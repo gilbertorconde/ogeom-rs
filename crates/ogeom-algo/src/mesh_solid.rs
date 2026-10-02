@@ -200,6 +200,12 @@ pub struct MeshSolidReport {
     /// Smooth regions nothing else fitted whose fitted patch failed its
     /// verification, left faceted.
     pub patches_unverified: usize,
+    /// Free edges of curved faces (a run of the mesh's boundary with one
+    /// face and nothing across it) that no parallel or ruling of the face
+    /// holds, built as a curve fitted onto the face through the feet of
+    /// the run's points, its tolerance measured against every vertex of the
+    /// run. The others are parallels and rulings, placed exactly.
+    pub free_edges_fitted: usize,
 }
 
 /// The result of [`solid_from_mesh`].
@@ -576,6 +582,7 @@ pub fn solid_from_mesh(
                 merge: options.merge_coplanar && !options.keep_vertices,
                 pinned: &pinned,
                 straight: &straight,
+                crease: options.crease,
                 flat,
                 tol,
             };
@@ -679,6 +686,7 @@ pub fn solid_from_mesh(
                             report.patches_not_disk = groups.refused.not_disk;
                             report.patches_narrow = groups.refused.narrow;
                             report.patches_unverified = groups.refused.unverified;
+                            report.free_edges_fitted = plan.free_fitted;
                             break shape;
                         }
                         culprits
@@ -1381,7 +1389,7 @@ fn unmatched_faces(
         grid.entry(c).or_default().push(welded.len() - 1);
         c
     };
-    let mut uses: HashMap<(Key, Key), (Vec<usize>, Point)> = HashMap::new();
+    let mut uses: HashMap<(Key, Key), (Vec<usize>, [Point; 2])> = HashMap::new();
     let mut out: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for (&(g, _), mesh) in faces.iter().zip(&meshes) {
         let Some(mesh) = mesh else {
@@ -1402,22 +1410,42 @@ fn unmatched_faces(
                 }
                 let entry = uses
                     .entry((a.min(b), a.max(b)))
-                    .or_insert_with(|| (Vec::new(), p.lerp(q, 0.5)));
+                    .or_insert_with(|| (Vec::new(), [p, q]));
                 entry.0.push(g);
             }
         }
     }
+    let free = free_edges(model, &faces, tol)?;
     let mut planar: Vec<Point> = Vec::new();
-    for (users, at) in uses.values() {
+    for (users, ends) in uses.values() {
         // One face's own seam, drawn from both sides of its closed chart,
         // meets itself there, and a pole's fans with it: an even count
         // from that face alone is its own closure, not a gap.
         if users.len() == 2 || (users.len() % 2 == 0 && users.iter().all(|&g| g == users[0])) {
             continue;
         }
+        // A free edge (one face, nothing across) is drawn by that face
+        // alone.
+        if users.len() == 1
+            && free.iter().any(|(curve, reach, (lo, hi))| {
+                let inside = |p: Point| {
+                    (lo.x..=hi.x).contains(&p.x)
+                        && (lo.y..=hi.y).contains(&p.y)
+                        && (lo.z..=hi.z).contains(&p.z)
+                };
+                ends.iter().all(|&p| {
+                    inside(p)
+                        && crate::measure::project_on_curve(curve, p, 64, tol)
+                            .is_ok_and(|near| near.distance <= *reach)
+                })
+            })
+        {
+            continue;
+        }
+        let at = ends[0].lerp(ends[1], 0.5);
         let mine: Vec<usize> = users.iter().copied().filter(|&g| curved(g)).collect();
         if mine.is_empty() {
-            planar.push(*at);
+            planar.push(at);
         } else {
             out.extend(mine);
         }
@@ -1445,6 +1473,72 @@ fn unmatched_faces(
         }
     }
     Ok(out.into_iter().collect())
+}
+
+/// A free edge as [`unmatched_faces`] reads it: its trimmed curve, how
+/// far from it a point counts as on it, and the box holding every such
+/// point.
+type FreeEdge = (Curve, f64, (Point, Point));
+
+/// The edges of the built faces that bound one face only and are no seam
+/// of it: each one's curve, trimmed to its range, its tolerance with the
+/// confusion distance's margin, and a box holding every point within that
+/// of it (its samples' box, widened by the tolerance and the longest step
+/// between samples).
+fn free_edges(
+    model: &Model,
+    faces: &[(usize, &Shape)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<FreeEdge>> {
+    use ogeom_geom::Curve3d as _;
+    let mut count: HashMap<ogeom_topo::SameKey, usize> = HashMap::new();
+    for &(_, face) in faces {
+        for edge in ogeom_topo::explore(
+            model,
+            face,
+            ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Edge),
+        )? {
+            *count.entry(ogeom_topo::SameKey(edge)).or_default() += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for (key, n) in count {
+        if n != 1 {
+            continue;
+        }
+        let Some(data) = model.node(&key.0).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        if data.degenerate {
+            continue;
+        }
+        let Some(curve) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let trimmed = ogeom_geom::TrimmedCurve::new(curve.clone(), range.0, range.1, tol)
+            .map_or_else(|_| curve.clone(), |t| Curve::Trimmed(Box::new(t)));
+        let reach = data.tolerance.get() + tol.confusion();
+        let mut samples = Vec::with_capacity(33);
+        for k in 0..=32 {
+            let t = range.0 + (range.1 - range.0) * f64::from(k) / 32.0;
+            samples.push(curve.point_at(t, tol)?);
+        }
+        let step = samples
+            .windows(2)
+            .map(|w| w[0].distance(w[1]))
+            .fold(0.0_f64, f64::max);
+        let (mut lo, mut hi) = (samples[0], samples[0]);
+        for p in &samples {
+            lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+        let margin = Vector::new(1.0, 1.0, 1.0) * (reach + step);
+        out.push((trimmed, reach, (lo - margin, hi + margin)));
+    }
+    Ok(out)
 }
 
 /// The most mesh triangles a planar face between curved ones may hold for
@@ -5472,6 +5566,8 @@ struct Plan {
     pcurves: HashMap<(usize, usize), (PlanarCurve, f64)>,
     /// How each curved face's boundary lies in its chart.
     layouts: Vec<Layout>,
+    /// How many free edges of curved faces are fitted curves.
+    free_fitted: usize,
 }
 
 /// Plans the edges and loops.
@@ -5487,6 +5583,9 @@ struct Planner<'a> {
     /// vertices: the solved curve bent the trim of a face beside it back
     /// across itself.
     straight: &'a std::collections::HashSet<(u32, u32)>,
+    /// The turn, in radians, from which a free boundary of a curved face
+    /// is cut into separate edges at a vertex.
+    crease: f64,
     flat: f64,
     tol: Tolerances,
 }
@@ -5598,7 +5697,9 @@ impl Planner<'_> {
         let any_curved = |faces: &[usize]| faces.iter().any(|&g| self.curved(g).is_some());
         // A vertex between two boundary edges with the same faces either
         // side is inside one edge: between planes only where the two are
-        // on one line; along a curved face always, the curve deciding.
+        // on one line; along a curved face always, the curve deciding,
+        // but for a free boundary (one face, nothing across), which ends
+        // an edge where it turns by the crease angle or more.
         let removable = |v: u32| -> bool {
             if !self.merge || self.pinned.contains(&v) {
                 return false;
@@ -5613,10 +5714,19 @@ impl Planner<'_> {
             if *faces != edge_faces[&e2] {
                 return false;
             }
-            if any_curved(faces) {
-                return true;
-            }
             let far = |(a, b): (u32, u32)| if a == v { b } else { a };
+            if any_curved(faces) {
+                if faces.len() > 1 {
+                    return true;
+                }
+                let at = self.points[v as usize];
+                let (inward, onward) = (
+                    at - self.points[far(e1) as usize],
+                    self.points[far(e2) as usize] - at,
+                );
+                let lengths = inward.magnitude() * onward.magnitude();
+                return lengths > 0.0 && inward.dot(onward) / lengths > self.crease.cos();
+            }
             let (p, q) = (self.points[far(e1) as usize], self.points[far(e2) as usize]);
             let at = self.points[v as usize];
             (at - p).dot(q - at) > 0.0 && distance_to_line(at, p, q) <= self.flat
@@ -5631,6 +5741,7 @@ impl Planner<'_> {
             surfaces: vec![None; self.groups.carriers.len()],
             pcurves: HashMap::new(),
             layouts: vec![Layout::Open; self.groups.carriers.len()],
+            free_fitted: 0,
         };
         let mut failed: Vec<usize> = Vec::new();
         let mut keys: Vec<(u32, u32)> = edge_faces.keys().copied().collect();
@@ -5668,7 +5779,8 @@ impl Planner<'_> {
                 }
                 let faces = edge_faces[&key].clone();
                 if any_curved(&faces) {
-                    let threaded = edges.iter().any(|e| self.straight.contains(e));
+                    let threaded =
+                        faces.len() > 1 && edges.iter().any(|e| self.straight.contains(e));
                     let snapped = if threaded {
                         let closed = chain.len() > 2 && chain[0] == chain[chain.len() - 1];
                         let pts: Vec<Point> = chain[..chain.len() - usize::from(closed)]
@@ -5683,6 +5795,9 @@ impl Planner<'_> {
                         Some(spec) => {
                             let index = plan.edges.len();
                             let (spec, forward, images) = spec;
+                            if faces.len() == 1 && !images.is_empty() {
+                                plan.free_fitted += 1;
+                            }
                             for (g, pcurve, deviation) in images {
                                 plan.pcurves.insert((index, g), (pcurve, deviation));
                             }
@@ -6137,8 +6252,11 @@ impl Planner<'_> {
 
     /// The exact curve a chain between two faces, one of them curved,
     /// lies on: a parallel circle or a ruling of a curved face, placed on
-    /// that face itself so its pcurve there is exact. `None` when no such
-    /// curve holds the chain and the faces both.
+    /// that face itself so its pcurve there is exact. Failing that, a
+    /// section solved onto both, or a chord. A free chain (one curved
+    /// face, nothing across) is held to its own face's parallels and
+    /// rulings, and failing them is fitted onto that face as a section is.
+    /// `None` when no curve holds the chain and the faces.
     fn snapped(&self, chain: &[u32], faces: &[usize]) -> Option<(Snapped, bool, Images)> {
         if faces.len() > 2 {
             return None;
@@ -6308,6 +6426,11 @@ impl Planner<'_> {
     /// positions at the same parameters, so the two run together. `None`
     /// where the surfaces meet tangentially, the solve does not settle, or
     /// the curve strays from either face past the reach.
+    ///
+    /// A free chain, with one curved face and nothing across, is fitted
+    /// the same way through the feet of its vertices on that face's
+    /// surface; its tolerance also holds every vertex of the chain, so the
+    /// edge keeps to the mesh's boundary within it.
     fn section(
         &self,
         pts: &[Point],
@@ -6319,6 +6442,13 @@ impl Planner<'_> {
         // fiftieth of a micron's worth of confusion distances, as close as
         // an exact edge's image would, or the points run out.
         let close = self.tol.confusion() * 50.0;
+        // A free chain's points are its own vertices, however many are
+        // asked for.
+        if faces.len() == 1 {
+            return self
+                .section_through(pts, closed, faces, reach, SECTION_POINTS)
+                .map(|(_, found)| found);
+        }
         let mut best: Option<(f64, (Snapped, bool, Images))> = None;
         let mut count = SECTION_POINTS;
         while count <= SECTION_POINTS * 8 {
@@ -6349,15 +6479,43 @@ impl Planner<'_> {
         count: usize,
     ) -> Option<(f64, (Snapped, bool, Images))> {
         use ogeom_geom::Curve3d as _;
-        let [a, b] = faces[..] else {
-            return None;
+        let (fa, fb) = match faces[..] {
+            [a, b] => (self.signed(a)?, Some(self.signed(b)?)),
+            [a] => (self.signed(a)?, None),
+            _ => return None,
         };
-        let (fa, fb) = (self.signed(a)?, self.signed(b)?);
+        // A point on the faces near a start: solved onto both, or for a
+        // free chain the foot on its face.
+        let onto = |start: Point, limit: f64| -> Option<Point> {
+            match &fb {
+                Some(fb) => onto_both(&fa, fb, start, reach, limit),
+                None => {
+                    let shape = &self.curved(faces[0])?.shape;
+                    let foot = evaluate(shape, chart(shape, start, self.tol)?);
+                    (fa(foot).abs() <= reach * 1e-3 && foot.distance(start) <= limit)
+                        .then_some(foot)
+                }
+            }
+        };
+        let off = |p: Point| fa(p).abs().max(fb.as_ref().map_or(0.0, |fb| fb(p).abs()));
         let steps = if closed { pts.len() } else { pts.len() - 1 };
         // A long chain is taken a few vertices at a time: the curve needs
-        // its shape, not every vertex.
-        let stride = steps.div_ceil(SECTION_SPANS).max(1);
-        let split = count.div_ceil(steps.div_ceil(stride)).max(SECTION_SPLIT);
+        // its shape, not every vertex. A free chain is taken through every
+        // vertex and nothing between: the foot of a point on a chord of a
+        // curved boundary lies off the boundary, across the surface, by as
+        // much as the chord cuts off it. A free chain of one or two spans
+        // has too few vertices for a cubic, and its spans are split.
+        let free = fb.is_none();
+        let stride = if free {
+            1
+        } else {
+            steps.div_ceil(SECTION_SPANS).max(1)
+        };
+        let split = if free {
+            if steps >= 3 { 1 } else { SECTION_SPLIT }
+        } else {
+            count.div_ceil(steps.div_ceil(stride)).max(SECTION_SPLIT)
+        };
         // A chord of the mesh lies across a face recognized from it, and a
         // face recognized from a mesh turns through well under a right
         // angle from one end of one of its chords to the other. Where the
@@ -6381,14 +6539,14 @@ impl Planner<'_> {
                 #[allow(clippy::cast_precision_loss, reason = "a handful of splits")]
                 let f = k as f64 / split as f64;
                 let limit = if k == 0 { reach } else { p.distance(q) + reach };
-                on.push(onto_both(&fa, &fb, p + (q - p) * f, reach, limit)?);
+                on.push(onto(p + (q - p) * f, limit)?);
             }
             i = next;
         }
         on.push(if closed {
             on[0]
         } else {
-            onto_both(&fa, &fb, pts[pts.len() - 1], reach, reach)?
+            onto(pts[pts.len() - 1], reach)?
         });
         // A loop is interpolated with a few of its points carried on past
         // each end, then cut back to its own: an open interpolation left
@@ -6437,7 +6595,14 @@ impl Planner<'_> {
         for k in 0..on.len() - 1 {
             for f in [0.25, 0.5, 0.75] {
                 let p = curve.point_at(between(k, f), self.tol).ok()?;
-                tolerance = tolerance.max(fa(p).abs()).max(fb(p).abs());
+                tolerance = tolerance.max(off(p));
+            }
+        }
+        if free {
+            // Every vertex of a free chain to the foot the curve runs
+            // through.
+            for (i, p) in pts.iter().enumerate() {
+                tolerance = tolerance.max(p.distance(on[i * split]));
             }
         }
         if tolerance > reach {

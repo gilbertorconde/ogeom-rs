@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Open meshes keep their curved faces' free boundary.** `solid_from_mesh`
+  cuts a run of boundary with one face and nothing across it where it
+  turns by the crease angle, and places it on the face's surface: an exact
+  parallel circle or ruling where one holds, otherwise a curve fitted
+  through its vertices' feet, with a pcurve and a tolerance measured
+  against the mesh. Open tubes, half cylinder sheets, domes and free-form
+  sheets come back as one face each instead of facets.
+  `MeshSolidReport::free_edges_fitted` counts the fitted edges.
+
 - **Face blends end where the seat runs off a face.** `blend_faces`
   rounds two curved faces of a solid, marched between them, where the ball
   touches both over only part of its seat: a crease that runs off the

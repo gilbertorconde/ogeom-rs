@@ -241,11 +241,16 @@ after.
    of it; the tube stays facets. Built whole, the hole would have to join
    the seam: the outer wire running along the equator to the hole, round
    it and on.
-8. **The free boundary of an open mesh.** A recognized region's edge with no
-   neighbour has no second surface to be solved onto. Check whether it comes
-   back as a polyline. If so, place it on the region's surface as a curve
-   (a circle on a cylinder's rim, a fitted spline otherwise), split where it
-   turns sharply.
+8. **The free boundary of an open mesh.** Done: a curved face's free
+   boundary is cut where it turns by the crease angle and each run placed
+   on the face's surface, as a parallel or ruling where one holds and
+   otherwise as a curve fitted through its vertices' feet
+   (`free_edges_fitted`). Measured on open tubes, sheets, a dome and a
+   free-form sheet, which all came back faceted before. Still open: a
+   mesh with no flat stretch has its coplanar distance read off its gently
+   curved triangle pairs (a bumped sheet alone measures 2e-3 where the
+   closed bumped plate measures 3e-5), and its free-form regions then
+   break into small canonical ones.
 
 **Faces whose trims fold in their chart tessellate open.** Some converted
 solids (`nist_ftc_07` in `mesh_corpus`, `nist_ctc_02` meshed at a

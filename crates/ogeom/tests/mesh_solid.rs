@@ -3874,3 +3874,380 @@ fn a_smooth_region_round_a_hole_stays_faceted() {
     assert_eq!(out.report.patches_not_disk, 1);
     assert_eq!(out.report.patches_unverified, 0);
 }
+
+/// The mesh of a shape's faces on one kind of surface alone: the shape
+/// with every other face taken away, open where they were.
+fn faces_meshed(
+    model: &Model,
+    shape: &Shape,
+    keep: fn(&ogeom::geom::SurfaceGeometry) -> bool,
+) -> Triangulation {
+    let mut out = Triangulation::new();
+    for face in explore_unique(model, shape, ShapeType::Face).unwrap() {
+        let data = model.node(&face).unwrap().data().as_face().unwrap();
+        if !keep(model.geometry().surface(data.surface).unwrap()) {
+            continue;
+        }
+        let mesh = meshed(model, &face);
+        let base = u32::try_from(out.positions.len()).unwrap();
+        out.positions.extend(&mesh.positions);
+        out.triangles
+            .extend(mesh.triangles.iter().map(|t| t.map(|v| v + base)));
+    }
+    out
+}
+
+/// The segments of a mesh that one triangle uses, its vertices welded at a
+/// nanometre.
+fn mesh_boundary(mesh: &Triangulation) -> Vec<[Point; 2]> {
+    #[allow(clippy::cast_possible_truncation, reason = "a grid cell")]
+    let key = |p: Point| {
+        (
+            (p.x * 1e6).round() as i64,
+            (p.y * 1e6).round() as i64,
+            (p.z * 1e6).round() as i64,
+        )
+    };
+    let mut uses: std::collections::HashMap<_, (usize, [Point; 2])> =
+        std::collections::HashMap::new();
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (p, q) = (
+                mesh.positions[t[k] as usize],
+                mesh.positions[t[(k + 1) % 3] as usize],
+            );
+            let (a, b) = (key(p), key(q));
+            if a == b {
+                continue;
+            }
+            uses.entry((a.min(b), a.max(b))).or_insert((0, [p, q])).0 += 1;
+        }
+    }
+    uses.into_values()
+        .filter(|(n, _)| *n == 1)
+        .map(|(_, s)| s)
+        .collect()
+}
+
+/// The free edges of a converted shell (bounding one face, and no seam
+/// of it): each one's curve trimmed to its range, and its tolerance.
+fn free_edges(model: &Model, shape: &Shape) -> Vec<(ogeom::geom::Curve, f64)> {
+    let mut count: std::collections::HashMap<ogeom::topo::SameKey, usize> =
+        std::collections::HashMap::new();
+    for face in explore_unique(model, shape, ShapeType::Face).unwrap() {
+        for edge in ogeom::topo::explore(model, &face, ogeom::topo::Filter::OfType(ShapeType::Edge))
+            .unwrap()
+        {
+            *count.entry(ogeom::topo::SameKey(edge)).or_default() += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for (key, n) in count {
+        let data = model.node(&key.0).unwrap().data().as_edge().unwrap();
+        if n != 1 || data.degenerate {
+            continue;
+        }
+        let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            panic!("an edge without a curve");
+        };
+        let curve = model.geometry().curve(*curve).unwrap().clone();
+        let trimmed = ogeom::geom::TrimmedCurve::new(curve, range.0, range.1, T).unwrap();
+        out.push((
+            ogeom::geom::Curve::Trimmed(Box::new(trimmed)),
+            data.tolerance.get(),
+        ));
+    }
+    out
+}
+
+/// The curve under a trimmed free edge.
+fn basis(curve: &ogeom::geom::Curve) -> &ogeom::geom::Curve {
+    match curve {
+        ogeom::geom::Curve::Trimmed(t) => t.basis(),
+        other => other,
+    }
+}
+
+/// A converted open mesh's free boundary against the mesh's: every vertex
+/// of the mesh's boundary within its edge's tolerance of a free edge, and
+/// every point of the converted shell's own boundary, as tessellated,
+/// within `sag` (what the mesh's chords cut off its boundary) and the
+/// edges' tolerance of the mesh's boundary. The worst of each, over the
+/// allowance it was held to.
+fn holds_the_mesh_boundary(
+    mesh: &Triangulation,
+    model: &Model,
+    shape: &Shape,
+    sag: f64,
+) -> (f64, f64) {
+    let boundary = mesh_boundary(mesh);
+    let edges = free_edges(model, shape);
+    let widest = edges.iter().map(|e| e.1).fold(0.0, f64::max);
+    let mut on_edges: f64 = 0.0;
+    for p in boundary.iter().flatten() {
+        let (off, tolerance) = edges
+            .iter()
+            .map(|(curve, tolerance)| {
+                let near = ogeom::algo::project_on_curve(curve, *p, 256, T).unwrap();
+                (near.distance, *tolerance)
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap();
+        assert!(off <= tolerance, "{p:?} {off:e} off, past {tolerance:e}");
+        on_edges = on_edges.max(off / tolerance);
+    }
+    let drawn = ogeom::mesh::triangulate(model, shape, Deflection::default(), T).unwrap();
+    let mut on_mesh: f64 = 0.0;
+    for p in mesh_boundary(&drawn).iter().flatten() {
+        let off = boundary
+            .iter()
+            .map(|s| {
+                let (d, along) = (s[1] - s[0], *p - s[0]);
+                let f = (along.dot(d) / d.dot(d)).clamp(0.0, 1.0);
+                p.distance(s[0] + d * f)
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(off <= sag + widest, "{p:?} {off:e} off the mesh's boundary");
+        on_mesh = on_mesh.max(off / (sag + widest));
+    }
+    (on_edges, on_mesh)
+}
+
+/// Converts an open mesh, checks the shell usable and open, and gives the
+/// model, the conversion and the shell's free edges.
+fn converted_open(
+    mesh: &Triangulation,
+) -> (
+    Model,
+    ogeom::algo::MeshSolid,
+    Vec<(ogeom::geom::Curve, f64)>,
+) {
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(!out.closed);
+    assert!(out.report.edges_used_once > 0);
+    assert_eq!(model.kind_of(&out.shape).unwrap(), ShapeType::Shell);
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_usable(), "{diagnosis}");
+    let edges = free_edges(&model, &out.shape);
+    (model, out, edges)
+}
+
+/// A cylinder's side meshed alone, both caps taken away: a tube open at
+/// both ends. It comes back one cylinder face bounded by two exact circles
+/// of the cylinder's radius at its two ends, and the converted boundary
+/// keeps to the mesh's.
+#[test]
+fn an_open_tube_comes_back_one_cylinder_between_two_circles() {
+    let mut model = Model::new();
+    let rod = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 4.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let mesh = faces_meshed(&model, &rod, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(_))
+    });
+    let (back, out, edges) = converted_open(&mesh);
+    assert_eq!(
+        kinds(&back, &out.shape),
+        [0, 1, 0, 0, 0],
+        "{:?}",
+        out.report
+    );
+    assert_eq!(out.report.free_edges_fitted, 0);
+    assert_eq!(edges.len(), 2);
+    let mut heights = Vec::new();
+    for (curve, tolerance) in &edges {
+        let ogeom::geom::Curve::Circle(c) = basis(curve) else {
+            panic!("a rim that is no circle: {curve:?}");
+        };
+        let circle = c.circle();
+        eprintln!(
+            "tube: rim radius {} at {:?}, tolerance {tolerance:e}",
+            circle.radius(),
+            circle.centre()
+        );
+        assert!((circle.radius() - 4.0).abs() <= *tolerance);
+        let centre = circle.centre();
+        assert!(Vector::new(centre.x, centre.y, 0.0).magnitude() <= *tolerance);
+        heights.push(centre.z);
+    }
+    heights.sort_by(f64::total_cmp);
+    assert!(
+        heights[0].abs() <= 1e-6 && (heights[1] - 10.0).abs() <= 1e-6,
+        "{heights:?}"
+    );
+    let held = holds_the_mesh_boundary(&mesh, &back, &out.shape, 0.01);
+    eprintln!("tube: boundary held to {held:?} of its allowances");
+}
+
+/// Half a cylinder's side, meshed alone: a sheet open all round. It comes
+/// back one cylinder face, its boundary cut where it turns square into
+/// four edges: two rulings along the axis at the cut, and two half circles
+/// at the ends.
+#[test]
+fn a_half_cylinder_sheet_comes_back_bounded_by_rulings_and_arcs() {
+    use ogeom::geom::Curve3d as _;
+    let mut model = Model::new();
+    let rod = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 4.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(-5.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let half_box = ogeom::algo::make_box(&mut model, at, (10.0, 5.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let half = ogeom::boolean::common(&mut model, &rod, &half_box, T)
+        .unwrap()
+        .shape;
+    let mesh = faces_meshed(&model, &half, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(_))
+    });
+    let (back, out, edges) = converted_open(&mesh);
+    assert_eq!(
+        kinds(&back, &out.shape),
+        [0, 1, 0, 0, 0],
+        "{:?}",
+        out.report
+    );
+    assert_eq!(out.report.free_edges_fitted, 0);
+    assert_eq!(edges.len(), 4);
+    let (mut rulings, mut arcs) = (0, 0);
+    for (curve, tolerance) in &edges {
+        let (a, b) = curve.domain();
+        let (p, q) = (curve.point_at(a, T).unwrap(), curve.point_at(b, T).unwrap());
+        match basis(curve) {
+            ogeom::geom::Curve::Line(line) => {
+                let along = line.axis().direction.vector();
+                eprintln!("half: ruling from {p:?} to {q:?}, tolerance {tolerance:e}");
+                assert!(along.cross(Vector::Z).magnitude() <= 1e-9);
+                assert!(p.y.abs() <= *tolerance && (p.x.abs() - 4.0).abs() <= *tolerance);
+                assert!((p.distance(q) - 10.0).abs() <= 1e-6);
+                rulings += 1;
+            }
+            ogeom::geom::Curve::Circle(c) => {
+                let circle = c.circle();
+                eprintln!(
+                    "half: arc of radius {} at {:?} over {}, tolerance {tolerance:e}",
+                    circle.radius(),
+                    circle.centre(),
+                    b - a
+                );
+                assert!((circle.radius() - 4.0).abs() <= *tolerance);
+                assert!(((b - a) - core::f64::consts::PI).abs() <= 1e-6);
+                assert!(p.y.abs() <= *tolerance && q.y.abs() <= *tolerance);
+                arcs += 1;
+            }
+            other => panic!("a free edge that is no ruling or arc: {other:?}"),
+        }
+    }
+    assert_eq!((rulings, arcs), (2, 2));
+    let held = holds_the_mesh_boundary(&mesh, &back, &out.shape, 0.01);
+    eprintln!("half: boundary held to {held:?} of its allowances");
+}
+
+/// A ball's top above a plane, meshed alone: a dome open along its rim. It
+/// comes back one sphere face whose rim is the latitude circle the plane
+/// cut.
+#[test]
+fn a_dome_s_rim_comes_back_a_circle_on_its_sphere() {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+        .unwrap()
+        .shape;
+    let above = Frame::new(Point::new(-8.0, -8.0, 3.0), Direction::Z, Direction::X, T).unwrap();
+    let top_box = ogeom::algo::make_box(&mut model, above, (16.0, 16.0, 8.0), T)
+        .unwrap()
+        .shape;
+    let dome = ogeom::boolean::common(&mut model, &ball, &top_box, T)
+        .unwrap()
+        .shape;
+    let mesh = faces_meshed(&model, &dome, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Sphere(_))
+    });
+    let (back, out, edges) = converted_open(&mesh);
+    assert_eq!(
+        kinds(&back, &out.shape),
+        [0, 0, 0, 1, 0],
+        "{:?}",
+        out.report
+    );
+    assert_eq!(out.report.free_edges_fitted, 0);
+    assert_eq!(edges.len(), 1);
+    let (curve, tolerance) = &edges[0];
+    let ogeom::geom::Curve::Circle(c) = basis(curve) else {
+        panic!("a rim that is no circle: {curve:?}");
+    };
+    let circle = c.circle();
+    eprintln!(
+        "dome: rim radius {} at {:?}, tolerance {tolerance:e}",
+        circle.radius(),
+        circle.centre()
+    );
+    assert!((circle.radius() - 40.0_f64.sqrt()).abs() <= *tolerance);
+    assert!(circle.centre().distance(Point::new(0.0, 0.0, 3.0)) <= *tolerance);
+    assert!(circle.frame().z().vector().cross(Vector::Z).magnitude() <= 1e-9);
+    let held = holds_the_mesh_boundary(&mesh, &back, &out.shape, 0.01);
+    eprintln!("dome: boundary held to {held:?} of its allowances");
+}
+
+/// The bump's height with a bowl added, so the sheet curves everywhere and
+/// no two of its triangles read as one flat face.
+fn bowl(x: f64, y: f64) -> f64 {
+    bump(x, y) + 0.05 * ((x - 10.0).powi(2) + (y - 10.0).powi(2))
+}
+
+/// A free-form sheet meshed alone, open all round its square: it comes back
+/// one fitted patch whose border, cut at its four corners, is four fitted
+/// curves. Each holds every vertex of the mesh's border within the
+/// tolerance it states, and the shell's own border, as tessellated, lies
+/// within that tolerance of the exact surface's border.
+#[test]
+fn a_free_form_sheet_s_border_comes_back_four_fitted_curves() {
+    let full = grid_solid(40, 20.0, |_, _| true, bowl);
+    let mut mesh = Triangulation::new();
+    mesh.positions.clone_from(&full.positions);
+    mesh.triangles = full
+        .triangles
+        .iter()
+        .copied()
+        .filter(|t| t.iter().all(|&v| v < 41 * 41))
+        .collect();
+    let (back, out, edges) = converted_open(&mesh);
+    eprintln!(
+        "sheet: distance {:e}, {:?}",
+        out.coplanar_distance, out.report
+    );
+    assert_eq!(out.report.faces, 1);
+    assert_eq!(out.report.patch_faces, 1);
+    assert_eq!(out.report.free_edges_fitted, 4);
+    assert_eq!(edges.len(), 4);
+    let widest = edges.iter().map(|e| e.1).fold(0.0, f64::max);
+    for (curve, tolerance) in &edges {
+        assert!(
+            matches!(basis(curve), ogeom::geom::Curve::BSpline(_)),
+            "{curve:?}"
+        );
+        eprintln!("sheet: border edge tolerance {tolerance:e}");
+        assert!(*tolerance <= out.coplanar_distance * 20.0);
+    }
+    let held = holds_the_mesh_boundary(&mesh, &back, &out.shape, 0.01);
+    eprintln!("sheet: boundary held to {held:?} of its allowances");
+    // The shell's border, as drawn, against the exact border: the side of
+    // the square nearest each point, and the height over it.
+    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+    let mut worst: f64 = 0.0;
+    for p in mesh_boundary(&drawn).iter().flatten() {
+        let (x, y) = (p.x.clamp(0.0, 20.0), p.y.clamp(0.0, 20.0));
+        let off = [
+            ((0.0, y), p.x.abs()),
+            ((20.0, y), (p.x - 20.0).abs()),
+            ((x, 0.0), p.y.abs()),
+            ((x, 20.0), (p.y - 20.0).abs()),
+        ]
+        .into_iter()
+        .map(|(on, across)| across.hypot(p.z - bowl(on.0, on.1)))
+        .fold(f64::INFINITY, f64::min);
+        worst = worst.max(off);
+    }
+    eprintln!("sheet: drawn border {worst:e} off the exact border, tolerance {widest:e}");
+    assert!(worst <= widest, "{worst} past {widest}");
+}
