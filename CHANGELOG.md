@@ -166,6 +166,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean keeps a piece reaching across a periodic face's seam as
+  one face.** The boolean splits each face in its own chart, whose edge
+  is the seam, so a piece reaching across the seam came back as two faces
+  sewn along it: a tube or drum halved square to its seam gave three
+  faces. Pieces of a cylinder, cone, sphere, torus or full revolution
+  that meet across its seam are joined into one face, on the surface
+  turned so its seam falls where the face does not reach, in solid
+  booleans, sheet booleans and `split_sheet` alike. `History` gains
+  `without_repeated_images`.
+
 - **A prism's far end edges sew.** `sew` told edges apart by their nodes,
   and a prism's far end edges are its profile's own edge nodes carried
   along it by a location: each was read where the profile stands, so a

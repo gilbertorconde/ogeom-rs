@@ -282,23 +282,17 @@ fn tube_halves(angle: f64) -> (usize, [f64; 2], usize) {
 #[test]
 fn a_tube_split_by_a_plane_through_its_axis_is_two_half_tubes() {
     let half = PI * 2.0 * 7.0;
-    // The plane y = 0, through the tube's seam: two faces, half each, the
-    // two lines the plane cuts along shared by both with a pcurve on the
-    // cylinder for each.
-    let (count, sides, shared) = tube_halves(0.0);
-    assert_eq!(count, 2);
-    assert_eq!(shared, 2);
-    for side in sides {
-        assert!((side - half).abs() < 1e-9 * half, "{sides:?}");
-    }
-    // The plane x = 0, square to the seam: the half the seam runs through
-    // keeps it as an edge between two faces, so three faces, and still
-    // half the area on each side.
-    let (count, sides, shared) = tube_halves(PI / 2.0);
-    assert_eq!(count, 3);
-    assert_eq!(shared, 3);
-    for side in sides {
-        assert!((side - half).abs() < 1e-9 * half, "{sides:?}");
+    // Through the seam, square to it, and at angles between: two faces,
+    // half each, the two lines the plane cuts along shared by both with a
+    // pcurve on the cylinder for each. Where the seam falls inside a half,
+    // that half is one face across it.
+    for angle in [0.0, PI / 2.0, PI / 3.0, 0.75 * PI, 1.0, 2.5] {
+        let (count, sides, shared) = tube_halves(angle);
+        assert_eq!(count, 2, "at {angle}");
+        assert_eq!(shared, 2, "at {angle}");
+        for side in sides {
+            assert!((side - half).abs() < 1e-9 * half, "at {angle}: {sides:?}");
+        }
     }
 }
 

@@ -194,6 +194,29 @@ impl History {
         out
     }
 
+    /// This history with each input's images listed once.
+    ///
+    /// Composing with a step that joins several shapes into one gives an
+    /// input that became each of them that one shape several times over;
+    /// the caller who knows the step joined shapes asks for the plain list.
+    #[must_use]
+    pub fn without_repeated_images(mut self) -> Self {
+        for images in self
+            .modified
+            .values_mut()
+            .chain(self.generated.values_mut())
+        {
+            let mut kept: Vec<Shape> = Vec::with_capacity(images.len());
+            for image in images.drain(..) {
+                if !kept.iter().any(|k| k.is_same(&image)) {
+                    kept.push(image);
+                }
+            }
+            *images = kept;
+        }
+        self
+    }
+
     /// Whether this history records nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {

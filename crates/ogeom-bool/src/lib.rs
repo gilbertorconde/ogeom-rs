@@ -43,6 +43,7 @@ mod arrange;
 mod bins;
 mod defeature;
 mod half_space;
+mod seam_join;
 mod section_face;
 
 pub use defeature::remove_faces;
@@ -7763,6 +7764,8 @@ fn assemble_result(
     let mut sewn = sewn;
     let dropped = without_membranes(model, &mut sewn.shells, floor, tol)?;
     history = history.then(&dropped);
+    let joined = seam_join::join_across_seams(model, &mut sewn.shells, tol)?;
+    history = history.then(&joined).without_repeated_images();
     if sewn.shells.is_empty() {
         // Membranes all through: what was kept encloses nothing.
         let empty = model.add_compound(&[])?;
@@ -7963,6 +7966,8 @@ fn assemble_sheet(
     let (faces, _) = rebuilt_pieces(model, fused, &kept, &mut history, tol)?;
     let mut sewn = sew(model, &faces, tol)?;
     history = history.then(&sewn.history);
+    let joined = seam_join::join_across_seams(model, &mut sewn.shells, tol)?;
+    history = history.then(&joined).without_repeated_images();
     let result = if sewn.shells.len() == 1 {
         sewn.shells.remove(0)
     } else {
@@ -9068,7 +9073,9 @@ fn trimmed_sheet(
 /// The pieces are sewn along the edges they share into one shell, or a
 /// compound of shells where they fall apart. Each piece lies on its face's
 /// surface, and the history records each against the face it came from;
-/// a face nothing crosses is its own copy.
+/// a face nothing crosses is its own copy. A piece reaching across the seam
+/// of a face on a surface of revolution is one face, on that surface turned
+/// about its axis so the chart's join falls outside the piece.
 ///
 /// # Errors
 ///
