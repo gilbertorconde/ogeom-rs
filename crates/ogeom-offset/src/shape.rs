@@ -963,6 +963,7 @@ pub(crate) fn rebuilt(
             // surface along its own normal, so the shared normal is the exact
             // answer: no corner to solve, nothing to polish.
             let moved = at + normals[0] * amounts[0];
+            corner_met(&prepared, &kept, moved, tol)?;
             new_vertices.insert(vertex.node(), (make_vertex(model, moved).shape, moved));
             continue;
         }
@@ -1009,6 +1010,7 @@ pub(crate) fn rebuilt(
             let step: Vec<f64> = rs.iter().map(|r| -r).collect();
             moved += solve_corner(&ns, &step, tol)?;
         }
+        corner_met(&prepared, &kept, moved, tol)?;
         new_vertices.insert(vertex.node(), (make_vertex(model, moved).shape, moved));
     }
 
@@ -2014,6 +2016,39 @@ fn rebuilt_lone_edge(
 /// The displacement that puts a point back on every moved plane: solve
 /// `x · nᵢ = wᵢ` for the corner's normals, exactly for three, in the least
 /// squares sense beyond.
+/// Refuse a re-solved corner that does not lie on every moved support it
+/// sits on: a plane moved clear of the drum it was tangent to meets it
+/// nowhere, and the solve stops on neither. Within the supports' own
+/// stated accuracy, as the hinge test allows a fitted support.
+fn corner_met(
+    prepared: &[Prepared],
+    seats: &[usize],
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for fi in seats {
+        // An analytic support's distance is its own; a projection is
+        // clamped to the surface's parameter window and measures the
+        // window's edge where the point lies past it.
+        let off = match &prepared[*fi].surface {
+            SurfaceGeometry::Plane(s) => s.plane().distance_to(at),
+            SurfaceGeometry::Cylinder(s) => s.cylinder().distance_to(at),
+            SurfaceGeometry::Cone(s) => s.cone().distance_to(at),
+            SurfaceGeometry::Sphere(s) => s.sphere().distance_to(at),
+            SurfaceGeometry::Torus(s) => s.torus().distance_to(at),
+            other => ogeom_algo::project_on_surface(other, at, 32, tol)?.distance,
+        };
+        if off > (tol.confusion() * 1e3).max(1e-4) {
+            ogeom_bail!(
+                Construction,
+                "the moved faces no longer meet at a corner they shared; the \
+                 edit pulls them apart there"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn solve_corner(normals: &[Vector], amounts: &[f64], tol: Tolerances) -> OgeomResult<Vector> {
     // Normal equations: (NᵀN) x = Nᵀw, 3×3 whatever the seat count.
     let mut a = [[0.0_f64; 3]; 3];

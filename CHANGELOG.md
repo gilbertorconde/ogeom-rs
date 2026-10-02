@@ -60,6 +60,14 @@ bump may break the API and a patch bump may not.
   one. Three converted corpus parts and the rough rounded box now
   tessellate closed.
 
+- **A face moved or offset clear of a neighbour it was tangent to is
+  refused.** Moving the side of a block rounded all round outward by half
+  a millimetre left the face's surface there and its edges where they had
+  been, on fillets it no longer met, and the solid came back valid with
+  less volume than before. Every corner the edit re-solves is now held to
+  lie on each surface it sits on, and the edit is refused by name where it
+  does not.
+
 ### Changed
 
 - **`tight_bounds` is hundreds of times faster on ruled and round

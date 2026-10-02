@@ -2584,3 +2584,159 @@ fn pads_on_a_part_converted_face_for_facet_fuse_back() {
         }
     }
 }
+
+/// A mesh converted with the default options, in a model of its own.
+fn converted(mesh: &Triangulation) -> (Model, Shape) {
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, mesh, &MeshSolidOptions::default(), T).unwrap();
+    (model, out.shape)
+}
+
+/// The rounded block, the rough box and a stepped part in single precision,
+/// each converted.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+fn converted_parts() -> Vec<(&'static str, Model, Shape)> {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let stepped = stepped_part(&mut model);
+    let mut single =
+        ogeom::mesh::triangulate(&model, &stepped, Deflection::with_chord(0.05).unwrap(), T)
+            .unwrap();
+    for p in &mut single.positions {
+        *p = Point::new(
+            f64::from(p.x as f32),
+            f64::from(p.y as f32),
+            f64::from(p.z as f32),
+        );
+    }
+    let mut out = Vec::new();
+    for (name, mesh) in [
+        ("rounded block", meshed(&model, &rounded)),
+        ("rough box", rough_rounded_box()),
+        ("stepped part", single),
+    ] {
+        let (model, shape) = converted(&mesh);
+        out.push((name, model, shape));
+    }
+    out
+}
+
+/// A converted solid written to STEP reads back valid, on the same kinds of
+/// surface and with the same volume.
+#[test]
+fn converted_solids_come_back_through_step() {
+    for (name, model, shape) in converted_parts() {
+        let before = (kinds(&model, &shape), volume(&model, &shape));
+        let mut document = ogeom::doc::Document::over(model);
+        document.add_part(name, shape);
+        let text = ogeom::io::write_step(&document, T).unwrap();
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let back = import.document.model();
+        let [solid] = import.solids.as_slice() else {
+            panic!("{name}: {} solids came back", import.solids.len());
+        };
+        let diagnosis = check(back, solid, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        assert_eq!(kinds(back, solid), before.0, "{name}");
+        let after = volume(back, solid);
+        assert!(
+            (after - before.1).abs() <= before.1 * 1e-6,
+            "{name}: {} went out, {after} came back",
+            before.1
+        );
+    }
+}
+
+/// The bore of a converted block offset and a side face moved come out as
+/// the same edits on the exact block do.
+#[test]
+fn offsets_and_moves_on_a_converted_block_match_the_exact_block() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 12.0, 8.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(10.0, 6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(&mut model, at, 3.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let exact = ogeom::boolean::cut(&mut model, &block, &drum, T)
+        .unwrap()
+        .shape;
+    let (mut back, conv) = converted(&meshed(&model, &exact));
+    assert_eq!(kinds(&back, &conv), [6, 1, 0, 0, 0]);
+    let mut changes = Vec::new();
+    for (m, shape) in [(&mut model, exact), (&mut back, conv)] {
+        let faces = explore_unique(m, &shape, ShapeType::Face).unwrap();
+        let bore = faces
+            .iter()
+            .find(|f| {
+                let data = m.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    m.geometry().surface(data.surface),
+                    Some(ogeom::geom::SurfaceGeometry::Cylinder(_))
+                )
+            })
+            .cloned()
+            .unwrap();
+        let side = faces
+            .iter()
+            .find(|f| ogeom::algo::face_normal(m, f, T).is_ok_and(|(_, n)| n.x < -0.999))
+            .cloned()
+            .unwrap();
+        let before = volume(m, &shape);
+        let offset = ogeom::offset::offset_faces(m, &shape, std::slice::from_ref(&bore), 0.5, T)
+            .unwrap()
+            .shape;
+        let step = ogeom::math::Transform::translation(Vector::new(-1.0, 0.0, 0.0));
+        let moved = ogeom::offset::move_faces(m, &shape, std::slice::from_ref(&side), &step, T)
+            .unwrap()
+            .shape;
+        for edited in [&offset, &moved] {
+            assert!(check(m, edited, T).unwrap().is_valid());
+        }
+        changes.push([volume(m, &offset) - before, volume(m, &moved) - before]);
+    }
+    // The bore's radius 3 to 2.5 through 8, and 12 by 8 moved out by 1.
+    let want = [core::f64::consts::PI * (9.0 - 6.25) * 8.0, 96.0];
+    for change in changes {
+        for (got, want) in change.iter().zip(want) {
+            assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+        }
+    }
+}
+
+/// A side face of a block rounded all round, moved out past the fillets it
+/// was tangent to, meets them nowhere: the move is refused, on the exact
+/// block and on its conversion alike, rather than leaving the face's edges
+/// where they were and its surface away from them.
+#[test]
+fn a_face_moved_clear_of_its_tangent_fillets_is_refused() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let (mut back, conv) = converted(&meshed(&model, &rounded));
+    let step = ogeom::math::Transform::translation(Vector::new(-0.5, 0.0, 0.0));
+    for (m, shape) in [(&mut model, rounded), (&mut back, conv)] {
+        let side = explore_unique(m, &shape, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| ogeom::algo::face_normal(m, f, T).is_ok_and(|(_, n)| n.x < -0.999))
+            .unwrap();
+        let moved = ogeom::offset::move_faces(m, &shape, std::slice::from_ref(&side), &step, T);
+        assert!(moved.is_err(), "{:?}", moved.map(|b| volume(m, &b.shape)));
+    }
+}
