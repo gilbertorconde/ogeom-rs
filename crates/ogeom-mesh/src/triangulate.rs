@@ -369,6 +369,22 @@ pub fn triangulate(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
+    Ok(triangulate_with_chords(model, shape, deflection, tol)?.0)
+}
+
+/// As [`triangulate`], with the edge chords the faces agreed on: what
+/// [`edge_chords_for`] answers for the same shape and deflection, without
+/// drawing every face a second time to find it.
+///
+/// # Errors
+///
+/// As [`triangulate_face`].
+pub fn triangulate_with_chords(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<(Triangulation, EdgeChords)> {
     // Faces in two phases, as `tessellate` does: each face is meshed from a
     // model nothing is writing to, in parallel; the pieces are then appended
     // sequentially in face order. The split is what keeps the answer
@@ -378,7 +394,7 @@ pub fn triangulate(
         ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
     let read_model: &Model = model;
 
-    let (computed, _) = face_meshes(read_model, &faces, deflection, tol)?;
+    let (computed, chords) = face_meshes(read_model, &faces, deflection, tol)?;
 
     let mut mesh = Triangulation::new();
     let mut pieces: Vec<(usize, usize)> = Vec::with_capacity(faces.len());
@@ -419,7 +435,7 @@ pub fn triangulate(
     // What is left open narrower than the chord asked for is two faces
     // sampling a shared corner differently, below the mesh's own
     // resolution, and is sealed; a wider opening is the shape's.
-    Ok(mesh.sealed(deflection.chord))
+    Ok((mesh.sealed(deflection.chord), chords))
 }
 
 /// Every face below a shape drawn to the chords the faces agree on, in face

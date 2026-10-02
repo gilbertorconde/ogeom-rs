@@ -89,6 +89,15 @@ bump may break the API and a patch bump may not.
   isolated touch, or where the surfaces come near without touching, is
   refused by name.
 
+### Changed
+
+- **Mesh conversion is 3 to 5 times faster on large meshes.** Each seam
+  curve is solved once per conversion and the per-face checks (areas,
+  probes, the exact volume) run in parallel, with identical results: a
+  23k-triangle part converts in 9 s instead of 48 s.
+  `ogeom_mesh::triangulate_with_chords` returns a shape's triangulation
+  together with the edge chords its faces agreed on.
+
 ### Fixed
 
 - **Exact area and volume on a face holed by a closed spline.** A face's

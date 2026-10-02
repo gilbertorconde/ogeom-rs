@@ -739,7 +739,8 @@ claims = [
     "IMeshTools_*", "BRepMeshData_*", "XBRepMesh",
 ]
 symbols = [
-    "ogeom_mesh::triangulate", "ogeom_mesh::triangulate_face",
+    "ogeom_mesh::triangulate", "ogeom_mesh::triangulate_with_chords",
+    "ogeom_mesh::triangulate_face",
     "ogeom_mesh::Deflection", "ogeom_mesh::tessellate",
 ]
 tests = [

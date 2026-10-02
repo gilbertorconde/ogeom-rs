@@ -559,6 +559,7 @@ pub fn solid_from_mesh(
         HashMap::new()
     };
     let mut absorbing = !absorbed.is_empty();
+    let snaps = std::sync::Mutex::new(SnapCache::new());
     let shape = 'attempt: loop {
         // Plan until every curved face's boundary is exact, faceting the ones
         // whose boundary is not; then build, and facet any recognized face that
@@ -585,6 +586,7 @@ pub fn solid_from_mesh(
                 crease: options.crease,
                 flat,
                 tol,
+                snaps: &snaps,
             };
             let failed = match planner.plan()? {
                 Err(Replan::Pin(vertices)) => {
@@ -969,9 +971,15 @@ fn crossed_seams(
         grid.entry((x, y, z)).or_default().push(welded.len() - 1);
         welded.len() - 1
     };
+    // The exact area of each meshed face with seams, which its drawn mesh
+    // may overrun.
+    let areas = ogeom_core::parallel::map_ordered(&faces, |i, &(g, face)| {
+        (meshes[i].is_some() && seams.contains_key(&g))
+            .then(|| crate::surface_properties(model, face, fine, tol))
+    });
     let mut flagged: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut uses: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-    for (&(g, face), mesh) in faces.iter().zip(&meshes) {
+    for ((&(g, _), mesh), area) in faces.iter().zip(&meshes).zip(areas) {
         let Some(mesh) = mesh else {
             if seams.contains_key(&g) {
                 flagged.insert(g);
@@ -992,10 +1000,8 @@ fn crossed_seams(
                 uses.entry((a.min(b), a.max(b))).or_default().push(g);
             }
         }
-        if seams.contains_key(&g)
-            && drawn
-                > crate::surface_properties(model, face, fine, tol)?.mass * OVERRUN
-                    + tol.confusion()
+        if let Some(area) = area
+            && drawn > area?.mass * OVERRUN + tol.confusion()
         {
             flagged.insert(g);
         }
@@ -1340,10 +1346,10 @@ fn unmatched_faces(
     let deflection = ogeom_mesh::Deflection::default();
     // What the solid is drawn as decides: a crack between two faces' own
     // meshes that the drawing welds shut costs nothing.
-    if ogeom_mesh::triangulate(model, shape, deflection, tol)?.is_closed() {
+    let (drawn, chords) = ogeom_mesh::triangulate_with_chords(model, shape, deflection, tol)?;
+    if drawn.is_closed() {
         return Ok(Vec::new());
     }
-    let chords = ogeom_mesh::edge_chords_for(model, shape, deflection, tol)?;
     let faces: Vec<(usize, &Shape)> = built
         .iter()
         .enumerate()
@@ -1591,177 +1597,188 @@ fn astray_faces(
             around[v as usize].push(t);
         }
     }
-    let mut astray = Vec::new();
-    for (g, face) in built.iter().enumerate() {
-        let (Some(face), Some((lo, hi))) = (face, reach[g]) else {
-            continue;
-        };
-        // Its boundary follows its neighbours' surfaces, which may meet it a
-        // little past the last row of the mesh; a face closed the wrong way
-        // round reaches a fair fraction of the region's size past it.
-        let margin = bulge[g] * 2.0 + flat * 20.0 + lo.distance(hi) * 0.1;
-        let bounds = crate::tight_bounds(model, face, tol)?;
-        let (Some(flo), Some(fhi)) = (bounds.low(), bounds.high()) else {
-            continue;
-        };
-        if flo.x < lo.x - margin
-            || flo.y < lo.y - margin
-            || flo.z < lo.z - margin
-            || fhi.x > hi.x + margin
-            || fhi.y > hi.y + margin
-            || fhi.z > hi.z + margin
-        {
-            astray.push(g);
-            continue;
-        }
-        // Nor may it cover another part of its surface than they do: every
-        // point of the face lies near one of them, by the surface's bulge
-        // over them and the chord it is sampled at.
-        let chord = (bulge[g] * 2.0).max(flat * 10.0);
-        // A face that cannot be drawn cannot be vouched for either.
-        let drawn = ogeom_mesh::triangulate_face(
-            model,
-            face,
-            ogeom_mesh::Deflection::with_chord(chord)?,
-            tol,
-        )
-        .or_else(|_| {
-            ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)
-        });
-        let Ok(mesh) = drawn else {
-            astray.push(g);
-            continue;
-        };
-        if mesh.triangles.is_empty() {
-            astray.push(g);
-            continue;
-        }
-        // Each triangle allows what the surface rises over it: a large facet
-        // on a gentle curve lets the face stand well off its middle, and
-        // lends nothing to the face anywhere else.
-        let Some(Carrier::Curved(curved)) = groups.carriers.get(g) else {
-            continue;
-        };
-        // The region's triangles and those touching them: the face's
-        // boundary runs on to meet its neighbours' surfaces, a little past
-        // its own last row.
-        let near: Vec<usize> = {
-            let mut near: Vec<usize> = members[g]
-                .iter()
-                .flat_map(|&t| triangles[t])
-                .flat_map(|v| around[v as usize].iter().copied())
-                .collect();
-            near.sort_unstable();
-            near.dedup();
-            near
-        };
-        let rise: Vec<f64> = near
-            .iter()
-            .map(|&t| {
-                let [a, b, c] = triangles[t].map(|v| points[v as usize]);
-                [(a, b), (b, c), (c, a)]
-                    .into_iter()
-                    .map(|(p, q)| curved.shape.distance_to(p + (q - p) * 0.5))
-                    .fold(0.0_f64, f64::max)
-            })
-            .collect();
-        // A triangle standing far off the surface (a flat neighbour's facet
-        // the region took in along a tangent) lends no more than a typical
-        // one of the region does.
-        let typical = {
-            let mut own: Vec<f64> = near
-                .iter()
-                .zip(&rise)
-                .filter(|(t, _)| groups.of[**t] == g)
-                .map(|(_, &r)| r)
-                .collect();
-            own.sort_by(f64::total_cmp);
-            own.get(own.len() / 2).copied().unwrap_or(0.0)
-        };
-        let rise: Vec<f64> = rise.iter().map(|&r| r.min(typical * 4.0)).collect();
-        let count = mesh.triangles.len();
-        let samples = count.min(32);
-        // A face running on past its last row where it meets a neighbour
-        // strays at a few points by its end; one covering another part of
-        // its surface strays over much of it.
-        let wandering = (0..samples)
-            .filter(|&k| {
-                let [a, b, c] =
-                    mesh.triangles[k * count / samples].map(|i| mesh.positions[i as usize]);
-                let middle =
-                    Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0);
-                near.iter().zip(&rise).all(|(&t, &rise)| {
-                    let [p, q, r] = triangles[t].map(|v| points[v as usize]);
-                    distance_to_triangle(middle, p, q, r) > rise * 2.0 + chord * 2.0 + flat * 20.0
-                })
-            })
-            .count();
-        if wandering * 4 > samples {
-            astray.push(g);
-            continue;
-        }
-        // A plane beside the face takes its boundary from it, and a face a
-        // little off its triangles carries that plane off its own: sampled
-        // where it meets this region, each plane must lie on the triangles
-        // too.
-        let mut planes: Vec<usize> = near
-            .iter()
-            .map(|&t| groups.of[t])
-            .filter(|&o| matches!(groups.carriers.get(o), Some(Carrier::Plane(_))))
-            .collect();
-        planes.sort_unstable();
-        planes.dedup();
-        // A gross check: a plane carried off by a face placed a little
-        // wrong stands off by a fair part of the region's size, while one
-        // meeting a rough neighbour a little past the last row stands off
-        // by the roughness.
-        let allowance = typical * 8.0 + chord * 2.0 + flat * 20.0 + lo.distance(hi) * 0.01;
-        let reaches = |p: Point| {
-            p.x >= lo.x - margin
-                && p.y >= lo.y - margin
-                && p.z >= lo.z - margin
-                && p.x <= hi.x + margin
-                && p.y <= hi.y + margin
-                && p.z <= hi.z + margin
-        };
-        for plane in planes {
-            let Some(beside) = built.get(plane).and_then(Option::as_ref) else {
-                continue;
+    // Each face is judged on its own, and the answers taken in face order.
+    let judged: Vec<(usize, &Shape, (Point, Point))> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, face)| Some((g, face.as_ref()?, reach[g]?)))
+        .collect();
+    let strays = ogeom_core::parallel::map_ordered(
+        &judged,
+        |_, &(g, face, (lo, hi))| -> OgeomResult<bool> {
+            // Its boundary follows its neighbours' surfaces, which may meet it a
+            // little past the last row of the mesh; a face closed the wrong way
+            // round reaches a fair fraction of the region's size past it.
+            let margin = bulge[g] * 2.0 + flat * 20.0 + lo.distance(hi) * 0.1;
+            let bounds = crate::tight_bounds(model, face, tol)?;
+            let (Some(flo), Some(fhi)) = (bounds.low(), bounds.high()) else {
+                return Ok(false);
             };
-            let Ok(drawn) =
-                ogeom_mesh::triangulate_face(model, beside, ogeom_mesh::Deflection::default(), tol)
-            else {
-                continue;
-            };
-            let middles: Vec<Point> = drawn
-                .triangles
-                .iter()
-                .map(|t| {
-                    let [a, b, c] = t.map(|i| drawn.positions[i as usize]);
-                    Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0)
-                })
-                .filter(|&m| reaches(m))
-                .collect();
-            if middles.is_empty() {
-                continue;
+            if flo.x < lo.x - margin
+                || flo.y < lo.y - margin
+                || flo.z < lo.z - margin
+                || fhi.x > hi.x + margin
+                || fhi.y > hi.y + margin
+                || fhi.z > hi.z + margin
+            {
+                return Ok(true);
             }
-            let own: Vec<usize> = (0..triangles.len())
-                .filter(|&t| groups.of[t] == plane)
+            // Nor may it cover another part of its surface than they do: every
+            // point of the face lies near one of them, by the surface's bulge
+            // over them and the chord it is sampled at.
+            let chord = (bulge[g] * 2.0).max(flat * 10.0);
+            // A face that cannot be drawn cannot be vouched for either.
+            let drawn = ogeom_mesh::triangulate_face(
+                model,
+                face,
+                ogeom_mesh::Deflection::with_chord(chord)?,
+                tol,
+            )
+            .or_else(|_| {
+                ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)
+            });
+            let Ok(mesh) = drawn else {
+                return Ok(true);
+            };
+            if mesh.triangles.is_empty() {
+                return Ok(true);
+            }
+            // Each triangle allows what the surface rises over it: a large facet
+            // on a gentle curve lets the face stand well off its middle, and
+            // lends nothing to the face anywhere else.
+            let Some(Carrier::Curved(curved)) = groups.carriers.get(g) else {
+                return Ok(false);
+            };
+            // The region's triangles and those touching them: the face's
+            // boundary runs on to meet its neighbours' surfaces, a little past
+            // its own last row.
+            let near: Vec<usize> = {
+                let mut near: Vec<usize> = members[g]
+                    .iter()
+                    .flat_map(|&t| triangles[t])
+                    .flat_map(|v| around[v as usize].iter().copied())
+                    .collect();
+                near.sort_unstable();
+                near.dedup();
+                near
+            };
+            let rise: Vec<f64> = near
+                .iter()
+                .map(|&t| {
+                    let [a, b, c] = triangles[t].map(|v| points[v as usize]);
+                    [(a, b), (b, c), (c, a)]
+                        .into_iter()
+                        .map(|(p, q)| curved.shape.distance_to(p + (q - p) * 0.5))
+                        .fold(0.0_f64, f64::max)
+                })
                 .collect();
-            let samples = middles.len().min(32);
-            let off = (0..samples)
+            // A triangle standing far off the surface (a flat neighbour's facet
+            // the region took in along a tangent) lends no more than a typical
+            // one of the region does.
+            let typical = {
+                let mut own: Vec<f64> = near
+                    .iter()
+                    .zip(&rise)
+                    .filter(|(t, _)| groups.of[**t] == g)
+                    .map(|(_, &r)| r)
+                    .collect();
+                own.sort_by(f64::total_cmp);
+                own.get(own.len() / 2).copied().unwrap_or(0.0)
+            };
+            let rise: Vec<f64> = rise.iter().map(|&r| r.min(typical * 4.0)).collect();
+            let count = mesh.triangles.len();
+            let samples = count.min(32);
+            // A face running on past its last row where it meets a neighbour
+            // strays at a few points by its end; one covering another part of
+            // its surface strays over much of it.
+            let wandering = (0..samples)
                 .filter(|&k| {
-                    let m = middles[k * middles.len() / samples];
-                    near.iter().chain(&own).all(|&t| {
+                    let [a, b, c] =
+                        mesh.triangles[k * count / samples].map(|i| mesh.positions[i as usize]);
+                    let middle =
+                        Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0);
+                    near.iter().zip(&rise).all(|(&t, &rise)| {
                         let [p, q, r] = triangles[t].map(|v| points[v as usize]);
-                        distance_to_triangle(m, p, q, r) > allowance
+                        distance_to_triangle(middle, p, q, r)
+                            > rise * 2.0 + chord * 2.0 + flat * 20.0
                     })
                 })
                 .count();
-            if off * 4 > samples {
-                astray.push(g);
-                break;
+            if wandering * 4 > samples {
+                return Ok(true);
             }
+            // A plane beside the face takes its boundary from it, and a face a
+            // little off its triangles carries that plane off its own: sampled
+            // where it meets this region, each plane must lie on the triangles
+            // too.
+            let mut planes: Vec<usize> = near
+                .iter()
+                .map(|&t| groups.of[t])
+                .filter(|&o| matches!(groups.carriers.get(o), Some(Carrier::Plane(_))))
+                .collect();
+            planes.sort_unstable();
+            planes.dedup();
+            // A gross check: a plane carried off by a face placed a little
+            // wrong stands off by a fair part of the region's size, while one
+            // meeting a rough neighbour a little past the last row stands off
+            // by the roughness.
+            let allowance = typical * 8.0 + chord * 2.0 + flat * 20.0 + lo.distance(hi) * 0.01;
+            let reaches = |p: Point| {
+                p.x >= lo.x - margin
+                    && p.y >= lo.y - margin
+                    && p.z >= lo.z - margin
+                    && p.x <= hi.x + margin
+                    && p.y <= hi.y + margin
+                    && p.z <= hi.z + margin
+            };
+            for plane in planes {
+                let Some(beside) = built.get(plane).and_then(Option::as_ref) else {
+                    continue;
+                };
+                let Ok(drawn) = ogeom_mesh::triangulate_face(
+                    model,
+                    beside,
+                    ogeom_mesh::Deflection::default(),
+                    tol,
+                ) else {
+                    continue;
+                };
+                let middles: Vec<Point> = drawn
+                    .triangles
+                    .iter()
+                    .map(|t| {
+                        let [a, b, c] = t.map(|i| drawn.positions[i as usize]);
+                        Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0)
+                    })
+                    .filter(|&m| reaches(m))
+                    .collect();
+                if middles.is_empty() {
+                    continue;
+                }
+                let own: Vec<usize> = (0..triangles.len())
+                    .filter(|&t| groups.of[t] == plane)
+                    .collect();
+                let samples = middles.len().min(32);
+                let off = (0..samples)
+                    .filter(|&k| {
+                        let m = middles[k * middles.len() / samples];
+                        near.iter().chain(&own).all(|&t| {
+                            let [p, q, r] = triangles[t].map(|v| points[v as usize]);
+                            distance_to_triangle(m, p, q, r) > allowance
+                        })
+                    })
+                    .count();
+                if off * 4 > samples {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        },
+    );
+    let mut astray = Vec::new();
+    for (&(g, _, _), stray) in judged.iter().zip(strays) {
+        if stray? {
+            astray.push(g);
         }
     }
     Ok(astray)
@@ -5602,7 +5619,12 @@ struct Planner<'a> {
     crease: f64,
     flat: f64,
     tol: Tolerances,
+    /// Curves snapped by earlier plans with the same points and distance.
+    snaps: &'a std::sync::Mutex<SnapCache>,
 }
+
+/// A chain of boundary vertices between two kept ones, and its mesh edges.
+type Chain = (Vec<u32>, Vec<(u32, u32)>);
 
 /// Why a plan was refused: curved faces to facet, or vertices to keep.
 enum Replan {
@@ -5760,37 +5782,72 @@ impl Planner<'_> {
         let mut failed: Vec<usize> = Vec::new();
         let mut keys: Vec<(u32, u32)> = edge_faces.keys().copied().collect();
         keys.sort_unstable();
+        // The chain of boundary edges from `key` to the next kept vertex,
+        // with its edges; the first pass starts only from a kept vertex.
+        let walk = |key: (u32, u32), pass: usize| -> Option<Chain> {
+            let (a, b) = key;
+            let start = if is_kept[&a] {
+                a
+            } else if is_kept[&b] {
+                b
+            } else if pass == 1 {
+                a
+            } else {
+                return None;
+            };
+            let mut chain = vec![start];
+            let mut edges = vec![key];
+            let mut at = if start == a { b } else { a };
+            chain.push(at);
+            while !is_kept[&at] && at != start {
+                let Some(&following) = incident[&at].iter().find(|e| !edges.contains(e)) else {
+                    break;
+                };
+                edges.push(following);
+                at = if following.0 == at {
+                    following.1
+                } else {
+                    following.0
+                };
+                chain.push(at);
+            }
+            Some((chain, edges))
+        };
+        // Every chain is walked as below, and the curves no earlier plan
+        // snapped are solved side by side before the edges are planned in
+        // order.
+        {
+            let mut taken: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+            let mut wanted: Vec<(Vec<u32>, Vec<usize>)> = Vec::new();
+            for pass in 0..2 {
+                for &key in &keys {
+                    if taken.contains(&key) {
+                        continue;
+                    }
+                    let Some((chain, edges)) = walk(key, pass) else {
+                        continue;
+                    };
+                    let faces = &edge_faces[&key];
+                    if any_curved(faces)
+                        && !edges.iter().any(|e| self.straight.contains(e))
+                        && !self.snap_known(&chain, faces)
+                    {
+                        wanted.push((chain, faces.clone()));
+                    }
+                    taken.extend(edges);
+                }
+            }
+            self.snap_all(wanted);
+        }
         for pass in 0..2 {
             for &key in &keys {
                 if plan.edge_of.contains_key(&key) {
                     continue;
                 }
-                let (a, b) = key;
-                let start = if is_kept[&a] {
-                    a
-                } else if is_kept[&b] {
-                    b
-                } else if pass == 1 {
-                    a
-                } else {
+                let Some((chain, edges)) = walk(key, pass) else {
                     continue;
                 };
-                let mut chain = vec![start];
-                let mut edges = vec![key];
-                let mut at = if start == a { b } else { a };
-                chain.push(at);
-                while !is_kept[&at] && at != start {
-                    let Some(&following) = incident[&at].iter().find(|e| !edges.contains(e)) else {
-                        break;
-                    };
-                    edges.push(following);
-                    at = if following.0 == at {
-                        following.1
-                    } else {
-                        following.0
-                    };
-                    chain.push(at);
-                }
+                let (start, at) = (chain[0], chain[chain.len() - 1]);
                 let faces = edge_faces[&key].clone();
                 if any_curved(&faces) {
                     let threaded =
@@ -6273,6 +6330,59 @@ impl Planner<'_> {
     /// rulings, and failing them is fitted onto that face as a section is.
     /// `None` when no curve holds the chain and the faces.
     fn snapped(&self, chain: &[u32], faces: &[usize]) -> Option<(Snapped, bool, Images)> {
+        let read = self.snap_read(faces);
+        let key = (chain.to_vec(), faces.to_vec());
+        if let Some(known) = self.snaps_held().get(&key)
+            && let Some((_, found)) = known.iter().find(|(was, _)| *was == read)
+        {
+            return found.clone();
+        }
+        let found = self.snap(chain, faces);
+        self.snaps_held()
+            .entry(key)
+            .or_default()
+            .push((read, found.clone()));
+        found
+    }
+
+    /// What a snapped curve between `faces` reads of them.
+    fn snap_read(&self, faces: &[usize]) -> Vec<SnapFace> {
+        faces
+            .iter()
+            .map(|&g| SnapFace::of(&self.groups.carriers[g]))
+            .collect()
+    }
+
+    /// The curves snapped so far.
+    fn snaps_held(&self) -> std::sync::MutexGuard<'_, SnapCache> {
+        self.snaps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether the curve for `chain` between `faces` as they stand is known.
+    fn snap_known(&self, chain: &[u32], faces: &[usize]) -> bool {
+        let read = self.snap_read(faces);
+        self.snaps_held()
+            .get(&(chain.to_vec(), faces.to_vec()))
+            .is_some_and(|known| known.iter().any(|(was, _)| *was == read))
+    }
+
+    /// The curves for chains between faces, each solved on its own, kept.
+    fn snap_all(&self, wanted: Vec<(Vec<u32>, Vec<usize>)>) {
+        let found =
+            ogeom_core::parallel::map_ordered(&wanted, |_, (chain, faces)| self.snap(chain, faces));
+        for ((chain, faces), found) in wanted.into_iter().zip(found) {
+            let read = self.snap_read(&faces);
+            self.snaps_held()
+                .entry((chain, faces))
+                .or_default()
+                .push((read, found));
+        }
+    }
+
+    /// As [`Self::snapped`], solved afresh.
+    fn snap(&self, chain: &[u32], faces: &[usize]) -> Option<(Snapped, bool, Images)> {
         if faces.len() > 2 {
             return None;
         }
@@ -6797,6 +6907,7 @@ impl Planner<'_> {
     }
 }
 
+#[derive(Clone)]
 enum Snapped {
     Open(Curve, (f64, f64), f64),
     Closed(Curve, f64),
@@ -6824,6 +6935,32 @@ const SECTION_POINTS: usize = 160;
 /// A fitted section's images on the curved faces it bounds: the face, the
 /// image, and how far the image strays from the curve.
 type Images = Vec<(usize, PlanarCurve, f64)>;
+
+/// What a snapped curve reads of one face beside its chain: the plane, or
+/// the curved surface with the chart point its images unwrap around and
+/// whether it wraps.
+#[derive(PartialEq)]
+enum SnapFace {
+    Plane(Plane),
+    Curved(Canonical, (f64, f64), bool, bool),
+    Gone,
+}
+
+impl SnapFace {
+    fn of(carrier: &Carrier) -> Self {
+        match carrier {
+            Carrier::Plane(plane) => Self::Plane(*plane),
+            Carrier::Curved(c) => Self::Curved(c.shape.clone(), c.centre, c.wraps, c.wraps_v),
+            Carrier::Gone => Self::Gone,
+        }
+    }
+}
+
+/// The curves snapped to chains, kept across the plans of one conversion:
+/// by chain and faces, each with what it read of the faces. The coplanar
+/// distance and the points are those of the whole conversion.
+type SnapCache =
+    HashMap<(Vec<u32>, Vec<usize>), Vec<(Vec<SnapFace>, Option<(Snapped, bool, Images)>)>>;
 
 /// A point solved onto where two surfaces meet, from a start near both:
 /// Newton's step, the least one that zeroes both signed distances to first

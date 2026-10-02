@@ -259,8 +259,12 @@ pub fn inside_out_faces(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomR
         }
         return Ok(out);
     }
-    for face in explore_unique(model, solid, ShapeType::Face)? {
-        if faces_inward(model, &face, &boundary, tol)? == Some(true) {
+    let faces = explore_unique(model, solid, ShapeType::Face)?;
+    let inward = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+        faces_inward(model, face, &boundary, tol)
+    });
+    for (face, inward) in faces.into_iter().zip(inward) {
+        if inward? == Some(true) {
             out.push(face);
         }
     }
@@ -277,9 +281,12 @@ pub(crate) fn faces_turned_in(
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
     let boundary = crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
+    let inward = ogeom_core::parallel::map_ordered(faces, |_, face| {
+        faces_inward(model, face, &boundary, tol)
+    });
     let mut out = Vec::new();
-    for face in faces {
-        if faces_inward(model, face, &boundary, tol)? == Some(true) {
+    for (face, inward) in faces.iter().zip(inward) {
+        if inward? == Some(true) {
             out.push(face.clone());
         }
     }

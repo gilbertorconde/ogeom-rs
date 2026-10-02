@@ -236,7 +236,7 @@ pub fn volume_properties(
     if let Some(exact) = exact_volume_properties(model, shape, tol)? {
         return Ok(exact);
     }
-    let mut mesh = ogeom_mesh::triangulate(model, shape, deflection, tol)?;
+    let (mut mesh, chords) = ogeom_mesh::triangulate_with_chords(model, shape, deflection, tol)?;
     if mesh.is_empty() {
         return Ok(MassProperties::none(deflection.chord));
     }
@@ -258,12 +258,13 @@ pub fn volume_properties(
                 "the boundary is not closed, so it encloses no volume to measure"
             );
         }
-        let chords = ogeom_mesh::edge_chords_for(model, shape, deflection, tol)?;
         mesh = ogeom_topo::Triangulation::new();
-        for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
-            mesh.append(&ogeom_mesh::triangulate_face_with(
-                model, &face, deflection, &chords, tol,
-            )?);
+        let faces = explore(model, shape, Filter::OfType(ShapeType::Face))?;
+        let meshes = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+            ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol)
+        });
+        for face_mesh in meshes {
+            mesh.append(&face_mesh?);
         }
     }
 
@@ -411,8 +412,17 @@ fn exact_volume_properties(
     let mut mass = 0.0;
     let mut first = Vector::ZERO;
     let mut second = Matrix3::ZERO;
-    for face in &exact {
+    // Each face's samples are taken on their own, and summed in the faces'
+    // order.
+    let sampled = ogeom_core::parallel::map_ordered(&exact, |_, face| {
+        let mut samples: Vec<(Point, Vector, f64)> = Vec::new();
         let settled = integrate_face(face, reference, tol, &mut |p, n_da, share| {
+            samples.push((p, n_da, share));
+        });
+        (settled, samples)
+    });
+    for (settled, samples) in sampled {
+        for (p, n_da, share) in samples {
             let n_da = n_da * share;
             let q = p - reference;
             mass += q.dot(n_da) / 3.0;
@@ -433,7 +443,7 @@ fn exact_volume_properties(
                     }
                 }
             }
-        });
+        }
         let settled = or_mesh(settled, false)?;
         if !settled {
             return Ok(None);

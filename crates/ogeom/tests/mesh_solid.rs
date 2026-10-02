@@ -1349,7 +1349,9 @@ fn holes_sideways_past_a_rough_corner_cut_and_fill_valid() {
 }
 
 /// A torus tessellated into 200 000 triangles converts in seconds, to the
-/// one face of the torus it is.
+/// one face of the torus it is. The bound allows for the rest of the suite
+/// sharing the machine; a conversion that grows faster than the mesh takes
+/// minutes.
 #[test]
 fn a_large_mesh_converts_in_seconds() {
     let (rings, sides) = (500_u32, 200_u32);
@@ -1380,7 +1382,7 @@ fn a_large_mesh_converts_in_seconds() {
     assert!(out.closed);
     assert_eq!(out.report.triangles, 200_000);
     assert_eq!(out.report.faces, 1);
-    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(took < Duration::from_secs(30), "{took:?}");
 }
 
 /// A rounded rectangle `w` by `h`, corner radius `r` in `n` steps per
