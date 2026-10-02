@@ -659,10 +659,9 @@ fn crossing_cylinders_meet_along_a_fitted_curve() {
 }
 
 /// A ball or a ring whose boundary only makes holes in it: a boss fused
-/// on a ball, a ball bored twice across, a ring pierced through its tube
-/// and through its outer equator. Each comes back as the whole surface
-/// with the holes as inner wires, its seams and poles turned clear of
-/// them.
+/// on a ball, a ball bored twice across, a ring pierced through its tube.
+/// Each comes back as the whole surface with the holes as inner wires, its
+/// seams and poles turned clear of them.
 #[test]
 fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
     let mut model = Model::new();
@@ -756,13 +755,29 @@ fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
         (&knob, [1, 1, 0, 1, 0]),
         (&bored, [0, 3, 0, 1, 0]),
         (&pierced, [0, 1, 0, 0, 1]),
-        (&through, [0, 1, 0, 0, 1]),
         (&cornered, [2, 0, 0, 1, 0]),
     ] {
         comes_back_as(&model, shape, expected);
         let mesh = ogeom::mesh::triangulate(&model, shape, Deflection::default(), T).unwrap();
         comes_back_from(&model, shape, &mesh, expected);
     }
+    // Pierced through its outer equator, where the tube's angle starts, the
+    // ring cannot be the whole torus with a hole: the whole torus's seam
+    // runs round the outer equator and through the hole. Its tube stays
+    // facets, the bore comes back a cylinder, and the solid meshes closed.
+    let mut back = Model::new();
+    let out = solid_from_mesh(
+        &mut back,
+        &meshed(&model, &through),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+    let found = kinds(&back, &out.shape);
+    assert_eq!((found[1], found[4]), (1, 0), "{found:?}");
+    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed());
 }
 
 /// A chamfered hole whose mesh has one vertex of the chamfer's rim a

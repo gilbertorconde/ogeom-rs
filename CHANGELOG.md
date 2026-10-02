@@ -56,6 +56,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A converted torus is no longer built with its seam through a hole.**
+  A hole's outline was unwrapped round the torus's axis but not round its
+  tube, so a hole across the outer equator, where the tube's angle starts,
+  read as clear of the seam there. The whole torus was built with the hole
+  as an inner wire and its seam edge running through the hole: a face
+  `check` passed and no tessellation could close. Such a ring's tube now
+  stays facets; its bore still comes back a cylinder.
+
 - **Faces meet at a vertex their edges end off.** An edge's curve may end
   off its vertex by up to the vertex's tolerance, and the next edge's off
   it on another side. Each face round the vertex closed its own gap

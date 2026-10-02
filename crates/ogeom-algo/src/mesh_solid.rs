@@ -7574,9 +7574,21 @@ fn hole_polygons(
             for &h in *ring {
                 let (a, _) = from_to(triangles, h);
                 let (u, v) = chart(shape, points[a as usize], tol)?;
-                let u = match out.last() {
-                    Some(&(last, _)) => last + ogeom_math::elementary::wrap_signed_angle(u - last),
-                    None => u,
+                // Unwrapped along the ring both ways the chart closes on
+                // itself: a hole across a torus's outer equator, where the
+                // tube's angle starts, runs on past a whole turn rather
+                // than jumping back to nought, so a seam there is seen to
+                // cross it.
+                let (u, v) = match out.last() {
+                    Some(&(last_u, last_v)) => (
+                        last_u + ogeom_math::elementary::wrap_signed_angle(u - last_u),
+                        if matches!(shape, Canonical::Torus(_)) {
+                            last_v + ogeom_math::elementary::wrap_signed_angle(v - last_v)
+                        } else {
+                            v
+                        },
+                    ),
+                    None => (u, v),
                 };
                 out.push((u, v));
             }

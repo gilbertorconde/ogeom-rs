@@ -217,7 +217,12 @@ after.
    that a corrected conversion builds what an automatic one would have. It
    follows item 4, whose corner and boundary graph is what an application
    edits.
-7. **The free boundary of an open mesh.** A recognized region's edge with no
+7. **A torus pierced across its outer equator.** The whole torus's seam
+   runs round the outer equator, so a hole there cannot be an inner wire
+   of it; the tube stays facets. Built whole, the hole would have to join
+   the seam: the outer wire running along the equator to the hole, round
+   it and on.
+8. **The free boundary of an open mesh.** A recognized region's edge with no
    neighbour has no second surface to be solved onto. Check whether it comes
    back as a polyline. If so, place it on the region's surface as a curve
    (a circle on a cylinder's rim, a fitted spline otherwise), split where it
