@@ -38,7 +38,7 @@ per package.
 - **algo.place-copy**: Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered` · 10 headers claimed
 - **algo.point-projection**: Projecting a point onto a curve or a surface, nearest first, all minima found · `covered` · 26 headers claimed
 - **algo.primitives**: The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered` · 23 headers claimed
-- **algo.sewing**: Sewing faces into shells along coincident edges, with spatial acceleration · `covered` · 11 headers claimed
+- **algo.sewing**: Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration · `covered` · 11 headers claimed
 - **algo.shape-distance**: Distance, proximity and overlap between whole shapes, and self-intersection · `covered` · 18 headers claimed
 - **algo.solid-from-mesh**: A solid from a triangle mesh: coplanar triangles merged into planar faces, curved regions recognized as cylinders, cones, spheres and tori · `covered` · 1 header claimed
 - **algo.spatial-acceleration**: Generic bounding-volume hierarchies · `divergent` · 33 headers claimed

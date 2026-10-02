@@ -962,7 +962,7 @@ tests = [
 
 [[capability]]
 id = "algo.sewing"
-title = "Sewing faces into shells along coincident edges, with spatial acceleration"
+title = "Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration"
 crate = "ogeom-algo"
 verdict = "covered"
 claims = [
@@ -974,8 +974,8 @@ claims = [
     "BRepOffsetAPI_Sewing", "BRepOffsetAPI_FindContigousEdges",
 ]
 symbols = [
-    "ogeom_algo::sew", "ogeom_algo::Sewn", "ogeom_algo::order_edges",
-    "ogeom_algo::make_wire_unordered",
+    "ogeom_algo::sew", "ogeom_algo::sew_within", "ogeom_algo::Sewn",
+    "ogeom_algo::order_edges", "ogeom_algo::make_wire_unordered",
 ]
 tests = ["crates/ogeom-algo/src/sew.rs"]
 

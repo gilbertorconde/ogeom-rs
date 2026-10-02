@@ -205,6 +205,41 @@ pub struct Sewn {
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if a handle fails to
 /// resolve.
 pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<Sewn> {
+    sew_with(model, faces, 0.0, tol)
+}
+
+/// Sew faces whose edges meet across a gap of up to `gap`.
+///
+/// As [`sew`], with two edges taken for one where their ends and middle
+/// lie within `gap` of each other rather than within the confusion
+/// distance: surfaces built apart (an imported sheet, a fitted fill beside
+/// an exact extrusion) meet a few micrometres apart. The edge kept, and the
+/// vertices it ends on, widen their tolerances to reach the edge they
+/// replace, as healing does, so the shell checks clean. An edge that runs
+/// along two or more shorter edges of other faces is first split where
+/// their vertices meet it within `gap`, so each piece has a twin.
+///
+/// # Errors
+///
+/// As [`sew`], and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// if `gap` is not finite and non-negative.
+pub fn sew_within(
+    model: &mut Model,
+    faces: &[Shape],
+    gap: f64,
+    tol: Tolerances,
+) -> OgeomResult<Sewn> {
+    if !(gap.is_finite() && gap >= 0.0) {
+        ogeom_bail!(
+            Construction,
+            "the gap to sew across, {gap}, is not finite and non-negative"
+        );
+    }
+    sew_with(model, faces, gap, tol)
+}
+
+fn sew_with(model: &mut Model, faces: &[Shape], gap: f64, tol: Tolerances) -> OgeomResult<Sewn> {
+    let reach = gap.max(tol.confusion());
     if faces.is_empty() {
         ogeom_bail!(Construction, "there are no faces to sew");
     }
@@ -221,7 +256,10 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // holding such a node is baked: rebuilt with its placements in its
     // geometry, every edge a node of its own where it stands.
     let originals = faces;
-    let baked = unshared(model, faces, tol)?;
+    let mut baked = unshared(model, faces, tol)?;
+    if gap > 0.0 {
+        baked = split_at_vertices(model, &baked, reach, tol)?;
+    }
     let faces = baked.as_slice();
 
     // Vertices first, and this is not an optimisation; it is what makes the
@@ -231,7 +269,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
     // mixture is reported to have a gap, because it has one: `is_same_position`
     // asks whether one node appears at two placements, which is the right
     // question and not this one.
-    let mut vertices = merge_vertices(model, faces, tol)?;
+    let mut vertices = merge_vertices(model, faces, reach, tol)?;
     // Two edges decided to be one must end on the same vertices, or the
     // faces that bounded the dropped one keep its neighbours ending where
     // the dropped one did, and their wires open. Twins whose ends are still
@@ -255,7 +293,10 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
                 if !catalogued.insert(id) {
                     continue;
                 }
-                if let Some(print) = fingerprint(model, &Shape::of(id), tol)? {
+                if let Some(mut print) = fingerprint(model, &Shape::of(id), tol)? {
+                    // Every comparison honours an edge's width, so the gap
+                    // sewn across is carried as one.
+                    print.width = print.width.max(reach);
                     catalogue.push((id, print));
                 }
             }
@@ -311,6 +352,22 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
                         {
                             v.tolerance = v.tolerance.widen_to(need);
                         }
+                    }
+                }
+                // Across a gap, the kept edge answers for where the dropped
+                // one ran: its tolerance reaches the farthest of the dropped
+                // edge's ends and middle from it.
+                if gap > 0.0 {
+                    let mut need = 0.0_f64;
+                    for p in [dropped_fp.start, dropped_fp.middle, dropped_fp.end] {
+                        need = need.max(kept_fp.off(p, tol)?);
+                    }
+                    let need = need + tol.confusion();
+                    if let Some(node) = model.node_mut(&survivor)
+                        && let NodeData::Edge(e) = node.data_mut()
+                        && need > e.tolerance.get()
+                    {
+                        e.tolerance = e.tolerance.widen_to(need);
                     }
                 }
                 merged.insert(catalogue[j].0, (catalogue[i].0, flipped));
@@ -376,6 +433,7 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
             &survivor,
             flipped,
             &carried,
+            reach,
             tol,
         )?;
         let Some(node) = model.node_mut(&survivor) else {
@@ -488,12 +546,212 @@ fn unshared(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<
     Ok(out)
 }
 
+/// The faces with every edge split where a vertex of another edge meets
+/// its interior within `reach`, the pieces ending on that vertex; faces
+/// with no such edge as they are. Edges and vertices placed by a location
+/// are left whole.
+fn split_at_vertices(
+    model: &mut Model,
+    faces: &[Shape],
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    let mut vertices: Vec<(TShapeId, Point)> = Vec::new();
+    let mut seen: HashSet<TShapeId> = HashSet::new();
+    for face in faces {
+        for vertex in explore_unique(model, face, ShapeType::Vertex)? {
+            if vertex.location().is_identity() && seen.insert(vertex.node()) {
+                vertices.push((vertex.node(), placed(model, &vertex)?));
+            }
+        }
+    }
+    // Each edge's cuts: the parameter, and the vertex the pieces meet at.
+    let mut cuts: Vec<(TShapeId, Vec<(f64, TShapeId)>)> = Vec::new();
+    let mut walked: HashSet<TShapeId> = HashSet::new();
+    for face in faces {
+        for edge in explore_unique(model, face, ShapeType::Edge)? {
+            if !edge.location().is_identity() || !walked.insert(edge.node()) {
+                continue;
+            }
+            let Some(print) = fingerprint(model, &edge, tol)? else {
+                continue;
+            };
+            let own: Vec<TShapeId> = model.children_of(&edge)?.iter().map(Shape::node).collect();
+            let drawn =
+                ogeom_mesh::polyline_of_edge(model, &edge, ogeom_mesh::Deflection::default(), tol)?;
+            let (mut lo, mut hi) = (drawn[0], drawn[0]);
+            for p in &drawn {
+                lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+                hi = Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+            }
+            let (r0, r1) = (
+                print.range.0.min(print.range.1),
+                print.range.0.max(print.range.1),
+            );
+            let mut here: Vec<(f64, TShapeId)> = Vec::new();
+            for &(v, p) in &vertices {
+                let outside = p.x < lo.x - reach
+                    || p.y < lo.y - reach
+                    || p.z < lo.z - reach
+                    || p.x > hi.x + reach
+                    || p.y > hi.y + reach
+                    || p.z > hi.z + reach;
+                if own.contains(&v)
+                    || outside
+                    || p.distance(print.start) <= reach
+                    || p.distance(print.end) <= reach
+                {
+                    continue;
+                }
+                let foot = crate::project_on_curve(&print.curve, p, 64, tol)?;
+                if foot.distance > reach {
+                    continue;
+                }
+                let mut t = foot.parameter;
+                if print.curve.is_periodic() {
+                    let (dlo, dhi) = print.curve.domain();
+                    let period = dhi - dlo;
+                    if period > 0.0 {
+                        t = r0 + (t - r0).rem_euclid(period);
+                    }
+                }
+                if t > r0 + tol.parametric() && t < r1 - tol.parametric() {
+                    here.push((t, v));
+                }
+            }
+            if !here.is_empty() {
+                here.sort_by(|a, b| a.0.total_cmp(&b.0));
+                here.dedup_by_key(|c| c.1);
+                cuts.push((edge.node(), here));
+            }
+        }
+    }
+    if cuts.is_empty() {
+        return Ok(faces.to_vec());
+    }
+    // Each cut edge's pieces, in its own direction.
+    let mut pieces: HashMap<TShapeId, Vec<Shape>> = HashMap::new();
+    for (node, at) in cuts {
+        let edge = Shape::of(node);
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()).cloned() else {
+            continue;
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d().cloned() else {
+            continue;
+        };
+        let Some((first, last)) = edge_vertices(model, &edge)? else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(curve).cloned() else {
+            continue;
+        };
+        // The vertex at the curve's start, and the one at its end.
+        let start_at = geometry.point_at(range.0, tol)?;
+        let (from, to) = if placed(model, &first)?.distance(start_at)
+            <= placed(model, &last)?.distance(start_at)
+        {
+            (first, last)
+        } else {
+            (last, first)
+        };
+        let rising = range.1 >= range.0;
+        let mut stops: Vec<f64> = at.iter().map(|c| c.0).collect();
+        let mut through: Vec<Shape> = at.iter().map(|c| Shape::of(c.1)).collect();
+        if !rising {
+            stops.reverse();
+            through.reverse();
+        }
+        let mut params = vec![range.0];
+        params.extend(stops);
+        params.push(range.1);
+        let mut ends = vec![from];
+        ends.extend(through);
+        ends.push(to);
+        let span = range.1 - range.0;
+        let mut out = Vec::with_capacity(params.len() - 1);
+        for k in 0..params.len() - 1 {
+            let (a, b) = (params[k], params[k + 1]);
+            // Each representation's own stretch for this piece, read
+            // proportionally, as same-parameter pcurves are.
+            let sub = |r: (f64, f64)| {
+                let at = |t: f64| r.0 + (t - range.0) / span * (r.1 - r.0);
+                (at(a), at(b))
+            };
+            let mut piece = data.clone();
+            piece.representations.retain(|r| {
+                matches!(
+                    r,
+                    EdgeRepr::Curve3d { .. } | EdgeRepr::PCurve { .. } | EdgeRepr::Seam { .. }
+                )
+            });
+            for r in &mut piece.representations {
+                match r {
+                    EdgeRepr::Curve3d { range: own, .. } => *own = (a, b),
+                    EdgeRepr::PCurve { range: own, .. } | EdgeRepr::Seam { range: own, .. } => {
+                        *own = sub(*own);
+                    }
+                    _ => {}
+                }
+            }
+            // The vertex the piece ends on reaches the curve where the
+            // piece does.
+            for (vertex, t) in [(&ends[k], a), (&ends[k + 1], b)] {
+                let need =
+                    placed(model, vertex)?.distance(geometry.point_at(t, tol)?) + tol.confusion();
+                if let Some(node) = model.node_mut(vertex)
+                    && let NodeData::Vertex(v) = node.data_mut()
+                    && need > v.tolerance.get()
+                {
+                    v.tolerance = v.tolerance.widen_to(need);
+                }
+            }
+            out.push(model.add_edge(piece, &[ends[k].clone(), ends[k + 1].clone()])?);
+        }
+        pieces.insert(node, out);
+    }
+    let mut out = Vec::with_capacity(faces.len());
+    for face in faces {
+        let touched = explore_unique(model, face, ShapeType::Edge)?
+            .iter()
+            .any(|e| pieces.contains_key(&e.node()));
+        let Some(data) = model.node(face).and_then(|n| n.data().as_face()).cloned() else {
+            continue;
+        };
+        if !touched || !face.location().is_identity() {
+            out.push(face.clone());
+            continue;
+        }
+        let mut wires = Vec::new();
+        for wire in model.ordered_children_of(face)? {
+            let mut ring = Vec::new();
+            for edge in model.ordered_children_of(&wire)? {
+                match pieces.get(&edge.node()) {
+                    Some(list) if edge.orientation() == Orientation::Reversed => {
+                        ring.extend(list.iter().rev().map(Shape::reversed));
+                    }
+                    Some(list) => ring.extend(list.iter().cloned()),
+                    None => ring.push(edge),
+                }
+            }
+            wires.push(make_wire(model, &ring, tol)?.shape);
+        }
+        let split = make_face_on(model, data.surface, &wires, tol)?.shape;
+        out.push(if face.orientation() == Orientation::Reversed {
+            split.reversed()
+        } else {
+            split
+        });
+    }
+    Ok(out)
+}
+
 /// Decide which coincident vertices are the same vertex.
 ///
 /// Returns only the ones that were replaced, mapping each to its survivor.
 fn merge_vertices(
     model: &mut Model,
     faces: &[Shape],
+    reach: f64,
     tol: Tolerances,
 ) -> OgeomResult<HashMap<TShapeId, TShapeId>> {
     let tolerance_of = |model: &Model, vertex: &Shape| {
@@ -505,7 +763,7 @@ fn merge_vertices(
     // The survivors, binned by position on cells sized to the loosest
     // vertex's reach; a vertex is compared with the survivors within the widest
     // reach any comparison can have, in the order they were kept.
-    let mut loosest = tol.confusion();
+    let mut loosest = reach;
     for face in faces {
         for vertex in explore_unique(model, face, ShapeType::Vertex)? {
             loosest = loosest.max(tolerance_of(model, &vertex));
@@ -514,7 +772,7 @@ fn merge_vertices(
     let mut bins = Bins::new(loosest);
     let mut seen: Vec<(TShapeId, Point, f64)> = Vec::new();
     let mut index_of: HashMap<TShapeId, usize> = HashMap::new();
-    let mut widest = tol.confusion();
+    let mut widest = reach;
     let mut out = HashMap::new();
     for face in faces {
         for vertex in explore_unique(model, face, ShapeType::Vertex)? {
@@ -528,9 +786,8 @@ fn merge_vertices(
             // vertex that recorded a welded gap reaches that far, and
             // merging by raw confusion would leave its twin standing a
             // recorded-but-ignored distance away.
-            let meets = |(_, p, w): &&(TShapeId, Point, f64)| {
-                p.distance(at) <= tol.confusion().max(*w).max(own)
-            };
+            let meets =
+                |(_, p, w): &&(TShapeId, Point, f64)| p.distance(at) <= reach.max(*w).max(own);
             let hit = match bins.near(at, widest.max(own)) {
                 Some(near) => near.into_iter().map(|i| &seen[i]).find(meets),
                 None => seen.iter().find(meets),
@@ -657,6 +914,7 @@ fn repaced_carry(
     survivor: &Shape,
     flipped: bool,
     carried: &[EdgeRepr],
+    floor: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<EdgeRepr>> {
     let as_is = || -> Vec<EdgeRepr> {
@@ -672,7 +930,7 @@ fn repaced_carry(
     ) else {
         return Ok(as_is());
     };
-    let reach = tol.confusion().max(dropped_fp.width).max(kept_fp.width);
+    let reach = floor.max(dropped_fp.width).max(kept_fp.width);
     if dropped_fp.middle.distance(kept_fp.middle) <= reach {
         if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
             eprintln!(
@@ -1408,6 +1666,57 @@ mod tests {
         crate::make_face_on(model, surface, std::slice::from_ref(&wire), T)
             .unwrap()
             .shape
+    }
+
+    /// Two unit squares side by side, the second a twentieth of a
+    /// millimetre off: sewn across a tenth they are one shell of one joined
+    /// pair with nothing broken; across a hundredth they stay apart.
+    #[test]
+    fn squares_a_little_apart_sew_across_the_gap_asked_for() {
+        let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+        for (gap, shells, joined) in [(0.1, 1, 1), (0.01, 2, 0)] {
+            let mut model = Model::new();
+            let first = loose_square(
+                &mut model,
+                [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)],
+            );
+            let second = loose_square(
+                &mut model,
+                [at(1.05, 0.0), at(2.05, 0.0), at(2.05, 1.0), at(1.05, 1.0)],
+            );
+            let sewn = sew_within(&mut model, &[first, second], gap, T).unwrap();
+            assert_eq!(sewn.shells.len(), shells, "gap {gap}");
+            assert_eq!(sewn.joined, joined, "gap {gap}");
+            if shells == 1 {
+                let d = crate::check(&model, &sewn.shells[0], T).unwrap();
+                assert!(d.is_usable(), "{d}");
+            }
+        }
+    }
+
+    /// A 10 mm edge against two 5 mm edges along it: the long edge is split
+    /// where the short ones meet, and the three faces sew into one shell.
+    #[test]
+    fn a_long_edge_against_two_short_ones_is_split_and_sewn() {
+        let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+        let mut model = Model::new();
+        let long = loose_square(
+            &mut model,
+            [at(0.0, 0.0), at(10.0, 0.0), at(10.0, 10.0), at(0.0, 10.0)],
+        );
+        let left = loose_square(
+            &mut model,
+            [at(0.0, -5.0), at(5.0, -5.0), at(5.0, 0.0), at(0.0, 0.0)],
+        );
+        let right = loose_square(
+            &mut model,
+            [at(5.0, -5.0), at(10.0, -5.0), at(10.0, 0.0), at(5.0, 0.0)],
+        );
+        let sewn = sew_within(&mut model, &[long, left, right], 1e-3, T).unwrap();
+        assert_eq!(sewn.shells.len(), 1);
+        assert_eq!(sewn.joined, 3);
+        let d = crate::check(&model, &sewn.shells[0], T).unwrap();
+        assert!(d.is_usable(), "{d}");
     }
 
     /// A prism's walls with a lid built apart at each end: the walls' end

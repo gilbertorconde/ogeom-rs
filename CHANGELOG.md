@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Sewing across a gap.** `sew_within` sews faces whose edges meet up
+  to a given distance apart, as surfaces built separately (an imported
+  sheet, a fitted fill beside an exact extrusion) do: two edges whose ends
+  and middle lie within the gap are one, and the edge kept and its
+  vertices widen their tolerances to reach the edge it replaces. An edge
+  that runs along two or more shorter edges of other faces is first split
+  where their vertices meet it, so each piece has a twin. Two unit squares
+  a twentieth of a millimetre apart sew across a tenth into one shell and
+  stay two across a hundredth; a 10 mm edge against two 5 mm edges sews
+  into one shell.
+
 - **A boolean takes a compound of disjoint solids as an argument.** A
   grid of drums cut from a plate at once is one boolean, not one per drum:
   four hundred bores take 0.2 s where four hundred cuts took over a
