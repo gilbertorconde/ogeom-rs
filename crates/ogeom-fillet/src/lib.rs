@@ -17,6 +17,7 @@ mod marched;
 mod pinched;
 mod ruled;
 pub mod sheet;
+mod sheet_curved;
 mod support;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};

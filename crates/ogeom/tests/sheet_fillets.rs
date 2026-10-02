@@ -655,9 +655,853 @@ fn a_round_into_another_face_is_refused() {
     assert!(said.contains("run into another face"), "{said}");
 }
 
-/// A floor meeting a cylindrical wall: refused by name, not rounded wrong.
+/// A floor along x from the z axis to x = 10 and a quarter cylinder wall of
+/// radius 5 about the vertical line through (-5, 0), rising from the z axis
+/// and curving back over -x, both 5 tall: they meet along the z axis at a
+/// right angle, the floor facing +y and the wall facing out of its axis.
+fn floor_and_quarter_wall(model: &mut Model) -> Shape {
+    floor_and_wall(model, false)
+}
+
+/// As [`floor_and_quarter_wall`], the wall's profile given as a B-spline
+/// where `spline` holds, so its surface has no closed form to read.
+fn floor_and_wall(model: &mut Model, spline: bool) -> Shape {
+    let far = make_vertex(model, Point::new(10.0, 0.0, 0.0)).shape;
+    let corner = make_vertex(model, Point::ORIGIN).shape;
+    let top = make_vertex(model, Point::new(-5.0, 5.0, 0.0)).shape;
+    let line =
+        Curve::Line(LineCurve::segment(Point::new(10.0, 0.0, 0.0), Point::ORIGIN, T).unwrap());
+    let floor = make_edge_between(model, line.clone(), line.domain(), &far, &corner, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(-5.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = Curve::Circle(CircleCurve::new(Circle::new(frame, 5.0, T).unwrap()));
+    let (profile, range) = if spline {
+        let curve = Curve::BSpline(circle.to_bspline_over((0.0, PI / 2.0), T).unwrap());
+        let domain = curve.domain();
+        (curve, domain)
+    } else {
+        (circle, (0.0, PI / 2.0))
+    };
+    let wall = make_edge_between(model, profile, range, &corner, &top, T)
+        .unwrap()
+        .shape;
+    let wire = make_wire(model, &[floor, wall], T).unwrap().shape;
+    make_prism(model, &wire, Vector::new(0.0, 0.0, 5.0), T)
+        .unwrap()
+        .shape
+}
+
+/// The round's faces against its neighbours: tangent within 1e-5 rad
+/// along each shared edge, the edge on both surfaces.
+fn tangent_within(model: &Model, shape: &Shape, round: &Shape, angle: f64, gap: f64) {
+    let contacts = analyse_blend(model, shape, round, 15, T).unwrap();
+    assert_eq!(contacts.len(), 2, "the round meets two faces: {contacts:?}");
+    for contact in &contacts {
+        assert!(
+            contact.tangency_error < angle,
+            "tangent within {angle}: {}",
+            contact.tangency_error
+        );
+        assert!(
+            contact.gap < gap,
+            "the shared edge lies on both: {}",
+            contact.gap
+        );
+    }
+}
+
+/// The face of `shape` whose surface `pick` accepts.
+fn face_where(model: &Model, shape: &Shape, pick: impl Fn(&SurfaceGeometry) -> bool) -> Shape {
+    let found: Vec<Shape> = faces(model, shape)
+        .into_iter()
+        .filter(|f| pick(&surface_of(model, f)))
+        .collect();
+    assert_eq!(found.len(), 1, "one such face");
+    found[0].clone()
+}
+
+/// A plane and a cylinder meeting along a line: the floor and the quarter
+/// wall rounded at radius 1 along the z axis. The ball sits 1 above the
+/// floor and 5 + 1 from the wall's axis, so its centre is at
+/// x = sqrt(6² - 1) - 5; the round is the cylinder of radius 1 about the
+/// vertical line through it, touching the floor below it and the wall where
+/// the line from the wall's axis to the centre crosses the wall.
 #[test]
-fn a_curved_face_is_refused_by_name() {
+fn a_floor_and_a_cylindrical_wall_round_to_a_cylinder() {
+    let mut model = Model::new();
+    let (r, h) = (1.0, 5.0);
+    let sheet = floor_and_quarter_wall(&mut model);
+    let corner = vertical_edge_at(&model, &sheet, 0.0, 0.0);
+    let built =
+        fillet_sheet_edges(&mut model, &sheet, std::slice::from_ref(&corner), r, T).unwrap();
+    let rounded = built.shape.clone();
+    assert_eq!(model.kind_of(&rounded).unwrap(), ShapeType::Shell);
+    assert_eq!(faces(&model, &rounded).len(), 3, "floor, wall and round");
+    usable(&model, &rounded);
+    assert_eq!(edge_use(&model, &rounded), (2, 8));
+
+    let xc = 35.0_f64.sqrt() - 5.0;
+    let round = face_where(
+        &model,
+        &rounded,
+        |s| matches!(s, SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - r).abs() < 1e-12),
+    );
+    let SurfaceGeometry::Cylinder(c) = surface_of(&model, &round) else {
+        unreachable!()
+    };
+    let cylinder = c.cylinder();
+    assert!((cylinder.radius() - r).abs() < 1e-12, "the radius asked");
+    assert!(
+        cylinder
+            .axis()
+            .direction
+            .vector()
+            .cross(Vector::new(0.0, 0.0, 1.0))
+            .magnitude()
+            < 1e-12
+    );
+    assert!(
+        off_axis(&cylinder, Point::new(xc, r, 0.0)) < 1e-12,
+        "the axis at the closed form"
+    );
+    tangent_within(&model, &rounded, &round, 1e-5, 1e-9);
+    // The arc sweeps from straight down to the direction toward the wall's
+    // axis, which stands `theta` below -x.
+    let theta = 1.0_f64.atan2(35.0_f64.sqrt());
+    let sweep = PI / 2.0 - theta;
+    let round_area = area(&model, &round);
+    assert!(
+        (round_area - r * sweep * h).abs() < 1e-9,
+        "{round_area} against {}",
+        r * sweep * h
+    );
+    let floor = face_where(&model, &rounded, |s| matches!(s, SurfaceGeometry::Plane(_)));
+    assert!((area(&model, &floor) - (10.0 - xc) * h).abs() < 1e-9);
+    let wall = face_where(
+        &model,
+        &rounded,
+        |s| matches!(s, SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - 5.0).abs() < 1e-12),
+    );
+    assert!((area(&model, &wall) - 5.0 * (PI / 2.0 - theta) * h).abs() < 1e-9);
+    // The round faces its axis, as the floor and wall face the corner.
+    let (p, n) = face_normal(&model, &round, T).unwrap();
+    let to_axis = Vector::new(xc - p.x, r - p.y, 0.0) / r;
+    assert!((n - to_axis).magnitude() < 1e-9, "{n:?}");
+    assert!(built.history.is_deleted(&corner));
+    assert!(
+        built
+            .history
+            .generated(&corner)
+            .iter()
+            .any(|f| f.node() == round.node())
+    );
+}
+
+/// The same floor and wall with the wall's profile a B-spline: no closed
+/// form is read from the wall, so the ball is marched, and the round lands
+/// on the closed form's within the fit's reach.
+#[test]
+fn a_spline_wall_rounds_by_marching_onto_the_closed_form() {
+    let mut model = Model::new();
+    let r = 1.0;
+    let sheet = floor_and_wall(&mut model, true);
+    let wall = faces(&model, &sheet)
+        .into_iter()
+        .find(|f| !matches!(surface_of(&model, f), SurfaceGeometry::Plane(_)))
+        .unwrap();
+    assert!(
+        !matches!(surface_of(&model, &wall), SurfaceGeometry::Cylinder(_)),
+        "the wall is not read as a cylinder"
+    );
+    let corner = vertical_edge_at(&model, &sheet, 0.0, 0.0);
+    let rounded = fillet_sheet_edges(&mut model, &sheet, &[corner], r, T)
+        .unwrap()
+        .shape;
+    assert_eq!(faces(&model, &rounded).len(), 3);
+    usable(&model, &rounded);
+    assert_eq!(
+        edge_use(&model, &rounded).0,
+        2,
+        "two lines of contact shared"
+    );
+    let before: Vec<Shape> = faces(&model, &sheet);
+    let round = faces(&model, &rounded)
+        .into_iter()
+        .find(|f| {
+            !before.iter().any(|b| b.node() == f.node())
+                && explore_unique(&model, f, ShapeType::Edge).unwrap().len() == 4
+                && analyse_blend(&model, &rounded, f, 3, T).unwrap().len() == 2
+        })
+        .expect("the round");
+    // The band is fitted through the ball's arcs to two tenths of a
+    // micron, so its normal holds to the faces' to the fit's angle: inside
+    // a tenth of a degree.
+    tangent_within(&model, &rounded, &round, 0.1_f64.to_radians(), 1e-3);
+    // Every corner of the round sits where the closed form's ball touches.
+    let xc = 35.0_f64.sqrt() - 5.0;
+    let wall_contact =
+        Point::new(-5.0, 0.0, 0.0) + Vector::new(xc + 5.0, r, 0.0) * (5.0 / (5.0 + r));
+    for vertex in explore_unique(&model, &round, ShapeType::Vertex).unwrap() {
+        let p = point_of(&model, &vertex);
+        let on_floor = Point::new(xc, 0.0, p.z).distance(p);
+        let on_wall = Point::new(wall_contact.x, wall_contact.y, p.z).distance(p);
+        assert!(on_floor.min(on_wall) < 1e-3, "a contact at {p:?}");
+        assert!(
+            p.z.abs() < 1e-9 || (p.z - 5.0).abs() < 1e-9,
+            "at an end: {p:?}"
+        );
+    }
+    // The area of the closed form's round, within the fit's reach.
+    let sweep = PI / 2.0 - 1.0_f64.atan2(35.0_f64.sqrt());
+    let round_area = area(&model, &round);
+    assert!(
+        (round_area - r * sweep * 5.0).abs() < 1e-3,
+        "{round_area} against {}",
+        r * sweep * 5.0
+    );
+}
+
+/// A tube of radius 3 and height 6 standing in a round hole in a square
+/// floor, as a sheet of two faces sharing the hole's circle: the floor
+/// faces up and the tube out of its axis.
+fn tube_on_floor(model: &mut Model) -> (Shape, Shape) {
+    tube_on_floor_as(model, false)
+}
+
+/// As [`tube_on_floor`], the hole's circle given as a B-spline where
+/// `spline` holds.
+fn tube_on_floor_as(model: &mut Model, spline: bool) -> (Shape, Shape) {
+    tube_on_floor_of(model, spline, 10.0)
+}
+
+/// As [`tube_on_floor_as`], the floor's square reaching `half` from the
+/// axis.
+fn tube_on_floor_of(model: &mut Model, spline: bool, half: f64) -> (Shape, Shape) {
+    let circle = Curve::Circle(CircleCurve::new(Circle::new(Frame::WORLD, 3.0, T).unwrap()));
+    let (profile, range) = if spline {
+        let curve = Curve::BSpline(circle.to_bspline_over((0.0, 2.0 * PI), T).unwrap());
+        let domain = curve.domain();
+        (curve, domain)
+    } else {
+        (circle, (0.0, 2.0 * PI))
+    };
+    let ring = ogeom::algo::make_edge(model, profile, range, T)
+        .unwrap()
+        .shape;
+    let tube = make_prism(model, &ring, Vector::new(0.0, 0.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let outer = make_polygon(
+        model,
+        &[
+            Point::new(-half, -half, 0.0),
+            Point::new(half, -half, 0.0),
+            Point::new(half, half, 0.0),
+            Point::new(-half, half, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let outer_edges = model.children_of(&outer).unwrap();
+    let floor = make_face_with_pcurves(
+        model,
+        PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::Z)).into(),
+        &[outer_edges, vec![ring.reversed()]],
+        T,
+    )
+    .unwrap()
+    .shape;
+    assert!(face_normal(model, &floor, T).unwrap().1.z > 0.5);
+    let sheet = model.add_shell(&[floor, tube]).unwrap();
+    (sheet, ring)
+}
+
+/// A plane meeting a cylinder square to it along a circle: the tube's
+/// foot rounded at radius 1. The ball rolls round the outside of the tube
+/// on the floor, its centre on the circle of radius 3 + 1 at height 1; the
+/// round is the torus about the tube's axis with that circle for its core
+/// and the radius asked for its tube, touching the floor on the circle of
+/// radius 4 and the tube on its circle at height 1.
+#[test]
+fn a_tube_on_a_floor_rounds_to_a_torus() {
+    let mut model = Model::new();
+    let r = 1.0;
+    let (sheet, ring) = tube_on_floor(&mut model);
+    usable(&model, &sheet);
+    let built = fillet_sheet_edges(&mut model, &sheet, std::slice::from_ref(&ring), r, T).unwrap();
+    let rounded = built.shape.clone();
+    assert_eq!(faces(&model, &rounded).len(), 3);
+    usable(&model, &rounded);
+    let round = face_where(&model, &rounded, |s| matches!(s, SurfaceGeometry::Torus(_)));
+    let SurfaceGeometry::Torus(t) = surface_of(&model, &round) else {
+        unreachable!()
+    };
+    let torus = t.torus();
+    assert!((torus.minor_radius() - r).abs() < 1e-12, "the radius asked");
+    assert!((torus.major_radius() - 4.0).abs() < 1e-12);
+    assert!(torus.centre().distance(Point::new(0.0, 0.0, r)) < 1e-12);
+    assert!(
+        torus
+            .axis()
+            .direction
+            .vector()
+            .cross(Vector::new(0.0, 0.0, 1.0))
+            .magnitude()
+            < 1e-12
+    );
+    tangent_within(&model, &rounded, &round, 1e-5, 1e-9);
+    // A quarter of the tube's turn about its core, from below the core to
+    // its inside: 2π r ∫ (4 + r cos v) dv over that quarter.
+    let expected = 2.0 * PI * r * (4.0 * PI / 2.0 - r);
+    let round_area = area(&model, &round);
+    assert!(
+        (round_area - expected).abs() < 1e-9,
+        "{round_area} against {expected}"
+    );
+    let floor = face_where(&model, &rounded, |s| matches!(s, SurfaceGeometry::Plane(_)));
+    assert!((area(&model, &floor) - (400.0 - PI * 16.0)).abs() < 1e-9);
+    let tube = face_where(&model, &rounded, |s| {
+        matches!(s, SurfaceGeometry::Cylinder(_))
+    });
+    assert!((area(&model, &tube) - 2.0 * PI * 3.0 * 5.0).abs() < 1e-9);
+    // The round faces its core, as the floor faces up toward it and the
+    // tube out toward it.
+    let (p, n) = face_normal(&model, &round, T).unwrap();
+    let radial = Vector::new(p.x, p.y, 0.0).normalized(T).unwrap();
+    let core = Point::new(0.0, 0.0, r) + radial * 4.0;
+    assert!((n - (core - p) / r).magnitude() < 1e-9, "{n:?}");
+    assert!(built.history.is_deleted(&ring));
+}
+
+/// The floor z = 0 over the rectangle `x` by `y`, facing up.
+fn floor_rectangle(model: &mut Model, x: (f64, f64), y: (f64, f64)) -> Shape {
+    let corners = [
+        Point::new(x.0, y.0, 0.0),
+        Point::new(x.1, y.0, 0.0),
+        Point::new(x.1, y.1, 0.0),
+        Point::new(x.0, y.1, 0.0),
+    ];
+    let wire = make_polygon(model, &corners, true, T).unwrap().shape;
+    let edges = model.children_of(&wire).unwrap();
+    let floor = make_face_with_pcurves(
+        model,
+        PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::Z)).into(),
+        &[edges],
+        T,
+    )
+    .unwrap()
+    .shape;
+    assert!(face_normal(model, &floor, T).unwrap().1.z > 0.5);
+    floor
+}
+
+/// The quarter of the cylinder of radius 3 about the line x = 0, z = 5
+/// running from +x round to straight down, over `y`, facing out of its
+/// axis.
+fn drum_quarter(model: &mut Model, y: (f64, f64)) -> Shape {
+    let frame = Frame::new(Point::new(0.0, y.0, 5.0), Direction::Y, Direction::X, T).unwrap();
+    let circle = Curve::Circle(CircleCurve::new(Circle::new(frame, 3.0, T).unwrap()));
+    // The frame's y is z × x = -z here, so angles run from +x down.
+    let arc = ogeom::algo::make_edge(model, circle, (0.0, PI / 2.0), T)
+        .unwrap()
+        .shape;
+    let face = make_prism(model, &arc, Vector::new(0.0, y.1 - y.0, 0.0), T)
+        .unwrap()
+        .shape;
+    let (p, n) = face_normal(model, &face, T).unwrap();
+    let out = Vector::new(p.x, 0.0, p.z - 5.0);
+    if n.dot(out) > 0.0 {
+        face
+    } else {
+        face.reversed()
+    }
+}
+
+/// Half a tube on a floor along an arc: the floor z = 0 over y ≥ 0 out to
+/// 10, notched by the half disc of radius 3 about the z axis, and the half
+/// tube of radius 3 standing 6 tall on the notch's arc. Rounded at radius
+/// 1 the round is half the torus of the whole tube's foot, ending in the
+/// half-plane y = 0 at both ends, where the floor's and the tube's
+/// boundaries leave the arc.
+#[test]
+fn a_half_tube_on_a_floor_rounds_to_half_a_torus() {
+    let mut model = Model::new();
+    let r = 1.0;
+    let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+    let points = [
+        at(10.0, 0.0),
+        at(10.0, 10.0),
+        at(-10.0, 10.0),
+        at(-10.0, 0.0),
+        at(-3.0, 0.0),
+        at(3.0, 0.0),
+    ];
+    let v: Vec<Shape> = points
+        .iter()
+        .map(|p| make_vertex(&mut model, *p).shape)
+        .collect();
+    let mut edges = Vec::new();
+    for i in 0..4 {
+        let line = Curve::Line(LineCurve::segment(points[i], points[i + 1], T).unwrap());
+        let range = line.domain();
+        edges.push(
+            make_edge_between(&mut model, line, range, &v[i], &v[i + 1], T)
+                .unwrap()
+                .shape,
+        );
+    }
+    let circle = Curve::Circle(CircleCurve::new(Circle::new(Frame::WORLD, 3.0, T).unwrap()));
+    let arc = make_edge_between(&mut model, circle, (0.0, PI), &v[5], &v[4], T)
+        .unwrap()
+        .shape;
+    edges.push(arc.reversed());
+    let line = Curve::Line(LineCurve::segment(points[5], points[0], T).unwrap());
+    let range = line.domain();
+    edges.push(
+        make_edge_between(&mut model, line, range, &v[5], &v[0], T)
+            .unwrap()
+            .shape,
+    );
+    let floor = make_face_with_pcurves(
+        &mut model,
+        PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::Z)).into(),
+        &[edges],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let floor = if face_normal(&model, &floor, T).unwrap().1.z > 0.0 {
+        floor
+    } else {
+        floor.reversed()
+    };
+    let tube = make_prism(&mut model, &arc, Vector::new(0.0, 0.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let (p, n) = face_normal(&model, &tube, T).unwrap();
+    let tube = if n.dot(Vector::new(p.x, p.y, 0.0)) > 0.0 {
+        tube
+    } else {
+        tube.reversed()
+    };
+    let sheet = model.add_shell(&[floor, tube]).unwrap();
+    usable(&model, &sheet);
+    let rounded = fillet_sheet_edges(&mut model, &sheet, &[arc], r, T)
+        .unwrap()
+        .shape;
+    assert_eq!(faces(&model, &rounded).len(), 3);
+    usable(&model, &rounded);
+    let round = face_where(&model, &rounded, |s| matches!(s, SurfaceGeometry::Torus(_)));
+    let SurfaceGeometry::Torus(t) = surface_of(&model, &round) else {
+        unreachable!()
+    };
+    assert!(
+        (t.torus().minor_radius() - r).abs() < 1e-12,
+        "the radius asked"
+    );
+    assert!((t.torus().major_radius() - 4.0).abs() < 1e-12);
+    tangent_within(&model, &rounded, &round, 1e-5, 1e-9);
+    let expected = PI * r * (4.0 * PI / 2.0 - r);
+    let round_area = area(&model, &round);
+    assert!(
+        (round_area - expected).abs() < 1e-9,
+        "{round_area} against {expected}"
+    );
+    // The floor loses the half annulus between radius 3 and 4.
+    let floor = face_where(&model, &rounded, |s| matches!(s, SurfaceGeometry::Plane(_)));
+    let floor_area = 200.0 - PI * 16.0 / 2.0;
+    assert!((area(&model, &floor) - floor_area).abs() < 1e-9);
+    for vertex in explore_unique(&model, &round, ShapeType::Vertex).unwrap() {
+        assert!(point_of(&model, &vertex).y.abs() < 1e-12, "an end on y = 0");
+    }
+}
+
+/// A plane and a separate cylinder parallel to it: the floor z = 0 and a
+/// quarter of the cylinder of radius 3 about the line x = 0, z = 5 along
+/// y, both 8 long, facing the gap between them. A ball of radius 2 sits 2
+/// above the floor and 5 from the cylinder's axis, at x = 4; it touches
+/// the floor at x = 4 and the cylinder at (2.4, 3.2). Trimmed, the three
+/// faces sew into one shell.
+#[test]
+fn a_plane_and_a_separate_cylinder_trim_into_one_shell() {
+    let mut model = Model::new();
+    let r = 2.0;
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (0.0, 8.0));
+    let drum = drum_quarter(&mut model, (0.0, 8.0));
+    let built = fillet_faces(&mut model, &floor, &drum, r, true, T).unwrap();
+    let shell = built.shape.clone();
+    assert_eq!(model.kind_of(&shell).unwrap(), ShapeType::Shell);
+    assert_eq!(faces(&model, &shell).len(), 3);
+    usable(&model, &shell);
+    let three = faces(&model, &shell);
+    let sewn = ogeom::algo::sew(&mut model, &three, T).unwrap();
+    assert_eq!(sewn.shells.len(), 1, "the three faces sew into one shell");
+    assert_eq!(
+        edge_use(&model, &shell).0,
+        2,
+        "both lines of contact shared"
+    );
+
+    let round = face_where(
+        &model,
+        &shell,
+        |s| matches!(s, SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - r).abs() < 1e-12),
+    );
+    let SurfaceGeometry::Cylinder(c) = surface_of(&model, &round) else {
+        unreachable!()
+    };
+    assert!(off_axis(&c.cylinder(), Point::new(4.0, 0.0, 2.0)) < 1e-12);
+    assert!(off_axis(&c.cylinder(), Point::new(4.0, 5.0, 2.0)) < 1e-12);
+    tangent_within(&model, &shell, &round, 1e-5, 1e-9);
+    // From straight down to toward the drum's axis: the angle whose
+    // cosine is the two directions' dot, (0, -1) · (-0.8, 0.6) = -0.6.
+    let sweep = (-0.6_f64).acos();
+    assert!((area(&model, &round) - r * sweep * 8.0).abs() < 1e-9);
+    let kept_floor = face_where(&model, &shell, |s| matches!(s, SurfaceGeometry::Plane(_)));
+    assert!(
+        (area(&model, &kept_floor) - 6.0 * 8.0).abs() < 1e-9,
+        "the floor keeps x ≥ 4"
+    );
+    let kept_drum = face_where(
+        &model,
+        &shell,
+        |s| matches!(s, SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - 3.0).abs() < 1e-12),
+    );
+    let kept = 0.6_f64.atan2(0.8);
+    assert!(
+        (area(&model, &kept_drum) - 3.0 * kept * 8.0).abs() < 1e-9,
+        "the drum keeps the part above its contact"
+    );
+    // The round faces the ball's centre, as the floor and drum face it.
+    let (p, n) = face_normal(&model, &round, T).unwrap();
+    assert!((n - (Point::new(4.0, p.y, 2.0) - p) / r).magnitude() < 1e-9);
+    assert_eq!(built.history.modified(&floor).len(), 1);
+}
+
+/// A plane and a separate cylinder square to it: the floor z = 0 and a
+/// tube of radius 3 standing clear of it from z = 1 to z = 6, both facing
+/// the gap. A ball of radius 2 rolls round the tube on the floor, its
+/// centre on the circle of radius 5 at height 2: the round is the torus
+/// with that core, touching the floor on the circle of radius 5 and the
+/// tube on its circle at height 2, closed all the way round.
+#[test]
+fn a_plane_and_a_separate_tube_trim_to_a_torus() {
+    let mut model = Model::new();
+    let r = 2.0;
+    let floor = {
+        let corners = [
+            Point::new(-10.0, -10.0, 0.0),
+            Point::new(10.0, -10.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(-10.0, 10.0, 0.0),
+        ];
+        let wire = make_polygon(&mut model, &corners, true, T).unwrap().shape;
+        let edges = model.children_of(&wire).unwrap();
+        make_face_with_pcurves(
+            &mut model,
+            PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::Z)).into(),
+            &[edges],
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let tube = {
+        let frame = Frame::new(Point::new(0.0, 0.0, 1.0), Direction::Z, Direction::X, T).unwrap();
+        let ring = ogeom::algo::make_edge(
+            &mut model,
+            Curve::Circle(CircleCurve::new(Circle::new(frame, 3.0, T).unwrap())),
+            (0.0, 2.0 * PI),
+            T,
+        )
+        .unwrap()
+        .shape;
+        make_prism(&mut model, &ring, Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape
+    };
+    let (p, n) = face_normal(&model, &tube, T).unwrap();
+    assert!(
+        n.dot(Vector::new(p.x, p.y, 0.0)) > 0.0,
+        "the tube faces out"
+    );
+    let built = fillet_faces(&mut model, &floor, &tube, r, true, T).unwrap();
+    let shell = built.shape.clone();
+    assert_eq!(faces(&model, &shell).len(), 3);
+    usable(&model, &shell);
+    let three = faces(&model, &shell);
+    let sewn = ogeom::algo::sew(&mut model, &three, T).unwrap();
+    assert_eq!(sewn.shells.len(), 1, "the three faces sew into one shell");
+    let round = face_where(&model, &shell, |s| matches!(s, SurfaceGeometry::Torus(_)));
+    let SurfaceGeometry::Torus(t) = surface_of(&model, &round) else {
+        unreachable!()
+    };
+    let torus = t.torus();
+    assert!((torus.minor_radius() - r).abs() < 1e-12, "the radius asked");
+    assert!((torus.major_radius() - 5.0).abs() < 1e-12);
+    assert!(torus.centre().distance(Point::new(0.0, 0.0, r)) < 1e-12);
+    tangent_within(&model, &shell, &round, 1e-5, 1e-9);
+    let expected = 2.0 * PI * r * (5.0 * PI / 2.0 - r);
+    let round_area = area(&model, &round);
+    assert!(
+        (round_area - expected).abs() < 1e-9,
+        "{round_area} against {expected}"
+    );
+    let kept_floor = face_where(&model, &shell, |s| matches!(s, SurfaceGeometry::Plane(_)));
+    assert!((area(&model, &kept_floor) - (400.0 - 25.0 * PI)).abs() < 1e-9);
+    let kept_tube = face_where(&model, &shell, |s| {
+        matches!(s, SurfaceGeometry::Cylinder(_))
+    });
+    assert!((area(&model, &kept_tube) - 2.0 * PI * 3.0 * 4.0).abs() < 1e-9);
+}
+
+/// A quarter of the same tube over the same floor: the round is the
+/// quarter of the torus over the quarter turn the tube spans, ending in
+/// the half-planes through the axis at its ends.
+#[test]
+fn a_plane_and_a_quarter_tube_round_over_its_quarter_turn() {
+    let mut model = Model::new();
+    let r = 2.0;
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (-10.0, 10.0));
+    let tube = {
+        let frame = Frame::new(Point::new(0.0, 0.0, 1.0), Direction::Z, Direction::X, T).unwrap();
+        let arc = ogeom::algo::make_edge(
+            &mut model,
+            Curve::Circle(CircleCurve::new(Circle::new(frame, 3.0, T).unwrap())),
+            (0.0, PI / 2.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let face = make_prism(&mut model, &arc, Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let (p, n) = face_normal(&model, &face, T).unwrap();
+        if n.dot(Vector::new(p.x, p.y, 0.0)) > 0.0 {
+            face
+        } else {
+            face.reversed()
+        }
+    };
+    let built = fillet_faces(&mut model, &floor, &tube, r, true, T).unwrap();
+    let shell = built.shape.clone();
+    assert_eq!(faces(&model, &shell).len(), 3);
+    usable(&model, &shell);
+    let three = faces(&model, &shell);
+    let sewn = ogeom::algo::sew(&mut model, &three, T).unwrap();
+    assert_eq!(sewn.shells.len(), 1, "the three faces sew into one shell");
+    let round = face_where(&model, &shell, |s| matches!(s, SurfaceGeometry::Torus(_)));
+    tangent_within(&model, &shell, &round, 1e-5, 1e-9);
+    let expected = 2.0 * PI * r * (5.0 * PI / 2.0 - r) / 4.0;
+    let round_area = area(&model, &round);
+    assert!(
+        (round_area - expected).abs() < 1e-9,
+        "{round_area} against {expected}"
+    );
+    // The floor is cut back to its whole line of contact, the circle of
+    // radius 5, and shares the quarter of it the round spans; the rest of
+    // the circle is free boundary.
+    let kept_floor = face_where(&model, &shell, |s| matches!(s, SurfaceGeometry::Plane(_)));
+    assert!(
+        (area(&model, &kept_floor) - (400.0 - 25.0 * PI)).abs() < 1e-9,
+        "{}",
+        area(&model, &kept_floor)
+    );
+    assert_eq!(
+        edge_use(&model, &shell).0,
+        2,
+        "both lines of contact shared"
+    );
+}
+
+/// What curved faces are still refused, each by name.
+#[test]
+fn curved_rounds_refuse_by_name() {
+    // A closed edge whose seat has no closed form: the tube swept from a
+    // B-spline ring would have to be marched round a loop.
+    let mut model = Model::new();
+    let (splined, ring) = tube_on_floor_as(&mut model, true);
+    let said = refusal(fillet_sheet_edges(&mut model, &splined, &[ring], 1.0, T));
+    assert!(said.contains("would have to be marched"), "{said}");
+
+    // A floor reaching 4.5 from the tube's axis: a ball of radius 2 would
+    // touch it on the circle of radius 5, across its edges.
+    let mut model = Model::new();
+    let (narrow, ring) = tube_on_floor_of(&mut model, false, 4.5);
+    assert!(fillet_sheet_edges(&mut model, &narrow, std::slice::from_ref(&ring), 1.0, T).is_ok());
+    let said = refusal(fillet_sheet_edges(&mut model, &narrow, &[ring], 2.0, T));
+    assert!(said.contains("within the strip"), "{said}");
+
+    // A cup: a disc floor inside the tube, both facing in. A ball of radius
+    // 2 inside the radius 3 has its centre 1 from the axis, so its round
+    // would be a torus crossing its own axis.
+    let mut model = Model::new();
+    let (cup, rim) = {
+        let (sheet, ring) = tube_on_floor(&mut model);
+        let tube = face_where(&model, &sheet, |s| {
+            matches!(s, SurfaceGeometry::Cylinder(_))
+        });
+        let disc = make_face_with_pcurves(
+            &mut model,
+            PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::Z)).into(),
+            &[vec![ring.clone()]],
+            T,
+        )
+        .unwrap()
+        .shape;
+        assert!(face_normal(&model, &disc, T).unwrap().1.z > 0.5);
+        (model.add_shell(&[disc, tube.reversed()]).unwrap(), ring)
+    };
+    assert!(fillet_sheet_edges(&mut model, &cup, std::slice::from_ref(&rim), 1.0, T).is_ok());
+    let said = refusal(fillet_sheet_edges(&mut model, &cup, &[rim], 2.0, T));
+    assert!(said.contains("crossing its own axis"), "{said}");
+
+    // A ball too big for the inside of a cylinder it would roll in: a floor
+    // meeting a quarter wall of radius 5 that curves over it.
+    let mut model = Model::new();
+    let sheet = {
+        let far = make_vertex(&mut model, Point::new(10.0, 0.0, 0.0)).shape;
+        let corner = make_vertex(&mut model, Point::ORIGIN).shape;
+        let top = make_vertex(&mut model, Point::new(5.0, 5.0, 0.0)).shape;
+        let line =
+            Curve::Line(LineCurve::segment(Point::new(10.0, 0.0, 0.0), Point::ORIGIN, T).unwrap());
+        let floor = make_edge_between(&mut model, line.clone(), line.domain(), &far, &corner, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(Point::new(5.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+        let circle = Curve::Circle(CircleCurve::new(Circle::new(frame, 5.0, T).unwrap()));
+        let wall = make_edge_between(&mut model, circle, (PI / 2.0, PI), &top, &corner, T)
+            .unwrap()
+            .shape;
+        let wire = make_wire(&mut model, &[floor, wall.reversed()], T)
+            .unwrap()
+            .shape;
+        make_prism(&mut model, &wire, Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape
+    };
+    let corner = vertical_edge_at(&model, &sheet, 0.0, 0.0);
+    let said = refusal(fillet_sheet_edges(&mut model, &sheet, &[corner], 6.0, T));
+    assert!(said.contains("does not fit inside"), "{said}");
+
+    // Separate faces sharing no direction or axis.
+    let mut model = Model::new();
+    let (a, _) = valley(&mut model, 0.5, (0.0, 8.0), (0.0, 8.0));
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let side = faces(&model, &drum)
+        .into_iter()
+        .find(|f| matches!(surface_of(&model, f), SurfaceGeometry::Cylinder(_)))
+        .unwrap();
+    let said = refusal(fillet_faces(&mut model, &side, &a, 1.0, true, T));
+    assert!(said.contains("share neither"), "{said}");
+
+    // A floor short of where the ball beside the drum touches it (x = 4),
+    // on either side.
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (5.0, 10.0), (0.0, 8.0));
+    let drum = drum_quarter(&mut model, (0.0, 8.0));
+    let said = refusal(fillet_faces(&mut model, &floor, &drum, 2.0, true, T));
+    assert!(said.contains("does not touch both faces"), "{said}");
+    // A floor and a drum side by side along y, never beside each other.
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (0.0, 8.0));
+    let drum = drum_quarter(&mut model, (10.0, 18.0));
+    let said = refusal(fillet_faces(&mut model, &floor, &drum, 2.0, false, T));
+    assert!(said.contains("do not overlap"), "{said}");
+
+    // A ball so large it touches the floor past the floor's far edge.
+    let mut model = Model::new();
+    let sheet = floor_and_quarter_wall(&mut model);
+    let corner = vertical_edge_at(&model, &sheet, 0.0, 0.0);
+    let said = refusal(fillet_sheet_edges(&mut model, &sheet, &[corner], 25.0, T));
+    assert!(said.contains("sets back past"), "{said}");
+
+    // A floor whose foot rises from the corner, (0, 0, 0) to (10, 0, 2),
+    // beside the quarter wall standing on z = 0: the round ends in the
+    // plane z = 0, which the floor's foot leaves.
+    let mut model = Model::new();
+    let at = |x: f64, y: f64, z: f64| Point::new(x, y, z);
+    let points = [
+        at(0.0, 0.0, 0.0),
+        at(10.0, 0.0, 2.0),
+        at(10.0, 0.0, 5.0),
+        at(0.0, 0.0, 5.0),
+        at(-5.0, 5.0, 0.0),
+        at(-5.0, 5.0, 5.0),
+    ];
+    let v: Vec<Shape> = points
+        .iter()
+        .map(|p| make_vertex(&mut model, *p).shape)
+        .collect();
+    let segment = |model: &mut Model, i: usize, j: usize| {
+        let line = Curve::Line(LineCurve::segment(points[i], points[j], T).unwrap());
+        let range = line.domain();
+        make_edge_between(model, line, range, &v[i], &v[j], T)
+            .unwrap()
+            .shape
+    };
+    let arc = |model: &mut Model, z: f64, i: usize, j: usize| {
+        let frame = Frame::new(Point::new(-5.0, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+        let circle = Curve::Circle(CircleCurve::new(Circle::new(frame, 5.0, T).unwrap()));
+        make_edge_between(model, circle, (0.0, PI / 2.0), &v[i], &v[j], T)
+            .unwrap()
+            .shape
+    };
+    let corner = segment(&mut model, 0, 3);
+    let floor_edges = vec![
+        segment(&mut model, 0, 1),
+        segment(&mut model, 1, 2),
+        segment(&mut model, 2, 3),
+        corner.reversed(),
+    ];
+    let wall_edges = vec![
+        arc(&mut model, 0.0, 0, 4),
+        segment(&mut model, 4, 5),
+        arc(&mut model, 5.0, 3, 5).reversed(),
+        corner.reversed(),
+    ];
+    let floor = make_face_with_pcurves(
+        &mut model,
+        PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::Y)).into(),
+        &[floor_edges],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wall_frame = Frame::new(Point::new(-5.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let wall = make_face_with_pcurves(
+        &mut model,
+        ogeom::geom::CylinderSurface::new(
+            ogeom::math::Cylinder::new(wall_frame, 5.0, T).unwrap(),
+            (-1.0, 6.0),
+        )
+        .unwrap()
+        .into(),
+        &[wall_edges],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let facing = |model: &Model, face: Shape, into: Vector| {
+        if face_normal(model, &face, T).unwrap().1.dot(into) > 0.0 {
+            face
+        } else {
+            face.reversed()
+        }
+    };
+    let floor = facing(&model, floor, Vector::new(0.0, 1.0, 0.0));
+    let wall = facing(&model, wall, Vector::new(1.0, 0.0, 0.0));
+    let sheet = model.add_shell(&[floor, wall]).unwrap();
+    let said = refusal(fillet_sheet_edges(&mut model, &sheet, &[corner], 1.0, T));
+    assert!(said.contains("outside the round's end section"), "{said}");
+
+    // The spline wall swept on a slant: at the edge's ends the ball's
+    // section stands square to the edge, and there it would touch the wall
+    // below its foot.
     let mut model = Model::new();
     let far = make_vertex(&mut model, Point::new(10.0, 0.0, 0.0)).shape;
     let corner = make_vertex(&mut model, Point::ORIGIN).shape;
@@ -669,16 +1513,23 @@ fn a_curved_face_is_refused_by_name() {
         .shape;
     let frame = Frame::new(Point::new(-5.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
     let circle = Curve::Circle(CircleCurve::new(Circle::new(frame, 5.0, T).unwrap()));
-    let wall = make_edge_between(&mut model, circle, (0.0, PI / 2.0), &corner, &top, T)
+    let spline = Curve::BSpline(circle.to_bspline_over((0.0, PI / 2.0), T).unwrap());
+    let domain = spline.domain();
+    let wall = make_edge_between(&mut model, spline, domain, &corner, &top, T)
         .unwrap()
         .shape;
     let wire = make_wire(&mut model, &[floor, wall], T).unwrap().shape;
-    let sheet = make_prism(&mut model, &wire, Vector::new(0.0, 0.0, 5.0), T)
+    let leaning = make_prism(&mut model, &wire, Vector::new(2.0, 0.0, 5.0), T)
         .unwrap()
         .shape;
-    let edge = vertical_edge_at(&model, &sheet, 0.0, 0.0);
-    let said = refusal(fillet_sheet_edges(&mut model, &sheet, &[edge], 1.0, T));
-    assert!(said.contains("only planar faces"), "{said}");
+    let slanted = edges_where(&model, &leaning, |p| {
+        p.y.abs() < 1e-9 && (p.x - 0.4 * p.z).abs() < 1e-9
+    })
+    .into_iter()
+    .next()
+    .unwrap();
+    let said = refusal(fillet_sheet_edges(&mut model, &leaning, &[slanted], 1.0, T));
+    assert!(said.contains("does not seat"), "{said}");
 }
 
 #[test]
@@ -715,17 +1566,6 @@ fn face_rounds_refuse_by_name() {
     .shape;
     let said = refusal(fillet_faces(&mut model, &a, &copy, 1.0, true, T));
     assert!(said.contains("parallel"), "{said}");
-
-    // A curved face.
-    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
-        .unwrap()
-        .shape;
-    let side = faces(&model, &drum)
-        .into_iter()
-        .find(|f| matches!(surface_of(&model, f), SurfaceGeometry::Cylinder(_)))
-        .unwrap();
-    let said = refusal(fillet_faces(&mut model, &side, &a, 1.0, true, T));
-    assert!(said.contains("only planar faces"), "{said}");
 }
 
 /// A floor whose far side notches back toward the corner, to within 1.5

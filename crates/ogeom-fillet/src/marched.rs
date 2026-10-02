@@ -1344,61 +1344,8 @@ pub(crate) fn build_open_band(
     let [(first, sign_first), (second, sign_second)] = hosts;
     let additive = !convex;
     let n = blend.len();
-    // Two tenths of a micron at unit scale: what the march's own stations
-    // hold to, and what the band's edges are widened to say.
-    let fit_target = (tol.confusion() * 2e3).max(2e-4);
-
-    // The band: each station's exact ball arc, fitted open along the
-    // stations: same arcs as the closed case, no wrap. Sampled twice as
-    // finely across: the scoop's widest sections sweep well past a right
-    // angle, and the knot refinement can only split spans that still hold
-    // data.
-    const ACROSS_OPEN: usize = 17;
-    let mut rows: Vec<Vec<Point>> = (0..ACROSS_OPEN).map(|_| Vec::with_capacity(n)).collect();
-    for at in 0..n {
-        if (at == 0 && pinched[0]) || (at == n - 1 && pinched[1]) {
-            for row in &mut rows {
-                row.push(blend.touch_first[at]);
-            }
-            continue;
-        }
-        let centre = blend.spine[at];
-        let a = (blend.touch_first[at] - centre) / radius;
-        let b = (blend.touch_second[at] - centre) / radius;
-        let cross = a.cross(b);
-        let m = cross.magnitude();
-        if m <= tol.angular() {
-            ogeom_bail!(
-                Construction,
-                "a blend section collapsed; the radius wedges rather than \
-                 seats at station {at}"
-            );
-        }
-        let axis = cross / m;
-        let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
-        for (k, row) in rows.iter_mut().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
-            let theta = sweep * (k as f64) / ((ACROSS_OPEN - 1) as f64);
-            let dir = a * theta.cos() + axis.cross(a) * theta.sin();
-            row.push(centre + dir * radius);
-        }
-    }
-    let stations: Vec<Vec<Point>> = (0..n)
-        .map(|i| (0..ACROSS_OPEN).map(|k| rows[k][i]).collect())
-        .collect();
-    // Fitted at half the target: the two passes each hold their half, but
-    // the assembled surface's honest error is measured across both, and an
-    // open band lands near their sum where the closed band's wrap absorbs
-    // it. The acceptance stays the caller's target.
-    let fitted = ogeom_geom::fit::fit_surface_grid_chordal(&stations, 3, fit_target * 0.5, tol)?;
-    if fitted.error > fit_target {
-        ogeom_bail!(
-            NotDone,
-            "the blend surface reached {} against a target of {fit_target}",
-            fitted.error
-        );
-    }
-    let surface = fitted.curve;
+    let fit_target = band_fit_target(tol);
+    let surface = fit_open_band(blend, radius, pinched, tol)?;
     let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
     let (k_count, l_count, net) = {
         let grid = surface.grid();
@@ -1754,6 +1701,76 @@ pub(crate) fn build_open_band(
     ];
     faces.extend(caps);
     apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+}
+
+/// Two tenths of a micron at unit scale: what the march's own stations
+/// hold to, and what a marched band's edges are widened to say.
+pub(crate) fn band_fit_target(tol: Tolerances) -> f64 {
+    (tol.confusion() * 2e3).max(2e-4)
+}
+
+/// The open band through each station's exact ball arc, fitted along the
+/// stations: `u` runs across each arc from the first support's touch point
+/// to the second's, `v` along the stations in their order. An end that is
+/// `pinched` collapses its row to the first touch point.
+///
+/// Sampled finely across: the widest sections sweep well past a right
+/// angle, and the knot refinement can only split spans that still hold
+/// data.
+pub(crate) fn fit_open_band(
+    blend: &crate::march::MarchedBlend,
+    radius: f64,
+    pinched: [bool; 2],
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::BSplineSurface> {
+    const ACROSS_OPEN: usize = 17;
+    let n = blend.len();
+    let fit_target = band_fit_target(tol);
+    let mut rows: Vec<Vec<Point>> = (0..ACROSS_OPEN).map(|_| Vec::with_capacity(n)).collect();
+    for at in 0..n {
+        if (at == 0 && pinched[0]) || (at == n - 1 && pinched[1]) {
+            for row in &mut rows {
+                row.push(blend.touch_first[at]);
+            }
+            continue;
+        }
+        let centre = blend.spine[at];
+        let a = (blend.touch_first[at] - centre) / radius;
+        let b = (blend.touch_second[at] - centre) / radius;
+        let cross = a.cross(b);
+        let m = cross.magnitude();
+        if m <= tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "a blend section collapsed; the radius wedges rather than \
+                 seats at station {at}"
+            );
+        }
+        let axis = cross / m;
+        let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
+        for (k, row) in rows.iter_mut().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let theta = sweep * (k as f64) / ((ACROSS_OPEN - 1) as f64);
+            let dir = a * theta.cos() + axis.cross(a) * theta.sin();
+            row.push(centre + dir * radius);
+        }
+    }
+    let stations: Vec<Vec<Point>> = (0..n)
+        .map(|i| (0..ACROSS_OPEN).map(|k| rows[k][i]).collect())
+        .collect();
+    // Fitted at half the target: the two passes each hold their half, but
+    // the assembled surface's honest error is measured across both, and an
+    // open band lands near their sum where the closed band's wrap absorbs
+    // it. The acceptance stays the caller's target.
+    let fitted = ogeom_geom::fit::fit_surface_grid_chordal(&stations, 3, fit_target * 0.5, tol)?;
+    if fitted.error > fit_target {
+        ogeom_bail!(
+            NotDone,
+            "the blend surface reached {} against a target of {fit_target}",
+            fitted.error
+        );
+    }
+    Ok(fitted.curve)
 }
 
 /// Whether the crease between the two hosts is convex, read from the solid
@@ -2834,7 +2851,7 @@ fn loop_through_neighbours(
 /// picked by index would be the ball at a different place wherever the
 /// march bunched its steps, and on a curved rim its centre can lie on the
 /// wrong side of the point.
-fn touching_ball(spine: &[Point], p: Point) -> Point {
+pub(crate) fn touching_ball(spine: &[Point], p: Point) -> Point {
     spine
         .iter()
         .copied()

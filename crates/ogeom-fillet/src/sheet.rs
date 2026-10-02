@@ -11,8 +11,9 @@
 //!
 //! Between two planes the rolling ball's envelope is a cylinder whose axis
 //! is where the two planes' offsets meet, and the lines of contact are
-//! straight: every curve and every trim here is closed-form. Curved
-//! supports are refused by name.
+//! straight: every curve and every trim here is closed-form. Curved faces
+//! are rounded in `sheet_curved`: exactly where the supports share a
+//! direction or an axis, marched otherwise.
 
 use core::f64::consts::PI;
 
@@ -36,12 +37,29 @@ use crate::support::{edge_curve, face_from_edges, segment_between};
 ///
 /// The ball rolls on the concave side of each corner: the side where the
 /// two faces make an angle under a half turn. Each of the two faces is
-/// rebuilt without the strip between the edge and the line the ball
-/// touches it along, and the round, a cylinder of `radius` tangent to both,
-/// fills the gap, sharing an edge with each. Its normal follows the sheet's:
+/// rebuilt on its own surface without the strip between the edge and the
+/// line the ball touches it along, and the round, tangent to both, fills
+/// the gap, sharing an edge with each. Its normal follows the sheet's:
 /// where the faces' normals point into the corner, the round's points to
-/// its axis. The round ends square to the edge, in the planes through the
-/// edge's ends, and those ends become part of the sheet's free boundary.
+/// the ball's centre.
+///
+/// The round's surface:
+///
+/// - between two planes, or planes and cylinders all along the straight
+///   edge's direction, a cylinder of `radius` along it;
+/// - between planes square to an axis and cylinders, cones, spheres and
+///   tori about it, meeting along a circle or arc about the axis, a torus
+///   about the axis with `radius` for its tube;
+/// - otherwise (B-spline, swept or other faces, or an edge with no closed
+///   form) a B-spline surface fitted through the ball's arcs as it is
+///   marched along an open edge, its borders the lines of contact, within
+///   two tenths of a micron at unit scale; the edges it shares are widened
+///   to say so.
+///
+/// The round ends in the ball's section at each end of an open edge (the
+/// plane square to a straight edge, the half-plane through the axis of an
+/// arc, the march's section elsewhere), and those ends become part of the
+/// sheet's free boundary. A closed edge is rounded all the way round.
 ///
 /// Edges are rounded one after another, each on the sheet the previous one
 /// left, so two rounds may trim the same face from different sides.
@@ -60,15 +78,25 @@ use crate::support::{edge_curve, face_from_edges, segment_between};
 /// - an edge is not an edge of the sheet with a face on each side (a free
 ///   edge, an edge of three faces, an edge an earlier round in the same
 ///   call consumed);
-/// - an edge is not straight, or a face beside it is not planar or is
-///   placed;
+/// - a face beside an edge is placed, or runs along it twice;
 /// - the two faces continue each other, fold onto each other, or are
 ///   oriented inconsistently across the edge;
-/// - at an end of the edge, a face's boundary does not leave it square to
-///   the edge along a straight edge of the sheet's free boundary, or other
-///   faces meet there too;
+/// - no ball of `radius` seats in the corner, a ball does not fit inside a
+///   curved face it rolls on, it touches the faces at the ends of a
+///   diameter, or its round would be a torus crossing its own axis;
+/// - the edge is closed and its round would have to be marched;
+/// - the ball does not seat between the faces at an end of a marched edge;
+/// - at an end of the edge, a face's boundary does not leave it along an
+///   edge of the sheet's free boundary lying in the round's end section (for
+///   two planes, square to the edge and straight), or other faces meet there
+///   too;
 /// - the ball sets back past the far end of a face's boundary edge, or some
-///   other part of a face's boundary comes into the strip the round takes.
+///   other part of a face's boundary comes within reach of the strip the
+///   round takes (checked against a sampled distance held low by the
+///   sampling step, so an edge only near the strip may be refused).
+///
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where a march
+/// gives too few stations or its band misses its fit target.
 pub fn fillet_sheet_edges(
     model: &mut Model,
     sheet: &Shape,
@@ -106,20 +134,33 @@ pub fn fillet_sheet_edges(
     Ok(Built::new(current, History::chain(&steps)))
 }
 
-/// Round the corner between two planar faces of separate shapes with a
-/// rolling ball of `radius`.
+/// Round the corner between two faces of separate shapes with a rolling
+/// ball of `radius`.
 ///
 /// The ball rolls on the side each face's normal points to: it touches
 /// the front of both. Reverse a face to roll it on that face's other side.
-/// The two planes meet on a line; the ball's centre runs parallel to it,
-/// and it touches each face along a line parallel to it too. The round runs
-/// over the stretch of that line both faces reach (where each face's line
-/// of contact crosses it) and ends square to the line.
+///
+/// The faces' surfaces must share a direction or an axis, which gives the
+/// round a closed form:
+///
+/// - two planes meet on a line, and planes and cylinders all along one
+///   direction share it: the ball's centre runs along that direction, it
+///   touches each face along a line, and the round is a cylinder of
+///   `radius` running over the stretch both faces reach (where each face's
+///   line of contact crosses it), ending square to the direction;
+/// - planes square to an axis and cylinders, cones, spheres and tori about
+///   it share the axis: the ball's centre turns about it, it touches each
+///   face along a circle, and the round is a torus about the axis with
+///   `radius` for its tube, running over the turn both faces reach and
+///   ending in half-planes through the axis, or all the way round where
+///   both lines of contact close on their faces.
 ///
 /// With `trim`, each face is cut back to its line of contact (everything of
-/// it on the corner's side of that line goes) and the result is one shell
+/// it on the round's side of that line goes) and the result is one shell
 /// of the two trimmed faces and the round, sharing an edge along each line
-/// of contact. Without it the faces are left as they are and the result is
+/// of contact; where a face's line of contact runs past the round's ends
+/// (or closes round on itself), the rest of it stays free boundary.
+/// Without it the faces are left as they are and the result is
 /// the round alone, its normal following the faces' as in the shell.
 ///
 /// History: each face generates the round; with `trim`, each face is
@@ -131,13 +172,22 @@ pub fn fillet_sheet_edges(
 /// name, where:
 ///
 /// - `radius` is not a positive length;
-/// - an argument is not a face, the two are one face, or either is not
-///   planar;
-/// - the faces are parallel;
-/// - a face does not reach its line of contact (it lies wholly beyond it,
-///   or wholly between it and the corner), or the line crosses it more than
-///   once;
+/// - an argument is not a face, or the two are one face;
+/// - a face is placed;
+/// - the faces' surfaces share no direction or axis (two B-spline faces,
+///   a cylinder and a plane at a slant to it, and the like);
+/// - two planes are parallel, or no ball of `radius` touches the front of
+///   both surfaces, or it does not fit inside a curved face, or more than
+///   one does and touches both faces;
+/// - the ball touching both surfaces misses a face, or touches the two at
+///   the ends of a diameter, or its round would be a torus crossing its
+///   own axis;
+/// - for two planes, a face does not reach its line of contact (it lies
+///   wholly beyond it, or wholly between it and the corner);
+/// - a line of contact crosses its face more than once;
 /// - the stretches the two faces reach do not overlap;
+/// - one face's line of contact closes on itself across the face's own
+///   boundary (round a seam) while the round spans only part of the turn;
 /// - with `trim`, cutting a face back leaves it in more than one piece, or
 ///   leaves a placed face.
 pub fn fillet_faces(
@@ -149,6 +199,7 @@ pub fn fillet_faces(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     usable_radius(radius, tol)?;
+    let mut planar = true;
     for (name, face) in [("first", a), ("second", b)] {
         let kind = model.kind_of(face)?;
         if kind != ShapeType::Face {
@@ -157,17 +208,13 @@ pub fn fillet_faces(
                 "fillet_faces rounds between two faces; the {name} argument is a {kind:?}"
             );
         }
-        let surface = surface_of(model, face)?;
-        if !matches!(surface, SurfaceGeometry::Plane(_)) {
-            ogeom_bail!(
-                Construction,
-                "only planar faces are rounded here; the {name} face is on a {:?} surface",
-                surface.kind()
-            );
-        }
+        planar &= matches!(surface_of(model, face)?, SurfaceGeometry::Plane(_));
     }
     if a.is_same(b) {
         ogeom_bail!(Construction, "a face is not rounded against itself");
+    }
+    if !planar {
+        return crate::sheet_curved::fillet_faces(model, a, b, radius, trim, tol);
     }
     let (origin_a, normal_a) = planar_face_of(model, a, tol)?;
     let (origin_b, normal_b) = planar_face_of(model, b, tol)?;
@@ -818,12 +865,34 @@ fn round_sheet_edge(
         ),
     }
     let (curve, _) = edge_curve(model, edge, tol)?;
+    let planar = [&faces[users[0]], &faces[users[1]]]
+        .into_iter()
+        .map(|face| surface_of(model, face))
+        .collect::<OgeomResult<Vec<_>>>()?
+        .iter()
+        .all(|s| matches!(s, SurfaceGeometry::Plane(_)));
     let Curve::Line(line) = &curve else {
-        ogeom_bail!(
-            Construction,
-            "only a straight edge between planar faces is rounded here"
+        return crate::sheet_curved::round_sheet_edge(
+            model,
+            shell,
+            edge,
+            [&faces[users[0]], &faces[users[1]]],
+            &|e| users_of(e).len(),
+            radius,
+            tol,
         );
     };
+    if !planar {
+        return crate::sheet_curved::round_sheet_edge(
+            model,
+            shell,
+            edge,
+            [&faces[users[0]], &faces[users[1]]],
+            &|e| users_of(e).len(),
+            radius,
+            tol,
+        );
+    }
     let along = line.axis().direction.vector();
     let Some((v0, v1)) = edge_vertices(model, &edge.oriented(Orientation::Forward))? else {
         ogeom_bail!(Construction, "the edge has no vertices");

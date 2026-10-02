@@ -19,6 +19,7 @@ ogeom-topo.workspace = true
 ogeom-algo.workspace = true
 ogeom-intersect.workspace = true
 ogeom-bool.workspace = true
+ogeom-heal.workspace = true
 ogeom-mesh.workspace = true
 
 [dev-dependencies]

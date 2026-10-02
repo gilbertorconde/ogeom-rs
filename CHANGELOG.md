@@ -14,11 +14,15 @@ bump may break the API and a patch bump may not.
 ### Added
 
 - **Fillets on sheets and between separate faces.** `fillet_sheet_edges`
-  rounds edges where two planar faces of a shell meet, rebuilding both
-  faces around an exact cylindrical round that shares an edge with each.
-  `fillet_faces` rounds the corner between two planar faces of separate
-  shapes, the ball on the side their normals point to, optionally
-  trimming both back into one shell with the round. Curved faces are
+  rounds edges where two faces of a shell meet, and `fillet_faces` rounds
+  the corner between two faces of separate shapes, the ball on the side
+  their normals point to, optionally trimming both back into one shell
+  with the round. The round is an exact cylinder where the supports share
+  a direction, an exact torus where they share an axis (a plane square to
+  it, cylinders, cones, spheres, tori), and on a sheet a marched B-spline
+  band elsewhere. Each face is rebuilt along its line of contact and
+  shares that edge with the round. A B-spline pair given to
+  `fillet_faces`, and a closed sheet edge with no closed-form round, are
   refused by name.
 
 - **Sheets offset and thicken.** `offset_sheet` moves a face or a shell
