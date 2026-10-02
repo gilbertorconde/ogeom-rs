@@ -93,6 +93,15 @@ against every sample, edges placed on both surfaces, facets as the fallback.
   axis or radius), then building the solid. The pieces exist inside
   `solid_from_mesh`; the work is a stable surface for them and tests that
   a corrected conversion builds what an automatic one would have.
+- Folded trims on planar faces beside recognized ones. On `nist_ctc_05`
+  meshed at a thousandth of its diagonal, two large planes and a row of
+  small ones come out with seams from the recognized faces round them
+  crossing back over them: their triangles cover part of them twice, the
+  body's volume falls short of the mesh's, and recognition is withdrawn
+  from the whole body. Faceting only the recognized faces round the planes
+  that miss their share keeps 49 of 84 curved faces but leaves smaller
+  folds the body's slack does not see, and the result tessellates open; a
+  way to hold every face to its own share is wanted first.
 - The free boundary of an open mesh. A recognized region's edge with no
   neighbour has no second surface to be solved onto. Check whether it comes
   back as a polyline. If so, place it on the region's surface as a curve
