@@ -134,7 +134,7 @@ to grow to, and a gap the recovered edges do not bridge.
   - *reasoning:* Healing outcomes here are values: `SameParameterReport`, `StepReport`, counts from `reduce_tolerances`. These are Rust Results rather than status bitfields read back through a registrator. A message-registration framework would add a second channel for what the return values already say.
 - **heal.substitution**: Recording shape substitutions and applying them across a model · `covered` · 6 headers claimed
 - **heal.tolerances**: Reading and tightening the tolerances a shape actually needs · `covered` · 2 headers claimed
-- **heal.upgrade**: Upgrading shapes in place: same-domain unification, edge merging, subdivision · `covered` · 34 headers claimed
+- **heal.upgrade**: Upgrading shapes in place: same-domain unification, edge merging, subdivision, splitting along curves · `covered` · 34 headers claimed
 
 ### ogeom-hlr
 

@@ -333,7 +333,7 @@ pub fn to_bezier(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
 
 // --- drivers ---------------------------------------------------------------
 
-type Bounds = ((f64, f64), (f64, f64));
+pub(crate) type Bounds = ((f64, f64), (f64, f64));
 
 /// Cut faces until `lines` asks for no cut any face takes: each round asks
 /// every face not yet settled for the lines it wants, in order, and makes
@@ -400,7 +400,11 @@ fn divide_faces(
 /// sides as its boundary: a periodic direction's two sides one seam edge,
 /// a side the surface pinches to a point (a ball's pole) a degenerate edge.
 /// `None` where the chart is unbounded or a side has no closed-form curve.
-fn bounded_natural(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Shape>> {
+pub(crate) fn bounded_natural(
+    model: &mut Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
     let face_fwd = forward(face);
     let data = face_data(model, &face_fwd)?;
     let Some(surface) = model.geometry().surface(data.surface).cloned() else {
@@ -629,7 +633,11 @@ fn divide_edges(
 /// The shape, its placements baked in where any edge or face is placed:
 /// cuts make new nodes in the chart of the node they cut, and a node placed
 /// twice has two.
-fn placed_baked(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+pub(crate) fn placed_baked(
+    model: &mut Model,
+    shape: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     let mut placed = false;
     for kind in [ShapeType::Edge, ShapeType::Face] {
         for s in explore_unique(model, shape, kind)? {
@@ -706,25 +714,25 @@ const fn angular(surface: &SurfaceGeometry) -> (bool, bool) {
 
 /// One traversal of an edge around a face, in the chart.
 #[derive(Debug, Clone)]
-struct Occurrence {
-    edge: Shape,
+pub(crate) struct Occurrence {
+    pub(crate) edge: Shape,
     pcurve: PlanarCurve,
     range: (f64, f64),
 }
 
 impl Occurrence {
-    fn reversed(&self) -> bool {
+    pub(crate) fn reversed(&self) -> bool {
         self.edge.orientation() == Orientation::Reversed
     }
 
     /// The chart point a fraction `s` of the way along the traversal.
-    fn at(&self, s: f64, tol: Tolerances) -> OgeomResult<Point2> {
+    pub(crate) fn at(&self, s: f64, tol: Tolerances) -> OgeomResult<Point2> {
         let s = if self.reversed() { 1.0 - s } else { s };
         self.pcurve
             .point_at(self.range.0 + (self.range.1 - self.range.0) * s, tol)
     }
 
-    fn polyline(&self, samples: usize, tol: Tolerances) -> OgeomResult<Vec<Point2>> {
+    pub(crate) fn polyline(&self, samples: usize, tol: Tolerances) -> OgeomResult<Vec<Point2>> {
         (0..=samples)
             .map(|i| {
                 #[allow(clippy::cast_precision_loss)]
@@ -743,7 +751,7 @@ type Outer = (Vec<Shape>, Vec<Point2>, Vec<Vec<Shape>>);
 
 /// A face's rings as traversals, each seam traversal on the side of the
 /// chart its ring continues on.
-fn rings(
+pub(crate) fn rings(
     model: &Model,
     face: &Shape,
     surface: SurfaceId,
@@ -838,7 +846,7 @@ fn rings(
     Ok(out)
 }
 
-fn chart_bounds(rings: &[Vec<Occurrence>], tol: Tolerances) -> Bounds {
+pub(crate) fn chart_bounds(rings: &[Vec<Occurrence>], tol: Tolerances) -> Bounds {
     let mut b = (
         (f64::INFINITY, f64::NEG_INFINITY),
         (f64::INFINITY, f64::NEG_INFINITY),
@@ -1270,7 +1278,7 @@ fn chain(mut items: Vec<Item>, snap: f64) -> OgeomResult<Vec<(Vec<Shape>, Vec<Po
 /// Split `edge` (forward) at fractions of its range, in order: the pieces
 /// in order, and the new vertex at each fraction. Every description the
 /// edge has is cut at the same fraction of its own range.
-fn split_edge(
+pub(crate) fn split_edge(
     model: &mut Model,
     edge: &Shape,
     fractions: &[f64],
@@ -1482,7 +1490,7 @@ fn frame_axis(frame: Frame) -> Axis {
 
 // --- helpers -------------------------------------------------------------------
 
-fn forward(shape: &Shape) -> Shape {
+pub(crate) fn forward(shape: &Shape) -> Shape {
     if shape.orientation() == Orientation::Reversed {
         shape.reversed()
     } else {
@@ -1490,7 +1498,7 @@ fn forward(shape: &Shape) -> Shape {
     }
 }
 
-fn edge_data(model: &Model, edge: &Shape) -> OgeomResult<EdgeData> {
+pub(crate) fn edge_data(model: &Model, edge: &Shape) -> OgeomResult<EdgeData> {
     match model.node(edge).map(ogeom_topo::TShape::data) {
         Some(NodeData::Edge(data)) => Ok((**data).clone()),
         Some(_) => ogeom_bail!(Construction, "expected an edge"),
@@ -1498,7 +1506,7 @@ fn edge_data(model: &Model, edge: &Shape) -> OgeomResult<EdgeData> {
     }
 }
 
-fn face_data(model: &Model, face: &Shape) -> OgeomResult<ogeom_topo::FaceData> {
+pub(crate) fn face_data(model: &Model, face: &Shape) -> OgeomResult<ogeom_topo::FaceData> {
     match model.node(face).map(ogeom_topo::TShape::data) {
         Some(NodeData::Face(data)) => Ok((**data).clone()),
         Some(_) => ogeom_bail!(Construction, "expected a face"),
@@ -1506,14 +1514,14 @@ fn face_data(model: &Model, face: &Shape) -> OgeomResult<ogeom_topo::FaceData> {
     }
 }
 
-fn vertex_point(model: &Model, vertex: &Shape) -> OgeomResult<Point> {
+pub(crate) fn vertex_point(model: &Model, vertex: &Shape) -> OgeomResult<Point> {
     let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
         ogeom_bail!(Construction, "a vertex holds no point");
     };
     Ok(data.point)
 }
 
-fn signed_area(ring: &[Point2]) -> f64 {
+pub(crate) fn signed_area(ring: &[Point2]) -> f64 {
     let n = ring.len();
     (0..n)
         .map(|i| {
@@ -1525,7 +1533,7 @@ fn signed_area(ring: &[Point2]) -> f64 {
 }
 
 /// Even-odd containment against every ring.
-fn inside(rings: &[Vec<Point2>], p: Point2) -> bool {
+pub(crate) fn inside(rings: &[Vec<Point2>], p: Point2) -> bool {
     let mut odd = false;
     for ring in rings {
         let n = ring.len();

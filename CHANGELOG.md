@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`split_face` cuts a face along curves on it or projected onto it.**
+  Curves lie on the face, or are dropped onto it along its normals or
+  along a direction (`Projection`); curves meeting end to end are
+  followed as one, and a curve crossing a periodic face's seam is followed
+  across it. Each stretch from boundary to boundary divides the face, and
+  a closed curve inside it cuts out the region it encloses. The pieces
+  share the new edges, neighbouring faces keep sharing the boundary edges
+  a cut ends on, and history maps the face to its pieces. A curve that
+  ends inside the face, misses it, or runs along its boundary is refused
+  with a reason.
+
 - **Booleans trim and split sheets.** `common` and `cut` accept a face, a
   shell or a compound of those against a solid or a half space, and return
   what of the sheet lies inside or outside it, sewn into a shell or a

@@ -35,3 +35,9 @@ other operation.
 
 `normal_projection` projects a wire onto a shape along the shape's normals
 (for engraving). It returns the `Projected` curves on the target faces.
+
+`split_face` (in `ogeom::heal`) cuts one face along curves that lie on it
+(`Projection::OnFace`) or are dropped onto it along its normals
+(`AlongNormals`) or along a direction (`Along`). Each curve must cross the
+face from boundary to boundary or close inside it. The pieces share the new
+edges, and the history maps the face to its pieces.
