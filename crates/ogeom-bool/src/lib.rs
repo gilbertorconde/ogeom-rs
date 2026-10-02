@@ -6828,10 +6828,10 @@ fn general_fuse_as(
                         }
                         let Some(state) = resolved else {
                             // On with no partner containing the probe: the
-                            // band's generosity read proximity as
+                            // band's generosity may have read proximity as
                             // coincidence. Ask again at a width where it
-                            // cannot, and only a genuine edge contact
-                            // remains refused.
+                            // cannot. What stays on the boundary there is a
+                            // genuine contact, settled below.
                             match ogeom_algo::classify_in_solid_exact_banded(
                                 model,
                                 other,
@@ -6866,6 +6866,56 @@ fn general_fuse_as(
                                     continue;
                                 }
                                 Containment::On => {}
+                            }
+                            // Every probe the piece offered stands on the
+                            // other solid's boundary, and none on a coincident
+                            // face. Where the two touch only along lines or at
+                            // points the piece does not cross the other
+                            // boundary there (a crossing would have split it),
+                            // so it lies wholly on one side, and any point of
+                            // it off the contact says which. Points at golden
+                            // fractions of the piece's extent miss a contact
+                            // that met its halves and quarters. Where they
+                            // read on the boundary too, the contact covers a
+                            // region, which is not this case.
+                            let mut off_contact = None;
+                            for candidate in
+                                arrange::off_contact_points(&piece.outlines, tol.parametric())
+                            {
+                                if !arrange::inside_rings(&piece.outlines, candidate)
+                                    || fine
+                                        .as_ref()
+                                        .is_some_and(|f| !arrange::inside_rings(f, candidate))
+                                {
+                                    continue;
+                                }
+                                let at = face.surface.point_at(candidate.x, candidate.y, tol)?;
+                                match boundary.holds(model, at, tol) {
+                                    Ok(Containment::In) => {
+                                        off_contact = Some(PieceState::In);
+                                        break;
+                                    }
+                                    Ok(Containment::Out) => {
+                                        off_contact = Some(PieceState::Out);
+                                        break;
+                                    }
+                                    Ok(Containment::On)
+                                    | Err(ogeom_core::OgeomError::NotDone(_)) => {}
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            if let Some(state) = off_contact {
+                                pieces.push(FacePiece {
+                                    from_a,
+                                    face: fi,
+                                    rings: piece.rings,
+                                    outlines: piece.outlines,
+                                    probe,
+                                    state,
+                                    covered: false,
+                                    whole: false,
+                                });
+                                continue;
                             }
                             // Still on it, on the boolean's second attempt
                             // (see [`settled`]): a face all but coplanar with
@@ -6928,9 +6978,10 @@ fn general_fuse_as(
                             ogeom_bail!(
                                 NotDone,
                                 "a piece lies on the other solid's boundary \
-                             with no coincident partner face to compare \
-                             sides against; edge or vertex contact is \
-                             refused rather than resolved; see the \
+                             at every point it was asked at, with no \
+                             coincident partner face to compare sides \
+                             against; a contact over a region of faces not \
+                             recognised as coincident is refused; see the \
                              open items in docs/PLAN.md"
                             );
                         };

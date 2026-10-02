@@ -432,13 +432,33 @@ pub(crate) fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResul
     // containers are found once: a face with hundreds of holes has as many
     // positive cycles (each hole's own disc), and asking every pair about
     // every other cycle is the square of that again.
+    //
+    // Whether a hole lies in a cycle is asked at three of its chords'
+    // midpoints, by majority. A hole may touch its cycle at isolated points
+    // that are no node of either (a circle inscribed in a square touches it
+    // at four), and a single point of the hole asked there lies on the
+    // cycle and reads either way.
+    let hole_inside = |k: usize, hole: &[Point2]| {
+        let n = hole.len();
+        let votes = [0, n / 3, 2 * n / 3]
+            .into_iter()
+            .filter(|&i| {
+                let (a, b) = (hole[i % n], hole[(i + 1) % n]);
+                contains(
+                    k,
+                    Point2::new(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y)),
+                )
+            })
+            .count();
+        votes >= 2
+    };
     let containers: Vec<Vec<usize>> = negatives
         .iter()
         .enumerate()
         .map(|(hi, (_, hole))| {
             (0..positives.len())
                 .filter(|&oi| {
-                    contains(oi, hole[0]) && !meet(&negative_nodes[hi], &positive_nodes[oi])
+                    hole_inside(oi, hole) && !meet(&negative_nodes[hi], &positive_nodes[oi])
                 })
                 .collect()
         })
@@ -732,6 +752,56 @@ pub(crate) fn inside_many(lines: &[&[Point2]], p: Point2) -> bool {
 /// [`interior_points`] for rings the caller assembled itself.
 pub(crate) fn interior_points_of(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
     interior_points(rings, snap)
+}
+
+/// Points strictly inside the region the rings bound, placed at golden-ratio
+/// fractions of the widest scanline gaps and of each inside interval.
+///
+/// [`interior_points`] offers halves and quarters, and a solid touching a
+/// piece only along lines or at points can stand on every one of those: a
+/// cylinder inscribed in a box touches its wall at the quarter turns, which
+/// are the quarter columns of the wall's chart. A golden fraction is no
+/// simple ratio of the piece's extent, so a contact that met every regular
+/// probe is not met here unless it covers a region.
+pub(crate) fn off_contact_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {
+    const FRACTIONS: [f64; 3] = [
+        0.381_966_011_250_105,
+        0.618_033_988_749_895,
+        0.145_898_033_750_315,
+    ];
+    let mut heights: Vec<f64> = rings.iter().flatten().map(|p| p.y).collect();
+    heights.sort_unstable_by(f64::total_cmp);
+    heights.dedup_by(|a, b| (*a - *b).abs() <= snap);
+    let mut gaps: Vec<(f64, f64)> = heights
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0], pair[0]))
+        .filter(|(gap, _)| *gap > snap)
+        .collect();
+    gaps.sort_by(|a, b| b.0.total_cmp(&a.0));
+    gaps.truncate(3);
+    let segments = Bands::new(rings);
+    let mut points = Vec::new();
+    for (gap, low) in gaps {
+        for along in FRACTIONS {
+            let level = gap.mul_add(along, low);
+            let mut crossings: Vec<f64> = Vec::new();
+            for &(a, b) in segments.near(level) {
+                if (a.y > level) != (b.y > level) {
+                    crossings.push((b.x - a.x).mul_add((level - a.y) / (b.y - a.y), a.x));
+                }
+            }
+            crossings.sort_by(f64::total_cmp);
+            for pair in crossings.as_chunks::<2>().0 {
+                let width = pair[1] - pair[0];
+                if width > snap {
+                    for across in FRACTIONS {
+                        points.push(Point2::new(width.mul_add(across, pair[0]), level));
+                    }
+                }
+            }
+        }
+    }
+    points
 }
 
 fn interior_points(rings: &[Vec<Point2>], snap: f64) -> Vec<Point2> {

@@ -1,6 +1,6 @@
 //! Contact configurations the boolean resolves rather than refuses: curved
-//! same-domain pairs unify, and contact confined to an edge or a vertex
-//! passes through the boolean without harm.
+//! same-domain pairs unify, and contact confined to lines or points is
+//! classified off the contact, so it shares no volume.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -86,40 +86,173 @@ fn curved_same_domain_pairs_unify() {
     }
 }
 
-/// Contact confined to one edge or one vertex: the fuse of edge-touching
-/// boxes is one valid solid of both volumes (the shared edge is the
-/// non-manifold seam the model permits), and cutting a corner-touching
-/// tool removes nothing.
-#[test]
-fn edge_and_vertex_contact_pass_through_the_boolean() {
-    {
-        let mut model = Model::new();
-        let a = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+/// What a boolean gave, measured: volume, validity, face count and solid
+/// count.
+struct Measured {
+    volume: f64,
+    valid: bool,
+    faces: usize,
+    solids: usize,
+}
+
+fn measured(model: &Model, shape: &ogeom::topo::Shape) -> Measured {
+    Measured {
+        volume: volume(model, shape),
+        valid: ogeom::algo::check(model, shape, T).unwrap().is_valid(),
+        faces: explore_unique(model, shape, ShapeType::Face).unwrap().len(),
+        solids: explore_unique(model, shape, ShapeType::Solid)
             .unwrap()
-            .shape;
-        let f = Frame::new(Point::new(10.0, 0.0, 10.0), Direction::Z, Direction::X, T).unwrap();
-        let b = ogeom::algo::make_box(&mut model, f, (10.0, 10.0, 10.0), T)
-            .unwrap()
-            .shape;
-        let fused = ogeom::boolean::fuse(&mut model, &a, &b, T).unwrap().shape;
-        let v = volume(&model, &fused);
-        assert!((v - 2000.0).abs() < 1e-6, "both boxes survive: {v}");
-        assert!(ogeom::algo::check(&model, &fused, T).unwrap().is_valid());
+            .len(),
     }
-    {
+}
+
+/// Fuse, common and cut of the pair `make` builds, each on a fresh model,
+/// held to the expected volume, face count and solid count, and to `check`.
+fn three_ways(
+    make: &dyn Fn(&mut Model) -> (ogeom::topo::Shape, ogeom::topo::Shape),
+    want: [(f64, usize, usize); 3],
+) {
+    for (op, (volume, faces, solids)) in ["fuse", "common", "cut"].into_iter().zip(want) {
         let mut model = Model::new();
-        let a = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
-            .unwrap()
-            .shape;
-        let f = Frame::new(Point::new(10.0, 10.0, 10.0), Direction::Z, Direction::X, T).unwrap();
-        let b = ogeom::algo::make_box(&mut model, f, (10.0, 10.0, 10.0), T)
-            .unwrap()
-            .shape;
-        let cut = ogeom::boolean::cut(&mut model, &a, &b, T).unwrap().shape;
-        let v = volume(&model, &cut);
+        let (a, b) = make(&mut model);
+        let got = match op {
+            "fuse" => ogeom::boolean::fuse(&mut model, &a, &b, T),
+            "common" => ogeom::boolean::common(&mut model, &a, &b, T),
+            _ => ogeom::boolean::cut(&mut model, &a, &b, T),
+        }
+        .unwrap_or_else(|e| panic!("{op}: {e}"))
+        .shape;
+        let m = measured(&model, &got);
         assert!(
-            (v - 1000.0).abs() < 1e-6,
-            "a corner touch removes nothing: {v}"
+            (m.volume - volume).abs() <= 1e-6 * volume.max(1.0),
+            "{op}: volume {} against {volume}",
+            m.volume
+        );
+        assert!(m.valid, "{op}: check reports the result invalid");
+        assert_eq!((m.faces, m.solids), (faces, solids), "{op}: faces, solids");
+    }
+}
+
+fn cube(model: &mut Model, at: (f64, f64, f64), side: f64) -> ogeom::topo::Shape {
+    let frame = Frame::new(Point::new(at.0, at.1, at.2), Direction::Z, Direction::X, T).unwrap();
+    ogeom::algo::make_box(model, frame, (side, side, side), T)
+        .unwrap()
+        .shape
+}
+
+fn direction(x: f64, y: f64, z: f64) -> Direction {
+    Direction::new(ogeom::math::Vector::new(x, y, z), T).unwrap()
+}
+
+/// Boxes touching along a whole edge, along part of one, and at a corner.
+/// Touching shares no volume: the fuse holds both boxes (one solid on the
+/// non-manifold edge the model permits where the edge is shared, two
+/// solids where only a corner is), the common is empty, and the cut leaves
+/// the first box as it was.
+#[test]
+fn boxes_touching_along_an_edge_or_at_a_corner_share_no_volume() {
+    for at in [(10.0, 0.0, 10.0), (10.0, 5.0, 10.0)] {
+        three_ways(
+            &|model| (cube(model, (0.0, 0.0, 0.0), 10.0), cube(model, at, 10.0)),
+            [(2000.0, 12, 1), (0.0, 0, 0), (1000.0, 6, 1)],
+        );
+    }
+    three_ways(
+        &|model| {
+            (
+                cube(model, (0.0, 0.0, 0.0), 10.0),
+                cube(model, (10.0, 10.0, 10.0), 10.0),
+            )
+        },
+        [(2000.0, 12, 2), (0.0, 0, 0), (1000.0, 6, 1)],
+    );
+}
+
+/// Solids resting on a box's top face: a cylinder on its side touches it
+/// along a line, a box stood on one corner and a cone stood on its apex
+/// touch it at a point. None shares volume with the box.
+#[test]
+fn solids_resting_on_a_face_along_a_line_or_at_a_point_share_no_volume() {
+    let pi = core::f64::consts::PI;
+    // Radius 2, length 6, axis along x at height 12: the line y = 5, z = 10.
+    three_ways(
+        &|model| {
+            let frame =
+                Frame::new(Point::new(2.0, 5.0, 12.0), Direction::X, Direction::Y, T).unwrap();
+            let roller = ogeom::algo::make_cylinder(model, frame, 2.0, 6.0, T)
+                .unwrap()
+                .shape;
+            (cube(model, (0.0, 0.0, 0.0), 10.0), roller)
+        },
+        [(1000.0 + 24.0 * pi, 9, 2), (0.0, 0, 0), (1000.0, 6, 1)],
+    );
+    // A cube of side 2 whose three edges from one corner all climb at the
+    // same angle: that corner is its lowest point, set on (5, 5, 10).
+    let c = 1.0 / 3f64.sqrt();
+    three_ways(
+        &|model| {
+            let frame = Frame::new(
+                Point::new(5.0, 5.0, 10.0),
+                direction(-1.0 / 6f64.sqrt(), -1.0 / 2f64.sqrt(), c),
+                direction((2.0f64 / 3.0).sqrt(), 0.0, c),
+                T,
+            )
+            .unwrap();
+            let tilted = ogeom::algo::make_box(model, frame, (2.0, 2.0, 2.0), T)
+                .unwrap()
+                .shape;
+            (cube(model, (0.0, 0.0, 0.0), 10.0), tilted)
+        },
+        [(1008.0, 12, 2), (0.0, 0, 0), (1000.0, 6, 1)],
+    );
+    // Base radius 3 at height 14, apex on (5, 5, 10).
+    three_ways(
+        &|model| {
+            let frame = Frame::new(
+                Point::new(5.0, 5.0, 14.0),
+                direction(0.0, 0.0, -1.0),
+                Direction::X,
+                T,
+            )
+            .unwrap();
+            let cone = ogeom::algo::make_cone(model, frame, 3.0, 0.0, 4.0, T)
+                .unwrap()
+                .shape;
+            (cube(model, (0.0, 0.0, 0.0), 10.0), cone)
+        },
+        [(1000.0 + 12.0 * pi, 8, 2), (0.0, 0, 0), (1000.0, 6, 1)],
+    );
+}
+
+/// A cylinder inscribed in a box touches its four walls along the lines
+/// where its quarter turns stand, which are exactly the halves and quarters
+/// of its wall's chart: every regular probe of the unsplit wall lands on a
+/// contact line. Off those lines the wall reads plainly inside the box.
+/// The cut leaves the four corners, pairwise touching along those lines;
+/// with the caps flush, the box's top and bottom keep the disc as a hole
+/// that touches their outline at four points.
+#[test]
+fn a_cylinder_inscribed_in_a_box_is_read_off_its_contact_lines() {
+    let pi = core::f64::consts::PI;
+    let disc = 25.0 * pi;
+    for (low, height, fuse_volume, fuse_faces, cut_faces) in [
+        (-2.0, 14.0, 1000.0 + 4.0 * disc, 16, 13),
+        (0.0, 10.0, 1000.0, 8, 7),
+    ] {
+        three_ways(
+            &|model| {
+                let frame =
+                    Frame::new(Point::new(5.0, 5.0, low), Direction::Z, Direction::X, T).unwrap();
+                let drum = ogeom::algo::make_cylinder(model, frame, 5.0, height, T)
+                    .unwrap()
+                    .shape;
+                (cube(model, (0.0, 0.0, 0.0), 10.0), drum)
+            },
+            [
+                (fuse_volume, fuse_faces, 1),
+                (10.0 * disc, 3, 1),
+                (1000.0 - 10.0 * disc, cut_faces, 1),
+            ],
         );
     }
 }

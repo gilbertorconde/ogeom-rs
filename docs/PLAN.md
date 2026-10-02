@@ -18,11 +18,12 @@ here.
 
 ## Open
 
-**Edge and vertex contact in the boolean.** A piece lying on the other solid's
-boundary with no coincident partner face is refused. What reaches that refusal
-is genuine contact confined to a line or a point: there is no shared region to
-find a partner in, and no pair of normals to compare. Resolving it needs the
-contact classified from the neighbouring pieces instead of the piece itself.
+**Unpaired coincidence in the boolean.** Contact confined to lines or points
+is classified off the contact. A piece that still reads on the other solid's
+boundary at every point it is asked at, with no coincident partner face, is
+refused: that is a contact over a region of faces the boolean did not pair as
+coincident. No configuration known to reach it has been found; one that does
+wants its two faces paired as same-domain.
 
 **Coincident spline patches.** Two B-spline surfaces lying on one another (a
 sheared copy sharing a plane with its original) are detected by sampling, and

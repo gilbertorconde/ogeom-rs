@@ -166,6 +166,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean piece touching the other solid along lines or points is
+  classified, not refused.** A face piece whose every probe landed on the
+  other solid's boundary (a cylinder inscribed in a box touches its walls
+  at the quarter turns the probes use) was refused for want of a
+  coincident partner. It is asked again at points off the contact, which
+  a contact along lines or points cannot cover. A hole touching its outer
+  boundary at isolated points (a disc inscribed in a square) is placed by
+  a vote of chord midpoints, not by a point that may be the one it
+  touches at.
+
 - **A boolean keeps a piece reaching across a periodic face's seam as
   one face.** The boolean splits each face in its own chart, whose edge
   is the seam, so a piece reaching across the seam came back as two faces
