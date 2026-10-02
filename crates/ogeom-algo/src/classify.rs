@@ -803,14 +803,12 @@ pub(crate) fn fold_toward_rings(
     rings: &[Vec<Point2>],
     mut at: Point2,
 ) -> Point2 {
-    use ogeom_geom::SurfaceGeometry as S;
-    let tau = core::f64::consts::TAU;
-    let (u_period, v_period) = match surface {
-        S::Cylinder(_) | S::Cone(_) => (Some(tau), None),
-        S::Sphere(_) => (Some(tau), None),
-        S::Torus(_) => (Some(tau), Some(tau)),
-        _ => (None, None),
-    };
+    use ogeom_geom::Surface as _;
+    // Whatever repeats: the canonical surfaces' angles, a whole turn of a
+    // revolution, a periodic patch.
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let u_period = (surface.is_periodic_u() && ub > ua).then_some(ub - ua);
+    let v_period = (surface.is_periodic_v() && vb > va).then_some(vb - va);
     let fold = |x: f64, lo: f64, hi: f64, period: f64| -> f64 {
         let mut x = x;
         while x < lo && x + period <= hi + period {

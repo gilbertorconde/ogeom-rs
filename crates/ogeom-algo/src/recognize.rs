@@ -26,7 +26,7 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Cone, Cylinder, Direction, Frame, Plane, Point, Sphere, Torus, Vector};
 
 /// A canonical surface a set of samples was recognized as.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Canonical {
     /// A plane.
     Plane(Plane),
@@ -38,6 +38,149 @@ pub enum Canonical {
     Sphere(Sphere),
     /// A torus.
     Torus(Torus),
+    /// A profile swept round an axis or along a direction: a surface of
+    /// revolution or an extrusion, for a region none of the others fits.
+    Swept(Box<SweptShape>),
+}
+
+/// A swept surface, with the tolerances its distances are measured at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SweptShape {
+    /// The surface: a [`SurfaceGeometry::Revolution`] or a
+    /// [`SurfaceGeometry::Extrusion`].
+    pub surface: ogeom_geom::SurfaceGeometry,
+    /// The tolerances a point's foot on it is found to.
+    pub tol: Tolerances,
+    /// The profile sampled evenly in its parameter, where a foot is first
+    /// sought.
+    profile: Vec<(f64, Point)>,
+}
+
+/// How many samples a swept shape's profile is held at.
+const PROFILE_SAMPLES: usize = 256;
+
+impl SweptShape {
+    /// A swept shape on `surface`, its profile sampled.
+    #[must_use]
+    pub fn new(surface: ogeom_geom::SurfaceGeometry, tol: Tolerances) -> Self {
+        use ogeom_geom::{Curve3d as _, SurfaceGeometry as S};
+        let curve = match &surface {
+            S::Revolution(r) => Some(r.curve().clone()),
+            S::Extrusion(e) => Some(e.curve().clone()),
+            _ => None,
+        };
+        let profile = curve
+            .map(|c| {
+                let (lo, hi) = c.domain();
+                (0..=PROFILE_SAMPLES)
+                    .filter_map(|k| {
+                        #[allow(clippy::cast_precision_loss, reason = "a sample index")]
+                        let t = lo + (hi - lo) * (k as f64) / (PROFILE_SAMPLES as f64);
+                        c.point_at(t, tol).ok().map(|p| (t, p))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            surface,
+            tol,
+            profile,
+        }
+    }
+
+    /// The parameter and distance of `p`'s foot on the profile `curve`:
+    /// the nearest sample, sought coarsely and then among its neighbours,
+    /// then Newton's method on the squared distance held between the
+    /// sample's own neighbours.
+    fn on_profile(&self, curve: &ogeom_geom::Curve, p: Point) -> Option<(f64, f64)> {
+        use ogeom_geom::Curve3d as _;
+        // Every sixteenth sample, then the ones round the nearest of those.
+        let near = |range: core::ops::Range<usize>, step: usize| {
+            range.step_by(step).min_by(|&a, &b| {
+                self.profile[a]
+                    .1
+                    .distance(p)
+                    .total_cmp(&self.profile[b].1.distance(p))
+            })
+        };
+        let coarse = near(0..self.profile.len(), 16)?;
+        let i = near(
+            coarse.saturating_sub(16)..(coarse + 17).min(self.profile.len()),
+            1,
+        )?;
+        let lo = self.profile[i.saturating_sub(1)].0;
+        let hi = self.profile[(i + 1).min(self.profile.len() - 1)].0;
+        let mut t = self.profile[i].0;
+        for _ in 0..12 {
+            let d = curve.derivatives_at(t, 2, self.tol).ok()?;
+            let (c, c1, c2) = (Point::from_vector(d[0]), d[1], d[2]);
+            let w = c - p;
+            let slope = w.dot(c1);
+            let curvature = c1.dot(c1) + w.dot(c2);
+            if curvature <= 0.0 {
+                break;
+            }
+            let next = (t - slope / curvature).clamp(lo, hi);
+            let moved = (next - t).abs();
+            t = next;
+            if moved <= self.tol.parametric() * (hi - lo).abs().max(1.0) * 1e-3 {
+                break;
+            }
+        }
+        Some((t, curve.point_at(t, self.tol).ok()?.distance(p)))
+    }
+
+    /// The foot of `p` on the surface: its parameters, the point there and
+    /// the distance to it.
+    #[must_use]
+    pub fn foot(&self, p: Point) -> Option<crate::measure::SurfaceProjection> {
+        use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry as S};
+        match &self.surface {
+            // The nearest point of a revolution lies in the point's own
+            // half-plane through the axis: the point turned back into the
+            // profile's, then its foot on the profile.
+            S::Revolution(r) => {
+                let axis = r.axis();
+                let a = axis.direction.vector();
+                let radial = |q: Point| {
+                    let w = q - axis.location;
+                    w - a * w.dot(a)
+                };
+                let (lo, _) = r.curve().domain();
+                let reference = radial(r.curve().point_at(lo, self.tol).ok()?);
+                let own = radial(p);
+                let mut u = reference.cross(own).dot(a).atan2(reference.dot(own));
+                if u < 0.0 {
+                    u += core::f64::consts::TAU;
+                }
+                let back = ogeom_math::Transform::rotation(axis, -u).apply(p);
+                let (v, distance) = self.on_profile(r.curve(), back)?;
+                let point = self.surface.point_at(u, v, self.tol).ok()?;
+                Some(crate::measure::SurfaceProjection {
+                    parameters: (u, v),
+                    point,
+                    distance,
+                })
+            }
+            // An extrusion's nearest point is on the point's shadow's foot,
+            // as far along the direction as the point.
+            S::Extrusion(e) => {
+                let d = e.direction().vector();
+                let (lo, _) = e.curve().domain();
+                let base = e.curve().point_at(lo, self.tol).ok()?;
+                let v = (p - base).dot(d);
+                let shadow = p - d * v;
+                let (u, _) = self.on_profile(e.curve(), shadow)?;
+                let point = e.curve().point_at(u, self.tol).ok()? + d * v;
+                Some(crate::measure::SurfaceProjection {
+                    parameters: (u, v),
+                    point,
+                    distance: point.distance(p),
+                })
+            }
+            other => crate::measure::project_on_surface(other, p, 24, self.tol).ok(),
+        }
+    }
 }
 
 impl Canonical {
@@ -50,6 +193,7 @@ impl Canonical {
             Self::Cone(c) => c.distance_to(p),
             Self::Sphere(s) => (p.distance(s.centre()) - s.radius()).abs(),
             Self::Torus(t) => t.distance_to(p),
+            Self::Swept(s) => s.foot(p).map_or(f64::INFINITY, |f| f.distance),
         }
     }
 
@@ -80,12 +224,23 @@ impl Canonical {
                 let (r, h) = radial(t.frame());
                 (r - t.major_radius()).hypot(h) - t.minor_radius()
             }
+            Self::Swept(s) => {
+                use ogeom_geom::Surface as _;
+                let Some(foot) = s.foot(p) else {
+                    return f64::INFINITY;
+                };
+                let (u, v) = foot.parameters;
+                match s.surface.normal_at(u, v, s.tol) {
+                    Ok(n) if (p - foot.point).dot(n.vector()) < 0.0 => -foot.distance,
+                    _ => foot.distance,
+                }
+            }
         }
     }
 }
 
 /// A recognition with its certificate.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Recognized {
     /// What the samples are.
     pub surface: Canonical,
@@ -197,10 +352,11 @@ fn curved_fits(
         let Some(seed) = fit(&sub_points, &sub_normals, tol) else {
             continue;
         };
-        let refined = refine(seed, &sub_points, hopeless, tol).unwrap_or(seed);
+        let refined = refine(seed.clone(), &sub_points, hopeless, tol).unwrap_or(seed);
+        let deviation = worst_deviation(&refined, points);
         fits.push(Recognized {
             surface: refined,
-            deviation: worst_deviation(&refined, points),
+            deviation,
         });
     }
     // Samples on a band's two rims fit a whole family of spheres and tori,
@@ -253,7 +409,7 @@ fn choose(fits: &[Recognized], chords: &[(Point, Point)], tolerance: f64) -> Opt
     ranked
         .into_iter()
         .find(|f| f.deviation <= (2.0 * best).max(tolerance * 1e-3))
-        .copied()
+        .cloned()
 }
 
 /// A curved surface through samples of which a few are not on it: fitted,
@@ -365,10 +521,11 @@ fn two_row_band(
     let axis = Direction::new(a.vector() + b.vector(), tol).ok()?;
     let on_rows: Vec<Point> = rows[..2].iter().flatten().map(|&i| points[i]).collect();
     let seed = ruled_about(&on_rows, centre, axis, hopeless, tol)?;
-    let band = refine(seed, &on_rows, hopeless, tol).unwrap_or(seed);
+    let band = refine(seed.clone(), &on_rows, hopeless, tol).unwrap_or(seed);
+    let deviation = worst_deviation(&band, points);
     Some(Recognized {
         surface: band,
-        deviation: worst_deviation(&band, points),
+        deviation,
     })
 }
 
@@ -544,7 +701,7 @@ fn fit_sphere(points: &[Point], tol: Tolerances) -> Option<Canonical> {
 /// least-squares null vector of those conditions, put back on the Klein
 /// quadric. A sphere's normals all meet at one point and determine no
 /// axis, which the fits after this one catch.
-fn revolution_axis(
+pub(crate) fn revolution_axis(
     points: &[Point],
     normals: &[Vector],
     tol: Tolerances,
@@ -867,7 +1024,7 @@ fn parameters(surface: &Canonical) -> Option<Vec<f64>> {
         out
     };
     Some(match surface {
-        Canonical::Plane(_) => return None,
+        Canonical::Plane(_) | Canonical::Swept(_) => return None,
         Canonical::Cylinder(c) => flat(c.frame().origin(), c.frame().z(), &[c.radius()]),
         Canonical::Cone(c) => flat(
             c.frame().origin(),
@@ -906,7 +1063,7 @@ fn residual(like: &Canonical, x: &[f64], p: Point) -> f64 {
             (rho - h.mul_add(angle.tan(), r0)) * angle.cos()
         }
         Canonical::Torus(_) => (rho - x[6]).hypot(h) - x[7],
-        Canonical::Plane(_) | Canonical::Sphere(_) => 0.0,
+        Canonical::Plane(_) | Canonical::Sphere(_) | Canonical::Swept(_) => 0.0,
     }
 }
 
@@ -931,7 +1088,7 @@ fn rebuild(like: &Canonical, x: &[f64], tol: Tolerances) -> Option<Canonical> {
             }
             Canonical::Torus(Torus::new(frame, x[6], x[7], tol).ok()?)
         }
-        Canonical::Plane(_) | Canonical::Sphere(_) => return None,
+        Canonical::Plane(_) | Canonical::Sphere(_) | Canonical::Swept(_) => return None,
     })
 }
 

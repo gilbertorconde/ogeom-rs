@@ -2740,3 +2740,154 @@ fn a_face_moved_clear_of_its_tangent_fillets_is_refused() {
         assert!(moved.is_err(), "{:?}", moved.map(|b| volume(m, &b.shape)));
     }
 }
+
+/// A spline through a wave: 3 + sin(0.4 t) over t in [0, 10], placed by
+/// `at`.
+fn wave(at: impl Fn(f64, f64) -> Point) -> ogeom::geom::Curve {
+    let points: Vec<Point> = (0..=20)
+        .map(|k| {
+            let t = f64::from(k) * 0.5;
+            at(t, 3.0 + (t * 0.4).sin())
+        })
+        .collect();
+    ogeom::algo::fit::interpolate(&points, 3, ogeom::algo::fit::Spacing::Centripetal, T)
+        .unwrap()
+        .into()
+}
+
+/// A closed wire through `corners`, the edge from the first corner to the
+/// second on `curve` and the rest straight.
+fn wire_with(model: &mut Model, corners: &[Point], curve: ogeom::geom::Curve) -> Shape {
+    let vertices: Vec<Shape> = corners
+        .iter()
+        .map(|p| ogeom::algo::build::make_vertex(model, *p).shape)
+        .collect();
+    let mut edges = Vec::new();
+    for i in 0..corners.len() {
+        let (a, b) = (&vertices[i], &vertices[(i + 1) % corners.len()]);
+        let c = if i == 0 {
+            curve.clone()
+        } else {
+            ogeom::geom::LineCurve::segment(corners[i], corners[(i + 1) % corners.len()], T)
+                .unwrap()
+                .into()
+        };
+        let range = ogeom::geom::Curve3d::domain(&c);
+        edges.push(
+            ogeom::algo::build::make_edge_between(model, c, range, a, b, T)
+                .unwrap()
+                .shape,
+        );
+    }
+    ogeom::algo::make_wire(model, &edges, T).unwrap().shape
+}
+
+/// The surface kinds of a shape's faces, by name.
+fn surface_kinds(model: &Model, shape: &Shape) -> Vec<ogeom::geom::SurfaceKind> {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            ogeom::geom::Surface::kind(model.geometry().surface(data.surface).unwrap())
+        })
+        .collect()
+}
+
+/// A mesh of `exact` converted with sweeps comes back valid, closed, of its
+/// volume, with one face on `kind`.
+fn comes_back_swept(model: &Model, exact: &Shape, kind: ogeom::geom::SurfaceKind, faces: usize) {
+    let mesh = meshed(model, exact);
+    let options = MeshSolidOptions {
+        sweeps: true,
+        ..MeshSolidOptions::default()
+    };
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &options, T).unwrap();
+    let diagnosis = check(&back, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let kinds = surface_kinds(&back, &out.shape);
+    assert_eq!(kinds.len(), faces, "{kinds:?}");
+    assert_eq!(kinds.iter().filter(|k| **k == kind).count(), 1, "{kinds:?}");
+    let fine = Deflection::with_chord(1e-4).unwrap();
+    let (want, got) = (
+        volume_properties(model, exact, fine, T).unwrap().mass,
+        volume_properties(&back, &out.shape, fine, T).unwrap().mass,
+    );
+    assert!((got - want).abs() < want * 1e-4, "{want} drawn, {got} back");
+    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed());
+}
+
+/// A plate whose one side is a wave, pushed up: its wavy wall comes back
+/// one extrusion of a fitted profile, not a row of facets.
+#[test]
+fn a_wavy_wall_comes_back_an_extrusion() {
+    let mut model = Model::new();
+    let profile = wave(|t, y| Point::new(10.0 - t, y, 0.0));
+    let start =
+        ogeom::geom::Curve3d::point_at(&profile, ogeom::geom::Curve3d::domain(&profile).0, T)
+            .unwrap();
+    let end = ogeom::geom::Curve3d::point_at(&profile, ogeom::geom::Curve3d::domain(&profile).1, T)
+        .unwrap();
+    let wire = wire_with(
+        &mut model,
+        &[
+            start,
+            end,
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+        ],
+        profile,
+    );
+    let plate = ogeom::algo::make_face(
+        &mut model,
+        ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(Frame::WORLD)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wall = ogeom::algo::make_prism(&mut model, &plate, Vector::new(0.0, 0.0, 5.0), T)
+        .unwrap()
+        .shape;
+    comes_back_swept(&model, &wall, ogeom::geom::SurfaceKind::Extrusion, 6);
+}
+
+/// A wavy profile turned half round its axis: its wavy face comes back one
+/// surface of revolution, the two profile faces one plane.
+#[test]
+fn a_turned_wave_comes_back_a_surface_of_revolution() {
+    let mut model = Model::new();
+    let profile = wave(|t, r| Point::new(r, 0.0, t));
+    let start =
+        ogeom::geom::Curve3d::point_at(&profile, ogeom::geom::Curve3d::domain(&profile).0, T)
+            .unwrap();
+    let end = ogeom::geom::Curve3d::point_at(&profile, ogeom::geom::Curve3d::domain(&profile).1, T)
+        .unwrap();
+    let wire = wire_with(
+        &mut model,
+        &[start, end, Point::new(0.0, 0.0, end.z), Point::ORIGIN],
+        profile,
+    );
+    let plane =
+        ogeom::math::Plane::new(Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap());
+    let face = ogeom::algo::make_face(
+        &mut model,
+        ogeom::geom::PlaneSurface::new(plane).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let turned = ogeom::algo::make_revolution(
+        &mut model,
+        &face,
+        ogeom::math::Axis::new(Point::ORIGIN, Direction::Z),
+        core::f64::consts::PI,
+        T,
+    )
+    .unwrap()
+    .shape;
+    comes_back_swept(&model, &turned, ogeom::geom::SurfaceKind::Revolution, 4);
+}

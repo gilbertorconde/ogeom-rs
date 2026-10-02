@@ -25,7 +25,26 @@ bump may break the API and a patch bump may not.
   a feature unifies what the feature made without undoing splits the part
   already held.
 
+- **Mesh conversion rebuilds extrusions and surfaces of revolution.**
+  With `MeshSolidOptions::sweeps`, a smooth region none of the canonical
+  surfaces fits is tried as an extrusion of a fitted profile (its normals
+  all square to one direction) and as a surface of revolution (its
+  normals all meeting one axis, the axis then moved to where the samples'
+  radii agree best with their heights), each held to the coplanar distance
+  at every vertex. A recognized band the region runs into smoothly is
+  offered with it, so a stretch of a wavy profile that passes for a cone
+  joins the one sweep. A wall extruded from a wavy spline comes back one
+  extrusion and five planes, not nineteen facets; a wavy profile turned
+  half round, one surface of revolution. Off by default for now.
+
 ### Fixed
+
+- **A point on a face of any repeating surface classifies on the right
+  side.** Points were folded by a period toward a face's outline only on
+  cylinders, cones, spheres and tori; on a whole turn of a revolution or a
+  periodic patch, an outline kept at negative angles left the point a
+  period away and the solid classified inside out. The surface now says
+  whether and how it repeats.
 
 - **Crossings along an edge each known to within its doubt meet where
   both doubts reach.** A pad pushed into a converted slab whose corner's
@@ -92,6 +111,11 @@ bump may break the API and a patch bump may not.
   does not.
 
 ### Changed
+
+- **`recognize::Canonical` is no longer `Copy`, and has a `Swept`
+  variant** holding a surface of revolution or an extrusion
+  ([`SweptShape`]). Code matching on it needs the new arm; code copying
+  it, a `clone`.
 
 - **`tight_bounds` is hundreds of times faster on ruled and round
   parts.** Every face was meshed and searched for an interior extreme, and

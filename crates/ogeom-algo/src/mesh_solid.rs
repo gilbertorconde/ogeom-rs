@@ -82,6 +82,11 @@ pub struct MeshSolidOptions {
     /// recognition reads, where merged edges along a curved stretch's
     /// facets would have dropped all but their ends.
     pub keep_vertices: bool,
+    /// After the canonical surfaces, rebuild a smooth region none of them
+    /// fits as an extrusion of a fitted profile (its normals all square to
+    /// one direction) or a surface of revolution (its normals all meeting
+    /// one axis), verified at every vertex. Needs `recognize`.
+    pub sweeps: bool,
 }
 
 impl Default for MeshSolidOptions {
@@ -95,6 +100,7 @@ impl Default for MeshSolidOptions {
             recognize: true,
             crease: core::f64::consts::FRAC_PI_6,
             keep_vertices: false,
+            sweeps: true,
         }
     }
 }
@@ -1261,14 +1267,42 @@ fn body_culprits(
         // allowance again, counted in the slack.
         let chord = (allowance / area.max(f64::MIN_POSITIVE)).max(flat);
         let deflection = ogeom_mesh::Deflection::with_chord(chord)?;
-        let measured = crate::volume_properties(model, &body.solid, deflection, tol)?.mass;
+        // A body with a swept face is measured on its tessellation at that
+        // chord: the exact integral over a fitted profile is held to far
+        // finer than the slack asks, at far greater cost.
+        let swept = own
+            .iter()
+            .any(|&g| matches!(&groups.carriers[g], Carrier::Curved(c) if matches!(c.shape, Canonical::Swept(_))));
+        let measured = if swept {
+            let mesh = ogeom_mesh::triangulate(model, &body.solid, deflection, tol)?;
+            mesh.triangles
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|i| mesh.positions[i as usize].to_vector());
+                    a.dot(b.cross(c)) / 6.0
+                })
+                .sum::<f64>()
+        } else {
+            crate::volume_properties(model, &body.solid, deflection, tol)?.mass
+        };
         // Measured at the facets' corners and edge middles, the allowance
         // misses the surface's rise inside a facet and a fitted boundary's
         // wander between the rows; twice over covers both.
         let slack = allowance * 2.0 + area * chord * 2.0 + diagonal.powi(3) * 1e-12;
         if (measured - mesh_volume).abs() > slack {
-            report.recognition_withdrawn = true;
-            culprits.extend(own);
+            // The sweeps answer first: the least proven of the fits. Only
+            // where none is left does the body give up its recognition.
+            let sweeps: Vec<usize> = own
+                .iter()
+                .copied()
+                .filter(|&g| matches!(&groups.carriers[g], Carrier::Curved(c) if matches!(c.shape, Canonical::Swept(_))))
+                .collect();
+            if sweeps.is_empty() {
+                report.recognition_withdrawn = true;
+                culprits.extend(own);
+            } else {
+                culprits.extend(sweeps);
+            }
         }
     }
     culprits.sort_unstable();
@@ -2135,6 +2169,16 @@ fn gradient(shape: &Canonical, p: Point) -> Vector {
             let (out, _) = radial(t.frame().origin(), z);
             p - (t.frame().origin() + out * t.major_radius())
         }
+        Canonical::Swept(s) => {
+            use ogeom_geom::Surface as _;
+            s.foot(p)
+                .and_then(|f| {
+                    s.surface
+                        .normal_at(f.parameters.0, f.parameters.1, s.tol)
+                        .ok()
+                })
+                .map_or(Vector::ZERO, |n| n.vector())
+        }
     }
 }
 
@@ -2145,7 +2189,7 @@ fn axis_frame(shape: &Canonical) -> Option<Frame> {
         Canonical::Cone(c) => Some(c.frame()),
         Canonical::Torus(t) => Some(t.frame()),
         Canonical::Sphere(s) => Some(s.frame()),
-        Canonical::Plane(_) => None,
+        Canonical::Plane(_) | Canonical::Swept(_) => None,
     }
 }
 
@@ -2170,7 +2214,7 @@ fn on_frame(shape: &Canonical, frame: Frame, tol: Tolerances) -> Option<Canonica
             Canonical::Torus(Torus::new(frame, t.major_radius(), t.minor_radius(), tol).ok()?)
         }
         Canonical::Sphere(s) => Canonical::Sphere(Sphere::new(frame, s.radius(), tol).ok()?),
-        Canonical::Plane(_) => return None,
+        Canonical::Plane(_) | Canonical::Swept(_) => return None,
     })
 }
 
@@ -2183,6 +2227,7 @@ fn chart(shape: &Canonical, p: Point, tol: Tolerances) -> Option<(f64, f64)> {
         Canonical::Cone(c) => e::cone_parameters(c, p, tol).ok(),
         Canonical::Sphere(s) => e::sphere_parameters(s, p, tol).ok(),
         Canonical::Torus(t) => e::torus_parameters(t, p, tol).ok(),
+        Canonical::Swept(s) => s.foot(p).map(|f| f.parameters),
     }
 }
 
@@ -2194,6 +2239,10 @@ fn evaluate(shape: &Canonical, (u, v): (f64, f64)) -> Point {
         Canonical::Cone(c) => e::cone_at(c, u, v).point,
         Canonical::Sphere(s) => e::sphere_at(s, u, v).point,
         Canonical::Torus(t) => e::torus_at(t, u, v).point,
+        Canonical::Swept(s) => {
+            use ogeom_geom::Surface as _;
+            s.surface.point_at(u, v, s.tol).unwrap_or(Point::ORIGIN)
+        }
     }
 }
 
@@ -2203,6 +2252,10 @@ fn periodic(shape: &Canonical) -> (bool, bool) {
         Canonical::Plane(_) => (false, false),
         Canonical::Cylinder(_) | Canonical::Cone(_) | Canonical::Sphere(_) => (true, false),
         Canonical::Torus(_) => (true, true),
+        Canonical::Swept(s) => {
+            use ogeom_geom::Surface as _;
+            (s.surface.is_periodic_u(), s.surface.is_periodic_v())
+        }
     }
 }
 
@@ -2276,6 +2329,17 @@ fn segment(
             &mut groups,
             tol,
         );
+        if options.sweeps {
+            swept_regions(
+                points,
+                triangles,
+                adjacency,
+                options,
+                flat,
+                &mut groups,
+                tol,
+            );
+        }
         split_disconnected(triangles, adjacency, &mut groups);
         merge_same_surface(points, triangles, adjacency, &mut groups, flat);
         sphere_axes(points, triangles, adjacency, &mut groups, flat, tol);
@@ -3426,6 +3490,179 @@ fn recognized_regions(
     }
 }
 
+/// The smooth regions recognition left free, rebuilt as extrusions or
+/// surfaces of revolution where one fits.
+///
+/// A region is the free triangles joined across edges that turn but do not
+/// crease. Its vertices, with the normals averaged over its triangles, are
+/// fitted as an extrusion and then as a surface of revolution, each held
+/// to the coplanar distance at every vertex; a region that goes all the way
+/// round (a closed profile, a whole turn) is left to its facets, as is one
+/// whose triangles do not sag as the surface does.
+fn swept_regions(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    options: &MeshSolidOptions,
+    flat: f64,
+    groups: &mut Groups,
+    tol: Tolerances,
+) {
+    let normals: Vec<Vector> = triangles.iter().map(|t| unit_normal(points, *t)).collect();
+    let (cos_crease, cos_flat) = (options.crease.cos(), options.coplanar_angle.cos());
+    let turn = |h: Half| adjacency.twin[h].map(|g| normals[h / 3].dot(normals[g / 3]));
+    let mut seen = vec![false; triangles.len()];
+    for seed in 0..triangles.len() {
+        if seen[seed] || groups.of[seed] != usize::MAX {
+            continue;
+        }
+        // The region: free triangles across smooth edges, one of which at
+        // least turns.
+        let mut region = vec![seed];
+        seen[seed] = true;
+        let mut bends = false;
+        let mut i = 0;
+        while i < region.len() {
+            let t = region[i];
+            i += 1;
+            for h in 3 * t..3 * t + 3 {
+                let (Some(c), Some(g)) = (turn(h), adjacency.twin[h]) else {
+                    continue;
+                };
+                if c < cos_crease {
+                    continue;
+                }
+                let other = g / 3;
+                if c < cos_flat {
+                    bends = true;
+                }
+                if !seen[other] && groups.of[other] == usize::MAX {
+                    seen[other] = true;
+                    region.push(other);
+                }
+            }
+        }
+        if !bends || region.len() < SWEPT_TRIANGLES {
+            continue;
+        }
+        // The recognized bands the region runs into smoothly, offered with
+        // it: a stretch of a wavy profile straight enough to pass for a
+        // cone is part of the one sweep, and the sweep takes it where the
+        // whole fits.
+        let mut bands: Vec<usize> = Vec::new();
+        for &t in &region {
+            for h in 3 * t..3 * t + 3 {
+                let (Some(c), Some(g)) = (turn(h), adjacency.twin[h]) else {
+                    continue;
+                };
+                let other = groups.of[g / 3];
+                if c >= cos_crease
+                    && other != usize::MAX
+                    && matches!(groups.carriers.get(other), Some(Carrier::Curved(_)))
+                    && !bands.contains(&other)
+                {
+                    bands.push(other);
+                }
+            }
+        }
+        if !bands.is_empty() {
+            let mut widened = region.clone();
+            widened.extend((0..triangles.len()).filter(|&t| bands.contains(&groups.of[t])));
+            if let Some(claim) = swept_claim(points, triangles, &normals, &widened, flat, tol) {
+                for &b in &bands {
+                    groups.carriers[b] = Carrier::Gone;
+                }
+                claim_swept(groups, &widened, claim);
+                continue;
+            }
+        }
+        if let Some(claim) = swept_claim(points, triangles, &normals, &region, flat, tol) {
+            claim_swept(groups, &region, claim);
+        }
+    }
+}
+
+/// A sweep fitted to a region's vertices, with the normals averaged over
+/// its triangles: held at every vertex, its triangles sagging as it does,
+/// and its chart centre the vertices' mean. `None` where none fits or the
+/// region goes all the way round.
+fn swept_claim(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    normals: &[Vector],
+    region: &[usize],
+    flat: f64,
+    tol: Tolerances,
+) -> Option<Curved> {
+    let mut sums: HashMap<u32, Vector> = HashMap::new();
+    for &t in region {
+        for &v in &triangles[t] {
+            *sums.entry(v).or_insert(Vector::ZERO) += normals[t];
+        }
+    }
+    let mut vertices: Vec<u32> = sums.keys().copied().collect();
+    vertices.sort_unstable();
+    let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
+    let nrm: Vec<Vector> = vertices
+        .iter()
+        .map(|v| {
+            let s = sums[v];
+            let m = s.magnitude();
+            if m > 0.0 { s / m } else { Vector::Z }
+        })
+        .collect();
+    let found = crate::recognize_swept::fit_extrusion(&pts, &nrm, flat, tol)
+        .or_else(|| crate::recognize_swept::fit_revolution(&pts, &nrm, flat, tol))?;
+    let shape = Canonical::Swept(Box::new(crate::recognize::SweptShape::new(
+        found.surface,
+        tol,
+    )));
+    if !region
+        .iter()
+        .all(|&t| sags_as_the_surface(&shape, triangles[t].map(|v| points[v as usize]), flat))
+    {
+        return None;
+    }
+    let charts: Vec<(f64, f64)> = pts.iter().filter_map(|p| chart(&shape, *p, tol)).collect();
+    if charts.len() != pts.len() {
+        return None;
+    }
+    let (pu, pv) = periodic(&shape);
+    let centre_of = |mut values: Vec<f64>, wraps: bool| -> Option<f64> {
+        if wraps {
+            let (mean, gap) = angular_spread(&mut values);
+            (gap >= core::f64::consts::FRAC_PI_2).then_some(mean)
+        } else {
+            #[allow(clippy::cast_precision_loss, reason = "vertex counts are small")]
+            Some(values.iter().sum::<f64>() / values.len().max(1) as f64)
+        }
+    };
+    let cu = centre_of(charts.iter().map(|c| c.0).collect(), pu)?;
+    let cv = centre_of(charts.iter().map(|c| c.1).collect(), pv)?;
+    Some(Curved {
+        shape,
+        deviation: found.deviation,
+        fitted: found.deviation,
+        centre: (cu, cv),
+        wraps: false,
+        wraps_v: false,
+        fixed: true,
+        vertices,
+    })
+}
+
+/// A region's triangles given to a new swept face.
+fn claim_swept(groups: &mut Groups, region: &[usize], claim: Curved) {
+    let g = groups.carriers.len();
+    for &t in region {
+        groups.of[t] = g;
+    }
+    groups.carriers.push(Carrier::Curved(claim));
+}
+
+/// The fewest triangles a smooth region needs to be tried as a sweep.
+const SWEPT_TRIANGLES: usize = 32;
+
 /// The largest distance between two of the points, from the first.
 fn span(points: &[Point]) -> f64 {
     points.first().map_or(0.0, |a| {
@@ -3586,7 +3823,7 @@ fn hole_frames(
             .flatten()
             .map(|&v| points[v as usize])
             .collect();
-        let shape = match curved.shape {
+        let shape = match curved.shape.clone() {
             Canonical::Sphere(sphere) => {
                 // The axis whose poles stand farthest from every ring point,
                 // of those no ring goes round: a pole inside a hole is off
@@ -5053,7 +5290,7 @@ impl Planner<'_> {
                 Some(Box::new(move |p: Point| plane.signed_distance_to(p)))
             }
             Carrier::Curved(c) => {
-                let shape = c.shape;
+                let shape = c.shape.clone();
                 Some(Box::new(move |p: Point| shape.signed_distance_to(p)))
             }
             Carrier::Gone => None,
@@ -5199,11 +5436,25 @@ fn onto_both(
         let d = |v: Vector| (f(p + v * h) - f(p - v * h)) / (2.0 * h);
         Vector::new(d(Vector::X), d(Vector::Y), d(Vector::Z))
     };
+    let (mut last, mut stalled) = (f64::INFINITY, 0);
     for _ in 0..40 {
         let (va, vb) = (fa(p), fb(p));
-        if va.abs().max(vb.abs()) <= 1e-13 * (1.0 + p.to_vector().magnitude()) {
+        let residual = va.abs().max(vb.abs());
+        if residual <= 1e-13 * (1.0 + p.to_vector().magnitude()) {
             break;
         }
+        // A surface whose distance is itself a search answers to its
+        // search's precision, short of the residual asked: two steps that
+        // do not halve it have reached that floor.
+        stalled = if residual > last * 0.5 {
+            stalled + 1
+        } else {
+            0
+        };
+        if stalled >= 2 {
+            break;
+        }
+        last = residual;
         let (ga, gb) = (gradient(fa, p), gradient(fb, p));
         let (aa, ab, bb) = (ga.dot(ga), ga.dot(gb), gb.dot(gb));
         let det = aa.mul_add(bb, -(ab * ab));
@@ -5432,18 +5683,19 @@ fn surface_of(
         let margin = (hi - lo).mul_add(0.25, tol.confusion() * 10.0);
         (lo - margin, hi + margin)
     };
-    Ok(match curved.shape {
-        Canonical::Cylinder(c) => CylinderSurface::new(c, heights())?.into(),
+    Ok(match &curved.shape {
+        Canonical::Cylinder(c) => CylinderSurface::new(*c, heights())?.into(),
         Canonical::Cone(c) => {
             // Short of the apex, where the cone's radius runs out.
             let (lo, hi) = heights();
             let apex = -c.reference_radius() / c.half_angle().tan();
             let lo = lo.max(apex + (hi - apex) * 1e-6);
-            ConeSurface::new(c, (lo, hi))?.into()
+            ConeSurface::new(*c, (lo, hi))?.into()
         }
-        Canonical::Sphere(s) => SphereSurface::new(s).into(),
-        Canonical::Torus(t) => TorusSurface::new(t).into(),
-        Canonical::Plane(p) => PlaneSurface::new(p).into(),
+        Canonical::Sphere(s) => SphereSurface::new(*s).into(),
+        Canonical::Torus(t) => TorusSurface::new(*t).into(),
+        Canonical::Plane(p) => PlaneSurface::new(*p).into(),
+        Canonical::Swept(s) => s.surface.clone(),
     })
 }
 
