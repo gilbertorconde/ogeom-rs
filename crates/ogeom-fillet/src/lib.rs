@@ -5,6 +5,7 @@
 //! and `BRepFilletAPI`.
 
 pub mod analyse;
+pub mod bridge;
 pub mod chamfer;
 pub mod corner;
 pub mod corner2d;
@@ -18,6 +19,7 @@ mod ruled;
 mod support;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
+pub use bridge::{End, make_blend_curve, make_blend_surface};
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
     chamfer_edges_with,

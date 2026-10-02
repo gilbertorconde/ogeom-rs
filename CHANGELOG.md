@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Blend surfaces and blend curves bridge two edges.**
+  `make_blend_surface` bridges two edges of different faces with a
+  B-spline face that shares both edges and meets each face C0, G1 or G2:
+  exactly against planes, and within a measured budget (1e-5 rad, a
+  curvature step of 1e-4 over the gap's width) against curved faces.
+  `make_blend_curve` bridges the ends of two edges G1 or G2, `End` naming
+  an edge's start or end as traversed. Circle and ellipse edges, closed
+  and seam edges, and C1 or C2 asked across unrelated surfaces are refused
+  by name.
+
 - **`split_face` cuts a face along curves on it or projected onto it.**
   Curves lie on the face, or are dropped onto it along its normals or
   along a direction (`Projection`); curves meeting end to end are
