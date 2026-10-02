@@ -46,8 +46,8 @@ pub enum Canonical {
 /// A swept surface, with the tolerances its distances are measured at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SweptShape {
-    /// The surface: a [`SurfaceGeometry::Revolution`] or a
-    /// [`SurfaceGeometry::Extrusion`].
+    /// The surface: a [`ogeom_geom::SurfaceGeometry::Revolution`] or a
+    /// [`ogeom_geom::SurfaceGeometry::Extrusion`].
     pub surface: ogeom_geom::SurfaceGeometry,
     /// The tolerances a point's foot on it is found to.
     pub tol: Tolerances,
