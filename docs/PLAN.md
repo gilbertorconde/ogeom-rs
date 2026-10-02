@@ -119,26 +119,47 @@ after.
    seams are not these folds. A guard on the point-by-point section
    (refusing a curve that runs against its chain) was tried and dropped:
    it left Body28 invalid and moved 77777_1's volume away from its mesh.
-4. **Topology first.** Before any seam is solved, the boundary graph on the
-   mesh (corners where three or more regions meet, boundary paths between
-   them) is cleaned:
-   - corners closer than the tolerance are merged;
-   - a facet region of one or two triangles at a junction goes to a
-     neighbour that verifies it, or into the corner;
-   - every face is bounded by simple cycles;
-   - a junction stays only if its faces are pairwise adjacent (Benière et
-     al. 2012).
+4. **Topology first.** Measured 2026-10-02 at 093c0de (benches and
+   counts kept with the scratch benches): of the corpus parts, Body28 and
+   handle-pickup tessellate open, and of the NIST parts meshed at a
+   thousandth of their diagonal, ctc_02, ftc_07 and ftc_10. Classified by
+   the faces whose meshes leave an edge used other than twice:
 
-   Then each corner is solved onto its surfaces (least squares with a
-   residual check where four or more meet, refused by name otherwise), and
-   each seam is traced as one branch of the intersection from corner to
-   corner, guided by the mesh path, instead of point by point. A branch
-   traced between fixed ends cannot fold. This is the general answer to the
-   folded trims the crossed-seam, straight-seam and turned-over checks catch
-   now, and to `nist_ctc_05`: two large planes and a row of small ones whose
-   neighbours' seams cross back over them, which faceting their curved
-   neighbours only shrinks. It replaces how the plan builds edges, so it
-   starts with a design note and a corpus baseline.
+   | Part | Bad mesh edges | At a planar facet of 3 or 4 edges | Elsewhere |
+   |---|---|---|---|
+   | Body28 | 436 | nearly all | a few on tori and spheres |
+   | handle-pickup | 5 | 3 | 2 on a sphere |
+   | ftc_07 | 212 | 69 | spheres 53, larger planes 62, cylinders 21 |
+   | ctc_02 | 11 | 4 | tori 7 |
+
+   Seams today: most are exact closed forms or point-by-point sections;
+   the chord through the chain's vertices carries 868 (Body11), 1581
+   (Body28) and 736 (77777_1). The work goes in stages, each measured on
+   these counts, the corpus and the truth bench before the next:
+
+   - **4a. Sliver facets at junctions.** A planar face of one or two
+     triangles between curved faces, narrower than the tolerance of the
+     seams that bound it, folds inside that tolerance and meshes over
+     itself. Its triangles go to the curved neighbour across its widest
+     seam when every vertex of it lies within that seam's tolerance of the
+     neighbour's surface, the neighbour's tolerance raised to cover them;
+     a facet within the tolerance of its corner collapses into the corner.
+     Either way it changes nothing past what its seams already claim.
+     Target: the first class in the table.
+   - **4b. Corners solved onto their surfaces.** A corner is the mesh
+     vertex today, and each seam ends where its own solve put it, near
+     but not at it. Corners where three or more faces meet are solved onto
+     their surfaces (least squares with a residual check where four or
+     more do, refused by name otherwise) and every seam is trimmed there.
+     First check, on one slit of the second class, that its edges' ends
+     disagree at the corner by more than the tessellation's tolerance; if
+     they do not, 4b waits.
+   - **4c. Seams traced between solved corners**, as one branch of the
+     intersection guided by the mesh path, replacing the point-by-point
+     section where the two surfaces cross. Only if 4a and 4b leave folds,
+     and nist_ctc_05's folded planes are the case to measure it on.
+   - **4d. Junction rules** (Benière et al. 2012): a junction stays only
+     if its faces are pairwise adjacent; dangling edges are dropped.
 5. **A fitted B-spline patch** for a smooth region nothing else fits:
    - a region that is not one disk with one loop stays faceted;
    - the chart comes from a canonical surface that nearly fits (within about
