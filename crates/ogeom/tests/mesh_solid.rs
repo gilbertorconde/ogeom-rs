@@ -847,6 +847,125 @@ fn holes_across_a_bore_opened_along_a_slit_cut_and_fill_valid() {
     }
 }
 
+/// Each face of a converted shape with its surface, and the pairs of
+/// faces sharing an edge.
+fn surfaces_and_neighbours(
+    model: &Model,
+    shape: &Shape,
+) -> (Vec<ogeom::geom::SurfaceGeometry>, Vec<(usize, usize)>) {
+    let faces = explore_unique(model, shape, ShapeType::Face).unwrap();
+    let surfaces = faces
+        .iter()
+        .map(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            model.geometry().surface(data.surface).unwrap().clone()
+        })
+        .collect();
+    let edges: Vec<Vec<Shape>> = faces
+        .iter()
+        .map(|f| explore_unique(model, f, ShapeType::Edge).unwrap())
+        .collect();
+    let mut pairs = Vec::new();
+    for i in 0..faces.len() {
+        for j in i + 1..faces.len() {
+            if edges[i]
+                .iter()
+                .any(|e| edges[j].iter().any(|f| e.is_same(f)))
+            {
+                pairs.push((i, j));
+            }
+        }
+    }
+    (surfaces, pairs)
+}
+
+/// Fillets and corner balls come back on the surfaces their neighbours
+/// fix, not on free fits, so they meet them tangentially to rounding: from
+/// a single-precision mesh, each corner ball of a rounded block is centred
+/// on the axes of the fillets it meets with their radius, and the torus
+/// easing a bore's rim stands a tube radius off the top face and off the
+/// bore.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn fillets_and_corner_balls_meet_their_neighbours_tangentially() {
+    use ogeom::geom::SurfaceGeometry as S;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let drilled = drilled_block(&mut model);
+    let rim = explore_unique(&model, &drilled, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|edge| {
+            let data = model.node(edge).unwrap().data().as_edge().unwrap();
+            let Some(ogeom::topo::EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+                return false;
+            };
+            matches!(
+                model.geometry().curve(*curve),
+                Some(ogeom::geom::Curve::Circle(_))
+            )
+        })
+        .unwrap();
+    let eased = ogeom::fillet::fillet_edges(&mut model, &drilled, &[rim], 1.0, T)
+        .unwrap()
+        .shape;
+    let (mut balls, mut tubes) = (0, 0);
+    for shape in [&rounded, &eased] {
+        let mut mesh = meshed(&model, shape);
+        for p in &mut mesh.positions {
+            *p = Point::new(
+                f64::from(p.x as f32),
+                f64::from(p.y as f32),
+                f64::from(p.z as f32),
+            );
+        }
+        let mut back = Model::new();
+        let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+        assert!(check(&back, &out.shape, T).unwrap().is_valid());
+        let (surfaces, pairs) = surfaces_and_neighbours(&back, &out.shape);
+        for (i, j) in pairs {
+            for (a, b) in [(&surfaces[i], &surfaces[j]), (&surfaces[j], &surfaces[i])] {
+                match (a, b) {
+                    (S::Sphere(s), S::Cylinder(c)) => {
+                        let (s, c) = (s.sphere(), c.cylinder());
+                        let z = c.frame().z().vector();
+                        let w = s.centre() - c.frame().origin();
+                        assert!((w - z * w.dot(z)).magnitude() < 1e-9);
+                        assert!((s.radius() - c.radius()).abs() < 1e-9);
+                        balls += 1;
+                    }
+                    (S::Torus(t), S::Plane(p)) => {
+                        let (t, p) = (t.torus(), p.plane());
+                        let n = p.normal().vector();
+                        let height = (t.centre() - p.frame().origin()).dot(n).abs();
+                        assert!(t.frame().z().vector().cross(n).magnitude() < 1e-9);
+                        assert!((height - t.minor_radius()).abs() < 1e-9);
+                        tubes += 1;
+                    }
+                    (S::Torus(t), S::Cylinder(c)) => {
+                        let (t, c) = (t.torus(), c.cylinder());
+                        let off = (t.major_radius() - c.radius()).abs();
+                        assert!((off - t.minor_radius()).abs() < 1e-9);
+                        tubes += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert_eq!(balls, 24, "eight corner balls, each meeting three fillets");
+    assert_eq!(tubes, 2, "the rim's torus, on the top face and the bore");
+}
+
 /// A rounded box whose corner balls are roughened into free-form facets,
 /// as a mesh.
 fn rough_rounded_box() -> Triangulation {

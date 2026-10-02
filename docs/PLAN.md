@@ -99,20 +99,14 @@ after.
    own normals carry a small twist (a pitch of about 1e-3 on a turned
    wave meshed at 0.01), so its threshold has to sit above that. A thread
    goes to the patch (item 5).
-2. **Fillets from their supports.** A constant-radius fillet between two
-   recognized faces is built from them and a radius (Kos, Martin, Varady
-   2000), not fitted freely. The rolling ball's centre runs where the two
-   supports, offset by the radius, meet; the fillet is the cylinder or
-   torus about that spine; its edges are the contact curves, in closed
-   form. The tangency is exact by construction and no near-tangent seam is
-   solved. Only the radius is fitted, and the fillet is verified against
-   every sample of its region. Closed forms: two planes give a cylinder; a
-   plane with a cylinder square to it, two coaxial cylinders, and a plane
-   with a cone on its axis give a torus. A corner ball where three equal
-   fillets meet is the sphere about the point their spines share. Other
-   pairs keep today's path. Seating a corner sphere on its fillets alone was
-   tried and opened two more slits: the seams also have to come from the
-   corners (item 4), not from the mesh boundary.
+2. **Fillets from their supports.** Done for the closed forms: rounds
+   between two planes (already), a torus between a plane and a coaxial
+   cylinder or cone, and corner balls, whose rounds now share one radius
+   so all their axes meet at the ball's centre. Not done: a torus between
+   two cylinders or a cylinder and a sphere, variable radius, and fillets
+   between curved faces off a common axis, which keep their fitted
+   surfaces. This does not reach C3 below the data's noise: there the
+   regions break up before any fillet is recognized (625 faces at 1e-7).
 3. **Loops checked in each face's chart.** Before the build, each face's
    loop, mapped into its surface's parameters, must be simple and turn the
    right way. A failure names the seam, so the culprit loop withdraws the

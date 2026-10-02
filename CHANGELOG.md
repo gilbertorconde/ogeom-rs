@@ -43,6 +43,17 @@ bump may break the API and a patch bump may not.
   round, one surface of revolution closed on itself between two flat
   ends. On by default.
 
+- **Mesh conversion builds fillets and corner balls from their
+  neighbours.** A torus between a plane and a cylinder or cone on an axis
+  square to it is put on that axis, its tube's centre a radius off both;
+  rounds between planes that meet at corner balls take one radius, and
+  each ball is centred a radius off the three planes its rounds run
+  between, where their axes meet. Only the radius is fitted, and each
+  surface is kept only where it holds every vertex of its region. From a
+  single-precision mesh of a rounded block the corner balls now meet their
+  fillets tangentially to rounding, where the fitted ones stood off their
+  axes by a few tenths of a micron.
+
 ### Fixed
 
 - **A point on a face of any repeating surface classifies on the right

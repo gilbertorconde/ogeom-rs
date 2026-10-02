@@ -2365,6 +2365,16 @@ fn segment(
         );
         let normals = plane_normals(&planes);
         align_axes(points, &mut groups, &normals, flat, tol);
+        tangent_blends(
+            points,
+            triangles,
+            adjacency,
+            &mut groups,
+            &planes,
+            options.crease.cos(),
+            flat,
+            tol,
+        );
         hole_frames(points, triangles, adjacency, &mut groups, tol);
         slit_bands(points, triangles, adjacency, &mut groups, tol);
     }
@@ -2472,7 +2482,7 @@ fn tangent_rounds(
             .iter()
             .map(|&v| points[v as usize])
             .collect();
-        let Some(shape) = tangent_cylinder(flanks[0], flanks[1], &pts, tol) else {
+        let Some(shape) = tangent_cylinder(flanks[0], flanks[1], &pts, None, tol) else {
             continue;
         };
         let deviation = worst_deviation(&shape, &pts);
@@ -2487,14 +2497,20 @@ fn tangent_rounds(
 }
 
 /// The cylinder tangent to two planes, on the side of them the points are
-/// on, through the points at their median radius.
+/// on, at `radius` or else through the points at their median radius.
 ///
 /// With the planes' unit normals `a` and `b` and `w = (a + b) / (1 + a·b)`,
 /// the axis of a circle of radius `r` tangent to both runs through
 /// `c0 + s·r·w`, `c0` on both planes and `s` the side (-1 within both, +1
 /// beyond both). A point `q` from `c0` (square to the axis) is on that
 /// circle where `r²(|w|² - 1) - 2s(q·w)r + |q|² = 0`, the larger root.
-fn tangent_cylinder(a: &Plane, b: &Plane, pts: &[Point], tol: Tolerances) -> Option<Canonical> {
+fn tangent_cylinder(
+    a: &Plane,
+    b: &Plane,
+    pts: &[Point],
+    radius: Option<f64>,
+    tol: Tolerances,
+) -> Option<Canonical> {
     let (na, nb) = (a.frame().z().vector(), b.frame().z().vector());
     let g = na.dot(nb);
     // Nearly parallel planes leave the axis to their slop; nearly opposite
@@ -2532,13 +2548,455 @@ fn tangent_cylinder(a: &Plane, b: &Plane, pts: &[Point], tol: Tolerances) -> Opt
     if radii.len() < pts.len() / 2 + 1 {
         return None;
     }
-    let at = radii.len() / 2;
-    let (_, radius, _) = radii.select_nth_unstable_by(at, f64::total_cmp);
-    let radius = *radius;
+    let radius = match radius {
+        Some(radius) => radius,
+        None => {
+            let at = radii.len() / 2;
+            *radii.select_nth_unstable_by(at, f64::total_cmp).1
+        }
+    };
     let through = Point::from_vector(c0 + w * (side * radius));
     Some(Canonical::Cylinder(
         Cylinder::new(Frame::about(through, axis), radius, tol).ok()?,
     ))
+}
+
+/// Put fillets and corner balls on the surfaces their neighbours fix.
+///
+/// A fillet is fitted as freely as any region, so it meets the faces it
+/// blends into at a slight angle or a slight gap, and the seam solved
+/// between two nearly tangent surfaces wanders along them. A fillet's
+/// supports fix it but for its radius:
+///
+/// - rounds between two planes that meet at corner balls are one rolling
+///   ball's: they take their median radius together where their own
+///   radii agree to within `flat`, and each ball is centred a radius off
+///   the planes its rounds run between, the point all their axes pass
+///   through;
+/// - a torus between a plane and a cylinder or a cone whose axis is square
+///   to the plane sits on that axis, its tube's centre a radius off both;
+/// - a sphere where cylinders of its own radius meet otherwise is centred
+///   nearest their axes.
+///
+/// The surface derived so is tangent to its supports by construction, and
+/// replaces the fitted one where it holds every vertex of the region within
+/// `flat`, on the fitted one's frame so the chart branch fixed for it still
+/// holds. Other regions keep their fits. `planes` are the groups with the
+/// planes grown, as for [`tangent_rounds`].
+#[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
+fn tangent_blends(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    planes: &Groups,
+    cos_crease: f64,
+    flat: f64,
+    tol: Tolerances,
+) {
+    let count = groups.carriers.len();
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (t, &g) in groups.of.iter().enumerate() {
+        if let Some(list) = members.get_mut(g) {
+            list.push(t);
+        }
+    }
+    // Each curved region's planes and curved regions across its smooth
+    // edges, and its vertices.
+    let mut flanks: Vec<Vec<Plane>> = vec![Vec::new(); count];
+    let mut supports: Vec<Vec<usize>> = vec![Vec::new(); count];
+    let mut samples: Vec<Vec<Point>> = vec![Vec::new(); count];
+    for (i, region) in members.iter().enumerate() {
+        let Carrier::Curved(curved) = &groups.carriers[i] else {
+            continue;
+        };
+        let mut beside: Vec<usize> = Vec::new();
+        for &t in region {
+            for h in 3 * t..3 * t + 3 {
+                let Some(g) = adjacency.twin[h] else {
+                    continue;
+                };
+                let other = g / 3;
+                if groups.of[other] == i
+                    || unit_normal(points, triangles[t]).dot(unit_normal(points, triangles[other]))
+                        < cos_crease
+                {
+                    continue;
+                }
+                beside.push(planes.of[other]);
+            }
+        }
+        beside.sort_unstable();
+        beside.dedup();
+        for &j in &beside {
+            match (planes.carriers.get(j), groups.carriers.get(j)) {
+                (Some(Carrier::Plane(plane)), _) => flanks[i].push(*plane),
+                (_, Some(Carrier::Curved(_))) if j != i => supports[i].push(j),
+                _ => {}
+            }
+        }
+        samples[i] = curved
+            .vertices
+            .iter()
+            .map(|&v| points[v as usize])
+            .collect();
+    }
+    let shape_of = |groups: &Groups, i: usize| match &groups.carriers[i] {
+        Carrier::Curved(c) => Some(c.shape.clone()),
+        _ => None,
+    };
+    let is_round = |groups: &Groups, i: usize| {
+        flanks[i].len() == 2 && matches!(shape_of(groups, i), Some(Canonical::Cylinder(_)))
+    };
+    let is_ball =
+        |groups: &Groups, i: usize| matches!(shape_of(groups, i), Some(Canonical::Sphere(_)));
+    // Rounds joined through the balls they meet at.
+    let mut chain: Vec<usize> = (0..count).collect();
+    fn root(chain: &mut [usize], mut i: usize) -> usize {
+        while chain[i] != i {
+            chain[i] = chain[chain[i]];
+            i = chain[i];
+        }
+        i
+    }
+    for (i, beside) in supports.iter().enumerate() {
+        if !is_ball(groups, i) {
+            continue;
+        }
+        for &j in beside {
+            if is_round(groups, j) {
+                let (a, b) = (root(&mut chain, i), root(&mut chain, j));
+                chain[a] = b;
+            }
+        }
+    }
+    let mut parts: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..count {
+        if is_round(groups, i) || is_ball(groups, i) {
+            parts.entry(root(&mut chain, i)).or_default().push(i);
+        }
+    }
+    let mut settled = vec![false; count];
+    for part in parts.values() {
+        let rounds: Vec<usize> = part
+            .iter()
+            .copied()
+            .filter(|&j| is_round(groups, j))
+            .collect();
+        let balls: Vec<usize> = part
+            .iter()
+            .copied()
+            .filter(|&j| is_ball(groups, j))
+            .collect();
+        if balls.is_empty() || rounds.is_empty() {
+            continue;
+        }
+        let mut radii: Vec<f64> = rounds
+            .iter()
+            .filter_map(|&j| match shape_of(groups, j) {
+                Some(Canonical::Cylinder(c)) => Some(c.radius()),
+                _ => None,
+            })
+            .collect();
+        let (lo, hi) = radii
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &r| {
+                (lo.min(r), hi.max(r))
+            });
+        if hi - lo > flat {
+            continue;
+        }
+        let at = radii.len() / 2;
+        let radius = *radii.select_nth_unstable_by(at, f64::total_cmp).1;
+        for &j in &rounds {
+            let Some(old) = shape_of(groups, j) else {
+                continue;
+            };
+            let derived =
+                tangent_cylinder(&flanks[j][0], &flanks[j][1], &samples[j], Some(radius), tol)
+                    .and_then(|d| on_frame_of(&d, &old, tol));
+            if let Some(shape) = derived {
+                settled[j] = put(groups, j, shape, &samples[j], flat);
+            }
+        }
+        for &j in &balls {
+            let Some(Canonical::Sphere(old)) = shape_of(groups, j) else {
+                continue;
+            };
+            let mut around: Vec<Plane> = Vec::new();
+            for &k in &supports[j] {
+                if rounds.contains(&k) {
+                    around.extend(flanks[k].iter().copied());
+                }
+            }
+            if let Some(shape) = ball_off_planes(&old, &around, &samples[j], radius, tol) {
+                settled[j] = put(groups, j, shape, &samples[j], flat);
+            }
+        }
+    }
+    for i in 0..count {
+        if settled[i] {
+            continue;
+        }
+        let derived = match shape_of(groups, i) {
+            Some(Canonical::Torus(torus)) => {
+                // The support is the band on the torus's own axis; other
+                // fillets running into it smoothly are its neighbours, not
+                // its supports.
+                let (o, z) = (torus.frame().origin(), torus.frame().z().vector());
+                let coaxial: Vec<Canonical> = supports[i]
+                    .iter()
+                    .filter_map(|&j| shape_of(groups, j))
+                    .filter(|s| {
+                        axis_frame(s).is_some_and(|f| {
+                            let w = f.origin() - o;
+                            f.z().vector().cross(z).magnitude() <= 1e-3
+                                && (w - z * w.dot(z)).magnitude() <= flat * 10.0
+                        })
+                    })
+                    .collect();
+                match (&flanks[i][..], &coaxial[..]) {
+                    ([plane], [support]) => tangent_torus(plane, support, &samples[i], tol),
+                    _ => None,
+                }
+            }
+            Some(Canonical::Sphere(sphere)) => {
+                let around: Vec<Canonical> = supports[i]
+                    .iter()
+                    .filter_map(|&j| shape_of(groups, j))
+                    .collect();
+                corner_ball(&sphere, &around, flat, tol)
+            }
+            _ => None,
+        };
+        if let Some(shape) = derived {
+            put(groups, i, shape, &samples[i], flat);
+        }
+    }
+}
+
+/// `shape` as group `i`'s surface where it holds every sample within
+/// `flat`; whether it does.
+fn put(groups: &mut Groups, i: usize, shape: Canonical, samples: &[Point], flat: f64) -> bool {
+    let deviation = worst_deviation(&shape, samples);
+    if deviation > flat {
+        return false;
+    }
+    if let Carrier::Curved(curved) = &mut groups.carriers[i] {
+        curved.shape = shape;
+        curved.deviation = deviation;
+    }
+    true
+}
+
+/// A cylinder put on the frame of the one it replaces: its axis turned to
+/// run the same way, its angle measured from the same direction and its
+/// height from the same level, so the chart branch fixed for the old one
+/// reads the same on the new.
+fn on_frame_of(shape: &Canonical, old: &Canonical, tol: Tolerances) -> Option<Canonical> {
+    let (Canonical::Cylinder(new), Some(was)) = (shape, axis_frame(old)) else {
+        return None;
+    };
+    let z = new.frame().z();
+    let z = if z.vector().dot(was.z().vector()) >= 0.0 {
+        z
+    } else {
+        -z
+    };
+    let x = was.x().vector() - z.vector() * was.x().vector().dot(z.vector());
+    let origin =
+        new.frame().origin() + z.vector() * (was.origin() - new.frame().origin()).dot(z.vector());
+    let frame = Frame::new(origin, z, Direction::new(x, tol).ok()?, tol).ok()?;
+    Some(Canonical::Cylinder(
+        Cylinder::new(frame, new.radius(), tol).ok()?,
+    ))
+}
+
+/// The ball a radius off the planes its rounds run between, on the side of
+/// each the samples are on, on the sphere's own frame. `None` unless the
+/// planes are three that meet in a point.
+fn ball_off_planes(
+    sphere: &Sphere,
+    around: &[Plane],
+    samples: &[Point],
+    radius: f64,
+    tol: Tolerances,
+) -> Option<Canonical> {
+    let mut distinct: Vec<Plane> = Vec::new();
+    for plane in around {
+        let n = plane.frame().z().vector();
+        let same = distinct.iter().any(|q| {
+            let m = q.frame().z().vector();
+            n.cross(m).magnitude() <= 1e-9
+                && (plane.frame().origin() - q.frame().origin()).dot(m).abs() <= tol.confusion()
+        });
+        if !same {
+            distinct.push(*plane);
+        }
+    }
+    let [a, b, c] = distinct[..] else {
+        return None;
+    };
+    #[allow(clippy::cast_precision_loss, reason = "vertex counts are small")]
+    let count = samples.len().max(1) as f64;
+    let mut m = nalgebra::Matrix3::<f64>::zeros();
+    let mut rhs = nalgebra::Vector3::<f64>::zeros();
+    for (row, plane) in [a, b, c].iter().enumerate() {
+        let (o, n) = (plane.frame().origin(), plane.frame().z().vector());
+        let side = (samples.iter().map(|p| (*p - o).dot(n)).sum::<f64>() / count).signum();
+        m.set_row(row, &nalgebra::RowVector3::new(n.x, n.y, n.z));
+        rhs[row] = o.to_vector().dot(n) + side * radius;
+    }
+    let solved = m.lu().solve(&rhs)?;
+    let centre = Point::new(solved[0], solved[1], solved[2]);
+    let frame = sphere.frame();
+    let on = Frame::new(centre, frame.z(), frame.x(), tol).ok()?;
+    Some(Canonical::Sphere(Sphere::new(on, radius, tol).ok()?))
+}
+
+/// The torus tangent to a plane and to a cylinder or cone whose axis is
+/// square to it, on the side of each the points are on, through the
+/// points at their median tube radius.
+///
+/// In the support's axial half-plane, with `rho` the distance from the axis
+/// and `z` the height along it, the support's line is `rho = a + b z` and
+/// the plane is `z = h`. A tube circle of radius `r` tangent to both has its
+/// centre at `A + B r`, with `A = (a + b h, h)` and
+/// `B = (s2 √(1 + b²) + s1 b, s1)`, `s1` and `s2` the sides of the plane and
+/// the support the points are on. A point `q` lies on that circle where
+/// `(|B|² - 1) r² - 2 (q - A)·B r + |q - A|² = 0`, the larger root.
+fn tangent_torus(
+    plane: &Plane,
+    support: &Canonical,
+    pts: &[Point],
+    tol: Tolerances,
+) -> Option<Canonical> {
+    let (frame, a, b) = match support {
+        Canonical::Cylinder(c) => (c.frame(), c.radius(), 0.0),
+        Canonical::Cone(c) => (
+            c.frame(),
+            c.radius_at(0.0),
+            c.radius_at(1.0) - c.radius_at(0.0),
+        ),
+        _ => return None,
+    };
+    let (o, z) = (frame.origin(), frame.z().vector());
+    let n = plane.frame().z().vector();
+    if n.cross(z).magnitude() > 1e-9 {
+        return None;
+    }
+    let h = (plane.frame().origin() - o).dot(z);
+    let local: Vec<(f64, f64)> = pts
+        .iter()
+        .map(|p| {
+            let w = *p - o;
+            let along = w.dot(z);
+            ((w - z * along).magnitude(), along)
+        })
+        .collect();
+    #[allow(clippy::cast_precision_loss, reason = "vertex counts are small")]
+    let count = local.len().max(1) as f64;
+    let s1 = (local.iter().map(|q| q.1 - h).sum::<f64>() / count).signum();
+    let s2 = (local.iter().map(|q| q.0 - a - b * q.1).sum::<f64>() / count).signum();
+    let base = (a + b * h, h);
+    let step = (s2 * b.hypot(1.0) + s1 * b, s1);
+    let k = step.0.mul_add(step.0, step.1 * step.1) - 1.0;
+    if k <= 0.0 {
+        return None;
+    }
+    let mut radii: Vec<f64> = local
+        .iter()
+        .filter_map(|q| {
+            let d = (q.0 - base.0, q.1 - base.1);
+            let along = d.0.mul_add(step.0, d.1 * step.1);
+            let disc = along * along - k * d.0.mul_add(d.0, d.1 * d.1);
+            (along > 0.0).then(|| (along + disc.max(0.0).sqrt()) / k)
+        })
+        .collect();
+    if radii.len() < local.len() / 2 + 1 {
+        return None;
+    }
+    let at = radii.len() / 2;
+    let (_, radius, _) = radii.select_nth_unstable_by(at, f64::total_cmp);
+    let radius = *radius;
+    let centre = (
+        step.0.mul_add(radius, base.0),
+        step.1.mul_add(radius, base.1),
+    );
+    if centre.0 <= radius {
+        return None;
+    }
+    let on = Frame::new(o + z * centre.1, frame.z(), frame.x(), tol).ok()?;
+    Some(Canonical::Torus(
+        Torus::new(on, centre.0, radius, tol).ok()?,
+    ))
+}
+
+/// The ball where cylinders of its own radius meet: centred at the point
+/// nearest their axes, its radius theirs, on the sphere's own frame. The
+/// cylinders taken are those within a hundredth of the fitted sphere's
+/// radius; `None` unless there are at least two, their radii agree to
+/// within `flat`, their axes are not parallel, and every axis passes within
+/// `flat` of the centre.
+fn corner_ball(
+    sphere: &Sphere,
+    supports: &[Canonical],
+    flat: f64,
+    tol: Tolerances,
+) -> Option<Canonical> {
+    let rounds: Vec<&Cylinder> = supports
+        .iter()
+        .filter_map(|s| match s {
+            Canonical::Cylinder(c)
+                if (c.radius() - sphere.radius()).abs() <= sphere.radius() * 0.01 =>
+            {
+                Some(c)
+            }
+            _ => None,
+        })
+        .collect();
+    if rounds.len() < 2 {
+        return None;
+    }
+    let (lo, hi) = rounds
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), c| {
+            (lo.min(c.radius()), hi.max(c.radius()))
+        });
+    if hi - lo > flat {
+        return None;
+    }
+    // Least squares: the sum over the axes of the projections square to
+    // each, applied to the centre, equals the same applied to their origins.
+    let mut m = nalgebra::Matrix3::<f64>::zeros();
+    let mut rhs = nalgebra::Vector3::<f64>::zeros();
+    for c in &rounds {
+        let z = c.frame().z().vector();
+        let zv = nalgebra::Vector3::new(z.x, z.y, z.z);
+        let across = nalgebra::Matrix3::identity() - zv * zv.transpose();
+        let o = c.frame().origin();
+        m += across;
+        rhs += across * nalgebra::Vector3::new(o.x, o.y, o.z);
+    }
+    let eigen = m.symmetric_eigen();
+    if eigen.eigenvalues.min() < 1e-3 {
+        return None;
+    }
+    let solved = m.lu().solve(&rhs)?;
+    let centre = Point::new(solved[0], solved[1], solved[2]);
+    let met = rounds.iter().all(|c| {
+        let z = c.frame().z().vector();
+        let w = centre - c.frame().origin();
+        (w - z * w.dot(z)).magnitude() <= flat
+    });
+    if !met {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss, reason = "a few cylinders")]
+    let radius = rounds.iter().map(|c| c.radius()).sum::<f64>() / rounds.len() as f64;
+    let frame = sphere.frame();
+    let on = Frame::new(centre, frame.z(), frame.x(), tol).ok()?;
+    Some(Canonical::Sphere(Sphere::new(on, radius, tol).ok()?))
 }
 
 /// How much larger than a curved region's own facets a flat patch must be
