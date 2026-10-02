@@ -98,13 +98,9 @@ against every sample, edges placed on both surfaces, facets as the fallback.
   back as a polyline. If so, place it on the region's surface as a curve
   (a circle on a cylinder's rim, a fitted spline otherwise), split where it
   turns sharply.
-- Tests the converter lacks:
-  - a converted solid written to STEP, read back and checked;
-  - `offset_faces` and `move_faces` on a converted solid;
-  - a committed mesh corpus. Tessellating the STEP corpus and converting it
-    back gives meshes with a known answer (the original faces), without
-    licensing questions;
-  - `ogeom-cli` reading a mesh and writing the converted solid.
+- A committed mesh corpus, a test the converter lacks. Tessellating the
+  STEP corpus and converting it back gives meshes with a known answer (the
+  original faces), without licensing questions.
 
 **Speed, not correctness.**
 

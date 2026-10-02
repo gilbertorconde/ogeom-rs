@@ -16,11 +16,12 @@ use std::process::ExitCode;
 
 use ogeom::{
     algo::{
-        Severity, check, linear_properties, make_box, make_cone, make_cylinder, make_sphere,
-        make_torus, make_wedge, surface_properties, volume_properties,
+        MeshSolidOptions, Severity, check, linear_properties, make_box, make_cone, make_cylinder,
+        make_sphere, make_torus, make_wedge, solid_from_mesh, surface_properties,
+        volume_properties,
     },
     core::{OgeomResult, Tolerances, ogeom_err},
-    io::{Encoding, native, read_step, write as write_stl},
+    io::{Encoding, native, read_step, write as write_stl, write_step},
     math::Frame,
     mesh::{Deflection, triangulate},
     topo::{Model, Shape, ShapeType, Triangulation, explore_unique},
@@ -39,11 +40,16 @@ usage: ogeom-cli <command> [args]
   torus     <major-radius> <minor-radius>
   wedge     <dx> <dy> <dz> <top-dx> <top-dy>
   census    <file.step> [--deflection <chord>] [--angular <degrees>]
+  convert   <mesh.stl|.obj|.ply|.3mf>
 
 `census` reads a STEP file, meshes every solid in it and says which came
 out watertight, which came out open and which the mesher refused, each
 by its product name; one line per solid that is not watertight and a
 count at the end.
+
+`convert` reads a triangle mesh, rebuilds it as a solid (planes and the
+canonical surfaces recognized, the rest left faceted) and reports on it
+as the shape commands do; `--step <path>` writes the result as STEP.
 
 Every shape command accepts, after its dimensions:
   --deflection <chord>   how finely to tessellate (default 0.1)
@@ -52,6 +58,7 @@ Every shape command accepts, after its dimensions:
   --og <path>            write the whole shape as native .og text
   --no-mesh              with --og, leave the cached tessellation out
   --view <path>          render the tessellation to a PPM image
+  --step <path>          write the shape as a STEP part
 ";
 
 /// The primitives `build` knows how to make.
@@ -71,6 +78,7 @@ fn main() -> ExitCode {
         }
         Some(name) if SHAPES.contains(&name) => run(name, &args[1..]),
         Some("census") => census(&args[1..]),
+        Some("convert") => convert(&args[1..]),
         Some(other) => {
             eprintln!("ogeom-cli: unknown command '{other}'");
             eprint!("{USAGE}");
@@ -190,6 +198,69 @@ struct Options {
     native: Option<String>,
     write_options: native::WriteOptions,
     view: Option<String>,
+    step: Option<String>,
+}
+
+/// Read a mesh, convert it to a solid and report on it.
+fn convert(args: &[String]) -> Result<(), String> {
+    let Some(path) = args.first() else {
+        return Err("convert takes a mesh file".to_string());
+    };
+    let (numbers, options) = split(&args[1..])?;
+    if !numbers.is_empty() {
+        return Err("convert takes no dimensions".to_string());
+    }
+    let mesh = read_mesh(path)?;
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), TOL)
+        .map_err(|e| e.to_string())?;
+    let r = &out.report;
+    println!(
+        "read {} triangles: {} faces, {} of them curved; {}",
+        r.triangles,
+        r.faces,
+        r.curved_faces,
+        if out.closed {
+            "closed"
+        } else {
+            "open, built as a shell"
+        }
+    );
+    report(&model, &out.shape, "converted", &options).map_err(|e| e.to_string())?;
+    if let Some(step) = &options.step {
+        let mut document = ogeom::doc::Document::over(model);
+        document.add_part("converted", out.shape);
+        let text = write_step(&document, TOL).map_err(|e| e.to_string())?;
+        std::fs::write(step, &text).map_err(|e| format!("could not write {step}: {e}"))?;
+        println!("  wrote {step} ({} lines)", text.lines().count());
+    }
+    Ok(())
+}
+
+/// A triangle mesh read by its file's extension; a 3MF file's objects are
+/// taken together.
+fn read_mesh(path: &str) -> Result<Triangulation, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let text = || String::from_utf8_lossy(&bytes).into_owned();
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let read = match extension.as_str() {
+        "stl" => ogeom::io::read(&bytes, TOL),
+        "obj" => ogeom::io::mesh_formats::read_obj(&text()),
+        "ply" => ogeom::io::mesh_formats::read_ply(&text()),
+        "3mf" => ogeom::io::read_3mf(&bytes, TOL).map(|import| {
+            let mut all = Triangulation::new();
+            for object in &import.objects {
+                all.append(&object.mesh);
+            }
+            all
+        }),
+        other => return Err(format!("{path}: no mesh reader for '.{other}'")),
+    };
+    read.map_err(|e| format!("{path}: {e}"))
 }
 
 /// Build one primitive and report on it.
@@ -334,6 +405,7 @@ fn split(args: &[String]) -> Result<(Vec<f64>, Options), String> {
         native: None,
         write_options: native::WriteOptions::default(),
         view: None,
+        step: None,
     };
 
     let mut rest = args.iter();
@@ -359,6 +431,7 @@ fn split(args: &[String]) -> Result<(Vec<f64>, Options), String> {
             "--og" => options.native = Some(rest.next().ok_or("--og needs a path")?.clone()),
             "--no-mesh" => options.write_options.triangulations = false,
             "--view" => options.view = Some(rest.next().ok_or("--view needs a path")?.clone()),
+            "--step" => options.step = Some(rest.next().ok_or("--step needs a path")?.clone()),
             other if other.starts_with("--") => {
                 return Err(format!("unknown option '{other}'"));
             }
