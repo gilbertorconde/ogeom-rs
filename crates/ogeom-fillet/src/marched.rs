@@ -1343,7 +1343,7 @@ fn open_runout_wedge(
     build_open_band(
         model,
         solid,
-        edge,
+        Some(edge),
         &blend,
         guide,
         hosts,
@@ -1355,7 +1355,8 @@ fn open_runout_wedge(
 }
 
 /// The band and wedge over an open run of stations that spans exactly the
-/// window the wedge owns, applied to the solid.
+/// window the wedge owns, applied to the solid. `edge` is the edge the
+/// crease runs along, where the solid has one.
 ///
 /// An end that is `pinched` stands on a pole where the hosts turn tangent:
 /// its station's touch points and crease point are the one pole, its row
@@ -1367,7 +1368,7 @@ fn open_runout_wedge(
 pub(crate) fn build_open_band(
     model: &mut Model,
     solid: &Shape,
-    edge: &Shape,
+    edge: Option<&Shape>,
     blend: &crate::march::MarchedBlend,
     guide: &Curve,
     hosts: [(&SurfaceGeometry, f64); 2],
@@ -1736,7 +1737,7 @@ pub(crate) fn build_open_band(
         blend_face,
     ];
     faces.extend(caps);
-    apply_wedge(model, solid, Some(edge), &faces, additive, tol)
+    apply_wedge(model, solid, edge, &faces, additive, tol)
 }
 
 /// Two tenths of a micron at unit scale: what the march's own stations
@@ -2188,6 +2189,13 @@ fn section_connector(
         if pa.distance > slack || pb.distance > slack {
             continue;
         }
+        // A long conic (a plane nearly along a drum's axis) places its
+        // ends only as finely as its parameter steps; the ends own that.
+        for (end, found) in [(from.0, pa.distance), (to.0, pb.distance)] {
+            if found > tol.confusion() * 0.5 {
+                model.widen(end, ogeom_core::Tolerance::new(found * 2.0)?)?;
+            }
+        }
         let (pa, pb) = (pa.parameter, pb.parameter);
         if curve.is_periodic() {
             let (lo, hi) = curve.domain();
@@ -2225,6 +2233,24 @@ fn section_connector(
                 .shape
                 .reversed(),
         );
+    }
+    // A plane through a drum's axis cuts it along straight lines, and one
+    // a hair off the axis in an ellipse so long that its parameter cannot
+    // place the corner. Where the chord between the two ends stays on the
+    // host within the slack, the chord is the section.
+    let slack = slack.max(tol.confusion() * 100.0);
+    let mut off: f64 = 0.0;
+    for k in 1..8 {
+        let p = from.1 + (to.1 - from.1) * (f64::from(k) / 8.0);
+        off = off.max(ogeom_algo::project_on_surface(host, p, 32, tol)?.distance);
+    }
+    if off <= slack {
+        let chord = crate::support::segment_between(model, from, to, tol)?;
+        model.widen(
+            &chord,
+            ogeom_core::Tolerance::new(off.max(tol.confusion()))?,
+        )?;
+        return Ok(chord);
     }
     ogeom_bail!(
         Construction,

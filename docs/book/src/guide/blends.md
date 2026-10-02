@@ -50,8 +50,8 @@ whatever they end on. Passed in one call, they join:
   Curved faces that meet along edges of the solid are blended along those
   edges, marched where the seat has no closed form. Curved faces that share
   no edge and no direction or axis (a B-spline face, a cylinder at a slant
-  to a plane) are marched round where their surfaces cross, where the ball
-  touches both all the way round.
+  to a plane) are marched round where their surfaces cross. Where the ball
+  leaves one face, the round ends in a flat cap in the ball's section.
 - **`march_blend`** is the underlying marcher. It traces the contact circle
   and reports why it stopped (`BlendStop`). Use it to blend up to an
   obstruction on purpose.

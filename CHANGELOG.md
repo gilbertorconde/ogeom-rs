@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Face blends end where the seat runs off a face.** `blend_faces`
+  rounds two curved faces of a solid, marched between them, where the ball
+  touches both over only part of its seat: a crease that runs off the
+  solid, or a face holding part of the loop. The round ends where the
+  ball's line of contact leaves a face, closed by a flat cap in the ball's
+  section, and is cut off or fused on as the closed round is. Slanted-drum
+  fills tend to the torus ring's share within 2e-5.
+
 - **Mesh conversion fits B-spline patches.** `solid_from_mesh` rebuilds a
   smooth region no plane, canonical surface or sweep fits as one B-spline
   patch, where the region is one disk and the patch verifies: charted by a

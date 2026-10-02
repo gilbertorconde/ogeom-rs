@@ -61,11 +61,15 @@ use crate::support::Seat;
 ///   plane): the ball is marched along where the two surfaces cross, the
 ///   surfaces carried on past the faces for it (a plane's or a cylinder's
 ///   window widened, a B-spline patch continued, each written back as the
-///   face's own surface). Where the ball touches both faces all the way
-///   round a closed seat, the blend is a B-spline band fitted through its
-///   arcs, and the corner between the band and the crease, bounded by the
-///   two surfaces, is cut off or fused on as the edge blend's is. The band
-///   rides both faces within a tenth of a degree.
+///   face's own surface). The blend is a B-spline band fitted through the
+///   ball's arcs, and the corner between the band and the crease, bounded
+///   by the two surfaces, is cut off or fused on as the edge blend's is:
+///   all the way round where the ball touches both faces round a closed
+///   seat, and otherwise over the stretch where it touches both, capped at
+///   each end by a plane face in the ball's section where its line of
+///   contact leaves a face (a crease running off the solid, or a face that
+///   holds part of the seat). The band rides both faces within a tenth of a
+///   degree.
 ///
 /// # Errors
 ///
@@ -86,9 +90,10 @@ use crate::support::Seat;
 ///   them). It is also refused where a ball seats on both sides;
 /// - for a marched seat, on a side, if no ball seats along where the
 ///   surfaces cross, more than one crossing holds one touching both faces,
-///   or the ball touches both faces over part of its seat only (a marched
-///   round between faces of a solid sharing no edge closes on itself), and
-///   if a face is a trimmed or offset surface.
+///   the ball leaves the two faces at different places round its seat and
+///   never both at once, its line of contact enters a face more than once,
+///   or the march stops while the ball still touches both faces; and if a
+///   face is a trimmed or offset surface.
 pub fn blend_faces(
     model: &mut Model,
     solid: &Shape,

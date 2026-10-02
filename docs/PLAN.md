@@ -29,13 +29,16 @@ wants its two faces paired as same-domain.
 curved faces that meet along edges of the solid through the edge blend (exact
 or marched), curved faces that share no edge where their surfaces share a
 direction or an axis, and otherwise marches the ball round where the
-surfaces cross. `fillet_faces` marches between separate faces the same way,
-over part of the seat or bridging a gap. Refused by name:
+surfaces cross, capping the round in the ball's section where it leaves a
+face. `fillet_faces` marches between separate faces the same way, over
+part of the seat or bridging a gap. Refused by name:
 
-- Faces of a solid sharing no edge whose marched seat the faces hold over
-  part of its length only (an open crease, or a loop the faces leave): the
-  wedge wants caps in the ball's sections at the round's ends, which the
-  edge blend builds along an edge and this path does not yet.
+- Faces of a solid that the ball leaves at different places round its
+  seat and never both at once: neither face gives the round both its ends.
+- A capped round whose wedge the boolean does not resolve (the kept pieces
+  do not close): seen where a cap stands in the plane of a side face of the
+  solid (a drum whose axis meets the block's edge and leans along it), and
+  where the drum's axis meets the top's plane past the block's edge.
 - A marched round closing on itself between separate faces, and one whose
   line of contact crosses a face more than once.
 - A round crossing a face that stands between the two (a ball smaller than a

@@ -186,6 +186,15 @@ pub(crate) fn pinched_fillet(
         blend.touch_second.push(p2);
     }
     crate::marched::build_open_band(
-        model, solid, edge, &blend, &guide, hosts, radius, convex, pinched, tol,
+        model,
+        solid,
+        Some(edge),
+        &blend,
+        &guide,
+        hosts,
+        radius,
+        convex,
+        pinched,
+        tol,
     )
 }

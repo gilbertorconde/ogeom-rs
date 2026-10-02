@@ -9,14 +9,18 @@
 //! where it touches both faces: the band fitted through the ball's arcs,
 //! as the marched edge blend fits it.
 //!
-//! Between faces of a solid the ball must touch both all the way round a
-//! closed seat; the corner between the band and the crease is built as the
-//! marched edge blend builds it and cut off or fused on. Between separate
-//! faces the round may span part of the seat. Where the ball touches each
-//! face is a line on it: the touch points, at the guide's parameters,
-//! fitted together with their places in the face's chart. The face is cut
-//! along that line, which settles exactly where the line enters and leaves
-//! the face, and the round spans the overlap of the two faces' stretches.
+//! Where the ball touches each face is a line on it: the touch points, at
+//! the guide's parameters, fitted together with their places in the face's
+//! chart. A face the ball leaves is cut along that line, which settles
+//! exactly where the line enters and leaves the face, and the round spans
+//! the overlap of the two faces' stretches.
+//!
+//! Between faces of a solid the corner between the band and the crease is
+//! built as the marched edge blend builds it and cut off or fused on: a
+//! ring where the ball touches both faces all the way round a closed seat,
+//! and otherwise capped at each end of the run in the ball's section there,
+//! as the open marched edge blend caps its run. Between separate faces each
+//! face is cut back to its line of contact and the round sewn between them.
 
 use ogeom_algo::{
     Built, History, attach_pcurve, make_edge, make_edge_between, make_vertex, project_on_curve,
@@ -140,6 +144,10 @@ pub(crate) enum Run {
     Closed,
     /// The overlap of the faces' two stretches.
     Open(Box<[FaceStretch; 2]>),
+    /// Between faces of a solid, the stretch of the seat where the ball
+    /// touches both, ended where it leaves one: the corner is capped in
+    /// the ball's section at each end.
+    Capped,
 }
 
 /// A marched seat between two faces: the stations the round spans, the
@@ -168,10 +176,10 @@ impl PairSeat {
 /// the faces' surfaces as [`hosts_of`] carries them on.
 ///
 /// Between faces of a solid (`solid`) the corner is where the surfaces
-/// cross: only that crossing guides the ball, and the ball must touch both
-/// faces all the way round a closed seat. Between separate faces the
-/// round may span part of the seat, and where the surfaces do not cross,
-/// their offsets' crossing (the ball's own centre line) guides it.
+/// cross: only that crossing guides the ball, and the round runs all the
+/// way round a closed seat or ends where the ball leaves a face. Between
+/// separate faces, where the surfaces do not cross, their offsets'
+/// crossing (the ball's own centre line) guides it.
 pub(crate) fn pair_seat(
     model: &mut Model,
     faces: [&Shape; 2],
@@ -296,8 +304,9 @@ fn spread(count: usize, most: usize) -> Vec<usize> {
 }
 
 /// The march along one guide, and the run it gives: `None` where the ball
-/// does not touch both faces along it. With `whole`, only a run all the
-/// way round a closed seat is taken, and the probe beside it is read.
+/// does not touch both faces along it. With `whole`, for faces of a solid,
+/// the run is the closed seat or the stretch of it the faces give ends to,
+/// and the probe beside it is read.
 #[allow(clippy::too_many_arguments, reason = "one seat, all its data")]
 #[allow(clippy::type_complexity, reason = "the seat's three parts")]
 fn seat_along(
@@ -344,11 +353,18 @@ fn seat_along(
     };
 
     // Whether the ball touches each face at a spread of stations, and a
-    // station where it misses one.
+    // station where it misses one. Between faces of a solid every station
+    // is read: where each face lets the ball go settles where the round
+    // ends.
     let deflection = reading(radius, tol);
     let mut touching = [0usize; 2];
     let mut missing = None;
-    let sampled = spread(blend.len(), 128);
+    let mut missed = [vec![false; blend.len()], vec![false; blend.len()]];
+    let sampled = if whole {
+        (0..blend.len()).collect()
+    } else {
+        spread(blend.len(), 128)
+    };
     for &i in &sampled {
         for (f, face) in faces.iter().enumerate() {
             let p = if f == 0 {
@@ -360,6 +376,7 @@ fn seat_along(
                 == ogeom_algo::Containment::Out
             {
                 missing.get_or_insert(i);
+                missed[f][i] = true;
             } else {
                 touching[f] += 1;
             }
@@ -370,15 +387,7 @@ fn seat_along(
     }
 
     let closed = blend.stopped == BlendStop::Closed;
-    if whole && !(closed && missing.is_none()) {
-        ogeom_bail!(
-            Construction,
-            "the ball touches both faces over part of its seat only; between faces of a solid \
-             that share no edge, a marched round is built where the ball touches both all the \
-             way round a closed seat"
-        );
-    }
-    let blend = match (closed, missing) {
+    let (blend, missed) = match (closed, missing) {
         (true, None) => {
             let probe = whole
                 .then(|| probe_at(&blend, guide, blend.len() / 2, radius, tol))
@@ -386,13 +395,44 @@ fn seat_along(
             return Ok(Some((blend, Run::Closed, probe)));
         }
         // A loop the faces hold part of: opened where the ball misses a
-        // face, and read from there round as one run.
+        // face, and read from there round as one run. Between faces of a
+        // solid it is opened where the ball misses every face it misses
+        // anywhere, so each such face's line of contact enters and leaves
+        // it once along the run.
         (true, Some(at)) => {
             let n = blend.len();
+            let at = if whole {
+                // The middle of the longest stretch where the ball is off
+                // every face it leaves, so the run starts and ends inside it.
+                let left: Vec<usize> = (0..2).filter(|&f| missed[f].contains(&true)).collect();
+                let gone = |i: usize| left.iter().all(|&f| missed[f][i % n]);
+                let Some(start) = (0..n).find(|&i| gone(i) && !gone(i + n - 1)) else {
+                    ogeom_bail!(
+                        Construction,
+                        "the ball leaves the two faces at different places round its seat; a \
+                         round between faces of a solid is ended where the ball leaves both, or \
+                         one face it leaves while the other holds it throughout"
+                    );
+                };
+                let mut best = (0, start);
+                for i in (0..n).filter(|&i| gone(i) && !gone(i + n - 1)) {
+                    let length = (0..n).take_while(|&k| gone(i + k)).count();
+                    if length > best.0 {
+                        best = (length, i);
+                    }
+                }
+                (best.1 + best.0 / 2) % n
+            } else {
+                at
+            };
             let order: Vec<usize> = (0..n).map(|k| (at + k) % n).collect();
-            reordered(&blend, &order)
+            let missed = [
+                order.iter().map(|&i| missed[0][i]).collect(),
+                order.iter().map(|&i| missed[1][i]).collect(),
+            ];
+            (reordered(&blend, &order), missed)
         }
-        (false, _) => blend,
+        (false, _) => (blend, missed),
     };
 
     // In order along the guide: a looping guide's parameters unwrapped
@@ -422,6 +462,47 @@ fn seat_along(
     order.dedup_by(|j, i| along[*j] <= along[*i] + tol.parametric());
     let mut blend = reordered(&blend, &order);
     blend.along = order.iter().map(|&i| along[i]).collect();
+    let missed: [Vec<bool>; 2] = [
+        order.iter().map(|&i| missed[0][i]).collect(),
+        order.iter().map(|&i| missed[1][i]).collect(),
+    ];
+
+    if whole {
+        // A face the ball never leaves holds the whole run; one it leaves
+        // is cut along its line of contact, which settles exactly where
+        // the line enters and leaves it. The round spans the overlap, and
+        // each of its ends must be where the ball leaves a face: where the
+        // march stopped on both faces is no end the faces give.
+        let (first_at, last_at) = (blend.along[0], blend.along[blend.len() - 1]);
+        let (mut w0, mut w1) = (first_at, last_at);
+        for (f, face) in faces.iter().enumerate() {
+            if !missed[f].contains(&true) {
+                continue;
+            }
+            let Some(cut) = contact_cut(model, face, f, &blend, hosts, tol)? else {
+                return Ok(None);
+            };
+            w0 = w0.max(cut.span.0);
+            w1 = w1.min(cut.span.1);
+        }
+        let margin = (last_at - first_at) * 1e-6;
+        if w0 <= first_at + margin || w1 >= last_at - margin {
+            ogeom_bail!(
+                Construction,
+                "the march along where the surfaces meet stops while the ball still touches \
+                 both faces; the round has no end the faces give it"
+            );
+        }
+        if w1 - w0 <= tol.parametric() {
+            ogeom_bail!(
+                Construction,
+                "the two faces reach the round over stretches of the corner that do not overlap"
+            );
+        }
+        let run = trimmed(&blend, hosts, guide, sides, radius, (w0, w1), tol)?;
+        let probe = probe_at(&run, guide, run.len() / 2, radius, tol)?;
+        return Ok(Some((run, Run::Capped, Some(probe))));
+    }
 
     let mut stretches = Vec::with_capacity(2);
     for (f, face) in faces.iter().enumerate() {
@@ -452,7 +533,7 @@ fn probe_at(
     let centre = blend.spine[i];
     let bisector = (blend.touch_first[i] - centre) + (blend.touch_second[i] - centre);
     let on_arc = centre + bisector.normalized(tol)? * radius;
-    let crease = guide.point_at(blend.along[i], tol)?;
+    let crease = guide.point_at(on_guide(guide, blend.along[i]), tol)?;
     let toward = crease - on_arc;
     let gap = toward.magnitude();
     if gap <= tol.confusion() {
@@ -465,10 +546,21 @@ fn probe_at(
     Ok(on_arc + toward / gap * (gap.min(radius) * 0.1))
 }
 
+/// A face cut along the ball's line of contact.
+struct ContactCut {
+    /// The face split along the line.
+    split: Shape,
+    /// The edge the line cut the face along.
+    edge: Shape,
+    /// The line's curve, parameterized as the guide.
+    line: Curve,
+    /// The guide's parameters where the line enters and leaves the face.
+    span: (f64, f64),
+}
+
 /// The face's stretch of the ball's line of contact: the face cut along
-/// the touch points, fitted at the guide's parameters with their places
-/// in the face's chart, and the piece away from the round kept. `None`
-/// where the line misses the face.
+/// the line, and the piece away from the round kept. `None` where the
+/// line misses the face.
 fn stretch_on(
     model: &mut Model,
     face: &Shape,
@@ -478,10 +570,89 @@ fn stretch_on(
     tol: Tolerances,
 ) -> OgeomResult<Option<FaceStretch>> {
     let surface = &hosts.surfaces[f];
-    let (touch, on, other) = if f == 0 {
-        (&blend.touch_first, &blend.on_first, &blend.touch_second)
+    let Some(ContactCut {
+        split,
+        edge: cut,
+        line,
+        span,
+    }) = contact_cut(model, face, f, blend, hosts, tol)?
+    else {
+        return Ok(None);
+    };
+    let (touch, other) = if f == 0 {
+        (&blend.touch_first, &blend.touch_second)
     } else {
-        (&blend.touch_second, &blend.on_second, &blend.touch_first)
+        (&blend.touch_second, &blend.touch_first)
+    };
+    let (cut_curve, cut_range) = edge_curve(model, &cut, tol)?;
+
+    // The piece away from the round: probed just off the line, half way
+    // along the stretch, on the far side from the round.
+    let middle = f64::midpoint(span.0, span.1);
+    let i = blend
+        .along
+        .partition_point(|&t| t < middle)
+        .min(blend.len() - 1);
+    let (centre, at, to) = (blend.spine[i], touch[i], other[i]);
+    let (a, b) = (at - centre, to - centre);
+    let into_arc = b - a * (a.dot(b) / a.dot(a));
+    let away: Vector = -into_arc.normalized(tol)?;
+    let reach = cut_curve
+        .point_at(cut_range.0, tol)?
+        .distance(cut_curve.point_at(cut_range.1, tol)?)
+        .max(tol.confusion() * 1e3)
+        .min(a.magnitude());
+    let pieces = explore_unique(model, &split, ShapeType::Face)?;
+    for scale in [1e-3, 1e-2, 5e-2] {
+        let eps = reach * scale;
+        let deflection = ogeom_mesh::Deflection {
+            chord: eps * 0.1,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let probe = project_on_surface(surface, at + away * eps, 32, tol)?.point;
+        let mut holding = Vec::new();
+        for piece in &pieces {
+            if ogeom_algo::classify_on_face(model, piece, probe, deflection, tol)?
+                == ogeom_algo::Containment::In
+            {
+                holding.push(piece.clone());
+            }
+        }
+        let [piece] = holding.as_slice() else {
+            continue;
+        };
+        if !explore_unique(model, piece, ShapeType::Edge)?
+            .iter()
+            .any(|e| e.is_same(&cut))
+        {
+            return Ok(None);
+        }
+        return Ok(Some(FaceStretch {
+            piece: piece.clone(),
+            edge: cut,
+            line,
+            span,
+        }));
+    }
+    Ok(None)
+}
+
+/// The face cut along the ball's line of contact: the touch points fitted
+/// at the guide's parameters with their places in the face's chart.
+/// `None` where the line misses the face.
+fn contact_cut(
+    model: &mut Model,
+    face: &Shape,
+    f: usize,
+    blend: &MarchedBlend,
+    hosts: &Hosts,
+    tol: Tolerances,
+) -> OgeomResult<Option<ContactCut>> {
+    let surface = &hosts.surfaces[f];
+    let (touch, on) = if f == 0 {
+        (&blend.touch_first, &blend.on_first)
+    } else {
+        (&blend.touch_second, &blend.on_second)
     };
     let target = tol.confusion() * 10.0;
     let line = ogeom_geom::fit::fit_points_at(&blend.along, touch, 3, target, tol)?;
@@ -582,56 +753,12 @@ fn stretch_on(
         span[k] = project_on_curve(&line, p, 512, tol)?.parameter;
     }
     let span = (span[0].min(span[1]), span[0].max(span[1]));
-
-    // The piece away from the round: probed just off the line, half way
-    // along the stretch, on the far side from the round.
-    let middle = f64::midpoint(span.0, span.1);
-    let i = blend
-        .along
-        .partition_point(|&t| t < middle)
-        .min(blend.len() - 1);
-    let (centre, at, to) = (blend.spine[i], touch[i], other[i]);
-    let (a, b) = (at - centre, to - centre);
-    let into_arc = b - a * (a.dot(b) / a.dot(a));
-    let away: Vector = -into_arc.normalized(tol)?;
-    let reach = cut_curve
-        .point_at(cut_range.0, tol)?
-        .distance(cut_curve.point_at(cut_range.1, tol)?)
-        .max(tol.confusion() * 1e3)
-        .min(a.magnitude());
-    let pieces = explore_unique(model, &split.shape, ShapeType::Face)?;
-    for scale in [1e-3, 1e-2, 5e-2] {
-        let eps = reach * scale;
-        let deflection = ogeom_mesh::Deflection {
-            chord: eps * 0.1,
-            ..ogeom_mesh::Deflection::default()
-        };
-        let probe = project_on_surface(surface, at + away * eps, 32, tol)?.point;
-        let mut holding = Vec::new();
-        for piece in &pieces {
-            if ogeom_algo::classify_on_face(model, piece, probe, deflection, tol)?
-                == ogeom_algo::Containment::In
-            {
-                holding.push(piece.clone());
-            }
-        }
-        let [piece] = holding.as_slice() else {
-            continue;
-        };
-        if !explore_unique(model, piece, ShapeType::Edge)?
-            .iter()
-            .any(|e| e.is_same(&cut))
-        {
-            return Ok(None);
-        }
-        return Ok(Some(FaceStretch {
-            piece: piece.clone(),
-            edge: cut,
-            line,
-            span,
-        }));
-    }
-    Ok(None)
+    Ok(Some(ContactCut {
+        split: split.shape,
+        edge: cut,
+        line,
+        span,
+    }))
 }
 
 /// The stations over the run `w0..w1` of the guide, with the ball's exact
@@ -675,7 +802,7 @@ fn trimmed(
             radius,
             guide,
             sides,
-            w,
+            on_guide(guide, w),
             near(nearest(w)),
             tol,
         )
@@ -725,9 +852,11 @@ fn trimmed(
     Ok(run)
 }
 
-/// Blend two faces of `solid` over a marched seat closed on itself: the
-/// corner between the round and the crease cut off (`behind`, the ball
-/// rolling in the material) or filled.
+/// Blend two faces of `solid` over a marched seat: the corner between the
+/// round and the crease cut off (`behind`, the ball rolling in the
+/// material) or filled. Round a closed seat the corner is a ring; over a
+/// stretch of the seat it is capped at each end in the ball's section
+/// there, as the open marched edge blend caps its run.
 pub(crate) fn apply_to_solid(
     model: &mut Model,
     solid: &Shape,
@@ -743,27 +872,96 @@ pub(crate) fn apply_to_solid(
         run,
         ..
     } = seat;
-    let Run::Closed = run else {
+    let [first, second] = &hosts.surfaces;
+    let surfaces = [(first, hosts.signs[0]), (second, hosts.signs[1])];
+    match run {
+        Run::Closed => {
+            let range = guide.domain();
+            crate::marched::closed_band_wedge(
+                model, solid, None, blend, &guide, range, true, surfaces, radius, behind, tol,
+            )
+        }
+        Run::Capped => {
+            let (w0, w1) = (blend.along[0], blend.along[blend.len() - 1]);
+            let crease = crease_over(&guide, (w0, w1), tol)?;
+            let mut blend = blend;
+            for t in &mut blend.along {
+                *t =
+                    project_on_curve(&crease, guide.point_at(on_guide(&guide, *t), tol)?, 64, tol)?
+                        .parameter;
+            }
+            crate::marched::build_open_band(
+                model,
+                solid,
+                None,
+                &blend,
+                &crease,
+                surfaces,
+                radius,
+                behind,
+                [false, false],
+                tol,
+            )
+        }
+        Run::Open(_) => ogeom_bail!(
+            Invariant,
+            "a seat between faces of a solid is taken round a closed seat or capped"
+        ),
+    }
+}
+
+/// A parameter unwrapped round a closed guide, brought back into the
+/// guide's domain where the guide is not periodic and so does not wrap
+/// it itself.
+fn on_guide(guide: &Curve, t: f64) -> f64 {
+    let (lo, hi) = guide.domain();
+    if guide.is_periodic() || (lo..=hi).contains(&t) {
+        return t;
+    }
+    lo + (t - lo).rem_euclid(hi - lo)
+}
+
+/// The crease under a capped round as one spline over the run `w0..w1`
+/// of the guide and a little past it, exact for a conic. The run's
+/// parameters are unwrapped round a closed guide; a run across the start
+/// of a closed guide that is not periodic takes the guide's two stretches
+/// either side of the start joined end to end.
+fn crease_over(guide: &Curve, (w0, w1): (f64, f64), tol: Tolerances) -> OgeomResult<Curve> {
+    let (lo, hi) = guide.domain();
+    let period = hi - lo;
+    let margin = ((w1 - w0) * 0.02).min((period - (w1 - w0)) * 0.25).max(0.0);
+    let (mut from, mut to) = (w0 - margin, w1 + margin);
+    if guide.is_periodic() {
+        return Ok(Curve::BSpline(guide.to_bspline_over((from, to), tol)?));
+    }
+    while from >= hi {
+        (from, to) = (from - period, to - period);
+    }
+    while from < lo {
+        (from, to) = (from + period, to + period);
+    }
+    if to <= hi {
+        return Ok(Curve::BSpline(guide.to_bspline_over((from, to), tol)?));
+    }
+    let joined = guide
+        .point_at(lo, tol)
+        .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
+        .is_ok_and(|d| d <= tol.confusion() * 10.0);
+    if !joined || to - period >= from {
         ogeom_bail!(
             Invariant,
-            "a seat between faces of a solid is taken only where it closes on itself"
+            "a capped run reaches past the ends of a guide it did not go round"
         );
-    };
-    let [first, second] = &hosts.surfaces;
-    let range = guide.domain();
-    crate::marched::closed_band_wedge(
-        model,
-        solid,
-        None,
-        blend,
-        &guide,
-        range,
-        true,
-        [(first, hosts.signs[0]), (second, hosts.signs[1])],
-        radius,
-        behind,
-        tol,
-    )
+    }
+    let before = guide.to_bspline_over((from, hi), tol)?;
+    let after = guide.to_bspline_over((lo, to - period), tol)?;
+    let whole = ogeom_math::bspline::join(
+        &(before.knots().clone(), before.control_points().to_vec()),
+        &(after.knots().clone(), after.control_points().to_vec()),
+    )?;
+    Ok(Curve::BSpline(ogeom_geom::BSplineCurve::rational(
+        whole.0, whole.1,
+    )?))
 }
 
 /// Round the corner between two faces of separate shapes over a marched
@@ -782,12 +980,17 @@ pub(crate) fn fillet_faces(
     let PairSeat {
         hosts, blend, run, ..
     } = seat;
-    let Run::Open(stretches) = run else {
-        ogeom_bail!(
+    let stretches = match run {
+        Run::Open(stretches) => stretches,
+        Run::Closed => ogeom_bail!(
             Construction,
             "the ball rolls round a closed seat between the two faces; a marched round closing \
              on itself between separate faces is not built"
-        );
+        ),
+        Run::Capped => ogeom_bail!(
+            Invariant,
+            "a seat between separate faces is taken over their stretches"
+        ),
     };
     let fit_target = band_fit_target(tol);
     let band = fit_open_band(&blend, radius, [false, false], tol)?;
