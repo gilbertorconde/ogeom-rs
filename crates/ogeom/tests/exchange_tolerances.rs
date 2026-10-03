@@ -241,6 +241,12 @@ fn fix_shape_restores_tolerance_containment() {
         fixed.report.after
     );
 
+    // The reduction shrinks no edge below how far its pcurves stand from
+    // its curve: this part's fitted trims stray most between the points a
+    // coarse measure would read.
+    let excess = widest_pcurve_excess(model, &fixed.shape);
+    assert!(excess.is_none(), "(gap, stated) {excess:?}");
+
     // The pass alone, run again, has nothing left to grow.
     assert_eq!(restore_containment(model, &fixed.shape).unwrap(), 0);
 }

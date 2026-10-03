@@ -151,8 +151,7 @@ every edge (the lifted pcurve against the nearest point of the curve's
 stretch, 33 samples) flags, besides the boolean's case: fuzzy booleans
 along faceted rounds and slivers (1e-6 to 4e-6 at 1e-7); a drill lying in
 a plate's underside between its rounds; offset faces converted to NURBS
-(1.2e-3 at 1e-5); a divide on an offset spline (1.18e-7 at 1e-7); and
-`fix_shape`'s output.
+(1.2e-3 at 1e-5); and a divide on an offset spline (1.18e-7 at 1e-7).
 Each producer that knows its deviation should raise its edges' tolerance
 first; the check follows them.
 The STEP and IGES readers pass it: every pcurve they attach, exact or
@@ -173,6 +172,9 @@ above.
 With its B-spline edges' gaps (up to 3.9e-2) stated, the exact integral
 takes `nist_ctc_02`, which moves its volume from the 0.1 mesh's 4.710940e7
 to the exact 4.710056e7, against 4.710192e7 on a 0.005 mesh.
+`fix_shape`'s tolerance reduction measured an edge at 9 samples, pcurves
+only (no seams), and shrank fitted trims straying 0.019 to 0.029 between
+them to microns; it now measures with the same helper.
 Mesh conversion passes it: a plane face keeps a curve's closed-form
 image only where it lands within the edge's tolerance (an arc fitted on a
 neighbouring face may cross the plane, and its closed-form image is then a

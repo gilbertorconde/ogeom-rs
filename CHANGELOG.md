@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Read edges state where their pcurves run.** The STEP and IGES readers
+  raise each edge's tolerance to how far its pcurves, exact or fitted, stand
+  from its curve, measured densely and searched near poles and ends: a line
+  microns off its plane, a sphere pcurve straying near a pole, and spheres
+  and converted solids read back stated 1e-7. Beyond a millimetre the
+  readers warn instead. `reduce_tolerances`, and so `fix_shape`, no longer
+  shrinks an edge below how far its pcurves stand from its curve; it
+  measures every pcurve, seams included. Five more drills through a NIST
+  part cut in the stress run.
+
 - **A converted plane face's pcurves stay on their edges.** An arc fitted on
   a neighbouring face that only crosses the plane along a few millimetres
   was imaged on the plane as a full-radius circle thousands of millimetres

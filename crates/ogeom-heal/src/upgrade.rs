@@ -697,62 +697,18 @@ fn agrees(
 ///
 /// As evaluation.
 pub fn reduce_tolerances(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<usize> {
+    let edges = explore_unique(model, shape, ShapeType::Edge)?;
+    // Each edge is measured on its own and the model is only read, so the
+    // measures run side by side.
+    let measured = {
+        let model = &*model;
+        ogeom_core::parallel::map_ordered(&edges, |_, edge| measure_edge(model, edge, tol))
+    };
     let mut shrunk = 0;
-    for edge in explore_unique(model, shape, ShapeType::Edge)? {
-        let measured = {
-            let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
-                continue;
-            };
-            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                continue;
-            };
-            let Some(geometry) = model.geometry().curve(*curve) else {
-                continue;
-            };
-            // The claim an edge tolerance covers: its pcurves against its
-            // curve at matched parameters.
-            let mut worst = 0.0f64;
-            let mut measurable = false;
-            for representation in &data.representations {
-                let EdgeRepr::PCurve {
-                    curve: pc,
-                    range: prange,
-                    surface,
-                    location,
-                } = representation
-                else {
-                    continue;
-                };
-                let Some(pcurve) = model.geometry().pcurve(*pc) else {
-                    continue;
-                };
-                let Some(surface_geometry) = model.geometry().surface(*surface) else {
-                    continue;
-                };
-                use ogeom_geom::Surface as _;
-                for k in 0..=8 {
-                    let t = range.0 + (range.1 - range.0) * f64::from(k) / 8.0;
-                    let pt = prange.0 + (prange.1 - prange.0) * f64::from(k) / 8.0;
-                    let (Ok(on_curve), Ok(chart)) =
-                        (geometry.point_at(t, tol), pcurve.point_at(pt, tol))
-                    else {
-                        continue;
-                    };
-                    let Ok(lifted) = surface_geometry.point_at(chart.x, chart.y, tol) else {
-                        continue;
-                    };
-                    let Ok(placement) = location.composed(model.datums()) else {
-                        continue;
-                    };
-                    worst = worst.max(placement.apply(lifted).distance(on_curve));
-                    measurable = true;
-                }
-            }
-            measurable.then_some(worst)
-        };
+    for (edge, measured) in edges.iter().zip(measured) {
         let Some(worst) = measured else { continue };
         let target = ogeom_core::Tolerance::new(worst + tol.confusion())?;
-        if let Some(node) = model.node_mut(&edge)
+        if let Some(node) = model.node_mut(edge)
             && let NodeData::Edge(data) = node.data_mut()
             && target.get() < data.tolerance.get()
         {
@@ -761,4 +717,76 @@ pub fn reduce_tolerances(model: &mut Model, shape: &Shape, tol: Tolerances) -> O
         }
     }
     Ok(shrunk)
+}
+
+/// How far an edge's pcurves stand from its curve, or `None` where it has
+/// no curve or no pcurve to measure.
+fn measure_edge(model: &Model, edge: &Shape, tol: Tolerances) -> Option<f64> {
+    let data = model.node(edge).and_then(|n| n.data().as_edge())?;
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        return None;
+    };
+    let geometry = model.geometry().curve(*curve)?;
+    // The claim an edge tolerance covers: every pcurve, both columns
+    // of a seam, lifted against its curve, measured as the readers
+    // and repairs that widen it measure.
+    let mut worst = 0.0f64;
+    let mut measurable = false;
+    for representation in &data.representations {
+        let (sides, prange, surface, location) = match representation {
+            EdgeRepr::PCurve {
+                curve,
+                range,
+                surface,
+                location,
+            } => ([Some(*curve), None], *range, *surface, location),
+            EdgeRepr::Seam {
+                forward,
+                reversed,
+                range,
+                surface,
+                location,
+            } => (
+                [Some(*forward), Some(*reversed)],
+                *range,
+                *surface,
+                location,
+            ),
+            _ => continue,
+        };
+        let Some(surface_geometry) = model.geometry().surface(surface) else {
+            continue;
+        };
+        let placed;
+        let surface_geometry = if location.is_identity() {
+            surface_geometry
+        } else {
+            use ogeom_geom::Transformable as _;
+            let Ok(placement) = location.composed(model.datums()) else {
+                continue;
+            };
+            let Ok(moved) = surface_geometry.transformed(&placement, tol) else {
+                continue;
+            };
+            placed = moved;
+            &placed
+        };
+        for pc in sides.into_iter().flatten() {
+            let Some(pcurve) = model.geometry().pcurve(pc) else {
+                continue;
+            };
+            let Ok(gap) = ogeom_algo::pcurve_fit::lifted_gap(
+                (geometry, *range),
+                (pcurve, prange),
+                surface_geometry,
+                data.same_parameter(),
+                tol,
+            ) else {
+                continue;
+            };
+            worst = worst.max(gap);
+            measurable = true;
+        }
+    }
+    measurable.then_some(worst)
 }
