@@ -23,6 +23,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Face blends end where the crease's edges end.** `blend_faces` between
+  faces that share no edge ends a capped round where the solid's edges
+  along the crease end, if that comes before the ball leaves a face,
+  capped in the ball's section through their end. A drum's foot leaning
+  along a block's edge blends at 1, 2 and 15 degrees with the axis on the
+  edge or past it, where it was refused; fills tend to the upright closed
+  form within 3e-6. A cap whose plane runs almost along a drum's axis meets
+  the wall in a chord instead of an ellipse too long to mesh.
+
 - **Pads fuse into slabs drafted under a thousandth.** A planar face
   leaning off another by under a thousandth of a radian, the two sharing
   an edge to their points' rounding, crosses it on that edge rather than

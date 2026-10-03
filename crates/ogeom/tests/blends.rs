@@ -1052,15 +1052,70 @@ fn an_edge_round_stops_where_a_leaning_drum_s_foot_runs_off_the_block() {
 
 /// A drum whose axis meets the block's top edge, leaning along it, its wall
 /// parted above the foot: the face blend's round ends where the ball's
-/// contact leaves the top at y = 40, its caps flush with the block's side.
-/// Upright the fill is half the ring.
+/// contact leaves the top at y = 40, its caps flush with the block's side,
+/// and nothing but the drum stands past the side by more than the fitted
+/// band's tolerance. Upright the fill is half the ring.
 #[test]
 fn a_face_blend_caps_its_round_flush_with_the_block_s_side() {
     let r = 2.0;
+    let fills = [1.0, 2.0].map(|slant| flush_capped_fill(slant, r));
+    assert_tends_to(fills, rim_ring(6.0, r, -1.0) / 2.0);
+}
+
+/// The same flush caps at a lean of 15 degrees, where each cap's plane runs
+/// all but along the drum's axis and cuts the wall in a conic so long that
+/// its chord stands for it: the round closes and fills more than upright.
+#[test]
+fn a_face_blend_caps_flush_with_the_side_at_a_steep_lean() {
+    let r = 2.0;
+    let half = rim_ring(6.0, r, -1.0) / 2.0;
+    let filled = flush_capped_fill(15.0, r);
+    assert!(
+        filled > half,
+        "a lean widens the fill: {filled} over {half}"
+    );
+}
+
+/// The fill of the face blend of a drum whose axis meets the block's top
+/// edge leaning `slant` degrees along it, its wall parted above the foot,
+/// with nothing but the drum standing past the block's side.
+fn flush_capped_fill(slant: f64, r: f64) -> f64 {
+    let mut model = Model::new();
+    let sharp = drum_leaning_x(&mut model, (20.0, 40.0), slant);
+    let before = exact_volume(&model, &sharp);
+    let (parted, wall) = wall_parted(&mut model, &sharp);
+    let top = lid_at(&model, &parted, 10.0);
+    let blended = ogeom::fillet::blend_faces(&mut model, &parted, &wall, &top, r, T)
+        .unwrap()
+        .shape;
+    let filled = capped_fill(&model, &blended, before);
+    let (s, c) = slant.to_radians().sin_cos();
+    let stray = past_the_side(&model, &blended, Vector::new(s, 0.0, c), 1e-3);
+    assert!(
+        stray.is_empty(),
+        "{} faces stand past the side",
+        stray.len()
+    );
+    filled
+}
+
+/// A drum whose axis stands 0.5 past the block's top edge, leaning along
+/// it, its wall parted above the foot. The crease runs off the block's
+/// side before the ball's line of contact leaves the top, so the round
+/// ends where the foot's edges end, capped in the ball's section through
+/// their end. Upright that is the meridian plane through where the foot's
+/// circle crosses y = 40, and the fill is the share of the ring the foot's
+/// arc turns, as the edge round of the same foot fills it.
+#[test]
+fn a_face_blend_ends_where_the_crease_runs_off_the_block_s_side() {
+    let r = 2.0;
+    let pi = core::f64::consts::PI;
+    let off: f64 = 0.5;
+    let want = rim_ring(6.0, r, -1.0) * (pi - 2.0 * (off / 6.0).asin()) / (2.0 * pi);
     let mut fills = Vec::new();
     for slant in [1.0, 2.0] {
         let mut model = Model::new();
-        let sharp = drum_leaning_x(&mut model, (20.0, 40.0), slant);
+        let sharp = drum_leaning_x(&mut model, (20.0, 40.0 + off), slant);
         let before = exact_volume(&model, &sharp);
         let (parted, wall) = wall_parted(&mut model, &sharp);
         let top = lid_at(&model, &parted, 10.0);
@@ -1069,7 +1124,7 @@ fn a_face_blend_caps_its_round_flush_with_the_block_s_side() {
             .shape;
         fills.push(capped_fill(&model, &blended, before));
     }
-    assert_tends_to([fills[0], fills[1]], rim_ring(6.0, r, -1.0) / 2.0);
+    assert_tends_to([fills[0], fills[1]], want);
 }
 
 /// A drum leaning wholly on the block: its foot is a whole ellipse, split

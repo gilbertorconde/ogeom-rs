@@ -2339,6 +2339,19 @@ fn section_connector(
         if pa.distance > slack || pb.distance > slack {
             continue;
         }
+        // A conic so long that its ends sit within a few parameter steps of
+        // each other (a plane all but along a drum's axis) gives an edge too
+        // short in its parameter to sample: the chord below stands for it.
+        let span = if curve.is_periodic() {
+            let (lo, hi) = curve.domain();
+            let d = (pb.parameter - pa.parameter).rem_euclid(hi - lo);
+            d.min(hi - lo - d)
+        } else {
+            (pb.parameter - pa.parameter).abs()
+        };
+        if span <= tol.parametric() * 1e3 && from.1.distance(to.1) > tol.confusion() {
+            break;
+        }
         // A long conic (a plane nearly along a drum's axis) places its
         // ends only as finely as its parameter steps; the ends own that.
         for (end, found) in [(from.0, pa.distance), (to.0, pb.distance)] {

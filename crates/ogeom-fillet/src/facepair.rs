@@ -68,8 +68,10 @@ use crate::support::Seat;
 ///   seat, and otherwise over the stretch where it touches both, capped at
 ///   each end by a plane face in the ball's section where its line of
 ///   contact leaves a face (a crease running off the solid, or a face that
-///   holds part of the seat). The band rides both faces within a tenth of a
-///   degree.
+///   holds part of the seat), or, where the solid's edges along the crease
+///   end first (a crease running off a block's side while the ball still
+///   rolls over its top), in the section through their end. The band rides
+///   both faces within a tenth of a degree.
 ///
 /// # Errors
 ///
@@ -328,15 +330,21 @@ fn curved_blend(
             None => crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol)
                 .and_then(|seat| crate::sheet_curved::corner_wedge(model, &seat, tol))
                 .map(|(wedge, probe)| (Corner::Swept(wedge), probe)),
-            Some(hosts) => {
-                crate::pair_marched::pair_seat(model, [a, b], hosts, radius, behind, true, tol)
-                    .and_then(|seat| match seat.probe() {
-                        Some(probe) => Ok((Corner::Marched(Box::new(seat)), probe)),
-                        None => {
-                            ogeom_bail!(Invariant, "a marched seat on the crease has no probe")
-                        }
-                    })
-            }
+            Some(hosts) => crate::pair_marched::pair_seat(
+                model,
+                [a, b],
+                hosts,
+                radius,
+                behind,
+                Some(solid),
+                tol,
+            )
+            .and_then(|seat| match seat.probe() {
+                Some(probe) => Ok((Corner::Marched(Box::new(seat)), probe)),
+                None => {
+                    ogeom_bail!(Invariant, "a marched seat on the crease has no probe")
+                }
+            }),
         };
         let (wedge, probe) = match built {
             Ok(built) => built,

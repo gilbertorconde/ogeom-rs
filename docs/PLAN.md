@@ -34,25 +34,28 @@ curved faces that meet along edges of the solid through the edge blend (exact
 or marched), curved faces that share no edge where their surfaces share a
 direction or an axis, and otherwise marches the ball round where the
 surfaces cross, capping the round in the ball's section where it leaves a
-face. `fillet_faces` marches between separate faces the same way, over
-part of the seat or bridging a gap. Refused by name:
+face, or through the end of the solid's edges along the crease where those
+end first. `fillet_faces` marches between separate faces the same way, over
+part of the seat or bridging a gap. A drum's foot leaning along a block's
+edge closes at 1, 2 and 15 degrees with the axis on the edge or 0.5 past
+it, as a face blend of the parted wall and as an edge round. With the axis
+past the edge the cap stands in the ball's section through the crease's
+end, which leans with the drum: one cap's wall corner stands past the
+block's side and the other falls short, by 0.003 at 1 degree and 0.032 at
+15. That is kept: every run-out caps in the ball's section, and a cap in
+the side's plane would end the band off a section. Refused by name:
 
 - Faces of a solid that the ball leaves at different places round its
   seat and never both at once: neither face gives the round both its ends.
-- A capped face blend whose wedge the boolean does not resolve, on a drum
-  leaning along the block's edge with its wall parted above the foot: with
-  the axis past the edge at a lean of 1 or 2 degrees the round's crossing
-  runs past the block's corner and the kept pieces do not close; with the
-  axis on the edge at 15 degrees the parted solid carries a sliver edge at
-  the wall's seam too short to mesh. A cap flush with a side face, and
-  edge rounds of the same feet, melt (each capped end row lies in its cap
-  plane on the exact touch points, and an end at the edge's vertex caps in
-  the section plane through that vertex, so chained arcs share one cap).
 - A marched round closing on itself between separate faces, and one whose
   line of contact crosses a face more than once.
 - A round crossing a face that stands between the two (a ball smaller than a
   chamfer between the faces it rounds): the solid beside the middle of the
   round is open where the seat says material, or the reverse.
+
+Not yet by name: an upright drum whose axis stands 0.5 past the block's
+edge goes through the closed-form swept blend, which answers "does not
+touch both faces" where the foot runs off the top.
 
 **Section loops pinned at a sphere's pole.** Where a curved wall passes
 through a pole of a sphere face, each section loop starts and ends at the
