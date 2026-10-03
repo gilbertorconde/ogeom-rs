@@ -9,15 +9,20 @@
 //! points. Any other surface (a B-spline, a revolution, an extrusion) is
 //! fitted to the moved points at their own parameters, refined until the
 //! fit, measured *between* the fitted points against the exact offset, is
-//! within the approximation tolerance; the measured deviation widens the
-//! moved face's tolerance, which is where it is reported. Because the chart
+//! within the approximation tolerance. Where the finest fit still misses
+//! it (the offset of a fitted surface is only as smooth as that surface's
+//! normal), the closest fit is kept if it is within the fit's bound: the
+//! larger of the face's own tolerance and a ten-thousandth of the
+//! distance. The measured deviation widens the moved face's tolerance,
+//! which is where it is reported. Because the chart
 //! is kept, every pcurve of the sheet carries over unchanged, so a trimmed
 //! face, holes and all, is trimmed along the same chart curves as its original.
 //!
 //! Edges and vertices move the same way: each point along the normal of
 //! the faces it bounds. A line or a circle whose move is a translation or
 //! a similarity stays a line or a circle (checked at samples, not assumed);
-//! any other edge is fitted at its own parameters to the same tolerance.
+//! any other edge is fitted at its own parameters the same way, its bound
+//! the largest of its faces'.
 //! Where two faces meet, both must move the shared boundary to the same
 //! place: faces meeting tangentially do, faces meeting at a crease do not,
 //! and a crease is refused by name rather than torn or patched.
@@ -58,7 +63,9 @@ use std::collections::HashMap;
 /// maps every face, edge and vertex to the one it became.
 ///
 /// A face with no parallel in its own family is fitted within the
-/// approximation tolerance, and its tolerance (and so its edges' and
+/// approximation tolerance where refining the fit reaches it, and
+/// otherwise within the larger of the face's own tolerance and a
+/// ten-thousandth of `distance`; its tolerance (and so its edges' and
 /// vertices') covers the deviation the fit measured.
 ///
 /// # Errors
@@ -69,8 +76,8 @@ use std::collections::HashMap;
 /// it moves to, the faces meet at a crease (the offsets of the two sides
 /// part or cross there), an edge is shared by more than two faces, or a
 /// free-form face has no normal where the offset needs one;
-/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a fit does
-/// not reach the tolerance.
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the finest
+/// fit misses that bound.
 pub fn offset_sheet(
     model: &mut Model,
     sheet: &Shape,
@@ -108,11 +115,12 @@ pub fn offset_sheet(
 /// joined by side faces along the sheet's free edges.
 ///
 /// The layers are built as [`offset_sheet`] builds them, so a free-form
-/// face is fitted within the approximation tolerance and reports its
-/// deviation in its tolerance. Each side face is the ruled face between a
-/// free edge's two images: a plane or a cylinder where the rulings make
-/// one on the edge's own parameter, and otherwise a B-spline fitted to the
-/// rulings, its deviation recorded the same way.
+/// face is fitted to the same bound and reports its deviation in its
+/// tolerance. Each side face is the ruled face between a free edge's two
+/// images: a plane or a cylinder where the rulings make one on the edge's
+/// own parameter, and otherwise a B-spline fitted to the rulings to the
+/// same bound (the thickness standing for the distance), its deviation
+/// recorded the same way.
 ///
 /// # Errors
 ///
@@ -225,6 +233,8 @@ struct SheetFace {
     /// `+1` where the sheet's normal is the surface's own, `-1` against it.
     sign: f64,
     natural: bool,
+    /// The face's own tolerance.
+    tolerance: f64,
     /// The stored wires: each wire's sense and its edges' nodes and senses.
     wires: Vec<(Orientation, Vec<(TShapeId, Orientation)>)>,
     /// The region of the chart the face covers.
@@ -328,6 +338,7 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
                 1.0
             },
             natural: data.natural_restriction || wires.is_empty(),
+            tolerance: data.tolerance.get(),
             surface,
             wires,
             window: ((0.0, 0.0), (0.0, 0.0)),
@@ -636,7 +647,8 @@ fn moved_layer(
         let (geometry, exact, deviation) = if distance == 0.0 {
             (face.surface.clone(), true, 0.0)
         } else {
-            moved_surface(face, distance, target, tol)?
+            let bound = fit_bound(face.tolerance, distance, tol);
+            moved_surface(face, distance, (target, bound), tol)?
         };
         let id = model.geometry_mut().add_surface(geometry.clone());
         surfaces.push(MovedSurface {
@@ -690,7 +702,12 @@ fn moved_layer(
             } else if let Some(exact) = exact_moved_curve(curve, *range, &off, tol)? {
                 (exact, 0.0)
             } else {
-                fitted_moved_curve(*range, &off, target, tol)?
+                let bound = edge
+                    .uses
+                    .iter()
+                    .map(|u| fit_bound(sheet.faces[u.face].tolerance, distance, tol))
+                    .fold(target, f64::max);
+                fitted_moved_curve(*range, &off, (target, bound), tol)?
             };
             // The curve's ends must reach the vertices: within the slop of
             // the fit and the spread the vertex's faces agreed within.
@@ -889,13 +906,27 @@ fn agreed(candidates: &[Point], target: f64, what: &str) -> OgeomResult<(Point, 
 /// The sample count along a window or a range when measuring.
 const PROBES: i32 = 8;
 
+/// The share of the offset distance a fit that cannot reach the
+/// approximation tolerance may miss by.
+const FIT_SHARE: f64 = 1e-4;
+
+/// The most a fitted offset of a face may miss the exact offset by when
+/// refining cannot bring it within the approximation tolerance: the face's
+/// own tolerance or a share of the distance, whichever is larger.
+fn fit_bound(face_tolerance: f64, distance: f64, tol: Tolerances) -> f64 {
+    tol.approximation()
+        .max(face_tolerance)
+        .max(FIT_SHARE * distance.abs())
+}
+
 /// A face's surface moved `distance` along the sheet's normal: the exact
-/// parallel where one is measured to keep the chart, else a fit. Returns
-/// the geometry, whether it is exact, and the fit's measured deviation.
+/// parallel where one is measured to keep the chart, else a fit refined
+/// toward `target` and kept within `bound`. Returns the geometry, whether
+/// it is exact, and the fit's measured deviation.
 fn moved_surface(
     face: &SheetFace,
     distance: f64,
-    target: f64,
+    (target, bound): (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<(SurfaceGeometry, bool, f64)> {
     let along = face.sign * distance;
@@ -961,8 +992,10 @@ fn moved_surface(
     }
 
     // A fit at the chart's own parameters, refined until the points it was
-    // not fitted to (the cell centres and edge middles) agree too.
+    // not fitted to (the cell centres and edge middles) agree too, or the
+    // finest net is reached and the closest fit stands against the bound.
     let mut spans: u32 = 8;
+    let mut best: Option<(SurfaceGeometry, f64)> = None;
     loop {
         let n = spans;
         let at = |k: u32, lo: f64, hi: f64| lo + (hi - lo) * f64::from(k) / f64::from(2 * n);
@@ -989,7 +1022,7 @@ fn moved_surface(
             .map(|j| (0..=n as usize).map(|i| fine[2 * j][2 * i]).collect())
             .collect();
         let fitted = ogeom_geom::fit::fit_surface_grid_at(&us, &vs, &rows, 3, target * 0.5, tol)?;
-        let surface: SurfaceGeometry = fitted.curve.into();
+        let mut surface: SurfaceGeometry = fitted.curve.into();
         let mut worst = fitted.error;
         for j in 0..=2 * n {
             for i in 0..=2 * n {
@@ -998,7 +1031,25 @@ fn moved_surface(
                 worst = worst.max(surface.point_at(u, v, tol)?.distance(want));
             }
         }
-        if worst <= target {
+        if best.as_ref().is_none_or(|(_, b)| worst < *b) {
+            best = Some((surface.clone(), worst));
+        }
+        let finest = spans >= 128;
+        if worst > target && finest {
+            let Some((closest, reached)) = best.take() else {
+                ogeom_bail!(NotDone, "the offset of a free-form face was not fitted");
+            };
+            if reached > bound {
+                ogeom_bail!(
+                    NotDone,
+                    "the offset of a free-form face did not fit within {bound}; \
+                     the closest fit was {reached} off"
+                );
+            }
+            surface = closest;
+            worst = reached;
+        }
+        if worst <= target || finest {
             // The fit must face the way the exact offset does everywhere it
             // was measured; a fold between the probes shows up here.
             for j in (0..=2 * n).step_by(2) {
@@ -1021,13 +1072,6 @@ fn moved_surface(
                 }
             }
             return Ok((surface, false, worst));
-        }
-        if spans >= 128 {
-            ogeom_bail!(
-                NotDone,
-                "the offset of a free-form face did not fit within {target}; \
-                 the closest fit was {worst} off"
-            );
         }
         spans *= 2;
     }
@@ -1103,15 +1147,17 @@ fn exact_moved_curve(
 }
 
 /// A curve fitted to `off` at its own parameters, refined until the
-/// midpoints between the fitted samples agree; the curve and the
-/// deviation measured.
+/// midpoints between the fitted samples agree within `target`, or the
+/// closest fit kept within `bound` once the finest is reached; the curve
+/// and the deviation measured.
 fn fitted_moved_curve(
     range: (f64, f64),
     off: &dyn Fn(f64) -> OgeomResult<Point>,
-    target: f64,
+    (target, bound): (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<(Curve, f64)> {
     let mut spans: u32 = 16;
+    let mut best: Option<(Curve, f64)> = None;
     loop {
         let at = |k: u32| range.0 + (range.1 - range.0) * f64::from(k) / f64::from(2 * spans);
         let mut fine = Vec::with_capacity((2 * spans + 1) as usize);
@@ -1130,12 +1176,19 @@ fn fitted_moved_curve(
         if worst <= target {
             return Ok((curve, worst));
         }
+        if best.as_ref().is_none_or(|(_, b)| worst < *b) {
+            best = Some((curve, worst));
+        }
         if spans >= 1024 {
-            ogeom_bail!(
-                NotDone,
-                "the offset of an edge did not fit within {target}; the \
-                 closest fit was {worst} off"
-            );
+            return match best {
+                Some((closest, reached)) if reached <= bound => Ok((closest, reached)),
+                Some((_, reached)) => ogeom_bail!(
+                    NotDone,
+                    "the offset of an edge did not fit within {bound}; the \
+                     closest fit was {reached} off"
+                ),
+                None => ogeom_bail!(NotDone, "the offset of an edge was not fitted"),
+            };
         }
         spans *= 2;
     }
@@ -1222,6 +1275,7 @@ fn side_face(
     let edge = &sheet.edges[ei];
     let used = &edge.uses[0];
     let face = &sheet.faces[used.face];
+    let bound = fit_bound(face.tolerance, hi - lo, tol);
     let Some((curve, range)) = edge.curve.clone() else {
         ogeom_bail!(Construction, "a free edge has no curve in space");
     };
@@ -1296,6 +1350,7 @@ fn side_face(
         Some(found) => found,
         None => {
             let mut spans: u32 = 16;
+            let mut best: Option<(SurfaceGeometry, f64)> = None;
             loop {
                 let at = |k: u32| t0 + (t1 - t0) * f64::from(k) / f64::from(2 * spans);
                 let us: Vec<f64> = (0..=spans).map(|k| at(2 * k)).collect();
@@ -1316,12 +1371,21 @@ fn side_face(
                 if worst <= target {
                     break (fit, 0.0, 1.0, worst);
                 }
+                if best.as_ref().is_none_or(|(_, b)| worst < *b) {
+                    best = Some((fit, worst));
+                }
                 if spans >= 1024 {
-                    ogeom_bail!(
-                        NotDone,
-                        "the side face along a free edge did not fit within \
-                         {target}; the closest fit was {worst} off"
-                    );
+                    match best {
+                        Some((closest, reached)) if reached <= bound => {
+                            break (closest, 0.0, 1.0, reached);
+                        }
+                        Some((_, reached)) => ogeom_bail!(
+                            NotDone,
+                            "the side face along a free edge did not fit within \
+                             {bound}; the closest fit was {reached} off"
+                        ),
+                        None => ogeom_bail!(NotDone, "the side face was not fitted"),
+                    }
                 }
                 spans *= 2;
             }
