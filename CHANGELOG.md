@@ -64,6 +64,13 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **The stress harness judges volumes exactly, to a millionth.** Volume
+  identities (cut and common adding up to the part, fuse and common to both)
+  are checked on exact volumes with a slack of 1e-6 relative instead of
+  tessellated volumes with 2e-3, which had hidden errors of a few tenths of
+  a percent. A result the exact integral refuses is measured at a 2e-4
+  chord with the chord's error added to its slack, and listed.
+
 - **Exact mass properties are several times faster on long pcurves.** Short
   boundary panels take as few Gauss points as their error bound allows,
   inner integrals on analytic surfaces are not refined again between runs,

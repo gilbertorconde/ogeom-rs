@@ -118,20 +118,38 @@ The stress drills still refused at seed 1: two on that part (not yet
 diagnosed, many faces at once) and one on the rounded box. Seeds 2 and 3
 refuse eight and three drills, of these kinds and some not yet diagnosed.
 
+**Stress results the exact volume refuses.** The stress harness holds
+its volume identities to 1e-6 on exact volumes, and every exactly
+measured case at seeds 1 to 3 holds (worst 1.8e-7, a converted corpus
+part; generated parts within 1e-8). Nine cases over the three seeds have
+a result with a face the exact integral refuses: the torus drilled along
+z with its wall through the outer equator's seam vertex (five), drills
+through `nist_ftc_11` (three) and one through the rounded box. They are
+measured on a 2e-4 chord tessellation with the chord times the area as
+slack (1.5e-4 of the torus, 2.2e-4 of the corpus part) and hold; at a
+2e-5 chord they stand within 1.2e-5, 3.3e-6 and 8e-8, and the torus
+drills' commons within 1e-6 of a ray-by-ray integral. A wrong answer
+smaller than that slack would pass on these cases; the exact path taking
+their faces tightens them to 1e-6.
+
 - **A drill all but touching inside a torus's outer equator.** A drill
   touching the torus inside its outer equator meets it in a figure eight;
   the marcher now finds the touch exactly and cuts the branches there, and
   these cut (at the seams' vertex and anywhere on the equator, every seam
-  direction tried, each sum within 1e-8), but for one: a radian round
-  from the seams' vertex with its seam on the touching line, the drill
-  less the torus refuses. Moved inside by 1e-7 to 1e-6 with its own seam
-  on the touching line, the section is one loop with a neck thousandths
-  wide across both charts' seams and the cut comes back valid and wrong by
-  3e-4 to 1e-3 of the torus (cut short by up to 1.7 mm^3), the same as
-  before the touch handling; its seam turned away it is exact. A
-  classification guard refuses a cut, common or union whose sections leave
-  every piece of both outside the other while the solids overlap, which is
-  what the touching drill returned before (the torus whole).
+  direction tried, each sum within 1e-8). Moved inside by 1e-7 or 1e-6
+  with its own seam on the touching line, the section is one loop with a
+  neck thousandths wide across both charts' seams. Drills of radius 1.5, 3
+  and 4.35 at 26 places round the equator, both offsets, measure exactly:
+  cut, common and drill less the torus within 4e-8 of the torus against a
+  ray-by-ray integral of the common. The misses of 3e-4 to 1e-3 once read
+  here were the measure's, not the boolean's: these results fell to a
+  2e-3 chord tessellation, and with chart loops left open at their
+  junctions the exact integral was off by 1e-5 to 1e-4. Two refuse by
+  name (radius 1.5, 0.8 and 6.3 radians round, 1e-7 in: the kept pieces
+  do not close). A classification guard refuses a cut, common or union
+  whose sections leave every piece of both outside the other while the
+  solids overlap, which is what the touching drill returned before (the
+  torus whole).
 - **A drill's seam along the other part's edge.** A drill whose wall runs
   along a round's tangent line with its own seam on that line: the section
   there hugs an edge on both sides and lays no split. Its seam turned away
