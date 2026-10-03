@@ -284,10 +284,19 @@ fn meshed(model: &Model, shape: &Shape) -> Triangulation {
     ogeom::mesh::triangulate(model, shape, Deflection::with_chord(0.01).unwrap(), T).unwrap()
 }
 
-/// The kinds of surface a shape's faces are built on, counted.
+/// The kinds of surface a shape's faces are built on, counted; it has no
+/// fitted patch.
 fn kinds(model: &Model, shape: &Shape) -> [usize; 5] {
+    let (out, patches) = kinds_and_patches(model, shape);
+    assert_eq!(patches, 0, "a fitted patch among {out:?}");
+    out
+}
+
+/// The kinds of canonical surface a shape's faces are built on, counted,
+/// and its fitted B-spline patches.
+fn kinds_and_patches(model: &Model, shape: &Shape) -> ([usize; 5], usize) {
     use ogeom::geom::SurfaceGeometry as S;
-    let mut out = [0; 5];
+    let (mut out, mut patches) = ([0; 5], 0);
     for face in explore_unique(model, shape, ShapeType::Face).unwrap() {
         let data = model.node(&face).unwrap().data().as_face().unwrap();
         out[match model.geometry().surface(data.surface).unwrap() {
@@ -296,10 +305,14 @@ fn kinds(model: &Model, shape: &Shape) -> [usize; 5] {
             S::Cone(_) => 2,
             S::Sphere(_) => 3,
             S::Torus(_) => 4,
+            S::BSpline(_) => {
+                patches += 1;
+                continue;
+            }
             _ => panic!("a surface recognition does not build"),
         }] += 1;
     }
-    out
+    (out, patches)
 }
 
 /// A converted shape is valid and holds the volume the original does, to
@@ -1235,8 +1248,13 @@ fn fillets_ending_on_rough_corners_are_still_cylinders() {
     let mut back = Model::new();
     let mesh = rough_rounded_box();
     let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    eprintln!("rough box: {:?}", out.report);
     assert!(out.closed);
-    assert_eq!(kinds(&back, &out.shape)[1], 12, "every fillet a cylinder");
+    assert_eq!(
+        kinds_and_patches(&back, &out.shape).0[1],
+        12,
+        "every fillet a cylinder"
+    );
     assert_eq!(out.report.curved_faceted, 0);
     assert!(check(&back, &out.shape, T).unwrap().is_valid());
     // A single facet left beside a fillet is thinner than the curve the
@@ -3344,7 +3362,7 @@ fn converted_parts() -> Vec<(&'static str, Model, Shape)> {
 #[ignore = "heavy"]
 fn converted_solids_come_back_through_step() {
     for (name, model, shape) in converted_parts() {
-        let before = (kinds(&model, &shape), volume(&model, &shape));
+        let before = (kinds_and_patches(&model, &shape), volume(&model, &shape));
         let mut document = ogeom::doc::Document::over(model);
         document.add_part(name, shape);
         let text = ogeom::io::write_step(&document, T).unwrap();
@@ -3355,7 +3373,7 @@ fn converted_solids_come_back_through_step() {
         };
         let diagnosis = check(back, solid, T).unwrap();
         assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
-        assert_eq!(kinds(back, solid), before.0, "{name}");
+        assert_eq!(kinds_and_patches(back, solid), before.0, "{name}");
         let after = volume(back, solid);
         assert!(
             (after - before.1).abs() <= before.1 * 1e-6,
@@ -4044,6 +4062,88 @@ fn a_smooth_region_round_a_hole_stays_faceted() {
     assert_eq!(out.report.patch_faces, 0);
     assert_eq!(out.report.patches_not_disk, 1);
     assert_eq!(out.report.patches_unverified, 0);
+}
+
+/// A plate twenty across, flat at five, with a lopsided twisted hill on the
+/// middle twelve of each side that runs out into the flat tangentially:
+/// height and slope are continuous where they meet, the curvature is not,
+/// as along a round.
+fn tangent_hill(x: f64, y: f64) -> f64 {
+    if !(4.0..=16.0).contains(&x) || !(4.0..=16.0).contains(&y) {
+        return 5.0;
+    }
+    let (s, t) = ((x - 4.0) / 12.0, (y - 4.0) / 12.0);
+    let w = |a: f64| (core::f64::consts::PI * a).sin().powi(2);
+    5.0 + w(s) * w(t) * (0.5 * (1.0 + 0.4 * s) + 0.5 * (s - 0.5) * (t - 0.5))
+}
+
+/// A hill running out tangentially into a flat top, meshed with vertices
+/// along the line where they meet: no crease bounds the hill, and its smooth
+/// region stops at the plane round it instead. It comes back one fitted
+/// patch inside one plane, the seam between them a closed curve on the
+/// plane within the coplanar distance of the patch. The fit holds the
+/// vertices to half that distance, and between them, where its knots are
+/// sparser than the vertices, the exact hill keeps within twice it. The
+/// volume is within the distance over the hill's footprint, and the solid
+/// valid and tessellating closed.
+#[test]
+fn a_hill_tangent_to_a_flat_comes_back_a_patch_inside_the_plane() {
+    use ogeom::geom::Curve3d as _;
+    let mesh = grid_solid(40, 20.0, |_, _| true, tangent_hill);
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    eprintln!(
+        "tangent hill: {} faces, distance {:e}, report {:?}",
+        out.report.faces, out.coplanar_distance, out.report
+    );
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let patches = spline_faces(&model, &out.shape);
+    assert_eq!(patches.len(), 1);
+    assert_eq!(out.report.faces, 7);
+    let flat = out.coplanar_distance;
+    let face = &patches[0];
+    let edges = explore_unique(&model, face, ShapeType::Edge).unwrap();
+    assert_eq!(edges.len(), 1);
+    let data = model.node(&edges[0]).unwrap().data().as_edge().unwrap();
+    let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        panic!("a seam without a curve");
+    };
+    let seam = model.geometry().curve(*curve).unwrap().clone();
+    let tolerance = data.tolerance.get();
+    let mut height: f64 = 0.0;
+    for k in 0..=400 {
+        let t = range.0 + (range.1 - range.0) * f64::from(k) / 400.0;
+        height = height.max((seam.point_at(t, T).unwrap().z - 5.0).abs());
+    }
+    eprintln!("tangent hill: seam tolerance {tolerance:e}, off the plane {height:e}");
+    assert!(tolerance <= flat, "{tolerance} past {flat}");
+    assert!(height <= 1e-9, "{height}");
+    let data = model.node(face).unwrap().data().as_face().unwrap();
+    let surface = model.geometry().surface(data.surface).unwrap().clone();
+    let mut worst: f64 = 0.0;
+    for j in 0..36 {
+        for i in 0..36 {
+            let (x, y) = (
+                4.0 + 12.0 * (f64::from(i) + 0.37) / 36.0,
+                4.0 + 12.0 * (f64::from(j) + 0.61) / 36.0,
+            );
+            let exact = Point::new(x, y, tangent_hill(x, y));
+            let foot = ogeom::algo::project_on_surface(&surface, exact, 16, T).unwrap();
+            worst = worst.max(foot.distance);
+        }
+    }
+    let volume = volume_properties(&model, &out.shape, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
+    // The plate, and the hill: its sines squared integrate to a half each
+    // way, the lean to 0.6 along x, the twist to nothing.
+    let exact = 2000.0 + 0.5 * 0.6 * 0.5 * 144.0;
+    eprintln!("tangent hill: exact to patch {worst:e}; volume {volume}, exact {exact}");
+    assert!(worst <= flat * 2.0, "{worst} past {flat}");
+    assert!((volume - exact).abs() <= flat * 144.0);
+    let closed = ogeom::mesh::triangulate(&model, &out.shape, Deflection::default(), T).unwrap();
+    assert!(closed.is_closed());
 }
 
 /// The mesh of a shape's faces on one kind of surface alone: the shape

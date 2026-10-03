@@ -5233,7 +5233,36 @@ fn patch_regions(
     tol: Tolerances,
 ) -> OgeomResult<()> {
     let normals: Vec<Vector> = triangles.iter().map(|t| unit_normal(points, *t)).collect();
-    let regions = smooth_regions(triangles, adjacency, &normals, options, groups);
+    // A free-form surface running on tangentially into a plane crosses no
+    // crease, and the smooth region would take the plane with it. The
+    // planes the free triangles gather into, where they hold a smooth
+    // region's worth of triangles, bound the smooth regions instead.
+    let mut held = groups.clone();
+    {
+        let mut planes = groups.clone();
+        coplanar_groups(
+            points,
+            triangles,
+            adjacency,
+            options,
+            flat,
+            &mut planes,
+            tol,
+        )?;
+        let mut sizes = vec![0_usize; planes.carriers.len()];
+        for &g in &planes.of {
+            if g != usize::MAX {
+                sizes[g] += 1;
+            }
+        }
+        for (t, &g) in planes.of.iter().enumerate() {
+            if held.of[t] == usize::MAX && sizes[g] >= SWEPT_TRIANGLES {
+                held.of[t] = g;
+            }
+        }
+        held.carriers = planes.carriers;
+    }
+    let regions = smooth_regions(triangles, adjacency, &normals, options, &held);
     if regions.is_empty() {
         return Ok(());
     }
@@ -8018,11 +8047,32 @@ fn interpolated_image(
             x
         }
     };
+    // On a patch, a curve threaded through a long chain has a knot at
+    // every vertex, and samples spread evenly over its range miss the
+    // turns between them: the samples are spread over each knot span
+    // alike.
+    let mut pieces = vec![range.0];
+    if let Curve::BSpline(spline) = curve
+        && curved.patch.is_some()
+    {
+        pieces.extend(
+            spline
+                .knots()
+                .distinct()
+                .iter()
+                .map(|k| k.0)
+                .filter(|&t| t > range.0 && t < range.1),
+        );
+    }
+    pieces.push(range.1);
+    let spans = u32::try_from(pieces.len() - 1).ok()?;
     let mut best: Option<(PlanarCurve, f64)> = None;
-    let mut count: u32 = 32;
-    while count <= 1024 {
-        let parameters: Vec<f64> = (0..=count)
-            .map(|k| range.0 + (range.1 - range.0) * f64::from(k) / f64::from(count))
+    let mut each = 32_u32.div_ceil(spans);
+    while each * spans <= 1024.max(spans * 8) {
+        let parameters: Vec<f64> = std::iter::once(range.0)
+            .chain(pieces.windows(2).flat_map(|w| {
+                (1..=each).map(move |k| w[0] + (w[1] - w[0]) * f64::from(k) / f64::from(each))
+            }))
             .collect();
         let mut uv: Vec<Point> = Vec::with_capacity(parameters.len());
         for &t in &parameters {
@@ -8061,7 +8111,7 @@ fn interpolated_image(
         if done {
             break;
         }
-        count *= 2;
+        each *= 2;
     }
     best
 }

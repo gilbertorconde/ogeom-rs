@@ -10,7 +10,11 @@
 //! the square's sides by arc length, the square's corners at four of its
 //! vertices, and each interior vertex the weighted mean of its neighbours,
 //! one sparse linear system solved in a band. The map of a disk onto a
-//! convex boundary by positive weights folds nowhere.
+//! convex boundary by positive weights folds nowhere. Where the patch over
+//! that map does not verify, the chart is the region's projection onto the
+//! plane across its mean normal, if that folds nowhere: a region with a
+//! rounded boundary, running out tangentially into its neighbours, is
+//! pinched into the square's corners by the map but not by the projection.
 //!
 //! A cubic patch over the unit square is fitted to the vertices at those
 //! parameters, faired by a small thin-plate term. After each fit every
@@ -261,14 +265,48 @@ pub(crate) fn fit_patch(region: &Region, flat: f64, tol: Tolerances) -> Result<P
     let corners: HashSet<usize> = (0..local.vertices.len())
         .filter(|&i| region.corners.contains(&local.vertices[i]))
         .collect();
-    let chart = mean_value_map(&local, &ring, &corners).ok_or(Refused::Unverified)?;
+    if let Some(chart) = mean_value_map(&local, &ring, &corners)
+        && let Some((surface, deviation)) = fitted(&local, &normals, chart, flat, tol)
+    {
+        return Ok(Patch {
+            surface,
+            deviation,
+            mapped: true,
+        });
+    }
+    // A region that is a height over the plane across its mean normal
+    // projects onto that plane without folding (the chart's winding says
+    // whether it does) and keeps the surface's own spacing there, where the
+    // mean-value map pinches a rounded boundary (a region running out
+    // tangentially into its neighbours) into the square's corners.
+    let plane = mean_plane(&local, &normals, tol).ok_or(Refused::Unverified)?;
+    let chart =
+        canonical_chart(&Canonical::Plane(plane), &local, tol).ok_or(Refused::Unverified)?;
     let (surface, deviation) =
         fitted(&local, &normals, chart, flat, tol).ok_or(Refused::Unverified)?;
     Ok(Patch {
         surface,
         deviation,
-        mapped: true,
+        mapped: false,
     })
+}
+
+/// The plane through the region's centroid across its triangles' mean
+/// normal, weighted by area; `None` where the region turns so far that the
+/// mean normal vanishes.
+fn mean_plane(local: &Local, normals: &[Vector], tol: Tolerances) -> Option<ogeom_math::Plane> {
+    let mut mean = Vector::ZERO;
+    for (t, n) in local.triangles.iter().zip(normals) {
+        let [a, b, c] = t.map(|i| local.points[i]);
+        mean += *n * (b - a).cross(c - a).magnitude();
+    }
+    let z = ogeom_math::Direction::new(mean, tol).ok()?;
+    let mut centre = Vector::ZERO;
+    for p in &local.points {
+        centre += p.to_vector();
+    }
+    let centre = Point::from_vector(centre / count(local.points.len()));
+    Some(ogeom_math::Plane::new(ogeom_math::Frame::about(centre, z)))
 }
 
 /// The region's chart on a canonical surface, normalized to the unit

@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Free-form regions tangent to a plane convert to a patch.** A smooth
+  region that runs out tangentially into a plane comes back as a fitted
+  patch bounded by a seam lying on that plane, instead of taking the plane
+  with it and falling to facets: a hill tangent to a flat top converts to 7
+  faces instead of 1153. A plane of 32 triangles or more bounds a smooth
+  region, and a region whose patch does not verify over the mean-value map
+  is charted by projection onto its mean plane.
+
 - **Fine meshes of free-form surfaces convert to one patch.** Where
   recognition cut a smooth free-form area of a fine mesh into small
   spheres, cones, cylinders and tori, `solid_from_mesh` fits the area and

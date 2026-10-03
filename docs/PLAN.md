@@ -293,14 +293,64 @@ after.
    one region not a disk each; now 6 faces, the top one patch, the exact
    surface within 6e-6 of it. The corpus, the NIST parts and the truth
    bench come back unchanged (faces, kinds, volumes, refusal counts).
-   Still to do:
-   - the fit holds vertices to half the distance, but between rows near a
-     free edge it can stand off the true surface by about twice the
-     distance on coarse meshes;
-   - a patch meeting a neighbour tangentially falls to the chord seam or
-     to facets.
+   A patch running out tangentially into a plane: done where the mesh
+   has vertices along the line they meet on. No crease bounded such a
+   region, so it took the plane with it and was no disk, or its fit failed
+   and both went to facets. Smooth regions now stop at the planes the free
+   triangles gather into, where a plane holds a smooth region's worth of
+   triangles (32). Where the patch over the mean-value map does not verify,
+   the region is charted by its projection onto the plane across its mean
+   normal: the map pinches the rounded boundary of a run-out into the
+   square's corners, the projection does not. The section solve finds
+   nothing at a tangency and the seam is the chord threaded through the
+   chain, which lies on the plane; its image on the patch is now sampled
+   over each knot span alike (sampled evenly over the range, 1024 points
+   over a chord of 190 spans left the image 6.2e-5 off it, per span
+   8.8e-7). Measured on a lopsided twisted hill on a plate's top,
+   running out with its slope (not its curvature) into the flat, meshed at
+   40 cells across: before, 1153 faces (the top one smooth region with the
+   plane, unverified, the hill faceted); now 7 faces, the seam a closed
+   curve on the plane (within 2e-15 of it) at a tolerance of 7.7e-6
+   against a distance of 2.9e-5, the volume 3.3e-5 off 2021.6, valid and
+   tessellating closed. On the rough box one noisy corner, bounded now by
+   planes and fillets alone, comes back a patch instead of facets. The
+   truth bench and the stress baseline come back unchanged, and so do the
+   corpus parts and the NIST parts in faces, kinds and volumes, but for
+   thread_flank_narrower_than_a_chord (invalid before and after: 8213
+   faces to 8242, 51 curved to 50). Their refusal counts move, as smooth
+   regions stop at planes: fewer not disks (ctc_03 from 11 to 2), a few
+   more narrow.
 
-   Tangency to a canonical neighbour comes after item 2.
+   Still to do:
+   - a tangent line inside a row of triangles (a scan, or a part meshed
+     without vertices along its edges): the boundary row's vertices lie on
+     the plane and the curvature's jump falls inside one span, which a
+     cubic with knots no finer than two vertex steps cannot follow (the fit
+     runs out at 7e-5 to 4e-4 against a target of 1.5e-5), and the hill's
+     near flat foot gathers into narrow slanted planes beside the main one,
+     each within the distance, the volume off by a few times the distance
+     over the hill's area;
+   - a patch tangent to a curved canonical neighbour (a cylinder, a round)
+     is not measured; the planes alone bound smooth regions;
+   - a chain of three vertices between a patch (or any curved face) and its
+     neighbour gets no chord: a cubic needs four points and the threading
+     gives up rather than trying the polyline. Threading three with a
+     parabola lets a hill running out into the flat with its curvature too
+     (60 cells across) build; across the corpus it moves outcomes both
+     ways (ctc_02 from 4090 faces to 3849, ftc_06 from 402 to 355,
+     sliver_on_a_diagonal_of_the_grid valid, but ftc_07 from 1375 faces
+     to 1408 and 114 faceted to 119), so it waits for its own measurement;
+   - between vertices the fit is no closer to the true surface than its
+     knots allow. Measured against the exact surface, by distance from a
+     free edge in cells: the bumped sheet at 10 cells across 1.5 times the
+     distance in the edge row, under 1 inside; at 20 cells 0.3 at most;
+     the bowl at 10 cells 4.2 in the edge row, 2.1 in the next, under 1
+     inside; the bowl at 16 cells, its distance read at 3.2e-5, up to 1.8
+     inside; the tangent hill 1.1 near its top. Lowering the fairing a
+     hundredfold made the edge row worse (6.3), holding the vertices to a
+     quarter of the distance left the hill unverified, and knots one
+     vertex step apart changed nothing: the vertices say no more, and no
+     cheap change helps.
 6. **The steps as an API.** Done: `MeshRegions::find` gathers the
    regions (each with its triangles, surface, measured deviation and
    neighbours), `merge`, `split` along a vertex path and `fit` of a
