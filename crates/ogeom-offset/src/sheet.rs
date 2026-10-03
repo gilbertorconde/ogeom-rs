@@ -17,11 +17,13 @@
 //! doubled until it is.
 //!
 //! A sheet has one face per section edge (per span between neighbouring
-//! sections for a ruled loft), the faces meeting on shared edges. A
-//! section edge that bounds the sheet and belongs to the model is the
-//! caller's own edge, so the sheet sews to what it was built from. Each
-//! face's normal is its chart's: `u` runs along the sections, `v` across
-//! them.
+//! sections for a ruled loft), the faces meeting on shared edges. Sections
+//! with different edge counts are matched by arc length: each section's
+//! edges are split where the others' breaks fall, as fractions of its
+//! length, the pieces keeping their exact form. A section edge that bounds
+//! the sheet, belongs to the model and was not split is the caller's own
+//! edge, so the sheet sews to what it was built from. Each face's normal
+//! is its chart's: `u` runs along the sections, `v` across them.
 
 use ogeom_algo::{
     Built, History, attach_pcurve, attach_seam, edge_vertices, make_edge_between, make_face_on,
@@ -58,11 +60,13 @@ const MOST_SWEEP_SECTIONS: usize = 1025;
 /// straight line to the point of `b` at the same fraction of its parameter.
 ///
 /// `a` and `b` are edges or wires, open or closed, taken in their own
-/// traversal sense; wires pair edge for edge, one face per pair. Between
-/// two straight segments the face is the plane when the four corners share
-/// one and the bilinear patch otherwise; between curves it is the exact
-/// rational B-spline of degree one across. The long edges are `a`'s and
-/// `b`'s own edges, and the rulings at the ends are straight segments.
+/// traversal sense; wires pair edge for edge, one face per pair, and wires
+/// of different edge counts are first split to match by arc length (see
+/// [`make_loft_surface`]). Between two straight segments the face is the
+/// plane when the four corners share one and the bilinear patch otherwise;
+/// between curves it is the exact rational B-spline of degree one across. The long edges are `a`'s and
+/// `b`'s own edges where they were not split, and the rulings at the ends
+/// are straight segments.
 ///
 /// # Errors
 ///
@@ -75,9 +79,13 @@ pub fn make_ruled(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
 ///
 /// The sections are edges or wires, open or closed, planar or not, each
 /// taken in its own traversal sense from its own start (aligning those is
-/// the caller's authorship). Wires pair edge for edge: every section has
-/// the same number of edges, and the sheet has one face per edge (one per
-/// edge and span between neighbouring sections when `ruled`). The sheet
+/// the caller's authorship). Wires pair edge for edge, and the sheet has
+/// one face per edge (one per edge and span between neighbouring sections
+/// when `ruled`). Sections with different edge counts are matched by arc
+/// length first: every section is split at the fractions of its length
+/// where any section has a break (breaks closer than ten confusions along
+/// the longest section are one), each piece the exact restriction of the
+/// edge it came from, so the sections pair edge for edge. The sheet
 /// passes through every section exactly. A smooth loft is the B-spline
 /// interpolating the sections across, cubic from four sections up,
 /// parameterized by the mean distance between their control points; a
@@ -88,7 +96,8 @@ pub fn make_ruled(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
 /// closed smooth loft spaces its sections evenly in its parameter.
 ///
 /// The first and last sections (every section, when ruled) bound the
-/// sheet, and where they are edges of the model they are those edges.
+/// sheet, and where they are edges of the model, not split to match, they
+/// are those edges.
 ///
 /// With `guides` the sheet also follows each guide, an edge or a wire
 /// crossing every section once, in the same order along every section and
@@ -107,10 +116,11 @@ pub fn make_ruled(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// with fewer than two sections, or three for a closed loft; if a section
 /// is not an edge or a wire, or has a curve with no exact B-spline form (a
-/// helix, an offset); if the sections differ in edge count or in being
-/// closed; if two neighbouring sections coincide; or if neighbouring edges
-/// of the sections carry weights at their shared corner that would part
-/// their faces. With guides, also if the loft is ruled or closed, a section
+/// helix, an offset); if the sections differ in being closed; if they
+/// differ in edge count and one has no length or their breaks fall too
+/// close together to match; if two neighbouring sections coincide; or if
+/// neighbouring edges of the sections carry weights at their shared corner
+/// that would part their faces. With guides, also if the loft is ruled or closed, a section
 /// has more than one edge, a guide misses a section by more than ten
 /// confusions, crosses the sections out of their order, or crosses some
 /// sections at an end and others inside, or two guides cross the sections
@@ -141,17 +151,8 @@ pub fn make_loft_surface(
     for shape in sections {
         read.push(read_section(model, shape, "loft section", tol)?);
     }
-    let count = read[0].edges.len();
     let closed_u = read[0].closed;
     for (k, s) in read.iter().enumerate() {
-        if s.edges.len() != count {
-            ogeom_bail!(
-                Construction,
-                "loft sections pair edge for edge; section 0 has {count} edges and section \
-                 {k} has {}",
-                s.edges.len()
-            );
-        }
         if s.closed != closed_u {
             ogeom_bail!(
                 Construction,
@@ -161,6 +162,10 @@ pub fn make_loft_surface(
             );
         }
     }
+    if read.iter().any(|s| s.edges.len() != read[0].edges.len()) {
+        matched_by_length(&mut read, tol)?;
+    }
+    let count = read[0].edges.len();
     // One degree and one knot vector per edge the sections pair up.
     for e in 0..count {
         let curves: Vec<BSplineCurve> = read.iter().map(|s| s.edges[e].curve.clone()).collect();
@@ -417,7 +422,7 @@ struct SectionEdge {
     /// The model edge, oriented the way the section runs.
     edge: Option<Shape>,
     /// The edge's curve in the section's sense, over `[0, 1]`, its first
-    /// weight one.
+    /// weight one unless it is a piece cut from an edge.
     curve: BSplineCurve,
     /// Whether `curve`'s parameter is the edge's own, mapped affinely.
     paced: bool,
@@ -516,6 +521,132 @@ fn standard(curve: &BSplineCurve) -> OgeomResult<BSplineCurve> {
         .map(|w| w.scale(1.0 / first))
         .collect();
     BSplineCurve::rational(knots, control)
+}
+
+/// Sections split to pair edge for edge by arc length: each section is cut
+/// at the fractions of its length where any section has a break, so every
+/// section ends with the same breaks, at the same fractions. Breaks closer
+/// than ten confusions along the longest section are one, and a section
+/// whose own break is among them keeps it. A piece is the exact
+/// restriction of the edge it is cut from. A section that is cut bounds the
+/// sheet with fresh edges rather than its own.
+fn matched_by_length(sections: &mut [Section], tol: Tolerances) -> OgeomResult<()> {
+    let mut lengths: Vec<Vec<f64>> = Vec::with_capacity(sections.len());
+    for (k, s) in sections.iter().enumerate() {
+        let each = s
+            .edges
+            .iter()
+            .map(|e| ogeom_algo::curve_length(&Curve::BSpline(e.curve.clone()), (0.0, 1.0), tol))
+            .collect::<OgeomResult<Vec<f64>>>()?;
+        if each.iter().sum::<f64>() <= tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "section {k} has no length to match the other sections' edges along"
+            );
+        }
+        lengths.push(each);
+    }
+    let longest = lengths
+        .iter()
+        .map(|l| l.iter().sum::<f64>())
+        .fold(0.0_f64, f64::max);
+    let same = tol.confusion() * 10.0 / longest;
+    // Each section's own breaks, as fractions of its length.
+    let own: Vec<Vec<f64>> = lengths
+        .iter()
+        .map(|l| {
+            let total: f64 = l.iter().sum();
+            let mut run = 0.0;
+            l[..l.len() - 1]
+                .iter()
+                .map(|x| {
+                    run += x;
+                    run / total
+                })
+                .collect()
+        })
+        .collect();
+    let mut union: Vec<f64> = own.iter().flatten().copied().collect();
+    union.sort_by(f64::total_cmp);
+    let mut breaks: Vec<f64> = Vec::with_capacity(union.len());
+    for f in union {
+        if f <= same || f >= 1.0 - same {
+            continue;
+        }
+        if breaks.last().is_none_or(|b| f - b > same) {
+            breaks.push(f);
+        }
+    }
+    for ((section, l), mine) in sections.iter_mut().zip(&lengths).zip(&own) {
+        let total: f64 = l.iter().sum();
+        let mut pieces: Vec<SectionEdge> = Vec::with_capacity(breaks.len() + 1);
+        let mut cut = false;
+        let mut start = 0.0;
+        for (edge, length) in section.edges.iter().zip(l) {
+            let (lo, hi) = (start / total, (start + length) / total);
+            // The fractions inside this edge none of its own breaks stands
+            // for, as lengths from its start.
+            let inside: Vec<f64> = breaks
+                .iter()
+                .filter(|f| **f > lo + same && **f < hi - same)
+                .filter(|f| mine.iter().all(|m| (*m - **f).abs() > same))
+                .map(|f| f * total - start)
+                .collect();
+            start += length;
+            if inside.is_empty() {
+                pieces.push(edge.clone());
+                continue;
+            }
+            cut = true;
+            let whole = Curve::BSpline(edge.curve.clone());
+            let mut at = Vec::with_capacity(inside.len());
+            for along in inside {
+                at.push(ogeom_algo::parameter_at_length(
+                    &whole,
+                    (0.0, 1.0),
+                    along,
+                    tol,
+                )?);
+            }
+            let mut rest = (
+                edge.curve.knots().clone(),
+                edge.curve.control_points().to_vec(),
+            );
+            // The rest keeps the edge's parameter, so each cut is made at
+            // the parameter found on the whole edge. The pieces keep their
+            // weights as cut, so where two meet the weights agree and the
+            // corner keeps the ratio a section with a vertex there has.
+            let piece = |(knots, control): (KnotVector, Vec<Weighted<Point>>)| {
+                Ok::<_, ogeom_core::OgeomError>(SectionEdge {
+                    edge: None,
+                    curve: BSplineCurve::rational(knots.reparameterized(0.0, 1.0)?, control)?,
+                    paced: false,
+                })
+            };
+            for t in at {
+                let (before, after) = ogeom_math::bspline::split(&rest.0, &rest.1, t, tol)?;
+                pieces.push(piece(before)?);
+                rest = after;
+            }
+            pieces.push(piece(rest)?);
+        }
+        if cut {
+            for piece in &mut pieces {
+                piece.edge = None;
+            }
+        }
+        section.edges = pieces;
+    }
+    let count = sections[0].edges.len();
+    if let Some(k) = sections.iter().position(|s| s.edges.len() != count) {
+        ogeom_bail!(
+            Construction,
+            "the sections' breaks fall too close together to match by length: section 0 \
+             splits into {count} edges and section {k} into {}",
+            sections[k].edges.len()
+        );
+    }
+    Ok(())
 }
 
 /// Curves raised to one degree and refined to one knot vector, each

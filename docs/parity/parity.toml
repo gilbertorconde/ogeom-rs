@@ -1236,6 +1236,7 @@ symbols = [
 tests = [
     "crates/ogeom-offset/tests/shape.rs", "crates/ogeom/tests/direct_edit.rs",
     "crates/ogeom-offset/tests/thick_sheet.rs",
+    "crates/ogeom/tests/sheet_offset.rs",
 ]
 
 [[capability]]

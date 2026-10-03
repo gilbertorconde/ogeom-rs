@@ -3,10 +3,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{
-    Spacing, check, interpolate, make_edge, make_polygon, make_wire, project_on_surface,
+    Spacing, check, interpolate, make_edge, make_edge_between, make_polygon, make_vertex,
+    make_wire, project_on_surface,
 };
 use ogeom::core::Tolerances;
-use ogeom::geom::{CircleCurve, Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
+use ogeom::geom::{
+    CircleCurve, Curve, Curve2d as _, Curve3d as _, LineCurve, Surface as _, SurfaceGeometry,
+};
 use ogeom::math::{Circle, Direction, Frame, Point, Vector};
 use ogeom::offset::{
     PipeLaw, make_loft_surface, make_ruled, make_sweep_surface, make_sweep_two_rails,
@@ -895,31 +898,200 @@ fn a_guided_loft_surface_refuses_what_it_does_not_build_by_name() {
     );
 }
 
+/// The distance from `p` to an edge's curve over its range: the nearest
+/// of dense samples, refined by golden section in the bracket round it.
+fn off_edge(model: &Model, edge: &Shape, p: Point) -> f64 {
+    let NodeData::Edge(data) = model.node(edge).unwrap().data() else {
+        panic!("not an edge");
+    };
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        panic!("no curve");
+    };
+    let curve = model.geometry().curve(*curve).unwrap();
+    let at = |t: f64| curve.point_at(t, T).unwrap().distance(p);
+    let steps = 256;
+    let step = (range.1 - range.0) / f64::from(steps);
+    let nearest = (0..=steps)
+        .map(|k| range.0 + step * f64::from(k))
+        .min_by(|a, b| at(*a).total_cmp(&at(*b)))
+        .unwrap();
+    let (mut lo, mut hi) = ((nearest - step).max(range.0), (nearest + step).min(range.1));
+    let g = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..80 {
+        let (a, b) = (hi - g * (hi - lo), lo + g * (hi - lo));
+        if at(a) < at(b) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    at(f64::midpoint(lo, hi))
+}
+
+/// A line and an arc chained into one section, ruled to a single line: the
+/// line is cut where the chain's break falls by arc length, and the sheet
+/// is one face per matched span, its rulings straight, its boundary both
+/// sections.
 #[test]
-fn a_loft_surface_refuses_sections_of_different_edge_counts() {
+fn a_ruled_sheet_matches_sections_of_different_edge_counts_by_length() {
     let mut model = Model::new();
-    let a = make_polygon(
+    let corner = [
+        Point::ORIGIN,
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+    ];
+    let joints: Vec<Shape> = corner
+        .iter()
+        .map(|p| make_vertex(&mut model, *p).shape)
+        .collect();
+    let line: Curve = LineCurve::segment(corner[0], corner[1], T).unwrap().into();
+    let line_range = line.domain();
+    let first = make_edge_between(&mut model, line, line_range, &joints[0], &joints[1], T)
+        .unwrap()
+        .shape;
+    // The half circle about (10, 5, 0) from (10, 0, 0) through (15, 5, 0).
+    let circle = Circle::new(
+        Frame::new(
+            Point::new(10.0, 5.0, 0.0),
+            Direction::new(Vector::new(0.0, 0.0, 1.0), T).unwrap(),
+            Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(),
+            T,
+        )
+        .unwrap(),
+        5.0,
+        T,
+    )
+    .unwrap();
+    let half: Curve = CircleCurve::new(circle).into();
+    let second = make_edge_between(
         &mut model,
-        &[Point::ORIGIN, Point::new(1.0, 0.0, 0.0)],
-        false,
+        half.clone(),
+        (0.0, PI),
+        &joints[1],
+        &joints[2],
         T,
     )
     .unwrap()
     .shape;
-    let b = make_polygon(
+    let chain = make_wire(&mut model, &[first.clone(), second.clone()], T)
+        .unwrap()
+        .shape;
+    let (top_a, top_b) = (Point::new(0.0, 0.0, 6.0), Point::new(12.0, 6.0, 6.0));
+    let top = make_polygon(&mut model, &[top_a, top_b], false, T)
+        .unwrap()
+        .shape;
+
+    let ruled = make_ruled(&mut model, &chain, &top, T).unwrap().shape;
+    let pieces = faces(&model, &ruled);
+    assert_eq!(pieces.len(), 2);
+    // Six free edges: the chain's two, the line's two pieces and the end
+    // rulings; the ruling at the break is shared.
+    sound_sheet(&model, &ruled, 6);
+
+    // The ruling at the break lands on the line at the break's share of
+    // the chain's length.
+    let share = 10.0 / (10.0 + 5.0 * PI);
+    let landing = top_a + (top_b - top_a) * share;
+    let inner: Vec<Shape> = edges(&model, &pieces[0])
+        .into_iter()
+        .filter(|e| edges(&model, &pieces[1]).iter().any(|f| f.is_partner(e)))
+        .collect();
+    assert_eq!(inner.len(), 1);
+    assert!(off_edge(&model, &inner[0], corner[1]) < 1e-9);
+    assert!(off_edge(&model, &inner[0], landing) < 1e-9);
+
+    // Both sections lie on the sheet's boundary.
+    let boundary = edges(&model, &ruled);
+    let on_boundary = |p: Point| {
+        boundary
+            .iter()
+            .map(|e| off_edge(&model, e, p))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut worst: f64 = 0.0;
+    for k in 0..=64 {
+        let f = f64::from(k) / 64.0;
+        worst = worst.max(on_boundary(corner[0] + (corner[1] - corner[0]) * f));
+        worst = worst.max(on_boundary(half.point_at(PI * f, T).unwrap()));
+        worst = worst.max(on_boundary(top_a + (top_b - top_a) * f));
+    }
+    assert!(
+        worst <= 1e-6,
+        "a section strays {worst:.3e} from the boundary"
+    );
+
+    // Every ruling is straight, from the chain at z = 0 to the line at
+    // z = 6.
+    for face in &pieces {
+        let s = surface(&model, face);
+        let ((u0, u1), (v0, v1)) = s.domain();
+        for i in 0..=32 {
+            let u = u0 + (u1 - u0) * f64::from(i) / 32.0;
+            let p = s.point_at(u, v0, T).unwrap();
+            let q = s.point_at(u, v1, T).unwrap();
+            assert!(p.z.abs() < 1e-9 && (q.z - 6.0).abs() < 1e-9, "{p:?} {q:?}");
+            let along = (q - p) / (q - p).magnitude();
+            for j in 1..8 {
+                let v = v0 + (v1 - v0) * f64::from(j) / 8.0;
+                let m = s.point_at(u, v, T).unwrap();
+                let aside = (m - p) - along * (m - p).dot(along);
+                assert!(
+                    aside.magnitude() < 1e-9,
+                    "ruling bends by {}",
+                    aside.magnitude()
+                );
+            }
+        }
+    }
+}
+
+/// A smooth loft through an arc, a two-edge polyline and an arc: the arcs
+/// are cut where the polyline breaks by arc length, and the sheet passes
+/// through all three sections.
+#[test]
+fn a_loft_surface_matches_sections_of_different_edge_counts_by_length() {
+    let mut model = Model::new();
+    let z = Vector::new(0.0, 0.0, 1.0);
+    let x = Vector::new(1.0, 0.0, 0.0);
+    let low = arc(&mut model, Point::ORIGIN, z, x, 4.0, 0.0, PI / 2.0);
+    let bend = [
+        Point::new(6.0, 0.0, 5.0),
+        Point::new(4.0, 4.0, 5.0),
+        Point::new(0.0, 6.0, 5.0),
+    ];
+    let middle = make_polygon(&mut model, &bend, false, T).unwrap().shape;
+    let high = arc(
         &mut model,
-        &[
-            Point::new(0.0, 0.0, 1.0),
-            Point::new(0.5, 0.5, 1.0),
-            Point::new(1.0, 0.0, 1.0),
-        ],
-        false,
-        T,
-    )
-    .unwrap()
-    .shape;
-    let err = make_ruled(&mut model, &a, &b, T).unwrap_err();
-    assert!(err.to_string().contains("pair edge for edge"), "{err}");
+        Point::new(0.0, 0.0, 10.0),
+        z,
+        x,
+        3.0,
+        0.0,
+        PI / 2.0,
+    );
+    let loft = make_loft_surface(&mut model, &[low, middle, high], false, &[], false, T)
+        .unwrap()
+        .shape;
+    let pieces = faces(&model, &loft);
+    assert_eq!(pieces.len(), 2);
+    sound_sheet(&model, &loft, 6);
+    let surfaces: Vec<SurfaceGeometry> = pieces.iter().map(|f| surface(&model, f)).collect();
+    let nearest = |p: Point| {
+        surfaces
+            .iter()
+            .map(|s| off(s, &[p]))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut worst: f64 = 0.0;
+    for k in 0..=32 {
+        let f = f64::from(k) / 32.0;
+        let t = PI / 2.0 * f;
+        worst = worst.max(nearest(Point::new(4.0 * t.cos(), 4.0 * t.sin(), 0.0)));
+        worst = worst.max(nearest(Point::new(3.0 * t.cos(), 3.0 * t.sin(), 10.0)));
+        worst = worst.max(nearest(bend[0] + (bend[1] - bend[0]) * f));
+        worst = worst.max(nearest(bend[1] + (bend[2] - bend[1]) * f));
+    }
+    assert!(worst < 1e-6, "a section is {worst:.3e} off the loft");
 }
 
 #[test]

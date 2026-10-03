@@ -87,6 +87,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Offsetting fitted sheets works (#119).** Where refining a free-form
+  offset cannot reach the approximation tolerance, `offset_sheet` and
+  `make_thick_sheet` keep the closest fit if it lies within the face's own
+  tolerance or a ten-thousandth of the distance, whichever is larger, and
+  report the deviation in the moved face's tolerance; they failed at 1e-6.
+  A filled saddle offset by 1 lies within 3.4e-6 of that distance.
+
+- **Ruled and lofted sheets between sections of different edge counts
+  (#118).** `make_ruled` and `make_loft_surface` match such sections by arc
+  length: each section is cut where the others break, the pieces keep their
+  exact geometry, and the sheet passes through every section exactly.
+
 - **Exact mass properties take pcurves that run beside their edge.** A face
   whose pcurve runs beside its edge's curve by up to a thousandth of a
   millimetre is integrated with the strip between the two, and a junction
