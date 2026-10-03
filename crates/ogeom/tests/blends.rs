@@ -916,10 +916,11 @@ fn a_face_blend_caps_its_round_where_a_face_holds_part_of_the_seat() {
     assert!(fills[2] > fills[1], "a steeper slant fills more: {fills:?}");
 }
 
-/// The faces of `shape` that reach past the block's side at y = 40 and
-/// are not the drum's own: anything but a cylinder of the drum's radius or
-/// a plane square to its `axis`.
-fn past_the_side(model: &Model, shape: &Shape, axis: Vector) -> Vec<Shape> {
+/// The faces of `shape` that reach past the block's side at y = 40 by more
+/// than `slack` and are not the drum's own: anything but a cylinder of the
+/// drum's radius or a plane square to its `axis`. A face's bounds reach
+/// past its geometry by its vertices' tolerance, which `slack` covers.
+fn past_the_side(model: &Model, shape: &Shape, axis: Vector, slack: f64) -> Vec<Shape> {
     faces_on(model, shape, |_| true)
         .into_iter()
         .filter(|f| {
@@ -929,7 +930,7 @@ fn past_the_side(model: &Model, shape: &Shape, axis: Vector) -> Vec<Shape> {
                 .iter()
                 .map(|p| p.y)
                 .fold(f64::NEG_INFINITY, f64::max);
-            if reach <= 40.0 + 1e-6 {
+            if reach <= 40.0 + slack {
                 return false;
             }
             let data = model.node(f).unwrap().data().as_face().unwrap();
@@ -980,7 +981,7 @@ fn an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block() {
             let done = built.unwrap().shape;
             let diagnosis = ogeom::algo::check(&model, &done, T).unwrap();
             assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
-            let stray = past_the_side(&model, &done, Vector::new(0.0, 0.0, 1.0));
+            let stray = past_the_side(&model, &done, Vector::new(0.0, 0.0, 1.0), 1e-6);
             assert!(
                 stray.is_empty(),
                 "{} faces stand past the side",
@@ -996,31 +997,74 @@ fn an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block() {
     }
 }
 
-/// The same foot leaning: an arc of an ellipse that runs off the top at
-/// y = 40, where the end section of the round stands in the plane of the
-/// block's side. The fitted band's end touches that side within the fit's
-/// tolerance along a stretch, which the melt does not resolve; the round
-/// is refused by name rather than run round the whole ellipse.
+/// The same foot leaning: an arc of an ellipse that runs off the top across
+/// the block's top edge, split into two arcs at the wall's seam, where the
+/// two arcs' bands meet in one cap plane. With the axis meeting the edge,
+/// the round's end sections stand in the plane of the block's side, the
+/// caps flush with it, and nothing but the drum stands past the side by
+/// more than the fitted band's tolerance. With the axis past the edge, the
+/// end sections lean with the drum, a cap standing past the side by a
+/// fraction of the lean. Either way the fills at 1 and 2 degrees
+/// extrapolate to the upright arc's share of the ring.
 #[test]
-fn an_edge_round_on_a_leaning_foot_run_off_the_block_refuses_by_name() {
-    for slant in [1.0, 15.0] {
+fn an_edge_round_stops_where_a_leaning_drum_s_foot_runs_off_the_block() {
+    let r = 2.0;
+    let pi = core::f64::consts::PI;
+    for off in [0.0, 0.5] {
+        let share = (pi - 2.0 * (off / 6.0_f64).asin()) / (2.0 * pi);
+        let want = rim_ring(6.0, r, -1.0) * share;
+        let mut fills = Vec::new();
+        for slant in [1.0, 2.0, 15.0] {
+            let mut model = Model::new();
+            let sharp = drum_leaning_x(&mut model, (20.0, 40.0 + off), slant);
+            let before = exact_volume(&model, &sharp);
+            let foot = shared_edges(
+                &model,
+                &drum_wall(&model, &sharp),
+                &lid_at(&model, &sharp, 10.0),
+            );
+            assert_eq!(foot.len(), 2, "the seam splits the foot");
+            let rounded = ogeom::fillet::fillet_edges(&mut model, &sharp, &foot, r, T)
+                .unwrap()
+                .shape;
+            let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            if off == 0.0 {
+                let (s, c) = slant.to_radians().sin_cos();
+                let stray = past_the_side(&model, &rounded, Vector::new(s, 0.0, c), 1e-3);
+                assert!(
+                    stray.is_empty(),
+                    "{} faces stand past the side",
+                    stray.len()
+                );
+            }
+            fills.push(exact_volume(&model, &rounded) - before);
+        }
+        assert_tends_to([fills[0], fills[1]], want);
+        assert!(fills[2] > fills[1], "a steeper lean fills more: {fills:?}");
+    }
+}
+
+/// A drum whose axis meets the block's top edge, leaning along it, its wall
+/// parted above the foot: the face blend's round ends where the ball's
+/// contact leaves the top at y = 40, its caps flush with the block's side.
+/// Upright the fill is half the ring.
+#[test]
+fn a_face_blend_caps_its_round_flush_with_the_block_s_side() {
+    let r = 2.0;
+    let mut fills = Vec::new();
+    for slant in [1.0, 2.0] {
         let mut model = Model::new();
         let sharp = drum_leaning_x(&mut model, (20.0, 40.0), slant);
-        let foot = shared_edges(
-            &model,
-            &drum_wall(&model, &sharp),
-            &lid_at(&model, &sharp, 10.0),
-        );
-        assert!(!foot.is_empty(), "the drum stands on the top");
-        let said = match ogeom::fillet::fillet_edges(&mut model, &sharp, &foot, 2.0, T) {
-            Ok(_) => panic!("refused"),
-            Err(e) => e.to_string(),
-        };
-        assert!(
-            said.contains("where its crease runs out on another face"),
-            "{said}"
-        );
+        let before = exact_volume(&model, &sharp);
+        let (parted, wall) = wall_parted(&mut model, &sharp);
+        let top = lid_at(&model, &parted, 10.0);
+        let blended = ogeom::fillet::blend_faces(&mut model, &parted, &wall, &top, r, T)
+            .unwrap()
+            .shape;
+        fills.push(capped_fill(&model, &blended, before));
     }
+    assert_tends_to([fills[0], fills[1]], rim_ring(6.0, r, -1.0) / 2.0);
 }
 
 /// A drum leaning wholly on the block: its foot is a whole ellipse, split

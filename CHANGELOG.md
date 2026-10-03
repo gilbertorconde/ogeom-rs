@@ -11,6 +11,25 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pads fuse into slabs drafted under a thousandth.** A planar face
+  leaning off another by under a thousandth of a radian, the two sharing
+  an edge to their points' rounding, crosses it on that edge rather than
+  on the solved line a sliver off it, where the band in which they stand
+  within the weld distance is under a tenth of either face. A pad pushed
+  into a converted slab drafted 0.0001 to 0.0007 fuses, cuts and is taken
+  in common instead of being refused.
+
+- **A round's cap flush with a side face of the solid.** A marched round
+  whose cap stands in the plane of a side face (an edge round or face blend
+  of a leaning drum's foot running off the block's edge) melts into the
+  solid: the band's end row lies in its cap plane and carries its measured
+  tolerance. Arcs of one crease split at a seam meet in one cap plane
+  instead of overlapping or leaving a sliver, which also raises fills that
+  came out short at the seam. Fills tend to the upright closed form within
+  3e-6.
+
 ## [0.8.0] - 2026-10-03
 
 A minor release, since the API changes: `MeshSolidReport` gains a field,

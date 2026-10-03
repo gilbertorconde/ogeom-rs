@@ -1037,6 +1037,7 @@ fn open_runout_wedge(
             w0 += k * period;
         }
         let mut w1 = w0 + span;
+        let window = (w0, w1);
         // Where the crease *terminates* at the solid's own boundary (its end
         // vertex belongs to a third face, not to a continuation of the seat
         // past a seam split), the blend runs out through the wall: the band
@@ -1270,7 +1271,15 @@ fn open_runout_wedge(
         blend.on_second.drain(..keep_from);
         blend.along.truncate(keep_to);
         blend.along.drain(..keep_from);
-        let mut end_station = |w: f64, front: bool| -> OgeomResult<()> {
+        // The cap stands in the plane of the ball's arc, which leans off the
+        // plane square to the crease wherever the section is not symmetric
+        // about it, so the arc at the vertex's own parameter crosses the
+        // crease a little past the vertex. At an end that stays at the
+        // edge's vertex, the station is the one whose arc plane holds the
+        // vertex: the crease ends there, a chain mate leaving the vertex
+        // caps in the same plane, and the wedge reaches no further along
+        // its hosts than the edge does (past a drum's seam, say).
+        let mut end_station = |w: f64, front: bool, at_vertex: bool| -> OgeomResult<()> {
             // Seeded from the adjacent kept station: the Newton must settle
             // in *this* seat's basin: a drum's far side holds a ball too.
             let i = if front { 0 } else { blend.len() - 1 };
@@ -1280,24 +1289,74 @@ fn open_runout_wedge(
                 blend.on_second[i].0,
                 blend.on_second[i].1,
             ];
-            let x = crate::march::seat_section(
-                first,
-                second,
-                radius,
-                guide,
-                blend.sides,
-                w,
-                near,
-                tol,
-            )?;
-            let p1 = first.point_at(x[0], x[1], tol)?;
-            let p2 = second.point_at(x[2], x[3], tol)?;
-            let n1 = {
-                let (du, dv) = first.d1_at(x[0], x[1], tol)?;
-                let n = du.cross(dv);
-                n / n.magnitude()
+            let section = |w: f64| -> OgeomResult<([f64; 5], Point, Point, Point)> {
+                let x = crate::march::seat_section(
+                    first,
+                    second,
+                    radius,
+                    guide,
+                    blend.sides,
+                    w,
+                    near,
+                    tol,
+                )?;
+                let p1 = first.point_at(x[0], x[1], tol)?;
+                let p2 = second.point_at(x[2], x[3], tol)?;
+                let n1 = {
+                    let (du, dv) = first.d1_at(x[0], x[1], tol)?;
+                    let n = du.cross(dv);
+                    n / n.magnitude()
+                };
+                Ok((x, p1, p2, p1 + n1 * (f64::from(blend.sides.first) * radius)))
             };
-            let centre = p1 + n1 * (f64::from(blend.sides.first) * radius);
+            let vertex = guide.point_at(w, tol)?;
+            // The vertex's signed distance from a section's arc plane.
+            let off = |(_, p1, p2, centre): &([f64; 5], Point, Point, Point)| -> f64 {
+                let n = (*p1 - *centre).cross(*p2 - *centre);
+                let m = n.magnitude();
+                if m <= f64::MIN_POSITIVE {
+                    0.0
+                } else {
+                    (vertex - *centre).dot(n / m)
+                }
+            };
+            let mut w = w;
+            let mut found = section(w)?;
+            if at_vertex {
+                let mut f = off(&found);
+                let mut step = (window.1 - window.0).abs() * 1e-4;
+                let mut previous = (w + step, off(&section(w + step)?));
+                for _ in 0..30 {
+                    if f.abs() <= tol.confusion() * 1e-2 {
+                        break;
+                    }
+                    let slope = (previous.1 - f) / (previous.0 - w);
+                    if !slope.is_finite() || slope.abs() <= f64::MIN_POSITIVE {
+                        break;
+                    }
+                    step = -f / slope;
+                    previous = (w, f);
+                    w += step;
+                    found = section(w)?;
+                    f = off(&found);
+                }
+            }
+            let (x, p1, p2, centre) = found;
+            // A station moved inside the window leaves kept stations past
+            // it, which would fold the band back on itself.
+            let past = |t: f64| if front { t <= w } else { t >= w };
+            while blend.len() > 8 {
+                let i = if front { 0 } else { blend.len() - 1 };
+                if !past(blend.along[i]) {
+                    break;
+                }
+                blend.spine.remove(i);
+                blend.touch_first.remove(i);
+                blend.touch_second.remove(i);
+                blend.on_first.remove(i);
+                blend.on_second.remove(i);
+                blend.along.remove(i);
+            }
             if front {
                 blend.spine.insert(0, centre);
                 blend.touch_first.insert(0, p1);
@@ -1316,10 +1375,10 @@ fn open_runout_wedge(
             Ok(())
         };
         if cap0 {
-            end_station(w0, true)?;
+            end_station(w0, true, w0 == window.0)?;
         }
         if cap1 {
-            end_station(w1, false)?;
+            end_station(w1, false, w1 == window.1)?;
         }
     }
     if blend.len() < 8 {
@@ -1424,21 +1483,6 @@ pub(crate) fn build_open_band(
     let additive = !convex;
     let n = blend.len();
     let fit_target = band_fit_target(tol);
-    let surface = fit_open_band(blend, radius, pinched, tol)?;
-    let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
-    let (k_count, l_count, net) = {
-        let grid = surface.grid();
-        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
-        (grid.u_count(), grid.v_count(), net)
-    };
-    let point_at = |i: usize, j: usize| -> Point { net[i * l_count + j] };
-    let blend_geo: SurfaceGeometry = surface.into();
-    let (u_dom, v_dom) = blend_geo.domain();
-    let blend_id = model.geometry_mut().add_surface(blend_geo.clone());
-
-    // Six shared vertices: the four band corners off the control net (
-    // which the clamped borders interpolate exactly) and the crease's two
-    // ends off the guide itself.
     // The cap at each end stands in the end section's *own* plane: the
     // plane of the ball's arc, which holds both touch points exactly. The
     // march's guide condition holds only one point of the section to the
@@ -1489,6 +1533,44 @@ pub(crate) fn build_open_band(
     } else {
         Some(section_plane(n - 1)?)
     };
+    let fitted = fit_open_band(blend, radius, pinched, tol)?;
+    let (u_knots, v_knots) = (fitted.u_knots().clone(), fitted.v_knots().clone());
+    let (k_count, l_count, mut net) = {
+        let grid = fitted.grid();
+        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
+        (grid.u_count(), grid.v_count(), net)
+    };
+    // The fit holds each end row within its target of the end section but
+    // not in the cap's plane, and where the cap stands flush with a face of
+    // the solid (a crease running off the solid square to its side) a band
+    // end straying from the plane grazes that face along a stretch the melt
+    // does not resolve. A clamped border is the curve of its control row,
+    // so each capped end row is set in its plane, with its ends on the
+    // exact touch points: the band moves by no more than the fit's error.
+    for (plane, j, station) in [(&plane0, 0, 0), (&plane1, l_count - 1, n - 1)] {
+        if let Some(plane) = plane {
+            for i in 0..k_count {
+                let p = net[i * l_count + j];
+                net[i * l_count + j] = p - plane.normal().vector() * plane.signed_distance_to(p);
+            }
+            net[j] = blend.touch_first[station];
+            net[(k_count - 1) * l_count + j] = blend.touch_second[station];
+        }
+    }
+    let surface = ogeom_geom::BSplineSurface::new(
+        u_knots.clone(),
+        v_knots.clone(),
+        &ogeom_math::ControlGrid::new(net.clone(), k_count, l_count)?,
+        tol,
+    )?;
+    let point_at = |i: usize, j: usize| -> Point { net[i * l_count + j] };
+    let blend_geo: SurfaceGeometry = surface.into();
+    let (u_dom, v_dom) = blend_geo.domain();
+    let blend_id = model.geometry_mut().add_surface(blend_geo.clone());
+
+    // Six shared vertices: the four band corners off the control net (
+    // which the clamped borders interpolate exactly) and the crease's two
+    // ends off the guide itself.
     let (t0, t1) = (
         match &plane0 {
             Some(plane) => apex_on(plane, blend.along[0])?,
@@ -1573,11 +1655,37 @@ pub(crate) fn build_open_band(
     } else {
         ogeom_algo::make_edge_between(model, end_arc(l_count - 1)?, u_dom, &vc01, &vc11, tol)?.shape
     };
-    for rail in [&rail_first, &rail_second, &arc_start, &arc_end] {
+    for rail in [&rail_first, &rail_second] {
         if let Some(node) = model.node_mut(rail)
             && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
         {
             data.tolerance = data.tolerance.widen_to(fit_target);
+        }
+    }
+    // An end arc lies in its cap's plane and ends on the exact touch
+    // points, so it owns only its measured distance from the ball's arc,
+    // not the whole fit target: an arc held that loosely reads as running
+    // along a straight edge it is tangent to (the top edge of a side its
+    // cap is flush with) over a stretch either side of the touch.
+    for (arc, j, station, collapsed) in [
+        (&arc_start, 0, 0, pinched[0]),
+        (&arc_end, l_count - 1, n - 1, pinched[1]),
+    ] {
+        if collapsed {
+            continue;
+        }
+        let curve = end_arc(j)?;
+        let (lo, hi) = curve.domain();
+        let centre = blend.spine[station];
+        let mut off: f64 = 0.0;
+        for k in 0..=64 {
+            let t = lo + (hi - lo) * f64::from(k) / 64.0;
+            off = off.max((curve.point_at(t, tol)?.distance(centre) - radius).abs());
+        }
+        if let Some(node) = model.node_mut(arc)
+            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+        {
+            data.tolerance = data.tolerance.widen_to(off * 2.0);
         }
     }
 

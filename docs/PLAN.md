@@ -39,10 +39,15 @@ part of the seat or bridging a gap. Refused by name:
 
 - Faces of a solid that the ball leaves at different places round its
   seat and never both at once: neither face gives the round both its ends.
-- A capped round whose wedge the boolean does not resolve (the kept pieces
-  do not close): seen where a cap stands in the plane of a side face of the
-  solid (a drum whose axis meets the block's edge and leans along it), and
-  where the drum's axis meets the top's plane past the block's edge.
+- A capped face blend whose wedge the boolean does not resolve, on a drum
+  leaning along the block's edge with its wall parted above the foot: with
+  the axis past the edge at a lean of 1 or 2 degrees the round's crossing
+  runs past the block's corner and the kept pieces do not close; with the
+  axis on the edge at 15 degrees the parted solid carries a sliver edge at
+  the wall's seam too short to mesh. A cap flush with a side face, and
+  edge rounds of the same feet, melt (each capped end row lies in its cap
+  plane on the exact touch points, and an end at the edge's vertex caps in
+  the section plane through that vertex, so chained arcs share one cap).
 - A marched round closing on itself between separate faces, and one whose
   line of contact crosses a face more than once.
 - A round crossing a face that stands between the two (a ball smaller than a
