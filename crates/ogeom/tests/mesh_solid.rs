@@ -2857,7 +2857,13 @@ fn clip_to_convex(subject: &[(f64, f64)], window: &[(f64, f64)]) -> Vec<(f64, f6
 ///
 /// The pad fused back, in common with the slab and cut from it must each
 /// be valid, with a volume within `2e-5` cubic millimetres of one measured
-/// from the mesh alone. The slab's volume is its triangles' signed
+/// from the mesh alone, plus the doubt the converted slab carries where the
+/// pad's floor crosses it. Rows that lean alike merge into one face on a
+/// fitted plane, its vertices off the plane by up to their tolerance; a
+/// face the floor splits is tessellated on those vertices in pieces, not
+/// whole, and its volume moves by up to how far they stand off the plane
+/// times its area. That sum over the faces the floor crosses is the doubt;
+/// faces holding their vertices to rounding carry none. The slab's volume is its triangles' signed
 /// tetrahedra, the pad's its lid's area times its depth, and their common
 /// part the integral down the pad of the lid clipped by the slab's
 /// section, which between two rows is the polygon through the edges
@@ -3015,6 +3021,28 @@ fn pad_on_a_drafted_slab(
         .unwrap()
         .shape;
     let fine = Deflection::with_chord(1e-3).unwrap();
+    let mut doubt = 0.0;
+    for face in explore_unique(&model, &slab, ShapeType::Face).unwrap() {
+        let (on, normal) = ogeom::algo::face_normal(&model, &face, T).unwrap();
+        let (mut off, mut low, mut high) = (0.0_f64, f64::MAX, f64::MIN);
+        for vertex in explore_unique(&model, &face, ShapeType::Vertex).unwrap() {
+            let p = model
+                .node(&vertex)
+                .unwrap()
+                .data()
+                .as_vertex()
+                .unwrap()
+                .point;
+            off = off.max((p - on).dot(normal).abs());
+            (low, high) = (low.min(p.z), high.max(p.z));
+        }
+        if low < floor && high > floor {
+            let area = ogeom::algo::surface_properties(&model, &face, fine, T)
+                .unwrap()
+                .mass;
+            doubt += off * area;
+        }
+    }
     for (name, expected) in [
         ("fuse", slab_volume + pad_volume - common_volume),
         ("common", common_volume),
@@ -3038,9 +3066,10 @@ fn pad_on_a_drafted_slab(
             return Err(format!("depth {depth}: {name}: its tessellation is open"));
         }
         let v = signed(&tessellated);
-        if (v - expected).abs() > 2e-5 {
+        if (v - expected).abs() > 2e-5 + doubt {
             return Err(format!(
-                "depth {depth}: {name}: volume {v}, measured {expected}, off by {:.2e}",
+                "depth {depth}: {name}: volume {v}, measured {expected}, off by {:.2e}, \
+                 the slab's doubt {doubt:.2e}",
                 v - expected
             ));
         }
@@ -3168,6 +3197,32 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_uniform_rows_cut_and_fuse() {
                     }
                 }
             }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
+/// The slab drafted 0.0001 to 0.0007 with rows of differing counts,
+/// converted at the converter's own coplanar distance, and the pad's floor
+/// crossing it below the top band. Rows that lean alike merge into one
+/// face, its vertices standing up to six ten-thousandths off its fitted
+/// plane, and the floor splits it: each result's volume stays within that
+/// face's doubt of the mesh's.
+#[test]
+fn pads_into_slabs_whose_merged_rows_stand_off_their_planes_cut_and_fuse() {
+    let mut failed = Vec::new();
+    for (draft, counts) in [
+        (0.0007, [6, 5, 6, 5, 6, 5, 6]),
+        (0.0007, [8, 9, 9, 5, 4, 5, 5]),
+        (0.0007, [8, 5, 9, 9, 5, 8, 7]),
+        (0.0005, [8, 7, 8, 7, 8, 7, 8]),
+        (0.0005, [6, 5, 6, 5, 6, 5, 6]),
+        (0.0005, [8, 9, 9, 5, 4, 5, 5]),
+        (0.0001, [8, 9, 9, 5, 4, 5, 5]),
+        (0.0001, [6, 6, 6, 4, 8, 7, 5]),
+    ] {
+        if let Err(e) = pad_on_a_drafted_slab(3.0, draft, counts, false) {
+            failed.push(format!("{draft} {counts:?}: {e}"));
         }
     }
     assert!(failed.is_empty(), "{failed:#?}");

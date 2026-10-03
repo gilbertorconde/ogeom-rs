@@ -102,11 +102,22 @@ converter's own distance (79 and 67 before). What remains:
   piece is refused as an unpaired coincidence. The pair wants same-domain
   pairing.
 - At the converter's own distance, rows that lean alike merge into one
-  face, and a pad whose floor crosses the slab below the top band, mostly
-  where the rows either side differ in count, fuses or cuts valid and
-  closed but off the mesh's volume by 2e-5 to 5e-4 (8 of 136: 5 gave the
-  same volume before, 3 were refused at the top band), or leaves the kept
-  pieces open (mostly at a depth of 10).
+  face on a fitted plane, its vertices up to 6e-4 off it within their
+  tolerance. A pad whose floor crosses such a face came out off the mesh's
+  volume by 2e-5 to 5e-4 (8 sets at a depth of 3). Not a boolean error:
+  slicing the slab with a plain box at the floor moves cut plus common by
+  the same amount to three digits, the pieces of a face tessellated on
+  vertices off its plane differ from the face tessellated whole, and every
+  case stays under a fiftieth of the crossed faces' doubt (vertex offset
+  times area, 6e-3 to 4e-2); where the crossed faces hold their vertices
+  the identities hold to 1e-12. The test's tolerance now adds that doubt.
+  The converter merging rows that far off a plane is the cause to take up
+  if exact volumes on such parts matter. Of the 15 committed row-count
+  sets at 4 drafts and 2 depths, 107 of 120 pass at this distance; of the
+  rest 10 are refused as kept pieces that do not close (9 at a depth of
+  10), 2 as a fuse whose rays all meet a degenerate point, and one fuse
+  is valid but its tessellation open (three to nine a row, drafted
+  0.0003, depth 10).
 - Each row a face of its own, three sets at a depth of 10 leave the kept
   pieces open or the fuse's tessellation open (eight to five or three to
   nine a row, drafted 0.0003 to 0.0005).
