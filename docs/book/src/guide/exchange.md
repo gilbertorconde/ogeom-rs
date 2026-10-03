@@ -114,3 +114,26 @@ you can model on:
 
 Its report says where an open mesh is open, and which curved regions could
 not be rebuilt exactly and stayed faceted.
+
+To correct a conversion, take its two steps apart. `algo::MeshRegions::find`
+returns the regions, each with its triangles, its surface, how far its
+vertices stand off it, and its neighbours. Then:
+
+- `merge` joins two neighbouring regions and refits them as one;
+- `split` cuts a region in two along a path of mesh vertices;
+- `fit` puts a plane, cylinder, cone, sphere or torus on a region,
+  optionally with its axis or radius fixed.
+
+`build` makes the solid the same way `solid_from_mesh` does. Each surface
+is checked against every vertex of its region, and a step that cannot be
+taken returns a `RegionRefusal` saying why.
+
+```rust,ignore
+let mut regions = MeshRegions::find(&mesh, &MeshSolidOptions::default(), tol)?;
+let merged = regions.merge(a, b)?;
+regions.fit(merged, SurfaceKind::Cylinder, &FitConstraints {
+    radius: Some(5.0),
+    ..FitConstraints::default()
+})?;
+let solid = regions.build(&mut model)?;
+```

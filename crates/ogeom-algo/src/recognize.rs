@@ -772,7 +772,7 @@ fn fit_plane(points: &[Point], tol: Tolerances) -> Option<Canonical> {
     ))))
 }
 
-fn fit_sphere(points: &[Point], tol: Tolerances) -> Option<Canonical> {
+pub(crate) fn fit_sphere(points: &[Point], tol: Tolerances) -> Option<Canonical> {
     // |p|² − 2p·c + Q = 0 with Q = |c|² − r²: linear in (c, Q).
     let mut a = nalgebra::Matrix4::zeros();
     let mut b = nalgebra::Vector4::zeros();
@@ -904,7 +904,11 @@ fn centred_on(points: &[Point], through: Point, axis: Direction) -> Point {
     through + axis.vector() * (c - through).dot(axis.vector())
 }
 
-fn fit_cylinder(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
+pub(crate) fn fit_cylinder(
+    points: &[Point],
+    normals: &[Vector],
+    tol: Tolerances,
+) -> Option<Canonical> {
     let (through, axis) = revolution_axis(points, normals, tol)?;
     let rows = profile(points, through, axis);
     #[allow(
@@ -922,7 +926,7 @@ fn fit_cylinder(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option
     ))
 }
 
-fn fit_cone(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
+pub(crate) fn fit_cone(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
     let (through, axis) = revolution_axis(points, normals, tol)?;
     match ruled_about(points, through, axis, 0.0, tol)? {
         cone @ Canonical::Cone(_) => Some(cone),
@@ -1028,7 +1032,11 @@ fn circle_through(points: &[Point], tol: Tolerances) -> Option<(Point, Direction
     Some((centre, normal, radius, rms))
 }
 
-fn fit_torus(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
+pub(crate) fn fit_torus(
+    points: &[Point],
+    normals: &[Vector],
+    tol: Tolerances,
+) -> Option<Canonical> {
     // Every normal line of a torus passes through its spine circle, a tube
     // radius from the surface: at the right radius the points shifted back
     // along their normals lie on one circle, whose plane gives the axis.
@@ -1144,7 +1152,7 @@ fn parameters(surface: &Canonical) -> Option<Vec<f64>> {
 
 /// A point's signed distance to the surface `x` describes, of the kind
 /// `like` is.
-fn residual(like: &Canonical, x: &[f64], p: Point) -> f64 {
+pub(crate) fn residual(like: &Canonical, x: &[f64], p: Point) -> f64 {
     let o = Point::new(x[0], x[1], x[2]);
     if let Canonical::Sphere(_) = like {
         return p.distance(o) - x[3];
@@ -1166,7 +1174,7 @@ fn residual(like: &Canonical, x: &[f64], p: Point) -> f64 {
     }
 }
 
-fn rebuild(like: &Canonical, x: &[f64], tol: Tolerances) -> Option<Canonical> {
+pub(crate) fn rebuild(like: &Canonical, x: &[f64], tol: Tolerances) -> Option<Canonical> {
     let o = Point::new(x[0], x[1], x[2]);
     if let Canonical::Sphere(_) = like {
         return Some(Canonical::Sphere(Sphere::centred(o, x[3], tol).ok()?));
@@ -1227,7 +1235,12 @@ fn regauged(like: &Canonical, mut x: Vec<f64>, points: &[Point]) -> Vec<f64> {
 /// rather than amplified, and each step halved until it lowers the cost.
 /// The Jacobian is by central differences: a handful of numbers, and a
 /// residual cheap enough that exactness in it buys nothing.
-fn refine(seed: Canonical, points: &[Point], hopeless: f64, tol: Tolerances) -> Option<Canonical> {
+pub(crate) fn refine(
+    seed: Canonical,
+    points: &[Point],
+    hopeless: f64,
+    tol: Tolerances,
+) -> Option<Canonical> {
     let mut x = parameters(&seed)?;
     let n = x.len();
     let cost = |x: &[f64]| -> f64 { points.iter().map(|p| residual(&seed, x, *p).powi(2)).sum() };

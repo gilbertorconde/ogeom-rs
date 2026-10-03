@@ -244,13 +244,28 @@ after.
      to facets.
 
    Tangency to a canonical neighbour comes after item 2.
-6. **The steps as an API:** the regions found, merging two, splitting one
-   along a vertex path, fitting a chosen surface type to one (optionally
-   with a fixed axis or radius), then building the solid. The pieces exist
-   inside `solid_from_mesh`; the work is a stable surface for them and tests
-   that a corrected conversion builds what an automatic one would have. It
-   follows item 4, whose corner and boundary graph is what an application
-   edits.
+6. **The steps as an API.** Done: `MeshRegions::find` gathers the
+   regions (each with its triangles, surface, measured deviation and
+   neighbours), `merge`, `split` along a vertex path and `fit` of a
+   `SurfaceKind` with `FitConstraints` (a fixed axis, or a cylinder's,
+   sphere's or torus tube's radius) change them, and `build` makes the
+   solid. `solid_from_mesh` is `find` then `build`, so both go through one
+   path; the corpus and the truth bench come back bitwise unchanged. Every
+   surface a step puts on a region is verified at every vertex and by the
+   triangles' sag, and a step that cannot be taken is a named
+   `RegionRefusal`. Tests (`mesh_steps`): a cylinder drawn with 36 degree
+   facets, faceted by the automatic conversion (volume 5877.85, the
+   decagonal prism's), merged into one region builds the cylinder
+   (6283.185307179579 against pi r^2 h = 6283.185307179587), the same
+   solid the automatic conversion builds with the crease raised; a roof
+   two hundredths high found as one plane builds 200.22 (a 3.9e-3 error),
+   and split along its ridge 201.000000000001 of 201. Not done: an edited
+   region keeps the surface it was given, and the tangent passes that
+   recognition runs over its regions (rounds between planes, blends,
+   corner balls) do not see it; a merged or split region is refitted as a
+   plane, a canonical surface or a sweep, never as a patch, and `fit` has
+   no sweep or patch kind. Item 4's corner and boundary graph, once there,
+   is what an application would edit next.
 7. **A torus pierced across its outer equator.** Done where a parallel
    is free: a whole torus with holes has its seam round the axis placed
    on the parallel the holes leave widest free, as its seam round the

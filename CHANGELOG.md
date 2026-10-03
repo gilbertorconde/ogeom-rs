@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Mesh conversion's steps as an API.** `MeshRegions::find` returns a
+  mesh's regions (triangles, surface, deviation, neighbours); `merge`,
+  `split` along a vertex path and `fit` of a `SurfaceKind` with
+  `FitConstraints` (a fixed axis or radius) correct them, each verified at
+  every vertex, and `build` makes the solid through the same pipeline as
+  `solid_from_mesh`, which is now `find` then `build` with unchanged
+  results. A step that cannot be taken returns a named `RegionRefusal` and
+  leaves the regions as they were.
+
 - **Tori drilled across their equators convert whole.** `solid_from_mesh`
   places a torus's seam round the axis on a parallel no hole crosses, as
   its seam round the tube already was, so a hole across the outer equator

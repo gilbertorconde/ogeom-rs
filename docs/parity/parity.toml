@@ -1813,8 +1813,10 @@ symbols = [
     "ogeom_algo::solid_from_mesh", "ogeom_algo::MeshSolidOptions",
     "ogeom_algo::MeshSolid", "ogeom_algo::MeshSolidReport",
     "ogeom_algo::recognize_points", "ogeom_algo::Canonical", "ogeom_algo::Recognized",
+    "ogeom_algo::MeshRegions", "ogeom_algo::MeshRegion", "ogeom_algo::RegionId",
+    "ogeom_algo::SurfaceKind", "ogeom_algo::FitConstraints", "ogeom_algo::RegionRefusal",
 ]
-tests = ["crates/ogeom/tests/mesh_solid.rs"]
+tests = ["crates/ogeom/tests/mesh_solid.rs", "crates/ogeom/tests/mesh_steps.rs"]
 
 [[capability]]
 id = "offset.middle-path"

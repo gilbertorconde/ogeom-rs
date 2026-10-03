@@ -39,6 +39,9 @@ use ogeom_math::{Cone, Cylinder, Direction, Frame, Plane, Point, Point2, Sphere,
 use crate::recognize::{Canonical, recognize_curved, worst_deviation};
 use ogeom_topo::{EdgeData, EdgeRepr, FaceData, Location, Model, Shape, Triangulation, VertexData};
 
+mod steps;
+pub use steps::{FitConstraints, MeshRegion, MeshRegions, RegionId, RegionRefusal, SurfaceKind};
+
 /// How [`solid_from_mesh`] builds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshSolidOptions {
@@ -372,7 +375,9 @@ const PRESSED: f64 = 0.7;
 /// Build a B-rep from a triangle mesh.
 ///
 /// See the module documentation for the construction. A closed piece
-/// inside another becomes a void of the solid around it.
+/// inside another becomes a void of the solid around it. It is
+/// [`MeshRegions::find`] followed by [`MeshRegions::build`], with no region
+/// changed between them.
 ///
 /// # Errors
 ///
@@ -385,6 +390,30 @@ pub fn solid_from_mesh(
     options: &MeshSolidOptions,
     tol: Tolerances,
 ) -> OgeomResult<MeshSolid> {
+    MeshRegions::find(mesh, options, tol)?.build(model)
+}
+
+/// A mesh welded, cleaned and oriented, its pieces found, and its triangles
+/// gathered into regions: what a solid is built from.
+#[derive(Clone)]
+struct Found {
+    points: Vec<Point>,
+    /// The welded vertex each of the input mesh's vertices became.
+    remap: Vec<u32>,
+    triangles: Vec<[u32; 3]>,
+    adjacency: Adjacency,
+    pieces: Vec<Piece>,
+    /// How many closed pieces each piece lies inside.
+    depth: Vec<usize>,
+    all_closed: bool,
+    /// The coplanar distance the regions were found to.
+    flat: f64,
+    groups: Groups,
+    report: MeshSolidReport,
+}
+
+/// Weld, clean and orient the mesh, and gather its triangles into regions.
+fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> OgeomResult<Found> {
     let weld = options.weld.unwrap_or_else(|| tol.confusion());
     if !(weld.is_finite() && weld > 0.0) {
         ogeom_bail!(
@@ -548,13 +577,64 @@ pub fn solid_from_mesh(
             groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
         }
     }
+    Ok(Found {
+        points,
+        remap,
+        triangles,
+        adjacency,
+        pieces,
+        depth,
+        all_closed,
+        flat,
+        groups,
+        report,
+    })
+}
+
+/// The solid built from found regions.
+///
+/// A region whose carrier is gone and still holds triangles gives them to
+/// planar faces first, as the planar pass gathers them.
+fn build(
+    model: &mut Model,
+    found: &Found,
+    options: &MeshSolidOptions,
+    tol: Tolerances,
+) -> OgeomResult<MeshSolid> {
+    let (points, triangles, adjacency) = (&found.points, &found.triangles, &found.adjacency);
+    let (pieces, depth, all_closed, flat) =
+        (&found.pieces, &found.depth, found.all_closed, found.flat);
+    let mut groups = found.groups.clone();
+    let mut report = found.report.clone();
+    let mut released = false;
+    for t in 0..triangles.len() {
+        if matches!(groups.carriers.get(groups.of[t]), Some(Carrier::Gone)) {
+            groups.of[t] = usize::MAX;
+            released = true;
+        }
+    }
+    if released {
+        if options.merge_coplanar {
+            coplanar_groups(
+                points,
+                triangles,
+                adjacency,
+                options,
+                flat,
+                &mut groups,
+                tol,
+            )?;
+        } else {
+            one_each(points, triangles, &mut groups, tol)?;
+        }
+    }
     // Facets left between curved faces go to them first. Whether that
     // leaves every face facing out is known only once the solid is built;
     // where one faces into the material, the conversion is made again
     // without them.
     let unabsorbed = (groups.clone(), report.clone());
     let mut absorbed = if options.recognize {
-        absorb_facets(&points, &triangles, &adjacency, &mut groups, flat)
+        absorb_facets(points, triangles, adjacency, &mut groups, flat)
     } else {
         HashMap::new()
     };
@@ -576,9 +656,9 @@ pub fn solid_from_mesh(
         let mut refaceted = false;
         let shape = loop {
             let planner = Planner {
-                points: &points,
-                triangles: &triangles,
-                adjacency: &adjacency,
+                points,
+                triangles,
+                adjacency,
                 groups: &groups,
                 merge: options.merge_coplanar && !options.keep_vertices,
                 pinned: &pinned,
@@ -598,25 +678,24 @@ pub fn solid_from_mesh(
                     model.begin_operation();
                     let built = Builder {
                         model,
-                        points: &points,
-                        triangles: &triangles,
+                        points,
+                        triangles,
                         groups: &groups,
                         plan: &plan,
                         tol,
                     }
                     .build()?;
                     let astray =
-                        astray_faces(model, &points, &triangles, &groups, &built, flat, tol)?;
+                        astray_faces(model, points, triangles, &groups, &built, flat, tol)?;
                     if astray.is_empty() {
                         let (shape, bodies) = assemble(
-                            model, &points, &triangles, &pieces, &depth, all_closed, &groups,
-                            &built,
+                            model, points, triangles, pieces, depth, all_closed, &groups, &built,
                         )?;
                         let mut culprits = if options.recognize && all_closed {
                             body_culprits(
                                 model,
-                                &points,
-                                &triangles,
+                                points,
+                                triangles,
                                 &groups,
                                 &built,
                                 &bodies,
@@ -629,7 +708,7 @@ pub fn solid_from_mesh(
                         };
                         if culprits.is_empty() && options.recognize && !threading_refused {
                             let crossed = crossed_seams(
-                                model, &shape, &triangles, &adjacency, &groups, &built, tol,
+                                model, &shape, triangles, adjacency, &groups, &built, tol,
                             )?;
                             let before = straight.len();
                             if before == 0 && !crossed.is_empty() {
@@ -641,7 +720,7 @@ pub fn solid_from_mesh(
                             }
                             if let Some((was, then)) = unthreaded.take()
                                 && (turned_over(
-                                    model, &shape, &triangles, &groups, &built, &straight, tol,
+                                    model, &shape, triangles, &groups, &built, &straight, tol,
                                 )? || (refaceted && any_turned_in(model, &shape, tol)?))
                             {
                                 groups = was;
@@ -656,7 +735,7 @@ pub fn solid_from_mesh(
                         }
                         if culprits.is_empty() && options.recognize {
                             culprits =
-                                overlapping_faces(model, &shape, &adjacency, &groups, &built, tol)?;
+                                overlapping_faces(model, &shape, adjacency, &groups, &built, tol)?;
                         }
                         if culprits.is_empty() && options.recognize {
                             culprits = unmatched_faces(model, &shape, &groups, &built, flat, tol)?;
@@ -723,9 +802,9 @@ pub fn solid_from_mesh(
                 }
             }
             coplanar_groups(
-                &points,
-                &triangles,
-                &adjacency,
+                points,
+                triangles,
+                adjacency,
                 options,
                 flat,
                 &mut groups,
@@ -2296,6 +2375,7 @@ fn next(h: Half) -> Half {
 }
 
 /// Which half-edges pair across a mesh edge exactly two triangles share.
+#[derive(Clone)]
 struct Adjacency {
     /// The other triangle's half-edge on the same mesh edge, where exactly
     /// one other triangle uses it.
@@ -2382,6 +2462,7 @@ impl Adjacency {
 }
 
 /// One connected piece: its triangles, and whether it closes.
+#[derive(Clone)]
 struct Piece {
     triangles: Vec<u32>,
     closed: bool,
@@ -5231,66 +5312,78 @@ fn sphere_axes(
     flat: f64,
     tol: Tolerances,
 ) {
-    let reach = flat * REACH;
     for g in 0..groups.carriers.len() {
-        let Carrier::Curved(curved) = &groups.carriers[g] else {
-            continue;
+        sphere_axis(points, triangles, adjacency, groups, g, flat, tol);
+    }
+}
+
+/// [`sphere_axes`] for the region `g`.
+fn sphere_axis(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    g: usize,
+    flat: f64,
+    tol: Tolerances,
+) {
+    let reach = flat * REACH;
+    let Carrier::Curved(curved) = &groups.carriers[g] else {
+        return;
+    };
+    let Canonical::Sphere(sphere) = curved.shape else {
+        return;
+    };
+    let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
+        return;
+    };
+    let mut axis: Option<Vector> = None;
+    let mut planar = true;
+    for ring in &loops {
+        let pts: Vec<Point> = ring.iter().map(|&v| points[v as usize]).collect();
+        let Some((through, normal)) = (pts.len() >= 3).then(|| plane_through(&pts, tol)).flatten()
+        else {
+            planar = false;
+            break;
         };
-        let Canonical::Sphere(sphere) = curved.shape else {
-            continue;
-        };
-        let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
-            continue;
-        };
-        let mut axis: Option<Vector> = None;
-        let mut planar = true;
-        for ring in &loops {
-            let pts: Vec<Point> = ring.iter().map(|&v| points[v as usize]).collect();
-            let Some((through, normal)) =
-                (pts.len() >= 3).then(|| plane_through(&pts, tol)).flatten()
-            else {
-                planar = false;
-                break;
-            };
-            let n = normal.vector();
-            if pts.iter().any(|p| (*p - through).dot(n).abs() > reach) {
+        let n = normal.vector();
+        if pts.iter().any(|p| (*p - through).dot(n).abs() > reach) {
+            planar = false;
+            break;
+        }
+        match axis {
+            None => axis = Some(n),
+            Some(a) if a.cross(n).magnitude() <= 1e-3 => {}
+            Some(_) => {
                 planar = false;
                 break;
             }
-            match axis {
-                None => axis = Some(n),
-                Some(a) if a.cross(n).magnitude() <= 1e-3 => {}
-                Some(_) => {
-                    planar = false;
-                    break;
-                }
-            }
         }
-        let (true, Some(mut z)) = (planar, axis) else {
-            continue;
-        };
-        // Into the region: the pole a cap covers is the north one.
-        let side: f64 = curved
-            .vertices
-            .iter()
-            .map(|&v| (points[v as usize] - sphere.centre()).dot(z))
-            .sum();
-        if side < 0.0 {
-            z = -z;
-        }
-        let Ok(z) = Direction::new(z, tol) else {
-            continue;
-        };
-        let Ok(frame) = Frame::new(sphere.centre(), z, z.any_perpendicular(), tol) else {
-            continue;
-        };
-        let Ok(turned) = Sphere::new(frame, sphere.radius(), tol) else {
-            continue;
-        };
-        if let Carrier::Curved(curved) = &mut groups.carriers[g] {
-            curved.shape = Canonical::Sphere(turned);
-            curved.fixed = true;
-        }
+    }
+    let (true, Some(mut z)) = (planar, axis) else {
+        return;
+    };
+    // Into the region: the pole a cap covers is the north one.
+    let side: f64 = curved
+        .vertices
+        .iter()
+        .map(|&v| (points[v as usize] - sphere.centre()).dot(z))
+        .sum();
+    if side < 0.0 {
+        z = -z;
+    }
+    let Ok(z) = Direction::new(z, tol) else {
+        return;
+    };
+    let Ok(frame) = Frame::new(sphere.centre(), z, z.any_perpendicular(), tol) else {
+        return;
+    };
+    let Ok(turned) = Sphere::new(frame, sphere.radius(), tol) else {
+        return;
+    };
+    if let Carrier::Curved(curved) = &mut groups.carriers[g] {
+        curved.shape = Canonical::Sphere(turned);
+        curved.fixed = true;
     }
 }
 
@@ -5351,142 +5444,154 @@ fn hole_frames(
     tol: Tolerances,
 ) {
     for g in 0..groups.carriers.len() {
-        let Carrier::Curved(curved) = &groups.carriers[g] else {
-            continue;
-        };
-        let wanted = match curved.shape {
-            Canonical::Sphere(_) => curved.wraps && !curved.fixed,
-            Canonical::Torus(_) => curved.wraps && curved.wraps_v,
-            _ => false,
-        };
-        if !wanted {
-            continue;
-        }
-        let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
-            continue;
-        };
-        let ring_points: Vec<Point> = loops
-            .iter()
-            .flatten()
-            .map(|&v| points[v as usize])
-            .collect();
-        let shape = match curved.shape.clone() {
-            Canonical::Sphere(sphere) => {
-                // The axis whose poles stand farthest from every ring point,
-                // of those no ring goes round: a pole inside a hole is off
-                // the face, however far it stands from the hole's edge.
-                let unit = |p: Point| {
-                    let d = p - sphere.centre();
-                    let m = d.magnitude();
-                    (m > 0.0).then(|| d / m)
-                };
-                let directions: Vec<Vector> = ring_points.iter().filter_map(|p| unit(*p)).collect();
-                let rings: Vec<Vec<Vector>> = loops
-                    .iter()
-                    .map(|ring| {
-                        ring.iter()
-                            .filter_map(|&v| unit(points[v as usize]))
-                            .collect()
-                    })
-                    .collect();
-                let mut ranked: Vec<(f64, Vector)> = spread_directions(POLE_CANDIDATES)
-                    .into_iter()
-                    .map(|z| {
-                        let nearest = directions
-                            .iter()
-                            .map(|d| d.dot(z).abs())
-                            .fold(0.0_f64, f64::max);
-                        (nearest, z)
-                    })
-                    .collect();
-                ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
-                // And both poles on the region itself: a loop no axis goes
-                // round has both poles to one side of it, which may be the
-                // hole's.
-                let on_region = |p: Point| {
-                    triangles
-                        .iter()
-                        .enumerate()
-                        .map(|(t, tri)| {
-                            let c = Point::from_vector(
-                                (points[tri[0] as usize].to_vector()
-                                    + points[tri[1] as usize].to_vector()
-                                    + points[tri[2] as usize].to_vector())
-                                    / 3.0,
-                            );
-                            (c.distance(p), t)
-                        })
-                        .min_by(|a, b| a.0.total_cmp(&b.0))
-                        .is_some_and(|(_, t)| groups.of[t] == g)
-                };
-                let best = ranked.into_iter().find(|(_, z)| {
-                    rings.iter().all(|ring| turns_about(ring, *z) == 0)
-                        && on_region(sphere.centre() + *z * sphere.radius())
-                        && on_region(sphere.centre() - *z * sphere.radius())
-                });
-                let Some((nearest, z)) = best else {
-                    continue;
-                };
-                // A pole within a few degrees of a ring has no room round it.
-                if nearest > POLE_CLEARANCE.cos() {
-                    continue;
-                }
-                let Ok(z) = Direction::new(z, tol) else {
-                    continue;
-                };
-                let Ok(frame) = Frame::new(sphere.centre(), z, z.any_perpendicular(), tol) else {
-                    continue;
-                };
-                let Ok(turned) = Sphere::new(frame, sphere.radius(), tol) else {
-                    continue;
-                };
-                Canonical::Sphere(turned)
-            }
-            other => other,
-        };
-        // Then the seam, turned about the axis into the widest angle the
-        // rings leave free.
-        let angles: Vec<Vec<(f64, f64)>> = vec![
-            ring_points
+        hole_frame(points, triangles, adjacency, groups, g, tol);
+    }
+}
+
+/// [`hole_frames`] for the region `g`.
+fn hole_frame(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    g: usize,
+    tol: Tolerances,
+) {
+    let Carrier::Curved(curved) = &groups.carriers[g] else {
+        return;
+    };
+    let wanted = match curved.shape {
+        Canonical::Sphere(_) => curved.wraps && !curved.fixed,
+        Canonical::Torus(_) => curved.wraps && curved.wraps_v,
+        _ => false,
+    };
+    if !wanted {
+        return;
+    }
+    let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
+        return;
+    };
+    let ring_points: Vec<Point> = loops
+        .iter()
+        .flatten()
+        .map(|&v| points[v as usize])
+        .collect();
+    let shape = match curved.shape.clone() {
+        Canonical::Sphere(sphere) => {
+            // The axis whose poles stand farthest from every ring point,
+            // of those no ring goes round: a pole inside a hole is off
+            // the face, however far it stands from the hole's edge.
+            let unit = |p: Point| {
+                let d = p - sphere.centre();
+                let m = d.magnitude();
+                (m > 0.0).then(|| d / m)
+            };
+            let directions: Vec<Vector> = ring_points.iter().filter_map(|p| unit(*p)).collect();
+            let rings: Vec<Vec<Vector>> = loops
                 .iter()
-                .filter_map(|p| chart(&shape, *p, tol))
-                .collect(),
-        ];
-        let Some(free) = free_angle(&angles) else {
-            continue;
-        };
-        let Some(frame) = axis_frame(&shape) else {
-            continue;
-        };
-        let (x, y) = (frame.x().vector(), frame.y().vector());
-        let Ok(x) = Direction::new(x * free.cos() + y * free.sin(), tol) else {
-            continue;
-        };
-        let Ok(turned) = Frame::new(frame.origin(), frame.z(), x, tol) else {
-            continue;
-        };
-        let Some(shape) = on_frame(&shape, turned, tol) else {
-            continue;
-        };
-        // A torus's seam round its axis is a parallel, placed at the tube
-        // angle the rings leave widest free; its chart is centred half a
-        // turn on from it.
-        let centre_v = match shape {
-            Canonical::Torus(_) => {
-                let across: Vec<Vec<(f64, f64)>> =
-                    vec![angles[0].iter().map(|&(u, v)| (v, u)).collect()];
-                let Some(free_v) = free_angle(&across) else {
-                    continue;
-                };
-                free_v + core::f64::consts::PI
+                .map(|ring| {
+                    ring.iter()
+                        .filter_map(|&v| unit(points[v as usize]))
+                        .collect()
+                })
+                .collect();
+            let mut ranked: Vec<(f64, Vector)> = spread_directions(POLE_CANDIDATES)
+                .into_iter()
+                .map(|z| {
+                    let nearest = directions
+                        .iter()
+                        .map(|d| d.dot(z).abs())
+                        .fold(0.0_f64, f64::max);
+                    (nearest, z)
+                })
+                .collect();
+            ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+            // And both poles on the region itself: a loop no axis goes
+            // round has both poles to one side of it, which may be the
+            // hole's.
+            let on_region = |p: Point| {
+                triangles
+                    .iter()
+                    .enumerate()
+                    .map(|(t, tri)| {
+                        let c = Point::from_vector(
+                            (points[tri[0] as usize].to_vector()
+                                + points[tri[1] as usize].to_vector()
+                                + points[tri[2] as usize].to_vector())
+                                / 3.0,
+                        );
+                        (c.distance(p), t)
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .is_some_and(|(_, t)| groups.of[t] == g)
+            };
+            let best = ranked.into_iter().find(|(_, z)| {
+                rings.iter().all(|ring| turns_about(ring, *z) == 0)
+                    && on_region(sphere.centre() + *z * sphere.radius())
+                    && on_region(sphere.centre() - *z * sphere.radius())
+            });
+            let Some((nearest, z)) = best else {
+                return;
+            };
+            // A pole within a few degrees of a ring has no room round it.
+            if nearest > POLE_CLEARANCE.cos() {
+                return;
             }
-            _ => curved.centre.1,
-        };
-        if let Carrier::Curved(curved) = &mut groups.carriers[g] {
-            curved.shape = shape;
-            curved.fixed = true;
-            curved.centre = (core::f64::consts::PI, centre_v);
+            let Ok(z) = Direction::new(z, tol) else {
+                return;
+            };
+            let Ok(frame) = Frame::new(sphere.centre(), z, z.any_perpendicular(), tol) else {
+                return;
+            };
+            let Ok(turned) = Sphere::new(frame, sphere.radius(), tol) else {
+                return;
+            };
+            Canonical::Sphere(turned)
         }
+        other => other,
+    };
+    // Then the seam, turned about the axis into the widest angle the
+    // rings leave free.
+    let angles: Vec<Vec<(f64, f64)>> = vec![
+        ring_points
+            .iter()
+            .filter_map(|p| chart(&shape, *p, tol))
+            .collect(),
+    ];
+    let Some(free) = free_angle(&angles) else {
+        return;
+    };
+    let Some(frame) = axis_frame(&shape) else {
+        return;
+    };
+    let (x, y) = (frame.x().vector(), frame.y().vector());
+    let Ok(x) = Direction::new(x * free.cos() + y * free.sin(), tol) else {
+        return;
+    };
+    let Ok(turned) = Frame::new(frame.origin(), frame.z(), x, tol) else {
+        return;
+    };
+    let Some(shape) = on_frame(&shape, turned, tol) else {
+        return;
+    };
+    // A torus's seam round its axis is a parallel, placed at the tube
+    // angle the rings leave widest free; its chart is centred half a
+    // turn on from it.
+    let centre_v = match shape {
+        Canonical::Torus(_) => {
+            let across: Vec<Vec<(f64, f64)>> =
+                vec![angles[0].iter().map(|&(u, v)| (v, u)).collect()];
+            let Some(free_v) = free_angle(&across) else {
+                return;
+            };
+            free_v + core::f64::consts::PI
+        }
+        _ => curved.centre.1,
+    };
+    if let Carrier::Curved(curved) = &mut groups.carriers[g] {
+        curved.shape = shape;
+        curved.fixed = true;
+        curved.centre = (core::f64::consts::PI, centre_v);
     }
 }
 
@@ -5523,46 +5628,58 @@ fn slit_bands(
     tol: Tolerances,
 ) {
     for g in 0..groups.carriers.len() {
-        let Carrier::Curved(curved) = &groups.carriers[g] else {
-            continue;
-        };
-        if !curved.wraps
-            || curved.wraps_v
-            || !matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_))
-        {
-            continue;
-        }
-        let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
-            continue;
-        };
-        let [ring] = &loops[..] else {
-            continue;
-        };
-        let Some(frame) = axis_frame(&curved.shape) else {
-            continue;
-        };
-        let directions: Vec<Vector> = ring
-            .iter()
-            .map(|&v| points[v as usize] - frame.origin())
-            .collect();
-        if turns_about(&directions, frame.z().vector()) != 0 {
-            continue;
-        }
-        let mut angles: Vec<f64> = curved
-            .vertices
-            .iter()
-            .filter_map(|&v| chart(&curved.shape, points[v as usize], tol).map(|c| c.0))
-            .collect();
-        let Some(gap) = widest_gap(&mut angles) else {
-            continue;
-        };
-        if let Carrier::Curved(curved) = &mut groups.carriers[g] {
-            curved.wraps = false;
-            curved.centre = (
-                ogeom_math::elementary::wrap_angle(gap + core::f64::consts::PI),
-                curved.centre.1,
-            );
-        }
+        slit_band(points, triangles, adjacency, groups, g, tol);
+    }
+}
+
+/// [`slit_bands`] for the region `g`.
+fn slit_band(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    g: usize,
+    tol: Tolerances,
+) {
+    let Carrier::Curved(curved) = &groups.carriers[g] else {
+        return;
+    };
+    if !curved.wraps
+        || curved.wraps_v
+        || !matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_))
+    {
+        return;
+    }
+    let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
+        return;
+    };
+    let [ring] = &loops[..] else {
+        return;
+    };
+    let Some(frame) = axis_frame(&curved.shape) else {
+        return;
+    };
+    let directions: Vec<Vector> = ring
+        .iter()
+        .map(|&v| points[v as usize] - frame.origin())
+        .collect();
+    if turns_about(&directions, frame.z().vector()) != 0 {
+        return;
+    }
+    let mut angles: Vec<f64> = curved
+        .vertices
+        .iter()
+        .filter_map(|&v| chart(&curved.shape, points[v as usize], tol).map(|c| c.0))
+        .collect();
+    let Some(gap) = widest_gap(&mut angles) else {
+        return;
+    };
+    if let Carrier::Curved(curved) = &mut groups.carriers[g] {
+        curved.wraps = false;
+        curved.centre = (
+            ogeom_math::elementary::wrap_angle(gap + core::f64::consts::PI),
+            curved.centre.1,
+        );
     }
 }
 
@@ -5674,106 +5791,119 @@ fn align_axes(
         let Carrier::Curved(curved) = &mut groups.carriers[i] else {
             continue;
         };
-        let Some(frame) = axis_frame(&curved.shape) else {
-            continue;
-        };
-        let sphere = matches!(curved.shape, Canonical::Sphere(_));
-        // An axis all but square to a plane of the solid is square to it:
-        // the mesh's slop leans the fit by a few millionths, and a leaning
-        // axis meets the plane in an ellipse where the part has a circle.
-        let frame = match normals.iter().find(|n| {
-            let lean = n.vector().cross(frame.z().vector()).magnitude();
-            lean > 0.0 && lean <= 1e-3
-        }) {
-            Some(&normal) if !sphere => {
-                let axis = if normal.vector().dot(frame.z().vector()) >= 0.0 {
-                    normal
-                } else {
-                    -normal
-                };
-                if let Ok(square) = Frame::new(frame.origin(), axis, frame.x(), tol) {
-                    onto_axis(curved, points, square, flat, tol);
-                }
-                axis_frame(&curved.shape).unwrap_or(frame)
-            }
-            _ => frame,
-        };
-        let lead = leaders.iter().find(|l| {
-            let parallel = l.z().vector().cross(frame.z().vector()).magnitude() <= 1e-3;
-            let w = frame.origin() - l.origin();
-            let off = (w - l.z().vector() * w.dot(l.z().vector())).magnitude();
-            // A sphere centred on the axis takes its frame too: any frame
-            // through its centre is exact, and seams meeting on the circle
-            // it shares with the axis's other surfaces must start from one
-            // angle.
-            parallel && off <= flat * 10.0
-        });
-        if let Some(lead) = lead {
-            let z = lead.z().vector();
-            let w = frame.origin() - lead.origin();
-            let origin = lead.origin() + z * w.dot(z);
-            let axis = if frame.z().vector().dot(z) >= 0.0 {
-                lead.z()
-            } else {
-                -lead.z()
-            };
-            if let Ok(snapped) = Frame::new(origin, axis, lead.x(), tol) {
-                onto_axis(curved, points, snapped, flat, tol);
-            }
-        } else if !sphere {
-            leaders.push(frame);
-        }
-        // The branch: the region's mean angle, and whether it wraps.
-        let charts: Vec<(f64, f64)> = curved
-            .vertices
-            .iter()
-            .filter_map(|&v| chart(&curved.shape, points[v as usize], tol))
-            .collect();
-        let mut us: Vec<f64> = charts.iter().map(|c| c.0).collect();
-        let (_, gap_u) = angular_spread(&mut us);
-        let (_, pv) = periodic(&curved.shape);
-        if pv {
-            let mut vs: Vec<f64> = charts.iter().map(|c| c.1).collect();
-            curved.wraps_v = angular_spread(&mut vs).1 < core::f64::consts::FRAC_PI_2;
-        }
-        let wraps_u = gap_u < core::f64::consts::FRAC_PI_2;
-        curved.wraps = wraps_u;
-        if !curved.wraps
-            && !curved.wraps_v
-            && !curved.fixed
-            && let Some(reframed) = away_from(curved, points, tol)
-        {
-            curved.shape = reframed;
-        }
-        // The branch every pcurve is read on: the region's own mean chart
-        // point, which after the re-framing sits half a turn from the cut.
-        let charts: Vec<(f64, f64)> = curved
-            .vertices
-            .iter()
-            .filter_map(|&v| chart(&curved.shape, points[v as usize], tol))
-            .collect();
-        let mut us: Vec<f64> = charts.iter().map(|c| c.0).collect();
-        let (mean_u, _) = angular_spread(&mut us);
-        let mean_v = if curved.wraps_v {
-            core::f64::consts::PI
-        } else if pv {
-            let mut vs: Vec<f64> = charts.iter().map(|c| c.1).collect();
-            angular_spread(&mut vs).0
-        } else {
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "vertex counts are far below 2^52"
-            )]
-            let count = charts.len().max(1) as f64;
-            charts.iter().map(|c| c.1).sum::<f64>() / count
-        };
-        let centre_u = if wraps_u {
-            core::f64::consts::PI
-        } else {
-            ogeom_math::elementary::wrap_angle(mean_u)
-        };
-        curved.centre = (centre_u, mean_v);
+        align_one(points, curved, &mut leaders, normals, flat, tol);
     }
+}
+
+/// [`align_axes`] for one curved region, after the regions `leaders`
+/// were taken from.
+fn align_one(
+    points: &[Point],
+    curved: &mut Curved,
+    leaders: &mut Vec<Frame>,
+    normals: &[Direction],
+    flat: f64,
+    tol: Tolerances,
+) {
+    let Some(frame) = axis_frame(&curved.shape) else {
+        return;
+    };
+    let sphere = matches!(curved.shape, Canonical::Sphere(_));
+    // An axis all but square to a plane of the solid is square to it:
+    // the mesh's slop leans the fit by a few millionths, and a leaning
+    // axis meets the plane in an ellipse where the part has a circle.
+    let frame = match normals.iter().find(|n| {
+        let lean = n.vector().cross(frame.z().vector()).magnitude();
+        lean > 0.0 && lean <= 1e-3
+    }) {
+        Some(&normal) if !sphere => {
+            let axis = if normal.vector().dot(frame.z().vector()) >= 0.0 {
+                normal
+            } else {
+                -normal
+            };
+            if let Ok(square) = Frame::new(frame.origin(), axis, frame.x(), tol) {
+                onto_axis(curved, points, square, flat, tol);
+            }
+            axis_frame(&curved.shape).unwrap_or(frame)
+        }
+        _ => frame,
+    };
+    let lead = leaders.iter().find(|l| {
+        let parallel = l.z().vector().cross(frame.z().vector()).magnitude() <= 1e-3;
+        let w = frame.origin() - l.origin();
+        let off = (w - l.z().vector() * w.dot(l.z().vector())).magnitude();
+        // A sphere centred on the axis takes its frame too: any frame
+        // through its centre is exact, and seams meeting on the circle
+        // it shares with the axis's other surfaces must start from one
+        // angle.
+        parallel && off <= flat * 10.0
+    });
+    if let Some(lead) = lead {
+        let z = lead.z().vector();
+        let w = frame.origin() - lead.origin();
+        let origin = lead.origin() + z * w.dot(z);
+        let axis = if frame.z().vector().dot(z) >= 0.0 {
+            lead.z()
+        } else {
+            -lead.z()
+        };
+        if let Ok(snapped) = Frame::new(origin, axis, lead.x(), tol) {
+            onto_axis(curved, points, snapped, flat, tol);
+        }
+    } else if !sphere {
+        leaders.push(frame);
+    }
+    // The branch: the region's mean angle, and whether it wraps.
+    let charts: Vec<(f64, f64)> = curved
+        .vertices
+        .iter()
+        .filter_map(|&v| chart(&curved.shape, points[v as usize], tol))
+        .collect();
+    let mut us: Vec<f64> = charts.iter().map(|c| c.0).collect();
+    let (_, gap_u) = angular_spread(&mut us);
+    let (_, pv) = periodic(&curved.shape);
+    if pv {
+        let mut vs: Vec<f64> = charts.iter().map(|c| c.1).collect();
+        curved.wraps_v = angular_spread(&mut vs).1 < core::f64::consts::FRAC_PI_2;
+    }
+    let wraps_u = gap_u < core::f64::consts::FRAC_PI_2;
+    curved.wraps = wraps_u;
+    if !curved.wraps
+        && !curved.wraps_v
+        && !curved.fixed
+        && let Some(reframed) = away_from(curved, points, tol)
+    {
+        curved.shape = reframed;
+    }
+    // The branch every pcurve is read on: the region's own mean chart
+    // point, which after the re-framing sits half a turn from the cut.
+    let charts: Vec<(f64, f64)> = curved
+        .vertices
+        .iter()
+        .filter_map(|&v| chart(&curved.shape, points[v as usize], tol))
+        .collect();
+    let mut us: Vec<f64> = charts.iter().map(|c| c.0).collect();
+    let (mean_u, _) = angular_spread(&mut us);
+    let mean_v = if curved.wraps_v {
+        core::f64::consts::PI
+    } else if pv {
+        let mut vs: Vec<f64> = charts.iter().map(|c| c.1).collect();
+        angular_spread(&mut vs).0
+    } else {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "vertex counts are far below 2^52"
+        )]
+        let count = charts.len().max(1) as f64;
+        charts.iter().map(|c| c.1).sum::<f64>() / count
+    };
+    let centre_u = if wraps_u {
+        core::f64::consts::PI
+    } else {
+        ogeom_math::elementary::wrap_angle(mean_u)
+    };
+    curved.centre = (centre_u, mean_v);
 }
 
 /// The surface on a frame that puts the region half a turn from its
