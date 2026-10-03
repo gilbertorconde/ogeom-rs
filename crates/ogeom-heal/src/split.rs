@@ -552,7 +552,27 @@ fn unfold(
                 }
             }
             cuts.push(1.0);
-            for w in cuts.windows(2) {
+            // A crossing within the confusion distance of a neighbouring
+            // one, or of an end (a closed curve starting on a seam the
+            // window's edge stands a hair off), cuts no piece: the part
+            // beside it takes the sliver.
+            let mut kept = vec![0.0];
+            for &c in &cuts[1..] {
+                let from = kept[kept.len() - 1];
+                let sliver = c - from <= 1e-6
+                    && part.point(from, tol)?.distance(part.point(c, tol)?) <= tol.confusion();
+                if !sliver {
+                    kept.push(c);
+                } else if c >= 1.0 {
+                    if kept.len() > 1 {
+                        let last = kept.len() - 1;
+                        kept[last] = 1.0;
+                    } else {
+                        kept.push(1.0);
+                    }
+                }
+            }
+            for w in kept.windows(2) {
                 if w[1] - w[0] <= 1e-9 {
                     continue;
                 }

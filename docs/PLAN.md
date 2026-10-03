@@ -43,7 +43,11 @@ past the edge the cap stands in the ball's section through the crease's
 end, which leans with the drum: one cap's wall corner stands past the
 block's side and the other falls short, by 0.003 at 1 degree and 0.032 at
 15. That is kept: every run-out caps in the ball's section, and a cap in
-the side's plane would end the band off a section. Refused by name:
+the side's plane would end the band off a section. Upright, with the axis
+on the edge or 0.5 past it, the closed-form blend is an exact torus ended
+where the solid's edges along the crease end, capped in the meridian plane
+there, and fills the ring's share of the foot's arc within 1e-10 relative,
+as the edge round of the sharp foot does. Refused by name:
 
 - Faces of a solid that the ball leaves at different places round its
   seat and never both at once: neither face gives the round both its ends.
@@ -52,10 +56,6 @@ the side's plane would end the band off a section. Refused by name:
 - A round crossing a face that stands between the two (a ball smaller than a
   chamfer between the faces it rounds): the solid beside the middle of the
   round is open where the seat says material, or the reverse.
-
-Not yet by name: an upright drum whose axis stands 0.5 past the block's
-edge goes through the closed-form swept blend, which answers "does not
-touch both faces" where the foot runs off the top.
 
 **Section loops pinned at a sphere's pole.** Where a curved wall passes
 through a pole of a sphere face, the marched section stalls and doubles

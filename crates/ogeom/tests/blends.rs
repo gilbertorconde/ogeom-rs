@@ -1127,6 +1127,63 @@ fn a_face_blend_ends_where_the_crease_runs_off_the_block_s_side() {
     assert_tends_to([fills[0], fills[1]], want);
 }
 
+/// The same drum upright, its axis on the block's top edge or 0.5 past it,
+/// its wall parted above the foot. The wall and the top share an axis, so
+/// the round is an exact torus; the crease runs off the block's side where
+/// the foot's circle crosses y = 40, so the round ends there, capped in the
+/// meridian plane through that crossing, and nothing but the drum stands
+/// past the side. The fill is the ring's share of the turn the foot's arc
+/// makes on the block, and what the edge round of the sharp foot fills.
+#[test]
+fn an_upright_drum_s_face_blend_ends_where_the_crease_runs_off_the_block() {
+    let r = 2.0;
+    let pi = core::f64::consts::PI;
+    for off in [0.0, 0.5] {
+        let want = rim_ring(6.0, r, -1.0) * (pi - 2.0 * (off / 6.0_f64).asin()) / (2.0 * pi);
+        let mut model = Model::new();
+        let sharp = drum_leaning_x(&mut model, (20.0, 40.0 + off), 0.0);
+        let before = exact_volume(&model, &sharp);
+        let (parted, wall) = wall_parted(&mut model, &sharp);
+        let top = lid_at(&model, &parted, 10.0);
+        let blended = ogeom::fillet::blend_faces(&mut model, &parted, &wall, &top, r, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let tori = faces_on(&model, &blended, |s| {
+            matches!(s, ogeom::geom::SurfaceGeometry::Torus(_))
+        });
+        assert_eq!(tori.len(), 1, "one torus band");
+        let stray = past_the_side(&model, &blended, Vector::new(0.0, 0.0, 1.0), 1e-6);
+        assert!(
+            stray.is_empty(),
+            "{} faces stand past the side",
+            stray.len()
+        );
+        let filled = exact_volume(&model, &blended) - before;
+        assert!(
+            (filled - want).abs() < want * 1e-9,
+            "the arc's share of the ring: {filled} against {want}"
+        );
+
+        let mut other = Model::new();
+        let sharp = drum_leaning_x(&mut other, (20.0, 40.0 + off), 0.0);
+        let foot = shared_edges(
+            &other,
+            &drum_wall(&other, &sharp),
+            &lid_at(&other, &sharp, 10.0),
+        );
+        let rounded = ogeom::fillet::fillet_edges(&mut other, &sharp, &foot, r, T)
+            .unwrap()
+            .shape;
+        let edge_fill = exact_volume(&other, &rounded) - exact_volume(&other, &sharp);
+        assert!(
+            (filled - edge_fill).abs() < want * 1e-9,
+            "the blend fills what the edge round does: {filled} against {edge_fill}"
+        );
+    }
+}
+
 /// A drum leaning wholly on the block: its foot is a whole ellipse, split
 /// into arcs at the wall's seam, and rounding the arcs rounds the whole
 /// ring. Upright the round is a torus and the fill the ring by Pappus; the

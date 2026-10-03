@@ -52,7 +52,8 @@ use crate::support::Seat;
 ///   square to it, cylinders, cones, spheres and tori about it): the ball
 ///   touches each face along a line or a circle, and the blend is a
 ///   cylinder or a torus of `radius` over the run both faces reach, or all
-///   the way round. The corner it takes off or fills is the section between
+///   the way round, ended in the ball's section through the end of the
+///   solid's edges along the crease where those end first. The corner it takes off or fills is the section between
 ///   the ball's arc and where the two surfaces cross, swept over the run;
 ///   the faces are trimmed to their lines of contact by the boolean that
 ///   applies it.
@@ -328,7 +329,7 @@ fn curved_blend(
         let side = if behind { "behind" } else { "in front of" };
         let built = match &hosts {
             None => crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol)
-                .and_then(|seat| crate::sheet_curved::corner_wedge(model, &seat, tol))
+                .and_then(|seat| crate::sheet_curved::corner_wedge(model, &seat, solid, tol))
                 .map(|(wedge, probe)| (Corner::Swept(wedge), probe)),
             Some(hosts) => crate::pair_marched::pair_seat(
                 model,

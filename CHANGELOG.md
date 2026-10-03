@@ -23,6 +23,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An upright drum's face blend where its foot runs off the block.**
+  `blend_faces` between an upright drum's wall and a block's top, where the
+  foot runs off the block's side, builds an exact torus band ending where
+  the foot's edge leaves the block, capped in the meridian plane there,
+  with the fill the ring's share of the arc to 1e-11; it was refused. A
+  closed contact circle starting on a face's seam is no longer cut into a
+  sliver and refused when the face is split along it.
+
 - **Drills through a dome's pole.** A trimmed sphere face (a dome, a cap, a
   dome on a drum) drilled by a wall passing through its pole was refused,
   turned inside out or given wrong volumes (a cut more than seven times the

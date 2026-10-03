@@ -2022,21 +2022,22 @@ pub(crate) fn face_seat(
 
 /// The solid between a seat's round and the corner it rounds: the section
 /// bounded by the two faces' surfaces, from where they cross to where the
-/// ball touches each, and by the ball's arc, swept over the run. With it, a
+/// ball touches each, and by the ball's arc, swept over the run. Where the
+/// edges of `solid` along the crease end inside an open run, the run ends
+/// there: past it the crease is no corner of the solid (a crease running
+/// off a block's side while the ball still rolls over its top), and the
+/// sweep stops in the ball's section through the edges' end. With it, a
 /// point inside it beside the middle of the round, where the solid being
 /// blended says whether the corner is material.
 pub(crate) fn corner_wedge(
     model: &mut Model,
     seat: &FaceSeat,
+    solid: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Point)> {
     let exact = &seat.exact;
     let layout = exact.layout;
     let section = exact.section;
-    let (s0, turn) = match seat.span {
-        Some((lo, hi)) => (lo, hi - lo),
-        None => (0.0, TAU),
-    };
     let Some(crease) = crossings(seat.profiles[0], seat.profiles[1], tol)
         .into_iter()
         .min_by(|p, q| norm2(sub2(*p, section.centre)).total_cmp(&norm2(sub2(*q, section.centre))))
@@ -2046,6 +2047,26 @@ pub(crate) fn corner_wedge(
             "the two faces' surfaces do not meet, so there is no corner between them for \
              the round to take off or fill"
         );
+    };
+    let (s0, turn) = match seat.span {
+        Some((mut lo, mut hi)) => {
+            let ends = crate::pair_marched::crease_edge_ends(
+                model,
+                solid,
+                &crease_line(&layout, crease, tol)?,
+                layout.turns(),
+                (lo, hi),
+                tol,
+            )?;
+            if let Some((s, _)) = ends[0] {
+                lo = s;
+            }
+            if let Some((s, _)) = ends[1] {
+                hi = s;
+            }
+            (lo, hi - lo)
+        }
+        None => (0.0, TAU),
     };
     for contact in section.contacts {
         if norm2(sub2(contact, crease)) <= tol.confusion() {
@@ -2134,6 +2155,30 @@ pub(crate) fn corner_wedge(
     let toward = scale2(sub2(crease, on_arc), 1.0 / gap);
     let probe = add2(on_arc, scale2(toward, gap.min(exact.radius) * 0.1));
     Ok((wedge, layout.lift(probe, s0 + turn / 2.0)))
+}
+
+/// The crease at the section point `crease` swept along the layout, its
+/// parameter the station.
+fn crease_line(layout: &Layout, crease: P2, tol: Tolerances) -> OgeomResult<Curve> {
+    match *layout {
+        Layout::Extruded { along, .. } => Ok(Curve::Line(LineCurve::new(Axis {
+            location: layout.lift(crease, 0.0),
+            direction: Direction::new(along, tol)?,
+        }))),
+        Layout::Revolved {
+            origin, axis, x, ..
+        } => {
+            let frame = Frame::new(
+                origin + axis * crease.1,
+                Direction::new(axis, tol)?,
+                Direction::new(x, tol)?,
+                tol,
+            )?;
+            Ok(Curve::Circle(ogeom_geom::CircleCurve::new(Circle::new(
+                frame, crease.0, tol,
+            )?)))
+        }
+    }
 }
 
 /// Whether the two faces' surfaces share a direction or an axis, so the
@@ -2577,9 +2622,27 @@ fn contact_stretch(
     extent: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Option<Stretch>> {
+    contact_stretch_from(model, face, exact, f, extent, None, tol)
+}
+
+/// [`contact_stretch`] with a circle of contact started at the station
+/// `from` (its own start where `None`). Where the circle starts on the face
+/// and the face holds an arc of it, the cut comes back in two edges that
+/// meet at the start: the cut is made again with the circle started half
+/// way round the stretch off the face.
+fn contact_stretch_from(
+    model: &mut Model,
+    face: &Shape,
+    exact: &Exact,
+    f: usize,
+    extent: (f64, f64),
+    from: Option<f64>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Stretch>> {
     let layout = exact.layout;
-    let curve = exact.contact_curve(f, tol)?;
+    let curve = exact.contact_curve_from(f, from.unwrap_or(0.0), tol)?;
     let range = if layout.turns() { (0.0, TAU) } else { extent };
+    let original = face;
     let line = make_edge(model, curve, range, tol)?.shape;
     let face = &with_edges_unplaced(model, face, tol)?;
     let Ok(split) = ogeom_heal::split_face(
@@ -2602,6 +2665,16 @@ fn contact_stretch(
     let edge = match cut.as_slice() {
         [] => return Ok(None),
         [one] => one.clone(),
+        [first, second] if layout.turns() && from.is_none() => {
+            let Some(off) = gap_between(model, &layout, [first, second])? else {
+                ogeom_bail!(
+                    Construction,
+                    "the line the ball touches a face along crosses it more than once; the \
+                     stretch the round spans is ambiguous"
+                );
+            };
+            return contact_stretch_from(model, original, exact, f, extent, Some(off), tol);
+        }
         _ => ogeom_bail!(
             Construction,
             "the line the ball touches a face along crosses it more than once; the stretch the \
@@ -2699,6 +2772,32 @@ fn contact_stretch(
         }));
     }
     Ok(None)
+}
+
+/// The station half way round the gap between the far ends of two cut
+/// edges of a circle of contact started at station zero, which meet end to
+/// end there; `None` where they do not meet.
+fn gap_between(model: &Model, layout: &Layout, cut: [&Shape; 2]) -> OgeomResult<Option<f64>> {
+    let mut ends = Vec::with_capacity(4);
+    for edge in cut {
+        let Some((a, b)) = edge_vertices(model, edge)? else {
+            return Ok(None);
+        };
+        ends.extend([a, b]);
+    }
+    let meets = |i: usize| (0..4).any(|j| j / 2 != i / 2 && ends[j].is_same(&ends[i]));
+    let far: Vec<usize> = (0..4).filter(|&i| !meets(i)).collect();
+    let [a, b] = far.as_slice() else {
+        return Ok(None);
+    };
+    // The arc on the face runs through station zero, so the gap lies
+    // between the two ends' stations taken in [0, 2 pi).
+    let station = |i: usize| -> OgeomResult<f64> {
+        Ok(layout
+            .station(vertex_point(model, &ends[i])?)
+            .rem_euclid(TAU))
+    };
+    Ok(Some(f64::midpoint(station(*a)?, station(*b)?)))
 }
 
 /// A piece whose line of contact goes a full turn but ends on a second

@@ -964,7 +964,7 @@ fn section_through(
 /// round the run's middle ends before the run does. `None` at an end the
 /// edges reach past, and at both where no edge runs along the crease at
 /// the run's middle.
-fn crease_edge_ends(
+pub(crate) fn crease_edge_ends(
     model: &Model,
     solid: &Shape,
     guide: &Curve,
