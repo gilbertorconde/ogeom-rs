@@ -98,8 +98,10 @@ const PER_CURVE: usize = 32;
 /// support at the continuity asked.
 ///
 /// The sides may come in any order and either direction; they must chain
-/// into one simple closed loop. `constraints` are vertices and edges inside
-/// the hole that the surface passes through. The surface is a
+/// into one simple closed loop, each side's end meeting the next one's at
+/// a shared vertex node or where the two vertices lie within their own and
+/// their edges' tolerances of each other. `constraints` are vertices and
+/// edges inside the hole that the surface passes through. The surface is a
 /// cubic B-spline height patch over the plane the loop spans, fitted by least
 /// squares to the sides' positions, to the tangent planes of G1 and G2
 /// sides' supports and to the normal curvatures of G2 sides' supports, with
@@ -535,10 +537,13 @@ fn read_support(
     })
 }
 
-/// One end of a side: its vertex.
+/// One end of a side: its vertex, where the vertex stands, and how far
+/// it reaches (its own tolerance or its edge's, the wider).
 #[derive(Clone)]
 struct End {
     vertex: Shape,
+    at: Point,
+    reach: f64,
 }
 
 /// A side's two ends, in the edge's own direction.
@@ -550,12 +555,23 @@ fn ends_of(model: &Model, side: &Side) -> OgeomResult<(End, End)> {
             side.entry
         );
     };
-    let end = |vertex: Shape| -> OgeomResult<End> { Ok(End { vertex }) };
+    let end = |vertex: Shape| -> OgeomResult<End> {
+        let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Construction, "side {}'s vertex holds no point", side.entry);
+        };
+        Ok(End {
+            at: vertex.transform(model.datums())?.apply(data.point),
+            reach: data.tolerance.get().max(side.edge_tolerance),
+            vertex,
+        })
+    };
     Ok((end(a)?, end(b)?))
 }
 
 /// Chain the sides into one loop: the order they are walked in, with each
-/// side's `reversed` set to the direction it is walked.
+/// side's `reversed` set to the direction it is walked. Ends join where
+/// they are one vertex, or failing that where they lie within reach of
+/// each other.
 fn chain(model: &Model, sides: &mut [Side], tol: Tolerances) -> OgeomResult<Vec<usize>> {
     let mut ends = Vec::with_capacity(sides.len());
     for side in sides.iter() {
@@ -565,7 +581,8 @@ fn chain(model: &Model, sides: &mut [Side], tol: Tolerances) -> OgeomResult<Vec<
     let same = |a: &End, b: &End| -> OgeomResult<bool> {
         Ok(a.vertex.is_same(&b.vertex) || model.same_position(&a.vertex, &b.vertex, tol)?)
     };
-    let meets = same;
+    let near = |a: &End, b: &End| a.at.distance(b.at) <= a.reach + b.reach + tol.confusion();
+    let meets = |a: &End, b: &End| -> OgeomResult<bool> { Ok(same(a, b)? || near(a, b)) };
     let n = sides.len();
     let mut used = vec![false; n];
     used[0] = true;
@@ -574,15 +591,29 @@ fn chain(model: &Model, sides: &mut [Side], tol: Tolerances) -> OgeomResult<Vec<
     let mut cursor = ends[0].1.clone();
     while order.len() < n {
         let last = sides[order[order.len() - 1]].entry;
+        // A shared vertex is the stronger word: ends merely near the
+        // cursor count only where none is the cursor's own vertex.
         let mut found: Vec<(usize, bool)> = Vec::new();
-        for j in 0..n {
-            if used[j] {
-                continue;
+        for strict in [true, false] {
+            for j in 0..n {
+                if used[j] {
+                    continue;
+                }
+                let joins = |e: &End| -> OgeomResult<bool> {
+                    if strict {
+                        same(e, &cursor)
+                    } else {
+                        meets(e, &cursor)
+                    }
+                };
+                if joins(&ends[j].0)? {
+                    found.push((j, false));
+                } else if joins(&ends[j].1)? {
+                    found.push((j, true));
+                }
             }
-            if meets(&ends[j].0, &cursor)? {
-                found.push((j, false));
-            } else if meets(&ends[j].1, &cursor)? {
-                found.push((j, true));
+            if !found.is_empty() {
+                break;
             }
         }
         let (j, reversed) = match found.as_slice() {

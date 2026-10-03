@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Placed edges and sheets everywhere they are read (#116).**
+  `baked_shape`, `to_nurbs`, `to_nurbs_within`, `restate_geometry` and
+  `general_transformed_shape` rebuild shells, faces and compounds of them,
+  not only solids, history mapping each face and edge occurrence to its
+  twin; `baked_where_placed` bakes only where something is placed.
+  `make_filling_n`, `make_blend_surface`, `extend_face` and
+  `fillet_sheet_edges` take placed edges and faces where they stand, and
+  `sew` joins a placed face to faces built from it. A prism's walls, a
+  floor and a filling across their top edges sew into a closed shell of
+  volume 500.
+
+- **Filling sides chain by coincident ends (#117).** `make_filling_n` joins
+  sides whose ends coincide within tolerance, a shared vertex node taking
+  precedence; where neighbouring sides carry their own vertices the face
+  is bounded by new edges on the given curves (`FillSide::edge` is the
+  edge bounding the face), and the history records them.
+
 - **Sphere caps with holes convert to one face.** A sphere bounded by one
   rim and holes (a dome drilled off its pole, a hill on a hemisphere) comes
   back as one sphere face, its pole on the face and its seam clear of the

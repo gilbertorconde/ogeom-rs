@@ -681,7 +681,7 @@ crate = "ogeom-heal"
 verdict = "covered"
 claims = ["ShapeCustom", "ShapeCustom_*"]
 symbols = [
-    "ogeom_algo::baked_shape",
+    "ogeom_algo::baked_shape", "ogeom_algo::baked_where_placed",
     "ogeom_algo::to_nurbs",
     "ogeom_algo::restate_geometry",
     "ogeom_heal::restrict_degree",
