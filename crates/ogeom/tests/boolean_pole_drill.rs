@@ -22,17 +22,17 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
 /// drill's disc, in the disc's own polar coordinates, where the integrand
 /// is smooth (the disc lies within the ball's outline).
 fn drilled_volume(cx: f64, cy: f64, r: f64) -> f64 {
-    let (rings, spokes) = (2000_usize, 2000_usize);
-    let ds = r / rings as f64;
-    let dpsi = core::f64::consts::TAU / spokes as f64;
+    let (rings, spokes) = (2000_u32, 2000_u32);
+    let ds = r / f64::from(rings);
+    let dpsi = core::f64::consts::TAU / f64::from(spokes);
     let mut total = 0.0;
     for j in 0..spokes {
-        let psi = dpsi * j as f64;
+        let psi = dpsi * f64::from(j);
         let (c, s) = (psi.cos(), psi.sin());
         // Simpson along the radius.
         let mut line = 0.0;
         for i in 0..=rings {
-            let t = ds * i as f64;
+            let t = ds * f64::from(i);
             let (x, y) = (cx + t * c, cy + t * s);
             let f = 2.0 * (BALL * BALL - x * x - y * y).sqrt() * t;
             let w = if i == 0 || i == rings {
