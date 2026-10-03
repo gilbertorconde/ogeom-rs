@@ -363,18 +363,21 @@ after.
    a coarse mesh of a surface whose curvature varies fast can still read
    its inflections as a little scatter.
 
-**Faces whose trims fold in their chart tessellate open.** Some converted
-solids (`nist_ftc_07` in `mesh_corpus`, `nist_ctc_02` meshed at a
-thousandth of its diagonal) pass `check` and tessellate open: a face's pcurves stray from its 3D edges by more than the
-tessellation's tolerance, or fold in its chart. Most should go with item 4
-above; what is left after it is measured first. Then, per face: where a
-pcurve strays, the boundary's chart positions are re-derived by projecting
-the shared 3D edge points onto the surface, the edges staying as they are;
-the loops are checked before meshing and the triangles' normals against the
-surface after. Each face that needed it is named with its deviation, since
-an open tessellation is the signal that a solid is suspect and must not be
-hidden. A face that still fails could be meshed by an advancing front on
-the surface itself, which needs no chart.
+**Converted faces whose edges fold in space.** With the converter's
+closure check off (measured 2026-10-03, NIST parts meshed at a thousandth
+of their diagonal), three parts tessellate open, and none for a pcurve
+straying from its edge: no face in the corpus has one past the chord, so
+re-deriving a face's chart from its edges has nothing to fix. ftc_07 has
+four sphere slivers whose two long edges run about 0.02 mm apart and swap
+sides, so the loop folds in space, with neighbouring planes folding the
+same way; ctc_02 has two torus faces with exact pcurves whose fitted free
+edges stand 0.7 mm off the torus, within their stated tolerance; ftc_06
+closes once welded. The fix belongs in the converter: refuse or merge a
+sliver whose boundary folds within its edges' tolerance, and fit edges
+that stand off their surface more tightly. The closure check stays as the
+backstop and withdraws the four ftc_07 slivers; two converter tests rely
+on it (`fillets_ending_on_rough_corners_are_still_cylinders` comes out
+3827.3 against 3835.4 without it).
 
 **Speed, not correctness.**
 
