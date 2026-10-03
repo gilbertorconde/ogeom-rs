@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-03
+
+A minor release, since the API changes: `MeshSolidReport` gains
+`fallbacks`, `SurfaceKind` and `RegionRefusal` gain variants, and
+`FillSide::edge` is the edge bounding the filling. It closes issues #116 to
+#119: placed edges and sheets wherever fill, blend, extend and bake read
+them, filling sides chained by coincident ends, sections of different edge
+counts in lofts and ruled sheets, and offsets of fitted sheets. Several
+silent wrong answers are fixed: drills touching a torus or a ball, drills
+through a dome's pole, arcs bounded short on a turned frame, a sewn sliver
+moving a corner, edges stating a smaller tolerance than their pcurves keep,
+and exact volumes that depended on where a loop's integral began. The
+stress harness now judges volumes exactly to a millionth. The mesh
+converter converts sphere caps with holes, tori whose holes leave no seam
+free and patches tangent to their neighbours; booleans on large solids and
+exact mass properties run several times faster.
+
 ### Added
 
 - **Placed edges and sheets everywhere they are read (#116).**
@@ -3418,7 +3435,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.0...v0.6.1
