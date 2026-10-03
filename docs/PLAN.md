@@ -138,13 +138,9 @@ six drills, of these kinds and some not yet diagnosed.
 
 The sections grazing an edge to the fourth order now close (a drill lying on
 a frustum's base through its rim, or along a round's tangent line into the
-corners), but the exact chart integrator measures some of the results short.
-A frustum of radii 6 and 3 drilled at radius 0.4 along its base: the cut's
-wall face comes out 5.6e-4 mm^2 under what its mesh and the faces beside it
-say, and cut and common miss the part by 8.4e-7 relative. At radius 0.3 and
-0.5 the same, and at 0.3 and 0.35 the drill less the part and the common
-miss the drill by 1.6e-6. From 0.38 to 0.45 but for 0.4, and from 0.6 to 2,
-every sum holds to 4e-8.
+corners). Drilled so at radii 0.3 to 2, cut and common add up to the part
+within 1.2e-10 relative, and the drill less the part and the common add up
+to the drill within 8e-9.
 
 **Facet walls drafted less than their chords sag.** A pad pushed down from
 the top of a slab converted face for facet, whose rounded corner's rows lean

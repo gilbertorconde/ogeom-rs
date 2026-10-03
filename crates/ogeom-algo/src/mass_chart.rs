@@ -62,6 +62,15 @@ pub(crate) struct ChartFace {
     /// The surface's own knot lines in `u` and in `v`, where panels break:
     /// read once, not once per inner integral.
     knot_lines: (Vec<f64>, Vec<f64>),
+    /// The straight chart steps closing each junction where one piece ends
+    /// short of where the next begins, as their start, their step and their
+    /// loop's sign. A fitted pcurve may end anywhere within its edge's
+    /// tolerance of the vertex, and an open loop's integral depends on
+    /// where the inner integrals start: a step of `dv` costs the strip from
+    /// `u_ref` across, the chart's whole width on a face wrapping round its
+    /// axis. Closed by these steps, every loop measures the region it
+    /// bounds whatever `u_ref` is.
+    bridges: Vec<(Point2, Vector2, f64)>,
 }
 
 /// A face's chart loops, or `None` where they cannot be had exactly: a
@@ -140,15 +149,43 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
     let Some(walked) = walked(model, face, true, tol)? else {
         return Ok(None);
     };
-    let ((u0, u1), _) = surface.domain();
+    let ((u0, u1), (v0, v1)) = surface.domain();
     let u_ref = if surface.is_periodic_u() {
         walked.lo.x
     } else {
         walked.lo.x.clamp(u0, u1)
     };
     let knot_lines = knot_lines(&walked.placed);
+    let period = Vector2::new(
+        if surface.is_periodic_u() {
+            u1 - u0
+        } else {
+            0.0
+        },
+        if surface.is_periodic_v() {
+            v1 - v0
+        } else {
+            0.0
+        },
+    );
+    let mut bridges = Vec::new();
+    for (segments, region) in &walked.loops {
+        for (k, segment) in segments.iter().enumerate() {
+            let next = &segments[(k + 1) % segments.len()];
+            let (end, _) = segment.at(segment.t1, tol)?;
+            let (start, _) = next.at(next.t0, tol)?;
+            // A loop wrapping round a periodic chart closes a whole period
+            // from where it began; only what is left over is a step.
+            let gap = start - end;
+            let step = gap - fold(gap, period);
+            if step.y != 0.0 {
+                bridges.push((end, step, *region));
+            }
+        }
+    }
     Ok(Some(ChartFace {
         knot_lines,
+        bridges,
         surface: walked.placed,
         loops: walked.loops,
         sign: walked.handedness
@@ -712,6 +749,11 @@ impl ChartFace {
                         }
                     }
                 }
+            }
+        }
+        for &(start, step, region) in &self.bridges {
+            for (t, wt) in gauss_legendre_rule(0.0, 1.0) {
+                self.inner(start + step * t, region * wt * step.y, fine, tol, &mut take)?;
             }
         }
         Ok(proxy)
