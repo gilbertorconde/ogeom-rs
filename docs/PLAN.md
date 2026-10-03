@@ -123,18 +123,32 @@ distance (1.65e-5 on every set, what single precision resolves) each row
 stays a face of its own and the faces a pad's floor crosses hold their
 vertices, doubt at most 1.6e-5 where rows merged 6e-4 off their planes
 gave 4e-2. Of the 15 committed row-count sets at drafts 0.001 to 0.0001
-and depths 3 and 10, 147 of 150 pass at that distance (137 before). What
-remains:
+and depths 3 and 10, 147 of 150 pass at that distance (137 before). A rung
+between two rows leaning out of a wall by a couple of thousandths of a
+radian is met by the sections either side a micron apart along it, and
+the edge's doubt there runs past a micron where the crossing's gap is
+within the weld distance, up to two microns, the most a joined crossing's
+vertex then claims; and the mesher reads an inner ring's width
+as twice its area over its perimeter, its mean width, so a ring of facets
+poking a sixth of a micron through a wall, a micron and a third wide,
+stays a hole. Of 17 row-count sets at drafts 0.001 to 0.0001 and depths 3
+and 10, 340 of 340 pass at both distances (334 before). What remains:
 
 - Drafted 0.00005 or less the band where a top facet stands within the
   weld distance of its wall is over a tenth of the facet, and the facet's
   edge is not taken for the crossing: the kept pieces are left open, or a
-  piece is refused as an unpaired coincidence. The pair wants same-domain
-  pairing.
-- Each row a face of its own, at either distance, three sets at a depth
-  of 10 leave the kept pieces open or the fuse's tessellation open (eight
-  to five or seven to five a row drafted 0.0005, three to nine drafted
-  0.0003).
+  piece is refused as an unpaired coincidence (20 of 34 pass with each row
+  a face of its own, 14 of 34 at the converter's distance, the same cases
+  as before the join above, refusing alike). The pair wants same-domain
+  pairing. One of those that passes is wrong: counts [8,8,8,7,7,6,5] at
+  depth 3 with each row a face of its own fuses valid but 2.1e-3 cubic
+  millimetres off the mesh's volume, against a doubt of 1.0e-3. It is the
+  one known result outside its own doubt in this family.
+- The mesher tells a slit from a hole by width alone: slits measured
+  about six tenths of a micron wide, the ring above a micron and a third,
+  either side of a one micron cutoff. A wall poked through more thinly
+  would lose its hole again; telling them apart by what fills the ring
+  would hold either way.
 
 **Mesh conversion.** `solid_from_mesh` rebuilds planes, the four canonical
 surfaces, extrusions, surfaces of revolution and fitted B-spline patches,

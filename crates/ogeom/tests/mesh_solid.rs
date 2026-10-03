@@ -3227,27 +3227,41 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_uniform_rows_cut_and_fuse() {
 
 /// The slab drafted 0.0001 to 0.0007 with rows of differing counts,
 /// converted at the converter's own coplanar distance, and the pad's floor
-/// crossing it below the top band. The rows' turns grow toward the top as
-/// the draft steepens, and in the corner the nearly flat edges between
-/// rows lie among edges that turn far more: neither is scatter, the
-/// distance stays at what single precision resolves, and each row stays a
-/// face of its own. The faces the floor splits hold their vertices, so
-/// the results' volumes are the mesh's to within a few hundred-thousandths
-/// of a cubic millimetre, the doubt among them.
+/// crossing it below the top band or standing below the slab. The rows'
+/// turns grow toward the top as the draft steepens, and in the corner the
+/// nearly flat edges between rows lie among edges that turn far more:
+/// neither is scatter, the distance stays at what single precision
+/// resolves, and each row stays a face of its own. The faces the floor
+/// splits hold their vertices, so the results' volumes are the mesh's to
+/// within a few hundred-thousandths of a cubic millimetre, the doubt among
+/// them.
+///
+/// Drafted 0.0005, a rung between two rows of equal count leans out of the
+/// pad's wall by a couple of thousandths of a radian, and the sections on
+/// the facets either side reach it a micron apart along it: one
+/// junction. Drafted 0.0003, a row's vertex stands a sixth of a micron
+/// outside a wall, and the facets round it poke through the wall in a ring
+/// a micron and a third wide on average, which the wall's mesh keeps as a
+/// hole.
 #[test]
 fn pads_into_slabs_drafted_under_a_thousandth_with_differing_rows_cut_and_fuse() {
     let mut failed = Vec::new();
-    for (draft, counts) in [
-        (0.0007, [6, 5, 6, 5, 6, 5, 6]),
-        (0.0007, [8, 9, 9, 5, 4, 5, 5]),
-        (0.0007, [8, 5, 9, 9, 5, 8, 7]),
-        (0.0005, [8, 7, 8, 7, 8, 7, 8]),
-        (0.0005, [6, 5, 6, 5, 6, 5, 6]),
-        (0.0005, [8, 9, 9, 5, 4, 5, 5]),
-        (0.0001, [8, 9, 9, 5, 4, 5, 5]),
-        (0.0001, [6, 6, 6, 4, 8, 7, 5]),
+    for (draft, counts, depth) in [
+        (0.0007, [6, 5, 6, 5, 6, 5, 6], 3.0),
+        (0.0007, [8, 9, 9, 5, 4, 5, 5], 3.0),
+        (0.0007, [8, 5, 9, 9, 5, 8, 7], 3.0),
+        (0.0005, [8, 7, 8, 7, 8, 7, 8], 3.0),
+        (0.0005, [6, 5, 6, 5, 6, 5, 6], 3.0),
+        (0.0005, [8, 9, 9, 5, 4, 5, 5], 3.0),
+        (0.0005, [7, 7, 7, 6, 6, 6, 5], 10.0),
+        (0.0005, [8, 8, 8, 7, 7, 6, 5], 10.0),
+        (0.0003, [3, 4, 5, 6, 7, 8, 9], 10.0),
+        (0.0003, [6, 6, 6, 4, 8, 7, 5], 3.0),
+        (0.0003, [6, 6, 6, 4, 8, 7, 5], 10.0),
+        (0.0001, [8, 9, 9, 5, 4, 5, 5], 3.0),
+        (0.0001, [6, 6, 6, 4, 8, 7, 5], 3.0),
     ] {
-        match pad_on_a_drafted_slab(3.0, draft, counts, false) {
+        match pad_on_a_drafted_slab(depth, draft, counts, false) {
             Err(e) => failed.push(format!("{draft} {counts:?}: {e}")),
             Ok(doubt) if doubt > 5e-5 => {
                 failed.push(format!("{draft} {counts:?}: the slab's doubt {doubt:.2e}"));

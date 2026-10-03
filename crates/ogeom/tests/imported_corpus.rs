@@ -373,7 +373,8 @@ fn a_ring_folds_across_a_closed_chart_s_join() {
 ///
 /// The face is a plane with twenty inner loops. Fifteen are holes. Five run
 /// out along two arcs and back along two splines fitted to the same arcs (
-/// three millimetres long, a fifth of a micron wide, enclosing nothing).
+/// three millimetres long, about six tenths of a micron wide on average,
+/// enclosing nothing).
 /// Read as holes they are a tangle the triangulator cannot classify, and
 /// the face draws with thirty-two holes. Measured in space, they are
 /// slits, and dropped. The fifteen real holes stay.

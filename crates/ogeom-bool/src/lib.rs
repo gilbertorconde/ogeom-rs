@@ -2863,8 +2863,21 @@ fn fill(
                         // the facets either side reach the edge apart by that
                         // rounding over the sine (a few tenths of a micron
                         // where the edge is a rung between two rows of facets
-                        // lying all but in a wall), and those are one point; an
-                        // exact pair meets with no gap and stays exact.
+                        // lying all but in a wall, a micron where the
+                        // rung leans out of the wall by a couple of
+                        // thousandths of a radian), and those are one point;
+                        // an exact pair meets with no gap and stays exact.
+                        // The doubt seeds a junction that owns it, and the
+                        // result's vertex there is widened to it. It runs past
+                        // the micron any one tolerance is held to only where
+                        // the gap is within the weld distance, rounding
+                        // rather than a miss, and stops at two microns:
+                        // the vertex a joined crossing leaves claims no more
+                        // than two crossings each held to a micron would. A
+                        // wider gap is held to the micron; crossings further
+                        // apart than the doubt stay apart, and the boolean
+                        // refuses rather than weld across a sliver it has
+                        // not resolved.
                         if at_end.is_none()
                             && let SurfaceGeometry::Plane(plane) = &across.surface
                         {
@@ -2874,7 +2887,13 @@ fn fill(
                                 let sine =
                                     along_edge.dot(plane.plane().normal().vector()).abs() / length;
                                 if sine > 0.0 {
-                                    honesty = honesty.max(honest(crossing.gap / sine, tol));
+                                    let leaning = crossing.gap / sine;
+                                    honesty =
+                                        honesty.max(if crossing.gap <= tol.confusion() * 1e2 {
+                                            leaning.min(tol.confusion() * 2e4)
+                                        } else {
+                                            honest(leaning, tol)
+                                        });
                                 }
                             }
                         }

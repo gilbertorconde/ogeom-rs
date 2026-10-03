@@ -31,6 +31,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Pads into slabs whose rows lean off the wall by thousandths.** Where a
+  converted slab's facet rows lean off a pad's wall by a couple of
+  thousandths of a radian, the sections either side of a row edge reach it
+  a micron apart; where their gap is within the weld distance they join as
+  one junction, its vertex claiming at most two microns. The mesher keeps
+  an inner ring about a micron wide as a hole rather than dropping it as a
+  slit. Every slab drafted 0.001 to 0.0001 tried fuses, cuts and is taken
+  in common.
+
 - **Converted faces no longer fold in space.** A curved face whose own
   edges cross within their tolerance (a sliver of a thin fillet fitted as a
   huge sphere) is faceted instead of built, and an edge between two curved

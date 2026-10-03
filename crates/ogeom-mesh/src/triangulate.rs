@@ -1496,7 +1496,8 @@ fn trimming_rings(
     // arcs encloses nothing, and the triangulator can only read it as a
     // tangle, drawing holes the face does not have. Measured in space
     // through the ring's own anchors, so a chart's units do not enter into
-    // it. A ring not anchored end to end is left alone, and so is the outer
+    // it: a thin ring's area is its mean width times half its perimeter.
+    // A ring not anchored end to end is left alone, and so is the outer
     // ring, whatever its width, since a face that is itself a slit is a
     // different question.
     if rings.len() > 1 {
@@ -1521,7 +1522,7 @@ fn trimming_rings(
                 normal += a.to_vector().cross(b.to_vector());
                 perimeter += a.distance(b);
             }
-            (perimeter > 0.0).then(|| normal.magnitude() * 0.5 / perimeter)
+            (perimeter > 0.0).then(|| normal.magnitude() / perimeter)
         };
         let keep: Vec<bool> = (0..rings.len())
             .map(|i| {
