@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-03
+
+A minor release, since the API changes: `MeshSolidReport` gains a field,
+and the mesh converter's steps are a public API (`MeshRegions`, with
+`merge`, `split`, `fit` and `build`). The converter keeps an open mesh's
+free boundary on its surfaces, seats a holed torus's seam clear of its
+holes, tells a finely drawn curve from scatter and runs 3 to 5 times
+faster on large meshes. Three silent wrong answers are fixed: a ball
+drilled through its poles, empty boolean results taken as valid, and an
+edge round over a drum's foot run off the block. Marched sections state
+their measured error, pads fuse into slabs drafted less than their chords
+sag, and `intersect_surfaces` answers `Same` for coincident patches.
+
 ### Added
 
 - **Mesh conversion's steps as an API.** `MeshRegions::find` returns a
@@ -3128,7 +3141,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.5.1...v0.6.0
