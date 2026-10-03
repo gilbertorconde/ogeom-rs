@@ -21,7 +21,7 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Aabb, Direction, Point, Point2, Vector};
-use ogeom_mesh::{Deflection, face_boundary, inside_boundary, triangulate};
+use ogeom_mesh::{Deflection, face_boundary, inside_boundary, open_chart_ring, triangulate};
 use ogeom_topo::{Model, NodeData, Shape, ShapeType};
 
 use crate::measure::project_on_surface;
@@ -324,7 +324,7 @@ struct PreparedFace {
     /// the first time a point or a ray comes near the face: a boolean asks
     /// about a few faces of a large solid, and drawing every face's rings
     /// up front cost more than all its questions.
-    rings: std::sync::OnceLock<OgeomResult<Vec<Vec<Point2>>>>,
+    rings: std::sync::OnceLock<OgeomResult<Rings>>,
     /// Where the face can be, padded past anything its bound could miss: a
     /// point outside is not on it, and a ray missing it does not cross it.
     bound: Aabb,
@@ -333,17 +333,244 @@ struct PreparedFace {
     reach: f64,
 }
 
-impl PreparedFace {
-    /// The face's trimming rings at `deflection`, drawn once.
-    fn rings(
+/// A face's trimming rings at one chord.
+#[derive(Debug)]
+enum Rings {
+    /// Every ring, drawn together.
+    All(Vec<Vec<Point2>>),
+    /// A plane's outer ring, and its holes each drawn the first time a
+    /// point comes near it: a face with hundreds of holes is asked about
+    /// near a few.
+    Open {
+        outer: Vec<Point2>,
+        holes: Vec<Hole>,
+    },
+}
+
+/// A hole of a plane face, its ring drawn when first needed.
+#[derive(Debug)]
+struct Hole {
+    wire: Shape,
+    /// A chart box holding every point its ring can have.
+    low: Point2,
+    high: Point2,
+    ring: std::sync::OnceLock<OgeomResult<Option<Vec<Point2>>>>,
+}
+
+impl Hole {
+    fn ring(
         &self,
         model: &Model,
+        face: &Shape,
         deflection: Deflection,
         tol: Tolerances,
-    ) -> OgeomResult<&[Vec<Point2>]> {
+    ) -> OgeomResult<Option<&[Point2]>> {
+        match self
+            .ring
+            .get_or_init(|| open_chart_ring(model, face, &self.wire, false, deflection, tol))
+        {
+            Ok(ring) => Ok(ring.as_deref()),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// How far `p` stands from the box, nothing inside it.
+    fn box_distance(&self, p: Point2) -> f64 {
+        let dx = (self.low.x - p.x).max(p.x - self.high.x).max(0.0);
+        let dy = (self.low.y - p.y).max(p.y - self.high.y).max(0.0);
+        dx.hypot(dy)
+    }
+}
+
+impl Rings {
+    /// A face's rings as [`face_boundary`] draws them: a plane's with
+    /// several wires one wire at a time, where each hole's box can be read
+    /// from its pcurves and is smaller than the outer ring, so the outer
+    /// ring is the largest, as drawing all of them would find.
+    fn of(
+        model: &Model,
+        face: &Shape,
+        surface: &ogeom_geom::SurfaceGeometry,
+        deflection: Deflection,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        let all = || face_boundary(model, face, deflection, tol).map(Rings::All);
+        let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+            return all();
+        };
+        let wires = model.ordered_children_of(face)?;
+        if !matches!(surface, ogeom_geom::SurfaceGeometry::Plane(_)) || wires.len() < 2 {
+            return all();
+        }
+        let Some(outer) = open_chart_ring(model, face, &wires[0], true, deflection, tol)? else {
+            return all();
+        };
+        let mut area = 0.0;
+        for i in 0..outer.len() {
+            let (p, q) = (outer[i], outer[(i + 1) % outer.len()]);
+            area += p.x * q.y - q.x * p.y;
+        }
+        let area = area.abs() * 0.5;
+        let mut holes = Vec::with_capacity(wires.len() - 1);
+        for wire in &wires[1..] {
+            let Some((low, high)) = chart_box(model, data.surface, wire, tol) else {
+                return all();
+            };
+            if (high.x - low.x) * (high.y - low.y) >= area {
+                return all();
+            }
+            holes.push(Hole {
+                wire: wire.clone(),
+                low,
+                high,
+                ring: std::sync::OnceLock::new(),
+            });
+        }
+        Ok(Rings::Open { outer, holes })
+    }
+
+    /// [`place_on_rings`]: on a plane the point stands where it is.
+    fn place(&self, surface: &ogeom_geom::SurfaceGeometry, at: Point2, tol: Tolerances) -> Point2 {
+        match self {
+            Rings::All(rings) => place_on_rings(surface, rings, at, tol),
+            Rings::Open { .. } => at,
+        }
+    }
+
+    /// Whether `at` lies within `band` of a ring.
+    fn within(
+        &self,
+        model: &Model,
+        face: &Shape,
+        deflection: Deflection,
+        at: Point2,
+        band: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<bool> {
+        match self {
+            Rings::All(rings) => Ok(distance_to_rings(rings, at) <= band),
+            Rings::Open { outer, holes } => {
+                if distance_to_ring(outer, at) <= band {
+                    return Ok(true);
+                }
+                for hole in holes {
+                    if hole.box_distance(at) <= band
+                        && let Some(ring) = hole.ring(model, face, deflection, tol)?
+                        && distance_to_ring(ring, at) <= band
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    /// Whether `at` lies inside the rings, by the even-odd count.
+    fn inside(
+        &self,
+        model: &Model,
+        face: &Shape,
+        deflection: Deflection,
+        at: Point2,
+        tol: Tolerances,
+    ) -> OgeomResult<bool> {
+        match self {
+            Rings::All(rings) => Ok(inside_boundary(rings, at)),
+            Rings::Open { outer, holes } => {
+                let mut inside = inside_boundary(core::slice::from_ref(outer), at);
+                for hole in holes {
+                    if hole.box_distance(at) <= 0.0
+                        && let Some(ring) = hole.ring(model, face, deflection, tol)?
+                        && inside_boundary(&[ring.to_vec()], at)
+                    {
+                        inside = !inside;
+                    }
+                }
+                Ok(inside)
+            }
+        }
+    }
+}
+
+/// A chart box holding every point a wire's pcurves on `surface` reach,
+/// for lines and circles; `None` for a wire with another kind of pcurve.
+fn chart_box(
+    model: &Model,
+    surface: ogeom_topo::SurfaceId,
+    wire: &Shape,
+    tol: Tolerances,
+) -> Option<(Point2, Point2)> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::PlanarCurve;
+    let mut low = Point2::new(f64::INFINITY, f64::INFINITY);
+    let mut high = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut take = |p: Point2, rx: f64, ry: f64| {
+        low = Point2::new(low.x.min(p.x - rx), low.y.min(p.y - ry));
+        high = Point2::new(high.x.max(p.x + rx), high.y.max(p.y + ry));
+    };
+    // How far a ring's ends may be moved onto the vertices they belong to:
+    // a vertex lies within its tolerance of its edge's end, and the edge
+    // within its own of its pcurve.
+    let mut loose = tol.confusion();
+    for edge in model.ordered_children_of(wire).ok()? {
+        let data = model.node(&edge)?.data().as_edge()?;
+        loose = loose.max(data.tolerance.get());
+        for vertex in model.children_of(&edge).ok()? {
+            if let Some(v) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+                loose = loose.max(v.tolerance.get());
+            }
+        }
+        let ogeom_topo::EdgeRepr::PCurve { curve, range, .. } =
+            data.pcurve_for(surface, edge.location())?
+        else {
+            return None;
+        };
+        match model.geometry().pcurve(*curve)? {
+            line @ PlanarCurve::Line(_) => {
+                take(line.point_at(range.0, tol).ok()?, 0.0, 0.0);
+                take(line.point_at(range.1, tol).ok()?, 0.0, 0.0);
+            }
+            PlanarCurve::Circle(arc) => {
+                let circle = arc.circle();
+                let (x, y) = (circle.frame().x().vector(), circle.frame().y().vector());
+                let r = circle.radius();
+                take(
+                    circle.centre(),
+                    r * (x.x.abs() + y.x.abs()),
+                    r * (x.y.abs() + y.y.abs()),
+                );
+            }
+            _ => return None,
+        }
+    }
+    if !(low.x.is_finite() && low.y.is_finite() && high.x.is_finite() && high.y.is_finite()) {
+        return None;
+    }
+    // Those moves twice over, and rounding in the points drawn and in a
+    // line's points just past its ends.
+    let slack = loose.mul_add(
+        4.0,
+        1e-9 * (1.0
+            + low
+                .x
+                .abs()
+                .max(low.y.abs())
+                .max(high.x.abs())
+                .max(high.y.abs())),
+    );
+    Some((
+        Point2::new(low.x - slack, low.y - slack),
+        Point2::new(high.x + slack, high.y + slack),
+    ))
+}
+
+impl PreparedFace {
+    /// The face's trimming rings at `deflection`, drawn once.
+    fn rings(&self, model: &Model, deflection: Deflection, tol: Tolerances) -> OgeomResult<&Rings> {
         match self
             .rings
-            .get_or_init(|| face_boundary(model, &self.face, deflection, tol))
+            .get_or_init(|| Rings::of(model, &self.face, &self.surface, deflection, tol))
         {
             Ok(rings) => Ok(rings),
             Err(e) => Err(e.clone()),
@@ -365,14 +592,19 @@ impl PreparedFace {
         if projection.distance > self.reach {
             return Ok(Containment::Out);
         }
-        Ok(against_rings(
-            &self.surface,
-            self.rings(model, deflection, tol)?,
-            projection.parameters,
-            self.reach,
-            deflection.chord,
-            tol,
-        ))
+        // `against_rings`, asked of the rings drawn so far.
+        let rings = self.rings(model, deflection, tol)?;
+        let (u, v) = projection.parameters;
+        let at = rings.place(&self.surface, Point2::new(u, v), tol);
+        let band = parametric_band(&self.surface, (u, v), self.reach + deflection.chord, tol);
+        if rings.within(model, &self.face, deflection, at, band, tol)? {
+            return Ok(Containment::On);
+        }
+        Ok(if rings.inside(model, &self.face, deflection, at, tol)? {
+            Containment::In
+        } else {
+            Containment::Out
+        })
     }
 }
 
@@ -437,13 +669,6 @@ impl SolidBoundary {
             }
         }
 
-        // Anything outside the shape's bound is outside the shape, and the bound
-        // also sets how long a ray must be to have left everything behind.
-        let bound = crate::measure::shape_bounds(model, solid, tol)?;
-        let (Some(centre), diagonal) = (bound.centre(), bound.diagonal()) else {
-            ogeom_bail!(Construction, "the boundary bounds nothing");
-        };
-
         let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
         // One prepared face per face, in face order, computed in parallel:
         // each preparation reads the model and writes nothing, and walking a
@@ -464,17 +689,31 @@ impl SolidBoundary {
             let bound = own.expanded(
                 ring_chord + data.tolerance.get() + tol.confusion() * 1e2 + own.diagonal() * 0.02,
             );
-            Ok(PreparedFace {
-                surface: surface.clone(),
-                inverse,
-                face: face.clone(),
-                rings: std::sync::OnceLock::new(),
-                bound,
-                reach: tol.confusion().max(data.tolerance.get()),
-            })
+            Ok((
+                PreparedFace {
+                    surface: surface.clone(),
+                    inverse,
+                    face: face.clone(),
+                    rings: std::sync::OnceLock::new(),
+                    bound,
+                    reach: tol.confusion().max(data.tolerance.get()),
+                },
+                own,
+            ))
         })
         .into_iter()
         .collect::<OgeomResult<Vec<_>>>()?;
+        // Anything outside the shape's bound is outside the shape, and the bound
+        // also sets how long a ray must be to have left everything behind. A
+        // solid holds shells and a shell faces, so the faces' bounds together
+        // are the shape's.
+        let bound = prepared
+            .iter()
+            .fold(Aabb::EMPTY, |bound, (_, own)| bound.union(own));
+        let (Some(centre), diagonal) = (bound.centre(), bound.diagonal()) else {
+            ogeom_bail!(Construction, "the boundary bounds nothing");
+        };
+        let prepared = prepared.into_iter().map(|(face, _)| face).collect();
         Ok(Self {
             faces: prepared,
             bound,
@@ -554,9 +793,12 @@ impl SolidBoundary {
                         // and it neither counts nor poisons the ray.
                         let (u, v) = hit.on_surface;
                         let rings = prepared.rings(model, ring_deflection, tol)?;
-                        let at = place_on_rings(surface, rings, Point2::new(u, v), tol);
+                        let at = rings.place(surface, Point2::new(u, v), tol);
                         let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
-                        if distance_to_rings(rings, at) <= band || inside_boundary(rings, at) {
+                        let face = &prepared.face;
+                        if rings.within(model, face, ring_deflection, at, band, tol)?
+                            || rings.inside(model, face, ring_deflection, at, tol)?
+                        {
                             continue 'directions;
                         }
                         continue;
@@ -578,15 +820,16 @@ impl SolidBoundary {
                         continue 'directions;
                     }
                     let rings = prepared.rings(model, ring_deflection, tol)?;
-                    let at = place_on_rings(surface, rings, Point2::new(u, v), tol);
+                    let at = rings.place(surface, Point2::new(u, v), tol);
                     let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
-                    if distance_to_rings(rings, at) <= band {
+                    let face = &prepared.face;
+                    if rings.within(model, face, ring_deflection, at, band, tol)? {
                         // Too near the face's boundary to know which side of the
                         // trim it crossed, and a shared edge would be counted by
                         // both faces or neither.
                         continue 'directions;
                     }
-                    if inside_boundary(rings, at) {
+                    if rings.inside(model, face, ring_deflection, at, tol)? {
                         crossings += 1;
                     }
                 }
@@ -771,12 +1014,17 @@ fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
 
 /// The distance in parameter space from a point to the nearest ring.
 pub(crate) fn distance_to_rings(rings: &[Vec<Point2>], p: Point2) -> f64 {
+    rings.iter().fold(f64::INFINITY, |best, ring| {
+        best.min(distance_to_ring(ring, p))
+    })
+}
+
+/// The distance in parameter space from a point to a ring.
+fn distance_to_ring(ring: &[Point2], p: Point2) -> f64 {
     let mut best = f64::INFINITY;
-    for ring in rings {
-        for i in 0..ring.len() {
-            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-            best = best.min(segment_distance_2d(p, a, b));
-        }
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+        best = best.min(segment_distance_2d(p, a, b));
     }
     best
 }

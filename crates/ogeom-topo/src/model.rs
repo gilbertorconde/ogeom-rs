@@ -1004,7 +1004,7 @@ impl Model {
     /// anything below it, does not resolve in this model.
     pub fn widen(&mut self, shape: &Shape, to: Tolerance) -> OgeomResult<()> {
         let mut affected = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = hashbrown::HashSet::new();
         let mut stack = vec![shape.node()];
         while let Some(id) = stack.pop() {
             if !seen.insert(id) {
@@ -1216,12 +1216,10 @@ pub fn explore(model: &Model, root: &Shape, filter: Filter) -> OgeomResult<Vec<S
 ///
 /// As [`explore`].
 pub fn explore_unique(model: &Model, root: &Shape, want: ShapeType) -> OgeomResult<Vec<Shape>> {
-    use std::collections::HashSet;
-
     use crate::shape::SameKey;
 
     let found = explore(model, root, Filter::OfType(want))?;
-    let mut seen = HashSet::with_capacity(found.len());
+    let mut seen = hashbrown::HashSet::with_capacity(found.len());
     let mut out = Vec::with_capacity(found.len());
     for shape in found {
         if seen.insert(SameKey(shape.clone())) {

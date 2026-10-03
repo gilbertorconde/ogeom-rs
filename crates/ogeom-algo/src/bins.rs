@@ -1,7 +1,7 @@
 //! Points binned on a uniform grid, so the entries near a point are found
 //! among the cells around it rather than by walking every entry.
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 use ogeom_math::Point;
 

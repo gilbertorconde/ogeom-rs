@@ -21,7 +21,7 @@
 //! meet within tolerance stay in separate shells, and the result says how many
 //! there are.
 
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d;
@@ -238,8 +238,51 @@ pub fn sew_within(
     sew_with(model, faces, gap, tol)
 }
 
-fn sew_with(model: &mut Model, faces: &[Shape], gap: f64, tol: Tolerances) -> OgeomResult<Sewn> {
-    let reach = gap.max(tol.confusion());
+/// Sew faces of which some already share their edges and vertices with
+/// every neighbour and are to be passed through as they stand.
+///
+/// As [`sew`], with each face whose `settled` flag is set taken as already
+/// sewn: it is neither compared nor rebuilt, and comes through as an exact
+/// copy of itself into the shell it closes with the others. The question is
+/// asked only of the other faces, so a large shell with a few faces to sew
+/// costs what those few cost. Where sewing the others would move an edge or
+/// a vertex a settled face holds, the faces are sewn as [`sew`] sews them,
+/// all alike.
+///
+/// # Errors
+///
+/// As [`sew`], and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// if `settled` does not hold one flag per face.
+pub fn sew_around(
+    model: &mut Model,
+    faces: &[Shape],
+    settled: &[bool],
+    tol: Tolerances,
+) -> OgeomResult<Sewn> {
+    if settled.len() != faces.len() {
+        ogeom_bail!(
+            Construction,
+            "{} settled flags for {} faces; one flag per face",
+            settled.len(),
+            faces.len()
+        );
+    }
+    check_faces(model, faces)?;
+    model.begin_operation();
+    if let Some(sewn) = sew_faces(model, faces, settled, 0.0, tol)? {
+        return Ok(sewn);
+    }
+    let none = vec![false; faces.len()];
+    match sew_faces(model, faces, &none, 0.0, tol)? {
+        Some(sewn) => Ok(sewn),
+        None => ogeom_bail!(
+            Construction,
+            "sewing with no face settled moved a settled face"
+        ),
+    }
+}
+
+fn check_faces(model: &Model, faces: &[Shape]) -> OgeomResult<()> {
     if faces.is_empty() {
         ogeom_bail!(Construction, "there are no faces to sew");
     }
@@ -248,15 +291,58 @@ fn sew_with(model: &mut Model, faces: &[Shape], gap: f64, tol: Tolerances) -> Og
             ogeom_bail!(Construction, "sewing joins faces");
         }
     }
+    Ok(())
+}
+
+fn sew_with(model: &mut Model, faces: &[Shape], gap: f64, tol: Tolerances) -> OgeomResult<Sewn> {
+    check_faces(model, faces)?;
     model.begin_operation();
+    let none = vec![false; faces.len()];
+    match sew_faces(model, faces, &none, gap, tol)? {
+        Some(sewn) => Ok(sewn),
+        None => ogeom_bail!(
+            Construction,
+            "sewing with no face settled moved a settled face"
+        ),
+    }
+}
+
+/// The sewing itself, the faces flagged `settled` passed through as they
+/// stand; `None` where sewing the others would move an edge or a vertex a
+/// settled face holds.
+fn sew_faces(
+    model: &mut Model,
+    all: &[Shape],
+    settled: &[bool],
+    gap: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Sewn>> {
+    let reach = gap.max(tol.confusion());
+    let originals: Vec<Shape> = all
+        .iter()
+        .zip(settled)
+        .filter(|(_, settled)| !**settled)
+        .map(|(face, _)| face.clone())
+        .collect();
+    // What the settled faces hold, which the sewing of the others must
+    // leave where it is.
+    let mut held_edges: HashSet<TShapeId> = HashSet::new();
+    let mut held_vertices: HashSet<TShapeId> = HashSet::new();
+    for (face, _) in all.iter().zip(settled).filter(|(_, settled)| **settled) {
+        for edge in explore_unique(model, face, ShapeType::Edge)? {
+            held_edges.insert(edge.node());
+        }
+        for vertex in explore_unique(model, face, ShapeType::Vertex)? {
+            held_vertices.insert(vertex.node());
+        }
+    }
 
     // Sewing tells edges apart by their nodes, so one node placed twice (a
     // prism's far end edges are its profile's, carried along it by a
     // location) would be read as one edge where it stands first. A face
     // holding such a node is baked: rebuilt with its placements in its
     // geometry, every edge a node of its own where it stands.
-    let originals = faces;
-    let mut baked = unshared(model, faces, tol)?;
+    let mut baked = unshared(model, &originals, tol)?;
     if gap > 0.0 {
         baked = split_at_vertices(model, &baked, reach, tol)?;
     }
@@ -383,6 +469,14 @@ fn sew_with(model: &mut Model, faces: &[Shape], gap: f64, tol: Tolerances) -> Og
             join_vertex(model, &mut vertices, gone, keep, tol)?;
         }
     };
+    // A settled face keeps its edges and vertices, so none of them may be
+    // merged away or rebuilt.
+    if vertices.keys().any(|v| held_vertices.contains(v))
+        || rebuilt_edges.keys().any(|e| held_edges.contains(e))
+        || merged.keys().any(|e| held_edges.contains(e))
+    {
+        return Ok(None);
+    }
 
     // The survivor has to carry the pcurves of the edge it replaced, or the
     // face that used the replaced one loses its description in parameter space
@@ -459,8 +553,20 @@ fn sew_with(model: &mut Model, faces: &[Shape], gap: f64, tol: Tolerances) -> Og
     }
 
     let mut history = History::new();
-    let mut rebuilt = Vec::with_capacity(faces.len());
-    for (face, original) in faces.iter().zip(originals) {
+    let mut rebuilt = Vec::with_capacity(all.len());
+    let mut sewing = faces.iter().zip(&originals);
+    for (face, settled) in all.iter().zip(settled) {
+        if *settled {
+            // Its edges and vertices stay as they were: the face is its own
+            // copy.
+            model.set_derived(face, std::slice::from_ref(face), roles::SEWN_FACE)?;
+            history.copy(face, face.clone());
+            rebuilt.push(face.clone());
+            continue;
+        }
+        let Some((face, original)) = sewing.next() else {
+            ogeom_bail!(Construction, "a face to sew was lost");
+        };
         let Some((sewn, whole)) = rebuild_face(model, face, &substitution, tol)? else {
             history.delete(original);
             continue;
@@ -487,12 +593,12 @@ fn sew_with(model: &mut Model, faces: &[Shape], gap: f64, tol: Tolerances) -> Og
     }
 
     let free_edges = free_edges(model, &rebuilt)?;
-    Ok(Sewn {
+    Ok(Some(Sewn {
         shells,
         joined,
         free_edges,
         history,
-    })
+    }))
 }
 
 /// The faces, each holding an edge node that some face places elsewhere

@@ -1371,35 +1371,7 @@ fn trimming_rings(
     // the constraint; a real file's chart can carry them. The consecutive
     // near-duplicates collapse, anchors staying aligned.
     for (ring, anchors) in rings.iter_mut().zip(ring_anchors.iter_mut()) {
-        if ring.len() < 3 {
-            continue;
-        }
-        let mut extent = 0.0_f64;
-        for pair in ring.windows(2) {
-            extent = extent.max(pair[0].distance(pair[1]));
-        }
-        let eps = extent.mul_add(1e-9, 1e-12);
-        let mut kept_ring = Vec::with_capacity(ring.len());
-        let mut kept_anchors = Vec::with_capacity(anchors.len());
-        for (p, a) in ring.iter().zip(anchors.iter()) {
-            if kept_ring
-                .last()
-                .is_some_and(|held: &Point2| held.distance(*p) <= eps)
-            {
-                continue;
-            }
-            kept_ring.push(*p);
-            kept_anchors.push(*a);
-        }
-        if kept_ring.len() > 2
-            && let (Some(first), Some(last)) = (kept_ring.first(), kept_ring.last())
-            && first.distance(*last) <= eps
-        {
-            kept_ring.pop();
-            kept_anchors.pop();
-        }
-        *ring = kept_ring;
-        *anchors = kept_anchors;
+        collapse_close_points(ring, anchors);
     }
     // Folded across a join, a ring on a *closed* surface can come to rest a
     // whole period outside the domain. A periodic surface would not mind
@@ -1512,22 +1484,8 @@ fn trimming_rings(
         let outer = (0..rings.len())
             .max_by(|&i, &j| chart_area(&rings[i]).total_cmp(&chart_area(&rings[j])))
             .unwrap_or(0);
-        let width = |anchors: &[Option<Point>]| -> Option<f64> {
-            let pts: Option<Vec<Point>> = anchors.iter().copied().collect();
-            let pts = pts?;
-            let mut normal = Vector::ZERO;
-            let mut perimeter = 0.0;
-            for i in 0..pts.len() {
-                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-                normal += a.to_vector().cross(b.to_vector());
-                perimeter += a.distance(b);
-            }
-            (perimeter > 0.0).then(|| normal.magnitude() / perimeter)
-        };
         let keep: Vec<bool> = (0..rings.len())
-            .map(|i| {
-                i == outer || width(&ring_anchors[i]).is_none_or(|w| w >= tol.confusion() * 1e4)
-            })
+            .map(|i| i == outer || !is_slit(&ring_anchors[i], tol))
             .collect();
         let mut it = keep.iter();
         rings.retain(|_| *it.next().unwrap_or(&true));
@@ -1551,6 +1509,124 @@ fn trimming_rings(
         met,
         walked,
     })
+}
+
+/// Collapse a ring's consecutive near-duplicate points, its closing one
+/// with them, anchors staying aligned. A ring of fewer than three points is
+/// left as it is.
+fn collapse_close_points(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>>) {
+    if ring.len() < 3 {
+        return;
+    }
+    let mut extent = 0.0_f64;
+    for pair in ring.windows(2) {
+        extent = extent.max(pair[0].distance(pair[1]));
+    }
+    let eps = extent.mul_add(1e-9, 1e-12);
+    let mut kept_ring = Vec::with_capacity(ring.len());
+    let mut kept_anchors = Vec::with_capacity(anchors.len());
+    for (p, a) in ring.iter().zip(anchors.iter()) {
+        if kept_ring
+            .last()
+            .is_some_and(|held: &Point2| held.distance(*p) <= eps)
+        {
+            continue;
+        }
+        kept_ring.push(*p);
+        kept_anchors.push(*a);
+    }
+    if kept_ring.len() > 2
+        && let (Some(first), Some(last)) = (kept_ring.first(), kept_ring.last())
+        && first.distance(*last) <= eps
+    {
+        kept_ring.pop();
+        kept_anchors.pop();
+    }
+    *ring = kept_ring;
+    *anchors = kept_anchors;
+}
+
+/// Whether a ring anchored in space end to end is thinner than a micron:
+/// its mean width, twice its enclosed area over its perimeter, measured
+/// through its anchors. A ring with a point not anchored is not called a
+/// slit.
+fn is_slit(anchors: &[Option<Point>], tol: Tolerances) -> bool {
+    let width = || -> Option<f64> {
+        let pts: Option<Vec<Point>> = anchors.iter().copied().collect();
+        let pts = pts?;
+        let mut normal = Vector::ZERO;
+        let mut perimeter = 0.0;
+        for i in 0..pts.len() {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            normal += a.to_vector().cross(b.to_vector());
+            perimeter += a.distance(b);
+        }
+        (perimeter > 0.0).then(|| normal.magnitude() / perimeter)
+    };
+    width().is_some_and(|w| w < tol.confusion() * 1e4)
+}
+
+/// One wire's trimming ring on a face whose chart neither repeats nor
+/// closes on itself, as [`face_boundary`] draws it among the face's other
+/// rings; `None` where the wire leaves no ring there.
+///
+/// On such a chart each ring is drawn from its own wire alone, so a caller
+/// asking about a few holes of a face with hundreds draws only those. The
+/// one ring drawn differently is a hole thinner than a micron, which
+/// [`face_boundary`] drops as a slit unless it is the face's largest ring:
+/// `largest` says whether this wire's ring is that one.
+///
+/// # Errors
+///
+/// As [`face_boundary`], and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
+/// the face's surface repeats or closes in either chart direction.
+pub fn open_chart_ring(
+    model: &Model,
+    face: &Shape,
+    wire: &Shape,
+    largest: bool,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Point2>>> {
+    use ogeom_geom::Surface as _;
+    deflection.validate()?;
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        ogeom_bail!(Construction, "expected a face");
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        ogeom_bail!(Dangling, "face refers to a surface not in this model");
+    };
+    if surface.is_periodic_u()
+        || surface.is_periodic_v()
+        || surface.is_closed_u(tol)
+        || surface.is_closed_v(tol)
+    {
+        ogeom_bail!(
+            Construction,
+            "a chart that repeats or closes draws its rings together"
+        );
+    }
+    let (mut ring, mut anchors, ..) = boundary_ring(
+        model,
+        wire,
+        data.surface,
+        deflection,
+        &EdgeChords::new(),
+        tol,
+    )?;
+    if ring.len() < 3 {
+        return Ok(None);
+    }
+    close_wound_ring(&mut ring, &mut anchors, surface, tol);
+    collapse_close_points(&mut ring, &mut anchors);
+    let reach = chart_reach(&ring);
+    merge_near_duplicates(&mut ring, &mut anchors, reach);
+    remove_spikes(&mut ring, &mut anchors, reach);
+    if ring.len() < 3 || anchors.len() < 3 || (!largest && is_slit(&anchors, tol)) {
+        return Ok(None);
+    }
+    Ok(Some(ring))
 }
 
 /// A face with no area as a fan of triangles across each of its walked

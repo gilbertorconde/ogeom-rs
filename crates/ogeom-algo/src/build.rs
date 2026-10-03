@@ -14,7 +14,7 @@
 //! a face with a gap in its boundary, and the first thing to notice is usually
 //! a boolean, several operations later.
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d, SurfaceGeometry};

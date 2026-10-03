@@ -292,6 +292,7 @@ name = "ogeom-algo"
 version = "0.8.0"
 dependencies = [
  "approx",
+ "hashbrown 0.16.1",
  "nalgebra",
  "ogeom-core",
  "ogeom-geom",

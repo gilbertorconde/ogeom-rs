@@ -29,6 +29,15 @@ bump may break the API and a patch bump may not.
   six faces instead of twelve to twenty-four thousand; a canonical face
   tangent to anything outside the smooth area is never taken.
 
+### Changed
+
+- **Booleans on large solids cost closer to what the tool touches.**
+  Untouched faces pass through the sew as they stand, the classifier draws
+  a plane's holes only near where it asks, and a cut face's holes that
+  nothing comes near are handled apart from its arrangement. A small drill
+  or boss against a 900-hole plate or an 1870-face converted mesh takes
+  about 1.8 times less CPU time, with identical results.
+
 ### Fixed
 
 - **Pads into slabs whose rows lean off the wall by thousandths.** Where a

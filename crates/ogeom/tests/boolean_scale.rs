@@ -207,3 +207,63 @@ fn a_drill_through_a_jittered_facet_top_closes() {
         "{before} less {after} against {hole}"
     );
 }
+
+/// A slot cut across a plate's top between rows of holes splits the top in
+/// two: each piece keeps exactly the holes standing in it, every hole's wall
+/// is untouched, and the volume falls by exactly the slot.
+#[test]
+fn a_slot_between_rows_of_holes_splits_the_face_and_keeps_every_hole() {
+    let (rows, pitch, radius, height) = (6_u32, 6.0, 1.0, 5.0);
+    let size = 8.0 + pitch * f64::from(rows);
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (size, size, height), T)
+        .unwrap()
+        .shape;
+    let mut pins = Vec::new();
+    for i in 0..rows {
+        for j in 0..rows {
+            let at = Point::new(8.0 + pitch * f64::from(i), 8.0 + pitch * f64::from(j), -1.0);
+            let frame = Frame::new(at, Direction::Z, Direction::X, T).unwrap();
+            pins.push(
+                ogeom::algo::make_cylinder(&mut model, frame, radius, height + 2.0, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+    }
+    let pins = model.add_compound(&pins).unwrap();
+    let plate = ogeom::boolean::cut(&mut model, &block, &pins, T)
+        .unwrap()
+        .shape;
+    // Across the whole plate, between the first two rows, from the top
+    // down to half the plate's height.
+    let (slot_y, slot_w, slot_d) = (10.5, 2.0, 2.5);
+    let frame = Frame::new(
+        Point::new(-1.0, slot_y, height - slot_d),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let slot = ogeom::algo::make_box(&mut model, frame, (size + 2.0, slot_w, slot_d + 1.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &plate, &slot, T)
+        .unwrap()
+        .shape;
+    let diagnosis = check(&model, &cut, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    // The plate's six faces and its walls, the top in two, and the slot's
+    // floor and two sides.
+    let faces = explore_unique(&model, &cut, ShapeType::Face).unwrap().len();
+    assert_eq!(faces, 6 + 36 + 1 + 3);
+    let volume = volume_properties(&model, &cut, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
+    let holes = f64::from(rows * rows) * core::f64::consts::PI * radius * radius * height;
+    let expected = size * size * height - holes - size * slot_w * slot_d;
+    assert!(
+        (volume - expected).abs() < expected * 1e-6,
+        "{volume} against {expected}"
+    );
+}

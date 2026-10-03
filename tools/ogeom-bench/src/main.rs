@@ -139,6 +139,52 @@ fn benchmarks() -> Vec<(&'static str, f64)> {
         }),
     ));
 
+    // A local edit to a large solid: a short drill into one side of a plate
+    // with a few hundred holes, and a slot across its top between two rows
+    // of them. The tool touches a face or two; what the boolean costs past
+    // that is what it spends on the faces the tool never reaches.
+    {
+        let mut model = Model::new();
+        let (rows, pitch) = (15_u32, 6.0);
+        let size = 8.0 + pitch * f64::from(rows);
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (size, size, 5.0), T)
+            .unwrap()
+            .shape;
+        let mut pins = Vec::new();
+        for i in 0..rows {
+            for j in 0..rows {
+                let at = Point::new(8.0 + pitch * f64::from(i), 8.0 + pitch * f64::from(j), -1.0);
+                let frame = Frame::new(at, Direction::Z, Direction::X, T).unwrap();
+                pins.push(
+                    ogeom::algo::make_cylinder(&mut model, frame, 1.0, 7.0, T)
+                        .unwrap()
+                        .shape,
+                );
+            }
+        }
+        let pins = model.add_compound(&pins).unwrap();
+        let plate = ogeom::boolean::cut(&mut model, &block, &pins, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(Point::new(-1.0, 5.0, 2.5), Direction::X, Direction::Y, T).unwrap();
+        let drill = ogeom::algo::make_cylinder(&mut model, frame, 1.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(Point::new(-1.0, 10.5, 2.5), Direction::Z, Direction::X, T).unwrap();
+        let slot = ogeom::algo::make_box(&mut model, frame, (size + 2.0, 2.0, 3.5), T)
+            .unwrap()
+            .shape;
+        out.push((
+            "boolean_local",
+            median(5, || {
+                for tool in [&drill, &slot] {
+                    let cut = ogeom::boolean::cut(&mut model, &plate, tool, T).unwrap();
+                    std::hint::black_box(&cut.shape);
+                }
+            }),
+        ));
+    }
+
     // The boolean with no closed form: crossed cylinders, whose sections only
     // the marcher can trace. `boolean_drill` is analytic end to end and never
     // reaches that machinery.

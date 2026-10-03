@@ -23,6 +23,6 @@ pub use hatch::hatch_face;
 pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
     EdgeChords, edge_chords_for, face_boundary, inside_boundary, inside_boundary_with,
-    polyline_of_edge, triangulate, triangulate_face, triangulate_face_with,
+    open_chart_ring, polyline_of_edge, triangulate, triangulate_face, triangulate_face_with,
     triangulate_with_chords,
 };

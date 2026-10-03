@@ -52,7 +52,7 @@ pub use section_face::section_face;
 
 use ogeom_algo::{
     Built, Containment, History, is_shell_closed, make_edge_between, make_face_on, make_vertex,
-    make_wire, sew, shape_bounds,
+    make_wire, sew_around, shape_bounds,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
@@ -169,6 +169,73 @@ impl EdgeKey {
     /// The node's index, for the debug traces.
     fn index(self) -> u32 {
         self.node.index()
+    }
+}
+
+/// What a boolean reads of one edge occurrence, the same for the faces on
+/// either side of it.
+struct Occurrence {
+    key: EdgeKey,
+    /// The edge's curve in world space, placement applied.
+    curve: std::sync::Arc<Curve>,
+    /// Each end where the curve puts it, with the tolerance of the vertex
+    /// there, matched to the curve's ends by position: the edge's vertex
+    /// order and its curve's direction need not agree once the edge is
+    /// reversed in its wire.
+    ends: [(Point, f64); 2],
+    /// The loosest tolerance either of its vertices states.
+    ends_tolerance: f64,
+    /// The box of seventeen points along the curve, the box of the chord
+    /// midpoints between them, and twice the farthest a midpoint stands off
+    /// its chord: how far the true curve may sag from the sampled polyline.
+    sampled: (ogeom_math::Aabb, ogeom_math::Aabb, f64),
+}
+
+impl Occurrence {
+    fn of(
+        model: &Model,
+        edge: &Shape,
+        curve: Curve,
+        range: (f64, f64),
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        let vertices = model.children_of(edge)?;
+        let ends_tolerance = vertices
+            .iter()
+            .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
+            .fold(0.0_f64, |acc, d| acc.max(d.tolerance.get()));
+        let (a, b) = (curve.point_at(range.0, tol)?, curve.point_at(range.1, tol)?);
+        let mut ends = [(a, tol.confusion()), (b, tol.confusion())];
+        for v in &vertices {
+            if let Some(d) = model.node(v).and_then(|n| n.data().as_vertex()) {
+                let at = v.transform(model.datums())?.apply(d.point);
+                let k = usize::from(at.distance(b) < at.distance(a));
+                ends[k].1 = ends[k].1.max(d.tolerance.get());
+            }
+        }
+        let mut previous: Option<Point> = None;
+        let (mut points, mut mids) = (ogeom_math::Aabb::EMPTY, ogeom_math::Aabb::EMPTY);
+        let mut sag = 0.0_f64;
+        for i in 0..=16 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            let t = range.0 + (range.1 - range.0) * f64::from(i) / 16.0;
+            let p = curve.point_at(t, tol)?;
+            if let Some(q) = previous {
+                let step = (range.1 - range.0) / 32.0;
+                let mid = curve.point_at(t - step, tol)?;
+                sag = sag.max(mid.distance(Point::midpoint(q, p)) * 2.0);
+                mids = mids.with_point(mid);
+            }
+            points = points.with_point(p);
+            previous = Some(p);
+        }
+        Ok(Self {
+            key: EdgeKey::of(edge),
+            curve: std::sync::Arc::new(curve),
+            ends,
+            ends_tolerance,
+            sampled: (points, mids, sag),
+        })
     }
 }
 
@@ -390,12 +457,10 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
     }
 
     let mut faces = Vec::new();
-    // Each edge occurrence's world curve, placed once for the faces on
-    // either side of it.
-    let mut placed_curves: std::collections::HashMap<
-        (ogeom_topo::TShapeId, Location),
-        std::sync::Arc<Curve>,
-    > = std::collections::HashMap::new();
+    // Each edge occurrence read once for the faces on either side of it:
+    // its world curve, its ends, and its sampled extent.
+    let mut occurrences: hashbrown::HashMap<(ogeom_topo::TShapeId, Location), Occurrence> =
+        hashbrown::HashMap::new();
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let Some(node) = model.node(&face) else {
             ogeom_bail!(Dangling, "face is not in this model");
@@ -419,6 +484,7 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
         let tolerance = data.tolerance.get();
 
         let mut edges = Vec::new();
+        let mut samples: Vec<(ogeom_math::Aabb, ogeom_math::Aabb, f64)> = Vec::new();
         let mut poles = Vec::new();
         for edge in explore_unique(model, &face, ShapeType::Edge)? {
             let Some(edge_node) = model.node(&edge) else {
@@ -455,16 +521,18 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
                 }
                 continue;
             };
-            let world = match placed_curves.entry((edge.node(), edge.location().clone())) {
-                std::collections::hash_map::Entry::Occupied(known) => known.get().clone(),
-                std::collections::hash_map::Entry::Vacant(slot) => {
+            let occurrence = match occurrences.entry((edge.node(), edge.location().clone())) {
+                hashbrown::hash_map::Entry::Occupied(known) => known.into_mut(),
+                hashbrown::hash_map::Entry::Vacant(slot) => {
                     let Some(geometry) = model.geometry().curve(*curve) else {
                         ogeom_bail!(Dangling, "curve is not in this model");
                     };
                     let placed = geometry.transformed(&edge.transform(model.datums())?, tol)?;
-                    slot.insert(std::sync::Arc::new(placed)).clone()
+                    slot.insert(Occurrence::of(model, &edge, placed, *range, tol)?)
                 }
             };
+            let world = occurrence.curve.clone();
+            samples.push(occurrence.sampled);
             let (pcurve, prange, other_side) =
                 match edge_data.pcurve_for(surface_id, edge.location()) {
                     Some(EdgeRepr::PCurve {
@@ -495,36 +563,16 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
                          that face's parameter space"
                     ),
                 };
-            let ends_tolerance = model
-                .children_of(&edge)?
-                .iter()
-                .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
-                .fold(0.0_f64, |acc, d| acc.max(d.tolerance.get()));
-            // Each end's own vertex, matched to the curve's ends by position:
-            // the edge's vertex order and its curve's direction need not
-            // agree once the edge is reversed in its wire.
-            let ends = {
-                let (a, b) = (world.point_at(range.0, tol)?, world.point_at(range.1, tol)?);
-                let mut ends = [(a, tol.confusion()), (b, tol.confusion())];
-                for v in model.children_of(&edge)? {
-                    if let Some(d) = model.node(&v).and_then(|n| n.data().as_vertex()) {
-                        let at = v.transform(model.datums())?.apply(d.point);
-                        let k = usize::from(at.distance(b) < at.distance(a));
-                        ends[k].1 = ends[k].1.max(d.tolerance.get());
-                    }
-                }
-                ends
-            };
             edges.push(BoundaryEdge {
-                node: EdgeKey::of(&edge),
+                node: occurrence.key,
                 curve: world,
                 crange: *range,
                 pcurve,
                 prange,
                 other_side,
                 tolerance: edge_data.tolerance.get(),
-                ends_tolerance,
-                ends,
+                ends_tolerance: occurrence.ends_tolerance,
+                ends: occurrence.ends,
                 bound: ogeom_math::Aabb::EMPTY,
             });
         }
@@ -612,29 +660,15 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
             SurfaceGeometry::Plane(_) | SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
         );
         let mut slack = 0.0_f64;
-        for e in &mut edges {
-            let mut previous: Option<Point> = None;
-            let (mut own, mut sag) = (ogeom_math::Aabb::EMPTY, 0.0_f64);
-            for i in 0..=16 {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-                let t = e.crange.0 + (e.crange.1 - e.crange.0) * f64::from(i) / 16.0;
-                let p = e.curve.point_at(t, tol)?;
-                if let Some(q) = previous {
-                    let step = (e.crange.1 - e.crange.0) / 32.0;
-                    let mid = e.curve.point_at(t - step, tol)?;
-                    let off = mid.distance(Point::midpoint(q, p)) * 2.0;
-                    sag = sag.max(off);
-                    own = own.with_point(mid);
-                    if ruled {
-                        slack = slack.max(off);
-                        bound = bound.with_point(mid);
-                    }
-                }
-                own = own.with_point(p);
-                bound = bound.with_point(p);
-                previous = Some(p);
+        for (e, &(points, mids, sag)) in edges.iter_mut().zip(&samples) {
+            if ruled {
+                slack = slack.max(sag);
+                bound = bound.union(&mids);
             }
-            e.bound = own.expanded(sag + e.tolerance + tol.confusion() * 1e2);
+            bound = bound.union(&points);
+            e.bound = points
+                .union(&mids)
+                .expanded(sag + e.tolerance + tol.confusion() * 1e2);
         }
         // A plane never bulges past its boundary. A ruled surface (cylinder,
         // cone) cannot either: every surface point lies on a straight ruling
@@ -5014,6 +5048,144 @@ fn quiet_piece(
     }))
 }
 
+/// A face's strands with its lone holes taken out: the rest, the place of
+/// each among all of them, and the holes, each walked alone.
+type Apart = (Vec<Strand<Tag>>, Vec<usize>, Vec<arrange::Lone<Tag>>);
+
+/// The holes of a planar face whose strands stand apart from every other
+/// strand, each walked alone (see [`arrange::Lone`]), with the rest of the
+/// strands and their places among all of them; `None` where no hole does.
+///
+/// A hole stands apart when no strand of another wire ends within a few
+/// snaps of its box, no section, contact or pole strand's box comes that
+/// near it, and its box lies inside the outer wire's.
+fn lone_holes(
+    model: &Model,
+    face: &GFace,
+    strands: &[Strand<Tag>],
+    snap: f64,
+) -> OgeomResult<Option<Apart>> {
+    // Fewer strands than this are walked together for no cost worth
+    // sparing.
+    const FEW: usize = 64;
+    if strands.len() < FEW
+        || !matches!(face.surface, SurfaceGeometry::Plane(_))
+        || !face.poles.is_empty()
+    {
+        return Ok(None);
+    }
+    // Each edge's wire, `None` for an edge in no wire or in two.
+    let index: hashbrown::HashMap<EdgeKey, usize> = face
+        .edges
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.node, i))
+        .collect();
+    let mut wire_of: Vec<Option<Option<usize>>> = vec![None; face.edges.len()];
+    let wires = model.ordered_children_of(&face.face.oriented(ogeom_topo::Orientation::Forward))?;
+    for (w, wire) in wires.iter().enumerate() {
+        for edge in model.ordered_children_of(wire)? {
+            if let Some(&i) = index.get(&EdgeKey::of(&edge)) {
+                wire_of[i] = match wire_of[i] {
+                    None => Some(Some(w)),
+                    Some(_) => Some(None),
+                };
+            }
+        }
+    }
+    let strand_wire: Vec<Option<usize>> = strands
+        .iter()
+        .map(|st| match st.tag {
+            Tag::Boundary { edge, .. } if st.boundary => {
+                wire_of.get(edge).copied().flatten().flatten()
+            }
+            _ => None,
+        })
+        .collect();
+    let mut by_wire: Vec<Vec<usize>> = vec![Vec::new(); wires.len()];
+    for (k, w) in strand_wire.iter().enumerate() {
+        if let Some(w) = w {
+            by_wire[*w].push(k);
+        }
+    }
+    let boxed = |ks: &[usize]| -> (Point2, Point2) {
+        let mut lo = Point2::new(f64::INFINITY, f64::INFINITY);
+        let mut hi = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for &k in ks {
+            for p in &strands[k].polyline {
+                lo = Point2::new(lo.x.min(p.x), lo.y.min(p.y));
+                hi = Point2::new(hi.x.max(p.x), hi.y.max(p.y));
+            }
+        }
+        (lo, hi)
+    };
+    let Some(outer) = by_wire.first().filter(|ks| !ks.is_empty()) else {
+        return Ok(None);
+    };
+    let (outer_lo, outer_hi) = boxed(outer);
+    // Every strand end, by abscissa; and the box of every strand no wire
+    // owns.
+    let mut ends: Vec<(f64, f64, usize)> = Vec::with_capacity(strands.len() * 2);
+    let mut loose: Vec<(Point2, Point2)> = Vec::new();
+    for (k, st) in strands.iter().enumerate() {
+        for p in [st.polyline.first(), st.polyline.last()]
+            .into_iter()
+            .flatten()
+        {
+            ends.push((p.x, p.y, k));
+        }
+        if strand_wire[k].is_none() {
+            loose.push(boxed(&[k]));
+        }
+    }
+    ends.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let margin = snap * 4.0;
+    let mut lone = Vec::new();
+    let mut taken = vec![false; strands.len()];
+    for (w, ks) in by_wire.iter().enumerate().skip(1) {
+        if ks.is_empty() {
+            continue;
+        }
+        let (lo, hi) = boxed(ks);
+        let (lo, hi) = (
+            Point2::new(lo.x - margin, lo.y - margin),
+            Point2::new(hi.x + margin, hi.y + margin),
+        );
+        if !(lo.x > outer_lo.x && lo.y > outer_lo.y && hi.x < outer_hi.x && hi.y < outer_hi.y) {
+            continue;
+        }
+        let first = ends.partition_point(|e| e.0 < lo.x);
+        let crowded = ends[first..]
+            .iter()
+            .take_while(|e| e.0 <= hi.x)
+            .any(|&(_, y, k)| y >= lo.y && y <= hi.y && strand_wire[k] != Some(w));
+        let crossed = loose
+            .iter()
+            .any(|(a, b)| a.x <= hi.x && b.x >= lo.x && a.y <= hi.y && b.y >= lo.y);
+        if crowded || crossed {
+            continue;
+        }
+        let mine: Vec<Strand<Tag>> = ks.iter().map(|&k| strands[k].clone()).collect();
+        let Some(ring) = arrange::lone_ring(&mine, ks, snap) else {
+            continue;
+        };
+        for &k in ks {
+            taken[k] = true;
+        }
+        lone.push(ring);
+    }
+    if lone.is_empty() {
+        return Ok(None);
+    }
+    let (rest, places): (Vec<Strand<Tag>>, Vec<usize>) = strands
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| !taken[*k])
+        .map(|(k, st)| (st.clone(), k))
+        .unzip();
+    Ok(Some((rest, places, lone)))
+}
+
 /// The face's outward normal at a chart point: the surface's, flipped when
 /// the face presents its other side.
 fn outward_normal(face: &GFace, at: Point2, tol: Tolerances) -> OgeomResult<ogeom_math::Vector> {
@@ -6778,7 +6950,20 @@ fn general_fuse_as(
                     keep
                 });
             }
-            let split = match arrange_pieces(&strands, face_snap) {
+            // A hole nothing comes near is walked on its own, and the face's
+            // walk is spared it: a face crossed by a small tool can hold
+            // hundreds of holes the tool never reaches.
+            let lone = lone_holes(model, face, &strands, face_snap)?;
+            let every: Vec<usize>;
+            let (walked, places, lone): (&[Strand<Tag>], &[usize], &[arrange::Lone<Tag>]) =
+                match &lone {
+                    Some((rest, places, lone)) => (rest, places, lone),
+                    None => {
+                        every = (0..strands.len()).collect();
+                        (&strands, &every, &[])
+                    }
+                };
+            let split = match arrange_pieces(walked, places, face_snap, lone) {
                 Ok(split) => split,
                 Err(err) => {
                     if *ARRANGE_DEBUG {
@@ -7940,8 +8125,8 @@ fn assemble_result(
         return Ok(Built::new(empty, history));
     }
 
-    let (faces, floor) = rebuilt_pieces(model, fused, kept, &mut history, tol)?;
-    let sewn = sew(model, &faces, tol)?;
+    let (faces, settled, floor) = rebuilt_pieces(model, fused, kept, &mut history, tol)?;
+    let sewn = sew_around(model, &faces, &settled, tol)?;
     // Sewing rebuilds the pieces onto shared edges: the result's faces are
     // its faces, reached from the inputs through both steps.
     history = history.then(&sewn.history);
@@ -8147,8 +8332,8 @@ fn assemble_sheet(
         return Ok(Built::new(empty, history));
     }
     let kept: Vec<(usize, bool)> = kept.iter().map(|&i| (i, false)).collect();
-    let (faces, _) = rebuilt_pieces(model, fused, &kept, &mut history, tol)?;
-    let mut sewn = sew(model, &faces, tol)?;
+    let (faces, settled, _) = rebuilt_pieces(model, fused, &kept, &mut history, tol)?;
+    let mut sewn = sew_around(model, &faces, &settled, tol)?;
     history = history.then(&sewn.history);
     let joined = seam_join::join_across_seams(model, &mut sewn.shells, tol)?;
     history = history.then(&joined).without_repeated_images();
@@ -8164,15 +8349,16 @@ fn assemble_sheet(
 }
 
 /// The kept pieces rebuilt as faces, each recorded in `history` against the
-/// face it came from and every face no piece is kept of deleted, with the
-/// distance the rebuild welds their ends within.
+/// face it came from and every face no piece is kept of deleted, whether
+/// each is a copy already sewn to all its neighbours, and the distance the
+/// rebuild welds their ends within.
 fn rebuilt_pieces(
     model: &mut Model,
     fused: &GeneralFused,
     kept: &[(usize, bool)],
     history: &mut History,
     tol: Tolerances,
-) -> OgeomResult<(Vec<Shape>, f64)> {
+) -> OgeomResult<(Vec<Shape>, Vec<bool>, f64)> {
     let source_face = |piece: &FacePiece| -> Shape {
         if piece.from_a {
             fused.a.faces[piece.face].face.clone()
@@ -8275,7 +8461,46 @@ fn rebuilt_pieces(
         }
     }
 
-    Ok((faces, floor))
+    // A copy shares each edge with the face of its own solid across it,
+    // built once for both: no edge a copy holds has a twin in its own
+    // solid. Where it meets a face of the other solid, its edges may have
+    // twins only the sew can find, so only a copy all of whose vertices are
+    // held by faces of its own solid alone comes through the sew as it
+    // stands.
+    let class = |slot: usize| -> u8 {
+        match (copies[slot], fused.pieces[kept[slot].0].from_a) {
+            (true, true) => 1,
+            (true, false) => 2,
+            (false, true) => 4,
+            (false, false) => 8,
+        }
+    };
+    let mut held: hashbrown::HashMap<ogeom_topo::TShapeId, u8> = hashbrown::HashMap::new();
+    let mut corners = Vec::with_capacity(faces.len());
+    for (slot, face) in faces.iter().enumerate() {
+        let vertices = explore_unique(rebuild.model, face, ShapeType::Vertex)?;
+        for vertex in &vertices {
+            *held.entry(vertex.node()).or_default() |= class(slot);
+        }
+        corners.push(vertices);
+    }
+    let settled = corners
+        .iter()
+        .enumerate()
+        .map(|(slot, vertices)| {
+            let own = if fused.pieces[kept[slot].0].from_a {
+                1 | 4
+            } else {
+                2 | 8
+            };
+            copies[slot]
+                && vertices
+                    .iter()
+                    .all(|v| held.get(&v.node()).is_some_and(|by| by & !own == 0))
+        })
+        .collect();
+
+    Ok((faces, settled, floor))
 }
 
 /// Each shell without its membranes, and the history of their removal.
@@ -8348,15 +8573,28 @@ fn without_membranes(
             .iter()
             .map(|f| bounding(model, f))
             .collect::<OgeomResult<Vec<_>>>()?;
+        // Only faces bounded by the same edges can be a membrane's pair, so
+        // the pairs are taken within each such group, in face order.
+        let mut alike: hashbrown::HashMap<&[ogeom_topo::TShapeId], Vec<usize>> =
+            hashbrown::HashMap::new();
+        for (i, bounded_by) in edges.iter().enumerate() {
+            if !bounded_by.is_empty() {
+                alike.entry(bounded_by.as_slice()).or_default().push(i);
+            }
+        }
+        let mut groups: Vec<Vec<usize>> = alike.into_values().filter(|g| g.len() > 1).collect();
+        groups.sort_unstable();
         let mut gone = vec![false; faces.len()];
-        for i in 0..faces.len() {
-            for j in i + 1..faces.len() {
-                if gone[i] || gone[j] || edges[i].is_empty() || edges[i] != edges[j] {
-                    continue;
-                }
-                if membrane(model, &faces[i], &faces[j])? {
-                    gone[i] = true;
-                    gone[j] = true;
+        for group in &groups {
+            for (k, &i) in group.iter().enumerate() {
+                for &j in &group[k + 1..] {
+                    if gone[i] || gone[j] {
+                        continue;
+                    }
+                    if membrane(model, &faces[i], &faces[j])? {
+                        gone[i] = true;
+                        gone[j] = true;
+                    }
                 }
             }
         }

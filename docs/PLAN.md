@@ -449,10 +449,20 @@ half.
   holds:
   - Local boolean, in part. A face the tool leaves alone is neither split nor
     arranged, the other solid's trims and outlines are drawn only where
-    asked, and an edge rebuilt whole is built once for its two faces. Still
-    whole-solid: the pair filter (all pairs, by box), the rebuild of every
-    kept face as new nodes, and the sew over all of them; a face the tool
-    crosses is arranged whole, its untouched holes with it.
+    asked, an edge rebuilt whole is built once for its two faces, and each
+    edge is read once for the faces on either side of it. The sew compares
+    only the rebuilt pieces and the copies beside the other solid: a copy
+    whose vertices only its own solid's faces hold passes through as it
+    stands (`sew_around`). The classifier draws a plane's holes one at a
+    time, as a point comes near one, and a hole of a crossed face that no
+    other strand comes near is walked apart from the face's arrangement and
+    put back in its piece. `boolean_local` in `tools/ogeom-bench` times a
+    drill into the side of a plate with 225 holes and a slot across its top.
+    Still whole-solid: gathering both solids, rebuilding every kept face as
+    new nodes (the copies too), the history composed over all of them, the
+    seam join and closure passes, and the classifier's face bounds; a
+    crossed face's interior probes are still sought over all its holes. The
+    pair filter by box costs nothing measurable.
   - Unchanged faces in the history: done as `History::copy`, an exact copy
     on new nodes. Sharing the nodes themselves would need every operation
     that edits its result in place to copy on write first.

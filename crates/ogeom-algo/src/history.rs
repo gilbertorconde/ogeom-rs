@@ -29,7 +29,7 @@
 //! which is far harder to diagnose than dying immediately. See
 //! [`History::then`].
 
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use ogeom_topo::{SameKey, Shape};
 
@@ -237,11 +237,16 @@ impl History {
     /// actually reported one.
     #[must_use]
     pub fn then(&self, later: &Self) -> Self {
+        // A step that touched nothing leaves every answer as it was.
+        if later.is_empty() {
+            return self.clone();
+        }
         let mut out = Self::new();
 
         let mut subjects: Vec<Shape> = self.inputs();
+        let mut known: HashSet<SameKey> = subjects.iter().cloned().map(SameKey).collect();
         for input in later.inputs() {
-            if !subjects.iter().any(|s| s.is_same(&input)) {
+            if known.insert(SameKey(input.clone())) {
                 subjects.push(input);
             }
         }

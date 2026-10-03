@@ -624,7 +624,14 @@ impl Curve2d for Circle2d {
     }
 
     fn point_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Point2> {
-        Ok(Point2::from_vector(self.derivatives_at(u, 0, tol)?[0]))
+        // The point alone, by the same arithmetic as `derivatives_at`.
+        let u = clamp_to_domain(u, self.domain(), true, tol)?;
+        let angle = if self.reversed { -u } else { u };
+        let f = self.circle.frame();
+        let r = self.circle.radius();
+        let (sin, cos) = angle.sin_cos();
+        let (x, y) = (f.x().vector(), f.y().vector());
+        Ok(self.circle.centre() + x * (r * cos) + y * (r * sin))
     }
 
     fn d1_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Vector2> {
