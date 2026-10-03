@@ -40,6 +40,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The sew joins edges by each end's own tolerances.** Two edges were
+  taken for one when both their ends lay within the widest tolerance either
+  edge held, so a vertex widened where a section was welded could join the
+  two sides of a sliver a quarter of a micron wide at their other ends and
+  move a corner: a pad fused into a slab drafted 0.00005 came out valid but
+  2.1e-3 cubic millimetres off. Each pair of ends is now compared within
+  those two ends' own tolerances. A facet leaning off a wall by tens of
+  microradians crosses it on their shared edge wherever its far side stands
+  off the wall by more than the weld distance: slabs drafted 0.00005 and
+  0.00002 under a pad fuse in nearly every case tried.
+
 - **Pads into slabs whose rows lean off the wall by thousandths.** Where a
   converted slab's facet rows lean off a pad's wall by a couple of
   thousandths of a radian, the sections either side of a row edge reach it

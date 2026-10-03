@@ -132,18 +132,31 @@ vertex then claims; and the mesher reads an inner ring's width
 as twice its area over its perimeter, its mean width, so a ring of facets
 poking a sixth of a micron through a wall, a micron and a third wide,
 stays a hole. Of 17 row-count sets at drafts 0.001 to 0.0001 and depths 3
-and 10, 340 of 340 pass at both distances (334 before). What remains:
+and 10, 340 of 340 pass at both distances (334 before). Drafted 0.00005
+and 0.00002, a top facet's shared edge is taken for the crossing wherever
+the facet's far side stands off the wall by more than the weld distance,
+though the band within it runs a third of the way down the facet. Where a
+section's end vertex is widened where it was welded, the sew compares each
+end of two edges within that end's own tolerances, so the two sides of a
+sliver a quarter of a micron wide stay two edges (the pad's floor at a
+corner row): the one result found outside its doubt (2.1e-3 cubic
+millimetres off, doubt 1.0e-3) now matches. Of 17 row-count sets at depths
+3 and 10, each row a face of its own / at the converter's distance: draft
+0.00005 34 / 28 of 34 (20 / 14 before), 0.00002 32 / 29 (18 / 15),
+0.00001 24 / 18 (16 / 16); every other case refuses. What remains:
 
-- Drafted 0.00005 or less the band where a top facet stands within the
-  weld distance of its wall is over a tenth of the facet, and the facet's
-  edge is not taken for the crossing: the kept pieces are left open, or a
-  piece is refused as an unpaired coincidence (20 of 34 pass with each row
-  a face of its own, 14 of 34 at the converter's distance, the same cases
-  as before the join above, refusing alike). The pair wants same-domain
-  pairing. One of those that passes is wrong: counts [8,8,8,7,7,6,5] at
-  depth 3 with each row a face of its own fuses valid but 2.1e-3 cubic
-  millimetres off the mesh's volume, against a doubt of 1.0e-3. It is the
-  one known result outside its own doubt in this family.
+- Same-domain pairing for planar faces within the weld distance of each
+  other over a region. Drafted 0.00001 the facet stands within the weld
+  of its wall over most of its height; where a corner facet meets the wall
+  only at a vertex, their planes' solve crosses it diagonally a tenth of a
+  millimetre off and the kept pieces do not close (10 of 34 refuse with
+  each row a face of its own, 16 at the converter's distance). Pairing the
+  band as coincident, split where the planes part by the weld, is the
+  design; dropping the solved line when each face lies on one side of the
+  other's plane changed nothing measured. The other refusals at 0.00005
+  and 0.00002 (depth 10 with merged rows, rising and falling counts at
+  depth 3) are a lower corner row's facets crossing the pad's walls, or a
+  ray meeting a tangency, not the top band.
 - The mesher tells a slit from a hole by width alone: slits measured
   about six tenths of a micron wide, the ring above a micron and a third,
   either side of a one micron cutoff. A wall poked through more thinly

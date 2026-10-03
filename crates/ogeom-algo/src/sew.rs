@@ -383,6 +383,7 @@ fn sew_faces(
                     // Every comparison honours an edge's width, so the gap
                     // sewn across is carried as one.
                     print.width = print.width.max(reach);
+                    print.ends = print.ends.map(|w| w.max(reach));
                     catalogue.push((id, print));
                 }
             }
@@ -1277,6 +1278,10 @@ struct Fingerprint {
     /// a recorded gap carries that gap here, and the comparison honours it:
     /// per-entity tolerances are the data model's, not a nicety of import.
     width: f64,
+    /// How far each end may stray: the edge's own tolerance and that end's
+    /// vertex's. A vertex widened where it was welded claims its span there
+    /// and not at the edge's other end.
+    ends: [f64; 2],
 }
 
 impl Fingerprint {
@@ -1335,11 +1340,21 @@ impl Fingerprint {
     fn same_as(&self, other: &Self, tol: Tolerances) -> OgeomResult<Option<bool>> {
         let reach = tol.confusion().max(self.width).max(other.width);
         let near = |a: Point, b: Point| a.distance(b) <= reach;
+        // Each pair of ends within what those two ends state: a vertex
+        // widened where a section was welded into a junction claims that
+        // span at the junction, and two edges of a sliver that meet there
+        // stay apart at their other ends by however much they part.
+        let meet =
+            |a: Point, wa: f64, b: Point, wb: f64| a.distance(b) <= tol.confusion().max(wa).max(wb);
+        let [self_start, self_end] = self.ends;
+        let [other_start, other_end] = other.ends;
         // Ends first: they cost a distance each, and most candidates that
         // start near this edge end somewhere else. The middle is asked only
         // of a pair whose ends already agree.
-        let along = near(self.start, other.start) && near(self.end, other.end);
-        let against = near(self.start, other.end) && near(self.end, other.start);
+        let along = meet(self.start, self_start, other.start, other_start)
+            && meet(self.end, self_end, other.end, other_end);
+        let against = meet(self.start, self_start, other.end, other_end)
+            && meet(self.end, self_end, other.start, other_start);
         if !along && !against {
             return Ok(None);
         }
@@ -1481,9 +1496,18 @@ fn fingerprint(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Opti
     // carried along it by a location, not new curves.
     let own = location.composed(model.datums())?;
     let outer = edge.transform(model.datums())?;
-    let mut width = data.tolerance.get();
-    for vertex in model.children_of(edge)? {
-        if let Some(v) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+    let own_width = data.tolerance.get();
+    let bounds = model.children_of(edge)?;
+    let reach_of = |vertex: Option<&Shape>| {
+        vertex
+            .and_then(|v| model.node(v))
+            .and_then(|n| n.data().as_vertex())
+            .map_or(own_width, |v| own_width.max(v.tolerance.get()))
+    };
+    let ends = [reach_of(bounds.first()), reach_of(bounds.last())];
+    let mut width = own_width;
+    for vertex in &bounds {
+        if let Some(v) = model.node(vertex).and_then(|n| n.data().as_vertex()) {
             width = width.max(v.tolerance.get());
         }
     }
@@ -1499,6 +1523,7 @@ fn fingerprint(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Opti
             .transformed(&outer, tol)?,
         range: *range,
         width,
+        ends,
     }))
 }
 
@@ -2138,6 +2163,39 @@ mod tests {
             "two different arcs were called the same edge"
         );
         assert!(a.same_as(&a, T).unwrap() == Some(false));
+    }
+
+    #[test]
+    fn a_wide_vertex_at_one_end_does_not_join_edges_apart_at_the_other() {
+        // Two sides of a sliver six microns long, a quarter of a micron
+        // wide at its open end, meeting at a vertex widened to most of a
+        // micron where a section was welded. The open end's vertices are
+        // exact, so the sides are two edges and the sliver stays a face.
+        let mut model = Model::new();
+        let shared = Point::new(0.0, 0.0, 0.0);
+        let side = |model: &mut Model, to: Point| {
+            crate::make_edge(
+                model,
+                ogeom_geom::LineCurve::segment(shared, to, T)
+                    .unwrap()
+                    .into(),
+                (0.0, to.distance(shared)),
+                T,
+            )
+            .unwrap()
+            .shape
+        };
+        let a = side(&mut model, Point::new(6e-3, 0.0, 0.0));
+        let b = side(&mut model, Point::new(6e-3, 2.7e-4, 0.0));
+        for edge in [&a, &b] {
+            let start = model.children_of(edge).unwrap()[0].clone();
+            model
+                .widen(&start, ogeom_core::Tolerance::new(8.8e-4).unwrap())
+                .unwrap();
+        }
+        let pa = fingerprint(&model, &a, T).unwrap().unwrap();
+        let pb = fingerprint(&model, &b, T).unwrap().unwrap();
+        assert!(pa.same_as(&pb, T).unwrap().is_none());
     }
 
     #[test]

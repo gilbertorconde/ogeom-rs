@@ -2276,11 +2276,13 @@ fn fill(
                     // it, splits nothing. The angle may be well under a
                     // thousandth of a radian (a facet leaning off a wall by
                     // less than its chord sags) where the edge is one both
-                    // faces hold and the band where the planes stand within
-                    // the weld distance of each other is under a tenth of
-                    // either face: wider, the faces are one surface over
-                    // much of their overlap to within the weld, and a
-                    // contact along one edge does not settle them.
+                    // faces hold and the planes part by more than the weld
+                    // distance across the smaller face: the band where they
+                    // stand within it of each other runs from the shared
+                    // edge, and the face past it lies off the other plane.
+                    // Where they never part by that much the faces are one
+                    // surface to within the weld, and a contact along one
+                    // edge does not settle them.
                     let mut replaced = false;
                     if let (SurfaceGeometry::Plane(pa), SurfaceGeometry::Plane(pb)) =
                         (&fa.surface, &fb.surface)
@@ -2297,8 +2299,7 @@ fn fill(
                             .map(|c| &c.curve)
                             .collect();
                         let weld = tol.confusion() * 1e2;
-                        let narrow =
-                            sine * fa.bound.diagonal().min(fb.bound.diagonal()) > weld * 10.0;
+                        let narrow = sine * fa.bound.diagonal().min(fb.bound.diagonal()) > weld;
                         if (sine > 1e-3 || narrow)
                             && let [solved] = lines.as_slice()
                             && matches!(solved, Curve::Line(_))

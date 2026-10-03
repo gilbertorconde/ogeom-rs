@@ -3201,17 +3201,18 @@ fn pads_into_slabs_drafted_less_than_their_chords_sag_at_the_default_distance() 
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
-/// The slab drafted 0.0001 to 0.0007, every row holding the same count, at
+/// The slab drafted 0.00002 to 0.0007, every row holding the same count, at
 /// both coplanar distances: each top facet stands parallel to its wall in
-/// plan, leaning off it by under a thousandth of a radian, down to about a
-/// ten-thousandth, and their planes' solve crosses microns to tens of
-/// microns off the top edge they share to their points' rounding. The edge
-/// is where they cross; the band where the two stand within the weld
-/// distance of each other is under a tenth of the facet.
+/// plan, leaning off it by under a thousandth of a radian, down to about
+/// two hundred-thousandths, and their planes' solve crosses microns to a
+/// tenth of a millimetre off the top edge they share to their points'
+/// rounding. The edge is where they cross: the facet's far side stands off
+/// the wall by more than the weld distance, though the band within it runs
+/// a third of the way down the facet.
 #[test]
 fn pads_into_slabs_drafted_under_a_thousandth_with_uniform_rows_cut_and_fuse() {
     let mut failed = Vec::new();
-    for draft in [0.0007, 0.0005, 0.0003, 0.0001] {
+    for draft in [0.0007, 0.0005, 0.0003, 0.0001, 0.00005, 0.00002] {
         for counts in [[8; 7], [6; 7], [4; 7]] {
             for rows_kept in [true, false] {
                 for depth in [3.0, 10.0] {
@@ -3243,6 +3244,14 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_uniform_rows_cut_and_fuse() {
 /// outside a wall, and the facets round it poke through the wall in a ring
 /// a micron and a third wide on average, which the wall's mesh keeps as a
 /// hole.
+///
+/// Drafted 0.00005, rows merge into faces whose vertices stand off them by
+/// up to a hundredth of a micron, the doubt a thousandth of a cubic
+/// millimetre. Where the pad's floor crosses a corner row, the floor keeps
+/// a sliver a quarter of a micron wide between its own edge and the
+/// section, the section's end vertex widened to most of a micron where it
+/// was welded higher up: the sliver's two sides are two edges, not one,
+/// and the wall above keeps its corner.
 #[test]
 fn pads_into_slabs_drafted_under_a_thousandth_with_differing_rows_cut_and_fuse() {
     let mut failed = Vec::new();
@@ -3260,10 +3269,11 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_differing_rows_cut_and_fuse()
         (0.0003, [6, 6, 6, 4, 8, 7, 5], 10.0),
         (0.0001, [8, 9, 9, 5, 4, 5, 5], 3.0),
         (0.0001, [6, 6, 6, 4, 8, 7, 5], 3.0),
+        (0.00005, [8, 8, 8, 7, 7, 6, 5], 3.0),
     ] {
         match pad_on_a_drafted_slab(depth, draft, counts, false) {
             Err(e) => failed.push(format!("{draft} {counts:?}: {e}")),
-            Ok(doubt) if doubt > 5e-5 => {
+            Ok(doubt) if draft >= 1e-4 && doubt > 5e-5 => {
                 failed.push(format!("{draft} {counts:?}: the slab's doubt {doubt:.2e}"));
             }
             Ok(_) => {}
