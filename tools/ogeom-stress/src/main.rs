@@ -15,6 +15,12 @@
 //!
 //! Refusals are honest and tracked. The last three are the bugs.
 //!
+//! The oracles are volume identities (a cut and a common add up to the
+//! part), read on volumes integrated on the exact surfaces and held to a
+//! millionth of the solids. A solid the exact integral refuses is measured
+//! on a fine tessellation instead, allowed the chord times its area on
+//! top, and the report lists those cases.
+//!
 //! `ogeom-stress` runs every scenario and prints the tally. `--check
 //! <baseline.json>` fails when a scenario has fewer `ok` or more bad cases
 //! than the baseline records, and `--write <path>` records one. `--case
@@ -131,31 +137,44 @@ impl Outcome {
 struct Verdict {
     outcome: Outcome,
     note: String,
+    /// Whether a volume the oracle read was measured on a tessellation,
+    /// the exact integral having refused the solid.
+    tessellated: bool,
 }
 
 impl Verdict {
     fn ok() -> Self {
-        Self {
-            outcome: Outcome::Ok,
-            note: String::new(),
-        }
+        Self::of(Outcome::Ok, "")
     }
 
     fn of(outcome: Outcome, note: impl Into<String>) -> Self {
         Self {
             outcome,
             note: note.into(),
+            tessellated: false,
         }
+    }
+
+    /// This verdict, marked as read from these measures.
+    fn read_from(mut self, named: &[(&str, &Measure)]) -> Self {
+        let fell = tessellated(named);
+        if !fell.is_empty() {
+            self.tessellated = true;
+            if self.outcome != Outcome::Ok {
+                self.note.push_str(&fell);
+            }
+        }
+        self
     }
 }
 
 /// An operation's result judged for validity: an error is a refusal, an
-/// invalid solid is `invalid`, and a valid one comes back with its volume.
+/// invalid solid is `invalid`, and a valid one comes back with its measure.
 fn judged(
     model: &Model,
     what: &str,
     result: ogeom::core::OgeomResult<ogeom::algo::Built>,
-) -> Result<(Shape, f64), Verdict> {
+) -> Result<(Shape, Measure), Verdict> {
     let built = result.map_err(|e| Verdict::of(Outcome::Refused, format!("{what}: {e}")))?;
     let diagnosis = ogeom::algo::check(model, &built.shape, T)
         .map_err(|e| Verdict::of(Outcome::Refused, format!("{what}: check: {e}")))?;
@@ -169,14 +188,110 @@ fn judged(
             format!("{what}: invalid: {first}"),
         ));
     }
-    let v = volume(model, &built.shape)
+    let m = measure(model, &built.shape)
         .map_err(|e| Verdict::of(Outcome::Refused, format!("{what}: volume: {e}")))?;
-    Ok((built.shape, v))
+    Ok((built.shape, m))
 }
 
-fn volume(model: &Model, shape: &Shape) -> ogeom::core::OgeomResult<f64> {
-    let deflection = Deflection::with_chord(2e-3)?;
-    Ok(ogeom::algo::volume_properties(model, shape, deflection, T)?.mass)
+/// The chord a volume is tessellated to where the exact integral refuses.
+/// An inscribed tessellation's volume is short by under the chord times
+/// the curved area, so this keeps a fallen-back identity within about
+/// 1e-4 of its solids.
+const CHORD: f64 = 2e-4;
+
+/// The relative slack a volume identity is allowed on exactly integrated
+/// solids. The integral rounds to about 1e-10 of a solid; booleans of
+/// generated parts land within 1e-8, and of converted corpus parts (whose
+/// vertices stand off their faces by up to their tolerance) within 2e-7.
+/// A face split the wrong way misses by 1e-5 to 1e-3.
+const SLACK: f64 = 1e-6;
+
+/// A solid's volume, and how far it can honestly be off.
+#[derive(Clone, Copy)]
+struct Measure {
+    volume: f64,
+    /// Whether the volume was integrated on the exact surfaces rather than
+    /// on a tessellation.
+    exact: bool,
+    /// How far a tessellated volume can be off: the chord times the
+    /// solid's area. Nothing for an exact one.
+    doubt: f64,
+}
+
+impl Measure {
+    const NOTHING: Self = Self {
+        volume: 0.0,
+        exact: true,
+        doubt: 0.0,
+    };
+}
+
+fn measure(model: &Model, shape: &Shape) -> ogeom::core::OgeomResult<Measure> {
+    let deflection = Deflection::with_chord(CHORD)?;
+    let props = ogeom::algo::volume_properties(model, shape, deflection, T)?;
+    // An empty answer has nothing to integrate either way.
+    let exact =
+        props.deflection == 0.0 || explore_unique(model, shape, ShapeType::Face)?.is_empty();
+    let doubt = if exact {
+        0.0
+    } else {
+        CHORD * ogeom::algo::surface_properties(model, shape, deflection, T)?.mass
+    };
+    Ok(Measure {
+        volume: props.mass,
+        exact,
+        doubt,
+    })
+}
+
+/// How far a solid's volume may move with the solid as it states itself:
+/// each face's area times the loosest tolerance on it (its own, its
+/// edges', its vertices'), which bounds how far the face's boundary may
+/// stand off where an integral runs it. Reported beside a wrong answer on
+/// a part, to tell a part that cannot be measured closer from a boolean
+/// that went wrong.
+fn stated_doubt(model: &Model, shape: &Shape) -> ogeom::core::OgeomResult<f64> {
+    let deflection = Deflection::with_chord(CHORD)?;
+    let mut doubt = 0.0;
+    for face in explore_unique(model, shape, ShapeType::Face)? {
+        let mut loosest = model
+            .node(&face)
+            .and_then(|n| n.data().as_face().map(|d| d.tolerance.get()))
+            .unwrap_or(0.0);
+        for edge in explore_unique(model, &face, ShapeType::Edge)? {
+            if let Some(d) = model.node(&edge).and_then(|n| n.data().as_edge()) {
+                loosest = loosest.max(d.tolerance.get());
+            }
+        }
+        for vertex in explore_unique(model, &face, ShapeType::Vertex)? {
+            if let Some(d) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+                loosest = loosest.max(d.tolerance.get());
+            }
+        }
+        let area = ogeom::algo::surface_properties(model, &face, deflection, T)?.mass;
+        doubt += loosest * area;
+    }
+    Ok(doubt)
+}
+
+/// How far an identity over these measures may miss: the relative slack
+/// on `scale`, and every tessellated measure's doubt.
+fn allowance(scale: f64, measures: &[&Measure]) -> f64 {
+    SLACK * scale + measures.iter().map(|m| m.doubt).sum::<f64>()
+}
+
+/// Which of these measures fell back to a tessellation, for the report.
+fn tessellated(named: &[(&str, &Measure)]) -> String {
+    let fell: Vec<&str> = named
+        .iter()
+        .filter(|(_, m)| !m.exact)
+        .map(|(n, _)| *n)
+        .collect();
+    if fell.is_empty() {
+        String::new()
+    } else {
+        format!("; tessellated: {}", fell.join(", "))
+    }
 }
 
 // --- parts -----------------------------------------------------------------
@@ -187,7 +302,9 @@ struct Part {
     name: String,
     model: Model,
     shape: Shape,
-    volume: f64,
+    measure: Measure,
+    /// Its tolerances times its faces' areas: see [`stated_doubt`].
+    stated: f64,
     low: Point,
     high: Point,
     vertices: Vec<Point>,
@@ -198,7 +315,8 @@ struct Part {
 
 impl Part {
     fn new(name: &str, model: Model, shape: Shape) -> Option<Self> {
-        let volume = volume(&model, &shape).ok()?;
+        let measure = measure(&model, &shape).ok()?;
+        let stated = stated_doubt(&model, &shape).ok()?;
         let bounds = ogeom::algo::shape_bounds(&model, &shape, T).ok()?;
         let (low, high) = (bounds.low()?, bounds.high()?);
         let vertices = explore_unique(&model, &shape, ShapeType::Vertex)
@@ -211,7 +329,8 @@ impl Part {
             name: name.to_string(),
             model,
             shape,
-            volume,
+            measure,
+            stated,
             low,
             high,
             vertices,
@@ -493,54 +612,68 @@ fn drill_case(part: &Part, rng: &mut Rng) -> Verdict {
             Err(e) => return Verdict::of(Outcome::Refused, format!("drill: {e}")),
         };
     // Where the drill went, for replaying a bad case outside the harness.
+    let seam = x.vector();
     let placed = format!(
-        "drill r {radius} from ({}, {}, {}) along ({}, {}, {}) length {length}",
-        start.x, start.y, start.z, axis.x, axis.y, axis.z
+        "drill r {radius} from ({}, {}, {}) along ({}, {}, {}) length {length}, seam toward \
+         ({}, {}, {})",
+        start.x, start.y, start.z, axis.x, axis.y, axis.z, seam.x, seam.y, seam.z
     );
     let verdict = (|| {
         let drill_volume = core::f64::consts::PI * radius * radius * length;
         let cut = ogeom::boolean::cut(&mut model, &part.shape, &drill, T);
-        let (_, v_cut) = match judged(&model, "cut", cut) {
+        let (_, cut) = match judged(&model, "cut", cut) {
             Ok(r) => r,
             Err(v) => return v,
         };
+        let whole = part.measure;
+        let scale = whole.volume.max(drill_volume.min(whole.volume));
         let common = ogeom::boolean::common(&mut model, &part.shape, &drill, T);
-        let v_common = match common {
+        let common = match common {
             // Nothing in common is an empty answer, not a refusal.
-            Err(e) if v_cut >= part.volume * (1.0 - 1e-9) => {
-                let _ = e;
-                0.0
+            Err(_) if cut.volume >= whole.volume - allowance(scale, &[&whole, &cut]) => {
+                Measure::NOTHING
             }
             other => match judged(&model, "common", other) {
-                Ok((_, v)) => v,
+                Ok((_, m)) => m,
                 Err(v) => return v,
             },
         };
-        let slack = 2e-3 * part.volume.max(drill_volume.min(part.volume));
-        let miss = (v_cut + v_common - part.volume).abs();
-        if miss > slack {
+        let named = [("part", &whole), ("cut", &cut), ("common", &common)];
+        let slack = allowance(scale, &[&whole, &cut, &common]);
+        let miss = cut.volume + common.volume - whole.volume;
+        if miss.abs() > slack {
             return Verdict::of(
                 Outcome::Wrong,
                 format!(
-                    "cut {v_cut:.6} + common {v_common:.6} = {:.6}, part {:.6}",
-                    v_cut + v_common,
-                    part.volume
+                    "cut {:.9} + common {:.9} = {:.9}, part {:.9}, off {miss:.3e} \
+                     ({:.2e} of the part) against {slack:.3e}, the part's stated doubt \
+                     {:.3e}",
+                    cut.volume,
+                    common.volume,
+                    cut.volume + common.volume,
+                    whole.volume,
+                    miss / whole.volume,
+                    part.stated,
                 ),
-            );
+            )
+            .read_from(&named);
         }
-        Verdict::ok()
+        Verdict::ok().read_from(&named)
     })();
     // Anything short of ok carries where the drill went, to replay it.
     if verdict.outcome == Outcome::Ok {
         verdict
     } else {
-        Verdict::of(verdict.outcome, format!("{}; {placed}", verdict.note))
+        Verdict {
+            note: format!("{}; {placed}", verdict.note),
+            ..verdict
+        }
     }
 }
 
 /// A primitive of a random kind and size, placed with its position and
 /// size snapped to a coarse grid half the time, so pairs meet face on face.
-fn primitive(model: &mut Model, rng: &mut Rng) -> Option<(Shape, f64, String)> {
+fn primitive(model: &mut Model, rng: &mut Rng) -> Option<(Shape, Measure, String)> {
     let snap = |rng: &mut Rng, lo: f64, hi: f64| {
         let v = rng.range(lo, hi);
         if rng.chance(0.5) {
@@ -594,65 +727,88 @@ fn primitive(model: &mut Model, rng: &mut Rng) -> Option<(Shape, f64, String)> {
         }
     };
     let shape = built.ok()?.shape;
-    let v = volume(model, &shape).ok()?;
-    Some((shape, v, name.to_string()))
+    let m = measure(model, &shape).ok()?;
+    Some((shape, m, name.to_string()))
 }
 
 /// Two primitives, and the boolean identities: the fuse and the common
 /// add up to the two, and the cut is the first less the common.
 fn pair_case(rng: &mut Rng) -> Verdict {
     let mut model = Model::new();
-    let Some((a, va, ka)) = primitive(&mut model, rng) else {
+    let Some((a, ma, ka)) = primitive(&mut model, rng) else {
         return Verdict::of(Outcome::Refused, "primitive");
     };
-    let Some((b, vb, kb)) = primitive(&mut model, rng) else {
+    let Some((b, mb, kb)) = primitive(&mut model, rng) else {
         return Verdict::of(Outcome::Refused, "primitive");
     };
     let what = format!("{ka} with {kb}");
     let common = ogeom::boolean::common(&mut model, &a, &b, T);
-    let v_common = match common {
+    let common = match common {
         Err(_) => None,
         other => match judged(&model, &format!("{what}: common"), other) {
-            Ok((_, v)) => Some(v),
+            Ok((_, m)) => Some(m),
             Err(v) => return v,
         },
     };
     let fuse = ogeom::boolean::fuse(&mut model, &a, &b, T);
-    let (_, v_fuse) = match judged(&model, &format!("{what}: fuse"), fuse) {
+    let (_, fuse) = match judged(&model, &format!("{what}: fuse"), fuse) {
         Ok(r) => r,
         Err(v) => return v,
     };
     let cut = ogeom::boolean::cut(&mut model, &a, &b, T);
-    let (_, v_cut) = match judged(&model, &format!("{what}: cut"), cut) {
+    let (_, cut) = match judged(&model, &format!("{what}: cut"), cut) {
         Ok(r) => r,
         Err(v) => return v,
     };
+    let (va, vb) = (ma.volume, mb.volume);
+    let scale = va + vb;
     // A refused common is only an empty one when the fuse says the two
     // do not overlap.
-    let v_common = match v_common {
-        Some(v) => v,
-        None if (v_fuse - va - vb).abs() <= 2e-3 * (va + vb) => 0.0,
+    let common = match common {
+        Some(m) => m,
+        None if (fuse.volume - va - vb).abs() <= allowance(scale, &[&ma, &mb, &fuse]) => {
+            Measure::NOTHING
+        }
         None => {
             return Verdict::of(Outcome::Refused, format!("{what}: common refused"));
         }
     };
-    let slack = 2e-3 * (va + vb);
-    if (v_fuse + v_common - va - vb).abs() > slack {
+    let named = [
+        ("first", &ma),
+        ("second", &mb),
+        ("fuse", &fuse),
+        ("common", &common),
+        ("cut", &cut),
+    ];
+    let slack = allowance(scale, &[&ma, &mb, &fuse, &common]);
+    let miss = fuse.volume + common.volume - va - vb;
+    if miss.abs() > slack {
         return Verdict::of(
             Outcome::Wrong,
             format!(
-                "{what}: fuse {v_fuse:.6} + common {v_common:.6} against {:.6}",
+                "{what}: fuse {:.9} + common {:.9} against {:.9}, off {miss:.3e} against \
+                 {slack:.3e}",
+                fuse.volume,
+                common.volume,
                 va + vb
             ),
-        );
+        )
+        .read_from(&named);
     }
-    if (v_cut + v_common - va).abs() > slack {
+    let slack = allowance(scale, &[&ma, &cut, &common]);
+    let miss = cut.volume + common.volume - va;
+    if miss.abs() > slack {
         return Verdict::of(
             Outcome::Wrong,
-            format!("{what}: cut {v_cut:.6} + common {v_common:.6} against {va:.6}"),
-        );
+            format!(
+                "{what}: cut {:.9} + common {:.9} against {va:.9}, off {miss:.3e} against \
+                 {slack:.3e}",
+                cut.volume, common.volume
+            ),
+        )
+        .read_from(&named);
     }
-    Verdict::ok()
+    Verdict::ok().read_from(&named)
 }
 
 /// A fillet on one to three random edges of a part at a random radius: a
@@ -670,11 +826,11 @@ fn fillet_case(part: &Part, rng: &mut Rng) -> Verdict {
     }
     let radius = part.diagonal() * rng.range(0.005, 0.06);
     let result = ogeom::fillet::fillet_edges(&mut model, &part.shape, &chosen, radius, T);
-    let (_, v) = match judged(&model, "fillet", result) {
+    let (_, m) = match judged(&model, "fillet", result) {
         Ok(r) => r,
         Err(v) => return v,
     };
-    let change = (v - part.volume).abs() / part.volume;
+    let change = (m.volume - part.measure.volume).abs() / part.measure.volume;
     if change > 0.25 {
         return Verdict::of(
             Outcome::Wrong,
@@ -684,7 +840,7 @@ fn fillet_case(part: &Part, rng: &mut Rng) -> Verdict {
             ),
         );
     }
-    Verdict::ok()
+    Verdict::ok().read_from(&[("fillet", &m)])
 }
 
 // --- running ---------------------------------------------------------------
@@ -896,6 +1052,20 @@ fn print_report(ran: &[Ran], tally: &Tally) {
                 r.verdict.note
             );
         }
+    }
+    // A volume the exact integral refused was read off a tessellation, and
+    // its case judged with the chord in its slack.
+    let fell: Vec<&str> = ran
+        .iter()
+        .filter(|r| r.verdict.tessellated)
+        .map(|r| r.key.as_str())
+        .collect();
+    if !fell.is_empty() {
+        println!(
+            "\nmeasured on a tessellation ({} cases): {}",
+            fell.len(),
+            fell.join(" ")
+        );
     }
     // Refusals by reason, numbers stripped, so a family reads as one line.
     let mut reasons: BTreeMap<(String, String), usize> = BTreeMap::new();
