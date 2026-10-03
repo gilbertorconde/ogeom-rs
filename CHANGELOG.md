@@ -91,6 +91,14 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **`intersect_surfaces` answers `Same` for coincident patches.** Two
+  patches with no closed form that lie on one another within the requested
+  tolerance are reported as coincident for every caller, where fillets,
+  offsets and sections used to march noise along them. Surface projection
+  (`project_on_surface`, `project_on_surface_from`, `SurfaceSeeds`,
+  `SurfaceProjection`) lives in `ogeom-geom`; the `ogeom-algo` paths still
+  work.
+
 - **Mesh conversion is 3 to 5 times faster on large meshes.** Each seam
   curve is solved once per conversion and the per-face checks (areas,
   probes, the exact volume) run in parallel, with identical results: a

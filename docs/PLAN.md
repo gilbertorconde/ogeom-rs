@@ -281,10 +281,11 @@ the surface itself, which needs no chart.
 
 - A per-face state cache would let the boolean's build phase read a piece's
   classification instead of probing for it. No case needs it for correctness.
-- Coincidence of two patches is measured in the boolean because the projection
-  it needs lives in `ogeom-algo`, above the intersector. Moving
-  `project_on_surface` down into `ogeom-geom` would let `intersect_surfaces`
-  answer `Same` itself, for every caller.
+- Coincidence of two patches: done. `project_on_surface` lives in
+  `ogeom-geom`, and `intersect_surfaces` measures a pair without a closed
+  form for coincidence and answers `Same` for every caller. The boolean
+  still asks `coincide_as_stated` itself, since only the faces know their
+  stated tolerance. No measurable time change on the stress run.
 - Local operations, so an op costs what an edit touches, not what the solid
   holds:
   - Local boolean, in part. A face the tool leaves alone is neither split nor

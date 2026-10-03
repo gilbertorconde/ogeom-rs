@@ -13,6 +13,7 @@ pub mod convert;
 pub mod curve;
 pub mod curve2d;
 pub mod fit;
+pub mod project;
 pub mod surface;
 pub mod traits;
 
@@ -23,6 +24,7 @@ pub use curve::{
 pub use curve2d::{
     BSpline2d, Circle2d, Ellipse2d, Line2d, Offset2d, PlanarCurve, Trig2d, Trimmed2d, tangent_angle,
 };
+pub use project::{SurfaceProjection, SurfaceSeeds, project_on_surface, project_on_surface_from};
 pub use surface::{
     BSplineSurface, ConeSurface, CylinderSurface, ExtrusionSurface, OffsetSurface, PlaneSurface,
     RevolutionSurface, SphereSurface, SurfaceGeometry, TorusSurface, TrimmedSurface, carried,
