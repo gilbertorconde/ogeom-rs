@@ -3884,7 +3884,9 @@ impl FlatPatches {
 /// such edges. A curve drawn finely turns that little too, steadily from
 /// one edge to the next, where scatter turns at random; each height is
 /// scaled by [`STEADY_GAIN`] times how far its edge's turn strays from its
-/// neighbours' ([`steady_miss`]), up to the whole height.
+/// neighbours' ([`steady_miss`]), up to the whole height, and an edge
+/// whose neighbours stray from it by more than [`STRAY_LIMIT`] times its
+/// turn is a lull in a surface that bends, and counts for nothing.
 fn flat_noise(points: &[Point], triangles: &[[u32; 3]], adjacency: &Adjacency) -> f64 {
     let cos_level = 0.05_f64.to_radians().cos();
     let normals: Vec<Vector> = triangles.iter().map(|&t| unit_normal(points, t)).collect();
@@ -3928,6 +3930,7 @@ fn flat_noise(points: &[Point], triangles: &[[u32; 3]], adjacency: &Adjacency) -
         }
         let value = if height > 0.0 {
             match steady_miss(points, triangles, &normals, adjacency, &fans, h, g) {
+                Some(miss) if miss > STRAY_LIMIT => 0.0,
                 Some(miss) => height * (STEADY_GAIN * miss).min(1.0),
                 None => height,
             }
@@ -3948,7 +3951,9 @@ fn flat_noise(points: &[Point], triangles: &[[u32; 3]], adjacency: &Adjacency) -
 /// [`PARALLEL_TURN`] of its direction, overlapping it along its length and
 /// sharing no vertex with it; between the nearest on either side the turn
 /// should lie, and with one side only, on the line through the nearest two
-/// there (or at the nearest's turn). Along: the edges continuing it past
+/// there, or where those two turn the same way, between the nearest's
+/// turn and twice or half it as they grow or shrink toward the edge; with
+/// one edge only, at its turn. Along: the edges continuing it past
 /// either end, the straightest within [`ALONG_TURN`] of its direction;
 /// between their turns, or at the one's. Every edge compared lies between
 /// triangles within [`NEAR_TURN`] of the edge's own. A surface drawn finely
@@ -4042,7 +4047,7 @@ fn steady_miss(
                     continue;
                 };
                 let (c, d) = from_to(triangles, k);
-                if o < k || (c != at && d != at) {
+                if o < k || (c != at && d != at) || !(near(s as usize) && near(o / 3)) {
                     continue;
                 }
                 let far = if c == at { d } else { c };
@@ -4066,11 +4071,23 @@ fn steady_miss(
         _ => {
             let side = if below.is_empty() { &above } else { &below };
             side.first().map(|&(o0, t0)| {
-                let line = match side.iter().find(|&&(o, _)| o > 1.5 * o0) {
-                    Some(&(o1, t1)) => (t0 * o1 - t1 * o0) / (o1 - o0),
-                    None => t0,
-                };
-                (line, line, line)
+                match side.iter().find(|&&(o, _)| o > 1.5 * o0) {
+                    // Two turns the same way that grow toward the edge, as
+                    // where a bend tightens toward a surface's last row,
+                    // put the edge's turn between the nearest and twice
+                    // it; two that shrink, between the nearest and half
+                    // of it.
+                    Some(&(_, t1)) if t0 * t1 > 0.0 && t0.abs() != t1.abs() => {
+                        let reach = if t0.abs() > t1.abs() { 2.0 } else { 0.5 };
+                        let line = t0 * (1.0 + reach) / 2.0;
+                        (t0.min(reach * t0), t0.max(reach * t0), line)
+                    }
+                    Some(&(o1, t1)) => {
+                        let line = (t0 * o1 - t1 * o0) / (o1 - o0);
+                        (line, line, line)
+                    }
+                    None => (t0, t0, t0),
+                }
             })
         }
     };
@@ -4136,6 +4153,12 @@ impl Fans {
 /// counts as scatter: scatter strays by about as much as it turns, and a
 /// height is kept whole unless the stray is under half the turn.
 const STEADY_GAIN: f64 = 2.0;
+
+/// How many times its own turn the edges an edge is compared with may
+/// stray from it before the edge is taken for a lull in a surface that
+/// bends, not part of a flat face: on a flat face they turn by about as
+/// much as it does, either way, while in a bend they turn far more.
+const STRAY_LIMIT: f64 = 3.0;
 
 /// The widest turn, in degrees, between the triangles either side of an
 /// edge whose scatter is measured and the triangles beside it whose edges

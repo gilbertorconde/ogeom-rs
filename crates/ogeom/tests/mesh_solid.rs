@@ -1245,7 +1245,11 @@ fn fillets_ending_on_rough_corners_are_still_cylinders() {
     // whole shape tessellates closed.
     let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
     assert!(drawn.is_closed());
-    let got = volume(&back, &out.shape);
+    // Measured finely: tessellated at the default deflection the twelve
+    // fitted cylinders lose about as much volume as the tolerance allows.
+    let got = volume_properties(&back, &out.shape, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
     assert!(
         (got - mesh.volume()).abs() < mesh.volume() * 2e-3,
         "{got} against {}",
@@ -2858,12 +2862,13 @@ fn clip_to_convex(subject: &[(f64, f64)], window: &[(f64, f64)]) -> Vec<(f64, f6
 /// The pad fused back, in common with the slab and cut from it must each
 /// be valid, with a volume within `2e-5` cubic millimetres of one measured
 /// from the mesh alone, plus the doubt the converted slab carries where the
-/// pad's floor crosses it. Rows that lean alike merge into one face on a
-/// fitted plane, its vertices off the plane by up to their tolerance; a
-/// face the floor splits is tessellated on those vertices in pieces, not
-/// whole, and its volume moves by up to how far they stand off the plane
-/// times its area. That sum over the faces the floor crosses is the doubt;
-/// faces holding their vertices to rounding carry none. The slab's volume is its triangles' signed
+/// pad's floor crosses it. Where rows that lean alike merge into one face
+/// on a fitted plane, its vertices stand off the plane by up to their
+/// tolerance; a face the floor splits is tessellated on those vertices in
+/// pieces, not whole, and its volume moves by up to how far they stand off
+/// the plane times its area. That sum over the faces the floor crosses is
+/// the doubt, returned; faces holding their vertices to rounding carry
+/// none. The slab's volume is its triangles' signed
 /// tetrahedra, the pad's its lid's area times its depth, and their common
 /// part the integral down the pad of the lid clipped by the slab's
 /// section, which between two rows is the polygon through the edges
@@ -2877,7 +2882,7 @@ fn pad_on_a_drafted_slab(
     draft: f64,
     counts: [u32; 7],
     rows_kept: bool,
-) -> Result<(), String> {
+) -> Result<f64, String> {
     let rows = [0.0_f64, 1.5, 3.0, 4.5, 5.8333, 7.1667, 8.5];
     let top = 8.5;
     #[allow(
@@ -3074,7 +3079,7 @@ fn pad_on_a_drafted_slab(
             ));
         }
     }
-    Ok(())
+    Ok(doubt)
 }
 
 /// Each wall of the pad stands on the facet just under the top edge they
@@ -3204,12 +3209,15 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_uniform_rows_cut_and_fuse() {
 
 /// The slab drafted 0.0001 to 0.0007 with rows of differing counts,
 /// converted at the converter's own coplanar distance, and the pad's floor
-/// crossing it below the top band. Rows that lean alike merge into one
-/// face, its vertices standing up to six ten-thousandths off its fitted
-/// plane, and the floor splits it: each result's volume stays within that
-/// face's doubt of the mesh's.
+/// crossing it below the top band. The rows' turns grow toward the top as
+/// the draft steepens, and in the corner the nearly flat edges between
+/// rows lie among edges that turn far more: neither is scatter, the
+/// distance stays at what single precision resolves, and each row stays a
+/// face of its own. The faces the floor splits hold their vertices, so
+/// the results' volumes are the mesh's to within a few hundred-thousandths
+/// of a cubic millimetre, the doubt among them.
 #[test]
-fn pads_into_slabs_whose_merged_rows_stand_off_their_planes_cut_and_fuse() {
+fn pads_into_slabs_drafted_under_a_thousandth_with_differing_rows_cut_and_fuse() {
     let mut failed = Vec::new();
     for (draft, counts) in [
         (0.0007, [6, 5, 6, 5, 6, 5, 6]),
@@ -3221,8 +3229,12 @@ fn pads_into_slabs_whose_merged_rows_stand_off_their_planes_cut_and_fuse() {
         (0.0001, [8, 9, 9, 5, 4, 5, 5]),
         (0.0001, [6, 6, 6, 4, 8, 7, 5]),
     ] {
-        if let Err(e) = pad_on_a_drafted_slab(3.0, draft, counts, false) {
-            failed.push(format!("{draft} {counts:?}: {e}"));
+        match pad_on_a_drafted_slab(3.0, draft, counts, false) {
+            Err(e) => failed.push(format!("{draft} {counts:?}: {e}")),
+            Ok(doubt) if doubt > 5e-5 => {
+                failed.push(format!("{draft} {counts:?}: the slab's doubt {doubt:.2e}"));
+            }
+            Ok(_) => {}
         }
     }
     assert!(failed.is_empty(), "{failed:#?}");

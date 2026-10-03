@@ -115,33 +115,26 @@ against 15 before). Drafted 0.0001 to 0.0007 the top band leans off the
 pad's walls by under a thousandth of a radian and crosses them on the top
 edge both faces hold: of 17 row-count sets at those 4 drafts and 2 depths,
 133 of 136 pass with each row a face of its own and 115 of 136 at the
-converter's own distance (79 and 67 before). What remains:
+converter's own distance (79 and 67 before). The estimate also takes an
+edge whose neighbours turn several times as much for a lull in a bend, and
+end rows whose turns grow toward the edge for steady, comparing edges
+continuing one past its ends only within five degrees of it: at its own
+distance (1.65e-5 on every set, what single precision resolves) each row
+stays a face of its own and the faces a pad's floor crosses hold their
+vertices, doubt at most 1.6e-5 where rows merged 6e-4 off their planes
+gave 4e-2. Of the 15 committed row-count sets at drafts 0.001 to 0.0001
+and depths 3 and 10, 147 of 150 pass at that distance (137 before). What
+remains:
 
 - Drafted 0.00005 or less the band where a top facet stands within the
   weld distance of its wall is over a tenth of the facet, and the facet's
   edge is not taken for the crossing: the kept pieces are left open, or a
   piece is refused as an unpaired coincidence. The pair wants same-domain
   pairing.
-- At the converter's own distance, rows that lean alike merge into one
-  face on a fitted plane, its vertices up to 6e-4 off it within their
-  tolerance. A pad whose floor crosses such a face came out off the mesh's
-  volume by 2e-5 to 5e-4 (8 sets at a depth of 3). Not a boolean error:
-  slicing the slab with a plain box at the floor moves cut plus common by
-  the same amount to three digits, the pieces of a face tessellated on
-  vertices off its plane differ from the face tessellated whole, and every
-  case stays under a fiftieth of the crossed faces' doubt (vertex offset
-  times area, 6e-3 to 4e-2); where the crossed faces hold their vertices
-  the identities hold to 1e-12. The test's tolerance now adds that doubt.
-  The converter merging rows that far off a plane is the cause to take up
-  if exact volumes on such parts matter. Of the 15 committed row-count
-  sets at 4 drafts and 2 depths, 107 of 120 pass at this distance; of the
-  rest 10 are refused as kept pieces that do not close (9 at a depth of
-  10), 2 as a fuse whose rays all meet a degenerate point, and one fuse
-  is valid but its tessellation open (three to nine a row, drafted
-  0.0003, depth 10).
-- Each row a face of its own, three sets at a depth of 10 leave the kept
-  pieces open or the fuse's tessellation open (eight to five or three to
-  nine a row, drafted 0.0003 to 0.0005).
+- Each row a face of its own, at either distance, three sets at a depth
+  of 10 leave the kept pieces open or the fuse's tessellation open (eight
+  to five or seven to five a row drafted 0.0005, three to nine drafted
+  0.0003).
 
 **Mesh conversion.** `solid_from_mesh` rebuilds planes, the four canonical
 surfaces, extrusions, surfaces of revolution and fitted B-spline patches,

@@ -23,6 +23,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The converter's scatter estimate skips a bend's nearly flat edges.**
+  The default coplanar distance no longer reads the nearly flat edges of a
+  coarse curved or drafted wall as scatter, so such walls convert at the
+  distance single precision resolves, each row a face of its own, with no
+  volume doubt from vertices standing off merged planes (slabs drafted
+  0.0001 to 0.0007: distance 1.7e-5 instead of up to 7.6e-4). Noisy meshes
+  beside creases estimate their scatter more closely: a filleted disc
+  exported with noise comes back as 5 recognized faces instead of 651
+  facets.
+
 - **Arcs on a turned frame are bounded whole.** An edge on a circle or
   ellipse arc whose frame is turned against the world axes was bounded by
   its ends and its frame's quarter points, short of the arc. Classification
