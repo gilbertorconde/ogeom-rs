@@ -393,13 +393,42 @@ after.
    (6283.185307179579 against pi r^2 h = 6283.185307179587), the same
    solid the automatic conversion builds with the crease raised; a roof
    two hundredths high found as one plane builds 200.22 (a 3.9e-3 error),
-   and split along its ridge 201.000000000001 of 201. Not done: an edited
-   region keeps the surface it was given, and the tangent passes that
-   recognition runs over its regions (rounds between planes, blends,
-   corner balls) do not see it; a merged or split region is refitted as a
-   plane, a canonical surface or a sweep, never as a patch, and `fit` has
-   no sweep or patch kind. Item 4's corner and boundary graph, once there,
-   is what an application would edit next.
+   and split along its ridge 201.000000000001 of 201.
+
+   Edits now hold or say why not. `build` names each curved region it
+   faceted and why (`MeshSolidReport::fallbacks`, a `RegionFallback` per
+   region with a `FallbackReason`: boundary not placed, reaching past its
+   triangles, turned in, body volume off, folded seam, overlap, meshing
+   open). A region a merge, a split or a free fit leaves on a surface goes
+   through the tangent passes for that region alone (a round between two
+   planes onto the cylinder tangent to both, a fillet onto what its
+   supports fix); a fit holding an axis or a radius keeps what it was
+   given, and a patch takes none. A planar region of one or two triangles
+   a step made is never absorbed into a curved neighbour. `fit` takes
+   `SurfaceKind::Patch` (the automatic patch fit and verification, refused
+   as `NotADisk`, `TooNarrowForAPatch` or `PatchDoesNotVerify`), and a
+   merge or split that no plane, canonical surface, sweep or kept surface
+   fits falls back to a patch where the union is a disk and it verifies
+   (with `patches` on). Tests: a one-row band piece fitted as the sphere
+   through both rims verifies and cannot be built beside the cylinder;
+   both are named (`BoundaryNotPlaced`) and the solid is the 64-gon prism
+   (6273.096981091773 of 6273.096981091878). A round drawn as two 45
+   degree facets with one row lifted 1e-5 merges onto the tangent
+   cylinder (radius 3 to 1e-12, where the free fit gives 2.999976, its
+   axis 3.4e-5 off and crossing the faces at 8e-6 radians) and builds 480.68583470577 of 480.68583470577
+   (9e-13 off). A facet split off a 64-facet cylinder stays a flat: the
+   solid is 6283.027677084415 against the exact D-cut 6283.027677084466
+   (the cylinder, 6283.185, without the protection). The top of a saddle
+   block, a facet per triangle, merged into a patch builds 499.99970 of
+   500 (3e-4 against an allowance of 1.5e-3, the distance over the base's
+   area); with the patches off, `fit` of a patch builds the same.
+   `solid_from_mesh` results are unchanged: the 34 corpus STEP parts give
+   the same faces, curved and faceted counts and volume bits, the truth
+   bench the same lines, and the stress baseline no regression. Not done: `fit`
+   has no sweep kind, the tangent passes do not revisit a neighbour an
+   edit changes (a ball beside a merged round keeps its fit), and item 4's
+   corner and boundary graph, once there, is what an application would
+   edit next.
 7. **A torus pierced across its outer equator.** Done where a parallel
    is free: a whole torus with holes has its seam round the axis placed
    on the parallel the holes leave widest free, as its seam round the

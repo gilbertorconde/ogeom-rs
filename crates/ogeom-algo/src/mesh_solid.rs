@@ -40,7 +40,10 @@ use crate::recognize::{Canonical, recognize_curved, worst_deviation};
 use ogeom_topo::{EdgeData, EdgeRepr, FaceData, Location, Model, Shape, Triangulation, VertexData};
 
 mod steps;
-pub use steps::{FitConstraints, MeshRegion, MeshRegions, RegionId, RegionRefusal, SurfaceKind};
+pub use steps::{
+    FallbackReason, FitConstraints, MeshRegion, MeshRegions, RegionFallback, RegionId,
+    RegionRefusal, SurfaceKind,
+};
 
 /// How [`solid_from_mesh`] builds.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -165,6 +168,12 @@ pub struct MeshSolidReport {
     /// Regions recognized as curved whose boundary could not be placed on
     /// the surface exactly, and which were faceted instead.
     pub curved_faceted: usize,
+    /// Those regions by name, each with why it was faceted, in the order
+    /// they fell back: as many as [`MeshSolidReport::curved_faceted`]
+    /// counts. The names are the regions' in
+    /// [`MeshRegions`], whose [`MeshRegions::find`] names them alike for
+    /// the same mesh and options.
+    pub fallbacks: Vec<RegionFallback>,
     /// Mesh vertices that welded onto another.
     pub vertices_welded: usize,
     /// Triangles dropped for having no area.
@@ -598,11 +607,14 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
 /// The solid built from found regions.
 ///
 /// A region whose carrier is gone and still holds triangles gives them to
-/// planar faces first, as the planar pass gathers them.
+/// planar faces first, as the planar pass gathers them. A facet holding a
+/// triangle marked in `protected` (one per triangle, or empty for none) is
+/// never given to a curved neighbour.
 fn build(
     model: &mut Model,
     found: &Found,
     options: &MeshSolidOptions,
+    protected: &[bool],
     tol: Tolerances,
 ) -> OgeomResult<MeshSolid> {
     let (points, triangles, adjacency) = (&found.points, &found.triangles, &found.adjacency);
@@ -638,7 +650,7 @@ fn build(
     // without them.
     let unabsorbed = (groups.clone(), report.clone());
     let mut absorbed = if options.recognize {
-        absorb_facets(points, triangles, adjacency, &mut groups, flat)
+        absorb_facets(points, triangles, adjacency, &mut groups, protected, flat)
     } else {
         HashMap::new()
     };
@@ -677,7 +689,7 @@ fn build(
                     pinned.extend(vertices);
                     continue;
                 }
-                Err(Replan::Facet(failed)) => failed,
+                Err(Replan::Facet(failed)) => (failed, FallbackReason::BoundaryNotPlaced),
                 Ok(plan) => {
                     model.begin_operation();
                     let built = Builder {
@@ -695,7 +707,7 @@ fn build(
                         let (shape, bodies) = assemble(
                             model, points, triangles, pieces, depth, all_closed, &groups, &built,
                         )?;
-                        let mut culprits = if options.recognize && all_closed {
+                        let (mut culprits, mut reason) = if options.recognize && all_closed {
                             body_culprits(
                                 model,
                                 points,
@@ -708,7 +720,7 @@ fn build(
                                 &mut report,
                             )?
                         } else {
-                            Vec::new()
+                            (Vec::new(), FallbackReason::TurnedIn)
                         };
                         if culprits.is_empty() && options.recognize && !threading_refused {
                             let crossed = crossed_seams(
@@ -736,13 +748,16 @@ fn build(
                         }
                         if culprits.is_empty() && options.recognize {
                             culprits = folded_seams(model, &groups, &built, tol)?;
+                            reason = FallbackReason::FoldedSeam;
                         }
                         if culprits.is_empty() && options.recognize {
                             culprits =
                                 overlapping_faces(model, &shape, adjacency, &groups, &built, tol)?;
+                            reason = FallbackReason::Overlaps;
                         }
                         if culprits.is_empty() && options.recognize {
                             culprits = unmatched_faces(model, &shape, &groups, &built, flat, tol)?;
+                            reason = FallbackReason::MeshesOpen;
                         }
                         if culprits.is_empty() {
                             report.faces = built.iter().flatten().count();
@@ -774,12 +789,13 @@ fn build(
                             report.free_edges_fitted = plan.free_fitted;
                             break shape;
                         }
-                        culprits
+                        (culprits, reason)
                     } else {
-                        astray
+                        (astray, FallbackReason::ReachesPast)
                     }
                 }
             };
+            let (failed, reason) = failed;
             refaceted |= unthreaded.is_some() && !failed.is_empty();
             // A region that took facets gives them back and is tried again
             // without them before it is faceted.
@@ -799,6 +815,10 @@ fn build(
             for g in failed {
                 groups.carriers[g] = Carrier::Gone;
                 report.curved_faceted += 1;
+                report.fallbacks.push(RegionFallback {
+                    region: RegionId(g),
+                    reason,
+                });
                 for of in &mut groups.of {
                     if *of == g {
                         *of = usize::MAX;
@@ -1335,12 +1355,13 @@ struct Absorbed {
 /// held to the reach as any seam's points are, so the face it joins is
 /// held to what it was. What each region took is returned, so a region
 /// that cannot be built with its facets gives them back before it is
-/// faceted itself.
+/// faceted itself. A facet holding a `protected` triangle stays a face.
 fn absorb_facets(
     points: &[Point],
     triangles: &[[u32; 3]],
     adjacency: &Adjacency,
     groups: &mut Groups,
+    protected: &[bool],
     flat: f64,
 ) -> HashMap<usize, Absorbed> {
     let reach = flat * REACH;
@@ -1353,6 +1374,10 @@ fn absorb_facets(
     let mut facets: Vec<(usize, Vec<usize>)> = members
         .into_iter()
         .filter(|(_, ts)| ts.len() <= SLIVER_FACETS)
+        .filter(|(_, ts)| {
+            !ts.iter()
+                .any(|&t| protected.get(t).copied().unwrap_or(false))
+        })
         .collect();
     facets.sort_unstable();
     let mut absorbed: HashMap<usize, Absorbed> = HashMap::new();
@@ -1983,7 +2008,8 @@ fn assemble(
 /// the mesh's, within what its recognized surfaces may add over their
 /// facets, gives up all of its recognized regions (a face closed over the
 /// wrong part of its surface passes every local test and is caught only
-/// there). Other bodies keep theirs.
+/// there). Other bodies keep theirs. Returned with which of the two it
+/// was.
 #[allow(
     clippy::too_many_arguments,
     reason = "the build's own state, passed through"
@@ -1998,7 +2024,7 @@ fn body_culprits(
     flat: f64,
     tol: Tolerances,
     report: &mut MeshSolidReport,
-) -> OgeomResult<Vec<usize>> {
+) -> OgeomResult<(Vec<usize>, FallbackReason)> {
     let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
     let own = |body: &Body| -> Vec<usize> {
         let mut own: Vec<usize> = body
@@ -2016,7 +2042,7 @@ fn body_culprits(
     // volumes say.
     let culprits = inverted_faces(model, points, triangles, groups, built, tol)?;
     if !culprits.is_empty() {
-        return Ok(culprits);
+        return Ok((culprits, FallbackReason::TurnedIn));
     }
     let mut culprits: Vec<usize> = Vec::new();
     for body in bodies {
@@ -2072,7 +2098,7 @@ fn body_culprits(
     }
     culprits.sort_unstable();
     culprits.dedup();
-    Ok(culprits)
+    Ok((culprits, FallbackReason::VolumeOff))
 }
 
 /// The recognized regions whose built face points against the triangles it
@@ -3160,6 +3186,7 @@ fn segment(
             &planes,
             options.crease.cos(),
             flat,
+            None,
             tol,
         );
         let normals = plane_normals(&planes);
@@ -3172,6 +3199,7 @@ fn segment(
             &planes,
             options.crease.cos(),
             flat,
+            None,
             tol,
         );
         hole_frames(points, triangles, adjacency, &mut groups, tol);
@@ -3223,7 +3251,8 @@ fn plane_normals(planes: &Groups) -> Vec<Direction> {
 /// region meeting two non-parallel planes (of `planes`, the groups with the
 /// planes grown) across smooth edges, and no other plane so, takes the
 /// cylinder at the vertices' median radius where it holds every vertex
-/// within the distance.
+/// within the distance. With `only`, that region alone is put on its
+/// round.
 #[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
 fn tangent_rounds(
     points: &[Point],
@@ -3233,6 +3262,7 @@ fn tangent_rounds(
     planes: &Groups,
     cos_crease: f64,
     flat: f64,
+    only: Option<usize>,
     tol: Tolerances,
 ) {
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); groups.carriers.len()];
@@ -3242,6 +3272,9 @@ fn tangent_rounds(
         }
     }
     for (i, region) in members.iter().enumerate() {
+        if only.is_some_and(|o| o != i) {
+            continue;
+        }
         let Carrier::Curved(curved) = &groups.carriers[i] else {
             continue;
         };
@@ -3381,7 +3414,8 @@ fn tangent_cylinder(
 /// replaces the fitted one where it holds every vertex of the region within
 /// `flat`, on the fitted one's frame so the chart branch fixed for it still
 /// holds. Other regions keep their fits. `planes` are the groups with the
-/// planes grown, as for [`tangent_rounds`].
+/// planes grown, as for [`tangent_rounds`]. With `only`, the fillets are
+/// derived as for all of them and that region alone is put on its own.
 #[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
 fn tangent_blends(
     points: &[Point],
@@ -3391,6 +3425,7 @@ fn tangent_blends(
     planes: &Groups,
     cos_crease: f64,
     flat: f64,
+    only: Option<usize>,
     tol: Tolerances,
 ) {
     let count = groups.carriers.len();
@@ -3440,6 +3475,7 @@ fn tangent_blends(
             .map(|&v| points[v as usize])
             .collect();
     }
+    let taken = |i: usize| only.is_none_or(|o| o == i);
     let shape_of = |groups: &Groups, i: usize| match &groups.carriers[i] {
         Carrier::Curved(c) => Some(c.shape.clone()),
         _ => None,
@@ -3514,7 +3550,9 @@ fn tangent_blends(
             let derived =
                 tangent_cylinder(&flanks[j][0], &flanks[j][1], &samples[j], Some(radius), tol)
                     .and_then(|d| on_frame_of(&d, &old, tol));
-            if let Some(shape) = derived {
+            if let Some(shape) = derived
+                && taken(j)
+            {
                 settled[j] = put(groups, j, shape, &samples[j], flat);
             }
         }
@@ -3528,13 +3566,15 @@ fn tangent_blends(
                     around.extend(flanks[k].iter().copied());
                 }
             }
-            if let Some(shape) = ball_off_planes(&old, &around, &samples[j], radius, tol) {
+            if let Some(shape) = ball_off_planes(&old, &around, &samples[j], radius, tol)
+                && taken(j)
+            {
                 settled[j] = put(groups, j, shape, &samples[j], flat);
             }
         }
     }
     for i in 0..count {
-        if settled[i] {
+        if settled[i] || !taken(i) {
             continue;
         }
         let derived = match shape_of(groups, i) {

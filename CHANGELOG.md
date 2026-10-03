@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Mesh conversion steps hold or say why not.** `MeshSolidReport::fallbacks`
+  names each curved region the build faceted, with a `FallbackReason`.
+  Regions changed by `merge`, `split` or a free `fit` go through the
+  tangent passes (rounds, blends, corner balls) the way recognized regions
+  do, and one- or two-triangle facets a step made are no longer absorbed
+  into curved neighbours. `fit` takes `SurfaceKind::Patch` (refused as
+  `NotADisk`, `TooNarrowForAPatch` or `PatchDoesNotVerify`), and `merge`
+  and `split` fall back to a verified patch where no other surface fits.
+  `solid_from_mesh` results are unchanged. The new report field and enum
+  variants break code that builds the report or matches these enums
+  exhaustively.
+
 - **Free-form regions tangent to a plane convert to a patch.** A smooth
   region that runs out tangentially into a plane comes back as a fitted
   patch bounded by a seam lying on that plane, instead of taking the plane

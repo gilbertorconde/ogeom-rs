@@ -70,8 +70,9 @@ pub use measure::{
 pub use medial::{MedialAxis, medial_axis};
 pub use medial_graph::{MedialBranch, MedialGraph, MedialSite, MedialVertex, medial_graph};
 pub use mesh_solid::{
-    FitConstraints, MeshRegion, MeshRegions, MeshSolid, MeshSolidOptions, MeshSolidReport,
-    RegionId, RegionRefusal, SurfaceKind, refine_solid, single_precision_quantum, solid_from_mesh,
+    FallbackReason, FitConstraints, MeshRegion, MeshRegions, MeshSolid, MeshSolidOptions,
+    MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, refine_solid,
+    single_precision_quantum, solid_from_mesh,
 };
 pub use place::{copied, transformed};
 pub use primitive::{

@@ -9,10 +9,11 @@ use ogeom_topo::{Model, Triangulation};
 
 use super::{
     Carrier, Curved, Found, MeshSolid, MeshSolidOptions, MeshSolidReport, align_one, axis_frame,
-    from_to, hole_frame, plane_normals, plane_through, sags_as_the_surface, slit_band, sphere_axis,
-    swept_claim, unit_normal,
+    from_to, hole_frame, plane_normals, plane_through, region_patch, sags_as_the_surface,
+    slit_band, sphere_axis, swept_claim, tangent_blends, tangent_rounds, unit_normal,
 };
 use crate::recognize::{self, Canonical, recognize_curved, worst_deviation};
+use crate::recognize_patch::Refused;
 
 /// The regions of a mesh, found and not yet built.
 ///
@@ -34,6 +35,16 @@ use crate::recognize::{self, Canonical, recognize_curved, worst_deviation};
 /// than their own sag. A step that cannot be taken is refused by name
 /// ([`RegionRefusal`]), the regions unchanged.
 ///
+/// A region a step left on a surface goes through the passes recognition
+/// runs over its own regions: a round meeting two planes across smooth
+/// edges is put on the cylinder tangent to both, and a round, ball or
+/// torus among fillets on the surface its supports fix (see
+/// [`MeshRegions::fit`] for the fits that keep what they were given). A
+/// planar region of one or two triangles a step made is built as its own
+/// face, never given to a curved neighbour as the build gives the facets
+/// recognition leaves. A curved region the build cannot place falls back
+/// to facets and is named in [`MeshSolidReport::fallbacks`], with why.
+///
 /// Indices name the mesh as the regions read it: [`MeshRegions::points`]
 /// and [`MeshRegions::triangles`], welded, cleaned and oriented, not the
 /// mesh handed to [`MeshRegions::find`] ([`MeshRegions::vertex_of`] maps
@@ -43,13 +54,64 @@ pub struct MeshRegions {
     found: Found,
     options: MeshSolidOptions,
     tol: Tolerances,
+    /// The regions a step made or changed, by index.
+    touched: Vec<usize>,
 }
 
 /// Names one region of a [`MeshRegions`]. A merge keeps the first region's
 /// name and retires the second's; a split keeps the name for one piece and
 /// gives the other a new one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RegionId(usize);
+pub struct RegionId(pub(super) usize);
+
+/// A curved region the build faceted, and why: see
+/// [`MeshSolidReport::fallbacks`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegionFallback {
+    /// The region.
+    pub region: RegionId,
+    /// Why its face was not built on its surface.
+    pub reason: FallbackReason,
+}
+
+/// Why a curved region was built as facets instead of on its surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FallbackReason {
+    /// Its seams or corners could not be placed on its surface and its
+    /// neighbours' within their tolerance.
+    BoundaryNotPlaced,
+    /// Its face, built, reached past the triangles it replaces: its
+    /// boundary closed on the wrong part of the surface.
+    ReachesPast,
+    /// Its face, built, faced into the material, against its triangles.
+    TurnedIn,
+    /// The body it is part of did not hold its mesh's volume, within what
+    /// its curved faces may add over their facets.
+    VolumeOff,
+    /// One of its seams folded back in its chart, deeper than the seam's
+    /// tolerance.
+    FoldedSeam,
+    /// Its face overlapped a face beside it.
+    Overlaps,
+    /// Its face's own mesh did not meet its neighbours': the solid would
+    /// not tessellate closed.
+    MeshesOpen,
+}
+
+impl fmt::Display for FallbackReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::BoundaryNotPlaced => "its boundary could not be placed on its surface",
+            Self::ReachesPast => "its face reached past its triangles",
+            Self::TurnedIn => "its face faced into the material",
+            Self::VolumeOff => "its body did not hold the mesh's volume",
+            Self::FoldedSeam => "a seam of it folded in its chart",
+            Self::Overlaps => "its face overlapped a neighbour",
+            Self::MeshesOpen => "its face did not mesh closed with its neighbours",
+        })
+    }
+}
 
 impl RegionId {
     /// The region's index among every region the mesh has had, retired
@@ -93,6 +155,11 @@ pub enum SurfaceKind {
     Sphere,
     /// A torus.
     Torus,
+    /// A fitted B-spline patch, as the automatic conversion fits a smooth
+    /// region nothing else fits ([`MeshSolidOptions::patches`]): over a
+    /// region that is one disk bounded by one loop, verified at every
+    /// vertex and across every triangle. It holds no axis or radius.
+    Patch,
 }
 
 /// What a fit holds fixed.
@@ -164,6 +231,16 @@ pub enum RegionRefusal {
         /// The triangle, an index into [`MeshRegions::triangles`].
         triangle: usize,
     },
+    /// A patch needs a region that is one disk bounded by one loop; this
+    /// one has a hole or touches itself.
+    NotADisk,
+    /// Too few of the region's vertices lie inside its boundary to hold a
+    /// patch across it.
+    TooNarrowForAPatch,
+    /// No patch fitted to the region passed the verification: within the
+    /// coplanar distance of every vertex and across every triangle, its
+    /// normal agreeing with theirs.
+    PatchDoesNotVerify,
 }
 
 impl fmt::Display for RegionRefusal {
@@ -210,6 +287,11 @@ impl fmt::Display for RegionRefusal {
                 f,
                 "triangle {triangle} spans off the fitted {kind:?} by more than its sag"
             ),
+            Self::NotADisk => write!(f, "the region is not one disk, as a patch needs"),
+            Self::TooNarrowForAPatch => {
+                write!(f, "too few vertices lie inside the region to hold a patch")
+            }
+            Self::PatchDoesNotVerify => write!(f, "no patch fitted to the region verifies"),
         }
     }
 }
@@ -242,20 +324,38 @@ impl MeshRegions {
             found: super::find(mesh, options, tol)?,
             options: *options,
             tol,
+            touched: Vec::new(),
         })
     }
 
     /// Build the solid from the regions as they stand, through the same
-    /// seams, corners, faces and checks as [`solid_from_mesh`](super::solid_from_mesh). A region
-    /// with no surface is built as planar facets; a curved region whose
-    /// boundary cannot be placed on its surface falls back to facets, and
-    /// the report counts it.
+    /// seams, corners, faces and checks as
+    /// [`solid_from_mesh`](super::solid_from_mesh). A region with no
+    /// surface is built as planar facets; a curved region whose boundary
+    /// cannot be placed on its surface falls back to facets, and the
+    /// report names it and why ([`MeshSolidReport::fallbacks`]): a region
+    /// a step put on a surface and named there did not hold. A planar
+    /// region of one or two triangles a step made stays a face of its own.
     ///
     /// # Errors
     ///
     /// As [`solid_from_mesh`](super::solid_from_mesh).
     pub fn build(&self, model: &mut Model) -> OgeomResult<MeshSolid> {
-        super::build(model, &self.found, &self.options, self.tol)
+        let protected: Vec<bool> = if self.touched.is_empty() {
+            Vec::new()
+        } else {
+            let mut by_region = vec![false; self.found.groups.carriers.len()];
+            for &g in &self.touched {
+                by_region[g] = true;
+            }
+            self.found
+                .groups
+                .of
+                .iter()
+                .map(|&g| by_region.get(g).copied().unwrap_or(false))
+                .collect()
+        };
+        super::build(model, &self.found, &self.options, &protected, self.tol)
     }
 
     /// The mesh's vertices as the regions read them, welded.
@@ -344,9 +444,12 @@ impl MeshRegions {
     /// triangles as a whole (a plane where they all lie within the
     /// distance of one, otherwise a cylinder, cone, sphere, torus or sweep
     /// where one verifies); where none does, the surface of the larger of
-    /// the two where it holds the other's vertices, and otherwise none,
-    /// which builds as facets. `b` is retired and the merged region keeps
-    /// the name `a`.
+    /// the two where it holds the other's vertices (unless that is a patch,
+    /// fitted to the larger alone); then, with
+    /// [`MeshSolidOptions::patches`], a patch fitted to the whole where it
+    /// is one disk and the patch verifies; and otherwise none, which
+    /// builds as facets. `b` is retired and the merged region keeps the
+    /// name `a`.
     ///
     /// # Errors
     ///
@@ -368,23 +471,24 @@ impl MeshRegions {
         }
         let mut union: Vec<usize> = first.iter().chain(&second).copied().collect();
         union.sort_unstable();
-        let carrier = match self.recognized(&union) {
-            Some(carrier) => carrier,
-            None => {
-                let (large, small) = if first.len() >= second.len() {
-                    (a.0, &second)
-                } else {
-                    (b.0, &first)
-                };
-                self.kept(&self.found.groups.carriers[large], small, &union)
+        let carrier = self.refitted(&union, || {
+            let (large, small) = if first.len() >= second.len() {
+                (a.0, &second)
+            } else {
+                (b.0, &first)
+            };
+            match &self.found.groups.carriers[large] {
+                Carrier::Curved(c) if c.patch.is_some() => Carrier::Gone,
+                carrier => self.kept(carrier, small, &union),
             }
-        };
+        });
         for &t in &union {
             self.found.groups.of[t] = a.0;
         }
         self.found.groups.carriers[b.0] = Carrier::Gone;
         self.found.groups.carriers[a.0] = carrier;
-        self.lay_out(a.0, false);
+        self.touched.retain(|&g| g != b.0);
+        self.lay_out(a.0, false, true);
         Ok(a)
     }
 
@@ -395,7 +499,8 @@ impl MeshRegions {
     ///
     /// Each piece takes the surface recognition finds for it, as a merged
     /// region does, and otherwise keeps the region's own (which holds it,
-    /// as it held the whole). The piece holding the region's first
+    /// as it held the whole); a piece of a region with no surface takes a
+    /// patch as a merged region does. The piece holding the region's first
     /// triangle keeps the name; the other is named anew.
     ///
     /// # Errors
@@ -458,10 +563,8 @@ impl MeshRegions {
         }
         let (kept, other): (Vec<usize>, Vec<usize>) = members.iter().partition(|&&t| piece[t] == 0);
         let parent = self.found.groups.carriers[id.0].clone();
-        let carriers = [&kept, &other].map(|part| {
-            self.recognized(part)
-                .unwrap_or_else(|| self.kept(&parent, part, part))
-        });
+        let carriers =
+            [&kept, &other].map(|part| self.refitted(part, || self.kept(&parent, part, part)));
         let [first, second] = carriers;
         let new = self.found.groups.carriers.len();
         self.found.groups.carriers.push(second);
@@ -469,8 +572,8 @@ impl MeshRegions {
         for &t in &other {
             self.found.groups.of[t] = new;
         }
-        self.lay_out(id.0, false);
-        self.lay_out(new, false);
+        self.lay_out(id.0, false, true);
+        self.lay_out(new, false, true);
         Ok((id, RegionId(new)))
     }
 
@@ -487,7 +590,15 @@ impl MeshRegions {
     /// about it. An axis fixed is kept as given; otherwise the axis is set
     /// square to a plane of the solid it all but is square to, and onto a
     /// coaxial region's, where the surface still verifies there, as
-    /// recognition does.
+    /// recognition does. A fit holding nothing then goes through the
+    /// tangent passes as recognition's regions do (a round between two
+    /// planes put on the cylinder tangent to both, a fillet on the surface
+    /// its supports fix), where the surface they give still verifies; a fit
+    /// holding an axis or a radius keeps the surface it was given.
+    ///
+    /// A [`SurfaceKind::Patch`] is fitted over the region's triangles by
+    /// the automatic conversion's own patch fit and verification, whatever
+    /// [`MeshSolidOptions::patches`] says, and is kept as fitted.
     ///
     /// # Errors
     ///
@@ -495,7 +606,9 @@ impl MeshRegions {
     /// [`RegionRefusal::ConstraintDoesNotApply`],
     /// [`RegionRefusal::InvalidRadius`], [`RegionRefusal::TooFewVertices`],
     /// [`RegionRefusal::NoFit`], [`RegionRefusal::DoesNotVerify`] or
-    /// [`RegionRefusal::TriangleOffTheSurface`].
+    /// [`RegionRefusal::TriangleOffTheSurface`]; for a patch,
+    /// [`RegionRefusal::NotADisk`], [`RegionRefusal::TooNarrowForAPatch`]
+    /// or [`RegionRefusal::PatchDoesNotVerify`].
     pub fn fit(
         &mut self,
         id: RegionId,
@@ -503,6 +616,18 @@ impl MeshRegions {
         constraints: &FitConstraints,
     ) -> Result<f64, RegionRefusal> {
         let members = self.held(id)?;
+        applies(kind, constraints, self.tol)?;
+        if kind == SurfaceKind::Patch {
+            let claim = self.patch(&members).map_err(|refused| match refused {
+                Refused::NotDisk => RegionRefusal::NotADisk,
+                Refused::Narrow => RegionRefusal::TooNarrowForAPatch,
+                Refused::Unverified => RegionRefusal::PatchDoesNotVerify,
+            })?;
+            let deviation = claim.deviation;
+            self.found.groups.carriers[id.0] = Carrier::Curved(claim);
+            self.lay_out(id.0, false, false);
+            return Ok(deviation);
+        }
         let vertices = self.vertices(&members);
         let (pts, nrm) = self.samples(&vertices, &members);
         let shape = fitted(kind, constraints, &pts, &nrm, self.found.flat, self.tol)?;
@@ -525,7 +650,8 @@ impl MeshRegions {
             shape => Carrier::Curved(curved(shape, deviation, vertices)),
         };
         self.found.groups.carriers[id.0] = carrier;
-        self.lay_out(id.0, constraints.axis.is_some());
+        let free = constraints.axis.is_none() && constraints.radius.is_none();
+        self.lay_out(id.0, constraints.axis.is_some(), free);
         // Set onto a shared axis, the surface is measured again there.
         Ok(match &self.found.groups.carriers[id.0] {
             Carrier::Curved(c) => c.deviation,
@@ -667,6 +793,39 @@ impl MeshRegions {
         None
     }
 
+    /// The surface recognition finds for a set of triangles taken whole;
+    /// else the one `kept` gives; else, with the patches on, a patch over
+    /// them; else none.
+    fn refitted(&self, members: &[usize], kept: impl FnOnce() -> Carrier) -> Carrier {
+        if let Some(carrier) = self.recognized(members) {
+            return carrier;
+        }
+        let carrier = kept();
+        if !matches!(carrier, Carrier::Gone) {
+            return carrier;
+        }
+        if self.options.recognize && self.options.merge_coplanar && self.options.patches {
+            return self.patch(members).map_or(Carrier::Gone, Carrier::Curved);
+        }
+        Carrier::Gone
+    }
+
+    /// A patch fitted to a set of triangles and verified, as the automatic
+    /// conversion fits one to a smooth region, the faces across its
+    /// boundary read from the regions as they stand.
+    fn patch(&self, members: &[usize]) -> Result<Curved, Refused> {
+        let f = &self.found;
+        region_patch(
+            &f.points,
+            &f.triangles,
+            &f.adjacency,
+            &f.groups,
+            members,
+            f.flat,
+            self.tol,
+        )
+    }
+
     /// A carrier kept for a region's new triangles where it holds the
     /// vertices of `added` within the distance, measured over `all`; gone
     /// otherwise.
@@ -701,11 +860,19 @@ impl MeshRegions {
     }
 
     /// Lay a curved region out on its surface as recognition lays its own:
-    /// a sphere turned about the normal its boundary circles share, the
-    /// axis squared to a plane and set onto a coaxial region's unless it
-    /// was fixed, the chart's branch and whether the region wraps, and a
-    /// closed surface's seams set clear of its holes.
-    fn lay_out(&mut self, g: usize, axis_fixed: bool) {
+    /// a sphere turned about the normal its boundary circles share, with
+    /// `tangent` a round between two planes put on the cylinder tangent to
+    /// both, the axis squared to a plane and set onto a coaxial region's
+    /// unless it was fixed, with `tangent` a fillet put on the surface its
+    /// supports fix, the chart's branch and whether the region wraps, and a
+    /// closed surface's seams set clear of its holes. The region is marked
+    /// as one a step touched. A patch takes no tangent pass: it is what is
+    /// left where no surface of theirs fits.
+    fn lay_out(&mut self, g: usize, axis_fixed: bool, tangent: bool) {
+        if !self.touched.contains(&g) {
+            self.touched.push(g);
+        }
+        let cos_crease = self.options.crease.cos();
         let f = &mut self.found;
         let tol = self.tol;
         sphere_axis(
@@ -717,6 +884,22 @@ impl MeshRegions {
             f.flat,
             tol,
         );
+        let tangent =
+            tangent && matches!(&f.groups.carriers[g], Carrier::Curved(c) if c.patch.is_none());
+        if tangent {
+            let planes = f.groups.clone();
+            tangent_rounds(
+                &f.points,
+                &f.triangles,
+                &f.adjacency,
+                &mut f.groups,
+                &planes,
+                cos_crease,
+                f.flat,
+                Some(g),
+                tol,
+            );
+        }
         let Carrier::Curved(mut curved) = f.groups.carriers[g].clone() else {
             return;
         };
@@ -750,6 +933,20 @@ impl MeshRegions {
         };
         align_one(&f.points, &mut curved, &mut leaders, &normals, f.flat, tol);
         f.groups.carriers[g] = Carrier::Curved(curved);
+        if tangent {
+            let planes = f.groups.clone();
+            tangent_blends(
+                &f.points,
+                &f.triangles,
+                &f.adjacency,
+                &mut f.groups,
+                &planes,
+                cos_crease,
+                f.flat,
+                Some(g),
+                tol,
+            );
+        }
         hole_frame(&f.points, &f.triangles, &f.adjacency, &mut f.groups, g, tol);
         slit_band(&f.points, &f.triangles, &f.adjacency, &mut f.groups, g, tol);
     }
@@ -806,6 +1003,7 @@ fn curved(shape: Canonical, deviation: f64, vertices: Vec<u32>) -> Curved {
 
 /// The fewest vertices each kind is fitted to: half as many again as its
 /// unknowns, as recognition asks.
+/// A patch counts the vertices inside its boundary instead.
 const fn floor(kind: SurfaceKind) -> usize {
     match kind {
         SurfaceKind::Plane => 3,
@@ -813,24 +1011,27 @@ const fn floor(kind: SurfaceKind) -> usize {
         SurfaceKind::Cylinder => 8,
         SurfaceKind::Cone => 9,
         SurfaceKind::Torus => 11,
+        SurfaceKind::Patch => 0,
     }
 }
 
-/// A surface of the kind fitted to the points, holding the constraints.
-fn fitted(
+/// Whether the kind has what the constraints fix, and a fixed radius is a
+/// distance.
+fn applies(
     kind: SurfaceKind,
     constraints: &FitConstraints,
-    pts: &[Point],
-    nrm: &[Vector],
-    flat: f64,
     tol: Tolerances,
-) -> Result<Canonical, RegionRefusal> {
+) -> Result<(), RegionRefusal> {
     let refuse = |constraint| Err(RegionRefusal::ConstraintDoesNotApply { kind, constraint });
     match kind {
-        SurfaceKind::Plane | SurfaceKind::Sphere if constraints.axis.is_some() => {
+        SurfaceKind::Plane | SurfaceKind::Sphere | SurfaceKind::Patch
+            if constraints.axis.is_some() =>
+        {
             return refuse("axis");
         }
-        SurfaceKind::Plane | SurfaceKind::Cone if constraints.radius.is_some() => {
+        SurfaceKind::Plane | SurfaceKind::Cone | SurfaceKind::Patch
+            if constraints.radius.is_some() =>
+        {
             return refuse("radius");
         }
         _ => {}
@@ -840,6 +1041,19 @@ fn fitted(
     {
         return Err(RegionRefusal::InvalidRadius(r));
     }
+    Ok(())
+}
+
+/// A canonical surface of the kind fitted to the points, holding the
+/// constraints, which [`applies`] has checked.
+fn fitted(
+    kind: SurfaceKind,
+    constraints: &FitConstraints,
+    pts: &[Point],
+    nrm: &[Vector],
+    flat: f64,
+    tol: Tolerances,
+) -> Result<Canonical, RegionRefusal> {
     let needed = floor(kind);
     if pts.len() < needed {
         return Err(RegionRefusal::TooFewVertices {
@@ -858,6 +1072,8 @@ fn fitted(
         pts.iter().fold(Vector::ZERO, |s, p| s + p.to_vector()) / count(pts.len()),
     );
     match kind {
+        // Fitted over the triangles, not the points alone.
+        SurfaceKind::Patch => Err(none),
         SurfaceKind::Plane => {
             let (centre, normal) = plane_through(pts, tol).ok_or(none)?;
             Ok(Canonical::Plane(Plane::new(Frame::about(centre, normal))))
