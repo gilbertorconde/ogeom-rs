@@ -73,6 +73,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Exact area and volume close junctions a pcurve misses.** A face's
+  chart integral treated each loop as closed, so where a fitted pcurve ended
+  a little off its vertex the result depended on where the integral
+  started, by up to a strip round the whole face: a frustum drilled along
+  its base measured its cut's cone wall 6e-4 square millimetres short, and
+  a drill inside a torus's tube measured its common 1.8e-3 short. Such
+  junctions are closed in the chart; cut and common add up to the part
+  within 1e-10 on drilled cylinders, cones, spheres and tori.
+
+- **A marched blend's rail follows its rail on each face.** A closed blend
+  marched between two faces fits its rail's chart image on each face
+  through the rail's own points, ending on the rail's vertex, not through
+  the march's stations: on a drum leaning on a block it stays within 2e-5
+  of the rail instead of 1.3e-4, and the fills at 1 and 2 degrees
+  extrapolate to the upright torus ring within 8e-6.
+
 - **Drills whose wall grazes an edge of the part.** A section touching an
   edge very flatly (a drill lying on a frustum's base through its rim, or
   along a round's tangent line) stopped short of the touch point and the

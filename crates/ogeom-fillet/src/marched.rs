@@ -2494,16 +2494,22 @@ fn host_leg(
     }
     rail_chart.push(Point2::new(rail_chart[0].x + winding, rail_chart[0].y));
     let rail_pcurve = {
-        let fitted =
-            ogeom_geom::fit::fit_points_2d_at_closed(u_params, &rail_chart, 3, fit_target, tol)?;
-        if !fitted.met {
-            ogeom_bail!(
-                NotDone,
-                "a rail's chart image reached {} against a target of {fit_target}",
-                fitted.error
-            );
+        let (pcurve, deviation) = rail_image(
+            model,
+            host,
+            rail,
+            u_params,
+            rail_chart[0],
+            winding,
+            fit_target,
+            tol,
+        )?;
+        if let Some(node) = model.node_mut(rail)
+            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+        {
+            data.tolerance = data.tolerance.widen_to(deviation);
         }
-        PlanarCurve::from(fitted.curve)
+        pcurve
     };
 
     // The apex ring: a fresh closed edge on the guide's own curve (turned
@@ -2642,6 +2648,76 @@ fn host_leg(
         };
         Ok(ogeom_algo::make_face_on(model, surface_id, &wires, tol)?.shape)
     }
+}
+
+/// The closed rail's chart image on its host, and how far the host's point
+/// under it strays from the rail at the same parameter.
+///
+/// The image is fitted through the feet of the rail's own points, dense
+/// between the stations, at the rail's own parameters: the march's chart
+/// points sit on the stations, while the rail is the band's border fitted
+/// through them, and an image fitted through the stations wanders off the
+/// rail between them by up to the band's fit. The first foot is the
+/// rail's start, its vertex, and the fit holds both ends, so the image
+/// starts and ends on the vertex's foot (the end one `winding` over). The
+/// chart tolerance is the 3D aim over the chart's steepest stretch, and the
+/// deviation is measured in space between the samples.
+#[allow(clippy::too_many_arguments, reason = "one fit, all its data")]
+fn rail_image(
+    model: &Model,
+    host: &SurfaceGeometry,
+    rail: &Shape,
+    u_params: &[f64],
+    start: Point2,
+    winding: f64,
+    fit_target: f64,
+    tol: Tolerances,
+) -> OgeomResult<(PlanarCurve, f64)> {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    // Samples per stride between stations.
+    const PER_STRIDE: usize = 4;
+    let (curve, _) = crate::support::edge_curve(model, rail, tol)?;
+    let last = u_params.len() - 1;
+    let mut params = Vec::with_capacity(last * PER_STRIDE + 1);
+    for w in u_params.windows(2) {
+        for k in 0..PER_STRIDE {
+            #[allow(clippy::cast_precision_loss)]
+            let s = k as f64 / PER_STRIDE as f64;
+            params.push(w[0] + (w[1] - w[0]) * s);
+        }
+    }
+    params.push(u_params[last]);
+    let mut chart = Vec::with_capacity(params.len());
+    let mut prev = start;
+    let mut steepest: f64 = 0.0;
+    for &t in &params[..params.len() - 1] {
+        let uv = chart_of(host, curve.point_at(t, tol)?, Some(prev), tol)?;
+        let (du, dv) = host.d1_at(uv.x, uv.y, tol)?;
+        steepest = steepest.max(du.magnitude()).max(dv.magnitude());
+        chart.push(uv);
+        prev = uv;
+    }
+    chart.push(Point2::new(chart[0].x + winding, chart[0].y));
+    let aim = tol.confusion() * 10.0;
+    let chart_target = if steepest > 0.0 { aim / steepest } else { aim };
+    let fitted = ogeom_geom::fit::fit_points_2d_at_closed(&params, &chart, 3, chart_target, tol)?;
+    if !fitted.met && fitted.error * steepest > fit_target {
+        ogeom_bail!(
+            NotDone,
+            "a rail's chart image reached {} against a target of {chart_target}",
+            fitted.error
+        );
+    }
+    let image = PlanarCurve::from(fitted.curve);
+    let mut deviation: f64 = 0.0;
+    for w in params.windows(2) {
+        for t in [w[0], f64::midpoint(w[0], w[1])] {
+            let uv = image.point_at(t, tol)?;
+            let on = host.point_at(uv.x, uv.y, tol)?;
+            deviation = deviation.max(on.distance(curve.point_at(t, tol)?));
+        }
+    }
+    Ok((image, deviation))
 }
 
 /// A leg holding a pole: the band from the loop that winds the period to
