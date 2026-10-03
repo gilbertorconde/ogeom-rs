@@ -267,10 +267,19 @@ after.
    `patches_narrow`, `patches_unverified`). Measured: the corpus and the
    truth bench come back unchanged; no region there verifies (Body28 has
    13 unverified, the rest are not disks or are rows of facets).
+   On a fine mesh, recognition cuts small spheres, cones, cylinders and
+   tori out of a free-form surface, and the free triangles left round them
+   are no disk. The pieces the smooth area encloses (curved regions and
+   pockets of fewer than 32 free triangles that meet nothing outside it
+   except across creases) are now tried with the smooth regions they join
+   as one region, and kept apart where that patch does not verify. A round
+   tangent to a face outside the smooth area is never taken. Measured on
+   the bumped plate meshed at 80 and 120 cells across: before, 12140
+   faces (4 curved, all faceted) and 24153 faces (70 curved, 46 faceted),
+   one region not a disk each; now 6 faces, the top one patch, the exact
+   surface within 6e-6 of it. The corpus, the NIST parts and the truth
+   bench come back unchanged (faces, kinds, volumes, refusal counts).
    Still to do:
-   - free-form regions on a fine mesh are cut into small canonical
-     regions before the patch pass sees them, and the ring left round them
-     is no disk;
    - the fit holds vertices to half the distance, but between rows near a
      free edge it can stand off the true surface by about twice the
      distance on coarse meshes;

@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Fine meshes of free-form surfaces convert to one patch.** Where
+  recognition cut a smooth free-form area of a fine mesh into small
+  spheres, cones, cylinders and tori, `solid_from_mesh` fits the area and
+  the pieces it encloses as one B-spline patch, kept only if the patch
+  verifies. A bumped plate meshed at 80 or 120 cells a side comes back as
+  six faces instead of twelve to twenty-four thousand; a canonical face
+  tangent to anything outside the smooth area is never taken.
+
 ### Fixed
 
 - **Pads fuse into slabs drafted under a thousandth.** A planar face

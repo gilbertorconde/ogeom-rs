@@ -100,7 +100,11 @@ pub struct MeshSolidOptions {
     /// sag, both ways, and the patch's normal regular and agreeing with
     /// every triangle's. Its chart is a nearly fitting canonical surface's
     /// where one fits within ten times the distance, and otherwise the
-    /// mean-value map of the region onto a square. A region that is not a
+    /// mean-value map of the region onto a square. Curved regions the
+    /// smooth area encloses (meeting nothing outside it except across
+    /// creases), as a fine mesh of a free-form surface is cut into, are
+    /// tried with the smooth regions they join as one region first, and
+    /// kept apart where that patch does not verify. A region that is not a
     /// disk, is too narrow to hold a patch across it, or whose patch does
     /// not verify stays faceted and is counted
     /// ([`MeshSolidReport::patches_not_disk`],
@@ -5182,9 +5186,10 @@ fn swept_claim(
 /// crease, as for the sweeps. The square its chart maps onto takes its
 /// corners first where the face across the region's boundary changes; the
 /// faces there are read as the planar pass would make them, every region a
-/// face of its own and the other free triangles grouped into planes. A
-/// region refused a patch keeps its triangles for the planes, and is
-/// counted by why.
+/// face of its own and the other free triangles grouped into planes.
+/// Regions joined by the pieces they enclose ([`enclosed_unions`]) are
+/// tried as one region first. A region refused a patch on its own keeps its
+/// triangles for the planes, and is counted by why.
 fn patch_regions(
     points: &[Point],
     triangles: &[[u32; 3]],
@@ -5216,67 +5221,280 @@ fn patch_regions(
         &mut across,
         tol,
     )?;
-    for region in regions {
-        // The faces across the boundary on either side of each boundary
-        // vertex: a corner where they differ.
-        let own = across.of[region[0]];
-        let mut sides: HashMap<u32, [Vec<usize>; 2]> = HashMap::new();
-        for &t in &region {
-            for h in 3 * t..3 * t + 3 {
-                let other = adjacency.twin[h].map_or(usize::MAX, |g| across.of[g / 3]);
-                if other == own {
-                    continue;
-                }
-                let (a, b) = from_to(triangles, h);
-                sides.entry(a).or_default()[0].push(other);
-                sides.entry(b).or_default()[1].push(other);
+    // On a fine mesh a free-form surface is cut into small canonical pieces
+    // before this pass, and the regions left round them are no disks. The
+    // pieces the smooth area encloses are offered with the regions they
+    // join, as one region, kept only where its patch verifies.
+    let mut done = vec![false; regions.len()];
+    for union in enclosed_unions(adjacency, &normals, options, groups, &regions) {
+        let mut members: Vec<usize> = union
+            .regions
+            .iter()
+            .flat_map(|&r| regions[r].iter().copied())
+            .collect();
+        members.extend_from_slice(&union.pieces);
+        if let Ok(claim) = region_patch(points, triangles, adjacency, &across, &members, flat, tol)
+        {
+            for &b in &union.carriers {
+                groups.carriers[b] = Carrier::Gone;
+            }
+            claim_swept(groups, &members, claim);
+            for &r in &union.regions {
+                done[r] = true;
             }
         }
-        let corners: std::collections::HashSet<u32> = sides
-            .into_iter()
-            .filter(|(_, [leaving, arriving])| {
-                let mut faces = leaving.iter().chain(arriving);
-                faces.next().is_some_and(|first| faces.any(|f| f != first))
-            })
-            .map(|(v, _)| v)
-            .collect();
-        let found = crate::recognize_patch::fit_patch(
-            &crate::recognize_patch::Region {
-                points,
-                triangles,
-                members: &region,
-                corners: &corners,
-            },
-            flat,
-            tol,
-        );
-        match found {
-            Ok(patch) => {
-                let mut vertices: Vec<u32> = region.iter().flat_map(|&t| triangles[t]).collect();
-                vertices.sort_unstable();
-                vertices.dedup();
-                let claim = Curved {
-                    shape: Canonical::Swept(Box::new(crate::recognize::SweptShape::new(
-                        patch.surface,
-                        tol,
-                    ))),
-                    deviation: patch.deviation,
-                    fitted: patch.deviation,
-                    centre: (0.5, 0.5),
-                    wraps: false,
-                    wraps_v: false,
-                    fixed: true,
-                    vertices,
-                    patch: Some(patch.mapped),
-                };
-                claim_swept(groups, &region, claim);
-            }
+    }
+    for (region, _) in regions.iter().zip(&done).filter(|(_, d)| !**d) {
+        match region_patch(points, triangles, adjacency, &across, region, flat, tol) {
+            Ok(claim) => claim_swept(groups, region, claim),
             Err(crate::recognize_patch::Refused::NotDisk) => groups.refused.not_disk += 1,
             Err(crate::recognize_patch::Refused::Narrow) => groups.refused.narrow += 1,
             Err(crate::recognize_patch::Refused::Unverified) => groups.refused.unverified += 1,
         }
     }
     Ok(())
+}
+
+/// Smooth regions joined by the pieces between them into one region to
+/// try a patch on.
+struct EnclosedUnion {
+    /// The smooth regions, by index.
+    regions: Vec<usize>,
+    /// The pieces' triangles.
+    pieces: Vec<usize>,
+    /// The carriers of the curved regions among the pieces.
+    carriers: Vec<usize>,
+}
+
+/// The pieces the smooth regions enclose, gathered with the smooth regions
+/// they join; only unions holding a curved region are returned.
+///
+/// A piece is a curved region not yet a patch, or a pocket of free
+/// triangles too small to be a smooth region of its own. It is enclosed
+/// when it meets the smooth regions or other enclosed pieces across an
+/// edge that does not crease, and meets nothing else except across creases
+/// and free edges. A curved region tangent to a face outside the smooth
+/// area (a round beside a plane) is never enclosed.
+fn enclosed_unions(
+    adjacency: &Adjacency,
+    normals: &[Vector],
+    options: &MeshSolidOptions,
+    groups: &Groups,
+    regions: &[Vec<usize>],
+) -> Vec<EnclosedUnion> {
+    let cos_crease = options.crease.cos();
+    let n = groups.of.len();
+    let mut region_of = vec![usize::MAX; n];
+    for (r, region) in regions.iter().enumerate() {
+        for &t in region {
+            region_of[t] = r;
+        }
+    }
+    // The triangles across a triangle's edges that do not crease.
+    let smooth = |t: usize| {
+        (3 * t..3 * t + 3).filter_map(move |h| {
+            adjacency.twin[h]
+                .filter(|g| normals[h / 3].dot(normals[g / 3]) >= cos_crease)
+                .map(|g| g / 3)
+        })
+    };
+    // The pieces: each its carrier where it is a curved region, and its
+    // triangles.
+    let mut piece_of = vec![usize::MAX; n];
+    let mut pieces: Vec<(Option<usize>, Vec<usize>)> = Vec::new();
+    let mut by_carrier: HashMap<usize, usize> = HashMap::new();
+    for (t, &g) in groups.of.iter().enumerate() {
+        if matches!(groups.carriers.get(g), Some(Carrier::Curved(c)) if c.patch.is_none()) {
+            let p = *by_carrier.entry(g).or_insert_with(|| {
+                pieces.push((Some(g), Vec::new()));
+                pieces.len() - 1
+            });
+            pieces[p].1.push(t);
+            piece_of[t] = p;
+        }
+    }
+    let free = |t: usize| groups.of[t] == usize::MAX && region_of[t] == usize::MAX;
+    let mut seen = vec![false; n];
+    for seed in 0..n {
+        if !free(seed) || seen[seed] {
+            continue;
+        }
+        let mut pocket = vec![seed];
+        seen[seed] = true;
+        let mut i = 0;
+        while i < pocket.len() {
+            for o in smooth(pocket[i]) {
+                if free(o) && !seen[o] {
+                    seen[o] = true;
+                    pocket.push(o);
+                }
+            }
+            i += 1;
+        }
+        if pocket.len() < SWEPT_TRIANGLES {
+            for &t in &pocket {
+                piece_of[t] = pieces.len();
+            }
+            pieces.push((None, pocket));
+        }
+    }
+    // Every piece reached from the smooth regions through smooth edges,
+    // then those meeting anything else dropped until none does.
+    let mut enclosed = vec![false; pieces.len()];
+    let mut queue: Vec<usize> = Vec::new();
+    for region in regions {
+        for &t in region {
+            for o in smooth(t) {
+                let p = piece_of[o];
+                if p != usize::MAX && !enclosed[p] {
+                    enclosed[p] = true;
+                    queue.push(p);
+                }
+            }
+        }
+    }
+    while let Some(p) = queue.pop() {
+        for &t in &pieces[p].1 {
+            for o in smooth(t) {
+                let q = piece_of[o];
+                if q != usize::MAX && !enclosed[q] {
+                    enclosed[q] = true;
+                    queue.push(q);
+                }
+            }
+        }
+    }
+    loop {
+        let open: Vec<usize> = (0..pieces.len())
+            .filter(|&p| {
+                enclosed[p]
+                    && pieces[p].1.iter().any(|&t| {
+                        smooth(t).any(|o| {
+                            region_of[o] == usize::MAX
+                                && (piece_of[o] == usize::MAX || !enclosed[piece_of[o]])
+                        })
+                    })
+            })
+            .collect();
+        if open.is_empty() {
+            break;
+        }
+        for p in open {
+            enclosed[p] = false;
+        }
+    }
+    // The smooth regions and enclosed pieces joined through smooth edges.
+    let mut seen_piece = vec![false; pieces.len()];
+    let mut seen_region = vec![false; regions.len()];
+    let mut unions = Vec::new();
+    for start in 0..pieces.len() {
+        if !enclosed[start] || seen_piece[start] {
+            continue;
+        }
+        seen_piece[start] = true;
+        let (mut joined, mut held) = (Vec::new(), vec![start]);
+        // Each entry a piece (`Ok`) or a smooth region (`Err`) still to
+        // search from.
+        let mut queue: Vec<Result<usize, usize>> = vec![Ok(start)];
+        while let Some(next) = queue.pop() {
+            let from: &[usize] = match next {
+                Ok(p) => &pieces[p].1,
+                Err(r) => &regions[r],
+            };
+            for &t in from {
+                for o in smooth(t) {
+                    let (r, p) = (region_of[o], piece_of[o]);
+                    if r != usize::MAX {
+                        if !seen_region[r] {
+                            seen_region[r] = true;
+                            joined.push(r);
+                            queue.push(Err(r));
+                        }
+                    } else if p != usize::MAX && enclosed[p] && !seen_piece[p] {
+                        seen_piece[p] = true;
+                        held.push(p);
+                        queue.push(Ok(p));
+                    }
+                }
+            }
+        }
+        let carriers: Vec<usize> = held.iter().filter_map(|&p| pieces[p].0).collect();
+        if !joined.is_empty() && !carriers.is_empty() {
+            unions.push(EnclosedUnion {
+                regions: joined,
+                pieces: held
+                    .iter()
+                    .flat_map(|&p| pieces[p].1.iter().copied())
+                    .collect(),
+                carriers,
+            });
+        }
+    }
+    unions
+}
+
+/// A patch fitted to a set of triangles, the square's corners first where
+/// the face across its boundary (as read in `across`) changes.
+fn region_patch(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    across: &Groups,
+    region: &[usize],
+    flat: f64,
+    tol: Tolerances,
+) -> Result<Curved, crate::recognize_patch::Refused> {
+    let inside: std::collections::HashSet<usize> = region.iter().copied().collect();
+    // The faces across the boundary on either side of each boundary
+    // vertex: a corner where they differ.
+    let mut sides: HashMap<u32, [Vec<usize>; 2]> = HashMap::new();
+    for &t in region {
+        for h in 3 * t..3 * t + 3 {
+            let other = match adjacency.twin[h] {
+                Some(g) if inside.contains(&(g / 3)) => continue,
+                Some(g) => across.of[g / 3],
+                None => usize::MAX,
+            };
+            let (a, b) = from_to(triangles, h);
+            sides.entry(a).or_default()[0].push(other);
+            sides.entry(b).or_default()[1].push(other);
+        }
+    }
+    let corners: std::collections::HashSet<u32> = sides
+        .into_iter()
+        .filter(|(_, [leaving, arriving])| {
+            let mut faces = leaving.iter().chain(arriving);
+            faces.next().is_some_and(|first| faces.any(|f| f != first))
+        })
+        .map(|(v, _)| v)
+        .collect();
+    let patch = crate::recognize_patch::fit_patch(
+        &crate::recognize_patch::Region {
+            points,
+            triangles,
+            members: region,
+            corners: &corners,
+        },
+        flat,
+        tol,
+    )?;
+    let mut vertices: Vec<u32> = region.iter().flat_map(|&t| triangles[t]).collect();
+    vertices.sort_unstable();
+    vertices.dedup();
+    Ok(Curved {
+        shape: Canonical::Swept(Box::new(crate::recognize::SweptShape::new(
+            patch.surface,
+            tol,
+        ))),
+        deviation: patch.deviation,
+        fitted: patch.deviation,
+        centre: (0.5, 0.5),
+        wraps: false,
+        wraps_v: false,
+        fixed: true,
+        vertices,
+        patch: Some(patch.mapped),
+    })
 }
 
 /// A region's triangles given to a new swept face.

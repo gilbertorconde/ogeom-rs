@@ -4438,3 +4438,99 @@ fn a_bumped_sheet_alone_comes_back_one_fitted_patch() {
     assert_eq!(out.report.patch_faces, 1);
     assert_eq!(edges.len(), 4);
 }
+
+/// The bump's plate over the cells `cells` each way of an `n` by `n` grid
+/// on its square, meshed finely enough that small spheres, cones and
+/// cylinders fit stretches of its top within the coplanar distance. Its
+/// top comes back one fitted B-spline face all the same: the solid valid
+/// with six faces, the exact surface within the coplanar distance of the
+/// patch at points off the mesh's grid, the volume a hundred times nearer
+/// the exact one than the mesh's, and tessellating closed.
+fn fine_bump_comes_back_one_patch(n: u32, cells: core::ops::Range<u32>, samples: u32) {
+    let mesh = grid_solid(
+        n,
+        20.0,
+        |i, j| cells.contains(&i) && cells.contains(&j),
+        bump,
+    );
+    let mut model = Model::new();
+    let started = Instant::now();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let took = started.elapsed();
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let patches = spline_faces(&model, &out.shape);
+    eprintln!(
+        "fine bump {n}: {} faces, {} patches in {took:?}, distance {:e}, report {:?}",
+        out.report.faces,
+        patches.len(),
+        out.coplanar_distance,
+        out.report
+    );
+    assert_eq!(patches.len(), 1);
+    assert_eq!(out.report.patch_faces, 1);
+    assert_eq!(out.report.faces, 6);
+    let data = model.node(&patches[0]).unwrap().data().as_face().unwrap();
+    let surface = model.geometry().surface(data.surface).unwrap().clone();
+    let flat = out.coplanar_distance;
+    let at = |k: u32| 20.0 * f64::from(k) / f64::from(n);
+    let (low, high) = (at(cells.start), at(cells.end));
+    let mut worst: f64 = 0.0;
+    for j in 0..samples {
+        for i in 0..samples {
+            let x = low + (high - low) * (f64::from(i) + 0.37) / f64::from(samples);
+            let y = low + (high - low) * (f64::from(j) + 0.61) / f64::from(samples);
+            let exact = Point::new(x, y, bump(x, y));
+            let foot = ogeom::algo::project_on_surface(&surface, exact, 16, T).unwrap();
+            worst = worst.max(foot.distance);
+        }
+    }
+    // The exact volume over the cells by Simpson's rule each way.
+    let steps = 200_u32;
+    let weight = |k: u32| {
+        if k == 0 || k == steps {
+            1.0
+        } else if k % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        }
+    };
+    let h = (high - low) / f64::from(steps);
+    let mut exact = 0.0;
+    for j in 0..=steps {
+        for i in 0..=steps {
+            let (x, y) = (low + h * f64::from(i), low + h * f64::from(j));
+            exact += weight(i) * weight(j) * bump(x, y);
+        }
+    }
+    exact *= h * h / 9.0;
+    let volume = volume_properties(&model, &out.shape, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
+    let mesh_volume = mesh.volume();
+    eprintln!(
+        "fine bump {n}: exact to patch {worst:e}, distance {flat:e}; volume {volume}, the mesh's {mesh_volume}, exact {exact}"
+    );
+    assert!(worst <= flat, "{worst} past {flat}");
+    assert!((volume - exact).abs() * 100.0 < (mesh_volume - exact).abs());
+    let closed = ogeom::mesh::triangulate(&model, &out.shape, Deflection::default(), T).unwrap();
+    assert!(closed.is_closed());
+}
+
+/// A quarter of the bump's width meshed at a hundred and twenty cells
+/// across the whole square: recognition takes small spheres out of its top
+/// at every distance it tries, and the free triangles left round them are
+/// no disk.
+#[test]
+fn a_finely_meshed_bump_patch_takes_the_small_spheres_cut_from_it() {
+    fine_bump_comes_back_one_patch(120, 45..75, 12);
+}
+
+/// The whole bumped plate at eighty cells across: its top is cut into a
+/// cylinder, two spheres and a torus among the free triangles.
+#[test]
+#[ignore = "heavy"]
+fn a_finely_meshed_bump_comes_back_one_fitted_patch() {
+    fine_bump_comes_back_one_patch(80, 0..80, 40);
+}
