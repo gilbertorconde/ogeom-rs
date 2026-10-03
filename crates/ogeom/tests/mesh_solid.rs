@@ -4289,6 +4289,344 @@ fn a_hill_tangent_to_a_flat_comes_back_a_patch_inside_the_plane() {
     assert!(closed.is_closed());
 }
 
+/// The lopsided twisted hill of [`tangent_hill`] over the unit square, its
+/// height and slope nought along the square's sides.
+fn unit_hill(s: f64, t: f64) -> f64 {
+    if !(0.0..=1.0).contains(&s) || !(0.0..=1.0).contains(&t) {
+        return 0.0;
+    }
+    let w = |a: f64| (core::f64::consts::PI * a).sin().powi(2);
+    w(s) * w(t) * (0.5 * (1.0 + 0.4 * s) + 0.5 * (s - 0.5) * (t - 0.5))
+}
+
+/// The edges of a shape's fitted patches: each one's curve, range and
+/// tolerance.
+fn patch_edges(model: &Model, shape: &Shape) -> Vec<(ogeom::geom::Curve, (f64, f64), f64)> {
+    let mut out = Vec::new();
+    for face in spline_faces(model, shape) {
+        for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
+            let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+            let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                panic!("an edge without a curve");
+            };
+            let curve = model.geometry().curve(*curve).unwrap().clone();
+            out.push((curve, *range, data.tolerance.get()));
+        }
+    }
+    out
+}
+
+/// The farthest a curve strays over its range, by a measure of its points.
+fn worst_along(curve: &ogeom::geom::Curve, range: (f64, f64), off: impl Fn(Point) -> f64) -> f64 {
+    use ogeom::geom::Curve3d as _;
+    (0..=2000)
+        .map(|k| {
+            let t = range.0 + (range.1 - range.0) * f64::from(k) / 2000.0;
+            off(curve.point_at(t, T).unwrap())
+        })
+        .fold(0.0, f64::max)
+}
+
+/// A round bar of radius five along x, twenty long, with a hill on its
+/// side over a quarter turn and the middle twelve of its length: the radius
+/// at angle `a` and abscissa `x`. The hill runs out into the cylinder with
+/// its height and slope.
+fn drum_radius(a: f64, x: f64) -> f64 {
+    let (lo, hi) = (0.75 * core::f64::consts::PI, 1.25 * core::f64::consts::PI);
+    5.0 + 0.5 * unit_hill((x - 4.0) / 12.0, (a - lo) / (hi - lo))
+}
+
+/// The bar of [`drum_radius`] meshed on `turn` cells round and `along`
+/// cells along it, lines of the grid on the hill's foot; each end a fan
+/// about its centre.
+fn drum_mesh(turn: u32, along: u32) -> Triangulation {
+    let mut mesh = Triangulation::new();
+    for j in 0..=along {
+        let x = 20.0 * f64::from(j) / f64::from(along);
+        for k in 0..turn {
+            let a = core::f64::consts::TAU * f64::from(k) / f64::from(turn);
+            let r = drum_radius(a, x);
+            mesh.positions.push(Point::new(x, r * a.cos(), r * a.sin()));
+        }
+    }
+    let ring = |j: u32, k: u32| j * turn + k % turn;
+    for j in 0..along {
+        for k in 0..turn {
+            let (a, b, c, d) = (
+                ring(j, k),
+                ring(j + 1, k),
+                ring(j + 1, k + 1),
+                ring(j, k + 1),
+            );
+            mesh.triangles.push([a, c, b]);
+            mesh.triangles.push([a, d, c]);
+        }
+    }
+    let base = u32::try_from(mesh.positions.len()).unwrap();
+    mesh.positions.push(Point::ORIGIN);
+    mesh.positions.push(Point::new(20.0, 0.0, 0.0));
+    for k in 0..turn {
+        mesh.triangles.push([base, ring(0, k + 1), ring(0, k)]);
+        mesh.triangles
+            .push([base + 1, ring(along, k), ring(along, k + 1)]);
+    }
+    mesh
+}
+
+/// A hill on a round bar's side, running out into the cylinder
+/// tangentially, meshed with vertices along the line where they meet: the
+/// cylinder bounds the hill's smooth region, which comes back one patch.
+/// The section solve finds nothing at a tangency, and the seam is threaded
+/// through the chain in the cylinder's chart, cornered where the chain
+/// turns, and lifted onto it: it lies on the cylinder, within twice the
+/// coplanar distance of the patch. The volume is within the distance over
+/// the hill's area, and the solid valid and tessellating closed.
+#[test]
+fn a_hill_tangent_to_a_cylinder_meets_it_on_the_cylinder() {
+    let mesh = drum_mesh(96, 40);
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    eprintln!("drum: {} faces, report {:?}", out.report.faces, out.report);
+    assert_eq!(out.report.windings_flipped, 0);
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(kinds_and_patches(&model, &out.shape), ([2, 1, 0, 0, 0], 1));
+    let flat = out.coplanar_distance;
+    let [(seam, range, tolerance)] = &patch_edges(&model, &out.shape)[..] else {
+        panic!("the patch is bounded by more than its seam");
+    };
+    let off = worst_along(seam, *range, |p| (p.y.hypot(p.z) - 5.0).abs());
+    let volume = volume_properties(&model, &out.shape, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
+    // The bar, and the hill: (r^2 - 25) / 2 over its angle and length, by
+    // the midpoint rule.
+    let (n, pi) = (400, core::f64::consts::PI);
+    let mut hill = 0.0;
+    for i in 0..n {
+        for k in 0..n {
+            let x = 4.0 + 12.0 * (f64::from(i) + 0.5) / f64::from(n);
+            let a = 0.75 * pi + 0.5 * pi * (f64::from(k) + 0.5) / f64::from(n);
+            hill += 0.5 * (drum_radius(a, x).powi(2) - 25.0);
+        }
+    }
+    hill *= 12.0 * 0.5 * pi / f64::from(n * n);
+    let exact = pi * 25.0 * 20.0 + hill;
+    eprintln!(
+        "drum: seam tolerance {tolerance:e} against {flat:e}, off the cylinder {off:e}; volume {volume}, exact {exact}"
+    );
+    assert!(off <= 1e-8, "{off}");
+    assert!(*tolerance <= flat * 2.0, "{tolerance} past {flat}");
+    assert!((volume - exact).abs() <= flat * 12.0 * 2.5 * pi);
+    let closed = ogeom::mesh::triangulate(&model, &out.shape, Deflection::default(), T).unwrap();
+    assert!(closed.is_closed());
+}
+
+/// The top of a block twenty long along x, fifteen deep along y and eight
+/// high, its front top edge rounded at radius three: past the round it
+/// rises from the round's tangent line as a free-form face, its height and
+/// slope across the line those of the round's top.
+fn rounded_top(x: f64, y: f64) -> f64 {
+    let s = (y - 3.0) / 12.0;
+    let along = x / 20.0;
+    8.0 + 2.0 * s * s * (1.0 + 0.4 * (core::f64::consts::PI * along).sin() + 0.3 * s * along)
+}
+
+/// The block of [`rounded_top`] meshed on `along` cells in x, `arc` round
+/// the round and `top` across the free-form face: every cross-section's
+/// vertices at the same depths, so the walls and the bottom are grids.
+fn rounded_block_mesh(along: u32, arc: u32, top: u32) -> Triangulation {
+    let quarter = |k: u32| core::f64::consts::FRAC_PI_2 * f64::from(k) / f64::from(arc);
+    let mut depths: Vec<f64> = (0..=arc).map(|k| 3.0 - 3.0 * quarter(k).cos()).collect();
+    depths.extend((1..=top).map(|k| 3.0 + 12.0 * f64::from(k) / f64::from(top)));
+    let height = |x: f64, k: usize| match u32::try_from(k).unwrap() {
+        k if k <= arc => 5.0 + 3.0 * quarter(k).sin(),
+        _ => rounded_top(x, depths[k]),
+    };
+    let (m, n) = (depths.len(), along as usize + 1);
+    let at = |i: usize| 20.0 * f64::from(u32::try_from(i).unwrap()) / f64::from(along);
+    let mut mesh = Triangulation::new();
+    for i in 0..n {
+        for (k, &y) in depths.iter().enumerate() {
+            mesh.positions.push(Point::new(at(i), y, height(at(i), k)));
+        }
+    }
+    for i in 0..n {
+        for &y in &depths {
+            mesh.positions.push(Point::new(at(i), y, 0.0));
+        }
+    }
+    let up = |i: usize, k: usize| u32::try_from(i * m + k).unwrap();
+    let down = |i: usize, k: usize| u32::try_from(n * m + i * m + k).unwrap();
+    for i in 0..n - 1 {
+        for k in 0..m - 1 {
+            mesh.triangles
+                .push([up(i, k), up(i + 1, k), up(i + 1, k + 1)]);
+            mesh.triangles
+                .push([up(i, k), up(i + 1, k + 1), up(i, k + 1)]);
+            mesh.triangles
+                .push([down(i, k), down(i + 1, k + 1), down(i + 1, k)]);
+            mesh.triangles
+                .push([down(i, k), down(i, k + 1), down(i + 1, k + 1)]);
+        }
+        // The front wall and the back.
+        let (f, b) = (0, m - 1);
+        mesh.triangles
+            .push([down(i, f), down(i + 1, f), up(i + 1, f)]);
+        mesh.triangles.push([down(i, f), up(i + 1, f), up(i, f)]);
+        mesh.triangles
+            .push([down(i, b), up(i + 1, b), down(i + 1, b)]);
+        mesh.triangles.push([down(i, b), up(i, b), up(i + 1, b)]);
+    }
+    // The two ends, a column of the section between each two depths.
+    let (e, l) = (0, n - 1);
+    for k in 0..m - 1 {
+        mesh.triangles
+            .push([down(e, k), up(e, k + 1), down(e, k + 1)]);
+        mesh.triangles.push([down(e, k), up(e, k), up(e, k + 1)]);
+        mesh.triangles
+            .push([down(l, k), down(l, k + 1), up(l, k + 1)]);
+        mesh.triangles.push([down(l, k), up(l, k + 1), up(l, k)]);
+    }
+    mesh
+}
+
+/// A round along a block's edge running tangentially into a free-form top,
+/// meshed with vertices along the line where they meet: the round bounds
+/// the top's smooth region, which comes back one patch, and the seam
+/// between them is the round's ruling through the chain, exactly on it and
+/// within the coplanar distance of the patch. The volume is within the
+/// distance over the top's area, and the solid valid and tessellating
+/// closed.
+#[test]
+fn a_round_running_into_a_free_form_top_meets_it_on_a_ruling() {
+    let mesh = rounded_block_mesh(40, 12, 24);
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    eprintln!("round: {} faces, report {:?}", out.report.faces, out.report);
+    assert_eq!(out.report.windings_flipped, 0);
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(kinds_and_patches(&model, &out.shape), ([5, 1, 0, 0, 0], 1));
+    let flat = out.coplanar_distance;
+    let round = |p: Point| ((p.y - 3.0).hypot(p.z - 5.0) - 3.0).abs();
+    let on_round: Vec<_> = patch_edges(&model, &out.shape)
+        .into_iter()
+        .filter(|(curve, range, _)| worst_along(curve, *range, round) <= 1e-9)
+        .collect();
+    let [(seam, _, tolerance)] = &on_round[..] else {
+        panic!("{} seams on the round", on_round.len());
+    };
+    assert!(matches!(seam, ogeom::geom::Curve::Line(_)));
+    assert!(*tolerance <= flat, "{tolerance} past {flat}");
+    let volume = volume_properties(&model, &out.shape, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
+    // The section's area along x (the wall under the round, the round's
+    // quarter disc, the block under the top, and the top's rise over
+    // eight) integrated in closed form.
+    let pi = core::f64::consts::PI;
+    let exact = 20.0 * (5.0 * 3.0 + pi * 9.0 / 4.0 + 8.0 * 12.0)
+        + 2.0 * 12.0 * (20.0 / 3.0 + 0.4 * 40.0 / (3.0 * pi) + 0.3 * 20.0 / 8.0);
+    eprintln!(
+        "round: seam tolerance {tolerance:e} against {flat:e}; volume {volume}, exact {exact}"
+    );
+    assert!((volume - exact).abs() <= flat * 20.0 * 12.0);
+    let closed = ogeom::mesh::triangulate(&model, &out.shape, Deflection::default(), T).unwrap();
+    assert!(closed.is_closed());
+}
+
+/// A ball of radius ten with a hill on its side between polar angles of an
+/// eighth and three eighths of a half turn, over a quarter turn about its
+/// axis: the radius at polar angle `p` and azimuth `a`.
+fn ball_radius(p: f64, a: f64) -> f64 {
+    let pi = core::f64::consts::PI;
+    10.0 + 0.5 * unit_hill((p - pi / 8.0) / (pi / 4.0), a / (pi / 2.0))
+}
+
+/// The ball of [`ball_radius`] meshed on `rings` cells from pole to pole
+/// and `turn` round, a fan at either pole.
+fn ball_mesh(rings: u32, turn: u32) -> Triangulation {
+    let pi = core::f64::consts::PI;
+    let mut mesh = Triangulation::new();
+    mesh.positions.push(Point::new(0.0, 0.0, 10.0));
+    for j in 1..rings {
+        let p = pi * f64::from(j) / f64::from(rings);
+        for k in 0..turn {
+            let a = 2.0 * pi * f64::from(k) / f64::from(turn);
+            let r = ball_radius(p, a);
+            mesh.positions.push(Point::new(
+                r * p.sin() * a.cos(),
+                r * p.sin() * a.sin(),
+                r * p.cos(),
+            ));
+        }
+    }
+    let at = |j: u32, k: u32| 1 + (j - 1) * turn + k % turn;
+    let south = u32::try_from(mesh.positions.len()).unwrap();
+    mesh.positions.push(Point::new(0.0, 0.0, -10.0));
+    for k in 0..turn {
+        mesh.triangles.push([0, at(1, k), at(1, k + 1)]);
+        mesh.triangles
+            .push([south, at(rings - 1, k + 1), at(rings - 1, k)]);
+    }
+    for j in 1..rings - 1 {
+        for k in 0..turn {
+            let (a, b, c, d) = (at(j, k), at(j + 1, k), at(j + 1, k + 1), at(j, k + 1));
+            mesh.triangles.push([a, b, c]);
+            mesh.triangles.push([a, c, d]);
+        }
+    }
+    mesh
+}
+
+/// A hill on a ball's side, running out into the sphere tangentially: the
+/// sphere, far larger than the hill, bounds it rather than joining it, and
+/// the seam threaded in the sphere's chart lies on the sphere. The cylinder
+/// case above is the quick one; a ball coarse enough to be quick leaves
+/// the hill too few vertices for a patch.
+#[test]
+#[ignore = "heavy"]
+fn a_hill_tangent_to_a_sphere_meets_it_on_the_sphere() {
+    let mesh = ball_mesh(96, 128);
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    eprintln!("ball: {} faces, report {:?}", out.report.faces, out.report);
+    assert_eq!(out.report.windings_flipped, 0);
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(kinds_and_patches(&model, &out.shape), ([0, 0, 0, 1, 0], 1));
+    let flat = out.coplanar_distance;
+    let [(seam, range, tolerance)] = &patch_edges(&model, &out.shape)[..] else {
+        panic!("the patch is bounded by more than its seam");
+    };
+    let off = worst_along(seam, *range, |p| (p.to_vector().magnitude() - 10.0).abs());
+    let volume = volume_properties(&model, &out.shape, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
+    // The ball, and the hill: (r^3 - 1000) / 3 over its solid angle, by the
+    // midpoint rule.
+    let (n, pi) = (400, core::f64::consts::PI);
+    let mut hill = 0.0;
+    for i in 0..n {
+        for k in 0..n {
+            let p = pi / 8.0 + pi / 4.0 * (f64::from(i) + 0.5) / f64::from(n);
+            let a = pi / 2.0 * (f64::from(k) + 0.5) / f64::from(n);
+            hill += (ball_radius(p, a).powi(3) - 1000.0) / 3.0 * p.sin();
+        }
+    }
+    hill *= pi / 4.0 * pi / 2.0 / f64::from(n * n);
+    let exact = 4.0 / 3.0 * pi * 1000.0 + hill;
+    eprintln!(
+        "ball: seam tolerance {tolerance:e} against {flat:e}, off the sphere {off:e}; volume {volume}, exact {exact}"
+    );
+    assert!(off <= 1e-6, "{off}");
+    assert!(*tolerance <= flat * 3.0, "{tolerance} past {flat}");
+    assert!((volume - exact).abs() <= flat * 100.0 * pi * pi / 8.0);
+    let closed = ogeom::mesh::triangulate(&model, &out.shape, Deflection::default(), T).unwrap();
+    assert!(closed.is_closed());
+}
+
 /// The mesh of a shape's faces on one kind of surface alone: the shape
 /// with every other face taken away, open where they were.
 fn faces_meshed(

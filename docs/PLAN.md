@@ -364,6 +364,34 @@ after.
    regions stop at planes: fewer not disks (ctc_03 from 11 to 2), a few
    more narrow.
 
+   A patch running out tangentially into a cylinder, a sphere or a round:
+   done where the mesh has vertices along the line they meet on.
+   Recognition runs first, so the canonical region already bounds the
+   smooth region and the patch builds; what failed was the seam. The chord
+   threaded through the chain's vertices stands off a curved surface
+   between them and overshoots where the chain turns, and its image on the
+   surface strays further. Measured before: a hill on a round bar's side
+   (radius 5, 96 cells round, 40 along) came back 4 faces, the seam at a
+   tolerance of 4.2e-4 against a distance of 2.5e-5 and 5.5e-5 off the
+   cylinder; a hill on a ball (radius 10, 96 by 128) 2 faces, the seam at
+   1.9e-3 against 1.4e-4 and as far off the sphere. Now, between a
+   cylinder, cone, sphere or torus and a patch, the chain is threaded in
+   the canonical surface's chart, cut where it turns by thirty degrees,
+   and lifted onto the surface; the curve and both images come from the
+   same points, and it is kept where it holds both faces within the reach
+   (a loose seam keeps the chord). The bar's seam lies on the cylinder
+   within 1e-9 at 4.2e-5 (the patch's own distance near the hill's
+   corners), the volume 4.6e-5 off; the ball's within 7e-7 at 2.9e-4, the
+   volume 3e-4 off; both valid and tessellating closed. A round along a
+   block's edge running into a free-form top came back 7 faces before and
+   after, its seam the round's ruling, exact. A curved region holding more
+   triangles than the smooth regions it meets is no longer tried with them
+   as one region: it bounds them (the ball was first tried whole, with the
+   hill, as one patch). The truth bench, the stress baseline and the
+   corpus and NIST parts come back unchanged in faces, kinds, volumes and
+   refusal counts, but for thread_flank_narrower_than_a_chord (invalid
+   before and after: 8242 faces to 8131, 50 tori to 52).
+
    Still to do:
    - a tangent line inside a row of triangles (a scan, or a part meshed
      without vertices along its edges): the boundary row's vertices lie on
@@ -373,8 +401,13 @@ after.
      near flat foot gathers into narrow slanted planes beside the main one,
      each within the distance, the volume off by a few times the distance
      over the hill's area;
-   - a patch tangent to a curved canonical neighbour (a cylinder, a round)
-     is not measured; the planes alone bound smooth regions;
+   - a sphere cap with a free-form hole has no layout (a cap takes one
+     latitude circle): a hill on a hemisphere's side leaves the sphere
+     faceted (5304 faces at 48 rings by 128);
+   - a steeper run-out into a curved surface fails the fit as on the
+     plane: the bar's hill at 0.8 high instead of 0.5 stays faceted, the
+     fit running out at 1.24e-5 against a target of 1.23e-5;
+   - cones and tori are threaded the same way, but not measured;
    - a chain of three vertices between a patch (or any curved face) and its
      neighbour gets no chord: a cubic needs four points and the threading
      gives up rather than trying the polyline. Threading three with a

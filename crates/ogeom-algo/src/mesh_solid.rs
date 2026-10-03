@@ -5410,7 +5410,9 @@ struct EnclosedUnion {
 /// when it meets the smooth regions or other enclosed pieces across an
 /// edge that does not crease, and meets nothing else except across creases
 /// and free edges. A curved region tangent to a face outside the smooth
-/// area (a round beside a plane) is never enclosed.
+/// area (a round beside a plane) is never enclosed, nor one holding more
+/// triangles than the smooth regions it meets (a cylinder a hill rises
+/// from), which bounds them.
 fn enclosed_unions(
     adjacency: &Adjacency,
     normals: &[Vector],
@@ -5474,6 +5476,24 @@ fn enclosed_unions(
             pieces.push((None, pocket));
         }
     }
+    // A curved region larger than the smooth regions it meets is a face of
+    // its own that they run into (a hill on a cylinder's side), not a piece
+    // cut from them: it bounds them, and is never enclosed.
+    let bounding: Vec<bool> = pieces
+        .iter()
+        .map(|(carrier, triangles)| {
+            let mut met: Vec<usize> = triangles
+                .iter()
+                .flat_map(|&t| smooth(t))
+                .map(|o| region_of[o])
+                .filter(|&r| r != usize::MAX)
+                .collect();
+            met.sort_unstable();
+            met.dedup();
+            let beside: usize = met.iter().map(|&r| regions[r].len()).sum();
+            carrier.is_some() && !met.is_empty() && triangles.len() > beside
+        })
+        .collect();
     // Every piece reached from the smooth regions through smooth edges,
     // then those meeting anything else dropped until none does.
     let mut enclosed = vec![false; pieces.len()];
@@ -5482,7 +5502,7 @@ fn enclosed_unions(
         for &t in region {
             for o in smooth(t) {
                 let p = piece_of[o];
-                if p != usize::MAX && !enclosed[p] {
+                if p != usize::MAX && !enclosed[p] && !bounding[p] {
                     enclosed[p] = true;
                     queue.push(p);
                 }
@@ -5493,7 +5513,7 @@ fn enclosed_unions(
         for &t in &pieces[p].1 {
             for o in smooth(t) {
                 let q = piece_of[o];
-                if q != usize::MAX && !enclosed[q] {
+                if q != usize::MAX && !enclosed[q] && !bounding[q] {
                     enclosed[q] = true;
                     queue.push(q);
                 }
@@ -7413,6 +7433,24 @@ impl Planner<'_> {
         if longest <= self.tol.confusion() {
             return None;
         }
+        // Between a canonical surface and a patch running out into it
+        // tangentially, the chain is threaded in the canonical surface's
+        // chart and lifted onto it: a curve through the vertices alone
+        // stands off a curved surface between them, most where the chain
+        // turns, and its image there strays as far.
+        for (g, h) in [(a, b), (b, a)] {
+            if self.curved(h).is_some_and(|c| c.patch.is_some())
+                && let Some((curve, range, tolerance, images)) =
+                    self.chart_thread(&on, closed, g, h, reach)
+            {
+                let snapped = if closed {
+                    Snapped::Loop(curve, range, tolerance)
+                } else {
+                    Snapped::Open(curve, range, tolerance)
+                };
+                return Some((snapped, true, images));
+            }
+        }
         let plain = self.thread(&on, closed, &fa, &fb, reach, longest);
         let threaded = match plain {
             Some(found)
@@ -7435,6 +7473,213 @@ impl Planner<'_> {
             },
             true,
             Vec::new(),
+        ))
+    }
+
+    /// A curve threaded through a chain's points in the chart of face `g`,
+    /// a cylinder, cone, sphere or torus, and lifted onto it. The chain is
+    /// cut where it turns by more than [`CHART_CORNER`], and each piece's
+    /// chart positions joined by a cubic (a piece of two or three points by
+    /// straight chart segments). The curve, its image on `g` and its image
+    /// on the patch `h` (the feet of its points there) are interpolated
+    /// through [`CHORD_SPLIT`] points a span at the same parameters, and the
+    /// pieces joined end to end. Its range, its tolerance (how far it
+    /// strays from `h`, or either image's lift from it), and both images
+    /// with how far each strays. `None` where `g` is no such surface, a
+    /// point has no chart position, a loop does not close in the chart (it
+    /// goes round the axis), the curve hooks back on itself, or it strays
+    /// past the reach.
+    fn chart_thread(
+        &self,
+        on: &[Point],
+        closed: bool,
+        g: usize,
+        h: usize,
+        reach: f64,
+    ) -> Option<(Curve, (f64, f64), f64, Images)> {
+        use ogeom_geom::{Curve2d as _, Curve3d as _};
+        type Spline = (ogeom_math::KnotVector, Vec<Point>);
+        let curved = self.curved(g)?;
+        if curved.patch.is_some()
+            || matches!(curved.shape, Canonical::Swept(_) | Canonical::Plane(_))
+        {
+            return None;
+        }
+        let n = on.len();
+        if n < 2 {
+            return None;
+        }
+        let (pu, pv) = periodic(&curved.shape);
+        let near = |x: f64, c: f64, wraps: bool| {
+            if wraps {
+                c + ogeom_math::elementary::wrap_signed_angle(x - c)
+            } else {
+                x
+            }
+        };
+        let mut uv: Vec<Point> = Vec::with_capacity(n);
+        for &p in on {
+            let (u, v) = match uv.last() {
+                None => unwrapped(curved, p, self.tol)?,
+                Some(last) => {
+                    let (u, v) = chart(&curved.shape, p, self.tol)?;
+                    (near(u, last.x, pu), near(v, last.y, pv))
+                }
+            };
+            uv.push(Point::new(u, v, 0.0));
+        }
+        if closed && uv[0].distance(uv[n - 1]) > 1e-9 {
+            return None;
+        }
+        let turns = |i: usize| -> bool {
+            let before = if i == 0 { on[n - 2] } else { on[i - 1] };
+            let (a, b) = (on[i] - before, on[i + 1] - on[i]);
+            let m = a.magnitude() * b.magnitude();
+            m > 0.0 && a.dot(b) < m * CHART_CORNER.cos()
+        };
+        let mut cuts: Vec<usize> = vec![0];
+        cuts.extend((1..n - 1).filter(|&i| turns(i)));
+        cuts.push(n - 1);
+        // A loop without a corner is carried on past its ends and cut
+        // back, as in `thread`, so it runs on smoothly through its start.
+        let smooth_loop = closed && cuts.len() == 2 && n >= 4 && !turns(0);
+        let patch = self.curved(h)?;
+        let other = self.signed(h)?;
+        let mut joined: Option<[Spline; 3]> = None;
+        // Each dense parameter of the whole curve, with the chain's span
+        // it falls in.
+        let mut dense_all: Vec<(f64, usize)> = Vec::new();
+        for piece in cuts.windows(2) {
+            let (s, e) = (piece[0], piece[1]);
+            let count = e - s + 1;
+            let (pts, chart_pts, pad) = if smooth_loop {
+                let pad = 3.min(n / 3);
+                let wrap = |all: &[Point]| -> Vec<Point> {
+                    all[n - 1 - pad..n - 1]
+                        .iter()
+                        .chain(all)
+                        .chain(&all[1..=pad])
+                        .copied()
+                        .collect()
+                };
+                (wrap(on), wrap(&uv), pad)
+            } else {
+                (on[s..=e].to_vec(), uv[s..=e].to_vec(), 0)
+            };
+            let parameters =
+                crate::fit::spaced(&pts, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+            let degree = if count >= 4 { 3 } else { 1 };
+            let mut flat =
+                crate::fit::interpolate_at(&chart_pts, &parameters, degree, self.tol).ok()?;
+            if pad > 0 {
+                flat = flat.split_at(parameters[pad], self.tol).ok()?.1;
+                flat = flat.split_at(parameters[pad + count - 1], self.tol).ok()?.0;
+            }
+            let flat: Curve = flat.into();
+            let own = &parameters[pad..pad + count];
+            let mut dense = vec![own[0]];
+            for w in own.windows(2) {
+                dense.extend(
+                    (1..=CHORD_SPLIT)
+                        .map(|k| w[0] + (w[1] - w[0]) * f64::from(k) / f64::from(CHORD_SPLIT)),
+                );
+            }
+            let mut at: Vec<Point> = Vec::with_capacity(dense.len());
+            let mut lifted: Vec<Point> = Vec::with_capacity(dense.len());
+            let mut feet: Vec<Point> = Vec::with_capacity(dense.len());
+            for &t in &dense {
+                let c = flat.point_at(t, self.tol).ok()?;
+                at.push(Point::new(c.x, c.y, 0.0));
+                let p = evaluate(&curved.shape, (c.x, c.y));
+                lifted.push(p);
+                let (u, v) = chart(&patch.shape, p, self.tol)?;
+                feet.push(Point::new(u, v, 0.0));
+            }
+            let image = crate::fit::interpolate_at(&at, &dense, 3, self.tol).ok()?;
+            let foot_image = crate::fit::interpolate_at(&feet, &dense, 3, self.tol).ok()?;
+            let curve = crate::fit::interpolate_at(&lifted, &dense, 3, self.tol).ok()?;
+            let unweighted = |spline: &ogeom_geom::BSplineCurve| {
+                (
+                    spline.knots().clone(),
+                    spline
+                        .control_points()
+                        .iter()
+                        .map(|c| c.scaled)
+                        .collect::<Vec<Point>>(),
+                )
+            };
+            let piece = [
+                unweighted(&curve),
+                unweighted(&image),
+                unweighted(&foot_image),
+            ];
+            let offset = joined.as_ref().map_or(0.0, |[c, ..]| c.0.domain_end()) - dense[0];
+            dense_all.extend(
+                dense
+                    .iter()
+                    .enumerate()
+                    .skip(usize::from(!dense_all.is_empty()))
+                    .map(|(k, &t)| {
+                        let span = k.saturating_sub(1) / CHORD_SPLIT as usize;
+                        (t + offset, s + span.min(count - 2))
+                    }),
+            );
+            joined = Some(match joined {
+                None => piece,
+                Some(before) => [
+                    ogeom_math::bspline::join(&before[0], &piece[0]).ok()?,
+                    ogeom_math::bspline::join(&before[1], &piece[1]).ok()?,
+                    ogeom_math::bspline::join(&before[2], &piece[2]).ok()?,
+                ],
+            });
+        }
+        let [(knots, control), image, foot_image] = joined?;
+        let curve: Curve = ogeom_geom::BSplineCurve::new(knots, control, self.tol)
+            .ok()?
+            .into();
+        let planar = |(knots, control): Spline| -> Option<PlanarCurve> {
+            Some(
+                ogeom_geom::BSpline2d::new(
+                    knots,
+                    control.iter().map(|c| Point2::new(c.x, c.y)).collect(),
+                    self.tol,
+                )
+                .ok()?
+                .into(),
+            )
+        };
+        let (image, foot_image) = (planar(image)?, planar(foot_image)?);
+        let range = curve.domain();
+        let (mut tolerance, mut deviation, mut foot_deviation) = (
+            self.tol.confusion(),
+            self.tol.confusion() * 1e-2,
+            self.tol.confusion() * 1e-2,
+        );
+        for pair in dense_all.windows(2) {
+            let span = pair[1].1;
+            for f in [0.0, 0.25, 0.5, 0.75] {
+                let t = (pair[0].0 + (pair[1].0 - pair[0].0) * f).clamp(range.0, range.1);
+                let p = curve.point_at(t, self.tol).ok()?;
+                let c = image.point_at(t, self.tol).ok()?;
+                tolerance = tolerance.max(other(p).abs());
+                deviation = deviation.max(evaluate(&curved.shape, (c.x, c.y)).distance(p));
+                let c = foot_image.point_at(t, self.tol).ok()?;
+                foot_deviation = foot_deviation.max(evaluate(&patch.shape, (c.x, c.y)).distance(p));
+                // At a corner the curve's direction is either piece's.
+                if f > 0.0 && curve.d1_at(t, self.tol).ok()?.dot(on[span + 1] - on[span]) <= 0.0 {
+                    return None;
+                }
+            }
+        }
+        // Only a seam held within the reach: a patch that meets the surface
+        // looser than that does not run out into it, and the chord through
+        // the vertices serves as well.
+        let tolerance = tolerance.max(deviation).max(foot_deviation);
+        (tolerance <= reach).then_some((
+            curve,
+            range,
+            tolerance,
+            vec![(g, image, deviation), (h, foot_image, foot_deviation)],
         ))
     }
 
@@ -7988,6 +8233,11 @@ fn onto_both(
     }
     (fa(p).abs().max(fb(p).abs()) <= reach * 1e-3 && p.distance(start) <= limit).then_some(p)
 }
+
+/// How far a chain threaded in a canonical surface's chart turns at a
+/// vertex, past straight on, for the curve to take a corner there: thirty
+/// degrees, a crease's turn.
+const CHART_CORNER: f64 = core::f64::consts::FRAC_PI_6;
 
 /// How many points each span of a chord is cut into, at most, when its
 /// points are carried onto both faces.

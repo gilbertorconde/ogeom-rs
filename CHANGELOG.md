@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Patches meet a curved neighbour on its surface.** Where a fitted patch
+  runs out tangentially into a cylinder, cone, sphere or torus, the seam is
+  threaded in that surface's own coordinates, cornered where it turns, and
+  mapped back onto it: a hill on a round bar meets the bar within 6e-10
+  instead of 5.5e-5. A large canonical face beside a smooth region bounds
+  that region instead of being tried with it as one patch.
+
 - **Tori whose holes leave no seam free convert whole.** A torus whose
   holes cross every parallel or every meridian comes back as one exact
   toroidal face, its seam threaded through the holes and the full circle
