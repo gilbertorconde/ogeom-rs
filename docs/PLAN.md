@@ -45,6 +45,13 @@ part of the seat or bridging a gap. Refused by name:
   chamfer between the faces it rounds): the solid beside the middle of the
   round is open where the seat says material, or the reverse.
 
+**Section loops pinned at a sphere's pole.** Where a curved wall passes
+through a pole of a sphere face, each section loop starts and ends at the
+pole node of the chart and the arrangement can read one piece round both
+loops. A whole ball is recharted about a clear axis before the boolean; a
+trimmed sphere face, or a solid with other faces too, still takes the
+pinned arrangement and is refused by name where its result comes out empty.
+
 **A section whose fit misses widens its junctions as far.** A marched
 section keeps its fit's error as its tolerance, and the paving's reach and
 the junctions at the ends of a stretch it runs along an edge grow with that

@@ -40,6 +40,7 @@
 //! pieces are sewn into shells with no closure asked of them.
 
 mod arrange;
+mod ball_chart;
 mod bins;
 mod defeature;
 mod half_space;
@@ -8726,7 +8727,9 @@ pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
              splits one"
         );
     }
-    settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
+    ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+        settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
+    })
 }
 
 fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
@@ -8757,6 +8760,13 @@ fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomR
             .collect();
         assemble_result(model, &fused, &kept, a, b, tol)
     })();
+    // A union of two solids is never empty.
+    let built = match built {
+        Ok(built) if holds_nothing(model, &built.shape)? => {
+            Err(ogeom_core::ogeom_err!(NotDone, "the union came out empty"))
+        }
+        other => other,
+    };
     // The union of a solid and one lying within it is the outer one,
     // whatever contact their boundaries make.
     or_nested(model, built, a, b, true, tol)
@@ -8772,6 +8782,43 @@ fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomR
 /// part's own outline, its sides chords of the part's walls) defeat the
 /// arrangement, and a solid within the other is what they usually are.
 fn nested(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Option<bool>> {
+    sampled_relation(model, a, b, Relation::Nested, tol)
+}
+
+/// Whether two solids share no volume: no sample of either's boundary
+/// strictly inside the other. Boxes apart settle it without sampling.
+fn apart(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    let (box_a, box_b) = (
+        ogeom_algo::shape_bounds(model, a, tol)?,
+        ogeom_algo::shape_bounds(model, b, tol)?,
+    );
+    if !box_a.expanded(tol.confusion()).intersects(&box_b) {
+        return Ok(true);
+    }
+    Ok(sampled_relation(model, a, b, Relation::Apart, tol)? == Some(true))
+}
+
+/// What [`sampled_relation`] reads of two boundaries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Relation {
+    /// Which solid lies within the other, as [`nested`] answers.
+    Nested,
+    /// Whether neither boundary enters the other solid: `Some(true)` when
+    /// none does.
+    Apart,
+    /// Whether the first solid's boundary stands nowhere outside the
+    /// second: `Some(true)` when no sample of it reads out.
+    Covered,
+}
+
+/// Two solids' boundaries sampled and read against each other.
+fn sampled_relation(
+    model: &Model,
+    a: &Shape,
+    b: &Shape,
+    relation: Relation,
+    tol: Tolerances,
+) -> OgeomResult<Option<bool>> {
     // The boundary's samples, each on its face's exact surface: the face
     // mesh's vertices, and its triangles' middles taken in the chart and
     // lifted, since a middle taken in space stands off a curved face by the
@@ -8846,6 +8893,14 @@ fn nested(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<O
         ogeom_algo::SolidBoundary::of(model, b, band, tol)?,
     );
     let (on_a, on_b) = (samples(a)?, samples(b)?);
+    if relation == Relation::Apart {
+        let clear = all_read(&on_a, &of_b, &|c| c != Containment::In)?
+            && all_read(&on_b, &of_a, &|c| c != Containment::In)?;
+        return Ok(Some(clear));
+    }
+    if relation == Relation::Covered {
+        return Ok(Some(all_read(&on_a, &of_b, &|c| c != Containment::Out)?));
+    }
     let within = |inner: &[Point],
                   outer_boundary: &ogeom_algo::SolidBoundary,
                   outer: &[Point],
@@ -9052,7 +9107,9 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeom
         ),
         (true, false) => trimmed_sheet(model, a, b, true, tol),
         (false, true) => trimmed_sheet(model, b, a, true, tol),
-        (false, false) => settled(model, tol, |model, tol| common_once(model, a, b, tol)),
+        (false, false) => ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+            settled(model, tol, |model, tol| common_once(model, a, b, tol))
+        }),
     }
 }
 
@@ -9081,8 +9138,24 @@ fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
             .collect();
         assemble_result(model, &fused, &kept, a, b, tol)
     })();
+    // Nothing in common is an answer only where the two share no volume.
+    let built = match built {
+        Ok(built) if holds_nothing(model, &built.shape)? && !apart(model, a, b, tol)? => {
+            Err(ogeom_core::ogeom_err!(
+                NotDone,
+                "the intersection came out empty though the solids overlap"
+            ))
+        }
+        other => other,
+    };
     // The intersection of a solid and one lying within it is the inner one.
     or_nested(model, built, a, b, false, tol)
+}
+
+/// Whether a boolean's result has no face: an empty compound, or one of
+/// empty shells.
+fn holds_nothing(model: &Model, shape: &Shape) -> OgeomResult<bool> {
+    Ok(explore_unique(model, shape, ShapeType::Face)?.is_empty())
 }
 
 /// The first solid with the second removed.
@@ -9110,7 +9183,9 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
     if is_sheet(model, a)? {
         return trimmed_sheet(model, a, b, false, tol);
     }
-    settled(model, tol, |model, tol| cut_once(model, a, b, tol))
+    ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+        settled(model, tol, |model, tol| cut_once(model, a, b, tol))
+    })
 }
 
 /// What of a sheet lies inside `tool` (`inside` true) or outside it, as a
@@ -9236,7 +9311,18 @@ fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         assemble_result(model, &fused, &kept, a, b, tol)
     })();
     let refusal = match built {
-        Ok(built) => return Ok(built),
+        // Nothing left is an answer only where no part of the solid's
+        // boundary stands outside the tool.
+        Ok(built)
+            if !holds_nothing(model, &built.shape)?
+                || sampled_relation(model, a, b, Relation::Covered, tol)? == Some(true) =>
+        {
+            return Ok(built);
+        }
+        Ok(_) => ogeom_core::ogeom_err!(
+            NotDone,
+            "the cut left nothing of a solid that does not lie within the tool"
+        ),
         Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
             return Err(e);
         }

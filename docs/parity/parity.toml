@@ -1028,6 +1028,7 @@ tests = [
     "crates/ogeom/tests/sheet_booleans.rs",
     "crates/ogeom/tests/boolean_interference.rs",
     "crates/ogeom/tests/boolean_contact.rs",
+    "crates/ogeom/tests/boolean_pole_drill.rs",
     "crates/ogeom/tests/boolean_options.rs",
 ]
 

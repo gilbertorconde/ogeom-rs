@@ -108,6 +108,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Booleans with a ball whose poles lie on the other solid's wall.** A
+  drill whose wall passes through both poles of a ball cut nothing away or
+  everything (an empty or whole result `check` called valid), or took the
+  common a little short. A whole ball meeting a curved wall at a pole is
+  charted about another axis of its frame, clear of the wall, before the
+  boolean; cut and common add up to the ball and match an independent
+  integral within 1e-6 over drills in six directions and three radii.
+  Empty results are checked too: a cut leaves nothing only where no part of
+  the solid lies outside the tool, a common only where the solids share no
+  volume, and a fuse never; otherwise each is refused by name.
+
 - **Mesh conversion tells a finely drawn curve from scatter.** The
   estimate behind the default coplanar distance weighs each nearly flat
   edge's turn against its neighbours': a steady turn from one edge to the
