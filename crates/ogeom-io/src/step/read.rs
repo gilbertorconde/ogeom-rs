@@ -151,6 +151,9 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         faces: HashMap::new(),
         callout_index: HashMap::new(),
         pcurves: HashMap::new(),
+        pieces: HashMap::new(),
+        pole_vertices: Vec::new(),
+        piece_key: u64::MAX,
         untrimmed_ids: Vec::new(),
         tallies: HashMap::new(),
         cdsr_of_nauo: None,
@@ -301,6 +304,15 @@ struct Reader<'a> {
     /// `(face, edge)` → the pcurve already derived for it, from the parallel
     /// pass at the head of each solid.
     pcurves: HashMap<(u64, u64), PreparedPcurve>,
+    /// Edge → the pieces it was cut into where its curve runs through a
+    /// pole of a face it bounds, each under a key of its own that stands in
+    /// for the edge's id wherever a face's bound names it.
+    pieces: HashMap<u64, Vec<(u64, BuiltEdge)>>,
+    /// The vertices made at poles, shared by every piece that meets one.
+    pole_vertices: Vec<Shape>,
+    /// The last key handed to a piece; keys count down from the top of the
+    /// range, clear of every file id.
+    piece_key: u64,
     /// Faces noted untrimmed, by file id; resolved to shapes once the read
     /// is far enough along for the shapes to exist.
     untrimmed_ids: Vec<u64>,
@@ -1626,6 +1638,128 @@ impl<'a> Reader<'a> {
         Ok(Some(entry))
     }
 
+    /// The edge a bound names as the bound walks it: its pieces where it
+    /// was cut at a pole, in order along its curve, or the edge itself
+    /// under its own id.
+    fn edge_pieces(&mut self, id: u64) -> OgeomResult<Option<Vec<(u64, BuiltEdge)>>> {
+        if let Some(pieces) = self.pieces.get(&id) {
+            return Ok(Some(pieces.clone()));
+        }
+        Ok(self.edge(id)?.map(|built| vec![(id, built)]))
+    }
+
+    /// The keys a bound's use of edge `id` stands under.
+    fn piece_keys(&self, id: u64) -> Vec<u64> {
+        self.pieces.get(&id).map_or_else(
+            || vec![id],
+            |pieces| pieces.iter().map(|(k, _)| *k).collect(),
+        )
+    }
+
+    /// Cut every edge of these faces whose curve runs through a pole of a
+    /// face it bounds (a sphere's pole, a cone's apex, a patch's collapsed
+    /// side) at that pole, before any face is built.
+    ///
+    /// No single image of such a curve follows it through the chart: at the
+    /// pole it leaves along another column than the one it arrived on, and
+    /// a fit across the jump stands millimetres off the edge. Cut there,
+    /// each piece has an image of its own (a meridian of a sphere is
+    /// exactly a straight column), and the face's wire closes across the
+    /// pole row as it does at any pole vertex. The cut is made on the edge,
+    /// so every face it bounds walks the same pieces.
+    ///
+    /// Best-effort: anything unreadable here is left whole, and the face
+    /// that uses it reports it as it would have.
+    fn cut_at_poles(&mut self, face_ids: &[u64]) {
+        let mut crossings: BTreeMap<u64, Vec<crate::pcurves::Crossing>> = BTreeMap::new();
+        for &fid in face_ids {
+            let Ok(args) = self.face_args(fid) else {
+                continue;
+            };
+            let Some(surface) = args
+                .get(2)
+                .and_then(Arg::reference)
+                .and_then(|sid| self.surface(sid).ok().flatten())
+            else {
+                continue;
+            };
+            let poles = crate::pcurves::chart_poles(&surface, self.tol);
+            if poles.is_empty() {
+                continue;
+            }
+            let bounds: Vec<u64> = args
+                .get(1)
+                .and_then(Arg::list)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Arg::reference)
+                .collect();
+            for bound in bounds {
+                let Ok((loop_id, _)) = self.bound_args(bound) else {
+                    continue;
+                };
+                let Ok(loop_args) = self.args(loop_id, "EDGE_LOOP") else {
+                    continue;
+                };
+                let edge_ids: Vec<u64> = loop_args
+                    .get(1)
+                    .and_then(Arg::list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::reference)
+                    .filter_map(|oe| {
+                        self.args(oe, "ORIENTED_EDGE")
+                            .ok()
+                            .and_then(|a| a.get(3).and_then(Arg::reference))
+                    })
+                    .collect();
+                for edge_id in edge_ids {
+                    if self.pieces.contains_key(&edge_id) {
+                        continue;
+                    }
+                    let Ok(Some((_, curve, range, _))) = self.edge(edge_id) else {
+                        continue;
+                    };
+                    let found = crate::pcurves::pole_crossings(&curve, range, &poles, self.tol);
+                    if found.is_empty() {
+                        continue;
+                    }
+                    let entry = crossings.entry(edge_id).or_default();
+                    for crossing in found {
+                        if entry.iter().all(|(t, ..)| (t - crossing.0).abs() > 1e-9) {
+                            entry.push(crossing);
+                        }
+                    }
+                }
+            }
+        }
+        for (edge_id, mut at) in crossings {
+            at.sort_by(|x, y| x.0.total_cmp(&y.0));
+            let Some((shape, curve, range, flipped)) = self.edges.get(&edge_id).cloned() else {
+                continue;
+            };
+            let Ok(cut) = crate::pcurves::split_at_poles(
+                &mut self.model,
+                &shape,
+                &curve,
+                range,
+                &at,
+                &mut self.pole_vertices,
+                self.tol,
+            ) else {
+                continue;
+            };
+            let pieces = cut
+                .into_iter()
+                .map(|(piece, window)| {
+                    self.piece_key -= 1;
+                    (self.piece_key, (piece, curve.clone(), window, flipped))
+                })
+                .collect();
+            self.pieces.insert(edge_id, pieces);
+        }
+    }
+
     fn face(&mut self, id: u64) -> OgeomResult<Option<Shape>> {
         if let Some(shape) = self.faces.get(&id) {
             return Ok(Some(shape.clone()));
@@ -1666,7 +1800,9 @@ impl<'a> Reader<'a> {
                 if let Some(oe_id) = oe.reference() {
                     let oargs = self.args(oe_id, "ORIENTED_EDGE")?;
                     if let Some(e) = oargs.get(3).and_then(Arg::reference) {
-                        *edge_uses.entry(e).or_default() += 1;
+                        for key in self.piece_keys(e) {
+                            *edge_uses.entry(key).or_default() += 1;
+                        }
                     }
                 }
             }
@@ -1725,25 +1861,37 @@ impl<'a> Reader<'a> {
                     continue;
                 };
                 let forward = !oargs.get(4).is_some_and(|a| a.is_enum("F"));
-                let Some((shape, curve, range, flipped)) = self.edge(edge_id)? else {
+                let Some(pieces) = self.edge_pieces(edge_id)? else {
                     self.report.warnings.push(format!(
                         "#{id}: a bound references unreadable edge #{edge_id}; \
                          the face is skipped"
                     ));
                     return Ok(None);
                 };
+                let flipped = pieces.first().is_some_and(|(_, built)| built.3);
                 // The use's direction composes the loop's, the bound's and
-                // the edge-against-curve flag.
+                // the edge-against-curve flag. The pieces of a cut edge go
+                // in the order the loop as written walks them; reversing a
+                // reversed bound below turns them with the rest.
                 let mut use_forward = forward == bound_forward;
                 if flipped {
                     use_forward = !use_forward;
                 }
-                let placed = if use_forward {
-                    shape.clone()
-                } else {
-                    shape.reversed()
-                };
-                uses.push((placed, shape, edge_id, curve, range));
+                let mut walked: Vec<BoundUse> = pieces
+                    .into_iter()
+                    .map(|(key, (shape, curve, range, _))| {
+                        let placed = if use_forward {
+                            shape.clone()
+                        } else {
+                            shape.reversed()
+                        };
+                        (placed, shape, key, curve, range)
+                    })
+                    .collect();
+                if forward == flipped {
+                    walked.reverse();
+                }
+                uses.extend(walked);
             }
             if !bound_forward {
                 uses.reverse();
@@ -2162,7 +2310,8 @@ impl<'a> Reader<'a> {
         // samples; its tolerance grows to cover that, and its vertices
         // follow once the solid is whole. Past the millimetre a file's
         // slop stays under, the pcurve is a fit gone astray (a curve
-        // through a pole, whose image leaps across the chart there), and
+        // through a pole left whole, whose image leaps across the chart
+        // there), and
         // an edge that wide would swallow its neighbours; the face is
         // reported instead.
         if off > self.tol.confusion() * 1e7 {
@@ -2350,14 +2499,16 @@ impl<'a> Reader<'a> {
                     if !seen.insert((fid, edge_id)) {
                         continue;
                     }
-                    if let Ok(Some((_, curve, range, _))) = self.edge(edge_id) {
-                        jobs.push(Job {
-                            face: fid,
-                            edge: edge_id,
-                            curve,
-                            range,
-                            surface: at,
-                        });
+                    if let Ok(Some(pieces)) = self.edge_pieces(edge_id) {
+                        for (key, (_, curve, range, _)) in pieces {
+                            jobs.push(Job {
+                                face: fid,
+                                edge: key,
+                                curve,
+                                range,
+                                surface: at,
+                            });
+                        }
                     }
                 }
             }
@@ -2519,6 +2670,7 @@ impl<'a> Reader<'a> {
             .iter()
             .filter_map(Arg::reference)
             .collect();
+        self.cut_at_poles(&face_ids);
         self.prepare_pcurves(&face_ids);
         let mut faces = Vec::new();
         for fid in face_ids {

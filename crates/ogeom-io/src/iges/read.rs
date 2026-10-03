@@ -101,6 +101,8 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         visited: BTreeMap::new(),
         vertices: HashMap::new(),
         edges: HashMap::new(),
+        pieces: HashMap::new(),
+        pole_vertices: Vec::new(),
         vertex_misses: (0, 0.0),
         depth: 0,
         tol,
@@ -284,6 +286,11 @@ struct Reader<'a> {
     vertices: HashMap<(i64, i64), Shape>,
     /// Edges by (edge-list DE, 1-based index), for the same reason.
     edges: HashMap<(i64, i64), BuiltEdge>,
+    /// Edges cut where their curve runs through a pole of a face they
+    /// bound: the pieces, in order along the curve.
+    pieces: HashMap<(i64, i64), Vec<Shape>>,
+    /// The vertices made at poles, shared by every piece that meets one.
+    pole_vertices: Vec<Shape>,
     /// Vertices a curve end missed by more than the confusion tolerance
     /// and that widened to cover it: how many, and the widest miss.
     vertex_misses: (usize, f64),
@@ -1884,8 +1891,8 @@ impl<'a> Reader<'a> {
     /// Widen `edge` to cover a gap it was measured to stand from a face it
     /// bounds; its vertices follow once the solid is whole. Past the
     /// millimetre a file's slop stays under, the pcurve is a fit gone
-    /// astray (a curve through a pole, whose image leaps across the chart
-    /// there), and an edge that wide would swallow its neighbours; it is
+    /// astray (a curve through a pole left whole, whose image leaps across
+    /// the chart there), and an edge that wide would swallow its neighbours; it is
     /// reported instead.
     fn state_gap(&mut self, edge: &Shape, off: f64) {
         if off > self.tol.confusion() * 1e7 {
@@ -1941,6 +1948,8 @@ impl<'a> Reader<'a> {
             );
         }
         let n = entity.count(0);
+        let face_des: Vec<i64> = (0..n).map(|i| entity.at(1 + 2 * i).int()).collect();
+        self.cut_at_poles(&face_des);
         let mut faces = Vec::with_capacity(n);
         for i in 0..n {
             let face_de = entity.at(1 + 2 * i).int();
@@ -1970,7 +1979,9 @@ impl<'a> Reader<'a> {
         self.assemble_face(surface, wires)
     }
 
-    fn loop_edges(&mut self, de: i64) -> OgeomResult<Vec<Shape>> {
+    /// A loop's (508) entries in order: for an edge, its list, its index
+    /// and whether the loop walks it along its curve; `None` for a vertex.
+    fn loop_entries(&mut self, de: i64) -> OgeomResult<Vec<Option<(i64, i64, bool)>>> {
         let entity = self.entity(de)?;
         if entity.kind != 508 {
             ogeom_bail!(
@@ -1980,7 +1991,7 @@ impl<'a> Reader<'a> {
             );
         }
         let n = entity.count(0);
-        let mut edges = Vec::with_capacity(n);
+        let mut entries = Vec::with_capacity(n);
         let mut i = 1;
         for _ in 0..n {
             let is_vertex = entity.at(i).int() == 1;
@@ -1989,22 +2000,101 @@ impl<'a> Reader<'a> {
             let orientation = entity.at(i + 3).int();
             let k = entity.count(i + 4);
             i += 5 + 2 * k;
-            if is_vertex {
+            entries.push((!is_vertex).then_some((list_de, index, orientation != 0)));
+        }
+        Ok(entries)
+    }
+
+    fn loop_edges(&mut self, de: i64) -> OgeomResult<Vec<Shape>> {
+        let mut edges = Vec::new();
+        for entry in self.loop_entries(de)? {
+            let Some((list_de, index, along)) = entry else {
                 // A vertex entry marks a degenerate use; the face builder
                 // rebuilds chart degeneracies from the surface itself.
                 self.report.warnings.push(format!(
                     "D{de}: a loop lists a vertex entry, which this reader skips"
                 ));
                 continue;
-            }
-            let (edge, _, _) = self.list_edge(list_de, index)?;
-            edges.push(if orientation != 0 {
-                edge
+            };
+            let pieces = match self.pieces.get(&(list_de, index)) {
+                Some(pieces) => pieces.clone(),
+                None => vec![self.list_edge(list_de, index)?.0],
+            };
+            if along {
+                edges.extend(pieces);
             } else {
-                edge.reversed()
-            });
+                edges.extend(pieces.into_iter().rev().map(|p| p.reversed()));
+            }
         }
         Ok(edges)
+    }
+
+    /// Cut every edge of these faces (510) whose curve runs through a pole
+    /// of a face it bounds (a sphere's pole, a cone's apex, a patch's
+    /// collapsed side) at that pole, before any face is built: no single
+    /// image of such a curve follows it through the chart, and each piece
+    /// has one. The cut is made on the shared edge, so every face it bounds
+    /// walks the same pieces. Best-effort: anything unreadable here is left
+    /// whole for the face to report.
+    fn cut_at_poles(&mut self, face_des: &[i64]) {
+        let mut crossings: BTreeMap<(i64, i64), Vec<crate::pcurves::Crossing>> = BTreeMap::new();
+        for &face_de in face_des {
+            let Ok(entity) = self.entity(face_de) else {
+                continue;
+            };
+            if entity.kind != 510 {
+                continue;
+            }
+            let loops: Vec<i64> = (0..entity.count(1))
+                .map(|i| entity.at(3 + i).int())
+                .collect();
+            let Ok(surface) = self.surface(entity.at(0).int()) else {
+                continue;
+            };
+            let poles = crate::pcurves::chart_poles(&surface, self.tol);
+            if poles.is_empty() {
+                continue;
+            }
+            for loop_de in loops {
+                let Ok(entries) = self.loop_entries(loop_de) else {
+                    continue;
+                };
+                for (list_de, index, _) in entries.into_iter().flatten() {
+                    let key = (list_de, index);
+                    let Ok((_, curve, range)) = self.list_edge(list_de, index) else {
+                        continue;
+                    };
+                    let found = crate::pcurves::pole_crossings(&curve, range, &poles, self.tol);
+                    let entry = crossings.entry(key).or_default();
+                    for crossing in found {
+                        if entry.iter().all(|(t, ..)| (t - crossing.0).abs() > 1e-9) {
+                            entry.push(crossing);
+                        }
+                    }
+                }
+            }
+        }
+        for (key, mut at) in crossings {
+            if at.is_empty() || self.pieces.contains_key(&key) {
+                continue;
+            }
+            at.sort_by(|x, y| x.0.total_cmp(&y.0));
+            let Some((edge, curve, range)) = self.edges.get(&key).cloned() else {
+                continue;
+            };
+            if let Ok(cut) = crate::pcurves::split_at_poles(
+                &mut self.model,
+                &edge,
+                &curve,
+                range,
+                &at,
+                &mut self.pole_vertices,
+                self.tol,
+            ) {
+                self.pieces
+                    .insert(key, cut.into_iter().map(|(piece, _)| piece).collect());
+            }
+        }
     }
 
     /// Edge `index` (1-based) of an edge list (504), built once and shared.
@@ -2956,6 +3046,8 @@ mod tests {
             visited: BTreeMap::new(),
             vertices: HashMap::new(),
             edges: HashMap::new(),
+            pieces: HashMap::new(),
+            pole_vertices: Vec::new(),
             vertex_misses: (0, 0.0),
             depth: 0,
             tol: T,

@@ -163,12 +163,18 @@ thousandths of the edge) and the edge widened to it. A line of
 `nist_ctc_03` lies 4.6e-6 off its plane, a sphere's fitted pcurve strays
 up to 2.6e-4 near a pole in `nist_ftc_07`, and converted solids and
 sphere cuts read back 3e-6 to 7e-6 off, each at 1e-7 before. Past a
-millimetre the reader warns instead of widening: a meridian circle of a
-sphere in `nist_ftc_06` crosses both poles, its fitted pcurve leaps
-across the chart there and stands 2.66 off, and an edge stating that
-swallows its neighbours (a drill through the part then refused). That
-pcurve wants splitting at the poles, which waits on the pole arrangement
-above.
+millimetre the reader warns instead of widening, since an edge that wide
+swallows its neighbours. A curve through a pole of a face it bounds (a
+sphere's pole, a cone's apex, a patch's collapsed side) has no single
+chart image, so both readers cut such an edge at the pole before any face
+is built, on the edge every face shares: a meridian circle of a sphere in
+`nist_ftc_06` stood 3.9 off its fitted pcurve and now reads as two exact
+meridians at 7e-9, the hemisphere's area exact, 2 fewer warnings, and the
+drills through the part cut as before. Not cut: IGES trimmed surfaces
+(144), whose faces sew whole edge to whole edge, and pcurves other
+producers build through a pole. The edge that was cut stays in the model
+with no face using it, so a reference to it by file id (PMI on an edge)
+points at it rather than its pieces.
 With its B-spline edges' gaps (up to 3.9e-2) stated, the exact integral
 takes `nist_ctc_02`, which moves its volume from the 0.1 mesh's 4.710940e7
 to the exact 4.710056e7, against 4.710192e7 on a 0.005 mesh.

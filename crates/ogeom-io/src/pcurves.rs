@@ -63,6 +63,194 @@ pub(crate) fn shifted_to_meet(
     image.transformed(&ogeom_math::Transform2::translation(shift), tol)
 }
 
+/// The points a surface's chart collapses a whole row of parameters to: a
+/// sphere's poles, a cone's apex, a patch's side drawn together to a point.
+///
+/// A curve through one of them has no continuous image in the chart: at the
+/// point every value of the other parameter is the same place, and the image
+/// leaves along another column than the one it arrived on.
+pub(crate) fn chart_poles(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<ogeom_math::Point> {
+    use ogeom_geom::Surface as _;
+    match surface {
+        SurfaceGeometry::Plane(_)
+        | SurfaceGeometry::Cylinder(_)
+        | SurfaceGeometry::Extrusion(_) => Vec::new(),
+        SurfaceGeometry::Cone(cone) => vec![cone.cone().apex()],
+        _ => {
+            let ((ua, ub), (va, vb)) = surface.domain();
+            if ![ua, ub, va, vb].iter().all(|x| x.is_finite()) {
+                return Vec::new();
+            }
+            let sides: [(f64, f64, f64, f64); 4] = [
+                (ua, va, ub, va),
+                (ua, vb, ub, vb),
+                (ua, va, ua, vb),
+                (ub, va, ub, vb),
+            ];
+            let mut out: Vec<ogeom_math::Point> = Vec::new();
+            for (u0, v0, u1, v1) in sides {
+                let Ok(first) = surface.point_at(u0, v0, tol) else {
+                    continue;
+                };
+                let collapsed = (1..=8).all(|k| {
+                    let s = f64::from(k) / 8.0;
+                    surface
+                        .point_at((u1 - u0).mul_add(s, u0), (v1 - v0).mul_add(s, v0), tol)
+                        .is_ok_and(|p| p.distance(first) <= tol.confusion())
+                });
+                if collapsed && out.iter().all(|p| p.distance(first) > tol.confusion()) {
+                    out.push(first);
+                }
+            }
+            out
+        }
+    }
+}
+
+/// A curve's passage through a chart pole: its parameter, the pole, and
+/// how far from the pole the curve passes.
+pub(crate) type Crossing = (f64, ogeom_math::Point, f64);
+
+/// Where `curve` runs through one of `poles` strictly inside `range`, clear
+/// of both its ends, ascending by parameter.
+///
+/// A crossing is a local minimum of the distance to the pole, found on a
+/// scan and refined by golden section, that comes within a hundred times
+/// the confusion distance.
+pub(crate) fn pole_crossings(
+    curve: &ogeom_geom::Curve,
+    range: (f64, f64),
+    poles: &[ogeom_math::Point],
+    tol: Tolerances,
+) -> Vec<Crossing> {
+    use ogeom_geom::Curve3d as _;
+    if poles.is_empty() || range.1 <= range.0 {
+        return Vec::new();
+    }
+    let reach = tol.confusion() * 100.0;
+    let samples: u32 = match curve {
+        ogeom_geom::Curve::BSpline(spline) => u32::try_from(spline.control_points().len())
+            .unwrap_or(u32::MAX / 8)
+            .saturating_mul(8)
+            .max(64),
+        _ => 64,
+    };
+    let step = (range.1 - range.0) / f64::from(samples);
+    let (Ok(head), Ok(tail)) = (curve.point_at(range.0, tol), curve.point_at(range.1, tol)) else {
+        return Vec::new();
+    };
+    let clear = (range.1 - range.0) * 1e-6;
+    let mut out: Vec<Crossing> = Vec::new();
+    for &pole in poles {
+        let distance = |t: f64| {
+            curve
+                .point_at(t, tol)
+                .map_or(f64::INFINITY, |p| p.distance(pole))
+        };
+        let scan: Vec<(f64, f64)> = (0..=samples)
+            .map(|k| {
+                let t = step.mul_add(f64::from(k), range.0);
+                (t, distance(t))
+            })
+            .collect();
+        for window in scan.windows(3) {
+            let [before, here, after] = [window[0], window[1], window[2]];
+            if here.1 > before.1 || here.1 > after.1 {
+                continue;
+            }
+            let (mut a, mut b) = (before.0, after.0);
+            for _ in 0..80 {
+                let (c, d) = ((b - a).mul_add(-0.618, b), (b - a).mul_add(0.618, a));
+                if distance(c) < distance(d) {
+                    b = d;
+                } else {
+                    a = c;
+                }
+            }
+            let t = f64::midpoint(a, b);
+            let miss = distance(t);
+            let Ok(at) = curve.point_at(t, tol) else {
+                continue;
+            };
+            if miss <= reach
+                && t - range.0 > clear
+                && range.1 - t > clear
+                && at.distance(head) > reach * 10.0
+                && at.distance(tail) > reach * 10.0
+                && out.iter().all(|(s, ..)| (s - t).abs() > clear)
+            {
+                out.push((t, pole, miss));
+            }
+        }
+    }
+    out.sort_by(|x, y| x.0.total_cmp(&y.0));
+    out
+}
+
+/// `edge`, built along `curve` over `range`, cut at `crossings` into pieces
+/// that each run along the curve between consecutive vertices: the edge's
+/// own at its ends, and at each crossing the vertex already standing at
+/// that pole in `pole_vertices`, or a new one added there.
+///
+/// Each piece keeps the edge's tolerance; a pole vertex widens to how far
+/// the curve passes from it.
+pub(crate) fn split_at_poles(
+    model: &mut ogeom_topo::Model,
+    edge: &ogeom_topo::Shape,
+    curve: &ogeom_geom::Curve,
+    range: (f64, f64),
+    crossings: &[Crossing],
+    pole_vertices: &mut Vec<ogeom_topo::Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<(ogeom_topo::Shape, (f64, f64))>> {
+    let Some((first, last)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(vec![(edge.clone(), range)]);
+    };
+    let tolerance = model
+        .node(edge)
+        .and_then(|n| n.data().as_edge())
+        .map(|d| d.tolerance);
+    let mut stops = vec![(range.0, first)];
+    for &(t, pole, miss) in crossings {
+        let found = pole_vertices.iter().find(|v| {
+            model
+                .node(v)
+                .and_then(|n| n.data().as_vertex())
+                .is_some_and(|d| d.point.distance(pole) <= tol.confusion())
+        });
+        let vertex = if let Some(found) = found {
+            found.clone()
+        } else {
+            let made = ogeom_algo::make_vertex(model, pole).shape;
+            pole_vertices.push(made.clone());
+            made
+        };
+        if miss > tol.confusion() {
+            model.widen(&vertex, ogeom_core::Tolerance::new(miss + tol.confusion())?)?;
+        }
+        stops.push((t, vertex));
+    }
+    stops.push((range.1, last));
+    let mut pieces = Vec::with_capacity(stops.len() - 1);
+    for pair in stops.windows(2) {
+        let window = (pair[0].0, pair[1].0);
+        let piece = ogeom_algo::make_edge_between(
+            model,
+            curve.clone(),
+            window,
+            &pair[0].1,
+            &pair[1].1,
+            tol,
+        )?
+        .shape;
+        if let Some(stated) = tolerance {
+            model.widen(&piece, stated)?;
+        }
+        pieces.push((piece, window));
+    }
+    Ok(pieces)
+}
+
 /// The other column of a seam the wire walked only one way: a period over,
 /// toward the middle of the chart.
 ///
@@ -121,6 +309,38 @@ mod tests {
     use ogeom_math::{ControlGrid, Cylinder, Frame, KnotVector, Plane, Point, Point2};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A cone's apex is a pole of its chart, and a ruling through it is
+    /// found crossing there; one that only ends at the apex, or passes it
+    /// by a tenth of a millimetre, is not.
+    #[test]
+    fn a_line_through_a_cone_apex_crosses_a_pole() {
+        use ogeom_geom::{ConeSurface, Curve, LineCurve};
+        use ogeom_math::{Axis, Cone, Direction};
+        let cone: SurfaceGeometry = ConeSurface::new(
+            Cone::new(Frame::WORLD, 2.0, core::f64::consts::FRAC_PI_4, T).unwrap(),
+            (-10.0, 10.0),
+        )
+        .unwrap()
+        .into();
+        let poles = chart_poles(&cone, T);
+        assert_eq!(poles.len(), 1);
+        assert!(poles[0].distance(Point::new(0.0, 0.0, -2.0)) < 1e-12);
+        let ruling = |through: Point| {
+            let towards = Direction::new(Point::new(4.0, 0.0, 2.0) - through, T).unwrap();
+            Curve::Line(LineCurve::new(Axis {
+                location: through,
+                direction: towards,
+            }))
+        };
+        let line = ruling(Point::new(0.0, 0.0, -2.0));
+        let found = pole_crossings(&line, (-3.0, 5.0), &poles, T);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].0.abs() < 1e-9 && found[0].2 < 1e-9, "{found:?}");
+        assert!(pole_crossings(&line, (0.0, 5.0), &poles, T).is_empty());
+        let beside = ruling(Point::new(0.0, 0.1, -2.0));
+        assert!(pole_crossings(&beside, (-3.0, 5.0), &poles, T).is_empty());
+    }
 
     /// A seam steps across the join the surface actually has.
     ///

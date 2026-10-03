@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Edges through a pole read in exact pieces.** The STEP and IGES readers
+  cut an edge whose curve runs through a pole of a face it bounds (a
+  sphere's pole, a cone's apex, a patch's collapsed side) at that pole, so
+  each piece takes an exact image in the chart. A meridian circle through
+  both poles of a sphere reads at the confusion tolerance, where its fitted
+  pcurve stood millimetres off with a warning; the hemisphere's area is
+  exact.
+
 - **Read edges state where their pcurves run.** The STEP and IGES readers
   raise each edge's tolerance to how far its pcurves, exact or fitted, stand
   from its curve, measured densely and searched near poles and ends: a line

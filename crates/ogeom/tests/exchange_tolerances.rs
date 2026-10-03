@@ -125,7 +125,11 @@ fn widest_pcurve_excess(model: &Model, shape: &Shape) -> Option<(f64, f64)> {
 /// boolean's result written out.
 #[test]
 fn a_read_states_how_far_its_pcurves_stand_from_their_curves() {
-    for name in ["nist_ctc_03_asme1_rc.stp", "nist_ftc_07_asme1_rd.stp"] {
+    for name in [
+        "nist_ctc_03_asme1_rc.stp",
+        "nist_ftc_06_asme1_rd.stp",
+        "nist_ftc_07_asme1_rd.stp",
+    ] {
         let read = ogeom::io::read_step(&corpus(name), T).unwrap();
         for solid in &read.solids {
             let excess = widest_pcurve_excess(read.document.model(), solid);
@@ -178,6 +182,109 @@ fn a_read_states_how_far_its_pcurves_stand_from_their_curves() {
         assert!(
             excess.is_none(),
             "sphere cut through {format}: (gap, stated) {excess:?}"
+        );
+    }
+}
+
+/// A half ball whose rim is one closed meridian circle: it starts at the
+/// north pole and runs through the south pole halfway round, as an exchange
+/// file states it. No single image of that circle follows it through the
+/// sphere's chart, so each reader cuts the rim at the south pole into two
+/// meridians, each a straight column of the chart: the solid reads with
+/// its pcurves on their edges at the confusion tolerance, no fit reported
+/// astray, and the exact volume.
+#[test]
+fn a_rim_through_a_sphere_pole_reads_cut_at_the_pole() {
+    use ogeom::geom::{CircleCurve, Curve, PlaneSurface, SphereSurface, SurfaceGeometry};
+    use ogeom::math::{Circle, Direction, Frame, Plane, Point, Sphere};
+    use ogeom::topo::{FaceData, Location};
+    const R: f64 = 10.0;
+    let mut model = Model::new();
+    let frame = |z: Direction, x: Direction| Frame::new(Point::ORIGIN, z, x, T).unwrap();
+    // The rim runs from the north pole toward +x, so the hemisphere on its
+    // left about the outward normal is the one at y > 0.
+    let rim = Curve::Circle(CircleCurve::new(
+        Circle::new(frame(Direction::Y, Direction::Z), R, T).unwrap(),
+    ));
+    let north = ogeom::algo::make_vertex(&mut model, Point::new(0.0, 0.0, R)).shape;
+    let edge = ogeom::algo::make_edge_between(
+        &mut model,
+        rim,
+        (0.0, core::f64::consts::TAU),
+        &north,
+        &north,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let ball: SurfaceGeometry =
+        SphereSurface::new(Sphere::new(frame(Direction::Z, Direction::X), R, T).unwrap()).into();
+    let ball = model.geometry_mut().add_surface(ball);
+    let flat: SurfaceGeometry = PlaneSurface::over(
+        Plane::new(frame(-Direction::Y, Direction::X)),
+        (-2.0 * R, 2.0 * R),
+        (-2.0 * R, 2.0 * R),
+    )
+    .unwrap()
+    .into();
+    let flat = model.geometry_mut().add_surface(flat);
+    let mut faces = Vec::new();
+    for (surface, use_) in [(ball, edge.clone()), (flat, edge.reversed())] {
+        let wire = model.add_wire(&[use_]).unwrap();
+        faces.push(
+            model
+                .add_face(FaceData::new(surface, Location::identity()), &[wire])
+                .unwrap(),
+        );
+    }
+    let shell = model.add_shell(&faces).unwrap();
+    let solid = model.add_solid(&[shell]).unwrap();
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("half ball", solid);
+
+    let exact = 2.0 / 3.0 * core::f64::consts::PI * R.powi(3);
+    let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
+    let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+    for (format, warnings, model, solid) in [
+        (
+            "STEP",
+            &step.report.warnings,
+            step.document.model(),
+            &step.solids[0],
+        ),
+        (
+            "IGES",
+            &iges.report.warnings,
+            iges.document.model(),
+            &iges.solids[0],
+        ),
+    ] {
+        assert!(
+            warnings.iter().all(|w| !w.contains("fit stopped")),
+            "{format}: {warnings:?}"
+        );
+        assert_eq!(widest_pcurve_excess(model, solid), None, "{format}");
+        for edge in explore_unique(model, solid, ShapeType::Edge).unwrap() {
+            let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+            assert!(
+                data.tolerance.get() <= T.confusion(),
+                "{format}: an edge states {}",
+                data.tolerance.get()
+            );
+        }
+        let rims = explore_unique(model, solid, ShapeType::Edge)
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                let data = model.node(e).unwrap().data().as_edge().unwrap();
+                !data.degenerate
+            })
+            .count();
+        assert_eq!(rims, 2, "{format}: the rim in two meridians");
+        let measured = volume(model, solid).unwrap();
+        assert!(
+            (measured - exact).abs() <= exact * 1e-3,
+            "{format}: volume {measured} against {exact}"
         );
     }
 }
