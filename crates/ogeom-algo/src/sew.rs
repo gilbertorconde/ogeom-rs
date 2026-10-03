@@ -544,11 +544,13 @@ fn sew_faces(
         // Two edges a little apart (a fitted section beside the circle it
         // hugs) are one edge to their ends' tolerances, and the survivor's
         // curve then stands off the twin's pcurves by up to the gap between
-        // them. The survivor states that gap, and its vertices hold it.
+        // them. The survivor states that gap, and its vertices hold it,
+        // with the smallest tolerance as margin: a fuzzy sew's confusion
+        // is its fuzz.
         if let Some(off) = off {
             model.widen(
                 &survivor,
-                ogeom_core::Tolerance::new(off + tol.confusion())?,
+                ogeom_core::Tolerance::new(off + ogeom_core::Tolerance::MIN.get())?,
             )?;
         }
     }
@@ -1229,7 +1231,10 @@ fn carried_off(
     let Some(curve) = model.geometry().curve(*curve) else {
         ogeom_bail!(Dangling, "curve is not in this model");
     };
-    let reach = data.tolerance.get().max(tol.confusion());
+    // The edge's own statement, not the confusion: a fuzzy sew's
+    // confusion is its fuzz, and a pcurve standing off within it still
+    // stands off the curve.
+    let reach = data.tolerance.get();
     let mut widest: Option<f64> = None;
     for repr in carried {
         let (sides, prange, surface, at) = match repr {

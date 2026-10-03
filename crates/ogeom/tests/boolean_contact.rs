@@ -4,9 +4,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
+use ogeom::geom::{Curve, Curve2d as _, Curve3d as _, Surface as _};
 use ogeom::math::{Direction, Frame, Point};
 use ogeom::mesh::Deflection;
-use ogeom::topo::{Model, ShapeType, explore_unique};
+use ogeom::topo::{EdgeRepr, Model, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -18,6 +19,100 @@ fn volume(model: &Model, shape: &ogeom::topo::Shape) -> f64 {
     ogeom::algo::volume_properties(model, shape, fine(), T)
         .unwrap()
         .mass
+}
+
+/// The distance from `p` to the nearest point of `curve` over `range`: a
+/// scan, then a golden-section search about the nearest sample.
+fn nearest_on(curve: &Curve, range: (f64, f64), p: ogeom::math::Point) -> f64 {
+    let at = |t: f64| curve.point_at(t, T).unwrap().distance(p);
+    let step = (range.1 - range.0) / 400.0;
+    let mut best = (range.0, at(range.0));
+    for k in 1..=400 {
+        let t = range.0 + step * f64::from(k);
+        if at(t) < best.1 {
+            best = (t, at(t));
+        }
+    }
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let (mut a, mut b) = ((best.0 - step.abs()).max(lo), (best.0 + step.abs()).min(hi));
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..100 {
+        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        if at(c) < at(d) {
+            b = d;
+        } else {
+            a = c;
+        }
+    }
+    best.1.min(at(f64::midpoint(a, b)))
+}
+
+/// The edges whose pcurves, lifted through their surfaces, leave their
+/// curve by more than the edge's tolerance anywhere along it: how far, and
+/// the tolerance. Each pcurve is sampled along its range, and each lifted
+/// point measured against the curve's point at the same fraction of its
+/// range or, where that is farther than the tolerance, the nearest point
+/// of the curve. A pcurve at another placement than the curve describes
+/// another occurrence and is not compared.
+fn pcurves_off_their_curves(model: &Model, shape: &Shape) -> Vec<(f64, f64)> {
+    let mut off = Vec::new();
+    for edge in explore_unique(model, shape, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Curve3d {
+            curve,
+            range,
+            location,
+        }) = data.curve3d()
+        else {
+            continue;
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        let tolerance = data.tolerance.get();
+        for repr in &data.representations {
+            let (pcurves, pcurve_range, surface) = match repr {
+                EdgeRepr::PCurve {
+                    curve,
+                    range,
+                    surface,
+                    location: at,
+                } if at == location => (vec![*curve], *range, *surface),
+                EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    surface,
+                    location: at,
+                } if at == location => (vec![*forward, *reversed], *range, *surface),
+                _ => continue,
+            };
+            let surface = model.geometry().surface(surface).unwrap();
+            for id in pcurves {
+                let pcurve = model.geometry().pcurve(id).unwrap();
+                let mut widest: f64 = 0.0;
+                for k in 0..=64 {
+                    let f = f64::from(k) / 64.0;
+                    let uv = pcurve
+                        .point_at(pcurve_range.0 + (pcurve_range.1 - pcurve_range.0) * f, T)
+                        .unwrap();
+                    let Ok(lifted) = surface.point_at(uv.x, uv.y, T) else {
+                        continue;
+                    };
+                    let mut gap = curve
+                        .point_at(range.0 + (range.1 - range.0) * f, T)
+                        .unwrap()
+                        .distance(lifted);
+                    if gap > tolerance {
+                        gap = gap.min(nearest_on(curve, *range, lifted));
+                    }
+                    widest = widest.max(gap);
+                }
+                if widest > tolerance {
+                    off.push((widest, tolerance));
+                }
+            }
+        }
+    }
+    off
 }
 
 /// Coaxial cylinders sharing one surface: flush stack, partial overlap,
@@ -1059,7 +1154,8 @@ fn a_prism_beside_a_leaning_wall_parts_from_it() {
 /// strips of facets, each leaning its own few microns. A prism of its top
 /// face pushed down into it and through it runs along those facets, and
 /// at a fuzz wider than the lean the three operations come out sound and
-/// hold what the two inputs do.
+/// hold what the two inputs do. Every edge states at least what its pcurves
+/// stand off its curve, its own stated slop below the fuzz included.
 #[test]
 #[allow(
     clippy::cast_possible_truncation,
@@ -1140,6 +1236,11 @@ fn a_prism_along_a_faceted_round_combines_at_a_fuzz() {
         for (name, out) in [("fuse", &fused), ("cut", &cut), ("common", &common)] {
             let diagnosis = ogeom::algo::check(&model, &out.shape, T).unwrap();
             assert!(diagnosis.is_valid(), "{name} at depth {depth}: {diagnosis}");
+            assert_eq!(
+                pcurves_off_their_curves(&model, &out.shape),
+                [],
+                "{name} at depth {depth}"
+            );
             got.push(volume(&model, &out.shape));
         }
         let scale = v_part + v_pad;
@@ -1540,8 +1641,9 @@ fn a_cavity_touching_its_wall_is_the_solid_s_void() {
 /// Slivers thinner than the weld distance (a hundred confusion distances)
 /// are welded: drums a few microns apart in radius, axis or end, and a box
 /// tilted five microradians on another. Every operation answers with a
-/// valid solid whose volume is the exact one to the sliver it welded, and
-/// nothing in it states a tolerance past the weld distance.
+/// valid solid whose volume is the exact one to the sliver it welded,
+/// nothing in it states a tolerance past the weld distance, and every edge
+/// states at least what its pcurves stand off its curve.
 #[test]
 fn slivers_under_the_weld_distance_are_welded() {
     use ogeom::topo::Shape;
@@ -1641,6 +1743,11 @@ fn slivers_under_the_weld_distance_are_welded() {
             }
             assert!(
                 ogeom::algo::check(&model, &shape, T).unwrap().is_valid(),
+                "{case} {name}"
+            );
+            assert_eq!(
+                pcurves_off_their_curves(&model, &shape),
+                [],
                 "{case} {name}"
             );
             let v = volume(&model, &shape);

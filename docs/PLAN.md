@@ -148,10 +148,22 @@ stands off it by more than a hundred confusions, whatever its tolerance.
 claims `same_parameter`, which almost no producer sets, so a pcurve
 leaving its curve by more than the edge states reads valid. Comparing
 every edge (the lifted pcurve against the nearest point of the curve's
-stretch, 33 samples) flags, besides the boolean's case: fuzzy booleans
-along faceted rounds and slivers (1e-6 to 4e-6 at 1e-7); and a drill lying
-in a plate's underside between its rounds. Each producer that knows its
-deviation should raise its edges' tolerance first; the check follows them.
+stretch, 33 samples) flagged the readers, `fix_shape`, mesh conversion,
+the geometry rebuild and the boolean. Each now raises its edges'
+tolerance to where its pcurves stand, and with the stricter comparison
+every workspace test passes, ignored ones included, as does the stress run
+at seeds 1 to 3, so the check can follow them.
+The boolean passes it. A fuzzy boolean's confusion is its fuzz, and the
+pieces of an operand's edge, a contact and a section kept their source's
+tolerance only above it, so edges of a faceted round stating 1e-6 to
+4e-6 came out at 1e-7 with their pcurves where they were; the floor is
+now the smallest tolerance. The sew measured carried pcurves beyond the
+edge's tolerance or the confusion, whichever was wider, which under a
+fuzz let twins up to 9e-6 apart through; it measures beyond the edge's
+own. A contact's piece states how far its image on the target's surface
+stands (a rim on a drum a micron off its own axis: 1e-6 at 1e-7). The
+drill lying in a plate's underside cut a line of `nist_ctc_03` lying
+4.6e-6 off its plane, which the reader now states and the pieces keep.
 The STEP and IGES readers pass it: every pcurve they attach, exact or
 fitted, is lifted against its edge's curve (`pcurve_fit::lifted_gap`: 257
 samples, the nearest point within a step where the pace differs, and a

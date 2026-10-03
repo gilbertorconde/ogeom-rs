@@ -21,6 +21,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Projection onto an offset surface.** Projecting a point onto an offset
+  surface returned the search's starting guess, an offset having no second
+  derivative; it now steps on first derivatives there. Faces restated as
+  offsets keep their pcurves on their edges (an offset drum's stood 0.11
+  off). `to_nurbs_within` keeps the fitted surface's iso line as an edge's
+  pcurve only where it follows the edge within the fit target, and every
+  re-derived edge states how far its pcurves stand off its curve.
+
+- **Fuzzy booleans keep their pieces' stated tolerances.** Under a fuzz,
+  pieces of operand edges, contacts and sections dropped tolerances below
+  the fuzz to the minimum, and the sew let twins within the fuzz through
+  unstated; pieces keep their source's tolerance, and a contact's piece
+  states how far its pcurve on the other surface stands off.
+
 - **Edge attributes follow an edge cut at a pole.** On STEP import, a style
   or a PMI shape aspect (dimension, tolerance, datum) that names an edge the
   reader cut at a pole lands on every piece of that edge, and edge styles

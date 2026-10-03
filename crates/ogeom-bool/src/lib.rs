@@ -8217,7 +8217,10 @@ fn build_sub_edge(
             // against a tolerance it never had. The ends own it too: a
             // junction on a tolerant curve is a junction to the curve's own
             // resolution, and the wires rebuilt through it meet within that.
-            if e.tolerance > tol.confusion() {
+            // A fuzzy boolean's confusion is its fuzz, which is no floor
+            // here: a piece is born at the smallest tolerance an edge
+            // states, and keeps whatever its edge stated above that.
+            if e.tolerance > ogeom_core::Tolerance::MIN.get() {
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
@@ -8272,7 +8275,7 @@ fn build_sub_edge(
             // A tolerant contact's pieces and ends own its stated slop, as a
             // boundary's and a section's do: three kinds of strand close one
             // ring, and every junction meets at the strands' own honesty.
-            if c.tolerance > tol.confusion() {
+            if c.tolerance > ogeom_core::Tolerance::MIN.get() {
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
@@ -8303,6 +8306,24 @@ fn build_sub_edge(
                 Location::identity(),
                 sub_p,
             )?;
+            // A contact's curve lies on the target's surface only to the
+            // weld or the fuzz (a rim on a drum a micron off its own), and
+            // its image there, lifted, stands off the curve by as much. The
+            // piece states that, and its ends hold it.
+            if let Some(gap) = ogeom_algo::edge_pcurve_gap(model, &built, tol)?
+                && let Some(data) = model.node(&built).and_then(|n| n.data().as_edge())
+                && gap > data.tolerance.get()
+            {
+                let widened = ogeom_core::Tolerance::new(gap * (1.0 + 1e-6))?;
+                if let Some(node) = model.node_mut(&built)
+                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen(widened);
+                }
+                for v in [&v0, &v1] {
+                    rebuild.widen(v, widened.get())?;
+                }
+            }
             Ok(built)
         }
         Tag::Section { section, range } => {
@@ -8336,7 +8357,7 @@ fn build_sub_edge(
             // stated slop, exactly as a tolerant boundary's do: the ring
             // they close alternates between the two, and both sides must
             // meet at the junction's own resolution.
-            if own > tol.confusion() {
+            if own > ogeom_core::Tolerance::MIN.get() {
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
