@@ -455,11 +455,12 @@ impl BSplineCurve {
 impl crate::surface::BSplineSurface {
     /// This patch at degrees no higher than `max_degree` in either
     /// direction, to a stated tolerance: itself where it already is, and
-    /// otherwise a fit through a grid of its own points, the grid doubled
-    /// until the fit holds every sample to the tolerance or the budget
-    /// runs out. The fit's parameterization is its own (chord-length
-    /// through the grid, not the patch's), so a pcurve spoken against the
-    /// patch must be re-derived against the result.
+    /// otherwise a fit through a grid of its own points at its own
+    /// parameters, measured between the samples as well as at them and
+    /// the grid refined where it misses, until the tolerance holds or the
+    /// budget runs out. The fit spans the patch's own domain, but its
+    /// knots are its own, so a pcurve spoken against the patch is
+    /// re-derived against the result.
     ///
     /// # Errors
     ///
@@ -492,10 +493,18 @@ impl crate::surface::BSplineSurface {
     }
 }
 
-/// A patch fitted at `degree` through a grid of `point` over `domain`, the
-/// grid doubled until the fit holds every sample to `tolerance` or the
-/// budget runs out. The best fit either way, its error measured at the
-/// samples.
+/// A patch fitted at `degree` through a grid of `point` over `domain`, at
+/// the surface's own parameters, measured between the samples as well as
+/// at them, and the grid refined where it misses until `tolerance` holds
+/// at every point measured or the budget runs out. The best fit either
+/// way, its error the worst measured.
+///
+/// The fit is same-parameter with the surface: the fit at `(u, v)` is
+/// compared with the surface at `(u, v)`, which bounds the distance either
+/// way from above. Each span is checked at its middle, along the sample
+/// lines and across them; a miss splits the spans it lies in, its middle
+/// becoming a sample, so the grid (and the fit's knots, which follow its
+/// residuals) thickens only where the fit strays.
 fn grid_fitted(
     point: impl Fn(f64, f64) -> OgeomResult<Point>,
     domain: ((f64, f64), (f64, f64)),
@@ -503,36 +512,109 @@ fn grid_fitted(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::surface::BSplineSurface>> {
+    use crate::traits::Surface as _;
+    /// The spans a direction starts with.
+    const START: usize = 16;
+    /// The most spans a direction is refined to.
+    const MOST: usize = 512;
     if !(tolerance > 0.0 && tolerance.is_finite()) {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
     }
     let ((ua, ub), (va, vb)) = domain;
-    if ![ua, ub, va, vb].iter().all(|x| x.is_finite()) {
-        ogeom_bail!(Construction, "an unbounded surface cannot be fitted");
+    if ![ua, ub, va, vb].iter().all(|x| x.is_finite()) || ub <= ua || vb <= va {
+        ogeom_bail!(
+            Construction,
+            "an unbounded or empty surface cannot be fitted"
+        );
     }
-    let mut samples = 16usize;
+    let uniform = |a: f64, b: f64| -> Vec<f64> {
+        (0..=START)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss, reason = "a small count")]
+                let t = i as f64 / START as f64;
+                if i == START { b } else { a + (b - a) * t }
+            })
+            .collect()
+    };
+    let (mut us, mut vs) = (uniform(ua, ub), uniform(va, vb));
     let mut best: Option<Fitted<crate::surface::BSplineSurface>> = None;
-    for _ in 0..4 {
-        let mut rows: Vec<Vec<Point>> = Vec::with_capacity(samples + 1);
-        for j in 0..=samples {
-            #[allow(clippy::cast_precision_loss)]
-            let v = va + (vb - va) * j as f64 / samples as f64;
-            let mut row = Vec::with_capacity(samples + 1);
-            for i in 0..=samples {
-                #[allow(clippy::cast_precision_loss)]
-                let u = ua + (ub - ua) * i as f64 / samples as f64;
-                row.push(point(u, v)?);
+    // Every point evaluated, by parameters: a split span's new sample is
+    // the midpoint already checked.
+    let mut seen: std::collections::HashMap<(u64, u64), Point> = std::collections::HashMap::new();
+    let mut at = |u: f64, v: f64| -> OgeomResult<Point> {
+        if let Some(p) = seen.get(&(u.to_bits(), v.to_bits())) {
+            return Ok(*p);
+        }
+        let p = point(u, v)?;
+        seen.insert((u.to_bits(), v.to_bits()), p);
+        Ok(p)
+    };
+    loop {
+        let rows = vs
+            .iter()
+            .map(|v| us.iter().map(|u| at(*u, *v)).collect())
+            .collect::<OgeomResult<Vec<Vec<Point>>>>()?;
+        // Half the tolerance at the samples leaves the other half for
+        // between them.
+        let fitted = fit::fit_surface_grid_at(&us, &vs, &rows, degree, tolerance * 0.5, tol)?;
+        let checks = |knots: &[f64]| -> Vec<(f64, Option<usize>)> {
+            let mut out = Vec::with_capacity(knots.len() * 2);
+            for (i, pair) in knots.windows(2).enumerate() {
+                out.push((pair[0], None));
+                out.push((f64::midpoint(pair[0], pair[1]), Some(i)));
             }
-            rows.push(row);
+            out.push((knots[knots.len() - 1], None));
+            out
+        };
+        let (u_checks, v_checks) = (checks(&us), checks(&vs));
+        let mut split_u = vec![false; us.len() - 1];
+        let mut split_v = vec![false; vs.len() - 1];
+        let mut error = fitted.error;
+        for &(v, v_span) in &v_checks {
+            for &(u, u_span) in &u_checks {
+                if u_span.is_none() && v_span.is_none() {
+                    continue;
+                }
+                let off = at(u, v)?.distance(fitted.curve.point_at(u, v, tol)?);
+                error = error.max(off);
+                if off > tolerance {
+                    if let Some(i) = u_span {
+                        split_u[i] = true;
+                    }
+                    if let Some(j) = v_span {
+                        split_v[j] = true;
+                    }
+                }
+            }
         }
-        let fitted = fit::fit_surface_grid(&rows, degree, tolerance, tol)?;
-        if fitted.met {
-            return Ok(fitted);
+        let candidate = Fitted {
+            curve: fitted.curve,
+            error,
+            met: error <= tolerance,
+        };
+        if candidate.met {
+            return Ok(candidate);
         }
-        if best.as_ref().is_none_or(|b| fitted.error < b.error) {
-            best = Some(fitted);
+        if best.as_ref().is_none_or(|b| error < b.error) {
+            best = Some(candidate);
         }
-        samples *= 2;
+        let split = |knots: &[f64], marked: &[bool]| -> Vec<f64> {
+            let mut out = Vec::with_capacity(knots.len() * 2);
+            for (pair, &m) in knots.windows(2).zip(marked) {
+                out.push(pair[0]);
+                if m {
+                    out.push(f64::midpoint(pair[0], pair[1]));
+                }
+            }
+            out.push(knots[knots.len() - 1]);
+            out
+        };
+        let (next_u, next_v) = (split(&us, &split_u), split(&vs, &split_v));
+        let grew = next_u.len() > us.len() || next_v.len() > vs.len();
+        if !grew || next_u.len() > MOST + 1 || next_v.len() > MOST + 1 {
+            break;
+        }
+        (us, vs) = (next_u, next_v);
     }
     best.ok_or_else(|| ogeom_err!(Construction, "the patch could not be sampled"))
 }
@@ -542,10 +624,13 @@ impl crate::surface::SurfaceGeometry {
     /// tolerance: the approximation [`to_bspline`](Self::to_bspline)
     /// refuses to make silently, for an offset surface or anything else
     /// with no exact rational form. A grid of the surface's points is
-    /// fitted at degree three, the grid doubled until every sample is
-    /// within the tolerance or the budget runs out, and `error` is what
-    /// was measured. The fit's parameterization is its own, so a pcurve
-    /// spoken against the surface must be re-derived against the result.
+    /// fitted at degree three at the surface's own parameters, the fit
+    /// measured against the surface between the samples as well as at
+    /// them, and the grid refined where it misses until the tolerance
+    /// holds or the budget runs out; `error` is the worst measured, not
+    /// what was asked. The fit spans the surface's own domain, but its
+    /// knots are its own, so a pcurve spoken against the surface is
+    /// re-derived against the result.
     ///
     /// # Errors
     ///
@@ -1455,6 +1540,42 @@ mod surface_tests {
         let again: SurfaceGeometry = patch.clone().into();
         let twice = again.to_bspline(T).unwrap();
         assert_eq!(patch, twice);
+    }
+
+    /// A drum spelt as an offset, fitted to a tolerance, holds it between
+    /// its samples: every point of a check grid off the sample lines lies
+    /// within the tolerance of the drum it traces, and of the surface's
+    /// own point at the same parameters.
+    #[test]
+    fn a_fitted_surface_holds_its_tolerance_between_the_samples() {
+        let basis: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 1.5, T).unwrap(), (0.0, 5.0))
+                .unwrap()
+                .into();
+        let offset = SurfaceGeometry::Offset(Box::new(
+            crate::surface::OffsetSurface::new(basis, 0.5).unwrap(),
+        ));
+        let tolerance = 1e-4;
+        let fitted = offset.fitted_bspline(tolerance, T).unwrap();
+        assert!(fitted.met && fitted.error <= tolerance, "{}", fitted.error);
+        let patch = fitted.curve;
+        let ((u0, u1), (v0, v1)) = offset.domain();
+        let (nu, nv) = (157, 131);
+        let mut worst = 0.0_f64;
+        for j in 0..=nv {
+            let v = v0 + (v1 - v0) * f64::from(j) / f64::from(nv);
+            for i in 0..=nu {
+                let u = u0 + (u1 - u0) * f64::from(i) / f64::from(nu);
+                let p = patch.point_at(u, v, T).unwrap();
+                let radial = (p.x.hypot(p.y) - 2.0).abs();
+                let across = p.distance(offset.point_at(u, v, T).unwrap());
+                worst = worst.max(radial).max(across);
+            }
+        }
+        assert!(
+            worst <= tolerance,
+            "the fit strays {worst} between its samples"
+        );
     }
 
     #[test]

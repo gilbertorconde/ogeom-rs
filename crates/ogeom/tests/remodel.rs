@@ -311,6 +311,19 @@ fn offset_faces_convert_to_nurbs_within_a_tolerance() {
             .shape;
         assert!(kinds(&model, &nurbs).iter().all(|k| *k == "spline"));
         holds(&model, &nurbs, volume);
+        // A fitted surface within 1e-4 of the offset keeps every edge's
+        // pcurves within that of its curve.
+        for edge in explore_unique(&model, &nurbs, ShapeType::Edge).unwrap() {
+            let stated = model
+                .node(&edge)
+                .unwrap()
+                .data()
+                .as_edge()
+                .unwrap()
+                .tolerance
+                .get();
+            assert!(stated <= 1e-4, "an edge states {stated}");
+        }
     }
 }
 

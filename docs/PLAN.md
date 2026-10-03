@@ -208,11 +208,19 @@ lie on their edges. An iso line on a fitted surface is kept only where it
 follows the edge within the fit target, and every edge given an iso line
 or a fit states how far its pcurves stand (256 samples, the nearest point
 of the stretch).
-Left: `to_nurbs_within` fits a surface through a grid and measures the
-fit only at the grid. An offset drum fitted at 1e-4 stands 1.3e-3 off the
-true one between the samples, and its rims now state 1.29e-3 where they
-stated 1e-5; measuring between the samples (or fitting at the surface's
-own parameters, as curves are) would hold the fit to what was asked.
+A surface fit (`to_nurbs_within`, a patch's degree restriction) is made
+at the surface's own parameters and measured against it at every span's
+middle as well as at the samples; a miss splits the spans it lies in.
+Against a 200x200 projection both ways, every fit of an offset drum,
+plane, cone, torus and spline, and of a plain cylinder, sphere, torus,
+cone and spline, now lies within 1e-4 and 1e-5 as asked (the drum at 1e-4
+stood 1.29e-3 off between the old chord-length grid's samples, a sphere
+0.14). A fit takes 4 to 95 ms where it took about 1 ms, and an offset
+spline at 1e-5 takes 0.57 s. The offset drum's rims state 8.4e-5 at 1e-4.
+Left: the stated error is the worst at the samples and span middles,
+which can sit a little under the true miss (8.32e-5 against a stated
+7.79e-5 for the drum); a fit whose surface cannot be evaluated somewhere
+(an offset sphere's poles) refuses as before.
 
 Left: the rest of those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
 standing off their edges within the 1e-5 taken as along, which every exact

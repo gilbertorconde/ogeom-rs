@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Surfaces fitted as splines hold their tolerance between samples.**
+  `to_nurbs_within` and a patch's degree restriction checked the fitted
+  surface only at its grid samples and reported the tolerance met: a
+  sphere converted at 1e-4 stood up to 0.28 off between them, an offset
+  drum 1.29e-3. The surface is fitted at its own parameters, checked at
+  every span's middle as well, and refined where it misses; every case
+  measured now holds the tolerance asked. A surface fit takes tens of
+  milliseconds where it took about one.
+
 ## [0.9.1] - 2026-10-03
 
 A patch release: no public API changes. `check` now compares every edge's
