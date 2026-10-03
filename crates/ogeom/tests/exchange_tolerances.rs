@@ -186,19 +186,15 @@ fn a_read_states_how_far_its_pcurves_stand_from_their_curves() {
     }
 }
 
-/// A half ball whose rim is one closed meridian circle: it starts at the
-/// north pole and runs through the south pole halfway round, as an exchange
-/// file states it. No single image of that circle follows it through the
-/// sphere's chart, so each reader cuts the rim at the south pole into two
-/// meridians, each a straight column of the chart: the solid reads with
-/// its pcurves on their edges at the confusion tolerance, no fit reported
-/// astray, and the exact volume.
-#[test]
-fn a_rim_through_a_sphere_pole_reads_cut_at_the_pole() {
+const R: f64 = 10.0;
+
+/// A half ball of radius `R` whose rim is one closed meridian circle: it
+/// starts at the north pole and runs through the south pole halfway round,
+/// as an exchange file states it.
+fn half_ball_with_a_meridian_rim() -> ogeom::doc::Document {
     use ogeom::geom::{CircleCurve, Curve, PlaneSurface, SphereSurface, SurfaceGeometry};
     use ogeom::math::{Circle, Direction, Frame, Plane, Point, Sphere};
     use ogeom::topo::{FaceData, Location};
-    const R: f64 = 10.0;
     let mut model = Model::new();
     let frame = |z: Direction, x: Direction| Frame::new(Point::ORIGIN, z, x, T).unwrap();
     // The rim runs from the north pole toward +x, so the hemisphere on its
@@ -241,7 +237,17 @@ fn a_rim_through_a_sphere_pole_reads_cut_at_the_pole() {
     let solid = model.add_solid(&[shell]).unwrap();
     let mut document = ogeom::doc::Document::over(model);
     document.add_part("half ball", solid);
+    document
+}
 
+/// No single image of a meridian rim follows it through the sphere's chart,
+/// so each reader cuts the rim at the south pole into two meridians, each a
+/// straight column of the chart: the solid reads with its pcurves on their
+/// edges at the confusion tolerance, no fit reported astray, and the exact
+/// volume.
+#[test]
+fn a_rim_through_a_sphere_pole_reads_cut_at_the_pole() {
+    let document = half_ball_with_a_meridian_rim();
     let exact = 2.0 / 3.0 * core::f64::consts::PI * R.powi(3);
     let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
     let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
@@ -287,6 +293,62 @@ fn a_rim_through_a_sphere_pole_reads_cut_at_the_pole() {
             "{format}: volume {measured} against {exact}"
         );
     }
+}
+
+/// A STEP file that styles the meridian rim and dimensions it through a
+/// shape aspect names the rim by its file id. The reader cuts the rim at
+/// the pole, so the colour and the dimension's feature land on both pieces
+/// the faces use, and on nothing else.
+#[test]
+fn a_rim_cut_at_a_pole_keeps_its_colour_and_pmi() {
+    let text = ogeom::io::write_step(&half_ball_with_a_meridian_rim(), T).unwrap();
+    let id_of = |keyword: &str| -> u64 {
+        let mut ids = text.lines().filter_map(|line| {
+            let (id, rest) = line.strip_prefix('#')?.split_once('=')?;
+            rest.starts_with(keyword)
+                .then(|| id.parse::<u64>().unwrap())
+        });
+        let id = ids.next().unwrap_or_else(|| panic!("no {keyword}"));
+        assert!(ids.next().is_none(), "one {keyword}");
+        id
+    };
+    let rim = id_of("EDGE_CURVE(");
+    let pds = id_of("PRODUCT_DEFINITION_SHAPE(");
+    let absr = id_of("ADVANCED_BREP_SHAPE_REPRESENTATION(");
+    let extra = format!(
+        "#900001=COLOUR_RGB('',1.,0.,0.);\n\
+         #900002=CURVE_STYLE('',$,$,#900001);\n\
+         #900003=PRESENTATION_STYLE_ASSIGNMENT((#900002));\n\
+         #900004=STYLED_ITEM('',(#900003),#{rim});\n\
+         #900005=SHAPE_ASPECT('','',#{pds},.T.);\n\
+         #900006=GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#900005,#{absr},#{rim});\n\
+         #900007=DIMENSIONAL_SIZE(#900005,'rim');\n\
+         #900008=SHAPE_DIMENSION_REPRESENTATION('',(),#{absr});\n\
+         #900009=DIMENSIONAL_CHARACTERISTIC_REPRESENTATION(#900007,#900008);\n"
+    );
+    let at = text.rfind("ENDSEC;").unwrap();
+    let text = format!("{}{extra}{}", &text[..at], &text[at..]);
+
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let document = &import.document;
+    let model = document.model();
+    let mut pieces: Vec<Shape> = explore_unique(model, &import.solids[0], ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| !model.node(e).unwrap().data().as_edge().unwrap().degenerate)
+        .collect();
+    assert_eq!(pieces.len(), 2, "the rim in two meridians");
+    let red = ogeom::doc::Colour::rgb(1.0, 0.0, 0.0);
+    for piece in &pieces {
+        assert_eq!(document.colour_of(piece), Some(red));
+    }
+    assert_eq!(document.colours().count(), 2, "nothing else coloured");
+    pieces.sort_by_key(Shape::node);
+    let nodes: Vec<_> = pieces.iter().map(Shape::node).collect();
+    let dimensions = &document.pmi().dimensions;
+    assert_eq!(dimensions.len(), 1);
+    assert_eq!(dimensions[0].name, "rim");
+    assert_eq!(dimensions[0].features, vec![nodes]);
 }
 
 fn volume(model: &Model, shape: &Shape) -> Option<f64> {

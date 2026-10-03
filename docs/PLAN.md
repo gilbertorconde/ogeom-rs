@@ -173,8 +173,9 @@ meridians at 7e-9, the hemisphere's area exact, 2 fewer warnings, and the
 drills through the part cut as before. Not cut: IGES trimmed surfaces
 (144), whose faces sew whole edge to whole edge, and pcurves other
 producers build through a pole. The edge that was cut stays in the model
-with no face using it, so a reference to it by file id (PMI on an edge)
-points at it rather than its pieces.
+with no face using it and nothing referring to it: a STEP style or shape
+aspect naming its file id lands on every piece. IGES carries no attribute
+on an edge of a 186 solid, whose edges are entries of an edge list.
 With its B-spline edges' gaps (up to 3.9e-2) stated, the exact integral
 takes `nist_ctc_02`, which moves its volume from the 0.1 mesh's 4.710940e7
 to the exact 4.710056e7, against 4.710192e7 on a 0.005 mesh.

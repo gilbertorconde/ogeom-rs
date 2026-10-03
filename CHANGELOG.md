@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Edge attributes follow an edge cut at a pole.** On STEP import, a style
+  or a PMI shape aspect (dimension, tolerance, datum) that names an edge the
+  reader cut at a pole lands on every piece of that edge, and edge styles
+  are read at all; the cut edge is left with nothing referring to it.
+
 - **Edges through a pole read in exact pieces.** The STEP and IGES readers
   cut an edge whose curve runs through a pole of a face it bounds (a
   sphere's pole, a cone's apex, a patch's collapsed side) at that pole, so

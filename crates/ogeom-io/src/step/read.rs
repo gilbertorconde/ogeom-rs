@@ -1656,6 +1656,25 @@ impl<'a> Reader<'a> {
         )
     }
 
+    /// What a file's edge id stands for in the read model: the pieces it
+    /// was cut into at a pole, in order along its curve, or the edge
+    /// itself; nothing when it never built. Everything that names an edge
+    /// by id (a style, a shape aspect) resolves through here, so it lands
+    /// on the edges the faces use.
+    fn edge_shapes(&self, id: u64) -> Vec<Shape> {
+        if let Some(pieces) = self.pieces.get(&id) {
+            return pieces
+                .iter()
+                .map(|(_, (piece, ..))| piece.clone())
+                .collect();
+        }
+        self.edges
+            .get(&id)
+            .map(|(shape, ..)| shape.clone())
+            .into_iter()
+            .collect()
+    }
+
     /// Cut every edge of these faces whose curve runs through a pole of a
     /// face it bounds (a sphere's pole, a cone's apex, a patch's collapsed
     /// side) at that pole, before any face is built.
@@ -3099,17 +3118,20 @@ impl<'a> Reader<'a> {
             let Some(item) = args.get(2).and_then(Arg::reference) else {
                 continue;
             };
-            let Some(shape) = by_item.get(&item).or_else(|| self.faces.get(&item)) else {
-                continue;
+            let shapes = match by_item.get(&item).or_else(|| self.faces.get(&item)) {
+                Some(shape) => vec![shape.clone()],
+                None => self.edge_shapes(item),
             };
+            if shapes.is_empty() {
+                continue;
+            }
             let styles: Vec<u64> = args
                 .get(1)
                 .and_then(Arg::list)
                 .map(|list| list.iter().filter_map(Arg::reference).collect())
                 .unwrap_or_default();
-            let shape = shape.clone();
             if let Some(colour) = styles.iter().find_map(|&style| self.colour_in(style, 0)) {
-                out.push((shape, colour));
+                out.extend(shapes.into_iter().map(|shape| (shape, colour)));
             }
         }
         out
@@ -3174,13 +3196,12 @@ impl<'a> Reader<'a> {
             ) else {
                 continue;
             };
-            let node = self
-                .faces
-                .get(&item)
-                .map(Shape::node)
-                .or_else(|| self.edges.get(&item).map(|(shape, ..)| shape.node()));
-            if let Some(node) = node {
-                aspect_items.entry(aspect).or_default().push(node);
+            let nodes = match self.faces.get(&item) {
+                Some(face) => vec![face.node()],
+                None => self.edge_shapes(item).iter().map(Shape::node).collect(),
+            };
+            if !nodes.is_empty() {
+                aspect_items.entry(aspect).or_default().extend(nodes);
             }
         }
         let mut adjacency: HashMap<u64, Vec<u64>> = HashMap::new();
