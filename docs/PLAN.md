@@ -456,12 +456,32 @@ after.
    the original's. The outer equator case first measured 5e-4 off: the
    exact integrator told the boundary from the holes by a single Gauss
    rule across each closed spline, which gave a hole the wrong winding;
-   it now integrates knot span by knot span. Still open: holes that
-   between them cross every parallel (a slot running all the way round
-   the tube, or a ring of holes staggered round it) leave no seam
-   position, and the tube stays facets. Built whole, a hole would have to
-   join the seam: the outer wire running along the parallel to the hole,
-   round it and on.
+   it now integrates knot span by knot span.
+
+   Done where no parallel (or no meridian) is free: the seam that way is
+   threaded through the holes. It runs straight in the chart from a point
+   on the free circle the other way to the hole vertex furthest back, round
+   the hole to the vertex furthest on, and on to the next hole; those
+   vertices are kept as edge ends, the straight pieces are seam edges, one
+   arc of each hole bounds the face along the chain and the other a whole
+   turn across, and the seam the other way is the full circle through the
+   chain's start. A torus whose rims go round one way only is a band
+   whatever the gap they leave (a groove narrower than a quarter turn read
+   as going round both ways before), and a band round the tube between
+   rims that are no circles gets a seam of its own as one round the axis
+   does. Measured, each one toroidal face, valid, meshing closed: three
+   bores of radius 2 straight through the tube a third of a turn apart
+   round the axis and a sixth round the tube (six holes over every
+   parallel), 1563.1185470 of 1563.1185695 (1.4e-8); slots over the top
+   on one side and under the bottom on the other (no meridian free),
+   1418.14076 of 1418.14096 (1.4e-7); a groove round the axis cut by a
+   second torus, 1e-15 off; a flat-sided groove round the tube, 5e-11 off.
+   Still open: holes that leave no circle free either way (no free
+   parallel and no free meridian) stay facets, as do holes that overlap
+   along the chain at every level tried. The exact volume check of a
+   threaded face is slow (2.5 s for the six holes, most of the
+   conversion's time), the interpolated seam pieces and hole edges
+   integrated span by span.
 8. **The free boundary of an open mesh.** Done: a curved face's free
    boundary is cut where it turns by the crease angle and each run placed
    on the face's surface, as a parallel or ruling where one holds and

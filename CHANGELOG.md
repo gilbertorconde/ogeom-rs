@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Tori whose holes leave no seam free convert whole.** A torus whose
+  holes cross every parallel or every meridian comes back as one exact
+  toroidal face, its seam threaded through the holes and the full circle
+  the other way as its second seam; a ring grooved all the way round its
+  axis or its tube comes back as an exact band. Volumes match the source
+  within 1.4e-7.
+
 - **Mesh conversion steps hold or say why not.** `MeshSolidReport::fallbacks`
   names each curved region the build faceted, with a `FallbackReason`.
   Regions changed by `merge`, `split` or a free `fit` go through the

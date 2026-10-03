@@ -819,6 +819,125 @@ fn rings_drilled_across_their_equators_come_back_whole_but_for_the_holes() {
     }
 }
 
+/// Converts a ring's mesh and checks it comes back on `expected` surfaces
+/// with no torus left as facets, valid, closed and meshing closed, and with
+/// the volume, measured on the exact surfaces both sides, within a
+/// millionth of the original's.
+fn ring_comes_back_exact(model: &Model, shape: &Shape, expected: [usize; 5], name: &str) {
+    let mut back = Model::new();
+    let out = solid_from_mesh(
+        &mut back,
+        &meshed(model, shape),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert!(out.closed, "{name}: {:?}", out.report);
+    assert_eq!(kinds(&back, &out.shape), expected, "{name}");
+    assert_eq!(out.report.curved_faceted, 0, "{name}");
+    let diagnosis = check(&back, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed(), "{name}");
+    let (a, b) = (volume(model, shape), volume(&back, &out.shape));
+    assert!(
+        (a - b).abs() / a < 1e-6,
+        "{name}: {a} went in, {b} came out"
+    );
+}
+
+fn ring(model: &mut Model) -> Shape {
+    ogeom::algo::make_torus(model, Frame::WORLD, 10.0, 3.0, T)
+        .unwrap()
+        .shape
+}
+
+/// A ring grooved all the way round its axis by a second torus over its
+/// outer equator: a band round the axis between two parallels, however
+/// narrow the groove, and the groove's floor a band of the second torus.
+/// And a ring grooved all the way round its tube by a flat-sided ring cut
+/// about the tube: a band round the tube between two rims that are no
+/// circles, a seam of its own joining them.
+#[test]
+fn rings_grooved_all_the_way_round_come_back_bands() {
+    let mut model = Model::new();
+    let rim = ring(&mut model);
+    let cutter = ogeom::algo::make_torus(&mut model, Frame::WORLD, 13.0, 0.5, T)
+        .unwrap()
+        .shape;
+    let round_axis = ogeom::boolean::cut(&mut model, &rim, &cutter, T)
+        .unwrap()
+        .shape;
+    ring_comes_back_exact(&model, &round_axis, [0, 0, 0, 0, 2], "round the axis");
+
+    let rim = ring(&mut model);
+    let about_tube =
+        Frame::new(Point::new(10.0, -0.25, 0.0), Direction::Y, Direction::X, T).unwrap();
+    let outer = ogeom::algo::make_cylinder(&mut model, about_tube, 4.0, 0.5, T)
+        .unwrap()
+        .shape;
+    let inner = ogeom::algo::make_cylinder(&mut model, about_tube, 2.5, 0.5, T)
+        .unwrap()
+        .shape;
+    let cutter = ogeom::boolean::cut(&mut model, &outer, &inner, T)
+        .unwrap()
+        .shape;
+    let round_tube = ogeom::boolean::cut(&mut model, &rim, &cutter, T)
+        .unwrap()
+        .shape;
+    ring_comes_back_exact(&model, &round_tube, [2, 1, 0, 0, 1], "round the tube");
+}
+
+/// A ring with a long slot over its top on one side and under its bottom
+/// on the other, the two overlapping round the axis: no meridian is free
+/// of them. The torus comes back one face, its seam round the tube running
+/// through a slot.
+#[test]
+fn a_ring_slotted_across_every_meridian_comes_back_one_torus() {
+    let mut model = Model::new();
+    let mut slotted = ring(&mut model);
+    for (corner, size) in [
+        (Point::new(0.0, -15.0, 1.5), (15.0, 30.0, 5.0)),
+        (Point::new(-15.0, -15.0, -6.5), (16.0, 30.0, 5.0)),
+    ] {
+        let frame = Frame::new(corner, Direction::Z, Direction::X, T).unwrap();
+        let cutter = ogeom::algo::make_box(&mut model, frame, size, T)
+            .unwrap()
+            .shape;
+        slotted = ogeom::boolean::cut(&mut model, &slotted, &cutter, T)
+            .unwrap()
+            .shape;
+    }
+    ring_comes_back_exact(&model, &slotted, [6, 0, 0, 0, 1], "slots");
+}
+
+/// A ring drilled straight through its tube three times, a third of a
+/// turn apart round the axis and a sixth of a turn apart round the tube:
+/// the six holes between them cross every parallel. The torus comes back
+/// one face, its seam round the axis running through a hole.
+#[test]
+#[ignore = "heavy"]
+fn a_ring_drilled_across_every_parallel_comes_back_one_torus() {
+    let mut model = Model::new();
+    let mut drilled = ring(&mut model);
+    for k in 0..3 {
+        let round_axis = f64::from(k) * core::f64::consts::TAU / 3.0;
+        let round_tube = f64::from(k) * core::f64::consts::PI / 3.0;
+        let out = Vector::new(round_axis.cos(), round_axis.sin(), 0.0);
+        let along = out * round_tube.cos() + Vector::Z * round_tube.sin();
+        let centre = Point::new(10.0 * round_axis.cos(), 10.0 * round_axis.sin(), 0.0);
+        let axis = Direction::new(along, T).unwrap();
+        let frame = Frame::new(centre - along * 5.0, axis, axis.any_perpendicular(), T).unwrap();
+        let drill = ogeom::algo::make_cylinder(&mut model, frame, 2.0, 10.0, T)
+            .unwrap()
+            .shape;
+        drilled = ogeom::boolean::cut(&mut model, &drilled, &drill, T)
+            .unwrap()
+            .shape;
+    }
+    ring_comes_back_exact(&model, &drilled, [0, 3, 0, 0, 1], "drilled");
+}
+
 /// A chamfered hole whose mesh has one vertex of the chamfer's rim a
 /// little off the cone (pushed outward along the plate, which still holds
 /// it): the triangles on it cannot join the cone, and the chamfer's band is
