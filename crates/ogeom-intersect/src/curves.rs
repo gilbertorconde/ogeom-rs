@@ -1690,6 +1690,14 @@ fn polish_2d(
 /// the two *stationarity* conditions (the gap vector perpendicular to both
 /// tangents), whose solutions are the local closest approaches. The gap test
 /// afterwards decides whether the approach found is a crossing.
+///
+/// Newton damped on the stationarity residual can settle where that residual
+/// is least without being zero: a fitted curve that all but stops along its
+/// parameter, as a fit through a sharp turn can, holds every seed nearby at
+/// such a point, short of a crossing beside it. Where the solve ends there
+/// without converging, the approach is walked on by alternating feet, each
+/// curve's point dropped onto the other, which never lets the gap grow, and
+/// polished again from where the walk stops.
 fn polish_3d(
     a: &Curve,
     b: &Curve,
@@ -1698,6 +1706,82 @@ fn polish_3d(
     options: CurveCurveOptions,
     tol: Tolerances,
 ) -> Option<Crossing<Point>> {
+    let (t, s, converged) = stationary_3d(a, b, seed_a, seed_b, tol)?;
+    let mut found = crossing_at_3d(a, b, t, s, tol)?;
+    if found.gap > options.gap && !converged {
+        let (t, s) = alternating_feet_3d(a, b, t, s, found.gap, tol)?;
+        let walked = crossing_at_3d(a, b, t, s, tol)?;
+        let polished = stationary_3d(a, b, t, s, tol)
+            .and_then(|(t, s, _)| crossing_at_3d(a, b, t, s, tol))
+            .filter(|p| p.gap < walked.gap);
+        found = polished.unwrap_or(walked);
+    }
+    (found.gap <= options.gap).then_some(found)
+}
+
+/// The two curves' points at `t` and `s` as a crossing, with their gap.
+fn crossing_at_3d(
+    a: &Curve,
+    b: &Curve,
+    t: f64,
+    s: f64,
+    tol: Tolerances,
+) -> Option<Crossing<Point>> {
+    let pa = a.point_at(t, tol).ok()?;
+    let pb = b.point_at(s, tol).ok()?;
+    Some(Crossing {
+        on_a: t,
+        on_b: s,
+        point: pa,
+        gap: pa.distance(pb),
+        reach: 0.0,
+    })
+}
+
+/// From `t` on the first curve and `s` on the second, `gap` apart, each
+/// point's foot on the other curve in turn while the gap falls by more than
+/// a hundredth of the confusion distance a round, at most sixty-four rounds.
+/// A foot that would widen the gap is not taken, so the pair returned is
+/// never further apart than the pair given.
+fn alternating_feet_3d(
+    a: &Curve,
+    b: &Curve,
+    mut t: f64,
+    mut s: f64,
+    mut gap: f64,
+    tol: Tolerances,
+) -> Option<(f64, f64)> {
+    for _ in 0..64 {
+        let before = gap;
+        let pa = a.point_at(t, tol).ok()?;
+        if let Some((next, d)) = foot_on_3d(b, pa, s, tol)
+            && d < gap
+        {
+            (s, gap) = (next, d);
+        }
+        let pb = b.point_at(s, tol).ok()?;
+        if let Some((next, d)) = foot_on_3d(a, pb, t, tol)
+            && d < gap
+        {
+            (t, gap) = (next, d);
+        }
+        if before - gap <= tol.confusion() * 0.01 {
+            break;
+        }
+    }
+    Some((t, s))
+}
+
+/// Newton on the stationarity system from a seed: the parameters it ends
+/// at, clamped to each curve's domain, and whether the residual met its
+/// tolerance there.
+fn stationary_3d(
+    a: &Curve,
+    b: &Curve,
+    seed_a: f64,
+    seed_b: f64,
+    tol: Tolerances,
+) -> Option<(f64, f64, bool)> {
     // Two unknowns: the allocation-free solver, and each curve's point
     // read from the same derivative table as its derivatives.
     let system = |x: [f64; 2]| {
@@ -1725,21 +1809,13 @@ fn polish_3d(
         step: tol.parametric(),
         max_iterations: 40,
     };
-    let ([t, s], ..) = solve::newton_system_2(system, [seed_a, seed_b], criteria).ok()?;
-    let (t, s) = (clamp_3d(a, t), clamp_3d(b, s));
-    let pa = a.point_at(t, tol).ok()?;
-    let pb = b.point_at(s, tol).ok()?;
-    let gap = pa.distance(pb);
-    if gap > options.gap {
-        return None;
-    }
-    Some(Crossing {
-        on_a: t,
-        on_b: s,
-        point: pa,
-        gap,
-        reach: 0.0,
-    })
+    let ([t, s], _, convergence, _) =
+        solve::newton_system_2(system, [seed_a, seed_b], criteria).ok()?;
+    Some((
+        clamp_3d(a, t),
+        clamp_3d(b, s),
+        convergence == solve::Convergence::Residual,
+    ))
 }
 
 // --- small helpers -----------------------------------------------------------

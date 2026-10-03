@@ -137,16 +137,23 @@ their faces tightens them to 1e-6.
   the marcher now finds the touch exactly and cuts the branches there, and
   these cut (at the seams' vertex and anywhere on the equator, every seam
   direction tried, each sum within 1e-8). Moved inside by 1e-7 or 1e-6
-  with its own seam on the touching line, the section is one loop with a
-  neck thousandths wide across both charts' seams. Drills of radius 1.5, 3
-  and 4.35 at 26 places round the equator, both offsets, measure exactly:
-  cut, common and drill less the torus within 4e-8 of the torus against a
-  ray-by-ray integral of the common. The misses of 3e-4 to 1e-3 once read
-  here were the measure's, not the boolean's: these results fell to a
-  2e-3 chord tessellation, and with chart loops left open at their
-  junctions the exact integral was off by 1e-5 to 1e-4. Two refuse by
-  name (radius 1.5, 0.8 and 6.3 radians round, 1e-7 in: the kept pieces
-  do not close). A classification guard refuses a cut, common or union
+  with its own seam on the touching line, the section is two loops, above
+  and below the equator, each turning sharply a thousandth or so from it
+  across the drill's seam. Drills of radius 1.5, 3 and 4.35 at 26 places
+  round the equator, both offsets, measure exactly: cut, common and drill
+  less the torus within 4e-8 of the torus against a ray-by-ray integral of
+  the common. The misses of 3e-4 to 1e-3 once read here were the
+  measure's, not the boolean's: these results fell to a 2e-3 chord
+  tessellation, and with chart loops left open at their junctions the
+  exact integral was off by 1e-5 to 1e-4. The last two (radius 1.5, 0.8
+  and 6.3 radians round, 1e-7 in) once refused (the kept pieces did not
+  close): the drill's seam line was never found crossing a loop at its
+  sharp turn, so the drill's wall kept no band between the loops. A loop
+  fitted whole wobbled by 3.5e-4 there, more than the marcher's finest
+  step, and is now fitted in pieces; another fit all but stopped along its
+  parameter beside the crossing, holding the curve-curve Newton short of
+  it, which now walks on by alternating feet. A classification guard
+  refuses a cut, common or union
   whose sections leave every piece of both outside the other while the
   solids overlap, which is what the touching drill returned before (the
   torus whole).

@@ -262,20 +262,24 @@ fn an_oblique_drill_seamed_through_a_shaved_cube_s_vertex_cuts() {
 #[test]
 fn drills_touching_a_torus_inside_its_outer_equator_cut() {
     for (angle, seam) in [(0.0, 0.0), (0.7, 0.7)] {
-        drill_inside_a_torus_s_outer_equator(angle, seam, 0.0);
+        drill_inside_a_torus_s_outer_equator(4.353_623_591_855_474, angle, seam, 0.0);
     }
 }
 
 /// The same drills moved in from the touch by `1e-7` and `1e-6`, with the
 /// drill's seam on the line where they touched, a radian round from the
-/// vertex where the torus's seams cross. The section is one loop pinched
-/// to a neck a few thousandths wide across the equator, where both
-/// surfaces' seams run; the faces split there must still bound the common
-/// the ray integral gives.
+/// vertex where the torus's seams cross; and drills of radius 1.5 moved in
+/// by `1e-7` at 0.8 radians round and just past the torus's seam. The
+/// section is two loops, above and below the equator, each turning sharply
+/// across the drill's seam a thousandth or so from it; the faces split
+/// there must still bound the common the ray integral gives.
 #[test]
 fn drills_just_inside_a_torus_s_outer_equator_cut() {
     for inward in [1e-7, 1e-6] {
-        drill_inside_a_torus_s_outer_equator(1.0, 1.0, inward);
+        drill_inside_a_torus_s_outer_equator(4.353_623_591_855_474, 1.0, 1.0, inward);
+    }
+    for angle in [0.8, 6.3] {
+        drill_inside_a_torus_s_outer_equator(1.5, angle, angle, 1e-7);
     }
 }
 
@@ -284,8 +288,7 @@ fn drills_just_inside_a_torus_s_outer_equator_cut() {
 /// round the axis, its seam toward `seam`. The common is the torus's
 /// thickness along z, twice the root of 9 less the square of the distance
 /// from the tube's centre circle, integrated over the drill's disc.
-fn drill_inside_a_torus_s_outer_equator(angle: f64, seam: f64, inward: f64) {
-    let radius = 4.353_623_591_855_474;
+fn drill_inside_a_torus_s_outer_equator(radius: f64, angle: f64, seam: f64, inward: f64) {
     let reach = 13.0 - radius - inward;
     let mut model = Model::new();
     let part = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)

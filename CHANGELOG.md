@@ -87,6 +87,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Crossings at a section's sharp turn are found.** A marched section that
+  wobbles through a sharp turn within its stated error is fitted in pieces
+  where its error exceeds the finest step the march took, and the
+  curve-curve crossing search continues by alternate projection where its
+  Newton solve stalls at a curve that almost stops along its parameter. A
+  drill all but touching inside a torus's outer equator, its seam on the
+  touching line, cuts at every placement tried instead of refusing.
+
 - **Drills touching a torus or a ball cut it.** Where a drill touches a
   torus inside its outer equator, or a ball at its pole, the section is a
   figure eight, and the marcher traced it as one loop round both lobes or

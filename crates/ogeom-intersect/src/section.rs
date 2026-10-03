@@ -1315,15 +1315,19 @@ fn marched(
 /// bore) is long and turns the same way throughout, and one fit of it can
 /// run out of room and come back with an error of the drum's size. An open
 /// branch whose fit misses by more than a hundred times its tolerance, or
-/// strays farther from the trace than the trace's own step, is split at
-/// its middle sample and each half fitted the same way, down to a floor of
-/// samples and depth; the pieces meet at the shared sample. A closed branch is
-/// split the same way, its two halves open and meeting at both ends: a loop
-/// round a thin drum lying all but tangent inside a wider one turns sharply
-/// at its tip, and fitted whole it can come back off the trace by the drum's
-/// size. A fit that misses its tolerance by less stands whole, its error
-/// stated: a caller takes one curve per branch where it can, and a few
-/// microns do not warrant more. So does a branch no split helps.
+/// strays farther from the trace than the finest step the marcher took
+/// along it, is split at its middle sample and each half fitted the same
+/// way, down to a floor of samples and depth; the pieces meet at the shared
+/// sample. The marcher shortens its step where the section turns sharply
+/// (round a neck a thousandth wide where a drill all but touches a torus),
+/// and a fit missing by more than that step there wobbles across the neck.
+/// A closed branch is split the same way, its two halves open and meeting
+/// at both ends: a loop round a thin drum lying all but tangent inside a
+/// wider one turns sharply at its tip, and fitted whole it can come back
+/// off the trace by the drum's size. A fit that misses its tolerance by
+/// less stands whole, its error stated: a caller takes one curve per branch
+/// where it can, and a few microns do not warrant more. So does a branch no
+/// split helps.
 fn fitted_in_pieces(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
@@ -1342,11 +1346,15 @@ fn fitted_in_pieces(
         tol: Tolerances,
     ) -> OgeomResult<Vec<crate::approx::IntersectionCurve>> {
         let whole = approximate_branch(a, b, branch, tolerance, tol)?;
-        let step = branch
-            .points
+        // The finest step the marcher took between the branch's ends: the
+        // first and last steps land on a patch edge or close the loop, and
+        // their length says nothing of how sharply the section turns.
+        let points = &branch.points;
+        let inner = points.get(1..points.len().saturating_sub(1)).unwrap_or(&[]);
+        let step = inner
             .windows(2)
             .map(|w| w[0].distance(w[1]))
-            .fold(0.0_f64, f64::max);
+            .fold(f64::INFINITY, f64::min);
         if whole.met
             || whole.fit_error <= step.min(tolerance * 1e2)
             || depth == 0
