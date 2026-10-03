@@ -55,10 +55,22 @@ pinned arrangement and is refused by name where its result comes out empty.
 **A section whose fit misses widens its junctions as far.** A marched
 section keeps its fit's error as its tolerance, and the paving's reach and
 the junctions at the ends of a stretch it runs along an edge grow with that
-tolerance, unbounded. A loop that will not fit whole is fitted in pieces,
-which keeps a sharp-tipped loop's doubt to microns; a branch no split
-helps still carries its whole miss into the junctions, and they can
-swallow every edge of a face piece.
+tolerance, unbounded. The error is measured in space: the curve against
+the trace, each pcurve lifted against the curve, and where the surfaces
+cross at a shallow angle their gap over the angle's sine, capped by the
+chart residual carried through the surface's stretch. A section across a
+wide drum now states microns where it stated tenths, a branch missing by a
+hundred times its tolerance is fitted in pieces, and a fitted section meets
+an edge within its own reach plus the edge's radius. Two sources remain:
+
+- A section through or beside a sphere's pole fits its samples but its
+  sphere pcurve strays up to 0.09 between them. Split at the pole sample
+  each piece measures under 1e-3, but the boolean then refuses a drill it
+  passed whole (the kept pieces do not close), so the split waits on the
+  pole arrangement.
+- A branch nothing fits (residuals of 0.1 to 10 near a tangency) still
+  carries its miss, as does a near-tangent crossing whose capped angle term
+  stands at 1e-3 or more.
 
 **Facet walls drafted less than their chords sag.** A pad pushed down from
 the top of a slab converted face for facet, whose rounded corner's rows lean

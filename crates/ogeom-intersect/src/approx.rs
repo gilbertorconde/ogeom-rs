@@ -45,11 +45,14 @@ pub struct IntersectionCurve {
     pub on_a: BSpline2d,
     /// And in the second's.
     pub on_b: BSpline2d,
-    /// How far the *fits* may sit from the traced polyline.
+    /// How far the *fits* may sit from the traced polyline, in millimetres.
     ///
-    /// The worst of the three fits' reported errors. The distance to the true
-    /// intersection adds the trace's own chord tolerance on top; both are
-    /// stated so an edge built on this knows what to carry.
+    /// Measured: the curve against the trace's samples, each pcurve lifted
+    /// against the curve, and, where the surfaces meet at a shallow angle,
+    /// how far along them their crossing may sit from the curve. The
+    /// distance to the true intersection adds the trace's own chord
+    /// tolerance on top; both are stated so an edge built on this knows
+    /// what to carry.
     pub fit_error: f64,
     /// Whether every fit met the tolerance it was asked for.
     pub met: bool,
@@ -176,17 +179,22 @@ pub fn approximate_branch(
         ogeom_geom::fit::fit_points_joint(&points, &unwrapped_a, &unwrapped_b, 3, tolerance, tol)?
     };
 
-    // And measured where it is promised: each pcurve lifted through its
-    // surface against the curve, between the trace's samples as well as at
-    // them. Near a cone's apex or a sphere's pole the chart turns fast, and
-    // a fit that holds at every sample can wander between them.
-    let lifted =
-        lift_error(a, &on_a, &space.curve, tol).max(lift_error(b, &on_b, &space.curve, tol));
-    let fit_error = space
-        .error
-        .max(space_error(a, &(on_a.clone(), space.met, space.error), tol))
-        .max(space_error(b, &(on_b.clone(), space.met, space.error), tol))
-        .max(lifted);
+    // Measured where it is promised, in millimetres. The joint fit's own
+    // residual mixes space and chart coordinates and says little about
+    // either alone, so it serves only as a bound on what is measured here.
+    let lifted = lift_error(a, b, &on_a, &on_b, &space.curve, tol);
+    let traced = trace_error(&space.curve, &points, space.error, tol);
+    // Where the surfaces meet at a shallow angle, a curve microns off both
+    // can still sit far along them from where they cross. That distance is
+    // the surfaces' gap over the sine of their angle, and it is no more than
+    // the fit's chart residual carried through each surface's stretch, which
+    // bounds how far the lifted pcurves stand from the trace whatever the
+    // angle. The smaller of the two stands.
+    let charted =
+        space_error(a, &on_a, space.error, tol).max(space_error(b, &on_b, space.error, tol));
+    let fit_error = traced
+        .max(lifted.along)
+        .max(lifted.across.min(charted.max(space.error)));
     Ok(IntersectionCurve {
         fit_error,
         met: space.met,
@@ -197,46 +205,184 @@ pub fn approximate_branch(
     })
 }
 
-/// How far a pcurve, lifted through its surface, stands from the curve it
-/// images, at the same parameters: four stations in every span of the
-/// curve's knots and at least two hundred along it.
+/// What lifting the pcurves onto their surfaces shows.
+struct Lifted {
+    /// How far either pcurve, lifted, stands from the curve at the same
+    /// parameter.
+    along: f64,
+    /// That gap over the sine of the surfaces' angle there: how far the
+    /// surfaces' true crossing may sit from the curve.
+    across: f64,
+}
+
+/// Each pcurve lifted through its surface against the curve, at four
+/// stations in every span of the curve's knots and at least two hundred
+/// along it, between the trace's samples as well as at them. Near a cone's
+/// apex or a sphere's pole the chart turns fast, and a fit that holds at
+/// every sample can wander between them.
 fn lift_error(
-    surface: &SurfaceGeometry,
-    pcurve: &BSpline2d,
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    on_a: &BSpline2d,
+    on_b: &BSpline2d,
     curve: &BSplineCurve,
     tol: Tolerances,
-) -> f64 {
+) -> Lifted {
     use ogeom_geom::{Curve2d as _, Curve3d as _};
     let (lo, hi) = curve.knots().domain();
     let spans = curve.knots().distinct().len().saturating_sub(1).max(1);
     let stations = (4 * spans).max(200);
-    let mut worst = 0.0_f64;
+    let mut out = Lifted {
+        along: 0.0,
+        across: 0.0,
+    };
     for k in 0..=stations {
         #[allow(clippy::cast_precision_loss)]
         let t = lo + (hi - lo) * k as f64 / stations as f64;
-        let (Ok(on), Ok(at)) = (curve.point_at(t, tol), pcurve.point_at(t, tol)) else {
+        let Ok(on) = curve.point_at(t, tol) else {
             continue;
         };
-        let Ok(lifted) = surface.point_at(at.x, at.y, tol) else {
-            continue;
-        };
-        worst = worst.max(lifted.distance(on));
+        let mut gap = 0.0_f64;
+        let mut normals = Vec::with_capacity(2);
+        for (surface, pcurve) in [(a, on_a), (b, on_b)] {
+            let Ok(at) = pcurve.point_at(t, tol) else {
+                continue;
+            };
+            let Ok(lifted) = surface.point_at(at.x, at.y, tol) else {
+                continue;
+            };
+            gap = gap.max(lifted.distance(on));
+            if let Ok(normal) = surface.normal_at(at.x, at.y, tol) {
+                normals.push(normal.vector());
+            }
+        }
+        out.along = out.along.max(gap);
+        if let [na, nb] = normals[..] {
+            let sine = na.cross(nb).magnitude().max(tol.angular());
+            out.across = out.across.max(gap / sine);
+        }
+    }
+    out
+}
+
+/// How far the curve stands from the trace it was fitted to: each sample's
+/// distance to its nearest point on the curve.
+///
+/// The samples run in order along the curve, so each one's foot is found by
+/// Newton steps from the last one's. Where that does not settle within
+/// `bound`, the fit's own residual, which already bounds each sample's
+/// distance from the curve at the fit's parameter, the nearest of the
+/// curve's stations seeds the search instead, and the result never exceeds
+/// `bound`.
+fn trace_error(
+    curve: &BSplineCurve,
+    samples: &[ogeom_math::Point],
+    bound: f64,
+    tol: Tolerances,
+) -> f64 {
+    use ogeom_geom::Curve3d as _;
+    let (lo, hi) = curve.knots().domain();
+    let spans = curve.knots().distinct().len().saturating_sub(1).max(1);
+    let count = (4 * spans).max(2 * samples.len()).max(200);
+    #[allow(clippy::cast_precision_loss)]
+    let at = |k: usize| lo + (hi - lo) * k as f64 / count as f64;
+    let mut stations: Option<Vec<(f64, ogeom_math::Point)>> = None;
+    let foot = |p: ogeom_math::Point, mut t: f64| -> (f64, f64) {
+        let mut best = (t, f64::INFINITY);
+        for _ in 0..8 {
+            let (Ok(q), Ok(d)) = (curve.point_at(t, tol), curve.d1_at(t, tol)) else {
+                break;
+            };
+            let gap = q.distance(p);
+            if gap < best.1 {
+                best = (t, gap);
+            }
+            let speed = d.dot(d);
+            if speed <= f64::MIN_POSITIVE {
+                break;
+            }
+            let next = (t + (p - q).dot(d) / speed).clamp(lo, hi);
+            if (next - t).abs() <= (hi - lo) * 1e-12 {
+                break;
+            }
+            t = next;
+        }
+        if let Ok(q) = curve.point_at(t, tol)
+            && q.distance(p) < best.1
+        {
+            best = (t, q.distance(p));
+        }
+        best
+    };
+    let mut t = lo;
+    let mut worst = 0.0_f64;
+    for p in samples {
+        let mut found = foot(*p, t);
+        if found.1 > bound {
+            let stations = stations.get_or_insert_with(|| {
+                (0..=count)
+                    .filter_map(|k| curve.point_at(at(k), tol).ok().map(|q| (at(k), q)))
+                    .collect()
+            });
+            if let Some(k) = (0..stations.len()).min_by(|&x, &y| {
+                stations[x]
+                    .1
+                    .distance(*p)
+                    .total_cmp(&stations[y].1.distance(*p))
+            }) {
+                // Scanned finely over the stations either side, then
+                // narrowed by golden section: where the curve all but stops
+                // in space (its chart image swinging round a pole) or kinks
+                // between two samples, Newton's steps are blind and the
+                // distance has more than one dip between stations.
+                let gap = |u: f64| {
+                    curve
+                        .point_at(u, tol)
+                        .map_or(f64::INFINITY, |q| q.distance(*p))
+                };
+                let (from, to) = (
+                    stations[k.saturating_sub(2)].0,
+                    stations[(k + 2).min(stations.len() - 1)].0,
+                );
+                const FINE: u32 = 256;
+                let h = (to - from) / f64::from(FINE);
+                let start = (0..=FINE)
+                    .map(|j| from + h * f64::from(j))
+                    .min_by(|&x, &y| gap(x).total_cmp(&gap(y)))
+                    .unwrap_or(from);
+                let (mut a, mut b) = ((start - h).max(lo), (start + h).min(hi));
+                let ratio = 0.5 * (5.0_f64.sqrt() - 1.0);
+                for _ in 0..60 {
+                    let (x, y) = (b - ratio * (b - a), a + ratio * (b - a));
+                    if gap(x) <= gap(y) {
+                        b = y;
+                    } else {
+                        a = x;
+                    }
+                }
+                let again = foot(*p, 0.5 * (a + b));
+                if again.1 < found.1 {
+                    found = again;
+                }
+            }
+        }
+        t = found.0;
+        worst = worst.max(found.1.min(bound));
     }
     worst
 }
 
-/// The fitted pcurve's error, converted back into space.
-///
-/// The pcurve was fitted in parameter units, against a scale estimated from
-/// the whole branch, but the surface's stretch varies along the curve, so an
-/// error acceptable in parameter units may be worse in millimetres where the
-/// surface stretches hardest. This converts the fit's parameter-space error
-/// through the local stretch at samples along the pcurve and reports the
-/// worst, so the number the caller reads is in the units the caller measures
-/// everything else in.
-fn space_error(surface: &SurfaceGeometry, fitted: &(BSpline2d, bool, f64), tol: Tolerances) -> f64 {
+/// The fit's chart residual carried into space through the surface's
+/// stretch along the pcurve: a bound on how far the lifted pcurve stands
+/// from the trace, loose by the stretch where the residual is mostly in the
+/// other coordinates, and so used only to cap an estimate, never stated.
+fn space_error(
+    surface: &SurfaceGeometry,
+    pcurve: &BSpline2d,
+    parameter_error: f64,
+    tol: Tolerances,
+) -> f64 {
     use ogeom_geom::Curve2d;
-    let (pcurve, _, parameter_error) = fitted;
     // Convert the parameter-space error back through the surface's local
     // stretch at a few places; take the worst.
     let (lo, hi) = pcurve.domain();
@@ -506,6 +652,70 @@ mod tests {
                 at.x
             );
             previous = at;
+        }
+    }
+
+    /// A bore across a converted drum states the error its curves have.
+    ///
+    /// The joint fit's residual mixes millimetres with the drum chart's
+    /// coordinates, and carried through the drum's stretch it reads hundreds
+    /// of times larger than the distance the fitted curves stand from the
+    /// two surfaces. The surfaces cross steeply here, so that distance is
+    /// what is stated, within a small multiple.
+    #[test]
+    fn a_section_across_a_wide_drum_states_its_measured_error() {
+        let radius = 23.6;
+        let wall = CylinderSurface::new(
+            Cylinder::new(Frame::WORLD, radius, T).unwrap(),
+            (-30.0, 30.0),
+        )
+        .unwrap();
+        let drum: SurfaceGeometry = SurfaceGeometry::from(wall).to_bspline(T).unwrap().into();
+        let bore = Cylinder::new(
+            Frame::new(
+                Point::new(0.0, 0.0, 3.0),
+                Direction::new(Vector::X, T).unwrap(),
+                Direction::new(Vector::Y, T).unwrap(),
+                T,
+            )
+            .unwrap(),
+            9.0,
+            T,
+        )
+        .unwrap();
+        let drill: SurfaceGeometry = CylinderSurface::new(bore, (-40.0, 40.0)).unwrap().into();
+        let marching = Marching {
+            chord: 1e-4,
+            ..Marching::default()
+        };
+        let found = branches(&drum, &drill, marching, T).unwrap();
+        assert!(!found.is_empty());
+        for branch in &found {
+            let fitted = approximate_branch(&drum, &drill, branch, 1e-4, T).unwrap();
+            let (lo, hi) = fitted.curve.knots().domain();
+            let mut off = 0.0_f64;
+            for i in 0..=2000 {
+                let t = lo + (hi - lo) * f64::from(i) / 2000.0;
+                let p = fitted.curve.point_at(t, T).unwrap();
+                off = off.max(
+                    wall.cylinder()
+                        .distance_to(p)
+                        .abs()
+                        .max(bore.distance_to(p).abs()),
+                );
+            }
+            // Honest both ways: no less than the curve stands off, and not
+            // hundreds of times more.
+            assert!(
+                fitted.fit_error + marching.chord >= off,
+                "states {:e} for a curve {off:e} off its surfaces",
+                fitted.fit_error
+            );
+            assert!(
+                fitted.fit_error <= 10.0 * off.max(marching.chord),
+                "states {:e} for a curve {off:e} off its surfaces",
+                fitted.fit_error
+            );
         }
     }
 

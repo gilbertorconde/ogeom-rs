@@ -108,6 +108,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Marched sections state the error their curves have.** A marched
+  intersection's tolerance is measured in space (the curve against its
+  trace, each pcurve on its surface against the curve, and the surfaces'
+  gap over the sine of their angle where they cross shallowly) instead of
+  the fit's residual times the surface's stretch, which on a wide drum
+  stated hundreds of times the real error and widened the boolean's
+  junctions as far. A branch whose fit misses by a hundred times its
+  tolerance is fitted in pieces, and a section reaches an edge within its
+  own reach plus the edge's tolerance. Two more drills in the stress run
+  succeed.
+
 - **Booleans with a ball whose poles lie on the other solid's wall.** A
   drill whose wall passes through both poles of a ball cut nothing away or
   everything (an empty or whole result `check` called valid), or took the

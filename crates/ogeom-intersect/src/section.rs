@@ -1314,10 +1314,10 @@ fn marched(
 /// A trace winding several turns round a drum (a thread's flank meeting a
 /// bore) is long and turns the same way throughout, and one fit of it can
 /// run out of room and come back with an error of the drum's size. An open
-/// branch whose fit strays farther from the trace than the trace's own
-/// step, and so is no longer the curve traced, is split at its middle
-/// sample and each half fitted the same way, down to a floor of samples
-/// and depth; the pieces meet at the shared sample. A closed branch is
+/// branch whose fit misses by more than a hundred times its tolerance, or
+/// strays farther from the trace than the trace's own step, is split at
+/// its middle sample and each half fitted the same way, down to a floor of
+/// samples and depth; the pieces meet at the shared sample. A closed branch is
 /// split the same way, its two halves open and meeting at both ends: a loop
 /// round a thin drum lying all but tangent inside a wider one turns sharply
 /// at its tip, and fitted whole it can come back off the trace by the drum's
@@ -1347,7 +1347,11 @@ fn fitted_in_pieces(
             .windows(2)
             .map(|w| w[0].distance(w[1]))
             .fold(0.0_f64, f64::max);
-        if whole.met || whole.fit_error <= step || depth == 0 || branch.points.len() < 2 * FLOOR {
+        if whole.met
+            || whole.fit_error <= step.min(tolerance * 1e2)
+            || depth == 0
+            || branch.points.len() < 2 * FLOOR
+        {
             return Ok(vec![whole]);
         }
         let middle = branch.points.len() / 2;

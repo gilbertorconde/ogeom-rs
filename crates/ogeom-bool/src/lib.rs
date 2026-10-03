@@ -2627,7 +2627,15 @@ fn fill(
                     // section without crossing it, running beside it, so on a
                     // curved face the edge's radius counts only for a line or
                     // a conic meeting an exact section across it. A fitted
-                    // section's own reach already stands for both.
+                    // section states only its own error, so its reach takes
+                    // in the edge's radius on any face: where a rail grazes
+                    // the other face, the section leaves its face as far
+                    // off the rail as the rail stands off the face.
+                    let reach = if section.tolerance > 0.0 {
+                        reach + e.tolerance
+                    } else {
+                        reach
+                    };
                     let planar = matches!(own.surface, SurfaceGeometry::Plane(_));
                     let analytic = matches!(
                         *e.curve,
