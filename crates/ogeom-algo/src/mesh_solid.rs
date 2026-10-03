@@ -1109,9 +1109,12 @@ fn crossed_seams(
 /// Each built face's boundary is drawn in its surface's chart as the
 /// tessellator trims it, and two of its chords that cross without sharing
 /// an end are a fold: the face encloses some of its area twice, or none.
-/// A fold no deeper than the tolerance of the edges that cross, or inside
-/// the tolerance of a corner of the face, is within what those claim, and
-/// stands. A deeper one names its two edges by
+/// A fold inside the tolerance of a corner of the face is within what the
+/// corner claims, and stands. One no deeper than the tolerance of the
+/// edges that cross stands where one edge crosses itself; where two edges
+/// of a curved face cross, the face is a sliver narrower than their
+/// tolerance whose sides swap along it, and is a culprit itself. A deeper
+/// one names its two edges by
 /// the points they were drawn through, and the curved faces across them
 /// are the culprits; where neither is curved and the folded face is, it
 /// is.
@@ -1245,6 +1248,13 @@ fn folded_seams(
                 continue;
             }
             if depth <= drawn[&first].1.max(drawn[&second].1) {
+                // Two of a curved face's own edges crossing within their
+                // tolerance make it a sliver no wider than that tolerance,
+                // its sides swapping along it: the face is drawn over
+                // itself, and its neighbours fold with it.
+                if first != second && curved(g) {
+                    out.insert(g);
+                }
                 continue;
             }
             let across: Vec<usize> = [first, second]
@@ -7046,9 +7056,11 @@ impl Planner<'_> {
     /// along the chain. The chain's own vertices lie on both, and a curve
     /// is threaded through them, a line for a single span; its tolerance is
     /// how far it strays from either surface between them, up to a
-    /// twentieth of its longest span. A face bounded by such a curve is
-    /// good to its tolerance, where it would otherwise fall to facets
-    /// whole.
+    /// twentieth of its longest span. Between two curved faces, where that
+    /// is past the reach, points between the vertices carried onto both
+    /// surfaces are threaded as well, and the closer curve kept. A face
+    /// bounded by such a curve is good to its tolerance, where it would
+    /// otherwise fall to facets whole.
     fn chord(
         &self,
         pts: &[Point],
@@ -7056,7 +7068,6 @@ impl Planner<'_> {
         faces: &[usize],
         reach: f64,
     ) -> Option<(Snapped, bool, Images)> {
-        use ogeom_geom::Curve3d as _;
         let [a, b] = faces[..] else {
             return None;
         };
@@ -7088,6 +7099,43 @@ impl Planner<'_> {
         if longest <= self.tol.confusion() {
             return None;
         }
+        let plain = self.thread(&on, closed, &fa, &fb, reach, longest);
+        let threaded = match plain {
+            Some(found)
+                if found.2 > reach && self.curved(a).is_some() && self.curved(b).is_some() =>
+            {
+                let between = between_both(&on, &fa, &fb, longest);
+                match self.thread(&between, closed, &fa, &fb, reach, longest) {
+                    Some(closer) if closer.2 < found.2 => Some(closer),
+                    _ => Some(found),
+                }
+            }
+            other => other,
+        };
+        let (curve, range, tolerance) = threaded?;
+        Some((
+            if closed {
+                Snapped::Loop(curve, range, tolerance)
+            } else {
+                Snapped::Open(curve, range, tolerance)
+            },
+            true,
+            Vec::new(),
+        ))
+    }
+
+    /// A curve threaded through points on two faces, as [`Self::chord`]
+    /// threads it: its range and how far it strays from either face.
+    fn thread(
+        &self,
+        on: &[Point],
+        closed: bool,
+        fa: &dyn Fn(Point) -> f64,
+        fb: &dyn Fn(Point) -> f64,
+        reach: f64,
+        longest: f64,
+    ) -> Option<(Curve, (f64, f64), f64)> {
+        use ogeom_geom::Curve3d as _;
         // A cubic through the points first; where it overshoots between
         // them (a short span beside long ones), the polyline through them.
         for degree in [3, 1] {
@@ -7106,12 +7154,12 @@ impl Planner<'_> {
                 let padded: Vec<Point> = if pad > 0 {
                     on[n - 1 - pad..n - 1]
                         .iter()
-                        .chain(&on)
+                        .chain(on)
                         .chain(&on[1..=pad])
                         .copied()
                         .collect()
                 } else {
-                    on.clone()
+                    on.to_vec()
                 };
                 let parameters =
                     crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
@@ -7154,15 +7202,7 @@ impl Planner<'_> {
             if !runs {
                 continue;
             }
-            return Some((
-                if closed {
-                    Snapped::Loop(curve, range, tolerance)
-                } else {
-                    Snapped::Open(curve, range, tolerance)
-                },
-                true,
-                Vec::new(),
-            ));
+            return Some((curve, range, tolerance));
         }
         None
     }
@@ -7633,6 +7673,70 @@ fn onto_both(
         p = p - ga * la - gb * lb;
     }
     (fa(p).abs().max(fb(p).abs()) <= reach * 1e-3 && p.distance(start) <= limit).then_some(p)
+}
+
+/// How many points each span of a chord is cut into, at most, when its
+/// points are carried onto both faces.
+const CHORD_SPLIT: u32 = 8;
+
+/// A chain of points on two surfaces that meet all but tangentially, with
+/// points between them: each span is cut into pieces no longer than an
+/// eighth of the longest, and each cut carried onto both surfaces in turn
+/// until it rests on both, where that brings it nearer them than the
+/// straight span. A curve threaded through the cuts as well as the chain's
+/// points keeps to the surfaces between those points, where one threaded
+/// through the points alone stands off them by the span's sag.
+fn between_both(
+    on: &[Point],
+    fa: &dyn Fn(Point) -> f64,
+    fb: &dyn Fn(Point) -> f64,
+    longest: f64,
+) -> Vec<Point> {
+    let off = |p: Point| fa(p).abs().max(fb(p).abs());
+    let gradient = |f: &dyn Fn(Point) -> f64, p: Point| {
+        let h = 1e-7 * (1.0 + p.to_vector().magnitude());
+        let d = |v: Vector| (f(p + v * h) - f(p - v * h)) / (2.0 * h);
+        Vector::new(d(Vector::X), d(Vector::Y), d(Vector::Z))
+    };
+    let carried = |start: Point| -> Point {
+        let mut p = start;
+        for _ in 0..32 {
+            for f in [fa, fb] {
+                let g = gradient(f, p);
+                let m = g.dot(g);
+                if m > 0.0 {
+                    p = p - g * (f(p) / m);
+                }
+            }
+            if off(p) <= 1e-12 * (1.0 + p.to_vector().magnitude()) {
+                break;
+            }
+        }
+        // A point carried along the tangency, farther than twice the gap
+        // it closes, is not where the span runs.
+        if p.is_finite() && off(p) < off(start) && p.distance(start) <= off(start) * 2.0 {
+            p
+        } else {
+            start
+        }
+    };
+    let mut out = Vec::with_capacity(on.len() * CHORD_SPLIT as usize);
+    for w in on.windows(2) {
+        out.push(w[0]);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a handful of pieces"
+        )]
+        let pieces = ((w[0].distance(w[1]) * f64::from(CHORD_SPLIT) / longest).ceil() as u32)
+            .clamp(1, CHORD_SPLIT);
+        for k in 1..pieces {
+            let f = f64::from(k) / f64::from(pieces);
+            out.push(carried(w[0].lerp(w[1], f)));
+        }
+    }
+    out.extend(on.last().copied());
+    out
 }
 
 /// The curves a chain on a curved surface may be: the parallel circle

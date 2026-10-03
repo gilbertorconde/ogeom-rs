@@ -23,6 +23,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Converted faces no longer fold in space.** A curved face whose own
+  edges cross within their tolerance (a sliver of a thin fillet fitted as a
+  huge sphere) is faceted instead of built, and an edge between two curved
+  faces meeting almost tangentially is threaded through points resting on
+  both, so it keeps to them (0.06 mm instead of 1.1 mm off on a NIST part).
+  Every NIST part meshed at a thousandth of its diagonal tessellates closed
+  without the converter's closure check.
+
 - **The converter's scatter estimate skips a bend's nearly flat edges.**
   The default coplanar distance no longer reads the nearly flat edges of a
   coarse curved or drafted wall as scatter, so such walls convert at the

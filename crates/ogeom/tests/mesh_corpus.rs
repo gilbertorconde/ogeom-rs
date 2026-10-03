@@ -116,6 +116,67 @@ fn nist_ctc_03() {
     comes_back("nist_ctc_03_asme1_rc.stp", true, true);
 }
 
+/// Its blends come back as tori fitted side by side, meeting at so slight
+/// an angle that where the two surfaces cross lies millimetres from the
+/// mesh's boundary between them. The edge there is threaded along the
+/// boundary through points resting on both, and keeps within twenty
+/// coplanar distances of each; threaded through the boundary's vertices
+/// alone it stands off them by its long spans' sag.
+#[test]
+#[ignore = "heavy"]
+fn nist_ctc_02() {
+    let name = "nist_ctc_02_asme1_rc.stp";
+    comes_back(name, true, true);
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
+    let mesh = ogeom::mesh::triangulate(
+        model,
+        part,
+        Deflection::with_chord(diagonal * 1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let is_curved = |face: &Shape| {
+        let data = back.node(face).unwrap().data().as_face().unwrap();
+        !matches!(
+            back.geometry().surface(data.surface),
+            Some(SurfaceGeometry::Plane(_))
+        )
+    };
+    let mut owners: std::collections::HashMap<_, Vec<bool>> = std::collections::HashMap::new();
+    for face in explore_unique(&back, &out.shape, ShapeType::Face).unwrap() {
+        for edge in explore_unique(&back, &face, ShapeType::Edge).unwrap() {
+            owners
+                .entry(edge.node())
+                .or_default()
+                .push(is_curved(&face));
+        }
+    }
+    let worst = explore_unique(&back, &out.shape, ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .filter(|e| owners[&e.node()] == [true, true])
+        .map(|e| {
+            back.node(e)
+                .unwrap()
+                .data()
+                .as_edge()
+                .unwrap()
+                .tolerance
+                .get()
+        })
+        .fold(0.0_f64, f64::max);
+    assert!(
+        worst <= out.coplanar_distance * 20.0,
+        "an edge between curved faces stands {worst} off them"
+    );
+}
+
 /// A fitted face here ran past a facet it should have ended on, and the
 /// solid came back with the facet facing into material.
 #[test]
@@ -136,7 +197,7 @@ fn nist_ftc_06() {
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_07() {
-    comes_back("nist_ftc_07_asme1_rd.stp", true, false);
+    comes_back("nist_ftc_07_asme1_rd.stp", true, true);
 }
 
 #[test]

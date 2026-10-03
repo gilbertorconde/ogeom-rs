@@ -353,21 +353,24 @@ after.
    a coarse mesh of a surface whose curvature varies fast can still read
    its inflections as a little scatter.
 
-**Converted faces whose edges fold in space.** With the converter's
-closure check off (measured 2026-10-03, NIST parts meshed at a thousandth
-of their diagonal), three parts tessellate open, and none for a pcurve
-straying from its edge: no face in the corpus has one past the chord, so
-re-deriving a face's chart from its edges has nothing to fix. ftc_07 has
-four sphere slivers whose two long edges run about 0.02 mm apart and swap
-sides, so the loop folds in space, with neighbouring planes folding the
-same way; ctc_02 has two torus faces with exact pcurves whose fitted free
-edges stand 0.7 mm off the torus, within their stated tolerance; ftc_06
-closes once welded. The fix belongs in the converter: refuse or merge a
-sliver whose boundary folds within its edges' tolerance, and fit edges
-that stand off their surface more tightly. The closure check stays as the
-backstop and withdraws the four ftc_07 slivers; two converter tests rely
-on it (`fillets_ending_on_rough_corners_are_still_cylinders` comes out
-3827.3 against 3835.4 without it).
+**Converted faces whose edges fold in space.** Done for the NIST parts:
+with the converter's closure check off, every one meshed at a thousandth
+of its diagonal now tessellates closed (ftc_06 closes once welded, as
+before). ftc_07's four slivers were huge spheres fitted to a few long
+triangles of a thin fillet, two of their own edges crossing within those
+edges' tolerance; `folded_seams` now refuses a curved face whose own
+edges cross, and the fillet stays facets there. ctc_02's blend comes back
+as tori side by side meeting at so slight an angle that where they cross
+lies millimetres from the mesh's boundary, so the section solve is
+refused and the edge falls to a chord through the boundary's vertices,
+standing up to 1.1 mm off both tori across its long spans. Between two
+curved faces such a chord is now threaded through points carried onto
+both surfaces as well, and keeps within 0.07 mm. The closure check stays
+as the backstop; no converter or corpus test needs it now. Still open: carrying points for every chord between
+curved faces, not only those past the reach, brings ctc_02's volume
+error from 5e-4 to 5e-5 and ftc_06's from 8e-5 to 1e-6 (402 faces to
+214), but facets nine more of ftc_07's fillet spheres and slows it by
+half.
 
 **Speed, not correctness.**
 
