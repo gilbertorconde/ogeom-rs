@@ -843,7 +843,7 @@ fn build(
         }
         break shape;
     };
-    state_pcurve_gaps(model, &shape, tol)?;
+    crate::pcurve_gap::state_pcurve_gaps(model, &shape, tol)?;
     Ok(MeshSolid {
         shape,
         closed: all_closed,
@@ -8929,147 +8929,6 @@ fn projected_image(
     best.map(|(pcurve, _)| pcurve)
 }
 
-/// How far a pcurve, lifted through its surface, stands off an edge's
-/// curve: at each of many samples along both ranges alike, the distance
-/// between the two points, or where that exceeds `stated`, the distance
-/// from the lifted point to the nearest point of the curve's stretch.
-/// Within `stated`, the answer is only known to be within it.
-fn pcurve_gap(
-    (curve, range): (&Curve, (f64, f64)),
-    (pcurve, pcurve_range): (&PlanarCurve, (f64, f64)),
-    surface: &ogeom_geom::SurfaceGeometry,
-    stated: f64,
-    tol: Tolerances,
-) -> OgeomResult<f64> {
-    use ogeom_geom::{Curve2d as _, Curve3d as _, Surface as _};
-    // The checker's sample counts divide this one, so every point it
-    // samples is one of these.
-    const SAMPLES: u32 = 256;
-    let mut widest: f64 = 0.0;
-    for i in 0..=SAMPLES {
-        let f = f64::from(i) / f64::from(SAMPLES);
-        let uv = pcurve.point_at(pcurve_range.0 + (pcurve_range.1 - pcurve_range.0) * f, tol)?;
-        let Ok(lifted) = surface.point_at(uv.x, uv.y, tol) else {
-            continue;
-        };
-        let mut gap = curve
-            .point_at(range.0 + (range.1 - range.0) * f, tol)?
-            .distance(lifted);
-        if gap > widest.max(stated) {
-            gap = gap.min(nearest_on_stretch(curve, range, lifted, tol)?);
-        }
-        widest = widest.max(gap);
-    }
-    Ok(widest)
-}
-
-/// The distance from `target` to the nearest point of `curve` over `range`:
-/// a scan, then a golden-section search about the nearest sample.
-fn nearest_on_stretch(
-    curve: &Curve,
-    range: (f64, f64),
-    target: Point,
-    tol: Tolerances,
-) -> OgeomResult<f64> {
-    use ogeom_geom::Curve3d as _;
-    const SCAN: u32 = 64;
-    let at = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(target)) };
-    let step = (range.1 - range.0) / f64::from(SCAN);
-    let mut best = (range.0, at(range.0)?);
-    for k in 1..=SCAN {
-        let t = range.0 + step * f64::from(k);
-        let d = at(t)?;
-        if d < best.1 {
-            best = (t, d);
-        }
-    }
-    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
-    let (mut a, mut b) = ((best.0 - step.abs()).max(lo), (best.0 + step.abs()).min(hi));
-    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
-    for _ in 0..80 {
-        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
-        if at(c)? < at(d)? {
-            b = d;
-        } else {
-            a = c;
-        }
-    }
-    Ok(best.1.min(at(f64::midpoint(a, b))?))
-}
-
-/// Raises each edge's tolerance to how far its pcurves stand off its
-/// curve. A pcurve is measured where it is built, but at fewer points
-/// than its turns can stray between, and a curve fitted to the mesh may
-/// stand off a face's surface by more than its plan allowed for.
-fn state_pcurve_gaps(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<()> {
-    let mut wider = Vec::new();
-    for edge in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Edge)? {
-        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
-            continue;
-        };
-        let Some(EdgeRepr::Curve3d {
-            curve,
-            location,
-            range,
-        }) = data.curve3d()
-        else {
-            continue;
-        };
-        let Some(curve) = model.geometry().curve(*curve) else {
-            continue;
-        };
-        let stated = data.tolerance.get();
-        let mut widest: f64 = 0.0;
-        for repr in &data.representations {
-            let (sides, pcurve_range, surface, at) = match repr {
-                EdgeRepr::PCurve {
-                    curve,
-                    range,
-                    surface,
-                    location,
-                } => ([Some(*curve), None], *range, *surface, location),
-                EdgeRepr::Seam {
-                    forward,
-                    reversed,
-                    range,
-                    surface,
-                    location,
-                } => (
-                    [Some(*forward), Some(*reversed)],
-                    *range,
-                    *surface,
-                    location,
-                ),
-                _ => continue,
-            };
-            let Some(surface) = model.geometry().surface(surface) else {
-                continue;
-            };
-            if at != location {
-                continue;
-            }
-            for id in sides.into_iter().flatten() {
-                if let Some(pcurve) = model.geometry().pcurve(id) {
-                    widest = widest.max(pcurve_gap(
-                        (curve, *range),
-                        (pcurve, pcurve_range),
-                        surface,
-                        stated,
-                        tol,
-                    )?);
-                }
-            }
-        }
-        if widest > stated {
-            wider.push((edge, widest));
-        }
-    }
-    for (edge, gap) in wider {
-        model.widen(&edge, Tolerance::new(gap * (1.0 + TOLERANCE_MARGIN))?)?;
-    }
-    Ok(())
-}
-
 /// A degree-one pcurve over the edge's range, from the chart points of its
 /// ends on the face's branch, and how far it strays along its length.
 fn straight_image(
@@ -9269,7 +9128,7 @@ impl Builder<'_> {
         spec: &EdgeSpec,
     ) -> OgeomResult<Option<PlanarCurve>> {
         if let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&spec.curve, geometry, self.tol)
-            && pcurve_gap(
+            && crate::pcurve_gap::pcurve_gap(
                 (&spec.curve, spec.range),
                 (&pcurve, spec.range),
                 geometry,

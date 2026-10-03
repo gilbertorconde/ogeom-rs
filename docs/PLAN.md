@@ -149,11 +149,9 @@ claims `same_parameter`, which almost no producer sets, so a pcurve
 leaving its curve by more than the edge states reads valid. Comparing
 every edge (the lifted pcurve against the nearest point of the curve's
 stretch, 33 samples) flags, besides the boolean's case: fuzzy booleans
-along faceted rounds and slivers (1e-6 to 4e-6 at 1e-7); a drill lying in
-a plate's underside between its rounds; offset faces converted to NURBS
-(1.2e-3 at 1e-5); and a divide on an offset spline (1.18e-7 at 1e-7).
-Each producer that knows its deviation should raise its edges' tolerance
-first; the check follows them.
+along faceted rounds and slivers (1e-6 to 4e-6 at 1e-7); and a drill lying
+in a plate's underside between its rounds. Each producer that knows its
+deviation should raise its edges' tolerance first; the check follows them.
 The STEP and IGES readers pass it: every pcurve they attach, exact or
 fitted, is lifted against its edge's curve (`pcurve_fit::lifted_gap`: 257
 samples, the nearest point within a step where the pace differs, and a
@@ -189,6 +187,20 @@ circle of its radius, thousands off), and otherwise takes the curve's
 projection; a last
 pass raises each edge's tolerance to where its pcurves stand, sampled
 denser than the check.
+The geometry rebuild (`to_nurbs`, `to_nurbs_within`, `restate_geometry`)
+passes it. Its pcurves on an offset surface came from a foot-point solve
+that stopped at its seed, since an offset has no second derivative; the
+solve now steps by Gauss-Newton there, and an offset drum's pcurves, 0.11
+off at 1e-5, and an offset box's, 1.18e-7 at 1e-7 (the divide's case),
+lie on their edges. An iso line on a fitted surface is kept only where it
+follows the edge within the fit target, and every edge given an iso line
+or a fit states how far its pcurves stand (256 samples, the nearest point
+of the stretch).
+Left: `to_nurbs_within` fits a surface through a grid and measures the
+fit only at the grid. An offset drum fitted at 1e-4 stands 1.3e-3 off the
+true one between the samples, and its rims now state 1.29e-3 where they
+stated 1e-5; measuring between the samples (or fitting at the surface's
+own parameters, as curves are) would hold the fit to what was asked.
 
 Left: the rest of those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
 standing off their edges within the 1e-5 taken as along, which every exact

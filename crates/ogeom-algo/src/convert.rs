@@ -287,8 +287,13 @@ fn rebuild(
         history: History::new(),
         new_vertices: HashMap::new(),
         new_edges: HashMap::new(),
+        rederived: Vec::new(),
     };
     let rebuilt = state.shape(model, shape)?;
+    // A re-derived pcurve is held to its target where it was built, at
+    // its samples; each such edge states how far its pcurves stand off
+    // its curve anywhere along it.
+    crate::pcurve_gap::state_pcurve_gaps_of(model, &state.rederived, tol)?;
     Ok(Built::new(rebuilt, state.history))
 }
 
@@ -302,6 +307,9 @@ struct Rebuild<'a> {
     new_vertices: HashMap<(TShapeId, [u64; 3]), Shape>,
     /// Each edge occurrence's twin, by node and placement.
     new_edges: HashMap<(TShapeId, [u64; 3]), ConvertedEdge>,
+    /// The edges given a pcurve that is not a closed form of their curve
+    /// on the new surface: an iso line or a fit.
+    rederived: Vec<Shape>,
 }
 
 impl Rebuild<'_> {
@@ -349,6 +357,7 @@ impl Rebuild<'_> {
         let history = &mut self.history;
         let new_vertices = &mut self.new_vertices;
         let new_edges = &mut self.new_edges;
+        let rederived = &mut self.rederived;
         let placement = face.transform(model.datums())?;
         let (surface_id_old, old_surface) = {
             let Some(node) = model.node(&face) else {
@@ -517,6 +526,7 @@ impl Rebuild<'_> {
                                     Ok,
                                 )?;
                         let seam_range = forward.domain();
+                        rederived.push(new_edge.clone());
                         attach_seam(
                             model,
                             &new_edge,
@@ -528,11 +538,17 @@ impl Rebuild<'_> {
                         )?;
                     }
                 } else {
-                    // The exact path: an edge that ran along the old
-                    // chart's iso direction runs along the new chart's,
-                    // and the boundary conversion shares the patch
-                    // direction's parameterization by construction.
-                    if let Some(iso) = exact_iso_pcurve(
+                    // The iso path: an edge that ran along the old chart's
+                    // iso direction runs along the new chart's. An exact
+                    // conversion shares the boundary's parameterization by
+                    // construction; a fitted surface has its own, and its
+                    // iso line may stray from the edge, so the line is kept
+                    // only where it follows the edge within the fit target.
+                    let stated = model
+                        .node(&new_edge)
+                        .and_then(|n| n.data().as_edge())
+                        .map_or(0.0, |d| d.tolerance.get());
+                    let iso = exact_iso_pcurve(
                         model,
                         old_repr.as_ref(),
                         old_window,
@@ -540,8 +556,24 @@ impl Rebuild<'_> {
                         new_range,
                         &patch_surface,
                         tol,
-                    )? {
+                    )?;
+                    let iso = match iso {
+                        Some(iso)
+                            if crate::pcurve_gap::pcurve_gap(
+                                (&new_curve, new_range),
+                                (&iso, iso.domain()),
+                                &patch_surface,
+                                stated,
+                                tol,
+                            )? <= target.max(stated) =>
+                        {
+                            Some(iso)
+                        }
+                        _ => None,
+                    };
+                    if let Some(iso) = iso {
                         let iso_range = iso.domain();
+                        rederived.push(new_edge.clone());
                         attach_pcurve(
                             model,
                             &new_edge,
@@ -626,6 +658,7 @@ impl Rebuild<'_> {
                                     model.widen(&vertex, widened)?;
                                 }
                             }
+                            rederived.push(new_edge.clone());
                             fitted
                         }
                     };

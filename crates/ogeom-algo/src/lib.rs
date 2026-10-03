@@ -26,6 +26,7 @@ pub mod medial;
 pub mod medial_graph;
 pub mod mesh_solid;
 pub mod pcurve_fit;
+pub mod pcurve_gap;
 pub mod place;
 pub mod primitive;
 pub mod project_plane;
@@ -74,6 +75,7 @@ pub use mesh_solid::{
     MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, refine_solid,
     single_precision_quantum, solid_from_mesh,
 };
+pub use pcurve_gap::{edge_pcurve_gap, pcurve_gap, state_pcurve_gaps, state_pcurve_gaps_of};
 pub use place::{copied, transformed};
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_hexahedron, make_parallelepiped,

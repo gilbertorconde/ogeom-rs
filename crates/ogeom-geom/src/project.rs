@@ -437,9 +437,25 @@ fn refine_foot(
     for _ in 0..60 {
         // One evaluation, not three. Every value here comes from the same
         // jet, so they are consistent with each other, which is what a
-        // Newton step needs.
-        let Ok(jet) = surface.jet_at(x.0, x.1, tol) else {
-            break;
+        // Newton step needs. A surface with no second derivative (an
+        // offset) steps by Gauss-Newton on its first: the curvature terms
+        // drop out of the Jacobian, which still descends and converges to
+        // the same foot, only more slowly.
+        let jet = match surface.jet_at(x.0, x.1, tol) {
+            Ok(jet) => jet,
+            Err(_) => {
+                let Ok((point, du, dv)) = surface.point_d1_at(x.0, x.1, tol) else {
+                    break;
+                };
+                SurfaceJet {
+                    point,
+                    du,
+                    dv,
+                    d2u: ogeom_math::Vector::ZERO,
+                    duv: ogeom_math::Vector::ZERO,
+                    d2v: ogeom_math::Vector::ZERO,
+                }
+            }
         };
         let SurfaceJet {
             point: p,
@@ -557,4 +573,38 @@ fn solve_2x2(j: [[f64; 2]; 2], r: [f64; 2]) -> Option<[f64; 2]> {
     let d1 = factor.mul_add(-rhs0, rhs1) / denom;
     let d0 = d1.mul_add(-row0[1], rhs0) / row0[0];
     Some([d0, d1])
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::{CylinderSurface, OffsetSurface};
+    use ogeom_math::{Cylinder, Frame};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// An offset surface has no second derivative, and its foot is still
+    /// found: a point set off the offset drum along its normal projects
+    /// back to the parameters it was set off from, at the distance it was
+    /// set off by, wherever it lies between the seeds.
+    #[test]
+    fn a_point_off_an_offset_drum_projects_to_its_foot() {
+        let basis: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 1.5, T).unwrap(), (-0.5, 5.5))
+                .unwrap()
+                .into();
+        let offset = SurfaceGeometry::Offset(Box::new(OffsetSurface::new(basis, 0.5).unwrap()));
+        for (u, v) in [(0.1, 5.0), (1.3, 0.37), (3.0, 2.2), (5.9, 4.91)] {
+            let on = offset.point_at(u, v, T).unwrap();
+            let target = Point::new(on.x * 1.15, on.y * 1.15, on.z);
+            let found = project_on_surface(&offset, target, 24, T).unwrap();
+            assert!(
+                found.point.distance(on) < T.confusion(),
+                "({u}, {v}) projected to {:?}",
+                found.parameters
+            );
+            assert!((found.distance - 0.3).abs() < 1e-9, "{}", found.distance);
+        }
+    }
 }
