@@ -218,6 +218,75 @@ fn a_g1_blend_between_parallel_strips_is_tangent_to_both() {
     }
 }
 
+/// The acceptance case with the high strip built on `z = 0` and placed 4
+/// up: the blend is read where the strip stands, is the same surface as
+/// the unplaced case's, and sews to the placed strip itself.
+#[test]
+fn a_blend_to_a_placed_strip_is_the_blend_to_where_it_stands() {
+    let mut model = Model::new();
+    let (a, b) = two_strips(&mut model);
+    let truth = make_blend_surface(
+        &mut model,
+        (&a.0, &a.1),
+        (&b.0, &b.1),
+        (Continuity::G1, Continuity::G1),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let flat = strip(&mut model, 0.0, (0.0, 20.0), (10.0, 15.0));
+    let high = model.placed(
+        &flat,
+        ogeom_math::Transform::translation(Vector::new(0.0, 0.0, 4.0)),
+    );
+    let high_edge = edge_between(
+        &model,
+        &high,
+        Point::new(0.0, 10.0, 0.0),
+        Point::new(20.0, 10.0, 0.0),
+    );
+    assert!(!high_edge.location().is_identity());
+    let built = make_blend_surface(
+        &mut model,
+        (&a.0, &a.1),
+        (&high_edge, &high),
+        (Continuity::G1, Continuity::G1),
+        T,
+    )
+    .unwrap();
+    let blend = built.shape.clone();
+    assert_valid(&model, &blend);
+    assert!(
+        !built.history.generated(&high_edge).is_empty(),
+        "the placed edge generates the blend"
+    );
+    let (ours, theirs) = (surface_of(&model, &blend), surface_of(&model, &truth));
+    for u in [0.0, 0.3, 1.0] {
+        for v in [0.0, 0.25, 0.5, 1.0] {
+            let (p, q) = (
+                ours.point_at(u, v, T).unwrap(),
+                theirs.point_at(u, v, T).unwrap(),
+            );
+            assert!(p.distance(q) < 1e-9, "at ({u}, {v}): {p:?} against {q:?}");
+        }
+    }
+
+    let sewn = sew(&mut model, &[a.1.clone(), blend.clone(), high.clone()], T).unwrap();
+    assert_eq!(sewn.shells.len(), 1, "the three faces sew into one shell");
+    let blend = sewn
+        .history
+        .modified(&blend)
+        .first()
+        .cloned()
+        .unwrap_or(blend);
+    let contacts = analyse_blend(&model, &sewn.shells[0], &blend, 41, T).unwrap();
+    assert_eq!(contacts.len(), 2, "the blend meets both strips");
+    for contact in &contacts {
+        assert!(contact.gap < 1e-7, "{contact:?}");
+        assert!(contact.tangency_error < 1e-9, "{contact:?}");
+    }
+}
+
 /// The acceptance case at G2: tangent, and bending as the strips do (not
 /// at all) square to each edge.
 #[test]

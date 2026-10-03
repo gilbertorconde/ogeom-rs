@@ -604,27 +604,41 @@ fn sew_faces(
 
 /// The faces, each holding an edge node that some face places elsewhere
 /// too baked into a copy with its placements in its geometry; the others
-/// as they are.
+/// as they are. Edges are matched on their nodes' own geometry, which is
+/// sound where every edge stands under one placement (an instance's faces
+/// sewn among themselves); where placements differ, a face holding a
+/// placed edge is baked too.
 fn unshared(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<Vec<Shape>> {
     let mut placements: HashMap<TShapeId, Vec<ogeom_topo::Location>> = HashMap::new();
     let mut held: Vec<Vec<TShapeId>> = Vec::with_capacity(faces.len());
+    let mut placed: Vec<bool> = Vec::with_capacity(faces.len());
+    let mut seen: Vec<ogeom_topo::Location> = Vec::new();
     for face in faces {
         let mut nodes = Vec::new();
+        let mut moved = false;
         for edge in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
             let list = placements.entry(edge.node()).or_default();
             if !list.contains(edge.location()) {
                 list.push(edge.location().clone());
             }
+            if !seen.contains(edge.location()) {
+                seen.push(edge.location().clone());
+            }
+            moved |= !edge.location().is_identity();
             nodes.push(edge.node());
         }
         held.push(nodes);
+        placed.push(moved);
     }
+    let mixed = seen.len() > 1;
     let placed_twice: Vec<bool> = held
         .iter()
-        .map(|nodes| {
-            nodes
-                .iter()
-                .any(|n| placements.get(n).is_some_and(|l| l.len() > 1))
+        .zip(&placed)
+        .map(|(nodes, moved)| {
+            (mixed && *moved)
+                || nodes
+                    .iter()
+                    .any(|n| placements.get(n).is_some_and(|l| l.len() > 1))
         })
         .collect();
     let to_bake: Vec<Shape> = faces

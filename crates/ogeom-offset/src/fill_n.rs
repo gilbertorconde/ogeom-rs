@@ -1,11 +1,14 @@
 //! The N-sided filling: one face over a hole bounded by any number of
 //! edges, meeting each side's face at G0, G1 or G2.
 
-use ogeom_algo::{Built, History, attach_pcurve, edge_vertices, make_face, make_wire};
+use ogeom_algo::{
+    Built, History, attach_pcurve, edge_vertices, make_edge_between, make_face, make_vertex,
+    make_wire,
+};
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
 use ogeom_geom::{
     BSpline2d, BSplineSurface, Continuity, Curve, Curve2d as _, Curve3d as _, CurveKind,
-    PlanarCurve, Surface as _, SurfaceCurvature, SurfaceGeometry, Trig2d,
+    PlanarCurve, Surface as _, SurfaceCurvature, SurfaceGeometry, Transformable as _, Trig2d,
 };
 use ogeom_math::{Direction, Point, Point2, Vector, Vector2, Weighted};
 use ogeom_topo::{
@@ -17,10 +20,16 @@ use crate::fill_patch::{Condition, DEGREE, PlaneFrame, fit_height};
 /// One side of an N-sided filling.
 #[derive(Debug, Clone)]
 pub struct FillBoundary {
-    /// The boundary edge. The filling's face is bounded by this edge node
-    /// itself, not by a copy of it.
+    /// The boundary edge, placed or not. The filling's face is bounded by
+    /// this edge node itself where the edge is not placed and its ends are
+    /// the vertex nodes its neighbours' ends are; otherwise by a new edge
+    /// on the edge's curve, where it stands, between vertices shared with
+    /// the neighbouring sides, which the history records as generated from
+    /// this edge. Either way the face sews to the edge's own faces.
     pub edge: Shape,
-    /// The face the edge belongs to, which the filling meets across it.
+    /// The face the edge belongs to, placed or not, which the filling
+    /// meets across it; the edge as an edge of this face, at the same
+    /// placement.
     /// Required for [`Continuity::G1`] and [`Continuity::G2`]; on a
     /// [`Continuity::C0`] side it is measured against and helps decide which
     /// way the filling faces.
@@ -35,7 +44,8 @@ pub struct FillBoundary {
 /// over the edge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FillSide {
-    /// The side's edge.
+    /// The edge bounding the filling along this side: the side's own edge,
+    /// or the new edge standing in for it.
     pub edge: Shape,
     /// The largest distance, in model units, between the edge's curve and
     /// the filling's surface read through the edge's pcurve on it.
@@ -89,14 +99,18 @@ const PER_CURVE: usize = 32;
 ///
 /// The sides may come in any order and either direction; they must chain
 /// into one simple closed loop. `constraints` are vertices and edges inside
-/// the hole that the surface passes through. The surface is a cubic
-/// B-spline height patch over the plane the loop spans, fitted by least
+/// the hole that the surface passes through. The surface is a
+/// cubic B-spline height patch over the plane the loop spans, fitted by least
 /// squares to the sides' positions, to the tangent planes of G1 and G2
 /// sides' supports and to the normal curvatures of G2 sides' supports, with
 /// a thin-plate bending energy settling the rest; the control net is
 /// refined until every side meets `tolerance` or the refinement runs out.
-/// The face is trimmed by the given edges themselves, each given a pcurve
-/// on the patch, and faces the way the supports say: across each edge it
+/// The face is trimmed by the given edges themselves where they are not
+/// placed and share vertex nodes end to end, each given a pcurve on the
+/// patch; any other side is stood in for by a new edge on its curve
+/// between vertices shared round the loop, so the face is one closed wire
+/// either way. A placed edge or support is read where it stands. The face
+/// faces the way the supports say: across each edge it
 /// runs opposite to its support's use of the edge, so sewing it to the
 /// supports gives a consistently oriented shell. With no supports it faces
 /// the side the loop turns counter-clockwise about, walked from the first
@@ -115,12 +129,12 @@ const PER_CURVE: usize = 32;
 /// name, where:
 ///
 /// - `tolerance` is not positive and finite, or there are no sides;
-/// - a side is not an edge, has no 3D curve or no vertices, or is placed;
+/// - a side is not an edge, or has no 3D curve or no vertices;
 /// - the same edge is given twice;
 /// - a side asks [`Continuity::C1`], [`Continuity::C2`] or
 ///   [`Continuity::CInfinity`] (parametric continuity between two
 ///   surfaces' charts), or G1 or G2 with no support;
-/// - a support is not a face, is placed, does not hold its edge, or the
+/// - a support is not a face, does not hold its edge, or the
 ///   edge does not lie on its surface within `tolerance`;
 /// - the sides do not chain into one closed loop;
 /// - the loop encloses no area, or crosses itself seen along the normal of
@@ -154,7 +168,7 @@ pub fn make_filling_n(
     }
     for i in 0..sides.len() {
         for j in (i + 1)..sides.len() {
-            if sides[i].edge.node() == sides[j].edge.node() {
+            if sides[i].given.is_same(&sides[j].given) {
                 ogeom_bail!(Construction, "side {j} is side {i}'s edge again");
             }
         }
@@ -259,10 +273,15 @@ pub fn make_filling_n(
                 last_miss = format!("at {}x{} controls, {miss}", controls.0, controls.1);
             }
             None => {
-                let face = build(model, &sides, &order, &traces, &reports, surface, tol)?;
+                let face = build(model, &mut sides, &order, &traces, &reports, surface, tol)?;
                 let mut history = History::new();
-                for side in &sides {
-                    history.generate(&side.edge, face.clone());
+                let mut reports = reports;
+                for (side, report) in sides.iter().zip(&mut reports) {
+                    history.generate(&side.given, face.clone());
+                    if !side.edge.is_same(&side.given) {
+                        history.generate(&side.given, side.edge.clone());
+                    }
+                    report.edge = side.edge.clone();
                 }
                 for constraint in constraints {
                     history.generate(constraint, face.clone());
@@ -292,8 +311,14 @@ struct Support {
 /// One side, read and checked.
 struct Side {
     entry: usize,
-    /// The edge node, forward.
+    /// The edge as given, forward.
+    given: Shape,
+    /// The edge bounding the face: the given one, or its stand-in once the
+    /// face is built.
     edge: Shape,
+    /// Whether the given edge or its curve is placed.
+    placed: bool,
+    /// The curve where the edge stands.
     curve: Curve,
     range: (f64, f64),
     edge_tolerance: f64,
@@ -334,12 +359,6 @@ fn read_side(
     if model.kind_of(edge)? != ShapeType::Edge {
         ogeom_bail!(Construction, "side {i} is not an edge");
     }
-    if !edge.location().is_identity() {
-        ogeom_bail!(
-            Construction,
-            "side {i}'s edge is placed; bake its placement into its geometry first"
-        );
-    }
     let order = match entry.continuity {
         Continuity::C0 => 0,
         Continuity::G1 => 1,
@@ -353,7 +372,12 @@ fn read_side(
     let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
         ogeom_bail!(Construction, "side {i}'s edge holds no edge data");
     };
-    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+    let Some(EdgeRepr::Curve3d {
+        curve,
+        range,
+        location: own,
+    }) = data.curve3d()
+    else {
         ogeom_bail!(Construction, "side {i}'s edge has no 3D curve");
     };
     let Some(curve) = model.geometry().curve(*curve).cloned() else {
@@ -361,6 +385,14 @@ fn read_side(
     };
     let range = *range;
     let edge_tolerance = data.tolerance.get();
+    let placed = !(edge.location().is_identity() && own.is_identity());
+    let curve = if placed {
+        curve
+            .transformed(&own.composed(model.datums())?, tol)?
+            .transformed(&edge.transform(model.datums())?, tol)?
+    } else {
+        curve
+    };
     let edge = edge.oriented(Orientation::Forward);
 
     let support = match &entry.support {
@@ -383,7 +415,9 @@ fn read_side(
     };
     Ok(Side {
         entry: i,
+        given: edge.clone(),
         edge,
+        placed,
         curve,
         range,
         edge_tolerance,
@@ -413,29 +447,36 @@ fn read_support(
     let Some(NodeData::Face(face_data)) = model.node(face).map(|n| n.data()) else {
         ogeom_bail!(Dangling, "side {i}'s support is not in this model");
     };
-    if !face.location().is_identity() || !face_data.location.is_identity() {
-        ogeom_bail!(
-            Construction,
-            "side {i}'s support is placed; bake its placement into its geometry first"
-        );
-    }
+    let face_placed = !(face.location().is_identity() && face_data.location.is_identity());
     let holds = explore(model, face, Filter::OfType(ShapeType::Edge))?
         .iter()
-        .any(|e| e.node() == edge.node());
+        .any(|e| e.is_same(edge));
     if !holds {
         ogeom_bail!(
             Construction,
-            "side {i}'s support face does not hold the side's edge"
+            "side {i}'s support face does not hold the side's edge at its placement"
         );
     }
     let surface_id = face_data.surface;
     let Some(surface) = model.geometry().surface(surface_id).cloned() else {
         ogeom_bail!(Dangling, "side {i}'s support surface is not in this model");
     };
+    let surface = if face_placed {
+        surface
+            .transformed(&face_data.location.composed(model.datums())?, tol)?
+            .transformed(&face.transform(model.datums())?, tol)?
+    } else {
+        surface
+    };
     let Some(edge_data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
         ogeom_bail!(Construction, "side {i}'s edge holds no edge data");
     };
-    let stored = match edge_data.pcurve_for(surface_id, edge.location()) {
+    // A stored pcurve describes the surface's own chart, which a placed
+    // face's restated surface need not share.
+    let stored = match edge_data
+        .pcurve_for(surface_id, edge.location())
+        .filter(|_| !face_placed)
+    {
         Some(
             EdgeRepr::PCurve { curve, range, .. }
             | EdgeRepr::Seam {
@@ -450,23 +491,36 @@ fn read_support(
             .map(|c| (c, *range)),
         _ => None,
     };
-    let (pcurve, prange) = if let Some(found) = stored {
+    // The edge must lie on the surface it is said to bound. A stored image
+    // that misses it (one kept for another placement of the same edge
+    // node) gives way to one fitted where the edge stands.
+    let off = |pcurve: &PlanarCurve, prange: (f64, f64)| -> OgeomResult<f64> {
+        let mut worst = 0.0f64;
+        for k in 0..=16 {
+            let f = f64::from(k) / 16.0;
+            let t = (range.1 - range.0).mul_add(f, range.0);
+            let pt = (prange.1 - prange.0).mul_add(f, prange.0);
+            let uv = pcurve.point_at(pt, tol)?;
+            let on = surface.point_at(uv.x, uv.y, tol)?;
+            worst = worst.max(on.distance(curve.point_at(t, tol)?));
+        }
+        Ok(worst)
+    };
+    let stored = match stored {
+        Some((pcurve, prange)) => {
+            let worst = off(&pcurve, prange)?;
+            (worst <= reach).then_some((pcurve, prange, worst))
+        }
+        None => None,
+    };
+    let (pcurve, prange, worst) = if let Some(found) = stored {
         found
     } else {
         let (fitted, _, _, _, _) =
             ogeom_algo::pcurve_fit::fit_projected_pcurve(curve, range, &surface, tol)?;
-        (fitted, range)
+        let worst = off(&fitted, range)?;
+        (fitted, range, worst)
     };
-    // The edge must lie on the surface it is said to bound.
-    let mut worst = 0.0f64;
-    for k in 0..=16 {
-        let f = f64::from(k) / 16.0;
-        let t = (range.1 - range.0).mul_add(f, range.0);
-        let pt = (prange.1 - prange.0).mul_add(f, prange.0);
-        let uv = pcurve.point_at(pt, tol)?;
-        let on = surface.point_at(uv.x, uv.y, tol)?;
-        worst = worst.max(on.distance(curve.point_at(t, tol)?));
-    }
     if worst > reach {
         ogeom_bail!(
             Construction,
@@ -481,23 +535,37 @@ fn read_support(
     })
 }
 
+/// One end of a side: its vertex.
+#[derive(Clone)]
+struct End {
+    vertex: Shape,
+}
+
+/// A side's two ends, in the edge's own direction.
+fn ends_of(model: &Model, side: &Side) -> OgeomResult<(End, End)> {
+    let Some((a, b)) = edge_vertices(model, &side.given)? else {
+        ogeom_bail!(
+            Construction,
+            "side {} has no vertices, so it cannot be shown to join the loop",
+            side.entry
+        );
+    };
+    let end = |vertex: Shape| -> OgeomResult<End> { Ok(End { vertex }) };
+    Ok((end(a)?, end(b)?))
+}
+
 /// Chain the sides into one loop: the order they are walked in, with each
 /// side's `reversed` set to the direction it is walked.
 fn chain(model: &Model, sides: &mut [Side], tol: Tolerances) -> OgeomResult<Vec<usize>> {
     let mut ends = Vec::with_capacity(sides.len());
     for side in sides.iter() {
-        let Some(pair) = edge_vertices(model, &side.edge)? else {
-            ogeom_bail!(
-                Construction,
-                "side {} has no vertices, so it cannot be shown to join the loop",
-                side.entry
-            );
-        };
-        ends.push(pair);
+        let (a, b) = ends_of(model, side)?;
+        ends.push((a, b));
     }
-    let meets = |a: &Shape, b: &Shape| -> OgeomResult<bool> {
-        Ok(a.is_same(b) || model.same_position(a, b, tol)?)
+    let same = |a: &End, b: &End| -> OgeomResult<bool> {
+        Ok(a.vertex.is_same(&b.vertex) || model.same_position(&a.vertex, &b.vertex, tol)?)
     };
+    let meets = same;
     let n = sides.len();
     let mut used = vec![false; n];
     used[0] = true;
@@ -559,7 +627,7 @@ fn face_the_supports(model: &Model, sides: &mut [Side], order: &mut [usize]) -> 
         let uses: Vec<Orientation> =
             explore(model, &support.face, Filter::OfType(ShapeType::Edge))?
                 .iter()
-                .filter(|e| e.node() == side.edge.node())
+                .filter(|e| e.is_same(&side.given))
                 .map(Shape::orientation)
                 .collect();
         let Some(&first) = uses.first() else {
@@ -1066,17 +1134,19 @@ fn first_miss(
         .then(|| format!("a constraint stands {constraint_gap} off the surface"))
 }
 
-/// Build the face on the fitted patch, bounded by the sides' own edges,
-/// each given its pcurve on it and a tolerance that holds its gap.
+/// Build the face on the fitted patch, bounded by the sides' own edges or
+/// their stand-ins, each given its pcurve on it and a tolerance that holds
+/// its gap.
 fn build(
     model: &mut Model,
-    sides: &[Side],
+    sides: &mut [Side],
     order: &[usize],
     traces: &[PlanarCurve],
     reports: &[FillSide],
     surface: BSplineSurface,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
+    stand_in(model, sides, order, tol)?;
     let walk: Vec<Shape> = order
         .iter()
         .map(|&i| {
@@ -1114,4 +1184,63 @@ fn build(
         }
     }
     Ok(face)
+}
+
+/// Give each side the edge the face is bounded by: its own where it is not
+/// placed and both its corners are vertex nodes it shares with its
+/// neighbours, otherwise a new edge on its curve where it stands, between
+/// the loop's corner vertices. A corner keeps the shared vertex where there
+/// is one, unplaced; elsewhere it is a new vertex midway between the two
+/// ends, reaching both.
+fn stand_in(
+    model: &mut Model,
+    sides: &mut [Side],
+    order: &[usize],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let n = order.len();
+    // Corner k is where side `order[k]` ends its walk and `order[k + 1]`
+    // starts its.
+    let mut corners: Vec<(Shape, bool)> = Vec::with_capacity(n);
+    for k in 0..n {
+        let (a, b) = (&sides[order[k]], &sides[order[(k + 1) % n]]);
+        let (a0, a1) = ends_of(model, a)?;
+        let (b0, b1) = ends_of(model, b)?;
+        let (arrive, leave) = (
+            if a.reversed { a0 } else { a1 },
+            if b.reversed { b1 } else { b0 },
+        );
+        let (from, to) = (
+            a.curve
+                .point_at(if a.reversed { a.range.0 } else { a.range.1 }, tol)?,
+            b.curve
+                .point_at(if b.reversed { b.range.1 } else { b.range.0 }, tol)?,
+        );
+        if arrive.vertex.is_same(&leave.vertex) && arrive.vertex.location().is_identity() {
+            corners.push((arrive.vertex, true));
+            continue;
+        }
+        let vertex = make_vertex(model, from.midpoint(to)).shape;
+        let reach = (0.5 * from.distance(to) + tol.confusion())
+            .max(a.edge_tolerance)
+            .max(b.edge_tolerance);
+        model.widen(&vertex, Tolerance::new(reach)?)?;
+        corners.push((vertex, false));
+    }
+    for k in 0..n {
+        let side = &sides[order[k]];
+        let (start, end) = (&corners[(k + n - 1) % n], &corners[k]);
+        if !side.placed && start.1 && end.1 {
+            continue;
+        }
+        let (from, to) = if side.reversed {
+            (&end.0, &start.0)
+        } else {
+            (&start.0, &end.0)
+        };
+        let edge = make_edge_between(model, side.curve.clone(), side.range, from, to, tol)?.shape;
+        model.widen(&edge, Tolerance::new(side.edge_tolerance)?)?;
+        sides[order[k]].edge = edge;
+    }
+    Ok(())
 }

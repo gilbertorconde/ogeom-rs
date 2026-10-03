@@ -78,8 +78,15 @@ const STATIONS_PER_SPAN: usize = 4;
 /// curved face the knots along the edges are refined until the measured join
 /// is within budget.
 ///
+/// A placed edge or face (a prism's far end edges are its profile's edges
+/// under the prism's translation) is read where it stands: the face is
+/// rebuilt with its placements baked in, and the blend is bounded by the
+/// edge's twin on it, a new edge on the same geometry that sews to the
+/// given one.
+///
 /// Each edge gains a trim on the blend's surface. History: each edge
-/// generates the blend face and the two side edges.
+/// generates the blend face and the two side edges, and its baked twin
+/// where it was placed.
 ///
 /// # Errors
 ///
@@ -90,7 +97,6 @@ const STATIONS_PER_SPAN: usize = 4;
 ///   [`Continuity::CInfinity`]: a blend's joins are geometric, to G2 at most;
 /// - a shape is not an edge or a face, an edge is not on the face given with
 ///   it, or both are the same edge;
-/// - an edge or a face is placed;
 /// - an edge is degenerate, closed, a seam of its face, or has no trim on its
 ///   face's surface;
 /// - an edge's curve has no exact B-spline form on its own parameter (a
@@ -114,8 +120,10 @@ pub fn make_blend_surface(
             "a blend bridges two different edges; both are the same one"
         );
     }
-    let mut near = read_side(model, first.0, first.1, orders.0, tol)?;
-    let mut far = read_side(model, second.0, second.1, orders.1, tol)?;
+    let (near_edge, near_face) = unplaced(model, first.0, first.1, tol)?;
+    let (far_edge, far_face) = unplaced(model, second.0, second.1, tol)?;
+    let mut near = read_side(model, &near_edge, &near_face, orders.0, tol)?;
+    let mut far = read_side(model, &far_edge, &far_face, orders.1, tol)?;
 
     // The second edge runs whichever way pairs its ends with the first's
     // without the sides crossing.
@@ -226,12 +234,42 @@ pub fn make_blend_surface(
     let face = make_face_on(model, surface_id, &[wire], tol)?.shape;
 
     let mut history = History::new();
-    for edge in [first.0, second.0] {
+    for (edge, twin) in [(first.0, &near_edge), (second.0, &far_edge)] {
         history.generate(edge, face.clone());
         history.generate(edge, side_start.clone());
         history.generate(edge, side_end.clone());
+        if !twin.is_same(edge) {
+            history.generate(edge, twin.clone());
+        }
     }
     Ok(Built::new(face, history))
+}
+
+/// An edge and the face it bounds, read where they stand: themselves where
+/// nothing about the face is placed, otherwise the face rebuilt with its
+/// placements baked in and the edge's twin on it.
+fn unplaced(
+    model: &mut Model,
+    edge: &Shape,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Shape)> {
+    if model.kind_of(face)? != ShapeType::Face {
+        return Ok((edge.clone(), face.clone()));
+    }
+    let baked = ogeom_algo::baked_where_placed(model, face, tol)?;
+    if baked.history.is_empty() {
+        return Ok((edge.clone(), face.clone()));
+    }
+    let Some(twin) = baked.history.modified(edge).first().cloned() else {
+        ogeom_bail!(Construction, "the edge is not on the face given with it");
+    };
+    let twin = if edge.orientation() == Orientation::Reversed {
+        twin.reversed()
+    } else {
+        twin
+    };
+    Ok((twin, baked.shape))
 }
 
 /// Bridge the gap between the ends of two edges with a blend edge.
@@ -364,15 +402,6 @@ fn read_side(
         ogeom_bail!(Dangling, "face is not in this model");
     };
     let surface_id = face_data.surface;
-    if !face.location().is_identity()
-        || !face_data.location.is_identity()
-        || !edge.location().is_identity()
-    {
-        ogeom_bail!(
-            Construction,
-            "a placed edge or face is not blended; bake its placement into its geometry first"
-        );
-    }
     if !explore_unique(model, face, ShapeType::Edge)?
         .iter()
         .any(|e| e.is_same(edge))

@@ -64,9 +64,17 @@ use crate::support::{edge_curve, face_from_edges, segment_between};
 /// Edges are rounded one after another, each on the sheet the previous one
 /// left, so two rounds may trim the same face from different sides.
 ///
+/// A placed sheet, a sheet with a placed face, or a placed edge to round
+/// (a sheet placed inside a compound and explored from it) is read where
+/// it stands: the sheet is first rebuilt with its placements baked in,
+/// and that rebuilt sheet is rounded, its edges new nodes on the same
+/// geometry. Placed edges elsewhere on a face's boundary (a prism's far
+/// end edges) are restated where the face is rebuilt.
+///
 /// History: the sheet is modified into the result; every rebuilt face and
 /// every shortened boundary edge is modified into its new self; each
-/// rounded edge is deleted and generates its round.
+/// rounded edge is deleted and generates its round; where the sheet was
+/// baked first, every other face and edge is modified into its baked twin.
 ///
 /// # Errors
 ///
@@ -74,11 +82,11 @@ use crate::support::{edge_curve, face_from_edges, segment_between};
 /// name, where:
 ///
 /// - `radius` is not a positive length, or `edges` is empty;
-/// - `sheet` is not a shell, or is placed;
+/// - `sheet` is not a shell;
 /// - an edge is not an edge of the sheet with a face on each side (a free
 ///   edge, an edge of three faces, an edge an earlier round in the same
 ///   call consumed);
-/// - a face beside an edge is placed, or runs along it twice;
+/// - a face beside an edge runs along it twice;
 /// - the two faces continue each other, fold onto each other, or are
 ///   oriented inconsistently across the edge;
 /// - no ball of `radius` seats in the corner, a ball does not fit inside a
@@ -115,18 +123,42 @@ pub fn fillet_sheet_edges(
             "a sheet's edges are rounded on a shell; got a {kind:?}"
         );
     }
-    if !sheet.location().is_identity() {
-        ogeom_bail!(
-            Construction,
-            "a placed sheet is not rounded; bake its placement into its geometry first"
-        );
-    }
-    let mut current = sheet.clone();
-    let mut steps = Vec::with_capacity(edges.len());
     for edge in edges {
         if model.kind_of(edge)? != ShapeType::Edge {
             ogeom_bail!(Construction, "a sheet is rounded along its edges");
         }
+    }
+    // A placed edge on a face's boundary is restated where the face is
+    // rebuilt; a placed sheet, face or rounded edge is baked first.
+    let mut placed =
+        !sheet.location().is_identity() || edges.iter().any(|e| !e.location().is_identity());
+    for face in explore_unique(model, sheet, ShapeType::Face)? {
+        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+            ogeom_bail!(Dangling, "face is not in this model");
+        };
+        placed |= !face.location().is_identity() || !data.location.is_identity();
+    }
+    let mut current = sheet.clone();
+    let mut steps = Vec::with_capacity(edges.len() + 1);
+    let edges: Vec<Shape> = if placed {
+        let baked = ogeom_algo::baked_shape(model, sheet, tol)?;
+        current = baked.shape.clone();
+        let mut twins = Vec::with_capacity(edges.len());
+        for edge in edges {
+            let Some(twin) = baked.history.modified(edge).first().cloned() else {
+                ogeom_bail!(
+                    Construction,
+                    "an edge to round is not an edge of the sheet at its placement"
+                );
+            };
+            twins.push(twin);
+        }
+        steps.push(baked.history);
+        twins
+    } else {
+        edges.to_vec()
+    };
+    for edge in &edges {
         let step = round_sheet_edge(model, &current, edge, radius, tol)?;
         current = step.shape.clone();
         steps.push(step.history);

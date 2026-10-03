@@ -878,24 +878,57 @@ fn a_curved_edge_of_a_planar_face_is_refused() {
     assert!(err.contains("straight edge"), "{err}");
 }
 
+/// A square placed 5 up grows where it stands: the result is 10 by 15 at
+/// z = 5, and the history reads through the placed occurrences.
 #[test]
-fn a_placed_face_is_refused() {
+fn a_placed_face_grows_where_it_stands() {
     let mut model = Model::new();
     let square = polygon_face(
         &mut model,
         &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
     );
-    let edge = outer_edges(&model, &square)[0].clone();
     let moved = model.placed(&square, Transform::translation(Vector::new(0.0, 0.0, 5.0)));
-    let err = refusal(extend_face(
-        &mut model,
+    // The placement is along z, so the stored ends still name the edge.
+    let edge = edge_between(
+        &model,
         &moved,
-        &edge,
-        1.0,
-        Extension::Natural,
-        T,
-    ));
-    assert!(err.contains("placed face"), "{err}");
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+    );
+    assert!(!edge.location().is_identity());
+    let built = extend_face(&mut model, &moved, &edge, 5.0, Extension::Natural, T).unwrap();
+    let grown = built.shape.clone();
+    assert_valid(&model, &grown);
+    assert!(grown.location().is_identity());
+    assert!((area(&model, &grown) - 150.0).abs() < 1e-9);
+    let corners = vertex_points(&model, &grown);
+    for q in &corners {
+        assert!(
+            (q.z - 5.0).abs() < 1e-12,
+            "a corner off the placed plane: {q:?}"
+        );
+    }
+    for expected in [(0.0, 0.0), (15.0, 0.0), (15.0, 10.0), (0.0, 10.0)] {
+        let p = Point::new(expected.0, expected.1, 5.0);
+        assert!(
+            corners.iter().any(|q| q.distance(p) < 1e-12),
+            "no corner at {p:?}"
+        );
+    }
+    assert!(built.history.modified(&moved)[0].is_same(&grown));
+    let far = &built.history.modified(&edge)[0];
+    for p in vertex_points(&model, far) {
+        assert!((p.x - 15.0).abs() < 1e-12 && (p.z - 5.0).abs() < 1e-12);
+    }
+    assert_eq!(built.history.generated(&edge).len(), 2);
+    let new = outer_edges(&model, &grown);
+    for kept in outer_edges(&model, &moved) {
+        if kept.is_same(&edge) {
+            continue;
+        }
+        let twin = &built.history.modified(&kept)[0];
+        assert!(new.iter().any(|n| n.is_same(twin)), "a kept edge's twin");
+    }
 }
 
 /// The extension that would carry a quarter cylinder more than the rest of

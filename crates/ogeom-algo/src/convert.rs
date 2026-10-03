@@ -16,13 +16,12 @@
 //! pcurve, which is the point of converting first.
 
 use crate::build::{attach_pcurve, attach_seam, make_edge_between, make_face_on};
-use crate::{Built, History, make_shell, make_solid, make_vertex, make_wire};
+use crate::{Built, History, make_compound, make_shell, make_solid, make_vertex, make_wire};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{GeneralTransform, Point, Point2, Weighted};
 use ogeom_topo::{
     EdgeRepr, Filter, Location, Model, NodeData, Orientation, Shape, ShapeType, TShapeId, explore,
-    explore_unique,
 };
 use std::collections::HashMap;
 
@@ -32,18 +31,21 @@ type ConvertedEdge = (Shape, Curve, (f64, f64));
 /// A surface's chart window: the `u` then `v` interval.
 type ChartWindow = ((f64, f64), (f64, f64));
 
-/// Rebuild a solid with every surface and curve in B-spline form.
+/// Rebuild a solid, a shell, a face, or a compound of them, with every
+/// surface and curve in B-spline form.
 ///
-/// The result is a new solid in world coordinates (every occurrence
-/// placement baked in), whose geometry is exactly the original's wherever
-/// the conversions are exact (everywhere but the fitted pcurves, whose error
-/// is bounded by the fit target derived from the tolerance). History records
-/// each original face modified into its converted twin.
+/// The result is a new shape of the same kind in world coordinates (every
+/// occurrence placement baked in), whose geometry is exactly the
+/// original's wherever the conversions are exact (everywhere but the
+/// fitted pcurves, whose error is bounded by the fit target derived from
+/// the tolerance). History records each original face, edge occurrence and
+/// container modified into its converted twin.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// shape is not a solid or a conversion has no exact form (a trimmed
+/// shape is not a solid, a shell, a face or a compound of them, or a
+/// conversion has no exact form (a trimmed
 /// surface's basis is converted; nothing else refuses);
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a pcurve
 /// refit cannot reach its target.
@@ -51,7 +53,7 @@ pub fn to_nurbs(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResul
     rebuild(model, shape, None, Restate::Nurbs, tol)
 }
 
-/// Rebuild a solid with every surface and curve in B-spline form: exactly
+/// Rebuild a shape with every surface and curve in B-spline form: exactly
 /// where a closed form exists, as [`to_nurbs`] does, and fitted within
 /// `tolerance` where none does (an offset surface, a helix, an offset
 /// curve), where [`to_nurbs`] refuses.
@@ -133,8 +135,13 @@ pub fn normals_oppose(
     Ok(n_old.vector().dot(n_new.vector()) < 0.0)
 }
 
-/// Rebuild a solid with its placements baked into the geometry, keeping
-/// every surface and curve in its own analytic vocabulary.
+/// Rebuild a solid, a shell, a face, or a compound of them, with its
+/// placements baked into the geometry, keeping every surface and curve in
+/// its own analytic vocabulary.
+///
+/// History records each face, edge occurrence and container modified into
+/// its twin: an edge node placed twice (a prism's two ends) has two twins,
+/// one per placement, each read back through the placed occurrence.
 ///
 /// A uniform-scale placement carries a cylinder to a cylinder and a line to
 /// a line (`Transformable` states each exactly), but the stored pcurves
@@ -151,7 +158,43 @@ pub fn baked_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomRe
     rebuild(model, shape, None, Restate::Keep, tol)
 }
 
-/// Rebuild a solid under a general affine transform.
+/// The shape with its placements baked in where any is placed, as
+/// [`baked_shape`] rebuilds it; the shape itself, with an empty history,
+/// where no face, surface, edge occurrence or edge curve in it is placed.
+///
+/// What an operation that reads geometry in its own coordinates calls on
+/// its input: a prism's far end edges are its profile's edges under the
+/// prism's translation, and read through this they are edges in place.
+/// [`History::trace`] on the result's history answers where any face or
+/// edge occurrence of the input went.
+///
+/// # Errors
+///
+/// As [`baked_shape`].
+pub fn baked_where_placed(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    let mut placed = !shape.location().is_identity();
+    for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+            ogeom_bail!(Dangling, "face is not in this model");
+        };
+        placed |= !face.location().is_identity() || !data.location.is_identity();
+    }
+    for edge in explore(model, shape, Filter::OfType(ShapeType::Edge))? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            ogeom_bail!(Dangling, "edge is not in this model");
+        };
+        placed |= !edge.location().is_identity()
+            || matches!(data.curve3d(), Some(EdgeRepr::Curve3d { location, .. }) if !location.is_identity());
+    }
+    if placed {
+        baked_shape(model, shape, tol)
+    } else {
+        Ok(Built::new(shape.clone(), History::identity()))
+    }
+}
+
+/// Rebuild a solid, a shell, a face, or a compound of them, under a
+/// general affine transform.
 ///
 /// A shear or an uneven scale is not a placement: it carries a circle to an
 /// ellipse and a sphere to something with no analytic name here, so the
@@ -196,7 +239,7 @@ pub type SurfaceRestatement<'a> =
 pub type CurveRestatement<'a> =
     &'a dyn Fn(&Curve, (f64, f64)) -> OgeomResult<Option<(Curve, (f64, f64))>>;
 
-/// Rebuild a solid with its surfaces and curves restated by the caller,
+/// Rebuild a shape with its surfaces and curves restated by the caller,
 /// every placement baked in and every pcurve re-derived against the new
 /// surfaces at the new edges' parameters.
 ///
@@ -237,131 +280,275 @@ fn rebuild(
     restate: Restate<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    if model.kind_of(shape)? != ShapeType::Solid {
-        ogeom_bail!(Construction, "whole-shape conversion rebuilds solids");
+    let mut state = Rebuild {
+        affine,
+        restate,
+        tol,
+        history: History::new(),
+        new_vertices: HashMap::new(),
+        new_edges: HashMap::new(),
+    };
+    let rebuilt = state.shape(model, shape)?;
+    Ok(Built::new(rebuilt, state.history))
+}
+
+/// A rebuild under way: how it restates, and what it has made so far.
+struct Rebuild<'a> {
+    affine: Option<&'a GeneralTransform>,
+    restate: Restate<'a>,
+    tol: Tolerances,
+    history: History,
+    /// Each vertex occurrence's twin, by node and position.
+    new_vertices: HashMap<(TShapeId, [u64; 3]), Shape>,
+    /// Each edge occurrence's twin, by node and placement.
+    new_edges: HashMap<(TShapeId, [u64; 3]), ConvertedEdge>,
+}
+
+impl Rebuild<'_> {
+    /// A solid, a shell, a face, or a compound of them, rebuilt: each
+    /// container anew over its rebuilt children, which carry the
+    /// container's orientation and placement down.
+    fn shape(&mut self, model: &mut Model, shape: &Shape) -> OgeomResult<Shape> {
+        let kind = model.kind_of(shape)?;
+        let rebuilt = match kind {
+            ShapeType::Face => return self.face(model, shape),
+            ShapeType::Shell | ShapeType::Solid | ShapeType::Compound => {
+                let mut children = Vec::new();
+                for child in model.ordered_children_of(shape)? {
+                    children.push(self.shape(model, &child)?);
+                }
+                match kind {
+                    ShapeType::Shell => make_shell(model, &children)?.shape,
+                    ShapeType::Solid => make_solid(model, &children)?.shape,
+                    _ => make_compound(model, &children)?.shape,
+                }
+            }
+            other => ogeom_bail!(
+                Construction,
+                "whole-shape conversion rebuilds solids, shells, faces and \
+                 compounds of them; this is a {other:?}"
+            ),
+        };
+        self.history.modify(shape, rebuilt.clone());
+        Ok(rebuilt)
     }
-    let map = |p: Point| affine.map_or(p, |t| t.apply(p));
-    // The fit target for re-derived pcurves: comfortably inside the model's
-    // own working band.
-    let target = tol.confusion() * 1e2;
 
-    let mut history = History::new();
-    let mut new_vertices: HashMap<(TShapeId, [u64; 3]), Shape> = HashMap::new();
-    let mut new_edges: HashMap<(TShapeId, [u64; 3]), ConvertedEdge> = HashMap::new();
-    let mut shells = Vec::new();
-
-    for shell in explore_unique(model, shape, ShapeType::Shell)? {
-        let mut faces = Vec::new();
-        for face in model.ordered_children_of(&shell)? {
-            let placement = face.transform(model.datums())?;
-            let (surface_id_old, old_surface) = {
-                let Some(node) = model.node(&face) else {
-                    ogeom_bail!(Dangling, "face is not in this model");
-                };
-                let NodeData::Face(data) = node.data() else {
-                    ogeom_bail!(Construction, "face node holds no face data");
-                };
-                let Some(surface) = model.geometry().surface(data.surface) else {
-                    ogeom_bail!(Dangling, "face refers to a surface not in this model");
-                };
-                (data.surface, surface.clone())
+    /// One face rebuilt on its restated surface, bounded by its restated
+    /// edges, each with a pcurve re-derived on the new surface.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one walk over a face's wires, restating each edge in place"
+    )]
+    fn face(&mut self, model: &mut Model, face: &Shape) -> OgeomResult<Shape> {
+        let (affine, restate, tol) = (self.affine, self.restate, self.tol);
+        let map = |p: Point| affine.map_or(p, |t| t.apply(p));
+        // The fit target for re-derived pcurves: comfortably inside the
+        // model's own working band.
+        let target = tol.confusion() * 1e2;
+        let face = face.clone();
+        let history = &mut self.history;
+        let new_vertices = &mut self.new_vertices;
+        let new_edges = &mut self.new_edges;
+        let placement = face.transform(model.datums())?;
+        let (surface_id_old, old_surface) = {
+            let Some(node) = model.node(&face) else {
+                ogeom_bail!(Dangling, "face is not in this model");
             };
-            use ogeom_geom::Transformable as _;
-            let placed = old_surface.transformed(&placement, tol)?;
-            // Bounded to the face's own chart region first: a plane declares
-            // an enormous domain, and a patch over all of it would map the
-            // face to a dot in its chart.
-            let (placed, old_window) = bounded_to_face(
-                model,
-                &face,
-                surface_id_old,
-                &placed,
-                placement.scale_factor().abs(),
-                tol,
-            )?;
-            let mut flipped = false;
-            // Under an affine map the turn is measured on the spline before
-            // the map moves it, where the old surface's normal still means
-            // something, and the map's own reflection goes on top.
-            let mut turned_before_affine = None;
-            let patch_surface: SurfaceGeometry = match restate {
-                Restate::Nurbs => {
-                    let mut patch = profile_held(&placed, old_window, tol).to_bspline(tol)?;
-                    if let Some(t) = affine {
-                        let unmapped: SurfaceGeometry = patch.clone().into();
-                        turned_before_affine =
-                            turned_by_rebuild(&old_surface, &placement, old_window, &unmapped, tol)
-                                .map(|turned| turned != (t.linear.determinant() < 0.0));
-                        patch = transformed_patch(&patch, t)?;
-                    }
-                    patch.into()
-                }
-                Restate::Keep => {
-                    on_right_handed_frame(&placed, tol)?.unwrap_or_else(|| placed.clone())
-                }
-                Restate::With(surface, _) => match surface(&placed)? {
-                    Some((restated, flip)) => {
-                        flipped = flip;
-                        restated
-                    }
-                    None => placed.clone(),
-                },
+            let NodeData::Face(data) = node.data() else {
+                ogeom_bail!(Construction, "face node holds no face data");
             };
-            let surface_id = model.geometry_mut().add_surface(patch_surface.clone());
+            let Some(surface) = model.geometry().surface(data.surface) else {
+                ogeom_bail!(Dangling, "face refers to a surface not in this model");
+            };
+            (data.surface, surface.clone())
+        };
+        use ogeom_geom::Transformable as _;
+        let placed = old_surface.transformed(&placement, tol)?;
+        // Bounded to the face's own chart region first: a plane declares
+        // an enormous domain, and a patch over all of it would map the
+        // face to a dot in its chart.
+        let (placed, old_window) = bounded_to_face(
+            model,
+            &face,
+            surface_id_old,
+            &placed,
+            placement.scale_factor().abs(),
+            tol,
+        )?;
+        let mut flipped = false;
+        // Under an affine map the turn is measured on the spline before
+        // the map moves it, where the old surface's normal still means
+        // something, and the map's own reflection goes on top.
+        let mut turned_before_affine = None;
+        let patch_surface: SurfaceGeometry = match restate {
+            Restate::Nurbs => {
+                let mut patch = profile_held(&placed, old_window, tol).to_bspline(tol)?;
+                if let Some(t) = affine {
+                    let unmapped: SurfaceGeometry = patch.clone().into();
+                    turned_before_affine =
+                        turned_by_rebuild(&old_surface, &placement, old_window, &unmapped, tol)
+                            .map(|turned| turned != (t.linear.determinant() < 0.0));
+                    patch = transformed_patch(&patch, t)?;
+                }
+                patch.into()
+            }
+            Restate::Keep => on_right_handed_frame(&placed, tol)?.unwrap_or_else(|| placed.clone()),
+            Restate::With(surface, _) => match surface(&placed)? {
+                Some((restated, flip)) => {
+                    flipped = flip;
+                    restated
+                }
+                None => placed.clone(),
+            },
+        };
+        let surface_id = model.geometry_mut().add_surface(patch_surface.clone());
 
-            let mut wires = Vec::new();
-            let mut corner_uv: HashMap<TShapeId, Point2> = HashMap::new();
-            for wire in model.ordered_children_of(&face)? {
-                let mut ring = Vec::new();
-                let mut seams_done: Vec<TShapeId> = Vec::new();
-                for edge in model.ordered_children_of(&wire)? {
-                    let edge_placement = edge.transform(model.datums())?;
-                    let key = (edge.node(), placement_bits(&edge_placement));
-                    let data = {
-                        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
-                            ogeom_bail!(Construction, "edge node holds no edge data");
-                        };
-                        data.clone()
+        let mut wires = Vec::new();
+        let mut corner_uv: HashMap<TShapeId, Point2> = HashMap::new();
+        for wire in model.ordered_children_of(&face)? {
+            let mut ring = Vec::new();
+            let mut seams_done: Vec<TShapeId> = Vec::new();
+            for edge in model.ordered_children_of(&wire)? {
+                let edge_placement = edge.transform(model.datums())?;
+                let key = (edge.node(), placement_bits(&edge_placement));
+                let data = {
+                    let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                        ogeom_bail!(Construction, "edge node holds no edge data");
                     };
-                    if data.degenerate {
-                        // A pole or an apex: still an edge in parameter
-                        // space; its pcurve is rebuilt below from the old
-                        // chart row's place in the new chart.
-                        let Some(vertex) = model.children_of(&edge)?.first().cloned() else {
-                            ogeom_bail!(Construction, "a degenerate edge has no vertex");
+                    data.clone()
+                };
+                if data.degenerate {
+                    // A pole or an apex: still an edge in parameter
+                    // space; its pcurve is rebuilt below from the old
+                    // chart row's place in the new chart.
+                    let Some(vertex) = model.children_of(&edge)?.first().cloned() else {
+                        ogeom_bail!(Construction, "a degenerate edge has no vertex");
+                    };
+                    let at = {
+                        let Some(v) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
+                            ogeom_bail!(Construction, "vertex node holds no vertex data");
                         };
-                        let at = {
-                            let Some(v) = model.node(&vertex).and_then(|n| n.data().as_vertex())
-                            else {
-                                ogeom_bail!(Construction, "vertex node holds no vertex data");
-                            };
-                            map(vertex.transform(model.datums())?.apply(v.point))
-                        };
-                        let new_vertex = new_vertices
-                            .entry((vertex.node(), point_bits(at)))
-                            .or_insert_with(|| make_vertex(model, at).shape)
-                            .clone();
-                        let mut degenerate = ogeom_topo::EdgeData::new();
-                        degenerate.degenerate = true;
-                        let new_edge =
-                            model.add_edge(degenerate, &[new_vertex.clone(), new_vertex])?;
-                        let row = degenerate_row(
+                        map(vertex.transform(model.datums())?.apply(v.point))
+                    };
+                    let new_vertex = new_vertices
+                        .entry((vertex.node(), point_bits(at)))
+                        .or_insert_with(|| make_vertex(model, at).shape)
+                        .clone();
+                    let mut degenerate = ogeom_topo::EdgeData::new();
+                    degenerate.degenerate = true;
+                    let new_edge = model.add_edge(degenerate, &[new_vertex.clone(), new_vertex])?;
+                    let row = degenerate_row(
+                        model,
+                        &data,
+                        surface_id_old,
+                        &edge,
+                        &placed,
+                        &patch_surface,
+                        at,
+                        tol,
+                    )?;
+                    attach_pcurve(
+                        model,
+                        &new_edge,
+                        row.into(),
+                        surface_id,
+                        Location::identity(),
+                        row.domain(),
+                    )?;
+                    ring.push(if edge.orientation() == Orientation::Reversed {
+                        new_edge.reversed()
+                    } else {
+                        new_edge
+                    });
+                    continue;
+                }
+
+                // An occurrence placed differently may still lie where
+                // one already converted lies (a rotated copy of a profile
+                // shares its edge on the axis of the turn), and is then
+                // that edge.
+                let found = match new_edges.get(&key) {
+                    Some(found) => Some(found.clone()),
+                    None => {
+                        let at = occurrence_points(model, &edge, &data, &map, tol)?;
+                        let same = new_edges
+                            .iter()
+                            .filter(|((node, _), _)| *node == edge.node())
+                            .find(|(_, (_, curve, range))| lies_at(curve, *range, at, tol))
+                            .map(|(_, found)| found.clone());
+                        if let Some(same) = &same {
+                            history.modify(&edge, same.0.clone());
+                            new_edges.insert(key, same.clone());
+                        }
+                        same
+                    }
+                };
+                let (new_edge, new_curve, new_range) = match found {
+                    Some(found) => found,
+                    None => {
+                        let built =
+                            convert_edge(model, &edge, &data, &map, restate, new_vertices, tol)?;
+                        history.modify(&edge, built.0.clone());
+                        new_edges.insert(key, built.clone());
+                        built
+                    }
+                };
+
+                // The pcurve on this face: fitted at the new edge's own
+                // parameters, seam sides each fitted against their own
+                // half of the chart.
+                let old_repr = data.pcurve_for(surface_id_old, edge.location()).cloned();
+                let was_seam = matches!(old_repr, Some(EdgeRepr::Seam { .. }));
+                if was_seam {
+                    if !seams_done.contains(&new_edge.node()) {
+                        seams_done.push(new_edge.node());
+                        let (forward, reversed) =
+                            exact_seam_columns(&new_curve, new_range, &patch_surface, tol)
+                                .map_or_else(
+                                    || {
+                                        seam_pcurves(
+                                            &new_curve,
+                                            new_range,
+                                            &patch_surface,
+                                            target,
+                                            tol,
+                                        )
+                                    },
+                                    Ok,
+                                )?;
+                        let seam_range = forward.domain();
+                        attach_seam(
                             model,
-                            &data,
-                            surface_id_old,
-                            &edge,
-                            &placed,
-                            &patch_surface,
-                            at,
-                            tol,
+                            &new_edge,
+                            forward,
+                            reversed,
+                            surface_id,
+                            Location::identity(),
+                            seam_range,
                         )?;
+                    }
+                } else {
+                    // The exact path: an edge that ran along the old
+                    // chart's iso direction runs along the new chart's,
+                    // and the boundary conversion shares the patch
+                    // direction's parameterization by construction.
+                    if let Some(iso) = exact_iso_pcurve(
+                        model,
+                        old_repr.as_ref(),
+                        old_window,
+                        &new_curve,
+                        new_range,
+                        &patch_surface,
+                        tol,
+                    )? {
+                        let iso_range = iso.domain();
                         attach_pcurve(
                             model,
                             &new_edge,
-                            row.into(),
+                            iso,
                             surface_id,
                             Location::identity(),
-                            row.domain(),
+                            iso_range,
                         )?;
                         ring.push(if edge.orientation() == Orientation::Reversed {
                             new_edge.reversed()
@@ -370,237 +557,125 @@ fn rebuild(
                         });
                         continue;
                     }
-
-                    // An occurrence placed differently may still lie where
-                    // one already converted lies (a rotated copy of a profile
-                    // shares its edge on the axis of the turn), and is then
-                    // that edge.
-                    let found = match new_edges.get(&key) {
-                        Some(found) => Some(found.clone()),
-                        None => {
-                            let at = occurrence_points(model, &edge, &data, &map, tol)?;
-                            let same = new_edges
-                                .iter()
-                                .filter(|((node, _), _)| *node == edge.node())
-                                .find(|(_, (_, curve, range))| lies_at(curve, *range, at, tol))
-                                .map(|(_, found)| found.clone());
-                            if let Some(same) = &same {
-                                history.modify(&edge, same.0.clone());
-                                new_edges.insert(key, same.clone());
-                            }
-                            same
+                    let uv_of = |model: &Model,
+                                 cache: &mut HashMap<TShapeId, Point2>,
+                                 vertex: &Shape|
+                     -> OgeomResult<Point2> {
+                        if let Some(&uv) = cache.get(&vertex.node()) {
+                            return Ok(uv);
                         }
+                        let Some(v) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+                            ogeom_bail!(Construction, "vertex node holds no vertex data");
+                        };
+                        let projection =
+                            crate::measure::project_on_surface(&patch_surface, v.point, 24, tol)?;
+                        let uv = Point2::new(projection.parameters.0, projection.parameters.1);
+                        cache.insert(vertex.node(), uv);
+                        Ok(uv)
                     };
-                    let (new_edge, new_curve, new_range) = match found {
-                        Some(found) => found,
-                        None => {
-                            let built = convert_edge(
-                                model,
-                                &edge,
-                                &data,
-                                &map,
-                                restate,
-                                &mut new_vertices,
-                                tol,
-                            )?;
-                            history.modify(&edge, built.0.clone());
-                            new_edges.insert(key, built.clone());
-                            built
-                        }
-                    };
-
-                    // The pcurve on this face: fitted at the new edge's own
-                    // parameters, seam sides each fitted against their own
-                    // half of the chart.
-                    let old_repr = data.pcurve_for(surface_id_old, edge.location()).cloned();
-                    let was_seam = matches!(old_repr, Some(EdgeRepr::Seam { .. }));
-                    if was_seam {
-                        if !seams_done.contains(&new_edge.node()) {
-                            seams_done.push(new_edge.node());
-                            let (forward, reversed) =
-                                exact_seam_columns(&new_curve, new_range, &patch_surface, tol)
-                                    .map_or_else(
-                                        || {
-                                            seam_pcurves(
-                                                &new_curve,
-                                                new_range,
-                                                &patch_surface,
-                                                target,
-                                                tol,
-                                            )
-                                        },
-                                        Ok,
-                                    )?;
-                            let seam_range = forward.domain();
-                            attach_seam(
-                                model,
-                                &new_edge,
-                                forward,
-                                reversed,
-                                surface_id,
-                                Location::identity(),
-                                seam_range,
-                            )?;
-                        }
+                    let bounds = model.children_of(&new_edge)?;
+                    // A closed edge (a rim) has one vertex at both
+                    // ends, and near a seam its single chart image is
+                    // one side's; pinning both ends there would fold the
+                    // ring. Its trace closes on its own.
+                    let closed_edge =
+                        bounds.len() < 2 || bounds[0].node() == bounds[bounds.len() - 1].node();
+                    let ends = if closed_edge {
+                        (None, None)
                     } else {
-                        // The exact path: an edge that ran along the old
-                        // chart's iso direction runs along the new chart's,
-                        // and the boundary conversion shares the patch
-                        // direction's parameterization by construction.
-                        if let Some(iso) = exact_iso_pcurve(
-                            model,
-                            old_repr.as_ref(),
-                            old_window,
-                            &new_curve,
-                            new_range,
-                            &patch_surface,
-                            tol,
-                        )? {
-                            let iso_range = iso.domain();
-                            attach_pcurve(
-                                model,
-                                &new_edge,
-                                iso,
-                                surface_id,
-                                Location::identity(),
-                                iso_range,
-                            )?;
-                            ring.push(if edge.orientation() == Orientation::Reversed {
-                                new_edge.reversed()
-                            } else {
-                                new_edge
-                            });
-                            continue;
-                        }
-                        let uv_of = |model: &Model,
-                                     cache: &mut HashMap<TShapeId, Point2>,
-                                     vertex: &Shape|
-                         -> OgeomResult<Point2> {
-                            if let Some(&uv) = cache.get(&vertex.node()) {
-                                return Ok(uv);
-                            }
-                            let Some(v) = model.node(vertex).and_then(|n| n.data().as_vertex())
-                            else {
-                                ogeom_bail!(Construction, "vertex node holds no vertex data");
-                            };
-                            let projection = crate::measure::project_on_surface(
+                        (
+                            Some(uv_of(model, &mut corner_uv, &bounds[0])?),
+                            Some(uv_of(model, &mut corner_uv, &bounds[bounds.len() - 1])?),
+                        )
+                    };
+                    // Exact wherever the chart has a closed form: the
+                    // melt downstream compares these images against
+                    // exact geometry, and a fitted stand-in for a
+                    // closed-form projection carries slop for nothing.
+                    let derived = match ogeom_intersect::exact_pcurve_over(
+                        &new_curve,
+                        new_range,
+                        &patch_surface,
+                        tol,
+                    ) {
+                        Some(exact) => exact,
+                        None => {
+                            let fitted = fit_pcurve(
+                                &new_curve,
+                                new_range,
                                 &patch_surface,
-                                v.point,
-                                24,
+                                None,
+                                ends,
+                                target,
                                 tol,
                             )?;
-                            let uv = Point2::new(projection.parameters.0, projection.parameters.1);
-                            cache.insert(vertex.node(), uv);
-                            Ok(uv)
-                        };
-                        let bounds = model.children_of(&new_edge)?;
-                        // A closed edge (a rim) has one vertex at both
-                        // ends, and near a seam its single chart image is
-                        // one side's; pinning both ends there would fold the
-                        // ring. Its trace closes on its own.
-                        let closed_edge =
-                            bounds.len() < 2 || bounds[0].node() == bounds[bounds.len() - 1].node();
-                        let ends = if closed_edge {
-                            (None, None)
-                        } else {
-                            (
-                                Some(uv_of(model, &mut corner_uv, &bounds[0])?),
-                                Some(uv_of(model, &mut corner_uv, &bounds[bounds.len() - 1])?),
-                            )
-                        };
-                        // Exact wherever the chart has a closed form: the
-                        // melt downstream compares these images against
-                        // exact geometry, and a fitted stand-in for a
-                        // closed-form projection carries slop for nothing.
-                        let derived = match ogeom_intersect::exact_pcurve_over(
-                            &new_curve,
-                            new_range,
-                            &patch_surface,
-                            tol,
-                        ) {
-                            Some(exact) => exact,
-                            None => {
-                                let fitted = fit_pcurve(
-                                    &new_curve,
-                                    new_range,
-                                    &patch_surface,
-                                    None,
-                                    ends,
-                                    target,
-                                    tol,
-                                )?;
-                                // The fit's honest slop rides the edge, so
-                                // every downstream filter widens by it,
-                                // and rides its vertices, which bound the
-                                // edge and cannot be held tighter than it.
-                                let widened = if let Some(node) = model.node_mut(&new_edge)
-                                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                                {
-                                    data.tolerance = data.tolerance.widen_to(target);
-                                    Some(data.tolerance)
-                                } else {
-                                    None
-                                };
-                                if let Some(widened) = widened {
-                                    for vertex in model.ordered_children_of(&new_edge)? {
-                                        model.widen(&vertex, widened)?;
-                                    }
+                            // The fit's honest slop rides the edge, so
+                            // every downstream filter widens by it,
+                            // and rides its vertices, which bound the
+                            // edge and cannot be held tighter than it.
+                            let widened = if let Some(node) = model.node_mut(&new_edge)
+                                && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                            {
+                                data.tolerance = data.tolerance.widen_to(target);
+                                Some(data.tolerance)
+                            } else {
+                                None
+                            };
+                            if let Some(widened) = widened {
+                                for vertex in model.ordered_children_of(&new_edge)? {
+                                    model.widen(&vertex, widened)?;
                                 }
-                                fitted
                             }
-                        };
-                        attach_pcurve(
-                            model,
-                            &new_edge,
-                            derived,
-                            surface_id,
-                            Location::identity(),
-                            new_range,
-                        )?;
-                    }
-                    ring.push(if edge.orientation() == Orientation::Reversed {
-                        new_edge.reversed()
-                    } else {
-                        new_edge
-                    });
+                            fitted
+                        }
+                    };
+                    attach_pcurve(
+                        model,
+                        &new_edge,
+                        derived,
+                        surface_id,
+                        Location::identity(),
+                        new_range,
+                    )?;
                 }
-                wires.push(make_wire(model, &ring, tol)?.shape);
+                ring.push(if edge.orientation() == Orientation::Reversed {
+                    new_edge.reversed()
+                } else {
+                    new_edge
+                });
             }
-            let built = make_face_on(model, surface_id, &wires, tol)?.shape;
-            // The rebuilt chart is right-handed wherever the old one stood;
-            // a reflecting placement flipped the old chart's natural normal,
-            // and the flag must carry that flip or the baked solid comes
-            // out inside-out.
-            // A restated surface whose normal turned is the same flip.
-            //
-            // Whether a reflection turns a surface's natural normal depends
-            // on the surface: a mirrored cylinder is stored about a
-            // right-handed frame again and keeps its normal away from the
-            // axis. So where it can be, the turn is measured: the old
-            // normal carried through the placement against the new one at
-            // the same point. Handedness is the fallback where the
-            // measurement cannot be taken, and under an affine map, which
-            // does not carry normals as vectors.
-            let measured = if affine.is_none() {
-                turned_by_rebuild(&old_surface, &placement, old_window, &patch_surface, tol)
-            } else {
-                turned_before_affine
-            };
-            let reflected = measured
-                .unwrap_or(!face.location().preserves_handedness(model.datums())? != flipped);
-            let built = if (face.orientation() == Orientation::Reversed) != reflected {
-                built.reversed()
-            } else {
-                built
-            };
-            history.modify(&face, built.clone());
-            faces.push(built);
+            wires.push(make_wire(model, &ring, tol)?.shape);
         }
-        shells.push(make_shell(model, &faces)?.shape);
+        let built = make_face_on(model, surface_id, &wires, tol)?.shape;
+        // The rebuilt chart is right-handed wherever the old one stood;
+        // a reflecting placement flipped the old chart's natural normal,
+        // and the flag must carry that flip or the baked solid comes
+        // out inside-out.
+        // A restated surface whose normal turned is the same flip.
+        //
+        // Whether a reflection turns a surface's natural normal depends
+        // on the surface: a mirrored cylinder is stored about a
+        // right-handed frame again and keeps its normal away from the
+        // axis. So where it can be, the turn is measured: the old
+        // normal carried through the placement against the new one at
+        // the same point. Handedness is the fallback where the
+        // measurement cannot be taken, and under an affine map, which
+        // does not carry normals as vectors.
+        let measured = if affine.is_none() {
+            turned_by_rebuild(&old_surface, &placement, old_window, &patch_surface, tol)
+        } else {
+            turned_before_affine
+        };
+        let reflected =
+            measured.unwrap_or(!face.location().preserves_handedness(model.datums())? != flipped);
+        let built = if (face.orientation() == Orientation::Reversed) != reflected {
+            built.reversed()
+        } else {
+            built
+        };
+        history.modify(&face, built.clone());
+        Ok(built)
     }
-    let solid = make_solid(model, &shells)?.shape;
-    history.modify(shape, solid.clone());
-    Ok(Built::new(solid, history))
 }
 
 /// An analytic surface placed by a reflection, restated on its frame's

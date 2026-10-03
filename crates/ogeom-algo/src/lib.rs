@@ -54,8 +54,8 @@ pub use classify::{
     classify_in_solid_exact_banded, classify_on_face,
 };
 pub use convert::{
-    CurveRestatement, SurfaceRestatement, baked_shape, general_transformed_shape, normals_oppose,
-    restate_geometry, to_nurbs, to_nurbs_within,
+    CurveRestatement, SurfaceRestatement, baked_shape, baked_where_placed,
+    general_transformed_shape, normals_oppose, restate_geometry, to_nurbs, to_nurbs_within,
 };
 pub use extend::{Extension, extend_face};
 pub use fit::{Spacing, approximate, approximate_within, interpolate};

@@ -270,6 +270,43 @@ fn an_open_l_rounds_to_a_quarter_cylinder() {
 /// so the ball sets back `r / tan 60°` along each face, sits `r / sin 60°`
 /// from the corner, and its arc sweeps a sixth of a turn.
 #[test]
+fn a_placed_open_l_rounds_where_it_stands() {
+    let mut model = Model::new();
+    let (r, h) = (2.0, 5.0);
+    let sheet = open_l(&mut model, h);
+    let moved = model.placed(
+        &sheet,
+        ogeom::math::Transform::translation(Vector::new(5.0, 0.0, 0.0)),
+    );
+    let corner = vertical_edge_at(&model, &moved, 5.0, 0.0);
+    let built =
+        fillet_sheet_edges(&mut model, &moved, std::slice::from_ref(&corner), r, T).unwrap();
+    let rounded = built.shape.clone();
+    assert_eq!(faces(&model, &rounded).len(), 3, "two flats and the round");
+    usable(&model, &rounded);
+    assert_eq!(edge_use(&model, &rounded), (2, 8));
+    let (round, cylinder) = the_round(&model, &rounded);
+    assert!(
+        off_axis(&cylinder, Point::new(5.0 + r, r, 0.0)) < 1e-12,
+        "the axis passes through (5 + r, r)"
+    );
+    let round_area = area(&model, &round);
+    assert!(
+        (round_area - PI / 2.0 * r * h).abs() < 1e-9,
+        "a quarter cylinder: {round_area}"
+    );
+    tangent_to_both(&model, &rounded, &round, r);
+    assert!(built.history.is_deleted(&corner));
+    assert!(
+        built
+            .history
+            .modified(&moved)
+            .iter()
+            .any(|s| s.is_same(&rounded))
+    );
+}
+
+#[test]
 fn an_obtuse_corner_sets_back_by_the_half_angle() {
     let mut model = Model::new();
     let (r, h) = (1.5, 4.0);

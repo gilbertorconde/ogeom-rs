@@ -56,8 +56,14 @@ pub enum Extension {
 /// as `mode` says. The edges the face kept are the same nodes, carrying a
 /// trim on the new surface where it is a new one.
 ///
+/// A placed face, or a face with placed edges (a prism's far end edges are
+/// its profile's edges under the prism's translation), is first rebuilt
+/// with its placements baked in, and that rebuilt face is extended: its
+/// edges are new nodes on the same geometry, which sew to the old ones.
+///
 /// History: the face is modified into the new face; `edge` is modified into
-/// the far edge and generates the two sides.
+/// the far edge and generates the two sides; where the face was baked
+/// first, every other edge is modified into its baked twin.
 ///
 /// # Errors
 ///
@@ -68,7 +74,6 @@ pub enum Extension {
 /// - `shape` is not a face, or `edge` is not an edge of its outer boundary
 ///   (an edge on no boundary of it, an edge bounding a hole, a seam the
 ///   boundary runs along twice, a degenerate edge);
-/// - the face or the edge is placed;
 /// - the surface is neither a plane, a cylinder, a cone, a sphere, a torus
 ///   nor a B-spline patch;
 /// - on a plane, the edge is not straight;
@@ -102,18 +107,20 @@ pub fn extend_face(
     if model.kind_of(edge)? != ShapeType::Edge {
         ogeom_bail!(Construction, "a face is extended across one of its edges");
     }
-    let (surface_id, face_tolerance, face_location) = {
+    let baked = crate::convert::baked_where_placed(model, shape, tol)?;
+    if !baked.history.is_empty() {
+        let Some(twin) = baked.history.modified(edge).first().cloned() else {
+            ogeom_bail!(Construction, "the edge is not on the face");
+        };
+        let grown = extend_face(model, &baked.shape, &twin, length, mode, tol)?;
+        return Ok(Built::new(grown.shape, baked.history.then(&grown.history)));
+    }
+    let (surface_id, face_tolerance) = {
         let Some(NodeData::Face(data)) = model.node(shape).map(|n| n.data()) else {
             ogeom_bail!(Dangling, "face is not in this model");
         };
-        (data.surface, data.tolerance, data.location.clone())
+        (data.surface, data.tolerance)
     };
-    if !shape.location().is_identity() || !face_location.is_identity() {
-        ogeom_bail!(
-            Construction,
-            "a placed face is not extended; bake its placement into its geometry first"
-        );
-    }
 
     // The face's wires and edges as stored, so the rebuilt face walks its
     // boundary exactly as the old one did.
@@ -148,12 +155,6 @@ pub fn extend_face(
         ),
     };
     let crossed = loops[0][at].clone();
-    if !crossed.location().is_identity() {
-        ogeom_bail!(
-            Construction,
-            "a placed edge is not extended across; bake its placement into its geometry first"
-        );
-    }
     let Some(NodeData::Edge(edge_data)) = model.node(&crossed).map(|n| n.data()) else {
         ogeom_bail!(Dangling, "edge is not in this model");
     };
