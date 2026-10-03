@@ -566,6 +566,147 @@ pub fn fit_projected_pcurve_capped(
     Ok((fitted.curve.into(), error, met, worst_off, slop))
 }
 
+/// How far `pcurve`, lifted through `surface`, stands from `curve`, each
+/// over its range and read at the same fraction along it.
+///
+/// This is the width an edge carrying both must state: the curve sitting
+/// off the surface (an exact pcurve is the curve's projection, and a file's
+/// line can lie microns off its plane) and a fit straying between the
+/// samples it was fitted through both show here. The lifted point is
+/// compared with the curve's point at the same fraction; unless `paced`
+/// (an edge claiming same parameter is held to its claim), where that
+/// misses by more than the confusion tolerance it is compared with the
+/// nearest point of the curve within one sample's step, so a pcurve paced
+/// a little differently is not charged for its pace. Samples the surface
+/// cannot evaluate (past a pole) are passed over.
+///
+/// A fit strays most where its chart runs fast, as a curve passing close
+/// by a sphere's pole sweeps across the chart in a few thousandths of its
+/// length, and a stray that narrow falls between even samples. So the
+/// widest few local peaks of the samples, and the two ends where a fit's
+/// trace is seeded, are each searched for their summit between the samples
+/// either side.
+///
+/// # Errors
+///
+/// Propagates a failure to evaluate the curve or the pcurve over its range.
+pub fn lifted_gap(
+    (curve, range): (&Curve, (f64, f64)),
+    (pcurve, pcurve_range): (&PlanarCurve, (f64, f64)),
+    surface: &SurfaceGeometry,
+    paced: bool,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    use ogeom_geom::Curve2d as _;
+    // Eight times the samples `check` takes, so its samples are among them.
+    const SAMPLES: u32 = 256;
+    // The peaks searched besides the ends: the widest stray and its
+    // runners-up, since the widest sample need not stand under the widest
+    // summit.
+    const PEAKS: usize = 3;
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let n = f64::from(SAMPLES);
+    let step = (range.1 - range.0) / n;
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    // The lifted point at fraction `f` and its distance from the curve's
+    // point there, or `None` where the surface cannot be evaluated.
+    let paced_at = |f: f64| -> OgeomResult<Option<(Point, f64)>> {
+        let uv = pcurve.point_at(
+            (pcurve_range.1 - pcurve_range.0).mul_add(f, pcurve_range.0),
+            tol,
+        )?;
+        let Ok(lifted) = surface.point_at(uv.x, uv.y, tol) else {
+            return Ok(None);
+        };
+        let t = (range.1 - range.0).mul_add(f, range.0);
+        Ok(Some((lifted, curve.point_at(t, tol)?.distance(lifted))))
+    };
+    // The gap the edge must state at fraction `f`, given the lifted point
+    // and its paced distance there: never more than the paced distance.
+    let gap_at = |f: f64, (lifted, gap): (Point, f64)| -> OgeomResult<f64> {
+        if paced || gap <= tol.confusion() {
+            return Ok(gap);
+        }
+        let at = |s: f64| -> OgeomResult<f64> { Ok(curve.point_at(s, tol)?.distance(lifted)) };
+        let t = (range.1 - range.0).mul_add(f, range.0);
+        // A lifted point standing square off the curve's tangent is already
+        // as near the curve's point here as any, to well under a part in a
+        // thousand of the gap.
+        let tangent = curve.d1_at(t, tol)?;
+        let along = (lifted - curve.point_at(t, tol)?).dot(tangent).abs();
+        if along <= gap * tangent.magnitude() * 1e-2 {
+            return Ok(gap);
+        }
+        let (mut a, mut b) = ((t - step.abs()).max(lo), (t + step.abs()).min(hi));
+        for _ in 0..24 {
+            let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+            if at(c)? < at(d)? {
+                b = d;
+            } else {
+                a = c;
+            }
+        }
+        Ok(gap.min(at(f64::midpoint(a, b))?))
+    };
+    let samples = (0..=SAMPLES)
+        .map(|i| paced_at(f64::from(i) / n))
+        .collect::<OgeomResult<Vec<_>>>()?;
+    let read = |i: usize| samples[i].map_or(0.0, |(_, gap)| gap);
+
+    // The widest sample, each measured fully only while its paced distance,
+    // which bounds it, could still beat the widest found.
+    let mut order: Vec<usize> = (0..samples.len()).collect();
+    order.sort_by(|&a, &b| read(b).total_cmp(&read(a)));
+    let mut widest = 0.0_f64;
+    for &i in &order {
+        let Some(sample) = samples[i] else { continue };
+        if sample.1 <= widest {
+            break;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let f = i as f64 / n;
+        widest = widest.max(gap_at(f, sample)?);
+    }
+
+    // Each summit, found by a golden-section search on the gap itself.
+    let mut peaks: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&i| {
+            read(i) > tol.confusion()
+                && (i == 0 || read(i) >= read(i - 1))
+                && (i + 1 == samples.len() || read(i) >= read(i + 1))
+        })
+        .take(PEAKS)
+        .collect();
+    peaks.extend([0, samples.len() - 1]);
+    for i in peaks {
+        #[allow(clippy::cast_precision_loss)]
+        let (mut a, mut b) = (
+            i.saturating_sub(1) as f64 / n,
+            (i + 1).min(samples.len() - 1) as f64 / n,
+        );
+        let height = |f: f64| -> OgeomResult<f64> {
+            paced_at(f)?.map_or(Ok(0.0), |sample| gap_at(f, sample))
+        };
+        let (mut c, mut d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        let (mut hc, mut hd) = (height(c)?, height(d)?);
+        for _ in 0..20 {
+            if hc > hd {
+                (b, d, hd) = (d, c, hc);
+                c = b - (b - a) * ratio;
+                hc = height(c)?;
+            } else {
+                (a, c, hc) = (c, d, hd);
+                d = a + (b - a) * ratio;
+                hd = height(d)?;
+            }
+        }
+        widest = widest.max(hc).max(hd);
+    }
+    Ok(widest)
+}
+
 /// Re-project the samples a stalled projection left behind.
 ///
 /// Where a chart collapses (a spline patch whose whole `v = 0` row is a

@@ -268,17 +268,20 @@ type BuiltEdge = (Shape, Curve, (f64, f64), bool);
 /// model, no order), and it is most of the time spent building solids. So
 /// it is done for a whole solid at once, off the walk that attaches it.
 enum PreparedPcurve {
-    /// The projection had a closed form.
-    Exact(PlanarCurve),
-    /// It did not, and this is the fit, with what the fit cost.
+    /// The projection had a closed form, standing `off` from the curve
+    /// once lifted.
+    Exact { curve: PlanarCurve, off: f64 },
+    /// It did not, and this is the fit, with what the fit cost and how far
+    /// it stands from the curve once lifted.
     Fitted {
         curve: PlanarCurve,
         error: f64,
         met: bool,
         worst_off: f64,
+        off: f64,
         warning: Option<String>,
     },
-    /// Neither worked; the face gets the warning the walk would have made.
+    /// Neither worked, for this reason; the face gets the warning.
     Refused(String),
 }
 
@@ -2123,80 +2126,53 @@ impl<'a> Reader<'a> {
         // already derived it. The fallbacks below serve the faces no pass
         // covered: a face reached outside a solid walk, or one whose
         // preparation refused.
-        if let Some(prepared) = self.pcurves.remove(&(face_id, edge_id)) {
-            match prepared {
-                PreparedPcurve::Exact(exact) => {
-                    return Ok(Some(widen(exact)));
+        let prepared = match self.pcurves.remove(&(face_id, edge_id)) {
+            Some(prepared) => prepared,
+            None => derive_pcurve(curve, range, surface, self.tol),
+        };
+        let (pcurve, off) = match prepared {
+            PreparedPcurve::Exact { curve, off } => (widen(curve), off),
+            PreparedPcurve::Fitted {
+                curve: fitted,
+                error,
+                met,
+                worst_off,
+                off,
+                warning,
+            } => {
+                if let Some(w) = warning {
+                    self.warn_slop(w, worst_off, face_id);
                 }
-                PreparedPcurve::Fitted {
-                    curve: fitted,
-                    error,
-                    met,
-                    worst_off,
-                    warning,
-                } => {
-                    if let Some(w) = warning {
-                        self.warn_slop(w, worst_off, face_id);
-                    }
-                    if !met {
-                        self.warn_fit_short(face_id, error);
-                    }
-                    if worst_off > self.tol.confusion()
-                        && let Some(node) = self.model.node_mut(edge)
-                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                    {
-                        data.tolerance = data.tolerance.widen_to(worst_off + self.tol.confusion());
-                    }
-                    return Ok(Some(fitted));
+                if !met {
+                    self.warn_fit_short(face_id, error);
                 }
-                PreparedPcurve::Refused(why) => {
-                    self.report.warnings.push(why);
-                    self.note_untrimmed(face_id);
-                    return Ok(None);
-                }
+                (fitted, off.max(worst_off))
             }
+            PreparedPcurve::Refused(why) => {
+                self.report.warnings.push(format!(
+                    "face #{face_id}: no pcurve for an edge on this surface ({why}); \
+                     the face may not triangulate"
+                ));
+                self.note_untrimmed(face_id);
+                return Ok(None);
+            }
+        };
+        // The edge provably stands `off` from the face it bounds, whether
+        // the curve lies off the surface or a fit strays between its
+        // samples; its tolerance grows to cover that, and its vertices
+        // follow once the solid is whole. Past the millimetre a file's
+        // slop stays under, the pcurve is a fit gone astray (a curve
+        // through a pole, whose image leaps across the chart there), and
+        // an edge that wide would swallow its neighbours; the face is
+        // reported instead.
+        if off > self.tol.confusion() * 1e7 {
+            self.warn_fit_short(face_id, off);
+        } else if off > self.tol.confusion()
+            && let Some(node) = self.model.node_mut(edge)
+            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+        {
+            data.tolerance = data.tolerance.widen_to(off + self.tol.confusion());
         }
-        let pcurve =
-            match ogeom_intersect::exact_pcurve_over(curve, range, surface, self.tol).map(widen) {
-                Some(exact) => exact,
-                None => {
-                    // No closed form: a spline surface, or a combination the
-                    // projection table lacks. The pcurve is *fitted at the
-                    // curve's own parameters*: sample the edge, project each
-                    // sample into the chart, fit the trace with the parameters
-                    // held fixed, so same-parameter is preserved by construction
-                    // and the reported error is the true chart deviation.
-                    match crate::pcurves::fit_projected_pcurve(curve, range, surface, self.tol) {
-                        Ok((fitted, error, met, worst_off, slop_warning)) => {
-                            if let Some(w) = slop_warning {
-                                self.warn_slop(w, worst_off, face_id);
-                            }
-                            if !met {
-                                self.warn_fit_short(face_id, error);
-                            }
-                            // The edge provably sits `worst_off` from the surface
-                            // it bounds; its tolerance grows to cover that, the
-                            // same honesty the vertex ends get.
-                            if worst_off > self.tol.confusion()
-                                && let Some(node) = self.model.node_mut(edge)
-                                && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                            {
-                                data.tolerance =
-                                    data.tolerance.widen_to(worst_off + self.tol.confusion());
-                            }
-                            fitted
-                        }
-                        Err(e) => {
-                            self.report.warnings.push(format!(
-                                "face #{face_id}: no pcurve for an edge on this \
-                             surface ({e}); the face may not triangulate"
-                            ));
-                            self.note_untrimmed(face_id);
-                            return Ok(None);
-                        }
-                    }
-                }
-            };
         Ok(Some(pcurve))
     }
 
@@ -2394,27 +2370,7 @@ impl<'a> Reader<'a> {
         }
         let tol = self.tol;
         let derived = ogeom_core::parallel::map_ordered(&jobs, |_, job| {
-            let surface = &surfaces[job.surface];
-            match ogeom_intersect::exact_pcurve_over(&job.curve, job.range, surface, tol) {
-                Some(exact) => PreparedPcurve::Exact(exact),
-                None => {
-                    match crate::pcurves::fit_projected_pcurve(&job.curve, job.range, surface, tol)
-                    {
-                        Ok((curve, error, met, worst_off, warning)) => PreparedPcurve::Fitted {
-                            curve,
-                            error,
-                            met,
-                            worst_off,
-                            warning,
-                        },
-                        Err(e) => PreparedPcurve::Refused(format!(
-                            "face #{}: no pcurve for an edge on this surface ({e}); \
-                         the face may not triangulate",
-                            job.face
-                        )),
-                    }
-                }
-            }
+            derive_pcurve(&job.curve, job.range, &surfaces[job.surface], tol)
         });
         for (job, pcurve) in jobs.iter().zip(derived) {
             self.pcurves.insert((job.face, job.edge), pcurve);
@@ -3838,6 +3794,44 @@ struct PdEntry {
     name: String,
     shapes: Vec<Shape>,
     children: Vec<(u64, Transform, Option<String>)>,
+}
+
+/// An edge's pcurve on a surface, exact where the pair has a closed form
+/// and fitted where it does not, with how far it stands from the curve once
+/// lifted through the surface.
+fn derive_pcurve(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> PreparedPcurve {
+    // A pcurve that does not evaluate over the edge's range states no gap
+    // here; the face that uses it fails on it there.
+    let lifted = |pcurve: &PlanarCurve| {
+        ogeom_algo::pcurve_fit::lifted_gap((curve, range), (pcurve, range), surface, false, tol)
+            .unwrap_or(0.0)
+    };
+    if let Some(exact) = ogeom_intersect::exact_pcurve_over(curve, range, surface, tol) {
+        let off = lifted(&exact);
+        return PreparedPcurve::Exact { curve: exact, off };
+    }
+    // No closed form: a spline surface, or a combination the projection
+    // table lacks. The pcurve is fitted at the curve's own parameters, so
+    // same-parameter is preserved by construction.
+    match crate::pcurves::fit_projected_pcurve(curve, range, surface, tol) {
+        Ok((fitted, error, met, worst_off, warning)) => {
+            let off = lifted(&fitted);
+            PreparedPcurve::Fitted {
+                curve: fitted,
+                error,
+                met,
+                worst_off,
+                off,
+                warning,
+            }
+        }
+        Err(e) => PreparedPcurve::Refused(e.to_string()),
+    }
 }
 
 /// Every reference in an argument tree, in order.

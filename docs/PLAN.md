@@ -114,9 +114,11 @@ pieces whose fits miss by up to 9e-3, paving the round's edge at several
 places with honesties up to 2e-2, and the kept pieces do not close. The
 same placement moved by a few ulps leaves the drill less the part
 unclosed.
-The stress drills still refused at seed 1: two on that part (not yet
-diagnosed, many faces at once) and one on the rounded box. Seeds 2 and 3
-refuse eight and three drills, of these kinds and some not yet diagnosed.
+The stress drills still refused: one on the rounded box at seed 1, six at
+seed 2 (a converted plate, the frustum, `nist_ctc_01`, `nist_ftc_11`, the
+rounded box, the shaved cube) and the rounded box at seed 3, some not yet
+diagnosed. Five drills through `nist_ctc_03` once refused there too; they
+cut since the STEP reader states how far its pcurves stand off their edges.
 
 **Stress results on exact volumes.** The stress harness holds its volume
 identities to 1e-6 on exact volumes, and at seeds 1 to 3 every drill is
@@ -146,18 +148,32 @@ stands off it by more than a hundred confusions, whatever its tolerance.
 claims `same_parameter`, which almost no producer sets, so a pcurve
 leaving its curve by more than the edge states reads valid. Comparing
 every edge (the lifted pcurve against the nearest point of the curve's
-stretch, 33 samples) flags, besides the boolean's case: a line of
-`nist_ctc_03` lying 4.6e-6 off its plane at a tolerance of 1e-7 (the STEP
-reader's exact pcurve does not measure the curve's distance from the
-surface), so every stress drill through it; IGES and STEP round trips
-(among them converted solids read back, whose fitted pcurves stand 3e-6
-off at the reader's 1e-7);
-fuzzy booleans along faceted rounds and slivers (1e-6 to 4e-6 at 1e-7);
-a drill lying in a plate's underside between its rounds; offset faces
-converted to NURBS (1.2e-3 at 1e-5); a divide on an offset spline
-(1.18e-7 at 1e-7); and `fix_shape`'s output. Each producer that knows
-its deviation should raise its edges' tolerance first; the check follows
-them. Mesh conversion passes it: a plane face keeps a curve's closed-form
+stretch, 33 samples) flags, besides the boolean's case: fuzzy booleans
+along faceted rounds and slivers (1e-6 to 4e-6 at 1e-7); a drill lying in
+a plate's underside between its rounds; offset faces converted to NURBS
+(1.2e-3 at 1e-5); a divide on an offset spline (1.18e-7 at 1e-7); and
+`fix_shape`'s output.
+Each producer that knows its deviation should raise its edges' tolerance
+first; the check follows them.
+The STEP and IGES readers pass it: every pcurve they attach, exact or
+fitted, is lifted against its edge's curve (`pcurve_fit::lifted_gap`: 257
+samples, the nearest point within a step where the pace differs, and a
+golden-section search for the summit about the widest peaks and both
+ends, where a fit through a near-pole sweeps across the chart in a few
+thousandths of the edge) and the edge widened to it. A line of
+`nist_ctc_03` lies 4.6e-6 off its plane, a sphere's fitted pcurve strays
+up to 2.6e-4 near a pole in `nist_ftc_07`, and converted solids and
+sphere cuts read back 3e-6 to 7e-6 off, each at 1e-7 before. Past a
+millimetre the reader warns instead of widening: a meridian circle of a
+sphere in `nist_ftc_06` crosses both poles, its fitted pcurve leaps
+across the chart there and stands 2.66 off, and an edge stating that
+swallows its neighbours (a drill through the part then refused). That
+pcurve wants splitting at the poles, which waits on the pole arrangement
+above.
+With its B-spline edges' gaps (up to 3.9e-2) stated, the exact integral
+takes `nist_ctc_02`, which moves its volume from the 0.1 mesh's 4.710940e7
+to the exact 4.710056e7, against 4.710192e7 on a 0.005 mesh.
+Mesh conversion passes it: a plane face keeps a curve's closed-form
 image only where it lands within the edge's tolerance (an arc fitted on a
 neighbouring face may cross the plane, and its closed-form image is then a
 circle of its radius, thousands off), and otherwise takes the curve's

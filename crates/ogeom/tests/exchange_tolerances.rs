@@ -24,6 +24,164 @@ fn containment_findings(model: &Model, shape: &Shape) -> usize {
         .count()
 }
 
+/// The widest a pcurve, lifted through its surface, leaves its edge's
+/// curve beyond the edge's tolerance, with that tolerance; `None` where
+/// every pcurve of every edge keeps within it.
+///
+/// Measured here, not through `check`: each pcurve is read at 501 points
+/// spread evenly over its range, a lifted point is compared with the
+/// curve's point at the same fraction of its range, and where that is
+/// farther than the tolerance, with the nearest point of the whole curve
+/// (a dense scan refined by golden section), since a pcurve need not share
+/// its curve's pace. A pcurve placed elsewhere than its curve describes
+/// another occurrence and is not compared.
+fn widest_pcurve_excess(model: &Model, shape: &Shape) -> Option<(f64, f64)> {
+    use ogeom::geom::{Curve2d as _, Curve3d as _, Surface as _};
+    use ogeom::topo::EdgeRepr;
+    const SAMPLES: u32 = 500;
+    let mut widest: Option<(f64, f64)> = None;
+    for edge in explore_unique(model, shape, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Curve3d {
+            curve,
+            range,
+            location,
+        }) = data.curve3d()
+        else {
+            continue;
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        let stated = data.tolerance.get();
+        let nearest = |p: ogeom::math::Point| {
+            let at = |t: f64| curve.point_at(t, T).unwrap().distance(p);
+            let step = (range.1 - range.0) / f64::from(SAMPLES);
+            let (mut best, mut least) = (range.0, at(range.0));
+            for k in 1..=SAMPLES {
+                let t = range.0 + step * f64::from(k);
+                if at(t) < least {
+                    (best, least) = (t, at(t));
+                }
+            }
+            let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+            let (mut a, mut b) = ((best - step.abs()).max(lo), (best + step.abs()).min(hi));
+            for _ in 0..60 {
+                let (c, d) = (b - (b - a) * 0.618, a + (b - a) * 0.618);
+                if at(c) < at(d) { b = d } else { a = c }
+            }
+            least.min(at(0.5 * (a + b)))
+        };
+        for repr in &data.representations {
+            let (sides, prange, surface, at) = match repr {
+                EdgeRepr::PCurve {
+                    curve,
+                    range,
+                    surface,
+                    location,
+                } => (vec![*curve], *range, *surface, location),
+                EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    surface,
+                    location,
+                } => (vec![*forward, *reversed], *range, *surface, location),
+                _ => continue,
+            };
+            if at != location {
+                continue;
+            }
+            let surface = model.geometry().surface(surface).unwrap();
+            for id in sides {
+                let pcurve = model.geometry().pcurve(id).unwrap();
+                for k in 0..=SAMPLES {
+                    let f = f64::from(k) / f64::from(SAMPLES);
+                    let uv = pcurve
+                        .point_at(prange.0 + (prange.1 - prange.0) * f, T)
+                        .unwrap();
+                    let Ok(lifted) = surface.point_at(uv.x, uv.y, T) else {
+                        continue;
+                    };
+                    let on_curve = curve
+                        .point_at(range.0 + (range.1 - range.0) * f, T)
+                        .unwrap();
+                    let mut gap = on_curve.distance(lifted);
+                    if gap > stated {
+                        gap = gap.min(nearest(lifted));
+                    }
+                    if gap > stated && widest.is_none_or(|(w, s)| gap - stated > w - s) {
+                        widest = Some((gap, stated));
+                    }
+                }
+            }
+        }
+    }
+    widest
+}
+
+/// A reader states, on every edge, how far its pcurves stand from its
+/// curve: an exact pcurve of a line lying microns off its plane, and a
+/// pcurve fitted on a sphere straying between its samples, both widen
+/// their edge. Through STEP and through IGES, from a file and from a
+/// boolean's result written out.
+#[test]
+fn a_read_states_how_far_its_pcurves_stand_from_their_curves() {
+    for name in ["nist_ctc_03_asme1_rc.stp", "nist_ftc_07_asme1_rd.stp"] {
+        let read = ogeom::io::read_step(&corpus(name), T).unwrap();
+        for solid in &read.solids {
+            let excess = widest_pcurve_excess(read.document.model(), solid);
+            assert!(
+                excess.is_none(),
+                "{name} through STEP: (gap, stated) {excess:?}"
+            );
+        }
+        let iges = ogeom::io::write_iges(&read.document, T).unwrap();
+        let back = ogeom::io::read_iges(&iges, T).unwrap();
+        for solid in &back.solids {
+            let excess = widest_pcurve_excess(back.document.model(), solid);
+            assert!(
+                excess.is_none(),
+                "{name} through IGES: (gap, stated) {excess:?}"
+            );
+        }
+    }
+
+    // A sphere cut on its side: the section circle has no closed-form
+    // image on the sphere, so each reader fits one.
+    let frame = |x: f64, y: f64, z: f64| {
+        ogeom::math::Frame::new(
+            ogeom::math::Point::new(x, y, z),
+            ogeom::math::Direction::Z,
+            ogeom::math::Direction::X,
+            T,
+        )
+        .unwrap()
+    };
+    let mut model = Model::new();
+    let sphere = ogeom::algo::make_sphere(&mut model, frame(0.0, 0.0, 0.0), 10.0, T)
+        .unwrap()
+        .shape;
+    let block = ogeom::algo::make_box(&mut model, frame(5.0, -20.0, -20.0), (40.0, 40.0, 40.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &sphere, &block, T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("part", cut);
+    let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
+    let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+    for (format, read) in [
+        ("STEP", (step.document.model(), &step.solids[0])),
+        ("IGES", (iges.document.model(), &iges.solids[0])),
+    ] {
+        let excess = widest_pcurve_excess(read.0, read.1);
+        assert!(
+            excess.is_none(),
+            "sphere cut through {format}: (gap, stated) {excess:?}"
+        );
+    }
+}
+
 fn volume(model: &Model, shape: &Shape) -> Option<f64> {
     ogeom::algo::volume_properties(model, shape, Deflection::default(), T)
         .ok()

@@ -1853,12 +1853,7 @@ impl<'a> Reader<'a> {
                              the face's mesh may sit that far off along this edge"
                         ));
                     }
-                    if worst_off > self.tol.confusion()
-                        && let Some(node) = self.model.node_mut(edge)
-                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                    {
-                        data.tolerance = data.tolerance.widen_to(worst_off + self.tol.confusion());
-                    }
+                    self.state_gap(edge, worst_off);
                     fitted
                 }
                 Err(e) => {
@@ -1870,7 +1865,40 @@ impl<'a> Reader<'a> {
                 }
             },
         };
+        // The edge provably stands this far from the face it bounds, whether
+        // the curve lies off the surface or a fit strays between its
+        // samples. A pcurve that does not evaluate over the edge's range
+        // states no gap here; the face that uses it fails on it there.
+        let off = ogeom_algo::pcurve_fit::lifted_gap(
+            (curve, range),
+            (&found, range),
+            surface,
+            false,
+            self.tol,
+        )
+        .unwrap_or(0.0);
+        self.state_gap(edge, off);
         Ok(Some(found))
+    }
+
+    /// Widen `edge` to cover a gap it was measured to stand from a face it
+    /// bounds; its vertices follow once the solid is whole. Past the
+    /// millimetre a file's slop stays under, the pcurve is a fit gone
+    /// astray (a curve through a pole, whose image leaps across the chart
+    /// there), and an edge that wide would swallow its neighbours; it is
+    /// reported instead.
+    fn state_gap(&mut self, edge: &Shape, off: f64) {
+        if off > self.tol.confusion() * 1e7 {
+            self.report.warnings.push(format!(
+                "a projected pcurve fit stopped at {off:.2e}; \
+                 the face's mesh may sit that far off along this edge"
+            ));
+        } else if off > self.tol.confusion()
+            && let Some(node) = self.model.node_mut(edge)
+            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+        {
+            data.tolerance = data.tolerance.widen_to(off + self.tol.confusion());
+        }
     }
 
     /// A manifold solid B-rep object: shell of faces of loops of edges.
