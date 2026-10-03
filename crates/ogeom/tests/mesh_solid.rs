@@ -5127,3 +5127,176 @@ fn a_finely_meshed_bump_patch_takes_the_small_spheres_cut_from_it() {
 fn a_finely_meshed_bump_comes_back_one_fitted_patch() {
     fine_bump_comes_back_one_patch(80, 0..80, 40);
 }
+
+/// A dome of radius 10 on its base: on a drum of the same radius 10
+/// high, or flat on a plate (a hemisphere). Drilled straight down by a
+/// cylinder of `radius` whose axis stands at `(x, y)`, where given.
+fn dome(model: &mut Model, on_drum: bool, drill: Option<((f64, f64), f64)>) -> Shape {
+    let base = if on_drum { 10.0 } else { 0.0 };
+    let top = Frame::new(Point::new(0.0, 0.0, base), Direction::Z, Direction::X, T).unwrap();
+    let ball = ogeom::algo::make_sphere(model, top, 10.0, T).unwrap().shape;
+    let dome = if on_drum {
+        let drum = ogeom::algo::make_cylinder(model, Frame::WORLD, 10.0, 10.0, T)
+            .unwrap()
+            .shape;
+        ogeom::boolean::fuse(model, &drum, &ball, T).unwrap().shape
+    } else {
+        let above =
+            Frame::new(Point::new(-20.0, -20.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+        let half = ogeom::algo::make_box(model, above, (40.0, 40.0, 20.0), T)
+            .unwrap()
+            .shape;
+        ogeom::boolean::common(model, &ball, &half, T)
+            .unwrap()
+            .shape
+    };
+    let Some(((x, y), radius)) = drill else {
+        return dome;
+    };
+    let below = Frame::new(Point::new(x, y, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drill = ogeom::algo::make_cylinder(model, below, radius, 30.0, T)
+        .unwrap()
+        .shape;
+    ogeom::boolean::cut(model, &dome, &drill, T).unwrap().shape
+}
+
+/// Converts a drilled [`dome`]'s mesh and checks it comes back on
+/// `expected` surfaces with no curved region faceted, valid and meshing
+/// closed, and with the volume, measured on the exact surfaces both sides,
+/// within a millionth of the original's.
+fn drilled_dome_comes_back(name: &str, on_drum: bool, at: (f64, f64), expected: [usize; 5]) {
+    let mut model = Model::new();
+    let drilled = dome(&mut model, on_drum, Some((at, 1.5)));
+    let mesh = ogeom::mesh::triangulate(&model, &drilled, Deflection::with_chord(0.05).unwrap(), T)
+        .unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(out.closed, "{name}: {:?}", out.report);
+    assert_eq!(out.report.curved_faceted, 0, "{name}: {:?}", out.report);
+    assert_eq!(kinds(&back, &out.shape), expected, "{name}");
+    let diagnosis = check(&back, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+    let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed(), "{name}");
+    let (a, b) = (volume(&model, &drilled), volume(&back, &out.shape));
+    eprintln!("{name}: {a} went in, {b} came out");
+    assert!(
+        (a - b).abs() / a < 1e-6,
+        "{name}: {a} went in, {b} came out"
+    );
+}
+
+/// A hemisphere drilled off its pole is a sphere's cap with a hole that
+/// is no latitude: the sphere comes back one face about a pole clear of
+/// the hole, its seam from the rim to the pole clear of it too, and the
+/// hole an inner wire. Drilled through its pole off its axis, the sphere
+/// is a zone between the rim and the hole, each going round an axis
+/// through the hole, and comes back one face with a seam between them.
+#[test]
+fn hemispheres_drilled_off_and_through_the_pole_keep_their_sphere_one_face() {
+    drilled_dome_comes_back("off the pole", false, (4.0, 1.0), [1, 1, 0, 1, 0]);
+    drilled_dome_comes_back("through the pole", false, (0.8, 0.3), [1, 1, 0, 1, 0]);
+}
+
+/// The same on a dome standing on a drum, whose axis the sphere shares.
+#[test]
+fn domes_on_a_drum_drilled_off_and_through_the_pole_keep_their_sphere_one_face() {
+    drilled_dome_comes_back("off the pole", true, (4.0, 1.0), [1, 2, 0, 1, 0]);
+    drilled_dome_comes_back("through the pole", true, (0.8, 0.3), [1, 2, 0, 1, 0]);
+}
+
+/// A hemisphere of radius 10 on its flat base, with the hill of
+/// [`ball_radius`] on its side, meshed on `rings` cells from the pole to
+/// the base's rim and `turn` round, the base a fan about its centre.
+fn hill_dome_mesh(rings: u32, turn: u32) -> Triangulation {
+    let pi = core::f64::consts::PI;
+    let mut mesh = Triangulation::new();
+    mesh.positions.push(Point::new(0.0, 0.0, 10.0));
+    for j in 1..=rings {
+        let p = pi / 2.0 * f64::from(j) / f64::from(rings);
+        for k in 0..turn {
+            let a = 2.0 * pi * f64::from(k) / f64::from(turn);
+            let r = ball_radius(p, a);
+            mesh.positions.push(Point::new(
+                r * p.sin() * a.cos(),
+                r * p.sin() * a.sin(),
+                if j == rings { 0.0 } else { r * p.cos() },
+            ));
+        }
+    }
+    let at = |j: u32, k: u32| 1 + (j - 1) * turn + k % turn;
+    let centre = u32::try_from(mesh.positions.len()).unwrap();
+    mesh.positions.push(Point::ORIGIN);
+    for k in 0..turn {
+        mesh.triangles.push([0, at(1, k), at(1, k + 1)]);
+        mesh.triangles
+            .push([centre, at(rings, k + 1), at(rings, k)]);
+    }
+    for j in 1..rings {
+        for k in 0..turn {
+            let (a, b, c, d) = (at(j, k), at(j + 1, k), at(j + 1, k + 1), at(j, k + 1));
+            mesh.triangles.push([a, b, c]);
+            mesh.triangles.push([a, c, d]);
+        }
+    }
+    mesh
+}
+
+/// A hill on a hemisphere's side, running out into the sphere
+/// tangentially: the sphere is a cap whose hole is the hill's free-form
+/// border, one of whose sides runs along a meridian. It comes back one
+/// face, its seam clear of that side, the hill one fitted patch and the
+/// base a plane, valid and meshing closed, the volume within the mesh's
+/// own sag over the hill.
+#[test]
+fn a_hill_on_a_hemisphere_keeps_the_sphere_one_face() {
+    hill_dome_comes_back(40, 96);
+}
+
+/// The same hill meshed finer.
+#[test]
+#[ignore = "heavy"]
+fn a_finely_meshed_hill_on_a_hemisphere_keeps_the_sphere_one_face() {
+    hill_dome_comes_back(48, 128);
+}
+
+/// [`a_hill_on_a_hemisphere_keeps_the_sphere_one_face`] on `rings` cells
+/// from the pole to the base and `turn` round.
+fn hill_dome_comes_back(rings: u32, turn: u32) {
+    let mesh = hill_dome_mesh(rings, turn);
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    eprintln!(
+        "hill dome: {} faces, report {:?}",
+        out.report.faces, out.report
+    );
+    assert_eq!(out.report.curved_faceted, 0, "{:?}", out.report);
+    assert_eq!(kinds_and_patches(&model, &out.shape), ([1, 0, 0, 1, 0], 1));
+    let diagnosis = check(&model, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let closed = ogeom::mesh::triangulate(&model, &out.shape, Deflection::default(), T).unwrap();
+    assert!(closed.is_closed());
+    let flat = out.coplanar_distance;
+    let volume = volume_properties(&model, &out.shape, Deflection::with_chord(1e-3).unwrap(), T)
+        .unwrap()
+        .mass;
+    // The hemisphere, and the hill: (r^3 - 1000) / 3 over its solid
+    // angle, by the midpoint rule.
+    let (n, pi) = (400, core::f64::consts::PI);
+    let mut hill = 0.0;
+    for i in 0..n {
+        for k in 0..n {
+            let p = pi / 8.0 + pi / 4.0 * (f64::from(i) + 0.5) / f64::from(n);
+            let a = pi / 2.0 * (f64::from(k) + 0.5) / f64::from(n);
+            hill += (ball_radius(p, a).powi(3) - 1000.0) / 3.0 * p.sin();
+        }
+    }
+    hill *= pi / 4.0 * pi / 2.0 / f64::from(n * n);
+    let exact = 2.0 / 3.0 * pi * 1000.0 + hill;
+    let mesh_volume = mesh.volume();
+    eprintln!(
+        "hill dome: volume {volume}, the mesh's {mesh_volume}, exact {exact}, distance {flat:e}"
+    );
+    assert!((volume - exact).abs() <= flat * 100.0 * pi * pi / 8.0);
+    assert!((volume - exact).abs() < (mesh_volume - exact).abs());
+}

@@ -2713,6 +2713,10 @@ enum Layout {
     Band { round_tube: bool },
     /// A sphere's cap: one latitude circle, a seam to the pole, and the pole.
     Cap,
+    /// A sphere's cap with holes: one rim of any shape going round the
+    /// axis, a seam from a vertex of it to the pole, straight in the chart
+    /// and clear of the holes, the pole, and the holes as inner wires.
+    HoledCap,
     /// The whole surface, with no boundary of its own.
     Whole,
     /// Round the axis (or round a torus's tube) between two rims of any
@@ -5811,7 +5815,8 @@ fn border_loops(
 /// sphere's poles as far from them as any axis puts them, so the whole
 /// surface's face can carry the rings as holes. A torus whose rings go
 /// round it one way is a band instead, and goes round the other way no
-/// more.
+/// more. A sphere bounded by a rim or two as well as holes gets its frame
+/// from [`cap_frame`].
 fn hole_frames(
     points: &[Point],
     triangles: &[[u32; 3]],
@@ -5821,6 +5826,164 @@ fn hole_frames(
 ) {
     for g in 0..groups.carriers.len() {
         hole_frame(points, triangles, adjacency, groups, g, tol);
+        cap_frame(points, triangles, adjacency, groups, g, tol);
+    }
+}
+
+/// Whether the triangle whose centroid stands nearest `p` is in the region
+/// `g`.
+fn on_region(points: &[Point], triangles: &[[u32; 3]], of: &[usize], g: usize, p: Point) -> bool {
+    triangles
+        .iter()
+        .enumerate()
+        .map(|(t, tri)| {
+            let c = Point::from_vector(
+                (points[tri[0] as usize].to_vector()
+                    + points[tri[1] as usize].to_vector()
+                    + points[tri[2] as usize].to_vector())
+                    / 3.0,
+            );
+            (c.distance(p), t)
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .is_some_and(|(_, t)| of[t] == g)
+}
+
+/// A frame for a sphere bounded by a rim and holes, or by two rims and
+/// holes, that [`hole_frame`] left without one: an axis one ring goes
+/// round (or two do) and every other ring does not. With one rim the face
+/// is a cap about the pole on it, clear of every ring; with two, a zone
+/// whose poles stand inside the rims, clear of them. The axes tried first
+/// are the region's own and each ring's plane normal and mean direction,
+/// so a rim in a plane is a latitude where that leaves the pole clear;
+/// then the spread axes, the pole farthest from every ring.
+fn cap_frame(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    g: usize,
+    tol: Tolerances,
+) {
+    let Carrier::Curved(curved) = &groups.carriers[g] else {
+        return;
+    };
+    let Canonical::Sphere(sphere) = curved.shape else {
+        return;
+    };
+    if curved.fixed {
+        return;
+    }
+    let Some(loops) = border_loops(triangles, adjacency, &groups.of, g) else {
+        return;
+    };
+    if loops.len() < 2 {
+        return;
+    }
+    let unit = |p: Point| {
+        let d = p - sphere.centre();
+        let m = d.magnitude();
+        (m > 0.0).then(|| d / m)
+    };
+    let rings: Vec<Vec<Vector>> = loops
+        .iter()
+        .map(|ring| {
+            ring.iter()
+                .filter_map(|&v| unit(points[v as usize]))
+                .collect()
+        })
+        .collect();
+    let own = sphere.frame().z().vector();
+    let mut preferred: Vec<Vector> = vec![own, -own];
+    for (ring, directions) in loops.iter().zip(&rings) {
+        let pts: Vec<Point> = ring.iter().map(|&v| points[v as usize]).collect();
+        if let Some((_, n)) = (pts.len() >= 3).then(|| plane_through(&pts, tol)).flatten() {
+            // A normal all but the region's own axis is that axis: the
+            // axis may have been shared with the surfaces round it.
+            let n = if n.vector().cross(own).magnitude() <= 1e-3 {
+                own * n.vector().dot(own).signum()
+            } else {
+                n.vector()
+            };
+            preferred.extend([n, -n]);
+        }
+        let mean = directions.iter().fold(Vector::ZERO, |a, d| a + *d);
+        let m = mean.magnitude();
+        #[allow(clippy::cast_precision_loss, reason = "ring lengths are small")]
+        if m > directions.len() as f64 * 0.1 {
+            preferred.extend([mean / m, -mean / m]);
+        }
+    }
+    // How near a ring the pole the face keeps comes (between two rims,
+    // either pole), as a cosine; `None` for an axis that makes neither a
+    // cap nor a zone, or a cap whose pole is off the region.
+    let near = |z: Vector| -> Option<f64> {
+        let turns: Vec<i32> = rings.iter().map(|ring| turns_about(ring, z)).collect();
+        if turns.iter().any(|t| t.abs() > 1) {
+            return None;
+        }
+        match turns.iter().filter(|t| **t != 0).count() {
+            1 => Some(
+                rings
+                    .iter()
+                    .flatten()
+                    .map(|d| d.dot(z))
+                    .fold(-1.0, f64::max),
+            ),
+            2 => Some(
+                rings
+                    .iter()
+                    .flatten()
+                    .map(|d| d.dot(z).abs())
+                    .fold(0.0, f64::max),
+            ),
+            _ => None,
+        }
+    };
+    let rims = |z: Vector| rings.iter().filter(|r| turns_about(r, z) != 0).count();
+    let pole_on = |z: Vector| {
+        rims(z) == 2
+            || on_region(
+                points,
+                triangles,
+                &groups.of,
+                g,
+                sphere.centre() + z * sphere.radius(),
+            )
+    };
+    let clear = POLE_CLEARANCE.cos();
+    let fits = |z: &Vector| near(*z).is_some_and(|n| n <= clear) && pole_on(*z);
+    let chosen = preferred.iter().copied().find(fits).or_else(|| {
+        let mut ranked: Vec<(f64, Vector)> = spread_directions(POLE_CANDIDATES)
+            .into_iter()
+            .filter_map(|z| near(z).filter(|n| *n <= clear).map(|n| (n, z)))
+            .collect();
+        ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+        ranked.into_iter().map(|(_, z)| z).find(|z| pole_on(*z))
+    });
+    let Some(z) = chosen else {
+        return;
+    };
+    let Ok(z) = Direction::new(z, tol) else {
+        return;
+    };
+    let x = if z.vector().cross(own).magnitude() <= 1e-12 {
+        sphere.frame().x()
+    } else {
+        z.any_perpendicular()
+    };
+    let Ok(frame) = Frame::new(sphere.centre(), z, x, tol) else {
+        return;
+    };
+    let Ok(turned) = Sphere::new(frame, sphere.radius(), tol) else {
+        return;
+    };
+    if let Carrier::Curved(curved) = &mut groups.carriers[g] {
+        curved.shape = Canonical::Sphere(turned);
+        curved.fixed = true;
+        curved.wraps = true;
+        curved.wraps_v = false;
+        curved.centre = (core::f64::consts::PI, curved.centre.1);
     }
 }
 
@@ -5926,22 +6089,7 @@ fn hole_frame(
             // And both poles on the region itself: a loop no axis goes
             // round has both poles to one side of it, which may be the
             // hole's.
-            let on_region = |p: Point| {
-                triangles
-                    .iter()
-                    .enumerate()
-                    .map(|(t, tri)| {
-                        let c = Point::from_vector(
-                            (points[tri[0] as usize].to_vector()
-                                + points[tri[1] as usize].to_vector()
-                                + points[tri[2] as usize].to_vector())
-                                / 3.0,
-                        );
-                        (c.distance(p), t)
-                    })
-                    .min_by(|a, b| a.0.total_cmp(&b.0))
-                    .is_some_and(|(_, t)| groups.of[t] == g)
-            };
+            let on_region = |p: Point| on_region(points, triangles, &groups.of, g, p);
             let best = ranked.into_iter().find(|(_, z)| {
                 rings.iter().all(|ring| turns_about(ring, *z) == 0)
                     && on_region(sphere.centre() + *z * sphere.radius())
@@ -6880,7 +7028,7 @@ impl Planner<'_> {
                 let resolved = rings
                     .iter()
                     .all(|ring| ring.iter().all(|&h| self.entry(&plan, h).0 != usize::MAX));
-                if sphere || curved.wraps == curved.wraps_v || !resolved {
+                if (sphere && !curved.fixed) || curved.wraps == curved.wraps_v || !resolved {
                     return None;
                 }
                 let windings: Option<Vec<i32>> = rings
@@ -6890,7 +7038,32 @@ impl Planner<'_> {
                 let windings = windings?;
                 let rims = windings.iter().filter(|w| w.abs() == 1).count();
                 let holes = windings.iter().filter(|w| **w == 0).count();
-                (rims == 2 && rims + holes == windings.len()).then_some(Layout::Wrapped)
+                if rims + holes != windings.len() {
+                    return None;
+                }
+                match rims {
+                    2 => Some(Layout::Wrapped),
+                    1 if sphere && holes > 0 => Some(Layout::HoledCap),
+                    _ => None,
+                }
+            };
+            // A sphere's circles all latitudes of its frame.
+            let latitudes = || {
+                rings.iter().all(|ring| {
+                    let (edge, _) = self.entry(&plan, ring[0]);
+                    match (&plan.edges[edge].curve, &curved.shape) {
+                        (Curve::Circle(c), Canonical::Sphere(s)) => {
+                            c.circle()
+                                .frame()
+                                .z()
+                                .vector()
+                                .cross(s.frame().z().vector())
+                                .magnitude()
+                                <= 1e-2
+                        }
+                        _ => false,
+                    }
+                })
             };
             let holed = || {
                 let closed_round = sphere || (torus && curved.wraps && curved.wraps_v);
@@ -6948,7 +7121,7 @@ impl Planner<'_> {
             } else if sphere && rings.len() == 1 && curved.fixed {
                 Some(Layout::Cap)
             } else if rings.len() == 2
-                && (!sphere || curved.fixed)
+                && (!sphere || (curved.fixed && latitudes()))
                 && !matches!(curved.shape, Canonical::Swept(_))
             {
                 // A band's seam is a ruling, a meridian or a tube's circle;
@@ -6966,6 +7139,9 @@ impl Planner<'_> {
                     self.seat_seam(&mut plan, curved, &rings)
                         .then_some(Layout::Wrapped)
                 }
+                Some(Layout::HoledCap) => self
+                    .cap_seam_clear(&plan, curved, &plan.loops[g])
+                    .then_some(Layout::HoledCap),
                 other => other,
             };
             if let Some(thread) = thread {
@@ -7001,7 +7177,11 @@ impl Planner<'_> {
             let surface = surface_of(curved, self.points, self.tol)?;
             if matches!(
                 plan.layouts[g],
-                Layout::Open | Layout::Wrapped | Layout::Holed | Layout::Threaded
+                Layout::Open
+                    | Layout::Wrapped
+                    | Layout::Holed
+                    | Layout::HoledCap
+                    | Layout::Threaded
             ) {
                 let mut held = true;
                 'rings: for ring in &plan.loops[g] {
@@ -7148,6 +7328,45 @@ impl Planner<'_> {
             plan.placed[k] = at;
         }
         clear(plan)
+    }
+
+    /// Whether a sphere's cap with holes has a seam from a vertex of its
+    /// rim to the pole clear of the holes (see [`cap_seam`]).
+    fn cap_seam_clear(&self, plan: &Plan, curved: &Curved, rings: &[Vec<Half>]) -> bool {
+        let Some((rim, _, holes)) = cap_rings(curved, rings, self.triangles, self.points, self.tol)
+        else {
+            return false;
+        };
+        let mut entries: Vec<(usize, bool)> = Vec::new();
+        for &h in &rings[rim] {
+            let entry = self.entry(plan, h);
+            if entries.last() != Some(&entry) {
+                entries.push(entry);
+            }
+        }
+        if entries.len() > 1 && entries.first() == entries.last() {
+            entries.pop();
+        }
+        let starts: Vec<Point> = entries
+            .into_iter()
+            .map(
+                |(edge, forward)| match plan.edges[edge].ends[usize::from(!forward)] {
+                    Corner::Mesh(v) => self.points[v as usize],
+                    Corner::Placed(k) => plan.placed[k],
+                },
+            )
+            .collect();
+        let holes: Vec<&[Half]> = holes.iter().map(|&k| rings[k].as_slice()).collect();
+        cap_seam(
+            curved,
+            &rings[rim],
+            &holes,
+            &starts,
+            self.triangles,
+            self.points,
+            self.tol,
+        )
+        .is_some()
     }
 
     /// The seam chain of a torus whole but for holes that between them
@@ -8758,6 +8977,7 @@ impl Builder<'_> {
                         Some(self.band_face(curved, rings, &edges, round_tube)?)
                     }
                     Layout::Cap => Some(self.cap_face(curved, rings, &edges)?),
+                    Layout::HoledCap => Some(self.holed_cap_face(curved, g, rings, &edges)?),
                     Layout::Wrapped => Some(self.wrapped_face(curved, g, rings, &edges)?),
                     Layout::Holed => Some(self.holed_face(curved, g, rings, &edges)?),
                     Layout::Threaded => Some(self.threaded_face(curved, g, rings, &edges)?),
@@ -9392,6 +9612,166 @@ impl Builder<'_> {
         Ok(if outward { face } else { face.reversed() })
     }
 
+    /// A sphere's cap with holes: the seam down from the pole, the rim in
+    /// the mesh's order from the seam's vertex, the seam back up a whole
+    /// turn over, and the pole as an edge of no length; each hole an inner
+    /// wire. The seam is the meridian where it runs straight up the chart
+    /// from a vertex on the sphere, and a curve traced along its chart line
+    /// otherwise. The wires run as the region's triangles do, and the face
+    /// flips as one where those face against the surface.
+    fn holed_cap_face(
+        &mut self,
+        curved: &Curved,
+        g: usize,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+    ) -> OgeomResult<Shape> {
+        let tau = core::f64::consts::TAU;
+        let north = core::f64::consts::FRAC_PI_2;
+        let Canonical::Sphere(sphere) = curved.shape else {
+            ogeom_bail!(Construction, "a cap is a sphere's");
+        };
+        let Some(geometry) = self.plan.surfaces[g].clone() else {
+            ogeom_bail!(Construction, "a cap was planned without its surface");
+        };
+        let surface = self.model.geometry_mut().add_surface(geometry);
+        let outward = self.outward(curved, g);
+        for ring in rings {
+            for (edge, _) in self.entries(ring) {
+                if self.has_pcurve(&edges[edge], surface) {
+                    continue;
+                }
+                let Some((pcurve, deviation)) = self.plan.pcurves.get(&(edge, g)).cloned() else {
+                    ogeom_bail!(
+                        Construction,
+                        "an edge was planned without its image on a face"
+                    );
+                };
+                self.model.widen(
+                    &edges[edge],
+                    Tolerance::new(deviation.max(self.tol.confusion()))?,
+                )?;
+                crate::build::attach_pcurve(
+                    self.model,
+                    &edges[edge],
+                    pcurve,
+                    surface,
+                    Location::identity(),
+                    self.plan.edges[edge].range,
+                )?;
+            }
+        }
+        let Some((rim, turn, holes)) =
+            cap_rings(curved, rings, self.triangles, self.points, self.tol)
+        else {
+            ogeom_bail!(Construction, "a cap has one rim and holes");
+        };
+        let entries = self.entries(&rings[rim]);
+        let mut starts: Vec<(Shape, Point)> = Vec::with_capacity(entries.len());
+        for &(edge, forward) in &entries {
+            let ends = self.model.children_of(&edges[edge])?;
+            let vertex = if forward { ends.first() } else { ends.last() };
+            let Some(vertex) = vertex.cloned() else {
+                ogeom_bail!(Construction, "a rim edge has no vertex");
+            };
+            let Some(ogeom_topo::NodeData::Vertex(data)) =
+                self.model.node(&vertex).map(|n| n.data())
+            else {
+                ogeom_bail!(Construction, "a rim vertex has no position");
+            };
+            let at = data.point;
+            starts.push((vertex, at));
+        }
+        let hole_rings: Vec<&[Half]> = holes.iter().map(|&k| rings[k].as_slice()).collect();
+        let at: Vec<Point> = starts.iter().map(|s| s.1).collect();
+        let Some((i, a, b)) = cap_seam(
+            curved,
+            &rings[rim],
+            &hole_rings,
+            &at,
+            self.triangles,
+            self.points,
+            self.tol,
+        ) else {
+            ogeom_bail!(Construction, "no seam reaches the pole clear of the holes");
+        };
+        let frame = sphere.frame();
+        let pole_at = sphere.centre() + frame.z().vector() * sphere.radius();
+        let pa = starts[i].1;
+        let meridian = (b.0 - a.0).abs() <= 1e-12
+            && pa.distance(evaluate(&curved.shape, a)) <= self.tol.confusion();
+        let (seam_curve, range, deviation): (Curve, (f64, f64), f64) = if meridian {
+            let x = Direction::new(
+                frame.x().vector() * a.0.cos() + frame.y().vector() * a.0.sin(),
+                self.tol,
+            )?;
+            let normal = Direction::new(x.vector().cross(frame.z().vector()), self.tol)?;
+            let circle = ogeom_math::Circle::new(
+                Frame::new(sphere.centre(), normal, x, self.tol)?,
+                sphere.radius(),
+                self.tol,
+            )?;
+            (
+                ogeom_geom::CircleCurve::new(circle).into(),
+                (a.1, north),
+                self.tol.confusion(),
+            )
+        } else {
+            chart_trace(&curved.shape, (a, b), (pa, pole_at), self.tol)?
+        };
+        let pole = self.model.add_vertex(VertexData::new(pole_at));
+        let id = self.model.geometry_mut().add_curve(seam_curve);
+        let mut data = EdgeData::on_curve(id, Location::identity(), range);
+        data.tolerance = Tolerance::new(deviation)?;
+        let seam = self
+            .model
+            .add_edge(data, &[starts[i].0.clone(), pole.clone()])?;
+        // Down its near side from the pole, round the rim the way the
+        // triangles run, and up its far side a whole turn over.
+        let over = tau * f64::from(turn);
+        crate::build::attach_seam(
+            self.model,
+            &seam,
+            linear((a.0 + over, a.1), (b.0 + over, b.1), range, self.tol)?,
+            linear(a, b, range, self.tol)?,
+            surface,
+            Location::identity(),
+            range,
+        )?;
+        let mut tip_data = EdgeData::new();
+        tip_data.degenerate = true;
+        let tip = self.model.add_edge(tip_data, &[pole.clone(), pole])?;
+        crate::build::attach_pcurve(
+            self.model,
+            &tip,
+            linear((b.0 + over, north), (b.0, north), (0.0, tau), self.tol)?,
+            surface,
+            Location::identity(),
+            (0.0, tau),
+        )?;
+        let mut outer = vec![seam.reversed()];
+        for k in 0..entries.len() {
+            let (edge, forward) = entries[(i + k) % entries.len()];
+            outer.push(oriented(&edges[edge], forward));
+        }
+        outer.push(seam);
+        outer.push(tip);
+        let mut wires = vec![self.model.add_wire(&outer)?];
+        for &k in &holes {
+            let ring_edges: Vec<Shape> = self
+                .entries(&rings[k])
+                .into_iter()
+                .map(|(edge, forward)| oriented(&edges[edge], forward))
+                .collect();
+            wires.push(self.model.add_wire(&ring_edges)?);
+        }
+        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        let mut face_data = FaceData::new(surface, Location::identity());
+        face_data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let face = self.model.add_face(face_data, &wires)?;
+        Ok(if outward { face } else { face.reversed() })
+    }
+
     /// A sphere or torus whole but for holes: the whole surface's face, a
     /// torus's seam round its axis on the parallel the plan placed clear of
     /// the holes, with each ring an inner wire. The rings
@@ -9906,6 +10286,147 @@ fn choose_seam(
         }
     }
     best.map(|(_, choice)| choice)
+}
+
+/// A sphere's cap with holes: the one ring that goes round its axis (the
+/// rim), which way it goes round, and the rings that do not (the holes).
+fn cap_rings(
+    curved: &Curved,
+    rings: &[Vec<Half>],
+    triangles: &[[u32; 3]],
+    points: &[Point],
+    tol: Tolerances,
+) -> Option<(usize, i32, Vec<usize>)> {
+    let windings: Vec<i32> = rings
+        .iter()
+        .map(|ring| winding(&curved.shape, ring, triangles, points, tol))
+        .collect::<Option<_>>()?;
+    let rims: Vec<usize> = (0..rings.len())
+        .filter(|&k| windings[k].abs() == 1)
+        .collect();
+    let [rim] = rims[..] else {
+        return None;
+    };
+    let holes: Vec<usize> = (0..rings.len()).filter(|&k| windings[k] == 0).collect();
+    (!holes.is_empty() && holes.len() + 1 == rings.len()).then_some((rim, windings[rim], holes))
+}
+
+/// The seam of a sphere's cap with holes, by the index of the rim vertex
+/// it starts from and its line's ends in the chart, on the branch the
+/// face's pcurves are read on.
+type CapSeamChoice = (usize, (f64, f64), (f64, f64));
+
+/// A straight segment in a chart, by its ends.
+type ChartSegment = ((f64, f64), (f64, f64));
+
+/// The seam of a sphere's cap with holes: from one of the rim's `starts`
+/// to the pole, straight in the chart, crossing no hole and meeting the
+/// rim only where it starts. A meridian where one is clear, the one
+/// standing farthest round from the holes; otherwise the line that turns
+/// least about the axis on its way up.
+fn cap_seam(
+    curved: &Curved,
+    rim: &[Half],
+    holes: &[&[Half]],
+    starts: &[Point],
+    triangles: &[[u32; 3]],
+    points: &[Point],
+    tol: Tolerances,
+) -> Option<CapSeamChoice> {
+    use core::f64::consts::{FRAC_PI_2, TAU};
+    const TURNS: i32 = 32;
+    let holes = centred_rings(
+        curved,
+        hole_polygons(&curved.shape, holes, triangles, points, tol),
+    );
+    let rim = centred_rings(
+        curved,
+        hole_polygons(&curved.shape, &[rim], triangles, points, tol),
+    )
+    .pop()?;
+    let closed = |ring: &[(f64, f64)]| -> Vec<ChartSegment> {
+        (0..ring.len())
+            .map(|k| {
+                let p = ring[k];
+                let q = if k + 1 < ring.len() {
+                    ring[k + 1]
+                } else {
+                    // A ring closes where it began, the rim a whole turn on.
+                    let first = ring[0];
+                    (first.0 + ((p.0 - first.0) / TAU).round() * TAU, first.1)
+                };
+                (p, q)
+            })
+            .collect()
+    };
+    let rim_segments = closed(&rim);
+    let hole_segments: Vec<_> = holes.iter().flat_map(|ring| closed(ring)).collect();
+    let crosses = |segments: &[ChartSegment], a: (f64, f64), b: (f64, f64)| {
+        segments.iter().any(|&(p, q)| {
+            [-2.0 * TAU, -TAU, 0.0, TAU, 2.0 * TAU]
+                .iter()
+                .any(|s| segments_cross(a, b, (p.0 + s, p.1), (q.0 + s, q.1)))
+        })
+    };
+    // A seam running along a hole's side, or within half its mean step
+    // of a hole's vertex, counts as crossing it: it would leave the face
+    // a sliver there.
+    #[allow(clippy::cast_precision_loss, reason = "ring lengths are small")]
+    let margin = 0.5
+        * hole_segments
+            .iter()
+            .map(|(p, q)| (q.0 - p.0).hypot(q.1 - p.1))
+            .sum::<f64>()
+        / hole_segments.len().max(1) as f64;
+    let grazes = |a: (f64, f64), b: (f64, f64)| {
+        holes.iter().flatten().any(|h| {
+            [-2.0 * TAU, -TAU, 0.0, TAU, 2.0 * TAU].iter().any(|s| {
+                let (x, y) = (h.0 + s - a.0, h.1 - a.1);
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let f = ((x * dx + y * dy) / dx.mul_add(dx, dy * dy)).clamp(0.0, 1.0);
+                (x - f * dx).hypot(y - f * dy) < margin
+            })
+        })
+    };
+    let at: Vec<Option<(f64, f64)>> = starts.iter().map(|p| unwrapped(curved, *p, tol)).collect();
+    let clearance = |u: f64| {
+        holes
+            .iter()
+            .flatten()
+            .map(|h| ogeom_math::elementary::wrap_signed_angle(h.0 - u).abs())
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut offsets = vec![0];
+    for k in 1..=TURNS / 2 {
+        offsets.extend([k, -k]);
+    }
+    for k in offsets {
+        let turn = TAU * f64::from(k) / f64::from(TURNS);
+        let mut best: Option<(f64, CapSeamChoice)> = None;
+        for (i, a) in at.iter().enumerate() {
+            let Some(a) = *a else {
+                continue;
+            };
+            if a.1 >= FRAC_PI_2 - 1e-9 {
+                continue;
+            }
+            let b = (a.0 + turn, FRAC_PI_2);
+            // Just above the rim, so the rim's own sides at the start
+            // vertex do not count.
+            let lifted = (a.0 + (b.0 - a.0) * 1e-3, a.1 + (b.1 - a.1) * 1e-3);
+            if crosses(&hole_segments, a, b) || grazes(a, b) || crosses(&rim_segments, lifted, b) {
+                continue;
+            }
+            let score = clearance(a.0);
+            if best.is_none_or(|held| score > held.0) {
+                best = Some((score, (i, a, b)));
+            }
+        }
+        if let Some((_, choice)) = best {
+            return Some(choice);
+        }
+    }
+    None
 }
 
 /// The straight pieces of a [`Thread`]'s chain in its working chart: from

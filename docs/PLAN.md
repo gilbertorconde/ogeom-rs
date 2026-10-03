@@ -420,6 +420,29 @@ after.
    refusal counts, but for thread_flank_narrower_than_a_chord (invalid
    before and after: 8242 faces to 8131, 50 tori to 52).
 
+   A sphere cap with holes: done. A sphere one ring goes round and every
+   other ring does not (a dome drilled off its pole, a hill on a
+   hemisphere's side) is framed about an axis whose pole is on the face
+   and five degrees clear of every ring, a ring's plane normal tried first
+   so a flat rim is a latitude. Its seam runs from a rim vertex to the
+   pole straight in the chart: a meridian where one keeps half the holes'
+   mean step clear of them (a seam along a hole's side left the face
+   meshing open), a slanted line otherwise; the pole is an edge of no
+   length and the holes inner wires. A sphere two rings go round (a dome
+   drilled through its pole off its axis) has its poles inside the two
+   rims and is laid out wrapped, its seam between them. Measured on the
+   hill on a hemisphere (radius 10, 48 rings by 128): 5304 faces before,
+   the sphere faceted, the volume 5.9e-4 off; now 3 (plane, sphere,
+   patch), valid, tessellating closed, 6.8e-8 off. At 40 by 96: 3364 faces
+   to 3. A dome on a drum and a hemisphere on its base, drilled (radius
+   1.5) off the pole and through it, meshed at 0.05 and 0.01: 299 to 3111
+   faces before with the sphere faceted, now 4 and 3 faces, volume within
+   3.2e-8. The truth bench and the stress baseline come back unchanged,
+   and so do the corpus and NIST parts in faces, kinds and volumes, but
+   for m5x16_bhcs, whose button head is such a cap: 1272 faces to 215, 2
+   spheres to 3, volume 2.3e-3 off to 5.9e-5, valid and closed before and
+   after.
+
    Still to do:
    - a tangent line inside a row of triangles (a scan, or a part meshed
      without vertices along its edges): the boundary row's vertices lie on
@@ -429,9 +452,11 @@ after.
      near flat foot gathers into narrow slanted planes beside the main one,
      each within the distance, the volume off by a few times the distance
      over the hill's area;
-   - a sphere cap with a free-form hole has no layout (a cap takes one
-     latitude circle): a hill on a hemisphere's side leaves the sphere
-     faceted (5304 faces at 48 rings by 128);
+   - a hemisphere coarse enough to leave its hill too few vertices for a
+     patch (24 rings by 64) keeps the sphere one face round the hill's
+     facets, but the volume check on the body and the crossed-seam check
+     take 4 to 5 s each round on its hole of a hundred short edges, and
+     the conversion 10 s, against 0.6 s with the sphere faceted;
    - a steeper run-out into a curved surface fails the fit as on the
      plane: the bar's hill at 0.8 high instead of 0.5 stays faceted, the
      fit running out at 1.24e-5 against a target of 1.23e-5;

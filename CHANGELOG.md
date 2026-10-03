@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Sphere caps with holes convert to one face.** A sphere bounded by one
+  rim and holes (a dome drilled off its pole, a hill on a hemisphere) comes
+  back as one sphere face, its pole on the face and its seam clear of the
+  holes; a sphere whose hole holds the pole comes back as one face between
+  its two rims. A hill on a hemisphere converts to 3 faces instead of 5304,
+  and a socket screw's button head in the corpus from 1272 faces to 215.
+
 - **Patches meet a curved neighbour on its surface.** Where a fitted patch
   runs out tangentially into a cylinder, cone, sphere or torus, the seam is
   threaded in that surface's own coordinates, cornered where it turns, and
