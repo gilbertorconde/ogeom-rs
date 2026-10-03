@@ -58,11 +58,23 @@ edge goes through the closed-form swept blend, which answers "does not
 touch both faces" where the foot runs off the top.
 
 **Section loops pinned at a sphere's pole.** Where a curved wall passes
-through a pole of a sphere face, each section loop starts and ends at the
-pole node of the chart and the arrangement can read one piece round both
-loops. A whole ball is recharted about a clear axis before the boolean; a
-trimmed sphere face, or a solid with other faces too, still takes the
-pinned arrangement and is refused by name where its result comes out empty.
+through a pole of a sphere face, the marched section stalls and doubles
+back at the pole, each loop starts and ends at the pole node of the chart,
+and the arrangement can read one piece round both loops. Before the
+boolean a whole ball is recharted about a clear axis, and so is a trimmed
+sphere face of any solid (a dome, a dome on a drum, a cap): its trim edges
+take fitted images in the new chart, its old seam and pole edges go, and
+the new seam leaves the trim at a vertex. Drills through the pole of a
+half ball, a cap and a half ball on a drum close at every wall offset
+tried. Still pinned: a face whose trim the new chart would have to split
+(two loops round the axis, as a band between two planes has, or a loop
+the seam meridian crosses at no vertex), a face at a placement or on a
+left-handed sphere, and an edge with no curve in space.
+
+**A tilted half ball fused with a drum.** A half ball whose sphere is
+charted about a tilted axis, fused with a drum, fails with "arrangement
+left no piece of the face": an error, not a wrong answer, seen while
+building the dome drills. Not yet diagnosed.
 
 **A section whose fit misses widens its junctions as far.** A marched
 section keeps its fit's error as its tolerance, and the paving's reach and
@@ -79,7 +91,7 @@ an edge within its own reach plus the edge's radius. Two sources remain:
   sphere pcurve strays up to 0.09 between them. Split at the pole sample
   each piece measures under 1e-3, but the boolean then refuses a drill it
   passed whole (the kept pieces do not close), so the split waits on the
-  pole arrangement.
+  pole arrangement. Recharting takes the pole away wherever it applies.
 - A branch nothing fits (residuals of 0.1 to 10 near a tangency) still
   carries its miss, as does a near-tangent crossing whose capped angle term
   stands at 1e-3 or more.

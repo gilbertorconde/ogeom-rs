@@ -23,6 +23,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Drills through a dome's pole.** A trimmed sphere face (a dome, a cap, a
+  dome on a drum) drilled by a wall passing through its pole was refused,
+  turned inside out or given wrong volumes (a cut more than seven times the
+  whole). Such a face is recharted about a clear axis before the boolean,
+  as a whole ball already was, its trim edges carried over and its seam
+  laid where no trim reaches: cut and common add up to the whole within
+  1e-8 and the common matches an independent integral within 1e-9.
+
 - **Face blends end where the crease's edges end.** `blend_faces` between
   faces that share no edge ends a capped round where the solid's edges
   along the crease end, if that comes before the ball leaves a face,
