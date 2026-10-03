@@ -23,6 +23,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Arcs on a turned frame are bounded whole.** An edge on a circle or
+  ellipse arc whose frame is turned against the world axes was bounded by
+  its ends and its frame's quarter points, short of the arc. Classification
+  could skip the face such an edge bounds: the common of a half ball seamed
+  along its flat face with a drum touching that face was refused as
+  overlapping instead of coming back empty. An arc's box now holds its
+  extremes along each world axis.
+
 - **A shared arc across the start of a full circle.** A half ball charted
   about a tilted axis, standing on a drum of its radius (the two sharing
   the flat face and its rim), failed fuse, cut and common with

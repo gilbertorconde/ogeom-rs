@@ -394,3 +394,39 @@ fn a_tilted_half_ball_on_a_drum_or_drilled() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A half ball charted about a level axis with its seam meridian level too,
+/// so the seam runs along the flat face's rim: the rim's arcs lie on circles
+/// whose frames are turned against the world axes. Drums under the face,
+/// narrower, as wide and wider than it and off its centre, touch it over
+/// the face and share no volume, so the common is empty and fuse and cut
+/// add up. A drum through the flat face checks the drilled volume.
+#[test]
+fn a_half_ball_seamed_in_its_flat_face_on_a_drum() {
+    let (axis, x_reference) = (Vector::new(1.0, 1.0, 0.0), Direction::Y);
+    let mut failures = Vec::new();
+    for (radius, cx, cy) in [
+        (9.5, 0.0, 0.0),
+        (BALL, 0.0, 0.0),
+        (10.5, 0.0, 0.0),
+        (BALL, 1.5, -0.5),
+    ] {
+        let foot = Point::new(cx, cy, -10.0);
+        if let Err(e) = tilted_with_drum(axis, x_reference, foot, radius, 10.0, 0.0) {
+            failures.push(format!("under, radius {radius} at ({cx}, {cy}): {e}"));
+        }
+    }
+    let (r, cx, cy) = (2.5, 1.0, -2.0);
+    let drilled = over_disc(cx, cy, r, |x, y| (BALL * BALL - x * x - y * y).sqrt());
+    if let Err(e) = tilted_with_drum(
+        axis,
+        x_reference,
+        Point::new(cx, cy, -5.0),
+        r,
+        20.0,
+        drilled,
+    ) {
+        failures.push(format!("through: {e}"));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

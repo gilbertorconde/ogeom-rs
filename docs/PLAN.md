@@ -73,12 +73,9 @@ left-handed sphere, and an edge with no curve in space.
 
 **A tilted half ball on a drum.** A half ball charted about a tilted axis
 fuses, cuts and commons with a drum standing under its flat face, sharing
-the face and its rim, and with a drum through it. Two limits remain. The
-common with a drum under it, where the chart's seam lies in the flat face
-(the axis horizontal, the seam meridian horizontal too), answers "the
-intersection came out empty though the solids overlap": the two touch over
-the face and share no volume, and the sampled reading of the two
-boundaries finds them not apart. Not yet diagnosed. And drilled through
+the face and its rim, and with a drum through it, also where the chart's
+seam lies in the flat face (the axis level, the seam meridian level too)
+and the common is empty. One limit remains: drilled through
 on the chart about the cube diagonal (1, 1, 1) with its seam toward z, the
 sums fuse + common and cut + common stand 1.2e-8 relative off the
 operands, where the other charts tried hold 5e-9: the rim and the section

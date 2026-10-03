@@ -120,8 +120,8 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
 /// world, and an imported edge sits on a stretch of it a few millimetres
 /// long. Where the range can be honoured exactly it is (a segment is the
 /// hull of its two ends, an arc the hull of its ends and whichever of its
-/// frame's four extremes it sweeps past), and where it cannot, the whole
-/// curve's bound stands, which is still a bound.
+/// extremes along the world axes it sweeps past), and where it cannot, the
+/// whole curve's bound stands, which is still a bound.
 ///
 /// # Errors
 ///
@@ -162,10 +162,14 @@ pub fn curve_bounds_over(curve: &Curve, range: (f64, f64), tol: Tolerances) -> O
     })
 }
 
-/// The hull of an arc's ends and the frame extremes it sweeps past.
+/// The hull of an arc's ends and the extremes along the world axes it
+/// sweeps past.
 ///
-/// A conic in its own frame reaches its extremes at the four quarter
-/// angles; an arc reaches only the ones inside it, and its ends otherwise.
+/// Along a world axis a conic's coordinate is `c + a cos t + b sin t`, with
+/// `a` and `b` read off the curve at `t = 0` and a quarter turn on, so its
+/// extremes stand at `atan2(b, a)` and half a turn from there. A frame
+/// tilted against the axes moves them off the frame's own quarter angles.
+/// An arc reaches only the extremes inside it, and its ends otherwise.
 fn arc_bounds(
     centre: Point,
     frame: ogeom_math::Frame,
@@ -175,7 +179,7 @@ fn arc_bounds(
     curve: &Curve,
     tol: Tolerances,
 ) -> OgeomResult<Aabb> {
-    use core::f64::consts::{PI, TAU};
+    use core::f64::consts::{FRAC_PI_2, PI, TAU};
     use ogeom_geom::Curve3d as _;
     let (lo, hi) = if range.0 <= range.1 {
         (range.0, range.1)
@@ -186,15 +190,21 @@ fn arc_bounds(
         return Ok(frame_bounds(centre, frame, (rx, ry, 0.0)));
     }
     let mut out = Aabb::of_corners(curve.point_at(lo, tol)?, curve.point_at(hi, tol)?);
-    // Every quarter angle the arc runs through, counted from the turn its
-    // own start sits in.
-    let turns = (lo / TAU).floor();
-    for step in 0..=4 {
-        #[allow(clippy::cast_precision_loss)]
-        let at = turns.mul_add(TAU, step as f64 * PI / 2.0);
-        for angle in [at, at + TAU] {
-            if angle >= lo && angle <= hi {
-                out = out.with_point(curve.point_at(angle, tol)?);
+    let (along_cos, along_sin) = (
+        curve.point_at(0.0, tol)? - centre,
+        curve.point_at(FRAC_PI_2, tol)? - centre,
+    );
+    for (a, b) in [
+        (along_cos.x, along_sin.x),
+        (along_cos.y, along_sin.y),
+        (along_cos.z, along_sin.z),
+    ] {
+        let extreme = b.atan2(a);
+        for angle in [extreme, extreme + PI] {
+            // Into the turn that starts at the arc's own start.
+            let folded = lo + (angle - lo).rem_euclid(TAU);
+            if folded <= hi {
+                out = out.with_point(curve.point_at(folded, tol)?);
             }
         }
     }
@@ -1498,6 +1508,58 @@ mod tests {
                     "{:?} escaped its bound at {p:?}: {bound}",
                     curve.kind()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn an_arc_on_a_tilted_frame_stays_inside_its_bound() {
+        // A frame turned against the world axes reaches its extremes along
+        // them between its own quarter angles. Arcs of every start and
+        // length, against dense samples of the arc itself.
+        let tilted = Frame::new(
+            Point::new(1.0, -2.0, 3.0),
+            Direction::from_coords(1.0, 2.0, 3.0, T).unwrap(),
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let level = Frame::new(
+            Point::ORIGIN,
+            -Direction::Z,
+            Direction::from_coords(-1.0, 1.0, 0.0, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let mut curves: Vec<Curve> = Vec::new();
+        for frame in [tilted, level] {
+            curves.push(CircleCurve::new(Circle::new(frame, 10.0, T).unwrap()).into());
+            curves.push(
+                ogeom_geom::EllipseCurve::new(
+                    ogeom_math::Ellipse::new(frame, 5.0, 3.0, T).unwrap(),
+                )
+                .into(),
+            );
+        }
+        let turn = core::f64::consts::TAU;
+        for curve in &curves {
+            for start in 0..16 {
+                for length in 1..8 {
+                    let lo = turn * (f64::from(start) / 8.0 - 1.0);
+                    let hi = lo + turn * f64::from(length) / 8.0;
+                    let bound = curve_bounds_over(curve, (lo, hi), T)
+                        .unwrap()
+                        .with_tolerance(T);
+                    for i in 0..=200 {
+                        let t = lo + (hi - lo) * f64::from(i) / 200.0;
+                        let p = curve.point_at(t, T).unwrap();
+                        assert!(
+                            bound.contains(p),
+                            "{:?} over ({lo}, {hi}) escaped its bound at {p:?}: {bound}",
+                            curve.kind()
+                        );
+                    }
+                }
             }
         }
     }
