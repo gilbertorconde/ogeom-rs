@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-03
+
+A patch release: no public API changes. `check` now compares every edge's
+pcurves with its curve, not only where an edge claims `same_parameter`, and
+every producer that understated its edges' tolerances states them first:
+the mesh converter (a plane's arc pcurve stood thousands of millimetres
+off), the STEP and IGES readers (which also cut an edge through a pole into
+exact pieces, keeping its colour and PMI on them), `fix_shape`, booleans
+under a fuzz, NURBS conversion and projection onto offset surfaces. STEP
+export writes edge colours and edge PMI.
+
 ### Added
 
 - **STEP export writes edge colours and edge PMI.** A coloured edge's
@@ -3502,7 +3513,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.6.1...v0.7.0
