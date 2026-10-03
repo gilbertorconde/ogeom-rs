@@ -23,6 +23,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A shared arc across the start of a full circle.** A half ball charted
+  about a tilted axis, standing on a drum of its radius (the two sharing
+  the flat face and its rim), failed fuse, cut and common with
+  "arrangement left no piece of the face". Where a shared arc runs across
+  the start of a full-circle edge, every stretch the edge covers is read as
+  boundary, on both sides of that start, not only the longer one.
+
 - **An upright drum's face blend where its foot runs off the block.**
   `blend_faces` between an upright drum's wall and a block's top, where the
   foot runs off the block's side, builds an exact torus band ending where

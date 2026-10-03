@@ -71,10 +71,19 @@ tried. Still pinned: a face whose trim the new chart would have to split
 the seam meridian crosses at no vertex), a face at a placement or on a
 left-handed sphere, and an edge with no curve in space.
 
-**A tilted half ball fused with a drum.** A half ball whose sphere is
-charted about a tilted axis, fused with a drum, fails with "arrangement
-left no piece of the face": an error, not a wrong answer, seen while
-building the dome drills. Not yet diagnosed.
+**A tilted half ball on a drum.** A half ball charted about a tilted axis
+fuses, cuts and commons with a drum standing under its flat face, sharing
+the face and its rim, and with a drum through it. Two limits remain. The
+common with a drum under it, where the chart's seam lies in the flat face
+(the axis horizontal, the seam meridian horizontal too), answers "the
+intersection came out empty though the solids overlap": the two touch over
+the face and share no volume, and the sampled reading of the two
+boundaries finds them not apart. Not yet diagnosed. And drilled through
+on the chart about the cube diagonal (1, 1, 1) with its seam toward z, the
+sums fuse + common and cut + common stand 1.2e-8 relative off the
+operands, where the other charts tried hold 5e-9: the rim and the section
+are fitted on the tilted chart, held to 7e-6 and 2e-5, and the measured
+volumes move by that much.
 
 **A section whose fit misses widens its junctions as far.** A marched
 section keeps its fit's error as its tolerance, and the paving's reach and

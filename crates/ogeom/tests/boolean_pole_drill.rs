@@ -1,6 +1,7 @@
 //! Drills along a ball's axis whose wall passes through both poles of its
 //! chart, or a hair beside them, and drills through the pole of a dome: a
-//! ball cut below its pole, alone or standing on a drum.
+//! ball cut below its pole, alone or standing on a drum. A half ball
+//! charted about a tilted axis stands on a drum or is drilled.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{check, make_box, make_cylinder, make_sphere, volume_properties};
@@ -281,6 +282,114 @@ fn drills_through_a_dome_pole() {
                     }
                 }
             }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The half ball above `z = 0` of a ball charted about `axis`, its seam
+/// leaving the axis toward `x_reference`.
+fn tilted_half(model: &mut Model, axis: Vector, x_reference: Direction) -> Shape {
+    let z = Direction::new(axis, T).unwrap();
+    let chart = Frame::new(Point::ORIGIN, z, x_reference, T).unwrap();
+    let ball = make_sphere(model, chart, BALL, T).unwrap().shape;
+    let below = Frame::new(
+        Point::new(-20.0, -20.0, -20.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let block = make_box(model, below, (40.0, 40.0, 20.0), T).unwrap().shape;
+    ogeom::boolean::cut(model, &ball, &block, T).unwrap().shape
+}
+
+/// Fuse, cut and common of a half ball on a tilted chart with an upright
+/// drum, each valid: fuse and common add up to both bodies, cut and common
+/// to the half ball, and common matches `inside`.
+fn tilted_with_drum(
+    axis: Vector,
+    x_reference: Direction,
+    foot: Point,
+    radius: f64,
+    height: f64,
+    inside: f64,
+) -> Result<(), String> {
+    let mut model = Model::new();
+    let half = tilted_half(&mut model, axis, x_reference);
+    let at = Frame::new(foot, Direction::Z, Direction::X, T).unwrap();
+    let drum = make_cylinder(&mut model, at, radius, height, T)
+        .unwrap()
+        .shape;
+    let mut volumes = Vec::new();
+    for (name, made) in [
+        ("fuse", ogeom::boolean::fuse(&mut model, &half, &drum, T)),
+        ("cut", ogeom::boolean::cut(&mut model, &half, &drum, T)),
+        (
+            "common",
+            ogeom::boolean::common(&mut model, &half, &drum, T),
+        ),
+    ] {
+        let made = made.map_err(|e| format!("{name}: {e}"))?;
+        let diagnosis = check(&model, &made.shape, T).unwrap();
+        if !diagnosis.is_valid() {
+            return Err(format!("{name}: {diagnosis}"));
+        }
+        volumes.push(volume(&model, &made.shape));
+    }
+    // The operands measured as the results are, so the sums compare like
+    // with like; each against its closed form at the measure's own reach.
+    let pi = core::f64::consts::PI;
+    let (a, b) = (volume(&model, &half), volume(&model, &drum));
+    for (name, measured, exact) in [
+        ("half ball", a, 2.0 / 3.0 * pi * BALL.powi(3)),
+        ("drum", b, pi * radius * radius * height),
+    ] {
+        if (measured - exact).abs() > exact * 1e-6 {
+            return Err(format!("{name} {measured} against {exact}"));
+        }
+    }
+    let (fuse, cut, common) = (volumes[0], volumes[1], volumes[2]);
+    if ((fuse + common) - (a + b)).abs() > (a + b) * 1e-8 {
+        return Err(format!("fuse {fuse} + common {common} against {}", a + b));
+    }
+    if ((cut + common) - a).abs() > a * 1e-8 {
+        return Err(format!("cut {cut} + common {common} against {a}"));
+    }
+    if (common - inside).abs() > a * 1e-6 {
+        return Err(format!("common {common} against {inside}"));
+    }
+    Ok(())
+}
+
+/// A drum of the ball's radius under the flat face shares the face and its
+/// rim with the half ball, and no volume. On a tilted chart the rim is cut
+/// into arcs where the chart's seam and poles meet it, and one of them runs
+/// across the start of the drum's whole circle; that arc lies along the
+/// circle on both sides of its start. A drum through the flat face and out
+/// of the dome checks the same charts against the drilled volume.
+#[test]
+fn a_tilted_half_ball_on_a_drum_or_drilled() {
+    let charts = [
+        (Vector::new(1.0, 1.0, 1.0), Direction::Z),
+        (Vector::new(1.0, 1.0, -1.0), Direction::Z),
+        (Vector::new(1.0, 1.0, 0.0), Direction::X),
+        (Vector::new(0.3, 0.2, 1.0), Direction::Z),
+    ];
+    let mut failures = Vec::new();
+    for (axis, x_reference) in charts {
+        let foot = Point::new(0.0, 0.0, -10.0);
+        if let Err(e) = tilted_with_drum(axis, x_reference, foot, BALL, 10.0, 0.0) {
+            failures.push(format!("{axis:?} {x_reference:?} under: {e}"));
+        }
+    }
+    let r = 2.5;
+    let (cx, cy) = (1.0, -2.0);
+    let drilled = over_disc(cx, cy, r, |x, y| (BALL * BALL - x * x - y * y).sqrt());
+    for (axis, x_reference) in &charts[1..] {
+        let foot = Point::new(cx, cy, -5.0);
+        if let Err(e) = tilted_with_drum(*axis, *x_reference, foot, r, 20.0, drilled) {
+            failures.push(format!("{axis:?} {x_reference:?} through: {e}"));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

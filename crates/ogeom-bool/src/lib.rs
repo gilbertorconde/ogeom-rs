@@ -797,25 +797,27 @@ fn onto_range(t: f64, curve: &Curve, range: (f64, f64), tol: Tolerances) -> f64 
     t
 }
 
-/// The part of an overlap that falls within the second curve's own bounded
-/// range, stated in the *first* curve's parameter.
+/// The parts of an overlap that fall within the second curve's own bounded
+/// range, stated in the *first* curve's parameter, in increasing order.
 ///
 /// An overlap is between two curves. An edge covers only part of its curve.
 /// The correspondence the overlap states is affine, so the edge's range
 /// carries across as an interval, and on a periodic curve it carries across
-/// up to whole turns, so the shift that meets the overlap is the one meant.
-/// `None` where the edge's own stretch and the overlap do not meet.
+/// up to whole turns. A full turn of the overlap meets an edge whose range
+/// starts elsewhere on the circle in two stretches, one either side of the
+/// edge's own start, and both are returned. Empty where the edge's own
+/// stretch and the overlap do not meet.
 fn overlap_within(
     overlap: &ogeom_intersect::Overlap,
     range: (f64, f64),
     curve: &Curve,
     tol: Tolerances,
-) -> Option<(f64, f64)> {
+) -> Vec<(f64, f64)> {
     let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
     let span_a = overlap.on_a.1 - overlap.on_a.0;
     let span_b = overlap.on_b.1 - overlap.on_b.0;
     if span_b.abs() <= f64::MIN_POSITIVE {
-        return None;
+        return Vec::new();
     }
     let to_a = |t: f64| overlap.on_a.0 + span_a * (t - overlap.on_b.0) / span_b;
     let (wlo, whi) = ordered((to_a(range.0), to_a(range.1)));
@@ -828,20 +830,21 @@ fn overlap_within(
     } else {
         0.0
     };
-    let mut best: Option<(f64, f64)> = None;
-    for k in [0.0, 1.0, -1.0, 2.0, -2.0] {
-        let candidate = (
-            lo.max(period.mul_add(k, wlo)),
-            hi.min(period.mul_add(k, whi)),
-        );
-        if candidate.1 - candidate.0 > best.map_or(tol.parametric(), |(x, y)| y - x) {
-            best = Some(candidate);
-        }
-        if period == 0.0 {
-            break;
-        }
-    }
-    best
+    let turns: &[f64] = if period == 0.0 {
+        &[0.0]
+    } else {
+        &[-2.0, -1.0, 0.0, 1.0, 2.0]
+    };
+    turns
+        .iter()
+        .map(|&k| {
+            (
+                lo.max(period.mul_add(k, wlo)),
+                hi.min(period.mul_add(k, whi)),
+            )
+        })
+        .filter(|(a, b)| b - a > tol.parametric())
+        .collect()
 }
 
 /// A parameter carried proportionally from one range to another.
@@ -2893,51 +2896,49 @@ fn fill(
                         // reading the whole curve as boundary makes the meridian
                         // opposite the seam disappear, which is the octant's own
                         // edge, on a ball cut at its corner.
-                        let Some((lo, hi)) = overlap_within(overlap, e.crange, &e.curve, tol)
-                        else {
-                            continue;
-                        };
-                        if *DEBUG_WIRE {
-                            eprintln!("PAVE s{si}: side {side} overlap ({lo:.6}, {hi:.6})");
-                        }
-                        // The edge splits where the shared stretch ends, as
-                        // the section does: the stretch itself is the edge's
-                        // to carry, and the section's next piece must meet
-                        // the edge at a vertex the edge actually has. A band
-                        // meeting a wall tangentially to the wall's own top
-                        // edge hugs it for a few microns from their corner;
-                        // without the split at the hug's far end the section
-                        // dangles there and is pruned, and the wall never
-                        // splits.
-                        // The section leaves the edge at the hug's end by
-                        // what the hug allowed, which no single strand's
-                        // honesty covers: that junction owns the gap.
-                        for t in [lo, hi] {
-                            let at = section
-                                .curve
-                                .point_at(at_param(t, domain, section.closed), tol)?;
-                            let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
-                            if foot.distance <= reach.max(tol.confusion() * 1e3) {
-                                let on_b = onto_range(foot.parameter, &e.curve, e.crange, tol);
-                                hits.push((
-                                    side,
-                                    e.node,
-                                    on_b,
-                                    t,
-                                    honest(section.tolerance, tol).max(foot.distance),
-                                ));
-                                if foot.distance > tol.confusion() * 1e2 {
-                                    junctions.push(Junction {
-                                        at: foot.point,
-                                        reach: foot.distance + tol.confusion() * 1e2,
-                                        onto_vertex: false,
-                                    });
+                        for (lo, hi) in overlap_within(overlap, e.crange, &e.curve, tol) {
+                            if *DEBUG_WIRE {
+                                eprintln!("PAVE s{si}: side {side} overlap ({lo:.6}, {hi:.6})");
+                            }
+                            // The edge splits where the shared stretch ends, as
+                            // the section does: the stretch itself is the edge's
+                            // to carry, and the section's next piece must meet
+                            // the edge at a vertex the edge actually has. A band
+                            // meeting a wall tangentially to the wall's own top
+                            // edge hugs it for a few microns from their corner;
+                            // without the split at the hug's far end the section
+                            // dangles there and is pruned, and the wall never
+                            // splits.
+                            // The section leaves the edge at the hug's end by
+                            // what the hug allowed, which no single strand's
+                            // honesty covers: that junction owns the gap.
+                            for t in [lo, hi] {
+                                let at = section
+                                    .curve
+                                    .point_at(at_param(t, domain, section.closed), tol)?;
+                                let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
+                                if foot.distance <= reach.max(tol.confusion() * 1e3) {
+                                    let on_b = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                                    hits.push((
+                                        side,
+                                        e.node,
+                                        on_b,
+                                        t,
+                                        honest(section.tolerance, tol).max(foot.distance),
+                                    ));
+                                    if foot.distance > tol.confusion() * 1e2 {
+                                        junctions.push(Junction {
+                                            at: foot.point,
+                                            reach: foot.distance + tol.confusion() * 1e2,
+                                            onto_vertex: false,
+                                        });
+                                    }
                                 }
                             }
+                            trim_ts.push(lo);
+                            trim_ts.push(hi);
+                            along[side].push((lo, hi, ei));
                         }
-                        trim_ts.push(lo);
-                        trim_ts.push(hi);
-                        along[side].push((lo, hi, ei));
                     }
                 }
             }
@@ -3966,20 +3967,23 @@ fn fill(
             let clipped: Vec<ogeom_intersect::Overlap> = found
                 .overlaps
                 .iter()
-                .filter_map(|overlap| {
-                    let (lo, hi) = overlap_within(overlap, e.crange, &contact.curve, tol)?;
+                .flat_map(|overlap| {
                     let span = overlap.on_a.1 - overlap.on_a.0;
-                    if span.abs() <= f64::MIN_POSITIVE {
-                        return None;
-                    }
-                    let to_b = |t: f64| {
+                    let parts = if span.abs() <= f64::MIN_POSITIVE {
+                        Vec::new()
+                    } else {
+                        overlap_within(overlap, e.crange, &contact.curve, tol)
+                    };
+                    let to_b = move |t: f64| {
                         overlap.on_b.0
                             + (overlap.on_b.1 - overlap.on_b.0) * (t - overlap.on_a.0) / span
                     };
-                    Some(ogeom_intersect::Overlap {
-                        on_a: (lo, hi),
-                        on_b: (to_b(lo), to_b(hi)),
-                    })
+                    parts
+                        .into_iter()
+                        .map(move |(lo, hi)| ogeom_intersect::Overlap {
+                            on_a: (lo, hi),
+                            on_b: (to_b(lo), to_b(hi)),
+                        })
                 })
                 .collect();
             // A line and a curved conic share no stretch, however loosely
@@ -4013,77 +4017,77 @@ fn fill(
                 // other side needs to sew against.
                 // A periodic curve's overlap is answered on its base turn;
                 // an edge written a turn up (a wedge cap's arc at 2π..2.5π)
-                // covers it only once the turn is carried across.
-                let (lo, hi) = if contact.curve.is_periodic() {
+                // covers it only once the turn is carried across. A stretch
+                // and a window that both run near a full turn can meet in
+                // two turns, and each meeting is a stretch along the edge.
+                let turns: Vec<f64> = if contact.curve.is_periodic() {
                     let (dlo, dhi) = contact.curve.domain();
                     let period = dhi - dlo;
                     let turn = ((contact.crange.0 - lo) / period).floor();
-                    let mut best = (lo, hi);
-                    let mut best_span = f64::NEG_INFINITY;
-                    for k in [turn, turn + 1.0, turn - 1.0] {
-                        let cand = (k.mul_add(period, lo), k.mul_add(period, hi));
-                        let span = cand.1.min(contact.crange.1) - cand.0.max(contact.crange.0);
-                        if span > best_span {
-                            best_span = span;
-                            best = cand;
-                        }
-                    }
-                    best
+                    [turn - 1.0, turn, turn + 1.0]
+                        .into_iter()
+                        .map(|k| k * period)
+                        .collect()
                 } else {
-                    (lo, hi)
+                    vec![0.0]
                 };
-                let (lo, hi) = (lo.max(contact.crange.0), hi.min(contact.crange.1));
-                if hi - lo <= tol.parametric() {
-                    continue;
-                }
-                for t in [lo, hi] {
-                    paves.entry(contact.node).or_default().push(Pave {
-                        t,
-                        honesty: honest(contact.tolerance, tol),
-                    });
-                }
-                if *DEBUG_WIRE {
-                    eprintln!(
-                        "CONTACT c{ci} along edge {} over ({lo:.6}, {hi:.6}) of {:?}: {:?} .. {:?}",
-                        e.node.index(),
-                        contact.crange,
-                        contact.curve.point_at(lo, tol).ok(),
-                        contact.curve.point_at(hi, tol).ok()
+                for shift in turns {
+                    let (lo, hi) = (
+                        (lo + shift).max(contact.crange.0),
+                        (hi + shift).min(contact.crange.1),
                     );
-                }
-                contact_along[ci].push((lo, hi));
-                // The *target* edge splits where the shared stretch ends,
-                // exactly as the contact does. Without this, the face across
-                // the overlap keeps one long boundary edge where its new
-                // neighbours carry two short ones, and sew (which matches
-                // edges whole) can pair it with neither. The clamped ends are
-                // carried across by the correspondence the overlap itself
-                // states, which is affine over the shared stretch.
-                let span = overlap.on_a.1 - overlap.on_a.0;
-                let carry = |t: f64| -> f64 {
-                    if span.abs() <= f64::MIN_POSITIVE {
-                        overlap.on_b.0
-                    } else {
-                        overlap.on_b.0
-                            + (overlap.on_b.1 - overlap.on_b.0) * (t - overlap.on_a.0) / span
+                    if hi - lo <= tol.parametric() {
+                        continue;
                     }
-                };
-                let (mut tlo, mut thi) = (carry(lo), carry(hi));
-                if tlo > thi {
-                    core::mem::swap(&mut tlo, &mut thi);
-                }
-                let target_domain = e.curve.domain();
-                let periodic = e.curve.is_periodic();
-                for t in [tlo, thi] {
-                    // A correspondence across a full turn can run the
-                    // parameter past the domain. The pave belongs where the
-                    // edge actually is.
-                    let t = if periodic { fold(t, target_domain) } else { t };
-                    if t > e.crange.0 + tol.parametric() && t < e.crange.1 - tol.parametric() {
-                        paves.entry(e.node).or_default().push(Pave {
+                    for t in [lo, hi] {
+                        paves.entry(contact.node).or_default().push(Pave {
                             t,
                             honesty: honest(contact.tolerance, tol),
                         });
+                    }
+                    if *DEBUG_WIRE {
+                        eprintln!(
+                            "CONTACT c{ci} along edge {} over ({lo:.6}, {hi:.6}) of {:?}: {:?} .. {:?}",
+                            e.node.index(),
+                            contact.crange,
+                            contact.curve.point_at(lo, tol).ok(),
+                            contact.curve.point_at(hi, tol).ok()
+                        );
+                    }
+                    contact_along[ci].push((lo, hi));
+                    // The *target* edge splits where the shared stretch ends,
+                    // exactly as the contact does. Without this, the face across
+                    // the overlap keeps one long boundary edge where its new
+                    // neighbours carry two short ones, and sew (which matches
+                    // edges whole) can pair it with neither. The clamped ends are
+                    // carried across by the correspondence the overlap itself
+                    // states, which is affine over the shared stretch.
+                    let span = overlap.on_a.1 - overlap.on_a.0;
+                    let carry = |t: f64| -> f64 {
+                        if span.abs() <= f64::MIN_POSITIVE {
+                            overlap.on_b.0
+                        } else {
+                            overlap.on_b.0
+                                + (overlap.on_b.1 - overlap.on_b.0) * (t - overlap.on_a.0) / span
+                        }
+                    };
+                    let (mut tlo, mut thi) = (carry(lo), carry(hi));
+                    if tlo > thi {
+                        core::mem::swap(&mut tlo, &mut thi);
+                    }
+                    let target_domain = e.curve.domain();
+                    let periodic = e.curve.is_periodic();
+                    for t in [tlo, thi] {
+                        // A correspondence across a full turn can run the
+                        // parameter past the domain. The pave belongs where the
+                        // edge actually is.
+                        let t = if periodic { fold(t, target_domain) } else { t };
+                        if t > e.crange.0 + tol.parametric() && t < e.crange.1 - tol.parametric() {
+                            paves.entry(e.node).or_default().push(Pave {
+                                t,
+                                honesty: honest(contact.tolerance, tol),
+                            });
+                        }
                     }
                 }
             }
