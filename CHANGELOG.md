@@ -64,6 +64,13 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Exact mass properties are several times faster on long pcurves.** Short
+  boundary panels take as few Gauss points as their error bound allows,
+  inner integrals on analytic surfaces are not refined again between runs,
+  and a run is summed as it goes instead of held. A coarsely meshed hill on
+  a hemisphere and a torus threaded through six holes convert about four
+  times faster; volumes are unchanged to within 1e-12.
+
 - **Booleans on large solids cost closer to what the tool touches.**
   Untouched faces pass through the sew as they stand, the classifier draws
   a plane's holes only near where it asks, and a cut face's holes that

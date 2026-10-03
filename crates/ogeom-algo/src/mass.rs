@@ -409,46 +409,50 @@ fn exact_volume_properties(
     }
 
     let reference = reference_point(&exact, tol)?;
-    let mut mass = 0.0;
-    let mut first = Vector::ZERO;
-    let mut second = Matrix3::ZERO;
-    // Each face's samples are taken on their own, and summed in the faces'
+    // Each face's moments are summed on their own, and added in the faces'
     // order.
-    let sampled = ogeom_core::parallel::map_ordered(&exact, |_, face| {
-        let mut samples: Vec<(Point, Vector, f64)> = Vec::new();
-        let settled = integrate_face(face, reference, tol, &mut |p, n_da, share| {
-            samples.push((p, n_da, share));
-        });
-        (settled, samples)
-    });
-    for (settled, samples) in sampled {
-        for (p, n_da, share) in samples {
-            let n_da = n_da * share;
-            let q = p - reference;
-            mass += q.dot(n_da) / 3.0;
-            first += Vector::new(
-                q.x * q.x * n_da.x / 2.0,
-                q.y * q.y * n_da.y / 2.0,
-                q.z * q.z * n_da.z / 2.0,
-            );
-            let d = [q.x, q.y, q.z];
-            let nd = [n_da.x, n_da.y, n_da.z];
-            for i in 0..3 {
-                // Diagonal: int q_i^2 dV = surface int q_i^3 n_i / 3.
-                second.rows[i][i] += d[i] * d[i] * d[i] * nd[i] / 3.0;
-                // Off-diagonal: int q_i q_j dV = surface int q_i^2 q_j n_i / 2.
-                for j in 0..3 {
-                    if i != j {
-                        second.rows[i][j] += d[i] * d[i] * d[j] * nd[i] / 2.0;
+    let summed = ogeom_core::parallel::map_ordered(&exact, |_, face| {
+        integrate_face(
+            face,
+            reference,
+            tol,
+            Moments::zero,
+            |sums, p, n_da, share| {
+                let n_da = n_da * share;
+                let q = p - reference;
+                sums.mass += q.dot(n_da) / 3.0;
+                sums.first += Vector::new(
+                    q.x * q.x * n_da.x / 2.0,
+                    q.y * q.y * n_da.y / 2.0,
+                    q.z * q.z * n_da.z / 2.0,
+                );
+                let d = [q.x, q.y, q.z];
+                let nd = [n_da.x, n_da.y, n_da.z];
+                for i in 0..3 {
+                    // Diagonal: int q_i^2 dV = surface int q_i^3 n_i / 3.
+                    sums.second.rows[i][i] += d[i] * d[i] * d[i] * nd[i] / 3.0;
+                    // Off-diagonal: int q_i q_j dV = surface int q_i^2 q_j n_i / 2.
+                    for j in 0..3 {
+                        if i != j {
+                            sums.second.rows[i][j] += d[i] * d[i] * d[j] * nd[i] / 2.0;
+                        }
                     }
                 }
-            }
-        }
-        let settled = or_mesh(settled, false)?;
-        if !settled {
-            return Ok(None);
+            },
+        )
+    });
+    let mut total = Moments::zero();
+    for face in summed {
+        match or_mesh(face, None)? {
+            Some(sums) => total.add(&sums),
+            None => return Ok(None),
         }
     }
+    let Moments {
+        mass,
+        first,
+        mut second,
+    } = total;
     // The off-diagonal identity fills each pair twice, once from each axis;
     // average them, which also symmetrizes rounding.
     for i in 0..3 {
@@ -491,26 +495,35 @@ fn exact_surface_properties(
         }
     }
     let reference = reference_point(&exact, tol)?;
-    let mut mass = 0.0;
-    let mut first = Vector::ZERO;
-    let mut second = Matrix3::ZERO;
+    let mut total = Moments::zero();
     for face in &exact {
-        let settled = integrate_face(face, reference, tol, &mut |p, n_da, share| {
-            let da = n_da.magnitude() * share;
-            let q = p - reference;
-            mass += da;
-            first += q * da;
-            for (i, qi) in [q.x, q.y, q.z].iter().enumerate() {
-                for (j, qj) in [q.x, q.y, q.z].iter().enumerate() {
-                    second.rows[i][j] += qi * qj * da;
+        let found = integrate_face(
+            face,
+            reference,
+            tol,
+            Moments::zero,
+            |sums, p, n_da, share| {
+                let da = n_da.magnitude() * share;
+                let q = p - reference;
+                sums.mass += da;
+                sums.first += q * da;
+                for (i, qi) in [q.x, q.y, q.z].iter().enumerate() {
+                    for (j, qj) in [q.x, q.y, q.z].iter().enumerate() {
+                        sums.second.rows[i][j] += qi * qj * da;
+                    }
                 }
-            }
-        });
-        let settled = or_mesh(settled, false)?;
-        if !settled {
-            return Ok(None);
+            },
+        );
+        match or_mesh(found, None)? {
+            Some(sums) => total.add(&sums),
+            None => return Ok(None),
         }
     }
+    let Moments {
+        mass,
+        first,
+        second,
+    } = total;
     let acc = Accumulator {
         reference: Some(reference),
         mass,
@@ -518,6 +531,30 @@ fn exact_surface_properties(
         second,
     };
     Ok(Some(acc.finish(0.0)))
+}
+
+/// A measure and its first and second moments about the reference, summed
+/// over one face's samples or over the faces.
+struct Moments {
+    mass: f64,
+    first: Vector,
+    second: Matrix3,
+}
+
+impl Moments {
+    const fn zero() -> Self {
+        Self {
+            mass: 0.0,
+            first: Vector::ZERO,
+            second: Matrix3::ZERO,
+        }
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.mass += other.mass;
+        self.first += other.first;
+        self.second = add(self.second, other.second);
+    }
 }
 
 /// An exact path's answer, or `fallback` where the closed forms could not
@@ -548,22 +585,25 @@ fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
     }
 }
 
-/// Drive the callback over every quadrature sample of a face.
+/// Sum every quadrature sample of a face into an accumulator from `fresh`;
+/// `None` where the face's rule did not settle.
 ///
-/// The callback receives the world point and the outward-signed `n dA`
-/// already weighted; summing the callback's contributions *is* the
-/// integral.
-fn integrate_face(
+/// `contribute` receives the world point, the outward-signed `n dA`
+/// already weighted, and the region's share; summing those contributions
+/// *is* the integral.
+fn integrate_face<A>(
     face: &ExactFace,
-    _reference: Point,
+    reference: Point,
     tol: Tolerances,
-    contribute: &mut dyn FnMut(Point, Vector, f64),
-) -> OgeomResult<bool> {
+    fresh: impl Fn() -> A,
+    contribute: impl Fn(&mut A, Point, Vector, f64),
+) -> OgeomResult<Option<A>> {
     let share = face.share();
     use ogeom_geom::Surface as _;
     const QUARTER: f64 = core::f64::consts::FRAC_PI_2;
+    let mut sums = fresh();
     match face {
-        ExactFace::Chart(chart) => Ok(chart.integrate(_reference, tol, contribute)),
+        ExactFace::Chart(chart) => Ok(chart.integrate(reference, tol, fresh, contribute)),
         ExactFace::ChartRectangle {
             surface,
             rect,
@@ -642,7 +682,7 @@ fn integrate_face(
                         let sample = (|| -> OgeomResult<()> {
                             let p = surface.point_at(u, v, tol)?;
                             let (du, dv) = surface.d1_at(u, v, tol)?;
-                            contribute(p, du.cross(dv) * (sign * weight), share);
+                            contribute(&mut sums, p, du.cross(dv) * (sign * weight), share);
                             Ok(())
                         })();
                         if let Err(e) = sample {
@@ -653,7 +693,7 @@ fn integrate_face(
             }
             match failure {
                 Some(e) => Err(e),
-                None => Ok(true),
+                None => Ok(Some(sums)),
             }
         }
         ExactFace::Disc {
@@ -678,12 +718,12 @@ fn integrate_face(
                         return;
                     }
                     let p = *centre + (*e1 * theta.cos() + *e2 * theta.sin()) * rho;
-                    contribute(p, *normal * (sign * rho * weight), share);
+                    contribute(&mut sums, p, *normal * (sign * rho * weight), share);
                 });
             }
             match failure {
                 Some(e) => Err(e),
-                None => Ok(true),
+                None => Ok(Some(sums)),
             }
         }
     }

@@ -457,9 +457,14 @@ after.
      over the hill's area;
    - a hemisphere coarse enough to leave its hill too few vertices for a
      patch (24 rings by 64) keeps the sphere one face round the hill's
-     facets, but the volume check on the body and the crossed-seam check
-     take 4 to 5 s each round on its hole of a hundred short edges, and
-     the conversion 10 s, against 0.6 s with the sphere faceted;
+     facets. Its conversion took 7 to 10 s, nearly all in the exact volume
+     of the body (each hole edge a cubic of some 160 spans, every span ten
+     boundary points with a full inner integral each); now 1.4 s (2.1 s of
+     CPU against 9), the volume within 1e-13 of before. A short boundary
+     panel takes as few points as its error bound allows, the inner
+     integrals on an analytic surface are not refined between runs, and a
+     run is summed as it goes instead of held. What is left of the time is
+     in planning and fitting, not in the checks;
    - a steeper run-out into a curved surface fails the fit as on the
      plane: the bar's hill at 0.8 high instead of 0.5 stays faceted, the
      fit running out at 1.24e-5 against a target of 1.23e-5;
@@ -567,10 +572,9 @@ after.
    second torus, 1e-15 off; a flat-sided groove round the tube, 5e-11 off.
    Still open: holes that leave no circle free either way (no free
    parallel and no free meridian) stay facets, as do holes that overlap
-   along the chain at every level tried. The exact volume check of a
-   threaded face is slow (2.5 s for the six holes, most of the
-   conversion's time), the interpolated seam pieces and hole edges
-   integrated span by span.
+   along the chain at every level tried. The exact volume check of the
+   six-hole ring took most of its conversion (1.5 s wall, 3 s of CPU);
+   with short panels on fewer points it converts in 0.4 s (0.8 s of CPU).
 8. **The free boundary of an open mesh.** Done: a curved face's free
    boundary is cut where it turns by the crease angle and each run placed
    on the face's surface, as a parallel or ruling where one holds and

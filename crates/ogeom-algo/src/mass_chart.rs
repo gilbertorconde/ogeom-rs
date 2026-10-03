@@ -19,7 +19,10 @@
 //! and conics swept or revolved. Panels break at a pcurve's knots and at
 //! every quarter turn, where the ten-point Gauss rule integrates such an
 //! integrand to rounding, and the whole is run again on panels twice as
-//! fine until two runs agree to a part in ten billion.
+//! fine until two runs agree to a part in ten billion. A short boundary
+//! panel on an analytic surface takes as few points as its error bound
+//! allows, and the inner integrals there, exact on quarter turns, are not
+//! refined between runs.
 
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{
@@ -620,10 +623,6 @@ fn fold(gap: Vector2, period: Vector2) -> Vector2 {
 /// mesh.
 const DOUBLINGS: u32 = 5;
 
-/// The most samples a run keeps to feed once it settles: 56 MB of them.
-/// A run past this is drawn a second time instead of held.
-const MOST_KEPT: usize = 1 << 20;
-
 /// Agreement asked of two runs, the second on panels twice as fine,
 /// relative to the size of what they integrate.
 const AGREE: f64 = 1e-10;
@@ -632,6 +631,111 @@ const AGREE: f64 = 1e-10;
 /// trigonometric polynomial integrates to rounding under the ten-point
 /// rule.
 const QUARTER: f64 = core::f64::consts::FRAC_PI_2;
+
+/// The boundary rules a short panel may take, by their number of points.
+const ORDERS: [usize; 5] = [3, 4, 5, 6, 7];
+
+/// The Gauss-Legendre rules of [`ORDERS`] on `[-1, 1]`: nodes and weights.
+const RULES: [(&[f64], &[f64]); 5] = [
+    (
+        &[-0.7745966692414834, 0.0, 0.7745966692414834],
+        &[0.5555555555555557, 0.8888888888888888, 0.5555555555555557],
+    ),
+    (
+        &[
+            -0.8611363115940526,
+            -0.33998104358485626,
+            0.33998104358485626,
+            0.8611363115940526,
+        ],
+        &[
+            0.34785484513745357,
+            0.6521451548625464,
+            0.6521451548625464,
+            0.34785484513745357,
+        ],
+    ),
+    (
+        &[
+            -0.906179845938664,
+            -0.5384693101056831,
+            0.0,
+            0.5384693101056831,
+            0.906179845938664,
+        ],
+        &[
+            0.23692688505618928,
+            0.4786286704993663,
+            0.5688888888888887,
+            0.4786286704993663,
+            0.23692688505618928,
+        ],
+    ),
+    (
+        &[
+            -0.9324695142031519,
+            -0.6612093864662645,
+            -0.2386191860831969,
+            0.2386191860831969,
+            0.6612093864662645,
+            0.9324695142031519,
+        ],
+        &[
+            0.17132449237917027,
+            0.3607615730481387,
+            0.46791393457269104,
+            0.46791393457269104,
+            0.3607615730481387,
+            0.17132449237917027,
+        ],
+    ),
+    (
+        &[
+            -0.9491079123427586,
+            -0.7415311855993945,
+            -0.4058451513773972,
+            0.0,
+            0.4058451513773972,
+            0.7415311855993945,
+            0.9491079123427586,
+        ],
+        &[
+            0.12948496616886973,
+            0.27970539148927687,
+            0.3818300505051187,
+            0.4179591836734693,
+            0.3818300505051187,
+            0.27970539148927687,
+            0.12948496616886973,
+        ],
+    ),
+];
+
+/// The highest frequency taken for a boundary integrand in an angle: the
+/// second moments' on a sphere or a torus, a cubic in the point times the
+/// `n dA`.
+const FREQUENCY: f64 = 6.0;
+
+/// What a boundary panel's rule may miss by, against the panel's own size:
+/// below what ten points over a quarter turn are bounded by.
+const PANEL_MISS: f64 = 1e-16;
+
+/// The `order`-point Gauss-Legendre rule on `[a, b]`: one of [`ORDERS`],
+/// or ten points.
+fn rule(order: usize, a: f64, b: f64) -> Vec<(f64, f64)> {
+    let (half, middle) = ((b - a) * 0.5, f64::midpoint(a, b));
+    match ORDERS.iter().position(|&n| n == order) {
+        Some(i) => {
+            let (nodes, weights) = RULES[i];
+            nodes
+                .iter()
+                .zip(weights)
+                .map(|(x, w)| (middle + half * x, w * half))
+                .collect()
+        }
+        None => gauss_legendre_rule(a, b).to_vec(),
+    }
+}
 
 /// One sample of a face's integral: the surface point, its outward
 /// `Su x Sv`, and the quadrature weight.
@@ -646,66 +750,39 @@ impl ChartFace {
         self.surface.point_at(at.x, at.y, tol)
     }
 
-    /// Feed every sample of the face's integral to `contribute`, as the
-    /// surface point, its `n dA` with the weight's magnitude folded in, and
-    /// the weight's sign: an area takes `|n dA|` times that sign, a volume
-    /// the product. `false` where the rule did not settle, and nothing was
-    /// fed.
-    pub(crate) fn integrate(
+    /// The face's integral summed into an accumulator from `fresh`: every
+    /// sample is handed to `contribute` as the surface point, its `n dA`
+    /// with the weight's magnitude folded in, and the weight's sign (an area
+    /// takes `|n dA|` times that sign, a volume the product). Each run sums
+    /// into an accumulator of its own, and the one that settles is
+    /// returned; `None` where none did.
+    pub(crate) fn integrate<A>(
         &self,
         reference: Point,
         tol: Tolerances,
-        contribute: &mut dyn FnMut(Point, Vector, f64),
-    ) -> bool {
-        self.integrate_keeping(MOST_KEPT, reference, tol, contribute)
-    }
-
-    /// [`ChartFace::integrate`], keeping at most `most_kept` samples of a
-    /// run.
-    fn integrate_keeping(
-        &self,
-        most_kept: usize,
-        reference: Point,
-        tol: Tolerances,
-        contribute: &mut dyn FnMut(Point, Vector, f64),
-    ) -> bool {
-        let Ok(mut held) = self.run(1, reference, tol, &mut |_| {}) else {
-            return false;
-        };
+        fresh: impl Fn() -> A,
+        contribute: impl Fn(&mut A, Point, Vector, f64),
+    ) -> Option<A> {
+        let mut held = self.run(1, reference, tol, &mut |_| {}).ok()?;
         for doubling in 1..=DOUBLINGS {
             // Each doubling costs twice the last: a cancelled watch is
             // honoured between them, and the caller's own checkpoint then
             // reports it.
             if ogeom_core::progress::checkpoint().is_err() {
-                return false;
+                return None;
             }
-            // The run's samples are kept to feed if it settles, up to a
-            // bound; past it they are dropped, and a settled run is drawn
-            // again, the same samples in the same order, straight into the
-            // caller.
-            let mut kept: Vec<Sample> = Vec::new();
-            let mut dropped = false;
-            let Ok(proxy) = self.run(1 << doubling, reference, tol, &mut |sample| {
-                if kept.len() < most_kept {
-                    kept.push(sample);
-                } else {
-                    dropped = true;
-                }
-            }) else {
-                return false;
-            };
+            let mut sum = fresh();
+            let proxy = self
+                .run(1 << doubling, reference, tol, &mut |(p, n, w)| {
+                    contribute(&mut sum, p, n * w.abs(), w.signum());
+                })
+                .ok()?;
             if settled(held, proxy) {
-                let mut feed = |(p, n, w): Sample| contribute(p, n * w.abs(), w.signum());
-                if dropped {
-                    drop(kept);
-                    return self.run(1 << doubling, reference, tol, &mut feed).is_ok();
-                }
-                kept.into_iter().for_each(feed);
-                return true;
+                return Some(sum);
             }
             held = proxy;
         }
-        false
+        None
     }
 
     /// The face's samples with every panel split `fine` ways, each handed to
@@ -740,10 +817,11 @@ impl ChartFace {
                 }
                 let breaks = self.outer_breaks(segment, tol)?;
                 for pair in breaks.windows(2) {
+                    let order = self.outer_order(segment, pair[0], pair[1], tol)?;
                     for k in 0..fine {
                         let a = pair[0] + (pair[1] - pair[0]) * f64::from(k) / f64::from(fine);
                         let b = pair[0] + (pair[1] - pair[0]) * f64::from(k + 1) / f64::from(fine);
-                        for (t, wt) in gauss_legendre_rule(a, b) {
+                        for (t, wt) in rule(order, a, b) {
                             let (at, d) = segment.at(t, tol)?;
                             self.inner(at, region * wt * d.y, fine, tol, &mut take)?;
                         }
@@ -844,6 +922,88 @@ impl ChartFace {
         Ok(breaks)
     }
 
+    /// How many Gauss points a boundary panel from `a` to `b` takes: the
+    /// fewest whose error bound is below [`PANEL_MISS`] of the panel's own
+    /// size, or ten.
+    ///
+    /// The integrand along a panel is a trigonometric polynomial of the
+    /// chart point, of frequency at most [`FREQUENCY`] in an angle (a
+    /// polynomial in a length, whose chart size stands in for a radian),
+    /// times the pcurve's `v` speed. On a polynomial piece of degree three
+    /// or less, written `c(s) = c0 + A1 s + A2 s^2 + A3 s^3` over the panel
+    /// as `s` runs over `[-1, 1]`, the integrand is analytic in the
+    /// Bernstein ellipse of every `rho`, bounded there through the bounds
+    /// of `|Im c|` and `|c'|`, and the `n`-point rule misses by at most
+    /// `64/15 M rho^(2 - 2n) / (rho^2 - 1)`. Any other piece, or a surface
+    /// whose integrand is of another kind, takes ten.
+    fn outer_order(
+        &self,
+        segment: &Segment,
+        a: f64,
+        b: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<usize> {
+        let cubic = match &segment.curve {
+            PlanarCurve::Line(_) => true,
+            PlanarCurve::BSpline(spline) => !spline.is_rational() && spline.knots().degree() <= 3,
+            _ => false,
+        };
+        let length = 1.0 / self.scale.max(f64::MIN_POSITIVE);
+        let (wu, wv) = match self.surface {
+            SurfaceGeometry::Sphere(_) | SurfaceGeometry::Torus(_) => (1.0, 1.0),
+            SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => (1.0, length),
+            SurfaceGeometry::Plane(_) => (length, length),
+            _ => return Ok(10),
+        };
+        if !cubic {
+            return Ok(10);
+        }
+        // The cubic's coefficients from its points at s = -1, -1/3, 1/3, 1.
+        let (middle, half) = (f64::midpoint(a, b), (b - a) * 0.5);
+        let mut y = [Point2::ORIGIN; 4];
+        for (slot, s) in y.iter_mut().zip([-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0]) {
+            *slot = segment.at(middle + half * s, tol)?.0;
+        }
+        let odd = (y[3] - y[0]) * 0.5;
+        let odd_inner = (y[2] - y[1]) * 0.5;
+        let a3 = (odd - odd_inner * 3.0) * (9.0 / 8.0);
+        let a1 = odd - a3;
+        let a2 = ((y[0].to_vector() + y[3].to_vector()) - (y[1].to_vector() + y[2].to_vector()))
+            * (9.0 / 16.0);
+        let size = a1.y.abs() + a2.y.abs() + a3.y.abs();
+        if size == 0.0 {
+            return Ok(ORDERS[0]);
+        }
+        let reach = |c: Vector2| c.x.abs() * wu + c.y.abs() * wv;
+        let (r1, r2, r3) = (reach(a1), reach(a2), reach(a3));
+        let mut best = [f64::INFINITY; ORDERS.len()];
+        for k in 0..48 {
+            let rho = 1.05 * 1.25_f64.powi(k);
+            let (big, small) = (0.5 * (rho + 1.0 / rho), 0.5 * (rho - 1.0 / rho));
+            // |Im c| on the ellipse, and |dv/ds| there against the panel's
+            // own size.
+            let im = r1 * small
+                + r2 * 2.0 * big * small
+                + r3 * (3.0 * big * big + small * small) * small;
+            let exponent = FREQUENCY * im;
+            if exponent > 600.0 {
+                break;
+            }
+            let speed = (a1.y.abs() + 2.0 * big * a2.y.abs() + 3.0 * big * big * a3.y.abs()) / size;
+            let common = 64.0 / 15.0 * exponent.exp() * speed * rho * rho / (rho * rho - 1.0);
+            for (slot, &n) in best.iter_mut().zip(&ORDERS) {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                let miss = common * rho.powi(-2 * n as i32);
+                *slot = slot.min(miss);
+            }
+        }
+        Ok(ORDERS
+            .iter()
+            .zip(best)
+            .find(|&(_, miss)| miss <= PANEL_MISS)
+            .map_or(10, |(&n, _)| n))
+    }
+
     /// The inner integral from `u_ref` to the boundary point `at`, along
     /// `u` at its `v`, its samples weighted by `outer`.
     fn inner(
@@ -859,12 +1019,24 @@ impl ChartFace {
         if ua == ub || outer == 0.0 {
             return Ok(());
         }
+        // Along `u` at a fixed `v`, an analytic surface's point, `n dA` and
+        // its length are trigonometric polynomials in `u` (polynomials on a
+        // plane), which a quarter-turn panel takes to rounding: only the
+        // boundary's own panels are refined between runs there.
+        let refined = match self.surface {
+            SurfaceGeometry::Plane(_)
+            | SurfaceGeometry::Cylinder(_)
+            | SurfaceGeometry::Cone(_)
+            | SurfaceGeometry::Sphere(_)
+            | SurfaceGeometry::Torus(_) => 1,
+            _ => fine,
+        };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let pieces = if matches!(self.surface, SurfaceGeometry::Plane(_)) {
             1
         } else {
             ((ub - ua).abs() / QUARTER).ceil().clamp(1.0, 64.0) as u32
-        } * fine;
+        } * refined;
         let u_knots = &self.knot_lines.0;
         let (lo, hi) = (ua.min(ub), ua.max(ub));
         let mut cuts: Vec<f64> = (0..=pieces)
@@ -961,43 +1133,27 @@ fn settled(a: [f64; 5], b: [f64; 5]) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "test code")]
 mod tests {
     use super::*;
-    use ogeom_math::{Direction, Frame};
 
-    const T: Tolerances = Tolerances::millimetres();
-
-    /// A run drawn again past the bound feeds exactly what a kept run
-    /// feeds, sample for sample.
+    /// Each short rule integrates every polynomial of degree below twice
+    /// its points exactly, on a panel away from the origin.
     #[test]
-    fn a_dropped_run_feeds_the_same_samples_again() {
-        let mut model = Model::new();
-        let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
-        let cylinder = crate::make_cylinder(&mut model, frame, 2.0, 3.0, T)
-            .unwrap()
-            .shape;
-        let faces =
-            ogeom_topo::explore_unique(&model, &cylinder, ogeom_topo::ShapeType::Face).unwrap();
-        let mut tried = 0;
-        for face in &faces {
-            let Some(chart) = chart_face(&model, face, T) else {
-                continue;
-            };
-            tried += 1;
-            let feed = |most_kept: usize| {
-                let mut out = Vec::new();
-                let settled =
-                    chart.integrate_keeping(most_kept, Point::ORIGIN, T, &mut |p, n, w| {
-                        out.push([p.x, p.y, p.z, n.x, n.y, n.z, w].map(f64::to_bits));
-                    });
-                assert!(settled);
-                out
-            };
-            let kept = feed(MOST_KEPT);
-            assert!(!kept.is_empty());
-            assert_eq!(kept, feed(0));
+    fn the_short_rules_are_exact_to_their_degree() {
+        let (a, b) = (0.75, 2.0);
+        for n in ORDERS {
+            let points = rule(n, a, b);
+            assert_eq!(points.len(), n);
+            for degree in 0..2 * n {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                let k = degree as i32;
+                let exact = (b.powi(k + 1) - a.powi(k + 1)) / f64::from(k + 1);
+                let sum: f64 = points.iter().map(|&(x, w)| w * x.powi(k)).sum();
+                assert!(
+                    (sum - exact).abs() <= 1e-14 * exact.abs(),
+                    "{n} points, degree {degree}: {sum} against {exact}"
+                );
+            }
         }
-        assert!(tried > 0);
     }
 }

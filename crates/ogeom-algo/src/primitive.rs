@@ -2271,8 +2271,12 @@ mod more_primitive_tests {
 
         assert!(closed(&model, &built.shape));
         let props = volume_properties(&model, &built.shape, deflection(0.005), T).unwrap();
-        assert!(props.mass < exact, "an inscribed volume cannot exceed it");
-        assert!(props.mass > exact * 0.995, "{} against {exact}", props.mass);
+        // Integrated on the exact cone, not on an inscribed mesh.
+        assert!(
+            (props.mass - exact).abs() <= exact * 1e-12,
+            "{} against {exact}",
+            props.mass
+        );
     }
 
     #[test]
