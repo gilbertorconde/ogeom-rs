@@ -57,17 +57,13 @@ swallow every edge of a face piece.
 the top of a slab converted face for facet, whose rounded corner's rows lean
 in by less than the corner's chords sag, fuses, cuts and is taken in common
 at every row count tried when the slab is drafted 0.001 to 0.005 by the
-rows' depth to the power 1.5 and each row stays a face of its own. Two cases
-still refuse:
+rows' depth to the power 1.5 and each row stays a face of its own, and
+also at the converter's own coplanar distance: the scatter estimate
+compares each nearly flat edge's turn with the edges beside it and
+continuing it, and a steady turn row after row is read as a curve drawn
+finely, not scatter (84 of 84 row-count sets measured at draft 0.001,
+against 15 before). One case still refuses:
 
-- Converted at its own coplanar distance, a slab drafted 0.001 has its rows'
-  turns (under a twentieth of a degree) read as the mesh's scatter: the
-  distance widens to a thousandth of a millimetre and three bands merge into
-  one plane their vertices stand 4e-4 off. Pads into it refuse at most row
-  counts, and where they pass come within 1e-3 cubic millimetres of the
-  mesh's own volume. A steady turn row after row is a curve drawn finely,
-  not scatter, and the converter's scatter estimate does not tell the two
-  apart.
 - Drafted 0.0007 or less, the top band leans off the pad's walls by under a
   thousandth of a radian. Where every row holds the same count, each top
   facet stands parallel to its wall in plan: eight a row is refused as an
@@ -258,11 +254,13 @@ after.
    on the face's surface, as a parallel or ruling where one holds and
    otherwise as a curve fitted through its vertices' feet
    (`free_edges_fitted`). Measured on open tubes, sheets, a dome and a
-   free-form sheet, which all came back faceted before. Still open: a
-   mesh with no flat stretch has its coplanar distance read off its gently
-   curved triangle pairs (a bumped sheet alone measures 2e-3 where the
-   closed bumped plate measures 3e-5), and its free-form regions then
-   break into small canonical ones.
+   free-form sheet, which all came back faceted before. A mesh with no
+   flat stretch no longer has its coplanar distance read off its gently
+   curved triangle pairs: a bumped sheet alone measures 1e-4 (2e-3
+   before; the closed plate 3e-5) and comes back one fitted patch. Where
+   the turns change sign the estimate asks them to change linearly, so
+   a coarse mesh of a surface whose curvature varies fast can still read
+   its inflections as a little scatter.
 
 **Faces whose trims fold in their chart tessellate open.** Some converted
 solids (`nist_ftc_07` in `mesh_corpus`, `nist_ctc_02` meshed at a

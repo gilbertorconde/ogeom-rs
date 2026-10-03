@@ -3794,12 +3794,17 @@ impl FlatPatches {
 
 /// How far the mesh's vertices stand off the flat faces they lie on: across
 /// every edge between two triangles as good as coplanar (a turn of under a
-/// twentieth of a degree, finer than any curve is drawn), the height of the
-/// one's far corner over the other's plane, at the ninetieth percentile.
-/// Zero where the mesh has no such edges.
+/// twentieth of a degree), the height of the one's far corner over the
+/// other's plane, at the ninetieth percentile. Zero where the mesh has no
+/// such edges. A curve drawn finely turns that little too, steadily from
+/// one edge to the next, where scatter turns at random; each height is
+/// scaled by [`STEADY_GAIN`] times how far its edge's turn strays from its
+/// neighbours' ([`steady_miss`]), up to the whole height.
 fn flat_noise(points: &[Point], triangles: &[[u32; 3]], adjacency: &Adjacency) -> f64 {
     let cos_level = 0.05_f64.to_radians().cos();
-    let mut heights: Vec<f64> = Vec::new();
+    let normals: Vec<Vector> = triangles.iter().map(|&t| unit_normal(points, t)).collect();
+    let fans = Fans::new(points.len(), triangles);
+    let mut edges: Vec<(f64, Half, Half)> = Vec::new();
     for (h, twin) in adjacency.twin.iter().enumerate() {
         let Some(g) = *twin else {
             continue;
@@ -3808,21 +3813,268 @@ fn flat_noise(points: &[Point], triangles: &[[u32; 3]], adjacency: &Adjacency) -
             continue;
         }
         let (t, u) = (h / 3, g / 3);
-        let a = unit_normal(points, triangles[t]);
-        let b = unit_normal(points, triangles[u]);
+        let (a, b) = (normals[t], normals[u]);
         if a.dot(b) < cos_level {
             continue;
         }
         let far = triangles[u][(g % 3 + 2) % 3];
         let base = points[triangles[t][0] as usize];
-        heights.push((points[far as usize] - base).dot(a).abs());
+        edges.push(((points[far as usize] - base).dot(a).abs(), h, g));
     }
-    if heights.is_empty() {
+    if edges.is_empty() {
         return 0.0;
     }
-    let at = (heights.len() * 9 / 10).min(heights.len() - 1);
-    let (_, value, _) = heights.select_nth_unstable_by(at, f64::total_cmp);
-    *value
+    // The percentile is the `kept`-th largest scaled height. Scaling only
+    // lowers a height, so the edges are scaled tallest first, and once
+    // `kept` scaled heights reach the next edge's unscaled one, no edge
+    // left can change the answer.
+    let kept = edges.len() - (edges.len() * 9 / 10).min(edges.len() - 1);
+    edges.sort_unstable_by(|x, y| y.0.total_cmp(&x.0));
+    // The scaled heights are not negative, so their bits order as they do.
+    let mut tallest: std::collections::BinaryHeap<std::cmp::Reverse<u64>> =
+        std::collections::BinaryHeap::with_capacity(kept + 1);
+    for &(height, h, g) in &edges {
+        if tallest.len() == kept
+            && tallest
+                .peek()
+                .is_some_and(|least| f64::from_bits(least.0) >= height)
+        {
+            break;
+        }
+        let value = if height > 0.0 {
+            match steady_miss(points, triangles, &normals, adjacency, &fans, h, g) {
+                Some(miss) => height * (STEADY_GAIN * miss).min(1.0),
+                None => height,
+            }
+        } else {
+            0.0
+        };
+        tallest.push(std::cmp::Reverse(value.to_bits()));
+        if tallest.len() > kept {
+            tallest.pop();
+        }
+    }
+    tallest.peek().map_or(0.0, |least| f64::from_bits(least.0))
+}
+
+/// How far the turn across a mesh edge strays from the turns of the edges
+/// around it, against the turn itself. Two readings are taken, and the
+/// nearer kept. Across: the edges beside it, about as long, within
+/// [`PARALLEL_TURN`] of its direction, overlapping it along its length and
+/// sharing no vertex with it; between the nearest on either side the turn
+/// should lie, and with one side only, on the line through the nearest two
+/// there (or at the nearest's turn). Along: the edges continuing it past
+/// either end, the straightest within [`ALONG_TURN`] of its direction;
+/// between their turns, or at the one's. Every edge compared lies between
+/// triangles within [`NEAR_TURN`] of the edge's own. A surface drawn finely
+/// turns steadily from one edge to the next and strays little; scatter
+/// turns either way at random and strays by as much as it turns. `None`
+/// where no edge is found to compare with.
+fn steady_miss(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    normals: &[Vector],
+    adjacency: &Adjacency,
+    fans: &Fans,
+    h: Half,
+    g: Half,
+) -> Option<f64> {
+    let cos_near = NEAR_TURN.to_radians().cos();
+    let cos_parallel = PARALLEL_TURN.to_radians().cos();
+    let cos_along = ALONG_TURN.to_radians().cos();
+    let (t, u) = (h / 3, g / 3);
+    let normal = normals[t];
+    let turn = signed_turn(points, triangles, h, g);
+    if turn == 0.0 {
+        return None;
+    }
+    let (i, j) = from_to(triangles, h);
+    let (p, q) = (points[i as usize], points[j as usize]);
+    let length = p.distance(q);
+    let along = (q - p) / length;
+    let across = normal.cross(along);
+    let middle = p + (q - p) * 0.5;
+    let near = |s: usize| normals[s].dot(normal) >= cos_near;
+    // The triangles within three steps of the edge's two.
+    let mut ring = vec![t, u];
+    let mut start = 0;
+    for _ in 0..3 {
+        let end = ring.len();
+        for r in start..end {
+            for k in 3 * ring[r]..3 * ring[r] + 3 {
+                if let Some(o) = adjacency.twin[k]
+                    && near(o / 3)
+                    && !ring.contains(&(o / 3))
+                {
+                    ring.push(o / 3);
+                }
+            }
+        }
+        start = end;
+    }
+    let mut below: Vec<(f64, f64)> = Vec::new();
+    let mut above: Vec<(f64, f64)> = Vec::new();
+    for &s in &ring {
+        for k in 3 * s..3 * s + 3 {
+            let Some(o) = adjacency.twin[k] else {
+                continue;
+            };
+            if (o < k && ring.contains(&(o / 3))) || !near(o / 3) {
+                continue;
+            }
+            let (c, d) = from_to(triangles, k);
+            if c == i || c == j || d == i || d == j {
+                continue;
+            }
+            let (c, d) = (points[c as usize], points[d as usize]);
+            let other = c.distance(d);
+            if other < 0.5 * length
+                || other > 2.0 * length
+                || ((d - c) / other).dot(along).abs() < cos_parallel
+            {
+                continue;
+            }
+            let offset = (c + (d - c) * 0.5) - middle;
+            let off = offset.dot(across);
+            if off.abs() <= 1e-3 * length
+                || offset.dot(along).abs() > 0.5 * (length + other)
+                || (d - c).dot(across).abs() > 0.25 * off.abs()
+            {
+                continue;
+            }
+            let side = if off < 0.0 { &mut below } else { &mut above };
+            side.push((off.abs(), signed_turn(points, triangles, k, o)));
+        }
+    }
+    for side in [&mut below, &mut above] {
+        side.sort_by(|x, y| x.0.total_cmp(&y.0));
+    }
+    let mut ends: [Option<(f64, f64)>; 2] = [None, None];
+    for (end, at, out) in [(0, i, -along), (1, j, along)] {
+        for &s in fans.around(at) {
+            for k in 3 * s as usize..3 * s as usize + 3 {
+                let Some(o) = adjacency.twin[k] else {
+                    continue;
+                };
+                let (c, d) = from_to(triangles, k);
+                if o < k || (c != at && d != at) {
+                    continue;
+                }
+                let far = if c == at { d } else { c };
+                if far == i || far == j {
+                    continue;
+                }
+                let step = points[far as usize] - points[at as usize];
+                let straight = step.dot(out) / step.magnitude();
+                if straight >= cos_along && ends[end].is_none_or(|(best, _)| straight > best) {
+                    ends[end] = Some((straight, signed_turn(points, triangles, k, o)));
+                }
+            }
+        }
+    }
+    // Each reading is the span of the turns either side and the turn the
+    // line between them gives at the edge's place.
+    let beside = match (below.first(), above.first()) {
+        (Some(&(o0, t0)), Some(&(o1, t1))) => {
+            Some((t0.min(t1), t0.max(t1), (t0 * o1 + t1 * o0) / (o0 + o1)))
+        }
+        _ => {
+            let side = if below.is_empty() { &above } else { &below };
+            side.first().map(|&(o0, t0)| {
+                let line = match side.iter().find(|&&(o, _)| o > 1.5 * o0) {
+                    Some(&(o1, t1)) => (t0 * o1 - t1 * o0) / (o1 - o0),
+                    None => t0,
+                };
+                (line, line, line)
+            })
+        }
+    };
+    let onward = match ends {
+        [Some((_, t0)), Some((_, t1))] => Some((t0.min(t1), t0.max(t1), 0.5 * (t0 + t1))),
+        [Some((_, t0)), None] | [None, Some((_, t0))] => Some((t0, t0, t0)),
+        [None, None] => None,
+    };
+    // Turning the same way as its neighbours, the edge need only lie
+    // between them; where the turns change sign, a curve passing through
+    // flat changes linearly, and the edge must lie on the line.
+    [beside, onward]
+        .into_iter()
+        .flatten()
+        .map(|(low, high, line)| {
+            let miss = if low * turn > 0.0 && high * turn > 0.0 {
+                (low - turn).max(turn - high).max(0.0)
+            } else {
+                (turn - line).abs()
+            };
+            miss / turn.abs()
+        })
+        .min_by(f64::total_cmp)
+}
+
+/// The triangles round each vertex.
+struct Fans {
+    start: Vec<usize>,
+    triangles: Vec<u32>,
+}
+
+impl Fans {
+    fn new(vertices: usize, triangles: &[[u32; 3]]) -> Self {
+        let mut start = vec![0; vertices + 1];
+        for t in triangles {
+            for &v in t {
+                start[v as usize + 1] += 1;
+            }
+        }
+        for v in 0..vertices {
+            start[v + 1] += start[v];
+        }
+        let mut fill = start.clone();
+        let mut list = vec![0; start[vertices]];
+        for (t, tri) in triangles.iter().enumerate() {
+            for &v in tri {
+                list[fill[v as usize]] = u32::try_from(t).unwrap_or(u32::MAX);
+                fill[v as usize] += 1;
+            }
+        }
+        Self {
+            start,
+            triangles: list,
+        }
+    }
+
+    fn around(&self, v: u32) -> &[u32] {
+        &self.triangles[self.start[v as usize]..self.start[v as usize + 1]]
+    }
+}
+
+/// How many times its stray from its neighbours' turns an edge's height
+/// counts as scatter: scatter strays by about as much as it turns, and a
+/// height is kept whole unless the stray is under half the turn.
+const STEADY_GAIN: f64 = 2.0;
+
+/// The widest turn, in degrees, between the triangles either side of an
+/// edge whose scatter is measured and the triangles beside it whose edges
+/// it is compared with.
+const NEAR_TURN: f64 = 5.0;
+
+/// The widest angle, in degrees, between an edge and one it is compared
+/// with as running beside it.
+const PARALLEL_TURN: f64 = 10.0;
+
+/// The widest angle, in degrees, between an edge and one it is compared
+/// with as continuing it past an end: a quarter circle drawn in three
+/// chords turns by thirty.
+const ALONG_TURN: f64 = 35.0;
+
+/// The turn across a mesh edge from the triangle of half-edge `h` to the
+/// triangle of its twin `g`, signed about the half-edge's direction, so
+/// that on a consistently wound mesh every fold one way has one sign.
+fn signed_turn(points: &[Point], triangles: &[[u32; 3]], h: Half, g: Half) -> f64 {
+    let a = unit_normal(points, triangles[h / 3]);
+    let b = unit_normal(points, triangles[g / 3]);
+    let (p, q) = from_to(triangles, h);
+    let along = points[q as usize] - points[p as usize];
+    a.cross(b).dot(along / along.magnitude()).atan2(a.dot(b))
 }
 
 /// Keep only the largest edge-connected piece of a set of triangles.

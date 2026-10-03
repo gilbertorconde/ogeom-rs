@@ -3095,6 +3095,41 @@ fn pads_into_slabs_drafted_less_than_their_chords_sag_cut_and_fuse() {
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
+/// The same slabs converted at the converter's own coplanar distance. The
+/// rows lean by under a twentieth of a degree more at each row down, as
+/// little as the scatter of a mesh's flat faces, but steadily: the scatter
+/// estimate reads them as a curve drawn finely, the distance stays at what
+/// single precision resolves, and each row stays a face of its own.
+#[test]
+fn pads_into_slabs_drafted_less_than_their_chords_sag_at_the_default_distance() {
+    let families: [[u32; 7]; 15] = [
+        [6; 7],
+        [8; 7],
+        [4; 7],
+        [8, 8, 8, 7, 7, 6, 5],
+        [5, 6, 7, 7, 8, 8, 8],
+        [4, 5, 6, 7, 8, 9, 10],
+        [10, 9, 8, 7, 6, 5, 4],
+        [8, 7, 8, 7, 8, 7, 8],
+        [6, 5, 6, 5, 6, 5, 6],
+        [3, 4, 5, 6, 7, 8, 9],
+        [12, 11, 10, 9, 8, 7, 6],
+        [7, 7, 7, 6, 6, 6, 5],
+        [8, 9, 9, 5, 4, 5, 5],
+        [8, 5, 9, 9, 5, 8, 7],
+        [6, 6, 6, 4, 8, 7, 5],
+    ];
+    let mut failed = Vec::new();
+    for counts in families {
+        for depth in [3.0, 10.0] {
+            if let Err(e) = pad_on_a_drafted_slab(depth, 0.001, counts, false) {
+                failed.push(format!("{counts:?}: {e}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
 /// Pads from the large top faces of the part `OGEOM_TEST_77777` names,
 /// converted face for facet in single precision, fused back into it. Where
 /// a pad's wall crosses a facet row's edge that runs all but in the wall's
@@ -4272,4 +4307,30 @@ fn a_free_form_sheet_s_border_comes_back_four_fitted_curves() {
     }
     eprintln!("sheet: drawn border {worst:e} off the exact border, tolerance {widest:e}");
     assert!(worst <= widest, "{worst} past {widest}");
+}
+
+/// The bump alone, meshed open all round its square, with no flat stretch
+/// anywhere: its few nearly flat triangle pairs turn steadily, row after
+/// row, and are not read as scatter. The coplanar distance stays near the
+/// closed plate's, and the sheet comes back one fitted patch.
+#[test]
+fn a_bumped_sheet_alone_comes_back_one_fitted_patch() {
+    let full = grid_solid(40, 20.0, |_, _| true, bump);
+    let mut mesh = Triangulation::new();
+    mesh.positions.clone_from(&full.positions);
+    mesh.triangles = full
+        .triangles
+        .iter()
+        .copied()
+        .filter(|t| t.iter().all(|&v| v < 41 * 41))
+        .collect();
+    let (_, out, edges) = converted_open(&mesh);
+    eprintln!(
+        "bumped sheet: distance {:e}, {:?}",
+        out.coplanar_distance, out.report
+    );
+    assert!(out.coplanar_distance <= 2e-4, "{}", out.coplanar_distance);
+    assert_eq!(out.report.faces, 1);
+    assert_eq!(out.report.patch_faces, 1);
+    assert_eq!(edges.len(), 4);
 }

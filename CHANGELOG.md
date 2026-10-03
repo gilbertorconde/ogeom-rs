@@ -108,6 +108,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Mesh conversion tells a finely drawn curve from scatter.** The
+  estimate behind the default coplanar distance weighs each nearly flat
+  edge's turn against its neighbours': a steady turn from one edge to the
+  next is a curve, not noise. Slabs drafted by fractions of a degree keep
+  each row a face of its own at the default distance (pads into them fuse,
+  cut and are taken in common at every row count tried), and a free-form
+  sheet with no flat stretch comes back one fitted patch instead of
+  thousands of facets.
+
 - **Exact area and volume on a face holed by a closed spline.** A face's
   loops are told apart by their areas, integrated span by span; one rule
   over a whole closed spline could read a hole's direction wrong and add
