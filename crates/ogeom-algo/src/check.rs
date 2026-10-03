@@ -532,77 +532,174 @@ fn check_edge(
         }
     }
 
-    // `same_parameter` is a claim, and a false one is worse than no claim: every
-    // algorithm evaluates whichever representation is cheapest and assumes the
-    // answer is interchangeable.
-    if data.same_parameter() {
-        check_same_parameter(model, edge, data, geometry, *range, reach, tol, found)?;
-    }
+    let curve_location = match data.curve3d() {
+        Some(EdgeRepr::Curve3d { location, .. }) => location.clone(),
+        _ => ogeom_topo::Location::identity(),
+    };
+    check_pcurves(
+        model,
+        edge,
+        data,
+        (geometry, *range, &curve_location),
+        reach,
+        tol,
+        found,
+    )?;
     Ok(())
 }
 
-/// Verify that every pcurve lands where the 3D curve does.
-#[allow(clippy::too_many_arguments)]
-fn check_same_parameter(
+/// Verify that every pcurve lands where the 3D curve does, to the edge's
+/// tolerance.
+///
+/// The tolerance is the radius about the curve within which every
+/// description of the edge lies, so each pcurve lifted through its surface
+/// stays inside it all along the edge, not only at its ends. An edge
+/// claiming `same_parameter` is held to the claim: the lifted point at each
+/// parameter within the tolerance of the curve's point at the same
+/// parameter, since every algorithm evaluates whichever representation is
+/// cheapest and assumes the answer interchangeable. An edge making no claim
+/// may pace its pcurves differently, so a lifted point is measured against
+/// the nearest point of the curve's stretch. A pcurve at another placement
+/// than the curve describes the edge where that occurrence stands, and is
+/// not compared.
+fn check_pcurves(
     model: &Model,
     edge: &Shape,
     data: &ogeom_topo::EdgeData,
-    curve: &ogeom_geom::Curve,
-    range: (f64, f64),
+    (curve, range, location): (&ogeom_geom::Curve, (f64, f64), &ogeom_topo::Location),
     reach: f64,
     tol: Tolerances,
     found: &mut Diagnosis,
 ) -> OgeomResult<()> {
-    const SAMPLES: usize = 8;
+    let claimed = data.same_parameter();
     for repr in &data.representations {
-        let (pcurve_id, pcurve_range, surface_id) = match repr {
+        let (sides, pcurve_range, surface_id, at) = match repr {
             EdgeRepr::PCurve {
                 curve,
                 range,
                 surface,
-                ..
-            } => (*curve, *range, *surface),
+                location,
+            } => ([Some(*curve), None], *range, *surface, location),
             EdgeRepr::Seam {
                 forward,
+                reversed,
                 range,
                 surface,
-                ..
-            } => (*forward, *range, *surface),
+                location,
+            } => (
+                [Some(*forward), Some(*reversed)],
+                *range,
+                *surface,
+                location,
+            ),
             _ => continue,
         };
-        let (Some(pcurve), Some(surface)) = (
-            model.geometry().pcurve(pcurve_id),
-            model.geometry().surface(surface_id),
-        ) else {
+        if at != location {
+            continue;
+        }
+        let Some(surface) = model.geometry().surface(surface_id) else {
             ogeom_bail!(Dangling, "an edge names geometry not in this model");
         };
-
-        for i in 0..=SAMPLES {
-            #[allow(clippy::cast_precision_loss)]
-            let t = i as f64 / SAMPLES as f64;
-            let on_curve = curve.point_at(range.0 + (range.1 - range.0) * t, tol)?;
-            let at =
-                pcurve.point_at(pcurve_range.0 + (pcurve_range.1 - pcurve_range.0) * t, tol)?;
-            let Ok(on_surface) = surface.point_at(at.x, at.y, tol) else {
+        for pcurve_id in sides.into_iter().flatten() {
+            let Some(pcurve) = model.geometry().pcurve(pcurve_id) else {
+                ogeom_bail!(Dangling, "an edge names geometry not in this model");
+            };
+            let Some((gap, t)) = pcurve_off_curve(
+                (curve, range),
+                (pcurve, pcurve_range),
+                surface,
+                reach,
+                claimed,
+                tol,
+            )?
+            else {
                 continue;
             };
-            let gap = on_curve.distance(on_surface);
-            if gap > reach {
-                found.note(
-                    Severity::Broken,
-                    edge,
-                    ShapeType::Edge,
-                    format!(
-                        "claims same_parameter but its pcurve is {gap} from its \
-                         curve at parameter {t} of the range, outside the edge's \
-                         tolerance of {reach}"
-                    ),
-                );
-                break;
-            }
+            let what = if claimed {
+                format!(
+                    "claims same_parameter but its pcurve is {gap} from its curve at \
+                     parameter {t} of the range, outside the edge's tolerance of {reach}"
+                )
+            } else {
+                format!(
+                    "has a pcurve that leaves its curve by {gap} at parameter {t} of \
+                     the range, outside the edge's tolerance of {reach}; the face it \
+                     bounds and the curve its neighbour follows part there"
+                )
+            };
+            found.note(Severity::Broken, edge, ShapeType::Edge, what);
         }
     }
     Ok(())
+}
+
+/// How far a pcurve, lifted through its surface, leaves its edge's curve
+/// beyond `reach`: the widest gap and where along the range it stands, or
+/// `None` where it keeps within `reach` everywhere sampled. Held to the
+/// same parameter where `paced`; otherwise a lifted point is measured
+/// against the nearest point of the curve's stretch.
+pub(crate) fn pcurve_off_curve(
+    (curve, range): (&ogeom_geom::Curve, (f64, f64)),
+    (pcurve, pcurve_range): (&ogeom_geom::PlanarCurve, (f64, f64)),
+    surface: &ogeom_geom::SurfaceGeometry,
+    reach: f64,
+    paced: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<(f64, f64)>> {
+    // A pcurve fitted through its edge's points strays most between them,
+    // so the samples are many more than a fit takes per span.
+    const SAMPLES: u32 = 32;
+    let mut widest: Option<(f64, f64)> = None;
+    for i in 0..=SAMPLES {
+        let t = f64::from(i) / f64::from(SAMPLES);
+        let on_curve = curve.point_at(range.0 + (range.1 - range.0) * t, tol)?;
+        let uv = pcurve.point_at(pcurve_range.0 + (pcurve_range.1 - pcurve_range.0) * t, tol)?;
+        let Ok(lifted) = surface.point_at(uv.x, uv.y, tol) else {
+            continue;
+        };
+        let mut gap = on_curve.distance(lifted);
+        if gap > reach && !paced {
+            gap = gap.min(nearest_on_stretch(curve, range, lifted, tol)?);
+        }
+        if gap > reach && widest.is_none_or(|(g, _)| gap > g) {
+            widest = Some((gap, t));
+        }
+    }
+    Ok(widest)
+}
+
+/// The distance from `target` to the nearest point of `curve` over `range`:
+/// a scan, then a golden-section search about the nearest sample.
+fn nearest_on_stretch(
+    curve: &ogeom_geom::Curve,
+    range: (f64, f64),
+    target: ogeom_math::Point,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    const SCAN: u32 = 32;
+    let at = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(target)) };
+    let step = (range.1 - range.0) / f64::from(SCAN);
+    let mut best = (range.0, at(range.0)?);
+    for k in 1..=SCAN {
+        let t = range.0 + step * f64::from(k);
+        let d = at(t)?;
+        if d < best.1 {
+            best = (t, d);
+        }
+    }
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let step = step.abs();
+    let (mut a, mut b) = ((best.0 - step).max(lo), (best.0 + step).min(hi));
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..60 {
+        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        if at(c)? < at(d)? {
+            b = d;
+        } else {
+            a = c;
+        }
+    }
+    Ok(best.1.min(at(f64::midpoint(a, b))?))
 }
 
 /// A wire's edges must meet end to end.
@@ -1090,6 +1187,72 @@ mod tests {
                 .of(Severity::Broken)
                 .iter()
                 .any(|p| p.what.contains("no pcurve on")),
+            "got {found}"
+        );
+    }
+
+    #[test]
+    fn an_edge_whose_pcurve_leaves_its_curve_is_caught() {
+        // A pcurve standing off its edge's curve by more than the edge's
+        // tolerance parts the face it bounds from the neighbour following
+        // the curve, whether or not the edge claims the two share a
+        // parameter. A box edge's pcurve on one face is moved a hundredth
+        // sideways in that face's chart.
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let face = explore_unique(&model, &solid, ShapeType::Face).unwrap()[0].clone();
+        let face_node = model.node(&face).unwrap().clone();
+        let NodeData::Face(face_data) = face_node.data() else {
+            panic!("not a face")
+        };
+        let surface = face_data.surface;
+        let edge = model
+            .children_of(&model.children_of(&face).unwrap()[0])
+            .unwrap()[0]
+            .clone();
+        assert!(check(&model, &solid, T).unwrap().is_valid());
+
+        let NodeData::Edge(data) = model.node(&edge).unwrap().data().clone() else {
+            panic!("not an edge")
+        };
+        let original = data
+            .representations
+            .iter()
+            .find_map(|r| match r {
+                EdgeRepr::PCurve {
+                    curve, surface: s, ..
+                } if *s == surface => Some(*curve),
+                _ => None,
+            })
+            .expect("the edge has a pcurve on the face");
+        let basis = model.geometry().pcurve(original).unwrap().clone();
+        let moved = model
+            .geometry_mut()
+            .add_pcurve(ogeom_geom::PlanarCurve::Offset(Box::new(
+                ogeom_geom::Offset2d::new(basis, 0.01).unwrap(),
+            )));
+        if let Some(NodeData::Edge(data)) = model.node_mut(&edge).map(ogeom_topo::TShape::data_mut)
+        {
+            for repr in &mut data.representations {
+                if let EdgeRepr::PCurve {
+                    curve, surface: s, ..
+                } = repr
+                    && *s == surface
+                {
+                    *curve = moved;
+                }
+            }
+        }
+
+        let found = check(&model, &solid, T).unwrap();
+        assert!(!found.is_usable(), "got {found}");
+        assert!(
+            found
+                .of(Severity::Broken)
+                .iter()
+                .any(|p| p.kind == ShapeType::Edge && p.what.contains("leaves its curve by")),
             "got {found}"
         );
     }

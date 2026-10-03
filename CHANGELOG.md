@@ -19,6 +19,18 @@ bump may break the API and a patch bump may not.
   naming the written `EDGE_CURVE`s, so both survive a write and read round
   trip; edge features were dropped before.
 
+### Changed
+
+- **`check` compares every edge's pcurves with its curve.** It compared
+  them only on edges claiming `same_parameter`, which few producers set, so
+  an edge whose pcurve stood thousands of millimetres off its curve read
+  valid. Every pcurve, seams included, is now measured along the whole edge
+  against the edge's tolerance: at the same parameter where the edge claims
+  `same_parameter`, otherwise against the nearest point of the curve. The
+  producers that understated their edges' tolerances (the mesh converter,
+  the STEP and IGES readers, `fix_shape`, booleans under a fuzz, NURBS
+  conversion) state them first.
+
 ### Fixed
 
 - **Projection onto an offset surface.** Projecting a point onto an offset
