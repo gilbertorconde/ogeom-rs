@@ -24,8 +24,9 @@
 //! allows, and the inner integrals there, exact on quarter turns, are not
 //! refined between runs.
 //!
-//! A pcurve that lifts off its edge's own curve by more than the edge
-//! states, while its neighbour across the edge runs along the curve, would
+//! A pcurve that lifts off its edge's own curve by more than a fitted curve
+//! states (on a curve with a closed form, by more than a hundred confusion
+//! distances), while its neighbour across the edge runs along the curve, would
 //! leave a slit in the boundary the divergence theorem closes over. The
 //! strip between the lifted pcurve and the curve is integrated with the
 //! face as a ruled surface, so the faces still close.
@@ -608,13 +609,13 @@ const BESIDE: f64 = 1e4;
 
 /// How a piece's lifted pcurve lies against its edge's own curve.
 enum Fit {
-    /// Along it, to a hundred times the confusion distance or to the
-    /// edge's own stated tolerance where that is looser; or the edge has
-    /// no curve of its own (a pole) to stray from.
+    /// Along it, to a hundred times the confusion distance or, on a fitted
+    /// curve, to the edge's own stated tolerance where that is looser; or
+    /// the edge has no curve of its own (a pole) to stray from.
     Along,
-    /// Beside it, further than the edge states but within [`BESIDE`]
-    /// confusion distances: a fitted section whose edge took a curve close
-    /// by for its own. The strip between is integrated with the face.
+    /// Beside it, further than that but within [`BESIDE`] confusion
+    /// distances: a fitted section whose edge took a curve close by for
+    /// its own. The strip between is integrated with the face.
     Beside(Ribbon),
     /// Further: the region the pcurve bounds is not the face's, and the
     /// face is left to the mesh, which takes its boundary from the edge.
@@ -649,17 +650,38 @@ fn fit_to_edge(
         .node(edge)
         .and_then(|n| n.data().as_edge())
         .map_or(0.0, |d| d.tolerance.get());
-    let reach = (tol.confusion() * 100.0).max(stated);
+    let close = tol.confusion() * 100.0;
+    let reach = close.max(stated);
+    // A curve with a closed form carries no fit error of its own, so a
+    // pcurve standing off it further than `close` is another curve's
+    // description beside it: two edges a little apart taken for one,
+    // which states the gap as its tolerance. The strip is integrated
+    // there all the same. A fitted curve's own pcurves stand off it within
+    // the fit's error, which its tolerance states.
+    let exact = matches!(
+        curve,
+        Curve::Line(_)
+            | Curve::Circle(_)
+            | Curve::Ellipse(_)
+            | Curve::Hyperbola(_)
+            | Curve::Parabola(_)
+    );
     let lifted = |t: f64| -> OgeomResult<Point> {
         let (at, _) = segment.at(t, tol)?;
         let at = into_domain(placed, at);
         placed.point_at(at.x, at.y, tol)
     };
     let mut along = true;
+    let mut within_stated = true;
     for k in 1..=5 {
         let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / 6.0;
-        if nearest(&curve, *range, lifted(t)?, tol)? > reach {
+        let off = nearest(&curve, *range, lifted(t)?, tol)?;
+        if off > close && exact {
             along = false;
+        }
+        if off > reach {
+            along = false;
+            within_stated = false;
             break;
         }
     }
@@ -668,12 +690,12 @@ fn fit_to_edge(
     }
     // Beside the curve all the way, ends included.
     const SAMPLES: u32 = 16;
-    let mut widest: f64 = reach;
+    let mut widest: f64 = close;
     for k in 0..=SAMPLES {
         let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / f64::from(SAMPLES);
         widest = widest.max(nearest(&curve, *range, lifted(t)?, tol)?);
         if widest > tol.confusion() * BESIDE {
-            return Ok(Fit::Off);
+            return Ok(if within_stated { Fit::Along } else { Fit::Off });
         }
     }
     // Which way the curve runs along the piece: the reading that keeps

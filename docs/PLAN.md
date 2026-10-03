@@ -135,8 +135,31 @@ ends stand 6e-5 apart inside a vertex of tolerance 4.2e-5: a junction may
 now open to the vertex's diameter. The torus commons stand within 1.5e-9
 of a ring-by-ring integral of the torus's thickness (2.6e-8 without the
 strip), and the nine identities hold within 5.4e-9.
-Left: the edges' stated tolerance is the boolean's to raise. The rest of
-those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
+The sewing that takes the section's edge and the circle's for one edge
+now raises the kept edge's tolerance to how far the carried pcurves stand
+off its curve, sampled at 33 points (2.2e-5 to 4.0e-5 on the torus drills,
+up to 1.2e-4 on `nist_ftc_11`, where the edges stated 1e-7), and the exact
+integral still takes the strip on a curve with a closed form whose pcurve
+stands off it by more than a hundred confusions, whatever its tolerance.
+
+`check` compares an edge's pcurves with its curve only where the edge
+claims `same_parameter`, which almost no producer sets, so a pcurve
+leaving its curve by more than the edge states reads valid. Comparing
+every edge (the lifted pcurve against the nearest point of the curve's
+stretch, 33 samples) flags, besides the boolean's case: a line of
+`nist_ctc_03` lying 4.6e-6 off its plane at a tolerance of 1e-7 (the STEP
+reader's exact pcurve does not measure the curve's distance from the
+surface), so every stress drill through it; mesh conversion of five corpus
+parts (plane pcurves of large arcs off by thousands, a translated chart
+image) and three heavy converter tests; IGES and STEP round trips;
+fuzzy booleans along faceted rounds and slivers (1e-6 to 4e-6 at 1e-7);
+a drill lying in a plate's underside between its rounds; offset faces
+converted to NURBS (1.2e-3 at 1e-5); a divide on an offset spline
+(1.18e-7 at 1e-7); and `fix_shape`'s output. Eleven default-tier tests
+and six heavy ones fail. Each producer that knows its deviation should
+raise its edges' tolerance first; the check follows them.
+
+Left: the rest of those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
 standing off their edges within the 1e-5 taken as along, which every exact
 volume carries: taking a strip on every edge that stands off at all
 brings the torus commons within 1e-13 and their identities within 1e-14,

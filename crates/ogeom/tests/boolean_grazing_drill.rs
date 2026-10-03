@@ -283,6 +283,97 @@ fn drills_just_inside_a_torus_s_outer_equator_cut() {
     }
 }
 
+/// A torus of radii 10 and 3 drilled along its axis by drills whose wall
+/// passes through the vertex where its seams cross on the outer equator,
+/// square to the equator there. Near the vertex the section hugs the seam's
+/// meridian circle some twenty microns off it, and the edge there is the
+/// circle, carrying the drill wall's pcurve of the true section. Every
+/// pcurve of every edge of the cut and the common, lifted through its
+/// surface, stays within the edge's tolerance of the edge's curve.
+#[test]
+fn a_torus_drilled_through_its_seams_vertex_states_where_its_pcurves_run() {
+    use ogeom::geom::{Curve2d, Curve3d, Surface};
+    use ogeom::topo::EdgeRepr;
+    for (r, seam) in [
+        (3.721_499_296_241_649_5, Vector::new(0.0, 1.0, 0.0)),
+        (-4.243_598_220_801_017, Vector::new(-1.0, 0.0, 0.0)),
+    ] {
+        let mut model = Model::new();
+        let part = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(
+            Point::new(13.0, r, -6.725_587_333_175_463),
+            Direction::Z,
+            Direction::new(seam, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let tool = make_cylinder(&mut model, frame, r.abs(), 13.451_174_666_350_926, T)
+            .unwrap()
+            .shape;
+        for (name, made) in [
+            ("cut", ogeom::boolean::cut(&mut model, &part, &tool, T)),
+            (
+                "common",
+                ogeom::boolean::common(&mut model, &part, &tool, T),
+            ),
+        ] {
+            let made = made.unwrap().shape;
+            for edge in explore_unique(&model, &made, ShapeType::Edge).unwrap() {
+                let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                    continue;
+                };
+                let curve = model.geometry().curve(*curve).unwrap();
+                let stated = data.tolerance.get().max(T.confusion());
+                for repr in &data.representations {
+                    let (pcurve, prange, surface) = match repr {
+                        EdgeRepr::PCurve {
+                            curve,
+                            range,
+                            surface,
+                            ..
+                        } => (*curve, *range, *surface),
+                        EdgeRepr::Seam {
+                            forward,
+                            range,
+                            surface,
+                            ..
+                        } => (*forward, *range, *surface),
+                        _ => continue,
+                    };
+                    let pcurve = model.geometry().pcurve(pcurve).unwrap();
+                    let surface = model.geometry().surface(surface).unwrap();
+                    for i in 0..=128 {
+                        let s = f64::from(i) / 128.0;
+                        let uv = pcurve
+                            .point_at(prange.0 + (prange.1 - prange.0) * s, T)
+                            .unwrap();
+                        let lifted = surface.point_at(uv.x, uv.y, T).unwrap();
+                        let paced = curve
+                            .point_at(range.0 + (range.1 - range.0) * s, T)
+                            .unwrap()
+                            .distance(lifted);
+                        let foot = ogeom::algo::project_on_curve(curve, lifted, 64, T).unwrap();
+                        let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+                        let off = if foot.parameter >= lo && foot.parameter <= hi {
+                            paced.min(foot.distance)
+                        } else {
+                            paced
+                        };
+                        assert!(
+                            off <= stated,
+                            "r {r}, {name}: a pcurve stands {off} off its edge's curve, \
+                             which states {stated}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A torus of radii 10 and 3 drilled along its axis by a drill of radius
 /// 4.35 whose wall stands `inward` inside the outer equator at `angle`
 /// round the axis, its seam toward `seam`. The common is the torus's

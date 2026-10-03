@@ -531,6 +531,7 @@ fn sew_faces(
             reach,
             tol,
         )?;
+        let off = carried_off(model, &survivor, &paced, tol)?;
         let Some(node) = model.node_mut(&survivor) else {
             ogeom_bail!(Dangling, "an edge is not in this model");
         };
@@ -539,6 +540,16 @@ fn sew_faces(
         };
         for repr in paced {
             data.add(repr);
+        }
+        // Two edges a little apart (a fitted section beside the circle it
+        // hugs) are one edge to their ends' tolerances, and the survivor's
+        // curve then stands off the twin's pcurves by up to the gap between
+        // them. The survivor states that gap, and its vertices hold it.
+        if let Some(off) = off {
+            model.widen(
+                &survivor,
+                ogeom_core::Tolerance::new(off + tol.confusion())?,
+            )?;
         }
     }
 
@@ -1192,6 +1203,125 @@ fn repaced_carry(
         });
     }
     Ok(out)
+}
+
+/// How far the pcurves carried onto `survivor` leave its curve beyond its
+/// stated tolerance, each lifted through its surface at 33 points along it
+/// and measured against the nearest point of the curve's stretch; `None`
+/// where they keep within it.
+fn carried_off(
+    model: &Model,
+    survivor: &Shape,
+    carried: &[EdgeRepr],
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let Some(data) = model.node(survivor).and_then(|n| n.data().as_edge()) else {
+        ogeom_bail!(Dangling, "an edge is not in this model");
+    };
+    let Some(EdgeRepr::Curve3d {
+        curve,
+        range,
+        location,
+    }) = data.curve3d()
+    else {
+        return Ok(None);
+    };
+    let Some(curve) = model.geometry().curve(*curve) else {
+        ogeom_bail!(Dangling, "curve is not in this model");
+    };
+    let reach = data.tolerance.get().max(tol.confusion());
+    let mut widest: Option<f64> = None;
+    for repr in carried {
+        let (sides, prange, surface, at) = match repr {
+            EdgeRepr::PCurve {
+                curve,
+                range,
+                surface,
+                location,
+            } => ([Some(*curve), None], *range, *surface, location),
+            EdgeRepr::Seam {
+                forward,
+                reversed,
+                range,
+                surface,
+                location,
+            } => (
+                [Some(*forward), Some(*reversed)],
+                *range,
+                *surface,
+                location,
+            ),
+            _ => continue,
+        };
+        if at != location {
+            continue;
+        }
+        let Some(surface) = model.geometry().surface(surface) else {
+            ogeom_bail!(Dangling, "surface is not in this model");
+        };
+        for id in sides.into_iter().flatten() {
+            let Some(pcurve) = model.geometry().pcurve(id) else {
+                ogeom_bail!(Dangling, "pcurve is not in this model");
+            };
+            // A pcurve fitted through its edge's points strays most between
+            // them, so the samples are many more than a fit takes per span.
+            const SAMPLES: u32 = 32;
+            for i in 0..=SAMPLES {
+                let t = f64::from(i) / f64::from(SAMPLES);
+                let on_curve = curve.point_at(range.0 + (range.1 - range.0) * t, tol)?;
+                let uv = ogeom_geom::Curve2d::point_at(
+                    pcurve,
+                    prange.0 + (prange.1 - prange.0) * t,
+                    tol,
+                )?;
+                let Ok(lifted) = ogeom_geom::Surface::point_at(surface, uv.x, uv.y, tol) else {
+                    continue;
+                };
+                let mut gap = on_curve.distance(lifted);
+                if gap > reach {
+                    gap = gap.min(nearest_on_stretch(curve, *range, lifted, tol)?);
+                }
+                if gap > reach {
+                    widest = Some(widest.map_or(gap, |w| w.max(gap)));
+                }
+            }
+        }
+    }
+    Ok(widest)
+}
+
+/// The distance from `target` to the nearest point of `curve` over `range`:
+/// a scan, then a golden-section search about the nearest sample.
+fn nearest_on_stretch(
+    curve: &ogeom_geom::Curve,
+    range: (f64, f64),
+    target: Point,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    const SCAN: u32 = 32;
+    let at = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(target)) };
+    let step = (range.1 - range.0) / f64::from(SCAN);
+    let mut best = (range.0, at(range.0)?);
+    for k in 1..=SCAN {
+        let t = range.0 + step * f64::from(k);
+        let d = at(t)?;
+        if d < best.1 {
+            best = (t, d);
+        }
+    }
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let step = step.abs();
+    let (mut a, mut b) = ((best.0 - step).max(lo), (best.0 + step).min(hi));
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..60 {
+        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        if at(c)? < at(d)? {
+            b = d;
+        } else {
+            a = c;
+        }
+    }
+    Ok(best.1.min(at(f64::midpoint(a, b))?))
 }
 
 /// A parametric representation running the other way.

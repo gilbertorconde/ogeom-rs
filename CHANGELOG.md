@@ -104,6 +104,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sewn edge states where its pcurves run.** Where the sew merged a
+  boolean's fitted section with an existing circle it nearly follows, the
+  kept edge stated the circle's 1e-7 while the copied pcurves stood up to
+  1.2e-4 off it. The kept edge now raises its tolerance, and its vertices',
+  to the distance measured, and the exact volume still integrates the strip
+  between pcurve and curve on an analytic edge.
+
 - **G1 fillings no longer sag in the middle.** `make_filling_n` accepted
   the first control net whose sides met the tolerance, and weighed bending
   energy too lightly for the interior to follow anything but the boundary's
