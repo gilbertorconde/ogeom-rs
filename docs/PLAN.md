@@ -118,19 +118,30 @@ The stress drills still refused at seed 1: two on that part (not yet
 diagnosed, many faces at once) and one on the rounded box. Seeds 2 and 3
 refuse eight and three drills, of these kinds and some not yet diagnosed.
 
-**Stress results the exact volume refuses.** The stress harness holds
-its volume identities to 1e-6 on exact volumes, and every exactly
-measured case at seeds 1 to 3 holds (worst 1.8e-7, a converted corpus
-part; generated parts within 1e-8). Nine cases over the three seeds have
-a result with a face the exact integral refuses: the torus drilled along
-z with its wall through the outer equator's seam vertex (five), drills
-through `nist_ftc_11` (three) and one through the rounded box. They are
-measured on a 2e-4 chord tessellation with the chord times the area as
-slack (1.5e-4 of the torus, 2.2e-4 of the corpus part) and hold; at a
-2e-5 chord they stand within 1.2e-5, 3.3e-6 and 8e-8, and the torus
-drills' commons within 1e-6 of a ray-by-ray integral. A wrong answer
-smaller than that slack would pass on these cases; the exact path taking
-their faces tightens them to 1e-6.
+**Stress results on exact volumes.** The stress harness holds its volume
+identities to 1e-6 on exact volumes, and at seeds 1 to 3 every drill is
+measured exactly and holds (worst 1.8e-7, a converted corpus part;
+generated parts within 7e-9). Nine drills once fell to a tessellation.
+In eight (the torus drilled along z or y with its wall through a point of
+the outer equator's seams, and drills through `nist_ftc_11` tangent to a
+plane holding a circular edge) the boolean bounds the drill's wall, near
+where the section hugs an existing circle, by that circle: the wall's
+pcurve, fitted to the true section, stands up to 4e-5 (1.2e-4 on the
+corpus part) off the edge's circle while the edge states 1e-7. The exact
+integral now takes the strip between the lifted pcurve and the edge's
+curve as a ruled surface with the face, up to a thousandth of a
+millimetre. The ninth, on the rounded box, is a junction where two pieces'
+ends stand 6e-5 apart inside a vertex of tolerance 4.2e-5: a junction may
+now open to the vertex's diameter. The torus commons stand within 1.5e-9
+of a ring-by-ring integral of the torus's thickness (2.6e-8 without the
+strip), and the nine identities hold within 5.4e-9.
+Left: the edges' stated tolerance is the boolean's to raise. The rest of
+those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
+standing off their edges within the 1e-5 taken as along, which every exact
+volume carries: taking a strip on every edge that stands off at all
+brings the torus commons within 1e-13 and their identities within 1e-14,
+but makes the stress run 5.6 times slower and leaves seven drills on a
+tessellation, so it is not done.
 
 - **A drill all but touching inside a torus's outer equator.** A drill
   touching the torus inside its outer equator meets it in a figure eight;

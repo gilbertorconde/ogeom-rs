@@ -23,6 +23,12 @@
 //! panel on an analytic surface takes as few points as its error bound
 //! allows, and the inner integrals there, exact on quarter turns, are not
 //! refined between runs.
+//!
+//! A pcurve that lifts off its edge's own curve by more than the edge
+//! states, while its neighbour across the edge runs along the curve, would
+//! leave a slit in the boundary the divergence theorem closes over. The
+//! strip between the lifted pcurve and the curve is integrated with the
+//! face as a ruled surface, so the faces still close.
 
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{
@@ -41,6 +47,77 @@ struct Segment {
     t0: f64,
     t1: f64,
     shift: Vector2,
+    /// The edge's own curve where the pcurve lifts off it by more than the
+    /// edge states, for the strip between the two.
+    ribbon: Option<Ribbon>,
+}
+
+/// An edge's curve, placed, which a piece's lifted pcurve runs beside
+/// instead of along. The face's neighbour across the edge is bounded by the
+/// curve, so the strip between the lifted pcurve and the curve is
+/// integrated with the face as a ruled surface, each ruling from a point of
+/// the lifted pcurve to its nearest point on the curve. The face, its
+/// strips and its neighbours' then close: what is left open is a gap no
+/// wider than the strip at each end of it.
+struct Ribbon {
+    curve: Curve,
+    range: (f64, f64),
+    /// The curve's parameter at the piece's start and end, the guesses the
+    /// nearest points are sought from.
+    ends: (f64, f64),
+    /// How far the piece was found to stand off the curve at most; a
+    /// nearest point further than twice this is a wrong one.
+    reach: f64,
+}
+
+impl Ribbon {
+    /// The point of the curve nearest `at`, the curve's tangent there, and
+    /// how fast that point moves along the curve as `at` moves by `moving`.
+    /// `guess` starts the search; the parameter is held in the edge's range,
+    /// where it stands still.
+    fn nearest(
+        &self,
+        at: Point,
+        moving: Vector,
+        guess: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<(Point, Vector, f64)> {
+        let (lo, hi) = (
+            self.range.0.min(self.range.1),
+            self.range.0.max(self.range.1),
+        );
+        let mut tau = guess.clamp(lo, hi);
+        for _ in 0..30 {
+            let d = self.curve.derivatives_at(tau, 2, tol)?;
+            let off = (Point::ORIGIN + d[0]) - at;
+            let slope = d[1].dot(d[1]) + off.dot(d[2]);
+            if slope <= 0.0 {
+                break;
+            }
+            let next = (tau - off.dot(d[1]) / slope).clamp(lo, hi);
+            let moved = (next - tau).abs();
+            tau = next;
+            if moved <= 1e-15 * (1.0 + tau.abs()) {
+                break;
+            }
+        }
+        let d = self.curve.derivatives_at(tau, 2, tol)?;
+        let point = Point::ORIGIN + d[0];
+        if point.distance(at) > 2.0 * self.reach {
+            ogeom_core::ogeom_bail!(
+                NotDone,
+                "a boundary point found no nearest point on its edge's curve"
+            );
+        }
+        let slope = d[1].dot(d[1]) + (point - at).dot(d[2]);
+        // Differentiating `(C(tau) - at) . C'(tau) = 0` along the piece.
+        let rate = if tau <= lo || tau >= hi || slope <= 0.0 {
+            0.0
+        } else {
+            moving.dot(d[1]) / slope
+        };
+        Ok((point, d[1], rate))
+    }
 }
 
 impl Segment {
@@ -78,8 +155,9 @@ pub(crate) struct ChartFace {
 
 /// A face's chart loops, or `None` where they cannot be had exactly: a
 /// surface whose integrand is not a trigonometric polynomial, an edge
-/// without a pcurve on the face or whose pcurve strays from it, a placement
-/// that scales, or a loop whose pieces do not meet.
+/// without a pcurve on the face or whose pcurve strays from it further than
+/// [`BESIDE`] allows, a placement that scales, or a loop whose pieces do
+/// not meet.
 pub(crate) fn chart_face(model: &Model, face: &Shape, tol: Tolerances) -> Option<ChartFace> {
     loops_of(model, face, tol).ok().flatten()
 }
@@ -327,8 +405,9 @@ fn walked(
     // Each loop must close, piece to piece, to a millionth of the chart, or
     // to what the two edges meeting there own: fitted sections each miss
     // their junction by up to their stated tolerance, possibly opposite
-    // ways, and the vertex there records any wider gap it absorbed. The
-    // chart reads that slack through the surface's stretch there.
+    // ways, and the vertex there holds both ends within its tolerance, so
+    // they may stand its diameter apart. The chart reads that slack
+    // through the surface's stretch there.
     let reach = scale * 1e-6 + tol.parametric();
     let owned = |edge: &Shape| {
         let own = model
@@ -353,7 +432,7 @@ fn walked(
             let (end, _) = segment.at(segment.t1, tol)?;
             let (start, _) = next.at(next.t0, tol)?;
             let (a, b) = (owned(&segment.edge), owned(&next.edge));
-            let slack = (a.0 + b.0).max(a.1).max(b.1);
+            let slack = (a.0 + b.0).max(2.0 * a.1).max(2.0 * b.1);
             let stretch = placed.d1_at(end.x, end.y, tol).map_or(1.0, |(du, dv)| {
                 du.magnitude().min(dv.magnitude()).max(tol.confusion())
             });
@@ -495,15 +574,20 @@ fn walk(
                         t0,
                         t1,
                         shift,
+                        ribbon: None,
                     },
                 ));
             }
         }
-        let Some((_, segment)) = best else {
+        let Some((_, mut segment)) = best else {
             return Ok(None);
         };
-        if strict && !lies_on_edge(model, edge, placed, &segment, tol)? {
-            return Ok(None);
+        if strict {
+            match fit_to_edge(model, edge, placed, &segment, tol)? {
+                Fit::Along => {}
+                Fit::Beside(ribbon) => segment.ribbon = Some(ribbon),
+                Fit::Off => return Ok(None),
+            }
         }
         last = Some(segment.at(segment.t1, tol)?.0);
         segments.push(segment);
@@ -514,53 +598,106 @@ fn walk(
     Ok(Some(segments))
 }
 
-/// Whether a piece's pcurve, lifted through the surface, runs along its
-/// edge's own curve: to a hundred times the confusion distance, or to the
-/// edge's own stated tolerance where that is looser. A fitted pcurve can
-/// stray from its edge by the edge's tolerance, and the region it bounds is
-/// measured that closely; one straying further is left to the mesh, which
-/// takes its boundary from the edge. An edge with no curve of its own (a
-/// pole) has nothing to stray from.
-///
-/// The two curves need not share a parameter, so each lifted point is
-/// measured against the nearest point of the edge's curve over its range.
-fn lies_on_edge(
+/// How far, in confusion distances, a piece's lifted pcurve may run beside
+/// its edge's curve and still be integrated, with the strip between them:
+/// a thousandth of a millimetre at millimetre tolerances. The strip's
+/// rulings are straight, and a ruled strip of width `w` departs from any
+/// smooth surface through both its sides by about `w^2` times the
+/// curvature, so what it leaves out of a volume goes as `w^3`.
+const BESIDE: f64 = 1e4;
+
+/// How a piece's lifted pcurve lies against its edge's own curve.
+enum Fit {
+    /// Along it, to a hundred times the confusion distance or to the
+    /// edge's own stated tolerance where that is looser; or the edge has
+    /// no curve of its own (a pole) to stray from.
+    Along,
+    /// Beside it, further than the edge states but within [`BESIDE`]
+    /// confusion distances: a fitted section whose edge took a curve close
+    /// by for its own. The strip between is integrated with the face.
+    Beside(Ribbon),
+    /// Further: the region the pcurve bounds is not the face's, and the
+    /// face is left to the mesh, which takes its boundary from the edge.
+    Off,
+}
+
+/// How a piece's pcurve, lifted through the surface, lies against its
+/// edge's own curve. The two curves need not share a parameter, so each
+/// lifted point is measured against the nearest point of the edge's curve
+/// over its range.
+fn fit_to_edge(
     model: &Model,
     edge: &Shape,
     placed: &SurfaceGeometry,
     segment: &Segment,
     tol: Tolerances,
-) -> OgeomResult<bool> {
+) -> OgeomResult<Fit> {
     let Some(EdgeRepr::Curve3d { curve, range, .. }) = model
         .node(edge)
         .and_then(|n| n.data().as_edge())
         .and_then(|d| d.curve3d())
     else {
-        return Ok(true);
+        return Ok(Fit::Along);
     };
     let Some(curve) = model.geometry().curve(*curve) else {
-        return Ok(false);
+        return Ok(Fit::Off);
     };
     let curve = curve
         .clone()
         .transformed(&edge.transform(model.datums())?, tol)?;
-    // The edge's own tolerance is the slop it states: a pcurve within it
-    // bounds the region that closely, far closer than a mesh would.
     let stated = model
         .node(edge)
         .and_then(|n| n.data().as_edge())
         .map_or(0.0, |d| d.tolerance.get());
     let reach = (tol.confusion() * 100.0).max(stated);
-    for k in 1..=5 {
-        let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / 6.0;
+    let lifted = |t: f64| -> OgeomResult<Point> {
         let (at, _) = segment.at(t, tol)?;
         let at = into_domain(placed, at);
-        let lifted = placed.point_at(at.x, at.y, tol)?;
-        if nearest(&curve, *range, lifted, tol)? > reach {
-            return Ok(false);
+        placed.point_at(at.x, at.y, tol)
+    };
+    let mut along = true;
+    for k in 1..=5 {
+        let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / 6.0;
+        if nearest(&curve, *range, lifted(t)?, tol)? > reach {
+            along = false;
+            break;
         }
     }
-    Ok(true)
+    if along {
+        return Ok(Fit::Along);
+    }
+    // Beside the curve all the way, ends included.
+    const SAMPLES: u32 = 16;
+    let mut widest: f64 = reach;
+    for k in 0..=SAMPLES {
+        let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / f64::from(SAMPLES);
+        widest = widest.max(nearest(&curve, *range, lifted(t)?, tol)?);
+        if widest > tol.confusion() * BESIDE {
+            return Ok(Fit::Off);
+        }
+    }
+    // Which way the curve runs along the piece: the reading that keeps
+    // the piece's points nearer the curve's at the same share of the way,
+    // the quarter points included so a closed curve is told apart too.
+    let mut ahead = 0.0;
+    let mut behind = 0.0;
+    for k in 0..=4 {
+        let share = f64::from(k) / 4.0;
+        let at = lifted(segment.t0 + (segment.t1 - segment.t0) * share)?;
+        ahead += at.distance(curve.point_at(range.0 + (range.1 - range.0) * share, tol)?);
+        behind += at.distance(curve.point_at(range.1 + (range.0 - range.1) * share, tol)?);
+    }
+    let ends = if ahead <= behind {
+        *range
+    } else {
+        (range.1, range.0)
+    };
+    Ok(Fit::Beside(Ribbon {
+        curve,
+        range: *range,
+        ends,
+        reach: widest,
+    }))
 }
 
 /// A chart point brought into the surface's domain where a pcurve fitted
@@ -807,6 +944,19 @@ impl ChartFace {
         };
         for (segments, region) in &self.loops {
             for segment in segments {
+                if let Some(ribbon) = &segment.ribbon {
+                    let breaks = self.outer_breaks(segment, tol)?;
+                    for pair in breaks.windows(2) {
+                        for k in 0..fine {
+                            let a = pair[0] + (pair[1] - pair[0]) * f64::from(k) / f64::from(fine);
+                            let b =
+                                pair[0] + (pair[1] - pair[0]) * f64::from(k + 1) / f64::from(fine);
+                            for (t, wt) in gauss_legendre_rule(a, b) {
+                                self.strip(segment, ribbon, t, region * wt, tol, &mut take)?;
+                            }
+                        }
+                    }
+                }
                 // A straight piece along which `v` does not move adds
                 // nothing.
                 if let PlanarCurve::Line(_) = segment.curve {
@@ -835,6 +985,43 @@ impl ChartFace {
             }
         }
         Ok(proxy)
+    }
+
+    /// The rulings of a piece's strip at `t`, its samples weighted by
+    /// `outer`: the boundary weight at `t`, signed as the walk runs. The
+    /// face's boundary runs the lifted pcurve one way; the strip, to close
+    /// on it, runs it the other, so its `n dA` is `-sign` times the
+    /// ruling's sweep along the walk crossed with the ruling.
+    fn strip(
+        &self,
+        segment: &Segment,
+        ribbon: &Ribbon,
+        t: f64,
+        outer: f64,
+        tol: Tolerances,
+        sink: &mut dyn FnMut(Sample),
+    ) -> OgeomResult<()> {
+        let (at, d) = segment.at(t, tol)?;
+        let at = into_domain(&self.surface, at);
+        let (point, du, dv) = self.surface.point_d1_at(at.x, at.y, tol)?;
+        let moving = du * d.x + dv * d.y;
+        let share = if segment.t1 == segment.t0 {
+            0.0
+        } else {
+            (t - segment.t0) / (segment.t1 - segment.t0)
+        };
+        let guess = ribbon.ends.0 + (ribbon.ends.1 - ribbon.ends.0) * share;
+        let (target, tangent, rate) = ribbon.nearest(point, moving, guess, tol)?;
+        let across = target - point;
+        for (s, ws) in rule(3, 0.0, 1.0) {
+            let sweep = moving * (1.0 - s) + tangent * (rate * s);
+            sink((
+                point + across * s,
+                sweep.cross(across),
+                -self.sign * outer * ws,
+            ));
+        }
+        Ok(())
     }
 
     /// Where a boundary piece's panels break: its own ends, its knots, and

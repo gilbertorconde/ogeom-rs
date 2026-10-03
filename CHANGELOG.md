@@ -87,6 +87,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Exact mass properties take pcurves that run beside their edge.** A face
+  whose pcurve runs beside its edge's curve by up to a thousandth of a
+  millimetre is integrated with the strip between the two, and a junction
+  whose ends lie anywhere within its vertex's tolerance closes; such faces
+  went to a tessellation. Drills whose section edge took its curve from a
+  nearby circle are measured exactly: cut and common add up to the part
+  within 6e-9 over every stress drill on three seeds.
+
 - **Crossings at a section's sharp turn are found.** A marched section that
   wobbles through a sharp turn within its stated error is fitted in pieces
   where its error exceeds the finest step the march took, and the

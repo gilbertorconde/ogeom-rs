@@ -251,3 +251,160 @@ fn a_frustum_drilled_through_its_rim_measures_its_hole() {
         );
     }
 }
+
+/// The common of a torus of radii 10 and 3 and a drill along its axis of
+/// radius `r` centred at `(x, y)`: the torus's thickness along z, twice the
+/// root of 9 less the square of the distance from the tube's centre
+/// circle, integrated over the drill's disc. Taken ring by ring round the
+/// torus's axis, each ring's angle inside the disc in closed form; the
+/// square-root ends at the tube's walls and where the rings start to leave
+/// the disc are smoothed by a sine substitution on each stretch.
+fn torus_core(x: f64, y: f64, r: f64) -> f64 {
+    let d = x.hypot(y);
+    let f = |rho: f64| {
+        let left = 9.0 - (rho - 10.0) * (rho - 10.0);
+        let angle = if rho + d <= r {
+            2.0 * PI
+        } else if rho >= d + r || rho <= d - r {
+            0.0
+        } else {
+            2.0 * ((rho * rho + d * d - r * r) / (2.0 * rho * d))
+                .clamp(-1.0, 1.0)
+                .acos()
+        };
+        2.0 * left.max(0.0).sqrt() * rho * angle
+    };
+    let mut breaks = vec![7.0, 13.0];
+    breaks.extend(
+        [d - r, d + r, r - d]
+            .into_iter()
+            .filter(|b| *b > 7.0 && *b < 13.0),
+    );
+    breaks.sort_by(f64::total_cmp);
+    breaks
+        .windows(2)
+        .map(|pair| {
+            let (mid, half) = (0.5 * (pair[0] + pair[1]), 0.5 * (pair[1] - pair[0]));
+            ogeom::math::integrate(
+                |phi| f(mid + half * phi.sin()) * half * phi.cos(),
+                -0.5 * PI,
+                0.5 * PI,
+                1e-13,
+            )
+            .unwrap()
+        })
+        .sum()
+}
+
+/// A torus drilled along its axis by drills whose wall passes through the
+/// vertex where its seams cross on the outer equator, square to the
+/// equator there. Near the vertex the section hugs the seam's meridian
+/// circle, and the boolean bounds the drill's wall there by the meridian:
+/// the wall's pcurve, fitted to the true section, stands up to 2e-5 off
+/// the edge's circle. The strip between them is integrated with the wall,
+/// and the common measures the torus's core within the drill to a few
+/// parts in a billion, where leaving the strip out misses by 2.6e-8.
+#[test]
+fn a_torus_drilled_through_its_seams_vertex_measures_its_core() {
+    use ogeom::algo::{make_cylinder, make_torus};
+    use ogeom::math::Direction;
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    for (r, seam) in [
+        (3.721_499_296_241_649_5, Vector::new(0.0, 1.0, 0.0)),
+        (-4.243_598_220_801_017, Vector::new(-1.0, 0.0, 0.0)),
+    ] {
+        let mut model = Model::new();
+        let part = make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(
+            Point::new(13.0, r, -6.725_587_333_175_463),
+            Direction::Z,
+            Direction::new(seam, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let drill = make_cylinder(&mut model, frame, r.abs(), 13.451_174_666_350_926, T)
+            .unwrap()
+            .shape;
+        let cut = ogeom::boolean::cut(&mut model, &part, &drill, T)
+            .unwrap()
+            .shape;
+        let common = ogeom::boolean::common(&mut model, &part, &drill, T)
+            .unwrap()
+            .shape;
+        let (v_cut, v_common) = (
+            volume_properties(&model, &cut, fine, T).unwrap(),
+            volume_properties(&model, &common, fine, T).unwrap(),
+        );
+        assert_eq!(v_cut.deflection, 0.0, "r {r}: integrated, not meshed");
+        assert_eq!(v_common.deflection, 0.0, "r {r}: integrated, not meshed");
+        let core = torus_core(13.0, r, r.abs());
+        assert!(
+            (v_common.mass - core).abs() < 5e-9 * core,
+            "r {r}: common {} against {core} integrated",
+            v_common.mass
+        );
+        let torus = 2.0 * PI * PI * 10.0 * 9.0;
+        assert!(
+            (v_cut.mass + v_common.mass - torus).abs() < 1e-9 * torus,
+            "r {r}: cut {} + common {} against {torus}",
+            v_cut.mass,
+            v_common.mass
+        );
+    }
+}
+
+/// A box rounded on every edge, drilled along y by a drill whose wall runs
+/// along the box's side face where a round leaves it. The drill's section
+/// on a corner's sphere ends at a vertex whose ball holds both pieces'
+/// ends, 6e-5 apart, wider than the vertex's tolerance but within its
+/// diameter. Cut and common are integrated on their surfaces, and add up
+/// to the rounded box to a part in a billion.
+#[test]
+fn a_rounded_box_drilled_along_a_round_s_edge_measures_exactly() {
+    use ogeom::algo::{make_box, make_cylinder};
+    use ogeom::math::Direction;
+    use ogeom::topo::{ShapeType, explore_unique};
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let mut model = Model::new();
+    let block = make_box(&mut model, Frame::WORLD, (20.0, 14.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let part = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let r = 0.700_445_137_892_257_4;
+    let frame = Frame::new(
+        Point::new(0.0, -12.638_181_458_367_212, 8.0 + r),
+        Direction::Y,
+        Direction::new(Vector::new(-1.0, 0.0, 0.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let drill = make_cylinder(&mut model, frame, r, 29.276_362_916_734_424, T)
+        .unwrap()
+        .shape;
+    let whole = volume_properties(&model, &part, fine, T).unwrap();
+    let cut = ogeom::boolean::cut(&mut model, &part, &drill, T)
+        .unwrap()
+        .shape;
+    let common = ogeom::boolean::common(&mut model, &part, &drill, T)
+        .unwrap()
+        .shape;
+    let (v_cut, v_common) = (
+        volume_properties(&model, &cut, fine, T).unwrap(),
+        volume_properties(&model, &common, fine, T).unwrap(),
+    );
+    for (name, v) in [("part", &whole), ("cut", &v_cut), ("common", &v_common)] {
+        assert_eq!(v.deflection, 0.0, "the {name} is integrated, not meshed");
+    }
+    assert!(
+        (v_cut.mass + v_common.mass - whole.mass).abs() < 1e-9 * whole.mass,
+        "cut {} + common {} against {}",
+        v_cut.mass,
+        v_common.mass,
+        whole.mass
+    );
+}
