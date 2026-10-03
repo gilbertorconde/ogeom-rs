@@ -6277,6 +6277,40 @@ fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     general_fuse_as(model, a, b, Operands::Solids, tol)
 }
 
+/// [`general_fuse`] for an operation that keeps pieces by their state,
+/// refusing a classification that cannot hold: the boundaries meet along
+/// sections, every piece of both reads outside the other, and yet the
+/// solids overlap.
+///
+/// Two solids sharing volume share it within a region bounded by pieces of
+/// their boundaries, and each such piece lies inside the other solid or on
+/// its boundary. So where no piece is in or on, the solids are apart, and a
+/// section that leaves them overlapping was not arranged into the faces it
+/// splits (a loop through a point where the surfaces touch, read as one
+/// ring round both its lobes). Kept as read, the cut would keep the whole
+/// solid and the union both solids whole. The overlap is asked of sampled
+/// boundaries, only where every piece reads out and sections were found.
+fn general_fuse_classified(
+    model: &Model,
+    a: &Shape,
+    b: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<GeneralFused> {
+    let fused = general_fuse(model, a, b, tol)?;
+    if !fused.sections.is_empty()
+        && fused.pieces.iter().all(|p| p.state == PieceState::Out)
+        && !apart(model, a, b, tol)?
+    {
+        ogeom_bail!(
+            NotDone,
+            "the boundaries cross yet every piece of both reads outside the other, \
+             though the solids overlap; a section was not arranged into the faces it \
+             splits"
+        );
+    }
+    Ok(fused)
+}
+
 /// The general fuse of `a` and `b` taken as `operands` says. Where `a` is a
 /// sheet only its pieces are made, and the pieces of `b` are not.
 fn general_fuse_as(
@@ -9095,7 +9129,7 @@ pub fn cells(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomR
     // One arrangement answers all three: each cell is a different choice
     // of the same classified pieces, the choices `cut` and `common` make,
     // and the cut the other way round with the arguments' roles swapped.
-    let fused = general_fuse(model, a, b, tol)?;
+    let fused = general_fuse_classified(model, a, b, tol)?;
     let keep = |choose: &dyn Fn(&FacePiece) -> Option<bool>| -> Vec<(usize, bool)> {
         fused
             .pieces
@@ -9398,7 +9432,7 @@ fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomR
         &baked_if_scaled(model, b, tol)?,
     );
     let built = (|| {
-        let fused = general_fuse(model, a, b, tol)?;
+        let fused = general_fuse_classified(model, a, b, tol)?;
         // Outward pieces bound the union. A same-domain pair with aligned
         // material keeps one copy, and one with opposed material is interior
         // to the union and vanishes.
@@ -9776,7 +9810,7 @@ fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
         &baked_if_scaled(model, b, tol)?,
     );
     let built = (|| {
-        let fused = general_fuse(model, a, b, tol)?;
+        let fused = general_fuse_classified(model, a, b, tol)?;
         // Inward pieces bound the intersection. An aligned same-domain pair
         // bounds it too, once. An opposed pair encloses no volume between
         // them.
@@ -9943,7 +9977,7 @@ fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         &baked_if_scaled(model, b, tol)?,
     );
     let built = (|| {
-        let fused = general_fuse(model, a, b, tol)?;
+        let fused = general_fuse_classified(model, a, b, tol)?;
         // The first argument's outward pieces stay. The tool's inward pieces
         // close the cut with their material side flipped. On the shared
         // surface: an opposed pair means the tool's material is entirely on

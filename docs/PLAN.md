@@ -114,17 +114,24 @@ pieces whose fits miss by up to 9e-3, paving the round's edge at several
 places with honesties up to 2e-2, and the kept pieces do not close. The
 same placement moved by a few ulps leaves the drill less the part
 unclosed.
-The stress drills still refused at seed 1, each "the kept pieces did not
-close": the other two on that part (not yet diagnosed, many faces at once),
-two on the torus and one on the rounded box. Seeds 2 and 3 refuse nine and
-six drills, of these kinds and some not yet diagnosed.
+The stress drills still refused at seed 1: two on that part (not yet
+diagnosed, many faces at once) and one on the rounded box. Seeds 2 and 3
+refuse eight and three drills, of these kinds and some not yet diagnosed.
 
-- **A figure eight at a seam corner.** A drill tangent inside the torus's
-  outer equator, or lying along it, touches the torus where its two seams
-  cross, and the section is a figure eight with its double point on that
-  vertex (a drill touching a ball at its pole the same). Moved a micron off
-  the vertex it closes. With the drill's own seam on the touching line the
-  cut comes back valid and wrong: the torus whole, nothing taken out.
+- **A drill all but touching inside a torus's outer equator.** A drill
+  touching the torus inside its outer equator meets it in a figure eight;
+  the marcher now finds the touch exactly and cuts the branches there, and
+  these cut (at the seams' vertex and anywhere on the equator, every seam
+  direction tried, each sum within 1e-8), but for one: a radian round
+  from the seams' vertex with its seam on the touching line, the drill
+  less the torus refuses. Moved inside by 1e-7 to 1e-6 with its own seam
+  on the touching line, the section is one loop with a neck thousandths
+  wide across both charts' seams and the cut comes back valid and wrong by
+  3e-4 to 1e-3 of the torus (cut short by up to 1.7 mm^3), the same as
+  before the touch handling; its seam turned away it is exact. A
+  classification guard refuses a cut, common or union whose sections leave
+  every piece of both outside the other while the solids overlap, which is
+  what the touching drill returned before (the torus whole).
 - **A drill's seam along the other part's edge.** A drill whose wall runs
   along a round's tangent line with its own seam on that line: the section
   there hugs an edge on both sides and lays no split. Its seam turned away

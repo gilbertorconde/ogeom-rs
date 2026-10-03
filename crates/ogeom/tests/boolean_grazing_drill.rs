@@ -2,7 +2,8 @@
 //! with the rim's circle touching the line it rests on, lying along a
 //! rounded box's tangent line into the corners where the rounds' end arcs
 //! touch it, and an oblique drill through a vertex of a shaved cube with
-//! its own seam on that vertex. Each cut, common and drill less the part is
+//! its own seam on that vertex, and drills along a torus's axis touching it
+//! inside its outer equator. Each cut, common and drill less the part is
 //! valid, cut and common add up to the part, the drill less the part and
 //! the common add up to the drill, and the common matches the drill's
 //! share of the part integrated ray by ray along the drill's axis.
@@ -248,4 +249,46 @@ fn an_oblique_drill_seamed_through_a_shaved_cube_s_vertex_cuts() {
         (common - expected).abs() < expected * 1e-6,
         "common {common} against {expected} integrated"
     );
+}
+
+/// A torus of radii 10 and 3 drilled along its axis by drills whose wall
+/// touches it inside the outer equator: the section is a figure eight with
+/// its double point on the equator. At the vertex where the torus's two
+/// seams cross and at a point of the equator seam alone, each with the
+/// drill's own seam on the touching line. The common is the
+/// torus's thickness along z, twice the root of 9 less the square of the
+/// distance from the tube's centre circle, integrated over the drill's
+/// disc.
+#[test]
+fn drills_touching_a_torus_inside_its_outer_equator_cut() {
+    let radius = 4.353_623_591_855_474;
+    let reach = 13.0 - radius;
+    for (angle, seam) in [(0.0, 0.0), (0.7, 0.7)] {
+        let mut model = Model::new();
+        let part = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+            .unwrap()
+            .shape;
+        let (sin, cos) = f64::sin_cos(angle);
+        let (centre_x, centre_y) = (reach * cos, reach * sin);
+        let common = drill(
+            &mut model,
+            &part,
+            Point::new(centre_x, centre_y, -6.725_587_333_175_463),
+            (
+                Vector::new(0.0, 0.0, 1.0),
+                Vector::new(f64::cos(seam), f64::sin(seam), 0.0),
+            ),
+            radius,
+            13.451_174_666_350_926,
+        );
+        let expected = across_disc(radius, |a, b| {
+            let off = (centre_x + a).hypot(centre_y + b) - 10.0;
+            let left = 9.0 - off * off;
+            if left <= 0.0 { 0.0 } else { 2.0 * left.sqrt() }
+        });
+        assert!(
+            (common - expected).abs() < expected * 1e-6,
+            "at {angle}, seam {seam}: common {common} against {expected} integrated"
+        );
+    }
 }

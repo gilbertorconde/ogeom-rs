@@ -73,6 +73,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Drills touching a torus or a ball cut it.** Where a drill touches a
+  torus inside its outer equator, or a ball at its pole, the section is a
+  figure eight, and the marcher traced it as one loop round both lobes or
+  stalled short of the touch: depending on the order of the operands the
+  cut was refused or came back as the whole torus, which `check` called
+  valid. The figure eight is cut into arcs ending exactly on the touch.
+  Cut, common, union and cells whose sections leave every piece of both
+  solids outside the other while the solids overlap now refuse instead of
+  returning a solid. Of 77 drill placements swept round a torus's equator,
+  74 cut within 1e-8 (48 were refused or wrong).
+
 - **Exact area and volume close junctions a pcurve misses.** A face's
   chart integral treated each loop as closed, so where a fitted pcurve ended
   a little off its vertex the result depended on where the integral
