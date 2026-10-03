@@ -119,6 +119,7 @@ fn nist_ctc_03() {
 /// A fitted face here ran past a facet it should have ended on, and the
 /// solid came back with the facet facing into material.
 #[test]
+#[ignore = "heavy"]
 fn nist_ctc_04() {
     comes_back("nist_ctc_04_asme1_rd.stp", true, true);
 }
@@ -126,12 +127,14 @@ fn nist_ctc_04() {
 /// Its whole mesh closes, welded; its faces meshed one by one still leave
 /// six edges unmatched.
 #[test]
+#[ignore = "heavy"]
 fn nist_ftc_06() {
     comes_back("nist_ftc_06_asme1_rd.stp", true, false);
 }
 
 /// As `nist_ctc_04`, on tori.
 #[test]
+#[ignore = "heavy"]
 fn nist_ftc_07() {
     comes_back("nist_ftc_07_asme1_rd.stp", true, false);
 }
@@ -150,6 +153,7 @@ fn nist_ftc_09() {
 /// side, within the corners' tolerance; drawn from the corners themselves,
 /// the faces round each one meet at one point and the mesh closes.
 #[test]
+#[ignore = "heavy"]
 fn nist_ftc_10() {
     comes_back("nist_ftc_10_asme1_rb.stp", true, true);
 }
@@ -160,6 +164,7 @@ fn nist_ftc_11() {
 }
 
 #[test]
+#[ignore = "heavy"]
 fn a_socket_head_screw() {
     comes_back("m5x16_bhcs_loops.step", true, true);
 }

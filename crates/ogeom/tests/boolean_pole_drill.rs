@@ -94,6 +94,7 @@ fn drilled(offset: Vector, r: f64) -> Result<(), String> {
 }
 
 #[test]
+#[ignore = "heavy"]
 fn drill_through_both_poles() {
     let r = 2.664_527_471_227_642;
     let mut failures = Vec::new();

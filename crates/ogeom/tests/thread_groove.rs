@@ -198,6 +198,7 @@ fn a_three_turn_groove_cuts_from_a_bored_block() {
 /// the sections on the two walls either side of the rail meet it a
 /// hundredth of a millimetre apart.
 #[test]
+#[ignore = "heavy"]
 fn a_six_turn_groove_cuts_from_a_bored_block() {
     cuts_from_a_bored_block(6.0);
 }
@@ -205,6 +206,7 @@ fn a_six_turn_groove_cuts_from_a_bored_block() {
 /// Seven turns end the cap across the bore's wall, and the flank's section
 /// winds round the bore for turns before it.
 #[test]
+#[ignore = "heavy"]
 fn a_seven_turn_groove_cuts_from_a_bored_block() {
     cuts_from_a_bored_block(7.0);
 }
@@ -215,6 +217,7 @@ fn a_seven_turn_groove_cuts_from_a_bored_block() {
 /// shallow for sampled cells to cross, found from where it leaves the
 /// flank's border.
 #[test]
+#[ignore = "heavy"]
 fn a_groove_whose_flank_just_dips_into_the_bore_cuts_from_it() {
     cuts_from_a_bored_block(5.75);
     cuts_from_a_bored_block(6.75);

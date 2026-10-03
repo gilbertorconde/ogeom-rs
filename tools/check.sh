@@ -41,8 +41,10 @@ echo "== test =="
 # this run rather than from running the world again.
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
+# Both tiers: the default one and the tests marked heavy, which the working
+# loop leaves out (see CONTRIBUTING.md, "Tests have a budget").
 echo "-- full run --"
-cargo test --workspace --all-features --no-fail-fast 2>&1 | tee "$log"
+cargo test --workspace --all-features --no-fail-fast -- --include-ignored 2>&1 | tee "$log"
 
 # Property tests draw fresh cases each run, so a single green run proves less
 # than it looks, but only the *unit* suites hold property tests, and the

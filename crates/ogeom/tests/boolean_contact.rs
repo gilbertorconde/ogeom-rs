@@ -726,6 +726,7 @@ fn a_sheared_copy_sharing_a_plane_combines_to_its_exact_volumes() {
 /// keeps the volume of the unsheared bar and drum: the bar `|y| <= 1`
 /// meets the disk of radius 5 in a band of area `2·sqrt(24) + 50·asin(1/5)`.
 #[test]
+#[ignore = "heavy"]
 fn a_rim_weaving_across_a_sheared_bar_s_window_combines_to_its_exact_volumes() {
     let shear = ogeom::math::GeneralTransform {
         linear: ogeom::math::Matrix3 {

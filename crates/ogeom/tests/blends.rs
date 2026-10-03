@@ -596,6 +596,7 @@ fn foot_blended(model: &mut Model, slant: f64, r: f64) -> (Shape, f64) {
 /// the small round whole. The band rides both faces within a tenth of a
 /// degree, and the fill is what rounding the sharp foot as an edge fills.
 #[test]
+#[ignore = "heavy"]
 fn a_face_blend_marches_round_a_slanted_drum_s_foot() {
     let r = 2.0;
     let mut model = Model::new();
@@ -640,6 +641,7 @@ fn a_face_blend_marches_round_a_slanted_drum_s_foot() {
 /// extrapolate to the ring's: four times the first less the second, over
 /// three.
 #[test]
+#[ignore = "heavy"]
 fn a_slanted_drum_s_fill_tends_to_the_torus_ring() {
     let r = 2.0;
     let ring = rim_ring(6.0, r, -1.0);
@@ -840,6 +842,7 @@ fn assert_tends_to(fills: [f64; 2], want: f64) {
 /// contact circle, radius 8 about the foot, crosses y = 40 round the long
 /// way.
 #[test]
+#[ignore = "heavy"]
 fn a_face_blend_caps_its_round_where_the_crease_runs_off_the_block() {
     let r = 2.0;
     let pi = core::f64::consts::PI;
@@ -870,6 +873,7 @@ fn a_face_blend_caps_its_round_where_the_crease_runs_off_the_block() {
 /// and is capped at both ends; upright, its fill is the torus ring's share
 /// of the turn past the line.
 #[test]
+#[ignore = "heavy"]
 fn a_face_blend_caps_its_round_where_a_face_holds_part_of_the_seat() {
     let r = 2.0;
     let pi = core::f64::consts::PI;
@@ -1007,6 +1011,7 @@ fn an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block() {
 /// fraction of the lean. Either way the fills at 1 and 2 degrees
 /// extrapolate to the upright arc's share of the ring.
 #[test]
+#[ignore = "heavy"]
 fn an_edge_round_stops_where_a_leaning_drum_s_foot_runs_off_the_block() {
     let r = 2.0;
     let pi = core::f64::consts::PI;
@@ -2053,6 +2058,7 @@ fn a_corner_with_a_curved_face_rounds_with_one_ball() {
 }
 
 #[test]
+#[ignore = "heavy"]
 fn a_curved_corner_closes_the_same_way_round_either_order() {
     // Two routes to one rounded corner: all three edges in one call (the
     // corner first, the bands stopping flush against its ball), and the
@@ -2098,6 +2104,7 @@ fn a_curved_corner_closes_the_same_way_round_either_order() {
 /// ends at that vertex. The corner tool then closes the same solid the
 /// ruling-first order does.
 #[test]
+#[ignore = "heavy"]
 fn a_curved_corner_closes_with_the_rim_s_band_first() {
     let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
     let mut volumes = Vec::new();
@@ -2140,6 +2147,7 @@ fn a_curved_corner_closes_with_the_rim_s_band_first() {
 /// as elsewhere. Three of its faces are measured from a mesh, so the
 /// volume agrees with the other orders to the mesh's resolution.
 #[test]
+#[ignore = "heavy"]
 fn a_curved_corner_closes_with_the_straight_band_first() {
     let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
     let mut measured = Vec::new();
@@ -2523,6 +2531,7 @@ fn a_rim_blend_rolls_over_the_bracket_s_concave_blend() {
 /// edge is two pieces either side of the scoop, on one line. Only the left
 /// is asked for, and only the left is blended whichever goes first.
 #[test]
+#[ignore = "heavy"]
 fn a_marched_blend_meets_a_straight_blend_at_its_corners() {
     let fine = ogeom::mesh::Deflection::with_chord(2e-3).unwrap();
     let mut volumes = Vec::new();
@@ -2888,6 +2897,7 @@ fn a_circular_rim_on_a_sphere_takes_the_march() {
 /// the pole with the rim cut from it. The same bore turned onto another
 /// axis keeps the pole out of the leg, and the two blends agree.
 #[test]
+#[ignore = "heavy"]
 fn a_rim_whose_rail_rounds_the_sphere_s_pole_blends() {
     let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
     let mut volumes = Vec::new();
@@ -2937,6 +2947,7 @@ fn a_rim_whose_rail_rounds_the_sphere_s_pole_blends() {
 /// A ring drilled through its tube: the seat runs round the drill on the
 /// torus, a host whose seat has no closed form.
 #[test]
+#[ignore = "heavy"]
 fn a_marched_blend_takes_a_torus_host() {
     let mut model = Model::new();
     let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
@@ -3007,6 +3018,7 @@ fn a_marched_blend_takes_a_cone_host() {
 /// volume removed is Pappus's: the blend's cross-section along the lines,
 /// and turned through a quarter about each corner's axis.
 #[test]
+#[ignore = "heavy"]
 fn blends_along_a_rounded_rim_turn_each_arc_by_its_quarter() {
     use ogeom::algo::{check, make_box, tight_bounds, volume_properties};
     use ogeom::mesh::Deflection;

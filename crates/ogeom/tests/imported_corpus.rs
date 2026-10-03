@@ -19,6 +19,7 @@ fn corpus(name: &str) -> String {
 /// relative band absorbs mesh refinements. An orientation or unit
 /// mistake moves a volume by whole factors and cannot hide inside it.
 #[test]
+#[ignore = "heavy"]
 fn the_corpus_heals_and_every_part_measures() {
     let files: [(&str, f64); 11] = [
         ("nist_ctc_01_asme1_rd.stp", 14_643_073.4),

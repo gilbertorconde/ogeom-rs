@@ -351,6 +351,7 @@ fn two_equal_drums_blend_pinched_at_their_tangent_poles() {
 }
 
 #[test]
+#[ignore = "heavy"]
 fn the_common_of_two_equal_drums_rounds_pinched_at_its_poles() {
     // The convex twin: the drums' common part, whose seam edges are
     // ridges. The ball rolls inside both drums and the band takes material
@@ -373,6 +374,7 @@ fn the_common_of_two_equal_drums_rounds_pinched_at_its_poles() {
 }
 
 #[test]
+#[ignore = "heavy"]
 fn pinched_bands_add_up_across_the_seam() {
     // Every seam edge blended in one call adds what the edges add one at a
     // time: the bands meet only at the poles, where each pinches to a
@@ -605,6 +607,7 @@ fn tee() -> (ogeom_topo::Model, ogeom_topo::Shape, Vec<ogeom_topo::Shape>) {
 /// branch's chart a period apart and are joined there, not round a full
 /// turn.
 #[test]
+#[ignore = "heavy"]
 fn a_tee_s_junction_loop_rounds_from_any_arc() {
     let (model, joined, arcs) = tee();
     assert_eq!(arcs.len(), 4);
@@ -633,6 +636,7 @@ fn a_tee_s_junction_loop_rounds_from_any_arc() {
 /// rounds once: the first arc's blend runs the loop, and the arcs after it
 /// lie on the crease it rounded, done rather than in its way.
 #[test]
+#[ignore = "heavy"]
 fn a_tee_s_junction_loop_rounds_as_a_chain_of_its_arcs() {
     let (mut model, joined, arcs) = tee();
     let one = {

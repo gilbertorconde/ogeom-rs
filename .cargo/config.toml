@@ -1,0 +1,6 @@
+# `cargo t` runs the default test tier in the `iterate` profile: release's
+# optimisation without its link-time work, so a test binary relinks in about
+# a second instead of the release profile's ten or more, with the same
+# results. Add `-- --include-ignored` for the heavy tier.
+[alias]
+t = "test --profile iterate"

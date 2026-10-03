@@ -196,6 +196,7 @@ fn a_frenet_pipe_on_a_helix_is_a_screw() {
 /// from the axis, lies inside for `acos(-x0 / r)` of every half turn. A
 /// block whose face holds the axis (`x0 = 0`) keeps half the coil.
 #[test]
+#[ignore = "heavy"]
 fn a_coil_trimmed_by_a_block_measures_its_closed_form() {
     let axis = Axis {
         location: Point::ORIGIN,
@@ -515,6 +516,7 @@ fn axial_face(model: &mut Model, pts: &[(f64, f64)], theta: f64) -> Shape {
 /// the next one starts. A section stopping short of it leaves the wire
 /// open at some start angles.
 #[test]
+#[ignore = "heavy"]
 fn a_thread_cut_into_a_rod_is_the_same_at_any_start_angle() {
     let mut volumes = Vec::new();
     for degrees in [0.0_f64, 37.0, 91.0, 195.0, 286.0, 351.0] {

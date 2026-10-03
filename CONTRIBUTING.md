@@ -124,6 +124,18 @@ does not throw; it corrupts a document six operations later. So:
   seeds does not slip through. Do not verify by grepping cargo's output for
   "ok": a run with a failing suite still prints "ok" for every suite that
   passed, so a real failure can hide behind a green-looking summary.
+- **Tests have a budget.** Every test in the default tier finishes within
+  5 s in the `iterate` profile. A test that needs longer (a sweep, a corpus
+  part, a fine mesh) is marked `#[ignore = "heavy"]`; prefer keeping a
+  small representative case in the default tier beside it.
+  - `cargo t` (an alias for `cargo test --profile iterate`) is the working
+    loop: the crates you touched, plus the heavy tests of that area by name
+    with `-- --include-ignored`.
+  - Do not test with `--release`: it links every test binary with link-time
+    optimisation and one codegen unit, ten seconds or more each, for the same
+    answers.
+  - `tools/check.sh` and CI run both tiers. `tools/test-times.sh` prints the
+    slowest tests of the default tier and fails past 15 s.
 - **Workspace lints** forbid `unsafe`, and warn on `unwrap`/`expect` and lossy
   numeric casts in library code. A kernel is arithmetic from end to end, and
   these are how wrong answers get shipped. A deliberate exception needs an

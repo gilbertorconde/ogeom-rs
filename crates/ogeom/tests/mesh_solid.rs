@@ -401,6 +401,7 @@ fn a_meshed_bore_comes_back_a_cylinder() {
 /// cylinders along the edges, spheres at the corners) come back on the
 /// surfaces they were meshed from.
 #[test]
+#[ignore = "heavy"]
 fn primitives_and_fillets_come_back_on_their_surfaces() {
     let mut model = Model::new();
     let cylinder = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 12.0, T)
@@ -540,6 +541,7 @@ fn caps_zones_and_bent_tubes_come_back_exact() {
 /// balls and a torus round a hole's edge still come back on their
 /// surfaces.
 #[test]
+#[ignore = "heavy"]
 fn a_coarse_mesh_keeps_its_fillets() {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
@@ -585,6 +587,7 @@ fn a_coarse_mesh_keeps_its_fillets() {
 /// triangles are listed in: a fillet two facets wide, sampled before the
 /// corners beside it are claimed, fits nothing then and is taken again.
 #[test]
+#[ignore = "heavy"]
 fn a_coarse_rounded_block_comes_back_whatever_its_triangle_order() {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
@@ -615,6 +618,7 @@ fn a_coarse_rounded_block_comes_back_whatever_its_triangle_order() {
 /// once on both surfaces, and each wall is built round its axis with a seam
 /// of its own clear of the holes in it, at a fine mesh and a printer's.
 #[test]
+#[ignore = "heavy"]
 fn crossing_cylinders_meet_along_a_fitted_curve() {
     let mut model = Model::new();
     let across = |p: (f64, f64, f64), z: Direction, x: Direction| {
@@ -663,6 +667,7 @@ fn crossing_cylinders_meet_along_a_fitted_curve() {
 /// Each comes back as the whole surface with the holes as inner wires, its
 /// seams and poles turned clear of them.
 #[test]
+#[ignore = "heavy"]
 fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
     let mut model = Model::new();
     let at = |p: (f64, f64, f64), z: Direction, x: Direction| {
@@ -760,6 +765,7 @@ fn balls_and_rings_with_holes_come_back_whole_but_for_them() {
 /// volume, measured on the exact surfaces both sides, agrees to a
 /// millionth.
 #[test]
+#[ignore = "heavy"]
 fn rings_drilled_across_their_equators_come_back_whole_but_for_the_holes() {
     let mut model = Model::new();
     let along_x =
@@ -970,6 +976,7 @@ fn surfaces_and_neighbours(
     reason = "the rounding to single precision is the point"
 )]
 #[test]
+#[ignore = "heavy"]
 fn fillets_and_corner_balls_meet_their_neighbours_tangentially() {
     use ogeom::geom::SurfaceGeometry as S;
     let mut model = Model::new();
@@ -1106,6 +1113,7 @@ fn facets_left_between_fillets_join_them() {
     reason = "the rounding to single precision is the point"
 )]
 #[test]
+#[ignore = "heavy"]
 fn a_filleted_plate_s_tangent_seams_end_at_their_corners() {
     let mut model = Model::new();
     let edge_ends = |model: &Model, e: &Shape| {
@@ -1222,6 +1230,7 @@ fn rough_rounded_box() -> Triangulation {
 /// fillets are still cylinders, bounded there by curves threaded through
 /// the chain's own vertices, good to how far they stray.
 #[test]
+#[ignore = "heavy"]
 fn fillets_ending_on_rough_corners_are_still_cylinders() {
     let mut back = Model::new();
     let mesh = rough_rounded_box();
@@ -1250,6 +1259,7 @@ fn fillets_ending_on_rough_corners_are_still_cylinders() {
 /// chart only as far as it reaches there, and it collapses no section or
 /// edge that is longer than its own doubt. Each hole cuts and fills valid.
 #[test]
+#[ignore = "heavy"]
 fn holes_beside_a_rough_corner_cut_and_fill_valid() {
     let mut model = Model::new();
     let out = solid_from_mesh(
@@ -1295,6 +1305,7 @@ fn holes_beside_a_rough_corner_cut_and_fill_valid() {
 /// space as well, or the rest of the rim ends on two vertices and its ring
 /// stays open.
 #[test]
+#[ignore = "heavy"]
 fn holes_sideways_past_a_rough_corner_cut_and_fill_valid() {
     let mut model = Model::new();
     let out = solid_from_mesh(
@@ -1520,6 +1531,7 @@ fn stl_slab(r: f64, n: u32, top: f64) -> (Vec<(f64, f64)>, Triangulation) {
 /// intersection the pad. A pad standing out through the top is never taken
 /// for either.
 #[test]
+#[ignore = "heavy"]
 fn a_pad_within_a_converted_solid_fuses_to_the_solid() {
     for (r, n) in [(8.0, 20), (2.0, 12), (3.0, 7)] {
         let at = format!("corner {r} in {n} steps");
@@ -1740,6 +1752,7 @@ fn stepped_part(model: &mut Model) -> Shape {
     reason = "the rounding to single precision is the point"
 )]
 #[test]
+#[ignore = "heavy"]
 fn a_fine_conversion_of_a_rounded_block_tessellates_closed() {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
@@ -1778,6 +1791,7 @@ fn a_fine_conversion_of_a_rounded_block_tessellates_closed() {
     reason = "the rounding to single precision is the point"
 )]
 #[test]
+#[ignore = "heavy"]
 fn a_distance_below_the_mesh_s_scatter_is_raised_and_said_so() {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
@@ -1824,6 +1838,7 @@ fn a_distance_below_the_mesh_s_scatter_is_raised_and_said_so() {
     reason = "the rounding to single precision is the point"
 )]
 #[test]
+#[ignore = "heavy"]
 fn a_pad_through_a_converted_part_matches_the_exact_part() {
     let mut model = Model::new();
     let exact = stepped_part(&mut model);
@@ -1945,6 +1960,7 @@ fn a_folded_sliver_is_unfolded() {
     reason = "the rounding to single precision is the point"
 )]
 #[test]
+#[ignore = "heavy"]
 fn a_windowed_tube_s_wall_patches_each_become_a_face() {
     let mut model = Model::new();
     let outer = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 16.0, 30.0, T)
@@ -2379,6 +2395,7 @@ fn narrow_round(model: &mut Model) -> Shape {
 /// cylinders and the corners' spheres again, as converting with
 /// recognition gives in one step.
 #[test]
+#[ignore = "heavy"]
 fn a_verbatim_conversion_refines_to_its_surfaces() {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (30.0, 20.0, 10.0), T)
@@ -3066,6 +3083,7 @@ fn a_pad_into_a_slab_whose_rows_differ_fuses_back() {
 /// one junction, and a stub of section between two such crossings is that
 /// junction too.
 #[test]
+#[ignore = "heavy"]
 fn pads_into_slabs_drafted_less_than_their_chords_sag_cut_and_fuse() {
     let families: [[u32; 7]; 15] = [
         [6; 7],
@@ -3101,6 +3119,7 @@ fn pads_into_slabs_drafted_less_than_their_chords_sag_cut_and_fuse() {
 /// estimate reads them as a curve drawn finely, the distance stays at what
 /// single precision resolves, and each row stays a face of its own.
 #[test]
+#[ignore = "heavy"]
 fn pads_into_slabs_drafted_less_than_their_chords_sag_at_the_default_distance() {
     let families: [[u32; 7]; 15] = [
         [6; 7],
@@ -3255,6 +3274,7 @@ fn converted_parts() -> Vec<(&'static str, Model, Shape)> {
 /// A converted solid written to STEP reads back valid, on the same kinds of
 /// surface and with the same volume.
 #[test]
+#[ignore = "heavy"]
 fn converted_solids_come_back_through_step() {
     for (name, model, shape) in converted_parts() {
         let before = (kinds(&model, &shape), volume(&model, &shape));
@@ -3341,6 +3361,7 @@ fn offsets_and_moves_on_a_converted_block_match_the_exact_block() {
 /// block and on its conversion alike, rather than leaving the face's edges
 /// where they were and its surface away from them.
 #[test]
+#[ignore = "heavy"]
 fn a_face_moved_clear_of_its_tangent_fillets_is_refused() {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
@@ -3629,6 +3650,7 @@ fn spline_faces(model: &Model, shape: &Shape) -> Vec<Shape> {
 /// the solid valid, a hundred times nearer the exact volume than the mesh
 /// is, and tessellating closed.
 #[test]
+#[ignore = "heavy"]
 fn a_free_form_bump_comes_back_one_fitted_patch() {
     let mesh = grid_solid(40, 20.0, |_, _| true, bump);
     let mut model = Model::new();
@@ -3853,6 +3875,7 @@ fn folds_over_its_plane(points: &[Point], triangles: &[[Point; 3]]) -> bool {
 /// closed. Between the mesh's vertices the front patch keeps far closer to
 /// the exact wall than the facets it was fitted to.
 #[test]
+#[ignore = "heavy"]
 fn a_folding_s_wall_is_charted_by_the_mean_value_map() {
     let (nt, nz) = (160, 24);
     let (mesh, front) = s_wall(nt, nz);
@@ -4282,6 +4305,7 @@ fn bowl(x: f64, y: f64) -> f64 {
 /// tolerance it states, and the shell's own border, as tessellated, lies
 /// within that tolerance of the exact surface's border.
 #[test]
+#[ignore = "heavy"]
 fn a_free_form_sheet_s_border_comes_back_four_fitted_curves() {
     let full = grid_solid(40, 20.0, |_, _| true, bowl);
     let mut mesh = Triangulation::new();
@@ -4338,6 +4362,7 @@ fn a_free_form_sheet_s_border_comes_back_four_fitted_curves() {
 /// row, and are not read as scatter. The coplanar distance stays near the
 /// closed plate's, and the sheet comes back one fitted patch.
 #[test]
+#[ignore = "heavy"]
 fn a_bumped_sheet_alone_comes_back_one_fitted_patch() {
     let full = grid_solid(40, 20.0, |_, _| true, bump);
     let mut mesh = Triangulation::new();
