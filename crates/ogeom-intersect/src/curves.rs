@@ -1350,7 +1350,7 @@ fn general_3d(
             let seed_a = sa.parameters[i - 1] + (sa.parameters[i] - sa.parameters[i - 1]) * ta;
             let seed_b = sb.parameters[j - 1] + (sb.parameters[j] - sb.parameters[j - 1]) * tb;
             if let Some(found) = polish_3d(a, b, seed_a, seed_b, options, tol) {
-                push_unique_3d(&mut crossings, found, tol);
+                push_unique_3d(a, &mut crossings, found, tol);
             }
         }
     }
@@ -1948,12 +1948,42 @@ fn push_unique_2d(crossings: &mut Vec<Crossing<Point2>>, found: Crossing<Point2>
     crossings.push(found);
 }
 
-fn push_unique_3d(crossings: &mut Vec<Crossing<Point>>, found: Crossing<Point>, tol: Tolerances) {
+/// Keep `found` unless it is a crossing already held: one standing at the
+/// same point with the first curve staying there between the two, which is
+/// one root polished from two seeds. A curve passing the same point twice
+/// (a section shaped as a figure eight, crossing an edge at its double
+/// point) crosses there twice, once per passage, and both are kept. A
+/// closed first curve is measured the short way round its seam.
+fn push_unique_3d(
+    a: &Curve,
+    crossings: &mut Vec<Crossing<Point>>,
+    found: Crossing<Point>,
+    tol: Tolerances,
+) {
     let reach = tol.confusion() * 100.0;
-    if crossings
-        .iter()
-        .any(|c| c.point.distance(found.point) <= reach)
-    {
+    let (lo, hi) = a.domain();
+    let period = hi - lo;
+    let closed = a.is_periodic()
+        || (period.is_finite()
+            && a.point_at(lo, tol)
+                .ok()
+                .zip(a.point_at(hi, tol).ok())
+                .is_some_and(|(p, q)| p.distance(q) <= reach));
+    let same = |c: &Crossing<Point>| {
+        if c.point.distance(found.point) > reach {
+            return false;
+        }
+        let mut mid = f64::midpoint(c.on_a, found.on_a);
+        if closed && (c.on_a - found.on_a).abs() > period * 0.5 {
+            mid += period * 0.5;
+            if mid > hi {
+                mid -= period;
+            }
+        }
+        a.point_at(mid, tol)
+            .is_ok_and(|p| p.distance(found.point) <= reach)
+    };
+    if crossings.iter().any(same) {
         return;
     }
     crossings.push(found);
@@ -2262,6 +2292,40 @@ mod tests {
             ..CurveCurveOptions::default()
         };
         assert!(intersect_curves(&a, &b, strict, T).unwrap().is_empty());
+    }
+
+    /// A figure eight passes its double point twice, and a line through
+    /// that point is crossed once per passage, at parameters half a turn
+    /// apart. The ring of controls is symmetric under a mirror that shifts
+    /// the parameter by half a turn and under a point reflection, so the
+    /// double point is the origin.
+    #[test]
+    fn a_line_through_a_figure_eight_s_double_point_is_crossed_twice() {
+        let ring = [
+            Point::new(2.0, 0.0, 0.0),
+            Point::new(1.0, 1.0, 0.0),
+            Point::new(-1.0, -1.0, 0.0),
+            Point::new(-2.0, 0.0, 0.0),
+            Point::new(-1.0, 1.0, 0.0),
+            Point::new(1.0, -1.0, 0.0),
+        ];
+        let a: Curve = ogeom_geom::BSplineCurve::periodic(&ring, 3, T)
+            .unwrap()
+            .into();
+        let b: Curve = LineCurve::segment(Point::new(0.0, 0.0, -1.0), Point::new(0.0, 0.0, 1.0), T)
+            .unwrap()
+            .into();
+        let found = intersect_curves(&a, &b, CurveCurveOptions::default(), T).unwrap();
+        assert_eq!(found.crossings.len(), 2, "{:?}", found.crossings);
+        let (lo, hi) = a.domain();
+        let apart = (found.crossings[0].on_a - found.crossings[1].on_a).abs();
+        assert!(
+            (apart - (hi - lo) / 2.0).abs() < 1e-6,
+            "half a turn apart: {apart}"
+        );
+        for hit in &found.crossings {
+            assert!(hit.point.distance(Point::ORIGIN) < 1e-9, "{:?}", hit.point);
+        }
     }
 
     #[test]

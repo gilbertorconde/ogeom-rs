@@ -102,6 +102,22 @@ an edge within its own reach plus the edge's radius. Two sources remain:
   carries its miss, as does a near-tangent crossing whose capped angle term
   stands at 1e-3 or more.
 
+**A drill lying in a face that runs into a round.** A drill whose lowest
+line lies in a plate's underside meets the round at each end of the plate
+within a few microns of tangency. Its section with the round is a figure
+eight crossing the round's tangent edge twice at the double point, or two
+loops crossing it a hundredth of a millimetre apart, which is one junction
+where the edge cannot be told from the drill between the crossings. Both
+close on the corpus drill along x with the drill's seam toward z. With its
+seam toward -y the marcher returns the section with one round as six open
+pieces whose fits miss by up to 9e-3, paving the round's edge at several
+places with honesties up to 2e-2, and the kept pieces do not close. The
+same placement moved by a few ulps leaves the drill less the part
+unclosed.
+The stress drills still refused: the other two on that part, two on the
+rounded box, two on the torus, one on the frustum and one on the shaved
+cube, each "the kept pieces did not close".
+
 **Facet walls drafted less than their chords sag.** A pad pushed down from
 the top of a slab converted face for facet, whose rounded corner's rows lean
 in by less than the corner's chords sag, fuses, cuts and is taken in common

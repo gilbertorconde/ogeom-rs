@@ -1788,3 +1788,88 @@ fn a_compound_of_disjoint_solids_cuts_as_one_tool() {
         volume(&model, &bored)
     );
 }
+
+/// A drill lying tangent to the underside of a thin plate, its lowest line
+/// running through the corner where a slot's straight wall meets the floor
+/// and its rounded end. The drill's circle on that wall touches the wall's
+/// corner at its own start, which the section crossing finds a hair short
+/// of a full turn: the arc from there up to the plate's top is read from
+/// the circle's start, not shrunk to the hair. Cut and common add up to the
+/// plate, and the common is the drill's segment below the plate's top along
+/// the plate, less what lies in the slot: half the segment across the
+/// straight walls and, past the corner, the segment under the rounded end,
+/// integrated here by the midpoint rule.
+#[test]
+fn a_drill_tangent_under_a_plate_through_a_slot_corner_cuts() {
+    let mut model = Model::new();
+    let m = &mut model;
+    let at = |x, y, z| Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap();
+    let (floor, top) = (76.2, 78.107_54);
+    let (length, slot_x, slot_width, slot_y) = (241.3, -136.042_4, 19.05, 210.972_400_167_151_8);
+    let end = slot_width / 2.0;
+    let plate = ogeom::algo::make_box(
+        m,
+        at(-length, 150.0, floor),
+        (length, 120.0, top - floor),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let straight = ogeom::algo::make_box(
+        m,
+        at(slot_x, 140.0, floor - 1.0),
+        (slot_width, slot_y - 140.0, 4.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let round = ogeom::algo::make_cylinder(m, at(slot_x + end, slot_y, floor - 1.0), end, 4.0, T)
+        .unwrap()
+        .shape;
+    let slot = ogeom::boolean::fuse(m, &straight, &round, T).unwrap().shape;
+    let part = ogeom::boolean::cut(m, &plate, &slot, T).unwrap().shape;
+
+    let (r, axis_y) = (23.616_669_978_788_245, 210.972_399_999_999_96);
+    let axis_z = floor + r;
+    let frame = Frame::new(
+        Point::new(-473.877_236_225_169_9, axis_y, axis_z),
+        Direction::X,
+        Direction::Z,
+        T,
+    )
+    .unwrap();
+    let drill = ogeom::algo::make_cylinder(m, frame, r, 586.769_672_450_339_8, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(m, &part, &drill, T).unwrap().shape;
+    let common = ogeom::boolean::common(m, &part, &drill, T).unwrap().shape;
+    for (name, shape) in [("cut", &cut), ("common", &common)] {
+        assert!(
+            ogeom::algo::check(m, shape, T).unwrap().is_valid(),
+            "{name}: check reports the result invalid"
+        );
+    }
+
+    // The drill's depth below the plate's top at `y`, and its segment.
+    let depth = |y: f64| (top - axis_z + (r * r - (y - axis_y).powi(2)).max(0.0).sqrt()).max(0.0);
+    let h = top - floor;
+    let segment = r * r * ((r - h) / r).acos() - (r - h) * (2.0 * r * h - h * h).sqrt();
+    let steps = 200_000;
+    let dy = end / f64::from(steps);
+    let under_round: f64 = (0..steps)
+        .map(|i| {
+            let s = (f64::from(i) + 0.5) * dy;
+            2.0 * (end * end - s * s).sqrt() * depth(slot_y + s) * dy
+        })
+        .sum();
+    let want = segment * length - segment / 2.0 * slot_width - under_round;
+    let (v_part, v_cut, v_common) = (volume(m, &part), volume(m, &cut), volume(m, &common));
+    assert!(
+        (v_cut + v_common - v_part).abs() <= 1e-6 * v_part,
+        "cut {v_cut} + common {v_common} against the part {v_part}"
+    );
+    assert!(
+        (v_common - want).abs() <= 1e-6 * want,
+        "common {v_common} against {want}"
+    );
+}

@@ -2,7 +2,8 @@
 //! drums, their trims stated two turns below their charts, and whose thin
 //! bores lie all but tangent inside the drill's wall. Each cut and common
 //! is valid, the two add up to the part, and the common matches the
-//! drill's share of the part's mesh as read.
+//! drill's share of the part's mesh as read. So does a drill lying in a
+//! thin plate's underside between the rounds at its ends.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -219,5 +220,77 @@ fn an_oblique_drill_through_the_slot_corners_cuts() {
         59.733_482_940_789_8,
         594.045_655_070_655_9,
         2e-5,
+    );
+}
+
+/// A drill along a thin plate, its lowest line lying in the plate's
+/// underside, which runs into a round at each end of the plate. Each round
+/// is tangent to the underside within a few microns of the drill, so the
+/// drill's section with it is a figure eight crossing the round's tangent
+/// edge twice at its double point, or two loops crossing that edge a
+/// hundredth of a millimetre apart where the edge cannot be told from the
+/// drill between them, which is one junction. Cut and common are valid, cut
+/// and common add up to the part and the drill less the part and the common
+/// add up to the drill. The common matches the drill's share of the part's
+/// mesh as read: at a tangency the mesh's chord moves that share by the
+/// root of the chord, so no extrapolation holds. Over chords from 2e-3 to
+/// 1.25e-4 and grids up to sixteen times finer it lands from 3e-5 below
+/// the common to 7e-5 above it, and 4e-5 above on the chord and grid used
+/// here.
+#[test]
+fn a_drill_lying_in_a_plate_s_underside_between_its_rounds_cuts() {
+    let mut import = ogeom::io::read_step(&corpus("nist_ctc_03_asme1_rc.stp"), T).unwrap();
+    let solid = import.solids[0].clone();
+    let model = import.document.model_mut();
+    let mesh =
+        ogeom::mesh::triangulate(model, &solid, Deflection::with_chord(FINE).unwrap(), T).unwrap();
+    let part = ogeom::heal::reanchor_periodic_rings(model, &solid, T)
+        .unwrap()
+        .0
+        .shape;
+    let whole = volume(model, &part);
+    let (radius, length) = (23.616_669_978_788_245, 586.769_672_450_339_8);
+    let start = Point::new(
+        -473.877_236_225_169_9,
+        210.972_399_999_999_96,
+        99.816_669_978_788_24,
+    );
+    let (x, z) = (Vector::new(0.0, 0.0, 1.0), Vector::new(1.0, 0.0, 0.0));
+    let frame = Frame::new(
+        start,
+        Direction::new(z, T).unwrap(),
+        Direction::new(x, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let drill = ogeom::algo::make_cylinder(model, frame, radius, length, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(model, &part, &drill, T).unwrap().shape;
+    let common = ogeom::boolean::common(model, &part, &drill, T)
+        .unwrap()
+        .shape;
+    let rest = ogeom::boolean::cut(model, &drill, &part, T).unwrap().shape;
+    for result in [&cut, &common, &rest] {
+        assert!(ogeom::algo::check(model, result, T).unwrap().is_valid());
+    }
+    let (a, b, c) = (
+        volume(model, &cut),
+        volume(model, &common),
+        volume(model, &rest),
+    );
+    assert!(
+        (a + b - whole).abs() < whole * 1e-6,
+        "{a} + {b} against {whole}"
+    );
+    let bore = core::f64::consts::PI * radius * radius * length;
+    assert!(
+        (c + b - bore).abs() < bore * 1e-6,
+        "{c} + {b} against the drill's {bore}"
+    );
+    let inside = mesh_inside_cylinder(&mesh, start, (x, z.cross(x), z), radius, (300, 1200));
+    assert!(
+        (b - inside).abs() < b * 5e-5,
+        "common {b} against {inside} measured on the mesh as read"
     );
 }

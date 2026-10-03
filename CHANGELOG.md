@@ -52,6 +52,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Drills lying in a face that runs into a round.** A closed section's
+  piece starting a hair short of its curve's seam was read back as one
+  vertex and its arc dropped ("wire 0 is open"); a line through a figure
+  eight's double point was crossed once instead of twice; and two
+  crossings of an edge that the other solid grazes between them, at most a
+  tenth of a millimetre apart, are one junction. Two NIST drills the stress
+  run refused now cut, cut and common adding up to the part within 1e-6.
+
 - **The sew joins edges by each end's own tolerances.** Two edges were
   taken for one when both their ends lay within the widest tolerance either
   edge held, so a vertex widened where a section was welded could join the
