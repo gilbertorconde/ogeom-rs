@@ -104,6 +104,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **G1 fillings no longer sag in the middle.** `make_filling_n` accepted
+  the first control net whose sides met the tolerance, and weighed bending
+  energy too lightly for the interior to follow anything but the boundary's
+  fitting error: a dome over four strips tangent to a sphere cratered to
+  7.98 where its crown stands near 10. The energy's weight now follows the
+  tolerance, and a net whose boundary residual outweighs the energy is
+  refined before it is accepted: the same dome crowns at 10.09.
+
 - **Offsetting fitted sheets works (#119).** Where refining a free-form
   offset cannot reach the approximation tolerance, `offset_sheet` and
   `make_thick_sheet` keep the closest fit if it lies within the face's own

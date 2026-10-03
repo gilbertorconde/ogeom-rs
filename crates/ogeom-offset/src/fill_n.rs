@@ -81,10 +81,12 @@ const OUTLINE_SAMPLES: usize = 64;
 const MARGIN: f64 = 0.05;
 /// The control counts across the larger extent, round by round.
 const NETS: [usize; 6] = [8, 12, 18, 27, 40, 60];
-/// The bending energy's weight against the conditions: small enough that
-/// the conditions win wherever they reach, leaving the energy to settle
-/// the controls they do not (the hole's interior, the margin round it).
-const SMOOTHING: f64 = 1e-12;
+/// The share of the tolerance the bending energy may cost the conditions;
+/// see [`smoothing_for`].
+const BUDGET: f64 = 0.1;
+/// The least weight of the bending energy: below it rounding rather than
+/// the energy would settle the controls the conditions leave free.
+const LEAST_SMOOTHING: f64 = 1e-12;
 /// The least cosine between a support's normal and the plane's normal:
 /// about 84 degrees.
 const MIN_LIFT: f64 = 0.1;
@@ -105,8 +107,10 @@ const PER_CURVE: usize = 32;
 /// cubic B-spline height patch over the plane the loop spans, fitted by least
 /// squares to the sides' positions, to the tangent planes of G1 and G2
 /// sides' supports and to the normal curvatures of G2 sides' supports, with
-/// a thin-plate bending energy settling the rest; the control net is
-/// refined until every side meets `tolerance` or the refinement runs out.
+/// a thin-plate bending energy settling the rest, weighted from
+/// `tolerance` so it costs the conditions a small share of it; the control
+/// net is refined until every side meets `tolerance` and the conditions'
+/// residual no longer outweighs the energy, or the refinement runs out.
 /// The face is trimmed by the given edges themselves where they are not
 /// placed and share vertex nodes end to end, each given a pcurve on the
 /// patch; any other side is stood in for by a new edge on its curve
@@ -224,7 +228,10 @@ pub fn make_filling_n(
         lengths.push(side_length(side, tol)?);
     }
 
+    let smoothing = smoothing_for(&sides, tolerance, size);
     let mut last_miss = String::new();
+    // The latest fit that met the tolerance.
+    let mut fallback = None;
     for base in NETS {
         #[expect(
             clippy::cast_possible_truncation,
@@ -258,7 +265,8 @@ pub fn make_filling_n(
                 weight: share.sqrt() / size,
             });
         }
-        let surface = fit_height(&frame, domain, controls, &conditions, SMOOTHING, tol)?;
+        let fit = fit_height(&frame, domain, controls, &conditions, smoothing, tol)?;
+        let surface = fit.surface;
 
         let mut reports = Vec::with_capacity(sides.len());
         for (side, pcurve) in sides.iter().zip(&traces) {
@@ -270,36 +278,40 @@ pub fn make_filling_n(
             constraint_gap = constraint_gap.max(surface.point_at(q.x, q.y, tol)?.distance(*p));
         }
 
-        match first_miss(&sides, &reports, constraint_gap, tolerance) {
-            Some(miss) => {
-                last_miss = format!("at {}x{} controls, {miss}", controls.0, controls.1);
-            }
-            None => {
-                let face = build(model, &mut sides, &order, &traces, &reports, surface, tol)?;
-                let mut history = History::new();
-                let mut reports = reports;
-                for (side, report) in sides.iter().zip(&mut reports) {
-                    history.generate(&side.given, face.clone());
-                    if !side.edge.is_same(&side.given) {
-                        history.generate(&side.given, side.edge.clone());
-                    }
-                    report.edge = side.edge.clone();
-                }
-                for constraint in constraints {
-                    history.generate(constraint, face.clone());
-                }
-                return Ok(Filled {
-                    built: Built::new(face, history),
-                    sides: reports,
-                    constraint_gap,
-                });
-            }
+        if let Some(miss) = first_miss(&sides, &reports, constraint_gap, tolerance) {
+            last_miss = format!("at {}x{} controls, {miss}", controls.0, controls.1);
+            continue;
+        }
+        fallback = Some((surface, reports, constraint_gap));
+        // A residual-led net is refined; see [`smoothing_for`].
+        if fit.residual <= smoothing {
+            break;
         }
     }
-    ogeom_bail!(
-        NotDone,
-        "the filling misses its tolerance of {tolerance} on the finest net: {last_miss}"
-    )
+    let Some((surface, reports, constraint_gap)) = fallback else {
+        ogeom_bail!(
+            NotDone,
+            "the filling misses its tolerance of {tolerance} on the finest net: {last_miss}"
+        )
+    };
+    let face = build(model, &mut sides, &order, &traces, &reports, surface, tol)?;
+    let mut history = History::new();
+    let mut reports = reports;
+    for (side, report) in sides.iter().zip(&mut reports) {
+        history.generate(&side.given, face.clone());
+        if !side.edge.is_same(&side.given) {
+            history.generate(&side.given, side.edge.clone());
+        }
+        report.edge = side.edge.clone();
+    }
+    for constraint in constraints {
+        history.generate(constraint, face.clone());
+    }
+    Ok(Filled {
+        built: Built::new(face, history),
+        sides: reports,
+        constraint_gap,
+    })
 }
 
 /// The surface a side's support lies on and the side's pcurve there.
@@ -943,6 +955,45 @@ fn solve3(rows: [[f64; 3]; 3], rhs: [f64; 3]) -> Option<[f64; 3]> {
         *slot = det(m) / d;
     }
     Some(out)
+}
+
+/// The bending energy's weight against the conditions.
+///
+/// The fit minimises `Q + λ·E`. `Q` sums the conditions' squared
+/// residuals, each free of units (a position over the patch size `size`, a
+/// slope as it is, a curvature times `size`) and weighted by its side's
+/// share of the boundary. `E` is the thin-plate energy, also free of units:
+/// about the square of the angle, in radians, the patch turns through.
+/// Scaling the whole problem changes neither, so `λ` means the same at any
+/// size and on any net; only the tolerance sets it.
+///
+/// For any surface `s` the net can carry, `Q(fit) + λ·E(fit) <= Q(s) +
+/// λ·E(s)`: the energy costs the conditions at most `λ·E(s)`. With `ε` the
+/// tolerance in the residuals' own units (the strictest of `tolerance /
+/// size` for positions, `tolerance` for G1 slopes and `tolerance · size`
+/// for G2 curvatures), `λ = (BUDGET·ε)²` holds that cost to a tenth of the
+/// tolerance, root mean square, per radian of turning, and gives the energy
+/// the largest weight the bound allows, so the energy rather than the
+/// conditions' approximation error settles every control the conditions
+/// reach only weakly.
+///
+/// The same bound says when a net is too coarse. Where the conditions'
+/// residual `Q` exceeds `λ`, the fit would bend the interior by up to a
+/// unit of energy to save that residual, so the hole's middle follows the
+/// boundary's approximation error (on a coarse net every control reaches
+/// the boundary, and the middle dips or bulges). Such a net is refined
+/// even when its sides meet the tolerance; where no net gets clear of it,
+/// the finest one that met the tolerance is taken.
+fn smoothing_for(sides: &[Side], tolerance: f64, size: f64) -> f64 {
+    let order = sides.iter().map(|s| s.order).max().unwrap_or(0);
+    let mut eps = tolerance / size;
+    if order >= 1 {
+        eps = eps.min(tolerance);
+    }
+    if order >= 2 {
+        eps = eps.min(tolerance * size);
+    }
+    (BUDGET * eps).powi(2).max(LEAST_SMOOTHING)
 }
 
 /// A side's length, by chords.

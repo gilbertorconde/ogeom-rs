@@ -312,20 +312,29 @@ fn strips_meeting_only_at_their_ends_chain_into_one_filling() {
     }
 }
 
-#[test]
-fn strips_tangent_to_a_dome_fill_tangent_to_each() {
+/// What a dome filling achieved: the height where it crosses the axis,
+/// the largest distance from the sphere over the hole, and the worst
+/// tangency and gap against the strips.
+struct Dome {
+    top: f64,
+    off_sphere: f64,
+    tangency: f64,
+    gap: f64,
+}
+
+/// A square on the sphere of radius `r` round the origin, filled at G1
+/// from four strips: four arcs of great circles, each in a plane through
+/// the origin leaning out by `lean`, each extruded along its plane's
+/// outward and downward normal. That normal is square to the sphere's
+/// radius all along the arc, so each strip is tangent to the sphere along
+/// its arc and the strips share the sphere's tangent plane at every
+/// corner: the spherical cap is the filling every condition agrees with.
+/// Separate prisms: neighbouring arcs end on vertices of their own.
+fn dome(r: f64, lean: f64, tolerance: f64) -> Dome {
     use ogeom::geom::{CircleCurve, Continuity};
     use ogeom::math::{Circle, Direction, Frame, Vector};
     use ogeom::offset::make_filling_n;
 
-    // A square on the sphere of radius 10 round the origin: four arcs of
-    // great circles, each in a plane through the origin leaning out by
-    // `lean`, each extruded along its plane's outward and downward normal.
-    // That normal is square to the sphere's radius all along the arc, so
-    // each strip is tangent to the sphere along its arc and the strips
-    // share the sphere's tangent plane at every corner. Separate prisms:
-    // neighbouring arcs end on vertices of their own.
-    let (r, lean) = (10.0f64, 0.3f64);
     let z0 = r / (2.0 * lean * lean + 1.0).sqrt();
     let corners = [(1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)]
         .map(|(sx, sy)| Point::new(sx * lean * z0, sy * lean * z0, z0));
@@ -349,15 +358,13 @@ fn strips_tangent_to_a_dome_fill_tangent_to_each() {
             out *= -1.0;
         }
         assert!(out.z < 0.0, "the strip runs out and down");
-        let (strip, side) = strip_side(&mut model, edge, out * 3.0, Continuity::G1);
+        let (strip, side) = strip_side(&mut model, edge, out * (0.3 * r), Continuity::G1);
         strips.push(strip);
         sides.push(side);
     }
-    let tolerance = 0.1f64.to_radians();
     let filled = make_filling_n(&mut model, &sides, &[], tolerance, T).unwrap();
     let face = filled.built.shape.clone();
 
-    // It crowns above the square, on the sphere.
     let surface_id = match model.node(&face).unwrap().data() {
         NodeData::Face(data) => data.surface,
         _ => panic!("a face"),
@@ -365,17 +372,23 @@ fn strips_tangent_to_a_dome_fill_tangent_to_each() {
     let surface = model.geometry().surface(surface_id).unwrap().clone();
     let top = ogeom::algo::project_on_surface(&surface, Point::new(0.0, 0.0, r), 32, T)
         .unwrap()
-        .point;
-    // The boundary's highest points are the arcs' middles.
-    let rim = r / lean.mul_add(lean, 1.0).sqrt();
-    assert!(
-        top.z > rim + 0.25,
-        "the filling crowns above its boundary: {top:?}"
-    );
-    assert!(
-        (top.z - r).abs() < 0.01,
-        "and stands near the sphere: {top:?}"
-    );
+        .point
+        .z;
+    // Points of the sphere over the square the corners span, which the
+    // hole covers, each projected onto the filling.
+    let mut off_sphere = 0.0f64;
+    let half = lean * z0;
+    for i in 0..=8 {
+        for j in 0..=8 {
+            let (x, y) = (
+                half * (f64::from(i) / 4.0 - 1.0),
+                half * (f64::from(j) / 4.0 - 1.0),
+            );
+            let p = Point::new(x, y, (r * r - x * x - y * y).sqrt());
+            let foot = ogeom::algo::project_on_surface(&surface, p, 32, T).unwrap();
+            off_sphere = off_sphere.max(foot.distance);
+        }
+    }
 
     let (shell, face) = sewn_with(&mut model, &strips, &face);
     let contacts = ogeom::fillet::analyse_blend(&model, &shell, &face, 41, T).unwrap();
@@ -384,12 +397,63 @@ fn strips_tangent_to_a_dome_fill_tangent_to_each() {
         4,
         "the filling shares an edge with each strip"
     );
+    let (mut tangency, mut gap) = (0.0f64, 0.0f64);
     for contact in &contacts {
+        tangency = tangency.max(contact.tangency_error);
+        gap = gap.max(contact.gap);
+    }
+    Dome {
+        top,
+        off_sphere,
+        tangency,
+        gap,
+    }
+}
+
+/// The crown of the thin-plate filling of a round hole on the sphere of
+/// radius `r`, the hole's rim a circle of radius `rho` round the axis, the
+/// filling taking the sphere's height and slope all round it.
+///
+/// The fill is the height field of least `∫∫ h_xx² + 2 h_xy² + h_yy²`
+/// with those values; with round data that is the paraboloid `a + b·ρ²`,
+/// the one regular radial biharmonic, whose slope `2·b·rho` is the
+/// sphere's `-rho / z` at the rim's height `z`. It crowns at
+/// `z + rho² / (2·z)`, above the sphere's `r`.
+fn paraboloid_crown(r: f64, rho: f64) -> f64 {
+    let z = r.mul_add(r, -rho * rho).sqrt();
+    z + rho * rho / (2.0 * z)
+}
+
+#[test]
+fn strips_tangent_to_a_dome_fill_tangent_to_each() {
+    // The square hole's crown lies between those of the round holes
+    // through its arcs' middles and through its corners; a crater, or a
+    // middle left to the fit's approximation error, falls outside by far
+    // more than `slack`.
+    let r = 10.0f64;
+    let tolerance = 0.1f64.to_radians();
+    let slack = 0.005 * r;
+    for lean in [0.2, 0.3, 0.5, 0.8] {
+        let d = dome(r, lean, tolerance);
+        let z0 = r / (2.0 * lean * lean + 1.0).sqrt();
+        let rim = r / lean.mul_add(lean, 1.0).sqrt();
+        let low = paraboloid_crown(r, lean * rim);
+        let high = paraboloid_crown(r, 2.0f64.sqrt() * lean * z0);
         assert!(
-            contact.tangency_error <= tolerance,
-            "{} degrees from tangent",
-            contact.tangency_error.to_degrees()
+            d.top > low - slack && d.top < high + slack,
+            "lean {lean}: the crown at {} against {low} to {high}",
+            d.top
         );
-        assert!(contact.gap <= tolerance, "{contact:?}");
+        assert!(
+            d.off_sphere < high - r + slack,
+            "lean {lean}: {} off the sphere",
+            d.off_sphere
+        );
+        assert!(
+            d.tangency <= tolerance,
+            "lean {lean}: {} degrees from tangent",
+            d.tangency.to_degrees()
+        );
+        assert!(d.gap <= tolerance, "lean {lean}: a gap of {}", d.gap);
     }
 }

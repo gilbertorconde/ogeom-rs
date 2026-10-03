@@ -7,7 +7,7 @@
 //! passes through fixes `h`, a tangent plane fixes `h_u` and `h_v`, and a
 //! second fundamental form (once the tangent plane is fixed) fixes the
 //! three second derivatives. The heights minimise the conditions' squared
-//! residuals plus a small thin-plate bending energy over the whole
+//! residuals plus a weighted thin-plate bending energy over the whole
 //! rectangle, which settles every control the conditions leave free.
 //!
 //! The surface itself is an ordinary B-spline patch: the plane part is
@@ -178,6 +178,13 @@ fn gram(knots: &KnotVector, count: usize) -> [Vec<Vec<f64>>; 3] {
     out
 }
 
+/// A fitted height patch and how far it misses its conditions.
+pub(crate) struct HeightFit {
+    pub surface: BSplineSurface,
+    /// The conditions' weighted squared residuals, summed.
+    pub residual: f64,
+}
+
 /// Fit the height over `domain` with `controls` control heights per
 /// direction to `conditions`, with the thin-plate energy at `smoothing`.
 ///
@@ -194,7 +201,7 @@ pub(crate) fn fit_height(
     conditions: &[Condition],
     smoothing: f64,
     tol: Tolerances,
-) -> OgeomResult<BSplineSurface> {
+) -> OgeomResult<HeightFit> {
     let (nu, nv) = controls;
     let ((ua, ub), (va, vb)) = domain;
     let u_knots = KnotVector::clamped_uniform(DEGREE, nu)?.reparameterized(ua, ub)?;
@@ -225,6 +232,7 @@ pub(crate) fn fit_height(
     }
 
     // The conditions, as least-squares rows.
+    let mut rows = Vec::with_capacity(conditions.len());
     for c in conditions {
         let (fu, bu) = basis_of(&u_knots, c.at.x.clamp(ua, ub), c.order.0);
         let (fv, bv) = basis_of(&v_knots, c.at.y.clamp(va, vb), c.order.1);
@@ -243,6 +251,7 @@ pub(crate) fn fit_height(
                 }
             }
         }
+        rows.push((row, target));
     }
 
     let Some(heights) = matrix.solve(&rhs) else {
@@ -251,6 +260,11 @@ pub(crate) fn fit_height(
             "the filling's system is singular at {nu}x{nv} controls"
         );
     };
+    let mut residual = 0.0f64;
+    for (row, target) in &rows {
+        let value: f64 = row.iter().map(|&(k, a)| a * heights[k]).sum();
+        residual += (value - target).powi(2);
+    }
 
     // Greville abscissae carry the plane part exactly.
     let greville = |knots: &KnotVector, i: usize| -> f64 {
@@ -270,7 +284,10 @@ pub(crate) fn fit_height(
         }
     }
     let grid = ControlGrid::new(control, nu, nv)?;
-    BSplineSurface::new(u_knots, v_knots, &grid, tol)
+    Ok(HeightFit {
+        surface: BSplineSurface::new(u_knots, v_knots, &grid, tol)?,
+        residual,
+    })
 }
 
 #[cfg(test)]
@@ -315,7 +332,8 @@ mod tests {
             1e-12,
             T,
         )
-        .unwrap();
+        .unwrap()
+        .surface;
         for (x, y) in [(0.13, -0.71), (-0.9, 0.4), (0.55, 0.55)] {
             let p = patch.point_at(x, y, T).unwrap();
             assert!((p.x - x).abs() < 1e-12 && (p.y - y).abs() < 1e-12, "{p:?}");
@@ -353,7 +371,8 @@ mod tests {
             1e-9,
             T,
         )
-        .unwrap();
+        .unwrap()
+        .surface;
         let (du, dv) = patch.d1_at(0.0, 0.3, T).unwrap();
         assert!((du.z - 0.5).abs() < 1e-6, "{du:?}");
         assert!((dv.z + 0.25).abs() < 1e-6, "{dv:?}");
