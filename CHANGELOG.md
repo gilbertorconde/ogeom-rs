@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A converted plane face's pcurves stay on their edges.** An arc fitted on
+  a neighbouring face that only crosses the plane along a few millimetres
+  was imaged on the plane as a full-radius circle thousands of millimetres
+  off its edge, which `check` did not compare. A plane keeps the closed-form
+  image only where it lands within the edge's tolerance and otherwise
+  projects the curve; every converted edge's tolerance covers how far its
+  pcurves stand off its curve, measured at 256 points.
+
 ## [0.9.0] - 2026-10-03
 
 A minor release, since the API changes: `MeshSolidReport` gains

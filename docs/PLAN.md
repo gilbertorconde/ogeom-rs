@@ -149,15 +149,21 @@ every edge (the lifted pcurve against the nearest point of the curve's
 stretch, 33 samples) flags, besides the boolean's case: a line of
 `nist_ctc_03` lying 4.6e-6 off its plane at a tolerance of 1e-7 (the STEP
 reader's exact pcurve does not measure the curve's distance from the
-surface), so every stress drill through it; mesh conversion of five corpus
-parts (plane pcurves of large arcs off by thousands, a translated chart
-image) and three heavy converter tests; IGES and STEP round trips;
+surface), so every stress drill through it; IGES and STEP round trips
+(among them converted solids read back, whose fitted pcurves stand 3e-6
+off at the reader's 1e-7);
 fuzzy booleans along faceted rounds and slivers (1e-6 to 4e-6 at 1e-7);
 a drill lying in a plate's underside between its rounds; offset faces
 converted to NURBS (1.2e-3 at 1e-5); a divide on an offset spline
-(1.18e-7 at 1e-7); and `fix_shape`'s output. Eleven default-tier tests
-and six heavy ones fail. Each producer that knows its deviation should
-raise its edges' tolerance first; the check follows them.
+(1.18e-7 at 1e-7); and `fix_shape`'s output. Each producer that knows
+its deviation should raise its edges' tolerance first; the check follows
+them. Mesh conversion passes it: a plane face keeps a curve's closed-form
+image only where it lands within the edge's tolerance (an arc fitted on a
+neighbouring face may cross the plane, and its closed-form image is then a
+circle of its radius, thousands off), and otherwise takes the curve's
+projection; a last
+pass raises each edge's tolerance to where its pcurves stand, sampled
+denser than the check.
 
 Left: the rest of those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
 standing off their edges within the 1e-5 taken as along, which every exact
