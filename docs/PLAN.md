@@ -22,8 +22,12 @@ here.
 is classified off the contact. A piece that still reads on the other solid's
 boundary at every point it is asked at, with no coincident partner face, is
 refused: that is a contact over a region of faces the boolean did not pair as
-coincident. A slab drafted 0.0007 under a pad (below) reaches it; it wants
-the facet and the wall paired as same-domain.
+coincident. A facet leaning off a pad's wall by a ten-thousandth of a radian
+or more, the two sharing an edge to their points' rounding, crosses the wall
+on that edge rather than on the solved line a sliver off it. Leaning less,
+the band where the two stand within the weld distance of each other is over
+a tenth of the facet, and a slab drafted 0.00005 under a pad (below) still
+reaches the refusal: the facet and the wall want pairing as same-domain.
 
 **Blends between curved faces that share no edge.** `blend_faces` blends
 curved faces that meet along edges of the solid through the edge blend (exact
@@ -81,12 +85,26 @@ also at the converter's own coplanar distance: the scatter estimate
 compares each nearly flat edge's turn with the edges beside it and
 continuing it, and a steady turn row after row is read as a curve drawn
 finely, not scatter (84 of 84 row-count sets measured at draft 0.001,
-against 15 before). One case still refuses:
+against 15 before). Drafted 0.0001 to 0.0007 the top band leans off the
+pad's walls by under a thousandth of a radian and crosses them on the top
+edge both faces hold: of 17 row-count sets at those 4 drafts and 2 depths,
+133 of 136 pass with each row a face of its own and 115 of 136 at the
+converter's own distance (79 and 67 before). What remains:
 
-- Drafted 0.0007 or less, the top band leans off the pad's walls by under a
-  thousandth of a radian. Where every row holds the same count, each top
-  facet stands parallel to its wall in plan: eight a row is refused as an
-  unpaired coincidence, six or four a row leave the kept pieces open.
+- Drafted 0.00005 or less the band where a top facet stands within the
+  weld distance of its wall is over a tenth of the facet, and the facet's
+  edge is not taken for the crossing: the kept pieces are left open, or a
+  piece is refused as an unpaired coincidence. The pair wants same-domain
+  pairing.
+- At the converter's own distance, rows that lean alike merge into one
+  face, and a pad whose floor crosses the slab below the top band, mostly
+  where the rows either side differ in count, fuses or cuts valid and
+  closed but off the mesh's volume by 2e-5 to 5e-4 (8 of 136: 5 gave the
+  same volume before, 3 were refused at the top band), or leaves the kept
+  pieces open (mostly at a depth of 10).
+- Each row a face of its own, three sets at a depth of 10 leave the kept
+  pieces open or the fuse's tessellation open (eight to five or three to
+  nine a row, drafted 0.0003 to 0.0005).
 
 **Mesh conversion.** `solid_from_mesh` rebuilds planes, the four canonical
 surfaces, extrusions, surfaces of revolution and fitted B-spline patches,

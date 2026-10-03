@@ -1182,6 +1182,39 @@ struct TangentRec {
     face_b: usize,
 }
 
+/// Whether a line edge of one face, its ends at `ends`, runs along a line
+/// edge of `target` end to end, each end within `weld` of that edge.
+fn shared_line(ends: &[Point], target: &GFace, weld: f64, tol: Tolerances) -> OgeomResult<bool> {
+    for t in &target.edges {
+        if !matches!(&*t.curve, Curve::Line(_)) {
+            continue;
+        }
+        let (a, b) = (
+            t.curve.point_at(t.crange.0, tol)?,
+            t.curve.point_at(t.crange.1, tol)?,
+        );
+        let along = (b.x - a.x, b.y - a.y, b.z - a.z);
+        let length2 = along.0 * along.0 + along.1 * along.1 + along.2 * along.2;
+        if length2 <= 0.0 {
+            continue;
+        }
+        let beside = |p: &Point| {
+            let s =
+                ((p.x - a.x) * along.0 + (p.y - a.y) * along.1 + (p.z - a.z) * along.2) / length2;
+            let s = s.clamp(0.0, 1.0);
+            p.distance(Point::new(
+                a.x + s * along.0,
+                a.y + s * along.1,
+                a.z + s * along.2,
+            ))
+        };
+        if ends.iter().all(|p| beside(p) <= weld) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// A strand's tolerance as a junction may trust it: a fitted section whose
 /// trace failed reports a budget of metres, and a weld that believed it
 /// would join every vertex of the model. Nothing this pipeline fits is
@@ -2203,7 +2236,14 @@ fn fill(
                     // the confusion distance yet no more than that slop
                     // allows, is where they cross: it splits the other face
                     // as a contact, and the solved line, a sliver away from
-                    // it, splits nothing.
+                    // it, splits nothing. The angle may be well under a
+                    // thousandth of a radian (a facet leaning off a wall by
+                    // less than its chord sags) where the edge is one both
+                    // faces hold and the band where the planes stand within
+                    // the weld distance of each other is under a tenth of
+                    // either face: wider, the faces are one surface over
+                    // much of their overlap to within the weld, and a
+                    // contact along one edge does not settle them.
                     let mut replaced = false;
                     if let (SurfaceGeometry::Plane(pa), SurfaceGeometry::Plane(pb)) =
                         (&fa.surface, &fb.surface)
@@ -2219,11 +2259,13 @@ fn fill(
                             .filter(|c| !c.tangential)
                             .map(|c| &c.curve)
                             .collect();
-                        if sine > 1e-3
+                        let weld = tol.confusion() * 1e2;
+                        let narrow =
+                            sine * fa.bound.diagonal().min(fb.bound.diagonal()) > weld * 10.0;
+                        if (sine > 1e-3 || narrow)
                             && let [solved] = lines.as_slice()
                             && matches!(solved, Curve::Line(_))
                         {
-                            let weld = tol.confusion() * 1e2;
                             for (owner, target, target_from_a, target_face) in
                                 [(fb, fa, true, ia), (fa, fb, false, ib)]
                             {
@@ -2268,6 +2310,24 @@ fn fill(
                                     ) else {
                                         continue;
                                     };
+                                    // Under a thousandth of a radian the
+                                    // edge must be one the two faces share:
+                                    // an edge of the other face beside it
+                                    // end to end, to the weld distance. A
+                                    // face whose edge only lies on the
+                                    // other's plane there (a block stacked
+                                    // on another tilted a hair) truly
+                                    // crosses it on the solved line.
+                                    if sine <= 1e-3 && !shared_line(&ends, target, weld, tol)? {
+                                        continue;
+                                    }
+                                    replaced = true;
+                                    // All but parallel, an edge on the
+                                    // other's plane to the confusion
+                                    // distance is a contact already.
+                                    if sine <= 1e-3 && stray <= tol.confusion() {
+                                        continue;
+                                    }
                                     out.contacts.push(ContactRec {
                                         curve: (*e.curve).clone(),
                                         crange: e.crange,
@@ -2281,7 +2341,6 @@ fn fill(
                                         target_face,
                                         bound: e.bound,
                                     });
-                                    replaced = true;
                                 }
                             }
                         }

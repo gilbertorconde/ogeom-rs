@@ -3130,6 +3130,30 @@ fn pads_into_slabs_drafted_less_than_their_chords_sag_at_the_default_distance() 
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
+/// The slab drafted 0.0001 to 0.0007, every row holding the same count, at
+/// both coplanar distances: each top facet stands parallel to its wall in
+/// plan, leaning off it by under a thousandth of a radian, down to about a
+/// ten-thousandth, and their planes' solve crosses microns to tens of
+/// microns off the top edge they share to their points' rounding. The edge
+/// is where they cross; the band where the two stand within the weld
+/// distance of each other is under a tenth of the facet.
+#[test]
+fn pads_into_slabs_drafted_under_a_thousandth_with_uniform_rows_cut_and_fuse() {
+    let mut failed = Vec::new();
+    for draft in [0.0007, 0.0005, 0.0003, 0.0001] {
+        for counts in [[8; 7], [6; 7], [4; 7]] {
+            for rows_kept in [true, false] {
+                for depth in [3.0, 10.0] {
+                    if let Err(e) = pad_on_a_drafted_slab(depth, draft, counts, rows_kept) {
+                        failed.push(format!("{draft} {counts:?} {rows_kept}: {e}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
 /// Pads from the large top faces of the part `OGEOM_TEST_77777` names,
 /// converted face for facet in single precision, fused back into it. Where
 /// a pad's wall crosses a facet row's edge that runs all but in the wall's
