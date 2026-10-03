@@ -66,6 +66,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Drills whose wall grazes an edge of the part.** A section touching an
+  edge very flatly (a drill lying on a frustum's base through its rim, or
+  along a round's tangent line) stopped short of the touch point and the
+  drill was never split there; the stretch of edge within a micron of the
+  drill is carried onto it as a contact. A section ending at a junction on
+  the drill's seam goes to the copy of the junction it arrives at, not
+  always the far one, and a touching section's junction is held to a
+  hundredth of a millimetre instead of swallowing the edge. Eight stress
+  drills over three seeds that were refused now cut, each checked against
+  an independent integral within 1e-6.
+
 - **Drills lying in a face that runs into a round.** A closed section's
   piece starting a hair short of its curve's seam was read back as one
   vertex and its arc dropped ("wire 0 is open"); a line through a figure

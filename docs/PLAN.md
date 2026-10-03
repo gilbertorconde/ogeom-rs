@@ -114,9 +114,37 @@ pieces whose fits miss by up to 9e-3, paving the round's edge at several
 places with honesties up to 2e-2, and the kept pieces do not close. The
 same placement moved by a few ulps leaves the drill less the part
 unclosed.
-The stress drills still refused: the other two on that part, two on the
-rounded box, two on the torus, one on the frustum and one on the shaved
-cube, each "the kept pieces did not close".
+The stress drills still refused at seed 1, each "the kept pieces did not
+close": the other two on that part (not yet diagnosed, many faces at once),
+two on the torus and one on the rounded box. Seeds 2 and 3 refuse nine and
+six drills, of these kinds and some not yet diagnosed.
+
+- **A figure eight at a seam corner.** A drill tangent inside the torus's
+  outer equator, or lying along it, touches the torus where its two seams
+  cross, and the section is a figure eight with its double point on that
+  vertex (a drill touching a ball at its pole the same). Moved a micron off
+  the vertex it closes. With the drill's own seam on the touching line the
+  cut comes back valid and wrong: the torus whole, nothing taken out.
+- **A drill's seam along the other part's edge.** A drill whose wall runs
+  along a round's tangent line with its own seam on that line: the section
+  there hugs an edge on both sides and lays no split. Its seam turned away
+  it closes. A drill tangent to a plane along a face's edge with its seam
+  there is the same; carrying the seam onto that face as a contact closes
+  it, but the same contact breaks a drill whose seam crosses a face's
+  interior lying in its plane, so it is not carried.
+- **A section tangent to an edge at its end.** A drill whose circle on a
+  rounded box's base touches the round's tangent line at the corner vertex,
+  where the corner ball touches the base.
+
+The sections grazing an edge to the fourth order now close (a drill lying on
+a frustum's base through its rim, or along a round's tangent line into the
+corners), but the exact chart integrator measures some of the results short.
+A frustum of radii 6 and 3 drilled at radius 0.4 along its base: the cut's
+wall face comes out 5.6e-4 mm^2 under what its mesh and the faces beside it
+say, and cut and common miss the part by 8.4e-7 relative. At radius 0.3 and
+0.5 the same, and at 0.3 and 0.35 the drill less the part and the common
+miss the drill by 1.6e-6. From 0.38 to 0.45 but for 0.4, and from 0.6 to 2,
+every sum holds to 4e-8.
 
 **Facet walls drafted less than their chords sag.** A pad pushed down from
 the top of a slab converted face for facet, whose rounded corner's rows lean

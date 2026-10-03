@@ -1260,6 +1260,188 @@ fn honest(tolerance: f64, tol: Tolerances) -> f64 {
     tolerance.min(tol.confusion() * 1e4)
 }
 
+/// How far off the other surface a boundary edge may lie and still be
+/// where a grazing section runs: ten confusions, fixed.
+const GRAZE_REACH: f64 = 10.0;
+
+/// The stretches of boundary edge a grazing section runs along, carried
+/// onto the other face as contacts.
+///
+/// Where a face's boundary edge lies in the other surface's tangent plane
+/// and touches it at one point (a drill whose wall runs along a plane
+/// through a rim the rim's circle touches, or along a round's tangent line
+/// into the corner where the round's end arc touches it), their section
+/// meets the edge there to the fourth order, and stays within the
+/// confusion distance of the edge for a stretch round it. The marcher stops
+/// on the stretch, and the section ends on the edge short of where it
+/// meets it: both ends on one edge, the loop handed back open, or one end
+/// on an edge short of the edge's vertex where the section truly ends. The
+/// face holding the edge is split there by its own boundary, but the other
+/// face is not split along the stretch, and its piece the section bounds
+/// never closes. The edge's stretch from the end to the other end or to
+/// the vertex, where it lies on the other surface to within
+/// [`GRAZE_REACH`] confusions, is the rest of the section: carried as a
+/// contact it splits the other face as the section would, and both sides
+/// share it as the edge it is.
+fn graze_contacts(
+    ga: &GSolid,
+    gb: &GSolid,
+    sections: &[SectionRec],
+    contacts: &[ContactRec],
+    tol: Tolerances,
+) -> OgeomResult<Vec<ContactRec>> {
+    let reach = tol.confusion() * GRAZE_REACH;
+    // A stretch shorter than the weld is the junction itself, which the
+    // crossing at the edge's end already snaps onto the vertex.
+    let weld = tol.confusion() * 1e2;
+    let mut out: Vec<ContactRec> = Vec::new();
+    for section in sections.iter().filter(|s| !s.closed) {
+        let (lo, hi) = section.curve.domain();
+        let ends = [
+            section.curve.point_at(lo, tol)?,
+            section.curve.point_at(hi, tol)?,
+        ];
+        let middle = section.curve.point_at(f64::midpoint(lo, hi), tol)?;
+        let near = tol.confusion().max(honest(section.tolerance, tol));
+        for (owner, target, target_from_a, target_face) in [
+            (
+                &ga.faces[section.face_a],
+                &gb.faces[section.face_b],
+                false,
+                section.face_b,
+            ),
+            (
+                &gb.faces[section.face_b],
+                &ga.faces[section.face_a],
+                true,
+                section.face_a,
+            ),
+        ] {
+            for e in &owner.edges {
+                let held = |c: &ContactRec| {
+                    c.node == e.node
+                        && c.target_from_a == target_from_a
+                        && c.target_face == target_face
+                };
+                let reached = near.max(e.tolerance);
+                if ends.iter().all(|p| e.bound.distance_to(*p) > reached)
+                    || contacts.iter().chain(&out).any(held)
+                {
+                    continue;
+                }
+                let mut feet: [Option<f64>; 2] = [None, None];
+                for (k, end) in ends.iter().enumerate() {
+                    if e.bound.distance_to(*end) > reached {
+                        continue;
+                    }
+                    let foot = ogeom_algo::project_on_curve(&e.curve, *end, 64, tol)?;
+                    if foot.distance <= reached
+                        && foot.parameter >= e.crange.0 - tol.parametric()
+                        && foot.parameter <= e.crange.1 + tol.parametric()
+                    {
+                        feet[k] = Some(foot.parameter.clamp(e.crange.0, e.crange.1));
+                    }
+                }
+                // A section running along the edge (a wall's seam lying in
+                // a plane it is tangent to) is that edge, not one that
+                // leaves it.
+                if feet.iter().all(Option::is_none)
+                    || ogeom_algo::project_on_curve(&e.curve, middle, 64, tol)?.distance <= near
+                {
+                    continue;
+                }
+                let closed = e
+                    .curve
+                    .point_at(e.crange.0, tol)?
+                    .distance(e.curve.point_at(e.crange.1, tol)?)
+                    <= tol.confusion();
+                // The ways the stretch may run, each a list of ranges on the
+                // edge: between two ends (on a closed edge either way round
+                // it, across its vertex), or from one end to a vertex.
+                let mut ways: Vec<Vec<(f64, f64)>> = Vec::new();
+                if let [Some(f0), Some(f1)] = feet {
+                    let (t0, t1) = (f0.min(f1), f0.max(f1));
+                    if t1 - t0 > tol.parametric() {
+                        ways.push(vec![(t0, t1)]);
+                        if closed {
+                            ways.push(
+                                [(t1, e.crange.1), (e.crange.0, t0)]
+                                    .into_iter()
+                                    .filter(|(a, b)| b - a > tol.parametric())
+                                    .collect(),
+                            );
+                        }
+                    }
+                } else if !closed {
+                    for t in feet.into_iter().flatten() {
+                        ways.push(vec![(e.crange.0, t)]);
+                        ways.push(vec![(t, e.crange.1)]);
+                    }
+                }
+                let mut stretches = None;
+                for way in ways {
+                    let mut lies = !way.is_empty();
+                    'way: for &(a, b) in &way {
+                        let span = e
+                            .curve
+                            .point_at(a, tol)?
+                            .distance(e.curve.point_at(b, tol)?);
+                        if b - a <= tol.parametric() || span <= weld {
+                            lies = false;
+                            break;
+                        }
+                        for i in 0..=16 {
+                            let t = a + (b - a) * f64::from(i) / 16.0;
+                            let p = e.curve.point_at(t, tol)?;
+                            if ogeom_algo::project_on_surface(&target.surface, p, 16, tol)?.distance
+                                > reach
+                            {
+                                lies = false;
+                                break 'way;
+                            }
+                        }
+                    }
+                    if lies {
+                        stretches = Some(way);
+                        break;
+                    }
+                }
+                let Some(stretches) = stretches else {
+                    continue;
+                };
+                for crange in stretches {
+                    let Ok((pcurve, _, true, ..)) = ogeom_algo::pcurve_fit::fit_projected_pcurve(
+                        &e.curve,
+                        crange,
+                        &target.surface,
+                        tol,
+                    ) else {
+                        continue;
+                    };
+                    if *DEBUG_WIRE {
+                        eprintln!(
+                            "GRAZE edge {} over {crange:?} onto face {target_face} (from_a {target_from_a})",
+                            e.node.index()
+                        );
+                    }
+                    out.push(ContactRec {
+                        curve: (*e.curve).clone(),
+                        crange,
+                        pcurve,
+                        prange: crange,
+                        node: e.node,
+                        tolerance: e.tolerance.max(owner.tolerance + target.tolerance),
+                        target_from_a,
+                        target_face,
+                        bound: e.bound,
+                    });
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// One split an edge is asked for, with how honestly it can be placed.
 #[derive(Debug, Clone, Copy)]
 struct Pave {
@@ -2689,6 +2871,8 @@ fn fill(
         tangents.extend(pair.tangents);
         same_pairs.extend(pair.same_pairs);
     }
+    let grazed = graze_contacts(ga, gb, &sections, &contacts, tol)?;
+    contacts.extend(grazed);
 
     // Boundary polylines per face, for the trim tests.
     let outline = |face: &GFace| -> OgeomResult<Vec<Vec<Point2>>> {
@@ -2981,8 +3165,15 @@ fn fill(
                                     // a rail grazing a bore is met there by
                                     // the sections on the faces either side
                                     // of it a hundredth of a millimetre
-                                    // apart, and those are one junction.
-                                    honesty = honesty.max(foot.distance).max(crossing.reach);
+                                    // apart, and those are one junction. No
+                                    // further: a section touching an edge to
+                                    // the fourth order stays beside it for
+                                    // tenths of a millimetre, and a junction
+                                    // that wide swallows the edge's vertex
+                                    // and the section's other end with it.
+                                    honesty = honesty
+                                        .max(foot.distance)
+                                        .max(crossing.reach.min(tol.confusion() * 1e5));
                                 }
                                 break;
                             }
@@ -6547,7 +6738,15 @@ fn general_fuse_as(
                     .filter(|(junction, _, reach)| junction.distance(q) <= *reach)
                     .min_by(|x, y| x.0.distance(q).total_cmp(&y.0.distance(q)));
                 match landed {
-                    Some(&(_, chart, _)) if exact => strand.polyline[end] = chart,
+                    // A junction on a seam stands on both sides of it, and
+                    // the strand is carried to the side it arrives from.
+                    Some(&(_, chart, _)) if exact => {
+                        strand.polyline[end] = period_shifts(&face.surface)
+                            .into_iter()
+                            .map(|(du, dv)| Point2::new(chart.x + du, chart.y + dv))
+                            .min_by(|p, r| p.distance(at).total_cmp(&r.distance(at)))
+                            .unwrap_or(chart);
+                    }
                     Some(&(_, _, reach)) => spread = spread.max(reach),
                     None => {}
                 }
