@@ -31,7 +31,9 @@ use std::fmt::Write as _;
 /// `SHELL_BASED_SURFACE_MODEL`s in a `MANIFOLD_SURFACE_SHAPE_REPRESENTATION`;
 /// a part holding both carries both representations, related to each other.
 /// Assemblies become usage occurrences with their placements; colours
-/// become styled items over the written solids, sheets and faces.
+/// become styled items over the written solids, sheets and faces (a fill
+/// style) and edges (a curve style). PMI anchors to the written faces and
+/// edges through shape aspects.
 ///
 /// # Errors
 ///
@@ -49,6 +51,8 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         vertices: HashMap::new(),
         edges: HashMap::new(),
         written_nodes: Vec::new(),
+        written_edges: Vec::new(),
+        curve_font: None,
         tol,
     };
 
@@ -180,7 +184,8 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     }
 
     // Colours: a styled item over every written entity whose node the
-    // document colours, plus product colours carried by their solids.
+    // document colours, plus product colours carried by their solids. An
+    // edge's colour is a curve style on each of its EDGE_CURVEs.
     let mut styled = Vec::new();
     let node_colours: HashMap<_, _> = document.colours().collect();
     // The written entities by node, each list in the order they were
@@ -210,6 +215,13 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         }
     }
     writer.written_nodes = written;
+    let edges = std::mem::take(&mut writer.written_edges);
+    for &(node, step_id) in &edges {
+        if let Some(colour) = node_colours.get(&node) {
+            styled.push(writer.curve_styled_item(step_id, *colour));
+        }
+    }
+    writer.written_edges = edges;
     if !styled.is_empty() {
         let list = styled
             .iter()
@@ -271,6 +283,11 @@ struct Writer<'a> {
     /// Every solid and face written, with its entity id: the hooks colours
     /// attach to.
     written_nodes: Vec<(ogeom_topo::TShapeId, u64)>,
+    /// Every `EDGE_CURVE` written, with its edge node: one per placement
+    /// of the edge.
+    written_edges: Vec<(ogeom_topo::TShapeId, u64)>,
+    /// The one curve font every edge style shares, once written.
+    curve_font: Option<u64>,
     tol: Tolerances,
 }
 
@@ -532,6 +549,7 @@ impl Writer<'_> {
             "EDGE_CURVE('',#{from_id},#{to_id},#{curve_id},.T.)"
         ));
         self.edges.insert(key, id);
+        self.written_edges.push((edge.node(), id));
         Ok(id)
     }
 
@@ -792,8 +810,12 @@ impl Writer<'_> {
         au: u64,
         gctx: u64,
     ) -> OgeomResult<()> {
-        let by_node: HashMap<ogeom_topo::TShapeId, u64> =
-            self.written_nodes.iter().copied().collect();
+        let by_node: HashMap<ogeom_topo::TShapeId, u64> = self
+            .written_nodes
+            .iter()
+            .chain(&self.written_edges)
+            .copied()
+            .collect();
         let aspect_for = |w: &mut Self, items: &[ogeom_topo::TShapeId]| -> u64 {
             let aspect = w.entity(format!("SHAPE_ASPECT('','',#{pds},.T.)"));
             for item in items {
@@ -1102,6 +1124,30 @@ impl Writer<'_> {
         let sss = self.entity(format!("SURFACE_SIDE_STYLE('',(#{ssfa}))"));
         let ssu = self.entity(format!("SURFACE_STYLE_USAGE(.BOTH.,#{sss})"));
         let psa = self.entity(format!("PRESENTATION_STYLE_ASSIGNMENT((#{ssu}))"));
+        self.entity(format!("STYLED_ITEM('',(#{psa}),#{item})"))
+    }
+
+    /// A styled item colouring one written edge: a continuous curve style
+    /// of the conventional display width.
+    fn curve_styled_item(&mut self, item: u64, colour: ogeom_doc::Colour) -> u64 {
+        let font = match self.curve_font {
+            Some(font) => font,
+            None => {
+                let font = self.entity("DRAUGHTING_PRE_DEFINED_CURVE_FONT('continuous')".into());
+                self.curve_font = Some(font);
+                font
+            }
+        };
+        let rgb = self.entity(format!(
+            "COLOUR_RGB('',{},{},{})",
+            real(colour.r),
+            real(colour.g),
+            real(colour.b)
+        ));
+        let style = self.entity(format!(
+            "CURVE_STYLE('',#{font},POSITIVE_LENGTH_MEASURE(0.1),#{rgb})"
+        ));
+        let psa = self.entity(format!("PRESENTATION_STYLE_ASSIGNMENT((#{style}))"));
         self.entity(format!("STYLED_ITEM('',(#{psa}),#{item})"))
     }
 }

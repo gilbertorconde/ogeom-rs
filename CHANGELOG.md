@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **STEP export writes edge colours and edge PMI.** A coloured edge's
+  `EDGE_CURVE` gets a curve style, and dimensions, tolerances, datums and
+  datum targets whose features are edges are written as shape aspects
+  naming the written `EDGE_CURVE`s, so both survive a write and read round
+  trip; edge features were dropped before.
+
 ### Fixed
 
 - **Edge attributes follow an edge cut at a pole.** On STEP import, a style

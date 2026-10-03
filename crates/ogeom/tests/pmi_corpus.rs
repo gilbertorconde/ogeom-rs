@@ -374,3 +374,88 @@ fn presentation_and_datum_targets_round_trip() {
     assert_eq!(drawn(before), drawn(after));
     assert_eq!(after.callouts.len(), 23);
 }
+
+/// The midpoint of a straight edge's two vertices, in world coordinates:
+/// enough to tell a block's twelve edges apart across a round trip.
+fn edge_midpoint(model: &ogeom::topo::Model, edge: &ogeom::topo::Shape) -> ogeom::math::Point {
+    let ends: Vec<ogeom::math::Point> = model
+        .children_of(edge)
+        .unwrap()
+        .iter()
+        .map(|v| {
+            let point = model.node(v).unwrap().data().as_vertex().unwrap().point;
+            v.transform(model.datums()).unwrap().apply(point)
+        })
+        .collect();
+    let (a, b) = (ends[0], ends[ends.len() - 1]);
+    ogeom::math::Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0, (a.z + b.z) / 2.0)
+}
+
+/// An edge's colour and a dimension between two edges survive the writer:
+/// the colour as a curve style on the edge's EDGE_CURVE, each end of the
+/// dimension as a shape aspect naming one, and both land back on the
+/// edges at the same place.
+#[test]
+fn edge_colours_and_edge_pmi_round_trip() {
+    use ogeom::math::{Frame, Point};
+    use ogeom::topo::{ShapeType, explore_unique};
+
+    let mut model = ogeom::topo::Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let at = |p: Point| {
+        edges
+            .iter()
+            .find(|e| edge_midpoint(&model, e).distance(p) < 1e-9)
+            .unwrap()
+            .clone()
+    };
+    // Two parallel edges along x on the bottom face, 10 apart.
+    let near = at(Point::new(10.0, 0.0, 0.0));
+    let far = at(Point::new(10.0, 10.0, 0.0));
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("block", block);
+    let red = ogeom::doc::Colour::rgb(1.0, 0.0, 0.0);
+    document.set_colour(&near, red);
+    document.pmi_mut().dimensions.push(ogeom::doc::Dimension {
+        name: "linear distance".into(),
+        values: vec![10.0],
+        kind: MeasureKind::Length,
+        plus: Some(0.1),
+        minus: Some(-0.1),
+        features: vec![vec![near.node()], vec![far.node()]],
+        location: true,
+    });
+
+    let text = ogeom::io::write_step(&document, T).unwrap();
+    assert_eq!(text.matches("CURVE_STYLE(").count(), 1);
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let back = &import.document;
+    let model = back.model();
+    let edges = explore_unique(model, &import.solids[0], ShapeType::Edge).unwrap();
+    let node_at = |p: Point| {
+        edges
+            .iter()
+            .find(|e| edge_midpoint(model, e).distance(p) < 1e-9)
+            .unwrap()
+            .node()
+    };
+
+    let coloured: Vec<_> = back.colours().collect();
+    assert_eq!(coloured, vec![(node_at(Point::new(10.0, 0.0, 0.0)), red)]);
+    let dimensions = &back.pmi().dimensions;
+    assert_eq!(dimensions.len(), 1);
+    let dimension = &dimensions[0];
+    assert_eq!(dimension.name, "linear distance");
+    assert!(dimension.location);
+    assert_eq!(dimension.values, vec![10.0]);
+    assert_eq!(
+        dimension.features,
+        vec![
+            vec![node_at(Point::new(10.0, 0.0, 0.0))],
+            vec![node_at(Point::new(10.0, 10.0, 0.0))],
+        ]
+    );
+}
