@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-05
+
+A patch release: no breaking API changes. Approximations that measured
+their error only at the points they were fitted through, and so reported a
+tolerance met while straying far between them, are measured between their
+samples, refined where they miss, and state the worst error found: spline
+conversion of surfaces (a sphere stood 0.28 off), sweeps, lofts, pipes and
+fillings (up to 0.18), heal boundaries, plane projections, IGES trims and
+offsets, canonical recognition, and fillet and boolean images. New
+`fit_surface_sampled`, `fit_curve_sampled`, `fit_trace_sampled` and
+`ogeom_algo::traced` fit known geometry this way.
+
 ### Fixed
 
 - **Sweeps, lofts and fillings hold their tolerance between samples.**
@@ -3554,7 +3566,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.7.0...v0.8.0
