@@ -27,8 +27,9 @@ pub struct FixedTrims {
 /// The reader heals boundary slop up to a millimetre and hands what it
 /// refuses over in `untrimmed_faces`, face shape included. This is the
 /// follow-up: the same projection fit, at the cap the caller chooses. Each
-/// fitted edge's tolerance widens to the offset actually measured, so the
-/// model says what it knows. An edge past the cap is reported, not touched.
+/// fitted edge's tolerance widens to the offset actually measured and to
+/// how far the fitted trim, lifted, stands from the curve anywhere along
+/// it, so the model says what it knows. An edge past the cap is reported, not touched.
 ///
 /// # Errors
 ///
@@ -87,11 +88,21 @@ pub fn fix_face_pcurves(
                 Ok((pcurve, _, _, worst_off, _)) => {
                     report.fitted += 1;
                     report.worst = report.worst.max(worst_off);
-                    if worst_off > tol.confusion()
-                        && let Some(node) = model.node_mut(&edge)
-                        && let NodeData::Edge(data) = node.data_mut()
-                    {
-                        data.tolerance = data.tolerance.widen_to(worst_off + tol.confusion());
+                    // The edge states where the fitted chart lies, lifted
+                    // and measured densely against the curve, as well as
+                    // the offset its samples sat at.
+                    let gap = ogeom_algo::pcurve_fit::lifted_gap(
+                        (&curve, range),
+                        (&pcurve, range),
+                        &surface,
+                        false,
+                        tol,
+                    )?;
+                    // Its vertices widen with it: what bounds the edge is
+                    // never tighter than the edge.
+                    let off = gap.max(worst_off);
+                    if off > tol.confusion() {
+                        model.widen(&edge, ogeom_core::Tolerance::new(off + tol.confusion())?)?;
                     }
                     ogeom_algo::attach_pcurve(
                         model,
@@ -125,8 +136,8 @@ pub struct ReanchoredBoundaries {
     pub moved: usize,
     /// The worst edge-to-surface offset found before moving.
     pub worst_before: f64,
-    /// The worst residual after: the fit's honest distance from the
-    /// projected samples.
+    /// The worst residual after: the moved curve's distance from the old
+    /// curve's projection, measured between the samples as well as at them.
     pub worst_after: f64,
     /// Edges refused (farther out than the cap), with their offsets.
     pub refused: Vec<(Shape, f64)>,
@@ -163,6 +174,7 @@ pub fn reanchor_boundaries(
     let mut done: std::collections::HashSet<ogeom_topo::TShapeId> =
         std::collections::HashSet::new();
 
+    /// The fewest samples an edge is measured at.
     const SAMPLES: usize = 33;
     for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
         let surface = {
@@ -197,25 +209,37 @@ pub fn reanchor_boundaries(
                 )
             };
             // Measure, then move only what is honestly off and under the cap.
+            // Sampled at every span of the curve, so a boundary with more
+            // detail than a fixed count of samples is measured whole.
             use ogeom_geom::Curve3d as _;
             use ogeom_geom::Surface as _;
-            let mut params = Vec::with_capacity(SAMPLES);
-            let mut projected = Vec::with_capacity(SAMPLES);
-            let mut worst = 0.0_f64;
-            let mut seed: Option<(f64, f64)> = None;
-            for i in 0..SAMPLES {
-                #[allow(clippy::cast_precision_loss, reason = "a sample index")]
-                let t = range.0 + (range.1 - range.0) * i as f64 / (SAMPLES - 1) as f64;
+            let stations = ogeom_algo::traced::stations(&curve, range, SAMPLES - 1);
+            // Each projection seeded from where the nearest one before it
+            // landed: consecutive points of a curve are neighbours on the
+            // surface.
+            let mut landed: Vec<(f64, (f64, f64), f64)> = Vec::with_capacity(stations.len());
+            let mut project = |t: f64| -> OgeomResult<(ogeom_math::Point, f64)> {
                 let p = curve.point_at(t, tol)?;
-                let hit = match seed {
+                let at = landed.partition_point(|l| l.0 < t);
+                let seed = at.checked_sub(1).or((!landed.is_empty()).then_some(0));
+                let hit = match seed.map(|i| landed[i].1) {
                     Some(uv) => ogeom_algo::project_on_surface_from(&surface, p, uv, tol)
                         .or_else(|_| ogeom_algo::project_on_surface(&surface, p, 24, tol))?,
                     None => ogeom_algo::project_on_surface(&surface, p, 24, tol)?,
                 };
-                seed = Some(hit.parameters);
-                worst = worst.max(hit.distance);
-                params.push(t);
-                projected.push(surface.point_at(hit.parameters.0, hit.parameters.1, tol)?);
+                landed.insert(at, (t, hit.parameters, hit.distance));
+                Ok((
+                    surface.point_at(hit.parameters.0, hit.parameters.1, tol)?,
+                    hit.distance,
+                ))
+            };
+            let mut worst = 0.0_f64;
+            let mut shadow: std::collections::HashMap<u64, ogeom_math::Point> =
+                std::collections::HashMap::with_capacity(stations.len());
+            for &t in &stations {
+                let (q, off) = project(t)?;
+                worst = worst.max(off);
+                shadow.insert(t.to_bits(), q);
             }
             if worst <= tol.confusion() * 1e3 {
                 continue; // Already on the surface, to the reader's own bar.
@@ -226,14 +250,27 @@ pub fn reanchor_boundaries(
                 continue;
             }
 
-            let fitted = ogeom_geom::fit::fit_points_at(
-                &params,
-                &projected,
+            // Fitted at the curve's own parameters and held to the target
+            // between the samples too; the error is the worst measured
+            // anywhere, and the displacement the edge states covers it.
+            let target = (tol.confusion() * 1e3).max(worst * 1e-3);
+            let fitted = ogeom_algo::traced::fit_traced(
+                |t| match shadow.get(&t.to_bits()) {
+                    Some(q) => Ok(*q),
+                    None => {
+                        let (q, off) = project(t)?;
+                        worst = worst.max(off);
+                        Ok(q)
+                    }
+                },
+                &stations,
                 3,
-                (tol.confusion() * 1e3).max(worst * 1e-3),
+                target,
                 tol,
             )?;
+            report.worst_before = report.worst_before.max(worst);
             report.worst_after = report.worst_after.max(fitted.error);
+            let moved_by = worst + fitted.error + tol.confusion();
 
             // The move is recorded before it is made: ends and edge widen to
             // cover where the boundary was, so every neighbour still meets
@@ -249,7 +286,7 @@ pub fn reanchor_boundaries(
                 if let Some(node) = model.node_mut(v)
                     && let NodeData::Vertex(data) = node.data_mut()
                 {
-                    data.tolerance = data.tolerance.widen_to(worst + tol.confusion());
+                    data.tolerance = data.tolerance.widen_to(moved_by);
                 }
             }
             let rebuilt = ogeom_algo::make_edge_between(
@@ -264,7 +301,7 @@ pub fn reanchor_boundaries(
             if let Some(node) = model.node_mut(&rebuilt)
                 && let NodeData::Edge(data) = node.data_mut()
             {
-                data.tolerance = data.tolerance.widen_to(worst + tol.confusion());
+                data.tolerance = data.tolerance.widen_to(moved_by);
                 // The charts riding the old curve stay: each pcurve speaks
                 // its own surface, whose geometry did not move, and the fit
                 // at the old parameters keeps the same-parameter law.
@@ -274,6 +311,9 @@ pub fn reanchor_boundaries(
                     }
                 }
             }
+            // The kept charts are measured against the moved curve, and
+            // the edge states how far they stand from it.
+            ogeom_algo::state_pcurve_gaps_of(model, core::slice::from_ref(&rebuilt), tol)?;
             reshape.replace(&edge, rebuilt);
             report.moved += 1;
         }

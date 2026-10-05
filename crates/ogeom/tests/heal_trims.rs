@@ -160,3 +160,123 @@ fn a_hovering_boundary_reanchors_then_trims_then_meshes() {
     assert!(!mesh.triangles.is_empty());
     let _ = refused;
 }
+
+/// A boundary with more wiggle than any fixed sample count catches moves
+/// onto its plane whole: a 64-span spline weaving `+/-0.05` across its
+/// line, hovering 0.01 above the plane. The moved curve follows the
+/// wiggle's shadow between the samples it was fitted through, the report
+/// states the real residual, and the edge's tolerance covers its pcurves.
+#[test]
+fn a_wiggling_boundary_reanchors_with_its_wiggle() {
+    use ogeom::geom::{Curve, Curve3d as _, PlaneSurface, SurfaceGeometry};
+    use ogeom::math::{Frame, KnotVector, Plane, Point};
+    use ogeom::topo::{EdgeRepr, Filter, Model, ShapeType, explore};
+
+    const SPANS: usize = 64;
+    const HOVER: f64 = 0.01;
+    let mut model = Model::new();
+    let control: Vec<Point> = (0..SPANS + 3)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let x = 10.0 * i as f64 / (SPANS + 2) as f64;
+            let y = if i == 0 || i == SPANS + 2 {
+                0.0
+            } else if i.is_multiple_of(2) {
+                0.15
+            } else {
+                -0.15
+            };
+            Point::new(x, y, HOVER)
+        })
+        .collect();
+    let knots = KnotVector::clamped_uniform(3, control.len()).unwrap();
+    let wiggle = Curve::BSpline(ogeom::geom::BSplineCurve::new(knots, control, T).unwrap());
+    let corners = [
+        Point::new(0.0, 0.0, HOVER),
+        Point::new(10.0, 0.0, HOVER),
+        Point::new(10.0, 10.0, HOVER),
+        Point::new(0.0, 10.0, HOVER),
+    ];
+    let v: Vec<_> = corners
+        .iter()
+        .map(|p| ogeom::algo::make_vertex(&mut model, *p).shape)
+        .collect();
+    let mut edges = vec![
+        ogeom::algo::make_edge_between(&mut model, wiggle.clone(), (0.0, 1.0), &v[0], &v[1], T)
+            .unwrap()
+            .shape,
+    ];
+    for i in 1..4 {
+        let (a, b) = (corners[i], corners[(i + 1) % 4]);
+        let line = ogeom::geom::LineCurve::new(ogeom::math::Axis {
+            location: a,
+            direction: ogeom::math::Direction::new(b - a, T).unwrap(),
+        });
+        edges.push(
+            ogeom::algo::make_edge_between(
+                &mut model,
+                Curve::from(line),
+                (0.0, a.distance(b)),
+                &v[i],
+                &v[(i + 1) % 4],
+                T,
+            )
+            .unwrap()
+            .shape,
+        );
+    }
+    let wire = ogeom::algo::make_wire(&mut model, &edges, T).unwrap().shape;
+    let plane: SurfaceGeometry = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+    let face = ogeom::algo::make_face(&mut model, plane, &[wire], T)
+        .unwrap()
+        .shape;
+    let trims = ogeom::heal::fix_face_pcurves(&mut model, &face, 1.0, T).unwrap();
+    assert_eq!(trims.fitted, 4);
+    let trimmed = ogeom::algo::check(&model, &face, T).unwrap();
+    assert!(trimmed.is_valid(), "{:?}", trimmed.problems);
+
+    let (built, report) = ogeom::heal::reanchor_boundaries(&mut model, &face, 1.0, T).unwrap();
+    assert_eq!(report.moved, 4);
+    let moved = explore(&model, &built.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let data = model.node(e).unwrap().data().as_edge().unwrap();
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                return false;
+            };
+            let c = model.geometry().curve(*curve).unwrap();
+            let mid = c.point_at(f64::midpoint(range.0, range.1), T).unwrap();
+            mid.y.abs() < 1.0 && mid.x > 1.0 && mid.x < 9.0
+        })
+        .unwrap();
+    let data = model.node(&moved).unwrap().data().as_edge().unwrap();
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        unreachable!()
+    };
+    let curve = model.geometry().curve(*curve).unwrap().clone();
+    let (mut off_plane, mut off_shadow) = (0.0_f64, 0.0_f64);
+    for i in 0..=4000 {
+        let t = range.0 + (range.1 - range.0) * f64::from(i) / 4000.0;
+        let p = curve.point_at(t, T).unwrap();
+        let w = wiggle.point_at(t, T).unwrap();
+        off_plane = off_plane.max(p.z.abs());
+        off_shadow = off_shadow.max(p.distance(Point::new(w.x, w.y, 0.0)));
+    }
+    let stated = data.tolerance.get();
+    let gap = ogeom::algo::edge_pcurve_gap(&model, &moved, T)
+        .unwrap()
+        .unwrap();
+    assert!(
+        off_shadow <= 1e-4,
+        "the moved curve misses the shadow by {off_shadow}"
+    );
+    assert!(
+        report.worst_after >= off_shadow * 0.9,
+        "the report says {} for a miss of {off_shadow}",
+        report.worst_after
+    );
+    assert!(gap <= stated, "pcurve gap {gap} over the stated {stated}");
+    let diagnosis = ogeom::algo::check(&model, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+}

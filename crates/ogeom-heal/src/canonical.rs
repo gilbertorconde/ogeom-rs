@@ -185,6 +185,23 @@ pub fn canonical_simplify(
         } else {
             rebuilt.reversed()
         };
+        // The carrier stands up to the certificate off the surface the
+        // boundary was drawn on: the face states it, and each edge states
+        // how far its chart on the carrier, lifted, stands from its curve.
+        let worst = match found {
+            Simplified::Plane { worst }
+            | Simplified::Cylinder { worst, .. }
+            | Simplified::Cone { worst, .. }
+            | Simplified::Sphere { worst, .. } => worst,
+        };
+        if worst > tol.confusion() {
+            model.widen(
+                &rebuilt,
+                ogeom_core::Tolerance::new(worst + tol.confusion())?,
+            )?;
+        }
+        let edges = ogeom_topo::explore_unique(model, &rebuilt, ShapeType::Edge)?;
+        ogeom_algo::state_pcurve_gaps_of(model, &edges, tol)?;
         history.modify(&face, rebuilt.clone());
         replaced.push((face, rebuilt));
         report.simplified.push(found);
@@ -249,7 +266,11 @@ pub fn recognize_surface(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Simplified>> {
-    let (points, normals) = samples(surface, tol)?;
+    // The estimators read the interior samples, whose normals are sound;
+    // each candidate is verified on these and on a grid over the whole
+    // chart, boundary strips included, at every span of a patch.
+    let (mut points, normals) = samples(surface, tol)?;
+    points.extend(verification_grid(surface, tol)?);
     // Most specific last: a plane verifies on nothing curved, a sphere and
     // cylinder disagree everywhere but a torus, so the order only decides
     // ties on genuinely ambiguous windows, where any verified answer is
@@ -293,6 +314,40 @@ pub fn recognize_surface(
     Ok(None)
 }
 
+/// Points over the surface's whole chart, its edges included: each span of
+/// a patch cut in two each way, at least sixteen pieces a direction and
+/// no more than 256.
+fn verification_grid(surface: &SurfaceGeometry, tol: Tolerances) -> OgeomResult<Vec<Point>> {
+    const FEWEST: usize = 16;
+    const MOST: usize = 256;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let direction = |range: (f64, f64), knots: Option<&ogeom_math::KnotVector>| -> Vec<f64> {
+        let breaks: Vec<f64> = knots.map_or_else(Vec::new, |k| {
+            k.distinct().into_iter().map(|(value, _)| value).collect()
+        });
+        let cut = ogeom_algo::traced::stations_between(range, &breaks, 1, FEWEST);
+        if cut.len() > MOST + 1 {
+            ogeom_algo::traced::stations_between(range, &[], 1, MOST)
+        } else {
+            cut
+        }
+    };
+    let (us, vs) = match surface {
+        SurfaceGeometry::BSpline(patch) => (
+            direction((u0, u1), Some(patch.u_knots())),
+            direction((v0, v1), Some(patch.v_knots())),
+        ),
+        _ => (direction((u0, u1), None), direction((v0, v1), None)),
+    };
+    let mut out = Vec::with_capacity(us.len() * vs.len());
+    for &u in &us {
+        for &v in &vs {
+            out.push(surface.point_at(u, v, tol)?);
+        }
+    }
+    Ok(out)
+}
+
 fn worst_of(points: &[Point], f: impl Fn(Point) -> f64) -> f64 {
     points.iter().map(|p| f(*p)).fold(0.0, f64::max)
 }
@@ -330,19 +385,25 @@ fn simplified_edge(
         use ogeom_geom::Transformable as _;
         curve.transformed(&placement, tol)?
     };
-    const N: usize = 17;
-    let mut pts = Vec::with_capacity(N);
-    for i in 0..N {
-        #[allow(clippy::cast_precision_loss, reason = "a sample index")]
-        let t = range.0 + (range.1 - range.0) * i as f64 / (N - 1) as f64;
-        pts.push(world.point_at(t, tol)?);
-    }
+    // Sampled at every span of the curve, so detail between a fixed
+    // count of samples is seen; the replacement states the worst measured.
+    let pts = ogeom_algo::traced::stations(&world, range, 16)
+        .into_iter()
+        .map(|t| world.point_at(t, tol))
+        .collect::<OgeomResult<Vec<Point>>>()?;
+    let n = pts.len();
+    let stated = |model: &mut Model, built: &Shape, worst: f64| -> OgeomResult<()> {
+        if worst > tol.confusion() {
+            model.widen(built, ogeom_core::Tolerance::new(worst + tol.confusion())?)?;
+        }
+        Ok(())
+    };
     let bounds = model.children_of(edge)?;
     let (Some(va), Some(vb)) = (bounds.first().cloned(), bounds.last().cloned()) else {
         return Ok(edge.clone());
     };
     let start = pts[0];
-    let end = pts[N - 1];
+    let end = pts[n - 1];
     let closed = start.distance(end) <= tol.confusion();
 
     // A line: every sample on the chord.
@@ -360,6 +421,7 @@ fn simplified_edge(
                 tol,
             )?
             .shape;
+            stated(model, &built, worst)?;
             cache.insert(edge.node(), built.clone());
             return Ok(built);
         }
@@ -401,7 +463,7 @@ fn simplified_edge(
                         let a = angle(start);
                         let mut b = angle(end);
                         // The arc runs the way the samples do.
-                        let m = angle(pts[N / 2]);
+                        let m = angle(pts[n / 2]);
                         let fwd = (m - a).rem_euclid(core::f64::consts::TAU)
                             <= (b - a).rem_euclid(core::f64::consts::TAU);
                         if !fwd {
@@ -421,6 +483,7 @@ fn simplified_edge(
                         tol,
                     )?
                     .shape;
+                    stated(model, &built, round.max(planar))?;
                     cache.insert(edge.node(), built.clone());
                     return Ok(built);
                 }

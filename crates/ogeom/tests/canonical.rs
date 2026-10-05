@@ -274,3 +274,163 @@ fn a_bore_spline_facing_its_axis_is_recognised_the_right_way_out() {
         "{after} against {before}"
     );
 }
+
+/// A plane patch with a bump confined to its outer strip, a twentieth of
+/// the chart wide, is not a plane: the bump stands 0.05 off, and a
+/// recognition that never looks at the strip would call it flat and state
+/// a certificate of nothing.
+#[test]
+fn a_bump_in_the_outer_strip_is_not_a_plane() {
+    use ogeom::geom::{BSplineSurface, Surface as _};
+    use ogeom::math::{ControlGrid, KnotVector};
+    const SPANS: usize = 40;
+    let n = SPANS + 3;
+    let mut points = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        for j in 0..4 {
+            #[allow(clippy::cast_precision_loss)]
+            let x = 10.0 * i as f64 / (n - 1) as f64;
+            let y = 10.0 * f64::from(j) / 3.0;
+            let z = if i == 1 { 0.1 } else { 0.0 };
+            points.push(Point::new(x, y, z));
+        }
+    }
+    let patch = BSplineSurface::new(
+        KnotVector::clamped_uniform(3, n).unwrap(),
+        KnotVector::clamped_uniform(3, 4).unwrap(),
+        &ControlGrid::new(points, n, 4).unwrap(),
+        T,
+    )
+    .unwrap();
+    let surface = SurfaceGeometry::BSpline(patch);
+    let mut bump = 0.0_f64;
+    for i in 0..=400 {
+        for j in 0..=10 {
+            let p = surface
+                .point_at(f64::from(i) / 400.0, f64::from(j) / 10.0, T)
+                .unwrap();
+            bump = bump.max(p.z.abs());
+        }
+    }
+    assert!(bump > 0.04, "the premise: a bump of {bump}");
+    let found = ogeom::heal::recognize_surface(&surface, 1e-3, T).unwrap();
+    assert!(
+        found.is_none(),
+        "a {bump} bump read as {found:?} at a tolerance of 1e-3"
+    );
+}
+
+/// A flat patch bounded by a spline that runs straight but for a bump
+/// between the samples a line is verified at keeps its bumped edge: the
+/// face is recognized as the plane, and its boundary keeps its bump.
+#[test]
+fn a_bumped_boundary_is_not_a_line() {
+    use ogeom::geom::{BSplineSurface, Curve, Curve3d as _};
+    use ogeom::math::{ControlGrid, KnotVector};
+    use ogeom::topo::EdgeRepr;
+    const SPANS: usize = 80;
+    let mut model = Model::new();
+    let patch = BSplineSurface::new(
+        KnotVector::clamped_uniform(1, 2).unwrap(),
+        KnotVector::clamped_uniform(1, 2).unwrap(),
+        &ControlGrid::new(
+            vec![
+                Point::new(-1.0, -1.0, 0.0),
+                Point::new(-1.0, 11.0, 0.0),
+                Point::new(11.0, -1.0, 0.0),
+                Point::new(11.0, 11.0, 0.0),
+            ],
+            2,
+            2,
+        )
+        .unwrap(),
+        T,
+    )
+    .unwrap();
+    let control: Vec<Point> = (0..SPANS + 3)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let x = 10.0 * i as f64 / (SPANS + 2) as f64;
+            Point::new(x, if i == 8 { 0.1 } else { 0.0 }, 0.0)
+        })
+        .collect();
+    let bumped = Curve::BSpline(
+        ogeom::geom::BSplineCurve::new(
+            KnotVector::clamped_uniform(3, control.len()).unwrap(),
+            control,
+            T,
+        )
+        .unwrap(),
+    );
+    let mut bump = 0.0_f64;
+    for i in 0..=4000 {
+        bump = bump.max(bumped.point_at(f64::from(i) / 4000.0, T).unwrap().y);
+    }
+    assert!(bump > 0.04, "the premise: a bump of {bump}");
+    let corners = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+        Point::new(0.0, 10.0, 0.0),
+    ];
+    let v: Vec<_> = corners
+        .iter()
+        .map(|p| ogeom::algo::make_vertex(&mut model, *p).shape)
+        .collect();
+    let mut edges = vec![
+        ogeom::algo::make_edge_between(&mut model, bumped, (0.0, 1.0), &v[0], &v[1], T)
+            .unwrap()
+            .shape,
+    ];
+    for i in 1..4 {
+        let (a, b) = (corners[i], corners[(i + 1) % 4]);
+        let line = ogeom::geom::LineCurve::segment(a, b, T).unwrap();
+        edges.push(
+            ogeom::algo::make_edge_between(
+                &mut model,
+                Curve::from(line),
+                (0.0, a.distance(b)),
+                &v[i],
+                &v[(i + 1) % 4],
+                T,
+            )
+            .unwrap()
+            .shape,
+        );
+    }
+    let wire = ogeom::algo::make_wire(&mut model, &edges, T).unwrap().shape;
+    let face = ogeom::algo::make_face(&mut model, SurfaceGeometry::BSpline(patch), &[wire], T)
+        .unwrap()
+        .shape;
+    let (built, report) = ogeom::heal::canonical_simplify(&mut model, &face, 1e-3, T).unwrap();
+    assert_eq!(report.simplified.len(), 1, "{report:?}");
+    let face = explore_unique(&model, &built.shape, ShapeType::Face)
+        .unwrap()
+        .remove(0);
+    for edge in explore_unique(&model, &face, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        let mid = curve.point_at(f64::midpoint(range.0, range.1), T).unwrap();
+        if mid.y.abs() > 1.0 {
+            continue;
+        }
+        // The bottom edge: how far the bump stands from it.
+        let mut miss = 0.0_f64;
+        for i in 0..=400 {
+            let t = range.0 + (range.1 - range.0) * f64::from(i) / 400.0;
+            let p = curve.point_at(t, T).unwrap();
+            miss = miss.max(p.y.abs());
+        }
+        let kept = miss > bump * 0.9;
+        assert!(
+            kept || data.tolerance.get() >= bump,
+            "the bump of {bump} vanished into a line stating {}",
+            data.tolerance.get()
+        );
+    }
+    let diagnosis = ogeom::algo::check(&model, &face, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+}
