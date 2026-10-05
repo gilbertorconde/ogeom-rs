@@ -751,6 +751,48 @@ impl<'a> Skin<'a> {
         })
     }
 
+    /// A skin known everywhere: `point(u, v)` with `u` along the rows and
+    /// `v` across them, sampled at `us` and `vs` to start with and checked
+    /// and refined between them both ways. Where `round`, the last of `us`
+    /// is the first again.
+    fn swept(
+        point: impl Fn(f64, f64) -> OgeomResult<Point> + 'a,
+        us: Vec<f64>,
+        vs: Vec<f64>,
+        round: bool,
+    ) -> OgeomResult<Self> {
+        let (u0, u1) = (us[0], us[us.len() - 1]);
+        // The end of the way round is its start, to the bit, so the seam
+        // closes exactly.
+        let point = move |u: f64, v: f64| -> OgeomResult<Point> {
+            point(if round && u >= u1 { u0 } else { u }, v)
+        };
+        let rows: Vec<Vec<Point>> = vs
+            .iter()
+            .map(|v| {
+                us[..us.len() - usize::from(round)]
+                    .iter()
+                    .map(|u| point(*u, *v))
+                    .collect::<OgeomResult<Vec<Point>>>()
+            })
+            .collect::<OgeomResult<_>>()?;
+        Ok(Self {
+            rows,
+            round,
+            by_spacing: false,
+            traced: Some(Traced {
+                point: Box::new(point),
+                sampling: ogeom_geom::fit::Sampling {
+                    us,
+                    vs,
+                    between: (true, true),
+                    closed_v: false,
+                    most: 512,
+                },
+            }),
+        })
+    }
+
     /// A skin through `sections`, each sampled at [`AROUND_SECTION`] even
     /// fractions of its length to start with (see [`Self::columns`]).
     fn sections(sections: Vec<Section>, closed: bool) -> OgeomResult<Self> {
@@ -2164,7 +2206,8 @@ fn skinned_strip(
         );
     }
     // Sections a caller placed follow their own spacing across the skin;
-    // stations a sweep placed keep the fit's centripetal assignment.
+    // stations a sweep placed keep the fit's centripetal assignment, or
+    // their index where the sweep is known between them.
     let fitted = skin.fit(false, tolerance, tol)?;
     if !fitted.met {
         ogeom_bail!(
@@ -3216,23 +3259,33 @@ fn closed_loop_shell(
     profile_loop: &Shape,
     edges: &[Shape],
     smooth: bool,
-    stations: &[SpineStation],
-    normals: &[Vector],
+    walk: &SpineWalk<'_>,
     frame0: (Point, Vector),
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     const AROUND: usize = 40;
     let (origin, x0) = frame0;
+    let stations = walk.stations;
     let t0 = stations[0].tangent;
     let y0 = t0.cross(x0);
-    // A point of the profile, in the start frame, at every station.
-    let carried = |(a, b): (f64, f64)| -> Vec<Point> {
-        stations
-            .iter()
-            .zip(normals)
-            .map(|(station, x)| station.at + *x * a + station.tangent.cross(*x) * b)
-            .collect()
+    // The way round runs from the first station to its return home, the
+    // last of the walk's stations; the station index is the skin's
+    // parameter across.
+    let home = stations.len() - 1;
+    #[allow(clippy::cast_precision_loss)]
+    let around_stations: Vec<f64> = (0..=home).map(|i| i as f64).collect();
+    // A point of the profile, in the start frame, at `s` along the way
+    // round: a station's own frame at a station, the home station the
+    // first again, the frame carried between them anywhere else.
+    let carried = |s: f64, (a, b): (f64, f64)| -> OgeomResult<Point> {
+        if s.fract() == 0.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let i = (s as usize) % home;
+            let (station, x) = (&stations[i], walk.normals[i]);
+            return Ok(station.at + x * a + station.tangent.cross(x) * b);
+        }
+        walk.generator(s, (0, home), (a, b), tol)
     };
     if !smooth {
         // A faceted profile: one ring strip per profile edge; a fit cannot
@@ -3253,20 +3306,19 @@ fn closed_loop_shell(
             // rows[j = station][i = across the facet]: each column one
             // point of the edge, at a fraction of its parameter range,
             // carried through the stations.
-            let skin = Skin::columns(
-                |f| {
+            let skin = Skin::swept(
+                |f, s| {
                     let t = if reversed {
                         range.1 - (range.1 - range.0) * f
                     } else {
                         range.0 + (range.1 - range.0) * f
                     };
                     let p = curve.point_at(t, tol)?;
-                    Ok(carried(((p - origin).dot(x0), (p - origin).dot(y0))))
+                    carried(s, ((p - origin).dot(x0), (p - origin).dot(y0)))
                 },
                 fractions(ALONG_EDGE),
+                around_stations.clone(),
                 false,
-                false,
-                true,
             )?;
             let next = (index + 1) % edges.len();
             let shared = [rails[index].clone(), rails[next].clone()];
@@ -3326,14 +3378,13 @@ fn closed_loop_shell(
     // Each column one point of the profile, read by arc length round it,
     // carried through the stations.
     let around = section_loop(model, profile_loop, None, tol)?;
-    let skin = Skin::columns(
-        |f| {
+    let skin = Skin::swept(
+        |f, s| {
             let p = around.at(f);
-            Ok(carried(((p - origin).dot(x0), (p - origin).dot(y0))))
+            carried(s, ((p - origin).dot(x0), (p - origin).dot(y0)))
         },
         fractions(AROUND),
-        true,
-        false,
+        around_stations,
         true,
     )?;
     closed_skinned_shell(model, &skin, tolerance, tol)
@@ -3409,14 +3460,35 @@ fn rmf_step(p0: Point, t0: Vector, n0: Vector, p1: Point, t1: Vector) -> Vector 
 
 /// A leg's generators, evaluated anywhere: the spine's own curve between
 /// stations with the rotation-minimizing normal carried one step from the
-/// station behind, and a straight extension past either end in the end
-/// frame: the surface a mitre trims against. Parameters are station
-/// indices; a unit beyond an end is one station spacing.
+/// station behind (turned to meet the next station's normal where the law
+/// differs from that step), and a straight extension past either end in
+/// the end frame: the surface a mitre trims against. Parameters are
+/// station indices; a unit beyond an end is one station spacing.
 struct SpineWalk<'a> {
-    /// Each spine edge's curve, range and whether it is travelled reversed.
-    curves: Vec<(ogeom_geom::Curve, (f64, f64), bool)>,
+    curves: Vec<WalkCurve>,
     stations: &'a [SpineStation],
     normals: &'a [Vector],
+}
+
+/// A spine edge's curve, range and whether it is travelled reversed.
+type WalkCurve = (ogeom_geom::Curve, (f64, f64), bool);
+
+/// Every spine edge as a [`WalkCurve`], in the spine's order.
+fn walk_curves(model: &Model, spine: &Shape) -> OgeomResult<Vec<WalkCurve>> {
+    let edges: Vec<Shape> = match model.kind_of(spine)? {
+        ShapeType::Edge => vec![spine.clone()],
+        _ => model.ordered_children_of(spine)?,
+    };
+    let mut out = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        let (curve, range) = spine_curve_of(model, edge)?;
+        out.push((
+            curve,
+            range,
+            edge.orientation() == ogeom_topo::Orientation::Reversed,
+        ));
+    }
+    Ok(out)
 }
 
 /// Where two legs' generators for one profile point meet at a corner: the
@@ -3476,7 +3548,29 @@ impl SpineWalk<'_> {
         }
         let tangent = if *reversed { -(d / m) } else { d / m };
         let n = rmf_step(st[j].at, st[j].tangent, self.normals[j], p, tangent);
-        Ok((p, tangent, n))
+        // A law whose normals are not carried by this step (Frenet, or a
+        // ring's twist spread round it) turns from the carried normal by
+        // the angle it reaches at the next station, a share of it in
+        // proportion to the way there, so the frame meets both stations.
+        let carried = rmf_step(
+            st[j].at,
+            st[j].tangent,
+            self.normals[j],
+            st[j + 1].at,
+            st[j + 1].tangent,
+        );
+        let ahead = self.normals[j + 1];
+        let turn = carried
+            .cross(ahead)
+            .dot(st[j + 1].tangent)
+            .atan2(carried.dot(ahead));
+        if turn == 0.0 {
+            return Ok((p, tangent, n));
+        }
+        let phi = turn * f;
+        let n = n * phi.cos() + tangent.cross(n) * phi.sin();
+        let n = n - tangent * n.dot(tangent);
+        Ok((p, tangent, n / n.magnitude()))
     }
 
     /// The generator of profile point `(a, b)` at `s` within the run.
@@ -5681,24 +5775,8 @@ fn pipe_shell_law(
         }
         out
     };
-    let curves: Vec<(ogeom_geom::Curve, (f64, f64), bool)> = {
-        let edges: Vec<Shape> = match model.kind_of(spine)? {
-            ShapeType::Edge => vec![spine.clone()],
-            _ => model.ordered_children_of(spine)?,
-        };
-        let mut out = Vec::with_capacity(edges.len());
-        for edge in &edges {
-            let (curve, range) = spine_curve_of(model, edge)?;
-            out.push((
-                curve,
-                range,
-                edge.orientation() == ogeom_topo::Orientation::Reversed,
-            ));
-        }
-        out
-    };
     let walk = SpineWalk {
-        curves,
+        curves: walk_curves(model, spine)?,
         stations: &stations,
         normals: &normals,
     };
@@ -5971,6 +6049,29 @@ fn pipe_shell_law(
             }
             Ok(rows)
         };
+    // A curved run with no crossing at either end has its stations for
+    // rows, and the frame carried between them places the profile anywhere
+    // along it: its skin is checked between the stations too, at the
+    // station index as its parameter across (an affine image of the spine's
+    // own parameter along the run).
+    let plain = |run: (usize, usize)| -> bool {
+        !straight(run.0, run.1)
+            && !corner_pairs
+                .iter()
+                .any(|pair| pair.curved && (pair.after == run || pair.before == run))
+    };
+    let along_run = |run: (usize, usize), s: f64, ab: (f64, f64)| -> OgeomResult<Point> {
+        if s.fract() == 0.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let i = s as usize;
+            place(i, ab)
+        } else {
+            walk.generator(s, run, ab, tol)
+        }
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let station_params =
+        |(rs, re): (usize, usize)| -> Vec<f64> { (rs..=re).map(|i| i as f64).collect() };
     let last = stations.len() - 1;
 
     enum LoopWall {
@@ -6003,16 +6104,25 @@ fn pipe_shell_law(
             for (ri, &(rs, re)) in runs.iter().enumerate() {
                 // Each column the run's rows of one point of the profile,
                 // read by arc length round it.
-                let skin = Skin::columns(
-                    |f| {
-                        let rows = run_rows((rs, re), &[flat(profile_loop.at(f))])?;
-                        Ok(rows.iter().map(|r| r[0]).collect())
-                    },
-                    fractions(AROUND),
-                    true,
-                    false,
-                    false,
-                )?;
+                let skin = if plain((rs, re)) {
+                    Skin::swept(
+                        |f, s| along_run((rs, re), s, flat(profile_loop.at(f))),
+                        fractions(AROUND),
+                        station_params((rs, re)),
+                        true,
+                    )?
+                } else {
+                    Skin::columns(
+                        |f| {
+                            let rows = run_rows((rs, re), &[flat(profile_loop.at(f))])?;
+                            Ok(rows.iter().map(|r| r[0]).collect())
+                        },
+                        fractions(AROUND),
+                        true,
+                        false,
+                        false,
+                    )?
+                };
                 let shared_start = shares_start(ri).then_some(()).and(ring1.as_ref());
                 let shared_end = shares_end(ri).then_some(()).and(ring0.as_ref());
                 let wall = skinned_wall(model, &skin, (shared_start, shared_end), tolerance, tol)?;
@@ -6134,16 +6244,25 @@ fn pipe_shell_law(
                 for (ri, &(rs, re)) in runs.iter().enumerate() {
                     // Each column the run's rows of one point of the edge,
                     // at a fraction of its parameter range.
-                    let skin = Skin::columns(
-                        |f| {
-                            let rows = run_rows((rs, re), &[edge_flat(f)?])?;
-                            Ok(rows.iter().map(|r| r[0]).collect())
-                        },
-                        fractions(ALONG_EDGE),
-                        false,
-                        false,
-                        false,
-                    )?;
+                    let skin = if plain((rs, re)) {
+                        Skin::swept(
+                            |f, s| along_run((rs, re), s, edge_flat(f)?),
+                            fractions(ALONG_EDGE),
+                            station_params((rs, re)),
+                            false,
+                        )?
+                    } else {
+                        Skin::columns(
+                            |f| {
+                                let rows = run_rows((rs, re), &[edge_flat(f)?])?;
+                                Ok(rows.iter().map(|r| r[0]).collect())
+                            },
+                            fractions(ALONG_EDGE),
+                            false,
+                            false,
+                            false,
+                        )?
+                    };
                     let shared_start = shares_start(ri).then_some(()).and(top.as_ref());
                     let shared_end = shares_end(ri).then_some(()).and(bottom.as_ref());
                     let mid_i = usize::midpoint(rs, re);
@@ -6786,7 +6905,9 @@ fn closed_pipe_shell(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     // The walk visits the join twice; the loop owns it once.
-    stations.pop();
+    let Some(home) = stations.pop() else {
+        ogeom_bail!(Construction, "a closed spine needs room to turn");
+    };
     if stations.len() < 3 {
         ogeom_bail!(Construction, "a closed spine needs room to turn");
     }
@@ -6892,6 +7013,23 @@ fn closed_pipe_shell(
 
     let x0 = normals[0];
     let origin = stations[0].at;
+    // The way round once more to its start, at the end of the spine's
+    // range, so the frame is carried between the last station and home.
+    let (round, round_normals) = {
+        let mut round = stations.clone();
+        round.push(SpineStation {
+            tangent: stations[0].tangent,
+            ..home
+        });
+        let mut normals = normals.clone();
+        normals.push(normals[0]);
+        (round, normals)
+    };
+    let walk = SpineWalk {
+        curves: walk_curves(model, spine)?,
+        stations: &round,
+        normals: &round_normals,
+    };
     let mut shells: Vec<Shape> = Vec::with_capacity(loops.len());
     for (li, wire) in loops.iter().enumerate() {
         let wire_edges = model.ordered_children_of(wire)?;
@@ -6903,8 +7041,7 @@ fn closed_pipe_shell(
             wire,
             &wire_edges,
             wire_smooth,
-            &stations,
-            &normals,
+            &walk,
             (origin, x0),
             tolerance,
             tol,

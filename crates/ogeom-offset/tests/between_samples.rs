@@ -420,3 +420,137 @@ fn a_pipe_through_thin_sections_holds_its_end_section() {
     eprintln!("pipe sections' start ring off its ellipse by {worst}");
     assert!(worst <= tolerance, "the start ring strays {worst}");
 }
+
+/// The distance from `p` to `curve` over `domain`: the nearest of `coarse`
+/// samples of it (parameter and point), then a golden-section search on the
+/// samples either side.
+fn to_curve(p: Point, curve: &ogeom_geom::Curve, coarse: &[(f64, Point)]) -> f64 {
+    let k = (0..coarse.len())
+        .min_by(|a, b| {
+            p.distance(coarse[*a].1)
+                .total_cmp(&p.distance(coarse[*b].1))
+        })
+        .unwrap();
+    let (mut lo, mut hi) = (
+        coarse[k.saturating_sub(1)].0,
+        coarse[(k + 1).min(coarse.len() - 1)].0,
+    );
+    let off = |t: f64| p.distance(curve.point_at(t, T).unwrap());
+    let g = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..80 {
+        let (a, b) = (hi - g * (hi - lo), lo + g * (hi - lo));
+        if off(a) < off(b) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    off(f64::midpoint(lo, hi))
+}
+
+/// A disc of radius `r` about `frame`'s origin, square to its `z`.
+fn disc(model: &mut Model, frame: Frame, r: f64) -> Shape {
+    let circle = edge_of(
+        model,
+        ogeom_geom::CircleCurve::new(Circle::new(frame, r, T).unwrap()).into(),
+    );
+    let wire = ogeom_algo::make_wire(model, &[circle], T).unwrap().shape;
+    let plane: SurfaceGeometry = ogeom_geom::PlaneSurface::new(Plane::new(frame)).into();
+    ogeom_algo::make_face(model, plane, &[wire], T)
+        .unwrap()
+        .shape
+}
+
+/// How far the spline walls of a disc of radius `r` swept along `spine`
+/// stand off the tube of that radius round it, sampled densely.
+fn off_the_tube(model: &Model, pipe: &Shape, spine: &ogeom_geom::Curve, r: f64) -> f64 {
+    let domain = spine.domain();
+    let coarse: Vec<(f64, Point)> = (0..=2000)
+        .map(|k| {
+            let t = across(domain, k, 2000);
+            (t, spine.point_at(t, T).unwrap())
+        })
+        .collect();
+    let mut worst = 0.0_f64;
+    let walls = spline_surfaces(model, pipe);
+    assert!(!walls.is_empty(), "the pipe has a fitted wall");
+    for wall in walls {
+        let (ud, vd) = wall.domain();
+        for j in 0..=400 {
+            for i in 0..=40 {
+                let p = wall
+                    .point_at(across(ud, i, 40), across(vd, j, 400), T)
+                    .unwrap();
+                worst = worst.max((to_curve(p, spine, &coarse) - r).abs());
+            }
+        }
+    }
+    worst
+}
+
+#[test]
+fn a_pipe_shell_round_a_tight_bend_holds_its_radius_between_stations() {
+    // A cubic spline running up z, turning through a quarter within one
+    // span of its parameter and running on along x: its stations stand
+    // evenly in that parameter, a few across the bend.
+    let control = vec![
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(0.0, 0.0, 3.0),
+        Point::new(0.0, 0.0, 6.0),
+        Point::new(0.0, 0.0, 9.0),
+        Point::new(1.0, 0.0, 9.0),
+        Point::new(4.0, 0.0, 9.0),
+        Point::new(7.0, 0.0, 9.0),
+        Point::new(10.0, 0.0, 9.0),
+    ];
+    let spine = ogeom_geom::Curve::BSpline(
+        ogeom_geom::BSplineCurve::new(
+            ogeom_math::KnotVector::new(
+                vec![0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0],
+                3,
+            )
+            .unwrap(),
+            control,
+            T,
+        )
+        .unwrap(),
+    );
+    let (r, tolerance) = (0.3, 1e-4);
+    for frenet in [false, true] {
+        let mut model = Model::new();
+        let edge = edge_of(&mut model, spine.clone());
+        let wire = ogeom_algo::make_wire(&mut model, &[edge], T).unwrap().shape;
+        let profile = disc(&mut model, Frame::WORLD, r);
+        let pipe = ogeom_offset::make_pipe_shell(&mut model, &profile, &wire, frenet, tolerance, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom_algo::check(&model, &pipe, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        let worst = off_the_tube(&model, &pipe, &spine, r);
+        eprintln!("pipe shell round a bend (Frenet {frenet}) off its radius by {worst}");
+        assert!(worst <= tolerance, "the wall strays {worst} from the tube");
+    }
+}
+
+#[test]
+fn a_closed_pipe_shell_holds_its_radius_between_stations() {
+    // An ellipse 5 by 2: its stations stand evenly in its angle, sparsest
+    // in length round the tight ends.
+    let spine: ogeom_geom::Curve =
+        ogeom_geom::EllipseCurve::new(ogeom_math::Ellipse::new(Frame::WORLD, 5.0, 2.0, T).unwrap())
+            .into();
+    let (r, tolerance) = (0.3, 1e-4);
+    let mut model = Model::new();
+    let edge = edge_of(&mut model, spine.clone());
+    let wire = ogeom_algo::make_wire(&mut model, &[edge], T).unwrap().shape;
+    let start = Frame::new(Point::new(5.0, 0.0, 0.0), Direction::Y, Direction::X, T).unwrap();
+    let profile = disc(&mut model, start, r);
+    let pipe = ogeom_offset::make_pipe_shell(&mut model, &profile, &wire, false, tolerance, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom_algo::check(&model, &pipe, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let worst = off_the_tube(&model, &pipe, &spine, r);
+    eprintln!("closed pipe shell off its radius by {worst}");
+    assert!(worst <= tolerance, "the wall strays {worst} from the tube");
+}

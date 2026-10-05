@@ -298,11 +298,20 @@ lean, for a neighbour standing across it at a slant. Its rebuild takes
 0.27 s (about 1.5 s with the old fit).
 The offset, sweep and stress runs cost about the same; `thread_groove`
 takes about 8% longer.
+A pipe shell's curved runs and closed rings are checked between their
+stations too: the frame is carried from the station behind by one
+double-reflection step and turned to meet the next station's normal, and
+the skin takes the station index as its parameter across. A disc of
+radius 0.3 down a spline turning a quarter within one span, at 1e-4,
+stood 1.1e-2 off its tube and stands 1.5e-5 off (both laws); round an
+ellipse 5 by 2, 1.3e-4 to 3.0e-5. Each wall takes about 20 to 100 ms
+more.
 Left:
-- Along a sweep only the stations are known: the strips, walls and rings
-  of a pipe shell, the law loft's stations and the helical strips are
-  checked along their profile, not between their stations (the pipe's
-  frame law between stations would have to be evaluated there).
+- Along a sweep only the stations are known: the law loft's stations and
+  the helical strips are checked along their profile, not between their
+  stations. A pipe shell's run re-rowed at a curved corner (each column
+  along its own generator to the crossing) is still fitted through its
+  rows.
 - `fit_curve_sampled` (ogeom-geom) and `ogeom_algo::traced::fit_traced`
   do the same job but not the same fit: `fit_traced` fits through every
   sample with `fit_points_at`, measures each interval's quarter points
