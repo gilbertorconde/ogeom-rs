@@ -311,6 +311,13 @@ Left:
   continuation also proved too short for a slanted neighbour once the
   wall is accurate. Not committed; the change waits on a cheaper exact
   integral for many-span trimmed faces or a decision to accept the cost.
+- The exact integral round a face's chart loops settles a volume on the
+  flux integrands it sums (the volume, first and second moments) and an
+  area also on `|n dA|`. Near a fold of the surface `|n|` almost vanishes
+  and its integral converges slowly: the area of a wavy wall drafted 0.1
+  at a 1e-4 target (a 9 by 173 patch, `|n|` from 0.045 to 643) still
+  doubles its panels five times, about 10 s, where its volume settles on
+  the first doubling in 0.1 s.
 - `general_draft` fits its hinge and tip curves at fixed parameters
   through 256 stations and does not check between them.
 - The patch closing a non-planar end of a skinned loft (`EndCap::Skinned`)

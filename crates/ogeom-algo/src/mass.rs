@@ -414,6 +414,7 @@ fn exact_volume_properties(
     let summed = ogeom_core::parallel::map_ordered(&exact, |_, face| {
         integrate_face(
             face,
+            crate::mass_chart::Measure::Volume,
             reference,
             tol,
             Moments::zero,
@@ -499,6 +500,7 @@ fn exact_surface_properties(
     for face in &exact {
         let found = integrate_face(
             face,
+            crate::mass_chart::Measure::Area,
             reference,
             tol,
             Moments::zero,
@@ -586,13 +588,14 @@ fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
 }
 
 /// Sum every quadrature sample of a face into an accumulator from `fresh`;
-/// `None` where the face's rule did not settle.
+/// `None` where the face's rule did not settle on what `measure` sums.
 ///
 /// `contribute` receives the world point, the outward-signed `n dA`
 /// already weighted, and the region's share; summing those contributions
 /// *is* the integral.
 fn integrate_face<A>(
     face: &ExactFace,
+    measure: crate::mass_chart::Measure,
     reference: Point,
     tol: Tolerances,
     fresh: impl Fn() -> A,
@@ -603,7 +606,7 @@ fn integrate_face<A>(
     const QUARTER: f64 = core::f64::consts::FRAC_PI_2;
     let mut sums = fresh();
     match face {
-        ExactFace::Chart(chart) => Ok(chart.integrate(reference, tol, fresh, contribute)),
+        ExactFace::Chart(chart) => Ok(chart.integrate(measure, reference, tol, fresh, contribute)),
         ExactFace::ChartRectangle {
             surface,
             rect,

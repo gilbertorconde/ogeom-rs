@@ -19,10 +19,12 @@
 //! and conics swept or revolved. Panels break at a pcurve's knots and at
 //! every quarter turn, where the ten-point Gauss rule integrates such an
 //! integrand to rounding, and the whole is run again on panels twice as
-//! fine until two runs agree to a part in ten billion. A short boundary
-//! panel on an analytic surface takes as few points as its error bound
-//! allows, and the inner integrals there, exact on quarter turns, are not
-//! refined between runs.
+//! fine until two runs agree to a part in ten billion on what the caller
+//! sums: a volume's runs on the flux integrands of the volume and its
+//! moments, an area's also on `|n dA|`. A short boundary panel on an
+//! analytic surface takes as few points as its error bound allows, and the
+//! inner integrals there, exact on quarter turns, are not refined between
+//! runs.
 //!
 //! A pcurve that lifts off its edge's own curve by more than a fitted curve
 //! states (on a curve with a closed form, by more than a hundred confusion
@@ -900,6 +902,27 @@ fn rule(order: usize, a: f64, b: f64) -> Vec<(f64, f64)> {
 /// `Su x Sv`, and the quadrature weight.
 type Sample = (Point, Vector, f64);
 
+/// What a face is integrated for, which says which measures two runs must
+/// agree on before the finer one is taken.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Measure {
+    /// The area and its moments: the runs agree on `|n dA|`, `n dA` and
+    /// the flux of the point.
+    Area,
+    /// The volume and its moments, which integrate `n dA` times a
+    /// polynomial in the point: the runs agree on `n dA` and on the flux
+    /// integrands of the volume, its first moments and its second, never
+    /// on `|n dA|`. Near a fold of the surface `|n|` almost vanishes and
+    /// its square root converges slowly, which says nothing about a volume.
+    Volume,
+}
+
+/// The measures two runs are compared by: `|n dA|` (an area's only),
+/// `n dA`, the flux of the point, and a volume's first and second moment
+/// integrands.
+const PROXIES: usize = 17;
+type Proxy = [f64; PROXIES];
+
 impl ChartFace {
     /// A point of the face's surface, to take moments from.
     pub(crate) fn anchor(&self, tol: Tolerances) -> OgeomResult<Point> {
@@ -917,12 +940,29 @@ impl ChartFace {
     /// returned; `None` where none did.
     pub(crate) fn integrate<A>(
         &self,
+        measure: Measure,
         reference: Point,
         tol: Tolerances,
         fresh: impl Fn() -> A,
         contribute: impl Fn(&mut A, Point, Vector, f64),
     ) -> Option<A> {
-        let mut held = self.run(1, reference, tol, &mut |_| {}).ok()?;
+        let (mut held, reach) = self.run(1, measure, reference, tol, &mut |_| {}).ok()?;
+        // The moments are weighed against the volume by the face's reach
+        // from the reference, the same for every run: once for the first,
+        // twice for the second.
+        let reach = reach.sqrt();
+        let weigh = |mut proxy: Proxy| {
+            if reach > 0.0 {
+                for x in &mut proxy[5..8] {
+                    *x /= reach;
+                }
+                for x in &mut proxy[8..] {
+                    *x /= reach * reach;
+                }
+            }
+            proxy
+        };
+        held = weigh(held);
         for doubling in 1..=DOUBLINGS {
             // Each doubling costs twice the last: a cancelled watch is
             // honoured between them, and the caller's own checkpoint then
@@ -931,11 +971,12 @@ impl ChartFace {
                 return None;
             }
             let mut sum = fresh();
-            let proxy = self
-                .run(1 << doubling, reference, tol, &mut |(p, n, w)| {
+            let (proxy, _) = self
+                .run(1 << doubling, measure, reference, tol, &mut |(p, n, w)| {
                     contribute(&mut sum, p, n * w.abs(), w.signum());
                 })
                 .ok()?;
+            let proxy = weigh(proxy);
             if settled(held, proxy) {
                 return Some(sum);
             }
@@ -945,22 +986,44 @@ impl ChartFace {
     }
 
     /// The face's samples with every panel split `fine` ways, each handed to
-    /// `sink` in a fixed order, and the integrals of a few measures over
-    /// them to compare runs by.
+    /// `sink` in a fixed order, the integrals of a few measures over them to
+    /// compare runs by, and the farthest sample's squared distance from
+    /// `reference`.
     fn run(
         &self,
         fine: u32,
+        measure: Measure,
         reference: Point,
         tol: Tolerances,
         sink: &mut dyn FnMut(Sample),
-    ) -> OgeomResult<[f64; 5]> {
-        let mut proxy = [0.0; 5];
+    ) -> OgeomResult<(Proxy, f64)> {
+        let mut proxy = [0.0; PROXIES];
+        let mut reach = 0.0_f64;
         let size = self.scale.max(1.0);
         let mut take = |(p, n, w): Sample| {
             let e = p - reference;
-            let row = [n.magnitude(), n.x, n.y, n.z, e.dot(n) / size];
-            for (acc, x) in proxy.iter_mut().zip(row) {
-                *acc += x * w;
+            let flux = e.dot(n) / size;
+            match measure {
+                Measure::Area => {
+                    let row = [n.magnitude(), n.x, n.y, n.z, flux];
+                    for (acc, x) in proxy.iter_mut().zip(row) {
+                        *acc += x * w;
+                    }
+                }
+                Measure::Volume => {
+                    reach = reach.max(e.dot(e));
+                    let (q, nq) = ([e.x, e.y, e.z], [n.x, n.y, n.z]);
+                    for (acc, x) in proxy[1..5].iter_mut().zip([n.x, n.y, n.z, flux]) {
+                        *acc += x * w;
+                    }
+                    for i in 0..3 {
+                        let lift = q[i] * q[i] * nq[i] / size * w;
+                        proxy[5 + i] += lift;
+                        for j in 0..3 {
+                            proxy[8 + 3 * i + j] += lift * q[j];
+                        }
+                    }
+                }
             }
             sink((p, n, w));
         };
@@ -1006,7 +1069,7 @@ impl ChartFace {
                 self.inner(start + step * t, region * wt * step.y, fine, tol, &mut take)?;
             }
         }
-        Ok(proxy)
+        Ok((proxy, reach))
     }
 
     /// The rulings of a piece's strip at `t`, its samples weighted by
@@ -1331,7 +1394,7 @@ impl<'a> Isoline<'a> {
 }
 
 /// Whether two runs agree, against the size of what they integrate.
-fn settled(a: [f64; 5], b: [f64; 5]) -> bool {
+fn settled(a: Proxy, b: Proxy) -> bool {
     let size: f64 = b.iter().map(|x| x.abs()).sum();
     let miss = a
         .iter()
