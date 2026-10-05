@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **A trimmed spline face's exact volume settles on what it returns.** The
+  volume integral refined until the face's area settled too, which on a
+  nearly folded spline face took millions of samples; it stops when two
+  runs agree on the volume and its moments. A drafted wavy wall's volume
+  check drops from 10 s to 0.1 s; inertias move within the integrator's
+  stated 1e-10 agreement.
+
+### Fixed
+
+- **Drafting an extruded spline wall holds it between stations.** The
+  drafted wall was fitted through 65 stations and checked there only: a
+  wavy wall drafted 0.1 at 1e-4 stood 2.5e-3 off its turned rulings. It is
+  fitted to the rulings between stations as well (3.1e-5), and extends far
+  enough past the profile's ends for a neighbour meeting it at a slant.
+
 ## [0.9.2] - 2026-10-05
 
 A patch release: no breaking API changes. Approximations that measured

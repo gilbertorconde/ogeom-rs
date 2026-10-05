@@ -270,16 +270,7 @@ fn spline_prism(
     frequency: f64,
 ) -> ogeom_topo::Shape {
     use ogeom_geom::Curve;
-    let points: Vec<Point> = (0..=16)
-        .map(|i| {
-            let x = 20.0 * f64::from(i) / 16.0;
-            Point::new(x, (x * frequency).sin() * amplitude, 0.0)
-        })
-        .collect();
-    let spline = ogeom_geom::fit::fit_points(&points, 3, 1e-6, T)
-        .unwrap()
-        .curve;
-    let curve: Curve = Curve::BSpline(spline);
+    let (curve, points) = wavy_profile(amplitude, frequency);
     let dom = {
         use ogeom_geom::Curve3d as _;
         curve.domain()
@@ -330,6 +321,21 @@ fn spline_prism(
     ogeom_algo::make_prism(model, &face, ogeom_math::Vector::new(0.0, 0.0, 10.0), T)
         .unwrap()
         .shape
+}
+
+/// The spline through a sine of `amplitude` and `frequency` along twenty
+/// units of x in the XY plane, and the points it passes through.
+fn wavy_profile(amplitude: f64, frequency: f64) -> (ogeom_geom::Curve, Vec<Point>) {
+    let points: Vec<Point> = (0..=16)
+        .map(|i| {
+            let x = 20.0 * f64::from(i) / 16.0;
+            Point::new(x, (x * frequency).sin() * amplitude, 0.0)
+        })
+        .collect();
+    let spline = ogeom_geom::fit::fit_points(&points, 3, 1e-6, T)
+        .unwrap()
+        .curve;
+    (ogeom_geom::Curve::BSpline(spline), points)
 }
 
 /// The face of `solid` on an extrusion surface.
@@ -408,6 +414,114 @@ fn an_extruded_spline_wall_drafts_to_the_requested_angle() {
             "the wall leans {lean} at height {frac}, wanted {angle}"
         );
     }
+}
+
+/// A drafted spline wall is the wall the draft names: every point of the
+/// fitted face lies on a ruling through the profile, the pull turned
+/// inwards about the profile's tangent by the angle, measured densely
+/// against the rulings rather than at the samples the fit was made from.
+#[test]
+fn a_drafted_spline_wall_lies_on_its_turned_rulings() {
+    use ogeom_geom::{Curve3d as _, Surface as _};
+    let (amplitude, frequency, angle) = (1.0, 0.9, 0.1_f64);
+    let mut model = ogeom_topo::Model::new();
+    let solid = spline_prism(&mut model, amplitude, frequency);
+    let wall = extruded_wall_of(&model, &solid);
+    let drafted = ogeom_offset::apply_draft(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&wall),
+        Plane::through(Point::ORIGIN, ogeom_math::Direction::Z),
+        ogeom_math::Direction::Z,
+        angle,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let diagnosis = ogeom_algo::check(&model, &drafted, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    // The rulings: through the profile point, the pull leaned towards the
+    // material (away from the footprint's outside, +y here).
+    let (profile, _) = wavy_profile(amplitude, frequency);
+    let (t0, t1) = profile.domain();
+    let ruling_at = |t: f64| -> (Point, ogeom_math::Vector) {
+        let c = profile.point_at(t, T).unwrap();
+        let d = profile.d1_at(t, T).unwrap();
+        let out = ogeom_math::Vector::new(-d.y, d.x, 0.0);
+        let out = out / out.magnitude();
+        (
+            c,
+            ogeom_math::Vector::new(0.0, 0.0, angle.cos()) - out * angle.sin(),
+        )
+    };
+    let off_ruling = |p: Point, t: f64| -> f64 {
+        let (c, r) = ruling_at(t);
+        let w = p - c;
+        (w - r * w.dot(r)).magnitude()
+    };
+    let at_k = |k: usize| t0 + (t1 - t0) * f64::from(u32::try_from(k).unwrap()) / 8000.0;
+    let rulings: Vec<(Point, ogeom_math::Vector)> =
+        (0..=8000).map(|k| ruling_at(at_k(k))).collect();
+    // The nearest ruling: the closest of the sampled ones, then the
+    // distance minimized between its neighbours.
+    let to_rulings = |p: Point| -> (f64, usize) {
+        let mut best = (f64::INFINITY, 0);
+        for (k, (c, r)) in rulings.iter().enumerate() {
+            if (c.x - p.x).abs() > 2.0 {
+                continue;
+            }
+            let w = p - *c;
+            let off = (w - *r * w.dot(*r)).magnitude();
+            if off < best.0 {
+                best = (off, k);
+            }
+        }
+        let k = best.1;
+        let (mut a, mut b) = (at_k(k.saturating_sub(1)), at_k((k + 1).min(8000)));
+        for _ in 0..60 {
+            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+            if off_ruling(p, m1) < off_ruling(p, m2) {
+                b = m2;
+            } else {
+                a = m1;
+            }
+        }
+        (off_ruling(p, f64::midpoint(a, b)).min(best.0), k)
+    };
+    let fitted = explore(&model, &drafted, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find_map(|f| {
+            let d = model.node(&f)?.data().as_face()?.clone();
+            match model.geometry().surface(d.surface)? {
+                ogeom_geom::SurfaceGeometry::BSpline(b) => Some(b.clone()),
+                _ => None,
+            }
+        })
+        .expect("the drafted wall is fitted");
+    // Away from the profile's ends, where the wall runs on past them to be
+    // trimmed: the fitted wall against the rulings.
+    let inner = 800..=rulings.len() - 801;
+    let ((u0, u1), (v0, v1)) = fitted.domain();
+    // Densely along each parameter in turn, whichever runs along the wall.
+    let mut worst = 0.0_f64;
+    for i in 0..=2000 {
+        for j in 0..=6 {
+            let (dense, sparse) = (f64::from(i) / 2000.0, f64::from(j) / 6.0);
+            for (a, b) in [(dense, sparse), (sparse, dense)] {
+                let (u, v) = (u0 + (u1 - u0) * a, v0 + (v1 - v0) * b);
+                let (off, k) = to_rulings(fitted.point_at(u, v, T).unwrap());
+                if inner.contains(&k) {
+                    worst = worst.max(off);
+                }
+            }
+        }
+    }
+    eprintln!("drafted wall off its rulings by {worst}");
+    assert!(
+        worst <= 1e-4,
+        "the drafted wall strays {worst} from its rulings"
+    );
 }
 
 #[test]

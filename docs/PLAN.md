@@ -276,9 +276,7 @@ hands `fit_surface_sampled` (or `fit_curve_sampled`, or
 `fit_trace_sampled` for a curve with its pcurve) the geometry it samples,
 fitted at its own parameters and checked at every span's quarter points;
 where the least-squares fit strays the spline through every sample
-decides where to refine. (`fit_curve_sampled` and
-`ogeom_algo::traced::fit_traced` were written apart and do the same work;
-one should take the other's place.) Measured densely against the true geometry,
+decides where to refine. Measured densely against the true geometry,
 before and after: `make_pipe_skinned` along eight periods of a sine at
 1e-3, 9.6e-2 to 3.1e-4; `make_filling` round a half disc's arc from four
 samples at 1e-4, 2.1e-2 to 1.6e-5; `make_loft_skinned` through ellipses
@@ -291,8 +289,13 @@ edge widened to it). Covered: the skinned pipe, the skinned lofts and
 their aligned, closed and apex forms and the loft a pipe law builds, the
 strips of a faceted pipe shell, a cornered loft and a helical sweep, a
 smooth profile's wall in a pipe shell, both closed pipe rings, a planar
-strip's borders, the multisection pipe's rings, the filling and the
-projection; an adopted strip border states how far its image stands.
+strip's borders, the multisection pipe's rings, the filling, the
+projection and the extruded draft's wall; an adopted strip border states
+how far its image stands. A wavy wall drafted 0.1 at a 1e-4 target stood
+2.5e-3 off its turned rulings and stands 3.1e-5 off; the wall's tangent
+continuation past the profile's ends now reaches as far as the rulings
+lean, for a neighbour standing across it at a slant. Its rebuild takes
+0.27 s (about 1.5 s with the old fit).
 The offset, sweep and stress runs cost about the same; `thread_groove`
 takes about 8% longer.
 Left:
@@ -300,17 +303,17 @@ Left:
   of a pipe shell, the law loft's stations and the helical strips are
   checked along their profile, not between their stations (the pipe's
   frame law between stations would have to be evaluated there).
-- `extruded_draft`: the drafted wall of an extruded spline is fitted
-  through 65 stations and nine rows, measured at them only. A wavy wall
-  drafted 0.1 at a 1e-4 target stood 2.5e-3 off its turned rulings. Fitted
-  to the rulings and refined between the stations it stands 3.8e-5 off,
-  but it needs more knots, the exact volume the rebuild measures as its
-  guard integrates a trimmed spline face span by span, and that one
-  draft went from about 1.5 s to 9 s (a gentler wall got faster, 2.2 s to
-  0.16 s, with the chart's `u` across the rulings). The window's tangent
-  continuation also proved too short for a slanted neighbour once the
-  wall is accurate. Not committed; the change waits on a cheaper exact
-  integral for many-span trimmed faces or a decision to accept the cost.
+- `fit_curve_sampled` (ogeom-geom) and `ogeom_algo::traced::fit_traced`
+  do the same job but not the same fit: `fit_traced` fits through every
+  sample with `fit_points_at`, measures each interval's quarter points
+  and allows 8192 samples, and has a planar twin (`fit_traced_2d`);
+  `fit_curve_sampled` tries the least-squares fit before the
+  interpolating one, measures eighths, allows 1024 spans and takes a
+  closed curve. One cannot replace the other without changing the fits of
+  its callers (the boolean, healing, IGES reading, plane projection and
+  `build.rs` through `traced`; the sweeps through `fit_curve_sampled`);
+  unifying them means picking one rule and re-measuring those callers,
+  with a 2D form added to ogeom-geom.
 - The exact integral round a face's chart loops settles a volume on the
   flux integrands it sums (the volume, first and second moments) and an
   area also on `|n dA|`. Near a fold of the surface `|n|` almost vanishes

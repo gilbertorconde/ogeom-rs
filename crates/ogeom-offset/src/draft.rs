@@ -390,23 +390,26 @@ fn extruded_draft(
     }
     let theta = angle * leaning;
 
-    // One ruling per sample: the hinge point, the hinge tangent, and the
-    // extrusion direction turned about it.
-    const ALONG: usize = 65;
-    let mut hinges: Vec<Point> = Vec::with_capacity(ALONG);
-    let mut rulings: Vec<Vector> = Vec::with_capacity(ALONG);
-    let (mut s_lo, mut s_hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for i in 0..ALONG {
-        #[allow(clippy::cast_precision_loss)]
-        let u = u0 + (u1 - u0) * (i as f64) / ((ALONG - 1) as f64);
+    // One ruling per profile parameter: the hinge point, the hinge
+    // tangent, and the extrusion direction turned about it.
+    let ruling_at = |u: f64| -> OgeomResult<(Point, Vector, f64)> {
         let c = curve.point_at(u, tol)?;
         let cd = curve.d1_at(u, tol)?;
         let h = height_at(c);
         let hinge = c + d * h;
         let tangent = Direction::new(hinge_tangent(cd), tol)?;
         let turn = Transform::rotation(ogeom_math::Axis::new(hinge, tangent), theta);
-        hinges.push(hinge);
-        rulings.push(turn.apply_vector(d));
+        Ok((hinge, turn.apply_vector(d), h))
+    };
+    const ALONG: usize = 65;
+    #[allow(clippy::cast_precision_loss)]
+    let along_u = |x: f64| u0 + (u1 - u0) * x / ((ALONG - 1) as f64);
+    let mut base: Vec<(Point, Vector)> = Vec::with_capacity(ALONG);
+    let (mut s_lo, mut s_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for i in 0..ALONG {
+        #[allow(clippy::cast_precision_loss)]
+        let (hinge, ruling, h) = ruling_at(along_u(i as f64))?;
+        base.push((hinge, ruling));
         s_lo = s_lo.min(v0 - h);
         s_hi = s_hi.max(v1 - h);
     }
@@ -417,49 +420,86 @@ fn extruded_draft(
     let grow = (u1 - u0).abs().max((v1 - v0).abs()).mul_add(0.5, 1.0) * angle.abs().tan()
         + tol.confusion();
     let (s_lo, s_hi) = (s_lo - grow, s_hi + grow);
-    {
-        // Quadratic continuation, so the fitted wall keeps its end
-        // curvature across the join instead of kinking straight.
-        let extend = |hinges: &mut Vec<Point>, rulings: &mut Vec<Vector>, front: bool| {
-            let (i0, i1, i2) = if front {
-                (0, 1, 2)
-            } else {
-                let n = hinges.len();
-                (n - 1, n - 2, n - 3)
-            };
-            let d1 = hinges[i0] - hinges[i1];
-            let d2 = (hinges[i0] - hinges[i1]) - (hinges[i1] - hinges[i2]);
-            let r1 = rulings[i0] - rulings[i1];
-            let steps = (grow / d1.magnitude().max(tol.confusion())).ceil().max(2.0);
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let steps = (steps as usize).min(16);
-            for k in 1..=steps {
-                #[allow(clippy::cast_precision_loss)]
-                let k = k as f64;
-                let station = (
-                    hinges[i0] + d1 * k + d2 * (k * (k + 1.0) / 2.0),
-                    rulings[i0] + r1 * k,
-                );
-                if front {
-                    hinges.insert(0, station.0);
-                    rulings.insert(0, station.1);
-                } else {
-                    hinges.push(station.0);
-                    rulings.push(station.1);
-                }
-            }
-        };
-        extend(&mut hinges, &mut rulings, true);
-        extend(&mut hinges, &mut rulings, false);
+    // Quadratic continuation, so the fitted wall keeps its end curvature
+    // across the join instead of kinking straight: `k` station spacings
+    // past the end, from the end's last three stations.
+    struct Continuation {
+        hinge: Point,
+        d1: Vector,
+        d2: Vector,
+        ruling: Vector,
+        r1: Vector,
+        steps: usize,
     }
-    let along_total = hinges.len();
+    let continuation = |front: bool| -> Continuation {
+        let (i0, i1, i2) = if front {
+            (0, 1, 2)
+        } else {
+            (ALONG - 1, ALONG - 2, ALONG - 3)
+        };
+        let d1 = base[i0].0 - base[i1].0;
+        let d2 = (base[i0].0 - base[i1].0) - (base[i1].0 - base[i2].0);
+        // Far enough past the end that a neighbour standing across the
+        // wall at a slant still finds wall where the turned rulings have
+        // carried it sideways, as far as they lean at the window's far
+        // heights.
+        let step = d1.magnitude().max(tol.confusion());
+        let ruling = base[i0].1;
+        let lean = (ruling - d * ruling.dot(d)).magnitude() * s_lo.abs().max(s_hi.abs());
+        let steps = ((grow + lean) / step).ceil().max(2.0);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = (steps as usize).min(16);
+        Continuation {
+            hinge: base[i0].0,
+            d1,
+            d2,
+            ruling: base[i0].1,
+            r1: base[i0].1 - base[i1].1,
+            steps,
+        }
+    };
+    let (front, back) = (continuation(true), continuation(false));
+    let continued = |c: &Continuation, k: f64| -> (Point, Vector) {
+        (
+            c.hinge + c.d1 * k + c.d2 * (k * (k + 1.0) / 2.0),
+            c.ruling + c.r1 * k,
+        )
+    };
+    // The wall's stations by index `x` along it: the front continuation,
+    // the profile's stations, the back continuation; between the
+    // profile's stations the profile itself, and between the
+    // continuation's its formula.
+    #[allow(clippy::cast_precision_loss)]
+    let (first, last) = (front.steps as f64, (front.steps + ALONG - 1) as f64);
+    let station = |x: f64| -> OgeomResult<(Point, Vector)> {
+        if x < first {
+            return Ok(continued(&front, first - x));
+        }
+        if x > last {
+            return Ok(continued(&back, x - last));
+        }
+        let (hinge, ruling, _) = ruling_at(along_u(x - first))?;
+        Ok((hinge, ruling))
+    };
+    let along_total = front.steps + ALONG + back.steps;
+    let stations: Vec<(Point, Vector)> = (0..along_total)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let x = i as f64;
+            match i.checked_sub(front.steps) {
+                Some(j) if j < ALONG => Ok(base[j]),
+                _ => station(x),
+            }
+        })
+        .collect::<OgeomResult<_>>()?;
 
     // A fold is two rulings crossing inside the window: walking the wall at
     // either extreme height must still advance the way the hinge advances.
     for edge in [s_lo, s_hi] {
-        for i in 0..along_total - 1 {
-            let step = (hinges[i + 1] + rulings[i + 1] * edge) - (hinges[i] + rulings[i] * edge);
-            if step.dot(hinges[i + 1] - hinges[i]) <= 0.0 {
+        for pair in stations.windows(2) {
+            let ((h0, r0), (h1, r1)) = (pair[0], pair[1]);
+            let step = (h1 + r1 * edge) - (h0 + r0 * edge);
+            if step.dot(h1 - h0) <= 0.0 {
                 ogeom_bail!(
                     Construction,
                     "the draft folds the wall onto itself inside the drafted \
@@ -470,19 +510,55 @@ fn extruded_draft(
     }
 
     // Rulings are straight, so a handful of rows fits them exactly; the
-    // profile direction carries the shape.
+    // profile direction carries the shape, and is fitted to the turned
+    // rulings at the stations and between them, the stations refined
+    // where the wall misses.
     const ACROSS: usize = 9;
-    let rows: Vec<Vec<Point>> = (0..ACROSS)
+    // The chart runs over [0, 1] both ways: `u` across the window from its
+    // top down, `v` along the wall by station index, which keeps the
+    // extrusion's own sense (`du x dv` the same way round). The straight
+    // rulings take `u`, where a measure of the face integrates along it.
+    #[allow(clippy::cast_precision_loss)]
+    let span = (along_total - 1) as f64;
+    let xs: Vec<f64> = (0..along_total)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let x = i as f64 / span;
+            x
+        })
+        .collect();
+    let ss: Vec<f64> = (0..ACROSS)
         .map(|j| {
             #[allow(clippy::cast_precision_loss)]
-            let s = s_lo + (s_hi - s_lo) * (j as f64) / ((ACROSS - 1) as f64);
-            (0..along_total)
-                .map(|i| hinges[i] + rulings[i] * s)
-                .collect()
+            let s = j as f64 / ((ACROSS - 1) as f64);
+            s
         })
         .collect();
     let fit_target = (tol.confusion() * 1e3).max(1e-4);
-    let fitted = ogeom_geom::fit::fit_surface_grid(&rows, 3, fit_target, tol)?;
+    let fitted = ogeom_geom::fit::fit_surface_sampled(
+        |s, x| {
+            let x = x * span;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let i = x.round() as usize;
+            #[allow(clippy::cast_precision_loss)]
+            let (hinge, ruling) = if (i as f64 - x).abs() <= 1e-12 * span && i < along_total {
+                stations[i]
+            } else {
+                station(x)?
+            };
+            Ok(hinge + ruling * (s_hi - (s_hi - s_lo) * s))
+        },
+        &ogeom_geom::fit::Sampling {
+            us: ss,
+            vs: xs,
+            between: (false, true),
+            closed_v: false,
+            most: 4096,
+        },
+        3,
+        fit_target,
+        tol,
+    )?;
     if !fitted.met {
         ogeom_bail!(
             NotDone,
