@@ -1476,13 +1476,44 @@ fn fit_surface_grid_parameterized(
         .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
         .collect();
 
-    // Averaged parameters: one shared assignment per direction. A family
-    // with no extent (a row collapsed to a single point, the apex a skin
-    // narrows to) has no parameterization opinion: its zero chords assign
-    // [0, …, 0, 1], and averaging that in compresses everyone else's
-    // parameters toward the start and sends the fitted border curves on an
-    // oscillating sprint over the tail. It rides the others' parameters
-    // instead. A constant row fits exactly at any assignment.
+    let (u_params, v_params) = averaged_parameters(&raw, by_chord);
+    fit_grid_on(
+        rows, &raw, &u_params, &v_params, degree, tolerance, closed_v, false, tol,
+    )
+}
+
+/// The parameters [`fit_surface_grid`] and its chord-length and section
+/// variants assign a rectangular grid: one shared assignment per
+/// direction, the average of every row's (`u`) and every column's (`v`),
+/// chord length or centripetal as `by_chord` says per direction.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// grid is not rectangular or is smaller than two by two.
+pub fn grid_parameters(
+    rows: &[Vec<Point>],
+    by_chord: (bool, bool),
+) -> OgeomResult<(Vec<f64>, Vec<f64>)> {
+    let nu = rows.first().map_or(0, Vec::len);
+    if rows.len() < 2 || nu < 2 || rows.iter().any(|r| r.len() != nu) {
+        ogeom_bail!(Construction, "a surface fit needs a rectangular grid");
+    }
+    let raw: Vec<Vec<[f64; 3]>> = rows
+        .iter()
+        .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
+        .collect();
+    Ok(averaged_parameters(&raw, by_chord))
+}
+
+/// Averaged parameters: one shared assignment per direction. A family
+/// with no extent (a row collapsed to a single point, the apex a skin
+/// narrows to) has no parameterization opinion: its zero chords assign
+/// [0, …, 0, 1], and averaging that in compresses everyone else's
+/// parameters toward the start and sends the fitted border curves on an
+/// oscillating sprint over the tail. It rides the others' parameters
+/// instead. A constant row fits exactly at any assignment.
+fn averaged_parameters(raw: &[Vec<[f64; 3]>], by_chord: (bool, bool)) -> (Vec<f64>, Vec<f64>) {
     let average = |families: &[Vec<[f64; 3]>], by_chord: bool| -> Vec<f64> {
         let mut sums = vec![0.0; families[0].len()];
         let mut counted = 0.0_f64;
@@ -1517,14 +1548,13 @@ fn fit_surface_grid_parameterized(
         }
         sums.iter().map(|s| s / counted).collect()
     };
-    let u_params = average(&raw, by_chord.0);
+    let nu = raw[0].len();
+    let u_params = average(raw, by_chord.0);
     let columns: Vec<Vec<[f64; 3]>> = (0..nu)
         .map(|i| raw.iter().map(|r| r[i]).collect())
         .collect();
     let v_params = average(&columns, by_chord.1);
-    fit_grid_on(
-        rows, &raw, &u_params, &v_params, degree, tolerance, closed_v, tol,
-    )
+    (u_params, v_params)
 }
 
 /// Fit a rectangular grid at *fixed* parameters: `u_params[i]` is the
@@ -1572,7 +1602,7 @@ pub fn fit_surface_grid_at(
         .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
         .collect();
     fit_grid_on(
-        rows, &raw, u_params, v_params, degree, tolerance, false, tol,
+        rows, &raw, u_params, v_params, degree, tolerance, false, false, tol,
     )
 }
 
@@ -1649,7 +1679,6 @@ pub fn fit_surface_sampled(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
-    use crate::traits::Surface as _;
     if !(tolerance > 0.0 && tolerance.is_finite()) {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
     }
@@ -1691,61 +1720,49 @@ pub fn fit_surface_sampled(
             .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
             .collect();
         // Half the tolerance at the samples leaves the other half for
-        // between them.
-        let fitted = fit_grid_on(
-            &rows,
-            &raw,
-            &us,
-            &vs,
-            degree,
-            tolerance * 0.5,
-            sampling.closed_v,
-            tol,
-        )?;
-        let checks = |knots: &[f64], between: bool| -> Vec<(f64, Option<usize>)> {
-            let mut out = Vec::with_capacity(knots.len() * 2);
-            for (i, pair) in knots.windows(2).enumerate() {
-                out.push((pair[0], None));
-                if between {
-                    out.push((f64::midpoint(pair[0], pair[1]), Some(i)));
-                }
+        // between them. The least-squares fit is the lean one, but where it
+        // strays between the samples that may be its knots rather than the
+        // sampling: the spline through every sample, on knots that follow
+        // the samples, then measures the sampling alone and decides where
+        // to refine.
+        let mut splits: Option<(Vec<bool>, Vec<bool>)> = None;
+        for interpolate in [false, true] {
+            let fitted = fit_grid_on(
+                &rows,
+                &raw,
+                &us,
+                &vs,
+                degree,
+                tolerance * 0.5,
+                sampling.closed_v,
+                interpolate,
+                tol,
+            )?;
+            let (between, split_u, split_v) = measured_between(
+                &mut at,
+                &fitted.curve,
+                (&us, &vs),
+                sampling.between,
+                tolerance,
+                tol,
+            )?;
+            let error = fitted.error.max(between);
+            let candidate = Fitted {
+                curve: fitted.curve,
+                error,
+                met: error <= tolerance,
+            };
+            if candidate.met {
+                return Ok(candidate);
             }
-            out.push((knots[knots.len() - 1], None));
-            out
-        };
-        let u_checks = checks(&us, sampling.between.0);
-        let v_checks = checks(&vs, sampling.between.1);
-        let mut split_u = vec![false; us.len() - 1];
-        let mut split_v = vec![false; vs.len() - 1];
-        let mut error = fitted.error;
-        for &(v, v_span) in &v_checks {
-            for &(u, u_span) in &u_checks {
-                if u_span.is_none() && v_span.is_none() {
-                    continue;
-                }
-                let off = at(u, v)?.distance(fitted.curve.point_at(u, v, tol)?);
-                error = error.max(off);
-                if off > tolerance {
-                    if let Some(i) = u_span {
-                        split_u[i] = true;
-                    }
-                    if let Some(j) = v_span {
-                        split_v[j] = true;
-                    }
-                }
+            if best.as_ref().is_none_or(|b| error < b.error) {
+                best = Some(candidate);
             }
+            splits = Some((split_u, split_v));
         }
-        let candidate = Fitted {
-            curve: fitted.curve,
-            error,
-            met: error <= tolerance,
+        let Some((split_u, split_v)) = splits else {
+            break;
         };
-        if candidate.met {
-            return Ok(candidate);
-        }
-        if best.as_ref().is_none_or(|b| error < b.error) {
-            best = Some(candidate);
-        }
         let split = |knots: &[f64], marked: &[bool]| -> Vec<f64> {
             let mut out = Vec::with_capacity(knots.len() * 2);
             for (pair, &m) in knots.windows(2).zip(marked) {
@@ -1767,6 +1784,65 @@ pub fn fit_surface_sampled(
     best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the surface could not be sampled"))
 }
 
+/// The worst distance between `surface` and `point` at the middles of the
+/// spans of `params` (in the directions `between` says are known there),
+/// and which spans miss `tolerance`. A miss at a cell's centre is put down
+/// to whichever direction already misses along its sample lines through
+/// that cell's spans, and to both only where neither does: a skin that
+/// strays across its rows has no use for more samples along them.
+#[allow(clippy::type_complexity, reason = "the error and the spans to split")]
+fn measured_between(
+    point: &mut impl FnMut(f64, f64) -> OgeomResult<Point>,
+    surface: &crate::BSplineSurface,
+    (us, vs): (&[f64], &[f64]),
+    between: (bool, bool),
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<(f64, Vec<bool>, Vec<bool>)> {
+    use crate::traits::Surface as _;
+    let checks = |knots: &[f64], between: bool| -> Vec<(f64, Option<usize>)> {
+        let mut out = Vec::with_capacity(knots.len() * 2);
+        for (i, pair) in knots.windows(2).enumerate() {
+            out.push((pair[0], None));
+            if between {
+                out.push((f64::midpoint(pair[0], pair[1]), Some(i)));
+            }
+        }
+        out.push((knots[knots.len() - 1], None));
+        out
+    };
+    let u_checks = checks(us, between.0);
+    let v_checks = checks(vs, between.1);
+    let mut split_u = vec![false; us.len() - 1];
+    let mut split_v = vec![false; vs.len() - 1];
+    let mut centres: Vec<(usize, usize)> = Vec::new();
+    let mut error = 0.0_f64;
+    for &(v, v_span) in &v_checks {
+        for &(u, u_span) in &u_checks {
+            if u_span.is_none() && v_span.is_none() {
+                continue;
+            }
+            let off = point(u, v)?.distance(surface.point_at(u, v, tol)?);
+            error = error.max(off);
+            if off > tolerance {
+                match (u_span, v_span) {
+                    (Some(i), Some(j)) => centres.push((i, j)),
+                    (Some(i), None) => split_u[i] = true,
+                    (None, Some(j)) => split_v[j] = true,
+                    (None, None) => {}
+                }
+            }
+        }
+    }
+    for (i, j) in centres {
+        if !split_u[i] && !split_v[j] {
+            split_u[i] = true;
+            split_v[j] = true;
+        }
+    }
+    Ok((error, split_u, split_v))
+}
+
 /// The two-pass grid fit on parameters already assigned.
 #[allow(
     clippy::too_many_arguments,
@@ -1780,11 +1856,13 @@ fn fit_grid_on(
     degree: usize,
     tolerance: f64,
     closed_v: bool,
+    interpolate: bool,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
     use crate::traits::Surface as _;
     // Pass one: every row on one shared knot vector.
-    let (u_knots, row_controls) = fit_family::<3>(raw, u_params, degree, tolerance * 0.5, false)?;
+    let (u_knots, row_controls) =
+        fit_family::<3>(raw, u_params, degree, tolerance * 0.5, false, interpolate)?;
     // Pass two: the columns of control points, against the v parameters.
     let k = u_knots.control_point_count();
     let control_columns: Vec<Vec<[f64; 3]>> = (0..k)
@@ -1796,6 +1874,7 @@ fn fit_grid_on(
         degree,
         tolerance * 0.5,
         closed_v,
+        interpolate,
     )?;
     let l = v_knots.control_point_count();
 
@@ -1839,10 +1918,15 @@ fn fit_family<const D: usize>(
     degree: usize,
     tolerance: f64,
     closed: bool,
+    interpolate: bool,
 ) -> OgeomResult<(KnotVector, Vec<Vec<[f64; D]>>)> {
     let degree = degree.min(parameters.len() - 1).max(1);
     let (a, b) = (parameters[0], parameters[parameters.len() - 1]);
-    let mut knots = single_span(degree, a, b)?;
+    let mut knots = if interpolate {
+        interpolating_knots(degree, parameters)?
+    } else {
+        single_span(degree, a, b)?
+    };
     const ROUNDS: usize = 24;
     let mut best: Option<FamilyRound<D>> = None;
     for _ in 0..ROUNDS {

@@ -592,6 +592,212 @@ fn bilinear_wall(
     Ok(if outward { face } else { face.reversed() })
 }
 
+/// What a skin closed the way round is fitted to: its rows of samples, and
+/// the geometry they sample where the builder knows it.
+struct Skin<'a> {
+    /// `rows[j][i]` runs round section `j`, without the closing point.
+    rows: Vec<Vec<Point>>,
+    /// The geometry the rows sample, if known: `point(u, v)` with `u` once
+    /// round over the sampling's `u` range (its end the start again) and
+    /// `v` along the skin, and where the fit starts sampling it.
+    traced: Option<Traced<'a>>,
+}
+
+/// The geometry a skin traces and where its fit starts sampling it.
+struct Traced<'a> {
+    point: Box<dyn Fn(f64, f64) -> OgeomResult<Point> + 'a>,
+    sampling: ogeom_geom::fit::Sampling,
+}
+
+/// One section a skin passes through: a closed loop read by arc length,
+/// or the point a skin narrows to.
+#[derive(Clone)]
+enum Section {
+    Loop(ArcLoop),
+    Point(Point),
+    /// A loop moved halfway toward a point, every point of it.
+    Halfway(ArcLoop, Point),
+}
+
+impl Section {
+    /// The point a fraction `f` of the way round.
+    fn at(&self, f: f64) -> Point {
+        match self {
+            Self::Loop(arc) => arc.at(f),
+            Self::Point(p) => *p,
+            Self::Halfway(arc, to) => {
+                Point::from_vector((arc.at(f).to_vector() + to.to_vector()) * 0.5)
+            }
+        }
+    }
+}
+
+/// The samples a skin's sections take round: an even fraction apart, from
+/// each section's own start.
+const AROUND_SECTION: usize = 48;
+
+impl<'a> Skin<'a> {
+    /// A skin over bare rows: fitted through them, measured at them.
+    fn rows(rows: Vec<Vec<Point>>) -> Self {
+        Self { rows, traced: None }
+    }
+
+    /// A skin through `sections`, each sampled at [`AROUND_SECTION`] even
+    /// fractions of its length and checked between them; across the
+    /// sections the samples are all there is of the skin. The rows sit
+    /// across the skin at the centripetal parameters
+    /// [`ogeom_geom::fit::fit_surface_grid`] gives them, and once round at
+    /// the fraction of the length.
+    fn sections(sections: Vec<Section>, closed: bool) -> OgeomResult<Self> {
+        let n = AROUND_SECTION;
+        let fraction = |i: usize| -> f64 {
+            #[allow(clippy::cast_precision_loss, reason = "a small count")]
+            let f = i as f64 / n as f64;
+            f
+        };
+        let rows: Vec<Vec<Point>> = sections
+            .iter()
+            .map(|s| (0..n).map(|i| s.at(fraction(i))).collect())
+            .collect();
+        let mut grid: Vec<Vec<Point>> = rows
+            .iter()
+            .map(|r| {
+                let mut r = r.clone();
+                r.push(r[0]);
+                r
+            })
+            .collect();
+        if closed {
+            grid.push(grid[0].clone());
+        }
+        let (_, vs) = ogeom_geom::fit::grid_parameters(&grid, (false, false))?;
+        if vs.windows(2).any(|w| w[1] <= w[0]) {
+            // Sections that coincide leave the rows no order across the
+            // skin; the bare rows decide what the fit makes of them.
+            return Ok(Self::rows(rows));
+        }
+        let us: Vec<f64> = (0..=n).map(fraction).collect();
+        let row_vs = vs.clone();
+        let count = sections.len();
+        let point = move |u: f64, v: f64| -> OgeomResult<Point> {
+            let Some(j) = row_vs.iter().position(|w| w.to_bits() == v.to_bits()) else {
+                ogeom_bail!(Construction, "a skin is known only at its sections");
+            };
+            Ok(sections[j % count].at(u))
+        };
+        Ok(Self {
+            rows,
+            traced: Some(Traced {
+                point: Box::new(point),
+                sampling: ogeom_geom::fit::Sampling {
+                    us,
+                    vs,
+                    between: (true, false),
+                    closed_v: closed,
+                    most: 512,
+                },
+            }),
+        })
+    }
+
+    /// The skin's fitted surface, closed the way round (each row's end its
+    /// start, so the row fits' pinned ends make the two border control
+    /// columns equal) and, where `closed_v` says, smoothly across the loop
+    /// of its rows.
+    fn fit(
+        &self,
+        closed_v: bool,
+        tolerance: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<ogeom_geom::fit::Fitted<ogeom_geom::BSplineSurface>> {
+        match &self.traced {
+            None => {
+                let mut grid: Vec<Vec<Point>> = self
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        let mut r = row.clone();
+                        r.push(row[0]);
+                        r
+                    })
+                    .collect();
+                if closed_v {
+                    grid.push(grid[0].clone());
+                    ogeom_geom::fit::fit_surface_grid_closed_v(&grid, 3, tolerance, tol)
+                } else {
+                    ogeom_geom::fit::fit_surface_grid(&grid, 3, tolerance, tol)
+                }
+            }
+            Some(traced) => {
+                let us = &traced.sampling.us;
+                let (u0, u1) = (us[0], us[us.len() - 1]);
+                let mut sampling = traced.sampling.clone();
+                sampling.closed_v = closed_v;
+                // The end of the way round is its start, to the bit, so
+                // the seam closes exactly.
+                ogeom_geom::fit::fit_surface_sampled(
+                    |u, v| (traced.point)(if u >= u1 { u0 } else { u }, v),
+                    &sampling,
+                    3,
+                    tolerance,
+                    tol,
+                )
+            }
+        }
+    }
+}
+
+/// A closed polyline read by arc length.
+#[derive(Clone)]
+struct ArcLoop {
+    dense: Vec<Point>,
+    /// The length run to each point of `dense`.
+    lengths: Vec<f64>,
+    /// The length round, the closing chord included.
+    total: f64,
+}
+
+impl ArcLoop {
+    fn new(dense: Vec<Point>) -> Self {
+        let mut lengths = Vec::with_capacity(dense.len());
+        lengths.push(0.0);
+        for w in dense.windows(2) {
+            let last = lengths[lengths.len() - 1];
+            lengths.push(last + w[0].distance(w[1]));
+        }
+        let total = lengths[lengths.len() - 1] + dense[dense.len() - 1].distance(dense[0]);
+        Self {
+            dense,
+            lengths,
+            total,
+        }
+    }
+
+    /// The point a fraction `f` of the length round from the first point;
+    /// a whole turn is the first point again.
+    fn at(&self, f: f64) -> Point {
+        let f = if (0.0..1.0).contains(&f) { f } else { 0.0 };
+        let target = self.total * f;
+        let n = self.dense.len();
+        let cursor = self.lengths[1..]
+            .partition_point(|l| *l < target)
+            .min(n - 1);
+        let (a, b) = (self.dense[cursor], self.dense[(cursor + 1) % n]);
+        let la = self.lengths[cursor];
+        let lb = if cursor + 1 < n {
+            self.lengths[cursor + 1]
+        } else {
+            self.total
+        };
+        let t = if lb > la {
+            (target - la) / (lb - la)
+        } else {
+            0.0
+        };
+        a + (b - a) * t.clamp(0.0, 1.0)
+    }
+}
+
 /// A skinned wall and the pieces a caller needs to close it: the rings at
 /// both ends, their exact border curves off the control net, and the chart's
 /// `u` window the ring pcurves span.
@@ -606,7 +812,7 @@ struct SkinnedWall {
 
 /// The wall of a skin over a grid of section samples, closed the way round.
 ///
-/// The wall is [`ogeom_geom::fit::fit_surface_grid`]'s surface with each row's
+/// The wall is the skin's fitted surface ([`Skin::fit`]), with each row's
 /// first sample repeated at its end: the row fits pin their ends, so the two
 /// border control columns are *equal* and the seam closes exactly, not
 /// within tolerance. The border iso-curves come straight off the control
@@ -615,19 +821,14 @@ struct SkinnedWall {
 /// is an iso line in the fitted chart, same-parameter by construction.
 fn skinned_wall(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     shared: (Option<&Shape>, Option<&Shape>),
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<SkinnedWall> {
     use ogeom_geom::Surface as _;
-    let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len());
-    for row in rows {
-        let mut r = row.clone();
-        r.push(row[0]);
-        closed_rows.push(r);
-    }
-    let fitted = ogeom_geom::fit::fit_surface_grid(&closed_rows, 3, tolerance, tol)?;
+    let rows = &skin.rows;
+    let fitted = skin.fit(false, tolerance, tol)?;
     if !fitted.met {
         ogeom_bail!(
             NotDone,
@@ -1033,12 +1234,13 @@ enum EndCap {
 
 fn skinned_solid(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     caps: (EndCap, EndCap),
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let wall = skinned_wall(model, rows, (None, None), tolerance, tol)?;
+    let wall = skinned_wall(model, skin, (None, None), tolerance, tol)?;
+    let rows = &skin.rows;
     let u_dom = wall.u_dom;
 
     let cap = |model: &mut Model,
@@ -1094,8 +1296,8 @@ fn skinned_solid(
                         .iter()
                         .map(|p| Point::from_vector((p.to_vector() + apex.to_vector()) * 0.5))
                         .collect();
-                    let rows = [row.to_vec(), half, vec![apex; row.len()]];
-                    Ok(apex_patch(model, &rows, Some(ring), tolerance, tol)?.0)
+                    let rows = vec![row.to_vec(), half, vec![apex; row.len()]];
+                    Ok(apex_patch(model, &Skin::rows(rows), Some(ring), tolerance, tol)?.0)
                 }
             }
         };
@@ -1125,19 +1327,14 @@ fn skinned_solid(
 /// edge.
 fn apex_patch(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     shared: Option<&Shape>,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Shape)> {
     use ogeom_geom::Surface as _;
-    let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len());
-    for row in rows {
-        let mut r = row.clone();
-        r.push(row[0]);
-        closed_rows.push(r);
-    }
-    let fitted = ogeom_geom::fit::fit_surface_grid(&closed_rows, 3, tolerance, tol)?;
+    let rows = &skin.rows;
+    let fitted = skin.fit(false, tolerance, tol)?;
     if !fitted.met {
         ogeom_bail!(
             NotDone,
@@ -1297,13 +1494,13 @@ fn centroid_of(rows: &[Vec<Point>]) -> Point {
 /// cap at the open end; the apex end closes by construction.
 fn skinned_solid_to_apex(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     cap_outward: Vector,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Curve3d as _;
-    let (wall, ring0) = apex_patch(model, rows, None, tolerance, tol)?;
+    let (wall, ring0) = apex_patch(model, skin, None, tolerance, tol)?;
     let (ring_curve, u_dom) = {
         let (curve, range) = spine_curve_of(model, &ring0)?;
         (curve, range)
@@ -1365,11 +1562,11 @@ fn skinned_solid_to_apex(
 /// twice, anchored at one shared vertex, exactly as a torus bounds itself.
 fn closed_skinned_solid(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let shell = closed_skinned_shell(model, rows, tolerance, tol)?;
+    let shell = closed_skinned_shell(model, skin, tolerance, tol)?;
     make_solid(model, std::slice::from_ref(&shell))
 }
 
@@ -1377,19 +1574,13 @@ fn closed_skinned_solid(
 /// a holed profile's ring is one outer shell and one per tunnel.
 fn closed_skinned_shell(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     use ogeom_geom::Surface as _;
-    let mut closed_rows: Vec<Vec<Point>> = Vec::with_capacity(rows.len() + 1);
-    for row in rows {
-        let mut r = row.clone();
-        r.push(row[0]);
-        closed_rows.push(r);
-    }
-    closed_rows.push(closed_rows[0].clone());
-    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v(&closed_rows, 3, tolerance, tol)?;
+    let rows = &skin.rows;
+    let fitted = skin.fit(true, tolerance, tol)?;
     if !fitted.met {
         ogeom_bail!(
             NotDone,
@@ -1752,8 +1943,7 @@ pub fn make_loft_skinned_aligned(
     if sections.len() < 2 {
         ogeom_bail!(Construction, "a loft needs at least two sections");
     }
-    const AROUND: usize = 48;
-    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(sections.len());
+    let mut loops: Vec<Section> = Vec::with_capacity(sections.len());
     let mut planes: Vec<Plane> = Vec::with_capacity(sections.len());
     for (wire, hint) in sections.iter().zip(hints) {
         if model.kind_of(wire)? != ShapeType::Wire {
@@ -1766,8 +1956,10 @@ pub fn make_loft_skinned_aligned(
             ogeom_bail!(Construction, "a loft section must be planar");
         };
         planes.push(plane);
-        rows.push(sample_wire_from(model, wire, AROUND, Some(*hint), tol)?);
+        loops.push(Section::Loop(section_loop(model, wire, Some(*hint), tol)?));
     }
+    let skin = Skin::sections(loops, false)?;
+    let rows = &skin.rows;
     let outward0 = {
         let towards = rows[1][0] - rows[0][0];
         let n = planes[0].normal().vector();
@@ -1780,7 +1972,7 @@ pub fn make_loft_skinned_aligned(
     };
     let mut built = skinned_solid(
         model,
-        &rows,
+        &skin,
         (EndCap::Plane(outward0), EndCap::Plane(outward1)),
         tolerance,
         tol,
@@ -1818,8 +2010,7 @@ pub fn make_loft_skinned_closed(
     if sections.len() < 3 {
         ogeom_bail!(Construction, "a closed loft needs at least three sections");
     }
-    const AROUND: usize = 48;
-    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(sections.len());
+    let mut loops: Vec<Section> = Vec::with_capacity(sections.len());
     for wire in sections {
         if model.kind_of(wire)? != ShapeType::Wire {
             ogeom_bail!(Construction, "a loft section is a closed wire");
@@ -1830,9 +2021,10 @@ pub fn make_loft_skinned_closed(
         if ogeom_algo::find_plane(model, wire, tol)?.is_none() {
             ogeom_bail!(Construction, "a loft section must be planar");
         }
-        rows.push(sample_wire(model, wire, AROUND, tol)?);
+        loops.push(Section::Loop(section_loop(model, wire, None, tol)?));
     }
-    let mut built = closed_skinned_solid(model, &rows, tolerance, tol)?;
+    let skin = Skin::sections(loops, true)?;
+    let mut built = closed_skinned_solid(model, &skin, tolerance, tol)?;
     for section in sections {
         built.history.generate(section, built.shape.clone());
     }
@@ -2457,8 +2649,9 @@ fn plane_cap(
 ///
 /// The sections are sampled at matched arc-length fractions from their own
 /// traversal starts (aligning those starts is the caller's authorship),
-/// and the skin holds every section to `tolerance`. The caps are the first
-/// and last sections' own planes.
+/// and the skin holds every section to `tolerance`, between the samples as
+/// well as at them: the sampling round a section is refined where the skin
+/// misses it. The caps are the first and last sections' own planes.
 ///
 /// # Errors
 ///
@@ -2493,7 +2686,6 @@ pub fn make_loft_skinned(
             return Ok(built);
         }
     }
-    const AROUND: usize = 48;
     // A trailing vertex is the apex form: the skin narrows to a point and
     // the solid closes there without a cap.
     let apex = match model.kind_of(&sections[sections.len() - 1])? {
@@ -2515,7 +2707,7 @@ pub fn make_loft_skinned(
         _ => None,
     };
     let wires = &sections[..sections.len() - usize::from(apex.is_some())];
-    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(sections.len());
+    let mut loops: Vec<Section> = Vec::with_capacity(sections.len() + 1);
     let mut cap_planes: Vec<Option<Plane>> = Vec::with_capacity(wires.len());
     for wire in wires {
         if model.kind_of(wire)? != ShapeType::Wire {
@@ -2528,7 +2720,7 @@ pub fn make_loft_skinned(
         // sections a cap will stand on must hold a plane. A wavy middle
         // section skins fine.
         cap_planes.push(ogeom_algo::find_plane(model, wire, tol)?);
-        rows.push(sample_wire(model, wire, AROUND, tol)?);
+        loops.push(Section::Loop(section_loop(model, wire, None, tol)?));
     }
     // A planar end is capped by its plane; one that is not (a wavy rim),
     // by a patch skinned from the ring to a point inside it.
@@ -2546,17 +2738,19 @@ pub fn make_loft_skinned(
         EndCap::Plane(if n.dot(towards) > 0.0 { -n } else { n })
     };
     let mut built = if let Some(apex) = apex {
-        if rows.len() < 2 {
+        if loops.len() < 2
+            && let Some(Section::Loop(ring)) = loops.first()
+        {
             // One ring to a point is exact machinery's job when it can be;
             // the skin still needs two rows to shape the wall, so a middle
             // row is interpolated halfway toward the apex.
-            let half: Vec<Point> = rows[0]
-                .iter()
-                .map(|p| Point::from_vector((p.to_vector() + apex.to_vector()) * 0.5))
-                .collect();
-            rows.push(half);
+            let half = Section::Halfway(ring.clone(), apex);
+            loops.push(half);
         }
-        let outward0 = match outward_at(&rows, &cap_planes, false) {
+        loops.push(Section::Point(apex));
+        let skin = Skin::sections(loops, false)?;
+        let rows = &skin.rows;
+        let outward0 = match outward_at(rows, &cap_planes, false) {
             EndCap::Plane(n) => n,
             EndCap::Skinned => {
                 ogeom_bail!(
@@ -2565,12 +2759,12 @@ pub fn make_loft_skinned(
                 );
             }
         };
-        rows.push(vec![apex; AROUND]);
-        skinned_solid_to_apex(model, &rows, outward0, tolerance, tol)?
+        skinned_solid_to_apex(model, &skin, outward0, tolerance, tol)?
     } else {
-        let outward0 = outward_at(&rows, &cap_planes, false);
-        let outward1 = outward_at(&rows, &cap_planes, true);
-        skinned_solid(model, &rows, (outward0, outward1), tolerance, tol)?
+        let skin = Skin::sections(loops, false)?;
+        let outward0 = outward_at(&skin.rows, &cap_planes, false);
+        let outward1 = outward_at(&skin.rows, &cap_planes, true);
+        skinned_solid(model, &skin, (outward0, outward1), tolerance, tol)?
     };
     for section in sections {
         built.history.generate(section, built.shape.clone());
@@ -2598,6 +2792,24 @@ fn sample_wire_from(
     start_hint: Option<Point>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Point>> {
+    let arc = section_loop(model, wire, start_hint, tol)?;
+    Ok((0..count)
+        .map(|s| {
+            #[allow(clippy::cast_precision_loss, reason = "a small count")]
+            let f = s as f64 / count as f64;
+            arc.at(f)
+        })
+        .collect())
+}
+
+/// A closed wire read by arc length from its traversal start, or from the
+/// dense sample nearest `start_hint` where one is given.
+fn section_loop(
+    model: &Model,
+    wire: &Shape,
+    start_hint: Option<Point>,
+    tol: Tolerances,
+) -> OgeomResult<ArcLoop> {
     let mut dense = dense_wire(model, wire, tol)?;
     if let Some(hint) = start_hint {
         let mut best = 0usize;
@@ -2611,7 +2823,7 @@ fn sample_wire_from(
         }
         dense.rotate_left(best);
     }
-    Ok(resampled(&dense, count))
+    Ok(ArcLoop::new(dense))
 }
 
 /// A closed wire as a dense polyline, by traversal, without the closing
@@ -2752,8 +2964,9 @@ fn matched_samples(dense: &[Point], count: usize, previous: &[Point]) -> Vec<Poi
 ///
 /// Frames along the spine are rotation-minimizing (the double-reflection
 /// construction), so the tube neither twists nor kinks where the spine
-/// bends; the skin holds the sampled circles to `tolerance`, and the caps
-/// sit perpendicular to the spine's ends.
+/// bends; the skin holds the tube to `tolerance`, measured between its
+/// stations and round its circles as well as at the samples and refined
+/// where it misses, and the caps sit perpendicular to the spine's ends.
 ///
 /// # Errors
 ///
@@ -2782,12 +2995,16 @@ pub fn make_pipe_skinned(
         };
         (geometry.clone(), *range)
     };
+    // The skin starts from 33 stations; the frame is carried along 64
+    // times as many, so the frame between stations turns smoothly enough
+    // for the fit refining between them.
     const STATIONS: usize = 33;
+    const FRAMES: usize = 64 * (STATIONS - 1) + 1;
     const AROUND: usize = 40;
-    let mut stations: Vec<SpineStation> = Vec::with_capacity(STATIONS);
-    for i in 0..STATIONS {
+    let mut stations: Vec<SpineStation> = Vec::with_capacity(FRAMES);
+    for i in 0..FRAMES {
         #[allow(clippy::cast_precision_loss)]
-        let t = range.0 + (range.1 - range.0) * (i as f64) / ((STATIONS - 1) as f64);
+        let t = range.0 + (range.1 - range.0) * (i as f64) / ((FRAMES - 1) as f64);
         let p = curve.point_at(t, tol)?;
         let d = curve.d1_at(t, tol)?;
         let m = d.magnitude();
@@ -2802,24 +3019,55 @@ pub fn make_pipe_skinned(
         });
     }
     let normals = rmf_normals(&stations);
-    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(STATIONS);
-    for (i, station) in stations.iter().enumerate() {
-        let x = normals[i];
-        let y = station.tangent.cross(x);
-        let mut row = Vec::with_capacity(AROUND);
-        for a in 0..AROUND {
-            #[allow(clippy::cast_precision_loss)]
-            let ang = core::f64::consts::TAU * (a as f64) / (AROUND as f64);
-            row.push(station.at + (x * ang.cos() + y * ang.sin()) * radius);
+    // The tube anywhere: the circle about the spine point at `t`, in the
+    // frame carried one rotation-minimizing step from the frame station
+    // behind, `u` the fraction of a turn. At a station that is the
+    // station's own frame, so the tube runs continuously through every
+    // station.
+    let tube = |u: f64, t: f64| -> OgeomResult<Point> {
+        let k = stations.partition_point(|s| s.t <= t).clamp(1, FRAMES) - 1;
+        let p = curve.point_at(t, tol)?;
+        let d = curve.d1_at(t, tol)?;
+        let m = d.magnitude();
+        if m <= tol.confusion() {
+            ogeom_bail!(Construction, "the spine is degenerate at {t}");
         }
-        rows.push(row);
-    }
+        let tangent = d / m;
+        let x = rmf_step(stations[k].at, stations[k].tangent, normals[k], p, tangent);
+        let y = tangent.cross(x);
+        let ang = core::f64::consts::TAU * u;
+        Ok(p + (x * ang.cos() + y * ang.sin()) * radius)
+    };
+    let fraction = |i: usize, n: usize| -> f64 {
+        #[allow(clippy::cast_precision_loss, reason = "a small count")]
+        let f = i as f64 / n as f64;
+        f
+    };
+    let us: Vec<f64> = (0..=AROUND).map(|a| fraction(a, AROUND)).collect();
+    let vs: Vec<f64> = stations.iter().step_by(64).map(|s| s.t).collect();
+    let rows = vs
+        .iter()
+        .map(|&t| us[..AROUND].iter().map(|&u| tube(u, t)).collect())
+        .collect::<OgeomResult<Vec<Vec<Point>>>>()?;
+    let skin = Skin {
+        rows,
+        traced: Some(Traced {
+            point: Box::new(tube),
+            sampling: ogeom_geom::fit::Sampling {
+                us,
+                vs,
+                between: (true, true),
+                closed_v: false,
+                most: 512,
+            },
+        }),
+    };
     let mut built = skinned_solid(
         model,
-        &rows,
+        &skin,
         (
             EndCap::Plane(-stations[0].tangent),
-            EndCap::Plane(stations[STATIONS - 1].tangent),
+            EndCap::Plane(stations[FRAMES - 1].tangent),
         ),
         tolerance,
         tol,
@@ -2970,7 +3218,7 @@ fn closed_loop_shell(
                 .collect()
         })
         .collect();
-    closed_skinned_shell(model, &rows, tolerance, tol)
+    closed_skinned_shell(model, &Skin::rows(rows), tolerance, tol)
 }
 
 /// Rotation-minimizing normals along the stations, by double reflection:
@@ -5604,7 +5852,13 @@ fn pipe_shell_law(
                 let rows = run_rows((rs, re), &flat_row)?;
                 let shared_start = shares_start(ri).then_some(()).and(ring1.as_ref());
                 let shared_end = shares_end(ri).then_some(()).and(ring0.as_ref());
-                let wall = skinned_wall(model, &rows, (shared_start, shared_end), tolerance, tol)?;
+                let wall = skinned_wall(
+                    model,
+                    &Skin::rows(rows),
+                    (shared_start, shared_end),
+                    tolerance,
+                    tol,
+                )?;
                 faces.push(if hole {
                     wall.face.reversed()
                 } else {
