@@ -701,8 +701,9 @@ impl<'a> Reader<'a> {
     /// distance is the exact offset curve. A distance that varies (type 2,
     /// linearly with arc length from `D1` at `TD1` to `D2` at `TD2`; type 3,
     /// as a coordinate of another curve at the same parameter) has no
-    /// closed form, and the displaced points are fitted, same-parameter
-    /// with the base curve, to a hundredth of a micron.
+    /// closed form, and the displaced curve is fitted, same-parameter with
+    /// the base curve, to a hundredth of a micron between its samples as
+    /// well as at them, or the reach is warned of.
     fn offset_curve(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
         let scale = self.report.scale_mm;
         let kind = entity.at(1).int();
@@ -741,17 +742,16 @@ impl<'a> Reader<'a> {
         .vector();
         let (tt1, tt2) = (entity.at(12).real(), entity.at(13).real());
         let range = if tt2 > tt1 { (tt1, tt2) } else { range };
+        // Sampled at every span of the base, and the fit held to its
+        // target between the samples as well as at them, against the law
+        // evaluated wherever the fit is measured.
         const SAMPLES: usize = 400;
-        let parameters: Vec<f64> = (0..=SAMPLES)
-            .map(|i| {
-                #[allow(clippy::cast_precision_loss)]
-                let f = i as f64 / SAMPLES as f64;
-                range.0 + (range.1 - range.0) * f
-            })
-            .collect();
-        let distance: Box<dyn Fn(usize, f64) -> OgeomResult<f64>> = match kind {
+        let stations = ogeom_algo::traced::stations(&basis, range, SAMPLES);
+        let distance: Box<dyn Fn(f64) -> OgeomResult<f64>> = match kind {
             2 => {
-                // Linear in arc length along the base, from TD1 to TD2.
+                // Linear in arc length along the base, from TD1 to TD2: the
+                // length to each station integrated once, and from the
+                // station below to any parameter on demand.
                 let (d1, td1, d2, td2) = (
                     entity.at(5).real(),
                     entity.at(6).real(),
@@ -759,17 +759,21 @@ impl<'a> Reader<'a> {
                     entity.at(8).real(),
                 );
                 let mut lengths = vec![0.0_f64];
-                let mut last = basis.point_at(parameters[0], self.tol)?;
-                for &t in &parameters[1..] {
-                    let p = basis.point_at(t, self.tol)?;
+                for pair in stations.windows(2) {
                     let held = lengths[lengths.len() - 1];
-                    lengths.push(held + last.distance(p) / scale);
-                    last = p;
+                    lengths.push(
+                        held + ogeom_algo::curve_length(&basis, (pair[0], pair[1]), self.tol)?
+                            / scale,
+                    );
                 }
                 let span = td2 - td1;
-                Box::new(move |i, _| {
+                let (basis, stations, tol) = (basis.clone(), stations.clone(), self.tol);
+                Box::new(move |t| {
+                    let i = stations.partition_point(|&s| s <= t).saturating_sub(1);
+                    let along = lengths[i]
+                        + ogeom_algo::curve_length(&basis, (stations[i], t), tol)? / scale;
                     let f = if span.abs() > 0.0 {
-                        (lengths[i] - td1) / span
+                        (along - td1) / span
                     } else {
                         0.0
                     };
@@ -782,7 +786,7 @@ impl<'a> Reader<'a> {
                 let (function, _) = self.curve(entity.at(2).int())?;
                 let which = entity.at(3).int();
                 let tol = self.tol;
-                Box::new(move |_, t| {
+                Box::new(move |t| {
                     let p = function.point_at(t, tol)?;
                     let value = match which {
                         1 => p.x,
@@ -797,23 +801,23 @@ impl<'a> Reader<'a> {
                 "D{de}: offset curve type {kind} names no distance law"
             ),
         };
-        let mut points = Vec::with_capacity(parameters.len());
-        for (i, &t) in parameters.iter().enumerate() {
-            let p = basis.point_at(t, self.tol)?;
-            let tangent = basis.d1_at(t, self.tol)?;
+        let tol = self.tol;
+        let displaced = |t: f64| -> OgeomResult<Point> {
+            let p = basis.point_at(t, tol)?;
+            let tangent = basis.d1_at(t, tol)?;
             let side = reference.cross(tangent);
             let m = side.magnitude();
-            if m <= self.tol.angular() {
+            if m <= tol.angular() {
                 ogeom_bail!(
                     Construction,
                     "D{de}: the offset's reference runs along its base curve"
                 );
             }
-            points.push(p + side * (distance(i, t)? * scale / m));
-        }
-        let fitted = ogeom_geom::fit::fit_points_at(
-            &parameters,
-            &points,
+            Ok(p + side * (distance(t)? * scale / m))
+        };
+        let fitted = ogeom_algo::traced::fit_traced(
+            displaced,
+            &stations,
             3,
             self.tol.confusion() * 100.0,
             self.tol,
@@ -1468,28 +1472,89 @@ impl<'a> Reader<'a> {
         let mut out = Vec::new();
         for (curve, range) in self.curve_segments(b)? {
             // The parameter-space curve read as a model-space one carries
-            // the unit scale; the surface's parameters do not.
-            const SAMPLES: usize = 200;
-            let mut parameters = Vec::with_capacity(SAMPLES + 1);
-            let mut points = Vec::with_capacity(SAMPLES + 1);
-            for i in 0..=SAMPLES {
-                #[allow(clippy::cast_precision_loss)]
-                let t = range.0 + (range.1 - range.0) * (i as f64) / SAMPLES as f64;
-                let p = curve.point_at(t, self.tol)?;
-                parameters.push(t);
-                let Some(q) = map(ogeom_math::Point2::new(p.x, p.y)) else {
-                    ogeom_bail!(Construction, "D{de}: a trim's parameters did not translate");
-                };
-                points.push(q);
-            }
-            let chart =
-                ogeom_geom::fit::fit_points_2d_at(&parameters, &points, 3, 1e-10, self.tol)?;
+            // the unit scale; the surface's parameters do not. Every map
+            // above is affine, so a spline's chart is the spline on its
+            // mapped control points, weights kept: exact, corners and all.
+            // Any other curve is fitted at its own parameters, at every
+            // span and between the samples, and a miss is said out loud.
+            let chart = match &curve {
+                Curve::BSpline(spline) => {
+                    let mut control = Vec::with_capacity(spline.control_points().len());
+                    for c in spline.control_points() {
+                        let p = c.point();
+                        let Some(q) = map(ogeom_math::Point2::new(p.x, p.y)) else {
+                            ogeom_bail!(
+                                Construction,
+                                "D{de}: a trim's parameters did not translate"
+                            );
+                        };
+                        control.push(Weighted::new(q, c.weight, self.tol)?);
+                    }
+                    ogeom_geom::BSpline2d::rational(spline.knots().clone(), control)?
+                }
+                _ => {
+                    const SAMPLES: usize = 200;
+                    let target = 1e-10;
+                    let stations = ogeom_algo::traced::stations(&curve, range, SAMPLES);
+                    let fitted = ogeom_algo::traced::fit_traced_2d(
+                        |t| {
+                            let p = curve.point_at(t, self.tol)?;
+                            map(ogeom_math::Point2::new(p.x, p.y)).ok_or_else(|| {
+                                ogeom_core::ogeom_err!(
+                                    Construction,
+                                    "D{de}: a trim's parameters did not translate"
+                                )
+                            })
+                        },
+                        &stations,
+                        3,
+                        target,
+                        self.tol,
+                    )?;
+                    if !fitted.met {
+                        self.report.warnings.push(format!(
+                            "D{de}: a parameter-space trim fitted to within {:.2e} of \
+                             the file's, in the surface's parameters",
+                            fitted.error
+                        ));
+                    }
+                    fitted.curve
+                }
+            };
+            // Lifted piece by piece between the chart's corners, so the
+            // space curve turns each corner where the chart does, and the
+            // pieces joined back into one curve.
+            let corners = ogeom_algo::traced::corners_2d(&chart, range);
             let lifted = Curve::OnSurface(Box::new(ogeom_geom::CurveOnSurface::new(
-                chart.curve.into(),
+                chart.into(),
                 surface.clone(),
             )));
-            let fitted =
-                lifted.fitted_bspline_over(range, self.tol.confusion() * 100.0, self.tol)?;
+            let target = self.tol.confusion() * 100.0;
+            let mut cuts = vec![range.0.min(range.1)];
+            cuts.extend(corners);
+            cuts.push(range.0.max(range.1));
+            let mut pieces = Vec::with_capacity(cuts.len() - 1);
+            let mut error = 0.0_f64;
+            for pair in cuts.windows(2) {
+                let piece = lifted.fitted_bspline_over((pair[0], pair[1]), target, self.tol)?;
+                error = error.max(piece.error);
+                pieces.push(piece.curve);
+            }
+            let fitted = if pieces.len() == 1 {
+                ogeom_geom::fit::Fitted {
+                    curve: pieces.remove(0),
+                    error,
+                    met: error <= target,
+                }
+            } else {
+                let (curve, moved) = ogeom_algo::traced::joined(&pieces, self.tol)?;
+                let error = error + moved;
+                ogeom_geom::fit::Fitted {
+                    curve,
+                    error,
+                    met: error <= target,
+                }
+            };
             if !fitted.met {
                 self.report.warnings.push(format!(
                     "D{de}: a parameter-space trim lifted to within {:.2e}",
@@ -3381,6 +3446,84 @@ mod tests {
         );
     }
 
+    /// An offset varying with arc length along a base of more spans than
+    /// any fixed sampling follows reads as the displaced curve everywhere
+    /// along it, not only at the samples.
+    #[test]
+    fn a_varying_offset_of_a_many_span_base_holds_between_the_samples() {
+        use ogeom_geom::Curve3d as _;
+        const SPANS: usize = 400;
+        let n = SPANS + 3;
+        let mut base = vec![
+            Value::Int(i64::try_from(n - 1).unwrap()),
+            Value::Int(3),
+            Value::Int(1),
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(0),
+        ];
+        let mut knots = vec![0.0; 4];
+        #[allow(clippy::cast_precision_loss)]
+        knots.extend((1..SPANS).map(|i| i as f64 / SPANS as f64));
+        knots.extend([1.0; 4]);
+        base.extend(reals(&knots));
+        base.extend(reals(&vec![1.0; n]));
+        for i in 0..n {
+            #[allow(clippy::cast_precision_loss)]
+            let x = 10.0 * i as f64 / (n - 1) as f64;
+            base.extend(reals(&[
+                x,
+                if i.is_multiple_of(2) { 5e-4 } else { -5e-4 },
+                0.0,
+            ]));
+        }
+        base.extend(reals(&[0.0, 1.0, 0.0, 0.0, 1.0]));
+        let deck = file(vec![(1, entity(126, 0, base)), (3, entity(130, 0, vec![]))]);
+        let mut reader = reader(&deck);
+        let (basis, range) = reader.curve(1).unwrap();
+        let length = ogeom_algo::curve_length(&basis, range, T).unwrap();
+        let offset = entity(
+            130,
+            0,
+            vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Real(0.05),
+                Value::Real(0.0),
+                Value::Real(0.1),
+                Value::Real(length),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ],
+        );
+        let deck = file(vec![(1, deck.entities[&1].clone()), (3, offset)]);
+        let mut reader = super::tests::reader(&deck);
+        let (curve, (t0, t1)) = reader.curve(3).unwrap();
+        let mut worst = 0.0_f64;
+        let mut along = 0.0;
+        let mut last = t0;
+        for k in 0..=4000 {
+            let t = t0 + (t1 - t0) * f64::from(k) / 4000.0;
+            along += ogeom_algo::curve_length(&basis, (last, t), T).unwrap();
+            last = t;
+            let d = 0.05 + 0.05 * along / length;
+            let side = Vector::Z.cross(basis.d1_at(t, T).unwrap());
+            let want = basis.point_at(t, T).unwrap() + side * (d / side.magnitude());
+            worst = worst.max(curve.point_at(t, T).unwrap().distance(want));
+        }
+        assert!(
+            worst < 1e-4,
+            "the offset strays {worst} between its samples: {:?}",
+            reader.report.warnings
+        );
+    }
+
     /// The parametric spline surface `(s, t, s·t)`: one patch over
     /// `[0, 2] × [0, 3]`, and the same surface as two patches split at
     /// `s = 1` (the second re-expanded about its own break point). Both
@@ -3533,6 +3676,102 @@ mod tests {
                 "D{de} {mid:?}"
             );
         }
+    }
+
+    /// A trim given only in a patch's parameters as a polyline of more
+    /// corners than any fixed sampling holds lifts with every corner where
+    /// the file put it.
+    #[test]
+    fn a_many_cornered_parameter_space_trim_keeps_its_corners() {
+        // The bilinear patch (10u, 10v, 0) over the unit square.
+        let mut patch = vec![
+            Value::Int(1),
+            Value::Int(1),
+            Value::Int(1),
+            Value::Int(1),
+            Value::Int(0),
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(0),
+            Value::Int(0),
+        ];
+        patch.extend(reals(&[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0]));
+        patch.extend(reals(&[1.0; 4]));
+        patch.extend(reals(&[
+            0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0,
+        ]));
+        patch.extend(reals(&[0.0, 1.0, 0.0, 1.0]));
+        // A zigzag of 301 corners in the patch's parameters.
+        const CORNERS: usize = 301;
+        let corner = |i: usize| -> [f64; 2] {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64 / (CORNERS - 1) as f64;
+            [0.1 + 0.8 * f, if i.is_multiple_of(2) { 0.49 } else { 0.51 }]
+        };
+        let mut zigzag = vec![
+            Value::Int(i64::try_from(CORNERS - 1).unwrap()),
+            Value::Int(1),
+            Value::Int(1),
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(0),
+        ];
+        let mut knots = vec![0.0];
+        #[allow(clippy::cast_precision_loss)]
+        knots.extend((0..CORNERS).map(|i| i as f64 / (CORNERS - 1) as f64));
+        knots.push(1.0);
+        zigzag.extend(reals(&knots));
+        zigzag.extend(reals(&[1.0; CORNERS]));
+        for i in 0..CORNERS {
+            let [u, v] = corner(i);
+            zigzag.extend(reals(&[u, v, 0.0]));
+        }
+        zigzag.extend(reals(&[0.0, 1.0, 0.0, 0.0, 1.0]));
+        let deck = file(vec![
+            (1, entity(128, 0, patch)),
+            (3, entity(126, 0, zigzag)),
+            (
+                5,
+                entity(
+                    142,
+                    0,
+                    vec![
+                        Value::Int(0),
+                        Value::Int(1),
+                        Value::Int(3),
+                        Value::Int(0),
+                        Value::Int(0),
+                    ],
+                ),
+            ),
+        ]);
+        let mut reader = reader(&deck);
+        let segments = reader.boundary_segments(5).unwrap();
+        let [(curve, (t0, t1))] = segments.as_slice() else {
+            panic!("one segment");
+        };
+        // Each corner, lifted, against the nearest point of the read trim.
+        let fine: Vec<Point> = (0..=60_000)
+            .map(|k| {
+                let t = t0 + (t1 - t0) * f64::from(k) / 60_000.0;
+                curve.point_at(t, T).unwrap()
+            })
+            .collect();
+        let mut worst = 0.0_f64;
+        for i in (0..CORNERS).step_by(7) {
+            let [u, v] = corner(i);
+            let want = Point::new(10.0 * u, 10.0 * v, 0.0);
+            let near = fine
+                .iter()
+                .map(|p| p.distance(want))
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max(near);
+        }
+        assert!(
+            worst < 1e-6,
+            "a corner lost by {worst}: {:?}",
+            reader.report.warnings
+        );
     }
 
     /// A trim given in an analytic surface's own parameters lifts through
