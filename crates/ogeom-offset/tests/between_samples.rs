@@ -594,3 +594,52 @@ fn a_closed_pipe_shell_holds_its_radius_between_stations() {
     eprintln!("closed pipe shell off its radius by {worst}");
     assert!(worst <= tolerance, "the wall strays {worst} from the tube");
 }
+
+#[test]
+fn a_wide_helical_sweep_holds_its_profile_between_stations() {
+    // A circle of radius one, a thousand out from the z axis in the XZ
+    // plane, screwed once round at a pitch of three: its stations, 48 a
+    // quarter turn, stand about thirty apart.
+    let (out, r, pitch) = (1000.0, 1.0, 3.0);
+    let mut model = Model::new();
+    let frame = Frame::new(Point::new(out, 0.0, 0.0), -Direction::Y, Direction::X, T).unwrap();
+    let profile = disc(&mut model, frame, r);
+    let axis = ogeom_math::Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Z,
+    };
+    let sweep =
+        ogeom_offset::make_helical_sweep(&mut model, &profile, axis, pitch, 1.0, false, 0.0, T)
+            .unwrap()
+            .shape;
+    let diagnosis = ogeom_algo::check(&model, &sweep, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    // Each wall point read in the half plane through the axis it stands
+    // in, screwed back to the start by the turn it has made (the one of
+    // its angle's whole turns that lands it nearest the profile): there it
+    // is on the profile's circle.
+    let mut worst = 0.0_f64;
+    for wall in spline_surfaces(&model, &sweep) {
+        let (ud, vd) = wall.domain();
+        for j in 0..=200 {
+            for i in 0..=40 {
+                let q = wall
+                    .point_at(across(ud, i, 40), across(vd, j, 200), T)
+                    .unwrap();
+                let angle = q.y.atan2(q.x);
+                let off = [angle, angle + 2.0 * PI]
+                    .iter()
+                    .map(|turned| {
+                        let back = q.z - pitch * turned / (2.0 * PI);
+                        ((q.x.hypot(q.y) - out).hypot(back) - r).abs()
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                worst = worst.max(off);
+            }
+        }
+    }
+    // The sweep's own target.
+    let tolerance = T.confusion() * 100.0;
+    eprintln!("wide helical sweep off its profile by {worst}");
+    assert!(worst <= tolerance, "the wall strays {worst} from the screw");
+}

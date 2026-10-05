@@ -654,12 +654,6 @@ fn fractions(n: usize) -> Vec<f64> {
         .collect()
 }
 
-/// The indices of `n` sections, as parameters: naught to `n - 1`.
-fn section_indices(n: usize) -> Vec<f64> {
-    #[allow(clippy::cast_precision_loss, reason = "a small count")]
-    (0..n).map(|i| i as f64).collect()
-}
-
 impl<'a> Skin<'a> {
     /// A skin over bare rows, each once round: fitted through them,
     /// measured at them.
@@ -757,21 +751,39 @@ impl<'a> Skin<'a> {
         })
     }
 
-    /// A skin known everywhere: `point(u, v)` with `u` along the rows and
-    /// `v` across them, sampled at `us` and `vs` to start with and checked
-    /// and refined between them both ways. Where `round`, the last of `us`
-    /// is the first again.
+    /// A skin known everywhere: `point(u, s)` with `u` along the rows and
+    /// `s` a station index across them, a whole number at a station and a
+    /// fraction between two. It is sampled at `us` and at every station
+    /// from `stations.0` to `stations.1` to start with, and checked and
+    /// refined between them both ways. Across, the skin's parameter runs
+    /// from naught to one over the stations, evenly. Where `round`, the
+    /// last of `us` is the first again.
     fn swept(
         point: impl Fn(f64, f64) -> OgeomResult<Point> + 'a,
         us: Vec<f64>,
-        vs: Vec<f64>,
+        stations: (usize, usize),
         round: bool,
     ) -> OgeomResult<Self> {
         let (u0, u1) = (us[0], us[us.len() - 1]);
+        #[allow(clippy::cast_precision_loss, reason = "station counts")]
+        let (first, steps) = (stations.0 as f64, (stations.1 - stations.0) as f64);
+        if steps < 1.0 {
+            ogeom_bail!(Construction, "a swept skin needs two stations");
+        }
+        let vs: Vec<f64> = (stations.0..=stations.1)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss, reason = "station counts")]
+                let step = (i - stations.0) as f64;
+                step / steps
+            })
+            .collect();
         // The end of the way round is its start, to the bit, so the seam
-        // closes exactly.
+        // closes exactly; a station is its whole index, to the bit.
         let point = move |u: f64, v: f64| -> OgeomResult<Point> {
-            point(if round && u >= u1 { u0 } else { u }, v)
+            let s = first + v * steps;
+            let whole = s.round();
+            let s = if (s - whole).abs() <= 1e-9 { whole } else { s };
+            point(if round && u >= u1 { u0 } else { u }, s)
         };
         let rows: Vec<Vec<Point>> = vs
             .iter()
@@ -2696,7 +2708,7 @@ fn cornered_loft(
                     Ok(motion(s)?.apply(edge_at(0, e, f)?))
                 },
                 fractions(ALONG),
-                section_indices(rings.len()),
+                (0, rings.len() - 1),
                 false,
             )?,
             None => Skin::columns(
@@ -2979,7 +2991,7 @@ fn loft_skinned_along(
                         Ok(motion(s)?.apply(first.at(f)))
                     },
                     fractions(AROUND_SECTION),
-                    section_indices(sections.len()),
+                    (0, sections.len() - 1),
                     true,
                 )?
             }
@@ -3333,11 +3345,8 @@ fn closed_loop_shell(
     let t0 = stations[0].tangent;
     let y0 = t0.cross(x0);
     // The way round runs from the first station to its return home, the
-    // last of the walk's stations; the station index is the skin's
-    // parameter across.
+    // last of the walk's stations.
     let home = stations.len() - 1;
-    #[allow(clippy::cast_precision_loss)]
-    let around_stations: Vec<f64> = (0..=home).map(|i| i as f64).collect();
     // A point of the profile, in the start frame, at `s` along the way
     // round: a station's own frame at a station, the home station the
     // first again, the frame carried between them anywhere else.
@@ -3380,7 +3389,7 @@ fn closed_loop_shell(
                     carried(s, ((p - origin).dot(x0), (p - origin).dot(y0)))
                 },
                 fractions(ALONG_EDGE),
-                around_stations.clone(),
+                (0, home),
                 false,
             )?;
             let next = (index + 1) % edges.len();
@@ -3447,7 +3456,7 @@ fn closed_loop_shell(
             carried(s, ((p - origin).dot(x0), (p - origin).dot(y0)))
         },
         fractions(AROUND),
-        around_stations,
+        (0, home),
         true,
     )?;
     closed_skinned_shell(model, &skin, tolerance, tol)
@@ -3925,9 +3934,11 @@ pub fn make_helical_sweep(
     // The fit keeps fewer controls than samples, so its reach at the
     // samples is set by how many there are.
     const PER_SEGMENT: usize = 48;
+    // The turn at `s` stations into a segment, `s` a whole station or any
+    // fraction between.
     #[allow(clippy::cast_precision_loss)]
-    let theta_at = |seg: usize, i: usize| {
-        borders[seg] + (borders[seg + 1] - borders[seg]) * (i as f64) / (PER_SEGMENT as f64)
+    let theta_at = |seg: usize, s: f64| {
+        borders[seg] + (borders[seg + 1] - borders[seg]) * s / (PER_SEGMENT as f64)
     };
 
     let mut faces: Vec<Shape> = Vec::new();
@@ -3987,19 +3998,15 @@ pub fn make_helical_sweep(
                 24
             }
         };
-        // A piece's strip over one segment: each column the piece's point
-        // screwed through the segment's stations.
+        // A piece's strip over one segment: the piece's points screwed
+        // through the segment, the station index (an even step of the
+        // turn) its parameter across, known between the stations as at
+        // them.
         let skin_of = |pi: usize, seg: usize| -> OgeomResult<Skin<'_>> {
-            Skin::columns(
-                move |f| {
-                    let p = piece_at(pi, f)?;
-                    (0..=PER_SEGMENT)
-                        .map(|i| screw(p, theta_at(seg, i)))
-                        .collect()
-                },
+            Skin::swept(
+                move |f, s| screw(piece_at(pi, f)?, theta_at(seg, s)),
                 fractions(along_of(pi)),
-                false,
-                false,
+                (0, PER_SEGMENT),
                 false,
             )
         };
@@ -4007,7 +4014,11 @@ pub fn make_helical_sweep(
         // A vertex set at every segment boundary.
         let mut corners: Vec<Vec<Shape>> = Vec::with_capacity(segments + 1);
         for b in 0..=segments {
-            let theta = if b == segments { total } else { theta_at(b, 0) };
+            let theta = if b == segments {
+                total
+            } else {
+                theta_at(b, 0.0)
+            };
             let mut set = Vec::with_capacity(count);
             for p in &starts {
                 set.push(ogeom_algo::make_vertex(model, screw(*p, theta)?).shape);
@@ -4020,7 +4031,8 @@ pub fn make_helical_sweep(
         // start on.
         let mut held_tops: Vec<Option<Shape>> = vec![None; count];
         for seg in 0..segments {
-            let hint = screw(centre, theta_at(seg, PER_SEGMENT / 2))?;
+            #[allow(clippy::cast_precision_loss)]
+            let hint = screw(centre, theta_at(seg, (PER_SEGMENT / 2) as f64))?;
             let mut first_rail: Option<Shape> = None;
             let mut prev_rail: Option<Shape> = None;
             for ei in 0..count {
@@ -6174,9 +6186,9 @@ fn pipe_shell_law(
         };
     // A curved run with no crossing at either end has its stations for
     // rows, and the frame carried between them places the profile anywhere
-    // along it: its skin is checked between the stations too, at the
-    // station index as its parameter across (an affine image of the spine's
-    // own parameter along the run).
+    // along it: its skin is checked between the stations too, its
+    // parameter across even in the station index (an affine image of the
+    // spine's own parameter along the run).
     let plain = |run: (usize, usize)| -> bool {
         !straight(run.0, run.1)
             && !corner_pairs
@@ -6192,9 +6204,6 @@ fn pipe_shell_law(
             walk.generator(s, run, ab, tol)
         }
     };
-    #[allow(clippy::cast_precision_loss)]
-    let station_params =
-        |(rs, re): (usize, usize)| -> Vec<f64> { (rs..=re).map(|i| i as f64).collect() };
     let last = stations.len() - 1;
 
     enum LoopWall {
@@ -6231,7 +6240,7 @@ fn pipe_shell_law(
                     Skin::swept(
                         |f, s| along_run((rs, re), s, flat(profile_loop.at(f))),
                         fractions(AROUND),
-                        station_params((rs, re)),
+                        (rs, re),
                         true,
                     )?
                 } else {
@@ -6371,7 +6380,7 @@ fn pipe_shell_law(
                         Skin::swept(
                             |f, s| along_run((rs, re), s, edge_flat(f)?),
                             fractions(ALONG_EDGE),
-                            station_params((rs, re)),
+                            (rs, re),
                             false,
                         )?
                     } else {

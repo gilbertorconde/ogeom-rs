@@ -310,12 +310,17 @@ section moved by the law's frame between its stations, the law asked for
 its normal there: the same disc under a guide beside the spine, at 1e-4,
 6.4e-3 to 3.6e-5; under a binormal at 1e-5, 5.4e-5 to 2.8e-6. A guide
 starting on the first station's plane no longer has its crossing taken a
-step along it (the start section turned by up to that step).
+step along it (the start section turned by up to that step). The helical
+strips are checked between their stations too (the screw is exact at any
+turn): a disc of radius 1 a thousand out from the axis, once round, stood
+4.5e-5 off at its 1e-5 target and stands 5.5e-6 off. A swept skin's
+parameter across runs from naught to one over its stations. Cost: a
+helical sweep builds about half as long again (a spring of 3 turns 0.49 s
+to 0.75 s), a thread groove's pipe 0.13 s to 0.26 s; the thread groove
+and helical sweep tests take 0 to 20% longer, the stress run the same.
 Left:
-- Along a sweep only the stations are known: the helical strips are
-  checked along their profile, not between their stations. A pipe shell's
-  run re-rowed at a curved corner (each column along its own generator to
-  the crossing) is still fitted through its rows.
+- A pipe shell's run re-rowed at a curved corner (each column along its
+  own generator to the crossing) is still fitted through its rows.
 - `fit_curve_sampled` (ogeom-geom) and `ogeom_algo::traced::fit_traced`
   do the same job but not the same fit: `fit_traced` fits through every
   sample with `fit_points_at`, measures each interval's quarter points
