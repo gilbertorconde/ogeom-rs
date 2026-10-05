@@ -654,6 +654,12 @@ fn fractions(n: usize) -> Vec<f64> {
         .collect()
 }
 
+/// The indices of `n` sections, as parameters: naught to `n - 1`.
+fn section_indices(n: usize) -> Vec<f64> {
+    #[allow(clippy::cast_precision_loss, reason = "a small count")]
+    (0..n).map(|i| i as f64).collect()
+}
+
 impl<'a> Skin<'a> {
     /// A skin over bare rows, each once round: fitted through them,
     /// measured at them.
@@ -2603,10 +2609,13 @@ fn coaxial_circles_loft(
 /// A loft through sections of one edge count, every vertex a corner: one
 /// strip per edge through all the sections, meeting its neighbours along
 /// seams through the matched corners, each strip a plane wherever its rows
-/// share one. `None` where the sections do not pair edge for edge.
+/// share one. `None` where the sections do not pair edge for edge. Where
+/// `along` moves the first section onto the others, the strips are held to
+/// that motion between the sections too.
 fn cornered_loft(
     model: &mut Model,
     sections: &[Shape],
+    along: Option<SectionMotion<'_>>,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
@@ -2676,13 +2685,28 @@ fn cornered_loft(
     let mut first_rail: Option<Shape> = None;
     let mut prev_rail: Option<Shape> = None;
     for e in 0..count {
-        let skin = Skin::columns(
-            |f| (0..rings.len()).map(|s| edge_at(s, e, f)).collect(),
-            fractions(ALONG),
-            false,
-            true,
-            false,
-        )?;
+        let skin = match along {
+            Some(motion) => Skin::swept(
+                move |f, s| {
+                    if s.fract() == 0.0 {
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let i = s as usize;
+                        return edge_at(i, e, f);
+                    }
+                    Ok(motion(s)?.apply(edge_at(0, e, f)?))
+                },
+                fractions(ALONG),
+                section_indices(rings.len()),
+                false,
+            )?,
+            None => Skin::columns(
+                |f| (0..rings.len()).map(|s| edge_at(s, e, f)).collect(),
+                fractions(ALONG),
+                false,
+                true,
+                false,
+            )?,
+        };
         let next = (e + 1) % count;
         let last_rail = if e + 1 == count {
             first_rail.clone()
@@ -2825,6 +2849,24 @@ pub fn make_loft_skinned(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    loft_skinned_along(model, sections, None, tolerance, tol)
+}
+
+/// The motion carrying a loft's first section to where the sections stand
+/// at `s`, a section's index (a fraction of the way between two sections
+/// between them): the sections of a sweep are one section moved.
+type SectionMotion<'a> = &'a dyn Fn(f64) -> OgeomResult<Transform>;
+
+/// [`make_loft_skinned`], and where `along` is given the sections are the
+/// first one moved by it and the skin is held to that motion between them
+/// as well as to the sections.
+fn loft_skinned_along(
+    model: &mut Model,
+    sections: &[Shape],
+    along: Option<SectionMotion<'_>>,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if sections.len() < 2 {
         ogeom_bail!(Construction, "a loft needs at least two sections");
     }
@@ -2834,6 +2876,7 @@ pub fn make_loft_skinned(
     // polygons.
     if sections.len() == 2
         && !to_point
+        && along.is_none()
         && let Ok(built) = make_loft(model, &sections[0], &sections[1], tol)
     {
         return Ok(built);
@@ -2842,7 +2885,7 @@ pub fn make_loft_skinned(
         if let Some(built) = coaxial_circles_loft(model, sections, tol)? {
             return Ok(built);
         }
-        if let Some(built) = cornered_loft(model, sections, tolerance, tol)? {
+        if let Some(built) = cornered_loft(model, sections, along, tolerance, tol)? {
             return Ok(built);
         }
     }
@@ -2921,7 +2964,27 @@ pub fn make_loft_skinned(
         };
         skinned_solid_to_apex(model, &skin, outward0, tolerance, tol)?
     } else {
-        let skin = Skin::sections(loops, false)?;
+        let skin = match along {
+            Some(motion) => {
+                let Some(Section::Loop(first)) = loops.first().cloned() else {
+                    ogeom_bail!(Construction, "a loft's first section is a loop");
+                };
+                Skin::swept(
+                    move |f, s| {
+                        if s.fract() == 0.0 {
+                            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                            let i = s as usize;
+                            return Ok(loops[i].at(f));
+                        }
+                        Ok(motion(s)?.apply(first.at(f)))
+                    },
+                    fractions(AROUND_SECTION),
+                    section_indices(sections.len()),
+                    true,
+                )?
+            }
+            None => Skin::sections(loops, false)?,
+        };
         let outward0 = outward_at(&skin.rows, &cap_planes, false);
         let outward1 = outward_at(&skin.rows, &cap_planes, true);
         skinned_solid(model, &skin, (outward0, outward1), tolerance, tol)?
@@ -5058,18 +5121,49 @@ fn law_loft(
     }
     let normals = law_normals(model, stations, law, tolerance, tol)?;
     let start = station_frame(&stations[0], normals[0], tol)?;
+    let mut kept: Vec<SpineStation> = Vec::with_capacity(stations.len());
+    let mut kept_normals: Vec<Vector> = Vec::with_capacity(stations.len());
     let mut sections: Vec<Shape> = Vec::with_capacity(stations.len());
-    let mut last: Option<Point> = None;
     for (station, normal) in stations.iter().zip(&normals) {
-        if last.is_some_and(|p| p.distance(station.at) <= tol.confusion()) {
+        if kept
+            .last()
+            .is_some_and(|p| p.at.distance(station.at) <= tol.confusion())
+        {
             continue;
         }
-        last = Some(station.at);
+        kept.push(*station);
+        kept_normals.push(*normal);
         let frame = station_frame(station, *normal, tol)?;
         let motion = Transform::from_frame(&frame) * Transform::to_frame(&start);
         sections.push(moved_ring(model, &rings[0], &motion, tol)?);
     }
-    let mut built = make_loft_skinned(model, &sections, tolerance, tol)?;
+    // Between two stations the spine is read off its curve and the law
+    // asked for its normal there, as at a station.
+    let walk = SpineWalk {
+        curves: walk_curves(model, spine)?,
+        stations: &kept,
+        normals: &kept_normals,
+    };
+    let held: std::cell::RefCell<std::collections::HashMap<u64, Transform>> =
+        std::cell::RefCell::default();
+    let guide = guide_curves(model, law)?;
+    let motion = |s: f64| -> OgeomResult<Transform> {
+        if let Some(m) = held.borrow().get(&s.to_bits()) {
+            return Ok(*m);
+        }
+        let (at, tangent, _) = walk.frame_at(s, (0, kept.len() - 1), tol)?;
+        let here = SpineStation {
+            at,
+            tangent,
+            ..kept[0]
+        };
+        let normal = law_normals_on(&guide, &[here], law, tolerance, tol)?[0];
+        let frame = station_frame(&here, normal, tol)?;
+        let m = Transform::from_frame(&frame) * Transform::to_frame(&start);
+        held.borrow_mut().insert(s.to_bits(), m);
+        Ok(m)
+    };
+    let mut built = loft_skinned_along(model, &sections, Some(&motion), tolerance, tol)?;
     built.history.generate(spine, built.shape.clone());
     built.history.generate(profile, built.shape.clone());
     Ok(built)
@@ -5424,6 +5518,39 @@ pub(crate) fn law_normals(
     reach: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Vector>> {
+    law_normals_on(&guide_curves(model, law)?, stations, law, reach, tol)
+}
+
+/// An auxiliary law's guide, each edge's curve and range in the guide's
+/// order; nothing for any other law.
+fn guide_curves(
+    model: &Model,
+    law: &PipeLaw<'_>,
+) -> OgeomResult<Vec<(ogeom_geom::Curve, (f64, f64))>> {
+    let PipeLaw::Auxiliary { guide } = law else {
+        return Ok(Vec::new());
+    };
+    let edges: Vec<Shape> = match model.kind_of(guide)? {
+        ShapeType::Edge => vec![(*guide).clone()],
+        ShapeType::Wire => model.ordered_children_of(guide)?,
+        _ => ogeom_bail!(Construction, "an auxiliary spine is an edge or a wire"),
+    };
+    let mut curves = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        curves.push(spine_curve_of(model, edge)?);
+    }
+    Ok(curves)
+}
+
+/// [`law_normals`], an auxiliary law's guide read already
+/// ([`guide_curves`]).
+fn law_normals_on(
+    curves: &[(ogeom_geom::Curve, (f64, f64))],
+    stations: &[SpineStation],
+    law: &PipeLaw<'_>,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vector>> {
     match law {
         // Carried by translation, the section has no frame turning with the
         // spine; the fixed pipe is built without stations.
@@ -5449,16 +5576,7 @@ pub(crate) fn law_normals(
                 Ok(n / n.magnitude())
             })
             .collect(),
-        PipeLaw::Auxiliary { guide } => {
-            let edges: Vec<Shape> = match model.kind_of(guide)? {
-                ShapeType::Edge => vec![(*guide).clone()],
-                ShapeType::Wire => model.ordered_children_of(guide)?,
-                _ => ogeom_bail!(Construction, "an auxiliary spine is an edge or a wire"),
-            };
-            let mut curves = Vec::with_capacity(edges.len());
-            for edge in &edges {
-                curves.push(spine_curve_of(model, edge)?);
-            }
+        PipeLaw::Auxiliary { .. } => {
             let mut out = Vec::with_capacity(stations.len());
             let mut last: Option<Point> = None;
             for s in stations {
@@ -5467,7 +5585,7 @@ pub(crate) fn law_normals(
                 // change of the height along each guide edge, refined; the
                 // crossing nearest the last one found.
                 let mut best: Option<Point> = None;
-                for (curve, range) in &curves {
+                for (curve, range) in curves {
                     const STEPS: u32 = 256;
                     let height = |u: f64| -> OgeomResult<(f64, Point)> {
                         let q = curve.point_at(u, tol)?;
@@ -5479,19 +5597,24 @@ pub(crate) fn law_normals(
                     for k in 1..=STEPS {
                         let here = height(at(k))?;
                         if prev.0 == 0.0 || prev.0.signum() != here.0.signum() {
-                            let (mut lo, mut hi) = (at(k - 1), at(k));
-                            let mut f_lo = prev.0;
-                            for _ in 0..60 {
-                                let mid = f64::midpoint(lo, hi);
-                                let (f_mid, _) = height(mid)?;
-                                if f_mid.signum() == f_lo.signum() {
-                                    lo = mid;
-                                    f_lo = f_mid;
-                                } else {
-                                    hi = mid;
+                            // A sample on the plane is the crossing itself.
+                            let q = if prev.0 == 0.0 {
+                                prev.1
+                            } else {
+                                let (mut lo, mut hi) = (at(k - 1), at(k));
+                                let mut f_lo = prev.0;
+                                for _ in 0..60 {
+                                    let mid = f64::midpoint(lo, hi);
+                                    let (f_mid, _) = height(mid)?;
+                                    if f_mid.signum() == f_lo.signum() {
+                                        lo = mid;
+                                        f_lo = f_mid;
+                                    } else {
+                                        hi = mid;
+                                    }
                                 }
-                            }
-                            let q = height(f64::midpoint(lo, hi))?.1;
+                                height(f64::midpoint(lo, hi))?.1
+                            };
                             let near = last.unwrap_or(p);
                             if best.is_none_or(|b| q.distance(near) < b.distance(near)) {
                                 best = Some(q);
@@ -5502,7 +5625,7 @@ pub(crate) fn law_normals(
                 }
                 if best.is_none() {
                     let near = last.unwrap_or(p);
-                    for (curve, range) in &curves {
+                    for (curve, range) in curves {
                         for u in [range.0, range.1] {
                             let q = curve.point_at(u, tol)?;
                             let h = (q - p).dot(t);

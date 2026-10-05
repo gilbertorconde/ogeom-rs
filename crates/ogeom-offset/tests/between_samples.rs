@@ -490,31 +490,7 @@ fn off_the_tube(model: &Model, pipe: &Shape, spine: &ogeom_geom::Curve, r: f64) 
 
 #[test]
 fn a_pipe_shell_round_a_tight_bend_holds_its_radius_between_stations() {
-    // A cubic spline running up z, turning through a quarter within one
-    // span of its parameter and running on along x: its stations stand
-    // evenly in that parameter, a few across the bend.
-    let control = vec![
-        Point::new(0.0, 0.0, 0.0),
-        Point::new(0.0, 0.0, 3.0),
-        Point::new(0.0, 0.0, 6.0),
-        Point::new(0.0, 0.0, 9.0),
-        Point::new(1.0, 0.0, 9.0),
-        Point::new(4.0, 0.0, 9.0),
-        Point::new(7.0, 0.0, 9.0),
-        Point::new(10.0, 0.0, 9.0),
-    ];
-    let spine = ogeom_geom::Curve::BSpline(
-        ogeom_geom::BSplineCurve::new(
-            ogeom_math::KnotVector::new(
-                vec![0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0],
-                3,
-            )
-            .unwrap(),
-            control,
-            T,
-        )
-        .unwrap(),
-    );
+    let spine = tight_bend();
     let (r, tolerance) = (0.3, 1e-4);
     for frenet in [false, true] {
         let mut model = Model::new();
@@ -530,6 +506,70 @@ fn a_pipe_shell_round_a_tight_bend_holds_its_radius_between_stations() {
         eprintln!("pipe shell round a bend (Frenet {frenet}) off its radius by {worst}");
         assert!(worst <= tolerance, "the wall strays {worst} from the tube");
     }
+}
+
+#[test]
+fn a_pipe_shell_under_a_law_holds_its_radius_between_stations() {
+    use ogeom_geom::Transformable as _;
+    let spine = tight_bend();
+    let r = 0.3;
+    for (guided, tolerance) in [(true, 1e-4), (false, 1e-5)] {
+        let mut model = Model::new();
+        let edge = edge_of(&mut model, spine.clone());
+        let wire = ogeom_algo::make_wire(&mut model, &[edge], T).unwrap().shape;
+        // The spine moved one along y: it crosses every plane square to
+        // the spine one along y from the spine.
+        let beside = spine
+            .transformed(
+                &ogeom_math::Transform::translation(ogeom_math::Vector::new(0.0, 1.0, 0.0)),
+                T,
+            )
+            .unwrap();
+        let guide = edge_of(&mut model, beside);
+        let law = if guided {
+            ogeom_offset::PipeLaw::Auxiliary { guide: &guide }
+        } else {
+            ogeom_offset::PipeLaw::Binormal(Direction::Y)
+        };
+        let profile = disc(&mut model, Frame::WORLD, r);
+        let pipe =
+            ogeom_offset::make_pipe_shell_law(&mut model, &profile, &wire, law, tolerance, T)
+                .unwrap()
+                .shape;
+        let diagnosis = ogeom_algo::check(&model, &pipe, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        let worst = off_the_tube(&model, &pipe, &spine, r);
+        eprintln!("pipe shell under a law (guided {guided}) off its radius by {worst}");
+        assert!(worst <= tolerance, "the wall strays {worst} from the tube");
+    }
+}
+
+/// A cubic spline running up z, turning through a quarter within one span
+/// of its parameter and running on along x: a pipe's stations stand evenly
+/// in that parameter, a few across the bend.
+fn tight_bend() -> ogeom_geom::Curve {
+    let control = vec![
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(0.0, 0.0, 3.0),
+        Point::new(0.0, 0.0, 6.0),
+        Point::new(0.0, 0.0, 9.0),
+        Point::new(1.0, 0.0, 9.0),
+        Point::new(4.0, 0.0, 9.0),
+        Point::new(7.0, 0.0, 9.0),
+        Point::new(10.0, 0.0, 9.0),
+    ];
+    ogeom_geom::Curve::BSpline(
+        ogeom_geom::BSplineCurve::new(
+            ogeom_math::KnotVector::new(
+                vec![0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0],
+                3,
+            )
+            .unwrap(),
+            control,
+            T,
+        )
+        .unwrap(),
+    )
 }
 
 #[test]

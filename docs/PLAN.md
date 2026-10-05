@@ -305,13 +305,17 @@ the skin takes the station index as its parameter across. A disc of
 radius 0.3 down a spline turning a quarter within one span, at 1e-4,
 stood 1.1e-2 off its tube and stands 1.5e-5 off (both laws); round an
 ellipse 5 by 2, 1.3e-4 to 3.0e-5. Each wall takes about 20 to 100 ms
-more.
+more. The law loft (auxiliary and binormal laws) is held to the first
+section moved by the law's frame between its stations, the law asked for
+its normal there: the same disc under a guide beside the spine, at 1e-4,
+6.4e-3 to 3.6e-5; under a binormal at 1e-5, 5.4e-5 to 2.8e-6. A guide
+starting on the first station's plane no longer has its crossing taken a
+step along it (the start section turned by up to that step).
 Left:
-- Along a sweep only the stations are known: the law loft's stations and
-  the helical strips are checked along their profile, not between their
-  stations. A pipe shell's run re-rowed at a curved corner (each column
-  along its own generator to the crossing) is still fitted through its
-  rows.
+- Along a sweep only the stations are known: the helical strips are
+  checked along their profile, not between their stations. A pipe shell's
+  run re-rowed at a curved corner (each column along its own generator to
+  the crossing) is still fitted through its rows.
 - `fit_curve_sampled` (ogeom-geom) and `ogeom_algo::traced::fit_traced`
   do the same job but not the same fit: `fit_traced` fits through every
   sample with `fit_points_at`, measures each interval's quarter points
