@@ -592,14 +592,21 @@ fn bilinear_wall(
     Ok(if outward { face } else { face.reversed() })
 }
 
-/// What a skin closed the way round is fitted to: its rows of samples, and
-/// the geometry they sample where the builder knows it.
+/// What a skin is fitted to: its rows of samples, and the geometry they
+/// sample where the builder knows it.
 struct Skin<'a> {
-    /// `rows[j][i]` runs round section `j`, without the closing point.
+    /// `rows[j][i]` runs along row `j`: once round a section without the
+    /// closing point where `round`, across an open strip otherwise.
     rows: Vec<Vec<Point>>,
-    /// The geometry the rows sample, if known: `point(u, v)` with `u` once
-    /// round over the sampling's `u` range (its end the start again) and
-    /// `v` along the skin, and where the fit starts sampling it.
+    /// Whether each row runs once round, its end its start.
+    round: bool,
+    /// Whether bare rows sit across the skin by chord length (sections a
+    /// caller spaced) rather than centripetally.
+    by_spacing: bool,
+    /// The geometry the rows sample, if known: `point(u, v)` with `u` along
+    /// the rows over the sampling's `u` range (once round where `round`, its
+    /// end the start again) and `v` across them, and where the fit starts
+    /// sampling it.
     traced: Option<Traced<'a>>,
 }
 
@@ -636,74 +643,130 @@ impl Section {
 /// each section's own start.
 const AROUND_SECTION: usize = 48;
 
-impl<'a> Skin<'a> {
-    /// A skin over bare rows: fitted through them, measured at them.
-    fn rows(rows: Vec<Vec<Point>>) -> Self {
-        Self { rows, traced: None }
-    }
-
-    /// A skin through `sections`, each sampled at [`AROUND_SECTION`] even
-    /// fractions of its length and checked between them; across the
-    /// sections the samples are all there is of the skin. The rows sit
-    /// across the skin at the centripetal parameters
-    /// [`ogeom_geom::fit::fit_surface_grid`] gives them, and once round at
-    /// the fraction of the length.
-    fn sections(sections: Vec<Section>, closed: bool) -> OgeomResult<Self> {
-        let n = AROUND_SECTION;
-        let fraction = |i: usize| -> f64 {
+/// `n + 1` even fractions of one, from naught to one.
+fn fractions(n: usize) -> Vec<f64> {
+    (0..=n)
+        .map(|i| {
             #[allow(clippy::cast_precision_loss, reason = "a small count")]
             let f = i as f64 / n as f64;
             f
-        };
-        let rows: Vec<Vec<Point>> = sections
+        })
+        .collect()
+}
+
+impl<'a> Skin<'a> {
+    /// A skin over bare rows, each once round: fitted through them,
+    /// measured at them.
+    fn rows(rows: Vec<Vec<Point>>) -> Self {
+        Self {
+            rows,
+            round: true,
+            by_spacing: false,
+            traced: None,
+        }
+    }
+
+    /// A skin whose every column is a function of its parameter along the
+    /// rows: `column(u)` is the column of points at `u`, one per row,
+    /// sampled at `us` to start with and checked and refined between them.
+    /// Across the rows the samples are all there is of the skin: the rows
+    /// sit there at the parameters [`ogeom_geom::fit::grid_parameters`]
+    /// gives them, by chord length where `by_spacing`, centripetally
+    /// otherwise. Where `round`, the last of `us` is the first again; where
+    /// `closed_v`, the rows loop and the first row closes it.
+    fn columns(
+        column: impl Fn(f64) -> OgeomResult<Vec<Point>> + 'a,
+        us: Vec<f64>,
+        round: bool,
+        by_spacing: bool,
+        closed_v: bool,
+    ) -> OgeomResult<Self> {
+        let sampled: Vec<Vec<Point>> = us[..us.len() - usize::from(round)]
             .iter()
-            .map(|s| (0..n).map(|i| s.at(fraction(i))).collect())
+            .map(|u| column(*u))
+            .collect::<OgeomResult<_>>()?;
+        let count = sampled[0].len();
+        let rows: Vec<Vec<Point>> = (0..count)
+            .map(|j| sampled.iter().map(|c| c[j]).collect())
             .collect();
         let mut grid: Vec<Vec<Point>> = rows
             .iter()
             .map(|r| {
                 let mut r = r.clone();
-                r.push(r[0]);
+                if round {
+                    r.push(r[0]);
+                }
                 r
             })
             .collect();
-        if closed {
+        if closed_v {
             grid.push(grid[0].clone());
         }
-        let (_, vs) = ogeom_geom::fit::grid_parameters(&grid, (false, false))?;
+        let bare = Self {
+            rows: rows.clone(),
+            round,
+            by_spacing,
+            traced: None,
+        };
+        let (_, vs) = ogeom_geom::fit::grid_parameters(&grid, (false, by_spacing))?;
         if vs.windows(2).any(|w| w[1] <= w[0]) {
-            // Sections that coincide leave the rows no order across the
-            // skin; the bare rows decide what the fit makes of them.
-            return Ok(Self::rows(rows));
+            // Rows that coincide have no order across the skin; the bare
+            // rows decide what the fit makes of them.
+            return Ok(bare);
         }
-        let us: Vec<f64> = (0..=n).map(fraction).collect();
         let row_vs = vs.clone();
-        let count = sections.len();
+        let (u0, u1) = (us[0], us[us.len() - 1]);
+        let held: std::cell::RefCell<std::collections::HashMap<u64, Vec<Point>>> =
+            std::cell::RefCell::default();
         let point = move |u: f64, v: f64| -> OgeomResult<Point> {
             let Some(j) = row_vs.iter().position(|w| w.to_bits() == v.to_bits()) else {
-                ogeom_bail!(Construction, "a skin is known only at its sections");
+                ogeom_bail!(Construction, "a skin is known across only at its rows");
             };
-            Ok(sections[j % count].at(u))
+            // The end of the way round is its start, to the bit, so the
+            // seam closes exactly.
+            let u = if round && u >= u1 { u0 } else { u };
+            if let Some(c) = held.borrow().get(&u.to_bits()) {
+                return Ok(c[j % count]);
+            }
+            let c = column(u)?;
+            if c.len() != count {
+                ogeom_bail!(Construction, "a skin's column changed its length");
+            }
+            let p = c[j % count];
+            held.borrow_mut().insert(u.to_bits(), c);
+            Ok(p)
         };
         Ok(Self {
-            rows,
             traced: Some(Traced {
                 point: Box::new(point),
                 sampling: ogeom_geom::fit::Sampling {
                     us,
                     vs,
                     between: (true, false),
-                    closed_v: closed,
+                    closed_v,
                     most: 512,
                 },
             }),
+            ..bare
         })
     }
 
-    /// The skin's fitted surface, closed the way round (each row's end its
-    /// start, so the row fits' pinned ends make the two border control
-    /// columns equal) and, where `closed_v` says, smoothly across the loop
-    /// of its rows.
+    /// A skin through `sections`, each sampled at [`AROUND_SECTION`] even
+    /// fractions of its length to start with (see [`Self::columns`]).
+    fn sections(sections: Vec<Section>, closed: bool) -> OgeomResult<Self> {
+        Self::columns(
+            move |u| Ok(sections.iter().map(|s| s.at(u)).collect()),
+            fractions(AROUND_SECTION),
+            true,
+            false,
+            closed,
+        )
+    }
+
+    /// The skin's fitted surface: where `round`, closed the way round (each
+    /// row's end its start, so the row fits' pinned ends make the two
+    /// border control columns equal); where `closed_v`, smoothly across the
+    /// loop of its rows.
     fn fit(
         &self,
         closed_v: bool,
@@ -717,26 +780,26 @@ impl<'a> Skin<'a> {
                     .iter()
                     .map(|row| {
                         let mut r = row.clone();
-                        r.push(row[0]);
+                        if self.round {
+                            r.push(row[0]);
+                        }
                         r
                     })
                     .collect();
                 if closed_v {
                     grid.push(grid[0].clone());
                     ogeom_geom::fit::fit_surface_grid_closed_v(&grid, 3, tolerance, tol)
+                } else if self.by_spacing {
+                    ogeom_geom::fit::fit_surface_grid_sections(&grid, 3, tolerance, tol)
                 } else {
                     ogeom_geom::fit::fit_surface_grid(&grid, 3, tolerance, tol)
                 }
             }
             Some(traced) => {
-                let us = &traced.sampling.us;
-                let (u0, u1) = (us[0], us[us.len() - 1]);
                 let mut sampling = traced.sampling.clone();
                 sampling.closed_v = closed_v;
-                // The end of the way round is its start, to the bit, so
-                // the seam closes exactly.
                 ogeom_geom::fit::fit_surface_sampled(
-                    |u, v| (traced.point)(if u >= u1 { u0 } else { u }, v),
+                    |u, v| (traced.point)(u, v),
                     &sampling,
                     3,
                     tolerance,
@@ -1005,7 +1068,7 @@ fn section_centre(rows: &[Vec<Point>], at: Point) -> Point {
 /// closed border loops; the seam is one station's column, used twice.
 fn skinned_ring_strip(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     outward_hint: Point,
     shared: [Option<&Shape>; 2],
     tolerance: f64,
@@ -1013,9 +1076,7 @@ fn skinned_ring_strip(
 ) -> OgeomResult<(Shape, Shape, Shape)> {
     use ogeom_geom::Surface as _;
     // The loop: first row repeated at the end, as the closed fit demands.
-    let mut looped: Vec<Vec<Point>> = rows.to_vec();
-    looped.push(rows[0].clone());
-    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v(&looped, 3, tolerance, tol)?;
+    let fitted = skin.fit(true, tolerance, tol)?;
     if !fitted.met {
         ogeom_bail!(
             NotDone,
@@ -2058,16 +2119,16 @@ struct SkinnedStrip {
 #[allow(clippy::too_many_arguments, reason = "one strip, spelled out")]
 fn skinned_strip(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     corners: (&Shape, &Shape, &Shape, &Shape),
     shared: [Option<&Shape>; 4],
     outward_hint: Point,
     hole: bool,
-    by_spacing: bool,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<SkinnedStrip> {
     use ogeom_geom::Surface as _;
+    let rows = &skin.rows;
     // A strip whose every row lies in one plane (a straight profile edge
     // down a straight run, a flat face of the profile along a planar
     // spine) is that plane, exactly: a coplanar neighbour then melts with
@@ -2075,7 +2136,7 @@ fn skinned_strip(
     if let Some(plane) = plane_of_rows(rows, tol) {
         return planar_strip(
             model,
-            rows,
+            skin,
             plane,
             corners,
             shared,
@@ -2087,11 +2148,7 @@ fn skinned_strip(
     }
     // Sections a caller placed follow their own spacing across the skin;
     // stations a sweep placed keep the fit's centripetal assignment.
-    let fitted = if by_spacing {
-        ogeom_geom::fit::fit_surface_grid_sections(rows, 3, tolerance, tol)?
-    } else {
-        ogeom_geom::fit::fit_surface_grid(rows, 3, tolerance, tol)?
-    };
+    let fitted = skin.fit(false, tolerance, tol)?;
     if !fitted.met {
         ogeom_bail!(
             NotDone,
@@ -2254,7 +2311,7 @@ fn plane_of_rows(rows: &[Vec<Point>], tol: Tolerances) -> Option<Plane> {
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 fn planar_strip(
     model: &mut Model,
-    rows: &[Vec<Point>],
+    skin: &Skin<'_>,
     plane: Plane,
     corners: (&Shape, &Shape, &Shape, &Shape),
     shared: [Option<&Shape>; 4],
@@ -2263,11 +2320,26 @@ fn planar_strip(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<SkinnedStrip> {
+    let rows = &skin.rows;
     // Splines, as every swept border is: the caps and the neighbouring
     // strips read them so, and a spline through collinear points is the
-    // straight segment itself.
-    let through = |points: &[Point]| -> OgeomResult<ogeom_geom::Curve> {
-        let fitted = ogeom_geom::fit::fit_points(points, 3, tolerance * 0.5, tol)?;
+    // straight segment itself. A row whose geometry the skin knows is
+    // fitted to it, measured between its samples too.
+    let through = |points: &[Point], row: Option<usize>| -> OgeomResult<ogeom_geom::Curve> {
+        let fitted = match (&skin.traced, row) {
+            (Some(traced), Some(j)) => {
+                let v = traced.sampling.vs[j];
+                ogeom_geom::fit::fit_curve_sampled(
+                    |u| (traced.point)(u, v),
+                    &traced.sampling.us,
+                    false,
+                    3,
+                    tolerance * 0.5,
+                    tol,
+                )?
+            }
+            _ => ogeom_geom::fit::fit_points(points, 3, tolerance * 0.5, tol)?,
+        };
         if !fitted.met {
             ogeom_bail!(
                 NotDone,
@@ -2283,20 +2355,29 @@ fn planar_strip(
     let border = |model: &mut Model,
                   given: Option<&Shape>,
                   points: Vec<Point>,
+                  row: Option<usize>,
                   from: &Shape,
                   to: &Shape|
      -> OgeomResult<Shape> {
         if let Some(edge) = given {
             return Ok(edge.clone());
         }
-        let curve = through(&points)?;
+        let curve = through(&points, row)?;
         let domain = curve.domain();
         Ok(make_edge_between(model, curve, domain, from, to, tol)?.shape)
     };
-    let bottom = border(model, shared[0], rows[0].clone(), c00, c10)?;
-    let top = border(model, shared[1], rows[rows.len() - 1].clone(), c01, c11)?;
-    let rail0 = border(model, shared[2], column(0), c00, c01)?;
-    let rail1 = border(model, shared[3], column(last), c10, c11)?;
+    let bottom = border(model, shared[0], rows[0].clone(), Some(0), c00, c10)?;
+    let top_row = rows.len() - 1;
+    let top = border(
+        model,
+        shared[1],
+        rows[top_row].clone(),
+        Some(top_row),
+        c01,
+        c11,
+    )?;
+    let rail0 = border(model, shared[2], column(0), None, c00, c01)?;
+    let rail1 = border(model, shared[3], column(last), None, c10, c11)?;
 
     // The loop runs across, up, back and down: counter-clockwise about the
     // normal from the first row's run to the first column's.
@@ -2476,29 +2557,31 @@ fn cornered_loft(
         return Ok(None);
     };
     const ALONG: usize = 16;
-    // Every edge of every section sampled in its ring's sense.
-    let mut samples: Vec<Vec<Vec<Point>>> = Vec::with_capacity(rings.len());
+    // Every edge of every section, read in its ring's sense at a fraction
+    // of its parameter range.
+    let mut edge_curves: Vec<Vec<(ogeom_geom::Curve, (f64, f64))>> =
+        Vec::with_capacity(rings.len());
     for ring in &rings {
         let mut per_edge = Vec::with_capacity(count);
         for edge in ring {
             let (curve, range) = spine_curve_of(model, edge)?;
             let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
             let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
-            let mut row = Vec::with_capacity(ALONG + 1);
-            for k in 0..=ALONG {
-                #[allow(clippy::cast_precision_loss)]
-                let f = k as f64 / ALONG as f64;
-                let t = if reversed {
-                    range.1 - (range.1 - range.0) * f
-                } else {
-                    range.0 + (range.1 - range.0) * f
-                };
-                row.push(curve.point_at(t, tol)?);
-            }
-            per_edge.push(row);
+            per_edge.push((curve, if reversed { (range.1, range.0) } else { range }));
         }
-        samples.push(per_edge);
+        edge_curves.push(per_edge);
     }
+    let edge_at = |s: usize, e: usize, f: f64| -> OgeomResult<Point> {
+        let (curve, (a, b)) = &edge_curves[s][e];
+        curve.point_at(a + (b - a) * f, tol)
+    };
+    let samples: Vec<Vec<Vec<Point>>> = (0..rings.len())
+        .map(|s| {
+            (0..count)
+                .map(|e| fractions(ALONG).iter().map(|f| edge_at(s, e, *f)).collect())
+                .collect()
+        })
+        .collect::<OgeomResult<_>>()?;
     let corners = |model: &mut Model, s: usize| -> Vec<Shape> {
         (0..count)
             .map(|e| ogeom_algo::make_vertex(model, samples[s][e][0]).shape)
@@ -2521,7 +2604,13 @@ fn cornered_loft(
     let mut first_rail: Option<Shape> = None;
     let mut prev_rail: Option<Shape> = None;
     for e in 0..count {
-        let rows: Vec<Vec<Point>> = samples.iter().map(|s| s[e].clone()).collect();
+        let skin = Skin::columns(
+            |f| (0..rings.len()).map(|s| edge_at(s, e, f)).collect(),
+            fractions(ALONG),
+            false,
+            true,
+            false,
+        )?;
         let next = (e + 1) % count;
         let last_rail = if e + 1 == count {
             first_rail.clone()
@@ -2530,12 +2619,11 @@ fn cornered_loft(
         };
         let strip = skinned_strip(
             model,
-            &rows,
+            &skin,
             (&from[e], &from[next], &to[e], &to[next]),
             [None, None, prev_rail.as_ref(), last_rail.as_ref()],
             hint,
             false,
-            true,
             tolerance,
             tol,
         )?;
@@ -3051,8 +3139,12 @@ pub fn make_pipe_skinned(
         .collect::<OgeomResult<Vec<Vec<Point>>>>()?;
     let skin = Skin {
         rows,
+        round: true,
+        by_spacing: false,
         traced: Some(Traced {
-            point: Box::new(tube),
+            // The end of the way round is its start, to the bit, so the
+            // seam closes exactly.
+            point: Box::new(move |u, t| tube(if u >= 1.0 { 0.0 } else { u }, t)),
             sampling: ogeom_geom::fit::Sampling {
                 us,
                 vs,
@@ -3106,6 +3198,14 @@ fn closed_loop_shell(
     let (origin, x0) = frame0;
     let t0 = stations[0].tangent;
     let y0 = t0.cross(x0);
+    // A point of the profile, in the start frame, at every station.
+    let carried = |(a, b): (f64, f64)| -> Vec<Point> {
+        stations
+            .iter()
+            .zip(normals)
+            .map(|(station, x)| station.at + *x * a + station.tangent.cross(*x) * b)
+            .collect()
+    };
     if !smooth {
         // A faceted profile: one ring strip per profile edge; a fit cannot
         // speak a corner, so each facet gets its own v-closed skin and the
@@ -3122,36 +3222,29 @@ fn closed_loop_shell(
         for (index, edge) in edges.iter().enumerate() {
             let (curve, range) = spine_curve_of(model, edge)?;
             let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
-            let mut flat_row: Vec<(f64, f64)> = Vec::with_capacity(ALONG_EDGE + 1);
-            for kk in 0..=ALONG_EDGE {
-                #[allow(clippy::cast_precision_loss)]
-                let f = (kk as f64) / (ALONG_EDGE as f64);
-                let t = if reversed {
-                    range.1 - (range.1 - range.0) * f
-                } else {
-                    range.0 + (range.1 - range.0) * f
-                };
-                let p = curve.point_at(t, tol)?;
-                flat_row.push(((p - origin).dot(x0), (p - origin).dot(y0)));
-            }
-            // rows[j = station][i = across the facet].
-            let rows: Vec<Vec<Point>> = stations
-                .iter()
-                .enumerate()
-                .map(|(i, station)| {
-                    let x = normals[i];
-                    let y = station.tangent.cross(x);
-                    flat_row
-                        .iter()
-                        .map(|(a, b)| station.at + x * *a + y * *b)
-                        .collect()
-                })
-                .collect();
+            // rows[j = station][i = across the facet]: each column one
+            // point of the edge, at a fraction of its parameter range,
+            // carried through the stations.
+            let skin = Skin::columns(
+                |f| {
+                    let t = if reversed {
+                        range.1 - (range.1 - range.0) * f
+                    } else {
+                        range.0 + (range.1 - range.0) * f
+                    };
+                    let p = curve.point_at(t, tol)?;
+                    Ok(carried(((p - origin).dot(x0), (p - origin).dot(y0))))
+                },
+                fractions(ALONG_EDGE),
+                false,
+                false,
+                true,
+            )?;
             let next = (index + 1) % edges.len();
             let shared = [rails[index].clone(), rails[next].clone()];
             let (face, rail0, rail1) = skinned_ring_strip(
                 model,
-                &rows,
+                &skin,
                 mid_station,
                 [shared[0].as_ref(), shared[1].as_ref()],
                 tolerance,
@@ -3202,23 +3295,20 @@ fn closed_loop_shell(
         }
         return Ok(sewn.shells[0].clone());
     }
-    let samples = sample_wire(model, profile_loop, AROUND, tol)?;
-    let flat: Vec<(f64, f64)> = samples
-        .iter()
-        .map(|p| ((*p - origin).dot(x0), (*p - origin).dot(y0)))
-        .collect();
-    let rows: Vec<Vec<Point>> = stations
-        .iter()
-        .enumerate()
-        .map(|(i, station)| {
-            let x = normals[i];
-            let y = station.tangent.cross(x);
-            flat.iter()
-                .map(|(a, b)| station.at + x * *a + y * *b)
-                .collect()
-        })
-        .collect();
-    closed_skinned_shell(model, &Skin::rows(rows), tolerance, tol)
+    // Each column one point of the profile, read by arc length round it,
+    // carried through the stations.
+    let around = section_loop(model, profile_loop, None, tol)?;
+    let skin = Skin::columns(
+        |f| {
+            let p = around.at(f);
+            Ok(carried(((p - origin).dot(x0), (p - origin).dot(y0))))
+        },
+        fractions(AROUND),
+        true,
+        false,
+        true,
+    )?;
+    closed_skinned_shell(model, &skin, tolerance, tol)
 }
 
 /// Rotation-minimizing normals along the stations, by double reflection:
@@ -3693,31 +3783,40 @@ pub fn make_helical_sweep(
             .map(|(curve, a, _)| curve.point_at(*a, tol))
             .collect::<OgeomResult<_>>()?;
         let count = pieces.len();
-        let mut rows0: Vec<Vec<Point>> = Vec::with_capacity(count);
-        for (pi, (curve, a, b)) in pieces.iter().enumerate() {
-            let along = if matches!(curve, ogeom_geom::Curve::Line(_)) {
+        // A piece at a fraction of its range, its ends on its corners
+        // exactly.
+        let piece_at = |pi: usize, f: f64| -> OgeomResult<Point> {
+            let (curve, a, b) = &pieces[pi];
+            if f <= 0.0 {
+                Ok(starts[pi])
+            } else if f >= 1.0 {
+                Ok(starts[(pi + 1) % count])
+            } else {
+                curve.point_at(a + (b - a) * f, tol)
+            }
+        };
+        let along_of = |pi: usize| -> usize {
+            if matches!(pieces[pi].0, ogeom_geom::Curve::Line(_)) {
                 8
             } else {
                 24
-            };
-            let mut row = Vec::with_capacity(along + 1);
-            for k in 0..=along {
-                #[allow(clippy::cast_precision_loss)]
-                let f = (k as f64) / (along as f64);
-                row.push(curve.point_at(a + (b - a) * f, tol)?);
             }
-            row[0] = starts[pi];
-            row[along] = starts[(pi + 1) % count];
-            rows0.push(row);
-        }
-        let rows_of = |row0: &[Point], seg: usize| -> OgeomResult<Vec<Vec<Point>>> {
-            (0..=PER_SEGMENT)
-                .map(|i| {
-                    row0.iter()
-                        .map(|p| screw(*p, theta_at(seg, i)))
-                        .collect::<OgeomResult<Vec<Point>>>()
-                })
-                .collect()
+        };
+        // A piece's strip over one segment: each column the piece's point
+        // screwed through the segment's stations.
+        let skin_of = |pi: usize, seg: usize| -> OgeomResult<Skin<'_>> {
+            Skin::columns(
+                move |f| {
+                    let p = piece_at(pi, f)?;
+                    (0..=PER_SEGMENT)
+                        .map(|i| screw(p, theta_at(seg, i)))
+                        .collect()
+                },
+                fractions(along_of(pi)),
+                false,
+                false,
+                false,
+            )
         };
 
         // A vertex set at every segment boundary.
@@ -3740,7 +3839,7 @@ pub fn make_helical_sweep(
             let mut first_rail: Option<Shape> = None;
             let mut prev_rail: Option<Shape> = None;
             for ei in 0..count {
-                let rows = rows_of(&rows0[ei], seg)?;
+                let skin = skin_of(ei, seg)?;
                 let next = (ei + 1) % count;
                 let last_rail = if ei + 1 == count {
                     first_rail.clone()
@@ -3750,7 +3849,7 @@ pub fn make_helical_sweep(
                 let (from, to) = (&corners[seg], &corners[seg + 1]);
                 let strip = skinned_strip(
                     model,
-                    &rows,
+                    &skin,
                     (&from[ei], &from[next], &to[ei], &to[next]),
                     [
                         held_tops[ei].as_ref(),
@@ -3760,7 +3859,6 @@ pub fn make_helical_sweep(
                     ],
                     hint,
                     hole,
-                    false,
                     tolerance,
                     tol,
                 )?;
@@ -4275,8 +4373,10 @@ fn mitred_lines(
 /// the profile neither twists nor kinks where the spine bends; `frenet`
 /// asks for the Frenet frame instead, which turns with the spine's own
 /// curvature, the law a thread wants. Stations are placed by each edge's
-/// own turning, the skin holds every transported section to `tolerance`,
-/// and the caps sit perpendicular to the spine's ends, holes and all.
+/// own turning, the skin holds every transported section to `tolerance`
+/// (along the profile between its samples as well as at them, the
+/// sampling refined where the skin misses), and the caps sit
+/// perpendicular to the spine's ends, holes and all.
 ///
 /// Each spine edge skins its own run of wall, and neighbouring runs share
 /// the section where their edges meet, so a join where the curvature steps
@@ -5841,24 +5941,28 @@ fn pipe_shell_law(
                 && ogeom_algo::edge_vertices(model, &edges[0])?.is_some_and(|(a, b)| a.is_same(&b))
         };
         if single_smooth {
-            let samples = sample_wire(model, wire, AROUND, tol)?;
-            let flat_row: Vec<(f64, f64)> = samples.iter().map(|p| flat(*p)).collect();
+            let profile_loop = section_loop(model, wire, None, tol)?;
             // One wall per smooth run: a fit across a corner speaks nothing,
             // and the twin stations put both runs' boundary rows on the one
             // mitred ring, where the sew joins them.
             let mut ring0: Option<Shape> = None;
             let mut ring1: Option<Shape> = None;
             for (ri, &(rs, re)) in runs.iter().enumerate() {
-                let rows = run_rows((rs, re), &flat_row)?;
+                // Each column the run's rows of one point of the profile,
+                // read by arc length round it.
+                let skin = Skin::columns(
+                    |f| {
+                        let rows = run_rows((rs, re), &[flat(profile_loop.at(f))])?;
+                        Ok(rows.iter().map(|r| r[0]).collect())
+                    },
+                    fractions(AROUND),
+                    true,
+                    false,
+                    false,
+                )?;
                 let shared_start = shares_start(ri).then_some(()).and(ring1.as_ref());
                 let shared_end = shares_end(ri).then_some(()).and(ring0.as_ref());
-                let wall = skinned_wall(
-                    model,
-                    &Skin::rows(rows),
-                    (shared_start, shared_end),
-                    tolerance,
-                    tol,
-                )?;
+                let wall = skinned_wall(model, &skin, (shared_start, shared_end), tolerance, tol)?;
                 faces.push(if hole {
                     wall.face.reversed()
                 } else {
@@ -5963,22 +6067,30 @@ fn pipe_shell_law(
                 let (curve, range) = spine_curve_of(model, edge)?;
                 let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
                 const ALONG_EDGE: usize = 8;
-                let mut flat_row: Vec<(f64, f64)> = Vec::with_capacity(ALONG_EDGE + 1);
-                for k in 0..=ALONG_EDGE {
-                    #[allow(clippy::cast_precision_loss)]
-                    let f = (k as f64) / (ALONG_EDGE as f64);
+                let edge_flat = |f: f64| -> OgeomResult<(f64, f64)> {
                     let t = if reversed {
                         range.1 - (range.1 - range.0) * f
                     } else {
                         range.0 + (range.1 - range.0) * f
                     };
-                    flat_row.push(flat(curve.point_at(t, tol)?));
-                }
+                    Ok(flat(curve.point_at(t, tol)?))
+                };
                 let next = (ei + 1) % count;
                 let mut bottom: Option<Shape> = None;
                 let mut top: Option<Shape> = None;
                 for (ri, &(rs, re)) in runs.iter().enumerate() {
-                    let rows = run_rows((rs, re), &flat_row)?;
+                    // Each column the run's rows of one point of the edge,
+                    // at a fraction of its parameter range.
+                    let skin = Skin::columns(
+                        |f| {
+                            let rows = run_rows((rs, re), &[edge_flat(f)?])?;
+                            Ok(rows.iter().map(|r| r[0]).collect())
+                        },
+                        fractions(ALONG_EDGE),
+                        false,
+                        false,
+                        false,
+                    )?;
                     let shared_start = shares_start(ri).then_some(()).and(top.as_ref());
                     let shared_end = shares_end(ri).then_some(()).and(bottom.as_ref());
                     let mid_i = usize::midpoint(rs, re);
@@ -5999,7 +6111,7 @@ fn pipe_shell_law(
                     };
                     let strip = skinned_strip(
                         model,
-                        &rows,
+                        &skin,
                         (&from[ei], &from[next], &to[ei], &to[next]),
                         [
                             shared_start,
@@ -6009,7 +6121,6 @@ fn pipe_shell_law(
                         ],
                         hint,
                         hole,
-                        false,
                         tolerance,
                         tol,
                     )?;

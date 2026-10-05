@@ -5,7 +5,7 @@
 
 use ogeom_core::Tolerances;
 use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
-use ogeom_math::{Circle, Direction, Frame, Point};
+use ogeom_math::{Circle, Direction, Frame, Plane, Point};
 use ogeom_topo::{Filter, Model, NodeData, Shape, ShapeType, explore};
 
 const T: Tolerances = Tolerances::millimetres();
@@ -210,4 +210,93 @@ fn a_skinned_loft_through_thin_ellipses_holds_its_end_sections() {
         worst <= tolerance,
         "an end ring strays {worst} from its ellipse"
     );
+}
+
+/// A gently curved spline spine from the origin, setting off along +z.
+fn bent_spine(model: &mut Model) -> Shape {
+    let curve = ogeom_geom::Curve::BSpline(
+        ogeom_geom::BSplineCurve::new(
+            ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap(),
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(0.0, 0.0, 3.0),
+                Point::new(1.0, 0.0, 6.0),
+                Point::new(3.0, 0.0, 9.0),
+            ],
+            T,
+        )
+        .unwrap(),
+    );
+    let edge = edge_of(model, curve);
+    ogeom_algo::make_wire(model, &[edge], T).unwrap().shape
+}
+
+#[test]
+fn a_pipe_shell_holds_its_profile_arc_between_samples() {
+    // A half disc in the XY plane: the arc of radius one over +y, closed
+    // by its diameter.
+    let mut model = Model::new();
+    let (a, b) = (Point::new(-1.0, 0.0, 0.0), Point::new(1.0, 0.0, 0.0));
+    let (va, vb) = (
+        ogeom_algo::make_vertex(&mut model, a).shape,
+        ogeom_algo::make_vertex(&mut model, b).shape,
+    );
+    let arc = ogeom_algo::make_edge_between(
+        &mut model,
+        ogeom_geom::CircleCurve::new(Circle::new(Frame::WORLD, 1.0, T).unwrap()).into(),
+        (0.0, PI),
+        &vb,
+        &va,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let diameter = ogeom_algo::make_edge_between(
+        &mut model,
+        ogeom_geom::LineCurve::segment(a, b, T).unwrap().into(),
+        (0.0, 2.0),
+        &va,
+        &vb,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wire = ogeom_algo::make_wire(&mut model, &[arc, diameter], T)
+        .unwrap()
+        .shape;
+    let plane: SurfaceGeometry = ogeom_geom::PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+    let profile = ogeom_algo::make_face(&mut model, plane, &[wire], T)
+        .unwrap()
+        .shape;
+    let spine = bent_spine(&mut model);
+    let tolerance = 1e-5;
+    let pipe = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, tolerance, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom_algo::check(&model, &pipe, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    // Every spline border lying in the profile's plane off its diameter is
+    // the arc.
+    let mut worst = 0.0_f64;
+    let mut seen = 0;
+    for patch in spline_surfaces(&model, &pipe) {
+        let (ud, vd) = patch.domain();
+        for k in 0..=1000 {
+            for (u, v) in [
+                (across(ud, k, 1000), vd.0),
+                (across(ud, k, 1000), vd.1),
+                (ud.0, across(vd, k, 1000)),
+                (ud.1, across(vd, k, 1000)),
+            ] {
+                let p = patch.point_at(u, v, T).unwrap();
+                if p.z.abs() < 1e-3 && p.y > 1e-2 {
+                    seen += 1;
+                    worst = worst.max(to_flat_circle(p, 1.0));
+                }
+            }
+        }
+    }
+    assert!(seen > 500, "the arc's strip has a border on the profile");
+    eprintln!("pipe shell border off its arc by {worst}");
+    assert!(worst <= tolerance, "the border strays {worst} from its arc");
 }

@@ -554,6 +554,120 @@ pub fn fit_points_at(
     })
 }
 
+/// Fit a curve to the geometry `point` traces over its parameter, measured
+/// between the samples as well as at them: the curve counterpart of
+/// [`fit_surface_sampled`].
+///
+/// The fit is same-parameter with `point`, fitted at `ts` to start with;
+/// every span's middle is compared with `point` there, a miss splits the
+/// span, and this repeats until `tolerance` holds at every point measured
+/// or the samples would pass 1024 spans. Where `closed`, the last of `ts`
+/// is the first again and the fit crosses its join C1. The best fit is
+/// returned either way, its error the worst measured.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// tolerance is not a distance, the degree is zero or the parameters do not
+/// strictly increase with at least two; whatever `point` refuses.
+pub fn fit_curve_sampled(
+    mut point: impl FnMut(f64) -> OgeomResult<Point>,
+    ts: &[f64],
+    closed: bool,
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSplineCurve>> {
+    use crate::traits::Curve3d as _;
+    const MOST: usize = 1024;
+    if !(tolerance > 0.0 && tolerance.is_finite()) {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    if degree == 0 {
+        ogeom_bail!(Construction, "a fit needs a degree of at least one");
+    }
+    if ts.len() < 2 || ts.iter().any(|t| !t.is_finite()) || ts.windows(2).any(|w| w[1] <= w[0]) {
+        ogeom_bail!(
+            Construction,
+            "a sampled fit needs strictly increasing parameters, at least two"
+        );
+    }
+    let mut ts = ts.to_vec();
+    let mut seen: std::collections::HashMap<u64, Point> = std::collections::HashMap::new();
+    let mut at = |t: f64| -> OgeomResult<Point> {
+        if let Some(p) = seen.get(&t.to_bits()) {
+            return Ok(*p);
+        }
+        let p = point(t)?;
+        seen.insert(t.to_bits(), p);
+        Ok(p)
+    };
+    let mut best: Option<Fitted<BSplineCurve>> = None;
+    loop {
+        let mut points = ts
+            .iter()
+            .map(|t| at(*t))
+            .collect::<OgeomResult<Vec<Point>>>()?;
+        if closed {
+            points[ts.len() - 1] = points[0];
+        }
+        let data: Vec<[f64; 3]> = points.iter().map(|p| [p.x, p.y, p.z]).collect();
+        // As the surface fit: the lean least-squares fit first, and where
+        // it strays between the samples, the spline through every sample
+        // decides where to refine.
+        let mut split: Vec<bool> = Vec::new();
+        for interpolate in [false, true] {
+            let (knots, mut controls) = fit_family::<3>(
+                std::slice::from_ref(&data),
+                &ts,
+                degree,
+                tolerance * 0.5,
+                closed,
+                interpolate,
+            )?;
+            let Some(control) = controls.pop() else {
+                ogeom_bail!(NotDone, "the curve fit solved nothing");
+            };
+            let curve = build_curve_3(knots, control, tol)?;
+            let mut error = 0.0_f64;
+            for (t, p) in ts.iter().zip(&points) {
+                error = error.max(curve.point_at(*t, tol)?.distance(*p));
+            }
+            split = vec![false; ts.len() - 1];
+            for (i, pair) in ts.windows(2).enumerate() {
+                let mid = f64::midpoint(pair[0], pair[1]);
+                let off = at(mid)?.distance(curve.point_at(mid, tol)?);
+                error = error.max(off);
+                split[i] = off > tolerance;
+            }
+            let candidate = Fitted {
+                curve,
+                error,
+                met: error <= tolerance,
+            };
+            if candidate.met {
+                return Ok(candidate);
+            }
+            if best.as_ref().is_none_or(|b| error < b.error) {
+                best = Some(candidate);
+            }
+        }
+        let mut next = Vec::with_capacity(ts.len() * 2);
+        for (pair, &m) in ts.windows(2).zip(&split) {
+            next.push(pair[0]);
+            if m {
+                next.push(f64::midpoint(pair[0], pair[1]));
+            }
+        }
+        next.push(ts[ts.len() - 1]);
+        if next.len() == ts.len() || next.len() > MOST + 1 {
+            break;
+        }
+        ts = next;
+    }
+    best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the curve could not be sampled"))
+}
+
 fn build_curve_3(
     knots: KnotVector,
     control: Vec<[f64; 3]>,
