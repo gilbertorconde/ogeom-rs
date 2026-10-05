@@ -8407,6 +8407,24 @@ fn build_sub_edge(
                 Location::identity(),
                 (f0, f1),
             )?;
+            // The section's image was fitted through samples and may have
+            // been bent onto its welded ends; lifted, it stands off the
+            // curve by what is measured along the whole piece, and the
+            // piece and its ends state that.
+            if let Some(gap) = ogeom_algo::edge_pcurve_gap(model, &built, tol)?
+                && let Some(data) = model.node(&built).and_then(|n| n.data().as_edge())
+                && gap > data.tolerance.get()
+            {
+                let widened = ogeom_core::Tolerance::new(gap * (1.0 + 1e-6))?;
+                if let Some(node) = model.node_mut(&built)
+                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen(widened);
+                }
+                for v in [&v0, &v1] {
+                    rebuild.widen(v, widened.get())?;
+                }
+            }
             Ok(built)
         }
     }
@@ -8414,8 +8432,9 @@ fn build_sub_edge(
 
 /// A pcurve over `range` bent at its ends onto the chart points of
 /// `targets`, where given: each end's correction fades linearly to nothing
-/// at the other end, and the result is refitted at the same parameters, so
-/// the image stays same-parameter with its edge to the correction's size.
+/// at the other end, and the result is refitted at the same parameters, at
+/// every span of the image, so the image stays same-parameter with its
+/// edge to the correction's size.
 fn pcurve_onto_ends(
     pcurve: &PlanarCurve,
     range: (f64, f64),
@@ -8423,20 +8442,17 @@ fn pcurve_onto_ends(
     targets: [Option<Point>; 2],
     tol: Tolerances,
 ) -> OgeomResult<PlanarCurve> {
-    const SAMPLES: u32 = 32;
-    let ts: Vec<f64> = (0..=SAMPLES)
-        .map(|i| range.0 + (range.1 - range.0) * f64::from(i) / f64::from(SAMPLES))
-        .collect();
-    let mut points = ts
-        .iter()
-        .map(|t| pcurve.point_at(*t, tol))
-        .collect::<OgeomResult<Vec<Point2>>>()?;
-    let last = points.len() - 1;
+    const SAMPLES: usize = 32;
+    let ends = [
+        pcurve.point_at(range.0, tol)?,
+        pcurve.point_at(range.1, tol)?,
+    ];
+    let mut deltas = [ogeom_math::Vector2::new(0.0, 0.0); 2];
     for (k, target) in targets.iter().enumerate() {
         let Some(target) = target else {
             continue;
         };
-        let end = points[if k == 0 { 0 } else { last }];
+        let end = ends[k];
         let foot = ogeom_algo::project_on_surface_from(surface, *target, (end.x, end.y), tol)?;
         let raw = Point2::new(foot.parameters.0, foot.parameters.1);
         // The foot may land a turn away from the end on a periodic chart,
@@ -8463,15 +8479,27 @@ fn pcurve_onto_ends(
                     .unwrap_or(core::cmp::Ordering::Equal)
             })
             .unwrap_or(raw);
-        let delta = onto - end;
-        for (i, p) in points.iter_mut().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
-            let along = i as f64 / last as f64;
-            let weight = if k == 0 { 1.0 - along } else { along };
-            *p += delta * weight;
-        }
+        deltas[k] = onto - end;
     }
-    let fitted = ogeom_geom::fit::fit_points_2d_at(&ts, &points, 3, tol.confusion() * 10.0, tol)?;
+    // Refitted at every span of the image and held to the target between
+    // the samples as well as at them; the edge states what the bend and
+    // the fit leave once the image is attached.
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let stations = ogeom_algo::traced::stations_2d(pcurve, (lo, hi), SAMPLES);
+    let fitted = ogeom_algo::traced::fit_traced_2d(
+        |t| {
+            let along = if hi > lo {
+                (t - range.0) / (range.1 - range.0)
+            } else {
+                0.0
+            };
+            Ok(pcurve.point_at(t, tol)? + deltas[0] * (1.0 - along) + deltas[1] * along)
+        },
+        &stations,
+        3,
+        tol.confusion() * 10.0,
+        tol,
+    )?;
     Ok(PlanarCurve::BSpline(fitted.curve))
 }
 

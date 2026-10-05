@@ -85,6 +85,23 @@ fn drilled(offset: Vector, r: f64) -> Result<(), String> {
         if !diagnosis.is_valid() {
             return Err(format!("{name}: {diagnosis}"));
         }
+        // Each edge states how far its charts stand from its curve.
+        for edge in
+            ogeom::topo::explore_unique(&model, &made.shape, ogeom::topo::ShapeType::Edge).unwrap()
+        {
+            let stated = model
+                .node(&edge)
+                .and_then(|n| n.data().as_edge())
+                .map_or(0.0, |d| d.tolerance.get());
+            let gap = ogeom::algo::edge_pcurve_gap(&model, &edge, T)
+                .unwrap()
+                .unwrap_or(0.0);
+            if gap > stated {
+                return Err(format!(
+                    "{name}: a chart {gap} off an edge stating {stated}"
+                ));
+            }
+        }
         volumes.push(volume(&model, &made.shape));
     }
     let whole = 4.0 / 3.0 * core::f64::consts::PI * BALL.powi(3);

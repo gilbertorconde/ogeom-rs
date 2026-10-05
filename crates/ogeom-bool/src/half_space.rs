@@ -418,19 +418,55 @@ fn bounded(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<Shap
         let p = surface.point_at(u, v, tol)?;
         vertices.push(ogeom_algo::make_vertex(model, p).shape);
     }
-    const SAMPLES: u32 = 32;
+    // Each side sampled at every span of the patch it runs along, and the
+    // fit held to its target between the samples as well as at them.
+    const SAMPLES: usize = 32;
+    let (u_breaks, v_breaks): (Vec<f64>, Vec<f64>) = match &surface {
+        SurfaceGeometry::BSpline(patch) => (
+            patch
+                .u_knots()
+                .distinct()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect(),
+            patch
+                .v_knots()
+                .distinct()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect(),
+        ),
+        _ => (Vec::new(), Vec::new()),
+    };
     let mut edges = Vec::with_capacity(4);
     for k in 0..4 {
         let (from, to) = (corners[k], corners[(k + 1) % 4]);
-        let params: Vec<f64> = (0..=SAMPLES)
-            .map(|i| f64::from(i) / f64::from(SAMPLES))
-            .collect();
-        let mut points = Vec::with_capacity(params.len());
-        for &t in &params {
-            let (u, v) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-            points.push(surface.point_at(u, v, tol)?);
-        }
-        let fitted = ogeom_geom::fit::fit_points_at(&params, &points, 3, tol.confusion(), tol)?;
+        // The patch's breaks along this side, as fractions of it.
+        let breaks: Vec<f64> = if (to.0 - from.0).abs() > 0.0 {
+            u_breaks
+                .iter()
+                .map(|b| (b - from.0) / (to.0 - from.0))
+                .collect()
+        } else {
+            v_breaks
+                .iter()
+                .map(|b| (b - from.1) / (to.1 - from.1))
+                .collect()
+        };
+        let stations = ogeom_algo::traced::stations_between((0.0, 1.0), &breaks, 3, SAMPLES);
+        let fitted = ogeom_algo::traced::fit_traced(
+            |t| {
+                surface.point_at(
+                    from.0 + (to.0 - from.0) * t,
+                    from.1 + (to.1 - from.1) * t,
+                    tol,
+                )
+            },
+            &stations,
+            3,
+            tol.confusion(),
+            tol,
+        )?;
         let edge = ogeom_algo::make_edge_between(
             model,
             fitted.curve.into(),
@@ -454,6 +490,8 @@ fn bounded(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<Shap
             ogeom_topo::Location::identity(),
             (0.0, length),
         )?;
+        // The edge states how far its side, lifted, stands from the fit.
+        ogeom_algo::state_pcurve_gaps_of(model, core::slice::from_ref(&edge), tol)?;
         edges.push(edge);
     }
     let wire = ogeom_algo::make_wire(model, &edges, tol)?.shape;
