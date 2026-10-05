@@ -250,3 +250,58 @@ fn a_bspline_edge_on_part_of_its_curve_projects_that_part() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A curve drawn on a plane with more wiggle than the fit's samples can
+/// follow projects onto that plane as itself everywhere, not only at the
+/// samples, at the edge's own parameter, and the stated error covers what
+/// a dense measure finds.
+#[test]
+fn a_wiggling_curve_projects_onto_its_plane_between_the_samples() {
+    use ogeom::geom::{BSpline2d, CurveOnSurface, PlanarCurve, PlaneSurface, SurfaceGeometry};
+    const SPANS: usize = 400;
+    let control: Vec<Point2> = (0..SPANS + 3)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let x = 10.0 * i as f64 / (SPANS + 2) as f64;
+            Point2::new(x, if i.is_multiple_of(2) { 0.03 } else { -0.03 })
+        })
+        .collect();
+    let chart = BSpline2d::new(
+        KnotVector::clamped_uniform(3, control.len()).unwrap(),
+        control,
+        T,
+    )
+    .unwrap();
+    let plane: SurfaceGeometry = PlaneSurface::new(Plane::XY).into();
+    let drawn = Curve::OnSurface(Box::new(CurveOnSurface::new(
+        PlanarCurve::BSpline(chart.clone()),
+        plane,
+    )));
+    let mut model = Model::new();
+    let edge = make_edge(&mut model, drawn, (0.0, 1.0), T).unwrap().shape;
+    let ProjectedCurve::BSpline { curve, fit_error } =
+        project_edge_onto_plane(&model, &edge, &Plane::XY, T).unwrap()
+    else {
+        panic!("a curve on a surface projects to a fitted spline");
+    };
+    let error = fit_error.expect("a fitted curve says how far off");
+    // The projection runs at the edge's own parameter: at every parameter
+    // it stands where the drawn curve does.
+    let (a, b) = curve.domain();
+    assert!(a.abs() < 1e-12 && (b - 1.0).abs() < 1e-12, "{a} {b}");
+    let mut off = 0.0_f64;
+    for k in 0..=20_000 {
+        let t = f64::from(k) / 20_000.0;
+        off = off.max(
+            curve
+                .point_at(t, T)
+                .unwrap()
+                .distance(chart.point_at(t, T).unwrap()),
+        );
+    }
+    assert!(off <= 1e-4, "the projection strays {off} from the curve");
+    assert!(
+        off <= error + 1e-6,
+        "the projection strays {off} and states {error}"
+    );
+}

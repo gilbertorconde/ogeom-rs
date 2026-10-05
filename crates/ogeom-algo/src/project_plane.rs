@@ -51,8 +51,9 @@ pub enum ProjectedCurve {
         /// The arc's eccentric angles, `range.0 < range.1`.
         range: (f64, f64),
     },
-    /// A B-spline: exact for a B-spline edge, fitted for any other curve,
-    /// with the fit's largest miss in `fit_error`.
+    /// A B-spline: exact for a B-spline edge, fitted for any other curve at
+    /// the edge's own parameter, with the fit's largest miss in
+    /// `fit_error`.
     BSpline {
         /// The curve.
         curve: BSpline2d,
@@ -310,46 +311,36 @@ fn projected_spline(spline: &BSplineCurve, onto: &Onto, tol: Tolerances) -> Ogeo
     }
 }
 
-/// A curve with no closed-form projection, fitted through its projected
-/// points to a hundred times the confusion distance.
+/// A curve with no closed-form projection, fitted at the curve's own
+/// parameters through its projected points to a hundred times the
+/// confusion distance, sampled at every span of the curve and held to
+/// that between the samples as well as at them.
 fn fitted(
     curve: &Curve,
     range: (f64, f64),
     onto: &Onto,
     tol: Tolerances,
 ) -> OgeomResult<ProjectedCurve> {
-    const SAMPLES: u32 = 200;
-    let mut points = Vec::with_capacity(SAMPLES as usize + 1);
-    for k in 0..=SAMPLES {
-        let t = range.0 + (range.1 - range.0) * f64::from(k) / f64::from(SAMPLES);
-        let p = onto.point(curve.point_at(t, tol)?);
-        points.push(Point::new(p.x, p.y, 0.0));
-    }
-    let fit = ogeom_geom::fit::fit_points(&points, 3, tol.confusion() * 100.0, tol)?;
+    const SAMPLES: usize = 200;
+    let target = tol.confusion() * 100.0;
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let stations = crate::traced::stations(curve, (lo, hi), SAMPLES);
+    let fit = crate::traced::fit_traced_2d(
+        |t| Ok(onto.point(curve.point_at(t, tol)?)),
+        &stations,
+        3,
+        target,
+        tol,
+    )?;
     if !fit.met {
         ogeom_bail!(
             Construction,
-            "the projected curve could not be fitted within {}; its best fit misses by {}",
-            tol.confusion() * 100.0,
+            "the projected curve could not be fitted within {target}; its best fit misses by {}",
             fit.error
         );
     }
-    let flat = BSplineCurve::new(
-        fit.curve.knots().clone(),
-        fit.curve
-            .control_points()
-            .iter()
-            .map(|c| c.scaled)
-            .collect(),
-        tol,
-    )?;
-    let onto_xy = Onto {
-        origin: Point::ORIGIN,
-        x: Vector::X,
-        y: Vector::Y,
-    };
     Ok(ProjectedCurve::BSpline {
-        curve: projected_spline(&flat, &onto_xy, tol)?,
+        curve: fit.curve,
         fit_error: Some(fit.error),
     })
 }

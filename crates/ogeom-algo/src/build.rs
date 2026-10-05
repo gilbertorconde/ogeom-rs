@@ -602,11 +602,21 @@ pub fn make_face_with_pcurves(
                 // No closed form: a fitted surface, mostly. The edge lies on
                 // the surface by construction here (a rebuilt boundary, a
                 // recovered intersection), so the projected fit speaks it: the
-                // same machinery the exchange readers trust, at the same cap,
-                // and the measured offset widens the edge honestly.
+                // same machinery the exchange readers trust, at the same cap.
+                // The edge is widened to the offset its samples sat at and to
+                // how far the fitted trim, lifted, stands from the curve
+                // anywhere along it.
                 None => {
                     let (fitted, _, _, worst_off, _) =
                         crate::pcurve_fit::fit_projected_pcurve(&curve, prange, &surface, tol)?;
+                    let gap = crate::pcurve_fit::lifted_gap(
+                        (&curve, prange),
+                        (&fitted, prange),
+                        &surface,
+                        false,
+                        tol,
+                    )?;
+                    let worst_off = worst_off.max(gap);
                     if worst_off > tol.confusion() {
                         // The edge owns the offset, and so must the vertices
                         // that bound it: the containment rule.
@@ -2046,23 +2056,28 @@ pub fn make_band_between(
         };
         let length = (b.x - a.x).hypot(b.y - a.y);
         const SAMPLES: usize = 64;
-        let mut params: Vec<f64> = Vec::with_capacity(SAMPLES + 1);
-        let mut lifted: Vec<Point> = Vec::with_capacity(SAMPLES + 1);
-        for i in 0..=SAMPLES {
-            #[allow(clippy::cast_precision_loss)]
-            let f = i as f64 / SAMPLES as f64;
-            params.push(length * f);
-            lifted.push(surface.point_at(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, tol)?);
-        }
-        let target = tol.confusion() * 1e3;
-        let fitted = ogeom_geom::fit::fit_points_at(&params, &lifted, 3, target, tol)?;
-        if !fitted.met {
+        // Held to the target between the samples as well as at them; the
+        // error is the worst measured, and the edge states it below.
+        let target = tol.confusion() * 10.0;
+        let stations = crate::traced::stations_between((0.0, length), &[], 3, SAMPLES);
+        let fitted = crate::traced::fit_traced(
+            |t| {
+                let f = t / length;
+                surface.point_at(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, tol)
+            },
+            &stations,
+            3,
+            target,
+            tol,
+        )?;
+        if fitted.error > tol.confusion() * 1e3 {
             ogeom_bail!(
                 NotDone,
                 "a band's connector reached {} against a target of {target}",
                 fitted.error
             );
         }
+        let fit_error = fitted.error;
         let connector: ogeom_geom::Curve = ogeom_geom::Curve::BSpline(fitted.curve);
         // Against the vertices' own points, not the lifted chart points: a
         // ring's start vertex stands off the host by the ring's own slop
@@ -2079,6 +2094,12 @@ pub fn make_band_between(
             }
         }
         let seam = make_edge_between(model, connector, (0.0, length), &from, &to, tol)?.shape;
+        if fit_error > tol.confusion() {
+            model.widen(
+                &seam,
+                ogeom_core::Tolerance::new(fit_error + tol.confusion())?,
+            )?;
+        }
         (seam, forward, a, b)
     } else {
         let SurfaceGeometry::Cylinder(c) = surface else {
@@ -2173,6 +2194,7 @@ pub fn make_band_between(
         Location::identity(),
         (0.0, seam_length),
     )?;
+    crate::state_pcurve_gaps_of(model, core::slice::from_ref(&seam), tol)?;
     for ring in &prepared {
         attach_pcurve(
             model,
@@ -2565,6 +2587,166 @@ mod tests {
         let at_end = Curve::Helix(helix).point_at(0.4, T).unwrap();
         assert!(at_start.distance(Point::new(2.0, 0.0, 0.0)) < 1e-9);
         assert!(at_end.distance(Point::new(2.0 * 0.4_f64.cos(), 2.0 * 0.4_f64.sin(), 2.0)) < 1e-9);
+    }
+
+    /// A boundary with more detail than the projected fit's samples, on a
+    /// patch no closed form speaks: each fitted trim, lifted, stands within
+    /// what its edge states.
+    #[test]
+    fn a_fitted_trim_states_its_gap_along_the_whole_edge() {
+        let mut model = Model::new();
+        let patch = ogeom_geom::BSplineSurface::new(
+            ogeom_math::KnotVector::clamped_uniform(1, 2).unwrap(),
+            ogeom_math::KnotVector::clamped_uniform(1, 2).unwrap(),
+            &ogeom_math::ControlGrid::new(
+                vec![
+                    Point::new(-1.0, -1.0, 0.0),
+                    Point::new(-1.0, 11.0, 0.0),
+                    Point::new(11.0, -1.0, 0.0),
+                    Point::new(11.0, 11.0, 0.0),
+                ],
+                2,
+                2,
+            )
+            .unwrap(),
+            T,
+        )
+        .unwrap();
+        const SPANS: usize = 300;
+        let control: Vec<Point> = (0..SPANS + 3)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let x = 10.0 * i as f64 / (SPANS + 2) as f64;
+                let y = if i == 0 || i == SPANS + 2 {
+                    0.0
+                } else if i.is_multiple_of(2) {
+                    0.03
+                } else {
+                    -0.03
+                };
+                Point::new(x, y, 0.0)
+            })
+            .collect();
+        let wiggle: Curve = ogeom_geom::BSplineCurve::new(
+            ogeom_math::KnotVector::clamped_uniform(3, control.len()).unwrap(),
+            control,
+            T,
+        )
+        .unwrap()
+        .into();
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(0.0, 10.0, 0.0),
+        ];
+        let v: Vec<Shape> = corners
+            .iter()
+            .map(|p| make_vertex(&mut model, *p).shape)
+            .collect();
+        let mut edges = vec![
+            make_edge_between(&mut model, wiggle, (0.0, 1.0), &v[0], &v[1], T)
+                .unwrap()
+                .shape,
+        ];
+        for i in 1..4 {
+            let (a, b) = (corners[i], corners[(i + 1) % 4]);
+            let line: Curve = LineCurve::segment(a, b, T).unwrap().into();
+            edges.push(
+                make_edge_between(
+                    &mut model,
+                    line,
+                    (0.0, a.distance(b)),
+                    &v[i],
+                    &v[(i + 1) % 4],
+                    T,
+                )
+                .unwrap()
+                .shape,
+            );
+        }
+        let face = make_face_with_pcurves(&mut model, SurfaceGeometry::BSpline(patch), &[edges], T)
+            .unwrap()
+            .shape;
+        for edge in explore_unique(&model, &face, ShapeType::Edge).unwrap() {
+            let stated = model
+                .node(&edge)
+                .unwrap()
+                .data()
+                .as_edge()
+                .unwrap()
+                .tolerance
+                .get();
+            let gap = crate::edge_pcurve_gap(&model, &edge, T).unwrap().unwrap();
+            assert!(gap <= stated, "a trim {gap} off an edge stating {stated}");
+        }
+        let diagnosis = crate::check(&model, &face, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    }
+
+    /// On a sphere the chart segment between two starts lifts to a curve
+    /// with no closed form, and the connector is fitted through it: its
+    /// charts stand within what the edge states, everywhere along it.
+    #[test]
+    fn a_fitted_connector_states_its_charts_gap() {
+        let mut model = Model::new();
+        let radius = 5.0;
+        let surface: SurfaceGeometry = ogeom_geom::SphereSurface::new(
+            ogeom_math::Sphere::new(Frame::WORLD, radius, T).unwrap(),
+        )
+        .into();
+        let ring_at = |model: &mut Model, lat: f64, phase: f64| {
+            let x = ogeom_math::Direction::new(
+                ogeom_math::Vector::new(phase.cos(), phase.sin(), 0.0),
+                T,
+            )
+            .unwrap();
+            let frame = Frame::new(
+                Point::new(0.0, 0.0, radius * lat.sin()),
+                ogeom_math::Direction::Z,
+                x,
+                T,
+            )
+            .unwrap();
+            let curve: Curve =
+                CircleCurve::new(Circle::new(frame, radius * lat.cos(), T).unwrap()).into();
+            let domain = curve.domain();
+            let edge = make_edge(model, curve, domain, T).unwrap().shape;
+            let pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
+                ogeom_math::Axis2::new(
+                    ogeom_math::Point2::new(phase, lat),
+                    ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), T).unwrap(),
+                ),
+                0.0,
+                core::f64::consts::TAU,
+            )
+            .unwrap()
+            .into();
+            (edge, pcurve)
+        };
+        let (lo, lo_pcurve) = ring_at(&mut model, -1.2, 0.0);
+        let (hi, hi_pcurve) = ring_at(&mut model, 1.2, 3.0);
+        let band = make_band_between(
+            &mut model,
+            &surface,
+            [(&lo, lo_pcurve), (&hi, hi_pcurve)],
+            T,
+        )
+        .unwrap();
+        for edge in explore_unique(&model, &band, ShapeType::Edge).unwrap() {
+            let stated = model
+                .node(&edge)
+                .unwrap()
+                .data()
+                .as_edge()
+                .unwrap()
+                .tolerance
+                .get();
+            let gap = crate::edge_pcurve_gap(&model, &edge, T).unwrap().unwrap();
+            assert!(gap <= stated, "a chart {gap} off an edge stating {stated}");
+        }
+        let diagnosis = crate::check(&model, &band, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
     }
 
     #[test]

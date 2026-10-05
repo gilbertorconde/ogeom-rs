@@ -38,6 +38,7 @@ pub mod sew;
 pub mod sweep;
 pub mod text;
 pub mod tight;
+pub mod traced;
 
 pub use build::{
     attach_pcurve, attach_seam, chain_wire_branches, closed_at_poles, edge_vertices, find_plane,
