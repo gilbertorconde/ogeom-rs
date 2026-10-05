@@ -347,3 +347,76 @@ fn a_projected_circle_holds_its_stated_tolerance_between_stations() {
     let diagnosis = ogeom_algo::check(&model, &landed[0].edge, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
 }
+
+#[test]
+fn a_pipe_through_thin_sections_holds_its_end_section() {
+    // An ellipse 10 by 0.2 square to a quarter arc of radius 20 at each of
+    // its ends, the arc turning in the ellipse's long direction.
+    let mut model = Model::new();
+    let ellipse = |model: &mut Model, frame: Frame| {
+        let curve =
+            ogeom_geom::EllipseCurve::new(ogeom_math::Ellipse::new(frame, 10.0, 0.2, T).unwrap());
+        let edge = edge_of(model, curve.into());
+        ogeom_algo::make_wire(model, &[edge], T).unwrap().shape
+    };
+    let start = ellipse(
+        &mut model,
+        Frame::new(Point::ORIGIN, -Direction::Y, Direction::X, T).unwrap(),
+    );
+    let end = ellipse(
+        &mut model,
+        Frame::new(Point::new(20.0, -20.0, 0.0), Direction::X, -Direction::Y, T).unwrap(),
+    );
+    let arc = Circle::new(
+        Frame::new(Point::new(20.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+        20.0,
+        T,
+    )
+    .unwrap();
+    let spine = ogeom_algo::make_edge(
+        &mut model,
+        ogeom_geom::CircleCurve::new(arc).into(),
+        (PI, 1.5 * PI),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let spine = ogeom_algo::make_wire(&mut model, &[spine], T)
+        .unwrap()
+        .shape;
+    let tolerance = 1e-3;
+    let pipe =
+        ogeom_offset::make_pipe_sections(&mut model, &[start, end], &spine, false, tolerance, T)
+            .unwrap()
+            .shape;
+    let diagnosis = ogeom_algo::check(&model, &pipe, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let ring: Vec<Point> = (0..=40_000)
+        .map(|k| {
+            let a = 2.0 * PI * f64::from(k) / 40_000.0;
+            Point::new(10.0 * a.cos(), 0.0, 0.2 * a.sin())
+        })
+        .collect();
+    let mut worst = 0.0_f64;
+    let mut seen = 0;
+    for patch in spline_surfaces(&model, &pipe) {
+        let (ud, vd) = patch.domain();
+        for k in 0..=2000 {
+            for (u, v) in [
+                (across(ud, k, 2000), vd.0),
+                (across(ud, k, 2000), vd.1),
+                (ud.0, across(vd, k, 2000)),
+                (ud.1, across(vd, k, 2000)),
+            ] {
+                let p = patch.point_at(u, v, T).unwrap();
+                if p.y.abs() < 1e-6 {
+                    seen += 1;
+                    worst = worst.max(to_polyline(p, &ring));
+                }
+            }
+        }
+    }
+    assert!(seen > 1000, "the pipe has a border on the start section");
+    eprintln!("pipe sections' start ring off its ellipse by {worst}");
+    assert!(worst <= tolerance, "the start ring strays {worst}");
+}

@@ -1938,10 +1938,13 @@ impl Sampling {
 /// The fit is same-parameter with `point`: it is fitted at the grid's own
 /// parameters, and the fit at `(u, v)` is compared with `point(u, v)`,
 /// which bounds the distance between the two from above. Each span of a
-/// direction known between its samples is checked at its middle, along
-/// the sample lines and across them; a miss splits the spans it lies in,
-/// its middle becoming a sample, so the grid (and the fit's knots, which
-/// follow its residuals) thickens only where the fit strays. This repeats
+/// direction known between its samples is checked at its quarter points,
+/// along the sample lines and across them; a miss splits the spans it lies
+/// in, its middle becoming a sample, so the grid (and the fit's knots,
+/// which follow its residuals) thickens only where the fit strays. Where
+/// the least-squares fit strays between the samples, the spline through
+/// every sample (on knots that follow the samples) is measured too and
+/// decides where to refine, and the closer of the two stands. This repeats
 /// until `tolerance` holds at every point measured or a direction would
 /// pass `sampling.most` spans. The best fit is returned either way, its
 /// error the worst measured and `met` whether that is within `tolerance`.
@@ -2063,12 +2066,12 @@ pub fn fit_surface_sampled(
     best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the surface could not be sampled"))
 }
 
-/// The worst distance between `surface` and `point` at the middles of the
-/// spans of `params` (in the directions `between` says are known there),
-/// and which spans miss `tolerance`. A miss at a cell's centre is put down
-/// to whichever direction already misses along its sample lines through
-/// that cell's spans, and to both only where neither does: a skin that
-/// strays across its rows has no use for more samples along them.
+/// The worst distance between `surface` and `point` at the quarter points
+/// of the spans of `params` (in the directions `between` says are known
+/// there), and which spans miss `tolerance`. A miss inside a cell is put
+/// down to whichever direction already misses along its sample lines
+/// through that cell's spans, and to both only where neither does: a skin
+/// that strays across its rows has no use for more samples along them.
 #[allow(clippy::type_complexity, reason = "the error and the spans to split")]
 fn measured_between(
     point: &mut impl FnMut(f64, f64) -> OgeomResult<Point>,
@@ -2084,7 +2087,10 @@ fn measured_between(
         for (i, pair) in knots.windows(2).enumerate() {
             out.push((pair[0], None));
             if between {
-                out.push((f64::midpoint(pair[0], pair[1]), Some(i)));
+                let mid = f64::midpoint(pair[0], pair[1]);
+                out.push((f64::midpoint(pair[0], mid), Some(i)));
+                out.push((mid, Some(i)));
+                out.push((f64::midpoint(mid, pair[1]), Some(i)));
             }
         }
         out.push((knots[knots.len() - 1], None));

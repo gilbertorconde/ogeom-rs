@@ -1254,13 +1254,15 @@ fn adopt_border(
 /// An adopted border's image on a surface it was not fitted on: the
 /// border's own points, each read off the surface at its nearest point,
 /// fitted at the border's own parameters so the image is same-parameter
-/// with it. Returned with the parameter range it spans.
+/// with it. Returned with the parameter range it spans and how far the
+/// surface at the image stands from the border, measured between the
+/// samples as well as at them.
 fn adopted_image(
     model: &Model,
     edge: &Shape,
     surface: &SurfaceGeometry,
     tol: Tolerances,
-) -> OgeomResult<(ogeom_geom::PlanarCurve, (f64, f64))> {
+) -> OgeomResult<(ogeom_geom::PlanarCurve, (f64, f64), f64)> {
     const SAMPLES: u32 = 64;
     let (curve, range) = spine_curve_of(model, edge)?;
     let mut params = Vec::with_capacity(SAMPLES as usize + 1);
@@ -1277,8 +1279,23 @@ fn adopted_image(
         params.push(t);
         image.push(Point2::new(foot.parameters.0, foot.parameters.1));
     }
+    use ogeom_geom::Surface as _;
     let fitted = ogeom_geom::fit::fit_points_2d_at(&params, &image, 3, tol.confusion(), tol)?;
-    Ok((fitted.curve.into(), range))
+    let mut off = 0.0_f64;
+    for step in 0..=SAMPLES * 4 {
+        let t = range.0 + (range.1 - range.0) * f64::from(step) / f64::from(SAMPLES * 4);
+        let at = ogeom_geom::Curve2d::point_at(&fitted.curve, t, tol)?;
+        // A border image runs along the chart's edge, and rounding may set
+        // it a hair outside; the surface is read at the edge there.
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let at = Point2::new(at.x.clamp(u0, u1), at.y.clamp(v0, v1));
+        off = off.max(
+            surface
+                .point_at(at.x, at.y, tol)?
+                .distance(curve.point_at(t, tol)?),
+        );
+    }
+    Ok((fitted.curve.into(), range, off))
 }
 
 /// A solid skinned over a grid of section samples: [`skinned_wall`] with a
@@ -2236,7 +2253,19 @@ fn skinned_strip(
         (&rail1, shared[3].is_some(), column_line(u_dom.1)?, v_dom),
     ] {
         let (image, range) = if given {
-            adopted_image(model, edge, &surface_geo, tol)?
+            let (image, range, off) = adopted_image(model, edge, &surface_geo, tol)?;
+            // The image stands off the border by what it was measured at;
+            // the edge and its ends carry that.
+            if off > tol.confusion() {
+                let held = ogeom_core::Tolerance::new(off)?;
+                model.widen(edge, held)?;
+                if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
+                    for v in [&a, &b] {
+                        model.widen(v, held)?;
+                    }
+                }
+            }
+            (image, range)
         } else {
             (straight, span)
         };
@@ -3011,12 +3040,12 @@ fn resampled(dense: &[Point], count: usize) -> Vec<Point> {
     out
 }
 
-/// A section's samples in its own frame, started and run where they best
-/// match the section before (`previous`, in its frame): a section's start
-/// and sense are accidents of how it was drawn, and matched as given they
-/// twist the blend. Every start of the dense polyline is tried both ways;
-/// the given start and sense win a tie.
-fn matched_samples(dense: &[Point], count: usize, previous: &[Point]) -> Vec<Point> {
+/// A section's dense polyline in its own frame, started and run where its
+/// `count` samples best match the section before (`previous`, in its
+/// frame): a section's start and sense are accidents of how it was drawn,
+/// and matched as given they twist the blend. Every start of the dense
+/// polyline is tried both ways; the given start and sense win a tie.
+fn matched_loop(dense: &[Point], count: usize, previous: &[Point]) -> ArcLoop {
     let cost = |samples: &[Point]| -> f64 {
         samples
             .iter()
@@ -3024,11 +3053,11 @@ fn matched_samples(dense: &[Point], count: usize, previous: &[Point]) -> Vec<Poi
             .map(|(p, q)| (*p - *q).dot(*p - *q))
             .sum()
     };
-    let mut best = resampled(dense, count);
-    let mut held = cost(&best);
+    let mut best = dense.to_vec();
+    let mut held = cost(&resampled(dense, count));
     let scale: f64 = previous
         .iter()
-        .chain(&best)
+        .chain(&resampled(dense, count))
         .map(|p| (*p - Point::ORIGIN).dot(*p - Point::ORIGIN))
         .sum();
     let slack = scale * 1e-12;
@@ -3037,15 +3066,14 @@ fn matched_samples(dense: &[Point], count: usize, previous: &[Point]) -> Vec<Poi
         for start in 0..way.len() {
             let mut turned = way.to_vec();
             turned.rotate_left(start);
-            let samples = resampled(&turned, count);
-            let c = cost(&samples);
+            let c = cost(&resampled(&turned, count));
             if c < held - slack {
                 held = c;
-                best = samples;
+                best = turned;
             }
         }
     }
-    best
+    ArcLoop::new(best)
 }
 
 /// Sweep a circular profile along a free-form spine, skinned.
@@ -5005,7 +5033,9 @@ pub fn make_pipe_sections(
     }
     // Each section: where along the spine it stands, and its samples in
     // the frame there.
-    let mut placed: Vec<(f64, Vec<Point>)> = Vec::with_capacity(sections.len());
+    // Each section where it stands along the spine, read by arc length in
+    // its own frame, and its samples there for the next to match.
+    let mut placed: Vec<(f64, Section, Vec<Point>)> = Vec::with_capacity(sections.len());
     // A point section: where it stands, and whether at the spine's end.
     let mut apex: Option<(Point, bool)> = None;
     // The last section's ring read, for the straight pipe to a point.
@@ -5035,7 +5065,11 @@ pub fn make_pipe_sections(
             // Every sample at the frame's origin: the section shrinks onto
             // the spine there.
             let along = if at_end { run[run.len() - 1] } else { 0.0 };
-            placed.push((along, vec![Point::ORIGIN; AROUND]));
+            placed.push((
+                along,
+                Section::Point(Point::ORIGIN),
+                vec![Point::ORIGIN; AROUND],
+            ));
             continue;
         }
         let ring = match model.kind_of(section)? {
@@ -5096,11 +5130,15 @@ pub fn make_pipe_sections(
             .iter()
             .map(|p| into.apply(*p))
             .collect();
-        let samples = match placed.last() {
-            Some((_, previous)) => matched_samples(&dense, AROUND, previous),
-            None => resampled(&dense, AROUND),
+        let around = match placed.last() {
+            Some((_, _, previous)) => matched_loop(&dense, AROUND, previous),
+            None => ArcLoop::new(dense),
         };
-        placed.push((along, samples));
+        let samples = fractions(AROUND)[..AROUND]
+            .iter()
+            .map(|f| around.at(*f))
+            .collect();
+        placed.push((along, Section::Loop(around), samples));
     }
     for pair in placed.windows(2) {
         if pair[1].0 <= pair[0].0 + tol.confusion() {
@@ -5136,13 +5174,28 @@ pub fn make_pipe_sections(
         let (a, b) = (&placed[k], &placed[k + 1]);
         let f = ((along - a.0) / (b.0 - a.0)).clamp(0.0, 1.0);
         let out = Transform::from_frame(frame);
-        let mut points: Vec<Point> =
-            a.1.iter()
-                .zip(&b.1)
-                .map(|(p, q)| out.apply(*p + (*q - *p) * f))
-                .collect();
-        points.push(points[0]);
-        let fitted = ogeom_geom::fit::fit_points_closed(&points, 3, tolerance * 0.1, tol)?;
+        // The blend round at a fraction of each section's length, held to
+        // its share of the tolerance between the samples as well as at
+        // them.
+        let target = tolerance * 0.1;
+        let fitted = ogeom_geom::fit::fit_curve_sampled(
+            |g| {
+                let (p, q) = (a.1.at(g), b.1.at(g));
+                Ok(out.apply(p + (q - p) * f))
+            },
+            &fractions(AROUND),
+            true,
+            3,
+            target,
+            tol,
+        )?;
+        if !fitted.met {
+            ogeom_bail!(
+                NotDone,
+                "a blended section reached {} against a target of {target}",
+                fitted.error
+            );
+        }
         let curve: ogeom_geom::Curve = fitted.curve.into();
         let range = curve.domain();
         let edge = ogeom_algo::make_edge(model, curve, range, tol)?.shape;
