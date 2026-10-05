@@ -2567,7 +2567,20 @@ fn host_leg(
                     fitted.error
                 );
             }
-            PlanarCurve::from(fitted.curve)
+            // The target is in the chart's units; the edge states the gap
+            // the image stands from the guide once lifted, as a length.
+            let pcurve = PlanarCurve::from(fitted.curve);
+            let gap = ogeom_algo::pcurve_fit::lifted_gap(
+                (&apex_guide, guide_range),
+                (&pcurve, guide_range),
+                host,
+                false,
+                tol,
+            )?;
+            if gap > tol.confusion() {
+                model.widen(&apex, ogeom_core::Tolerance::new(gap + tol.confusion())?)?;
+            }
+            pcurve
         }
     };
 

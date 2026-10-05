@@ -727,17 +727,23 @@ fn contact_cut(
     }
     let line = Curve::BSpline(line.curve);
     let domain = line.domain();
+    let image = PlanarCurve::from(image.curve);
+    // The line and its image were fitted apart through the same stations;
+    // the edge states how far the image, lifted, stands from the line
+    // anywhere along it, and never less than the fit's target.
+    let gap =
+        ogeom_algo::pcurve_fit::lifted_gap((&line, domain), (&image, domain), surface, false, tol)?;
     let edge = make_edge(model, line.clone(), domain, tol)?.shape;
     attach_pcurve(
         model,
         &edge,
-        PlanarCurve::from(image.curve),
+        image,
         hosts.ids[f],
         Location::identity(),
         domain,
     )?;
     crate::sheet_curved::same_parameter(model, &edge);
-    model.widen(&edge, Tolerance::new(target.max(image.error * 10.0))?)?;
+    model.widen(&edge, Tolerance::new(target.max(gap + tol.confusion()))?)?;
     let split = ogeom_heal::split_face(
         model,
         face,

@@ -920,7 +920,7 @@ fn piece_of(
 
 /// The image of `curve` over `range` on `surface`: exact where it has a
 /// closed form, fitted otherwise with the edge and its vertices widened to
-/// hold the fit; put on the branch of a periodic chart nearest `near` at
+/// hold the fit, measured along the whole edge; put on the branch of a periodic chart nearest `near` at
 /// the image's start.
 fn attach_image(
     model: &mut Model,
@@ -935,8 +935,18 @@ fn attach_image(
         if let Some(exact) = ogeom_intersect::exact_pcurve_over(&curve, range, surface, tol) {
             exact
         } else {
-            let (fitted, _, _, worst, _) =
+            let (fitted, _, _, worst_off, _) =
                 ogeom_algo::pcurve_fit::fit_projected_pcurve(&curve, range, surface, tol)?;
+            // The offset the samples sat at, and how far the fitted image,
+            // lifted, stands from the curve anywhere along it.
+            let gap = ogeom_algo::pcurve_fit::lifted_gap(
+                (&curve, range),
+                (&fitted, range),
+                surface,
+                false,
+                tol,
+            )?;
+            let worst = worst_off.max(gap);
             if worst > tol.confusion() {
                 let widened = Tolerance::new(worst + tol.confusion())?;
                 model.widen(edge, widened)?;
