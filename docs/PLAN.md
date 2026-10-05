@@ -217,10 +217,10 @@ cone and spline, now lies within 1e-4 and 1e-5 as asked (the drum at 1e-4
 stood 1.29e-3 off between the old chord-length grid's samples, a sphere
 0.14). A fit takes 4 to 95 ms where it took about 1 ms, and an offset
 spline at 1e-5 takes 0.57 s. The offset drum's rims state 8.4e-5 at 1e-4.
-Left: the stated error is the worst at the samples and span middles,
-which can sit a little under the true miss (8.32e-5 against a stated
-7.79e-5 for the drum); a fit whose surface cannot be evaluated somewhere
-(an offset sphere's poles) refuses as before.
+Left: the stated error is the worst at the samples and span quarter
+points, which can sit a little under the true miss; a fit whose surface
+cannot be evaluated somewhere (an offset sphere's poles) refuses as
+before.
 Curve fits measured only at their samples follow the same rule through
 `ogeom_algo::traced`: a fit starts at every span of its source (each cut
 in degree + 1, at least the old count), is checked at each interval's
@@ -270,6 +270,51 @@ added. Left: `projected_into_shared_chart` ignores the owner fit's `met`
 (the contact piece states the dense gap after), heal `split.rs`'s joint
 fit and `divide.rs`'s iso fit (one case measured, 8e-15) are measured at
 samples only.
+
+The offset builders' fits are now measured the same way. Each builder
+hands `fit_surface_sampled` (or `fit_curve_sampled`, or
+`fit_trace_sampled` for a curve with its pcurve) the geometry it samples,
+fitted at its own parameters and checked at every span's quarter points;
+where the least-squares fit strays the spline through every sample
+decides where to refine. (`fit_curve_sampled` and
+`ogeom_algo::traced::fit_traced` were written apart and do the same work;
+one should take the other's place.) Measured densely against the true geometry,
+before and after: `make_pipe_skinned` along eight periods of a sine at
+1e-3, 9.6e-2 to 3.1e-4; `make_filling` round a half disc's arc from four
+samples at 1e-4, 2.1e-2 to 1.6e-5; `make_loft_skinned` through ellipses
+10 by 0.2 at 1e-4, 1.4e-2 to 3.0e-5; `make_pipe_shell` of a half disc
+down a bent spline at 1e-5, 6.5e-4 to 4.6e-6 on its arc;
+`make_pipe_sections` between two such ellipses at 1e-3, 0.18 to 7.2e-4;
+`normal_projection` of a circle onto a ball from 8 stations at 1e-3,
+2.5e-2 (stating 2.2e-2, its edge 1e-7) to 9.3e-4 (stating 9.6e-4, the
+edge widened to it). Covered: the skinned pipe, the skinned lofts and
+their aligned, closed and apex forms and the loft a pipe law builds, the
+strips of a faceted pipe shell, a cornered loft and a helical sweep, a
+smooth profile's wall in a pipe shell, both closed pipe rings, a planar
+strip's borders, the multisection pipe's rings, the filling and the
+projection; an adopted strip border states how far its image stands.
+The offset, sweep and stress runs cost about the same; `thread_groove`
+takes about 8% longer.
+Left:
+- Along a sweep only the stations are known: the strips, walls and rings
+  of a pipe shell, the law loft's stations and the helical strips are
+  checked along their profile, not between their stations (the pipe's
+  frame law between stations would have to be evaluated there).
+- `extruded_draft`: the drafted wall of an extruded spline is fitted
+  through 65 stations and nine rows, measured at them only. A wavy wall
+  drafted 0.1 at a 1e-4 target stood 2.5e-3 off its turned rulings. Fitted
+  to the rulings and refined between the stations it stands 3.8e-5 off,
+  but it needs more knots, the exact volume the rebuild measures as its
+  guard integrates a trimmed spline face span by span, and that one
+  draft went from about 1.5 s to 9 s (a gentler wall got faster, 2.2 s to
+  0.16 s, with the chart's `u` across the rulings). The window's tangent
+  continuation also proved too short for a slanted neighbour once the
+  wall is accurate. Not committed; the change waits on a cheaper exact
+  integral for many-span trimmed faces or a decision to accept the cost.
+- `general_draft` fits its hinge and tip curves at fixed parameters
+  through 256 stations and does not check between them.
+- The patch closing a non-planar end of a skinned loft (`EndCap::Skinned`)
+  is still fitted through its rows and measured at them.
 
 Left: the rest of those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
 standing off their edges within the 1e-5 taken as along, which every exact

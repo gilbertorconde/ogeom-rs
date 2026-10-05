@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Sweeps, lofts and fillings hold their tolerance between samples.**
+  Skinned pipes, skinned lofts (aligned, closed, apex and law forms),
+  fillings, swept strips (pipe shell, cornered loft, helical sweep) and
+  closed and multisection pipe rings were fitted through samples and
+  reported the tolerance met while straying up to 0.18 between them. They
+  are fitted at the true geometry's own parameters, checked at quarter
+  points (eighths along curves), refined where they miss, and state the
+  worst measured. `normal_projection` measures between its stations and
+  widens the edge to the error it states. `fit_surface_sampled`,
+  `fit_curve_sampled` and `fit_trace_sampled` fit known geometry this way.
+
 - **Fitted curves are measured between their samples.** A heal boundary
   moved onto its face, a curve projected onto a plane, a band connector, an
   IGES trim given only in parameter space or a varying offset, and a
