@@ -726,3 +726,78 @@ fn a_fitted_patch_wall_drafts_to_the_requested_angle() {
         );
     }
 }
+
+/// A drum drafted about a neutral plane tilted well off its axis: the
+/// drafted wall is the ruled surface through the ellipse where the plane
+/// cuts the drum, each ruling the pull turned by the draft about the
+/// ellipse's tangent. Sampled densely along the wall, its hinge stands on
+/// that ellipse and its rulings run that way out to the window's far
+/// rows, within the draft's fit target of 1e-4.
+#[test]
+fn an_oblique_drafted_drum_holds_its_rulings_between_stations() {
+    use ogeom_geom::Surface as _;
+    let mut model = ogeom_topo::Model::new();
+    let solid = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let wall = wall_of(&model, &solid);
+    let tilt = 0.7_f64;
+    let up = ogeom_math::Vector::new(tilt.sin(), 0.0, tilt.cos());
+    let neutral = Plane::through(
+        Point::new(0.0, 0.0, 10.0),
+        ogeom_math::Direction::new(up, T).unwrap(),
+    );
+    let angle = 0.1_f64;
+    let drafted = ogeom_offset::apply_draft(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&wall),
+        neutral,
+        ogeom_math::Direction::Z,
+        angle,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let diagnosis = ogeom_algo::check(&model, &drafted, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let surface = explore(&model, &drafted, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find_map(|f| {
+            let d = model.node(&f)?.data().as_face()?.clone();
+            match model.geometry().surface(d.surface)? {
+                s @ ogeom_geom::SurfaceGeometry::BSpline(_) => Some(s.clone()),
+                _ => None,
+            }
+        })
+        .expect("the drafted wall is fitted");
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    // The chart's `v` is the height along the ruling, the hinge at naught.
+    let reach = v0.abs().max(v1.abs());
+    let mut worst = 0.0_f64;
+    for k in 0..=4000 {
+        let u = u0 + (u1 - u0) * f64::from(k) / 4000.0;
+        let hinge = surface.point_at(u, 0.0, T).unwrap();
+        let off_drum = (hinge.x.hypot(hinge.y) - 10.0).abs();
+        let off_plane = neutral.distance_to(hinge);
+        // The exact ruling there: the pull turned by the draft about the
+        // hinge's tangent, square to the drum's normal and the plane's.
+        let radial = ogeom_math::Vector::new(hinge.x, hinge.y, 0.0);
+        let tangent = radial.cross(up);
+        let (_, along) = surface.d1_at(u, 0.0, T).unwrap();
+        let along = along / along.magnitude();
+        let mut lean = f64::INFINITY;
+        for sense in [1.0, -1.0] {
+            let turn = ogeom_math::Transform::rotation(
+                ogeom_math::Axis::new(hinge, ogeom_math::Direction::new(tangent, T).unwrap()),
+                angle * sense,
+            );
+            let ruling = turn.apply_vector(ogeom_math::Vector::Z);
+            lean = lean.min(ruling.cross(along).magnitude());
+        }
+        worst = worst.max(off_drum.hypot(off_plane) + lean * reach);
+    }
+    eprintln!("oblique drafted drum off its rulings by {worst} out to {reach}");
+    assert!(worst <= 1e-4, "the wall strays {worst} from its rulings");
+}

@@ -13,7 +13,7 @@
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{Curve3d as _, PlaneSurface, Surface as _, SurfaceGeometry};
+use ogeom_geom::{PlaneSurface, Surface as _, SurfaceGeometry};
 use ogeom_math::{Direction, Frame, Plane, Point, Transform, Vector};
 use ogeom_topo::{Model, NodeData, Shape, ShapeType, TShapeId};
 
@@ -735,22 +735,22 @@ fn general_draft(
     // them in the chart (across a periodic seam by the short way), and
     // corrected onto the surface below, the stations are as dense as the
     // fit's target wants.
+    let ((ua, ub), (va, vb)) = surface.domain();
+    // Closed counts as periodic here: a fitted tube closes on itself
+    // without repeating, and a chain crossing its join must still take
+    // the short way round.
+    let period = (
+        (surface.is_periodic_u() || surface.is_closed_u(tol)).then_some(ub - ua),
+        (surface.is_periodic_v() || surface.is_closed_v(tol)).then_some(vb - va),
+    );
+    let short = |a: f64, b: f64, period: Option<f64>| -> f64 {
+        let d = b - a;
+        match period {
+            Some(p) if d.abs() > p * 0.5 => d - p * d.signum(),
+            _ => d,
+        }
+    };
     let chain: Vec<(f64, f64)> = {
-        let ((ua, ub), (va, vb)) = surface.domain();
-        // Closed counts as periodic here: a fitted tube closes on itself
-        // without repeating, and a chain crossing its join must still take
-        // the short way round.
-        let period = (
-            (surface.is_periodic_u() || surface.is_closed_u(tol)).then_some(ub - ua),
-            (surface.is_periodic_v() || surface.is_closed_v(tol)).then_some(vb - va),
-        );
-        let short = |a: f64, b: f64, period: Option<f64>| -> f64 {
-            let d = b - a;
-            match period {
-                Some(p) if d.abs() > p * 0.5 => d - p * d.signum(),
-                _ => d,
-            }
-        };
         // A closed hinge starts where it crosses the chart's own seam
         // column, so the drafted support's seam stands where the old one
         // did and the rebuild finds it there.
@@ -840,13 +840,12 @@ fn general_draft(
     // Each station corrected onto the surface's crossing with the plane
     // (the mesh's chord is not the surface), and read for its tangent and
     // outward normal.
-    let mut hinges: Vec<Point> = Vec::with_capacity(chain.len());
-    let mut tangents: Vec<Vector> = Vec::with_capacity(chain.len());
-    let mut outwards: Vec<Vector> = Vec::with_capacity(chain.len());
-    for (k, &(mut u, mut v)) in chain.iter().enumerate() {
-        // The first station of a closed hinge is the seam column's, and
-        // stays on it: corrected along `v` alone.
-        let pinned = closed && k == 0;
+    // A chart position corrected onto the crossing (along `v` alone where
+    // `pinned`), with the point there, the crossing's direction (either
+    // way along it) and the outward normal.
+    let on_hinge = |(mut u, mut v): (f64, f64),
+                    pinned: bool|
+     -> OgeomResult<((f64, f64), Point, Vector, Vector)> {
         for _ in 0..8 {
             let p = surface.point_at(u, v, tol)?;
             let f = neutral.signed_distance_to(p);
@@ -869,16 +868,8 @@ fn general_draft(
             ogeom_bail!(Construction, "the drafted face has no normal on its hinge");
         }
         let outward = raw / raw.magnitude() * sign;
-        // Along the crossing: square to both normals, run the way the chain
-        // runs.
-        let mut t = outward.cross(n);
-        let next = chain[(k + 1) % chain.len()];
-        let prev = chain[(k + chain.len() - 1) % chain.len()];
-        let ahead =
-            surface.point_at(next.0, next.1, tol)? - surface.point_at(prev.0, prev.1, tol)?;
-        if t.dot(ahead) < 0.0 {
-            t = -t;
-        }
+        // Along the crossing: square to both normals.
+        let t = outward.cross(n);
         if t.magnitude() <= tol.angular() {
             ogeom_bail!(
                 Construction,
@@ -886,8 +877,27 @@ fn general_draft(
                  hinge to turn about"
             );
         }
+        Ok(((u, v), p, t / t.magnitude(), outward))
+    };
+    let mut feet: Vec<(f64, f64)> = Vec::with_capacity(chain.len());
+    let mut hinges: Vec<Point> = Vec::with_capacity(chain.len());
+    let mut tangents: Vec<Vector> = Vec::with_capacity(chain.len());
+    let mut outwards: Vec<Vector> = Vec::with_capacity(chain.len());
+    for (k, &at) in chain.iter().enumerate() {
+        // The first station of a closed hinge is the seam column's, and
+        // stays on it.
+        let (foot, p, mut t, outward) = on_hinge(at, closed && k == 0)?;
+        // Run the way the chain runs.
+        let next = chain[(k + 1) % chain.len()];
+        let prev = chain[(k + chain.len() - 1) % chain.len()];
+        let ahead =
+            surface.point_at(next.0, next.1, tol)? - surface.point_at(prev.0, prev.1, tol)?;
+        if t.dot(ahead) < 0.0 {
+            t = -t;
+        }
+        feet.push(foot);
         hinges.push(p);
-        tangents.push(t / t.magnitude());
+        tangents.push(t);
         outwards.push(outward);
     }
 
@@ -937,10 +947,12 @@ fn general_draft(
     }
     let grow = extent.mul_add(0.5, 1.0) * angle.abs().tan() + tol.confusion();
     let (s_lo, s_hi) = (s_lo - grow, s_hi + grow);
+    // How many stations continue an open hinge before its first.
+    let mut lead = 0;
     if !closed {
         // An open hinge is continued straight past both ends, for the
         // same reason.
-        let extend = |hinges: &mut Vec<Point>, rulings: &mut Vec<Vector>, front: bool| {
+        let extend = |hinges: &mut Vec<Point>, rulings: &mut Vec<Vector>, front: bool| -> usize {
             let (i0, i1) = if front {
                 (0, 1)
             } else {
@@ -961,8 +973,9 @@ fn general_draft(
                     rulings.push(station.1);
                 }
             }
+            steps
         };
-        extend(&mut hinges, &mut rulings, true);
+        lead = extend(&mut hinges, &mut rulings, true);
         extend(&mut hinges, &mut rulings, false);
     } else {
         hinges.push(hinges[0]);
@@ -980,11 +993,12 @@ fn general_draft(
             }
         }
     }
-    // The ruled surface itself, exactly: the hinge fitted as a cubic, the
-    // rulings' tips fitted as another at the *same* parameters, the two
-    // brought onto one knot vector, and the surface linear between them:
-    // degree one along the ruling, so a straight line is a straight line
-    // and the fit's only error is the two curves' own. A grid fit through
+    // The ruled surface itself, exactly: the wall's two border rows, at the
+    // window's two heights along the rulings, fitted as cubics on one knot
+    // vector at the *same* parameters and checked between the stations,
+    // and the surface linear between them: degree one along the ruling, so
+    // a straight line is a straight line, and every point of the window
+    // stands between two rows each within the target. A grid fit through
     // rows at several heights parameterizes each row by its own chord and
     // averages, and rows that converge along their rulings disagree by
     // enough for a cubic across them to wander.
@@ -1011,49 +1025,153 @@ fn general_draft(
         }
         out
     };
-    let reach = s_lo.abs().max(s_hi.abs()).max(1.0);
+    // The hinge and its ruling anywhere along it: a station's own, and
+    // between two stations the crossing found again from the chart between
+    // their feet, its ruling turned there as at a station; along an open
+    // hinge's straight continuation, the line and its end's ruling.
+    let stations = feet.len();
+    let wrap = |x: f64, lo: f64, period: Option<f64>| -> f64 {
+        period.map_or(x, |p| lo + (x - lo).rem_euclid(p))
+    };
+    let exact_at = |at: f64| -> OgeomResult<(Point, Vector)> {
+        let i = params
+            .partition_point(|p| *p <= at)
+            .saturating_sub(1)
+            .min(params.len() - 2);
+        let f = (at - params[i]) / (params[i + 1] - params[i]);
+        if f <= 0.0 {
+            return Ok((hinges[i], rulings[i]));
+        }
+        let (k0, k1) = (i.wrapping_sub(lead), (i + 1).wrapping_sub(lead));
+        if k0 >= stations || k1 > stations || (!closed && k1 == stations) {
+            return Ok((hinges[i] + (hinges[i + 1] - hinges[i]) * f, rulings[i]));
+        }
+        let (a, b) = (feet[k0], feet[k1 % stations]);
+        let (mut u, mut v) = (
+            wrap(a.0 + short(a.0, b.0, period.0) * f, ua, period.0),
+            wrap(a.1 + short(a.1, b.1, period.1) * f, va, period.1),
+        );
+        // On the plane, and as far along the chord between the two
+        // stations as the parameter is between theirs: a correction onto
+        // the plane alone would slide along the hinge as it went, and the
+        // hinge's pace would kink at every station.
+        let (from, chord) = (hinges[i], hinges[i + 1] - hinges[i]);
+        for _ in 0..8 {
+            let q = surface.point_at(u, v, tol)?;
+            let g = (
+                neutral.signed_distance_to(q),
+                (q - from).dot(chord) - f * chord.dot(chord),
+            );
+            if g.0.abs() <= tol.confusion() * 1e-2
+                && g.1.abs() <= tol.confusion() * 1e-2 * chord.magnitude()
+            {
+                break;
+            }
+            let (du, dv) = surface.d1_at(u, v, tol)?;
+            let (a11, a12, a21, a22) = (n.dot(du), n.dot(dv), chord.dot(du), chord.dot(dv));
+            let det = a11 * a22 - a12 * a21;
+            if det.abs() <= f64::MIN_POSITIVE {
+                break;
+            }
+            u = wrap(u - (g.0 * a22 - a12 * g.1) / det, ua, period.0);
+            v = wrap(v - (a11 * g.1 - a21 * g.0) / det, va, period.1);
+        }
+        let (_, p, t, _) = on_hinge((u, v), false)?;
+        let t = if t.dot(tangents[k0]) < 0.0 { -t } else { t };
+        let turn = Transform::rotation(ogeom_math::Axis::new(p, Direction::new(t, tol)?), theta);
+        Ok((p, turn.apply_vector(pull.vector())))
+    };
+    // A closed hinge leaves its first station and comes back to it on the
+    // two sides of the face's seam, where a face closed only to its
+    // position turns its normal, and its rulings with it. The wall closes
+    // on one ruling there, the mean of the two sides, and turns smoothly
+    // from it to each side's own over a thirty-second of the way round
+    // either side: a turn within one station would ask the fit for a knot
+    // at every sample there.
+    const SEAM_BLEND: f64 = 1.0 / 32.0;
+    let seam = if closed {
+        let leave = exact_at(params[1] * 1e-9)?.1;
+        let back = exact_at(1.0 - (1.0 - params[params.len() - 2]) * 1e-9)?.1;
+        let mean = leave + back;
+        Some((leave, back, mean / mean.magnitude()))
+    } else {
+        None
+    };
+    let ruled_at = |at: f64| -> OgeomResult<(Point, Vector)> {
+        let Some((leave, back, mean)) = seam else {
+            return exact_at(at);
+        };
+        if at <= 0.0 || at >= 1.0 {
+            return Ok((hinges[0], mean));
+        }
+        let (p, r) = exact_at(at)?;
+        // The share of the turn left: one at the seam, none past the blend,
+        // flat at both ends.
+        let left = |x: f64| {
+            let x = x.clamp(0.0, 1.0);
+            1.0 - x * x * 2.0f64.mul_add(-x, 3.0)
+        };
+        let r = if at < SEAM_BLEND {
+            r + (mean - leave) * left(at / SEAM_BLEND)
+        } else if at > 1.0 - SEAM_BLEND {
+            r + (mean - back) * left((1.0 - at) / SEAM_BLEND)
+        } else {
+            return Ok((p, r));
+        };
+        Ok((p, r / r.magnitude()))
+    };
+    // Both rows on one knot vector, refined where either strays between
+    // the samples: a surface fit through the two rows, which is linear
+    // across them.
     let fit_target = (tol.confusion() * 1e3).max(1e-4);
-    let hinge_fit = ogeom_geom::fit::fit_points_at(&params, &hinges, 3, fit_target, tol)?;
-    let tips: Vec<Point> = hinges.iter().zip(&rulings).map(|(h, r)| *h + *r).collect();
-    let tip_fit = ogeom_geom::fit::fit_points_at(&params, &tips, 3, fit_target / reach, tol)?;
-    if !hinge_fit.met || !tip_fit.met {
+    let rows = ogeom_geom::fit::fit_surface_sampled(
+        |at, side| {
+            let (h, r) = ruled_at(at)?;
+            Ok(h + r * if side < 0.5 { s_lo } else { s_hi })
+        },
+        &ogeom_geom::fit::Sampling {
+            us: params.clone(),
+            vs: vec![0.0, 1.0],
+            between: (true, false),
+            closed_v: false,
+            most: 1024,
+        },
+        3,
+        fit_target,
+        tol,
+    )?;
+    if !rows.met {
         ogeom_bail!(
             NotDone,
-            "the drafted wall's hinge fit reached {} and its rulings' {} against \
-             a target of {fit_target}",
-            hinge_fit.error,
-            tip_fit.error * reach
+            "the drafted wall's border rows reached {} against a target of {fit_target}",
+            rows.error
         );
     }
-    let (mut hinge_curve, mut tip_curve) = (hinge_fit.curve, tip_fit.curve);
-    for (value, count) in tip_curve.knots().distinct() {
-        let have = hinge_curve.knots().multiplicity_of(value);
-        if count > have {
-            hinge_curve = hinge_curve.with_knot_inserted(value, count - have, tol)?;
-        }
-    }
-    for (value, count) in hinge_curve.knots().distinct() {
-        let have = tip_curve.knots().multiplicity_of(value);
-        if count > have {
-            tip_curve = tip_curve.with_knot_inserted(value, count - have, tol)?;
-        }
-    }
-    let (hc, tc) = (hinge_curve.control_points(), tip_curve.control_points());
-    if hc.len() != tc.len() {
+    let fitted = rows.curve;
+    let (k, l) = (fitted.grid().u_count(), fitted.grid().v_count());
+    if l != 2 || fitted.v_knots().degree() != 1 {
         ogeom_bail!(
             Construction,
-            "the hinge and its rulings did not share a knot vector"
+            "the drafted wall's border rows did not fit as a ruled surface"
         );
     }
+    let corners: Vec<Point> = fitted.grid().points().iter().map(|w| w.point()).collect();
+    let (lc, hc): (Vec<Point>, Vec<Point>) =
+        (0..k).map(|i| (corners[i * 2], corners[i * 2 + 1])).unzip();
     // The face keeps its orientation flag, so the new surface's own normal
     // must turn the way the old one's did; whether it does depends on which
     // way the hinge chained. Measured at the hinge's middle, where the two
     // surfaces meet, and the rulings run from the far end back if not.
-    let (hinge_mid, tip_mid) = (
-        hinge_curve.point_at(0.5, tol)?,
-        tip_curve.point_at(0.5, tol)?,
+    let mid = {
+        let (ud, _) = fitted.domain();
+        f64::midpoint(ud.0, ud.1)
+    };
+    let (low_mid, high_mid) = (
+        fitted.point_at(mid, 0.0, tol)?,
+        fitted.point_at(mid, 1.0, tol)?,
     );
-    let across = hinge_curve.d1_at(0.5, tol)?;
+    let hinge_mid = low_mid + (high_mid - low_mid) * (-s_lo / (s_hi - s_lo));
+    let across = fitted.d1_at(mid, 0.0, tol)?.0;
     let old_normal = {
         let foot = ogeom_algo::project_on_surface(surface, hinge_mid, 16, tol)?;
         let (u, v) = foot.parameters;
@@ -1061,27 +1179,25 @@ fn general_draft(
     };
     // du x dv of the new surface at the hinge: along the hinge, crossed
     // with up the ruling.
-    let agrees = across.cross(tip_mid - hinge_mid).dot(old_normal) >= 0.0;
+    let agrees = across.cross(high_mid - low_mid).dot(old_normal) >= 0.0;
     let (first, second, v_range) = if agrees {
-        (s_lo, s_hi, (s_lo, s_hi))
+        (&lc, &hc, (s_lo, s_hi))
     } else {
-        (s_hi, s_lo, (-s_hi, -s_lo))
+        (&hc, &lc, (-s_hi, -s_lo))
     };
-    let mut net: Vec<Point> = Vec::with_capacity(hc.len() * 2);
-    for (h, t) in hc.iter().zip(tc) {
-        let (h, d) = (h.point(), t.point() - h.point());
-        net.push(h + d * first);
-        net.push(h + d * second);
+    let mut net: Vec<Point> = Vec::with_capacity(k * 2);
+    for (a, b) in first.iter().zip(second) {
+        net.push(*a);
+        net.push(*b);
     }
-    let grid = ogeom_math::ControlGrid::new(net, hc.len(), 2)?;
+    let grid = ogeom_math::ControlGrid::new(net, k, 2)?;
     // The chart: `u` over the old surface's own `u` domain for a closed
     // hinge, so the seam column carries over; `v` the height along the
     // ruling in the model's own units.
     let u_knots = if closed {
-        let ((ua, ub), _) = surface.domain();
-        hinge_curve.knots().reparameterized(ua, ub)?
+        fitted.u_knots().reparameterized(ua, ub)?
     } else {
-        hinge_curve.knots().clone()
+        fitted.u_knots().clone()
     };
     let v_knots =
         ogeom_math::KnotVector::clamped_uniform(1, 2)?.reparameterized(v_range.0, v_range.1)?;

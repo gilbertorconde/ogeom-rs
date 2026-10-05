@@ -318,6 +318,14 @@ parameter across runs from naught to one over its stations. Cost: a
 helical sweep builds about half as long again (a spring of 3 turns 0.49 s
 to 0.75 s), a thread groove's pipe 0.13 s to 0.26 s; the thread groove
 and helical sweep tests take 0 to 20% longer, the stress run the same.
+`general_draft` fitted its hinge to 1e-4 and its rulings' tips (a unit
+out) to 1e-4 over the reach, through 256 stations: the hinge's own error
+grew along the rulings, and a drum drafted 0.1 about a plane tilted 0.7
+stood 2.0e-3 off its exact rulings 20 out. The wall's two border rows are
+now fitted on one knot vector (the surface fit through them) and checked
+between the stations, where the crossing is found again from the chart
+between the stations' feet, held on the chord between them so its pace
+does not kink: 1.8e-5, and the draft about 30% faster there.
 Left:
 - A pipe shell's run re-rowed at a curved corner (each column along its
   own generator to the crossing) is still fitted through its rows.
@@ -339,8 +347,14 @@ Left:
   at a 1e-4 target (a 9 by 173 patch, `|n|` from 0.045 to 643) still
   doubles its panels five times, about 10 s, where its volume settles on
   the first doubling in 0.1 s.
-- `general_draft` fits its hinge and tip curves at fixed parameters
-  through 256 stations and does not check between them.
+- `general_draft` on a closed face whose seam is closed only to position
+  (a skinned loft's wall): the face's normal turns across the seam and the
+  exact draft's rulings with it, so the drafted wall closes on the mean
+  ruling and blends to each side's within a thirty-second of the hinge.
+  There it stands off the exact draft by half the turn times the reach
+  (6.5e-4 on a loft of circles of radius 10 skinned at 1e-3, reach 9);
+  elsewhere within 1e-4. Such a draft rebuilds in about 1.3 s (0.23 s
+  before), the time in the rebuild's exact volume over the wall.
 - The patch closing a non-planar end of a skinned loft (`EndCap::Skinned`)
   is still fitted through its rows and measured at them.
 
