@@ -13,6 +13,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Fitted curves are measured between their samples.** A heal boundary
+  moved onto its face, a curve projected onto a plane, a band connector, an
+  IGES trim given only in parameter space or a varying offset, and a
+  boolean section's image were fitted through samples and their error read
+  at those samples only: a moved boundary stood 0.1 off its face while
+  reporting 3e-12, a projection 2e-2 off while stating under 1e-5, a
+  301-corner IGES trim lost its corners by 6e-2. They are fitted at their
+  source's own parameters (`ogeom_algo::traced`), checked at every
+  interval's quarters, refined where they miss, and their edges state the
+  worst measured.
+
+- **Canonical recognition checks the whole face.** `recognize_surface`
+  verified a candidate plane, sphere, cylinder or cone on an interior grid
+  that never reached the face's border strip, so a patch bumped near its
+  edge read as a plane; it verifies over the whole chart, and
+  `canonical_simplify` states the certificate on the rebuilt face and its
+  edges. A line or circle replacing a curved edge states its deviation, and
+  `fix_face_pcurves` widens an edge's vertices with the edge.
+
 - **Surfaces fitted as splines hold their tolerance between samples.**
   `to_nurbs_within` and a patch's degree restriction checked the fitted
   surface only at its grid samples and reported the tolerance met: a

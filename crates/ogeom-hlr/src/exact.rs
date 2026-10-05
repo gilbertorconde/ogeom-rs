@@ -688,9 +688,9 @@ fn on_polyline(line: &[Point], p: Point) -> f64 {
 /// refined onto the condition before the walk begins. A silhouette loop
 /// smaller than one grid cell is stepped over.
 ///
-/// The walked polylines are fitted to curves at `chord`, and the fit's own
-/// error is added to it, so what comes back carries a budget rather than a
-/// claim of exactness.
+/// The walked polylines are fitted to curves at `chord` through the walked
+/// points, which lie on the silhouette, so what comes back is worth the
+/// chord rather than exactness; nothing is stated with it.
 fn marched_silhouettes(
     surface: &SurfaceGeometry,
     along: Vector,
@@ -793,8 +793,8 @@ fn marched_silhouettes(
         if walked.points.len() < 4 {
             continue;
         }
-        // Fitted, with the fit's own error added to the walk's chord. The
-        // curve says what it is worth.
+        // Fitted through the walked points at the walk's chord; the fit is
+        // measured at those points only.
         let Ok(fitted) = ogeom_geom::fit::fit_points(&walked.points, 3, options.chord, tol) else {
             continue;
         };

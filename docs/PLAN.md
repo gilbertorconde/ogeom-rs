@@ -221,6 +221,55 @@ Left: the stated error is the worst at the samples and span middles,
 which can sit a little under the true miss (8.32e-5 against a stated
 7.79e-5 for the drum); a fit whose surface cannot be evaluated somewhere
 (an offset sphere's poles) refuses as before.
+Curve fits measured only at their samples follow the same rule through
+`ogeom_algo::traced`: a fit starts at every span of its source (each cut
+in degree + 1, at least the old count), is checked at each interval's
+quarters, splits the intervals that miss, and reports the worst measured
+(budget 8192 samples). Where a fit and its pcurve were made apart, the
+edge states `lifted_gap` or `state_pcurve_gaps_of`. Measured before and
+after, each pinned by a test that failed before:
+- `reanchor_boundaries`: a 64-span edge weaving 0.1 moved onto a plane
+  1.0e-1 off its shadow while reporting 3e-12; now 3.5e-5, reported 3.6e-5.
+  `fix_face_pcurves` widens the vertices with the edge (they stayed at 1e-7
+  under a 1e-2 edge, which `check` flagged) and states the lifted gap.
+- `recognize_surface` verified on a 9x9 interior grid: a 0.059 bump in a
+  plane patch's outer twentieth read as a plane with a certificate of 0. It
+  now also verifies on a grid over the whole chart, two per span each way
+  (16 to 256 a side), and the rebuilt face and its edges state the
+  certificate and their pcurve gaps. `simplified_edge` verified at 17
+  points: a 0.067 bump in an 80-span boundary became a line stating 1e-7;
+  it samples every span now and a replaced edge states its deviation.
+- IGES 142 with only a parameter-space trim: a 301-corner polyline trim
+  lost corners by 5.9e-2 while warning 1.0e-5. A spline trim's chart is now
+  exact (the maps are affine) and the lift is fitted piece by piece between
+  its corners and joined C0: corners within 1e-6. IGES 130 types 2 and 3:
+  on a 400-span base the offset strayed 4.3e-3 between samples while
+  warning 3.5e-4; the law is evaluated at any parameter now, 7.1e-6.
+- `make_face_with_pcurves`' projected fallback: a trim 2.5e-4 off a
+  300-span edge stating 1e-7; the edge now states the lifted gap.
+  `make_band_between`'s fitted connector on a sphere: 4.9e-5 at 1e-7, now
+  fitted to 1e-6 between samples (1.5e-7) and stated. `project_edge_onto_plane`'s
+  fallback (a curve on a surface, an offset): 2.0e-2 off a 400-span curve
+  while stating under 1e-5; it is fitted at the edge's own parameter now
+  (9.6e-6), so the result runs same-parameter with the edge.
+- Boolean section pieces: images up to 1% past what the edge stated
+  (2.38e-6 at 2.35e-6 in the pole drills); the piece states its gap as a
+  contact piece does, and `pcurve_onto_ends` refits at every span.
+Measured with no miss in the result, fixed anyway: a fillet leg's fitted
+apex image stood up to 1.3e-3 off an apex edge stating 1e-7 (the boolean
+that consumes the leg restates it); `attach_image` understated by 14%; a
+half space's sides on a 60-span patch stood 3.5e-2 off at 1e-7 (they never
+reach a result). No miss: the marched pair's contact line (gaps up to
+9.98e-7 under its 1e-6), and the marched bands, whose points stand within
+9.8e-5 of exact sections solved between the stations (target 2e-4); the
+ball centred off the band's normal misses the hosts by up to 1.1e-3, a
+normal-direction error no tolerance states. HLR's marched silhouettes fit
+through on-curve points and sit 1.9e-6 off a torus's outline at a 1e-5
+chord, closer than the walk; their comment no longer claims an error is
+added. Left: `projected_into_shared_chart` ignores the owner fit's `met`
+(the contact piece states the dense gap after), heal `split.rs`'s joint
+fit and `divide.rs`'s iso fit (one case measured, 8e-15) are measured at
+samples only.
 
 Left: the rest of those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
 standing off their edges within the 1e-5 taken as along, which every exact
