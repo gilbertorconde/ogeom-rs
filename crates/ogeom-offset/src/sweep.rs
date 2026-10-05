@@ -4090,7 +4090,7 @@ pub fn make_helical_sweep(
             let along = z * n.dot(z);
             let square = n - along;
             let turned = along + square * cos + z.cross(square) * sin;
-            let forward = if turned.dot(travel(centre)) >= 0.0 {
+            let forward = if turned.dot(travel(at)) >= 0.0 {
                 turned
             } else {
                 -turned

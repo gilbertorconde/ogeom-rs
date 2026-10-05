@@ -114,6 +114,36 @@ fn a_round_wire_spring_is_as_big_as_pappus_says() {
     assert!((v - want).abs() < want * 1e-3, "{v} against {want}");
 }
 
+/// A sweep through part of a turn ends on a cap facing on along the
+/// motion there, not along the motion where it started.
+#[test]
+fn a_part_turn_sweep_closes_facing_out() {
+    for turns in [0.25, 0.5, 0.75, 1.5] {
+        let mut model = Model::new();
+        let profile = rectangle(&mut model);
+        let sweep = ogeom::offset::make_helical_sweep(
+            &mut model,
+            &profile,
+            z_axis(),
+            5.0,
+            turns,
+            false,
+            0.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let diagnosis = check(&model, &sweep, T).unwrap();
+        assert!(diagnosis.is_valid(), "{turns} turns: {diagnosis}");
+        let want = 4.0 * core::f64::consts::TAU * 11.0 * turns;
+        let v = volume(&model, &sweep);
+        assert!(
+            (v - want).abs() < want * 1e-3,
+            "{turns} turns: {v} against {want}"
+        );
+    }
+}
+
 #[test]
 fn a_tapered_thread_builds_and_grows() {
     let mut model = Model::new();
