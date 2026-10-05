@@ -28,15 +28,19 @@ pub struct Projected {
     pub edge: Shape,
     /// The face it landed on.
     pub face: Shape,
-    /// How far the fitted curve may sit from the sampled feet.
+    /// How far the fitted curve and its pcurve may sit from the feet they
+    /// trace and from each other, measured between the stations as well as
+    /// at them; the edge carries it as its tolerance.
     pub tolerance: f64,
 }
 
 /// Project every edge of `wire` onto the faces of `target`.
 ///
-/// `stations` is how finely each edge is sampled; the fit is held to
-/// `tolerance` against those samples. Both are the caller's, because both
-/// are the answer's accuracy and this cannot guess what it is for.
+/// `stations` is how finely each edge is sampled to start with; the fit
+/// is held to `tolerance` against the feet at those samples and between
+/// them, the sampling refined where it misses, and states what it reached
+/// where it cannot. Both are the caller's, because both are the answer's
+/// accuracy and this cannot guess what it is for.
 ///
 /// # Errors
 ///
@@ -112,12 +116,15 @@ pub fn normal_projection(
         // Walk the edge, landing each station on the nearest face that will
         // have it, and break the run wherever the face changes or nothing
         // catches; each run becomes one projected edge.
-        let mut run: Vec<(usize, Point, Point2)> = Vec::new();
-        let mut runs: Vec<(usize, Vec<(Point, Point2)>)> = Vec::new();
-        let mut flush = |run: &mut Vec<(usize, Point, Point2)>| {
+        let mut run: Vec<(usize, f64, Point, Point2)> = Vec::new();
+        let mut runs: Vec<(usize, Vec<Landed>)> = Vec::new();
+        let mut flush = |run: &mut Vec<(usize, f64, Point, Point2)>| {
             if run.len() >= 4 {
                 let seat = run[0].0;
-                runs.push((seat, run.iter().map(|(_, p, uv)| (*p, *uv)).collect()));
+                runs.push((
+                    seat,
+                    run.iter().map(|(_, t, p, uv)| (*t, *p, *uv)).collect(),
+                ));
             }
             run.clear();
         };
@@ -131,10 +138,10 @@ pub fn normal_projection(
             let landed = nearest_seat(&seats, at, tol)?;
             match landed {
                 Some((seat, point, uv)) => {
-                    if run.first().is_some_and(|(held, _, _)| *held != seat) {
+                    if run.first().is_some_and(|(held, ..)| *held != seat) {
                         flush(&mut run);
                     }
-                    run.push((seat, point, uv));
+                    run.push((seat, t, point, uv));
                 }
                 None => flush(&mut run),
             }
@@ -142,19 +149,52 @@ pub fn normal_projection(
         flush(&mut run);
 
         for (seat, samples) in runs {
-            let points: Vec<Point> = samples.iter().map(|(p, _)| *p).collect();
-            let mut chart: Vec<Point2> = samples.iter().map(|(_, uv)| *uv).collect();
+            let points: Vec<Point> = samples.iter().map(|(_, p, _)| *p).collect();
+            let mut chart: Vec<Point2> = samples.iter().map(|(_, _, uv)| *uv).collect();
             // A periodic chart's parameters come back folded into the
             // surface's own window, so a run crossing the seam arrives torn,
             // and a fit through a tear is a fit through a jump it cannot
             // make. Unwrapped, the run is continuous again.
             unwrap(&mut chart, &seats[seat].surface);
+            // The run over [0, 1]: its stations where the walk left them,
+            // and the foot anywhere between, landed on the run's own face
+            // and unwrapped against the station before it.
+            let (t0, t1) = (samples[0].0, samples[samples.len() - 1].0);
+            let ts: Vec<f64> = samples.iter().map(|(t, ..)| (t - t0) / (t1 - t0)).collect();
+            let surface = &seats[seat].surface;
+            let foot = |s: f64| -> OgeomResult<(Point, Point2)> {
+                let k = ts.partition_point(|x| *x <= s).clamp(1, ts.len()) - 1;
+                if ts[k].to_bits() == s.to_bits() {
+                    return Ok((points[k], chart[k]));
+                }
+                let at = curve.point_at(t0 + (t1 - t0) * s, tol)?;
+                let projection = ogeom_algo::project_on_surface(surface, at, 24, tol)?;
+                let mut uv = [
+                    chart[k],
+                    Point2::new(projection.parameters.0, projection.parameters.1),
+                ];
+                unwrap(&mut uv, surface);
+                Ok((surface.point_at(uv[1].x, uv[1].y, tol)?, uv[1]))
+            };
             // Fitted together, so the two descriptions share a parameter:
-            // the pcurve rides the same knots as the curve.
-            let (fitted, on_face, _) =
-                ogeom_geom::fit::fit_points_joint(&points, &chart, &chart, 3, tolerance, tol)?;
+            // the pcurve rides the same knots as the curve, and both are
+            // measured against the foot between the stations as well as at
+            // them.
+            let (fitted, on_face) = ogeom_geom::fit::fit_trace_sampled(
+                foot,
+                |uv| surface.point_at(uv.x, uv.y, tol),
+                &ts,
+                3,
+                tolerance,
+                tol,
+            )?;
             let curve: Curve = fitted.curve.into();
             let built = ogeom_algo::make_edge(model, curve, (0.0, 1.0), tol)?.shape;
+            // The curve and its pcurve stand as far apart as the fit
+            // measured them; the edge carries that.
+            if fitted.error > tol.confusion() {
+                model.widen(&built, ogeom_core::Tolerance::new(fitted.error)?)?;
+            }
             let pcurve: PlanarCurve = on_face.into();
             ogeom_algo::attach_pcurve(
                 model,
@@ -178,6 +218,10 @@ pub fn normal_projection(
     history.modify(wire, result.clone());
     Ok((out, Built::new(result, history)))
 }
+
+/// A station landed on a face: its parameter on the edge, the foot, and
+/// the foot's chart position.
+type Landed = (f64, Point, Point2);
 
 /// A face ready to catch a projection.
 struct Seat {

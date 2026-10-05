@@ -559,8 +559,8 @@ pub fn fit_points_at(
 /// [`fit_surface_sampled`].
 ///
 /// The fit is same-parameter with `point`, fitted at `ts` to start with;
-/// every span's middle is compared with `point` there, a miss splits the
-/// span, and this repeats until `tolerance` holds at every point measured
+/// every span's eighth points are compared with `point` there, a miss
+/// splits the span, and this repeats until `tolerance` holds at every point measured
 /// or the samples would pass 1024 spans. Where `closed`, the last of `ts`
 /// is the first again and the fit crosses its join C1. The best fit is
 /// returned either way, its error the worst measured.
@@ -635,8 +635,10 @@ pub fn fit_curve_sampled(
             }
             split = vec![false; ts.len() - 1];
             for (i, pair) in ts.windows(2).enumerate() {
-                let mid = f64::midpoint(pair[0], pair[1]);
-                let off = at(mid)?.distance(curve.point_at(mid, tol)?);
+                let mut off = 0.0_f64;
+                for t in eighths(pair[0], pair[1]) {
+                    off = off.max(at(t)?.distance(curve.point_at(t, tol)?));
+                }
                 error = error.max(off);
                 split[i] = off > tolerance;
             }
@@ -666,6 +668,169 @@ pub fn fit_curve_sampled(
         ts = next;
     }
     best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the curve could not be sampled"))
+}
+
+/// Fit a curve on a surface and its chart image together to the trace
+/// `trace` gives over its parameter: at each parameter the point in space
+/// and its chart position, `on_surface` the surface the chart belongs to.
+///
+/// One knot vector and one parameterization for both, fixed at `ts` to
+/// start with, so the two are same-parameter with the trace and with each
+/// other. Every sample and every span's eighth points are measured in
+/// space: the curve and the surface at the image's chart position, each
+/// against the trace's point and against each other. A miss splits the
+/// span, and this repeats
+/// until `tolerance` holds at every point measured or the samples would
+/// pass 1024 spans; the error is the worst measured either way. The chart
+/// coordinates are weighed in the fit by the surface's own speed along
+/// them, so a residual in either space counts as the distance it is.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// tolerance is not a distance, the degree is zero or the parameters do not
+/// strictly increase with at least two; whatever `trace` or `on_surface`
+/// refuses.
+pub fn fit_trace_sampled(
+    mut trace: impl FnMut(f64) -> OgeomResult<(Point, Point2)>,
+    on_surface: impl Fn(Point2) -> OgeomResult<Point>,
+    ts: &[f64],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d)> {
+    use crate::traits::{Curve2d as _, Curve3d as _};
+    const MOST: usize = 1024;
+    if !(tolerance > 0.0 && tolerance.is_finite()) {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    if degree == 0 {
+        ogeom_bail!(Construction, "a fit needs a degree of at least one");
+    }
+    if ts.len() < 2 || ts.iter().any(|t| !t.is_finite()) || ts.windows(2).any(|w| w[1] <= w[0]) {
+        ogeom_bail!(
+            Construction,
+            "a sampled fit needs strictly increasing parameters, at least two"
+        );
+    }
+    let mut ts = ts.to_vec();
+    let mut seen: std::collections::HashMap<u64, (Point, Point2)> =
+        std::collections::HashMap::new();
+    let mut at = |t: f64| -> OgeomResult<(Point, Point2)> {
+        if let Some(p) = seen.get(&t.to_bits()) {
+            return Ok(*p);
+        }
+        let p = trace(t)?;
+        seen.insert(t.to_bits(), p);
+        Ok(p)
+    };
+    // The surface's speed along each chart direction, at the first samples.
+    let mut speed = [0.0_f64; 2];
+    for t in &ts {
+        let (_, uv) = at(*t)?;
+        let here = on_surface(uv)?;
+        for (axis, step) in [(0, Point2::new(1.0, 0.0)), (1, Point2::new(0.0, 1.0))] {
+            let h = 1e-6 * (1.0 + uv.x.abs().max(uv.y.abs()));
+            let moved = Point2::new(uv.x + step.x * h, uv.y + step.y * h);
+            speed[axis] = speed[axis].max(on_surface(moved)?.distance(here) / h);
+        }
+    }
+    let weight = speed.map(|s| if s > 0.0 && s.is_finite() { s } else { 1.0 });
+    let mut best: Option<(Fitted<BSplineCurve>, BSpline2d)> = None;
+    loop {
+        let samples = ts.iter().map(|t| at(*t)).collect::<OgeomResult<Vec<_>>>()?;
+        let data: Vec<[f64; 5]> = samples
+            .iter()
+            .map(|(p, uv)| [p.x, p.y, p.z, uv.x * weight[0], uv.y * weight[1]])
+            .collect();
+        let mut split: Vec<bool> = Vec::new();
+        for interpolate in [false, true] {
+            let (knots, mut controls) = fit_family::<5>(
+                std::slice::from_ref(&data),
+                &ts,
+                degree,
+                tolerance * 0.5,
+                false,
+                interpolate,
+            )?;
+            let Some(control) = controls.pop() else {
+                ogeom_bail!(NotDone, "the trace fit solved nothing");
+            };
+            let curve = build_curve_3(
+                knots.clone(),
+                control.iter().map(|c| [c[0], c[1], c[2]]).collect(),
+                tol,
+            )?;
+            let image = BSpline2d::new(
+                knots,
+                control
+                    .iter()
+                    .map(|c| Point2::new(c[3] / weight[0], c[4] / weight[1]))
+                    .collect(),
+                tol,
+            )?;
+            let mut off_at = |t: f64| -> OgeomResult<f64> {
+                let (p, _) = at(t)?;
+                let (c, s) = (
+                    curve.point_at(t, tol)?,
+                    on_surface(image.point_at(t, tol)?)?,
+                );
+                Ok(c.distance(p).max(s.distance(p)).max(c.distance(s)))
+            };
+            let mut error = 0.0_f64;
+            for t in &ts {
+                error = error.max(off_at(*t)?);
+            }
+            split = vec![false; ts.len() - 1];
+            for (i, pair) in ts.windows(2).enumerate() {
+                let mut off = 0.0_f64;
+                for t in eighths(pair[0], pair[1]) {
+                    off = off.max(off_at(t)?);
+                }
+                error = error.max(off);
+                split[i] = off > tolerance;
+            }
+            let met = error <= tolerance;
+            let candidate = (Fitted { curve, error, met }, image);
+            if met {
+                return Ok(candidate);
+            }
+            if best.as_ref().is_none_or(|b| error < b.0.error) {
+                best = Some(candidate);
+            }
+        }
+        let mut next = Vec::with_capacity(ts.len() * 2);
+        for (pair, &m) in ts.windows(2).zip(&split) {
+            next.push(pair[0]);
+            if m {
+                next.push(f64::midpoint(pair[0], pair[1]));
+            }
+        }
+        next.push(ts[ts.len() - 1]);
+        if next.len() == ts.len() || next.len() > MOST + 1 {
+            break;
+        }
+        ts = next;
+    }
+    best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the trace could not be sampled"))
+}
+
+/// The eighth points of a span, its middle among them: where a curve fit
+/// is measured between two samples. A split makes the middle a sample and
+/// these points the new spans' quarters and middles, so most are not
+/// evaluated twice.
+fn eighths(a: f64, b: f64) -> [f64; 7] {
+    let mid = f64::midpoint(a, b);
+    let (q1, q3) = (f64::midpoint(a, mid), f64::midpoint(mid, b));
+    [
+        f64::midpoint(a, q1),
+        q1,
+        f64::midpoint(q1, mid),
+        mid,
+        f64::midpoint(mid, q3),
+        q3,
+        f64::midpoint(q3, b),
+    ]
 }
 
 fn build_curve_3(

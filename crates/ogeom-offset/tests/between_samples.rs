@@ -6,7 +6,7 @@
 use ogeom_core::Tolerances;
 use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{Circle, Direction, Frame, Plane, Point};
-use ogeom_topo::{Filter, Model, NodeData, Shape, ShapeType, explore};
+use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, explore};
 
 const T: Tolerances = Tolerances::millimetres();
 const PI: f64 = core::f64::consts::PI;
@@ -299,4 +299,51 @@ fn a_pipe_shell_holds_its_profile_arc_between_samples() {
     assert!(seen > 500, "the arc's strip has a border on the profile");
     eprintln!("pipe shell border off its arc by {worst}");
     assert!(worst <= tolerance, "the border strays {worst} from its arc");
+}
+
+#[test]
+fn a_projected_circle_holds_its_stated_tolerance_between_stations() {
+    // A circle of radius 3 at height 10 over a ball of radius 5: its foot
+    // on the ball is the circle of radius 15 / sqrt(109) at height
+    // 50 / sqrt(109).
+    let mut model = Model::new();
+    let ball = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 5.0, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(0.0, 0.0, 10.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = edge_of(
+        &mut model,
+        ogeom_geom::CircleCurve::new(Circle::new(frame, 3.0, T).unwrap()).into(),
+    );
+    let wire = ogeom_algo::make_wire(&mut model, &[circle], T)
+        .unwrap()
+        .shape;
+    let tolerance = 1e-3;
+    let (landed, _) =
+        ogeom_offset::normal_projection(&mut model, &ball, &wire, 8, tolerance, T).unwrap();
+    assert!(!landed.is_empty());
+    let (radius, height) = (15.0 / 109.0_f64.sqrt(), 50.0 / 109.0_f64.sqrt());
+    for stretch in &landed {
+        let data = model.node(&stretch.edge).unwrap().data().as_edge().unwrap();
+        let EdgeRepr::Curve3d { curve, range, .. } = data.curve3d().unwrap() else {
+            unreachable!()
+        };
+        let geometry = model.geometry().curve(*curve).unwrap();
+        let mut worst = 0.0_f64;
+        for k in 0..=2000 {
+            let p = geometry.point_at(across(*range, k, 2000), T).unwrap();
+            worst = worst.max((p.x.hypot(p.y) - radius).hypot(p.z - height));
+        }
+        eprintln!(
+            "projection off its foot by {worst}, stating {}",
+            stretch.tolerance
+        );
+        assert!(
+            worst <= stretch.tolerance.max(1e-9) && stretch.tolerance <= tolerance,
+            "the projection strays {worst} and states {}",
+            stretch.tolerance
+        );
+    }
+    let diagnosis = ogeom_algo::check(&model, &landed[0].edge, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
 }
