@@ -493,18 +493,10 @@ impl crate::surface::BSplineSurface {
     }
 }
 
-/// A patch fitted at `degree` through a grid of `point` over `domain`, at
-/// the surface's own parameters, measured between the samples as well as
-/// at them, and the grid refined where it misses until `tolerance` holds
-/// at every point measured or the budget runs out. The best fit either
-/// way, its error the worst measured.
-///
-/// The fit is same-parameter with the surface: the fit at `(u, v)` is
-/// compared with the surface at `(u, v)`, which bounds the distance either
-/// way from above. Each span is checked at its middle, along the sample
-/// lines and across them; a miss splits the spans it lies in, its middle
-/// becoming a sample, so the grid (and the fit's knots, which follow its
-/// residuals) thickens only where the fit strays.
+/// A patch fitted at `degree` to `point` over `domain` by
+/// [`fit::fit_surface_sampled`]: at the surface's own parameters, from
+/// sixteen spans a side, measured between the samples as well as at them
+/// and refined where it misses, to at most 512 spans a side.
 fn grid_fitted(
     point: impl Fn(f64, f64) -> OgeomResult<Point>,
     domain: ((f64, f64), (f64, f64)),
@@ -512,14 +504,6 @@ fn grid_fitted(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::surface::BSplineSurface>> {
-    use crate::traits::Surface as _;
-    /// The spans a direction starts with.
-    const START: usize = 16;
-    /// The most spans a direction is refined to.
-    const MOST: usize = 512;
-    if !(tolerance > 0.0 && tolerance.is_finite()) {
-        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
-    }
     let ((ua, ub), (va, vb)) = domain;
     if ![ua, ub, va, vb].iter().all(|x| x.is_finite()) || ub <= ua || vb <= va {
         ogeom_bail!(
@@ -527,96 +511,13 @@ fn grid_fitted(
             "an unbounded or empty surface cannot be fitted"
         );
     }
-    let uniform = |a: f64, b: f64| -> Vec<f64> {
-        (0..=START)
-            .map(|i| {
-                #[allow(clippy::cast_precision_loss, reason = "a small count")]
-                let t = i as f64 / START as f64;
-                if i == START { b } else { a + (b - a) * t }
-            })
-            .collect()
-    };
-    let (mut us, mut vs) = (uniform(ua, ub), uniform(va, vb));
-    let mut best: Option<Fitted<crate::surface::BSplineSurface>> = None;
-    // Every point evaluated, by parameters: a split span's new sample is
-    // the midpoint already checked.
-    let mut seen: std::collections::HashMap<(u64, u64), Point> = std::collections::HashMap::new();
-    let mut at = |u: f64, v: f64| -> OgeomResult<Point> {
-        if let Some(p) = seen.get(&(u.to_bits(), v.to_bits())) {
-            return Ok(*p);
-        }
-        let p = point(u, v)?;
-        seen.insert((u.to_bits(), v.to_bits()), p);
-        Ok(p)
-    };
-    loop {
-        let rows = vs
-            .iter()
-            .map(|v| us.iter().map(|u| at(*u, *v)).collect())
-            .collect::<OgeomResult<Vec<Vec<Point>>>>()?;
-        // Half the tolerance at the samples leaves the other half for
-        // between them.
-        let fitted = fit::fit_surface_grid_at(&us, &vs, &rows, degree, tolerance * 0.5, tol)?;
-        let checks = |knots: &[f64]| -> Vec<(f64, Option<usize>)> {
-            let mut out = Vec::with_capacity(knots.len() * 2);
-            for (i, pair) in knots.windows(2).enumerate() {
-                out.push((pair[0], None));
-                out.push((f64::midpoint(pair[0], pair[1]), Some(i)));
-            }
-            out.push((knots[knots.len() - 1], None));
-            out
-        };
-        let (u_checks, v_checks) = (checks(&us), checks(&vs));
-        let mut split_u = vec![false; us.len() - 1];
-        let mut split_v = vec![false; vs.len() - 1];
-        let mut error = fitted.error;
-        for &(v, v_span) in &v_checks {
-            for &(u, u_span) in &u_checks {
-                if u_span.is_none() && v_span.is_none() {
-                    continue;
-                }
-                let off = at(u, v)?.distance(fitted.curve.point_at(u, v, tol)?);
-                error = error.max(off);
-                if off > tolerance {
-                    if let Some(i) = u_span {
-                        split_u[i] = true;
-                    }
-                    if let Some(j) = v_span {
-                        split_v[j] = true;
-                    }
-                }
-            }
-        }
-        let candidate = Fitted {
-            curve: fitted.curve,
-            error,
-            met: error <= tolerance,
-        };
-        if candidate.met {
-            return Ok(candidate);
-        }
-        if best.as_ref().is_none_or(|b| error < b.error) {
-            best = Some(candidate);
-        }
-        let split = |knots: &[f64], marked: &[bool]| -> Vec<f64> {
-            let mut out = Vec::with_capacity(knots.len() * 2);
-            for (pair, &m) in knots.windows(2).zip(marked) {
-                out.push(pair[0]);
-                if m {
-                    out.push(f64::midpoint(pair[0], pair[1]));
-                }
-            }
-            out.push(knots[knots.len() - 1]);
-            out
-        };
-        let (next_u, next_v) = (split(&us, &split_u), split(&vs, &split_v));
-        let grew = next_u.len() > us.len() || next_v.len() > vs.len();
-        if !grew || next_u.len() > MOST + 1 || next_v.len() > MOST + 1 {
-            break;
-        }
-        (us, vs) = (next_u, next_v);
-    }
-    best.ok_or_else(|| ogeom_err!(Construction, "the patch could not be sampled"))
+    fit::fit_surface_sampled(
+        point,
+        &fit::Sampling::even(domain, 16),
+        degree,
+        tolerance,
+        tol,
+    )
 }
 
 impl crate::surface::SurfaceGeometry {

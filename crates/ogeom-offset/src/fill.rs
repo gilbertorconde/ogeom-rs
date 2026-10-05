@@ -1,8 +1,9 @@
 //! Surface filling: a face fitted over the region a loop of edges bounds.
 //!
 //! [`make_filling`] takes four edges and fits the transfinite Coons blend
-//! of them (which interpolates them exactly), sampled and fitted through
-//! the grid machinery, error reported. What the caller gets is a *natural*
+//! of them (which interpolates them exactly), fitted at the blend's own
+//! parameters and measured between the samples, error reported. What the
+//! caller gets is a *natural*
 //! face over the fitted patch: the patch's own chart rectangle is the trim,
 //! and the patch boundary stands within the stated fit tolerance of the
 //! edges it was asked to fill.
@@ -26,9 +27,11 @@ pub use crate::fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 /// Fill the loop `edges` bound with a fitted patch face.
 ///
 /// The four edges must chain head to tail into a closed loop, in order;
-/// the first runs along the patch's `u` direction. `samples` controls the
-/// Coons sampling per direction and `tolerance` the fit target; the fit
-/// that cannot meet it refuses with the error it reached.
+/// the first runs along the patch's `u` direction. `samples` is the Coons
+/// sampling per direction the fit starts from and `tolerance` the fit
+/// target, measured between the samples as well as at them and the
+/// sampling refined where it misses; the fit that cannot meet it refuses
+/// with the error it reached.
 ///
 /// # Errors
 ///

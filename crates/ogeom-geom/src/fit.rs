@@ -1233,10 +1233,12 @@ fn derivative_grams(knots: &KnotVector) -> [Vec<Vec<f64>>; 3] {
 ///
 /// The curves must close corner to corner in the order given (`bottom`
 /// runs with `u`, `top` above it, `left` and `right` with `v`), each
-/// traversed over its own domain. The patch *interpolates the Coons
-/// surface's samples* to the stated tolerance. The Coons surface itself
-/// interpolates the boundaries exactly, so the fit error is the whole
-/// distance between the returned patch and the boundary it fills.
+/// traversed over its own domain. The patch is fitted to the Coons surface
+/// by [`fit_surface_sampled`], starting from `samples` (at least four) a
+/// side, so the stated error is measured between the samples as well as at
+/// them. The Coons surface itself interpolates the boundaries exactly, so
+/// the fit error bounds the distance between the returned patch's borders
+/// and the boundary it fills.
 ///
 /// # Errors
 ///
@@ -1278,29 +1280,30 @@ pub fn fill_boundary(
         }
     }
 
-    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(samples);
-    for j in 0..samples {
-        let v = precise(j) / precise(samples - 1);
-        let mut row = Vec::with_capacity(samples);
-        for i in 0..samples {
-            let u = precise(i) / precise(samples - 1);
-            // The bilinearly blended Coons point: ruled in each direction,
-            // the doubly-ruled corner sheet subtracted once.
-            let cu0 = at(bottom, u)?;
-            let cu1 = at(top, u)?;
-            let d0v = at(left, v)?;
-            let d1v = at(right, v)?;
-            let ruled_u = cu0.to_vector() * (1.0 - v) + cu1.to_vector() * v;
-            let ruled_v = d0v.to_vector() * (1.0 - u) + d1v.to_vector() * u;
-            let corners = c00.to_vector() * ((1.0 - u) * (1.0 - v))
-                + c10.to_vector() * (u * (1.0 - v))
-                + c01.to_vector() * ((1.0 - u) * v)
-                + c11.to_vector() * (u * v);
-            row.push(Point::from_vector(ruled_u + ruled_v - corners));
-        }
-        rows.push(row);
-    }
-    fit_surface_grid(&rows, 3, tolerance, tol)
+    // The bilinearly blended Coons point: ruled in each direction, the
+    // doubly-ruled corner sheet subtracted once.
+    let coons = |u: f64, v: f64| -> OgeomResult<Point> {
+        let cu0 = at(bottom, u)?;
+        let cu1 = at(top, u)?;
+        let d0v = at(left, v)?;
+        let d1v = at(right, v)?;
+        let ruled_u = cu0.to_vector() * (1.0 - v) + cu1.to_vector() * v;
+        let ruled_v = d0v.to_vector() * (1.0 - u) + d1v.to_vector() * u;
+        let corners = c00.to_vector() * ((1.0 - u) * (1.0 - v))
+            + c10.to_vector() * (u * (1.0 - v))
+            + c01.to_vector() * ((1.0 - u) * v)
+            + c11.to_vector() * (u * v);
+        Ok(Point::from_vector(ruled_u + ruled_v - corners))
+    };
+    // Fitted at the Coons surface's own parameters, `samples` a side to
+    // start with, and checked and refined between them.
+    fit_surface_sampled(
+        coons,
+        &Sampling::even(((0.0, 1.0), (0.0, 1.0)), samples - 1),
+        3,
+        tolerance,
+        tol,
+    )
 }
 
 /// Fit a rectangular grid of points with a tensor-product B-spline surface.
@@ -1571,6 +1574,197 @@ pub fn fit_surface_grid_at(
     fit_grid_on(
         rows, &raw, u_params, v_params, degree, tolerance, false, tol,
     )
+}
+
+/// Where [`fit_surface_sampled`] starts sampling and how far it may refine.
+#[derive(Clone, Debug)]
+pub struct Sampling {
+    /// The first grid's column parameters (`u`), strictly increasing.
+    pub us: Vec<f64>,
+    /// The first grid's row parameters (`v`), strictly increasing.
+    pub vs: Vec<f64>,
+    /// Whether the geometry is known between the columns (`.0`) and
+    /// between the rows (`.1`). Only a direction known between its samples
+    /// is checked there and refined; the other is fitted through its
+    /// samples, which are all there is of it.
+    pub between: (bool, bool),
+    /// Whether the fit closes smoothly across `v`: the last row is the
+    /// first again, and the loop crosses its seam C1 as in
+    /// [`fit_surface_grid_closed_v`].
+    pub closed_v: bool,
+    /// The most spans a direction is refined to.
+    pub most: usize,
+}
+
+impl Sampling {
+    /// `spans` even spans over each side of `domain`, both directions
+    /// known between their samples, open, refined to at most 512 spans.
+    #[must_use]
+    pub fn even(domain: ((f64, f64), (f64, f64)), spans: usize) -> Self {
+        let even = |(a, b): (f64, f64)| -> Vec<f64> {
+            let n = spans.max(1);
+            (0..=n)
+                .map(|i| {
+                    if i == n {
+                        b
+                    } else {
+                        a + (b - a) * precise(i) / precise(n)
+                    }
+                })
+                .collect()
+        };
+        Self {
+            us: even(domain.0),
+            vs: even(domain.1),
+            between: (true, true),
+            closed_v: false,
+            most: 512,
+        }
+    }
+}
+
+/// Fit a surface to the geometry `point` traces over its parameters,
+/// measured between the samples as well as at them.
+///
+/// The fit is same-parameter with `point`: it is fitted at the grid's own
+/// parameters, and the fit at `(u, v)` is compared with `point(u, v)`,
+/// which bounds the distance between the two from above. Each span of a
+/// direction known between its samples is checked at its middle, along
+/// the sample lines and across them; a miss splits the spans it lies in,
+/// its middle becoming a sample, so the grid (and the fit's knots, which
+/// follow its residuals) thickens only where the fit strays. This repeats
+/// until `tolerance` holds at every point measured or a direction would
+/// pass `sampling.most` spans. The best fit is returned either way, its
+/// error the worst measured and `met` whether that is within `tolerance`.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// tolerance is not a distance or the parameters do not strictly increase
+/// with at least two a side; whatever `point` refuses.
+pub fn fit_surface_sampled(
+    mut point: impl FnMut(f64, f64) -> OgeomResult<Point>,
+    sampling: &Sampling,
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    use crate::traits::Surface as _;
+    if !(tolerance > 0.0 && tolerance.is_finite()) {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    let increasing = |ps: &[f64]| {
+        ps.len() >= 2 && ps.iter().all(|p| p.is_finite()) && ps.windows(2).all(|w| w[1] > w[0])
+    };
+    if !increasing(&sampling.us) || !increasing(&sampling.vs) {
+        ogeom_bail!(
+            Construction,
+            "a sampled fit needs strictly increasing parameters, two a side"
+        );
+    }
+    let (mut us, mut vs) = (sampling.us.clone(), sampling.vs.clone());
+    let mut best: Option<Fitted<crate::BSplineSurface>> = None;
+    // Every point evaluated, by parameters: a split span's new sample is
+    // the midpoint already checked.
+    let mut seen: std::collections::HashMap<(u64, u64), Point> = std::collections::HashMap::new();
+    let mut at = |u: f64, v: f64| -> OgeomResult<Point> {
+        if let Some(p) = seen.get(&(u.to_bits(), v.to_bits())) {
+            return Ok(*p);
+        }
+        let p = point(u, v)?;
+        seen.insert((u.to_bits(), v.to_bits()), p);
+        Ok(p)
+    };
+    loop {
+        let mut rows = vs
+            .iter()
+            .map(|v| us.iter().map(|u| at(*u, *v)).collect())
+            .collect::<OgeomResult<Vec<Vec<Point>>>>()?;
+        if sampling.closed_v {
+            let first = rows[0].clone();
+            if let Some(last) = rows.last_mut() {
+                *last = first;
+            }
+        }
+        let raw: Vec<Vec<[f64; 3]>> = rows
+            .iter()
+            .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
+            .collect();
+        // Half the tolerance at the samples leaves the other half for
+        // between them.
+        let fitted = fit_grid_on(
+            &rows,
+            &raw,
+            &us,
+            &vs,
+            degree,
+            tolerance * 0.5,
+            sampling.closed_v,
+            tol,
+        )?;
+        let checks = |knots: &[f64], between: bool| -> Vec<(f64, Option<usize>)> {
+            let mut out = Vec::with_capacity(knots.len() * 2);
+            for (i, pair) in knots.windows(2).enumerate() {
+                out.push((pair[0], None));
+                if between {
+                    out.push((f64::midpoint(pair[0], pair[1]), Some(i)));
+                }
+            }
+            out.push((knots[knots.len() - 1], None));
+            out
+        };
+        let u_checks = checks(&us, sampling.between.0);
+        let v_checks = checks(&vs, sampling.between.1);
+        let mut split_u = vec![false; us.len() - 1];
+        let mut split_v = vec![false; vs.len() - 1];
+        let mut error = fitted.error;
+        for &(v, v_span) in &v_checks {
+            for &(u, u_span) in &u_checks {
+                if u_span.is_none() && v_span.is_none() {
+                    continue;
+                }
+                let off = at(u, v)?.distance(fitted.curve.point_at(u, v, tol)?);
+                error = error.max(off);
+                if off > tolerance {
+                    if let Some(i) = u_span {
+                        split_u[i] = true;
+                    }
+                    if let Some(j) = v_span {
+                        split_v[j] = true;
+                    }
+                }
+            }
+        }
+        let candidate = Fitted {
+            curve: fitted.curve,
+            error,
+            met: error <= tolerance,
+        };
+        if candidate.met {
+            return Ok(candidate);
+        }
+        if best.as_ref().is_none_or(|b| error < b.error) {
+            best = Some(candidate);
+        }
+        let split = |knots: &[f64], marked: &[bool]| -> Vec<f64> {
+            let mut out = Vec::with_capacity(knots.len() * 2);
+            for (pair, &m) in knots.windows(2).zip(marked) {
+                out.push(pair[0]);
+                if m {
+                    out.push(f64::midpoint(pair[0], pair[1]));
+                }
+            }
+            out.push(knots[knots.len() - 1]);
+            out
+        };
+        let (next_u, next_v) = (split(&us, &split_u), split(&vs, &split_v));
+        let grew = next_u.len() > us.len() || next_v.len() > vs.len();
+        if !grew || next_u.len() > sampling.most + 1 || next_v.len() > sampling.most + 1 {
+            break;
+        }
+        (us, vs) = (next_u, next_v);
+    }
+    best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the surface could not be sampled"))
 }
 
 /// The two-pass grid fit on parameters already assigned.
