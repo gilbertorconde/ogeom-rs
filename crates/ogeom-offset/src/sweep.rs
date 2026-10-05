@@ -1421,31 +1421,63 @@ fn skinned_solid(
         )?;
         Ok(face)
     };
-    let close =
-        |model: &mut Model, end: EndCap, ring: &Shape, curve: &ogeom_geom::Curve, row: &[Point]| {
-            match end {
-                EndCap::Plane(outward) => cap(model, ring, curve.clone(), outward),
-                EndCap::Skinned => {
-                    // The ring, a row halfway in, and the point the rest of
-                    // the ring's rows collapse to: the section's own centroid,
-                    // which a closed section winds round.
-                    let apex = centroid_of(std::slice::from_ref(&row.to_vec()));
-                    let half: Vec<Point> = row
-                        .iter()
-                        .map(|p| Point::from_vector((p.to_vector() + apex.to_vector()) * 0.5))
-                        .collect();
-                    let rows = vec![row.to_vec(), half, vec![apex; row.len()]];
-                    Ok(apex_patch(model, &Skin::rows(rows), Some(ring), tolerance, tol)?.0)
-                }
+    let close = |model: &mut Model,
+                 end: EndCap,
+                 ring: &Shape,
+                 curve: &ogeom_geom::Curve,
+                 row: &[Point],
+                 last: bool| {
+        match end {
+            EndCap::Plane(outward) => cap(model, ring, curve.clone(), outward),
+            EndCap::Skinned => {
+                // The cone from the section to the point its rows collapse
+                // to (the section's own centroid, which a closed section
+                // winds round): the ring, a row halfway in, and the point.
+                let apex = centroid_of(std::slice::from_ref(&row.to_vec()));
+                let patch = match &skin.traced {
+                    // Known between the samples where the skin knows its
+                    // end section there, and checked there too.
+                    Some(traced) => {
+                        let vs = &traced.sampling.vs;
+                        let at = if last { vs[vs.len() - 1] } else { vs[0] };
+                        Skin::swept(
+                            move |f, s| {
+                                let p = (traced.point)(f, at)?;
+                                Ok(apex + (p - apex) * (1.0 - s * 0.5))
+                            },
+                            traced.sampling.us.clone(),
+                            (0, 2),
+                            skin.round,
+                        )?
+                    }
+                    None => {
+                        let half: Vec<Point> = row
+                            .iter()
+                            .map(|p| Point::from_vector((p.to_vector() + apex.to_vector()) * 0.5))
+                            .collect();
+                        Skin::rows(vec![row.to_vec(), half, vec![apex; row.len()]])
+                    }
+                };
+                // Inside the solid behind the cap: the middle of the next
+                // section in.
+                let next = if last {
+                    &rows[rows.len() - 2]
+                } else {
+                    &rows[1]
+                };
+                let inside = centroid_of(std::slice::from_ref(next));
+                Ok(apex_patch(model, &patch, Some(ring), Some(inside), tolerance, tol)?.0)
             }
-        };
-    let cap0 = close(model, caps.0, &wall.ring0, &wall.curve0, &rows[0])?;
+        }
+    };
+    let cap0 = close(model, caps.0, &wall.ring0, &wall.curve0, &rows[0], false)?;
     let cap1 = close(
         model,
         caps.1,
         &wall.ring1,
         &wall.curve1,
         &rows[rows.len() - 1],
+        true,
     )?;
 
     let faces = [wall.face, cap0, cap1];
@@ -1461,12 +1493,14 @@ fn skinned_solid(
 /// edge on one vertex, bounding the chart's whole top row the way a cone's
 /// apex bounds a countersink. The ring edge is adopted from `shared`
 /// where a neighbour already built it, and the face is turned to point
-/// away from the section it passes through. Returns the face and its ring
-/// edge.
+/// away from `inside` where given (a point within the solid behind the
+/// patch), from the section it passes through otherwise. Returns the face
+/// and its ring edge.
 fn apex_patch(
     model: &mut Model,
     skin: &Skin<'_>,
     shared: Option<&Shape>,
+    inside: Option<Point>,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Shape)> {
@@ -1596,16 +1630,21 @@ fn apex_patch(
     let mid_v = f64::midpoint(v_dom.0, v_dom.1);
     let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
     let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
-    // Inside is judged from the section the patch passes through at that
-    // row, not from the whole skin's centroid: a skin that bends puts that
-    // centroid outside itself, in the crook of the bend.
-    let local = {
-        let mut sum = Vector::ZERO;
-        for k in 0..16 {
-            let u = u_dom.0 + (u_dom.1 - u_dom.0) * f64::from(k) / 16.0;
-            sum += surface_geo.point_at(u, mid_v, tol)?.to_vector();
+    // Without a point inside, inside is judged from the section the patch
+    // passes through at that row, not from the whole skin's centroid: a
+    // skin that bends puts that centroid outside itself, in the crook of
+    // the bend. A patch spanning a section (a cap) has its normal square to
+    // the way out from that section's middle, and is told where inside is.
+    let local = match inside {
+        Some(at) => at,
+        None => {
+            let mut sum = Vector::ZERO;
+            for k in 0..16 {
+                let u = u_dom.0 + (u_dom.1 - u_dom.0) * f64::from(k) / 16.0;
+                sum += surface_geo.point_at(u, mid_v, tol)?.to_vector();
+            }
+            Point::from_vector(sum / 16.0)
         }
-        Point::from_vector(sum / 16.0)
     };
     let face = if du.cross(dv).dot(s_mid - local) >= 0.0 {
         face
@@ -1638,7 +1677,7 @@ fn skinned_solid_to_apex(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Curve3d as _;
-    let (wall, ring0) = apex_patch(model, skin, None, tolerance, tol)?;
+    let (wall, ring0) = apex_patch(model, skin, None, None, tolerance, tol)?;
     let (ring_curve, u_dom) = {
         let (curve, range) = spine_curve_of(model, &ring0)?;
         (curve, range)

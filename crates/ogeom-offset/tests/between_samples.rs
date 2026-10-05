@@ -643,3 +643,98 @@ fn a_wide_helical_sweep_holds_its_profile_between_stations() {
     eprintln!("wide helical sweep off its profile by {worst}");
     assert!(worst <= tolerance, "the wall strays {worst} from the screw");
 }
+
+/// The distance from `p` to the triangle `a`, `b`, `c`.
+fn to_triangle(p: Point, a: Point, b: Point, c: Point) -> f64 {
+    let n = (b - a).cross(c - a);
+    let m = n.magnitude();
+    if m > 0.0 {
+        let n = n / m;
+        let h = (p - a).dot(n);
+        let f = p - n * h;
+        if (b - a).cross(f - a).dot(n) >= 0.0
+            && (c - b).cross(f - b).dot(n) >= 0.0
+            && (a - c).cross(f - c).dot(n) >= 0.0
+        {
+            return h.abs();
+        }
+    }
+    to_polyline(p, &[a, b, c, a])
+}
+
+#[test]
+fn a_skinned_loft_closes_a_wavy_end_on_its_cone() {
+    // Rings of radius 10 waving 0.8 in and out twelve times round, the
+    // last also rising and falling 2 twice round: no plane caps it, so
+    // the loft closes it with the cone from the ring to its centroid.
+    let ring = |z: f64, lift: f64| {
+        move |t: f64| {
+            let a = 2.0 * PI * t;
+            let r = 10.0 + 0.8 * (12.0 * a).sin();
+            Point::new(r * a.cos(), r * a.sin(), z + lift * (2.0 * a).sin())
+        }
+    };
+    let mut model = Model::new();
+    let ts: Vec<f64> = (0..=800).map(|k| across((0.0, 1.0), k, 800)).collect();
+    let mut sections = Vec::new();
+    let mut end = None;
+    for (z, lift) in [(0.0, 0.0), (5.0, 0.0), (10.0, 2.0)] {
+        let at = ring(z, lift);
+        let curve: ogeom_geom::Curve =
+            ogeom_geom::fit::fit_curve_sampled(|t| Ok(at(t)), &ts, true, 3, 1e-7, T)
+                .unwrap()
+                .curve
+                .into();
+        end = Some(curve.clone());
+        let edge = edge_of(&mut model, curve);
+        sections.push(ogeom_algo::make_wire(&mut model, &[edge], T).unwrap().shape);
+    }
+    let tolerance = 1e-4;
+    let loft = ogeom_offset::make_loft_skinned(&mut model, &sections, tolerance, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom_algo::check(&model, &loft, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    // The end ring densely: its chords sag well under the tolerance.
+    let end = end.unwrap();
+    let domain = end.domain();
+    let count = 8000;
+    let rim: Vec<Point> = (0..=count)
+        .map(|k| end.point_at(across(domain, k, count), T).unwrap())
+        .collect();
+    let mut worst = 0.0_f64;
+    let mut seen = 0;
+    for patch in spline_surfaces(&model, &loft) {
+        let (ud, vd) = patch.domain();
+        let apex = patch.point_at(ud.0, vd.1, T).unwrap();
+        if apex.distance(patch.point_at(f64::midpoint(ud.0, ud.1), vd.1, T).unwrap()) > 1e-9 {
+            continue;
+        }
+        seen += 1;
+        for j in 0..=20 {
+            for i in 0..=400 {
+                let q = patch
+                    .point_at(across(ud, i, 400), across(vd, j, 20), T)
+                    .unwrap();
+                // The fan from the apex to the rim near the angle q stands
+                // at: the rim runs round with its angle.
+                let turn = q.y.atan2(q.x).rem_euclid(2.0 * PI) / (2.0 * PI);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::cast_precision_loss
+                )]
+                let at = (turn * count as f64) as usize;
+                let mut best = f64::INFINITY;
+                for k in (at + count - 100)..(at + count + 100) {
+                    let (a, b) = (rim[k % count], rim[(k + 1) % count]);
+                    best = best.min(to_triangle(q, apex, a, b));
+                }
+                worst = worst.max(best);
+            }
+        }
+    }
+    assert_eq!(seen, 1, "one end closes on a cone");
+    eprintln!("wavy end's cap off its cone by {worst}");
+    assert!(worst <= tolerance, "the cap strays {worst} from its cone");
+}

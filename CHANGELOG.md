@@ -22,6 +22,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Sweeps hold their walls between stations along the path.** Pipe
+  shells, law pipes and helical sweeps were checked along the profile but
+  not between stations: a disc swept down a spline turning a quarter within
+  one span stood 1.1e-2 off at 1e-4, a guided law loft 6.4e-3. They are
+  fitted to the swept profile between stations as well. A general draft
+  holds its wall to the turned rulings across its whole height (2.0e-3 off,
+  now 1.8e-5), and a skinned loft's non-planar end patch is held to its
+  cone (9.6e-2 off and invalid, now valid within 6e-5) and faces out of the
+  solid.
+
+- **A helical sweep through part of a turn ends on an outward cap.** A
+  sweep that was not whole turns ended on a cap facing into the solid. An
+  auxiliary-law pipe whose guide starts on the first station's plane no
+  longer turns its start section.
+
 - **Drafting an extruded spline wall holds it between stations.** The
   drafted wall was fitted through 65 stations and checked there only: a
   wavy wall drafted 0.1 at 1e-4 stood 2.5e-3 off its turned rulings. It is

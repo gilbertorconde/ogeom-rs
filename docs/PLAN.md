@@ -301,7 +301,7 @@ takes about 8% longer.
 A pipe shell's curved runs and closed rings are checked between their
 stations too: the frame is carried from the station behind by one
 double-reflection step and turned to meet the next station's normal, and
-the skin takes the station index as its parameter across. A disc of
+the skin's parameter across is even in the station index. A disc of
 radius 0.3 down a spline turning a quarter within one span, at 1e-4,
 stood 1.1e-2 off its tube and stands 1.5e-5 off (both laws); round an
 ellipse 5 by 2, 1.3e-4 to 3.0e-5. Each wall takes about 20 to 100 ms
@@ -326,9 +326,20 @@ now fitted on one knot vector (the surface fit through them) and checked
 between the stations, where the crossing is found again from the chart
 between the stations' feet, held on the chord between them so its pace
 does not kink: 1.8e-5, and the draft about 30% faster there.
+The patch closing a non-planar end of a skinned loft is the cone from the
+end section to its centroid, now fitted to that cone between the samples
+as well: rings waving 0.8 twelve times round, the end rising and falling
+2, at 1e-4, stood up to 9.6e-2 off it (and failed `check`) and stands
+6.0e-5 off; a plain saddle end at 1e-3, 1.8e-3 to 4.3e-5. The cap is
+turned away from the next section's middle: the test from the section it
+passes through is square to a nearly flat cap's normal, and could leave
+it facing in.
 Left:
 - A pipe shell's run re-rowed at a curved corner (each column along its
   own generator to the crossing) is still fitted through its rows.
+- `check` passed a skinned loft whose nearly flat end patch faced into the
+  solid (the exact volume then came out 607 for 1278), and the mesh's
+  volume did not see it either.
 - `fit_curve_sampled` (ogeom-geom) and `ogeom_algo::traced::fit_traced`
   do the same job but not the same fit: `fit_traced` fits through every
   sample with `fit_points_at`, measures each interval's quarter points
@@ -355,8 +366,6 @@ Left:
   (6.5e-4 on a loft of circles of radius 10 skinned at 1e-3, reach 9);
   elsewhere within 1e-4. Such a draft rebuilds in about 1.3 s (0.23 s
   before), the time in the rebuild's exact volume over the wall.
-- The patch closing a non-planar end of a skinned loft (`EndCap::Skinned`)
-  is still fitted through its rows and measured at them.
 
 Left: the rest of those commons' miss (up to 1.5e-9) is the fitted sections' own pcurves
 standing off their edges within the 1e-5 taken as along, which every exact
