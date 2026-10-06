@@ -283,6 +283,23 @@ impl SweptShape {
 }
 
 impl Canonical {
+    /// Whether distances to the surface are resolved to `distance`: a
+    /// sphere fitted to a nearly flat patch can have its centre so far off
+    /// that the distance to it, taken from points near the patch, rounds
+    /// by more than the distance, and every point of the patch and well
+    /// beyond it then measures as on it.
+    pub(crate) fn resolves(&self, distance: f64) -> bool {
+        let far = |frame: ogeom_math::Frame| frame.origin().to_vector().magnitude();
+        let reach = match self {
+            Self::Plane(_) | Self::Swept(_) => return true,
+            Self::Cylinder(c) => far(c.frame()) + c.radius(),
+            Self::Cone(c) => far(c.frame()) + c.reference_radius(),
+            Self::Sphere(s) => s.centre().to_vector().magnitude() + s.radius(),
+            Self::Torus(t) => far(t.frame()) + t.major_radius() + t.minor_radius(),
+        };
+        reach * 16.0 * f64::EPSILON <= distance
+    }
+
     /// The distance from `p` to the surface.
     #[must_use]
     pub fn distance_to(&self, p: Point) -> f64 {
@@ -574,7 +591,10 @@ fn cylinder_in_torus(torus: &Torus, points: &[Point], tol: Tolerances) -> Option
 /// the samples by orders more than the round's own cylinder.
 fn choose(fits: &[Recognized], chords: &[(Point, Point)], tolerance: f64) -> Option<Recognized> {
     let tie = |best: f64| tie(best, tolerance);
-    let within: Vec<&Recognized> = fits.iter().filter(|f| f.deviation <= tolerance).collect();
+    let within: Vec<&Recognized> = fits
+        .iter()
+        .filter(|f| f.deviation <= tolerance && f.surface.resolves(tolerance))
+        .collect();
     let closest = within
         .iter()
         .map(|f| f.deviation)
@@ -1433,6 +1453,29 @@ mod tests {
     use super::*;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A sphere centred so far off that a point's distance to it rounds by
+    /// more than the tolerance: a point five off it measures as on it or
+    /// many times farther. It is no fit. A sphere of the part's own size
+    /// is.
+    #[test]
+    fn a_sphere_too_far_off_to_measure_is_no_fit() {
+        let far = Sphere::centred(Point::new(1e17, 0.0, 0.0), 1e17, T).unwrap();
+        let off = Point::new(-5.0, 0.0, 0.0);
+        assert!((Canonical::Sphere(far).distance_to(off) - 5.0).abs() > 1.0);
+        let fit = |sphere: Sphere| {
+            choose(
+                &[Recognized {
+                    surface: Canonical::Sphere(sphere),
+                    deviation: 0.0,
+                }],
+                &[],
+                1e-3,
+            )
+        };
+        assert!(fit(far).is_none());
+        assert!(fit(Sphere::centred(Point::new(10.0, 0.0, 0.0), 10.0, T).unwrap()).is_some());
+    }
 
     /// Points on a cylinder with normals tipped a few degrees off true, as
     /// a mesh's averaged facet normals are: the refinement recovers the
