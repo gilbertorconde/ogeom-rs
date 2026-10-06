@@ -13,6 +13,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A unified face keeps its curved edges' pcurves (#132).**
+  `unify_same_domain` gave every boundary edge of a merged plane a chord
+  between its ends as its pcurve, which stood 0.9 off a fillet's arc, so
+  the face left the exact volume path; an edge takes the pcurve it already
+  carries on a merged face, turned into the kept chart. A filleted bracket
+  refined by the unify measures exactly, to the same volume as before it.
+
+- **Thickening a loft between arcs of different radii (#127).** Such a
+  surface is smooth but parameterised only C0 along its middle knot, and
+  the offset's cubic fit stalled at about 5.5e-3 there; the fit keeps a
+  triple knot at every knot where the base surface is C1 or less, and
+  fits to 1.9e-7.
+
+- **The middle path of a tube with one sharp corner (#131).** A section
+  square to one leg reached past the mitre into the other and the march
+  read it as turning back; the path is marched from both ends, each leg cut
+  back from the corner, and joined at the corner as two edges. A tube with
+  two or more sharp corners is still refused.
+
 - **Sewing orients the faces it joins by their walk.** Each edge two faces
   share ends up walked once each way, open sheets included, keeping the
   orientation most faces already have; a closed shell is then made to face
@@ -82,6 +101,9 @@ corpus with no curved face faceted. Fillets the stress run refused now
 round, and a boolean on a large solid leaves less work on untouched faces.
 
 ### Added
+
+- **`fit_surface_grid_at_with_knots`.** A fixed-parameter grid fit that
+  starts from given interior knots and keeps them.
 
 - **`check` names an edge both its faces walk the same way.** In a shell,
   each edge between two faces is walked once each way when every face keeps

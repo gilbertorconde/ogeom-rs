@@ -244,3 +244,160 @@ fn a_middle_path_needs_two_faces_of_the_solid() {
     );
     assert!(ogeom_offset::middle_path(&mut model, &solid, &bottom, &foreign, -1.0, T).is_err());
 }
+
+/// A round rod of radius 2 swept along the polyline through `corners`,
+/// each corner mitred.
+fn mitred_rod(model: &mut Model, corners: &[Point]) -> Shape {
+    use ogeom_geom::{CircleCurve, PlaneSurface};
+    use ogeom_math::{Direction, Plane};
+    let frame = Frame::about(
+        corners[0],
+        Direction::new(corners[1] - corners[0], T).unwrap(),
+    );
+    let circle = Circle::new(frame, 2.0, T).unwrap();
+    let edge = ogeom_algo::make_edge(
+        model,
+        CircleCurve::new(circle).into(),
+        (0.0, 2.0 * core::f64::consts::PI),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wire = ogeom_algo::make_wire(model, &[edge], T).unwrap().shape;
+    let disc = ogeom_algo::make_face(
+        model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let spine = ogeom_algo::make_polygon(model, corners, false, T)
+        .unwrap()
+        .shape;
+    let rod = ogeom_offset::make_pipe_shell_with(
+        model,
+        &disc,
+        &spine,
+        &ogeom_offset::PipeLaw::RotationMinimizing,
+        ogeom_offset::PipeCorners::Mitre,
+        1e-3,
+        T,
+    )
+    .unwrap()
+    .shape;
+    assert!(ogeom_algo::check(model, &rod, T).unwrap().is_valid());
+    rod
+}
+
+/// The distance from `p` to the polyline through `corners`.
+fn off_polyline(corners: &[Point], p: Point) -> f64 {
+    corners
+        .windows(2)
+        .map(|w| {
+            let d = w[1] - w[0];
+            let s = ((p - w[0]).dot(d) / d.dot(d)).clamp(0.0, 1.0);
+            p.distance(w[0] + d * s)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The middle path of a rod with one mitred corner is the rod's spine: a
+/// straight edge along each leg, meeting at the corner, every point of it
+/// on the polyline and its length the polyline's.
+fn the_middle_path_follows_the_mitred_spine(corners: [Point; 3]) {
+    let mut model = Model::new();
+    let solid = mitred_rod(&mut model, &corners);
+    let start = face_at(&model, &solid, corners[0]);
+    let end = face_at(&model, &solid, corners[2]);
+    let tolerance = 0.02;
+    let path = ogeom_offset::middle_path(&mut model, &solid, &start, &end, tolerance, T).unwrap();
+    assert!(path.deviation <= tolerance);
+
+    // The wire is open, which the check takes for a gap in a boundary, so
+    // its edges are checked one by one.
+    let edges = explore(&model, &path.built.shape, Filter::OfType(ShapeType::Edge)).unwrap();
+    assert_eq!(edges.len(), 2);
+    for edge in &edges {
+        let diagnosis = ogeom_algo::check(&model, edge, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+    }
+    let mut length = 0.0;
+    let mut ends = Vec::new();
+    let mut worst = 0.0_f64;
+    for edge in &edges {
+        let data = model.node(edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            panic!("a path edge carries a 3D curve");
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        let (lo, hi) = *range;
+        let mut previous = curve.point_at(lo, T).unwrap();
+        ends.push(previous);
+        for i in 1..=100 {
+            let p = curve
+                .point_at(lo + (hi - lo) * f64::from(i) / 100.0, T)
+                .unwrap();
+            worst = worst.max(off_polyline(&corners, p));
+            length += p.distance(previous);
+            previous = p;
+        }
+        ends.push(previous);
+    }
+    assert!(worst < tolerance, "{worst} off the spine");
+    let want = corners[0].distance(corners[1]) + corners[1].distance(corners[2]);
+    assert!(
+        (length - want).abs() < 2.0 * tolerance,
+        "a length of {length} against {want}"
+    );
+    assert!(ends[0].distance(corners[0]) < tolerance);
+    assert!(
+        ends[1].distance(corners[1]) < tolerance,
+        "a corner at {:?}",
+        ends[1]
+    );
+    assert!(ends[2].distance(corners[1]) < tolerance);
+    assert!(ends[3].distance(corners[2]) < tolerance);
+}
+
+#[test]
+fn a_rod_with_a_mitred_square_corner_has_its_spine_for_a_middle_path() {
+    the_middle_path_follows_the_mitred_spine([
+        Point::ORIGIN,
+        Point::new(0.0, 0.0, 20.0),
+        Point::new(15.0, 0.0, 20.0),
+    ]);
+}
+
+#[test]
+fn rods_turning_gently_and_sharply_have_their_spines_for_middle_paths() {
+    for turn in [50.0_f64, 120.0] {
+        let (s, c) = turn.to_radians().sin_cos();
+        the_middle_path_follows_the_mitred_spine([
+            Point::ORIGIN,
+            Point::new(0.0, 0.0, 20.0),
+            Point::new(15.0 * s, 0.0, 20.0 + 15.0 * c),
+        ]);
+    }
+}
+
+/// Two sharp corners leave a leg neither march reaches: the legs from the
+/// two ends do not meet, and the path is refused rather than guessed.
+#[test]
+fn a_rod_with_two_mitred_corners_is_refused() {
+    let corners = [
+        Point::ORIGIN,
+        Point::new(0.0, 0.0, 20.0),
+        Point::new(15.0, 0.0, 20.0),
+        Point::new(15.0, 0.0, 40.0),
+    ];
+    let mut model = Model::new();
+    let solid = mitred_rod(&mut model, &corners);
+    let start = face_at(&model, &solid, corners[0]);
+    let end = face_at(&model, &solid, corners[3]);
+    let refused = ogeom_offset::middle_path(&mut model, &solid, &start, &end, 0.02, T).unwrap_err();
+    assert!(
+        refused.to_string().contains("turned back on itself"),
+        "{refused}"
+    );
+}
