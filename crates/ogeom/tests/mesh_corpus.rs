@@ -329,11 +329,16 @@ fn nist_ctc_04() {
 }
 
 /// Its whole mesh closes, welded; its faces meshed one by one still leave
-/// six edges unmatched.
+/// six edges unmatched. Its rounds meet their neighbours all but
+/// tangentially, and the edges there are threaded through points carried
+/// onto both surfaces between the mesh's vertices; through the vertices
+/// alone no curve keeps to both.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_06() {
-    comes_back("nist_ftc_06_asme1_rd.stp", true, false);
+    let report = comes_back("nist_ftc_06_asme1_rd.stp", true, false);
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+    assert!(report.faces <= 200, "{} faces came back", report.faces);
 }
 
 /// As `nist_ctc_04`, on tori. Its long rounds of radius 0.43 are meshed a

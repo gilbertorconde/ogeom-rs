@@ -21,6 +21,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Drill points, stand-in tori and tangent chords convert exact.** A cone
+  closing at its apex inside one rim (a drill point) had no layout and fell
+  to facets; it is built like a sphere's cap, its seam running from the
+  apex to the rim. A strip of a cylinder fitted as a torus thousands of
+  millimetres in radius comes back as the cylinder the torus stands in for.
+  An edge between two curved faces meeting almost tangentially is traced
+  through points placed on both surfaces. NIST parts convert to far fewer
+  faces (one from 4104 to 1997, its volume error from 1.3e-3 to 3.7e-5;
+  another from 345 to 155 with no face faceted).
+
 - **Narrow rounds and drafted corners convert to their own surfaces.** A
   narrow round meshed only a few rows across came back as near-flat
   spheres hundreds of thousands of times its size, which won the chord

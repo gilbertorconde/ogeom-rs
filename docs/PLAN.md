@@ -882,12 +882,18 @@ refused and the edge falls to a chord through the boundary's vertices,
 standing up to 1.1 mm off both tori across its long spans. Between two
 curved faces such a chord is now threaded through points carried onto
 both surfaces as well, and keeps within 0.07 mm. The closure check stays
-as the backstop; no converter or corpus test needs it now. Still open: carrying points for every chord between
-curved faces, not only those past the reach, brings ctc_02's volume
-error from 5e-4 to 5e-5 and ftc_06's from 8e-5 to 1e-6 (402 faces to
-214), but facets nine more of ftc_07's fillet spheres and slows it by
-half (those spheres are its rounds' cylinders now: worth measuring
-again).
+as the backstop; no converter or corpus test needs it now. Every chord between two curved faces now carries points onto both, not
+only one whose vertices alone stand past the reach; where the vertices
+alone thread no curve within a twentieth of the longest span, the carried
+points' curve is the one taken. Measured on top of the two changes below
+(faces, curved faces faceted, volume error): ftc_06 345, 10, 8.5e-5 to
+155, 0, 2.0e-6; ctc_02 2106, 10, 1.3e-3 to 1997, 8, 3.7e-5; ftc_07 695,
+0, 1.8e-5 to 647, 0, 8.5e-6; ftc_10 513, 4 to 498, 3;
+sliver_on_a_diagonal_of_the_grid (invalid before and after) 1242, 6 to
+1191, 3. The rest of the NIST parts, the corpus, the truth bench and the
+stress baseline are unchanged. Run alone, ftc_07 converts in about 4 s
+and ctc_02 in 7 s, as before. The spheres the earlier trial faceted were
+ftc_07's rounds, since fitted on their cylinders.
 
 **Converted faces folded under a neighbour.** `check` probes every face
 of a solid for orientation, stepping off it by shorter steps until both

@@ -8203,9 +8203,10 @@ impl Planner<'_> {
     /// along the chain. The chain's own vertices lie on both, and a curve
     /// is threaded through them, a line for a single span; its tolerance is
     /// how far it strays from either surface between them, up to a
-    /// twentieth of its longest span. Between two curved faces, where that
-    /// is past the reach, points between the vertices carried onto both
-    /// surfaces are threaded as well, and the closer curve kept. A face
+    /// twentieth of its longest span. Between two curved faces, points
+    /// between the vertices carried onto both surfaces are threaded as
+    /// well, and the closer curve kept (the only one, where the vertices
+    /// alone thread none). A face
     /// bounded by such a curve is good to its tolerance, where it would
     /// otherwise fall to facets whole.
     fn chord(
@@ -8265,17 +8266,16 @@ impl Planner<'_> {
             }
         }
         let plain = self.thread(&on, closed, &fa, &fb, reach, longest);
-        let threaded = match plain {
-            Some(found)
-                if found.2 > reach && self.curved(a).is_some() && self.curved(b).is_some() =>
-            {
-                let between = between_both(&on, &fa, &fb, longest);
-                match self.thread(&between, closed, &fa, &fb, reach, longest) {
-                    Some(closer) if closer.2 < found.2 => Some(closer),
-                    _ => Some(found),
-                }
+        let threaded = if self.curved(a).is_some() && self.curved(b).is_some() {
+            let between = between_both(&on, &fa, &fb, longest);
+            let carried = self.thread(&between, closed, &fa, &fb, reach, longest);
+            match (plain, carried) {
+                (Some(found), Some(closer)) if closer.2 < found.2 => Some(closer),
+                (None, closer) => closer,
+                (found, _) => found,
             }
-            other => other,
+        } else {
+            plain
         };
         let (curve, range, tolerance) = threaded?;
         Some((
