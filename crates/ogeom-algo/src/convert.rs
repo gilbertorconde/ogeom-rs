@@ -414,7 +414,11 @@ impl Rebuild<'_> {
 
         let mut wires = Vec::new();
         let mut corner_uv: HashMap<TShapeId, Point2> = HashMap::new();
-        for wire in model.ordered_children_of(&face)? {
+        // The wires are read as the face stores them, its own sense left
+        // out: the rebuilt face takes that sense back below, and reading
+        // them under it as well would turn every ring of a reversed face
+        // around.
+        for wire in model.ordered_children_of(&face.oriented(Orientation::Forward))? {
             let mut ring = Vec::new();
             let mut seams_done: Vec<TShapeId> = Vec::new();
             for edge in model.ordered_children_of(&wire)? {
@@ -1523,6 +1527,23 @@ mod tests {
             chord: 1e-3,
             ..Deflection::default()
         }
+    }
+
+    /// A prism's near cap is its profile turned round. Baked, each face
+    /// keeps its rings as it stored them and takes its sense back on top,
+    /// so every edge is still walked once each way.
+    #[test]
+    fn a_baked_prism_walks_each_edge_once_each_way() {
+        let mut model = Model::new();
+        let block = make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let face = ogeom_topo::explore_unique(&model, &block, ShapeType::Face).unwrap()[0].clone();
+        let prism = crate::make_prism(&mut model, &face, ogeom_math::Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let baked = baked_shape(&mut model, &prism, T).unwrap().shape;
+        assert_eq!(crate::check::edges_walked_one_way(&model, &baked), 0);
     }
 
     #[test]
