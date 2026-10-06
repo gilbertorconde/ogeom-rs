@@ -398,7 +398,9 @@ impl Rings {
         let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
             return all();
         };
-        let wires = model.ordered_children_of(face)?;
+        // Stored order, the outer wire first: the walk of a reversed face
+        // lists its holes first.
+        let wires = model.children_of(face)?;
         if !matches!(surface, ogeom_geom::SurfaceGeometry::Plane(_)) || wires.len() < 2 {
             return all();
         }
