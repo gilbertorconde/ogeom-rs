@@ -2472,18 +2472,6 @@ impl<'a> Reader<'a> {
         range: (f64, f64),
         surface: &SurfaceGeometry,
     ) -> OgeomResult<Option<PlanarCurve>> {
-        let widen = |p: PlanarCurve| -> PlanarCurve {
-            // A line pcurve evaluates anywhere; its stated domain must still
-            // cover the edge's range, which for a wrapped circle runs past
-            // one period.
-            if let PlanarCurve::Line(l) = &p {
-                let (lo, hi) = (l.domain().0.min(range.0), l.domain().1.max(range.1));
-                if let Ok(wider) = ogeom_geom::Line2d::over(l.axis(), lo, hi) {
-                    return wider.into();
-                }
-            }
-            p
-        };
         // Taken from the table where the pass at the head of the solid
         // already derived it. The fallbacks below serve the faces no pass
         // covered: a face reached outside a solid walk, or one whose
@@ -2497,7 +2485,7 @@ impl<'a> Reader<'a> {
         };
         let (pcurve, off) = match prepared {
             PreparedPcurve::Exact { curve, off } | PreparedPcurve::Stated { curve, off } => {
-                (widen(curve), off)
+                (over_range(&curve, range), off)
             }
             PreparedPcurve::Fitted {
                 curve: fitted,
@@ -4225,6 +4213,7 @@ fn derive_pcurve(
     }
     let derived =
         if let Some(exact) = ogeom_intersect::exact_pcurve_over(curve, range, surface, tol) {
+            let exact = over_range(&exact, range);
             let off = lifted(&exact);
             PreparedPcurve::Exact { curve: exact, off }
         } else {
@@ -4848,5 +4837,29 @@ mod tests {
         assert!(window_between_feet(&spline, at(0.7), at(0.3), T).is_none());
         let off = at(0.3) + Vector::new(0.0, 0.0, 0.5);
         assert!(window_between_feet(&spline, off, at(0.7), T).is_none());
+    }
+
+    /// A parallel of a cone read as a circle a few tenths of a micron wider
+    /// than the cone there, its range running past one turn: the exact
+    /// pcurve is stated over the whole range, and the gap it stands off
+    /// the circle is measured along all of it.
+    #[test]
+    fn a_wrapped_parallel_states_its_gap() {
+        let cone: SurfaceGeometry = ConeSurface::new(
+            Cone::new(Frame::WORLD, 2.0, core::f64::consts::FRAC_PI_4, T).unwrap(),
+            (-10.0, 10.0),
+        )
+        .unwrap()
+        .into();
+        let wider = 3e-7;
+        let circle: Curve =
+            CircleCurve::new(Circle::new(Frame::WORLD, 2.0 + wider, T).unwrap()).into();
+        let range = (3.0, 8.5);
+        let PreparedPcurve::Exact { curve, off } = derive_pcurve(&circle, range, &cone, &[], T)
+        else {
+            panic!("a parallel has an exact pcurve");
+        };
+        assert!(curve.point_at(range.1, T).is_ok(), "{curve:?}");
+        assert!((off - wider).abs() < wider * 1e-3, "{off}");
     }
 }

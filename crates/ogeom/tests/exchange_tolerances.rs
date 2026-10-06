@@ -380,6 +380,58 @@ fn a_step_read_keeps_tolerance_containment() {
     }
 }
 
+/// A frustum whose base circle stands three tenths of a micron outside its
+/// cone and starts its turn at three radians, so its range runs past one
+/// period: it reads with the circle's edge as loose as its pcurve stands
+/// off it, checks clean, and checks clean after a repair.
+#[test]
+fn a_parallel_read_past_one_turn_checks_clean() {
+    let mut model = Model::new();
+    let frustum = ogeom::algo::make_cone(&mut model, ogeom::math::Frame::WORLD, 3.0, 2.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("frustum", frustum);
+    let text = ogeom::io::write_step(&document, T).unwrap();
+    // The base circle, given a placement of its own turned three radians
+    // about its axis and a radius a hair wider.
+    let line = text
+        .lines()
+        .find(|l| l.contains("CIRCLE(") && l.ends_with(",3.0);"))
+        .expect("the base circle is written");
+    let placement = line.split(['(', ',']).nth(2).unwrap();
+    let base = text
+        .lines()
+        .find(|l| l.starts_with(&format!("{placement}=AXIS2_PLACEMENT_3D(")))
+        .unwrap();
+    let args: Vec<&str> = base
+        .trim_end_matches(");")
+        .split_once('(')
+        .unwrap()
+        .1
+        .split(',')
+        .collect();
+    let (s, c) = 3.0_f64.sin_cos();
+    let turned = format!(
+        "#9001=DIRECTION('',({c},{s},0.0));\n#9002=AXIS2_PLACEMENT_3D('',{},{},#9001);\n",
+        args[1], args[2]
+    );
+    let wider = line
+        .replace(placement, "#9002")
+        .replace(",3.0);", ",3.0000003);");
+    let text = text
+        .replace(line, &wider)
+        .replacen("DATA;\n", &format!("DATA;\n{turned}"), 1);
+
+    let mut import = ogeom::io::read_step(&text, T).unwrap();
+    let solid = import.solids[0].clone();
+    let diagnosis = check(import.document.model(), &solid, T).unwrap();
+    assert!(diagnosis.of(Severity::Broken).is_empty(), "{diagnosis}");
+    let fixed = ogeom::heal::fix_shape(import.document.model_mut(), &solid, T).unwrap();
+    let diagnosis = check(import.document.model(), &fixed.shape, T).unwrap();
+    assert!(diagnosis.of(Severity::Broken).is_empty(), "{diagnosis}");
+}
+
 /// The healer restores containment. A real part whose edges genuinely
 /// need their width (pcurves sitting microns off their curves) has its
 /// vertices reset to the confusion tolerance, which is the state a reader
