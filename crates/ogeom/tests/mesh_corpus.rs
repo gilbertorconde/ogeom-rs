@@ -481,6 +481,33 @@ fn sliver_on_a_diagonal_of_the_grid() {
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
+/// Its rounds run on into spline faces along rows the mesh leaves as
+/// single facets all but tangent to them, whichever order the mesh lists
+/// its triangles in: each such facet is built as a fan onto the round, and
+/// the round stays curved.
+#[test]
+#[ignore = "heavy"]
+fn sliver_on_a_diagonal_of_the_grid_whatever_order_its_triangles_are_listed_in() {
+    for seed in [1_u64, 2] {
+        let report = comes_back_listed(
+            "sliver_on_a_diagonal_of_the_grid.step",
+            true,
+            true,
+            |mesh| {
+                let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for i in (1..mesh.triangles.len()).rev() {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    let j = usize::try_from(state % (i as u64 + 1)).unwrap();
+                    mesh.triangles.swap(i, j);
+                }
+            },
+        );
+        assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+    }
+}
+
 /// A turned part whose rounds meet single facets, chords of a spline
 /// face left faceted, across their curvature: the span they share stands
 /// off the round by more than a chord may, and each such facet comes back

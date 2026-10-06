@@ -43,6 +43,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A STEP file checks clean where a circle's range runs past one turn
+  (#126).** The reader measured such a circle's pcurve gap as nothing, so
+  the edge kept a tighter tolerance than its pcurve; and the nearest point
+  of a closed curve beside either end was missed, so a repair could add a
+  broken edge. A file 0.9.0 read clean reads and repairs clean again.
+
+- **Mesh conversion depends less on triangle order.** A fillet torus a few
+  facets round is recognized whichever triangle seeds it, a sphere fitted
+  with its centre far away no longer swallows neighbouring regions, and the
+  facets beside a face reaching past its triangles become fans before the
+  face is faceted. Corpus parts come back on fewer faces.
+
 - **A sewn box of planes measures exactly (#125).** `volume_properties`
   sent a shell holding a face whose flag points into the material (a box
   sewn from six sheets with a lid filled facing in) to the mesh, and its

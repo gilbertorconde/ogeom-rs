@@ -921,6 +921,24 @@ fn build(
                         }
                         (culprits, reason)
                     } else {
+                        // A facet all but tangent to a curved face beside
+                        // it meets the face's surface along a seam that can
+                        // lie well past the facet, and the face then reaches
+                        // past its triangles: each facet beside such a face
+                        // that can be a fan is built as one onto it before
+                        // the face is faceted.
+                        let fanned: Vec<usize> = (0..triangles.len())
+                            .filter(|&t| !fans.contains_key(&groups.of[t]))
+                            .filter(|&t| {
+                                groups.fan_at(t, triangles, adjacency).is_some_and(|fan| {
+                                    fan.seams().any(|(_, c)| astray.contains(&c))
+                                })
+                            })
+                            .collect();
+                        if !fanned.is_empty() {
+                            groups.fans.extend(fanned);
+                            continue 'build;
+                        }
                         (astray, FallbackReason::ReachesPast)
                     }
                 }
