@@ -1076,6 +1076,15 @@ All valid and tessellating closed; the other corpus parts, the truth
 bench and the stress baseline come back unchanged. A blind hole with a
 drill point, meshed and converted, pins it.
 
+A rim circle need not start on the cone's seam: where it is shared with
+the bore, its start comes from whichever surface placed it first. The cap
+was refused there (ftc_10's two drill points, one faceted for its
+boundary, the other for reaching past its triangles in the layout tried
+instead). The cone is now turned about its axis so its seam runs through
+the rim's start. ftc_10: 498 faces, 3 faceted, 2.2e-4 to 420, 1, 2.3e-4;
+the other parts, the truth bench and the stress baseline are unchanged.
+Its last fallback is a cylinder of seven triangles reaching past them.
+
 Tori standing in for cylinders: done. ctc_03's rounds (radius 9.5 to
 12.7) and two of ctc_05's walls (radius 279.4) came back as tori of major
 radius 1e3 to 3e4 whose tube radius differs from it by the cylinder's: a

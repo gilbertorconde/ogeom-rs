@@ -3209,6 +3209,18 @@ fn axis_frame(shape: &Canonical) -> Option<Frame> {
     }
 }
 
+/// The cone about the same axis, turned about it so its seam (where its
+/// angle is zero) runs through `at`; `None` where `at` is on the axis.
+fn cone_seamed_through(cone: &Cone, at: Point, tol: Tolerances) -> Option<Cone> {
+    let old = cone.frame();
+    let x = Direction::new(at - old.origin(), tol).ok()?;
+    let mut frame = Frame::new(old.origin(), old.z(), x, tol).ok()?;
+    if frame.handedness() != old.handedness() {
+        frame = frame.mirrored();
+    }
+    Cone::new(frame, cone.reference_radius(), cone.half_angle(), tol).ok()
+}
+
 /// The same surface on another frame whose axis is the same line: its
 /// radii kept, a cone's reference radius carried to the new origin.
 fn on_frame(shape: &Canonical, frame: Frame, tol: Tolerances) -> Option<Canonical> {
@@ -7635,12 +7647,26 @@ impl Planner<'_> {
             if failed.contains(&g) || plan.loops[g].is_empty() {
                 continue;
             }
-            let surface = surface_of(
-                curved,
-                self.points,
-                plan.layouts[g] == Layout::Cap,
-                self.tol,
-            )?;
+            let cap = plan.layouts[g] == Layout::Cap;
+            let turned;
+            let curved = match &curved.shape {
+                Canonical::Cone(cone) if cap => {
+                    let (rim, _) = self.entry(&plan, plan.loops[g][0][0]);
+                    let start =
+                        ogeom_geom::Curve3d::point_at(&plan.edges[rim].curve, 0.0, self.tol)?;
+                    let Some(cone) = cone_seamed_through(cone, start, self.tol) else {
+                        failed.push(g);
+                        continue;
+                    };
+                    turned = Curved {
+                        shape: Canonical::Cone(cone),
+                        ..curved.clone()
+                    };
+                    &turned
+                }
+                _ => curved,
+            };
+            let surface = surface_of(curved, self.points, cap, self.tol)?;
             if matches!(
                 plan.layouts[g],
                 Layout::Open
@@ -7694,9 +7720,10 @@ impl Planner<'_> {
     }
 
     /// Whether a cone's face closes at its apex inside one rim: the rim one
-    /// full circle starting on the cone's seam, a vertex of the region at
-    /// the apex within the reach, and every vertex on the apex's own nappe.
-    /// A drill's point is such a face.
+    /// full circle starting off the axis, a vertex of the region at the
+    /// apex within the reach, and every vertex on the apex's own nappe. A
+    /// drill's point is such a face; its surface is the cone turned about
+    /// its axis so its seam runs through the rim's start.
     fn cone_tip(&self, plan: &Plan, curved: &Curved, ring: &[Half]) -> bool {
         use ogeom_geom::Curve3d as _;
         let Canonical::Cone(cone) = &curved.shape else {
@@ -7712,10 +7739,7 @@ impl Planner<'_> {
         let Ok(start) = plan.edges[edge].curve.point_at(0.0, self.tol) else {
             return false;
         };
-        let Some((u, _)) = chart(&curved.shape, start, self.tol) else {
-            return false;
-        };
-        if ogeom_math::elementary::wrap_signed_angle(u).abs() > self.tol.parametric() {
+        if cone_seamed_through(cone, start, self.tol).is_none() {
             return false;
         }
         let frame = cone.frame();
@@ -10498,8 +10522,8 @@ impl Builder<'_> {
     }
 
     /// A cone closing at its apex inside its rim: the rim, a ruling seam
-    /// from the apex up to the rim's vertex on the cone's angle zero, and
-    /// the apex as an edge of no length.
+    /// from the apex up to the rim's vertex on the planned surface's angle
+    /// zero, and the apex as an edge of no length.
     fn cone_tip_face(
         &mut self,
         curved: &Curved,

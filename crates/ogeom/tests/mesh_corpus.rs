@@ -387,12 +387,15 @@ fn nist_ftc_09() {
 /// the faces round each one meet at one point and the mesh closes. Facets
 /// beside a cylinder meet it all but tangentially, and built flat they
 /// turn into the material; built as fans onto the cylinder, it stays
-/// curved.
+/// curved. Its drill points close at their apex inside rims whose circles
+/// start off the cone's own seam, and the cone is turned about its axis to
+/// meet them.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_10() {
     let report = comes_back("nist_ftc_10_asme1_rb.stp", true, true);
-    assert!(report.faces <= 520, "{} faces came back", report.faces);
+    assert!(report.faces <= 430, "{} faces came back", report.faces);
+    assert!(report.curved_faceted <= 1, "{:?}", report.fallbacks);
     assert!(
         !report
             .fallbacks
