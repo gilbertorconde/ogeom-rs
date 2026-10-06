@@ -881,12 +881,46 @@ agreed along shared edges. That finds planar faces in the converter's
 results for ftc_10, ftc_07 and ctc_02 turned into the material within
 about 0.03 of themselves: a fold, material on the face's outside and a
 thin empty wedge on its inside, under a neighbour that runs past it. The
-converter asks the same probe, so it now catches these and falls back
-to more facets (ftc_10 704 faces to 977, ftc_07 1375 to 1460, ctc_02
-4090 to 4138). Open: what folds these faces, so they come back exact
-without the fallback. The probe classifies two points per face against
-the exact boundary, about 0.45 s on a 165-face helical thread (0.05 s
-before), 0.16 s on ctc_02 (1.0 s before, when the flag walk ran).
+converter asks the same probe, so it catches these and facets the curved
+faces beside them (ftc_07 1375 faces to 1460, ctc_02 4090 to 4138).
+ftc_10 went from 704 to 977 because a threaded build with such a face
+was thrown away whole for the unthreaded one, whose crossed seams then
+facet 16 curved faces; the threading now stands and only the cylinder
+beside the turned facets is faceted (726 faces, 144 curved, volume error
+3.8e-4 from 8.1e-4).
+
+What folds them, in every case a single-triangle facet meeting a curved
+face all but tangentially, the facet a chord plane of a neighbour that
+stayed faceted (a chamfer, a drafted wall, a blend):
+
+- The exact seam wraps past the facet (ctc_02, two facets on a 57.5
+  bore). The plane through the facet meets the cylinder in a long thin
+  ellipse; the arc between the two corners on the cylinder bulges 8 in
+  the plane for a 1.1 sag and passes 0.16 beyond the third corner, which
+  sits 0.019 inside the cylinder. The face's loop then encloses the
+  crescent between the arc and the facet's other two sides, wound the
+  wrong way. No exact curve on both surfaces exists here: the facet lies
+  wholly on the cylinder's material side.
+- A chord seam leaves a slot (ftc_10 beside a radius 6 cylinder, ftc_07
+  tori tangent to a drafted wall, ctc_02's third facet). The seam is a
+  line threaded through the mesh corners with a tolerance of 0.09 to
+  0.15, the curved face trimmed at its projection; between the line and
+  that trim is an opening as wide as the tolerance. A probe point 0.003
+  to 0.03 off the facet sits below the curved surface's level, and a
+  ray through the opening reaches the curved face from inside: In. At
+  0.1, past the tolerance, the probe answers right.
+
+Open: both want the facet's own surface to meet the curved one along
+the seam lifted onto it. A ruled fan from the facet's far corner to that
+lifted curve would share every edge exactly (lines with the facets
+beside it, the lifted curve with the curved face) and fit the true
+surface closer than the plane does; it needs a degenerate edge at the
+apex. Recognizing the faceted neighbour (ftc_07's walls fall back as
+BoundaryNotPlaced, among near-flat regions fitted as spheres of radius
+thousands) would remove the facets instead. The probe classifies two
+points per face against the exact boundary, about 0.45 s on a 165-face
+helical thread (0.05 s before), 0.16 s on ctc_02 (1.0 s before, when
+the flag walk ran).
 
 **Speed, not correctness.**
 

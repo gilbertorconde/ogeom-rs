@@ -22,6 +22,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A converted part keeps its straight-threaded seams.** Mesh conversion
+  threw away every seam it had threaded straight when any facet beside one
+  faced into the material, and the rebuild faceted curved faces for folded
+  seams; the threading stays and only the curved faces beside such a facet
+  are faceted. A NIST part converts to 726 faces instead of 977, with 144
+  curved faces where it kept 127.
+
 - **`check` probes every face of a solid for orientation.** A single face
   turned into its solid passed where the faces' flags could not be compared
   along their edges (a nearly flat conical or domed cap, a face whose

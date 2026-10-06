@@ -143,8 +143,8 @@ fn pcurves_off_their_curves(model: &Model, shape: &Shape) -> Vec<(f64, f64)> {
 /// of its volume, tessellating closed where `closed` says it does, its faces
 /// meshed one by one meeting edge to edge where `meet` says they do, every
 /// pcurve within its edge's tolerance of the edge's curve, and with curved
-/// faces where the part has them.
-fn comes_back(name: &str, closed: bool, meet: bool) {
+/// faces where the part has them. Returns how many faces it came back with.
+fn comes_back(name: &str, closed: bool, meet: bool) -> usize {
     let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(path).expect("the corpus file is committed");
     let import = ogeom::io::read_step(&text, T).unwrap();
@@ -198,6 +198,7 @@ fn comes_back(name: &str, closed: bool, meet: bool) {
             "{name}: nothing curved came back"
         );
     }
+    out.report.faces
 }
 
 #[test]
@@ -306,11 +307,14 @@ fn nist_ftc_09() {
 
 /// Its seams end a little off the corners they meet at, each on its own
 /// side, within the corners' tolerance; drawn from the corners themselves,
-/// the faces round each one meet at one point and the mesh closes.
+/// the faces round each one meet at one point and the mesh closes. Its
+/// seams threaded straight leave facets turned into the material beside a
+/// cylinder; that cylinder alone is faceted, and the threading stands.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_10() {
-    comes_back("nist_ftc_10_asme1_rb.stp", true, true);
+    let faces = comes_back("nist_ftc_10_asme1_rb.stp", true, true);
+    assert!(faces <= 760, "{faces} faces came back");
 }
 
 #[test]

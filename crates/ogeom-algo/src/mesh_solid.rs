@@ -664,12 +664,11 @@ fn build(
         let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
         let mut straight: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
         // What stood before any seam was threaded straight: a straightened
-        // build with a face turned into its material is set aside for it.
+        // build with a face collapsed beside a threaded seam is set aside for
+        // it. A face turned into the material beside one is an overlap like
+        // any other, and the curved faces beside it are faceted.
         let mut unthreaded: Option<(Groups, MeshSolidReport)> = None;
         let mut threading_refused = false;
-        // Whether faces were faceted after the first seam was threaded: the
-        // build then differs from the unthreaded one beyond those seams.
-        let mut refaceted = false;
         let shape = loop {
             let planner = Planner {
                 points,
@@ -735,9 +734,9 @@ fn build(
                                 continue;
                             }
                             if let Some((was, then)) = unthreaded.take()
-                                && (turned_over(
-                                    model, &shape, triangles, &groups, &built, &straight, tol,
-                                )? || (refaceted && any_turned_in(model, &shape, tol)?))
+                                && collapsed_beside(
+                                    model, triangles, &groups, &built, &straight, tol,
+                                )?
                             {
                                 groups = was;
                                 report = then;
@@ -796,7 +795,6 @@ fn build(
                 }
             };
             let (failed, reason) = failed;
-            refaceted |= unthreaded.is_some() && !failed.is_empty();
             // A region that took facets gives them back and is tried again
             // without them before it is faceted.
             let returned: Vec<usize> = failed
@@ -947,12 +945,10 @@ fn any_turned_in(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<b
     Ok(false)
 }
 
-/// Whether a face beside a seam threaded straight faces into the material
-/// of the shape's solids, or has collapsed: thinner than the confusion
-/// distance, its seams threaded onto one line.
-fn turned_over(
+/// Whether a face beside a seam threaded straight has collapsed: thinner
+/// than the confusion distance, its seams threaded onto one line.
+fn collapsed_beside(
     model: &Model,
-    shape: &Shape,
     triangles: &[[u32; 3]],
     groups: &Groups,
     built: &[Option<Shape>],
@@ -966,20 +962,14 @@ fn turned_over(
             beside.insert(groups.of[h / 3]);
         }
     }
-    let faces: Vec<Shape> = beside
-        .iter()
-        .filter_map(|&g| built.get(g).and_then(Option::as_ref).cloned())
-        .collect();
     let fine = ogeom_mesh::Deflection::with_chord(ogeom_mesh::Deflection::default().chord * 1e-2)?;
-    for face in &faces {
+    for face in beside
+        .iter()
+        .filter_map(|&g| built.get(g).and_then(Option::as_ref))
+    {
         let area = crate::surface_properties(model, face, fine, tol)?.mass;
         let reach = crate::shape_bounds(model, face, tol)?.diagonal();
         if area <= reach * tol.confusion() {
-            return Ok(true);
-        }
-    }
-    for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
-        if !crate::check::faces_turned_in(model, &solid, &faces, tol)?.is_empty() {
             return Ok(true);
         }
     }
