@@ -67,8 +67,10 @@ pub fn seam_periodic_faces(
         let Some((surface_id, surface)) = seamless_periodic(model, &face)? else {
             continue;
         };
+        // The rings as the face stores them: each rebuilt face is the face
+        // as stored, and the shells below turn it as the old one was.
         let rings: Vec<Vec<Shape>> = model
-            .ordered_children_of(&face)?
+            .ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))?
             .iter()
             .map(|w| model.ordered_children_of(w))
             .collect::<OgeomResult<_>>()?;
@@ -1141,7 +1143,9 @@ fn rebuild_with(
     };
     let mut wires = Vec::new();
     let mut replaced = Vec::new();
-    for wire in model.ordered_children_of(face)? {
+    // The wires as the face stores them: the caller turns the rebuilt face
+    // as the old one was turned.
+    for wire in model.ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))? {
         let mut edges = Vec::new();
         for edge in model.ordered_children_of(&wire)? {
             match substitution.get(&edge.node()) {

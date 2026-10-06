@@ -471,7 +471,9 @@ pub(crate) fn rebuild_plain_face(
     };
     let mut wires = Vec::new();
     let mut replaced = Vec::new();
-    for wire in model.ordered_children_of(face)? {
+    // The wires as the face stores them: the caller turns the rebuilt face
+    // as each occurrence of the old one was turned.
+    for wire in model.ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))? {
         let mut edges = Vec::new();
         for edge in model.ordered_children_of(&wire)? {
             match substitution.get(&edge.node()) {

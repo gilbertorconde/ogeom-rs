@@ -2,6 +2,9 @@
 //! the analytic thing, and geometry that is not, stays what it is.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::core::Tolerances;
 use ogeom::geom::SurfaceGeometry;
 use ogeom::math::{Frame, Point};
@@ -194,6 +197,7 @@ fn a_bore_spelt_either_way_round_stays_the_right_way_out() {
         let (built, _) = ogeom::heal::canonical_simplify(&mut model, &nurbsed, 1e-6, T).unwrap();
         let diagnosis = ogeom::algo::check(&model, &built.shape, T).unwrap();
         assert!(diagnosis.is_valid(), "{diagnosis}");
+        assert_eq!(walks::edges_walked_one_way(&model, &built.shape), 0);
         let after = ogeom::algo::volume_properties(&model, &built.shape, Deflection::default(), T)
             .unwrap()
             .mass;
@@ -266,6 +270,8 @@ fn a_bore_spline_facing_its_axis_is_recognised_the_right_way_out() {
     );
     let diagnosis = ogeom::algo::check(&model, &built.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(walks::edges_walked_one_way(&model, &restated), 0);
+    assert_eq!(walks::edges_walked_one_way(&model, &built.shape), 0);
     let after = ogeom::algo::volume_properties(&model, &built.shape, Deflection::default(), T)
         .unwrap()
         .mass;

@@ -1856,7 +1856,14 @@ pub fn make_band_of_rings(
         )?
         .into())
     };
-    let (forward_side, reversed_side) = if downward {
+    // The rings run as given, so the face's neighbours still meet them
+    // the other way; which way the loop then goes round the chart says
+    // which side the face faces. Clockwise, it faces against the surface,
+    // and stores the loop walked back so it keeps the face on its left in
+    // the chart: the climbing occurrence then stands where the walk
+    // starts, on the first ring's column.
+    let clockwise = (end_column - column) * (vb - va) < 0.0;
+    let (forward_side, reversed_side) = if downward != clockwise {
         (column, end_column)
     } else {
         (end_column, column)
@@ -1879,16 +1886,12 @@ pub fn make_band_of_rings(
     edges.push(up.clone());
     edges.extend(ring_b);
     edges.push(up.reversed());
+    if clockwise {
+        edges = edges.iter().rev().map(Shape::reversed).collect();
+    }
     let wire = make_wire(model, &edges, tol)?.shape;
     let face = make_face_on(model, surface_id, &[wire], tol)?.shape;
-    // The rings run as given, so the face's neighbours still meet them
-    // the other way; which way the loop then goes round the chart says
-    // which side the face faces. Clockwise, it faces against the surface.
-    Ok(if (end_column - column) * (vb - va) < 0.0 {
-        face.reversed()
-    } else {
-        face
-    })
+    Ok(if clockwise { face.reversed() } else { face })
 }
 
 /// Build the face of a band between two closed rings that need not be

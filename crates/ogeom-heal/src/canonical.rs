@@ -153,8 +153,17 @@ pub fn canonical_simplify(
         // or the exact-pcurve machinery has nothing to project in closed
         // form. Curve recognition is held to the same certificate as the
         // surfaces': every sample within tolerance, or no change.
+        //
+        // A cylinder, cone or sphere has its own normal away from its axis
+        // or centre whichever side the material was on; a bore spelt as a
+        // spline with its normal towards the axis comes out turned. The
+        // flag carries over, and turns once more where the normals oppose.
+        // The rings are read as the face stores them, keeping it on their
+        // left about the old surface's normal, and walked back where the
+        // new normal opposes it.
+        let flipped = ogeom_algo::normals_oppose(&world, &carrier, tol)?;
         let mut wires = Vec::new();
-        for wire in model.ordered_children_of(&face)? {
+        for wire in model.ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))? {
             let mut edges = Vec::new();
             for edge in model.ordered_children_of(&wire)? {
                 // Mapped in its stored direction; the occurrence's own
@@ -171,13 +180,11 @@ pub fn canonical_simplify(
                     mapped
                 });
             }
+            if flipped {
+                edges = edges.iter().rev().map(Shape::reversed).collect();
+            }
             wires.push(edges);
         }
-        // A cylinder, cone or sphere has its own normal away from its axis
-        // or centre whichever side the material was on; a bore spelt as a
-        // spline with its normal towards the axis comes out turned. The
-        // flag carries over, and turns once more where the normals oppose.
-        let flipped = ogeom_algo::normals_oppose(&world, &carrier, tol)?;
         let rebuilt = ogeom_algo::make_face_with_pcurves(model, carrier, &wires, tol)?.shape;
         let reversed = face.orientation() == ogeom_topo::Orientation::Reversed;
         let rebuilt = if reversed == flipped {

@@ -5,6 +5,9 @@
 //! them.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Frame, Point};
 use ogeom::mesh::Deflection;
@@ -37,6 +40,7 @@ fn seamless_faces_heal_and_a_drill_cuts_through_them() {
     assert!(count > 0);
     let part = healed.shape;
     assert!(ogeom::algo::check(model, &part, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(model, &part), 0);
     let whole = volume(model, &part);
     assert!(
         (whole - before).abs() < before * 1e-4,
@@ -75,6 +79,7 @@ fn seamless_faces_heal_and_a_drill_cuts_through_them() {
         .shape;
     for result in [&cut, &common] {
         assert!(ogeom::algo::check(model, result, T).unwrap().is_valid());
+        assert_eq!(walks::edges_walked_one_way(model, result), 0);
     }
     let (a, b) = (volume(model, &cut), volume(model, &common));
     assert!(
@@ -186,6 +191,7 @@ fn a_meridian_circle_splits_at_the_poles_and_a_drill_crosses_the_hemisphere() {
         .0
         .shape;
     assert!(ogeom::algo::check(model, &part, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(model, &part), 0);
     let whole = ogeom::algo::volume_properties(model, &part, fine, T)
         .unwrap()
         .mass;
@@ -215,6 +221,7 @@ fn a_meridian_circle_splits_at_the_poles_and_a_drill_crosses_the_hemisphere() {
         .shape;
     for result in [&cut, &common] {
         assert!(ogeom::algo::check(model, result, T).unwrap().is_valid());
+        assert_eq!(walks::edges_walked_one_way(model, result), 0);
     }
     let (a, b) = (volume(model, &cut), volume(model, &common));
     let inside = mesh_inside_cylinder_along_y(&mesh, (x, z), radius, (300, 1200));
