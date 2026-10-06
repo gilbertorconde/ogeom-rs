@@ -3,6 +3,9 @@
 //! handedness back in.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom_core::Tolerances;
 use ogeom_math::{Frame, Point};
 
@@ -78,6 +81,7 @@ fn a_body_fuses_with_its_mirror_across_the_shared_face() {
     let fused = ogeom_bool::fuse(&mut model, &block, &mirrored, T).unwrap();
     let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert_eq!(walks::edges_walked_one_way(&model, &fused.shape), 0);
     assert!(
         (vol(&model, &fused.shape) - 2000.0).abs() < 1e-6,
         "the halves joined across their shared face"
@@ -178,6 +182,7 @@ fn a_prism_fuses_with_its_mirrored_copy() {
     let fused = ogeom_bool::fuse(&mut model, &a, &b, T).unwrap();
     let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert_eq!(walks::edges_walked_one_way(&model, &fused.shape), 0);
 
     // Two 10×10×5 pads meeting at the mirror plane, sharing only that face.
     let measured = vol(&model, &fused.shape);
@@ -307,6 +312,7 @@ fn booleans_with_mirrored_curved_solids_match_the_unmirrored_images() {
                 ogeom_algo::check(&model, &got, T).unwrap().is_valid(),
                 "{name}"
             );
+            assert_eq!(walks::edges_walked_one_way(&model, &got), 0, "{name}");
             let (g, w) = (vol(&model, &got), vol(&model, &want));
             assert!((g - w).abs() < 1e-6 * w.max(1.0), "{name}: {g} against {w}");
         }

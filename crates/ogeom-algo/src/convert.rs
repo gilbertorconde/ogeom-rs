@@ -412,7 +412,36 @@ impl Rebuild<'_> {
         };
         let surface_id = model.geometry_mut().add_surface(patch_surface.clone());
 
-        let mut wires = Vec::new();
+        // The rebuilt chart is right-handed wherever the old one stood;
+        // a reflecting placement flipped the old chart's natural normal,
+        // and the flag must carry that flip or the baked solid comes
+        // out inside-out.
+        // A restated surface whose normal turned is the same flip.
+        //
+        // Whether a reflection turns a surface's natural normal depends
+        // on the surface: a mirrored cylinder is stored about a
+        // right-handed frame again and keeps its normal away from the
+        // axis. So where it can be, the turn is measured: the old
+        // normal carried through the placement against the new one at
+        // the same point. Handedness is the fallback where the
+        // measurement cannot be taken, and under an affine map, which
+        // does not carry normals as vectors.
+        let measured = if affine.is_none() {
+            turned_by_rebuild(&old_surface, &placement, old_window, &patch_surface, tol)
+        } else {
+            turned_before_affine
+        };
+        let reflecting = !face.location().preserves_handedness(model.datums())?;
+        let reflected = measured.unwrap_or(reflecting != flipped);
+        // The rings keep the face on their left in the old chart. A spline
+        // whose control points the affine map moved keeps that chart; any
+        // other new chart runs the other way round where the placement
+        // reflects and the normal did not turn with it, or the normal
+        // turned under a placement that does not reflect, and the rings
+        // are walked back to keep the face on their left in it.
+        let walked_back = affine.is_none() && reflecting != reflected;
+
+        let mut rings = Vec::new();
         let mut corner_uv: HashMap<TShapeId, Point2> = HashMap::new();
         // The wires are read as the face stores them, its own sense left
         // out: the rebuilt face takes that sense back below, and reading
@@ -458,6 +487,7 @@ impl Rebuild<'_> {
                         &placed,
                         &patch_surface,
                         at,
+                        walked_back,
                         tol,
                     )?;
                     attach_pcurve(
@@ -681,30 +711,18 @@ impl Rebuild<'_> {
                     new_edge
                 });
             }
+            rings.push(ring);
+        }
+        let mut wires = Vec::with_capacity(rings.len());
+        for ring in rings {
+            let ring: Vec<Shape> = if walked_back {
+                ring.iter().rev().map(Shape::reversed).collect()
+            } else {
+                ring
+            };
             wires.push(make_wire(model, &ring, tol)?.shape);
         }
         let built = make_face_on(model, surface_id, &wires, tol)?.shape;
-        // The rebuilt chart is right-handed wherever the old one stood;
-        // a reflecting placement flipped the old chart's natural normal,
-        // and the flag must carry that flip or the baked solid comes
-        // out inside-out.
-        // A restated surface whose normal turned is the same flip.
-        //
-        // Whether a reflection turns a surface's natural normal depends
-        // on the surface: a mirrored cylinder is stored about a
-        // right-handed frame again and keeps its normal away from the
-        // axis. So where it can be, the turn is measured: the old
-        // normal carried through the placement against the new one at
-        // the same point. Handedness is the fallback where the
-        // measurement cannot be taken, and under an affine map, which
-        // does not carry normals as vectors.
-        let measured = if affine.is_none() {
-            turned_by_rebuild(&old_surface, &placement, old_window, &patch_surface, tol)
-        } else {
-            turned_before_affine
-        };
-        let reflected =
-            measured.unwrap_or(!face.location().preserves_handedness(model.datums())? != flipped);
         let built = if (face.orientation() == Orientation::Reversed) != reflected {
             built.reversed()
         } else {
@@ -1244,7 +1262,9 @@ fn seam_pcurves(
 }
 
 /// The pole row of a degenerate edge, restated in the new chart; `pole` is
-/// its vertex where the new surface holds it.
+/// its vertex where the new surface holds it. The row runs with the new
+/// chart's `u` as the old one's does, or against it where the face's
+/// rings are walked back.
 #[expect(
     clippy::too_many_arguments,
     reason = "the old and new charts of one edge"
@@ -1257,6 +1277,7 @@ fn degenerate_row(
     old: &SurfaceGeometry,
     new: &SurfaceGeometry,
     pole: Point,
+    walked_back: bool,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_geom::Line2d> {
     // Which end of the old chart the pole row sat at decides which end of
@@ -1282,7 +1303,12 @@ fn degenerate_row(
         } else {
             nv1
         });
-    ogeom_geom::Line2d::segment(Point2::new(nu0, v_new), Point2::new(nu1, v_new), tol)
+    let (from, to) = (Point2::new(nu0, v_new), Point2::new(nu1, v_new));
+    if walked_back {
+        ogeom_geom::Line2d::segment(to, from, tol)
+    } else {
+        ogeom_geom::Line2d::segment(from, to, tol)
+    }
 }
 
 /// The `v` at which a surface's middle column reaches `pole`, to the
