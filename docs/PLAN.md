@@ -1073,6 +1073,13 @@ the parallel's line in the chart, the seam a ruling up from the rim's
 first vertex. m5x16_bhcs 181, 1, 2.0e-4 to 20, 0, 1.1e-4 (the source's
 twenty faces); m5x16_bhcs_loops 439, 2 to 278, 1.
 
+A smooth region counts as bending only on turns between its own
+triangles. A flat face beside a recognized one across an edge smoother
+than a crease (a screw head's flat top beside its sphere, 26 degrees)
+was a smooth region of its own, was offered the sphere as a band, and
+the two came back one sweep with a kink in its profile, faceted whole.
+m5x16_bhcs_loops 278, 1, 2.5e-3 to 20, 0, 1.1e-4.
+
 Done for ftc_07, in two steps:
 
 - Its rounds of radius 0.43 along the drafted walls' foot are meshed

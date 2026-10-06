@@ -421,10 +421,15 @@ fn nist_ftc_11() {
     comes_back("nist_ftc_11_asme1_rb.stp", true, true);
 }
 
+/// Its head's flat top meets the head's sphere across an edge smoother
+/// than a crease; the flat top is no smooth region of its own, and the
+/// sphere stays a sphere rather than a sweep through both.
 #[test]
 #[ignore = "heavy"]
 fn a_socket_head_screw() {
-    comes_back("m5x16_bhcs_loops.step", true, true);
+    let report = comes_back("m5x16_bhcs_loops.step", true, true);
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+    assert!(report.faces <= 20, "{} faces came back", report.faces);
 }
 
 /// The disc capping its chamfered end has every corner on the chamfer's

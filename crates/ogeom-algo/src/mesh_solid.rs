@@ -6175,10 +6175,15 @@ fn smooth_regions(
                     continue;
                 }
                 let other = g / 3;
+                // Only a turn between its own triangles: a flat face meeting
+                // a recognized one across a smooth edge does not bend.
+                if groups.of[other] != usize::MAX {
+                    continue;
+                }
                 if c < cos_flat {
                     bends = true;
                 }
-                if !seen[other] && groups.of[other] == usize::MAX {
+                if !seen[other] {
                     seen[other] = true;
                     region.push(other);
                 }
