@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-10-06
+
+A patch release: no breaking API changes. It closes issues #127 to #132:
+thickening a loft between arcs of different radii, a worm and a bearing
+combined on one plane, a bore removed from or moved in an extruded plate,
+the middle path of a tube with a sharp corner, and a filleted bracket
+measured exactly after unifying its faces. Every producer, the STEP and
+IGES exchange and sewing now walk each edge once each way, and `check`
+names an edge both its faces walk the same way. A widened edge carries its
+vertices, and sewing orients the faces it joins by their walk.
+
 ### Fixed
 
 - **A worm and a bearing standing on one plane combine (#128).** An exact
@@ -3958,7 +3969,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.2...v0.9.3
