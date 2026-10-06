@@ -1027,14 +1027,17 @@ fn rebuilt_face(
 
 /// Orient a round so its normal agrees with the faces it meets: away from
 /// the ball where `away` holds, toward it otherwise. `ball` finds the
-/// centre of the ball touching the round at a point.
+/// centre of the ball touching the round at a point. The round's ring is
+/// first made to run counter-clockwise in its chart, so that the face keeps
+/// itself on the left of its ring whichever side it faces.
 fn oriented_round(
-    model: &Model,
+    model: &mut Model,
     round: Shape,
     away: bool,
     ball: impl Fn(Point) -> Point,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
+    let round = counter_clockwise(model, round, tol)?;
     let (p, n) = ogeom_algo::face_normal(model, &round, tol)?;
     let outward = n.dot(p - ball(p)) > 0.0;
     Ok(if outward == away {
@@ -1042,6 +1045,61 @@ fn oriented_round(
     } else {
         round.reversed()
     })
+}
+
+/// The face with its one ring walked back where, as stored, it runs
+/// clockwise in the face's chart; the face itself where it runs
+/// counter-clockwise, holds several rings, or walks an edge twice (a seam,
+/// whose two sides a walk back would exchange).
+fn counter_clockwise(model: &mut Model, face: Shape, tol: Tolerances) -> OgeomResult<Shape> {
+    /// Points drawn along each edge's image.
+    const DRAWN: u32 = 16;
+    let Some(data) = model.node(&face).and_then(|n| n.data().as_face()).cloned() else {
+        ogeom_bail!(Dangling, "face is not in this model");
+    };
+    let stored = face.oriented(Orientation::Forward);
+    let [wire] = &model.ordered_children_of(&stored)?[..] else {
+        return Ok(face);
+    };
+    let ring = model.ordered_children_of(wire)?;
+    if ring
+        .iter()
+        .enumerate()
+        .any(|(i, e)| ring[..i].iter().any(|f| f.node() == e.node()))
+    {
+        return Ok(face);
+    }
+    let mut points: Vec<P2> = Vec::new();
+    for edge in &ring {
+        let Some(range) = model
+            .node(edge)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.pcurve_for(data.surface, edge.location()))
+            .and_then(|r| match r {
+                EdgeRepr::PCurve { range, .. } => Some(*range),
+                _ => None,
+            })
+        else {
+            return Ok(face);
+        };
+        let image = occurrence_image(model, edge, data.surface)?;
+        let forward = edge.orientation() != Orientation::Reversed;
+        for k in 0..DRAWN {
+            let f = f64::from(k) / f64::from(DRAWN);
+            let f = if forward { f } else { 1.0 - f };
+            let q = image.point_at((range.1 - range.0).mul_add(f, range.0), tol)?;
+            points.push((q.x, q.y));
+        }
+    }
+    let area: f64 = (0..points.len())
+        .map(|i| cross2(points[i], points[(i + 1) % points.len()]))
+        .sum();
+    if area >= 0.0 {
+        return Ok(face);
+    }
+    let back: Vec<Shape> = ring.iter().rev().map(Shape::reversed).collect();
+    let wire = make_wire(model, &back, tol)?.shape;
+    Ok(model.add_face(data, &[wire])?.oriented(face.orientation()))
 }
 
 /// Sampled distance from every point of an edge to a curve, held low by

@@ -3,6 +3,9 @@
 //! rolling ball's closed form.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{
     check, edge_vertices, face_normal, make_edge_between, make_face_with_pcurves, make_polygon,
     make_prism, make_vertex, make_wire, surface_properties,
@@ -117,10 +120,12 @@ fn edge_use(model: &Model, shape: &Shape) -> (usize, usize) {
     (shared, free)
 }
 
-/// Whether the checker finds nothing wrong past the openness a sheet has.
+/// Whether the checker finds nothing wrong past the openness a sheet has,
+/// and each edge two faces share is walked once each way.
 fn usable(model: &Model, shape: &Shape) {
     let found = check(model, shape, T).unwrap();
     assert!(found.is_usable(), "{found}");
+    assert_eq!(walks::edges_walked_one_way(model, shape), 0);
 }
 
 /// The distance from `p` to the cylinder's axis line.
