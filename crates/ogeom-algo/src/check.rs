@@ -993,6 +993,35 @@ fn crossings_among(
     Ok(crossings)
 }
 
+/// How many edges between two faces of `shape` both faces walk the same
+/// way: none where every face keeps its material on the left of its rings.
+#[cfg(test)]
+pub(crate) fn edges_walked_one_way(model: &Model, shape: &Shape) -> usize {
+    let mut walks: HashMap<(TShapeId, ogeom_topo::Location), (usize, usize)> = HashMap::new();
+    for face in explore(model, shape, Filter::OfType(ShapeType::Face)).unwrap_or_default() {
+        for edge in explore(model, &face, Filter::OfType(ShapeType::Edge)).unwrap_or_default() {
+            if model
+                .node(&edge)
+                .and_then(|n| n.data().as_edge())
+                .is_some_and(|d| d.degenerate)
+            {
+                continue;
+            }
+            let walk = walks
+                .entry((edge.node(), edge.location().clone()))
+                .or_default();
+            walk.0 += 1;
+            if edge.orientation() == ogeom_topo::Orientation::Forward {
+                walk.1 += 1;
+            }
+        }
+    }
+    walks
+        .values()
+        .filter(|(uses, forward)| *uses == 2 && *forward != 1)
+        .count()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

@@ -248,6 +248,13 @@ pub fn make_prism_tapered(
             model.set_derived(&wall, std::slice::from_ref(&edges[0]), roles::SWEEP_SIDE)?;
             history.generate(&edges[0], wall.clone());
             faces.push(wall);
+            // Both circles turn about the travel; round a hole the caps walk
+            // them the other way, keeping the material on their left.
+            let (near, far) = if sigma > 0.0 {
+                (near, far)
+            } else {
+                (near.reversed(), far.reversed())
+            };
             near_wires.push(make_wire(model, std::slice::from_ref(&near), tol)?.shape);
             far_wires.push(make_wire(model, std::slice::from_ref(&far), tol)?.shape);
             continue;
@@ -388,24 +395,40 @@ pub fn make_prism_tapered(
             let surface: ogeom_geom::SurfaceGeometry =
                 ogeom_geom::PlaneSurface::over(wall_plane, (-reach, reach), (-reach, reach))?
                     .into();
-            let wall = crate::build::make_face_with_pcurves(
-                model,
-                surface,
-                &[vec![
+            // Counter-clockwise about the outward normal: along the near edge
+            // where the loop keeps its material on the left, against it where
+            // the loop runs the other way.
+            let ring = if flip > 0.0 {
+                vec![
                     near_edges[i].clone(),
                     rails[next].clone(),
                     far_edges[i].reversed(),
                     rails[i].reversed(),
-                ]],
-                tol,
-            )?
-            .shape;
+                ]
+            } else {
+                vec![
+                    rails[i].clone(),
+                    far_edges[i].clone(),
+                    rails[next].reversed(),
+                    near_edges[i].reversed(),
+                ]
+            };
+            let wall = crate::build::make_face_with_pcurves(model, surface, &[ring], tol)?.shape;
             model.set_derived(&wall, std::slice::from_ref(edge), roles::SWEEP_SIDE)?;
             history.generate(edge, wall.clone());
             faces.push(wall);
         }
-        near_wires.push(make_wire(model, &near_edges, tol)?.shape);
-        far_wires.push(make_wire(model, &far_edges, tol)?.shape);
+        // The caps keep the material on the left of each ring about the
+        // travel.
+        let walked = |ring: &[Shape]| -> Vec<Shape> {
+            if flip > 0.0 {
+                ring.to_vec()
+            } else {
+                ring.iter().rev().map(Shape::reversed).collect()
+            }
+        };
+        near_wires.push(make_wire(model, &walked(&near_edges), tol)?.shape);
+        far_wires.push(make_wire(model, &walked(&far_edges), tol)?.shape);
     }
 
     // Caps: the near one facing backwards, both rebuilt over the fresh rings
@@ -559,7 +582,7 @@ fn prism_over_face(
     // while the caps face out, and the solid comes back inside out. Each
     // ring's turn about the travel is measured, the ring enclosing the most
     // is the outer one and must turn positively, every other a hole turning
-    // the other way, and a ring walked against that has its walls turned.
+    // the other way.
     let wires = model.children_of(&profile)?;
     let turns: Vec<f64> = wires
         .iter()
@@ -574,15 +597,24 @@ fn prism_over_face(
                 .unwrap_or(core::cmp::Ordering::Equal)
         })
         .map_or(0, |(i, _)| i);
-    for (index, wire) in wires.iter().enumerate() {
+    // A ring walked against that is turned round in the profile itself, so
+    // the caps and the walls built over it agree on which way each edge is
+    // walked, and each wall faces out.
+    let against: Vec<bool> = turns
+        .iter()
+        .enumerate()
+        .map(|(i, turn)| turn * if i == outer { 1.0 } else { -1.0 } < 0.0)
+        .collect();
+    let profile = if against.contains(&true) {
+        rewound(model, &profile, &against, tol)?
+    } else {
+        profile
+    };
+    let wires = model.children_of(&profile)?;
+    for wire in &wires {
         let (sides, wire_history) = prism_over_wire(model, rails, wire, displacement, vector, tol)?;
         history = history.then(&wire_history);
-        let wanted = if index == outer { 1.0 } else { -1.0 };
-        if turns[index] * wanted < 0.0 {
-            faces.extend(sides.into_iter().map(|f| f.reversed()));
-        } else {
-            faces.extend(sides);
-        }
+        faces.extend(sides);
     }
 
     // The near end faces backwards, because the solid is on the far side of it.
@@ -603,15 +635,56 @@ fn prism_over_face(
     Ok(Built::new(solid, history))
 }
 
+/// `face` again with the rings `turned` walked the other way round: a face
+/// of its own on the same surface, placed and presented as `face` is.
+fn rewound(
+    model: &mut Model,
+    face: &Shape,
+    turned: &[bool],
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let Some(node) = model.node(face) else {
+        ogeom_bail!(Dangling, "the profile is not in this model");
+    };
+    let Some(data) = node.data().as_face() else {
+        ogeom_bail!(Construction, "the profile holds no face data");
+    };
+    let mut rebuilt = ogeom_topo::FaceData::new(data.surface, data.location.clone());
+    rebuilt.tolerance = data.tolerance;
+    let stored = node.children().to_vec();
+    let mut wires = Vec::with_capacity(stored.len());
+    for (wire, &turn) in stored.iter().zip(turned) {
+        wires.push(if turn {
+            walked_back(model, wire, tol)?
+        } else {
+            wire.clone()
+        });
+    }
+    let built = model.add_face(rebuilt, &wires)?;
+    Ok(built.moved(face.location()).oriented(face.orientation()))
+}
+
+/// A fresh wire walking `wire`'s edges the other way round.
+fn walked_back(model: &mut Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
+    let edges = model.ordered_children_of(&wire.reversed())?;
+    Ok(make_wire(model, &edges, tol)?.shape)
+}
+
 /// How a wire turns about `axis`: twice the area it encloses projected
 /// square to the axis, signed by the right-hand rule, from points sampled
 /// along its edges in traversal order.
 fn wire_turn(model: &Model, wire: &Shape, axis: Vector, tol: Tolerances) -> OgeomResult<f64> {
+    edges_turn(model, &model.ordered_children_of(wire)?, axis, tol)
+}
+
+/// How a closed walk of edge occurrences turns about `axis`, as
+/// [`wire_turn`] measures a wire's.
+fn edges_turn(model: &Model, edges: &[Shape], axis: Vector, tol: Tolerances) -> OgeomResult<f64> {
     use ogeom_geom::Curve3d as _;
     let mut points: Vec<ogeom_math::Point> = Vec::new();
-    for edge in model.ordered_children_of(wire)? {
+    for edge in edges {
         let Some(EdgeRepr::Curve3d { curve, range, .. }) = model
-            .node(&edge)
+            .node(edge)
             .and_then(|n| n.data().as_edge())
             .and_then(|d| d.curve3d())
         else {
@@ -807,25 +880,23 @@ fn prism_over_edge(
     });
 
     // The extrusion's `u` is the *curve's* own parameter, and the curve does
-    // not care which way the wire walks it. So a reversed occurrence is
-    // traversed from `hi` to `lo`, and the rail its walk starts at stands at
-    // `u = hi`, not at `u = lo`.
-    //
-    // Pinning the rails to `lo` and `hi` regardless of the occurrence puts
-    // each rail's pcurve on the wrong side of the parameter rectangle, and
-    // the boundary comes out as a bow tie enclosing nothing. The face then
-    // fails to triangulate outright, while the topology looks perfect: the wire
-    // closes, the shell closes, and every edge is used twice.
+    // not care which way the wire walks it. The face is built over the
+    // curve's own direction, its rails standing at `u = lo` and `u = hi`,
+    // and a reversed occurrence only decides which side it presents.
     let reversed = edge.orientation() == Orientation::Reversed;
-    let (u_start, u_end) = if reversed { (hi, lo) } else { (lo, hi) };
 
     // The four sides of the extrusion's parameter rectangle: the edge along the
     // bottom, the same edge displaced along the top, and the two vertical rails
     // its endpoints sweep out.
-    let bottom = edge.clone();
-    let top = edge.moved(displacement);
-    let start_rail = rail(model, rails, edge, displacement, vector, false, tol)?;
-    let end_rail = rail(model, rails, edge, displacement, vector, true, tol)?;
+    let bottom = edge.oriented(Orientation::Forward);
+    let top = bottom.moved(displacement);
+    let walk_start = rail(model, rails, edge, displacement, vector, false, tol)?;
+    let walk_end = rail(model, rails, edge, displacement, vector, true, tol)?;
+    let (low_rail, high_rail) = if reversed {
+        (walk_end, walk_start)
+    } else {
+        (walk_start, walk_end)
+    };
 
     pcurve(
         model,
@@ -843,58 +914,70 @@ fn prism_over_edge(
         chart((hi, travel)),
         tol,
     )?;
-    if start_rail.is_same(&end_rail) {
+    // The ring runs counter-clockwise in the extrusion's chart: along the
+    // bottom, up the rail at `hi`, back along the top, down the rail at
+    // `lo`. A chart turned the other way round runs it backward, so the
+    // surface's own chart always sees it counter-clockwise.
+    let (up, down) = if turned { (lo, hi) } else { (hi, lo) };
+    if low_rail.is_same(&high_rail) {
         // A closed profile edge (a full circle) starts and ends at one
         // vertex, so its two rails are one edge appearing at both `u = lo` and
         // `u = hi`. That is a seam, and it needs both pcurves: giving it one
         // would leave the face's boundary running up the same side twice and
-        // enclosing nothing. Which pcurve is which is decided by the ring
-        // below: the rail is walked forward at `u_end` and backward at
-        // `u_start`.
+        // enclosing nothing. The ring walks it up where it climbs and down
+        // where it descends.
         seam_pcurves(
             model,
-            &start_rail,
+            &low_rail,
             surface,
-            (chart((u_end, 0.0)), chart((u_end, travel))),
-            (chart((u_start, 0.0)), chart((u_start, travel))),
+            (chart((up, 0.0)), chart((up, travel))),
+            (chart((down, 0.0)), chart((down, travel))),
             tol,
         )?;
     } else {
         pcurve(
             model,
-            &start_rail,
+            &low_rail,
             surface,
-            chart((u_start, 0.0)),
-            chart((u_start, travel)),
+            chart((lo, 0.0)),
+            chart((lo, travel)),
             tol,
         )?;
         pcurve(
             model,
-            &end_rail,
+            &high_rail,
             surface,
-            chart((u_end, 0.0)),
-            chart((u_end, travel)),
+            chart((hi, 0.0)),
+            chart((hi, travel)),
             tol,
         )?;
     }
 
-    // Round the rectangle: along the bottom, up the far rail, back along the
-    // top, down the near rail.
-    let ring = [
-        bottom.clone(),
-        end_rail.clone(),
-        top.reversed(),
-        start_rail.reversed(),
-    ];
+    let ring = if turned {
+        [
+            low_rail.clone(),
+            top.clone(),
+            high_rail.reversed(),
+            bottom.reversed(),
+        ]
+    } else {
+        [
+            bottom.clone(),
+            high_rail.clone(),
+            top.reversed(),
+            low_rail.reversed(),
+        ]
+    };
     let boundary = make_wire(model, &ring, tol)?.shape;
     let built = make_face_on(model, surface, std::slice::from_ref(&boundary), tol)?.shape;
 
     // The extrusion's normal is the curve's tangent crossed with the sweep, so
     // it follows the *curve* and not the wire's walk of it. An edge the wire
     // walks backwards therefore makes a face whose default side points into the
-    // solid, and the occurrence has to be reversed to present the other one.
-    // Every profile with a mixed wire (four of a box's six faces) has some of
-    // each, so this cannot be decided once for the profile.
+    // solid, and the occurrence has to be reversed to present the other one;
+    // reversed, it walks the edge as the wire does. Every profile with a mixed
+    // wire (four of a box's six faces) has some of each, so this cannot be
+    // decided once for the profile.
     let face = if reversed != turned {
         built.reversed()
     } else {
@@ -907,7 +990,7 @@ fn prism_over_edge(
     // makes the lateral face; recording only one is how a reference to "that
     // edge" or to "the face from that edge" ends up resolving to nothing.
     history.generate(edge, face.clone());
-    history.generate(edge, top);
+    history.generate(edge, edge.moved(displacement));
     Ok((face, history))
 }
 
@@ -1035,16 +1118,23 @@ fn revolution_over_face(
              volume; a face revolved within its own plane is not a solid"
         );
     }
-    // The sweep's material side follows each wire's own walk, so the walks
-    // are measured from the traversal itself, as each loop's area vector
-    // against the sweep tangent, as the prism measures them. The face's
-    // stated normal cannot answer this: it speaks the carrier's chart, and
-    // one loop reads as either hand depending on which way the chart was
-    // laid down. The loop enclosing the most is the outline and must turn
-    // positively, every other a hole turning the other way; a hole may come
-    // wound either way, and one walked the outline's way would sweep walls
-    // facing into the material.
-    let wires = model.children_of(face)?;
+    // The caps face the way the profile's surface does, turned to face
+    // along the sweep as the prism's do.
+    let profile = if along < 0.0 {
+        face.reversed()
+    } else {
+        face.clone()
+    };
+    // Each wall's material side follows its wire's walk, so the walks are
+    // measured from the traversal itself, as each loop's area vector against
+    // the sweep tangent, as the prism measures them. The face's stated
+    // normal cannot answer this: it speaks the carrier's chart, and one loop
+    // reads as either hand depending on which way the chart was laid down.
+    // The loop enclosing the most is the outline and must turn positively,
+    // every other a hole turning the other way; a loop wound against its
+    // role is turned round in the profile itself, so the caps and the walls
+    // agree on which way each edge is walked.
+    let wires = model.children_of(&profile)?;
     if wires.is_empty() {
         ogeom_bail!(Construction, "the profile has no boundary to revolve");
     }
@@ -1061,28 +1151,23 @@ fn revolution_over_face(
                 .unwrap_or(core::cmp::Ordering::Equal)
         })
         .map_or(0, |(i, _)| i);
-    // The caps face the way the profile's surface does, turned to face
-    // along the sweep as the prism's do; the walls follow each walk, and a
-    // walk running against its role (an outline wound the other way about
-    // the surface's normal, a hole wound like its outline) has its walls
-    // turned to match.
-    let profile = if along < 0.0 {
-        face.reversed()
+    let against: Vec<bool> = turns
+        .iter()
+        .enumerate()
+        .map(|(i, turn)| turn * if i == outer { 1.0 } else { -1.0 } < 0.0)
+        .collect();
+    let profile = if against.contains(&true) {
+        rewound(model, &profile, &against, tol)?
     } else {
-        face.clone()
+        profile
     };
 
     let mut history = History::new();
     let mut faces = Vec::new();
-    for (index, wire) in model.children_of(&profile)?.iter().enumerate() {
+    for wire in &model.children_of(&profile)? {
         let (sides, wire_history) = revolution_over_wire(model, rails, wire, turn, tol)?;
         history = history.then(&wire_history);
-        let wanted = if index == outer { 1.0 } else { -1.0 };
-        if (turns[index] * wanted < 0.0) != (along < 0.0) {
-            faces.extend(sides.into_iter().map(|f| f.reversed()));
-        } else {
-            faces.extend(sides);
-        }
+        faces.extend(sides);
     }
 
     if turn.full {
@@ -1218,6 +1303,9 @@ fn revolution_over_edge(
     let reversed = edge.orientation() == Orientation::Reversed;
     let (v_start, v_end) = if reversed { (hi, lo) } else { (lo, hi) };
     let (near, far) = (0.0, turn.angle);
+    // Whether the walk runs down the chart's `v`: the ring is then walked
+    // the other way round, so the chart always sees it counter-clockwise.
+    let descending = reversed != opposed;
 
     // The circles the two ends sweep. A full turn brings each back to where it
     // started, so it is one closed edge; a partial turn leaves an arc between
@@ -1230,13 +1318,18 @@ fn revolution_over_edge(
         // one vertex, so its two rails are one edge bounding the face across
         // both the bottom and the top of the parameter rectangle. That is a
         // seam in `v`, and it needs both pcurves for the same reason a seam in
-        // `u` does.
+        // `u` does. The ring walks it forward where it runs with the turn.
+        let (forward, backward) = if descending {
+            (v_end, v_start)
+        } else {
+            (v_start, v_end)
+        };
         seam_pcurves(
             model,
             &start_rail,
             surface,
-            ((near, v_start), (far, v_start)),
-            ((near, v_end), (far, v_end)),
+            ((near, forward), (far, forward)),
+            ((near, backward), (far, backward)),
             tol,
         )?;
     } else {
@@ -1258,9 +1351,14 @@ fn revolution_over_edge(
     if turn.full {
         // The two sides are one edge appearing twice, at `u = 0` and at
         // `u = 2pi`. Which pcurve applies is decided by the occurrence's
-        // orientation, and the ring below puts the walk that goes *up* the far
-        // side on whichever occurrence carries the edge's own direction.
-        let (forward, reversed_side) = if reversed { (near, far) } else { (far, near) };
+        // orientation: the ring below walks the edge's own direction up the
+        // far side and down the near one, or the other way round where it
+        // runs backward.
+        let (forward, reversed_side) = if reversed != descending {
+            (near, far)
+        } else {
+            (far, near)
+        };
         seam_pcurves(
             model,
             edge,
@@ -1275,13 +1373,23 @@ fn revolution_over_edge(
     }
 
     // Round the rectangle: across the bottom in the direction of the turn, up
-    // the far side of the profile, back across the top, down the near side.
-    let ring = [
-        start_rail.clone(),
-        displaced.clone(),
-        end_rail.reversed(),
-        edge.reversed(),
-    ];
+    // the far side of the profile, back across the top, down the near side;
+    // where the walk runs down the chart, the same ring the other way round.
+    let ring = if descending {
+        [
+            edge.clone(),
+            end_rail.clone(),
+            displaced.reversed(),
+            start_rail.reversed(),
+        ]
+    } else {
+        [
+            start_rail.clone(),
+            displaced.clone(),
+            end_rail.reversed(),
+            edge.reversed(),
+        ]
+    };
     let boundary = make_wire(model, &ring, tol)?.shape;
     let built = make_face_on(model, surface, std::slice::from_ref(&boundary), tol)?.shape;
 
@@ -1506,17 +1614,34 @@ fn flat_revolution(
     };
 
     let reversed = edge.orientation() == Orientation::Reversed;
+    // Each ring runs counter-clockwise about the plane's normal, the axis,
+    // where it bounds the face from outside, and clockwise round a hole.
+    let wound = |model: &mut Model, ring: Vec<Shape>, outside: bool| -> OgeomResult<Shape> {
+        let turning = edges_turn(model, &ring, axis_dir.vector(), tol)?;
+        let ring = if (turning > 0.0) == outside {
+            ring
+        } else {
+            ring.iter().rev().map(Shape::reversed).collect()
+        };
+        Ok(make_wire(model, &ring, tol)?.shape)
+    };
     let built = if turn.full {
-        let mut wires = Vec::new();
+        let mut circles = Vec::new();
         for rail in [&start_rail, &end_rail] {
             if is_degenerate(model, rail) {
                 continue;
             }
             attach(model, rail)?;
-            wires.push(make_wire(model, std::slice::from_ref(rail), tol)?.shape);
+            let turning = edges_turn(model, std::slice::from_ref(rail), axis_dir.vector(), tol)?;
+            circles.push((turning.abs(), rail.clone()));
         }
-        if wires.is_empty() {
+        if circles.is_empty() {
             ogeom_bail!(Construction, "a flat revolution swept out no boundary");
+        }
+        circles.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut wires = Vec::with_capacity(circles.len());
+        for (i, (_, rail)) in circles.into_iter().enumerate() {
+            wires.push(wound(model, vec![rail], i == 0)?);
         }
         make_face_on(model, surface, &wires, tol)?.shape
     } else {
@@ -1534,7 +1659,7 @@ fn flat_revolution(
         }
         attach(model, edge)?;
         ring.push(edge.reversed());
-        let boundary = make_wire(model, &ring, tol)?.shape;
+        let boundary = wound(model, ring, true)?;
         make_face_on(model, surface, std::slice::from_ref(&boundary), tol)?.shape
     };
 
@@ -1948,6 +2073,87 @@ mod tests {
     /// A square face in the xy plane, one unit on a side from the origin.
     fn square(model: &mut Model, side: f64) -> Shape {
         box_face(model, side, crate::primitive::roles::FACE_MAX_Z)
+    }
+
+    /// A 10 mm square on the xy plane with a round hole, the hole's circle
+    /// walked the other way from the square's corners or the same way.
+    fn holed_square(model: &mut Model, hole_like_outline: bool) -> Shape {
+        let plane = ogeom_math::Plane::new(Frame::WORLD);
+        let corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+            .map(|(x, y)| Point::new(x, y, 0.0));
+        let outer = crate::build::make_polygon(model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(
+            Point::new(4.0, 5.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let curve: ogeom_geom::Curve =
+            ogeom_geom::CircleCurve::new(Circle::new(frame, 2.0, T).unwrap()).into();
+        let domain = curve.domain();
+        let ring = crate::build::make_edge(model, curve, domain, T)
+            .unwrap()
+            .shape;
+        let ring = if hole_like_outline {
+            ring
+        } else {
+            ring.reversed()
+        };
+        let surface: ogeom_geom::SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(plane, (-20.0, 20.0), (-20.0, 20.0))
+                .unwrap()
+                .into();
+        let outer_edges = model.ordered_children_of(&outer).unwrap();
+        crate::build::make_face_with_pcurves(model, surface, &[outer_edges, vec![ring]], T)
+            .unwrap()
+            .shape
+    }
+
+    /// Every edge between two faces of a swept solid is walked once each
+    /// way, each face keeping its material on the left of its rings: prisms
+    /// along a profile's normal and against it, of a profile presented the
+    /// other way round, of a hole wound either way, tapered, and turns part
+    /// of the way and all the way round, clear of the axis and on it.
+    #[test]
+    fn every_sweep_walks_each_edge_once_each_way() {
+        use crate::check::edges_walked_one_way;
+        let mut model = Model::new();
+        let face = square(&mut model, 2.0);
+        let mut solids = Vec::new();
+        for (profile, travel) in [
+            (face.clone(), 3.0),
+            (face.clone(), -3.0),
+            (face.reversed(), 3.0),
+        ] {
+            let vector = Vector::new(0.0, 0.0, travel);
+            solids.push(make_prism(&mut model, &profile, vector, T).unwrap().shape);
+        }
+        for hole_like_outline in [false, true] {
+            let profile = holed_square(&mut model, hole_like_outline);
+            let up = Vector::new(0.0, 0.0, 4.0);
+            solids.push(make_prism(&mut model, &profile, up, T).unwrap().shape);
+            solids.push(
+                make_prism_tapered(&mut model, &profile, up, 0.1, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+        let side = box_face(&mut model, 2.0, crate::primitive::roles::FACE_MIN_Y);
+        let clear = Axis::new(Point::new(-5.0, 0.0, 0.0), ogeom_math::Direction::Z);
+        let on = Axis::new(Point::ORIGIN, ogeom_math::Direction::Z);
+        for (axis, angle) in [(clear, 1.0), (clear, TAU), (on, 4.0), (on, TAU)] {
+            solids.push(
+                make_revolution(&mut model, &side, axis, angle, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+        for (i, solid) in solids.iter().enumerate() {
+            assert_eq!(edges_walked_one_way(&model, solid), 0, "solid {i}");
+        }
     }
 
     #[test]
