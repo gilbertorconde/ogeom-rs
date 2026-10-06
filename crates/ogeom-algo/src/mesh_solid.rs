@@ -762,7 +762,15 @@ fn build(
                             }
                         }
                         if culprits.is_empty() && options.recognize {
-                            culprits = folded_seams(model, &groups, &built, tol)?;
+                            let fanned;
+                            (culprits, fanned) =
+                                folded_seams(model, triangles, adjacency, &groups, &built, tol)?;
+                            // A facet folding a curved face beside it is
+                            // built as a fan before that face is faceted.
+                            if !fanned.is_empty() {
+                                groups.fans.extend(fanned);
+                                continue;
+                            }
                             reason = FallbackReason::FoldedSeam;
                         }
                         if culprits.is_empty() && options.recognize {
@@ -1243,14 +1251,34 @@ fn crossed_seams(
 /// the points they were drawn through, and the curved faces across them
 /// are the culprits; where neither is curved and the folded face is, it
 /// is.
+///
+/// Returned with the facets that could be fans (see [`Fan`]) along a fold
+/// that names a curved face beside them: a facet's plane meets the curved
+/// surface along a curve that can bulge past the curved face's far side
+/// where that face is narrow, and the fan's seam, drawn straight in the
+/// curved face's chart, does not.
 fn folded_seams(
     model: &Model,
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
     groups: &Groups,
     built: &[Option<Shape>],
     tol: Tolerances,
-) -> OgeomResult<Vec<usize>> {
+) -> OgeomResult<(Vec<usize>, Vec<usize>)> {
     use ogeom_geom::Surface as _;
     let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
+    // The triangle of facet `f` that could be built as a fan onto curved
+    // face `c`, and is not one yet.
+    let fan_of = |f: usize, c: usize| -> Option<usize> {
+        let mut members = groups.of.iter().enumerate().filter(|&(_, &g)| g == f);
+        let (t, _) = members.next()?;
+        if members.next().is_some() || groups.fans.contains(&t) {
+            return None;
+        }
+        let fan = groups.fan_at(t, triangles, adjacency)?;
+        (fan.curved == c).then_some(t)
+    };
+    let mut fans: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let deflection = ogeom_mesh::Deflection::default();
     let fine = ogeom_mesh::Deflection::with_chord(deflection.chord * 1e-2)?;
     // Each edge's faces and drawn points, by its node.
@@ -1372,6 +1400,19 @@ fn folded_seams(
             if d1 > drawn[&first].1 + drawn_within || d2 > drawn[&second].1 + drawn_within {
                 continue;
             }
+            let fannable: Vec<usize> = [first, second]
+                .iter()
+                .flat_map(|id| owners[id].iter().copied())
+                .filter_map(|o| {
+                    if curved(g) {
+                        fan_of(o, g)
+                    } else if curved(o) {
+                        fan_of(g, o)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if depth <= drawn[&first].1.max(drawn[&second].1) {
                 // Two of a curved face's own edges crossing within their
                 // tolerance make it a sliver no wider than that tolerance,
@@ -1379,6 +1420,7 @@ fn folded_seams(
                 // itself, and its neighbours fold with it.
                 if first != second && curved(g) {
                     out.insert(g);
+                    fans.extend(fannable);
                 }
                 continue;
             }
@@ -1390,13 +1432,15 @@ fn folded_seams(
             if across.is_empty() {
                 if curved(g) {
                     out.insert(g);
+                    fans.extend(fannable);
                 }
             } else {
                 out.extend(across);
+                fans.extend(fannable);
             }
         }
     }
-    Ok(out.into_iter().collect())
+    Ok((out.into_iter().collect(), fans.into_iter().collect()))
 }
 
 /// Each pair of a boundary's chords that cross without sharing an end, as

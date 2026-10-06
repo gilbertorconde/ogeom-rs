@@ -431,17 +431,12 @@ fn sliver_on_a_diagonal_of_the_grid() {
 /// A turned part whose rounds meet single facets, chords of a spline
 /// face left faceted, across their curvature: the span they share stands
 /// off the round by more than a chord may, and each such facet comes back
-/// as a fan onto the round, which stays curved.
+/// as a fan onto the round, which stays curved. A quarter round shorter
+/// than the sag of a facet's plane across it would fold over its far rim
+/// along that plane; the facet is a fan there too.
 #[test]
 #[ignore = "heavy"]
 fn grid_point_on_a_diagonal_boundary() {
     let report = comes_back("grid_point_on_a_diagonal_boundary.step", true, true);
-    assert!(
-        !report
-            .fallbacks
-            .iter()
-            .any(|f| f.reason == FallbackReason::BoundaryNotPlaced),
-        "{:?}",
-        report.fallbacks
-    );
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }

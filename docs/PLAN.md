@@ -1014,6 +1014,12 @@ other parts, the truth bench and the stress baseline are unchanged.
 ctc_02's torus of radius 10 fitted to a spline blend (r39 of its regions)
 still facets: two of its chains with facets have three vertices, and the
 parabola through them stands 0.24 off for a limit of 0.20.
+A facet whose plane meets a narrow curved face along a curve bulging past
+that face's far side (a quarter round 0.17 long beside a single facet,
+the seam 3e-4 over the far rim) folds the curved face; the facet is now
+built as a fan before the curved face is faceted for the fold.
+grid_point_on_a_diagonal_boundary 744, 1, 6.2e-4 to 741, 0, 6.2e-4; the
+other parts, the truth bench and the stress baseline are unchanged.
 
 Done for ftc_07, in two steps:
 
