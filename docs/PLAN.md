@@ -237,9 +237,9 @@ suspect finding.
   repair tests turn inside out on purpose, which expect it; no sheet is
   named, so open shells are asked too. The count costs under a
   millisecond on the corpus parts (0.3 ms on `nist_ctc_02`'s 663 faces,
-  whose check takes 0.34 s). A closed marched band's wedge also has
-  vertices tighter than its widened rails, which `check` names as broken;
-  the rails are widened in place without carrying their vertices.
+  whose check takes 0.34 s). A marched band widens its rails and end arcs
+  with their vertices, so its wedges and the blended solids pass `check`
+  with nothing broken.
 - Fixed with the same cause (rings read under a face's sense, then the
   face turned again): seaming and ring re-anchoring, surface
   recognition, face removal and the IGES writer (whose reader takes loops

@@ -813,11 +813,7 @@ pub(crate) fn closed_band_wedge(
     // compares them against exact geometry (the melt's crossing paver above
     // all) widens by an edge's recorded tolerance, not by wishful thinking.
     for rail in [&rail_first, &rail_second] {
-        if let Some(node) = model.node_mut(rail)
-            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-        {
-            data.tolerance = data.tolerance.widen_to(fit_target);
-        }
+        widen_edge(model, rail, fit_target)?;
     }
     let anchor0 = ogeom_algo::edge_vertices(model, &rail_first)?
         .map(|(a, _)| a)
@@ -1656,11 +1652,7 @@ pub(crate) fn build_open_band(
         ogeom_algo::make_edge_between(model, end_arc(l_count - 1)?, u_dom, &vc01, &vc11, tol)?.shape
     };
     for rail in [&rail_first, &rail_second] {
-        if let Some(node) = model.node_mut(rail)
-            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-        {
-            data.tolerance = data.tolerance.widen_to(fit_target);
-        }
+        widen_edge(model, rail, fit_target)?;
     }
     // An end arc lies in its cap's plane and ends on the exact touch
     // points, so it owns only its measured distance from the ball's arc,
@@ -1682,11 +1674,7 @@ pub(crate) fn build_open_band(
             let t = lo + (hi - lo) * f64::from(k) / 64.0;
             off = off.max((curve.point_at(t, tol)?.distance(centre) - radius).abs());
         }
-        if let Some(node) = model.node_mut(arc)
-            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-        {
-            data.tolerance = data.tolerance.widen_to(off * 2.0);
-        }
+        widen_edge(model, arc, off * 2.0)?;
     }
 
     // The crease over the marched window. On a periodic guide the unwrapped
@@ -1928,6 +1916,15 @@ pub(crate) fn build_open_band(
 /// hold to, and what a marched band's edges are widened to say.
 pub(crate) fn band_fit_target(tol: Tolerances) -> f64 {
     (tol.confusion() * 2e3).max(2e-4)
+}
+
+/// Widen an edge to at least `by`, its vertices with it, so no vertex is
+/// held tighter than an edge meeting it. A non-finite `by` leaves it.
+fn widen_edge(model: &mut Model, edge: &Shape, by: f64) -> OgeomResult<()> {
+    if !by.is_finite() {
+        return Ok(());
+    }
+    model.widen(edge, ogeom_core::Tolerance::new(by.max(0.0))?)
 }
 
 /// The open band through each station's exact ball arc, fitted along the
@@ -2538,11 +2535,7 @@ fn host_leg(
             fit_target,
             tol,
         )?;
-        if let Some(node) = model.node_mut(rail)
-            && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-        {
-            data.tolerance = data.tolerance.widen_to(deviation);
-        }
+        widen_edge(model, rail, deviation)?;
         pcurve
     };
 

@@ -1540,7 +1540,8 @@ mod tests {
     }
 
     /// The wedges a marched band takes away or fills walk each edge between
-    /// two of their faces once each way and pass the checker, and each holds
+    /// two of their faces once each way and pass the checker, as do the
+    /// blended solids, and each holds
     /// what the blend adds to or removes from the solid: a closed band round
     /// a branch's foot, a band running out through a block's walls at both
     /// ends, and a band pinched where two equal drums turn tangent.
@@ -1611,20 +1612,18 @@ mod tests {
                 panic!("{name}: one wedge, not {}", wedges.len());
             };
             assert_eq!(walked_one_way(&model, &wedge.solid), 0, "{name}");
-            // The checker asks the walk too. A closed band's rails are
-            // widened past their vertices, which it also names; that is not
-            // this test's question.
+            // The checker asks the walk too, and that every vertex is held
+            // as loosely as the edges meeting it.
             let found = ogeom_algo::check(&model, &wedge.solid, T).unwrap();
-            assert!(
-                !found.problems.iter().any(|p| p.what.contains("same way")),
-                "{name}: {found}"
-            );
+            assert!(found.is_usable(), "{name}: {found}");
             // What the blend adds is the wedge; what it removes is the part
             // of the wedge inside the solid, the band running on past the
             // walls where it runs out.
             let blended = crate::fillet_edge(&mut model, solid, edge, radius, T)
                 .unwrap()
                 .shape;
+            let found = ogeom_algo::check(&model, &blended, T).unwrap();
+            assert!(found.is_usable(), "{name}: the blended solid: {found}");
             let moved = (volume(&model, &blended) - volume(&model, solid)).abs();
             let held = if wedge.additive {
                 volume(&model, &wedge.solid)
