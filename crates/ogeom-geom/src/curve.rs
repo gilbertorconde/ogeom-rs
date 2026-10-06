@@ -217,6 +217,27 @@ impl CircleCurve {
     pub const fn is_reversed(&self) -> bool {
         self.reversed
     }
+
+    /// The same curve, the same point at every parameter, running forward:
+    /// a reversed circle is its circle's frame turned half a turn about its
+    /// `x` axis, the angle measured from the same `x` towards `-y`.
+    ///
+    /// # Errors
+    ///
+    /// None in practice: the turned frame is the given one's axes negated.
+    pub fn forward(&self, tol: Tolerances) -> OgeomResult<Self> {
+        if !self.reversed {
+            return Ok(*self);
+        }
+        let frame = turned_about_x(self.circle.frame(), tol)?;
+        Ok(Self::new(Circle::new(frame, self.circle.radius(), tol)?))
+    }
+}
+
+/// A frame turned half a turn about its own `x` axis, of the same
+/// handedness.
+fn turned_about_x(frame: Frame, tol: Tolerances) -> OgeomResult<Frame> {
+    Frame::from_axes(frame.origin(), frame.x(), -frame.y(), -frame.z(), tol)
 }
 
 impl EllipseCurve {
@@ -243,6 +264,26 @@ impl EllipseCurve {
     #[must_use]
     pub const fn is_reversed(&self) -> bool {
         self.reversed
+    }
+
+    /// The same curve, the same point at every parameter, running forward,
+    /// as [`CircleCurve::forward`].
+    ///
+    /// # Errors
+    ///
+    /// None in practice: the turned frame is the given one's axes negated.
+    pub fn forward(&self, tol: Tolerances) -> OgeomResult<Self> {
+        if !self.reversed {
+            return Ok(*self);
+        }
+        let e = self.ellipse;
+        let frame = turned_about_x(e.frame(), tol)?;
+        Ok(Self::new(Ellipse::new(
+            frame,
+            e.major_radius(),
+            e.minor_radius(),
+            tol,
+        )?))
     }
 }
 
@@ -2027,6 +2068,39 @@ mod tests {
     use ogeom_math::{Direction, Frame};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A reversed circle or ellipse spelled forward is the same point at
+    /// every parameter.
+    #[test]
+    fn a_reversed_conic_spelled_forward_is_the_same_curve() {
+        let frame = Frame::new(Point::new(1.0, 2.0, 3.0), Direction::Y, Direction::Z, T).unwrap();
+        let curves = [
+            Curve::Circle(CircleCurve::new(Circle::new(frame, 2.0, T).unwrap())),
+            Curve::Ellipse(EllipseCurve::new(Ellipse::new(frame, 5.0, 3.0, T).unwrap())),
+        ];
+        for reversed in curves.map(|c| c.reversed()) {
+            let (forward, turned) = match &reversed {
+                Curve::Circle(c) => {
+                    let f = c.forward(T).unwrap();
+                    (f.is_reversed(), Curve::Circle(f))
+                }
+                Curve::Ellipse(e) => {
+                    let f = e.forward(T).unwrap();
+                    (f.is_reversed(), Curve::Ellipse(f))
+                }
+                _ => unreachable!(),
+            };
+            assert!(!forward);
+            for i in 0..8 {
+                let u = 0.3 + f64::from(i) * 0.8;
+                let (a, b) = (
+                    reversed.point_at(u, T).unwrap(),
+                    turned.point_at(u, T).unwrap(),
+                );
+                assert!(a.distance(b) < 1e-12, "{u}: {a:?} {b:?}");
+            }
+        }
+    }
 
     /// A spline whose ends meet is closed, periodic or unclamped, and the
     /// surface it sweeps closes with it.

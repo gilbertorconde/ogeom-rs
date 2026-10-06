@@ -851,13 +851,15 @@ impl Writer<'_> {
                 let vector = self.entity(format!("VECTOR('',#{d},1.0)"));
                 Ok(self.entity(format!("LINE('',#{origin},#{vector})")))
             }
+            // A circle or ellipse running backwards goes out as its forward
+            // spelling: STEP's runs counter-clockwise about its axis.
             Curve::Circle(c) => {
-                let circle = c.circle();
+                let circle = c.forward(self.tol)?.circle();
                 let frame = self.frame(&circle.frame());
                 Ok(self.entity(format!("CIRCLE('',#{frame},{})", real(circle.radius()))))
             }
             Curve::Ellipse(el) => {
-                let ellipse = el.ellipse();
+                let ellipse = el.forward(self.tol)?.ellipse();
                 let frame = self.frame(&ellipse.frame());
                 Ok(self.entity(format!(
                     "ELLIPSE('',#{frame},{},{})",

@@ -1549,6 +1549,17 @@ fn exact_pcurve(
             .ok()
             .map(Into::into);
     }
+    // The cases below read a circle's or an ellipse's frame as the way its
+    // parameter runs, so one running backwards is read as its forward
+    // spelling, the same point at every parameter.
+    let forward = match curve {
+        Curve::Circle(c) if c.is_reversed() => Some(Curve::Circle(c.forward(tol).ok()?)),
+        Curve::Ellipse(e) if e.is_reversed() => Some(Curve::Ellipse(e.forward(tol).ok()?)),
+        _ => None,
+    };
+    if let Some(forward) = forward {
+        return exact_pcurve(&forward, range, surface, tol);
+    }
     match surface {
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, range, c.cylinder(), tol),

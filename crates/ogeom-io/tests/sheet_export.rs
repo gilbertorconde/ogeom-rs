@@ -515,13 +515,21 @@ fn a_boundary_whose_pieces_run_against_the_loop_reads() {
 /// its basis: the diameter on a line about its middle, the arc on the
 /// second half turn of a whole circle about +z (its first half turn would
 /// be the lower half), the hole on a whole circle about +z, which so runs
-/// clockwise. Area 11.5π, facing +z.
-fn half_disc_on_reversed_trims(model: &mut Model) -> Shape {
+/// clockwise. Area 11.5π, facing +z. Without `trimmed`, the two circles
+/// are reversed circles rather than reversed trims of them.
+fn half_disc_on_reversed_trims(model: &mut Model, trimmed: bool) -> Shape {
     use ogeom_geom::{CircleCurve, Curve, LineCurve, PlaneSurface, Reversible as _, TrimmedCurve};
     use ogeom_math::{Axis, Circle, Direction, Plane};
     use std::f64::consts::{PI, TAU};
     let backwards = |basis: Curve, start: f64, end: f64| {
         Curve::Trimmed(Box::new(TrimmedCurve::new(basis, start, end, T).unwrap())).reversed()
+    };
+    let circle_backwards = |basis: Curve| {
+        if trimmed {
+            backwards(basis, 0.0, TAU)
+        } else {
+            basis.reversed()
+        }
     };
     let (a, m, b) = (
         Point::new(0.0, 0.0, 0.0),
@@ -544,11 +552,11 @@ fn half_disc_on_reversed_trims(model: &mut Model) -> Shape {
         let frame = Frame::new(centre, Direction::Z, Direction::X, T).unwrap();
         Curve::Circle(CircleCurve::new(Circle::new(frame, r, T).unwrap()))
     };
-    let arc = backwards(circle(m, 5.0), 0.0, TAU);
+    let arc = circle_backwards(circle(m, 5.0));
     let arc_edge = ogeom_algo::make_edge_between(model, arc, (PI, TAU), &va, &vb, T)
         .unwrap()
         .shape;
-    let hole = backwards(circle(Point::new(5.0, 2.0, 0.0), 1.0), 0.0, TAU);
+    let hole = circle_backwards(circle(Point::new(5.0, 2.0, 0.0), 1.0));
     let hole_edge = ogeom_algo::make_edge(model, hole, (0.0, TAU), T)
         .unwrap()
         .shape;
@@ -563,34 +571,41 @@ fn half_disc_on_reversed_trims(model: &mut Model) -> Shape {
     .shape
 }
 
-/// A face bounded by trimmed curves running against their bases reads
-/// back as the face it was, in the same place: each piece goes out at its
-/// own points, not at the trim's range read on the basis.
+/// A face bounded by trimmed curves running against their bases, or by
+/// circles running backwards, reads back from IGES and STEP as the face it
+/// was, in the same place: each piece goes out at its own points, not at
+/// the trim's range read on the basis nor round its circle the other way.
 #[test]
-fn trimmed_curves_running_backwards_round_trip_through_iges_in_place() {
-    let mut model = Model::new();
-    let face = half_disc_on_reversed_trims(&mut model);
-    assert_valid(&model, &face);
-    let original = face_records(&model, &face);
-    let expected = 11.5 * std::f64::consts::PI;
-    assert!((original[0].0 - expected).abs() < 1e-6, "{original:?}");
+fn curves_running_backwards_round_trip_in_place() {
     let centre = |model: &Model, shape: &Shape| {
         ogeom_algo::surface_properties(model, shape, Deflection::default(), T)
             .unwrap()
             .centre
     };
-    let before = centre(&model, &face);
-    assert!(before.y > 1.0, "{before:?}");
+    for (format, trimmed) in [
+        ("iges", true),
+        ("step", true),
+        ("iges", false),
+        ("step", false),
+    ] {
+        let mut model = Model::new();
+        let face = half_disc_on_reversed_trims(&mut model, trimmed);
+        assert_valid(&model, &face);
+        let original = face_records(&model, &face);
+        let expected = 11.5 * std::f64::consts::PI;
+        assert!((original[0].0 - expected).abs() < 1e-6, "{original:?}");
+        let before = centre(&model, &face);
+        assert!(before.y > 1.0, "{before:?}");
 
-    let text = ogeom_io::write_iges(&document_of(model, face), T).unwrap();
-    let import = ogeom_io::read_iges(&text, T).unwrap();
-    let model = import.document.model();
-    let part = &part_shapes(&import.document)[0];
-    assert_usable(model, part);
-    assert_same_faces(&original, &face_records(model, part));
-    let after = centre(model, part);
-    assert!(
-        after.distance(before) < 1e-6,
-        "{after:?} against {before:?}"
-    );
+        let document = round_trip(&document_of(model, face), format);
+        let model = document.model();
+        let part = &part_shapes(&document)[0];
+        assert_usable(model, part);
+        assert_same_faces(&original, &face_records(model, part));
+        let after = centre(model, part);
+        assert!(
+            after.distance(before) < 1e-6,
+            "{format} {trimmed}: {after:?} against {before:?}"
+        );
+    }
 }

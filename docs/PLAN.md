@@ -309,7 +309,14 @@ agree with the ring.
   mesh so the sign reads wrong (a cross-bore band wedge of 8.4 mm3
   meshed to -304). The writer puts a trimmed curve that runs against its
   basis out at its own points: its range mirrored in its domain, walked
-  the other way on the basis.
+  the other way on the basis. The STEP writer puts a trim out as its
+  spline over its own range, so a reversed trim already read back in
+  place; a circle or ellipse running backwards went out as its forward
+  conic, and between its vertices the reader took the other arc. It goes
+  out in its frame turned half a turn about its `x` axis, the same point
+  at every parameter, and its exact pcurve is read from that spelling
+  too: the pcurve of a reversed circle on a plane ran it forward, so a
+  face bounded by one failed `check`.
 
 The fillet's side test no longer trusts the walk where the chart's chords
 cannot settle it.
