@@ -130,7 +130,8 @@ harness's crease list takes both kinds.
 edge between two faces walked once each way, senses composed: each face
 keeps its material on the left of its rings about its surface's normal.
 Prisms, tapered prisms, revolutions, baked shapes, revolution bands,
-sewing and the STEP reader do. More producers are still to fix; once
+sewing, the STEP reader and the offset crate's lofts, pipes and sweeps
+do. More producers are still to fix; once
 none breaks it, `check` gains the rule.
 
 - Sewing rebuilt a reversed face by reading its wires under its own sense
@@ -197,6 +198,24 @@ none breaks it, `check` gains the rule.
   defeature (2); recognising a bore's spline as a cylinder (2); the IGES
   reader (2); a face offset, a thick solid and a sheet fillet (1 each); and
   a hand-built prism test whose bottom face winds the wrong way (1).
+- The offset crate's 42 are fixed, every measured volume and centroid
+  unchanged: a ruled loft's planar faces walked their corners in section
+  order whatever side the material was on (the bottom cap always against
+  the walls); the torus segment's half-tube patches ran clockwise in the
+  chart, and its far cap walked the tube circle forward; the planar caps
+  of skinned lofts and pipes, helical sweeps and pipe shells walked the
+  border rings in the walls' order whatever way the outward normal
+  pointed, and now walk each ring so the material is on its left (an
+  outer ring turning positively about the normal, a hole negatively); and
+  a pipe shell's flat strip read its normal off its first row's chord and
+  first column's, which on a strip starting from a curved corner's join
+  row lie along one line, so the strip's ring could run clockwise about
+  its plane. It reads the turn of the whole sampled border now. The
+  integration tests count same-way edges with `tests/support/walks.rs`.
+  A shell check over the offset crate's tests and the sweep, loft, pipe
+  and thread integration tests now flags only draft (`apply_draft`'s
+  rebuilt faces) and the fillet wedges a thick solid's rounded corners go
+  through.
 
 - Sewing cannot orient by the walk while producers break it: turning faces
   breadth first over shared edges failed 132 default tests (fillet wedges,

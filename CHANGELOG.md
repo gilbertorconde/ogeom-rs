@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Lofts, pipes and sweeps walk each edge once each way.** Lofts between
+  polygons, pipes along part of a circle, skinned lofts and pipes, pipes
+  through sections or along law-driven frames, helical sweeps and pipe
+  shells built caps and walls whose rings ran the same way as the face
+  beside them; each face keeps its material on the left of its rings.
+  Geometry and volumes are unchanged.
+
 - **Reversed STEP faces read with their loops as the file walks them.** The
   reader stored a reversed face's loops as written and then turned the face
   over, so every such face walked its loops backward; every edge of a
