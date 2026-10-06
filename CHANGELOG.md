@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A folded sheet thickens into one solid (#124).** `make_thick_sheet`
+  joins faces meeting at a crease with a mitre on either side, where the
+  crease runs from border to border and those borders stand square to it
+  (a profile extruded square to its plane); other creases are refused by
+  name. `offset_sheet` still refuses creases.
+
 - **STEP carries each edge's pcurves.** Edges are written as surface curves
   with a pcurve on each face (a seam curve with both sides on a closed
   face), wherever the file can state them exactly in the curve's parameter.
@@ -36,6 +42,12 @@ bump may break the API and a patch bump may not.
   curves, and the budgets `SAMPLED_SPANS` and `SAMPLED_LOOP_SPANS`.
 
 ### Fixed
+
+- **A sweep surface follows a line into a tangent arc (#120).**
+  `make_sweep_surface` skinned the whole spine at once across the
+  curvature jump at a tangent join, and its error stalled just above the
+  target; each spine edge is skinned on its own, so the sheet has one face
+  per profile edge and spine edge.
 
 - **Fillings take saddles, crossing semicircles and tube caps (#121, #122,
   #123).** `make_filling_n` read rounding noise along a straight side as

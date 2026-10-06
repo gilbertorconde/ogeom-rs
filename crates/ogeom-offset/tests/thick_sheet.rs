@@ -507,40 +507,91 @@ fn a_shell_of_coplanar_faces_thickens_and_offsets_as_one() {
     assert!((volume(&model, &solid) - 250.0 * 1.5).abs() < 1e-9);
 }
 
-#[test]
-fn faces_meeting_at_a_crease_are_refused() {
-    let mut model = Model::new();
-    let floor = square(&mut model, 0.0, 10.0);
+/// The square floor [0, 10]^2 in z = 0, facing up, sewn to a square wall
+/// rising 10 from its edge at x = 10, bounded counter-clockwise about
+/// its normal: back over the floor (-X) when `back`, else away (+X).
+fn floor_and_wall(model: &mut Model, back: bool) -> Shape {
+    let floor = square(model, 0.0, 10.0);
     let wall = {
-        let wire = make_polygon(
-            &mut model,
-            &[
-                Point::new(10.0, 0.0, 0.0),
-                Point::new(10.0, 0.0, 10.0),
-                Point::new(10.0, 10.0, 10.0),
-                Point::new(10.0, 10.0, 0.0),
-            ],
-            true,
-            T,
-        )
-        .unwrap()
-        .shape;
-        let edges = explore(&model, &wire, Filter::OfType(ShapeType::Edge)).unwrap();
-        let plane = Plane::new(
-            Frame::new(Point::new(10.0, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap(),
-        );
-        make_face_with_pcurves(&mut model, PlaneSurface::new(plane).into(), &[edges], T)
+        let mut corners = vec![
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 10.0),
+            Point::new(10.0, 10.0, 10.0),
+            Point::new(10.0, 10.0, 0.0),
+        ];
+        let normal = if back {
+            Direction::new(Vector::new(-1.0, 0.0, 0.0), T).unwrap()
+        } else {
+            corners.reverse();
+            Direction::X
+        };
+        let wire = make_polygon(model, &corners, true, T).unwrap().shape;
+        let edges = explore(model, &wire, Filter::OfType(ShapeType::Edge)).unwrap();
+        let plane =
+            Plane::new(Frame::new(Point::new(10.0, 0.0, 0.0), normal, Direction::Y, T).unwrap());
+        make_face_with_pcurves(model, PlaneSurface::new(plane).into(), &[edges], T)
             .unwrap()
             .shape
     };
-    let sewn = ogeom_algo::sew(&mut model, &[floor, wall], T).unwrap();
+    let sewn = ogeom_algo::sew(model, &[floor, wall], T).unwrap();
     let [shell] = sewn.shells.as_slice() else {
         panic!("two shells");
     };
-    let refused = offset_sheet(&mut model, shell, 1.0, T).unwrap_err();
+    shell.clone()
+}
+
+#[test]
+fn a_floor_and_wall_thicken_with_a_mitre_but_do_not_offset() {
+    let mut model = Model::new();
+    // Walking their shared edge opposite ways, the floor and the wall face
+    // into the corner between them.
+    let shell = floor_and_wall(&mut model, true);
+    let refused = offset_sheet(&mut model, &shell, 1.0, T).unwrap_err();
     assert!(refused.to_string().contains("crease"), "{refused}");
-    let refused = make_thick_sheet(&mut model, shell, 1.0, false, T).unwrap_err();
-    assert!(refused.to_string().contains("crease"), "{refused}");
+    // Into the corner the slabs meet on the mitre and their 1 x 1 x 10
+    // overlap is counted once; away from it the mitre adds the 1 x 1 x 10
+    // block at the corner. Half to each side, the two cancel.
+    for (t, want) in [(1.0, 190.0), (-1.0, 210.0), (2.0, 400.0)] {
+        let solid = make_thick_sheet(&mut model, &shell, t, t == 2.0, T)
+            .unwrap()
+            .shape;
+        assert_valid(&model, &solid);
+        let got = volume(&model, &solid);
+        assert!((got - want).abs() < 1e-9, "{t}: {got} against {want}");
+    }
+}
+
+#[test]
+fn creases_the_mitre_does_not_join_are_refused() {
+    let mut model = Model::new();
+    // Facing away from the floor, the wall walks the edge they share the
+    // way the floor does: they disagree on which side of the sheet is
+    // which.
+    let shell = floor_and_wall(&mut model, false);
+    let refused = make_thick_sheet(&mut model, &shell, 1.0, false, T).unwrap_err();
+    assert!(
+        refused.to_string().contains("walk a crease the same way"),
+        "{refused}"
+    );
+    // Swept aslant, the folded sheet's borders do not lie square to its
+    // crease, and their offsets miss the mitre.
+    let wire = make_polygon(
+        &mut model,
+        &[
+            Point::ORIGIN,
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+        ],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let aslant = ogeom_algo::make_prism(&mut model, &wire, Vector::new(2.0, 1.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let refused = make_thick_sheet(&mut model, &aslant, 1.0, false, T).unwrap_err();
+    assert!(refused.to_string().contains("mitre"), "{refused}");
 }
 
 #[test]
@@ -968,4 +1019,148 @@ fn a_lune_offsets_through_its_poles_but_its_sides_do_not_close() {
     // to rule along.
     let refused = make_thick_sheet(&mut model, &face, 1.0, false, T).unwrap_err();
     assert!(refused.to_string().contains("no normal"), "{refused}");
+}
+
+/// The sheet the open polyline `corners` in z = 0 sweeps rising 5.
+fn folded(model: &mut Model, corners: &[Point]) -> Shape {
+    let wire = make_polygon(model, corners, false, T).unwrap().shape;
+    ogeom_algo::make_prism(model, &wire, Vector::new(0.0, 0.0, 5.0), T)
+        .unwrap()
+        .shape
+}
+
+fn corners(model: &Model, shape: &Shape) -> Vec<Point> {
+    explore(model, shape, Filter::OfType(ShapeType::Vertex))
+        .unwrap()
+        .iter()
+        .map(|v| match model.node(v).unwrap().data() {
+            NodeData::Vertex(data) => data.point,
+            _ => panic!("not a vertex"),
+        })
+        .collect()
+}
+
+/// Thickened by `t` (by half of it to each side when `both`), the sheet is
+/// one valid solid of volume `want`.
+fn thickens_to(model: &mut Model, sheet: &Shape, t: f64, both: bool, want: f64) -> Shape {
+    let solid = make_thick_sheet(model, sheet, t, both, T).unwrap().shape;
+    assert_eq!(model.kind_of(&solid).unwrap(), ShapeType::Solid);
+    assert_valid(model, &solid);
+    let got = volume(model, &solid);
+    assert!(
+        (got - want).abs() < want * 1e-9,
+        "{t}: {got} against {want}"
+    );
+    solid
+}
+
+#[test]
+fn a_sheet_folded_square_thickens_with_a_mitre() {
+    let mut model = Model::new();
+    let sheet = folded(
+        &mut model,
+        &[
+            Point::ORIGIN,
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+        ],
+    );
+    // The faces face away from the corner, right of the polyline's
+    // travel: that way the slabs part and the mitre fills the 1 x 1 square
+    // at the corner, the other way they overlap on it.
+    let out = thickens_to(&mut model, &sheet, 1.0, false, 5.0 * 21.0);
+    let found = corners(&model, &out);
+    for z in [0.0, 5.0] {
+        let mitre = Point::new(11.0, -1.0, z);
+        assert!(found.iter().any(|c| c.distance(mitre) < 1e-12), "{mitre:?}");
+    }
+    // The sheet's two faces, their offsets and a side along each of the
+    // six free edges.
+    assert_eq!(
+        explore(&model, &out, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .len(),
+        10
+    );
+    let inside = thickens_to(&mut model, &sheet, -1.0, false, 5.0 * 19.0);
+    let found = corners(&model, &inside);
+    for z in [0.0, 5.0] {
+        let mitre = Point::new(9.0, 1.0, z);
+        assert!(found.iter().any(|c| c.distance(mitre) < 1e-12), "{mitre:?}");
+    }
+    // Half to each side: the square gained outside is the one lost inside.
+    thickens_to(&mut model, &sheet, 2.0, true, 5.0 * 40.0);
+}
+
+#[test]
+fn a_sheet_folded_at_sixty_degrees_thickens_with_a_mitre() {
+    let mut model = Model::new();
+    let turn = PI / 3.0;
+    let sheet = folded(
+        &mut model,
+        &[
+            Point::ORIGIN,
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0 + 10.0 * turn.cos(), 10.0 * turn.sin(), 0.0),
+        ],
+    );
+    // A band of width t along a polyline of length 20 turning by 60
+    // degrees gains t^2 tan 30 at the mitre outside the turn and loses as
+    // much inside it.
+    let corner = (turn / 2.0).tan();
+    thickens_to(&mut model, &sheet, 1.0, false, 5.0 * (20.0 + corner));
+    thickens_to(&mut model, &sheet, -1.0, false, 5.0 * (20.0 - corner));
+    thickens_to(&mut model, &sheet, 2.0, true, 5.0 * 40.0);
+}
+
+#[test]
+fn a_line_turning_into_an_arc_thickens_with_a_mitre() {
+    let mut model = Model::new();
+    // The line along +X to (10, 0, 0), then a quarter of the circle of
+    // radius 5 about (5, 0, 0) from there to (5, 5, 0): a corner of 90
+    // degrees between a plane and a cylinder.
+    let v = [
+        make_vertex(&mut model, Point::ORIGIN).shape,
+        make_vertex(&mut model, Point::new(10.0, 0.0, 0.0)).shape,
+        make_vertex(&mut model, Point::new(5.0, 5.0, 0.0)).shape,
+    ];
+    let segment: Curve = LineCurve::segment(Point::ORIGIN, Point::new(10.0, 0.0, 0.0), T)
+        .unwrap()
+        .into();
+    let line = make_edge_between(&mut model, segment, (0.0, 10.0), &v[0], &v[1], T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(5.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle: Curve = CircleCurve::new(Circle::new(frame, 5.0, T).unwrap()).into();
+    let arc = make_edge_between(&mut model, circle, (0.0, FRAC_PI_2), &v[1], &v[2], T)
+        .unwrap()
+        .shape;
+    let wire = ogeom_algo::make_wire(&mut model, &[line, arc], T)
+        .unwrap()
+        .shape;
+    let sheet = ogeom_algo::make_prism(&mut model, &wire, Vector::new(0.0, 0.0, 5.0), T)
+        .unwrap()
+        .shape;
+    // Outside the turn the line's offset y = -1 meets the circle of radius
+    // 6 at M = (5 + sqrt 35, -1), at the angle -asin(1/6) about the
+    // centre. The band is the trapezoid under the line, out to M, and the
+    // annular sector between radii 5 and 6 with the sliver of the radius-6
+    // disc between the angles -asin(1/6) and 0, less the triangle from the
+    // centre to the corner and M.
+    let r35 = 35.0_f64.sqrt();
+    let outside = (15.0 + r35) / 2.0 + 11.0 * PI / 4.0 + 18.0 * (1.0 / 6.0_f64).asin() - 2.5;
+    let solid = thickens_to(&mut model, &sheet, 1.0, false, 5.0 * outside);
+    let mitre = Point::new(5.0 + r35, -1.0, 0.0);
+    assert!(
+        corners(&model, &solid)
+            .iter()
+            .any(|c| c.distance(mitre) < 1e-9)
+    );
+    // Inside, y = 1 meets the circle of radius 4 at (5 + sqrt 15, 1), at
+    // the angle a = asin(1/4): the trapezoid, the annular sector between
+    // radii 4 and 5 from a to 90 degrees, and the radius-5 sector from 0
+    // to a less the triangle from the centre to the corner and the mitre.
+    let a = 0.25_f64.asin();
+    let inside = (15.0 + 15.0_f64.sqrt()) / 2.0 + 4.5 * (FRAC_PI_2 - a) + 12.5 * a - 2.5;
+    thickens_to(&mut model, &sheet, -1.0, false, 5.0 * inside);
 }

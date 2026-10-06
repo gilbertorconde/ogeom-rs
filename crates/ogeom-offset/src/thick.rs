@@ -25,7 +25,8 @@
 //! the largest of its faces'.
 //! Where two faces meet, both must move the shared boundary to the same
 //! place: faces meeting tangentially do, faces meeting at a crease do not,
-//! and a crease is refused by name rather than torn or patched.
+//! and an offset sheet refuses a crease by name rather than tearing or
+//! patching it.
 //!
 //! Thickening builds the sheet moved to both of its sides (or the sheet
 //! itself and one side) and closes the gap along every free edge with the
@@ -35,22 +36,37 @@
 //! edge's own parameter, its deviation recorded the same way. The pieces
 //! share their edges by construction, so the shell closes without sewing.
 //!
+//! A thickened sheet joins its faces across a crease with a mitre, as a
+//! solid's walls meet when it is hollowed: in each layer the two faces'
+//! moved surfaces are cut back or run on to where they cross, found beside
+//! each point of the crease in the plane square to it there. A crease is
+//! joined where it runs from one border of the sheet to another, each end
+//! a vertex where it meets one free edge of each of its two faces, and
+//! where those borders and their offsets lie square to it (as the walls of
+//! a profile swept square to its plane do), so the side along each such
+//! border is flat and reaches the mitre. The mitred edges are lines and
+//! circles on analytic faces, each charted exactly on its moved face.
+//!
 //! Refused by name: a distance beyond a face's smallest radius of curvature
 //! on the side it moves to (checked over the face's chart window), a
 //! free-form face whose normal is undefined somewhere the offset needs it,
-//! a crease, an edge shared by more than two faces, and a thickened sheet
-//! whose layers run into each other.
+//! a crease in an offset sheet and a crease a thickened sheet cannot mitre,
+//! an edge shared by more than two faces, and a thickened sheet whose
+//! layers run into each other.
 
 use ogeom_algo::{
     Built, History, attach_pcurve, attach_seam, edge_vertices, make_edge_between, make_face_on,
-    make_shell, make_solid, make_vertex, make_wire,
+    make_face_with_pcurves, make_shell, make_solid, make_vertex, make_wire,
 };
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
 use ogeom_geom::{
     Curve, Curve2d as _, Curve3d as _, CylinderSurface, Line2d, LineCurve, OffsetSurface,
     PlanarCurve, PlaneSurface, Surface as _, SurfaceGeometry, Transformable as _,
 };
-use ogeom_math::{Axis2, Cylinder, Direction, Direction2, Frame, Point, Point2, Transform, Vector};
+use ogeom_math::{
+    Axis2, Cylinder, Direction, Direction2, Frame, Point, Point2, Transform, Transform2, Vector,
+    Vector2,
+};
 use ogeom_topo::{
     EdgeData, EdgeRepr, FaceData, Filter, Location, Model, NodeData, Orientation, Shape, ShapeType,
     SurfaceId, TShapeId, explore,
@@ -88,7 +104,7 @@ pub fn offset_sheet(
         ogeom_bail!(Construction, "an offset of {distance} moves nothing");
     }
     let read = read_sheet(model, sheet, tol)?;
-    let layer = moved_layer(model, &read, distance, tol)?;
+    let layer = moved_layer(model, &read, distance, None, tol)?;
     let shape = if read.root_is_face {
         layer.faces[0].clone()
     } else {
@@ -116,18 +132,27 @@ pub fn offset_sheet(
 ///
 /// The layers are built as [`offset_sheet`] builds them, so a free-form
 /// face is fitted to the same bound and reports its deviation in its
-/// tolerance. Each side face is the ruled face between a free edge's two
-/// images: a plane or a cylinder where the rulings make one on the edge's
-/// own parameter, and otherwise a B-spline fitted to the rulings to the
-/// same bound (the thickness standing for the distance), its deviation
-/// recorded the same way.
+/// tolerance. Where two faces meet at a crease, their offsets meet on the
+/// mitre: each layer's faces are cut back or run on to where their moved
+/// surfaces cross, and the borders ending at the crease with them. Each
+/// side face is the ruled face between a free edge's two images: a plane
+/// or a cylinder where the rulings make one on the edge's own parameter,
+/// and otherwise a B-spline fitted to the rulings to the same bound (the
+/// thickness standing for the distance), its deviation recorded the same
+/// way; along a border ending at a crease it is the flat face between the
+/// images.
 ///
 /// # Errors
 ///
-/// As [`offset_sheet`], and if the sheet is closed or has no free edge (a
-/// closed shell bounds a solid already; hollow it with
+/// As [`offset_sheet`] but for creases, and if the sheet is closed or has
+/// no free edge (a closed shell bounds a solid already; hollow it with
 /// [`make_thick_solid`](crate::make_thick_solid)), a free edge runs into a
 /// point where its face has no normal, or the layers run into each other.
+/// A crease is refused where it closes on itself, ends where more than
+/// one border of each of its faces meets it, is walked the same way by
+/// both faces, folds its faces back onto each other, or where a border
+/// ending at it is not flat with its offset or does not reach the mitre,
+/// or its mitred edges have no exact chart image on the moved faces.
 pub fn make_thick_sheet(
     model: &mut Model,
     sheet: &Shape,
@@ -163,8 +188,9 @@ pub fn make_thick_sheet(
     } else {
         (thickness, 0.0)
     };
-    let lower = moved_layer(model, &read, lo, tol)?;
-    let upper = moved_layer(model, &read, hi, tol)?;
+    let creases = creases(&read, lo.abs().max(hi.abs()), tol)?;
+    let lower = moved_layer(model, &read, lo, Some(&creases), tol)?;
+    let upper = moved_layer(model, &read, hi, Some(&creases), tol)?;
 
     let mut history = History::new();
     let mut faces: Vec<Shape> = Vec::new();
@@ -178,15 +204,19 @@ pub fn make_thick_sheet(
     }
     let mut risers: HashMap<TShapeId, Shape> = HashMap::new();
     for ei in free {
-        let side = side_face(
-            model,
-            &read,
-            ei,
-            (lo, hi),
-            (&lower, &upper),
-            &mut risers,
-            tol,
-        )?;
+        let side = if creases.touches(&read.edges[ei]) {
+            flat_side_face(model, &read, ei, (&lower, &upper), &mut risers, tol)?
+        } else {
+            side_face(
+                model,
+                &read,
+                ei,
+                (lo, hi),
+                (&lower, &upper),
+                &mut risers,
+                tol,
+            )?
+        };
         history.generate(&Shape::of(read.edges[ei].node), side.clone());
         faces.push(side);
     }
@@ -636,12 +666,20 @@ struct Layer {
 
 /// The sheet moved `distance` along its normals; at zero, a copy on the
 /// same geometry.
+///
+/// With `creases`, the faces either side of each crease meet on the
+/// mitre: the crease's image is where their moved surfaces cross, beside
+/// each point of the crease in the plane square to it there, and the
+/// borders ending at the crease are cut back or carried on to that line.
+/// Without, a crease is refused.
 fn moved_layer(
     model: &mut Model,
     sheet: &Sheet,
     distance: f64,
+    creases: Option<&Creases>,
     tol: Tolerances,
 ) -> OgeomResult<Layer> {
+    let creases = creases.filter(|c| distance != 0.0 && !c.edges.is_empty());
     let target = tol.approximation();
     let mut history = History::new();
 
@@ -666,6 +704,19 @@ fn moved_layer(
     let mut vertices: HashMap<TShapeId, (Shape, Point)> = HashMap::new();
     let mut vertex_slop: HashMap<TShapeId, f64> = HashMap::new();
     for (node, point, seats) in &sheet.vertices {
+        if let Some(&(ci, at_end)) = creases.and_then(|c| c.ends.get(node)) {
+            let edge = &sheet.edges[ci];
+            let Some((_, range)) = &edge.curve else {
+                ogeom_bail!(Construction, "a crease has no curve in space");
+            };
+            let t = if at_end { range.1 } else { range.0 };
+            let moved = mitre_at(sheet, &surfaces, edge, t, tol)?;
+            let shape = make_vertex(model, moved).shape;
+            history.modify(&Shape::of(*node), shape.clone());
+            vertex_slop.insert(*node, 0.0);
+            vertices.insert(*node, (shape, moved));
+            continue;
+        }
         let mut candidates = Vec::with_capacity(seats.len());
         for (fi, uv) in seats {
             candidates.push(moved_point(
@@ -681,7 +732,15 @@ fn moved_layer(
 
     // Edges.
     let mut edges: HashMap<TShapeId, Shape> = HashMap::new();
-    for edge in &sheet.edges {
+    for (ei, edge) in sheet.edges.iter().enumerate() {
+        let is_crease = creases.is_some_and(|c| c.edges.contains(&ei));
+        let cut = creases.map_or([false, false], |c| {
+            [
+                c.ends.contains_key(&edge.ends.0),
+                c.ends.contains_key(&edge.ends.1),
+            ]
+        });
+        let mut recharted: Option<(Curve, (f64, f64))> = None;
         let (Some((from, from_at)), Some((to, to_at))) = (
             vertices.get(&edge.ends.0).cloned(),
             vertices.get(&edge.ends.1).cloned(),
@@ -700,9 +759,11 @@ fn moved_layer(
                 }
                 Ok(agreed(&candidates, target, "an edge")?.0)
             };
+            let mitre = |t: f64| mitre_at(sheet, &surfaces, edge, t, tol);
+            let off: &dyn Fn(f64) -> OgeomResult<Point> = if is_crease { &mitre } else { &off };
             let (moved, slop) = if distance == 0.0 {
                 (curve.clone(), 0.0)
-            } else if let Some(exact) = exact_moved_curve(curve, *range, &off, tol)? {
+            } else if let Some(exact) = exact_moved_curve(curve, *range, off, tol)? {
                 (exact, 0.0)
             } else {
                 let bound = edge
@@ -710,8 +771,18 @@ fn moved_layer(
                     .iter()
                     .map(|u| fit_bound(sheet.faces[u.face].tolerance, distance, tol))
                     .fold(target, f64::max);
-                fitted_moved_curve(*range, &off, (target, bound), tol)?
+                fitted_moved_curve(*range, off, (target, bound), tol)?
             };
+            // A border ending at a crease runs to the crease's image.
+            let (moved, range) = if !is_crease && cut.contains(&true) {
+                let ends = [cut[0].then_some(from_at), cut[1].then_some(to_at)];
+                retrimmed(&moved, *range, ends, tol)?
+            } else {
+                (moved, *range)
+            };
+            if is_crease || cut.contains(&true) {
+                recharted = Some((moved.clone(), range));
+            }
             // The curve's ends must reach the vertices: within the slop of
             // the fit and the spread the vertex's faces agreed within.
             for (t, (vertex, at)) in [(range.0, (&from, from_at)), (range.1, (&to, to_at))] {
@@ -720,7 +791,7 @@ fn moved_layer(
                     model.widen(vertex, Tolerance::new(gap + tol.confusion())?)?;
                 }
             }
-            let shape = make_edge_between(model, moved, *range, &from, &to, tol)?.shape;
+            let shape = make_edge_between(model, moved, range, &from, &to, tol)?.shape;
             if slop > 0.0 {
                 model.widen(&shape, Tolerance::new(slop + tol.confusion())?)?;
             }
@@ -735,6 +806,38 @@ fn moved_layer(
             if slop > tol.confusion() {
                 model.widen(&vertices[&end].0, Tolerance::new(slop + tol.confusion())?)?;
             }
+        }
+        // An edge the mitre moved is charted afresh on each moved surface.
+        if let Some((curve, range)) = &recharted {
+            for used in &edge.uses {
+                let surface = &surfaces[used.face].geometry;
+                let Some(image) = ogeom_intersect::exact_pcurve_over(curve, *range, surface, tol)
+                else {
+                    ogeom_bail!(
+                        Construction,
+                        "the sheet's faces meet at a crease whose mitre has no exact \
+                         image on a moved face; a crease is joined between planes, \
+                         cylinders, cones, spheres and tori bounded by lines and circles"
+                    );
+                };
+                let near = sheet
+                    .vertices
+                    .iter()
+                    .find(|(node, _, _)| *node == edge.ends.0)
+                    .and_then(|(_, _, seats)| seats.iter().find(|(f, _)| *f == used.face))
+                    .map(|(_, uv)| *uv);
+                let image = match near {
+                    Some(near) => on_branch(image, range.0, near, surface, tol)?,
+                    None => image,
+                };
+                let sid = surfaces[used.face].id;
+                attach_pcurve(model, &built, image, sid, Location::identity(), *range)?;
+            }
+            model.widen(&built, edge.data.tolerance)?;
+            same_parameter(model, &built, tol)?;
+            history.modify(&Shape::of(edge.node), built.clone());
+            edges.insert(edge.node, built);
+            continue;
         }
         // The pcurves carry over: the moved surface keeps the chart.
         let mut done: Vec<SurfaceId> = Vec::new();
@@ -1258,6 +1361,501 @@ fn same_parameter(model: &mut Model, edge: &Shape, tol: Tolerances) -> OgeomResu
     Ok(())
 }
 
+/// Where the sheet's faces meet at an angle, so that their offsets part
+/// on one side and cross on the other.
+#[derive(Default)]
+struct Creases {
+    /// The creased edges, by index into the sheet's edges.
+    edges: Vec<usize>,
+    /// Each vertex a crease ends at: the crease, and whether the vertex is
+    /// its end rather than its start.
+    ends: HashMap<TShapeId, (usize, bool)>,
+}
+
+impl Creases {
+    /// Whether an edge ends at a crease.
+    fn touches(&self, edge: &SheetEdge) -> bool {
+        self.ends.contains_key(&edge.ends.0) || self.ends.contains_key(&edge.ends.1)
+    }
+}
+
+/// The sheet's creases at an offset reaching `reach`: the edges two faces
+/// share whose normals part there by more than the faces could agree on.
+/// Each crease must run between two of the sheet's borders: its ends are
+/// vertices where it meets one free edge of each of its two faces and
+/// nothing else, and its faces do not fold back onto each other.
+fn creases(sheet: &Sheet, reach: f64, tol: Tolerances) -> OgeomResult<Creases> {
+    let target = tol.approximation();
+    let mut found = Creases::default();
+    for (ei, edge) in sheet.edges.iter().enumerate() {
+        let [a, b] = edge.uses.as_slice() else {
+            continue;
+        };
+        let Some((curve, range)) = &edge.curve else {
+            continue;
+        };
+        if a.face == b.face {
+            continue;
+        }
+        let mut parting = 0.0_f64;
+        for k in 0..=PROBES {
+            let t = range.0 + (range.1 - range.0) * f64::from(k) / f64::from(PROBES);
+            let at = curve.point_at(t, tol)?;
+            let na = sheet_normal(
+                &sheet.faces[a.face],
+                seat_on(sheet, edge, a, (at, t, *range), tol)?,
+                tol,
+            );
+            let nb = sheet_normal(
+                &sheet.faces[b.face],
+                seat_on(sheet, edge, b, (at, t, *range), tol)?,
+                tol,
+            );
+            if let (Some(na), Some(nb)) = (na, nb) {
+                parting = parting.max((na - nb).magnitude());
+            }
+        }
+        if parting * reach / 2.0 > target {
+            found.edges.push(ei);
+        }
+    }
+    for &ei in &found.edges {
+        let edge = &sheet.edges[ei];
+        if edge.ends.0 == edge.ends.1 {
+            ogeom_bail!(
+                Construction,
+                "the sheet's faces meet at a crease that closes on itself; a crease \
+                 is joined where it runs from one border of the sheet to another"
+            );
+        }
+        let walked = |u: &EdgeUse| {
+            sheet.faces[u.face]
+                .occurrence
+                .orientation()
+                .compose(u.sense)
+        };
+        if walked(&edge.uses[0]) == walked(&edge.uses[1]) {
+            ogeom_bail!(
+                Construction,
+                "the sheet's faces walk a crease the same way, so they disagree on \
+                 which side of the sheet they face; orient the sheet first"
+            );
+        }
+        let mut sides: Vec<usize> = edge.uses.iter().map(|u| u.face).collect();
+        sides.sort_unstable();
+        for (vertex, at_end) in [(edge.ends.0, false), (edge.ends.1, true)] {
+            let meeting: Vec<&SheetEdge> = sheet
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(i, e)| *i != ei && (e.ends.0 == vertex || e.ends.1 == vertex))
+                .map(|(_, e)| e)
+                .collect();
+            let mut faces: Vec<usize> = meeting
+                .iter()
+                .filter(|e| e.uses.len() == 1)
+                .map(|e| e.uses[0].face)
+                .collect();
+            faces.sort_unstable();
+            if meeting.len() != 2 || faces != sides {
+                ogeom_bail!(
+                    Construction,
+                    "the sheet's faces meet at a crease that ends where more than \
+                     its two faces' borders meet; a crease is joined where it runs \
+                     from one border of the sheet to another"
+                );
+            }
+            found.ends.insert(vertex, (ei, at_end));
+        }
+    }
+    Ok(found)
+}
+
+/// The mitre beside the point at `t` on a crease: where the moved
+/// surfaces of the crease's two faces cross in the plane square to the
+/// crease there.
+fn mitre_at(
+    sheet: &Sheet,
+    surfaces: &[MovedSurface],
+    edge: &SheetEdge,
+    t: f64,
+    tol: Tolerances,
+) -> OgeomResult<Point> {
+    let Some((curve, range)) = &edge.curve else {
+        ogeom_bail!(Construction, "a crease has no curve in space");
+    };
+    let [a, b] = edge.uses.as_slice() else {
+        ogeom_bail!(Construction, "a crease is shared by two faces");
+    };
+    let at = curve.point_at(t, tol)?;
+    let seat_a = seat_on(sheet, edge, a, (at, t, *range), tol)?;
+    let seat_b = seat_on(sheet, edge, b, (at, t, *range), tol)?;
+    let (Some(na), Some(nb)) = (
+        sheet_normal(&sheet.faces[a.face], seat_a, tol),
+        sheet_normal(&sheet.faces[b.face], seat_b, tol),
+    ) else {
+        ogeom_bail!(
+            Construction,
+            "a crease runs into a point where a face has no normal; the mitre \
+             there is not determined"
+        );
+    };
+    if 1.0 + na.dot(nb) <= 1e-6 {
+        ogeom_bail!(
+            Construction,
+            "the sheet folds back onto itself at a crease; the offsets of its \
+             two faces never meet"
+        );
+    }
+    let along = curve.d1_at(t, tol)?;
+    let speed = along.magnitude();
+    if speed <= f64::MIN_POSITIVE {
+        ogeom_bail!(Construction, "a crease stands still at {at:?}");
+    }
+    mitre_point(
+        (&surfaces[a.face].geometry, &surfaces[b.face].geometry),
+        (seat_a, seat_b),
+        at,
+        along / speed,
+        tol,
+    )
+}
+
+/// The point on both surfaces in the plane through `at` square to
+/// `tangent`, by Newton's method in the two charts from `seats`.
+fn mitre_point(
+    (first, second): (&SurfaceGeometry, &SurfaceGeometry),
+    (seat_a, seat_b): (Point2, Point2),
+    at: Point,
+    tangent: Vector,
+    tol: Tolerances,
+) -> OgeomResult<Point> {
+    let mut x = [seat_a.x, seat_a.y, seat_b.x, seat_b.y];
+    for _ in 0..32 {
+        let (pa, au, av) = first.point_d1_at(x[0], x[1], tol)?;
+        let (pb, bu, bv) = second.point_d1_at(x[2], x[3], tol)?;
+        let gap = pa - pb;
+        let across = (pa - at).dot(tangent);
+        if gap.magnitude() <= tol.confusion() * 1e-3 && across.abs() <= tol.confusion() * 1e-3 {
+            return Ok(pa + (pb - pa) * 0.5);
+        }
+        let mut rows = [
+            [au.x, av.x, -bu.x, -bv.x, -gap.x],
+            [au.y, av.y, -bu.y, -bv.y, -gap.y],
+            [au.z, av.z, -bu.z, -bv.z, -gap.z],
+            [au.dot(tangent), av.dot(tangent), 0.0, 0.0, -across],
+        ];
+        let Some(step) = solved(&mut rows) else {
+            break;
+        };
+        for (xi, si) in x.iter_mut().zip(step) {
+            *xi += si;
+        }
+    }
+    ogeom_bail!(
+        NotDone,
+        "the offsets of the faces at a crease were not found to meet beside {at:?}"
+    )
+}
+
+/// The solution of four linear equations, each row its coefficients and
+/// right-hand side, by elimination with partial pivoting; `None` where
+/// they are singular.
+fn solved(rows: &mut [[f64; 5]; 4]) -> Option<[f64; 4]> {
+    let scale = rows
+        .iter()
+        .flat_map(|r| r[..4].iter())
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    if scale <= f64::MIN_POSITIVE {
+        return None;
+    }
+    for col in 0..4 {
+        let pivot = (col..4).max_by(|&i, &j| rows[i][col].abs().total_cmp(&rows[j][col].abs()))?;
+        if rows[pivot][col].abs() <= 1e-14 * scale {
+            return None;
+        }
+        rows.swap(col, pivot);
+        let lead = rows[col];
+        for row in rows.iter_mut().skip(col + 1) {
+            let f = row[col] / lead[col];
+            for (v, l) in row.iter_mut().zip(lead).skip(col) {
+                *v -= f * l;
+            }
+        }
+    }
+    let mut out = [0.0; 4];
+    for r in (0..4).rev() {
+        let mut v = rows[r][4];
+        for (c, known) in out.iter().enumerate().skip(r + 1) {
+            v -= rows[r][c] * known;
+        }
+        out[r] = v / rows[r][r];
+    }
+    Some(out)
+}
+
+/// A border's moved curve run to new ends: each end given a point is moved
+/// to the curve's foot of that point, a line or a circle carried on past
+/// its old end where the point lies beyond it.
+fn retrimmed(
+    curve: &Curve,
+    range: (f64, f64),
+    ends: [Option<Point>; 2],
+    tol: Tolerances,
+) -> OgeomResult<(Curve, (f64, f64))> {
+    let mut new = [range.0, range.1];
+    for (k, end) in ends.iter().enumerate() {
+        let Some(p) = end else {
+            continue;
+        };
+        let t = match curve {
+            Curve::Line(line) => {
+                let axis = line.axis();
+                (*p - axis.location).dot(axis.direction.vector())
+            }
+            _ => {
+                let mut t = new[k];
+                for _ in 0..64 {
+                    let c = curve.point_at(t, tol)?;
+                    let d = curve.d1_at(t, tol)?;
+                    let speed = d.dot(d);
+                    if speed <= f64::MIN_POSITIVE {
+                        break;
+                    }
+                    let step = (*p - c).dot(d) / speed;
+                    t += step;
+                    if step.abs() <= 1e-15 * (1.0 + t.abs()) {
+                        break;
+                    }
+                }
+                t
+            }
+        };
+        let reached = match curve {
+            Curve::Line(line) => line.axis().point_at(t),
+            _ => curve.point_at(t, tol)?,
+        };
+        if reached.distance(*p) > tol.confusion() * 10.0 {
+            ogeom_bail!(
+                Construction,
+                "a border ending at a crease does not reach the crease's mitre \
+                 ({:.3e} away); a crease is joined where the borders at its ends \
+                 lie square to it",
+                reached.distance(*p)
+            );
+        }
+        new[k] = t;
+    }
+    if new[1] - new[0] <= tol.parametric() {
+        ogeom_bail!(
+            Construction,
+            "the thickness reaches past a border's length where it meets a \
+             crease; the faces' offsets cross beyond it"
+        );
+    }
+    Ok(match curve {
+        Curve::Line(line) => {
+            let (d0, d1) = curve.domain();
+            let carried = LineCurve::over(line.axis(), new[0].min(d0), new[1].max(d1))?;
+            (carried.into(), (new[0], new[1]))
+        }
+        // Restarted at the new start, so the range runs from zero within
+        // one turn, where every chart image of the circle is defined.
+        Curve::Circle(c) => {
+            let circle = c.circle();
+            let start = curve.point_at(new[0], tol)?;
+            let frame = Frame::new(
+                circle.centre(),
+                circle.frame().z(),
+                Direction::new(start - circle.centre(), tol)?,
+                tol,
+            )?;
+            let restarted = ogeom_math::Circle::new(frame, circle.radius(), tol)?;
+            (
+                ogeom_geom::CircleCurve::new(restarted).into(),
+                (0.0, new[1] - new[0]),
+            )
+        }
+        _ => (curve.clone(), (new[0], new[1])),
+    })
+}
+
+/// A pcurve shifted by whole periods of `surface`'s chart so that its
+/// point at `t` lies closest to `near`.
+fn on_branch(
+    image: PlanarCurve,
+    t: f64,
+    near: Point2,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<PlanarCurve> {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let at = image.point_at(t, tol)?;
+    let whole = |periodic: bool, period: f64, gap: f64| {
+        if periodic && period > 0.0 {
+            (gap / period).round() * period
+        } else {
+            0.0
+        }
+    };
+    let shift = Vector2::new(
+        whole(surface.is_periodic_u(), ub - ua, near.x - at.x),
+        whole(surface.is_periodic_v(), vb - va, near.y - at.y),
+    );
+    if shift.x == 0.0 && shift.y == 0.0 {
+        return Ok(image);
+    }
+    image.transformed(&Transform2::translation(shift), tol)
+}
+
+/// The straight riser from a free vertex's image in the lower layer to its
+/// image in the upper one, built once and shared through `risers`.
+fn riser(
+    model: &mut Model,
+    vertex: TShapeId,
+    (lower, upper): (&Layer, &Layer),
+    risers: &mut HashMap<TShapeId, Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    if let Some(found) = risers.get(&vertex) {
+        return Ok(found.clone());
+    }
+    let (from, a) = lower.vertices[&vertex].clone();
+    let (to, b) = upper.vertices[&vertex].clone();
+    let segment = LineCurve::segment(a, b, tol)?;
+    let span = a.distance(b);
+    let shape = make_edge_between(model, segment.into(), (0.0, span), &from, &to, tol)?.shape;
+    risers.insert(vertex, shape.clone());
+    Ok(shape)
+}
+
+/// The direction out of the material across a free edge, in the sheet:
+/// the face lies to the left of the edge as the bare face walks it.
+fn outward_of(sheet: &Sheet, ei: usize, tol: Tolerances) -> OgeomResult<Vector> {
+    let edge = &sheet.edges[ei];
+    let used = &edge.uses[0];
+    let face = &sheet.faces[used.face];
+    let Some((curve, range)) = &edge.curve else {
+        ogeom_bail!(Construction, "a free edge has no curve in space");
+    };
+    let mid = f64::midpoint(range.0, range.1);
+    let uv = seat_on(
+        sheet,
+        edge,
+        used,
+        (curve.point_at(mid, tol)?, mid, *range),
+        tol,
+    )?;
+    let natural = face.surface.normal_at(uv.x, uv.y, tol)?.vector();
+    let walked = if used.sense == Orientation::Reversed {
+        -curve.d1_at(mid, tol)?
+    } else {
+        curve.d1_at(mid, tol)?
+    };
+    Ok(walked.cross(natural))
+}
+
+/// Points along an edge's curve over its range, start to end.
+fn edge_samples(
+    model: &Model,
+    edge: &Shape,
+    count: i32,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Point>> {
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = model
+        .node(edge)
+        .and_then(|n| n.data().as_edge())
+        .and_then(EdgeData::curve3d)
+    else {
+        ogeom_bail!(Construction, "a layer edge has no curve");
+    };
+    let Some(curve) = model.geometry().curve(*curve) else {
+        ogeom_bail!(Dangling, "curve is not in this model");
+    };
+    (0..=count)
+        .map(|k| {
+            curve.point_at(
+                range.0 + (range.1 - range.0) * f64::from(k) / f64::from(count),
+                tol,
+            )
+        })
+        .collect()
+}
+
+/// The side face along a free edge that ends at a crease: the flat face
+/// bounded by the edge's images in the two layers and the risers at its
+/// ends, oriented out of the material.
+fn flat_side_face(
+    model: &mut Model,
+    sheet: &Sheet,
+    ei: usize,
+    (lower, upper): (&Layer, &Layer),
+    risers: &mut HashMap<TShapeId, Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let edge = &sheet.edges[ei];
+    let rise_start = riser(model, edge.ends.0, (lower, upper), risers, tol)?;
+    let rise_end = riser(model, edge.ends.1, (lower, upper), risers, tol)?;
+    let low = lower.edges[&edge.node].clone();
+    let high = upper.edges[&edge.node].clone();
+    // The walk: along the lower image, up the end riser, back along the
+    // upper image and down the start riser; its plane is the one the
+    // walk turns counter-clockwise about.
+    let mut walk = edge_samples(model, &low, 4 * PROBES, tol)?;
+    let mut back = edge_samples(model, &high, 4 * PROBES, tol)?;
+    back.reverse();
+    walk.extend(back);
+    let mut turning = Vector::ZERO;
+    for (k, p) in walk.iter().enumerate() {
+        let q = walk[(k + 1) % walk.len()];
+        turning += Vector::new(
+            (p.y - q.y) * (p.z + q.z),
+            (p.z - q.z) * (p.x + q.x),
+            (p.x - q.x) * (p.y + q.y),
+        );
+    }
+    #[allow(clippy::cast_precision_loss, reason = "a few dozen samples")]
+    let count = walk.len() as f64;
+    let centre = walk
+        .iter()
+        .fold(Point::ORIGIN, |acc, p| acc + (*p - Point::ORIGIN) / count);
+    let normal = Direction::new(turning, tol)?;
+    let flat = walk
+        .iter()
+        .map(|p| (*p - centre).dot(normal.vector()).abs())
+        .fold(0.0_f64, f64::max);
+    if flat > tol.confusion() * 10.0 {
+        ogeom_bail!(
+            Construction,
+            "the side along a border ending at a crease is not flat ({flat:.3e} \
+             out of its plane); a crease is joined where the borders at its ends \
+             and their offsets lie in one plane"
+        );
+    }
+    let plane =
+        ogeom_math::Plane::new(Frame::new(centre, normal, normal.any_perpendicular(), tol)?);
+    let bare = make_face_with_pcurves(
+        model,
+        PlaneSurface::new(plane).into(),
+        &[vec![
+            low.clone(),
+            rise_end.clone(),
+            high.reversed(),
+            rise_start.reversed(),
+        ]],
+        tol,
+    )?
+    .shape;
+    for e in [&low, &high, &rise_start, &rise_end] {
+        same_parameter(model, e, tol)?;
+    }
+    Ok(if normal.vector().dot(outward_of(sheet, ei, tol)?) >= 0.0 {
+        bare
+    } else {
+        bare.reversed()
+    })
+}
+
 /// The ruled face between a free edge's images in the two layers, oriented
 /// out of the material, with the risers at its ends shared with the
 /// neighbouring side faces through `risers`.
@@ -1397,20 +1995,8 @@ fn side_face(
     let side_id = model.geometry_mut().add_surface(surface.clone());
 
     // The risers: one straight edge per free vertex, lower to upper.
-    let mut riser = |model: &mut Model, vertex: TShapeId| -> OgeomResult<Shape> {
-        if let Some(found) = risers.get(&vertex) {
-            return Ok(found.clone());
-        }
-        let (from, a) = lower.vertices[&vertex].clone();
-        let (to, b) = upper.vertices[&vertex].clone();
-        let segment = LineCurve::segment(a, b, tol)?;
-        let span = a.distance(b);
-        let shape = make_edge_between(model, segment.into(), (0.0, span), &from, &to, tol)?.shape;
-        risers.insert(vertex, shape.clone());
-        Ok(shape)
-    };
-    let rise_start = riser(model, edge.ends.0)?;
-    let rise_end = riser(model, edge.ends.1)?;
+    let rise_start = riser(model, edge.ends.0, (lower, upper), risers, tol)?;
+    let rise_end = riser(model, edge.ends.1, (lower, upper), risers, tol)?;
     let low = lower.edges[&edge.node].clone();
     let high = upper.edges[&edge.node].clone();
 
@@ -1507,24 +2093,8 @@ fn side_face(
         model.widen(&bare, Tolerance::new(deviation + tol.confusion())?)?;
     }
 
-    // Out of the material: the face lies to the left of the edge as the
-    // bare face walks it, so outward is the walk's tangent across the
-    // surface's own normal.
     let mid = f64::midpoint(t0, t1);
-    let uv = seat_on(
-        sheet,
-        edge,
-        used,
-        (curve.point_at(mid, tol)?, mid, range),
-        tol,
-    )?;
-    let natural = face.surface.normal_at(uv.x, uv.y, tol)?.vector();
-    let walked = if used.sense == Orientation::Reversed {
-        -curve.d1_at(mid, tol)?
-    } else {
-        curve.d1_at(mid, tol)?
-    };
-    let outward = walked.cross(natural);
+    let outward = outward_of(sheet, ei, tol)?;
     let side_normal = surface
         .normal_at(mid, sense.mul_add(0.5 * height, v0), tol)?
         .vector();
