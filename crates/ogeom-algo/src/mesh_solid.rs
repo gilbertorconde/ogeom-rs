@@ -849,8 +849,8 @@ fn build(
                             reason = FallbackReason::FoldedSeam;
                         }
                         if culprits.is_empty() && options.recognize {
-                            let (turned, alone);
-                            (culprits, turned, alone) = or_withdraw!(
+                            let (turned, alone, covering);
+                            (culprits, turned, alone, covering) = or_withdraw!(
                                 'checks,
                                 &built,
                                 overlapping_faces(model, &shape, adjacency, &groups, &built, tol)
@@ -868,6 +868,23 @@ fn build(
                                 .collect();
                             if !fanned.is_empty() {
                                 groups.fans.extend(fanned);
+                                continue 'build;
+                            }
+                            // A curved face that took facets in can run
+                            // over the planar faces near it, which then face
+                            // into it: every such face across a turned-in
+                            // one gives its facets back before the curved
+                            // face beside it is blamed.
+                            let covered: Vec<usize> = covering
+                                .into_iter()
+                                .filter(|g| absorbed.contains_key(g))
+                                .collect();
+                            if !covered.is_empty() {
+                                for g in covered {
+                                    if let Some(record) = absorbed.remove(&g) {
+                                        give_back(&mut groups, g, record);
+                                    }
+                                }
                                 continue 'build;
                             }
                             // A planar face turned in with no recognized
@@ -1179,9 +1196,10 @@ fn failing_faces(
 /// validity check probes orientation; a recognized face found turned in is
 /// a culprit, and for any other face so found the recognized faces beside
 /// it, or whose box it meets, are. Returned with the planar faces so found
-/// that share an edge with a recognized one, and those with no recognized
-/// face beside them or across their box.
-#[allow(clippy::type_complexity, reason = "three lists of groups")]
+/// that share an edge with a recognized one, those with no recognized face
+/// beside them or across their box, and every recognized face whose box
+/// meets a planar face so found.
+#[allow(clippy::type_complexity, reason = "four lists of groups")]
 fn overlapping_faces(
     model: &Model,
     shape: &Shape,
@@ -1189,7 +1207,7 @@ fn overlapping_faces(
     groups: &Groups,
     built: &[Option<Shape>],
     tol: Tolerances,
-) -> OgeomResult<(Vec<usize>, Vec<usize>, Vec<usize>)> {
+) -> OgeomResult<(Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>)> {
     let curved = |g: usize| {
         matches!(groups.carriers.get(g), Some(Carrier::Curved(_)))
             && built.get(g).is_some_and(Option::is_some)
@@ -1237,6 +1255,7 @@ fn overlapping_faces(
     let mut culprits = std::collections::BTreeSet::new();
     let mut turned = Vec::new();
     let mut alone = Vec::new();
+    let mut covering = std::collections::BTreeSet::new();
     for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
         for face in crate::check::inside_out_faces(model, &solid, tol)? {
             let Some(&g) = of_face.get(&face.node()) else {
@@ -1244,7 +1263,10 @@ fn overlapping_faces(
             };
             if curved(g) {
                 culprits.insert(g);
-            } else if let Some(next) = beside.get(&g) {
+                continue;
+            }
+            covering.extend(crossing(g));
+            if let Some(next) = beside.get(&g) {
                 culprits.extend(next.iter().copied());
                 turned.push(g);
             } else {
@@ -1256,7 +1278,12 @@ fn overlapping_faces(
             }
         }
     }
-    Ok((culprits.into_iter().collect(), turned, alone))
+    Ok((
+        culprits.into_iter().collect(),
+        turned,
+        alone,
+        covering.into_iter().collect(),
+    ))
 }
 
 /// The facets that could be fans (see [`Fan`]) whose boundary as built
