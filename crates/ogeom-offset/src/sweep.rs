@@ -2435,6 +2435,13 @@ fn plane_of_rows(rows: &[Vec<Point>], tol: Tolerances) -> Option<Plane> {
         .then_some(plane)
 }
 
+/// A border of a strip: the row or the column of the skin at an index.
+#[derive(Clone, Copy)]
+enum Side {
+    Row(usize),
+    Column(usize),
+}
+
 /// A strip on its own exact plane: the borders fitted through the rows and
 /// the end columns, the face on the plane.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
@@ -2452,15 +2459,26 @@ fn planar_strip(
     let rows = &skin.rows;
     // Splines, as every swept border is: the caps and the neighbouring
     // strips read them so, and a spline through collinear points is the
-    // straight segment itself. A row whose geometry the skin knows is
-    // fitted to it, measured between its samples too.
-    let through = |points: &[Point], row: Option<usize>| -> OgeomResult<ogeom_geom::Curve> {
-        let fitted = match (&skin.traced, row) {
-            (Some(traced), Some(j)) => {
+    // straight segment itself. A row or a column whose geometry the skin
+    // knows is fitted to it, measured between its samples too.
+    let through = |points: &[Point], side: Side| -> OgeomResult<ogeom_geom::Curve> {
+        let fitted = match (&skin.traced, side) {
+            (Some(traced), Side::Row(j)) => {
                 let v = traced.sampling.vs[j];
                 ogeom_geom::fit::fit_curve_sampled(
                     |u| (traced.point)(u, v),
                     &traced.sampling.us,
+                    false,
+                    3,
+                    tolerance * 0.5,
+                    tol,
+                )?
+            }
+            (Some(traced), Side::Column(i)) if traced.sampling.between.1 => {
+                let u = traced.sampling.us[i];
+                ogeom_geom::fit::fit_curve_sampled(
+                    |v| (traced.point)(u, v),
+                    &traced.sampling.vs,
                     false,
                     3,
                     tolerance * 0.5,
@@ -2484,29 +2502,29 @@ fn planar_strip(
     let border = |model: &mut Model,
                   given: Option<&Shape>,
                   points: Vec<Point>,
-                  row: Option<usize>,
+                  side: Side,
                   from: &Shape,
                   to: &Shape|
      -> OgeomResult<Shape> {
         if let Some(edge) = given {
             return Ok(edge.clone());
         }
-        let curve = through(&points, row)?;
+        let curve = through(&points, side)?;
         let domain = curve.domain();
         Ok(make_edge_between(model, curve, domain, from, to, tol)?.shape)
     };
-    let bottom = border(model, shared[0], rows[0].clone(), Some(0), c00, c10)?;
+    let bottom = border(model, shared[0], rows[0].clone(), Side::Row(0), c00, c10)?;
     let top_row = rows.len() - 1;
     let top = border(
         model,
         shared[1],
         rows[top_row].clone(),
-        Some(top_row),
+        Side::Row(top_row),
         c01,
         c11,
     )?;
-    let rail0 = border(model, shared[2], column(0), None, c00, c01)?;
-    let rail1 = border(model, shared[3], column(last), None, c10, c11)?;
+    let rail0 = border(model, shared[2], column(0), Side::Column(0), c00, c01)?;
+    let rail1 = border(model, shared[3], column(last), Side::Column(last), c10, c11)?;
 
     // The loop runs across, up, back and down: counter-clockwise about the
     // normal from the first row's run to the first column's.
@@ -6092,137 +6110,145 @@ fn pipe_shell_law(
             None => p,
         })
     };
-    // The rows a run's skin interpolates. A straight run is its two end
-    // rings, ruled: the trimmed prism itself, whether an end is sheared
-    // onto a mitre plane or stands on a curved corner's crossing. A curved
-    // run is its stations, except that a stretch at a curved corner is
-    // re-rowed: each row runs along the generators from the last plain
-    // station to the crossing, so the skin is the leg's own surface up to
-    // the join and nothing past it.
-    let run_rows =
-        |(rs, re): (usize, usize), flat_row: &[(f64, f64)]| -> OgeomResult<Vec<Vec<Point>>> {
-            let run = (rs, re);
-            let joins_at = |at_start: bool| -> OgeomResult<Option<Vec<CornerJoin>>> {
-                let pair = corner_pairs.iter().find(|pair| {
-                    pair.curved
-                        && if at_start {
-                            pair.after == run
-                        } else {
-                            pair.before == run
-                        }
-                });
-                let Some(pair) = pair else {
-                    return Ok(None);
-                };
-                let mut out = Vec::with_capacity(flat_row.len());
-                for ab in flat_row {
-                    out.push(curved_join(pair, *ab)?);
-                }
-                Ok(Some(out))
-            };
-            let (start, end) = (joins_at(true)?, joins_at(false)?);
-            #[allow(clippy::cast_precision_loss)]
-            let (rsf, ref_) = (rs as f64, re as f64);
-            let short = || {
-                ogeom_bail!(
-                    Construction,
-                    "a leg is shorter than its corner's reach; the mitre would \
-                 run off its far end"
-                )
-            };
-            let mut rows: Vec<Vec<Point>> = Vec::new();
-            if straight(rs, re) {
-                if start
-                    .as_ref()
-                    .is_some_and(|js| js.iter().any(|j| j.s2 >= ref_ - 0.5))
-                    || end
-                        .as_ref()
-                        .is_some_and(|js| js.iter().any(|j| j.s1 <= rsf + 0.5))
-                {
-                    return short();
-                }
-                for (at_start, joins) in [(true, &start), (false, &end)] {
-                    rows.push(match joins {
-                        Some(js) => js.iter().map(|j| j.at).collect(),
-                        None => {
-                            let i = if at_start { rs } else { re };
-                            flat_row
-                                .iter()
-                                .map(|ab| place(i, *ab))
-                                .collect::<OgeomResult<Vec<Point>>>()?
-                        }
-                    });
-                }
-                return Ok(rows);
-            }
-            if start.is_none() && end.is_none() {
-                for i in rs..=re {
-                    rows.push(
-                        flat_row
-                            .iter()
-                            .map(|ab| place(i, *ab))
-                            .collect::<OgeomResult<Vec<Point>>>()?,
-                    );
-                }
-                return Ok(rows);
-            }
-            // A curved run with a crossing at either end is re-rowed whole:
-            // every column runs its own generator from its start to its end,
-            // sampled at the same fractions, so the grid's shared parameter is
-            // honest for every column; a stretch skewed only near the corner
-            // would pace each column differently and the fit would fight it.
-            if start
-                .as_ref()
-                .is_some_and(|js| js.iter().any(|j| j.s2 >= ref_ - 0.5))
-                || end
-                    .as_ref()
-                    .is_some_and(|js| js.iter().any(|j| j.s1 <= rsf + 0.5))
-            {
-                return short();
-            }
-            // Each column at equal fractions of its own arc length: the grid's
-            // parameter is one for all columns, and a column's pace differs
-            // between the leg's curve and its straight extension, so the
-            // fractions are taken along the generator, not along its parameter.
-            let steps = re - rs;
-            let fine = steps * 8;
-            let mut columns: Vec<Vec<Point>> = Vec::with_capacity(flat_row.len());
-            for (k, ab) in flat_row.iter().enumerate() {
-                let lo = start.as_ref().map_or(rsf, |js| js[k].s2);
-                let hi = end.as_ref().map_or(ref_, |js| js[k].s1);
-                let mut along: Vec<(f64, f64)> = Vec::with_capacity(fine + 1);
-                let mut prev: Option<Point> = None;
-                let mut length = 0.0;
-                for i in 0..=fine {
-                    #[allow(clippy::cast_precision_loss)]
-                    let sp = lo + (hi - lo) * (i as f64) / (fine as f64);
-                    let p = walk.generator(sp, run, *ab, tol)?;
-                    if let Some(q) = prev {
-                        length += q.distance(p);
-                    }
-                    along.push((length, sp));
-                    prev = Some(p);
-                }
-                let mut column = Vec::with_capacity(steps + 1);
-                for i in 0..=steps {
-                    #[allow(clippy::cast_precision_loss)]
-                    let target = length * (i as f64) / (steps as f64);
-                    let at = along.partition_point(|(l, _)| *l < target).clamp(1, fine);
-                    let ((l0, s0), (l1, s1)) = (along[at - 1], along[at]);
-                    let f = if l1 > l0 {
-                        ((target - l0) / (l1 - l0)).clamp(0.0, 1.0)
+    // One profile point's generator along a re-rowed run: its parameter
+    // against the length run from the column's start, and the whole length.
+    struct RerowColumn {
+        along: Vec<(f64, f64)>,
+        length: f64,
+    }
+    // Where one profile point's generator on `run` meets the next leg's (at
+    // its end) or the previous leg's (at its start), at a curved corner.
+    let crossing =
+        |run: (usize, usize), ab: (f64, f64), at_start: bool| -> OgeomResult<Option<CornerJoin>> {
+            let pair = corner_pairs.iter().find(|pair| {
+                pair.curved
+                    && if at_start {
+                        pair.after == run
                     } else {
-                        0.0
-                    };
-                    column.push(walk.generator(s0 + (s1 - s0) * f, run, *ab, tol)?);
-                }
-                columns.push(column);
-            }
-            for i in 0..=steps {
-                rows.push(columns.iter().map(|c| c[i]).collect());
-            }
-            Ok(rows)
+                        pair.before == run
+                    }
+            });
+            pair.map(|pair| curved_join(pair, ab)).transpose()
         };
+    // Each end of one profile point's column on `run`: the crossing where
+    // the run meets a curved corner there, else the end station. A crossing
+    // past the middle of the run means the leg is shorter than the corner's
+    // reach.
+    let column_ends = |(rs, re): (usize, usize),
+                       ab: (f64, f64)|
+     -> OgeomResult<(Option<CornerJoin>, Option<CornerJoin>)> {
+        let run = (rs, re);
+        let (start, end) = (crossing(run, ab, true)?, crossing(run, ab, false)?);
+        #[allow(clippy::cast_precision_loss)]
+        let (rsf, ref_) = (rs as f64, re as f64);
+        if start.as_ref().is_some_and(|j| j.s2 >= ref_ - 0.5)
+            || end.as_ref().is_some_and(|j| j.s1 <= rsf + 0.5)
+        {
+            ogeom_bail!(
+                Construction,
+                "a leg is shorter than its corner's reach; the mitre would \
+                 run off its far end"
+            );
+        }
+        Ok((start, end))
+    };
+    // A straight run's column is its two ends, ruled: the trimmed prism
+    // itself, whether an end is sheared onto a mitre plane or stands on a
+    // curved corner's crossing.
+    let straight_column = |(rs, re): (usize, usize), ab: (f64, f64)| -> OgeomResult<Vec<Point>> {
+        let (start, end) = column_ends((rs, re), ab)?;
+        Ok(vec![
+            match start {
+                Some(j) => j.at,
+                None => place(rs, ab)?,
+            },
+            match end {
+                Some(j) => j.at,
+                None => place(re, ab)?,
+            },
+        ])
+    };
+    // A curved run with a crossing at either end is re-rowed whole: every
+    // column runs its own generator from its start to its end, read at
+    // fractions of its own arc length, so the skin's parameter across is
+    // one for all columns. A column's pace differs between the leg's curve
+    // and its straight extension, and a stretch skewed only near the corner
+    // would pace each column differently. The skin is known everywhere
+    // along its columns, so it is checked between its rows as well.
+    let rerow_column = |(rs, re): (usize, usize), ab: (f64, f64)| -> OgeomResult<RerowColumn> {
+        let run = (rs, re);
+        let (start, end) = column_ends(run, ab)?;
+        #[allow(clippy::cast_precision_loss)]
+        let lo = start.map_or(rs as f64, |j| j.s2);
+        #[allow(clippy::cast_precision_loss)]
+        let hi = end.map_or(re as f64, |j| j.s1);
+        // The length is read in eighths of a station on the stations' own
+        // grid, so the run's end station, where the leg's curve gives way to
+        // its straight extension and a generator off the spine changes its
+        // pace, is a step's end. Read across it, one step would mix the two
+        // paces and kink the column's parameter, which a cubic fit cannot
+        // follow.
+        let mut nodes: Vec<f64> = vec![lo];
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        {
+            let mut m = (lo * 8.0).floor() as i64 + 1;
+            while (m as f64) / 8.0 < hi {
+                let sp = (m as f64) / 8.0;
+                if sp - lo > 1e-9 && hi - sp > 1e-9 {
+                    nodes.push(sp);
+                }
+                m += 1;
+            }
+        }
+        nodes.push(hi);
+        let mut along: Vec<(f64, f64)> = Vec::with_capacity(nodes.len());
+        let mut prev: Option<Point> = None;
+        let mut length = 0.0;
+        for sp in nodes {
+            let p = walk.generator(sp, run, ab, tol)?;
+            if let Some(q) = prev {
+                length += q.distance(p);
+            }
+            along.push((length, sp));
+            prev = Some(p);
+        }
+        Ok(RerowColumn { along, length })
+    };
+    // The point a fraction `f` of the way along a re-rowed column.
+    let rerowed_at =
+        |run: (usize, usize), column: &RerowColumn, ab: (f64, f64), f: f64| -> OgeomResult<Point> {
+            let along = &column.along;
+            let target = column.length * f;
+            let at = along
+                .partition_point(|(l, _)| *l < target)
+                .clamp(1, along.len() - 1);
+            let ((l0, s0), (l1, s1)) = (along[at - 1], along[at]);
+            let g = if l1 > l0 {
+                ((target - l0) / (l1 - l0)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            walk.generator(s0 + (s1 - s0) * g, run, ab, tol)
+        };
+    // A re-rowed run's skin known everywhere: the point `s` stations' worth
+    // of the way along the column of profile point `ab` at `u`, each column
+    // built once into `held`.
+    #[allow(clippy::type_complexity)]
+    let rerowed_point = |(rs, re): (usize, usize),
+                         held: &std::cell::RefCell<std::collections::HashMap<u64, RerowColumn>>,
+                         u: f64,
+                         ab: (f64, f64),
+                         s: f64|
+     -> OgeomResult<Point> {
+        if !held.borrow().contains_key(&u.to_bits()) {
+            let column = rerow_column((rs, re), ab)?;
+            held.borrow_mut().insert(u.to_bits(), column);
+        }
+        let held = held.borrow();
+        #[allow(clippy::cast_precision_loss)]
+        let f = (s - rs as f64) / (re - rs) as f64;
+        rerowed_at((rs, re), &held[&u.to_bits()], ab, f)
+    };
     // A curved run with no crossing at either end has its stations for
     // rows, and the frame carried between them places the profile anywhere
     // along it: its skin is checked between the stations too, its
@@ -6275,6 +6301,7 @@ fn pipe_shell_law(
             for (ri, &(rs, re)) in runs.iter().enumerate() {
                 // Each column the run's rows of one point of the profile,
                 // read by arc length round it.
+                let held = std::cell::RefCell::default();
                 let skin = if plain((rs, re)) {
                     Skin::swept(
                         |f, s| along_run((rs, re), s, flat(profile_loop.at(f))),
@@ -6282,16 +6309,20 @@ fn pipe_shell_law(
                         (rs, re),
                         true,
                     )?
-                } else {
+                } else if straight(rs, re) {
                     Skin::columns(
-                        |f| {
-                            let rows = run_rows((rs, re), &[flat(profile_loop.at(f))])?;
-                            Ok(rows.iter().map(|r| r[0]).collect())
-                        },
+                        |f| straight_column((rs, re), flat(profile_loop.at(f))),
                         fractions(AROUND),
                         true,
                         false,
                         false,
+                    )?
+                } else {
+                    Skin::swept(
+                        |f, s| rerowed_point((rs, re), &held, f, flat(profile_loop.at(f)), s),
+                        fractions(AROUND),
+                        (rs, re),
+                        true,
                     )?
                 };
                 let shared_start = shares_start(ri).then_some(()).and(ring1.as_ref());
@@ -6415,6 +6446,7 @@ fn pipe_shell_law(
                 for (ri, &(rs, re)) in runs.iter().enumerate() {
                     // Each column the run's rows of one point of the edge,
                     // at a fraction of its parameter range.
+                    let held = std::cell::RefCell::default();
                     let skin = if plain((rs, re)) {
                         Skin::swept(
                             |f, s| along_run((rs, re), s, edge_flat(f)?),
@@ -6422,15 +6454,19 @@ fn pipe_shell_law(
                             (rs, re),
                             false,
                         )?
-                    } else {
+                    } else if straight(rs, re) {
                         Skin::columns(
-                            |f| {
-                                let rows = run_rows((rs, re), &[edge_flat(f)?])?;
-                                Ok(rows.iter().map(|r| r[0]).collect())
-                            },
+                            |f| straight_column((rs, re), edge_flat(f)?),
                             fractions(ALONG_EDGE),
                             false,
                             false,
+                            false,
+                        )?
+                    } else {
+                        Skin::swept(
+                            |f, s| rerowed_point((rs, re), &held, f, edge_flat(f)?, s),
+                            fractions(ALONG_EDGE),
+                            (rs, re),
                             false,
                         )?
                     };

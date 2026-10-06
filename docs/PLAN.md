@@ -334,9 +334,20 @@ as well: rings waving 0.8 twelve times round, the end rising and falling
 turned away from the next section's middle: the test from the section it
 passes through is square to a nearly flat cap's normal, and could leave
 it facing in.
+A pipe shell's curved run ending on a curved corner's crossing (each
+column along its own generator to the crossing, read by its own length)
+is checked between its rows too, and so are a planar strip's end columns
+wherever the skin is known along them. A disc of radius 2 down a quarter
+arc of radius 20 turning square onto a straight leg, at 1e-4, stood
+7.3e-3 off its tube near the corner and stands 7.7e-5 off; a square
+section through the same corner was refused (an end column through its
+rows only, 5.9e-3) and stands 6.6e-5 off. A column's length is read on
+the stations' grid, so the arc's end, where an off-spine generator
+changes pace onto the straight extension, is a step's end: read across
+it, the column's parameter kinked and the fit refined to a 421 by 259
+grid (11 s) at 1e-4 and failed at 1e-5. Now 0.1 s at 1e-4 and 0.3 s at
+1e-5 (9.0e-6).
 Left:
-- A pipe shell's run re-rowed at a curved corner (each column along its
-  own generator to the crossing) is still fitted through its rows.
 - `check` passed a skinned loft whose nearly flat end patch faced into the
   solid (the exact volume then came out 607 for 1278), and the mesh's
   volume did not see it either.

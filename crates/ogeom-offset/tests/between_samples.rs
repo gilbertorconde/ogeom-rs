@@ -738,3 +738,105 @@ fn a_skinned_loft_closes_a_wavy_end_on_its_cone() {
     eprintln!("wavy end's cap off its cone by {worst}");
     assert!(worst <= tolerance, "the cap strays {worst} from its cone");
 }
+
+/// A quarter arc of radius `r` about the origin from `(r, 0)` to `(0, r)`,
+/// then a straight leg of 20 up `+y`: a corner between a curved run and a
+/// straight one, turning in the arc's plane.
+fn arc_then_leg(model: &mut Model, r: f64) -> Shape {
+    let (a, b, c) = (
+        Point::new(r, 0.0, 0.0),
+        Point::new(0.0, r, 0.0),
+        Point::new(0.0, r + 20.0, 0.0),
+    );
+    let va = ogeom_algo::make_vertex(model, a).shape;
+    let vb = ogeom_algo::make_vertex(model, b).shape;
+    let vc = ogeom_algo::make_vertex(model, c).shape;
+    let arc = ogeom_algo::make_edge_between(
+        model,
+        ogeom_geom::CircleCurve::new(Circle::new(Frame::WORLD, r, T).unwrap()).into(),
+        (0.0, PI / 2.0),
+        &va,
+        &vb,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let leg = ogeom_algo::make_edge_between(
+        model,
+        ogeom_geom::LineCurve::segment(b, c, T).unwrap().into(),
+        (0.0, 20.0),
+        &vb,
+        &vc,
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom_algo::make_wire(model, &[arc, leg], T).unwrap().shape
+}
+
+#[test]
+fn a_pipe_shell_holds_its_walls_between_rows_at_a_curved_corner() {
+    // The arc's wall runs up to where each generator crosses the leg's,
+    // past the arc's end along its straight extension on the outside of the
+    // turn; the leg's runs back to the same crossing. Each wall point lies
+    // on the arc's tube (its torus, then the extension's cylinder along -x
+    // past x = 0) or on the leg's cylinder about the y axis.
+    let (r, w, tolerance) = (20.0, 2.0, 1e-4);
+    let off_round = |p: Point| -> f64 {
+        let arc = if p.x >= 0.0 {
+            (p.x.hypot(p.y) - r).hypot(p.z)
+        } else {
+            (p.y - r).hypot(p.z)
+        };
+        (arc - w).abs().min((p.x.hypot(p.z) - w).abs())
+    };
+    // The square's walls: the larger of the two offsets across the
+    // section from its centre, against the half side.
+    let off_square = |p: Point| -> f64 {
+        let arc = if p.x >= 0.0 {
+            (p.x.hypot(p.y) - r).abs().max(p.z.abs())
+        } else {
+            (p.y - r).abs().max(p.z.abs())
+        };
+        (arc - w).abs().min((p.x.abs().max(p.z.abs()) - w).abs())
+    };
+    for round in [true, false] {
+        let mut model = Model::new();
+        let spine = arc_then_leg(&mut model, r);
+        let start = Frame::new(Point::new(r, 0.0, 0.0), Direction::Y, Direction::X, T).unwrap();
+        let profile = if round {
+            disc(&mut model, start, w)
+        } else {
+            let corners: Vec<Point> = [(-w, -w), (w, -w), (w, w), (-w, w)]
+                .iter()
+                .map(|(a, b)| Point::new(r + a, 0.0, *b))
+                .collect();
+            let wire = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+                .unwrap()
+                .shape;
+            let plane: SurfaceGeometry = ogeom_geom::PlaneSurface::new(Plane::new(start)).into();
+            ogeom_algo::make_face(&mut model, plane, &[wire], T)
+                .unwrap()
+                .shape
+        };
+        let pipe = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, false, tolerance, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom_algo::check(&model, &pipe, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        let mut worst = 0.0_f64;
+        for wall in spline_surfaces(&model, &pipe) {
+            let (ud, vd) = wall.domain();
+            for j in 0..=400 {
+                for i in 0..=40 {
+                    let p = wall
+                        .point_at(across(ud, i, 40), across(vd, j, 400), T)
+                        .unwrap();
+                    worst = worst.max(if round { off_round(p) } else { off_square(p) });
+                }
+            }
+        }
+        eprintln!("pipe shell at a curved corner (round {round}) off its walls by {worst}");
+        assert!(worst <= tolerance, "a wall strays {worst} at the corner");
+    }
+}
