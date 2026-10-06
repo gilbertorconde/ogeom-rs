@@ -220,7 +220,7 @@ fn check_orientation(
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) only; a
 /// question the geometry cannot answer names no face.
 pub fn inside_out_faces(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<Vec<Shape>> {
-    let boundary = match crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol) {
+    let boundary = match probe_boundary(model, solid, tol) {
         Ok(boundary) => boundary,
         // A question the geometry cannot answer (an open shell, a chart
         // walk off its domain) is no finding; only cancellation and a
@@ -242,8 +242,18 @@ pub(crate) fn faces_turned_in(
     faces: &[Shape],
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
-    let boundary = crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
+    let boundary = probe_boundary(model, solid, tol)?;
     turned_in_against(model, &boundary, faces, tol)
+}
+
+/// The boundary of `solid` its faces are probed against, as
+/// [`inside_out_faces`] builds it.
+pub(crate) fn probe_boundary(
+    model: &Model,
+    solid: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<crate::SolidBoundary> {
+    crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)
 }
 
 /// The faces of `faces` whose probe against `boundary` finds material on
@@ -276,7 +286,7 @@ fn turned_in_against(
 /// across a gap narrower than the step lands in the material beyond, and
 /// either leaves both points on the same side. The shortest step stays well
 /// clear of the band within which a point counts as on the face.
-fn faces_inward(
+pub(crate) fn faces_inward(
     model: &Model,
     face: &Shape,
     boundary: &crate::SolidBoundary,

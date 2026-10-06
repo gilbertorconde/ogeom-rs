@@ -22,6 +22,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An exact volume never takes a face's sign on trust.**
+  `volume_properties` read a face whose orientation it could not compare
+  along its edges (a cone apex, a face placed inside the shape, a separate
+  shell) as agreeing, so a face turned into its solid gave a wrong exact
+  volume: a drum with a nearly flat cone cap turned in measured 784.09
+  where it holds 786.71. Each group of faces the edge walk cannot tie is
+  probed against its solid, any of its faces able to settle it (the broad
+  face of a very thin sheet passes the question to its rim), and the volume
+  falls back to the mesh only where a group faces in or none of its faces
+  can be decided. A prism's placed top is compared too.
+
 - **A converted part keeps its straight-threaded seams.** Mesh conversion
   threw away every seam it had threaded straight when any facet beside one
   faced into the material, and the rebuild faceted curved faces for folded
