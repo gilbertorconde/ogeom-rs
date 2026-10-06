@@ -1821,38 +1821,66 @@ pub(crate) fn build_open_band(
     };
 
     // The legs: each host's own surface between the crease and its rail,
-    // closed at the ends by the connectors.
+    // closed at the ends by the connectors. The ring runs the crease
+    // forward, which keeps the leg on its left about the host's normal
+    // where, at the middle station, the rail stands to the crease's left;
+    // the ring is walked back where it stands to the right.
+    let mid = n / 2;
+    let crease_mid = guide.point_at(blend.along[mid], tol)?;
+    let crease_dir = guide.d1_at(blend.along[mid], tol)?;
     let leg = |model: &mut Model,
                host: &SurfaceGeometry,
                rail: &Shape,
-               ends: [&Option<Shape>; 2]|
+               ends: [&Option<Shape>; 2],
+               (touch, (u, v)): (Point, (f64, f64))|
      -> OgeomResult<Shape> {
         let mut edges = vec![apex_edge.clone()];
         edges.extend(ends[1].clone());
         edges.push(rail.reversed());
         edges.extend(ends[0].as_ref().map(Shape::reversed));
+        let (du, dv) = host.d1_at(u, v, tol)?;
+        if du.cross(dv).dot(crease_dir.cross(touch - crease_mid)) < 0.0 {
+            edges = edges.iter().rev().map(Shape::reversed).collect();
+        }
         face_from_edges(model, host.clone(), &edges, tol)
     };
-    let leg_first = leg(model, first, &rail_first, [&conn_first_0, &conn_first_1])?;
+    let leg_first = leg(
+        model,
+        first,
+        &rail_first,
+        [&conn_first_0, &conn_first_1],
+        (blend.touch_first[mid], blend.on_first[mid]),
+    )?;
     let leg_second = leg(
         model,
         second,
         &rail_second,
         [&conn_second_0, &conn_second_1],
+        (blend.touch_second[mid], blend.on_second[mid]),
     )?;
 
     // The caps: the section planes, bounded by connector, arc, connector.
     // Outward is out of the marched window: against the guide at the
-    // start, along it at the end.
+    // start, along it at the end. The ring runs crease, first touch,
+    // second touch, and is walked back where those corners turn against
+    // the plane's normal: the arc and the connectors bow toward the
+    // crease and never past it, so the corners' turn is the ring's.
     let cap = |model: &mut Model,
                plane: ogeom_math::Plane,
                edges: &[Shape],
+               [p, q, r]: [Point; 3],
                outward: Vector|
      -> OgeomResult<Shape> {
         let reach = (radius * 4.0).max(1.0);
         let surface: SurfaceGeometry =
             ogeom_geom::PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        let face = face_from_edges(model, surface, edges, tol)?;
+        let turn = (q - p).cross(r - p).dot(plane.normal().vector());
+        let edges: Vec<Shape> = if turn < 0.0 {
+            edges.iter().rev().map(Shape::reversed).collect()
+        } else {
+            edges.to_vec()
+        };
+        let face = face_from_edges(model, surface, &edges, tol)?;
         if plane.normal().vector().dot(outward) > 0.0 {
             Ok(face)
         } else {
@@ -1865,6 +1893,7 @@ pub(crate) fn build_open_band(
             model,
             plane,
             &[c1.clone(), arc_start.clone(), c2.reversed()],
+            [apex0, corner(0, 0), corner(k_count - 1, 0)],
             -guide.d1_at(t0, tol)?,
         )?);
     }
@@ -1873,6 +1902,11 @@ pub(crate) fn build_open_band(
             model,
             plane,
             &[c1.clone(), arc_end.clone(), c2.reversed()],
+            [
+                apex1,
+                corner(0, l_count - 1),
+                corner(k_count - 1, l_count - 1),
+            ],
             guide.d1_at(t1, tol)?,
         )?);
     }
@@ -2652,9 +2686,21 @@ fn host_leg(
             ogeom_topo::Location::identity(),
             (u_params[0], u_params[u_params.len() - 1]),
         )?;
-        let apex_wire = ogeom_algo::make_wire(model, std::slice::from_ref(&apex), tol)?.shape;
-        let rail_wire = ogeom_algo::make_wire(model, std::slice::from_ref(rail), tol)?.shape;
-        let wires = if apex_area.abs() >= rail_area.abs() {
+        // The outer ring turns anticlockwise in the chart and the hole
+        // clockwise, so the leg keeps itself on the left of both.
+        let outer_apex = apex_area.abs() >= rail_area.abs();
+        let turned = |ring: &Shape, area: f64, outer: bool| {
+            if (area > 0.0) == outer {
+                ring.clone()
+            } else {
+                ring.reversed()
+            }
+        };
+        let apex_wire =
+            ogeom_algo::make_wire(model, &[turned(&apex, apex_area, outer_apex)], tol)?.shape;
+        let rail_wire =
+            ogeom_algo::make_wire(model, &[turned(rail, rail_area, !outer_apex)], tol)?.shape;
+        let wires = if outer_apex {
             [apex_wire, rail_wire]
         } else {
             [rail_wire, apex_wire]
@@ -2808,11 +2854,9 @@ fn pole_leg(
         ogeom_topo::Location::identity(),
         hole_range,
     )?;
-    // The band's walk runs the winding loop forward, so it turns
-    // anticlockwise in the chart when the pole is above it; the hole turns
-    // the other way.
-    let outer_turn = if above { 1.0 } else { -1.0 };
-    let hole = if chart_area(hole_chart) * outer_turn > 0.0 {
+    // The band turns anticlockwise in the chart; the hole turns the other
+    // way.
+    let hole = if chart_area(hole_chart) > 0.0 {
         hole_edge.reversed()
     } else {
         hole_edge.clone()

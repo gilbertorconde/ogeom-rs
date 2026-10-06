@@ -1522,4 +1522,122 @@ mod tests {
             );
         }
     }
+
+    /// The edge of `shape` whose curve is the first `kind` accepts.
+    fn edge_on(model: &Model, shape: &Shape, kind: impl Fn(&ogeom_geom::Curve) -> bool) -> Shape {
+        explore_unique(model, shape, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| super::edge_curve(model, e, T).is_ok_and(|(curve, _)| kind(&curve)))
+            .unwrap()
+    }
+
+    /// The volume of a solid, through the mesh where a face is fitted.
+    fn volume(model: &Model, solid: &Shape) -> f64 {
+        ogeom_algo::volume_properties(model, solid, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    }
+
+    /// The wedges a marched band takes away or fills walk each edge between
+    /// two of their faces once each way and pass the checker, and each holds
+    /// what the blend adds to or removes from the solid: a closed band round
+    /// a branch's foot, a band running out through a block's walls at both
+    /// ends, and a band pinched where two equal drums turn tangent.
+    #[test]
+    fn marched_wedges_walk_each_edge_once_each_way() {
+        use ogeom_geom::Curve;
+        use ogeom_math::{Direction, Vector};
+        let mut model = Model::new();
+        let across = |x: f64, y: f64, z: f64| {
+            Frame::new(Point::new(x, y, z), Direction::X, Direction::Y, T).unwrap()
+        };
+        let main = ogeom_algo::make_cylinder(&mut model, across(-20.0, 0.0, 0.0), 10.0, 40.0, T)
+            .unwrap()
+            .shape;
+        let branch = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 20.0, T)
+            .unwrap()
+            .shape;
+        let branched = ogeom_bool::fuse(&mut model, &main, &branch, T)
+            .unwrap()
+            .shape;
+        let foot = edge_on(&model, &branched, |c| {
+            use ogeom_geom::Curve3d as _;
+            let (lo, hi) = c.domain();
+            matches!(c, Curve::BSpline(_))
+                && c.point_at(lo, T)
+                    .and_then(|p| c.point_at(hi, T).map(|q| p.distance(q)))
+                    .is_ok_and(|d| d <= 1e-6)
+        });
+
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let tilt = 0.35_f64;
+        let axis = Direction::new(Vector::new(0.0, tilt.cos(), -tilt.sin()), T).unwrap();
+        let drum = ogeom_algo::make_cylinder(
+            &mut model,
+            Frame::new(Point::new(10.0, -5.0, 11.5), axis, Direction::X, T).unwrap(),
+            4.0,
+            30.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let grooved = ogeom_bool::cut(&mut model, &block, &drum, T).unwrap().shape;
+        let groove = edge_at(&model, &grooved, Point::new(10.0, 14.84, 0.0));
+
+        let upright = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 20.0, T)
+            .unwrap()
+            .shape;
+        let lying = ogeom_algo::make_cylinder(&mut model, across(-20.0, 0.0, 10.0), 5.0, 40.0, T)
+            .unwrap()
+            .shape;
+        let crossed = ogeom_bool::fuse(&mut model, &upright, &lying, T)
+            .unwrap()
+            .shape;
+        let pinch = edge_on(&model, &crossed, |c| matches!(c, Curve::Ellipse(_)));
+
+        let cases = [
+            ("closed band", &branched, &foot, 1.5),
+            ("run-out band", &grooved, &groove, 1.0),
+            ("pinched band", &crossed, &pinch, 1.0),
+        ];
+        for (name, solid, edge, radius) in cases {
+            let (made, wedges) =
+                super::collecting_wedges(|| crate::fillet_edge(&mut model, solid, edge, radius, T));
+            made.unwrap();
+            let [wedge] = &wedges[..] else {
+                panic!("{name}: one wedge, not {}", wedges.len());
+            };
+            assert_eq!(walked_one_way(&model, &wedge.solid), 0, "{name}");
+            // The checker asks the walk too. A closed band's rails are
+            // widened past their vertices, which it also names; that is not
+            // this test's question.
+            let found = ogeom_algo::check(&model, &wedge.solid, T).unwrap();
+            assert!(
+                !found.problems.iter().any(|p| p.what.contains("same way")),
+                "{name}: {found}"
+            );
+            // What the blend adds is the wedge; what it removes is the part
+            // of the wedge inside the solid, the band running on past the
+            // walls where it runs out.
+            let blended = crate::fillet_edge(&mut model, solid, edge, radius, T)
+                .unwrap()
+                .shape;
+            let moved = (volume(&model, &blended) - volume(&model, solid)).abs();
+            let held = if wedge.additive {
+                volume(&model, &wedge.solid)
+            } else {
+                let inside = ogeom_bool::common(&mut model, &wedge.solid, solid, T)
+                    .unwrap()
+                    .shape;
+                volume(&model, &inside)
+            };
+            assert!(
+                (held - moved).abs() < moved * 1e-3,
+                "{name}: the wedge holds {held}, the blend moves {moved}"
+            );
+        }
+    }
 }

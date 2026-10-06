@@ -1907,7 +1907,9 @@ pub fn make_band_of_rings(
 /// The caller's contract: both rings are closed, both chart images run the
 /// full period *forward* in `u`, and both start on the same column; the
 /// seam runs there, between the two start vertices. One ring may be a pole:
-/// a degenerate edge whose image is the pole's row over `(0, period)`.
+/// a degenerate edge whose image is the pole's row over `(0, period)`. The
+/// face walks the lower ring forward and the upper one back, whichever
+/// order they come in, so it keeps itself on the left of its walk.
 ///
 /// # Errors
 ///
@@ -1977,6 +1979,12 @@ pub fn make_band_between(
             pcurve,
             start,
         });
+    }
+    // The band keeps itself on the left of its walk in the chart, which
+    // runs the lower ring forward and the upper one back: the rings do not
+    // cross, so their start rows say which is lower.
+    if prepared[1].start.y < prepared[0].start.y {
+        prepared.swap(0, 1);
     }
     // The connector between the rings' starts. On one column it is the
     // surface's own iso; on different columns it is the straight chart
