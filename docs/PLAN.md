@@ -1328,10 +1328,32 @@ with more than one shell.
     new nodes (the copies too), the history composed over all of them, the
     seam join and closure passes, and the classifier's face bounds; a
     crossed face's interior probes are still sought over all its holes. The
-    pair filter by box costs nothing measurable.
+    pair filter by box costs nothing measurable. Profiled on a 900-hole
+    plate (a side drill and a boss fuse, each touching one or two faces),
+    the boolean's CPU goes to: rebuilding the kept faces 27 to 38% (copies
+    included, through the general piece builder), gathering both solids
+    14 to 17% (each edge sampled at 33 points for its box), the sew 8%, the
+    two classifiers' face bounds 6%, the seam join and the membrane pass 2
+    to 4% each, composing the history 3 to 8%. A drill into the top crosses two
+    faces of 900 holes, and their arrangement is 45% of it: the scanline
+    probe search over 200,000 outline points per face, and each hole
+    walked on its own. No phase is above a fifth on its own, so no one
+    change wins much: removing the quadratic edge lookups of a many-holed
+    face, the allocations of `Model::widen` and the vertex bins, and the
+    history clones when a step records nothing gave 8% on the side drill
+    and the fuse and nothing measurable on the converted mesh or the top
+    drill. A radix sort of the probe heights was slower than the
+    comparison sort on outlines that arrive nearly ordered.
   - Unchanged faces in the history: done as `History::copy`, an exact copy
-    on new nodes. Sharing the nodes themselves would need every operation
-    that edits its result in place to copy on write first.
+    on new nodes. Sharing the nodes themselves would remove most of the
+    rebuild, a third at most, and needs: the rebuilt neighbours to name
+    the shared edges and vertices (pcurves on the input's own surface ids,
+    so the face keeps its placement), no weld or tolerance widening on a
+    shared vertex (`Rebuild::vertex` and `Model::add_face` both widen in
+    place), the sew to leave a shared face's derivation alone (it records
+    every settled face as derived from itself), and every operation that
+    edits its result in place (heal, fillet, offset, sew) to copy on write
+    first, since the input would see the edit.
   - Local refine: done, `unify_same_domain_around`.
   - Fillets in few passes. A chain is taken in rounds, no two edges of a
     round sharing a vertex, and each round's blends are applied in one
