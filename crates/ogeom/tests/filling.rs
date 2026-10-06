@@ -457,3 +457,98 @@ fn strips_tangent_to_a_dome_fill_tangent_to_each() {
         assert!(d.gap <= tolerance, "lean {lean}: a gap of {}", d.gap);
     }
 }
+
+/// A line edge from `a` to `b` on vertices of its own.
+fn line_edge(model: &mut Model, a: Point, b: Point) -> Shape {
+    let line = ogeom::algo::make_polygon(model, &[a, b], false, T)
+        .unwrap()
+        .shape;
+    ogeom::topo::explore_unique(model, &line, ogeom::topo::ShapeType::Edge)
+        .unwrap()
+        .remove(0)
+}
+
+/// The surface a face lies on.
+fn surface_of(model: &Model, face: &Shape) -> SurfaceGeometry {
+    match model.node(face).unwrap().data() {
+        NodeData::Face(data) => model.geometry().surface(data.surface).unwrap().clone(),
+        _ => panic!("a face"),
+    }
+}
+
+/// The largest distance from `points` to the surface.
+fn worst_off(surface: &SurfaceGeometry, points: impl IntoIterator<Item = Point>) -> f64 {
+    points
+        .into_iter()
+        .map(|p| {
+            ogeom::algo::project_on_surface(surface, p, 32, T)
+                .unwrap()
+                .distance
+        })
+        .fold(0.0, f64::max)
+}
+
+/// The face is valid under `check`, and its mesh, reflected by `mirror`,
+/// lies on the surface within `slack`: a loop that maps onto itself under
+/// the reflection is filled by a face that does too.
+fn valid_and_mirrored(model: &Model, face: &Shape, mirror: impl Fn(Point) -> Point, slack: f64) {
+    let diagnosis = ogeom::algo::check(model, face, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let surface = surface_of(model, face);
+    let mesh =
+        ogeom::mesh::triangulate_face(model, face, ogeom::mesh::Deflection::default(), T).unwrap();
+    assert!(mesh.positions.len() > 10);
+    let off = worst_off(&surface, mesh.positions.iter().map(|p| mirror(*p)));
+    assert!(off <= slack, "the mirrored mesh stands {off} off the face");
+}
+
+#[test]
+fn a_four_line_saddle_fills_over_the_plane_it_projects_simply_on() {
+    use ogeom::geom::Continuity;
+    use ogeom::offset::{FillBoundary, make_filling_n};
+
+    // A diamond rising at one corner and running out at another; along
+    // (0, 1, -1) it is a rhombus.
+    let p = [
+        Point::new(-10.0, 0.0, 0.0),
+        Point::new(0.0, 0.0, 10.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(0.0, -10.0, 0.0),
+    ];
+    let mut model = Model::new();
+    let sides: Vec<FillBoundary> = (0..4)
+        .map(|i| FillBoundary {
+            edge: line_edge(&mut model, p[i], p[(i + 1) % 4]),
+            support: None,
+            continuity: Continuity::C0,
+        })
+        .collect();
+    let tolerance = 1e-3;
+    let filled = make_filling_n(&mut model, &sides, &[], tolerance, T).unwrap();
+    let face = filled.built.shape.clone();
+    let surface = surface_of(&model, &face);
+    let lines = (0..4).flat_map(|i| {
+        (0..=50).map(move |k| {
+            let f = f64::from(k) / 50.0;
+            p[i] + (p[(i + 1) % 4] - p[i]) * f
+        })
+    });
+    let off = worst_off(&surface, lines);
+    assert!(off <= tolerance, "a side stands {off} off the filling");
+    valid_and_mirrored(&model, &face, |q| Point::new(-q.x, q.y, q.z), tolerance);
+    // The ruled saddle the four lines bound, against which a fair filling
+    // stands within a small share of the hole's 20 units.
+    let bilinear = (1..10).flat_map(|i| {
+        (1..10).map(move |j| {
+            let (s, t) = (f64::from(i) / 10.0, f64::from(j) / 10.0);
+            Point::from_vector(
+                p[0].to_vector() * ((1.0 - s) * (1.0 - t))
+                    + p[1].to_vector() * (s * (1.0 - t))
+                    + p[2].to_vector() * (s * t)
+                    + p[3].to_vector() * ((1.0 - s) * t),
+            )
+        })
+    });
+    let off = worst_off(&surface, bilinear);
+    assert!(off <= 0.1, "the filling strays {off} from the ruled saddle");
+}

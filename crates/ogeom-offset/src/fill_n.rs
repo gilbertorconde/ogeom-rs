@@ -144,7 +144,8 @@ const PER_CURVE: usize = 32;
 ///   edge does not lie on its surface within `tolerance`;
 /// - the sides do not chain into one closed loop;
 /// - the loop encloses no area, or crosses itself seen along the normal of
-///   the plane it spans, so the hole is not a height field over that plane;
+///   the plane it spans (the plane it encloses the most area seen square
+///   to), so the hole is not a height field over that plane;
 /// - a G1 or G2 side's support stands within about 6 degrees of square to
 ///   that plane;
 /// - a constraint is neither a vertex nor an edge, or lies outside the hole
@@ -755,10 +756,31 @@ fn frame_of(outline: &[Point], tol: Tolerances) -> OgeomResult<PlaneFrame> {
 }
 
 /// Whether a closed polygon crosses itself: any two segments that are not
-/// neighbours crossing.
+/// neighbours crossing, each segment's ends standing clear of the other's
+/// line on opposite sides.
+///
+/// A point within rounding of a line is on it, not on a side: samples of a
+/// straight side are collinear, and two segments of one straight side
+/// would otherwise cross wherever rounding scatters their ends' sides.
 fn crosses_itself(polygon: &[Point2]) -> bool {
     let n = polygon.len();
-    let orient = |a: Point2, b: Point2, c: Point2| (b - a).cross(c - a);
+    let reach = polygon
+        .iter()
+        .map(|q| q.x.abs().max(q.y.abs()))
+        .fold(0.0f64, f64::max);
+    let floor = 1e-9 * reach;
+    // The side of line `ab` that `c` stands on: 1, -1, or 0 within `floor`.
+    let side = |a: Point2, b: Point2, c: Point2| -> i8 {
+        let ab = b - a;
+        let o = ab.cross(c - a);
+        if o.abs() <= floor * ab.magnitude() {
+            0
+        } else if o > 0.0 {
+            1
+        } else {
+            -1
+        }
+    };
     for i in 0..n {
         let (a, b) = (polygon[i], polygon[(i + 1) % n]);
         for j in (i + 2)..n {
@@ -766,7 +788,7 @@ fn crosses_itself(polygon: &[Point2]) -> bool {
                 continue;
             }
             let (c, d) = (polygon[j], polygon[(j + 1) % n]);
-            if orient(a, b, c) * orient(a, b, d) < 0.0 && orient(c, d, a) * orient(c, d, b) < 0.0 {
+            if side(a, b, c) * side(a, b, d) < 0 && side(c, d, a) * side(c, d, b) < 0 {
                 return true;
             }
         }
