@@ -6,11 +6,12 @@
 #[path = "support/walks.rs"]
 mod walks;
 
+use core::f64::consts::TAU;
 use ogeom::core::Tolerances;
 use ogeom::geom::SurfaceGeometry;
-use ogeom::math::{Direction, Frame, Point};
+use ogeom::math::{Circle, Direction, Frame, Point, Vector};
 use ogeom::mesh::Deflection;
-use ogeom::topo::{Model, Shape, ShapeType, explore_unique};
+use ogeom::topo::{Model, Orientation, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -69,6 +70,86 @@ fn removing_a_bores_wall_makes_the_block_whole() {
     // bound.
     assert!((healed - 6000.0).abs() < 1e-6, "the block, whole: {healed}");
     assert!(built.history.is_deleted(&walls[0]));
+}
+
+/// A through bore cut into a plate extruded from a profile, its wall
+/// removed: the plate comes back whole. The bore is drilled from below
+/// through both faces, or sunk from a disc on the lid, the way a pocket is.
+/// Every face of the cut lists its outer boundary first, the bore's rim
+/// after it.
+#[test]
+fn removing_a_bores_wall_from_an_extruded_plate_makes_it_whole() {
+    use ogeom::topo::{Filter, explore};
+    let flat = |model: &mut Model, z: f64, wire: Shape| {
+        let surface = ogeom::geom::PlaneSurface::over(
+            ogeom::math::Plane::through(Point::new(0.0, 0.0, z), Direction::Z),
+            (-100.0, 100.0),
+            (-100.0, 100.0),
+        )
+        .unwrap();
+        ogeom::algo::make_face(model, surface.into(), &[wire], T)
+            .unwrap()
+            .shape
+    };
+    for sunk in [false, true] {
+        let mut model = Model::new();
+        let corners = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+            .map(|(x, y)| Point::new(x, y, 0.0));
+        let outline = ogeom::algo::make_polygon(&mut model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let profile = flat(&mut model, 0.0, outline);
+        let plate = ogeom::algo::make_prism(&mut model, &profile, Vector::Z * 5.0, T)
+            .unwrap()
+            .shape;
+        let drill = if sunk {
+            let seat =
+                Frame::new(Point::new(10.0, 5.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+            let circle = ogeom::geom::CircleCurve::new(Circle::new(seat, 2.0, T).unwrap());
+            let rim = ogeom::algo::make_edge(&mut model, circle.into(), (0.0, TAU), T)
+                .unwrap()
+                .shape;
+            let ring = ogeom::algo::make_wire(&mut model, &[rim], T).unwrap().shape;
+            let disc = flat(&mut model, 5.0, ring);
+            ogeom::algo::make_prism(&mut model, &disc, Vector::Z * -8.3, T)
+                .unwrap()
+                .shape
+        } else {
+            let frame =
+                Frame::new(Point::new(10.0, 5.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+            ogeom::algo::make_cylinder(&mut model, frame, 2.0, 7.0, T)
+                .unwrap()
+                .shape
+        };
+        let drilled = ogeom::boolean::cut(&mut model, &plate, &drill, T)
+            .unwrap()
+            .shape;
+
+        // The extruded plate's base is used reversed: its rings read in walk
+        // order come hole first, so the removal has to read them as stored.
+        let mut reversed = 0;
+        for cap in faces_where(&model, &drilled, |s| matches!(s, SurfaceGeometry::Plane(_))) {
+            let wires = explore(&model, &cap, Filter::OfType(ShapeType::Wire)).unwrap();
+            let edges = explore_unique(&model, &wires[0], ShapeType::Edge).unwrap();
+            assert_eq!(edges.len(), 4, "sunk {sunk}: the outer wire first");
+            if wires.len() == 2 && cap.orientation() == Orientation::Reversed {
+                reversed += 1;
+            }
+        }
+        assert_eq!(reversed, 1, "sunk {sunk}: the base is used reversed");
+
+        let walls = faces_where(&model, &drilled, |s| {
+            matches!(s, SurfaceGeometry::Cylinder(_))
+        });
+        assert_eq!(walls.len(), 1, "sunk {sunk}: one bore wall");
+        let built = ogeom::boolean::remove_faces(&mut model, &drilled, &walls, T)
+            .unwrap_or_else(|e| panic!("sunk {sunk}: {e}"));
+        let healed = volume(&model, &built.shape);
+        assert!(
+            (healed - 1000.0).abs() < 1e-6,
+            "sunk {sunk}: the plate, whole: {healed}"
+        );
+    }
 }
 
 /// A chamfer band removed: the band interrupts the top and side faces, whose
