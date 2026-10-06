@@ -11,6 +11,11 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Hooks the workspace's own tests use to hand the converter's build
+# surfaces it would never choose itself. Not a supported interface.
+test-hooks = []
+
 [dependencies]
 ogeom-core.workspace = true
 ogeom-math.workspace = true

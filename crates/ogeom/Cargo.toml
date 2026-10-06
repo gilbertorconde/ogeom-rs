@@ -47,6 +47,7 @@ ogeom-doc.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+ogeom-algo = { workspace = true, features = ["test-hooks"] }
 proptest.workspace = true
 
 [lints]

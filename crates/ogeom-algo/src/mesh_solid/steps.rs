@@ -666,12 +666,14 @@ impl MeshRegions {
     /// is laid out: a plane on a planar region, or a curved surface of the
     /// kind the region is on. What the build makes of a surface its
     /// vertices do not lie on is what its fallbacks catch; this is how a
-    /// test hands it one. Not part of the supported interface.
+    /// test hands it one. Present only with the `test-hooks` feature, which
+    /// nothing but the workspace's own tests enables.
     ///
     /// # Errors
     ///
     /// [`RegionRefusal::NoSuchRegion`], or [`RegionRefusal::NoFit`] where
     /// the surface is not of the region's kind.
+    #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn put_surface_unverified(
         &mut self,

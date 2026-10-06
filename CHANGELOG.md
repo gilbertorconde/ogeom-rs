@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The mesh converter facets a face it cannot build.** `solid_from_mesh`
+  failed outright when one face could not be built, meshed or measured (a
+  degenerate spline sliver failed with "cannot normalize a vector"); the
+  face is faceted and named with the new `FallbackReason::BuildFailed`. The
+  converter also probes every face for orientation as `check` does, so a
+  planar face turned in among planes is rebuilt from its triangles
+  (`FallbackReason::TurnedIn`); `curved_faceted` and `fallbacks` can name
+  planar regions too.
+
 - **Fewer converted faces fall back to facets.** A chain of three vertices
   between faces meeting all but tangentially is threaded with a parabola
   instead of faceting both faces; a single facet whose seam with a curved
