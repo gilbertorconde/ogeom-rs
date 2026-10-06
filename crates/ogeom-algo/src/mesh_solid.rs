@@ -5678,7 +5678,16 @@ impl Surfaces<'_> {
                 // near for its size (within a hundredth of its own span),
                 // as a small patch of a thick torus does, its tube not yet
                 // seen; a free-form patch misses by more, and is left.
-                Err(closest) if closest > span(&pts) * 1e-2 || queue.is_empty() => break,
+                // A sample too small to be fitted as a torus has not been
+                // asked whether it lies on one, and its miss says nothing of
+                // what a larger sample fits: the next stage is taken.
+                Err(closest)
+                    if queue.is_empty()
+                        || (closest > span(&pts) * 1e-2
+                            && pts.len() >= crate::recognize::TORUS_SAMPLES) =>
+                {
+                    break;
+                }
                 Err(_) => {}
             }
         }

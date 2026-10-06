@@ -431,6 +431,10 @@ pub(crate) fn recognize_curved(
     )
 }
 
+/// The fewest samples a torus is fitted to: its seven parameters and half
+/// as many again, the most any kind asks.
+pub(crate) const TORUS_SAMPLES: usize = 11;
+
 /// Every curved kind fitted and refined, with its worst deviation over all
 /// the samples. Fitted on an even subsample of a large set and verified on
 /// all of it: the fit's cost grows with every point, the certificate's
@@ -458,7 +462,7 @@ fn curved_fits(
         (6, |p, _, tol| fit_sphere(p, tol)),
         (8, fit_cylinder),
         (9, fit_cone),
-        (11, fit_torus),
+        (TORUS_SAMPLES, fit_torus),
     ];
     let mut fits = Vec::with_capacity(4);
     for (floor, fit) in attempts {

@@ -153,19 +153,30 @@ fn pcurves_off_their_curves(model: &Model, shape: &Shape) -> Vec<(f64, f64)> {
 /// pcurve within its edge's tolerance of the edge's curve, and with curved
 /// faces where the part has them. Returns what the conversion reported.
 fn comes_back(name: &str, closed: bool, meet: bool) -> MeshSolidReport {
+    comes_back_listed(name, closed, meet, |_| {})
+}
+
+/// As [`comes_back`], with the mesh's triangles relisted by `list` first.
+fn comes_back_listed(
+    name: &str,
+    closed: bool,
+    meet: bool,
+    list: impl Fn(&mut ogeom::topo::Triangulation),
+) -> MeshSolidReport {
     let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(path).expect("the corpus file is committed");
     let import = ogeom::io::read_step(&text, T).unwrap();
     let model = import.document.model();
     let part = &import.solids[0];
     let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
-    let mesh = ogeom::mesh::triangulate(
+    let mut mesh = ogeom::mesh::triangulate(
         model,
         part,
         Deflection::with_chord(diagonal * 1e-3).unwrap(),
         T,
     )
     .unwrap();
+    list(&mut mesh);
     assert!(mesh.is_closed(), "{name}: the source mesh is open");
     let mut back = Model::new();
     let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
@@ -368,6 +379,26 @@ fn nist_ftc_06() {
 fn nist_ftc_07() {
     let report = comes_back("nist_ftc_07_asme1_rd.stp", true, true);
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+}
+
+/// Its fillet tori a few facets round come back whichever corner each
+/// triangle lists first: a dozen vertices of such a torus are too few to
+/// be fitted as one, and the sample a fit starts from grows past them.
+#[test]
+#[ignore = "heavy"]
+fn nist_ftc_07_whatever_corner_each_triangle_lists_first() {
+    for seed in [1_u64, 3] {
+        let report = comes_back_listed("nist_ftc_07_asme1_rd.stp", true, true, |mesh| {
+            let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            for t in &mut mesh.triangles {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                t.rotate_left(usize::try_from(state % 3).unwrap());
+            }
+        });
+        assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+    }
 }
 
 /// Its fillet tori are meshed a few facets round, and a piece of one can
