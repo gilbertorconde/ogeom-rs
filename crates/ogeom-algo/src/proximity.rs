@@ -37,7 +37,7 @@ use ogeom_math::{Point, Point2, Transform};
 use ogeom_mesh::{Deflection, face_boundary, inside_boundary};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Shape, ShapeType, explore_unique};
 
-use crate::classify::{distance_to_rings, parametric_band};
+use crate::classify::parametric_band;
 use crate::measure::{project_on_curve, project_on_surface};
 use ogeom_intersect::ExtremaOptions;
 
@@ -262,7 +262,7 @@ fn inside_trim(face: &Prepared, world_point: Point, tol: Tolerances) -> OgeomRes
     let (u, v) = projection.parameters;
     let at = Point2::new(u, v);
     let band = parametric_band(&face.local, (u, v), tol.confusion() + RING_CHORD, tol);
-    if distance_to_rings(&face.rings, at) <= band {
+    if band.meets_rings(&face.rings, at) {
         return Ok(false);
     }
     Ok(inside_boundary(&face.rings, at))

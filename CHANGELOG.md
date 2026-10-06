@@ -22,6 +22,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Points beside an edge near a sphere's pole classify in or out.** The
+  boundary band was carried into the chart with one scale for both
+  directions, the smaller tangent's, so half a millimetre from a pole it
+  reached twenty times too far toward it and points beside a rim read as on
+  the boundary; the band is measured in space along each chart direction.
+  A fillet whose rim's middle is its point nearest the pole seats its ball
+  at another point of the rim and builds.
+
 - **Fillets whose ball passes over a sphere's pole.** The sphere leg's seam
   ran along the meridian from the march's first station, through the rim
   it bounds, so the wedge meshed open (5.7 to 64 against 4.44 cubic

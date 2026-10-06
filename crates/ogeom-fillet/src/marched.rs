@@ -325,7 +325,6 @@ pub(crate) fn marched_fillet(
     // boolean cut away, and a probe standing off the solid reads nothing in
     // either direction. The edge's midpoint is on the crease by definition.
     use ogeom_geom::Surface as _;
-    let mid_t = f64::midpoint(edge_range.0, edge_range.1);
     let convex = crease_convexity(
         model,
         &face_first,
@@ -359,34 +358,49 @@ pub(crate) fn marched_fillet(
         );
     }
 
-    // Seeded at the edge's own midpoint: on a reconstructed loop the domain
+    // Seeded on the edge itself: on a reconstructed loop the domain
     // midpoint may stand in cut-away territory where no ball seats, but the
-    // crease's own midpoint is seat by definition, and a closed loop closes
-    // from wherever the walker starts.
-    let (steering, seed_t) = match &march_guide {
-        Some(smooth) => {
-            let seed = guide.point_at(mid_t, tol)?;
-            let on_smooth = ogeom_algo::project_on_curve(smooth, seed, 256, tol)?;
-            (smooth, on_smooth.parameter)
-        }
-        None => (&guide, mid_t),
+    // crease is seat by definition, and a closed loop closes from wherever
+    // the walker starts. The edge's midpoint first, then its quarters: where
+    // the ball's touch on a sphere lies across the pole from the edge's
+    // point, the seat's solve in the sphere's chart cannot reach it from
+    // there. The first refusal stands when none seats.
+    let steering = march_guide.as_ref().unwrap_or(&guide);
+    let options = Marching {
+        // Three millionths of the radius: the blend's own scale, so a wide
+        // rim marches as many stations as a small one rather than running
+        // out of them.
+        chord: (radius * 3e-6).max(tol.confusion() * 0.1),
+        ..Marching::default()
     };
-    let mut blend = march_blend_seeded(
-        &first,
-        &second,
-        radius,
-        steering,
-        sides,
-        seed_t,
-        Marching {
-            // Three millionths of the radius: the blend's own scale, so a
-            // wide rim marches as many stations as a small one rather than
-            // running out of them.
-            chord: (radius * 3e-6).max(tol.confusion() * 0.1),
-            ..Marching::default()
-        },
-        tol,
-    )?;
+    let mut first_refusal = None;
+    let mut marched = None;
+    for share in [0.5, 0.25, 0.75] {
+        let on_edge = (edge_range.1 - edge_range.0).mul_add(share, edge_range.0);
+        let seed_t = match &march_guide {
+            Some(smooth) => {
+                let seed = guide.point_at(on_edge, tol)?;
+                ogeom_algo::project_on_curve(smooth, seed, 256, tol)?.parameter
+            }
+            None => on_edge,
+        };
+        match march_blend_seeded(
+            &first, &second, radius, steering, sides, seed_t, options, tol,
+        ) {
+            Ok(found) => {
+                marched = Some(found);
+                break;
+            }
+            Err(e @ ogeom_core::OgeomError::NotDone(_)) => {
+                first_refusal.get_or_insert(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let Some(mut blend) = marched else {
+        return Err(first_refusal
+            .unwrap_or_else(|| ogeom_core::ogeom_err!(NotDone, "no ball seats on the edge")));
+    };
     if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
         eprintln!(
             "MARCH stopped {:?} with {} stations; guide domain {:?} closed {closed}; first {:?}/{:?} at {:?}; last {:?}/{:?} at {:?}; hosts {:?} {:?}",

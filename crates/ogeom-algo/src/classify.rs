@@ -137,7 +137,7 @@ fn against_rings(
     // and its arc (inside the true trim, outside the sampled one) would
     // read as Out when the honest answer at this resolution is On.
     let band = parametric_band(surface, (u, v), reach + chord, tol);
-    if distance_to_rings(rings, at) <= band {
+    if band.meets_rings(rings, at) {
         return Containment::On;
     }
     if inside_boundary(rings, at) {
@@ -446,19 +446,19 @@ impl Rings {
         face: &Shape,
         deflection: Deflection,
         at: Point2,
-        band: f64,
+        band: ChartBand,
         tol: Tolerances,
     ) -> OgeomResult<bool> {
         match self {
-            Rings::All(rings) => Ok(distance_to_rings(rings, at) <= band),
+            Rings::All(rings) => Ok(band.meets_rings(rings, at)),
             Rings::Open { outer, holes } => {
-                if distance_to_ring(outer, at) <= band {
+                if band.meets_ring(outer, at) {
                     return Ok(true);
                 }
                 for hole in holes {
-                    if hole.box_distance(at) <= band
+                    if hole.box_distance(at) <= band.radius()
                         && let Some(ring) = hole.ring(model, face, deflection, tol)?
-                        && distance_to_ring(ring, at) <= band
+                        && band.meets_ring(ring, at)
                     {
                         return Ok(true);
                     }
@@ -1014,23 +1014,6 @@ fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
     p.distance(a + d * t)
 }
 
-/// The distance in parameter space from a point to the nearest ring.
-pub(crate) fn distance_to_rings(rings: &[Vec<Point2>], p: Point2) -> f64 {
-    rings.iter().fold(f64::INFINITY, |best, ring| {
-        best.min(distance_to_ring(ring, p))
-    })
-}
-
-/// The distance in parameter space from a point to a ring.
-fn distance_to_ring(ring: &[Point2], p: Point2) -> f64 {
-    let mut best = f64::INFINITY;
-    for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-        best = best.min(segment_distance_2d(p, a, b));
-    }
-    best
-}
-
 /// The distance from a 2D point to a 2D segment.
 fn segment_distance_2d(p: Point2, a: Point2, b: Point2) -> f64 {
     let d = b - a;
@@ -1160,27 +1143,80 @@ fn place_on_rings(
         .unwrap_or(folded)
 }
 
-/// How wide, in parameter units, a distance of `reach` in space is at `(u, v)`.
+/// A distance of `reach` in space about a chart point, read in the chart.
 ///
-/// The surface's tangents give the conversion. Where a tangent vanishes (a
-/// sphere's pole, a cone's apex), no parameter distance corresponds to a
-/// spatial one, and the band opens to cover the whole neighbourhood rather than
-/// closing to nothing.
+/// Each chart direction keeps its own scale, the length of the surface's
+/// tangent along it: near a sphere's pole a step in `u` covers a sliver of
+/// the space a step in `v` does, and one scale for both would either miss
+/// rings along `v` or reach far past them across it. A chart step
+/// `(du, dv)` is within the band when `(du * su, dv * sv)` is within
+/// `reach`. Where both tangents vanish (a cone's apex) no chart distance
+/// corresponds to a spatial one, and the band covers the whole
+/// neighbourhood rather than closing to nothing.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChartBand {
+    reach: f64,
+    su: f64,
+    sv: f64,
+}
+
+impl ChartBand {
+    /// The widest the band reaches along any chart direction, in chart
+    /// units.
+    pub(crate) fn radius(self) -> f64 {
+        let scale = self.su.min(self.sv);
+        if scale <= 0.0 {
+            f64::INFINITY
+        } else {
+            self.reach / scale
+        }
+    }
+
+    /// Whether a ring passes within the band about `p`.
+    pub(crate) fn meets_ring(self, ring: &[Point2], p: Point2) -> bool {
+        if self.su <= 0.0 && self.sv <= 0.0 {
+            return true;
+        }
+        let scaled = |q: Point2| Point2::new((q.x - p.x) * self.su, (q.y - p.y) * self.sv);
+        let origin = Point2::new(0.0, 0.0);
+        (0..ring.len()).any(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            segment_distance_2d(origin, scaled(a), scaled(b)) <= self.reach
+        })
+    }
+
+    /// Whether any of the rings passes within the band about `p`.
+    pub(crate) fn meets_rings(self, rings: &[Vec<Point2>], p: Point2) -> bool {
+        rings.iter().any(|ring| self.meets_ring(ring, p))
+    }
+}
+
+/// The band a distance of `reach` in space makes about `(u, v)` in the
+/// chart, scaled by the surface's tangents there.
 pub(crate) fn parametric_band(
     surface: &ogeom_geom::SurfaceGeometry,
     at: (f64, f64),
     reach: f64,
     tol: Tolerances,
-) -> f64 {
+) -> ChartBand {
     use ogeom_geom::Surface;
     let Ok((du, dv)) = surface.d1_at(at.0, at.1, tol) else {
-        return reach;
+        return ChartBand {
+            reach,
+            su: 1.0,
+            sv: 1.0,
+        };
     };
-    let scale = du.magnitude().min(dv.magnitude());
-    if scale <= tol.confusion() {
-        return f64::INFINITY;
+    // A tangent shorter than the confusion distance is a collapsed one.
+    let scale = |t: ogeom_math::Vector| {
+        let m = t.magnitude();
+        if m <= tol.confusion() { 0.0 } else { m }
+    };
+    ChartBand {
+        reach,
+        su: scale(du),
+        sv: scale(dv),
     }
-    reach / scale
 }
 
 /// Whether the segment from `a` to `b` passes through the box, by slabs.
@@ -1281,6 +1317,67 @@ mod tests {
                 classify_in_solid(&model, &holed, p, fine(), T).unwrap(),
                 want,
                 "{p:?}"
+            );
+        }
+    }
+
+    /// A sphere's cap whose rim runs half a millimetre from the pole: near
+    /// the pole a step round the chart covers a twentieth of the space a
+    /// step toward it does, and the boundary band is read in space along
+    /// each, so points a tenth of a millimetre either side of the rim are in
+    /// and out, and only a point within the band is on it.
+    #[test]
+    fn points_beside_a_rim_near_a_sphere_s_pole_are_in_or_out() {
+        use core::f64::consts::TAU;
+        let mut model = Model::new();
+        let radius = 10.0;
+        let sphere = ogeom_math::Sphere::new(Frame::WORLD, radius, T).unwrap();
+        let surface: ogeom_geom::SurfaceGeometry = ogeom_geom::SphereSurface::new(sphere).into();
+        // The rim: the parallel at a polar distance of 0.5.
+        let height = |off: f64| (radius * radius - off * off).sqrt();
+        let rim_frame = Frame::new(
+            Point::new(0.0, 0.0, height(0.5)),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = ogeom_math::Circle::new(rim_frame, 0.5, T).unwrap();
+        let start = crate::make_vertex(&mut model, Point::new(0.5, 0.0, height(0.5))).shape;
+        let rim = crate::make_edge_between(
+            &mut model,
+            ogeom_geom::CircleCurve::new(circle).into(),
+            (0.0, TAU),
+            &start,
+            &start,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let top = crate::make_vertex(&mut model, Point::new(0.0, 0.0, radius)).shape;
+        let mut data = ogeom_topo::EdgeData::new();
+        data.degenerate = true;
+        let pole = model.add_edge(data, &[top.clone(), top]).unwrap();
+        let cap = crate::make_revolution_band(&mut model, &surface, &rim, &pole, T).unwrap();
+        // The side probe's own resolution: a chord of a hundredth.
+        let deflection = Deflection {
+            chord: 1e-2,
+            ..Deflection::default()
+        };
+        // Across the rim, on the side away from the seam.
+        let at = |off: f64| Point::new(-off, 0.0, height(off));
+        for (off, want) in [
+            (0.4, Containment::In),
+            (0.45, Containment::In),
+            (0.5, Containment::On),
+            (0.505, Containment::On),
+            (0.55, Containment::Out),
+            (0.6, Containment::Out),
+        ] {
+            assert_eq!(
+                classify_on_face(&model, &cap, at(off), deflection, T).unwrap(),
+                want,
+                "{off} from the pole"
             );
         }
     }

@@ -322,11 +322,18 @@ agree with the ring.
   rail is now split on the column half a turn from the hole and the seam
   leaves from there; the band walks the two pieces too. The wedge meshes
   within 0.2% of its measure and the blend measures the same at every turn
-  to 5e-9. Still open: with the bore turned to the ball's -y side the
-  blend refuses before the march, the side probe reading every point on
-  the sphere face near the pole as on its boundary; and a leg whose edge
-  winds round the pole while its rail does not still takes its seam from
-  the edge's vertex (no part measured builds one). The writer puts a trimmed curve that runs against its
+  to 5e-9. With the bore turned to the ball's -y side the rim's middle is
+  its point nearest the pole, and two things refused there. The face
+  classifier read the boundary band in the chart with one scale for both
+  directions, the smaller tangent's, so half a millimetre from the pole of
+  a ball of radius 10 the band reached twenty times too far toward the
+  pole and every side probe read on the boundary; each chart direction now
+  keeps its own scale. And the ball's touch on the sphere lies across the
+  pole from that point, where the seat's solve in the sphere's chart
+  cannot reach; the march is seeded at the edge's quarters when its middle
+  seats no ball. Still open: a leg whose edge winds round the pole while
+  its rail does not takes its seam from the edge's vertex (no part
+  measured builds one). The writer puts a trimmed curve that runs against its
   basis out at its own points: its range mirrored in its domain, walked
   the other way on the basis. The STEP writer puts a trim out as its
   spline over its own range, so a reversed trim already read back in
