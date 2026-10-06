@@ -311,12 +311,12 @@ fn nist_ftc_06() {
 /// chords on itself and fall back to facets. The corners of its drafted
 /// walls are cones meshed a few facets round, too few vertices to fit
 /// alone; the walls tangent to them fix them, and the tori at their foot
-/// seam to them. What falls back is the countersinks' cones.
+/// seam to them. Its drill points are cones closing at their apex.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_07() {
     let report = comes_back("nist_ftc_07_asme1_rd.stp", true, true);
-    assert!(report.curved_faceted <= 8, "{:?}", report.fallbacks);
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn nist_ftc_09() {
 #[ignore = "heavy"]
 fn nist_ftc_10() {
     let report = comes_back("nist_ftc_10_asme1_rb.stp", true, true);
-    assert!(report.faces <= 700, "{} faces came back", report.faces);
+    assert!(report.faces <= 520, "{} faces came back", report.faces);
     assert!(
         !report
             .fallbacks

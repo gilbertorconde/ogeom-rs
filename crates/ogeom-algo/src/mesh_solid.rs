@@ -2812,7 +2812,9 @@ enum Layout {
     /// A band between two full circles, joined by a seam: round the axis,
     /// or round a torus's tube.
     Band { round_tube: bool },
-    /// A sphere's cap: one latitude circle, a seam to the pole, and the pole.
+    /// A sphere's cap: one latitude circle, a seam to the pole, and the
+    /// pole; or a cone closing at its apex: one rim circle, a ruling to the
+    /// apex, and the apex.
     Cap,
     /// A sphere's cap with holes: one rim of any shape going round the
     /// axis, a seam from a vertex of it to the pole, straight in the chart
@@ -7565,7 +7567,9 @@ impl Planner<'_> {
                 Some(Layout::Threaded)
             } else if (curved.wraps && curved.wraps_v) || !circles {
                 wrapped()
-            } else if sphere && rings.len() == 1 && curved.fixed {
+            } else if rings.len() == 1
+                && ((sphere && curved.fixed) || self.cone_tip(&plan, curved, &rings[0]))
+            {
                 Some(Layout::Cap)
             } else if rings.len() == 2
                 && (!sphere || (curved.fixed && latitudes()))
@@ -7621,7 +7625,12 @@ impl Planner<'_> {
             if failed.contains(&g) || plan.loops[g].is_empty() {
                 continue;
             }
-            let surface = surface_of(curved, self.points, self.tol)?;
+            let surface = surface_of(
+                curved,
+                self.points,
+                plan.layouts[g] == Layout::Cap,
+                self.tol,
+            )?;
             if matches!(
                 plan.layouts[g],
                 Layout::Open
@@ -7670,6 +7679,46 @@ impl Planner<'_> {
         } else {
             Ok(Err(Replan::Facet(failed)))
         }
+    }
+
+    /// Whether a cone's face closes at its apex inside one rim: the rim one
+    /// full circle starting on the cone's seam, a vertex of the region at
+    /// the apex within the reach, and every vertex on the apex's own nappe.
+    /// A drill's point is such a face.
+    fn cone_tip(&self, plan: &Plan, curved: &Curved, ring: &[Half]) -> bool {
+        use ogeom_geom::Curve3d as _;
+        let Canonical::Cone(cone) = &curved.shape else {
+            return false;
+        };
+        let (edge, _) = self.entry(plan, ring[0]);
+        if edge == usize::MAX
+            || !plan.edges[edge].closed_circle
+            || ring.iter().any(|&h| self.entry(plan, h).0 != edge)
+        {
+            return false;
+        }
+        let Ok(start) = plan.edges[edge].curve.point_at(0.0, self.tol) else {
+            return false;
+        };
+        let Some((u, _)) = chart(&curved.shape, start, self.tol) else {
+            return false;
+        };
+        if ogeom_math::elementary::wrap_signed_angle(u).abs() > self.tol.parametric() {
+            return false;
+        }
+        let frame = cone.frame();
+        let axis = frame.z().vector();
+        let apex = frame.origin() + axis * (-cone.reference_radius() / cone.half_angle().tan());
+        let reach = self.flat * REACH;
+        let mut nearest = f64::INFINITY;
+        for &v in &curved.vertices {
+            let p = self.points[v as usize];
+            if (p - apex).dot(axis) < -reach {
+                return false;
+            }
+            nearest = nearest.min(p.distance(apex));
+        }
+        nearest <= reach
     }
 
     /// Whether a face round its axis has a seam clear of its holes, turning
@@ -9264,10 +9313,12 @@ fn plane_through(points: &[Point], tol: Tolerances) -> Option<(Point, Direction)
 }
 
 /// The surface a curved face is built on, windowed along its axis to hold
-/// every point its boundary reaches.
+/// every point its boundary reaches. A cone's window stops short of its
+/// apex, or ends on it where `to_apex` (a cap closing there).
 fn surface_of(
     curved: &Curved,
     points: &[Point],
+    to_apex: bool,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_geom::SurfaceGeometry> {
     use ogeom_geom::{ConeSurface, CylinderSurface, SphereSurface, TorusSurface};
@@ -9288,7 +9339,11 @@ fn surface_of(
             // Short of the apex, where the cone's radius runs out.
             let (lo, hi) = heights();
             let apex = -c.reference_radius() / c.half_angle().tan();
-            let lo = lo.max(apex + (hi - apex) * 1e-6);
+            let lo = if to_apex {
+                apex
+            } else {
+                lo.max(apex + (hi - apex) * 1e-6)
+            };
             ConeSurface::new(*c, (lo, hi))?.into()
         }
         Canonical::Sphere(s) => SphereSurface::new(*s).into(),
@@ -9586,7 +9641,10 @@ impl Builder<'_> {
                     Layout::Band { round_tube } => {
                         Some(self.band_face(curved, rings, &edges, round_tube)?)
                     }
-                    Layout::Cap => Some(self.cap_face(curved, rings, &edges)?),
+                    Layout::Cap => Some(match curved.shape {
+                        Canonical::Cone(_) => self.cone_tip_face(curved, rings, &edges)?,
+                        _ => self.cap_face(curved, rings, &edges)?,
+                    }),
                     Layout::HoledCap => Some(self.holed_cap_face(curved, g, rings, &edges)?),
                     Layout::Wrapped => Some(self.wrapped_face(curved, g, rings, &edges)?),
                     Layout::Holed => Some(self.holed_face(curved, g, rings, &edges)?),
@@ -10377,6 +10435,98 @@ impl Builder<'_> {
             oriented(&edges[rim], with),
             seam.clone(),
             tip.reversed(),
+            seam.reversed(),
+        ];
+        if !outward {
+            ring.reverse();
+            ring = ring.iter().map(Shape::reversed).collect();
+        }
+        let wire = self.model.add_wire(&ring)?;
+        let mut data = FaceData::new(surface, Location::identity());
+        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let face = self.model.add_face(data, std::slice::from_ref(&wire))?;
+        Ok(if outward { face } else { face.reversed() })
+    }
+
+    /// A cone closing at its apex inside its rim: the rim, a ruling seam
+    /// from the apex up to the rim's vertex on the cone's angle zero, and
+    /// the apex as an edge of no length.
+    fn cone_tip_face(
+        &mut self,
+        curved: &Curved,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+    ) -> OgeomResult<Shape> {
+        use ogeom_geom::Curve3d as _;
+        let tau = core::f64::consts::TAU;
+        let g = self.groups.of[rings[0][0] / 3];
+        let Canonical::Cone(cone) = curved.shape else {
+            ogeom_bail!(Construction, "a cone's tip is a cone's");
+        };
+        let Some(geometry) = self.plan.surfaces[g].clone() else {
+            ogeom_bail!(Construction, "a cone's tip was planned without its surface");
+        };
+        let surface = self.model.geometry_mut().add_surface(geometry);
+        let outward = self.outward(curved, g);
+        let frame = cone.frame();
+        let v_apex = -cone.reference_radius() / cone.half_angle().tan();
+        let (rim, _) = self.entry(rings[0][0]);
+        let spec = &self.plan.edges[rim];
+        let Curve::Circle(c) = &spec.curve else {
+            ogeom_bail!(Construction, "a cone's rim is not a circle");
+        };
+        let with = c.circle().frame().z().vector().dot(frame.z().vector()) > 0.0;
+        let start = spec.curve.point_at(0.0, self.tol)?;
+        let v_rim = (start - frame.origin()).dot(frame.z().vector());
+        let (a, b) = if with { (0.0, tau) } else { (tau, 0.0) };
+        crate::build::attach_pcurve(
+            self.model,
+            &edges[rim],
+            linear((a, v_rim), (b, v_rim), (0.0, tau), self.tol)?,
+            surface,
+            Location::identity(),
+            (0.0, tau),
+        )?;
+        let Some(rim_vertex) = self.model.children_of(&edges[rim])?.first().cloned() else {
+            ogeom_bail!(Construction, "a rim has no vertex");
+        };
+        let at_apex = frame.origin() + frame.z().vector() * v_apex;
+        let apex = self.model.add_vertex(VertexData::new(at_apex));
+        let seam_range = (0.0, at_apex.distance(start));
+        let id = self
+            .model
+            .geometry_mut()
+            .add_curve(LineCurve::segment(at_apex, start, self.tol)?.into());
+        let seam = self.model.add_edge(
+            EdgeData::on_curve(id, Location::identity(), seam_range),
+            &[apex.clone(), rim_vertex],
+        )?;
+        crate::build::attach_seam(
+            self.model,
+            &seam,
+            linear((tau, v_apex), (tau, v_rim), seam_range, self.tol)?,
+            linear((0.0, v_apex), (0.0, v_rim), seam_range, self.tol)?,
+            surface,
+            Location::identity(),
+            seam_range,
+        )?;
+        let mut data = EdgeData::new();
+        data.degenerate = true;
+        let tip = self.model.add_edge(data, &[apex.clone(), apex])?;
+        crate::build::attach_pcurve(
+            self.model,
+            &tip,
+            linear((0.0, v_apex), (tau, v_apex), (0.0, tau), self.tol)?,
+            surface,
+            Location::identity(),
+            (0.0, tau),
+        )?;
+        // Counter-clockwise in the chart: along the apex, up the seam's far
+        // side, back along the rim, down the seam's near side.
+        let mut ring = vec![
+            tip,
+            seam.clone(),
+            oriented(&edges[rim], !with),
             seam.reversed(),
         ];
         if !outward {

@@ -5403,3 +5403,60 @@ fn a_drafted_boss_s_faceted_corners_come_back_cones() {
     let drawn = ogeom::mesh::triangulate(&model, &built.shape, Deflection::default(), T).unwrap();
     assert!(drawn.is_closed());
 }
+
+/// A blind hole ending in a drill's point, a cone of 59 degrees half angle
+/// closing at its apex inside its one rim. The cone comes back one face
+/// running to its apex, with a ruling for its seam and the apex an edge of
+/// no length.
+#[test]
+fn a_drill_point_comes_back_a_cone_to_its_apex() {
+    let mut model = Model::new();
+    let (radius, half) = (3.175_f64, 59.0_f64.to_radians());
+    let depth = radius / half.tan();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let at = |z: f64| Frame::new(Point::new(10.0, 10.0, z), Direction::Z, Direction::X, T).unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, at(5.0), radius, 8.0, T)
+        .unwrap()
+        .shape;
+    let point = ogeom::algo::make_cone(&mut model, at(5.0 - depth), 0.0, radius, depth, T)
+        .unwrap()
+        .shape;
+    let drill = ogeom::boolean::fuse(&mut model, &bore, &point, T)
+        .unwrap()
+        .shape;
+    let part = ogeom::boolean::cut(&mut model, &block, &drill, T)
+        .unwrap()
+        .shape;
+    let mesh =
+        ogeom::mesh::triangulate(&model, &part, Deflection::with_chord(0.02).unwrap(), T).unwrap();
+    let mut back = Model::new();
+    let built = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(built.closed, "{:?}", built.report);
+    let diagnosis = check(&back, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(
+        built.report.curved_faceted, 0,
+        "{:?}",
+        built.report.fallbacks
+    );
+    let cones: Vec<f64> = explore_unique(&back, &built.shape, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter_map(|face| {
+            let data = back.node(face).unwrap().data().as_face().unwrap();
+            match back.geometry().surface(data.surface).unwrap() {
+                ogeom::geom::SurfaceGeometry::Cone(c) => Some(c.cone().half_angle()),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(cones.len(), 1, "{:?}", built.report);
+    assert!((cones[0].abs() - half).abs() < 1e-6, "{cones:?}");
+    let want = volume(&model, &part);
+    let got = volume(&back, &built.shape);
+    assert!((got - want).abs() < want * 1e-5, "{got} against {want}");
+    let drawn = ogeom::mesh::triangulate(&back, &built.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed());
+}

@@ -1001,8 +1001,29 @@ Done for ftc_07, in two steps:
   unchanged. A synthetic drafted boss (corners four facets round, a
   fillet at the foot) pins it: before, no cones and three tori folded.
 
-Open on ftc_07: the eight countersink cones (half angle 59 degrees)
-beside radius 3.175 cylinders fall back as BoundaryNotPlaced.
+Cones closing at their apex: done. ftc_07's eight cones of half angle 59
+degrees are drill points, not countersinks: each region is bounded by one
+circle (its bore's) and closes at its apex inside it, and only a sphere had
+a layout for one rim. A cone whose one rim is a full circle starting on its
+seam, with a vertex at its apex within the reach and every vertex on the
+apex's nappe, is now laid out as a cap: the rim, a ruling up from the apex,
+and the apex an edge of no length, the surface windowed down to the apex.
+Measured (faces, curved faces faceted, volume error, conversion time with
+six parts at once):
+
+| Part | Before | After |
+|---|---|---|
+| ftc_07 | 927, 8, 2.2e-5, 7.1 s | 695, 0, 1.8e-5, 6.5 s |
+| ctc_01 | 220, 2, 4.8e-6 | 150, 0, 4.0e-7 |
+| ctc_02 | 4104, 84, 1.3e-3, 15.5 s | 2106, 10, 1.3e-3, 12.7 s |
+| ctc_04 | 1184, 24, 1.5e-4, 6.0 s | 590, 2, 1.5e-4, 3.8 s |
+| ctc_05 | 648, 11, 1.2e-4 | 378, 1, 1.3e-4 |
+| ftc_06 | 403, 12, 8.6e-5 | 345, 10, 8.5e-5 |
+| ftc_10 | 687, 10, 1.4e-4 | 513, 4, 1.4e-4 (one ReachesPast) |
+
+All valid and tessellating closed; the other corpus parts, the truth
+bench and the stress baseline come back unchanged. A blind hole with a
+drill point, meshed and converted, pins it.
 
 **Flags the exact volume trusts.** `volume_properties` takes the closed
 form only where the faces' flags agree. The edge walks tie faces into sets
