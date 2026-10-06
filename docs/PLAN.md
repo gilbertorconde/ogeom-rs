@@ -347,6 +347,16 @@ changes pace onto the straight extension, is a step's end: read across
 it, the column's parameter kinked and the fit refined to a 421 by 259
 grid (11 s) at 1e-4 and failed at 1e-5. Now 0.1 s at 1e-4 and 0.3 s at
 1e-5 (9.0e-6).
+
+The exact area of a trimmed spline face grades an inner panel across
+which `|n|` dips almost to nothing (the surface folding over) towards the
+dip's bottom, found on the Legendre series of `n` at the panel's nodes;
+only a face whose first run shows such a panel watches for it. A wavy
+wall drafted 0.1 at a 1e-4 target (a 9 by 173 patch whose normal turns
+over in a sliver near a crest) doubled its panels five times, about 5 s,
+and stood 4.6e-10 off its area; it settles on the first doubling in
+0.07 s, within 1e-10. Volumes and every other area the tests measure are
+unchanged to the last bit.
 Left:
 - `check` passed a skinned loft whose nearly flat end patch faced into the
   solid (the exact volume then came out 607 for 1278), and the mesh's
@@ -362,13 +372,6 @@ Left:
   `build.rs` through `traced`; the sweeps through `fit_curve_sampled`);
   unifying them means picking one rule and re-measuring those callers,
   with a 2D form added to ogeom-geom.
-- The exact integral round a face's chart loops settles a volume on the
-  flux integrands it sums (the volume, first and second moments) and an
-  area also on `|n dA|`. Near a fold of the surface `|n|` almost vanishes
-  and its integral converges slowly: the area of a wavy wall drafted 0.1
-  at a 1e-4 target (a 9 by 173 patch, `|n|` from 0.045 to 643) still
-  doubles its panels five times, about 10 s, where its volume settles on
-  the first doubling in 0.1 s.
 - `general_draft` on a closed face whose seam is closed only to position
   (a skinned loft's wall): the face's normal turns across the seam and the
   exact draft's rulings with it, so the drafted wall closes on the mean

@@ -24,7 +24,10 @@
 //! moments, an area's also on `|n dA|`. A short boundary panel on an
 //! analytic surface takes as few points as its error bound allows, and the
 //! inner integrals there, exact on quarter turns, are not refined between
-//! runs.
+//! runs. Near a fold of a spline surface `|n|` dips almost to nothing
+//! between two nodes of an inner panel, and no uniform split takes
+//! `|n dA|` there quickly: an area's inner panel across such a dip is
+//! graded towards its bottom instead.
 //!
 //! A pcurve that lifts off its edge's own curve by more than a fitted curve
 //! states (on a curve with a closed form, by more than a hundred confusion
@@ -917,6 +920,18 @@ pub(crate) enum Measure {
     Volume,
 }
 
+/// How an inner integral treats a panel across which `|n|` dips.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Folds {
+    /// Integrated as any other.
+    Ignore,
+    /// Integrated as any other, and reported.
+    Watch,
+    /// Graded towards the dip where there is one (see [`fold_in`]), and
+    /// reported.
+    Grade,
+}
+
 /// The measures two runs are compared by: `|n dA|` (an area's only),
 /// `n dA`, the flux of the point, and a volume's first and second moment
 /// integrands.
@@ -946,7 +961,23 @@ impl ChartFace {
         fresh: impl Fn() -> A,
         contribute: impl Fn(&mut A, Point, Vector, f64),
     ) -> Option<A> {
-        let (mut held, reach) = self.run(1, measure, reference, tol, &mut |_| {}).ok()?;
+        // An area's first run watches for `|n|` dipping across an inner
+        // panel; where it does, that run and every finer one grade such
+        // panels towards the dip (see [`fold_in`]).
+        let watch = if measure == Measure::Area {
+            Folds::Watch
+        } else {
+            Folds::Ignore
+        };
+        let (mut held, mut reach, dipped) = self
+            .run(1, measure, watch, reference, tol, &mut |_| {})
+            .ok()?;
+        let folds = if dipped { Folds::Grade } else { Folds::Ignore };
+        if dipped {
+            (held, reach, _) = self
+                .run(1, measure, folds, reference, tol, &mut |_| {})
+                .ok()?;
+        }
         // The moments are weighed against the volume by the face's reach
         // from the reference, the same for every run: once for the first,
         // twice for the second.
@@ -971,10 +1002,17 @@ impl ChartFace {
                 return None;
             }
             let mut sum = fresh();
-            let (proxy, _) = self
-                .run(1 << doubling, measure, reference, tol, &mut |(p, n, w)| {
-                    contribute(&mut sum, p, n * w.abs(), w.signum());
-                })
+            let (proxy, _, _) = self
+                .run(
+                    1 << doubling,
+                    measure,
+                    folds,
+                    reference,
+                    tol,
+                    &mut |(p, n, w)| {
+                        contribute(&mut sum, p, n * w.abs(), w.signum());
+                    },
+                )
                 .ok()?;
             let proxy = weigh(proxy);
             if settled(held, proxy) {
@@ -987,18 +1025,21 @@ impl ChartFace {
 
     /// The face's samples with every panel split `fine` ways, each handed to
     /// `sink` in a fixed order, the integrals of a few measures over them to
-    /// compare runs by, and the farthest sample's squared distance from
-    /// `reference`.
+    /// compare runs by, the farthest sample's squared distance from
+    /// `reference`, and whether `|n|` dipped across an inner panel where
+    /// `folds` watches for it.
     fn run(
         &self,
         fine: u32,
         measure: Measure,
+        folds: Folds,
         reference: Point,
         tol: Tolerances,
         sink: &mut dyn FnMut(Sample),
-    ) -> OgeomResult<(Proxy, f64)> {
+    ) -> OgeomResult<(Proxy, f64, bool)> {
         let mut proxy = [0.0; PROXIES];
         let mut reach = 0.0_f64;
+        let mut dipped = false;
         let size = self.scale.max(1.0);
         let mut take = |(p, n, w): Sample| {
             let e = p - reference;
@@ -1058,7 +1099,8 @@ impl ChartFace {
                         let b = pair[0] + (pair[1] - pair[0]) * f64::from(k + 1) / f64::from(fine);
                         for (t, wt) in rule(order, a, b) {
                             let (at, d) = segment.at(t, tol)?;
-                            self.inner(at, region * wt * d.y, fine, tol, &mut take)?;
+                            dipped |=
+                                self.inner(at, region * wt * d.y, fine, folds, tol, &mut take)?;
                         }
                     }
                 }
@@ -1066,10 +1108,17 @@ impl ChartFace {
         }
         for &(start, step, region) in &self.bridges {
             for (t, wt) in gauss_legendre_rule(0.0, 1.0) {
-                self.inner(start + step * t, region * wt * step.y, fine, tol, &mut take)?;
+                dipped |= self.inner(
+                    start + step * t,
+                    region * wt * step.y,
+                    fine,
+                    folds,
+                    tol,
+                    &mut take,
+                )?;
             }
         }
-        Ok((proxy, reach))
+        Ok((proxy, reach, dipped))
     }
 
     /// The rulings of a piece's strip at `t`, its samples weighted by
@@ -1277,32 +1326,37 @@ impl ChartFace {
     }
 
     /// The inner integral from `u_ref` to the boundary point `at`, along
-    /// `u` at its `v`, its samples weighted by `outer`.
+    /// `u` at its `v`, its samples weighted by `outer`, and whether `|n|`
+    /// dipped across one of its panels where `folds` watches for it.
     fn inner(
         &self,
         at: Point2,
         outer: f64,
         fine: u32,
+        folds: Folds,
         tol: Tolerances,
         sink: &mut dyn FnMut(Sample),
-    ) -> OgeomResult<()> {
+    ) -> OgeomResult<bool> {
         let at = into_domain(&self.surface, at);
         let (ua, ub) = (self.u_ref, at.x);
         if ua == ub || outer == 0.0 {
-            return Ok(());
+            return Ok(false);
         }
         // Along `u` at a fixed `v`, an analytic surface's point, `n dA` and
         // its length are trigonometric polynomials in `u` (polynomials on a
         // plane), which a quarter-turn panel takes to rounding: only the
-        // boundary's own panels are refined between runs there.
-        let refined = match self.surface {
+        // boundary's own panels are refined between runs there, and none
+        // is graded.
+        let analytic = matches!(
+            self.surface,
             SurfaceGeometry::Plane(_)
-            | SurfaceGeometry::Cylinder(_)
-            | SurfaceGeometry::Cone(_)
-            | SurfaceGeometry::Sphere(_)
-            | SurfaceGeometry::Torus(_) => 1,
-            _ => fine,
-        };
+                | SurfaceGeometry::Cylinder(_)
+                | SurfaceGeometry::Cone(_)
+                | SurfaceGeometry::Sphere(_)
+                | SurfaceGeometry::Torus(_)
+        );
+        let refined = if analytic { 1 } else { fine };
+        let folds = if analytic { Folds::Ignore } else { folds };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let pieces = if matches!(self.surface, SurfaceGeometry::Plane(_)) {
             1
@@ -1321,18 +1375,229 @@ impl ChartFace {
         }
         cuts.dedup();
         let isoline = Isoline::of(&self.surface, at.y, tol);
+        let mut dipped = false;
+        let mut normals = [Vector::ZERO; 10];
         for pair in cuts.windows(2) {
             let (a, b) = (pair[0], pair[1]);
-            for (u, wu) in gauss_legendre_rule(a, b) {
+            if folds == Folds::Ignore {
+                for (u, wu) in gauss_legendre_rule(a, b) {
+                    let (p, du, dv) = match isoline.as_ref().and_then(|line| line.at(u, tol)) {
+                        Some(found) => found,
+                        None => self.surface.point_d1_at(u, at.y, tol)?,
+                    };
+                    sink((p, du.cross(dv) * self.sign, outer * wu));
+                }
+                continue;
+            }
+            let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
+            for ((u, wu), slot) in gauss_legendre_rule(a, b).into_iter().zip(&mut normals) {
                 let (p, du, dv) = match isoline.as_ref().and_then(|line| line.at(u, tol)) {
                     Some(found) => found,
                     None => self.surface.point_d1_at(u, at.y, tol)?,
                 };
-                sink((p, du.cross(dv) * self.sign, outer * wu));
+                let n = du.cross(dv) * self.sign;
+                let q = n.dot(n);
+                (least, most) = (least.min(q), most.max(q));
+                *slot = n;
+                sink((p, n, outer * wu));
+            }
+            // Near its bottom a dip of `|n|` runs up both sides in
+            // proportion to the distance, so a dip anywhere on the panel,
+            // or just past its end, brings some node below half the
+            // largest; a panel whose nodes all stand above that has none.
+            if least < 0.25 * most {
+                dipped = true;
+                if folds == Folds::Grade {
+                    self.regrade(isoline.as_ref(), at.y, (a, b), &normals, outer, tol, sink)?;
+                }
+            }
+        }
+        Ok(dipped)
+    }
+
+    /// An inner panel from `a` to `b` along `u` at `v`, whose samples
+    /// (with `n` at its nodes `normals`) were summed, graded towards where
+    /// `|n|` dips if it does (see [`fold_in`]): its samples are taken back,
+    /// each summed again with its weight negated, and the graded panels'
+    /// summed instead.
+    #[cold]
+    #[allow(clippy::too_many_arguments)]
+    fn regrade(
+        &self,
+        isoline: Option<&Isoline<'_>>,
+        v: f64,
+        (a, b): (f64, f64),
+        normals: &[Vector; 10],
+        outer: f64,
+        tol: Tolerances,
+        sink: &mut dyn FnMut(Sample),
+    ) -> OgeomResult<()> {
+        let Some((x, levels)) = fold_in(normals) else {
+            return Ok(());
+        };
+        let point = |u: f64| -> OgeomResult<(Point, Vector)> {
+            let (p, du, dv) = match isoline.and_then(|line| line.at(u, tol)) {
+                Some(found) => found,
+                None => self.surface.point_d1_at(u, v, tol)?,
+            };
+            Ok((p, du.cross(dv) * self.sign))
+        };
+        for (u, wu) in gauss_legendre_rule(a, b) {
+            let (p, n) = point(u)?;
+            sink((p, n, -outer * wu));
+        }
+        let fold = f64::midpoint(a, b) + (b - a) * 0.5 * x;
+        for (from, to) in graded(a, fold, b, levels) {
+            for (u, wu) in gauss_legendre_rule(from, to) {
+                let (p, n) = point(u)?;
+                sink((p, n, outer * wu));
             }
         }
         Ok(())
     }
+}
+
+/// How small `|n|` may grow across an inner panel, against its largest
+/// at the panel's nodes, before the panel is graded towards the fold.
+const DIP: f64 = 0.25;
+
+/// The ten-point rule's Legendre transform on `[-1, 1]`: row `k` carries
+/// each node's share of the `k`-th Legendre coefficient of the values
+/// there, exact for a polynomial of degree nine or less.
+fn legendre_transform() -> &'static [[f64; 10]; 10] {
+    static TABLE: std::sync::OnceLock<[[f64; 10]; 10]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [[0.0; 10]; 10];
+        for (i, (x, w)) in gauss_legendre_rule(-1.0, 1.0).into_iter().enumerate() {
+            let (mut before, mut p) = (0.0, 1.0);
+            for (k, row) in table.iter_mut().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let k = k as f64;
+                row[i] = (2.0 * k + 1.0) * 0.5 * w * p;
+                let next = ((2.0 * k + 1.0) * x * p - k * before) / (k + 1.0);
+                (before, p) = (p, next);
+            }
+        }
+        table
+    })
+}
+
+/// The Legendre series `c` at `x` in `[-1, 1]`.
+fn legendre_at(c: &[Vector; 10], x: f64) -> Vector {
+    let (mut before, mut p) = (0.0, 1.0);
+    let mut sum = Vector::ZERO;
+    for (k, ck) in c.iter().enumerate() {
+        sum += *ck * p;
+        #[allow(clippy::cast_precision_loss)]
+        let k = k as f64;
+        let next = ((2.0 * k + 1.0) * x * p - k * before) / (k + 1.0);
+        (before, p) = (p, next);
+    }
+    sum
+}
+
+/// Where along an inner panel `|n|` nearly vanishes, from `n` at the
+/// panel's ten Gauss nodes: the place in `[-1, 1]` and how many times the
+/// panel is halved towards it to resolve the dip. `None` where `|n|` stays
+/// above [`DIP`] of its largest at the nodes, or vanishes only at the
+/// panel's end.
+///
+/// Along `u` at a fixed `v` a polynomial patch's `n` is a polynomial of
+/// degree `2p - 1` within a knot span, which the nodes' Legendre series
+/// gives exactly up to degree five in `u`. Near a fold `|n|` dips to a sliver
+/// the nodes can step over, and `sqrt(|n|^2)` there converges slowly under
+/// any uniform split; the series finds the dip, and panels halving towards
+/// it down to its width take it to rounding.
+fn fold_in(normals: &[Vector; 10]) -> Option<(f64, u32)> {
+    let largest = normals.iter().map(|n| n.magnitude()).fold(0.0, f64::max);
+    if largest == 0.0 {
+        return None;
+    }
+    let table = legendre_transform();
+    let mut c = [Vector::ZERO; 10];
+    for (ck, row) in c.iter_mut().zip(table) {
+        for (n, share) in normals.iter().zip(row) {
+            *ck += *n * *share;
+        }
+    }
+    // `|n|` stays at least the mean's length less every other term's,
+    // each Legendre polynomial at most one in size.
+    let rest: f64 = c[1..].iter().map(|ck| ck.magnitude()).sum();
+    if c[0].magnitude() - rest > DIP * largest {
+        return None;
+    }
+    let squared = |x: f64| {
+        let n = legendre_at(&c, x);
+        n.dot(n)
+    };
+    const SAMPLES: u32 = 32;
+    let step = 2.0 / f64::from(SAMPLES);
+    let (mut best, mut low) = (-1.0, squared(-1.0));
+    for k in 1..=SAMPLES {
+        let x = -1.0 + step * f64::from(k);
+        let q = squared(x);
+        if q < low {
+            (best, low) = (x, q);
+        }
+    }
+    let (mut a, mut b) = ((best - step).max(-1.0), (best + step).min(1.0));
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..50 {
+        let (c1, c2) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        if squared(c1) < squared(c2) {
+            b = c2;
+        } else {
+            a = c1;
+        }
+    }
+    let x = f64::midpoint(a, b);
+    let low = squared(x);
+    if low.sqrt() > DIP * largest {
+        return None;
+    }
+    // The dip's width from `|n|^2 = m^2 + q (x - x*)^2` about its bottom.
+    let h = 1e-3;
+    let bend: f64 = ((squared(x + h) + squared(x - h) - 2.0 * low) / (h * h) * 0.5).max(0.0);
+    let width: f64 = if bend > 0.0 { (low / bend).sqrt() } else { 0.0 };
+    // Each side of the bottom, `|n|` runs as `sqrt(t^2 + w^2)` in the
+    // distance `t`, which the rule takes to within about `w^2` of the
+    // panel's own integral: a dip narrower than [`NARROW`] needs only the
+    // cut at its bottom, and none at the panel's end (a pole on its edge).
+    if width < NARROW {
+        return (x.abs() < 1.0 - 1e-6).then_some((x, 0));
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let levels = ((2.0 / width).log2().ceil() + 2.0) as u32;
+    Some((x, levels))
+}
+
+/// How narrow a dip of `|n|`, against the panel's half-width, is taken
+/// without grading towards it.
+const NARROW: f64 = 1e-6;
+
+/// The panels from `a` to `b` halving towards `fold` between them, `levels`
+/// on each side, in order.
+fn graded(a: f64, fold: f64, b: f64, levels: u32) -> Vec<(f64, f64)> {
+    let mut panels = Vec::with_capacity(2 * levels as usize + 2);
+    if fold != a {
+        let mut from = a;
+        for k in 1..=levels {
+            let to = fold + (a - fold) * 0.5_f64.powi(k.cast_signed());
+            panels.push((from, to));
+            from = to;
+        }
+        panels.push((from, fold));
+    }
+    if fold != b {
+        let mut from = fold;
+        for k in (1..=levels).rev() {
+            let to = fold + (b - fold) * 0.5_f64.powi(k.cast_signed());
+            panels.push((from, to));
+            from = to;
+        }
+        panels.push((from, b));
+    }
+    panels
 }
 
 /// A polynomial spline patch read along one `v`: its control net summed
@@ -1378,6 +1643,7 @@ impl<'a> Isoline<'a> {
     }
 
     /// The point, `du` and `dv` at `u`; `None` off the knots' domain.
+    #[inline(always)]
     fn at(&self, u: f64, tol: Tolerances) -> Option<(Point, Vector, Vector)> {
         let span = self.knots.span(u, tol).ok()?;
         let p = self.knots.degree();
@@ -1427,5 +1693,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A normal that nearly vanishes between two of a panel's nodes, as
+    /// across a fold: `n = (x - b, e, 0)`, so `|n| = sqrt((x - b)^2 + e^2)`
+    /// with a closed-form integral. The dip is found, and the panels graded
+    /// towards it integrate `|n|` to rounding where the plain rule misses
+    /// by orders of magnitude more. A normal vanishing at the panel's end
+    /// (a pole on its edge) is left to the plain rule.
+    #[test]
+    fn a_dip_of_the_normal_between_nodes_is_graded_to_rounding() {
+        let (bottom, e) = (0.3, 1e-4);
+        let normal = |x: f64| Vector::new(x - bottom, e, 0.0);
+        let primitive = |t: f64| 0.5 * (t * t.hypot(e) + e * e * (t / e).asinh());
+        let exact = primitive(1.0 - bottom) - primitive(-1.0 - bottom);
+        let rule = gauss_legendre_rule(-1.0, 1.0);
+        let normals = rule.map(|(x, _)| normal(x));
+        let plain: f64 = rule.iter().map(|&(x, w)| normal(x).magnitude() * w).sum();
+        let Some((x, levels)) = fold_in(&normals) else {
+            panic!("the dip is not found");
+        };
+        // The bottom is found on the nodes' Legendre series, which carries
+        // this linear normal exactly.
+        assert!((x - bottom).abs() < 1e-9, "dip found at {x}");
+        let graded: f64 = graded(-1.0, x, 1.0, levels)
+            .into_iter()
+            .flat_map(|(a, b)| gauss_legendre_rule(a, b))
+            .map(|(u, w)| normal(u).magnitude() * w)
+            .sum();
+        // Rounding over a few hundred samples of an integral of about one.
+        assert!(
+            (graded - exact).abs() < 1e-13,
+            "graded {graded} against {exact}"
+        );
+        assert!(
+            (plain - exact).abs() > 1e-6,
+            "plain {plain} against {exact}"
+        );
+
+        let pole = rule.map(|(x, _)| Vector::new(x + 1.0, 0.0, 0.0));
+        assert!(fold_in(&pole).is_none(), "a pole on the panel's end");
     }
 }

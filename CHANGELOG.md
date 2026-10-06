@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **The area of a spline face that folds over settles at once.** Where a
+  trimmed spline face's normal nearly vanishes inside it, the exact area
+  graded its panels towards the fold instead of halving them all: a wavy
+  wall drafted 0.1 takes 0.07 s instead of about 5 s, and its area is more
+  accurate. Other areas and every volume are unchanged.
+
 ### Fixed
 
 - **A void turned inside out is weighed as a void.** `volume_properties`
