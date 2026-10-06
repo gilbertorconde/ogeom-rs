@@ -344,3 +344,28 @@ fn the_plate_round_trips_through_step_with_its_outer_bounds() {
     assert!((v - want).abs() < 1e-3, "{v} against {want}");
 }
 
+/// IGES: the reversed base alone goes out as a trimmed surface whose
+/// outer boundary is the square. The square's edges are used reversed in
+/// the profile, so the base walks each of them forward.
+#[test]
+fn the_reversed_base_round_trips_through_iges_as_a_trimmed_surface() {
+    let mut model = Model::new();
+    let (_, base) = plate_of(&mut model, true);
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("base", base);
+    let text = ogeom::io::write_iges(&document, T).unwrap();
+    let import = ogeom::io::read_iges(&text, T).unwrap();
+    let back = import.document.model();
+    let faces: Vec<Shape> = import
+        .document
+        .products()
+        .filter_map(|(_, p)| match &p.kind {
+            ogeom::doc::ProductKind::Part { shape } => Some(shape.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(faces.len(), 1);
+    outer_first(back, &faces[0]);
+    let a = area(back, &faces[0]);
+    assert!((a - net_area()).abs() < 1e-2, "{a} against {}", net_area());
+}

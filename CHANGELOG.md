@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`Model::outer_wire`.** A face's outer wire, read from the stored order
+  (outer first) whichever way the face is used; a reversed face's walk
+  lists its holes first.
+
+### Fixed
+
+- **A reversed face's holes are no longer taken for its outer wire.** STEP
+  export of a reversed face with holes marked a hole as
+  `FACE_OUTER_BOUND`, and IGES export of one as a trimmed surface wrote a
+  hole as the outer boundary, so other readers were told the hole bounds
+  the face; a fixed-section pipe of such a face faced its side walls into
+  the material and stored a cap's hole as its outer wire. Each reads the
+  stored order. Point classification uses its lazy hole rings on such
+  faces too, with answers unchanged.
+
 ## [0.9.6] - 2026-10-06
 
 A patch release: no breaking API changes. It closes issues #127 to #132:

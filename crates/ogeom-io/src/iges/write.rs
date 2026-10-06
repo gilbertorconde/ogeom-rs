@@ -292,8 +292,10 @@ impl Writer<'_> {
         } else {
             self.surface(&surface)?
         };
+        // Stored order, the outer boundary first; the walk of a reversed
+        // face lists its holes first.
         let mut boundaries = Vec::new();
-        for wire in self.model.ordered_children_of(face)? {
+        for wire in self.model.children_of(face)? {
             if let Some(curve) = self.boundary_curve(&wire)? {
                 // Unspecified creation, no parameter-space curve, the
                 // model-space curve preferred.
