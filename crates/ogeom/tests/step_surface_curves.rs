@@ -2,9 +2,12 @@
 //! the reference kernel writes.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/pcurves.rs"]
+mod pcurves;
+
 use ogeom::topo::Model;
 use ogeom_core::Tolerances;
-use ogeom_math::Frame;
+use ogeom_math::{Direction, Frame, Point};
 use ogeom_mesh::Deflection;
 
 const T: Tolerances = Tolerances::millimetres();
@@ -92,4 +95,96 @@ fn an_edge_dressed_as_a_surface_curve_still_reads() {
         "no edge was skipped: {:?}",
         import.report.warnings
     );
+}
+
+/// Primitives with seams and poles, and a loft whose skew walls are spline
+/// patches, written and read back: every pcurve the file carries comes
+/// back as the source held it, a seam's two sides included, and the solid
+/// is valid with its volume.
+#[test]
+fn pcurves_written_with_their_edges_come_back_as_written() {
+    let mut model = Model::new();
+    let at = |x: f64| Frame::new(Point::new(x, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let mut parts = vec![
+        (
+            "cylinder",
+            ogeom::algo::make_cylinder(&mut model, at(0.0), 3.0, 5.0, T)
+                .unwrap()
+                .shape,
+        ),
+        (
+            "cone",
+            ogeom::algo::make_cone(&mut model, at(10.0), 3.0, 1.0, 4.0, T)
+                .unwrap()
+                .shape,
+        ),
+        (
+            "sphere",
+            ogeom::algo::make_sphere(&mut model, at(20.0), 2.5, T)
+                .unwrap()
+                .shape,
+        ),
+        (
+            "torus",
+            ogeom::algo::make_torus(&mut model, at(30.0), 4.0, 1.0, T)
+                .unwrap()
+                .shape,
+        ),
+    ];
+    // A square lofted to the same square an eighth of a turn round: its
+    // four walls are bilinear spline patches.
+    let square = |model: &mut Model, turn: f64, z: f64| {
+        let corners: Vec<Point> = (0..4)
+            .map(|i| {
+                let angle = turn + core::f64::consts::FRAC_PI_2 * f64::from(i);
+                Point::new(50.0 + 3.0 * angle.cos(), 3.0 * angle.sin(), z)
+            })
+            .collect();
+        ogeom::algo::make_polygon(model, &corners, true, T)
+            .unwrap()
+            .shape
+    };
+    let bottom = square(&mut model, 0.0, 0.0);
+    let top = square(&mut model, core::f64::consts::FRAC_PI_4, 5.0);
+    parts.push((
+        "twisted loft",
+        ogeom::offset::make_loft(&mut model, &bottom, &top, T)
+            .unwrap()
+            .shape,
+    ));
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    for (name, shape) in parts {
+        let before = ogeom::algo::volume_properties(&model, &shape, fine, T)
+            .unwrap()
+            .mass;
+        let mut document = ogeom::doc::Document::over(model.clone());
+        document.add_part(name, shape.clone());
+        let text = ogeom::io::write_step(&document, T).unwrap();
+        assert!(text.contains("PCURVE("), "{name}: the edges carry pcurves");
+        if name != "twisted loft" {
+            assert!(
+                text.contains("SEAM_CURVE("),
+                "{name}: a seam is written as one"
+            );
+        }
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let back = import.document.model();
+        let [solid] = import.solids.as_slice() else {
+            panic!("{name}: {} solids came back", import.solids.len());
+        };
+        let diagnosis = ogeom::algo::check(back, solid, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        let (same, total) = pcurves::kept((&model, &shape), (back, solid), T);
+        assert!(total > 0, "{name}: the read solid holds pcurves");
+        assert_eq!(same, total, "{name}: pcurves come back as written");
+        let after = ogeom::algo::volume_properties(back, solid, fine, T)
+            .unwrap()
+            .mass;
+        // Both measured at the same fine chord; the same geometry and the
+        // same trims leave only where the meshes place their points.
+        assert!(
+            (after - before).abs() <= before * 1e-6,
+            "{name}: {before} went out, {after} came back"
+        );
+    }
 }

@@ -271,6 +271,9 @@ type BuiltEdge = (Shape, Curve, (f64, f64), bool);
 /// model, no order), and it is most of the time spent building solids. So
 /// it is done for a whole solid at once, off the walk that attaches it.
 enum PreparedPcurve {
+    /// The file stated it, and it stands `off` from the curve once lifted,
+    /// within what the edge's own tolerance allows.
+    Stated { curve: PlanarCurve, off: f64 },
     /// The projection had a closed form, standing `off` from the curve
     /// once lifted.
     Exact { curve: PlanarCurve, off: f64 },
@@ -1076,8 +1079,7 @@ impl<'a> Reader<'a> {
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
                 // A curve dressed in its surface associations: what many
                 // exporters write for every edge. The 3D curve is the first
-                // argument; the pcurve list is advisory and this reader
-                // re-derives its own, so unwrapping is the whole job.
+                // argument; the pcurves are read where a face asks for them.
                 self.curve(args.get(1).and_then(Arg::reference).unwrap_or(0))?
             }
             "BEZIER_CURVE" | "UNIFORM_CURVE" | "QUASI_UNIFORM_CURVE" => {
@@ -1445,6 +1447,199 @@ impl<'a> Reader<'a> {
     /// The parameter of a point on one of this kernel's curves.
     fn parameter_of(&self, curve: &Curve, p: Point) -> Option<f64> {
         crate::inversion::parameter_on(curve, p)
+    }
+
+    /// The pcurves the file states for edge `edge_id` on surface entity
+    /// `surface_id`: the `PCURVE`s of its `SURFACE_CURVE` or `SEAM_CURVE`
+    /// drawn on that surface, as written. Nothing where the file states
+    /// none, or states them in a form not read here.
+    fn file_pcurves(&mut self, edge_id: u64, surface_id: u64) -> Vec<PlanarCurve> {
+        let mut out = Vec::new();
+        let Ok(args) = self.args(edge_id, "EDGE_CURVE") else {
+            return out;
+        };
+        let Ok(instance) = self.instance(ref_at(args, 3)) else {
+            return out;
+        };
+        let Some(dressed) = instance
+            .part("SURFACE_CURVE")
+            .or_else(|| instance.part("SEAM_CURVE"))
+            .or_else(|| instance.part("INTERSECTION_CURVE"))
+        else {
+            return out;
+        };
+        let uses: Vec<u64> = dressed
+            .get(2)
+            .and_then(Arg::list)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Arg::reference)
+            .collect();
+        for id in uses {
+            let Ok(pargs) = self.args(id, "PCURVE") else {
+                continue;
+            };
+            if pargs.get(1).and_then(Arg::reference) != Some(surface_id) {
+                continue;
+            }
+            let Ok(dargs) = self.args(ref_at(pargs, 2), "DEFINITIONAL_REPRESENTATION") else {
+                continue;
+            };
+            let Some(item) = dargs
+                .get(1)
+                .and_then(Arg::list)
+                .and_then(|items| items.first())
+                .and_then(Arg::reference)
+            else {
+                continue;
+            };
+            if let Ok(Some(curve)) = self.nested(|reader| reader.planar_curve(item)) {
+                out.push(curve);
+            }
+        }
+        out
+    }
+
+    /// A curve in a surface's parameters, its coordinates as written: a
+    /// line, a circle, an ellipse, a spline, or a trim of one, which is its
+    /// basis.
+    fn planar_curve(&mut self, id: u64) -> OgeomResult<Option<PlanarCurve>> {
+        let instance = self.instance(id)?;
+        let (base, knotted, weights) = (
+            instance.part("B_SPLINE_CURVE"),
+            instance.part("B_SPLINE_CURVE_WITH_KNOTS"),
+            instance.part("RATIONAL_B_SPLINE_CURVE"),
+        );
+        // A spline's degree, control points and knots sit at these places
+        // in a simple instance, and split between parts in a complex one.
+        let spline = match (base, knotted) {
+            (Some(base), Some(knotted)) => {
+                Some((base.first(), base.get(1), knotted.first(), knotted.get(1)))
+            }
+            (None, Some(knotted)) => Some((
+                knotted.get(1),
+                knotted.get(2),
+                knotted.get(6),
+                knotted.get(7),
+            )),
+            _ => None,
+        };
+        if let Some((degree, control, mults, knots)) = spline {
+            let degree = file_degree(degree, 0.0)?;
+            let mut points = Vec::new();
+            for r in control
+                .and_then(Arg::list)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Arg::reference)
+            {
+                points.push(self.point2(r)?);
+            }
+            let expanded = expanded_knots(
+                mults.and_then(Arg::list).unwrap_or(&[]),
+                knots.and_then(Arg::list).unwrap_or(&[]),
+            )?;
+            let flat: Vec<f64> = weights
+                .and_then(|w| w.first())
+                .and_then(Arg::list)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Arg::number)
+                .collect();
+            let control = points
+                .into_iter()
+                .zip(flat.iter().chain(std::iter::repeat(&1.0)))
+                .map(|(p, w)| Weighted::new(p, *w, self.tol))
+                .collect::<OgeomResult<Vec<_>>>()?;
+            let knots = KnotVector::new(expanded, degree)?;
+            return Ok(Some(
+                ogeom_geom::BSpline2d::rational(knots, control)?.into(),
+            ));
+        }
+        let args = instance
+            .parts
+            .first()
+            .map_or(&[][..], |(_, a)| a.as_slice());
+        let out: PlanarCurve = match instance.keyword() {
+            "LINE" => {
+                let through = self.point2(ref_at(args, 1))?;
+                let vector = self.args(ref_at(args, 2), "VECTOR")?;
+                let direction = self.direction2(vector[1].reference().unwrap_or(0))?;
+                // The vector's magnitude is the parameter's pace along the
+                // line. A unit one is the length a line here runs by; any
+                // other is the straight spline of degree one at that pace.
+                let magnitude = vector.get(2).and_then(Arg::number).unwrap_or(1.0);
+                if magnitude == 1.0 {
+                    let axis = ogeom_math::Axis2 {
+                        location: through,
+                        direction,
+                    };
+                    ogeom_geom::Line2d::over(axis, -SURFACE_EXTENT, SURFACE_EXTENT)?.into()
+                } else {
+                    let step = direction.vector() * magnitude;
+                    let ends = vec![
+                        through - step * SURFACE_EXTENT,
+                        through + step * SURFACE_EXTENT,
+                    ];
+                    let knots = vec![
+                        -SURFACE_EXTENT,
+                        -SURFACE_EXTENT,
+                        SURFACE_EXTENT,
+                        SURFACE_EXTENT,
+                    ];
+                    ogeom_geom::BSpline2d::new(KnotVector::new(knots, 1)?, ends, self.tol)?.into()
+                }
+            }
+            "CIRCLE" => {
+                let frame = self.frame2(ref_at(args, 1))?;
+                let radius = args.get(2).and_then(Arg::number).unwrap_or(0.0);
+                ogeom_geom::Circle2d::new(ogeom_math::Circle2::new(frame, radius, self.tol)?).into()
+            }
+            "ELLIPSE" => {
+                let frame = self.frame2(ref_at(args, 1))?;
+                let a = args.get(2).and_then(Arg::number).unwrap_or(0.0);
+                let b = args.get(3).and_then(Arg::number).unwrap_or(0.0);
+                ogeom_geom::Ellipse2d::new(ogeom_math::Ellipse2::new(frame, a, b, self.tol)?).into()
+            }
+            "TRIMMED_CURVE" => {
+                // The trims restate the edge's ends; the basis carries the
+                // parameter, so it is the pcurve.
+                return self.planar_curve(ref_at(args, 1));
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(out))
+    }
+
+    /// A point of a surface's parameters, as written.
+    fn point2(&mut self, id: u64) -> OgeomResult<ogeom_math::Point2> {
+        let args = self.args(id, "CARTESIAN_POINT")?;
+        let Some(coords) = args.get(1).and_then(Arg::list) else {
+            ogeom_bail!(Construction, "#{id}: a point without coordinates");
+        };
+        let value = |i: usize| coords.get(i).and_then(Arg::number).unwrap_or(0.0);
+        Ok(ogeom_math::Point2::new(value(0), value(1)))
+    }
+
+    fn direction2(&mut self, id: u64) -> OgeomResult<ogeom_math::Direction2> {
+        let args = self.args(id, "DIRECTION")?;
+        let Some(coords) = args.get(1).and_then(Arg::list) else {
+            ogeom_bail!(Construction, "#{id}: a direction without components");
+        };
+        let value = |i: usize| coords.get(i).and_then(Arg::number).unwrap_or(0.0);
+        ogeom_math::Direction2::new(ogeom_math::Vector2::new(value(0), value(1)), self.tol)
+    }
+
+    /// An `AXIS2_PLACEMENT_2D` as a frame, its reference direction the
+    /// standard's default where the file leaves it out.
+    fn frame2(&mut self, id: u64) -> OgeomResult<ogeom_math::Frame2> {
+        let args = self.args(id, "AXIS2_PLACEMENT_2D")?;
+        let origin = self.point2(ref_at(args, 1))?;
+        let x = match args.get(2).and_then(Arg::reference) {
+            Some(r) => self.direction2(r)?,
+            None => ogeom_math::Direction2::X,
+        };
+        Ok(ogeom_math::Frame2::new(origin, x))
     }
 
     // --- topology ------------------------------------------------------------
@@ -2295,10 +2490,15 @@ impl<'a> Reader<'a> {
         // preparation refused.
         let prepared = match self.pcurves.remove(&(face_id, edge_id)) {
             Some(prepared) => prepared,
-            None => derive_pcurve(curve, range, surface, self.tol),
+            None => {
+                let stated = self.stated_pcurves(face_id, edge_id);
+                derive_pcurve(curve, range, surface, &stated, self.tol)
+            }
         };
         let (pcurve, off) = match prepared {
-            PreparedPcurve::Exact { curve, off } => (widen(curve), off),
+            PreparedPcurve::Exact { curve, off } | PreparedPcurve::Stated { curve, off } => {
+                (widen(curve), off)
+            }
             PreparedPcurve::Fitted {
                 curve: fitted,
                 error,
@@ -2342,6 +2542,23 @@ impl<'a> Reader<'a> {
             data.tolerance = data.tolerance.widen_to(off + self.tol.confusion());
         }
         Ok(Some(pcurve))
+    }
+
+    /// The pcurves the file states for an edge on a face's surface. A key
+    /// standing for a piece of an edge cut at a pole names no edge in the
+    /// file, and the file's pcurves run over the whole edge in any case.
+    fn stated_pcurves(&mut self, face_id: u64, edge_id: u64) -> Vec<PlanarCurve> {
+        if self.pieces.contains_key(&edge_id) || !self.exchange.data.contains_key(&edge_id) {
+            return Vec::new();
+        }
+        let Some(surface_id) = self
+            .face_args(face_id)
+            .ok()
+            .and_then(|args| args.get(2).and_then(Arg::reference))
+        else {
+            return Vec::new();
+        };
+        self.file_pcurves(edge_id, surface_id)
     }
 
     /// Count one occurrence of a warning kind toward the summary.
@@ -2465,6 +2682,8 @@ impl<'a> Reader<'a> {
             edge: u64,
             curve: Curve,
             range: (f64, f64),
+            /// The pcurves the file states for it, tried first.
+            stated: Vec<PlanarCurve>,
             /// Index into `surfaces`. The surface is held once per face, not
             /// once per edge: a B-spline patch owns its whole control grid,
             /// and cloning that per edge costs more than the projection it
@@ -2520,11 +2739,13 @@ impl<'a> Reader<'a> {
                     }
                     if let Ok(Some(pieces)) = self.edge_pieces(edge_id) {
                         for (key, (_, curve, range, _)) in pieces {
+                            let stated = self.stated_pcurves(fid, key);
                             jobs.push(Job {
                                 face: fid,
                                 edge: key,
                                 curve,
                                 range,
+                                stated,
                                 surface: at,
                             });
                         }
@@ -2540,7 +2761,13 @@ impl<'a> Reader<'a> {
         }
         let tol = self.tol;
         let derived = ogeom_core::parallel::map_ordered(&jobs, |_, job| {
-            derive_pcurve(&job.curve, job.range, &surfaces[job.surface], tol)
+            derive_pcurve(
+                &job.curve,
+                job.range,
+                &surfaces[job.surface],
+                &job.stated,
+                tol,
+            )
         });
         for (job, pcurve) in jobs.iter().zip(derived) {
             self.pcurves.insert((job.face, job.edge), pcurve);
@@ -3969,13 +4196,15 @@ struct PdEntry {
     children: Vec<(u64, Transform, Option<String>)>,
 }
 
-/// An edge's pcurve on a surface, exact where the pair has a closed form
-/// and fitted where it does not, with how far it stands from the curve once
-/// lifted through the surface.
+/// An edge's pcurve on a surface: the file's own where it lies within the
+/// edge's tolerance of the curve once lifted, else derived, exact where
+/// the pair has a closed form and fitted where it does not, with how far it
+/// stands from the curve once lifted through the surface.
 fn derive_pcurve(
     curve: &Curve,
     range: (f64, f64),
     surface: &SurfaceGeometry,
+    stated: &[PlanarCurve],
     tol: Tolerances,
 ) -> PreparedPcurve {
     // A pcurve that does not evaluate over the edge's range states no gap
@@ -3984,27 +4213,177 @@ fn derive_pcurve(
         ogeom_algo::pcurve_fit::lifted_gap((curve, range), (pcurve, range), surface, false, tol)
             .unwrap_or(0.0)
     };
-    if let Some(exact) = ogeom_intersect::exact_pcurve_over(curve, range, surface, tol) {
-        let off = lifted(&exact);
-        return PreparedPcurve::Exact { curve: exact, off };
+    let nearest = nearest_stated(curve, range, surface, stated, tol);
+    // One that follows the curve exactly needs nothing derived beside it.
+    if let Some((curve, off)) = &nearest
+        && *off <= tol.confusion()
+    {
+        return PreparedPcurve::Stated {
+            curve: curve.clone(),
+            off: *off,
+        };
     }
-    // No closed form: a spline surface, or a combination the projection
-    // table lacks. The pcurve is fitted at the curve's own parameters, so
-    // same-parameter is preserved by construction.
-    match crate::pcurves::fit_projected_pcurve(curve, range, surface, tol) {
-        Ok((fitted, error, met, worst_off, warning)) => {
-            let off = lifted(&fitted);
-            PreparedPcurve::Fitted {
-                curve: fitted,
-                error,
-                met,
-                worst_off,
-                off,
-                warning,
+    let derived =
+        if let Some(exact) = ogeom_intersect::exact_pcurve_over(curve, range, surface, tol) {
+            let off = lifted(&exact);
+            PreparedPcurve::Exact { curve: exact, off }
+        } else {
+            // No closed form: a spline surface, or a combination the
+            // projection table lacks. The pcurve is fitted at the curve's own
+            // parameters, so same-parameter is preserved by construction.
+            match crate::pcurves::fit_projected_pcurve(curve, range, surface, tol) {
+                Ok((fitted, error, met, worst_off, warning)) => {
+                    let off = lifted(&fitted);
+                    PreparedPcurve::Fitted {
+                        curve: fitted,
+                        error,
+                        met,
+                        worst_off,
+                        off,
+                        warning,
+                    }
+                }
+                Err(e) => PreparedPcurve::Refused(e.to_string()),
+            }
+        };
+    // The edge's tolerance on this face is how far its curve stands from
+    // the surface, which the projection measures. A pcurve whose trace
+    // keeps within that of the projected trace lifts to within twice it of
+    // the curve, and within that bound the file's pcurve is the same
+    // boundary drawn as its sender drew it, and is kept.
+    let allowed = match &derived {
+        PreparedPcurve::Exact { off, .. } => Some(*off),
+        PreparedPcurve::Fitted { off, worst_off, .. } => Some(off.max(*worst_off)),
+        PreparedPcurve::Stated { .. } | PreparedPcurve::Refused(_) => None,
+    };
+    match (nearest, allowed) {
+        (Some((curve, off)), Some(allowed)) if off <= 2.0f64.mul_add(allowed, tol.confusion()) => {
+            PreparedPcurve::Stated { curve, off }
+        }
+        _ => derived,
+    }
+}
+
+/// A pcurve as it is measured over an edge's range: a line's stated
+/// domain widened to cover it, since a line evaluates anywhere.
+fn over_range(pcurve: &PlanarCurve, range: (f64, f64)) -> PlanarCurve {
+    if let PlanarCurve::Line(l) = pcurve {
+        let (lo, hi) = (l.domain().0.min(range.0), l.domain().1.max(range.1));
+        if let Ok(wider) = ogeom_geom::Line2d::over(l.axis(), lo, hi) {
+            return wider.into();
+        }
+    }
+    pcurve.clone()
+}
+
+/// The file's pcurve nearest the curve once lifted, with how far it
+/// stands. One that does not evaluate over the edge's range, or whose
+/// image leaves the surface's chart along a direction that does not close,
+/// is left out.
+///
+/// A closed curve's range here may begin whole periods from where the
+/// file's parameter began it, so each is also tried a period either way:
+/// on a sphere a meridian's image a period off lifts to the same points,
+/// at latitudes past the poles, and only the right one stays in the chart.
+/// The first that follows the curve exactly ends the search.
+fn nearest_stated(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    stated: &[PlanarCurve],
+    tol: Tolerances,
+) -> Option<(PlanarCurve, f64)> {
+    let period = curve.is_periodic().then(|| {
+        let (lo, hi) = curve.domain();
+        hi - lo
+    });
+    let turns: &[f64] = if period.is_some() {
+        &[0.0, 1.0, -1.0]
+    } else {
+        &[0.0]
+    };
+    let mut best: Option<(PlanarCurve, f64)> = None;
+    for pcurve in stated {
+        for turn in turns {
+            let Some(shifted) = period_shifted(pcurve, turn * period.unwrap_or(0.0)) else {
+                continue;
+            };
+            let shifted = over_range(&shifted, range);
+            if !within_chart(&shifted, range, surface, tol) {
+                continue;
+            }
+            let Ok(off) = ogeom_algo::pcurve_fit::lifted_gap(
+                (curve, range),
+                (&shifted, range),
+                surface,
+                false,
+                tol,
+            ) else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(_, held)| off < *held) {
+                best = Some((shifted, off));
+            }
+            if off <= tol.confusion() {
+                return best;
             }
         }
-        Err(e) => PreparedPcurve::Refused(e.to_string()),
     }
+    best
+}
+
+/// A pcurve read `delta` later along its parameter: at `t`, the point the
+/// pcurve has at `t - delta`. `None` for a kind that cannot be restated so.
+fn period_shifted(pcurve: &PlanarCurve, delta: f64) -> Option<PlanarCurve> {
+    if delta == 0.0 {
+        return Some(pcurve.clone());
+    }
+    match pcurve {
+        PlanarCurve::Line(l) => {
+            let axis = l.axis();
+            let moved = ogeom_math::Axis2 {
+                location: axis.location - axis.direction.vector() * delta,
+                direction: axis.direction,
+            };
+            let (lo, hi) = l.domain();
+            ogeom_geom::Line2d::over(moved, lo + delta, hi + delta)
+                .ok()
+                .map(Into::into)
+        }
+        PlanarCurve::BSpline(b) => {
+            let knots: Vec<f64> = b.knots().knots().iter().map(|k| k + delta).collect();
+            let knots = KnotVector::new(knots, b.knots().degree()).ok()?;
+            ogeom_geom::BSpline2d::rational(knots, b.control_points().to_vec())
+                .ok()
+                .map(Into::into)
+        }
+        // A conic's parameter is its angle: whole turns leave it in place.
+        PlanarCurve::Circle(_) | PlanarCurve::Ellipse(_)
+            if (delta / core::f64::consts::TAU).fract().abs() < 1e-12 =>
+        {
+            Some(pcurve.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Whether a pcurve's image over a range stays inside the surface's chart
+/// along each direction that does not close on itself.
+fn within_chart(
+    pcurve: &PlanarCurve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> bool {
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let slack = tol.parametric();
+    (0..=4).all(|i| {
+        let t = (range.1 - range.0).mul_add(f64::from(i) / 4.0, range.0);
+        pcurve.point_at(t, tol).is_ok_and(|p| {
+            (surface.is_periodic_u() || (p.x >= u0 - slack && p.x <= u1 + slack))
+                && (surface.is_periodic_v() || (p.y >= v0 - slack && p.y <= v1 + slack))
+        })
+    })
 }
 
 /// Every reference in an argument tree, in order.
