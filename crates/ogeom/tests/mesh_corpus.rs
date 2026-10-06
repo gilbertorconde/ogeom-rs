@@ -263,7 +263,8 @@ fn nist_ctc_03() {
 /// round its large bore are chords whose planes meet the bore past their
 /// far corners; they come back as fans, and the bore curved. A facet with
 /// two sides on curved faces, turned in, comes back as a wedge ruled
-/// between its two seams, and both curved faces stay curved.
+/// between its two seams, and both curved faces stay curved. One with both
+/// curved sides on one torus is split at the corner they share.
 #[test]
 #[ignore = "heavy"]
 fn nist_ctc_02() {
@@ -276,7 +277,7 @@ fn nist_ctc_02() {
         .count();
     assert_eq!(overlaps, 0, "{overlaps} faces faceted for overlaps");
     assert!(
-        report.curved_faceted <= 2,
+        report.curved_faceted <= 1,
         "{} curved faces faceted: {:?}",
         report.curved_faceted,
         report.fallbacks

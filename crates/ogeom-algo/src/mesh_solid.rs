@@ -7754,6 +7754,7 @@ impl Planner<'_> {
         };
         let mut failed: Vec<usize> = Vec::new();
         let mut fan_wanted: Vec<usize> = Vec::new();
+        let mut wedge_corners: Vec<u32> = Vec::new();
         let mut keys: Vec<(u32, u32)> = edge_faces.keys().copied().collect();
         keys.sort_unstable();
         // The chain of boundary edges from `key` to the next kept vertex,
@@ -7900,6 +7901,8 @@ impl Planner<'_> {
                         None => {
                             if let Some(t) = self.fan_for(&chain, &faces) {
                                 fan_wanted.push(t);
+                            } else if let Some(v) = self.wedge_corner(&chain, &faces) {
+                                wedge_corners.push(v);
                             }
                             for g in faces {
                                 if self.curved(g).is_some() && !failed.contains(&g) {
@@ -8282,6 +8285,8 @@ impl Planner<'_> {
         }
         if !fan_wanted.is_empty() {
             Ok(Err(Replan::Fan(fan_wanted)))
+        } else if !wedge_corners.is_empty() {
+            Ok(Err(Replan::Pin(wedge_corners)))
         } else if failed.is_empty() {
             Ok(Ok(plan))
         } else {
@@ -8644,6 +8649,40 @@ impl Planner<'_> {
         }
         let fan = self.groups.fan_at(t, self.triangles, self.adjacency)?;
         (fan.seam_between(p, q) == Some(curved)).then_some(t)
+    }
+
+    /// The corner to pin where a chain no curve places runs along both
+    /// curved sides of a wedge onto one curved face: the two sides meet at
+    /// the chain's middle vertex, which split there leaves each side a span
+    /// of its own, a seam the wedge can be built from.
+    fn wedge_corner(&self, chain: &[u32], faces: &[usize]) -> Option<u32> {
+        let [a, b] = faces[..] else {
+            return None;
+        };
+        let [p, middle, q] = chain[..] else {
+            return None;
+        };
+        let (facet, curved) = match (self.curved(a), self.curved(b)) {
+            (Some(_), None) => (b, a),
+            (None, Some(_)) => (a, b),
+            _ => return None,
+        };
+        let mut members = self
+            .groups
+            .of
+            .iter()
+            .enumerate()
+            .filter(|&(_, &g)| g == facet)
+            .map(|(t, _)| t);
+        let t = members.next()?;
+        if members.next().is_some() || self.pinned.contains(&middle) {
+            return None;
+        }
+        let fan = self.groups.fan_at(t, self.triangles, self.adjacency)?;
+        (fan.seam.1 == middle
+            && fan.seam_between(p, middle) == Some(curved)
+            && fan.seam_between(middle, q) == Some(curved))
+        .then_some(middle)
     }
 
     /// The curved face a chain is a fan's seam with, if it is one, and

@@ -1010,9 +1010,8 @@ faceted. Measured (faces, curved faces faceted, volume error):
 grid_point_on_a_diagonal_boundary 823, 3, 6.3e-4 to 744, 1, 6.2e-4 (a
 cylinder and a torus); ctc_02 1861, 5, 2.9e-5 to 1854, 4, 2.9e-5. The
 other parts, the truth bench and the stress baseline are unchanged.
-ctc_02's torus of radius 10 fitted to a spline blend (r39 of its regions)
-still facets: two of its chains with facets have three vertices, and the
-parabola through them stands 0.24 off for a limit of 0.20.
+ctc_02's torus of radius 10 fitted to a spline blend has a facet whose two
+sides lie on it; it is built as a wedge (below).
 A facet whose plane meets a narrow curved face along a curve bulging past
 that face's far side (a quarter round 0.17 long beside a single facet,
 the seam 3e-4 over the far rim) folds the curved face; the facet is now
@@ -1090,6 +1089,13 @@ grid_point_on_a_diagonal_boundary 741 to 735 faces, 6.22e-4 to 6.25e-4;
 the open thread flank 2035 to 2001 faces; the degenerate spline sliver
 keeps its 13 regions faceted, one for a folded seam where it failed to
 build.
+
+A wedge whose two curved sides lie on one curved face shares one chain
+with it, through their shared corner, and no curve through the chain's
+three vertices holds (ctc_02's torus of radius 10 on a spline blend, the
+parabola 0.24 off for a limit of 0.20). The shared corner is pinned, each
+side is a seam of its own, and the facet a wedge. ctc_02 1828, 2 to 1799,
+1, 2.5e-5; the open thread flank 2001 to 1916 faces.
 
 Done for ftc_07, in two steps:
 
