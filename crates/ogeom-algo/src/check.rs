@@ -791,7 +791,59 @@ fn check_shell(model: &Model, shell: &Shape, found: &mut Diagnosis) -> OgeomResu
             ),
         );
     }
+    for edge in walked_one_way(model, shell)? {
+        found.note(
+            Severity::Suspect,
+            &edge,
+            ShapeType::Edge,
+            "walked the same way by both its faces: one of them does not keep \
+             its material on the left of its rings"
+                .into(),
+        );
+    }
     Ok(())
+}
+
+/// The edges between two faces of `shape` that both faces walk the same
+/// way, in the order the walk first meets them.
+///
+/// Each face keeps its material on the left of its rings about its outward
+/// normal, so an edge two faces share is walked once each way, senses
+/// composed. That holds for any edge with two faces, closed shell or sheet;
+/// an edge with one face or more than two says nothing. A degenerate edge
+/// (a pole, an apex) bounds nothing and is not asked, and a seam, walked
+/// both ways by its one face, passes.
+fn walked_one_way(model: &Model, shape: &Shape) -> OgeomResult<Vec<Shape>> {
+    type Walks = (Shape, usize, usize);
+    let mut walks: HashMap<(TShapeId, ogeom_topo::Location), Walks> = HashMap::new();
+    let mut order = Vec::new();
+    for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        for edge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
+            if model
+                .node(&edge)
+                .and_then(|n| n.data().as_edge())
+                .is_some_and(|d| d.degenerate)
+            {
+                continue;
+            }
+            let key = (edge.node(), edge.location().clone());
+            let walk = walks.entry(key.clone()).or_insert_with(|| {
+                order.push(key);
+                (edge.clone(), 0, 0)
+            });
+            walk.1 += 1;
+            if edge.orientation() == ogeom_topo::Orientation::Forward {
+                walk.2 += 1;
+            }
+        }
+    }
+    Ok(order
+        .into_iter()
+        .filter_map(|key| {
+            let (edge, uses, forward) = walks.remove(&key)?;
+            (uses == 2 && forward != 1).then_some(edge)
+        })
+        .collect())
 }
 
 /// Restore tolerance containment below `shape`: every edge widened to at
@@ -965,29 +1017,7 @@ fn crossings_among(
 /// way: none where every face keeps its material on the left of its rings.
 #[cfg(test)]
 pub(crate) fn edges_walked_one_way(model: &Model, shape: &Shape) -> usize {
-    let mut walks: HashMap<(TShapeId, ogeom_topo::Location), (usize, usize)> = HashMap::new();
-    for face in explore(model, shape, Filter::OfType(ShapeType::Face)).unwrap_or_default() {
-        for edge in explore(model, &face, Filter::OfType(ShapeType::Edge)).unwrap_or_default() {
-            if model
-                .node(&edge)
-                .and_then(|n| n.data().as_edge())
-                .is_some_and(|d| d.degenerate)
-            {
-                continue;
-            }
-            let walk = walks
-                .entry((edge.node(), edge.location().clone()))
-                .or_default();
-            walk.0 += 1;
-            if edge.orientation() == ogeom_topo::Orientation::Forward {
-                walk.1 += 1;
-            }
-        }
-    }
-    walks
-        .values()
-        .filter(|(uses, forward)| *uses == 2 && *forward != 1)
-        .count()
+    walked_one_way(model, shape).map_or(0, |edges| edges.len())
 }
 
 #[cfg(test)]
@@ -1275,6 +1305,78 @@ mod tests {
 
         let empty = Model::new();
         assert!(check(&empty, &beyond, T).is_err());
+    }
+
+    /// The edges of `diagnosis` named as walked the same way by both their
+    /// faces.
+    fn walked_one_way_named(diagnosis: &Diagnosis) -> Vec<TShapeId> {
+        diagnosis
+            .problems
+            .iter()
+            .filter(|p| {
+                p.severity == Severity::Suspect
+                    && p.kind == ShapeType::Edge
+                    && p.what.starts_with("walked the same way by both its faces")
+            })
+            .map(|p| p.at.node())
+            .collect()
+    }
+
+    /// A face of a box rebuilt with its ring walked back, its sense kept,
+    /// walks each of its four edges the same way as the face beside it:
+    /// `check` names those four edges, in the closed box and in a sheet of
+    /// that face and one neighbour, where it names the one edge they share.
+    #[test]
+    fn an_edge_both_faces_walk_the_same_way_is_named() {
+        let mut model = Model::new();
+        let block = make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), T)
+            .unwrap()
+            .shape;
+        let faces = explore_unique(&model, &block, ShapeType::Face).unwrap();
+        let face = faces[2].clone();
+        let data = model.node(&face).unwrap().data().as_face().unwrap().clone();
+        let stored = face.oriented(ogeom_topo::Orientation::Forward);
+        let [wire] = &model.ordered_children_of(&stored).unwrap()[..] else {
+            panic!("a box face has one ring");
+        };
+        let ring = model.ordered_children_of(wire).unwrap();
+        let back: Vec<Shape> = ring.iter().rev().map(Shape::reversed).collect();
+        let back = crate::build::make_wire(&mut model, &back, T).unwrap().shape;
+        let walked_back = model
+            .add_face(data, &[back])
+            .unwrap()
+            .oriented(face.orientation());
+
+        let mut held = faces.clone();
+        held[2] = walked_back.clone();
+        let shell = crate::build::make_shell(&mut model, &held).unwrap().shape;
+        let solid = crate::build::make_solid(&mut model, &[shell])
+            .unwrap()
+            .shape;
+        let diagnosis = check(&model, &solid, T).unwrap();
+        let mut named = walked_one_way_named(&diagnosis);
+        named.sort();
+        let mut ring_nodes: Vec<TShapeId> = ring.iter().map(Shape::node).collect();
+        ring_nodes.sort();
+        assert_eq!(named, ring_nodes, "{diagnosis}");
+        assert!(diagnosis.is_usable(), "{diagnosis}");
+
+        let beside = faces
+            .iter()
+            .find(|f| {
+                let theirs = explore_unique(&model, f, ShapeType::Edge).unwrap();
+                !f.is_same(&face) && theirs.iter().any(|e| ring_nodes.contains(&e.node()))
+            })
+            .unwrap()
+            .clone();
+        let sheet = crate::build::make_shell(&mut model, &[walked_back, beside])
+            .unwrap()
+            .shape;
+        assert_eq!(
+            walked_one_way_named(&check(&model, &sheet, T).unwrap()).len(),
+            1
+        );
+        assert!(walked_one_way_named(&check(&model, &block, T).unwrap()).is_empty());
     }
 }
 

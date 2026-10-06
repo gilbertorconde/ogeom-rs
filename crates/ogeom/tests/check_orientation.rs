@@ -37,6 +37,14 @@ fn a_box_is_valid_and_one_with_a_face_turned_inside_out_is_not() {
         .collect();
     assert_eq!(inward.len(), 1, "{diagnosis}");
     assert_eq!(inward[0].at.node(), faces[2].node());
+    // Its ring now turns against its outward normal, so each of its four
+    // edges is walked the same way by the face beside it.
+    let same_way = diagnosis
+        .problems
+        .iter()
+        .filter(|p| p.kind == ShapeType::Edge && p.what.contains("walked the same way"))
+        .count();
+    assert_eq!(same_way, 4, "{diagnosis}");
 }
 
 /// A drum of radius 5 and `height` along `y`, its top a cone rising

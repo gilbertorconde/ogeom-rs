@@ -391,6 +391,14 @@ fn a_face_facing_into_the_material_is_turned() {
     let turned = reshape.apply(&mut model, &block).unwrap().shape;
     let broken = ogeom::algo::check(&model, &turned, T).unwrap();
     assert!(!broken.is_valid());
+    // The flag turned, the ring did not: each of the face's four edges is
+    // walked the same way by the face beside it.
+    let same_way = broken
+        .problems
+        .iter()
+        .filter(|p| p.what.contains("walked the same way"))
+        .count();
+    assert_eq!(same_way, 4, "{broken}");
 
     let fixed = ogeom::heal::fix_shape(&mut model, &turned, T).unwrap();
     assert_eq!(fixed.report.faces_turned, 1);
