@@ -373,12 +373,14 @@ fn nist_ftc_07() {
 }
 
 /// Its fillet tori are meshed a few facets round, and a piece of one can
-/// lie on a sphere as exactly as on the torus; where the rest of the torus
-/// is a larger region beside it, the piece joins that region.
+/// lie on a sphere as exactly as on the torus. Where the rest of the torus
+/// is a larger region beside it, the piece joins that region; where the
+/// torus is all such pieces, each is put on the torus between the plane
+/// and the cylinder it blends, and they are one region.
 #[test]
 fn nist_ftc_08() {
     let report = comes_back("nist_ftc_08_asme1_rc.stp", true, true);
-    assert!(report.curved_faceted <= 3, "{:?}", report.fallbacks);
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
 #[test]

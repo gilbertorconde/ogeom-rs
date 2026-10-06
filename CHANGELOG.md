@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fewer converted faces fall back to facets.** A chain of three vertices
+  between faces meeting all but tangentially is threaded with a parabola
+  instead of faceting both faces; a single facet whose seam with a curved
+  face cannot be placed, or that folds it, is built as a fan onto it; a
+  drill point whose rim starts off its seam is turned to meet it; a small
+  curved region joins a neighbour of another kind it lies on; and coarse
+  pieces of a fillet torus fitted as spheres are put back on the torus.
+  NIST parts convert with fewer faceted regions (several with none), a
+  corpus part that converted invalid is valid, and the truth bench's mean
+  volume error falls from 3.5e-6 to 7.1e-7.
+
 ## [0.9.4] - 2026-10-06
 
 A patch release: no breaking API changes. Exact mass properties weigh a

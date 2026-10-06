@@ -1032,9 +1032,13 @@ m5x16_bhcs 215, 6, 2, 5.9e-5 to 212, 3, 2, 9.3e-5 (two spheres and a
 second cylinder on its head's one cylinder join it, as in the source);
 sliver_on_a_diagonal_of_the_grid 1008, 70 to 1006, 68, 5.5e-6 to 4.5e-6.
 The truth bench's noisy rim-disc comes back 4 faces for 5, 4.1e-7 off for
-8.4e-5 (mean volume error 3.5e-6 to 7.1e-7). ftc_08's other corner torus
-is fitted whole as two spheres with no torus region beside them, and
-stays faceted; ftc_10's last fallback is a cylinder of seven triangles
+8.4e-5 (mean volume error 3.5e-6 to 7.1e-7). A torus met only as such
+pieces (ftc_08's other corner: two spheres, no torus region beside them)
+has each sphere beside one plane and a cylinder or cone square to it put
+on the torus tangent to both where that holds its vertices, and the
+pieces then join: ftc_08 310, 151, 3, 2.8e-5 to 302, 153, 0, 2.2e-5, the
+other parts, the truth bench and the stress baseline unchanged. ftc_10's
+last fallback is a cylinder of seven triangles
 fitted across a torus and a plane's edge (a vertex 0.07 off the torus).
 
 Done for ftc_07, in two steps:

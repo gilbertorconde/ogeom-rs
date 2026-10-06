@@ -3472,7 +3472,9 @@ fn segment(
         );
         let normals = plane_normals(&planes);
         align_axes(points, &mut groups, &normals, flat, tol);
-        tangent_blends(
+        // Pieces of one torus met as spheres are put on it apart, and
+        // are one region.
+        if tangent_blends(
             points,
             triangles,
             adjacency,
@@ -3482,7 +3484,9 @@ fn segment(
             flat,
             None,
             tol,
-        );
+        ) {
+            merge_same_surface(points, triangles, adjacency, &mut groups, flat);
+        }
         hole_frames(points, triangles, adjacency, &mut groups, tol);
         slit_bands(points, triangles, adjacency, &mut groups, tol);
     }
@@ -3947,7 +3951,10 @@ fn round_between(
 /// - a torus between a plane and a cylinder or a cone whose axis is square
 ///   to the plane sits on that axis, its tube's centre a radius off both;
 /// - a sphere where cylinders of its own radius meet otherwise is centred
-///   nearest their axes.
+///   nearest their axes; a sphere beside one plane and a cylinder or cone
+///   whose axis is square to it is a piece of the torus between them, met
+///   a few facets round (each piece's vertices lie on a sphere as exactly
+///   as on the torus), where that torus holds it.
 ///
 /// The surface derived so is tangent to its supports by construction, and
 /// replaces the fitted one where it holds every vertex of the region within
@@ -3955,6 +3962,7 @@ fn round_between(
 /// holds. Other regions keep their fits. `planes` are the groups with the
 /// planes grown, as for [`tangent_rounds`]. With `only`, the fillets are
 /// derived as for all of them and that region alone is put on its own.
+/// Returns whether a sphere was put on a torus.
 #[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
 fn tangent_blends(
     points: &[Point],
@@ -3966,7 +3974,7 @@ fn tangent_blends(
     flat: f64,
     only: Option<usize>,
     tol: Tolerances,
-) {
+) -> bool {
     let count = groups.carriers.len();
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (t, &g) in groups.of.iter().enumerate() {
@@ -4112,6 +4120,7 @@ fn tangent_blends(
             }
         }
     }
+    let mut tori = false;
     for i in 0..count {
         if settled[i] || !taken(i) {
             continue;
@@ -4143,7 +4152,17 @@ fn tangent_blends(
                     .iter()
                     .filter_map(|&j| shape_of(groups, j))
                     .collect();
-                corner_ball(&sphere, &around, flat, tol)
+                corner_ball(&sphere, &around, flat, tol).or_else(|| {
+                    let [plane] = &flanks[i][..] else {
+                        return None;
+                    };
+                    let torus = around.iter().find_map(|support| {
+                        let torus = tangent_torus(plane, support, &samples[i], tol)?;
+                        (worst_deviation(&torus, &samples[i]) <= flat).then_some(torus)
+                    })?;
+                    tori = true;
+                    Some(torus)
+                })
             }
             _ => None,
         };
@@ -4151,6 +4170,7 @@ fn tangent_blends(
             put(groups, i, shape, &samples[i], flat);
         }
     }
+    tori
 }
 
 /// `shape` as group `i`'s surface where it holds every sample within
