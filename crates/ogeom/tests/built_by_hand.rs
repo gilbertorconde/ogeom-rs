@@ -19,11 +19,16 @@
 //! already computed the pcurves themselves.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::core::Tolerances;
 use ogeom::geom::{LineCurve, PlaneSurface, SurfaceGeometry};
 use ogeom::math::{Direction, Frame, Plane, Point};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape, ShapeType, explore_unique};
+
+use walks::edges_walked_one_way;
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -117,13 +122,15 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
         .collect();
 
     let mut faces = Vec::with_capacity(SIDES + 2);
-    // The bottom faces down, out of the prism, as the top faces up.
+    // The bottom faces down, out of the prism, as the top faces up. Each
+    // keeps its face on the left of its ring about its normal: the top
+    // walks its rim as built, the bottom walks it back.
     faces.push(face(
         &mut model,
         bottom_pts[0],
         -Direction::Z,
         Direction::X,
-        bottom_edges.clone(),
+        bottom_edges.iter().rev().map(Shape::reversed).collect(),
     ));
     faces.push(face(
         &mut model,
@@ -170,6 +177,7 @@ fn a_hand_built_prism_closes_and_measures_its_closed_form() {
 
     let check = ogeom::algo::check(&model, &solid, T).unwrap();
     assert!(check.is_valid(), "{check}");
+    assert_eq!(edges_walked_one_way(&model, &solid), 0);
     assert_eq!(
         explore_unique(&model, &solid, ShapeType::Face)
             .unwrap()
