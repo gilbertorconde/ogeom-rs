@@ -512,8 +512,11 @@ impl Writer<'_> {
         let chart = (rigid(&placement) && surface_states_parameters(&surface))
             .then_some((held, surface_id));
 
+        // Each loop walked under the face's sense, in the order the face
+        // stores them: the outer one first, which the walk of a reversed
+        // face lists last.
         let mut bounds = Vec::new();
-        for (index, wire) in self.model.ordered_children_of(face)?.iter().enumerate() {
+        for (index, wire) in self.model.children_of(face)?.iter().enumerate() {
             let keyword = if index == 0 {
                 "FACE_OUTER_BOUND"
             } else {

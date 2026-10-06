@@ -314,3 +314,33 @@ fn a_fixed_pipe_of_the_reversed_base_is_the_plate_again() {
     }
 }
 
+/// Every two-wire face read back from a file stores the square first.
+fn outer_first(model: &Model, shape: &Shape) {
+    let mut seen = 0;
+    for face in explore_unique(model, shape, ShapeType::Face).unwrap() {
+        let stored = model.children_of(&face).unwrap();
+        if stored.len() == 2 {
+            seen += 1;
+            assert!(spread(model, &stored[0]) > W, "a face read back bore first");
+        }
+    }
+    assert!(seen > 0, "no face kept its bore");
+}
+
+/// STEP: the reversed base's outer bound is the square, so the plate reads
+/// back as it went out.
+#[test]
+fn the_plate_round_trips_through_step_with_its_outer_bounds() {
+    let mut model = Model::new();
+    let (solid, _) = plate(&mut model);
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("plate", solid);
+    let text = ogeom::io::write_step(&document, T).unwrap();
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let back = import.document.model();
+    outer_first(back, &import.solids[0]);
+    let v = volume(back, &import.solids[0]);
+    let want = net_area() * THICK;
+    assert!((v - want).abs() < 1e-3, "{v} against {want}");
+}
+
