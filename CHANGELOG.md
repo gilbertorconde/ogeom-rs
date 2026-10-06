@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Fillets the stress run refused.** A fillet on the loop where two bores
+  cross decided each face's side by a step so short it landed inside the
+  face on both sides; it steps the whole setback where the short step
+  cannot tell. Rounding an edge and then one at its end where a drum takes
+  over took the first blend's cap edge for a piece of the second; a piece
+  must lie between the same surfaces as the edge. A boolean's material test
+  on a flat face with a rotated chart used a ray level with a corner and
+  dropped the strip between two cuts; it uses the slanted ray its trims
+  use. Thirteen stress fillets over three seeds that were refused now
+  match their closed forms.
+
 - **The corpus's last faceted curved faces convert on their surfaces.** A
   fillet torus round a rounded corner, meshed a few facets round, comes
   back as one torus instead of spheres; a disc capping a chamfered end is

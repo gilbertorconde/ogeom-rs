@@ -120,6 +120,34 @@ rounded box, the shaved cube) and the rounded box at seed 3, some not yet
 diagnosed. Five drills through `nist_ctc_03` once refused there too; they
 cut since the STEP reader states how far its pcurves stand off their edges.
 
+**Stress fillets still refused.** At seeds 1 to 3 the fillet scenario
+refuses 23, 21 and 21 of 160, all by design: every edge of the rounded box
+joins two tangent faces, and the stepped part's fuse leaves its base's and
+its step's coplanar side faces split along an edge with no corner. The
+harness's crease list takes both kinds.
+
+**Edges walked the same way by both their faces.** The data model has each
+edge between two faces walked once each way, senses composed. Sewing
+rebuilds a reversed face by reading its wires under its own sense and then
+reversing the rebuilt face again, so every rebuilt reversed face (the tool's
+faces lining a cut) walks all its rings backward. Reading the stored wires
+(`face.oriented(Forward)` in `rebuild_face` and `split_at_vertices`) fixes
+it and keeps every default test and the stress run, but changes what the
+mesh converter builds: the rough box's STEP round trip then moves its volume
+by 7e-6 and a pcurve on a hole beside a rough corner stands 4.5e-6 past its
+edge's tolerance. A shell check for edges walked the same way flags 137
+default tests besides, prisms, lofts, sweeps and mirrors among their
+sources. The fillet's side test no longer trusts the walk where the
+chart's chords cannot settle it.
+
+**Two convex fillets meeting where a curved face takes over.** On the
+shaved cube a bottom edge and the upright edge at its end, rounded in that
+order, take off the union of the two blends, the bottom's flush cap
+leaving a sliver standing against the drum. Rounded the other way, the
+bottom blend runs on through the upright's band and trims that sliver
+too, 0.8% more at radius 0.18 and 4% at 1. Both are valid; one corner
+should give one solid.
+
 **Stress results on exact volumes.** The stress harness holds its volume
 identities to 1e-6 on exact volumes, and at seeds 1 to 3 every drill is
 measured exactly and holds (worst 1.8e-7, a converted corpus part;
