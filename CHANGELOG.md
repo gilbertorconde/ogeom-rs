@@ -31,6 +31,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Swept solids walk each edge once each way.** A prism or revolution
+  over a profile edge walked backward, a profile ring wound against its
+  role, a tapered prism round a hole, a baked reversed face and a
+  revolution band given its upper ring first each built faces that walked
+  their rings the same way as the face beside them. Each face keeps its
+  material on the left of its rings.
+
+- **Edge tolerances cover a pcurve's peaks between samples.** An edge's
+  stated tolerance was measured at 256 samples, so a piece cut from it
+  could stand a few microns past it; the widest peaks are searched for
+  their tops.
+
 - **Fillets the stress run refused.** A fillet on the loop where two bores
   cross decided each face's side by a step so short it landed inside the
   face on both sides; it steps the whole setback where the short step

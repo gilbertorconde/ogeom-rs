@@ -127,18 +127,48 @@ its step's coplanar side faces split along an edge with no corner. The
 harness's crease list takes both kinds.
 
 **Edges walked the same way by both their faces.** The data model has each
-edge between two faces walked once each way, senses composed. Sewing
-rebuilds a reversed face by reading its wires under its own sense and then
-reversing the rebuilt face again, so every rebuilt reversed face (the tool's
-faces lining a cut) walks all its rings backward. Reading the stored wires
-(`face.oriented(Forward)` in `rebuild_face` and `split_at_vertices`) fixes
-it and keeps every default test and the stress run, but changes what the
-mesh converter builds: the rough box's STEP round trip then moves its volume
-by 7e-6 and a pcurve on a hole beside a rough corner stands 4.5e-6 past its
-edge's tolerance. A shell check for edges walked the same way flags 137
-default tests besides, prisms, lofts, sweeps and mirrors among their
-sources. The fillet's side test no longer trusts the walk where the
-chart's chords cannot settle it.
+edge between two faces walked once each way, senses composed: each face
+keeps its material on the left of its rings about its surface's normal.
+Prisms, tapered prisms, revolutions, baked shapes and revolution bands do.
+Three producers break it with a fix measured and held, and more are
+still to fix; once none breaks it, `check` gains the rule.
+
+- Sewing rebuilds a reversed face by reading its wires under its own
+  sense and then reversing the rebuilt face again (`rebuild_face`,
+  `split_at_vertices`), so every boolean cut's tool faces walk their rings
+  backward. Reading the stored wires fixes it and keeps every default test
+  and the stress run, but the rough box's converter tests start from the
+  rounded box's tessellation with its corner vertices bumped by index, and
+  the tessellator numbers a reversed face's vertices along its rings: the
+  fix makes a different rough box. On it the converter bounds a fillet
+  cylinder by a threaded edge 0.018 loose whose pcurve on the cylinder is
+  the straight iso line; STEP carries no pcurves, the reader projects the
+  edge's curve instead, and the volume read back moves by 7e-6 against the
+  test's 1e-6. Either STEP writes pcurves and the reader keeps them where
+  they lie within the edge's tolerance, or the converter takes the
+  projected image where the straight one strays along the face further
+  than the curve stands off it (measured: the round trip then holds, and
+  corpus volumes move by up to 6.5e-6, some away from the source part).
+- The STEP reader stores a face turned against its surface with the
+  file's loops as written and then turns the face, so each such face walks
+  its loops backward (168 edges on `nist_ctc_01`). Storing the loops
+  walked back fixes every third-party corpus file; the two ogeom-written
+  screw files were written from such faces and need their reversed faces'
+  bounds flipped. Reversed faces then tessellate differently, and four
+  heavy converter tests on corpus meshes (`nist_ftc_07`, `nist_ftc_10`, the
+  sliver on a diagonal, displaced regions on `nist_ftc_08`) fall back a
+  region they did not.
+- A shell check run over the default tests with both held fixes in flags
+  77: the offset crate's lofts between polygons, pipes (their caps on the
+  torus), pipe shells with curved legs, laws or sections, helical sweeps
+  and skinned pipes (42); the mesh converter (18); draft (3); a fuse
+  with a mirrored body (2); seam healing followed by a drill (2);
+  defeature (2); recognising a bore's spline as a cylinder (2); the IGES
+  reader (2); a face offset, a thick solid and a sheet fillet (1 each); and
+  a hand-built prism test whose bottom face winds the wrong way (1).
+
+The fillet's side test no longer trusts the walk where the chart's chords
+cannot settle it.
 
 **Two convex fillets meeting where a curved face takes over.** On the
 shaved cube a bottom edge and the upright edge at its end, rounded in that
