@@ -5303,12 +5303,24 @@ fn quiet_piece(
     tol: Tolerances,
 ) -> OgeomResult<Option<FacePiece>> {
     let forward = face.face.oriented(ogeom_topo::Orientation::Forward);
+    // A face with many holes is looked up by key, not walked once per edge.
+    let indexed: Option<hashbrown::HashMap<EdgeKey, usize>> = (face.edges.len() > 16).then(|| {
+        let mut first = hashbrown::HashMap::with_capacity(face.edges.len());
+        for (index, e) in face.edges.iter().enumerate() {
+            first.entry(e.node).or_insert(index);
+        }
+        first
+    });
     let mut rings = Vec::new();
     for wire in model.ordered_children_of(&forward)? {
         let mut ring = Vec::new();
         for edge in model.ordered_children_of(&wire)? {
             let key = EdgeKey::of(&edge);
-            let Some(index) = face.edges.iter().position(|e| e.node == key) else {
+            let found = match &indexed {
+                Some(first) => first.get(&key).copied(),
+                None => face.edges.iter().position(|e| e.node == key),
+            };
+            let Some(index) = found else {
                 return Ok(None);
             };
             ring.push(Traversal {
@@ -7779,6 +7791,8 @@ struct Rebuild<'m> {
     vertices: Vec<(Point, Shape)>,
     /// `vertices` binned by position.
     vertex_bins: bins::Bins,
+    /// The entries a bin query found, kept between queries.
+    near: Vec<usize>,
     /// The widest tolerance any vertex in `vertices` holds: every widening
     /// of one goes through [`Rebuild::vertex`] or [`Rebuild::widen`], so an
     /// end is compared only with the vertices this far and a weld from it.
@@ -7820,9 +7834,11 @@ impl Rebuild<'_> {
             let j = &self.junctions[*slot].0;
             j.at.distance(p) <= j.reach + slack
         };
-        let first = match self.junction_bins.near(p, reach + slack) {
-            Some(near) => near.into_iter().find(inside),
-            None => (0..self.junctions.len()).find(inside),
+        let mut near = core::mem::take(&mut self.near);
+        let first = if self.junction_bins.near_into(p, reach + slack, &mut near) {
+            near.iter().copied().find(inside)
+        } else {
+            (0..self.junctions.len()).find(inside)
         };
         if let Some(slot) = first {
             let junction = self.junctions[slot].0;
@@ -7835,6 +7851,7 @@ impl Rebuild<'_> {
                     shape
                 }
             };
+            self.near = near;
             if junction.onto_vertex {
                 self.onto_vertex.insert(shape.node());
             }
@@ -7872,23 +7889,27 @@ impl Rebuild<'_> {
         // taken in is remembered where it arrived, and the next end is
         // measured from the description nearest it.
         let floor = self.weld.max(tol.confusion() * 1e2);
-        let near = self
+        if !self
             .vertex_bins
-            .near(p, floor + self.widest)
-            .unwrap_or_else(|| (0..self.vertices.len()).collect());
+            .near_into(p, floor + self.widest, &mut near)
+        {
+            near.extend(0..self.vertices.len());
+        }
         let found = near
-            .into_iter()
-            .map(|index| &self.vertices[index])
-            .filter_map(|(q, shape)| {
+            .iter()
+            .filter_map(|&index| {
+                let (q, shape) = &self.vertices[index];
                 let own = self
                     .model
                     .node(shape)
                     .and_then(|n| n.data().as_vertex())
                     .map_or(0.0, |d| d.tolerance.get());
                 let gap = q.distance(p);
-                (gap <= floor.max(own + floor)).then_some((gap, shape.clone()))
+                (gap <= floor.max(own + floor)).then_some((gap, index))
             })
-            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal))
+            .map(|(gap, index)| (gap, self.vertices[index].1.clone()));
+        self.near = near;
         if let Some((gap, shape)) = found {
             // Two descriptions of one junction may disagree by a general
             // crossing's residual. The vertex's tolerance is where that
@@ -7963,6 +7984,10 @@ impl Rebuild<'_> {
     }
 }
 
+/// The sub-edges built of each strand of a piece, keyed by strand, each
+/// with the parameter range it covers, in the order they were built.
+type StrandEdges = hashbrown::HashMap<(usize, u8), Vec<((f64, f64), Shape)>>;
+
 /// Build one piece as a face, orientation matching its source face's side.
 fn build_piece(
     rebuild: &mut Rebuild,
@@ -7975,8 +8000,9 @@ fn build_piece(
     let surface_id = rebuild.surface_id(fused, piece.from_a, piece.face);
 
     // Sub-edges cached within the piece, so a seam used from both sides is
-    // one edge appearing twice.
-    let mut cache: Vec<(usize, u8, (f64, f64), Shape)> = Vec::new();
+    // one edge appearing twice. Keyed by strand, each with the ranges built
+    // of it in order.
+    let mut cache: StrandEdges = hashbrown::HashMap::new();
     let mut wires = Vec::new();
     for ring in &piece.rings {
         let mut edges = Vec::with_capacity(ring.len());
@@ -8002,9 +8028,9 @@ fn build_piece(
                     piece.from_a, piece.face
                 );
             }
-            let built = if let Some((.., shape)) = cache
-                .iter()
-                .find(|(k, s, r, _)| *k == key_edge && *s == key_kind && near(*r, range))
+            let built = if let Some((_, shape)) = cache
+                .get(&(key_edge, key_kind))
+                .and_then(|built| built.iter().find(|(r, _)| near(*r, range)))
             {
                 shape.clone()
             } else {
@@ -8017,7 +8043,10 @@ fn build_piece(
                     &traversal.tag,
                     tol,
                 )?;
-                cache.push((key_edge, key_kind, range, shape.clone()));
+                cache
+                    .entry((key_edge, key_kind))
+                    .or_default()
+                    .push((range, shape.clone()));
                 shape
             };
             // A piece whose two ends welded to one vertex and whose whole
@@ -8537,12 +8566,12 @@ fn assemble_result(
     let sewn = sew_around(model, &faces, &settled, tol)?;
     // Sewing rebuilds the pieces onto shared edges: the result's faces are
     // its faces, reached from the inputs through both steps.
-    history = history.then(&sewn.history);
+    history = history.followed_by(&sewn.history);
     let mut sewn = sewn;
     let dropped = without_membranes(model, &mut sewn.shells, floor, tol)?;
-    history = history.then(&dropped);
+    history = history.followed_by(&dropped);
     let joined = seam_join::join_across_seams(model, &mut sewn.shells, tol)?;
-    history = history.then(&joined).without_repeated_images();
+    history = history.followed_by(&joined).without_repeated_images();
     if sewn.shells.is_empty() {
         // Membranes all through: what was kept encloses nothing.
         let empty = model.add_compound(&[])?;
@@ -8742,9 +8771,9 @@ fn assemble_sheet(
     let kept: Vec<(usize, bool)> = kept.iter().map(|&i| (i, false)).collect();
     let (faces, settled, _) = rebuilt_pieces(model, fused, &kept, &mut history, tol)?;
     let mut sewn = sew_around(model, &faces, &settled, tol)?;
-    history = history.then(&sewn.history);
+    history = history.followed_by(&sewn.history);
     let joined = seam_join::join_across_seams(model, &mut sewn.shells, tol)?;
-    history = history.then(&joined).without_repeated_images();
+    history = history.followed_by(&joined).without_repeated_images();
     let result = if sewn.shells.len() == 1 {
         sewn.shells.remove(0)
     } else {
@@ -8807,6 +8836,7 @@ fn rebuilt_pieces(
         surfaces_b: vec![None; fused.b.faces.len()],
         vertices: Vec::new(),
         vertex_bins: bins::Bins::new(floor + loosest),
+        near: Vec::new(),
         widest: 0.0,
         weld,
         junctions: fused.junctions.iter().map(|j| (*j, None)).collect(),

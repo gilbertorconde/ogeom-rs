@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Less overhead on the faces a boolean leaves alone.** Edge lookups while
+  rebuilding kept faces are hashed instead of scanned, widening a node's
+  tolerance and querying the vertex bins allocate nothing, and
+  `History::followed_by` composes a step that records nothing without
+  copying the whole history. A small drill or boss against a large solid
+  takes about 8% less CPU, with identical results.
+
 - **One fitter for curves measured between their samples.**
   `ogeom_algo::traced::fit_traced` and `fit_traced_2d` call
   `ogeom_geom::fit::fit_curve_sampled`: the least-squares fit first, the

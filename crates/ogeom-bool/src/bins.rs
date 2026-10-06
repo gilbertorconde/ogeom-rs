@@ -54,9 +54,18 @@ impl Bins {
     /// `None` when the grid cannot answer: the cell is unusable, the radius
     /// is not finite, or it spans more cells than a walk over every entry
     /// would cost.
+    #[cfg(test)]
     pub(crate) fn near(&self, p: Point, radius: f64) -> Option<Vec<usize>> {
+        let mut out = Vec::new();
+        self.near_into(p, radius, &mut out).then_some(out)
+    }
+
+    /// [`Bins::near`] into `out`, cleared first, for a caller asking many
+    /// times: `false` where the grid cannot answer.
+    pub(crate) fn near_into(&self, p: Point, radius: f64, out: &mut Vec<usize>) -> bool {
+        out.clear();
         if !self.usable() || !radius.is_finite() {
-            return None;
+            return false;
         }
         // The box's corners are rounded outward by more than the
         // subtraction and addition can lose, so a point on its face is
@@ -71,9 +80,8 @@ impl Bins {
             cells = cells.saturating_mul(hi.saturating_sub(lo).saturating_add(1));
         }
         if cells > MOST_CELLS {
-            return None;
+            return false;
         }
-        let mut out = Vec::new();
         for x in ranges[0].0..=ranges[0].1 {
             for y in ranges[1].0..=ranges[1].1 {
                 for z in ranges[2].0..=ranges[2].1 {
@@ -84,7 +92,7 @@ impl Bins {
             }
         }
         out.sort_unstable();
-        Some(out)
+        true
     }
 }
 

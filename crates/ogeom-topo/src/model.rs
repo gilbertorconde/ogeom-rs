@@ -1003,12 +1003,22 @@ impl Model {
     /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the shape, or
     /// anything below it, does not resolve in this model.
     pub fn widen(&mut self, shape: &Shape, to: Tolerance) -> OgeomResult<()> {
-        let mut affected = Vec::new();
-        let mut seen = hashbrown::HashSet::new();
-        let mut stack = vec![shape.node()];
+        // An edge and its vertices, the usual call, are searched in a short
+        // list; a larger shape's nodes are hashed.
+        const SHORT: usize = 32;
+        let mut affected: smallvec::SmallVec<[TShapeId; 8]> = smallvec::SmallVec::new();
+        let mut seen: Option<hashbrown::HashSet<TShapeId>> = None;
+        let mut stack: smallvec::SmallVec<[TShapeId; 8]> = smallvec::smallvec![shape.node()];
         while let Some(id) = stack.pop() {
-            if !seen.insert(id) {
+            let fresh = match &mut seen {
+                Some(seen) => seen.insert(id),
+                None => !affected.contains(&id),
+            };
+            if !fresh {
                 continue;
+            }
+            if seen.is_none() && affected.len() >= SHORT {
+                seen = Some(affected.iter().copied().chain([id]).collect());
             }
             let Some(node) = self.nodes.get(id) else {
                 ogeom_bail!(Dangling, "shape refers to a node not in this model");

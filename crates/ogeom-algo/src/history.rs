@@ -241,8 +241,6 @@ impl History {
         if later.is_empty() {
             return self.clone();
         }
-        let mut out = Self::new();
-
         let mut subjects: Vec<Shape> = self.inputs();
         let mut known: HashSet<SameKey> = subjects.iter().cloned().map(SameKey).collect();
         for input in later.inputs() {
@@ -250,7 +248,13 @@ impl History {
                 subjects.push(input);
             }
         }
+        self.then_for(later, subjects)
+    }
 
+    /// The records [`History::then`] gives each of `subjects`, and nothing
+    /// for any other input.
+    fn then_for(&self, later: &Self, subjects: impl IntoIterator<Item = Shape>) -> Self {
+        let mut out = Self::new();
         for input in subjects {
             let gone_already = self.is_deleted(&input);
 
@@ -321,6 +325,61 @@ impl History {
         }
 
         out
+    }
+
+    /// This history followed by `later`, as [`History::then`] answers it,
+    /// reworking only the inputs `later` reaches.
+    ///
+    /// An input whose images and generated shapes `later` knows nothing of
+    /// keeps its records as they stand, so a step that touched a few shapes
+    /// of a large result costs what it touched.
+    #[must_use]
+    pub fn followed_by(mut self, later: &Self) -> Self {
+        if later.is_empty() {
+            return self;
+        }
+        let reached = |shape: &Shape| {
+            let key = SameKey(shape.clone());
+            later.deleted.contains(&key)
+                || later.modified.contains_key(&key)
+                || later.generated.contains_key(&key)
+        };
+        // The inputs to rework: this history's inputs whose images or
+        // generated shapes `later` reaches, then `later`'s own inputs this
+        // history does not know, in the order `then` meets them.
+        let mut subjects: Vec<Shape> = Vec::new();
+        let mut known: HashSet<SameKey> = HashSet::new();
+        for input in self.inputs() {
+            let key = SameKey(input.clone());
+            let images = match self.modified.get(&key) {
+                _ if self.deleted.contains(&key) => &[][..],
+                Some(images) => images.as_slice(),
+                None => core::slice::from_ref(&input),
+            };
+            let made = self.generated.get(&key).map_or(&[][..], Vec::as_slice);
+            if images.iter().chain(made).any(reached) {
+                subjects.push(input);
+            }
+            known.insert(key);
+        }
+        for input in later.inputs() {
+            if known.insert(SameKey(input.clone())) {
+                subjects.push(input);
+            }
+        }
+        let reworked = self.then_for(later, subjects.iter().cloned());
+        for input in &subjects {
+            let key = SameKey(input.clone());
+            self.generated.remove(&key);
+            self.modified.remove(&key);
+            self.deleted.remove(&key);
+            self.copied.remove(&key);
+        }
+        self.generated.extend(reworked.generated);
+        self.modified.extend(reworked.modified);
+        self.deleted.extend(reworked.deleted);
+        self.copied.extend(reworked.copied);
+        self
     }
 
     /// Fold a sequence of histories into one, in order.
@@ -589,6 +648,59 @@ mod tests {
             assert_eq!(composed.modified(&s[0]).len(), h.modified(&s[0]).len());
             assert_eq!(composed.generated(&s[0]).len(), h.generated(&s[0]).len());
             assert_eq!(composed.is_deleted(&s[1]), h.is_deleted(&s[1]));
+        }
+    }
+
+    /// Composing in place answers every query as composing afresh does, over
+    /// histories mixing copies, splits, deletions and generation, where the
+    /// later step reaches some inputs' images and leaves the rest alone.
+    #[test]
+    fn composing_in_place_answers_as_composing_afresh() {
+        let (_, s) = shapes(24);
+        let mut state = 0x2545_f491_u64;
+        let mut next = |n: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_possible_truncation)]
+            let pick = (state >> 33) as usize % n;
+            pick
+        };
+        let random = |next: &mut dyn FnMut(usize) -> usize, records: usize| {
+            let mut h = History::new();
+            for _ in 0..records {
+                let (input, output) = (&s[next(24)], s[next(24)].clone());
+                match next(4) {
+                    0 => h.copy(input, output),
+                    1 => h.modify(input, output),
+                    2 => h.delete(input),
+                    _ => h.generate(input, output),
+                }
+            }
+            h
+        };
+        for _ in 0..200 {
+            let first = random(&mut next, 12);
+            let later = random(&mut next, 4);
+            let afresh = first.then(&later);
+            let in_place = first.clone().followed_by(&later);
+            for shape in &s {
+                let nodes = |images: &[Shape]| images.iter().map(Shape::node).collect::<Vec<_>>();
+                assert_eq!(afresh.is_deleted(shape), in_place.is_deleted(shape));
+                assert_eq!(afresh.is_affected(shape), in_place.is_affected(shape));
+                assert_eq!(
+                    nodes(afresh.modified(shape)),
+                    nodes(in_place.modified(shape))
+                );
+                assert_eq!(
+                    nodes(afresh.generated(shape)),
+                    nodes(in_place.generated(shape))
+                );
+                assert_eq!(
+                    afresh.copy_of(shape).map(Shape::node),
+                    in_place.copy_of(shape).map(Shape::node)
+                );
+            }
         }
     }
 
