@@ -3,6 +3,9 @@
 //! reads back whole, and a solid's spherical void stays a void.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Frame, Point};
 use ogeom::mesh::Deflection;
@@ -105,6 +108,11 @@ fn spheres_round_trip_through_iges() {
         let text = ogeom::io::write_iges(&document, T).unwrap();
         let import = ogeom::io::read_iges(&text, T).unwrap();
         assert_eq!(import.solids.len(), 1, "{name}");
+        assert_eq!(
+            walks::edges_walked_one_way(import.document.model(), &import.solids[0]),
+            0,
+            "{name}"
+        );
         holds(
             name,
             "IGES",

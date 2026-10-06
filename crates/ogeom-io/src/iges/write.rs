@@ -232,7 +232,12 @@ impl Writer<'_> {
             surface.clone().transformed(&placement, self.tol)?
         };
         let surface_entity = self.surface(&surface)?;
-        let wires = self.model.ordered_children_of(face)?;
+        // A face's loops keep it on their left about its surface's normal,
+        // as the face stores them; the shell's flag says which side of the
+        // surface the face faces.
+        let wires = self
+            .model
+            .ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))?;
         let mut loop_entities = Vec::new();
         for wire in &wires {
             if let Some(entity) = self.wire(wire)? {

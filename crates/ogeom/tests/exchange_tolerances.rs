@@ -3,6 +3,9 @@
 //! reads back.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{Severity, check, restore_containment};
 use ogeom::core::{Tolerance, Tolerances};
 use ogeom::mesh::Deflection;
@@ -499,6 +502,7 @@ fn a_solid_written_as_iges_reads_back() {
             let model = back.document.model();
             assert!(check(model, came, T).unwrap().is_usable(), "{name}");
             assert_eq!(containment_findings(model, came), 0, "{name}");
+            assert_eq!(walks::edges_walked_one_way(model, came), 0, "{name}");
             let faces = |m: &Model, s: &Shape| explore_unique(m, s, ShapeType::Face).unwrap().len();
             assert_eq!(
                 faces(read.document.model(), sent),
