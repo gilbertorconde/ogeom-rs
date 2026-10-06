@@ -813,6 +813,14 @@ pub fn fillet_edge_variable(
                 tol,
             )?,
         ];
+        // Apex, contact on `a`, contact on `b`: walked back where that
+        // turns against `outward`, so the cap keeps itself on the left.
+        let turn = (contact_a[i] - apex[i]).cross(contact_b[i] - apex[i]);
+        let edges: Vec<Shape> = if turn.dot(outward) < 0.0 {
+            edges.iter().rev().map(Shape::reversed).collect()
+        } else {
+            edges
+        };
         ogeom_algo::make_face_with_pcurves(model, cap_surface, &[edges], tol)
     };
     let cap0 = cap(model, 0, -seat.along)?.shape;
@@ -1037,6 +1045,13 @@ pub(crate) fn seated_fillet(
             arc(model, h, &ca_v, &cb_v)?,
             segment_between(model, (&cb_v, cb), (&apex_v, apex), tol)?,
         ];
+        // Walked back where apex, `ca`, `cb` turn against `outward`, so the
+        // cap keeps itself on the left.
+        let edges: Vec<Shape> = if (ca - apex).cross(cb - apex).dot(outward) < 0.0 {
+            edges.iter().rev().map(Shape::reversed).collect()
+        } else {
+            edges
+        };
         face_from_edges(model, surface.into(), &edges, tol)
     };
     let cap0 = cap(model, apex0, contact_a0, contact_b0, 0.0, -seat.along)?;

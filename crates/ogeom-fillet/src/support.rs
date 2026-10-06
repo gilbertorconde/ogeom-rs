@@ -595,8 +595,24 @@ pub(crate) fn revolved_flanks(
         let reach = (seat.radius + wall_depth + cap_rho) * 2.0;
         let surface: SurfaceGeometry =
             PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        let outer = ogeom_algo::make_wire(model, std::slice::from_ref(&apex_ring), tol)?.shape;
-        let inner = ogeom_algo::make_wire(model, std::slice::from_ref(&cap_ring), tol)?.shape;
+        // Both rings turn about `up`. The wider is the outer boundary and
+        // turns positively about the face's normal, the narrower the hole
+        // and turns against it, so the face keeps itself on their left.
+        let (wide, narrow) = if cap_rho > seat.radius {
+            (&cap_ring, &apex_ring)
+        } else {
+            (&apex_ring, &cap_ring)
+        };
+        let with_normal = seat.tau > 0.0;
+        let turned = |ring: &Shape, positive: bool| {
+            if positive == with_normal {
+                ring.clone()
+            } else {
+                ring.reversed()
+            }
+        };
+        let outer = ogeom_algo::make_wire(model, &[turned(wide, true)], tol)?.shape;
+        let inner = ogeom_algo::make_wire(model, &[turned(narrow, false)], tol)?.shape;
         let face = ogeom_algo::make_face(model, surface.clone(), &[outer, inner], tol)?.shape;
         let surface_id = {
             let Some(node) = model.node(&face) else {
@@ -822,6 +838,16 @@ pub(crate) fn planar_face(
         reach = reach.max(p.distance(corners[0]) * 2.0);
     }
     let surface = PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?;
+    // The ring keeps the face on its left about `outward`: corners given
+    // turning the other way about it are walked in reverse.
+    let turn = (0..corners.len()).fold(Vector::ZERO, |sum, i| {
+        let (p, q) = (corners[i], corners[(i + 1) % corners.len()]);
+        sum + p.to_vector().cross(q.to_vector())
+    });
+    let mut corners = corners.to_vec();
+    if turn.dot(outward) < 0.0 {
+        corners.reverse();
+    }
     let vertices: Vec<Shape> = corners
         .iter()
         .map(|p| make_vertex(model, *p).shape)
@@ -1267,4 +1293,109 @@ fn on_boundary(model: &Model, solid: &Shape, point: Point, tol: Tolerances) -> O
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use std::collections::HashMap;
+
+    use ogeom_core::Tolerances;
+    use ogeom_math::{Frame, Point};
+    use ogeom_topo::{Filter, Model, Orientation, Shape, ShapeType, explore, explore_unique};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// How many edges two faces of `shape` walk the same way.
+    fn walked_one_way(model: &Model, shape: &Shape) -> usize {
+        let mut walks: HashMap<_, Vec<Orientation>> = HashMap::new();
+        for face in explore(model, shape, Filter::OfType(ShapeType::Face)).unwrap() {
+            for wire in model.children_of(&face).unwrap() {
+                for edge in model.children_of(&wire).unwrap() {
+                    if !model
+                        .node(&edge)
+                        .unwrap()
+                        .data()
+                        .as_edge()
+                        .unwrap()
+                        .degenerate
+                    {
+                        walks
+                            .entry(edge.node())
+                            .or_default()
+                            .push(edge.orientation());
+                    }
+                }
+            }
+        }
+        walks
+            .values()
+            .filter(|w| w.len() == 2 && w[0] == w[1])
+            .count()
+    }
+
+    /// The edge of `shape` whose middle stands nearest `at`.
+    fn edge_at(model: &Model, shape: &Shape, at: Point) -> Shape {
+        let off = |e: &Shape| {
+            let b = ogeom_algo::shape_bounds(model, e, T).unwrap();
+            b.low().unwrap().midpoint(b.high().unwrap()).distance(at)
+        };
+        explore_unique(model, shape, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .min_by(|a, b| off(a).total_cmp(&off(b)))
+            .unwrap()
+    }
+
+    /// The wedges a straight edge's fillet and chamfer and a drum rim's
+    /// fillet take away walk each edge between two of their faces once each
+    /// way, and hold the volume the blend removes: a quarter round's
+    /// section, or a half square's, along the edge or round the rim at the
+    /// section's centroid.
+    #[test]
+    fn blend_wedges_walk_each_edge_once_each_way() {
+        let mut model = Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 6.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let ridge = edge_at(&model, &block, Point::new(5.0, 0.0, 4.0));
+        let rim = edge_at(&model, &drum, Point::new(0.0, 0.0, 4.0));
+        let pi = core::f64::consts::PI;
+        let section = 1.0 - pi / 4.0;
+        let centroid = (5.0 / 6.0 - pi / 4.0) / section;
+        let cases = [
+            (&block, &ridge, false, section * 10.0),
+            (&block, &ridge, true, 0.5 * 10.0),
+            (&drum, &rim, false, 2.0 * pi * (3.0 - centroid) * section),
+        ];
+        for (solid, edge, bevel, removed) in cases {
+            let (made, wedges) = super::collecting_wedges(|| {
+                if bevel {
+                    crate::chamfer_edge(&mut model, solid, edge, 1.0, T)
+                } else {
+                    crate::fillet_edge(&mut model, solid, edge, 1.0, T)
+                }
+            });
+            made.unwrap();
+            let [wedge] = &wedges[..] else {
+                panic!("one wedge, not {}", wedges.len());
+            };
+            assert_eq!(walked_one_way(&model, &wedge.solid), 0, "bevel {bevel}");
+            let volume = ogeom_algo::volume_properties(
+                &model,
+                &wedge.solid,
+                ogeom_mesh::Deflection::default(),
+                T,
+            )
+            .unwrap()
+            .mass;
+            assert!(
+                (volume - removed).abs() < removed * 1e-6,
+                "bevel {bevel}: {volume} against {removed}"
+            );
+        }
+    }
 }
