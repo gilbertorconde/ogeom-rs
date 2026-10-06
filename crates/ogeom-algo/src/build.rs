@@ -680,7 +680,9 @@ pub fn make_face_with_pcurves(
 /// alone. A seam representation carries both branches by design: the
 /// walk passes through it on the side the occurrence uses and moves
 /// nothing. Every wire after the first is then carried whole onto the
-/// first wire's branch, so rims, slits and holes all read in one chart.
+/// first wire's branch, the middle of the extent its images run over
+/// brought within half a period of the first's, so rims, slits, holes and
+/// rings closed by one edge all read in one chart.
 /// The images are rewritten in place (`GeometryStore::pcurve_mut`), once
 /// each; a slit uses one image twice.
 ///
@@ -718,12 +720,17 @@ pub fn chain_wire_branches(
         })
     };
     // A wire's images in traversal order: the pcurve to move (none for a
-    // seam), its start and end in the edge's own direction.
+    // seam), its start and end in the edge's own direction, and points
+    // along it, which place a loop closed by one edge whose ends say
+    // nothing of where it runs.
     type Image = (
         Option<ogeom_topo::PCurveId>,
         ogeom_math::Point2,
         ogeom_math::Point2,
+        Vec<ogeom_math::Point2>,
     );
+    /// How many steps each image is sampled at for the wire's extent.
+    const STEPS: u32 = 8;
     let images = |model: &Model, wire: &Shape| -> OgeomResult<Vec<Image>> {
         let mut out = Vec::new();
         for edge in model.ordered_children_of(wire)? {
@@ -749,10 +756,16 @@ pub fn chain_wire_branches(
             } else {
                 (range.0, range.1)
             };
+            let mut along = Vec::with_capacity(STEPS as usize - 1);
+            for k in 1..STEPS {
+                let t = range.0 + (range.1 - range.0) * f64::from(k) / f64::from(STEPS);
+                along.push(planar.point_at(t, tol)?);
+            }
             out.push((
                 movable.then_some(id),
                 planar.point_at(t_start, tol)?,
                 planar.point_at(t_end, tol)?,
+                along,
             ));
         }
         Ok(out)
@@ -769,7 +782,7 @@ pub fn chain_wire_branches(
         let mut prev_end: Option<ogeom_math::Point2> = None;
         let mut lo = ogeom_math::Point2::new(f64::INFINITY, f64::INFINITY);
         let mut hi = ogeom_math::Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for (id, start, end) in &wire_images {
+        for (id, start, end, along) in &wire_images {
             let shift = match id {
                 None => ogeom_math::Vector2::new(0.0, 0.0),
                 Some(id) => match shifts.iter().find(|(seen, _)| seen == id) {
@@ -787,7 +800,7 @@ pub fn chain_wire_branches(
                 },
             };
             let (s, e) = (*start + shift, *end + shift);
-            for p in [s, e] {
+            for p in along.iter().map(|p| *p + shift).chain([s, e]) {
                 lo = ogeom_math::Point2::new(lo.x.min(p.x), lo.y.min(p.y));
                 hi = ogeom_math::Point2::new(hi.x.max(p.x), hi.y.max(p.y));
             }

@@ -2698,6 +2698,10 @@ fn host_leg(
         } else {
             [rail_wire, apex_wire]
         };
+        // The two images are found apart (the rail's slid into the chart's
+        // window, the ring's wherever its inversion answers) and can lie a
+        // period apart; the patch between them is one chart's.
+        ogeom_algo::chain_wire_branches(model, surface_id, &wires, tol)?;
         Ok(ogeom_algo::make_face_on(model, surface_id, &wires, tol)?.shape)
     }
 }

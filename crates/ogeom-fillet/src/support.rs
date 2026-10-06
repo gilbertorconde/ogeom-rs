@@ -791,9 +791,8 @@ pub(crate) fn apply_wedge(
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the blend wedge did not close");
     }
-    // Put together raw: a wedge is oriented by construction, and a band
-    // wedge whose faces overlap in its mesh would read its volume's sign
-    // wrong and be turned inside out by `make_solid`.
+    // Put together raw: a wedge is oriented by construction, and asks no
+    // mesh to say which way it faces.
     let wedge = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
     let set_aside = WEDGES.with(|held| {
         held.borrow_mut().as_mut().map(|wedges| {
@@ -1540,6 +1539,69 @@ mod tests {
         ogeom_algo::volume_properties(model, solid, ogeom_mesh::Deflection::default(), T)
             .unwrap()
             .mass
+    }
+
+    /// Where two bores cross inside a block, the wedge of the band rounding
+    /// each edge where they meet meshes to what it measures. Round a closed
+    /// loop each leg is the patch of one bore's wall between two closed
+    /// rings, both on one branch of the wall's chart, so the mesh covers
+    /// the patch and not the wall round between them.
+    #[test]
+    fn a_band_round_crossing_bores_meshes_to_its_volume() {
+        use ogeom_math::Direction;
+        let mut model = Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 20.0), T)
+            .unwrap()
+            .shape;
+        let bore = |model: &mut Model, at: Point, axis: Direction, x: Direction, r: f64| {
+            let frame = Frame::new(at, axis, x, T).unwrap();
+            ogeom_algo::make_cylinder(model, frame, r, 22.0, T)
+                .unwrap()
+                .shape
+        };
+        let a = bore(
+            &mut model,
+            Point::new(-1.0, 10.0, 10.0),
+            Direction::X,
+            Direction::Y,
+            4.0,
+        );
+        let b = bore(
+            &mut model,
+            Point::new(10.0, -1.0, 12.0),
+            Direction::Y,
+            Direction::Z,
+            3.0,
+        );
+        let once = ogeom_bool::cut(&mut model, &block, &a, T).unwrap().shape;
+        let bored = ogeom_bool::cut(&mut model, &once, &b, T).unwrap().shape;
+        let meeting: Vec<Shape> = explore_unique(&model, &bored, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                super::edge_curve(&model, e, T)
+                    .is_ok_and(|(curve, _)| matches!(curve, ogeom_geom::Curve::BSpline(_)))
+            })
+            .collect();
+        assert_eq!(meeting.len(), 3);
+        for edge in &meeting {
+            let (made, wedges) =
+                super::collecting_wedges(|| crate::fillet_edge(&mut model, &bored, edge, 1.0, T));
+            made.unwrap();
+            let [wedge] = &wedges[..] else {
+                panic!("one wedge, not {}", wedges.len());
+            };
+            let exact = volume(&model, &wedge.solid);
+            let mesh =
+                ogeom_mesh::triangulate(&model, &wedge.solid, ogeom_mesh::Deflection::default(), T)
+                    .unwrap();
+            assert!(mesh.is_closed());
+            assert!(
+                (mesh.volume() - exact).abs() < exact * 0.25,
+                "mesh {} against {exact}",
+                mesh.volume()
+            );
+        }
     }
 
     /// The wedges a marched band takes away or fills walk each edge between

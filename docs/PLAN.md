@@ -305,9 +305,15 @@ agree with the ring.
   purpose put the solid together with `Model::add_solid`: a half space
   outside a closed face, the offset's guard against faces moved past
   each other (it reads the inside-out volume), and a blend wedge, which
-  is oriented by construction and whose band wedges can overlap in the
-  mesh so the sign reads wrong (a cross-bore band wedge of 8.4 mm3
-  meshed to -304). The writer puts a trimmed curve that runs against its
+  is oriented by construction. A band wedge round a closed loop where two
+  bores cross meshed to -304 against the 8.4 mm3 it measures: each leg is
+  the patch of a bore's wall between two closed rings, whose images were
+  found apart and lay a period apart in the wall's chart, so the mesh
+  covered the wall round between them. The leg's rings are chained onto
+  one branch, and the chaining places a wire by points along its images,
+  not only their ends, which for a ring closed by one edge are one point.
+  Over the fillet stress cases no wedge's mesh is now off its measure by
+  more than chord error. The writer puts a trimmed curve that runs against its
   basis out at its own points: its range mirrored in its domain, walked
   the other way on the basis. The STEP writer puts a trim out as its
   spline over its own range, so a reversed trim already read back in

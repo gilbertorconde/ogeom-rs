@@ -13,11 +13,27 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`CircleCurve::forward` and `EllipseCurve::forward`.** The same curve
+  running forward, its frame turned half a turn about its x axis.
+
 - **`Model::outer_wire`.** A face's outer wire, read from the stored order
   (outer first) whichever way the face is used; a reversed face's walk
   lists its holes first.
 
 ### Fixed
+
+- **A reversed circle or ellipse is written and imaged as itself.** STEP
+  wrote a circle or ellipse running backwards as its forward conic, and the
+  reader took the other arc between its vertices; and its exact pcurve ran
+  the forward way on every analytic surface, so a face bounded by one on a
+  plane failed `check`. Both follow the curve's own direction.
+
+- **A fillet band round crossed bores meshes to its volume.** The legs of a
+  band round a closed loop where two bores cross had their two rings imaged
+  a whole turn apart in the wall's chart, so the wedge meshed to -304
+  against an exact 8.4 cubic millimetres; both rings are put on one branch.
+  `chain_wire_branches` places a wire by points along its images, so a ring
+  closed by one edge is moved onto the first wire's branch.
 
 - **`make_solid` turns a consistent shell facing the wrong way.** A closed
   shell whose faces all agree but face in made an inside-out solid; the
