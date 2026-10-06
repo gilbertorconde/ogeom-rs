@@ -18,8 +18,10 @@ const MARGIN: f64 = 1e-6;
 /// How far a pcurve, lifted through its surface, stands off an edge's
 /// curve: at each of many samples along both ranges alike, the distance
 /// between the two points, or where that exceeds `stated`, the distance
-/// from the lifted point to the nearest point of the curve's stretch.
-/// Within `stated`, the answer is only known to be within it.
+/// from the lifted point to the nearest point of the curve's stretch, and
+/// the widest peaks between samples searched for their tops, so a stretch
+/// of the edge sampled anywhere stays within the answer. Within `stated`,
+/// the answer is only known to be within it.
 ///
 /// Unlike [`lifted_gap`](crate::pcurve_fit::lifted_gap), which charges a
 /// pcurve for a pace differing from the curve's by more than a sample's
@@ -39,20 +41,85 @@ pub fn pcurve_gap(
     // The checker's sample counts divide this one, so every point it
     // samples is one of these.
     const SAMPLES: u32 = 256;
-    let mut widest: f64 = 0.0;
-    for i in 0..=SAMPLES {
-        let f = f64::from(i) / f64::from(SAMPLES);
+    // A sample this close to the widest may stand beside a peak wider
+    // than every sample: the stretch either side of it is searched, for
+    // at most this many of the widest.
+    const NEAR_PEAK: f64 = 0.9;
+    const PEAKS: usize = 4;
+    // The gap at `f` of the way along, the nearest point of the curve
+    // standing in where the same parameter's is past `within`.
+    let gap_beyond = |f: f64, within: f64| -> OgeomResult<Option<f64>> {
         let uv = pcurve.point_at(pcurve_range.0 + (pcurve_range.1 - pcurve_range.0) * f, tol)?;
         let Ok(lifted) = surface.point_at(uv.x, uv.y, tol) else {
-            continue;
+            return Ok(None);
         };
-        let mut gap = curve
+        let gap = curve
             .point_at(range.0 + (range.1 - range.0) * f, tol)?
             .distance(lifted);
-        if gap > widest.max(stated) {
-            gap = gap.min(nearest_on_stretch(curve, range, lifted, tol)?);
+        Ok(Some(if gap > within {
+            gap.min(nearest_on_stretch(curve, range, lifted, tol)?)
+        } else {
+            gap
+        }))
+    };
+    let step = 1.0 / f64::from(SAMPLES);
+    let mut widest: f64 = 0.0;
+    let mut gaps = Vec::with_capacity(SAMPLES as usize + 1);
+    for i in 0..=SAMPLES {
+        // A gap no wider than the widest so far changes nothing, and is
+        // kept as found.
+        let gap = gap_beyond(f64::from(i) * step, widest.max(stated))?;
+        if let Some(gap) = gap {
+            widest = widest.max(gap);
         }
-        widest = widest.max(gap);
+        gaps.push(gap);
+    }
+    // A piece of the edge is sampled between these points, so the peaks
+    // between them count: the widest local peaks near the widest sample are
+    // searched for their tops.
+    let sampled = widest;
+    let gap_of = |j: Option<usize>| j.and_then(|j| gaps.get(j).copied().flatten());
+    let mut peaks: Vec<(f64, usize)> = gaps
+        .iter()
+        .enumerate()
+        .filter_map(|(i, gap)| {
+            let gap = (*gap)?;
+            let peak = gap >= sampled * NEAR_PEAK
+                && gap_of(i.checked_sub(1)).is_none_or(|g| g <= gap)
+                && gap_of(Some(i + 1)).is_none_or(|g| g <= gap);
+            peak.then_some((gap, i))
+        })
+        .collect();
+    peaks.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let gap_at = |f: f64| gap_beyond(f, stated);
+    for &(_, i) in peaks.iter().take(PEAKS) {
+        #[allow(clippy::cast_precision_loss, reason = "a sample index")]
+        let at = i as f64 * step;
+        widest = widest.max(peak_about(&gap_at, at, step)?);
+    }
+    Ok(widest)
+}
+
+/// The widest of `gap_at` within a step either side of `at`, by a
+/// golden-section search, never less than at `at`.
+fn peak_about(
+    gap_at: &impl Fn(f64) -> OgeomResult<Option<f64>>,
+    at: f64,
+    step: f64,
+) -> OgeomResult<f64> {
+    const ROUNDS: u32 = 40;
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut widest = gap_at(at)?.unwrap_or(0.0);
+    let (mut a, mut b) = ((at - step).max(0.0), (at + step).min(1.0));
+    for _ in 0..ROUNDS {
+        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        let (gc, gd) = (gap_at(c)?.unwrap_or(0.0), gap_at(d)?.unwrap_or(0.0));
+        widest = widest.max(gc).max(gd);
+        if gc > gd {
+            b = d;
+        } else {
+            a = c;
+        }
     }
     Ok(widest)
 }
@@ -198,4 +265,47 @@ pub fn state_pcurve_gaps_of(
 pub fn state_pcurve_gaps(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<()> {
     let edges = ogeom_topo::explore_unique(model, shape, ShapeType::Edge)?;
     state_pcurve_gaps_of(model, &edges, tol)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use ogeom_geom::{BSpline2d, LineCurve, PlaneSurface};
+    use ogeom_math::{KnotVector, Plane, Point2};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A pcurve rising to a corner half way between two samples, along a
+    /// straight edge on the plane: the samples either side stand short of
+    /// the corner by a quarter of a percent, and the gap is the corner's
+    /// height, where a piece of the edge sampled at its corner finds it.
+    #[test]
+    fn a_peak_between_samples_is_measured_at_its_top() {
+        let curve: Curve = LineCurve::segment(Point::ORIGIN, Point::new(1.0, 0.0, 0.0), T)
+            .unwrap()
+            .into();
+        let surface: SurfaceGeometry =
+            PlaneSurface::new(Plane::new(ogeom_math::Frame::WORLD)).into();
+        let (corner, height) = (128.5 / 256.0, 1e-3);
+        let knots = KnotVector::new(vec![0.0, 0.0, corner, 1.0, 1.0], 1).unwrap();
+        let control = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(corner, height),
+            Point2::new(1.0, 0.0),
+        ];
+        let pcurve: PlanarCurve = BSpline2d::new(knots, control, T).unwrap().into();
+        let gap = pcurve_gap(
+            (&curve, (0.0, 1.0)),
+            (&pcurve, (0.0, 1.0)),
+            &surface,
+            1e-7,
+            T,
+        )
+        .unwrap();
+        assert!(
+            (gap - height).abs() < height * 1e-6,
+            "{gap} against {height}"
+        );
+    }
 }
