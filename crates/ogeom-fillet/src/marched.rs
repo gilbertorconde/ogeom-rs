@@ -865,15 +865,63 @@ pub(crate) fn closed_band_wedge(
         ogeom_topo::Location::identity(),
         u_dom,
     )?;
+    // The legs: one per host, the exact host surface bounded by the fitted
+    // rail and a fresh ring on the edge's own curve.
+    let (leg_first, pieces_first) = host_leg(
+        model,
+        first,
+        &blend.on_first,
+        &u_params,
+        &rail_first,
+        guide,
+        guide_range,
+        fit_target,
+        tol,
+    )?;
+    let (leg_second, pieces_second) = host_leg(
+        model,
+        second,
+        &blend.on_second,
+        &u_params,
+        &rail_second,
+        guide,
+        guide_range,
+        fit_target,
+        tol,
+    )?;
+    // A leg that split its rail hands back the pieces, which the band walks
+    // in the rail's place on the rail's own column.
+    let mut rail_walk =
+        |rail: &Shape, pieces: RailPieces, column: f64| -> OgeomResult<Vec<Shape>> {
+            let Some(pieces) = pieces else {
+                return Ok(vec![rail.clone()]);
+            };
+            let mut walked = Vec::with_capacity(pieces.len());
+            for (piece, range) in pieces {
+                ogeom_algo::attach_pcurve(
+                    model,
+                    &piece,
+                    column_line(column)?,
+                    blend_id,
+                    ogeom_topo::Location::identity(),
+                    range,
+                )?;
+                walked.push(piece);
+            }
+            Ok(walked)
+        };
+    let walked_first = rail_walk(&rail_first, pieces_first, u_dom.0)?;
+    let walked_second = rail_walk(&rail_second, pieces_second, u_dom.1)?;
     let blend_face = {
         let wire = ogeom_algo::make_wire(
             model,
             &[
-                seam.clone(),
-                rail_second.clone(),
-                seam.reversed(),
-                rail_first.reversed(),
-            ],
+                vec![seam.clone()],
+                walked_second,
+                vec![seam.reversed()],
+                walked_first.iter().rev().map(Shape::reversed).collect(),
+            ]
+            .concat(),
             tol,
         )?
         .shape;
@@ -895,30 +943,6 @@ pub(crate) fn closed_band_wedge(
         }
     };
 
-    // The legs: one per host, the exact host surface bounded by the fitted
-    // rail and a fresh ring on the edge's own curve.
-    let leg_first = host_leg(
-        model,
-        first,
-        &blend.on_first,
-        &u_params,
-        &rail_first,
-        guide,
-        guide_range,
-        fit_target,
-        tol,
-    )?;
-    let leg_second = host_leg(
-        model,
-        second,
-        &blend.on_second,
-        &u_params,
-        &rail_second,
-        guide,
-        guide_range,
-        fit_target,
-        tol,
-    )?;
     // Legs coincide with the solid's own faces: aligned when subtracting,
     // opposed when fusing, which is what the melt needs either way.
     let orient = |face: Shape, host_sign: f64| -> Shape {
@@ -2452,6 +2476,11 @@ fn section_connector(
     )
 }
 
+/// The rail as a leg left it: whole, or split into pieces (each with its
+/// range on the rail's curve, in the rail's own order) that every face on
+/// the rail walks in its place.
+type RailPieces = Option<Vec<(Shape, (f64, f64))>>;
+
 /// One leg: the host's own surface bounded by the marched rail and the
 /// edge's ring. A rail that winds the chart's period takes the band with its
 /// connector seam; a contractible one takes the annular two-wire face.
@@ -2466,7 +2495,7 @@ fn host_leg(
     guide_range: (f64, f64),
     fit_target: f64,
     tol: Tolerances,
-) -> OgeomResult<Shape> {
+) -> OgeomResult<(Shape, RailPieces)> {
     let n = on_host.len();
     // The rail's chart image, closed: the marcher solved these parameters,
     // so the fit through them at the grid's own u-parameters is
@@ -2640,7 +2669,15 @@ fn host_leg(
             )
         };
         let wound_chart = if apex_winds { &apex_chart } else { &rail_chart };
-        return pole_leg(model, host, wound, wound_chart, contractible, tol);
+        return pole_leg(
+            model,
+            host,
+            wound,
+            wound_chart,
+            contractible,
+            !apex_winds,
+            tol,
+        );
     }
     if winding.abs() > 1e-6 {
         // Both loops wind the period; the band with its connector closes the
@@ -2652,12 +2689,15 @@ fn host_leg(
                  guide is still owed; see docs/PARITY.md, fillet.edge-blends"
             );
         }
-        ogeom_algo::make_band_between(
-            model,
-            host,
-            [(&apex, apex_pcurve), (rail, rail_pcurve.clone())],
-            tol,
-        )
+        Ok((
+            ogeom_algo::make_band_between(
+                model,
+                host,
+                [(&apex, apex_pcurve), (rail, rail_pcurve.clone())],
+                tol,
+            )?,
+            None,
+        ))
     } else {
         // Contractible loops: an annular patch, outer wire first.
         let apex_area = chart_area(&apex_chart);
@@ -2702,7 +2742,10 @@ fn host_leg(
         // window, the ring's wherever its inversion answers) and can lie a
         // period apart; the patch between them is one chart's.
         ogeom_algo::chain_wire_branches(model, surface_id, &wires, tol)?;
-        Ok(ogeom_algo::make_face_on(model, surface_id, &wires, tol)?.shape)
+        Ok((
+            ogeom_algo::make_face_on(model, surface_id, &wires, tol)?.shape,
+            None,
+        ))
     }
 }
 
@@ -2779,14 +2822,22 @@ fn rail_image(
 /// A leg holding a pole: the band from the loop that winds the period to
 /// the pole on the other loop's side, with the other loop cut from it as a
 /// hole.
+///
+/// The seam from the winding loop to the pole is a meridian, and one
+/// through the hole would cross it. When the winding loop is the rail
+/// (`split_rail`), the rail is split on the column farthest from the hole
+/// and the seam leaves from there; the pieces come back for the band to
+/// walk too. Otherwise the seam leaves from the loop's own vertex.
+#[allow(clippy::too_many_lines, reason = "one leg, assembled end to end")]
 fn pole_leg(
     model: &mut Model,
     host: &SurfaceGeometry,
     wound: (&Shape, PlanarCurve, (f64, f64)),
     wound_chart: &[Point2],
     contractible: (&Shape, PlanarCurve, (f64, f64), &[Point2]),
+    split_rail: bool,
     tol: Tolerances,
-) -> OgeomResult<Shape> {
+) -> OgeomResult<(Shape, RailPieces)> {
     use ogeom_geom::{Curve2d as _, Surface as _};
     if !matches!(host, SurfaceGeometry::Sphere(_)) {
         ogeom_bail!(
@@ -2814,52 +2865,299 @@ fn pole_leg(
     };
     // The pole on the hole's side of the winding loop.
     let ((u0, u1), (v0, v1)) = host.domain();
+    let period = u1 - u0;
     let above = mean(hole_chart) > mean(wound_chart);
     let row = if above { v1 } else { v0 };
-    let pole = ogeom_algo::make_vertex(model, host.point_at(start.x, row, tol)?).shape;
+    let (lo, hi) = column_span(hole_chart);
+    let split = if split_rail && hi - lo < period {
+        // The crossing of the column half a turn from the hole's middle,
+        // the one nearest the pole: the meridian from there up to the
+        // pole meets neither the hole nor the rail again.
+        let free = f64::midpoint(lo, hi) + period / 2.0;
+        let column = start.x + (free - start.x).rem_euclid(period);
+        rail_crossing(&wound_pcurve, wound_range, column, row, tol)?
+    } else {
+        None
+    };
+    let Some(split) = split else {
+        let pole = ogeom_algo::make_vertex(model, host.point_at(start.x, row, tol)?).shape;
+        let mut data = ogeom_topo::EdgeData::new();
+        data.degenerate = true;
+        let pole_edge = model.add_edge(data, &[pole.clone(), pole])?;
+        let pole_pcurve: PlanarCurve = ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(start.x, row), ogeom_math::Direction2::X),
+            0.0,
+            period,
+        )?
+        .into();
+        let band = ogeom_algo::make_band_between(
+            model,
+            host,
+            [(wound_edge, wound_pcurve), (&pole_edge, pole_pcurve)],
+            tol,
+        )?;
+        let Some(surface_id) = model
+            .node(&band)
+            .and_then(|n| n.data().as_face())
+            .map(|d| d.surface)
+        else {
+            ogeom_bail!(Construction, "the pole band holds no face data");
+        };
+        let outer = model.children_of(&band)?[0].clone();
+        let hole_wire = pole_hole(
+            model,
+            surface_id,
+            (hole_edge, hole_pcurve, hole_range, hole_chart),
+            start.x,
+            period,
+            tol,
+        )?;
+        let face = ogeom_algo::make_face_on(model, surface_id, &[outer, hole_wire], tol)?.shape;
+        return Ok((face, None));
+    };
+
+    // The rail in two pieces meeting on the free column.
+    if wound_edge.orientation() == Orientation::Reversed {
+        ogeom_bail!(Construction, "a pole leg's rail is walked backwards");
+    }
+    let (curve, _) = edge_curve(model, wound_edge, tol)?;
+    let Some((vertex, _)) = ogeom_algo::edge_vertices(model, wound_edge)? else {
+        ogeom_bail!(Construction, "a pole leg's rail has no vertex");
+    };
+    let foot = wound_pcurve.point_at(split, tol)?;
+    let column = foot.x;
+    let at = curve.point_at(split, tol)?;
+    let cut = ogeom_algo::make_vertex(model, at).shape;
+    let first = ogeom_algo::make_edge_between(
+        model,
+        curve.clone(),
+        (wound_range.0, split),
+        &vertex,
+        &cut,
+        tol,
+    )?
+    .shape;
+    let second =
+        ogeom_algo::make_edge_between(model, curve, (split, wound_range.1), &cut, &vertex, tol)?
+            .shape;
+    let rail_tolerance = model.tolerance_of(wound_edge)?;
+    if let Some(widened) = rail_tolerance {
+        for piece in [&first, &second] {
+            model.widen(piece, widened)?;
+        }
+    }
+    // The cut stands where the rail's image puts it on the host, within
+    // the rail's own tolerance.
+    let miss = host.point_at(column, foot.y, tol)?.distance(at);
+    let hold = rail_tolerance
+        .map_or(0.0, ogeom_core::Tolerance::get)
+        .max(miss);
+    if hold > tol.confusion() {
+        model.widen(&cut, ogeom_core::Tolerance::new(hold)?)?;
+    }
+
+    // The rail's image runs from the column a period round: the second
+    // piece from the column to the rail's start a period on, the first
+    // from there to the column a period on.
+    let surface_id = model.geometry_mut().add_surface(host.clone());
+    let over = ogeom_math::Transform2::translation(ogeom_math::Vector2::new(period, 0.0));
+    ogeom_algo::attach_pcurve(
+        model,
+        &second,
+        wound_pcurve.clone(),
+        surface_id,
+        ogeom_topo::Location::identity(),
+        (split, wound_range.1),
+    )?;
+    ogeom_algo::attach_pcurve(
+        model,
+        &first,
+        wound_pcurve.transformed(&over, tol)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        (wound_range.0, split),
+    )?;
+
+    // The seam: the meridian on the column, run up the chart, met on the
+    // column a period on going up and on the column itself coming down.
+    let pole = ogeom_algo::make_vertex(model, host.point_at(column, row, tol)?).shape;
+    let Some(meridian) = ogeom_algo::surface_iso_u_curve(host, column, tol) else {
+        ogeom_bail!(Construction, "the pole leg's host has no meridian");
+    };
+    let (rows, from, to) = if above {
+        ((foot.y, row), &cut, &pole)
+    } else {
+        ((row, foot.y), &pole, &cut)
+    };
+    let seam = ogeom_algo::make_edge_between(model, meridian, rows, from, to, tol)?.shape;
+    let upright = |u: f64| -> OgeomResult<PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+            rows.0,
+            rows.1,
+        )?
+        .into())
+    };
+    ogeom_algo::attach_seam(
+        model,
+        &seam,
+        upright(column + period)?,
+        upright(column)?,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        rows,
+    )?;
+    ogeom_algo::state_pcurve_gaps_of(model, std::slice::from_ref(&seam), tol)?;
+
+    // The pole, its image the pole's row from the column a period round.
     let mut data = ogeom_topo::EdgeData::new();
     data.degenerate = true;
     let pole_edge = model.add_edge(data, &[pole.clone(), pole])?;
     let pole_pcurve: PlanarCurve = ogeom_geom::Line2d::over(
-        ogeom_math::Axis2::new(
-            Point2::new(start.x, row),
-            ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), tol)?,
-        ),
+        ogeom_math::Axis2::new(Point2::new(column, row), ogeom_math::Direction2::X),
         0.0,
-        u1 - u0,
+        period,
     )?
     .into();
-    let band = ogeom_algo::make_band_between(
-        model,
-        host,
-        [(wound_edge, wound_pcurve), (&pole_edge, pole_pcurve)],
-        tol,
-    )?;
-    let Some(surface_id) = model
-        .node(&band)
-        .and_then(|n| n.data().as_face())
-        .map(|d| d.surface)
-    else {
-        ogeom_bail!(Construction, "the pole band holds no face data");
-    };
-    let outer = model.children_of(&band)?[0].clone();
     ogeom_algo::attach_pcurve(
         model,
-        hole_edge,
-        hole_pcurve,
+        &pole_edge,
+        pole_pcurve,
         surface_id,
         ogeom_topo::Location::identity(),
-        hole_range,
+        (0.0, period),
+    )?;
+
+    // Anticlockwise in the chart: the lower loop forward, up the far
+    // column, the upper loop back, down the near column.
+    let walk = if above {
+        vec![
+            second.clone(),
+            first.clone(),
+            seam.clone(),
+            pole_edge.reversed(),
+            seam.reversed(),
+        ]
+    } else {
+        vec![
+            pole_edge,
+            seam.clone(),
+            first.reversed(),
+            second.reversed(),
+            seam.reversed(),
+        ]
+    };
+    let outer = ogeom_algo::make_wire(model, &walk, tol)?.shape;
+    let hole_wire = pole_hole(
+        model,
+        surface_id,
+        (hole_edge, hole_pcurve, hole_range, hole_chart),
+        column,
+        period,
+        tol,
+    )?;
+    let face = ogeom_algo::make_face_on(model, surface_id, &[outer, hole_wire], tol)?.shape;
+    Ok((
+        face,
+        Some(vec![
+            (first, (wound_range.0, split)),
+            (second, (split, wound_range.1)),
+        ]),
+    ))
+}
+
+/// The least and greatest column a chart polyline reaches.
+fn column_span(chart: &[Point2]) -> (f64, f64) {
+    chart
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.x), hi.max(p.x))
+        })
+}
+
+/// The parameter where a winding rail's image crosses `column`, of the
+/// crossings the one nearest `row`; `None` when that is the rail's own
+/// start, where its vertex already stands.
+fn rail_crossing(
+    image: &PlanarCurve,
+    range: (f64, f64),
+    column: f64,
+    row: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    use ogeom_geom::Curve2d as _;
+    const SAMPLES: u32 = 512;
+    let at = |t: f64| image.point_at(t, tol);
+    let mut best: Option<(f64, f64, f64)> = None;
+    let mut prev = (range.0, at(range.0)?);
+    for k in 1..=SAMPLES {
+        let t = range.0 + (range.1 - range.0) * f64::from(k) / f64::from(SAMPLES);
+        let p = at(t)?;
+        if (prev.1.x - column) * (p.x - column) <= 0.0 {
+            let v = f64::midpoint(prev.1.y, p.y);
+            if best.is_none_or(|(_, _, seen)| (row - v).abs() < (row - seen).abs()) {
+                best = Some((prev.0, t, v));
+            }
+        }
+        prev = (t, p);
+    }
+    let Some((mut a, mut b, _)) = best else {
+        ogeom_bail!(
+            Construction,
+            "a pole leg's rail does not cross the column clear of its hole"
+        );
+    };
+    let below = at(a)?.x < column;
+    for _ in 0..64 {
+        let m = f64::midpoint(a, b);
+        if (at(m)?.x < column) == below {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    let split = f64::midpoint(a, b);
+    let near_end = (range.1 - range.0) * 1e-9;
+    Ok((split - range.0 > near_end && range.1 - split > near_end).then_some(split))
+}
+
+/// The hole of a pole leg as a wire on `surface_id`: its image moved by
+/// whole periods into the band's turn from `column`, walked clockwise.
+fn pole_hole(
+    model: &mut Model,
+    surface_id: ogeom_topo::SurfaceId,
+    hole: (&Shape, PlanarCurve, (f64, f64), &[Point2]),
+    column: f64,
+    period: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let (edge, image, range, chart) = hole;
+    let (lo, hi) = column_span(chart);
+    let turns = ((column + period / 2.0 - f64::midpoint(lo, hi)) / period).round();
+    let image = if turns == 0.0 {
+        image
+    } else {
+        image.transformed(
+            &ogeom_math::Transform2::translation(ogeom_math::Vector2::new(turns * period, 0.0)),
+            tol,
+        )?
+    };
+    ogeom_algo::attach_pcurve(
+        model,
+        edge,
+        image,
+        surface_id,
+        ogeom_topo::Location::identity(),
+        range,
     )?;
     // The band turns anticlockwise in the chart; the hole turns the other
     // way.
-    let hole = if chart_area(hole_chart) > 0.0 {
-        hole_edge.reversed()
+    let turned = if chart_area(chart) > 0.0 {
+        edge.reversed()
     } else {
-        hole_edge.clone()
+        edge.clone()
     };
-    let hole_wire = ogeom_algo::make_wire(model, &[hole], tol)?.shape;
-    Ok(ogeom_algo::make_face_on(model, surface_id, &[outer, hole_wire], tol)?.shape)
+    Ok(ogeom_algo::make_wire(model, &[turned], tol)?.shape)
 }
 
 /// The host surface cut down to the window the leg actually spans, padded a

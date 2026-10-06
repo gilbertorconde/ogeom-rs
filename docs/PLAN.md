@@ -313,7 +313,20 @@ agree with the ring.
   one branch, and the chaining places a wire by points along its images,
   not only their ends, which for a ring closed by one edge are one point.
   Over the fillet stress cases no wedge's mesh is now off its measure by
-  more than chord error. The writer puts a trimmed curve that runs against its
+  more than chord error. A band whose rail passes over a sphere's pole
+  (a bore down a ball beside its pole) has a sphere leg from the rail to
+  the pole with the rim cut from it as a hole. The leg's seam to the pole
+  is a meridian, and from the rail's own vertex it ran through the hole:
+  the wedge meshed open, 5.7 to 64 against the 4.44 mm3 it measures, and
+  the blend refused at most turns of the bore about the ball's axis. The
+  rail is now split on the column half a turn from the hole and the seam
+  leaves from there; the band walks the two pieces too. The wedge meshes
+  within 0.2% of its measure and the blend measures the same at every turn
+  to 5e-9. Still open: with the bore turned to the ball's -y side the
+  blend refuses before the march, the side probe reading every point on
+  the sphere face near the pole as on its boundary; and a leg whose edge
+  winds round the pole while its rail does not still takes its seam from
+  the edge's vertex (no part measured builds one). The writer puts a trimmed curve that runs against its
   basis out at its own points: its range mirrored in its domain, walked
   the other way on the basis. The STEP writer puts a trim out as its
   spline over its own range, so a reversed trim already read back in

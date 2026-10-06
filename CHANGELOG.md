@@ -22,6 +22,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Fillets whose ball passes over a sphere's pole.** The sphere leg's seam
+  ran along the meridian from the march's first station, through the rim
+  it bounds, so the wedge meshed open (5.7 to 64 against 4.44 cubic
+  millimetres) and the fillet was refused at most turns of a bore about the
+  ball's axis. The rail is split where the seam can run clear of the rim:
+  the blend meshes closed and fillets at every turn measured.
+
 - **A reversed circle or ellipse is written and imaged as itself.** STEP
   wrote a circle or ellipse running backwards as its forward conic, and the
   reader took the other arc between its vertices; and its exact pcurve ran

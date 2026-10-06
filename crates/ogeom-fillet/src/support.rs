@@ -1541,6 +1541,99 @@ mod tests {
             .mass
     }
 
+    /// A bore down a ball beside its pole, rounded where it leaves the far
+    /// side: the ball rolling round the rim touches the sphere along a rail
+    /// that passes over the pole, so the sphere's leg is the band from the
+    /// rail to the pole with the rim cut from it. Its seam to the pole runs
+    /// clear of the rim however the bore is turned about the ball's axis:
+    /// the wedge meshes closed to what it measures, the leg's mesh covers
+    /// its area, and the blend is valid and measures the same at each turn.
+    #[test]
+    fn a_pole_leg_meshes_to_its_area_as_the_bore_turns() {
+        use ogeom_math::Direction;
+        let chord = 1e-2;
+        let deflection = ogeom_mesh::Deflection::with_chord(chord).unwrap();
+        let mut reference: Option<f64> = None;
+        for turn in [0.0_f64, 0.9, 1.8, 3.2, 5.6] {
+            let (c, s) = (turn.cos(), turn.sin());
+            let mut model = Model::new();
+            let ball = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+                .unwrap()
+                .shape;
+            let frame = Frame::new(
+                Point::new(2.0 * c, 2.0 * s, -20.0),
+                Direction::Z,
+                Direction::X,
+                T,
+            )
+            .unwrap();
+            let bore = ogeom_algo::make_cylinder(&mut model, frame, 1.5, 40.0, T)
+                .unwrap()
+                .shape;
+            let drilled = ogeom_bool::cut(&mut model, &ball, &bore, T).unwrap().shape;
+            // The rim on the ball's top, on the bore's side away from the
+            // axis.
+            let top = (100.0_f64 - 3.5 * 3.5).sqrt();
+            let rim = edge_at(&model, &drilled, Point::new(3.5 * c, 3.5 * s, top));
+            let (made, wedges) =
+                super::collecting_wedges(|| crate::fillet_edge(&mut model, &drilled, &rim, 1.0, T));
+            made.unwrap();
+            let [wedge] = &wedges[..] else {
+                panic!("turn {turn}: one wedge, not {}", wedges.len());
+            };
+            let exact = volume(&model, &wedge.solid);
+            let mesh = ogeom_mesh::triangulate(&model, &wedge.solid, deflection, T).unwrap();
+            assert!(mesh.is_closed(), "turn {turn}");
+            assert!(
+                (mesh.volume() - exact).abs() < exact * 0.05,
+                "turn {turn}: wedge mesh {} against {exact}",
+                mesh.volume()
+            );
+            let leg = explore_unique(&model, &wedge.solid, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|face| {
+                    model
+                        .node(face)
+                        .and_then(|n| n.data().as_face())
+                        .and_then(|d| model.geometry().surface(d.surface))
+                        .is_some_and(|g| matches!(g, ogeom_geom::SurfaceGeometry::Sphere(_)))
+                })
+                .unwrap();
+            let area = ogeom_algo::surface_properties(&model, &leg, deflection, T)
+                .unwrap()
+                .mass;
+            let leg_mesh = ogeom_mesh::triangulate_face(&model, &leg, deflection, T).unwrap();
+            let meshed: f64 = leg_mesh
+                .triangles
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|i| leg_mesh.positions[i as usize]);
+                    (b - a).cross(c - a).magnitude() * 0.5
+                })
+                .sum();
+            // Flat facets sagging by at most the chord under a sphere of
+            // radius 10 fall short of its area by under twice chord / 10.
+            assert!(
+                (meshed - area).abs() < area * 2.0 * chord / 10.0,
+                "turn {turn}: leg mesh {meshed} against {area}"
+            );
+            let blended = crate::fillet_edge(&mut model, &drilled, &rim, 1.0, T)
+                .unwrap()
+                .shape;
+            assert!(
+                ogeom_algo::check(&model, &blended, T).unwrap().is_valid(),
+                "turn {turn}"
+            );
+            let whole = volume(&model, &blended);
+            let first = *reference.get_or_insert(whole);
+            assert!(
+                (whole - first).abs() < first * 1e-6,
+                "turn {turn}: {whole} against {first}"
+            );
+        }
+    }
+
     /// Where two bores cross inside a block, the wedge of the band rounding
     /// each edge where they meet meshes to what it measures. Round a closed
     /// loop each leg is the patch of one bore's wall between two closed
