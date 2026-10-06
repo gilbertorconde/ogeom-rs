@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sewing turns over a face that faces into the closed shell it joins.**
+  A box sewn from sheets with a lid filled the wrong way round made a solid
+  `check` called reversed; where two faces walk a shared edge the same way,
+  the faces the orientation probe finds facing in are turned, provided every
+  shared edge is then walked once each way and the shell encloses a
+  positive volume. Faces that already face out, and open shells, keep the
+  orientation they were given.
+
 ## [0.9.5] - 2026-10-06
 
 A patch release: no breaking API changes. It closes issues #120 to #126:

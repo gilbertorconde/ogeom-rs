@@ -167,6 +167,21 @@ are still to fix; once none breaks it, `check` gains the rule.
   reader (2); a face offset, a thick solid and a sheet fillet (1 each); and
   a hand-built prism test whose bottom face winds the wrong way (1).
 
+- Sewing cannot orient by the walk while producers break it: turning faces
+  breadth first over shared edges failed 132 default tests (fillet wedges,
+  the mesh converter, defeature, sweeps, drills), whose faces face out
+  with rings wound against their normals. 544 closed groups sewn in the
+  default tests have faces walking a shared edge the same way. Sewing now
+  probes such a closed group's faces against its solid and turns those
+  facing in, only where the turn leaves every shared edge walked once
+  each way and the shell enclosing a positive meshed volume: 3 groups
+  turn (boxes with a lid filled the wrong way round), the rest are left
+  as given. On a thin fillet wedge of the crossed bores the probe names
+  faces facing out, and the two checks refuse the turn. Open shells are
+  not turned. Once no producer breaks the walk, sewing can turn faces by
+  the walk alone, open shells included, and name a shell with no
+  consistent orientation.
+
 The fillet's side test no longer trusts the walk where the chart's chords
 cannot settle it.
 

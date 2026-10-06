@@ -27,7 +27,8 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d;
 use ogeom_math::Point;
 use ogeom_topo::{
-    EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, TShapeId, explore_unique,
+    EdgeRepr, Filter, Model, NodeData, Orientation, Shape, ShapeType, TShapeId, explore,
+    explore_unique,
 };
 
 use crate::bins::Bins;
@@ -195,6 +196,14 @@ pub struct Sewn {
 /// what stops two different arcs between the same pair of vertices from being
 /// merged into one, which is a real case: the two halves of a circle share both
 /// ends.
+///
+/// A closed shell in which two faces walk an edge they now share the same
+/// way has every face probed against the solid it bounds, and the faces
+/// found facing into it are turned over where that leaves every shared edge
+/// walked once each way and the shell enclosing a positive volume. A face
+/// that probes clean keeps the
+/// orientation it was given, whatever its walk, and so does every face of
+/// an open shell.
 ///
 /// Nothing is moved. See the module documentation.
 ///
@@ -568,14 +577,16 @@ fn sew_faces(
 
     let mut history = History::new();
     let mut rebuilt = Vec::with_capacity(all.len());
+    // Each rebuilt face's original, and whether it is that original's copy.
+    let mut sources: Vec<(Shape, bool)> = Vec::with_capacity(all.len());
     let mut sewing = faces.iter().zip(&originals);
     for (face, settled) in all.iter().zip(settled) {
         if *settled {
             // Its edges and vertices stay as they were: the face is its own
             // copy.
             model.set_derived(face, std::slice::from_ref(face), roles::SEWN_FACE)?;
-            history.copy(face, face.clone());
             rebuilt.push(face.clone());
+            sources.push((face.clone(), true));
             continue;
         }
         let Some((face, original)) = sewing.next() else {
@@ -588,20 +599,29 @@ fn sew_faces(
         model.set_derived(&sewn, std::slice::from_ref(original), roles::SEWN_FACE)?;
         // Moved onto the shared edges with every ring kept, the face is the
         // same face: a copy, on its own surface within its own boundary.
-        if whole && face == original {
-            history.copy(original, sewn.clone());
-        } else {
-            history.modify(original, sewn.clone());
-        }
         rebuilt.push(sewn);
+        sources.push((original.clone(), whole && face == original));
     }
 
     let groups = connected_groups(model, &rebuilt)?;
     let mut shells = Vec::with_capacity(groups.len());
     for group in groups {
-        let shell = make_shell(model, &group)?.shape;
-        for face in &group {
-            history.generate(face, shell.clone());
+        let members: Vec<Shape> = group.iter().map(|&i| rebuilt[i].clone()).collect();
+        let mut shell = make_shell(model, &members)?.shape;
+        if turn_inward_faces(model, &mut rebuilt, &group, &shell, tol)? {
+            let members: Vec<Shape> = group.iter().map(|&i| rebuilt[i].clone()).collect();
+            shell = make_shell(model, &members)?.shape;
+        }
+        for &i in &group {
+            let (original, copy) = &sources[i];
+            // A face turned over to face out of what it bounds is the same
+            // face presented the other way: changed, not copied.
+            if *copy && rebuilt[i].orientation() == original.orientation() {
+                history.copy(original, rebuilt[i].clone());
+            } else {
+                history.modify(original, rebuilt[i].clone());
+            }
+            history.generate(&rebuilt[i], shell.clone());
         }
         shells.push(shell);
     }
@@ -613,6 +633,77 @@ fn sew_faces(
         free_edges,
         history,
     }))
+}
+
+/// Turn over the faces of one closed group (indices into `faces`, sewn
+/// into `shell`) that face into the solid the shell bounds; whether any
+/// was turned.
+///
+/// Asked only where two faces of the group walk an edge they share the
+/// same way. A face's walk follows its surface's normal only where its
+/// rings were wound to, so the walk says that something disagrees but not
+/// which face, and each face is probed against the solid instead. The
+/// probe steps off each face by a fraction of its size, and on a thin
+/// solid a step can land past the far side and name a face that faces
+/// out; so the faces named are turned only where both checks agree with
+/// the probe: turned, they leave every shared edge walked once each way
+/// and the shell enclosing a positive volume. Otherwise every face is left
+/// as given.
+fn turn_inward_faces(
+    model: &mut Model,
+    faces: &mut [Shape],
+    group: &[usize],
+    shell: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let uses = walks(model, group.iter().map(|&i| &faces[i]))?;
+    let closed = uses.values().all(|(count, _)| *count >= 2);
+    if !closed || walked_each_way(&uses) {
+        return Ok(false);
+    }
+    let solid = model.add_solid(std::slice::from_ref(shell))?;
+    let inward: HashSet<(TShapeId, ogeom_topo::Location)> =
+        crate::check::inside_out_faces(model, &solid, tol)?
+            .into_iter()
+            .map(|f| (f.node(), f.location().clone()))
+            .collect();
+    if inward.is_empty() {
+        return Ok(false);
+    }
+    let turned: Vec<Shape> = group
+        .iter()
+        .map(|&i| {
+            if inward.contains(&(faces[i].node(), faces[i].location().clone())) {
+                faces[i].reversed()
+            } else {
+                faces[i].clone()
+            }
+        })
+        .collect();
+    if !walked_each_way(&walks(model, turned.iter())?) {
+        return Ok(false);
+    }
+    let candidate = model.add_shell(&turned)?;
+    let Ok(mesh) =
+        ogeom_mesh::triangulate(model, &candidate, ogeom_mesh::Deflection::default(), tol)
+    else {
+        return Ok(false);
+    };
+    let volume: f64 = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|k| mesh.positions[k as usize].to_vector());
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum();
+    if volume <= 0.0 {
+        return Ok(false);
+    }
+    for (&i, face) in group.iter().zip(turned) {
+        faces[i] = face;
+    }
+    Ok(true)
 }
 
 /// The faces, each holding an edge node that some face places elsewhere
@@ -1786,8 +1877,42 @@ fn rebuild_face(
     )))
 }
 
+/// How many times the faces use each edge, and how many of those uses walk
+/// it forward.
+fn walks<'a>(
+    model: &Model,
+    faces: impl Iterator<Item = &'a Shape>,
+) -> OgeomResult<HashMap<(TShapeId, ogeom_topo::Location), (usize, usize)>> {
+    let mut uses: HashMap<(TShapeId, ogeom_topo::Location), (usize, usize)> = HashMap::new();
+    for face in faces {
+        for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
+            if model
+                .node(&edge)
+                .and_then(|n| n.data().as_edge())
+                .is_some_and(|d| d.degenerate)
+            {
+                continue;
+            }
+            let walk = uses
+                .entry((edge.node(), edge.location().clone()))
+                .or_default();
+            walk.0 += 1;
+            if edge.orientation() == Orientation::Forward {
+                walk.1 += 1;
+            }
+        }
+    }
+    Ok(uses)
+}
+
+/// Whether every edge used by two faces is walked once each way.
+fn walked_each_way(uses: &HashMap<(TShapeId, ogeom_topo::Location), (usize, usize)>) -> bool {
+    uses.values()
+        .all(|(count, forward)| *count != 2 || *forward == 1)
+}
+
 /// Group faces by whether they share an edge, transitively.
-fn connected_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape>>> {
+fn connected_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<usize>>> {
     let mut group_of: Vec<usize> = (0..faces.len()).collect();
     let mut edges_of = Vec::with_capacity(faces.len());
     for face in faces {
@@ -1812,17 +1937,14 @@ fn connected_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape
         }
     }
 
-    let mut groups: HashMap<usize, Vec<Shape>> = HashMap::new();
-    for (i, face) in faces.iter().enumerate() {
-        groups
-            .entry(find(&mut group_of, i))
-            .or_default()
-            .push(face.clone());
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..faces.len() {
+        groups.entry(find(&mut group_of, i)).or_default().push(i);
     }
-    let mut out: Vec<Vec<Shape>> = groups.into_values().collect();
+    let mut out: Vec<Vec<usize>> = groups.into_values().collect();
     // Deterministic: a result whose shells come back in a different order each
     // run is one nobody can compare against.
-    out.sort_by_key(|group| group.first().map(Shape::node));
+    out.sort_by_key(|group| group.first().map(|&i| faces[i].node()));
     Ok(out)
 }
 
@@ -1881,9 +2003,9 @@ mod tests {
         }
     }
 
-    /// A square face in the z = `at` plane, built from its own fresh edges so
-    /// it shares nothing with anything else.
-    fn loose_square(model: &mut Model, corners: [Point; 4]) -> Shape {
+    /// A flat face on `corners`, built from its own fresh edges so it shares
+    /// nothing with anything else.
+    fn loose_polygon<const N: usize>(model: &mut Model, corners: [Point; N]) -> Shape {
         let wire = make_polygon(model, &corners, true, T).unwrap().shape;
         let normal =
             ogeom_math::Direction::from_cross(corners[1] - corners[0], corners[2] - corners[1], T)
@@ -1930,11 +2052,11 @@ mod tests {
         let at = |x: f64, y: f64| Point::new(x, y, 0.0);
         for (gap, shells, joined) in [(0.1, 1, 1), (0.01, 2, 0)] {
             let mut model = Model::new();
-            let first = loose_square(
+            let first = loose_polygon(
                 &mut model,
                 [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)],
             );
-            let second = loose_square(
+            let second = loose_polygon(
                 &mut model,
                 [at(1.05, 0.0), at(2.05, 0.0), at(2.05, 1.0), at(1.05, 1.0)],
             );
@@ -1954,15 +2076,15 @@ mod tests {
     fn a_long_edge_against_two_short_ones_is_split_and_sewn() {
         let at = |x: f64, y: f64| Point::new(x, y, 0.0);
         let mut model = Model::new();
-        let long = loose_square(
+        let long = loose_polygon(
             &mut model,
             [at(0.0, 0.0), at(10.0, 0.0), at(10.0, 10.0), at(0.0, 10.0)],
         );
-        let left = loose_square(
+        let left = loose_polygon(
             &mut model,
             [at(0.0, -5.0), at(5.0, -5.0), at(5.0, 0.0), at(0.0, 0.0)],
         );
-        let right = loose_square(
+        let right = loose_polygon(
             &mut model,
             [at(5.0, -5.0), at(10.0, -5.0), at(10.0, 0.0), at(5.0, 0.0)],
         );
@@ -1997,7 +2119,7 @@ mod tests {
             .unwrap()
             .shape;
         let mut faces = explore_unique(&model, &walls, ShapeType::Face).unwrap();
-        faces.push(loose_square(
+        faces.push(loose_polygon(
             &mut model,
             [
                 at(0.0, 0.0, 0.0),
@@ -2006,7 +2128,7 @@ mod tests {
                 at(10.0, 0.0, 0.0),
             ],
         ));
-        faces.push(loose_square(
+        faces.push(loose_polygon(
             &mut model,
             [
                 at(0.0, 0.0, 5.0),
@@ -2025,6 +2147,97 @@ mod tests {
             .unwrap()
             .mass;
         assert!((volume.abs() - 500.0).abs() < 1e-6, "{volume}");
+    }
+
+    /// A 10 x 10 x 5 box's six faces: a prism's four walls, turned to face
+    /// in where `walls_in`, and two lids built apart, the bottom one wound
+    /// to face up into the box where `bottom_in` and down out of it
+    /// otherwise; the top one faces up.
+    fn box_faces(model: &mut Model, walls_in: bool, bottom_in: bool) -> Vec<Shape> {
+        let at = |x: f64, y: f64, z: f64| Point::new(x, y, z);
+        let square = |z: f64| {
+            [
+                at(0.0, 0.0, z),
+                at(10.0, 0.0, z),
+                at(10.0, 10.0, z),
+                at(0.0, 10.0, z),
+            ]
+        };
+        let profile = make_polygon(model, &square(0.0), true, T).unwrap().shape;
+        let walls = crate::make_prism(model, &profile, Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let mut faces: Vec<Shape> = explore_unique(model, &walls, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .map(|f| if walls_in { f.reversed() } else { f })
+            .collect();
+        let mut bottom = square(0.0);
+        if !bottom_in {
+            bottom.reverse();
+        }
+        faces.push(loose_polygon(model, bottom));
+        faces.push(loose_polygon(model, square(5.0)));
+        faces
+    }
+
+    /// The solid a sewn closed shell bounds, checked valid with no face
+    /// facing into it, and its volume.
+    fn solid_volume(model: &mut Model, shell: &Shape) -> f64 {
+        let solid = crate::make_solid(model, std::slice::from_ref(shell))
+            .unwrap()
+            .shape;
+        let d = crate::check(model, &solid, T).unwrap();
+        assert!(d.is_valid(), "{d}");
+        assert!(
+            crate::inside_out_faces(model, &solid, T)
+                .unwrap()
+                .is_empty()
+        );
+        crate::volume_properties(model, &solid, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    }
+
+    /// Both lids of a box filled the same way round, so the bottom one
+    /// faces into the box: sewn, that lid is turned over, every edge is
+    /// walked once each way and the box measures its volume.
+    #[test]
+    fn a_lid_facing_into_the_box_is_turned_over_when_sewn() {
+        let mut model = Model::new();
+        let faces = box_faces(&mut model, false, true);
+        let sewn = sew(&mut model, &faces, T).unwrap();
+        assert!(sewn.free_edges.is_empty());
+        assert_eq!(
+            crate::check::edges_walked_one_way(&model, &sewn.shells[0]),
+            0
+        );
+        let image = sewn.history.modified(&faces[4]);
+        assert_eq!(image.len(), 1);
+        assert_ne!(image[0].orientation(), faces[4].orientation());
+        let volume = solid_volume(&mut model, &sewn.shells[0]);
+        assert!((volume - 500.0).abs() < 1e-9, "{volume}");
+    }
+
+    /// A box whose walls face in and whose lids face out: the lids are
+    /// turned to agree with the walls, and the shell, then facing in as a
+    /// whole, is turned over to face out.
+    #[test]
+    fn a_closed_shell_whose_faces_disagree_is_turned_to_face_out() {
+        let mut model = Model::new();
+        let faces = box_faces(&mut model, true, false);
+        let sewn = sew(&mut model, &faces, T).unwrap();
+        for face in &faces[..4] {
+            assert_ne!(
+                sewn.history.modified(face)[0].orientation(),
+                face.orientation()
+            );
+        }
+        for face in &faces[4..] {
+            assert!(sewn.history.copy_of(face).is_some());
+        }
+        let volume = solid_volume(&mut model, &sewn.shells[0]);
+        assert!((volume - 500.0).abs() < 1e-9, "{volume}");
     }
 
     #[test]
@@ -2108,7 +2321,7 @@ mod tests {
     #[test]
     fn two_faces_that_touch_are_sewn_into_one_shell() {
         let mut model = Model::new();
-        let left = loose_square(
+        let left = loose_polygon(
             &mut model,
             [
                 Point::new(0.0, 0.0, 0.0),
@@ -2117,7 +2330,7 @@ mod tests {
                 Point::new(0.0, 1.0, 0.0),
             ],
         );
-        let right = loose_square(
+        let right = loose_polygon(
             &mut model,
             [
                 Point::new(1.0, 0.0, 0.0),
@@ -2161,13 +2374,13 @@ mod tests {
     fn a_reversed_face_rebuilt_onto_a_shared_edge_keeps_its_walk() {
         let at = |x: f64, y: f64| Point::new(x, y, 0.0);
         let mut model = Model::new();
-        let left = loose_square(
+        let left = loose_polygon(
             &mut model,
             [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)],
         );
         // Wound clockwise seen from above: its plane faces down, and the
         // face is presented the other way round.
-        let right = loose_square(
+        let right = loose_polygon(
             &mut model,
             [at(1.0, 0.0), at(1.0, 1.0), at(2.0, 1.0), at(2.0, 0.0)],
         )
@@ -2207,7 +2420,7 @@ mod tests {
     #[test]
     fn twin_edges_join_the_vertices_they_end_on() {
         let mut model = Model::new();
-        let left = loose_square(
+        let left = loose_polygon(
             &mut model,
             [
                 Point::new(0.0, 0.0, 0.0),
@@ -2216,7 +2429,7 @@ mod tests {
                 Point::new(0.0, 1.0, 0.0),
             ],
         );
-        let right = loose_square(
+        let right = loose_polygon(
             &mut model,
             [
                 Point::new(1.0, -0.01, 0.0),
@@ -2253,7 +2466,7 @@ mod tests {
     fn faces_that_do_not_meet_stay_in_separate_shells() {
         // Claiming one shell would claim a closure that is not there.
         let mut model = Model::new();
-        let here = loose_square(
+        let here = loose_polygon(
             &mut model,
             [
                 Point::new(0.0, 0.0, 0.0),
@@ -2262,7 +2475,7 @@ mod tests {
                 Point::new(0.0, 1.0, 0.0),
             ],
         );
-        let far = loose_square(
+        let far = loose_polygon(
             &mut model,
             [
                 Point::new(50.0, 0.0, 0.0),
@@ -2423,7 +2636,10 @@ mod tests {
             [c(0., 0., 0.), c(0., 0., 1.), c(0., 1., 1.), c(0., 1., 0.)],
             [c(1., 0., 0.), c(1., 1., 0.), c(1., 1., 1.), c(1., 0., 1.)],
         ];
-        let built: Vec<Shape> = faces.iter().map(|f| loose_square(&mut model, *f)).collect();
+        let built: Vec<Shape> = faces
+            .iter()
+            .map(|f| loose_polygon(&mut model, *f))
+            .collect();
         let sewn = sew(&mut model, &built, T).unwrap();
         assert_eq!(sewn.joined, 12, "every edge pair merged");
         assert!(sewn.free_edges.is_empty());
