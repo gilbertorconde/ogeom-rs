@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The corpus's last faceted curved faces convert on their surfaces.** A
+  fillet torus round a rounded corner, meshed a few facets round, comes
+  back as one torus instead of spheres; a disc capping a chamfered end is
+  no longer taken by the chamfer's cone; a drill point whose rim is arcs of
+  one circle (under a hex socket) closes at its apex as one cone face; a
+  flat face meeting a curved one below the crease angle no longer turns it
+  into a kinked sweep; a single facet with two sides on curved faces is
+  built as a ruled wedge; and a run of facets between two single facets is
+  no longer put on a cylinder. Every NIST solid in the corpus converts with
+  no curved face faceted, and a socket screw comes back as the 20 faces of
+  its source instead of 470.
+
 - **The mesh converter facets a face it cannot build.** `solid_from_mesh`
   failed outright when one face could not be built, meshed or measured (a
   degenerate spline sliver failed with "cannot normalize a vector"); the

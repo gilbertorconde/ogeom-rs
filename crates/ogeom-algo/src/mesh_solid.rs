@@ -4176,8 +4176,18 @@ fn faceted_rounds(
     windows.sort_by_key(|(run, _, _)| core::cmp::Reverse(run.len()));
     let mut claimed = vec![false; count];
     let mut changed = false;
+    let mut sizes = vec![0_usize; count];
+    for &j in &planes.of {
+        if let Some(n) = sizes.get_mut(j) {
+            *n += 1;
+        }
+    }
+    let planes_size = |j: usize| sizes[j];
     for (run, before, after) in windows {
-        if [before, after].iter().chain(&run).any(|&j| claimed[j]) || before == after {
+        if [before, after].iter().chain(&run).any(|&j| claimed[j])
+            || before == after
+            || (planes_size(before) < 2 && planes_size(after) < 2)
+        {
             continue;
         }
         let (Some(a), Some(b)) = (plane(before), plane(after)) else {

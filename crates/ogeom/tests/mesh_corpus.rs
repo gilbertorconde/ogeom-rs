@@ -264,24 +264,15 @@ fn nist_ctc_03() {
 /// far corners; they come back as fans, and the bore curved. A facet with
 /// two sides on curved faces, turned in, comes back as a wedge ruled
 /// between its two seams, and both curved faces stay curved. One with both
-/// curved sides on one torus is split at the corner they share.
+/// curved sides on one torus is split at the corner they share. Two facets
+/// of a blend between two single facets are no round tangent to them, and
+/// stay facets.
 #[test]
 #[ignore = "heavy"]
 fn nist_ctc_02() {
     let name = "nist_ctc_02_asme1_rc.stp";
     let report = comes_back(name, true, true);
-    let overlaps = report
-        .fallbacks
-        .iter()
-        .filter(|f| f.reason == FallbackReason::Overlaps)
-        .count();
-    assert_eq!(overlaps, 0, "{overlaps} faces faceted for overlaps");
-    assert!(
-        report.curved_faceted <= 1,
-        "{} curved faces faceted: {:?}",
-        report.curved_faceted,
-        report.fallbacks
-    );
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
     let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
     let model = import.document.model();

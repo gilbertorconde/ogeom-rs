@@ -1097,6 +1097,17 @@ parabola 0.24 off for a limit of 0.20). The shared corner is pinned, each
 side is a seam of its own, and the facet a wedge. ctc_02 1828, 2 to 1799,
 1, 2.5e-5; the open thread flank 2001 to 1916 faces.
 
+A run of facets between two planes that are both single facets (chords
+of a blend left faceted) is not put on the round tangent to them: on
+ctc_02 a run of two such facets came back a cylinder of radius 5.07 that
+reached past its triangles. ctc_02 1799, 1 to 1807, 0, 2.5e-5; the
+degenerate spline sliver 243, 13 faceted to 228, 4 (two still for
+`BuildFailed`). Over these seven changes every NIST and corpus solid
+stays valid and tessellates closed, the truth bench's noisy rim-disc
+moves from 4.1e-7 to 3.3e-7 and the rest of it is unchanged, and the
+stress baseline is unchanged. Left: ftc_10's cylinder of seven triangles
+fitted across a torus and a plane's edge, a misfit the fallback answers.
+
 Done for ftc_07, in two steps:
 
 - Its rounds of radius 0.43 along the drafted walls' foot are meshed
