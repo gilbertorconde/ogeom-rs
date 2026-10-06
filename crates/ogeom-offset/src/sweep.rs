@@ -214,29 +214,31 @@ fn pipe_segment(
         ogeom_topo::Location::identity(),
         range,
     )?;
-    // The outer equator bounds both halves across the period: v = 2π for its
-    // forward use under the upper patch, v = 0 for its reversed use under the
-    // lower: a seam, said as one.
+    // The outer equator bounds both halves across the period: v = 0 for its
+    // forward use under the lower patch, v = 2π for its reversed use under
+    // the upper: a seam, said as one.
     let outer = parallel(model, 0.0, &verts[0][0], &verts[1][0])?;
     ogeom_algo::attach_seam(
         model,
         &outer,
-        row(tau)?.into(),
         row(0.0)?.into(),
+        row(tau)?.into(),
         surface_id,
         ogeom_topo::Location::identity(),
         range,
     )?;
 
-    // The two half-tube patches, on the one registered surface.
+    // The two half-tube patches, on the one registered surface, each ring
+    // counter-clockwise in the chart: along the spine, up the far end's
+    // tube, back, and down the near end's.
     let lower = {
         let wire = ogeom_algo::make_wire(
             model,
             &[
-                tube_arcs[0][0].clone(),
-                inner.clone(),
-                tube_arcs[1][0].reversed(),
-                outer.reversed(),
+                outer.clone(),
+                tube_arcs[1][0].clone(),
+                inner.reversed(),
+                tube_arcs[0][0].reversed(),
             ],
             tol,
         )?
@@ -247,10 +249,10 @@ fn pipe_segment(
         let wire = ogeom_algo::make_wire(
             model,
             &[
-                tube_arcs[0][1].clone(),
-                outer.clone(),
-                tube_arcs[1][1].reversed(),
-                inner.reversed(),
+                inner.clone(),
+                tube_arcs[1][1].clone(),
+                outer.reversed(),
+                tube_arcs[0][1].reversed(),
             ],
             tol,
         )?
@@ -268,15 +270,14 @@ fn pipe_segment(
         let reach = (major + radius) * 2.0;
         let surface: SurfaceGeometry =
             PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        caps.push(
-            make_face_with_pcurves(
-                model,
-                surface,
-                &[vec![tube_arcs[k][0].clone(), tube_arcs[k][1].clone()]],
-                tol,
-            )?
-            .shape,
-        );
+        // The tube circles turn about the spine's backward tangent: the near
+        // cap walks its circle forward, the far one walks it back.
+        let ring = if k == 0 {
+            vec![tube_arcs[k][0].clone(), tube_arcs[k][1].clone()]
+        } else {
+            vec![tube_arcs[k][1].reversed(), tube_arcs[k][0].reversed()]
+        };
+        caps.push(make_face_with_pcurves(model, surface, &[ring], tol)?.shape);
     }
 
     let faces = [lower, upper, caps[0].clone(), caps[1].clone()];

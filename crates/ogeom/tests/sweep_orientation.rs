@@ -9,6 +9,9 @@
 //! turning positively, a hole the other way.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{
     face_normal, make_edge_between, make_face_with_pcurves, make_prism, volume_properties,
 };
@@ -123,5 +126,47 @@ fn a_holed_prism_faces_out_whichever_way_each_ring_was_walked() {
                 );
             }
         }
+    }
+}
+
+/// A pipe along part of a circle is a torus segment whose two half-tube
+/// patches and two end discs walk every edge once each way: valid, and
+/// the volume Pappus names, wherever the arc starts.
+#[test]
+fn a_torus_segment_pipe_walks_each_edge_once_each_way() {
+    use ogeom::geom::CircleCurve;
+    use ogeom::math::Circle;
+    let (major, minor) = (5.0, 1.0);
+    for (from, to) in [(0.0, core::f64::consts::FRAC_PI_2), (1.0, 3.5)] {
+        let mut model = Model::new();
+        let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+        let spine = ogeom::algo::make_edge(
+            &mut model,
+            CircleCurve::new(Circle::new(frame, major, T).unwrap()).into(),
+            (from, to),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let solid = ogeom::offset::make_pipe(&mut model, &spine, minor, T)
+            .unwrap()
+            .shape;
+        assert_eq!(
+            walks::edges_walked_one_way(&model, &solid),
+            0,
+            "from {from}"
+        );
+        let found = ogeom::algo::check(&model, &solid, T).unwrap();
+        assert!(found.is_valid(), "from {from}: {found}");
+        let want = core::f64::consts::PI * minor * minor * major * (to - from);
+        let fine = Deflection {
+            chord: 1e-3,
+            ..Deflection::default()
+        };
+        let v = volume_properties(&model, &solid, fine, T).unwrap().mass;
+        assert!(
+            (v - want).abs() < want * 1e-4,
+            "from {from}: {v} against {want}"
+        );
     }
 }
