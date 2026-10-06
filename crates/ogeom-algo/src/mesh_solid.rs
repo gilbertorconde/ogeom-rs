@@ -4808,11 +4808,12 @@ fn keep_largest_piece(region: &mut Vec<usize>, adjacency: &Adjacency) {
     region.retain(|t| piece.get(t) == Some(&largest));
 }
 
-/// Recognized regions of one kind sharing a mesh edge and lying on one
-/// surface are one region: each within twice the distance of the other's
-/// (a band peeled of a flat face's facets can leave its two ends to be
-/// fitted apart), or the smaller within the distance of the larger's, whose
-/// surface the merged region keeps.
+/// Recognized regions sharing a mesh edge and lying on one surface are one
+/// region: of one kind, each within twice the distance of the other's (a
+/// band peeled of a flat face's facets can leave its two ends to be fitted
+/// apart); of any canonical kind, the smaller within the distance of the
+/// larger's (a few facets of a torus can lie on a sphere as exactly as on
+/// the torus). The merged region keeps the larger's surface.
 fn merge_same_surface(
     points: &[Point],
     triangles: &[[u32; 3]],
@@ -4838,7 +4839,12 @@ fn merge_same_surface(
                 let Some(Carrier::Curved(b)) = groups.carriers.get(o) else {
                     continue;
                 };
-                if core::mem::discriminant(&a.shape) != core::mem::discriminant(&b.shape) {
+                let canonical = |c: &Curved| {
+                    c.patch.is_none()
+                        && !matches!(c.shape, Canonical::Swept(_) | Canonical::Plane(_))
+                };
+                let same = core::mem::discriminant(&a.shape) == core::mem::discriminant(&b.shape);
+                if !same && !(canonical(a) && canonical(b)) {
                     continue;
                 }
                 // Each was fitted to its own vertices within the distance,
@@ -4848,7 +4854,10 @@ fn merge_same_surface(
                         .iter()
                         .all(|&v| shape.distance_to(points[v as usize]) <= within)
                 };
-                if on(&a.shape, &b.vertices, flat * 2.0) && on(&b.shape, &a.vertices, flat * 2.0) {
+                if same
+                    && on(&a.shape, &b.vertices, flat * 2.0)
+                    && on(&b.shape, &a.vertices, flat * 2.0)
+                {
                     pair = Some((g.min(o), g.max(o)));
                     break 'find;
                 }

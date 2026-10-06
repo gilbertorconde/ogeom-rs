@@ -1021,6 +1021,22 @@ built as a fan before the curved face is faceted for the fold.
 grid_point_on_a_diagonal_boundary 744, 1, 6.2e-4 to 741, 0, 6.2e-4; the
 other parts, the truth bench and the stress baseline are unchanged.
 
+A small region on another canonical kind than its larger neighbour joins
+it where its vertices lie on the neighbour's surface within the distance,
+as one of the same kind already did: a few facets of a fillet torus lie on
+a sphere as exactly as on the torus, and the sphere could not meet its
+neighbours. Measured (faces, curved faces, faceted, volume error): ftc_08
+317, 150, 5, 2.8e-5 to 310, 151, 3, 2.8e-5; ctc_02 1854, 334, 4, 2.9e-5 to
+1853, 333, 4, 2.7e-5; ctc_04 590, 273 to 588, 271 (volume unchanged);
+m5x16_bhcs 215, 6, 2, 5.9e-5 to 212, 3, 2, 9.3e-5 (two spheres and a
+second cylinder on its head's one cylinder join it, as in the source);
+sliver_on_a_diagonal_of_the_grid 1008, 70 to 1006, 68, 5.5e-6 to 4.5e-6.
+The truth bench's noisy rim-disc comes back 4 faces for 5, 4.1e-7 off for
+8.4e-5 (mean volume error 3.5e-6 to 7.1e-7). ftc_08's other corner torus
+is fitted whole as two spheres with no torus region beside them, and
+stays faceted; ftc_10's last fallback is a cylinder of seven triangles
+fitted across a torus and a plane's edge (a vertex 0.07 off the torus).
+
 Done for ftc_07, in two steps:
 
 - Its rounds of radius 0.43 along the drafted walls' foot are meshed

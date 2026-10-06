@@ -372,9 +372,13 @@ fn nist_ftc_07() {
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
+/// Its fillet tori are meshed a few facets round, and a piece of one can
+/// lie on a sphere as exactly as on the torus; where the rest of the torus
+/// is a larger region beside it, the piece joins that region.
 #[test]
 fn nist_ftc_08() {
-    comes_back("nist_ftc_08_asme1_rc.stp", true, true);
+    let report = comes_back("nist_ftc_08_asme1_rc.stp", true, true);
+    assert!(report.curved_faceted <= 3, "{:?}", report.fallbacks);
 }
 
 #[test]
