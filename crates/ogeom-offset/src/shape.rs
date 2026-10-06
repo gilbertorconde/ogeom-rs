@@ -1268,11 +1268,8 @@ pub(crate) fn rebuilt(
                         }
                         make_edge_between(model, curve.clone(), range, &v_from, &v_to, tol)?.shape
                     };
-                    if worst > tol.confusion()
-                        && let Some(node) = model.node_mut(&built)
-                        && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                    {
-                        data.tolerance = data.tolerance.widen_to(worst);
+                    if worst > tol.confusion() {
+                        model.widen(&built, ogeom_core::Tolerance::new(worst)?)?;
                     }
                     history.modify(&edge, built.clone());
                     new_edges.insert(edge.node(), built);
@@ -1403,11 +1400,8 @@ pub(crate) fn rebuilt(
                     };
                     make_edge_between(model, moved, (ta, tb), &v_from, &v_to, tol)?.shape
                 };
-                if slop > tol.confusion()
-                    && let Some(node) = model.node_mut(&built)
-                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
-                {
-                    data.tolerance = data.tolerance.widen_to(slop);
+                if slop > tol.confusion() {
+                    model.widen(&built, ogeom_core::Tolerance::new(slop)?)?;
                 }
                 built
             }
