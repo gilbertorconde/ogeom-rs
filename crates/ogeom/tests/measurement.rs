@@ -196,22 +196,22 @@ fn a_face_with_a_hole_is_weighed_in_closed_form() {
     );
 }
 
-/// A shell whose faces disagree about which way is out is not weighed in
-/// closed form, however analytic its surfaces are.
+/// A shell whose faces disagree about which way is out is weighed in closed
+/// form with the turned face turned back, never with its flag believed.
 ///
 /// The flag on a face is the only thing that says which side of its surface
 /// the material is on, and nothing in a shell makes the flags agree. They
 /// can be asked about each other, though: an edge between two faces is
 /// walked by each with its own material on its left, so the two walks run
-/// opposite ways along it. Where they do not, this hands the shape to the
-/// tessellator, which repairs such a shell by flipping whichever side of
-/// the disagreement is in the minority.
+/// opposite ways along it. Where they do not, the faces are turned against
+/// each other, and probing the solid off one face says which of them faces
+/// in.
 ///
 /// An imported part can arrive exactly like this (a bore wall's flag
 /// pointing into the solid), and taking the flags at their word counts the
 /// bore as material and makes the part a third heavy.
 #[test]
-fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
+fn a_shell_whose_faces_disagree_is_weighed_with_the_turned_face_turned_back() {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 6.0, 4.0), T)
         .unwrap()
@@ -233,9 +233,9 @@ fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
             .shape;
         let measured =
             ogeom::algo::volume_properties(&model, &turned, Deflection::default(), T).unwrap();
-        assert!(
-            measured.deflection > 0.0,
-            "face {which} turned over: the mesh was asked instead"
+        assert_eq!(
+            measured.deflection, 0.0,
+            "face {which} turned over: the closed form was taken"
         );
         assert!(
             (measured.mass - 240.0).abs() < 1e-9,
@@ -247,12 +247,11 @@ fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
 
 /// A face the edge walks cannot compare (a cone cap whose apex has no
 /// normal) is asked by probing the solid off both its sides, and turned
-/// over it is left to the mesh like any other disagreement, never weighed
-/// in closed form with its share of the volume counted backwards.
+/// over it is turned back like any other face the probe finds facing in,
+/// never weighed with its share of the volume counted backwards.
 ///
 /// The cap is all but flat, so counting it backwards is only three parts
-/// in a thousand wrong: the mesh is asked at a chord fine enough to land
-/// within one.
+/// in a thousand wrong, far outside the closed form's rounding.
 #[test]
 fn a_face_the_walks_cannot_compare_is_probed_before_it_is_believed() {
     use ogeom::topo::{ShapeType, explore_unique};
@@ -305,13 +304,13 @@ fn a_face_the_walks_cannot_compare_is_probed_before_it_is_believed() {
             T,
         )
         .unwrap();
-        assert!(
-            measured.deflection > 0.0,
-            "face {which} turned over: the mesh was asked, not the closed form ({})",
+        assert_eq!(
+            measured.deflection, 0.0,
+            "face {which} turned over: the closed form was taken ({})",
             measured.mass
         );
         assert!(
-            (measured.mass - want).abs() < want * 1e-3,
+            (measured.mass - want).abs() < 1e-9,
             "face {which} turned over: and it mends the flag, {} against {want}",
             measured.mass
         );
@@ -397,9 +396,9 @@ fn a_metre_cube_and_a_long_drum_measure_exactly_and_at_once() {
 /// face of it reversed) no edge notices: the faces agree with each other
 /// and the mesh, which mends a minority of turned faces within each piece,
 /// would weigh the cavity as material. Each shell of a solid with several
-/// is asked which way it faces: the whole void turned over is turned back
-/// and weighed in closed form, and a block with a face of its own turned as
-/// well is meshed with every face asked, the void still subtracted.
+/// is asked which way it faces: the whole void turned over is turned back,
+/// and so is a face of the block turned against its neighbours, all in
+/// closed form, the void still subtracted.
 #[test]
 fn a_void_turned_inside_out_is_still_a_void() {
     use ogeom::topo::{ShapeType, explore_unique};
@@ -435,20 +434,19 @@ fn a_void_turned_inside_out_is_still_a_void() {
         let honest_void: Vec<Shape> = turned_void.iter().map(Shape::reversed).collect();
         let mut turned_outer = outer.clone();
         turned_outer[0] = turned_outer[0].reversed();
-        for (name, outer, inner, exact) in [
-            ("as built", &outer, &honest_void, true),
-            ("void turned", &outer, &turned_void, true),
-            ("outer face turned", &turned_outer, &honest_void, false),
-            ("both turned", &turned_outer, &turned_void, false),
+        for (name, outer, inner) in [
+            ("as built", &outer, &honest_void),
+            ("void turned", &outer, &turned_void),
+            ("outer face turned", &turned_outer, &honest_void),
+            ("both turned", &turned_outer, &turned_void),
         ] {
             let o = ogeom::algo::make_shell(&mut model, outer).unwrap().shape;
             let i = ogeom::algo::make_shell(&mut model, inner).unwrap().shape;
             let solid = ogeom::algo::make_solid(&mut model, &[o, i]).unwrap().shape;
             let measured = ogeom::algo::volume_properties(&model, &solid, chord, T).unwrap();
             assert_eq!(
-                measured.deflection == 0.0,
-                exact,
-                "sphere {spherical}, {name}: closed form {exact}"
+                measured.deflection, 0.0,
+                "sphere {spherical}, {name}: the closed form was taken"
             );
             assert!(
                 (measured.mass - want).abs() < want * 1e-4,
@@ -456,5 +454,71 @@ fn a_void_turned_inside_out_is_still_a_void() {
                 measured.mass
             );
         }
+    }
+}
+
+/// A box sewn from six planar sheets (four walls swept up from a square,
+/// two lids filled in it) measures in closed form, as the same box does
+/// before sewing: every face is still a rectangle on a plane.
+///
+/// Both lids are filled the same way round, so the bottom one faces into
+/// the box until something turns it; it is built every way it can come:
+/// its flag either way and its loop walked either way, which sewing may
+/// keep or rebuild. Volume and area are exact to rounding each time.
+#[test]
+fn a_box_sewn_from_six_sheets_measures_exactly() {
+    use ogeom::algo::{make_face_with_pcurves, make_polygon, make_prism, make_solid, sew};
+    use ogeom::geom::PlaneSurface;
+    use ogeom::math::{Plane, Vector};
+    use ogeom::topo::{Filter, ShapeType, explore};
+
+    let square = |z: f64| {
+        [
+            Point::new(0.0, 0.0, z),
+            Point::new(10.0, 0.0, z),
+            Point::new(10.0, 10.0, z),
+            Point::new(0.0, 10.0, z),
+        ]
+    };
+    for (turned, backwards) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut model = Model::new();
+        let base = make_polygon(&mut model, &square(0.0), true, T)
+            .unwrap()
+            .shape;
+        let walls = make_prism(&mut model, &base, Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let mut faces = explore(&model, &walls, Filter::OfType(ShapeType::Face)).unwrap();
+        for z in [0.0, 5.0] {
+            let wire = make_polygon(&mut model, &square(z), true, T).unwrap().shape;
+            let frame = Frame::new(Point::new(0.0, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+            let surface =
+                PlaneSurface::over(Plane::new(frame), (-20.0, 20.0), (-20.0, 20.0)).unwrap();
+            let mut edges = model.ordered_children_of(&wire).unwrap();
+            let bottom = z == 0.0;
+            if bottom && backwards {
+                edges = edges.iter().rev().map(Shape::reversed).collect();
+            }
+            let lid = make_face_with_pcurves(&mut model, surface.into(), &[edges], T)
+                .unwrap()
+                .shape;
+            faces.push(if bottom && turned {
+                lid.reversed()
+            } else {
+                lid
+            });
+        }
+        let sewn = sew(&mut model, &faces, T).unwrap();
+        assert_eq!(sewn.shells.len(), 1);
+        assert!(sewn.free_edges.is_empty());
+        let solid = make_solid(&mut model, &sewn.shells).unwrap().shape;
+
+        let case = format!("bottom lid turned {turned}, walked backwards {backwards}");
+        let v = ogeom::algo::volume_properties(&model, &solid, Deflection::default(), T).unwrap();
+        assert_eq!(v.deflection, 0.0, "{case}: the closed form was taken");
+        assert!((v.mass - 500.0).abs() < 1e-12, "{case}: {}", v.mass);
+        let a = ogeom::algo::surface_properties(&model, &solid, Deflection::default(), T).unwrap();
+        assert_eq!(a.deflection, 0.0, "{case}: the closed form was taken");
+        assert!((a.mass - 400.0).abs() < 1e-12, "{case}: {}", a.mass);
     }
 }

@@ -43,6 +43,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sewn box of planes measures exactly (#125).** `volume_properties`
+  sent a shell holding a face whose flag points into the material (a box
+  sewn from six sheets with a lid filled facing in) to the mesh, and its
+  properties came back approximate. Faces walking a shared edge the same
+  way are tied as turned against each other, each tied set is probed
+  against the solid, and a face facing in is counted turned back: the box
+  measures 500 and 400 exactly.
+
 - **A sweep surface follows a line into a tangent arc (#120).**
   `make_sweep_surface` skinned the whole spine at once across the
   curvature jump at a tangent join, and its error stalled just above the

@@ -2487,7 +2487,7 @@ fn body_culprits(
                 })
                 .sum::<f64>()
         } else {
-            crate::volume_properties(model, &body.solid, deflection, tol)?.mass
+            crate::mass::volume_as_flagged(model, &body.solid, deflection, tol)?.mass
         };
         // Measured at the facets' corners and edge middles, the allowance
         // misses the surface's rise inside a facet and a fitted boundary's

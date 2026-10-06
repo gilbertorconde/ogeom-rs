@@ -221,7 +221,9 @@ pub fn surface_properties(
 /// Each shell of a solid with several is weighed facing out of the solid's
 /// material, as a probe off its faces finds: a void whose faces all point
 /// into the material (turned inside out as a whole, which no edge between
-/// its faces shows) is still taken away, not added.
+/// its faces shows) is still taken away, not added. A face whose flag
+/// points into the material, against the neighbours it shares edges
+/// with, is counted turned back the same way.
 ///
 /// # Errors
 ///
@@ -237,8 +239,48 @@ pub fn volume_properties(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<MassProperties> {
+    volume_with(model, shape, deflection, Turning::Probed, tol)
+}
+
+/// The volume a shape encloses with no face turned against its neighbours
+/// turned back: such a face leaves the closed form to the mesh, which
+/// counts it as the mesh's own repair does. For a builder asking whether
+/// its faces face the way it meant, where a probe that turns them back
+/// would hide the fault the volume is asked to show.
+///
+/// # Errors
+///
+/// As [`volume_properties`].
+pub(crate) fn volume_as_flagged(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<MassProperties> {
+    volume_with(model, shape, deflection, Turning::WholeShells, tol)
+}
+
+/// Which faces the closed form turns over where the probe finds them
+/// facing into the material.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Turning {
+    /// Any face the probe settles.
+    Probed,
+    /// Only a whole shell of a solid with several, turned inside out; a
+    /// face turned against its neighbours, or any other set facing in,
+    /// leaves the closed form to the mesh.
+    WholeShells,
+}
+
+fn volume_with(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    turning: Turning,
+    tol: Tolerances,
+) -> OgeomResult<MassProperties> {
     deflection.validate()?;
-    if let Some(exact) = exact_volume_properties(model, shape, tol)? {
+    if let Some(exact) = exact_volume_properties(model, shape, turning, tol)? {
         return Ok(exact);
     }
     if let Some(probed) = probed_mesh_volume(model, shape, deflection, tol)? {
@@ -463,6 +505,7 @@ impl ExactFace {
 fn exact_volume_properties(
     model: &Model,
     shape: &Shape,
+    turning: Turning,
     tol: Tolerances,
 ) -> OgeomResult<Option<MassProperties>> {
     let faces = explore(model, shape, Filter::OfType(ShapeType::Face))?;
@@ -516,30 +559,39 @@ fn exact_volume_properties(
             );
         }
     }
-    // Sets of faces the walks could not tie together are asked of the
-    // solid itself, a face of each probed off both its sides. A set facing
-    // in that is a whole shell of a solid with several (a void turned
-    // inside out) is turned over as a whole. Any other set turned in, or
-    // one no face of which the probe can settle, is left to the mesh,
-    // which mends a minority of turned faces.
+    // Each set of faces the walks tied together is asked of the solid
+    // itself, a face of it probed off both its sides, and every face the
+    // answer finds facing in is turned over: a face turned against its
+    // neighbours, or a whole shell turned inside out. A set no face of
+    // which the probe can settle is left to the mesh, and so is any face
+    // facing in that `turning` does not turn.
     let mut turned: std::collections::HashSet<Occurrence> = std::collections::HashSet::new();
     if !flags.sets.is_empty() {
+        if turning == Turning::WholeShells
+            && flags.sets.iter().flatten().any(|(_, against)| *against)
+        {
+            return Ok(None);
+        }
         let Some(inward) = sets_facing_in(model, shape, &flags.sets, tol)? else {
             return Ok(None);
         };
-        let shells = shells_of_several(model, shape)?;
+        let shells = match turning {
+            Turning::Probed => Vec::new(),
+            Turning::WholeShells => shells_of_several(model, shape)?,
+        };
         for (set, inward) in flags.sets.iter().zip(inward) {
-            if !inward {
-                continue;
-            }
-            let held: std::collections::HashSet<Occurrence> = set
+            let facing_in: std::collections::HashSet<Occurrence> = set
                 .iter()
-                .map(|f| (f.node(), f.location().clone()))
+                .filter(|(_, against)| *against != inward)
+                .map(|(f, _)| (f.node(), f.location().clone()))
                 .collect();
-            if !shells.contains(&held) {
+            if turning == Turning::WholeShells
+                && !facing_in.is_empty()
+                && !shells.contains(&facing_in)
+            {
                 return Ok(None);
             }
-            turned.extend(held);
+            turned.extend(facing_in);
         }
     }
     let sign: Vec<f64> = region_of
@@ -1016,21 +1068,25 @@ type PlacedCurves = std::collections::HashMap<Occurrence, (ogeom_geom::Curve, (f
 /// flag, the material's direction from the chart, since a face's region
 /// lies around the middle of the boundary that encloses it.
 ///
-/// A bore wall whose flag points into the solid walks its edges the same
-/// way as its neighbours. The tessellator repairs such a shell, flipping
-/// whichever side of the disagreement is in the minority, and the
-/// closed-form integral cannot: it would hand the bore back as material.
-/// So where the flags disagree this says so and the mesh is asked instead.
+/// A face whose flag points into the solid (a bore wall turned over, a
+/// lid sewn to walls it was not built with) walks its edges the same way
+/// as its neighbours. Taken at its word, the closed-form integral would
+/// count its share of the volume backwards. So two faces that walk an edge
+/// the same way are tied as turned against each other, and the set they
+/// fall into is listed for the caller to ask which way each face of it
+/// faces. A loop of ties whose turns do not cancel cannot be one boundary
+/// however its faces are turned, and is reported as disagreeing.
 ///
-/// The comparison ties faces into sets that agree among themselves, and
-/// says nothing about one set against another: a face the walks cannot be
-/// read on (a station at a cone's apex, where the surface has no normal, a
-/// trim that is no closed loop) is a set of its own, and so is each
-/// closed shell. Turning a whole set over turns its share of the volume
-/// over without any edge noticing, so where there is more than one set
-/// [`Flags::sets`] lists the faces of each, for the caller to ask which
-/// way the set faces. A single set turned over as a whole is the whole
-/// boundary wound inward, and the volume's sign says so.
+/// The comparison ties faces into sets, and says nothing about one set
+/// against another: a face the walks cannot be read on (a station at a
+/// cone's apex, where the surface has no normal, a trim that is no closed
+/// loop) is a set of its own, and so is each closed shell. Turning a whole
+/// set over turns its share of the volume over without any edge noticing,
+/// so where there is more than one set, or a set holds faces turned
+/// against each other, [`Flags::sets`] lists the faces of each, for the
+/// caller to ask which way the set faces. A single set agreeing throughout
+/// and turned over as a whole is the whole boundary wound inward, and the
+/// volume's sign says so.
 ///
 /// An edge occurrence is its node at its placement: the top and bottom of
 /// a prism are one edge moved, and each is compared only with the faces
@@ -1060,8 +1116,9 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
     if *DEBUG_MASS {
         eprintln!("MASS flags_agree walked {} edges", walks.len());
     }
-    // Which set each face is in, as a forest of parents.
-    let mut parent: Vec<usize> = (0..faces.len()).collect();
+    // Which set each face is in, as a forest of parents, and whether each
+    // face is turned against its parent.
+    let mut parent: Vec<(usize, bool)> = (0..faces.len()).map(|at| (at, false)).collect();
     for ((edge, _), uses) in &walks {
         // An edge one face walks twice is that face's own seam, however it
         // is written down (a canonicalised drum keeps its as an ordinary
@@ -1070,57 +1127,110 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
         if uses.iter().all(|(_, owner, _)| *owner == uses[0].1) {
             continue;
         }
-        let ahead = uses.iter().filter(|(ahead, ..)| *ahead).count();
-        if ahead * 2 != uses.len() {
-            if *DEBUG_MASS {
-                eprintln!("MASS edge {} is walked {uses:?}", edge.index());
+        // An edge between two faces that each walk it one way only ties
+        // them: as they stand where they walk it opposite ways, one turned
+        // against the other where they walk it the same way.
+        let mut owners: Vec<(usize, bool)> = Vec::with_capacity(2);
+        let mut uniform = true;
+        for &(ahead, owner, _) in uses {
+            match owners.iter().find(|(held, _)| *held == owner) {
+                Some(&(_, way)) => uniform &= way == ahead,
+                None => owners.push((owner, ahead)),
             }
-            return Ok(Flags {
-                agree: false,
-                sets: Vec::new(),
-            });
         }
-        let first = set_of(&mut parent, uses[0].1);
-        for (_, owner, _) in uses {
-            let other = set_of(&mut parent, *owner);
-            parent[other] = first;
+        let tie: Vec<(usize, bool)> = if uniform && owners.len() == 2 {
+            vec![owners[0], (owners[1].0, owners[0].1 == owners[1].1)]
+        } else {
+            // Anything else (a face walking it both ways, three faces or
+            // more round it) must walk it each way equally often.
+            let ahead = uses.iter().filter(|(ahead, ..)| *ahead).count();
+            if ahead * 2 != uses.len() {
+                if *DEBUG_MASS {
+                    eprintln!("MASS edge {} is walked {uses:?}", edge.index());
+                }
+                return Ok(Flags {
+                    agree: false,
+                    sets: Vec::new(),
+                });
+            }
+            uses.iter().map(|&(_, owner, _)| (owner, false)).collect()
+        };
+        let (first, first_turned) = set_of(&mut parent, tie[0].0);
+        for &(owner, against) in &tie[1..] {
+            let (other, other_turned) = set_of(&mut parent, owner);
+            // `owner` must stand turned against the first face by `against`.
+            let turned = first_turned ^ other_turned ^ against;
+            if other == first {
+                if turned {
+                    if *DEBUG_MASS {
+                        eprintln!(
+                            "MASS edge {} closes a loop of faces turned oddly",
+                            edge.index()
+                        );
+                    }
+                    return Ok(Flags {
+                        agree: false,
+                        sets: Vec::new(),
+                    });
+                }
+                continue;
+            }
+            parent[other] = (first, turned);
         }
     }
     // Each set's faces in the order they were explored, named as the
-    // caller's shape holds them, placement and all.
-    let mut sets: Vec<Vec<Shape>> = Vec::new();
-    let mut set_at: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    // caller's shape holds them, placement and all, each with whether it
+    // is turned against the set's first face.
+    let mut sets: Vec<Vec<(Shape, bool)>> = Vec::new();
+    let mut set_at: std::collections::HashMap<usize, (usize, bool)> =
+        std::collections::HashMap::new();
+    let mut mixed = false;
     for (index, face) in faces.iter().enumerate() {
-        let root = set_of(&mut parent, index);
-        let at = *set_at.entry(root).or_insert_with(|| {
+        let (root, turned) = set_of(&mut parent, index);
+        let (at, first_turned) = *set_at.entry(root).or_insert_with(|| {
             sets.push(Vec::new());
-            sets.len() - 1
+            (sets.len() - 1, turned)
         });
-        sets[at].push(face.moved(shape.location()));
+        let against = turned != first_turned;
+        mixed |= against;
+        sets[at].push((face.moved(shape.location()), against));
     }
-    if sets.len() < 2 {
+    if sets.len() < 2 && !mixed {
         sets.clear();
     }
     Ok(Flags { agree: true, sets })
 }
 
-/// The face standing for the set `at` is in, shortening the way there.
-fn set_of(parent: &mut [usize], mut at: usize) -> usize {
-    while parent[at] != at {
-        parent[at] = parent[parent[at]];
-        at = parent[at];
+/// The face standing for the set `at` is in, and whether `at` is turned
+/// against it, shortening the way there.
+fn set_of(parent: &mut [(usize, bool)], at: usize) -> (usize, bool) {
+    let mut path = Vec::new();
+    let mut here = at;
+    while parent[here].0 != here {
+        path.push(here);
+        here = parent[here].0;
     }
-    at
+    let root = here;
+    // From the root down, each face's turn against the root.
+    for &face in path.iter().rev() {
+        let (up, turned) = parent[face];
+        let up_turned = if up == root { false } else { parent[up].1 };
+        parent[face] = (root, turned ^ up_turned);
+    }
+    (root, if at == root { false } else { parent[at].1 })
 }
 
 /// What [`flags_agree`] found.
 pub(crate) struct Flags {
-    /// Whether every edge the walks could read is walked opposite ways by
-    /// the faces either side of it.
+    /// Whether the walks tie every face consistently: no loop of faces
+    /// round which the turns between neighbours fail to cancel, and no
+    /// edge walked unevenly by three faces or more.
     pub agree: bool,
-    /// Where the faces fall into more than one set that agrees within
-    /// itself, the faces of each set; empty where they are one set.
-    pub sets: Vec<Vec<Shape>>,
+    /// Where the faces fall into more than one set, or a set holds faces
+    /// turned against each other, the faces of each set, each with whether
+    /// it is turned against the set's first face; empty where they are one
+    /// set agreeing throughout.
+    pub sets: Vec<Vec<(Shape, bool)>>,
 }
 
 /// One station of a face's walk round its boundary: the edge occurrence,
@@ -1349,8 +1459,8 @@ fn face_walks(
     Ok(Some(walks))
 }
 
-/// Whether each of `sets` faces into the solid it bounds; `None` where no
-/// face of some set settles it.
+/// Whether the first face of each of `sets` faces into the solid it
+/// bounds; `None` where no face of some set settles it.
 ///
 /// A set agrees within itself, so any one of its faces answers for all of
 /// them, and a face the probe cannot settle hands the question to the
@@ -1363,7 +1473,7 @@ fn face_walks(
 fn sets_facing_in(
     model: &Model,
     shape: &Shape,
-    sets: &[Vec<Shape>],
+    sets: &[Vec<(Shape, bool)>],
     tol: Tolerances,
 ) -> OgeomResult<Option<Vec<bool>>> {
     let solids = explore(model, shape, Filter::OfType(ShapeType::Solid))?;
@@ -1382,32 +1492,33 @@ fn sets_facing_in(
         }
     }
     let mut boundaries: Vec<Option<crate::SolidBoundary>> = solids.iter().map(|_| None).collect();
-    // Each unsettled set with its faces still to be asked and their solids.
-    let mut pending: Vec<(usize, std::collections::VecDeque<(usize, &Shape)>)> =
-        Vec::with_capacity(sets.len());
+    // Each unsettled set with its faces still to be asked: each face's
+    // solid, the face, and whether it is turned against the set's first.
+    type Asking<'a> = std::collections::VecDeque<(usize, &'a Shape, bool)>;
+    let mut pending: Vec<(usize, Asking)> = Vec::with_capacity(sets.len());
     for (set, faces_of) in sets.iter().enumerate() {
         let mut faces = std::collections::VecDeque::with_capacity(faces_of.len());
-        for face in faces_of {
+        for (face, against) in faces_of {
             let Some(&at) = owner.get(&(face.node(), face.location().clone())) else {
                 return Ok(None);
             };
-            faces.push_back((at, face));
+            faces.push_back((at, face, *against));
         }
         pending.push((set, faces));
     }
     let mut inward = vec![false; sets.len()];
     let mut take = 1;
     loop {
-        let mut asked: Vec<(usize, usize, &Shape)> = Vec::new();
+        let mut asked: Vec<(usize, usize, &Shape, bool)> = Vec::new();
         for (set, faces) in &mut pending {
             for _ in 0..take {
-                let Some((at, face)) = faces.pop_front() else {
+                let Some((at, face, against)) = faces.pop_front() else {
                     break;
                 };
-                asked.push((*set, at, face));
+                asked.push((*set, at, face, against));
             }
         }
-        for &(_, at, _) in &asked {
+        for &(_, at, ..) in &asked {
             if boundaries[at].is_none() {
                 let Some(boundary) = or_mesh(
                     crate::check::probe_boundary(model, &solids[at], tol).map(Some),
@@ -1419,20 +1530,22 @@ fn sets_facing_in(
                 boundaries[at] = Some(boundary);
             }
         }
-        let facing = ogeom_core::parallel::map_ordered(&asked, |_, &(_, at, face)| {
+        let facing = ogeom_core::parallel::map_ordered(&asked, |_, &(_, at, face, _)| {
             let Some(boundary) = boundaries[at].as_ref() else {
                 return Ok(None);
             };
             crate::check::faces_inward(model, face, boundary, tol)
         });
         let mut settled = vec![false; sets.len()];
-        for (&(set, ..), facing) in asked.iter().zip(facing) {
+        for (&(set, _, _, against), facing) in asked.iter().zip(facing) {
             let facing = or_mesh(facing, None)?;
             if *DEBUG_MASS {
                 eprintln!("MASS set {set} probed {facing:?}");
             }
             if let Some(facing) = facing {
-                inward[set] = facing;
+                // A face turned against the set's first answers for it
+                // turned back.
+                inward[set] = facing != against;
                 settled[set] = true;
             }
         }
