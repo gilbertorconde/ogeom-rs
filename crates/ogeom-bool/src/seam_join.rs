@@ -427,7 +427,9 @@ fn join_group(
     data.surface = turned_id;
     data.natural_restriction = false;
     data.triangulation = None;
+    let widest = data.tolerance;
     let joined = model.add_face(data, &wires)?;
+    model.widen(&joined, widest)?;
     let joined = joined.oriented(members[0].orientation());
     Ok(Some((joined, dissolved)))
 }

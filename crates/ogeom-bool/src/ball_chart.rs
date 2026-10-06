@@ -973,9 +973,10 @@ fn restated(
     let Some(NodeData::Face(old)) = model.node(face).map(|n| n.data()) else {
         return Ok(None);
     };
-    let mut data = ogeom_topo::FaceData::new(surface, ogeom_topo::Location::identity());
-    data.widen(old.tolerance);
+    let held = old.tolerance;
+    let data = ogeom_topo::FaceData::new(surface, ogeom_topo::Location::identity());
     let made = model.add_face(data, &made_wires)?;
+    model.widen(&made, held)?;
     Ok(Some(made.oriented(face.orientation())))
 }
 
