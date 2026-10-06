@@ -1590,6 +1590,9 @@ struct Fingerprint {
     start: Point,
     middle: Point,
     end: Point,
+    /// The points a quarter and three quarters of the way along, which tell
+    /// the sense of a closed edge whose ends are one point.
+    quarters: [Point; 2],
     /// The edge's curve in space and the stretch it covers, for the middle
     /// of another edge to be asked whether it lies on this one.
     curve: ogeom_geom::Curve,
@@ -1707,6 +1710,15 @@ impl Fingerprint {
                 );
             }
             return Ok(None);
+        }
+        // A closed edge meets the other's ends both ways round; its sense is
+        // the one whose quarter points lie the nearer.
+        if along && against {
+            let [q1, q3] = self.quarters;
+            let [p1, p3] = other.quarters;
+            let forward = q1.distance(p1) + q3.distance(p3);
+            let backward = q1.distance(p3) + q3.distance(p1);
+            return Ok(Some(backward < forward));
         }
         Ok(Some(!along))
     }
@@ -1838,6 +1850,10 @@ fn fingerprint(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Opti
         start: placement(geometry.point_at(range.0, tol)?),
         middle: placement(geometry.point_at(f64::midpoint(range.0, range.1), tol)?),
         end: placement(geometry.point_at(range.1, tol)?),
+        quarters: [
+            placement(geometry.point_at(range.0 + 0.25 * (range.1 - range.0), tol)?),
+            placement(geometry.point_at(range.0 + 0.75 * (range.1 - range.0), tol)?),
+        ],
         curve: geometry
             .clone()
             .transformed(&own, tol)?
