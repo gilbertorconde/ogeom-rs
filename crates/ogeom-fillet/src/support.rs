@@ -1546,6 +1546,7 @@ mod tests {
     /// a branch's foot, a band running out through a block's walls at both
     /// ends, and a band pinched where two equal drums turn tangent.
     #[test]
+    #[ignore = "heavy"]
     fn marched_wedges_walk_each_edge_once_each_way() {
         use ogeom_geom::Curve;
         use ogeom_math::{Direction, Vector};

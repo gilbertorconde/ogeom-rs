@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A widened edge carries its vertices, and a widened face its edges.**
+  Marched fillet bands, offset rebuilds, splitting, dividing,
+  same-parameter, sweep rails, converted edges, IGES pcurve gaps, and faces
+  rejoined at a seam or rebuilt on a ball chart widened an edge (or face)
+  in place and left its vertices tighter, which `check` reports broken; they
+  widen through the cascade that carries them along.
+
 - **Fillet wedges walk each edge once each way.** Rim arc wedges and
   marched blend wedges (closed, run-out, pinched, face blends) built faces
   whose rings ran the same way as the face beside them; each keeps its
