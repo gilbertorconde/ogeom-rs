@@ -849,8 +849,8 @@ fn build(
                             reason = FallbackReason::FoldedSeam;
                         }
                         if culprits.is_empty() && options.recognize {
-                            let turned;
-                            (culprits, turned) = or_withdraw!(
+                            let (turned, alone);
+                            (culprits, turned, alone) = or_withdraw!(
                                 'checks,
                                 &built,
                                 overlapping_faces(model, &shape, adjacency, &groups, &built, tol)
@@ -869,6 +869,16 @@ fn build(
                             if !fanned.is_empty() {
                                 groups.fans.extend(fanned);
                                 continue 'build;
+                            }
+                            // A planar face turned in with no recognized
+                            // face near it is gathered again, then built a
+                            // face per triangle, while that is left to try.
+                            if culprits.is_empty() {
+                                culprits = alone
+                                    .into_iter()
+                                    .filter(|&g| regrouped.can_withdraw(&groups, g))
+                                    .collect();
+                                reason = FallbackReason::TurnedIn;
                             }
                         }
                         if culprits.is_empty() && options.recognize {
@@ -1027,7 +1037,7 @@ fn planes_off_their_vertices(
 }
 
 /// The planar regions the build has given up on, by their triangles. A
-/// planar face that fails is gathered again
+/// planar face that fails, or faces into the material, is gathered again
 /// from its triangles the first time; once its triangles have been
 /// gathered again, it is built a face to each triangle; a face of one
 /// triangle so built is left as it is. A curved region can always be
@@ -1147,11 +1157,13 @@ fn failing_faces(
 /// The recognized faces that overlap a face beside them: a fitted face
 /// running past the facet it should end on encloses a sliver outside that
 /// facet, and the facet then faces into material on its outer side while
-/// every check on either face alone passes. Every recognized face and every
-/// face beside one is probed as the validity check probes orientation; a
-/// recognized face found turned in is a culprit, and for any other face
-/// so found the recognized faces beside it are. Returned with the faces so
-/// found that share an edge with a recognized one.
+/// every check on either face alone passes. Every face is probed as the
+/// validity check probes orientation; a recognized face found turned in is
+/// a culprit, and for any other face so found the recognized faces beside
+/// it, or whose box it meets, are. Returned with the planar faces so found
+/// that share an edge with a recognized one, and those with no recognized
+/// face beside them or across their box.
+#[allow(clippy::type_complexity, reason = "three lists of groups")]
 fn overlapping_faces(
     model: &Model,
     shape: &Shape,
@@ -1159,7 +1171,7 @@ fn overlapping_faces(
     groups: &Groups,
     built: &[Option<Shape>],
     tol: Tolerances,
-) -> OgeomResult<(Vec<usize>, Vec<usize>)> {
+) -> OgeomResult<(Vec<usize>, Vec<usize>, Vec<usize>)> {
     let curved = |g: usize| {
         matches!(groups.carriers.get(g), Some(Carrier::Curved(_)))
             && built.get(g).is_some_and(Option::is_some)
@@ -1199,23 +1211,16 @@ fn overlapping_faces(
                 .collect()
         })
     };
-    let mut near: std::collections::BTreeSet<usize> = beside.keys().copied().collect();
-    near.extend((0..groups.carriers.len()).filter(|&g| curved(g) || !crossing(g).is_empty()));
-    if near.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let mut of_face: HashMap<ogeom_topo::TShapeId, usize> = HashMap::new();
-    let mut faces = Vec::new();
-    for &g in &near {
-        if let Some(face) = built.get(g).and_then(Option::as_ref) {
-            of_face.insert(face.node(), g);
-            faces.push(face.clone());
-        }
-    }
+    let of_face: HashMap<ogeom_topo::TShapeId, usize> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, face)| Some((face.as_ref()?.node(), g)))
+        .collect();
     let mut culprits = std::collections::BTreeSet::new();
     let mut turned = Vec::new();
+    let mut alone = Vec::new();
     for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
-        for face in crate::check::faces_turned_in(model, &solid, &faces, tol)? {
+        for face in crate::check::inside_out_faces(model, &solid, tol)? {
             let Some(&g) = of_face.get(&face.node()) else {
                 continue;
             };
@@ -1225,11 +1230,15 @@ fn overlapping_faces(
                 culprits.extend(next.iter().copied());
                 turned.push(g);
             } else {
-                culprits.extend(crossing(g));
+                let across = crossing(g);
+                if across.is_empty() {
+                    alone.push(g);
+                }
+                culprits.extend(across);
             }
         }
     }
-    Ok((culprits.into_iter().collect(), turned))
+    Ok((culprits.into_iter().collect(), turned, alone))
 }
 
 /// The facets that could be fans (see [`Fan`]) whose boundary as built

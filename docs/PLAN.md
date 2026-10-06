@@ -1153,6 +1153,18 @@ turned into the material. A conversion of ctc_02 that failed with "the
 face's boundary enclosed no triangulable region" was not reproduced on the
 current build.
 
+The converter's last orientation probe now asks every face, as `check`
+does (`inside_out_faces`), where it asked only curved faces and the faces
+beside or across them: a planar face turned in among planes went
+unprobed. A face it names with no curved face beside it or across its box
+is gathered again from its triangles, then built a face per triangle
+(`FallbackReason::TurnedIn`). No NIST or corpus part, the truth bench or
+the stress baseline changes. The probe costs what it did: its time is
+building the solid's boundary once, not the faces asked (ctc_02 0.29 s
+to 0.33 s over its builds, ftc_10 0.64 s to 0.59 s, every other part
+under 0.03 s). A box whose top is put on its plane turned over comes back
+valid with the top gathered again; before, it came back turned in.
+
 **Flags the exact volume trusts.** `volume_properties` takes the closed
 form only where the faces' flags agree. The edge walks tie faces into sets
 that agree among themselves; a face the walks cannot read (a cone apex, a

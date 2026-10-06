@@ -234,18 +234,6 @@ pub fn inside_out_faces(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomR
     turned_in_against(model, &boundary, &faces, tol)
 }
 
-/// Which of `faces` face into the material of `solid`, each probed as
-/// [`inside_out_faces`] probes a face.
-pub(crate) fn faces_turned_in(
-    model: &Model,
-    solid: &Shape,
-    faces: &[Shape],
-    tol: Tolerances,
-) -> OgeomResult<Vec<Shape>> {
-    let boundary = probe_boundary(model, solid, tol)?;
-    turned_in_against(model, &boundary, faces, tol)
-}
-
 /// The boundary of `solid` its faces are probed against, as
 /// [`inside_out_faces`] builds it.
 pub(crate) fn probe_boundary(

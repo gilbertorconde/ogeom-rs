@@ -173,6 +173,63 @@ fn from_polygons(points: Vec<Point>, polygons: &[Vec<u32>]) -> Triangulation {
     mesh
 }
 
+/// A box's top region put on its own plane facing the other way: every
+/// vertex lies on it, but its face faces into the box, with no curved face
+/// near it. The build probes every face as the validity check does, finds
+/// it turned in, and gathers its triangles again onto a plane facing out,
+/// naming it with why.
+#[test]
+fn a_planar_face_turned_in_among_planes_is_gathered_again() {
+    use ogeom::algo::Canonical;
+    let p = Point::new;
+    let points = vec![
+        p(0.0, 0.0, 0.0),
+        p(2.0, 0.0, 0.0),
+        p(2.0, 1.0, 0.0),
+        p(0.0, 1.0, 0.0),
+        p(0.0, 0.0, 1.0),
+        p(2.0, 0.0, 1.0),
+        p(2.0, 1.0, 1.0),
+        p(0.0, 1.0, 1.0),
+    ];
+    let mesh = from_polygons(
+        points,
+        &[
+            vec![0, 3, 2, 1],
+            vec![4, 5, 6, 7],
+            vec![0, 1, 5, 4],
+            vec![3, 7, 6, 2],
+            vec![1, 2, 6, 5],
+            vec![0, 4, 7, 3],
+        ],
+    );
+    let mut regions = MeshRegions::find(&mesh, &MeshSolidOptions::default(), T).unwrap();
+    let (top, plane) = regions
+        .regions()
+        .into_iter()
+        .find_map(|r| match r.surface {
+            Some(Canonical::Plane(plane)) if plane.normal().vector().z > 0.5 => Some((r.id, plane)),
+            _ => None,
+        })
+        .unwrap();
+    regions
+        .put_surface_unverified(top, Canonical::Plane(plane.reversed()))
+        .unwrap();
+    let mut back = Model::new();
+    let out = regions.build(&mut back).unwrap();
+    valid(&back, &out);
+    assert!(
+        out.report.fallbacks.contains(&RegionFallback {
+            region: top,
+            reason: FallbackReason::TurnedIn,
+        }),
+        "{:?}",
+        out.report.fallbacks
+    );
+    assert_eq!(kinds(&back, &out.shape), [6, 0, 0, 0, 0, 0]);
+    assert!((volume(&back, &out.shape) - 2.0).abs() < 1e-9);
+}
+
 /// The vertex `i` of `n` round the rim at height `z` of a faceted cylinder
 /// of radius `r`.
 fn rim_vertex(regions: &MeshRegions, r: f64, n: u32, i: u32, z: f64) -> u32 {

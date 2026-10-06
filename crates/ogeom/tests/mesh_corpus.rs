@@ -488,7 +488,7 @@ fn a_face_that_cannot_be_built_is_faceted() {
 
 /// A surface moved off its region: translated by `by` across it (along a
 /// plane's normal, along a curved surface's frame `x`), or with `scale`
-/// its radius grown by that factor.
+/// its radius grown by that factor (a plane's normal turned over).
 fn displaced(surface: &Canonical, by: f64, scale: Option<f64>) -> Option<Canonical> {
     use ogeom::math::{Cone, Cylinder, Frame, Sphere, Torus, Transform};
     let shift = |frame: Frame| match surface {
@@ -505,6 +505,7 @@ fn displaced(surface: &Canonical, by: f64, scale: Option<f64>) -> Option<Canonic
             Canonical::Sphere(s.transformed(&shift(s.frame()), T).ok()?)
         }
         (Canonical::Torus(t), None) => Canonical::Torus(t.transformed(&shift(t.frame()), T).ok()?),
+        (Canonical::Plane(p), Some(_)) => Canonical::Plane(p.reversed()),
         (Canonical::Cylinder(c), Some(k)) => {
             Canonical::Cylinder(Cylinder::new(c.frame(), c.radius() * k, T).ok()?)
         }
@@ -577,7 +578,9 @@ fn displaced_regions_fall_back(name: &str, each: usize) -> usize {
             let far = (distance * 50.0).max(lo.distance(hi) * 0.02);
             let near = distance * 4.0;
             let mut moves = vec![(far, None, true), (near, None, false)];
-            if kind != 0 {
+            if kind == 0 {
+                moves.push((0.0, Some(-1.0), true));
+            } else {
                 moves.extend([(0.0, Some(1.1), true), (0.0, Some(0.5), true)]);
             }
             for (by, scale, beyond) in moves {
@@ -614,7 +617,7 @@ fn displaced_regions_fall_back(name: &str, each: usize) -> usize {
 
 #[test]
 fn a_displaced_region_falls_back_to_facets() {
-    assert!(displaced_regions_fall_back("nist_ftc_11_asme1_rb.stp", 6) > 0);
+    assert!(displaced_regions_fall_back("nist_ftc_11_asme1_rb.stp", 1) > 0);
 }
 
 #[test]
