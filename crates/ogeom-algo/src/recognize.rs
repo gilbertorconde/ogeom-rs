@@ -476,8 +476,26 @@ fn curved_fits(
 ///
 /// Before either, the fit that lays the most of the chords' midpoints on
 /// itself: a mesh's edges along a surface's rulings are on the surface.
+/// The chords favour a ruled fit over a round one the samples cannot tell
+/// it from, and never the other way: a sphere or a torus the samples tell
+/// from a closer fit takes no part. A sphere of a radius far beyond the
+/// samples' span, through a strip of chord facets across a narrow round,
+/// lays the facets' cross chords on itself as their plane does, and misses
+/// the samples by orders more than the round's own cylinder.
 fn choose(fits: &[Recognized], chords: &[(Point, Point)], tolerance: f64) -> Option<Recognized> {
+    let tie = |best: f64| (2.0 * best).max(tolerance * 1e-3);
     let within: Vec<&Recognized> = fits.iter().filter(|f| f.deviation <= tolerance).collect();
+    let closest = within
+        .iter()
+        .map(|f| f.deviation)
+        .fold(f64::INFINITY, f64::min);
+    let within: Vec<&Recognized> = within
+        .into_iter()
+        .filter(|f| {
+            !matches!(f.surface, Canonical::Sphere(_) | Canonical::Torus(_))
+                || f.deviation <= tie(closest)
+        })
+        .collect();
     let on = |f: &Recognized| {
         chords
             .iter()
@@ -507,7 +525,7 @@ fn choose(fits: &[Recognized], chords: &[(Point, Point)], tolerance: f64) -> Opt
     ranked.sort_by_key(|f| rank(f));
     ranked
         .into_iter()
-        .find(|f| f.deviation <= (2.0 * best).max(tolerance * 1e-3))
+        .find(|f| f.deviation <= tie(best))
         .cloned()
 }
 
@@ -1378,6 +1396,54 @@ mod tests {
         };
         assert!((t.minor_radius() - 10.0).abs() < 1e-6, "{t:?}");
         assert!((t.major_radius() - 40.0).abs() < 1e-6, "{t:?}");
+    }
+
+    /// A strip of a narrow round meshed coarsely: two rulings of a radius
+    /// 0.432 cylinder twelve long, cut into cells, and one corner on a
+    /// third ruling sixty along, where a fan of long facets meets them.
+    /// A sphere of a radius in the tens of thousands passes within a
+    /// thousandth of every sample and lays the cells' cross chords on
+    /// itself; the samples lie on the cylinder to rounding, which is what
+    /// is recognized.
+    #[test]
+    fn a_coarse_strip_of_a_narrow_round_is_its_cylinder() {
+        let r = 0.432;
+        let at = |degrees: f64, x: f64| {
+            let a = degrees.to_radians();
+            (
+                Point::new(x, r * a.cos(), r * a.sin()),
+                Vector::new(0.0, a.cos(), a.sin()),
+            )
+        };
+        let (mut points, mut normals) = (Vec::new(), Vec::new());
+        let mut chords = Vec::new();
+        for i in 0..13 {
+            let x = 45.0 + f64::from(i) * 0.98;
+            for degrees in [135.9, 157.9] {
+                let (p, n) = at(degrees, x);
+                points.push(p);
+                normals.push(n);
+            }
+            let (a, b) = (at(135.9, x).0, at(157.9, x).0);
+            let apex = at(179.9, 116.0).0;
+            chords.extend([(a, b), (b, apex)]);
+            if i > 0 {
+                let back = x - 0.98;
+                chords.extend([
+                    (at(135.9, back).0, a),
+                    (at(157.9, back).0, b),
+                    (at(157.9, back).0, a),
+                ]);
+            }
+        }
+        let (apex, n) = at(179.9, 116.0);
+        points.push(apex);
+        normals.push(n);
+        let (found, _) = recognize_trimmed(&points, &normals, &chords, 1e-3, T).unwrap();
+        let Canonical::Cylinder(c) = found.surface else {
+            panic!("the round's cylinder: {found:?}");
+        };
+        assert!((c.radius() - r).abs() < 1e-9, "{c:?}");
     }
 
     #[test]

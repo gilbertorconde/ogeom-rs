@@ -304,11 +304,16 @@ fn nist_ftc_06() {
     comes_back("nist_ftc_06_asme1_rd.stp", true, false);
 }
 
-/// As `nist_ctc_04`, on tori.
+/// As `nist_ctc_04`, on tori. Its long rounds of radius 0.43 are meshed a
+/// few rows across, with fans of long facets from single corners; each
+/// strip of them comes back on its round's cylinder, where a sphere tens
+/// of thousands in radius through the strip would lay the facets' cross
+/// chords on itself and fall back to facets.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_07() {
-    comes_back("nist_ftc_07_asme1_rd.stp", true, true);
+    let report = comes_back("nist_ftc_07_asme1_rd.stp", true, true);
+    assert!(report.curved_faceted <= 14, "{:?}", report.fallbacks);
 }
 
 #[test]
