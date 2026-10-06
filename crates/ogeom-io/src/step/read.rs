@@ -2913,16 +2913,141 @@ impl<'a> Reader<'a> {
             .collect();
         self.cut_at_poles(&face_ids);
         self.prepare_pcurves(&face_ids);
-        let mut faces = Vec::new();
+        let mut read = Vec::new();
         for fid in face_ids {
             if let Some(face) = self.face(fid)? {
-                faces.push(face);
+                read.push((fid, face));
             }
         }
-        if faces.is_empty() {
+        if read.is_empty() {
             return Ok(None);
         }
+        self.turn_backward_loops(shell_id, &mut read)?;
+        let faces: Vec<Shape> = read.into_iter().map(|(_, face)| face).collect();
         Ok(Some(make_shell(&mut self.model, &faces)?.shape))
+    }
+
+    /// Walk back the loops of the faces a shell's own edges say run
+    /// against their sense.
+    ///
+    /// Each edge between two faces is walked once each way, every face
+    /// keeping its material on the left of its loops. A file whose faces
+    /// turned against their surfaces were written with their loops walked
+    /// backward has such faces walking every edge the same way as the face
+    /// beside them. Where the shell's walks pick out a set of faces whose
+    /// loops, walked back, leave every edge walked once each way, and every
+    /// face in the set is turned against its surface, those faces are
+    /// rebuilt with their loops walked back, and the report says how many.
+    /// A shell whose walks pick out no such set is left as read.
+    fn turn_backward_loops(&mut self, shell_id: u64, read: &mut [(u64, Shape)]) -> OgeomResult<()> {
+        // Each edge's uses: the face, and whether it walks the edge forward.
+        let mut uses: HashMap<(ogeom_topo::TShapeId, Location), Vec<(usize, bool)>> =
+            HashMap::new();
+        for (i, (_, face)) in read.iter().enumerate() {
+            for wire in self.model.children_of(face)? {
+                for edge in self.model.children_of(&wire)? {
+                    if self
+                        .model
+                        .node(&edge)
+                        .and_then(|n| n.data().as_edge())
+                        .is_some_and(|d| d.degenerate)
+                    {
+                        continue;
+                    }
+                    uses.entry((edge.node(), edge.location().clone()))
+                        .or_default()
+                        .push((i, edge.orientation() == ogeom_topo::Orientation::Forward));
+                }
+            }
+        }
+        // Whether each face's loops must be walked back relative to a
+        // reference face of its group: walked the same way by two faces,
+        // an edge asks one of the two to turn; once each way, both or
+        // neither.
+        let pairs: Vec<(usize, usize, bool)> = uses
+            .values()
+            .filter_map(|u| match u.as_slice() {
+                [(a, x), (b, y)] if a != b => Some((*a, *b, x == y)),
+                _ => None,
+            })
+            .collect();
+        if !pairs.iter().any(|&(_, _, same)| same) {
+            return Ok(());
+        }
+        let mut beside: Vec<Vec<(usize, bool)>> = vec![Vec::new(); read.len()];
+        for &(a, b, same) in &pairs {
+            beside[a].push((b, same));
+            beside[b].push((a, same));
+        }
+        let mut turn: Vec<Option<bool>> = vec![None; read.len()];
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for start in 0..read.len() {
+            if turn[start].is_some() {
+                continue;
+            }
+            turn[start] = Some(false);
+            let mut group = vec![start];
+            let mut k = 0;
+            while k < group.len() {
+                let f = group[k];
+                k += 1;
+                let mine = turn[f] == Some(true);
+                for &(g, same) in &beside[f] {
+                    let want = mine ^ same;
+                    match turn[g] {
+                        None => {
+                            turn[g] = Some(want);
+                            group.push(g);
+                        }
+                        Some(had) if had != want => return Ok(()),
+                        Some(_) => {}
+                    }
+                }
+            }
+            groups.push(group);
+        }
+        let backward = |i: usize| read[i].1.orientation() == ogeom_topo::Orientation::Reversed;
+        let mut walk_back = Vec::new();
+        for group in groups {
+            let (marked, unmarked): (Vec<usize>, Vec<usize>) =
+                group.iter().partition(|&&f| turn[f] == Some(true));
+            let candidates = [marked, unmarked];
+            let Some(chosen) = candidates
+                .iter()
+                .filter(|set| set.iter().all(|&f| backward(f)))
+                .min_by_key(|set| set.len())
+            else {
+                return Ok(());
+            };
+            walk_back.extend(chosen.iter().copied());
+        }
+        if walk_back.is_empty() {
+            return Ok(());
+        }
+        for &i in &walk_back {
+            let (fid, face) = read[i].clone();
+            let built = face.oriented(ogeom_topo::Orientation::Forward);
+            let Some(surface_id) = self
+                .model
+                .node(&built)
+                .and_then(|n| n.data().as_face())
+                .map(|d| d.surface)
+            else {
+                ogeom_bail!(Construction, "#{fid}: a read face holds no face data");
+            };
+            let wires = self.model.ordered_children_of(&built)?;
+            let wires = walked_back(&mut self.model, &wires, self.tol)?;
+            let rebuilt = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
+            let turned = rebuilt.oriented(face.orientation());
+            self.faces.insert(fid, turned.clone());
+            read[i].1 = turned;
+        }
+        self.report.warnings.push(format!(
+            "#{shell_id}: {} face(s) turned against their surfaces walked their \
+             loops backward; their loops were walked back",
+            walk_back.len()
+        ));
+        Ok(())
     }
 
     // --- product structure, names, colours -----------------------------------

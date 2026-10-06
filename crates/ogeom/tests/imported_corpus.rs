@@ -972,3 +972,75 @@ fn every_edge_reads_walked_once_each_way() {
         }
     }
 }
+
+/// Every reversed face's bounds in a file turned the other way: the loops
+/// of each face turned against its surface walked backward.
+fn bounds_walked_back(text: &str) -> String {
+    let reference = |s: &str| s.trim().trim_start_matches('#').parse::<u64>().ok();
+    let mut bounds = std::collections::HashSet::new();
+    for line in text.lines() {
+        if line.contains("=ADVANCED_FACE(") && line.ends_with(",.F.);") {
+            let list = line.split_once("',(").unwrap().1.split_once(')').unwrap().0;
+            bounds.extend(list.split(',').filter_map(reference));
+        }
+    }
+    text.lines()
+        .map(|line| {
+            let id = line.split_once('=').and_then(|(id, _)| reference(id));
+            if id.is_some_and(|id| bounds.contains(&id)) {
+                if line.ends_with(",.T.);") {
+                    return line.replace(",.T.);", ",.F.);");
+                }
+                return line.replace(",.F.);", ",.T.);");
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A file whose faces turned against their surfaces walk their loops
+/// backward reads as if it walked them right: each such face's loops are
+/// walked back, every edge is walked once each way, and the part has the
+/// faces and volume it has read from the file written right.
+#[test]
+fn faces_walking_their_loops_backward_are_walked_back() {
+    let coarse = ogeom::mesh::Deflection::default();
+    let right = corpus("m5x16_bhcs.step");
+    let wrong = bounds_walked_back(&right);
+    assert_ne!(right, wrong);
+    let read = |text: &str| {
+        let import = ogeom::io::read_step(text, T).unwrap();
+        let model = import.document.model();
+        let measured: Vec<(usize, f64)> = import
+            .solids
+            .iter()
+            .map(|solid| {
+                assert_eq!(walked_the_same_way(model, solid), 0);
+                (
+                    explore_unique(model, solid, ShapeType::Face).unwrap().len(),
+                    ogeom::algo::volume_properties(model, solid, coarse, T)
+                        .unwrap()
+                        .mass,
+                )
+            })
+            .collect();
+        let walked_back = import
+            .report
+            .warnings
+            .iter()
+            .any(|w| w.contains("walked back"));
+        (measured, walked_back)
+    };
+    let (want, _) = read(&right);
+    let (got, walked_back) = read(&wrong);
+    assert!(walked_back, "the report says the loops were walked back");
+    assert_eq!(want.len(), got.len());
+    for ((faces, volume), (got_faces, got_volume)) in want.iter().zip(&got) {
+        assert_eq!(faces, got_faces);
+        assert!(
+            (volume - got_volume).abs() <= volume * 1e-9,
+            "{volume} read right, {got_volume} walked back"
+        );
+    }
+}
