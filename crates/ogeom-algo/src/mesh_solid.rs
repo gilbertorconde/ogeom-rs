@@ -1078,7 +1078,7 @@ impl Regrouped {
 }
 
 /// The groups to withdraw for faces that could not be built: a curved one
-/// itself; for a fan, the curved face its seam lies on, which leaves it a
+/// itself; for a fan, the curved faces its seams lie on, which leaves it a
 /// flat facet; for another planar face, the curved faces beside it, whose
 /// seams it could not take, or where there are none, the face itself.
 fn unbuilt_culprits(
@@ -1092,7 +1092,7 @@ fn unbuilt_culprits(
         if !matches!(groups.carriers.get(g), Some(Carrier::Plane(_))) {
             out.insert(g);
         } else if let Some(fan) = fans.get(&g) {
-            out.insert(fan.curved);
+            out.extend(fan.seams().map(|(_, c)| c));
         } else {
             let beside: Vec<usize> = adjacency
                 .twin
@@ -1540,7 +1540,7 @@ fn folded_seams(
             return None;
         }
         let fan = groups.fan_at(t, triangles, adjacency)?;
-        (fan.curved == c).then_some(t)
+        fan.seams().any(|(_, g)| g == c).then_some(t)
     };
     let mut fans: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let deflection = ogeom_mesh::Deflection::default();
@@ -3199,6 +3199,11 @@ struct Groups {
 /// face short of it by the seam's sag. The fan shares the lifted seam with
 /// the curved face and its two straight sides with the faces beside it,
 /// exactly, and closes at its apex on an edge with no length.
+///
+/// A facet with two sides on curved faces and the third on a planar one is
+/// a wedge: built as the ruled surface between its two seams, each lifted
+/// onto its curved surface, from the corner they share (where it closes on
+/// an edge with no length) to its third side, the ruling at their far ends.
 #[derive(Debug, Clone, Copy)]
 struct Fan {
     /// The triangle's corner off the seam.
@@ -3207,32 +3212,59 @@ struct Fan {
     seam: (u32, u32),
     /// The curved face across the seam.
     curved: usize,
+    /// For a wedge, the curved face across its second seam, from the
+    /// seam's second end to the apex.
+    across: Option<usize>,
+}
+
+impl Fan {
+    /// Its seams, each by its ends and the curved face across it.
+    fn seams(&self) -> impl Iterator<Item = ((u32, u32), usize)> + use<> {
+        let second = self.across.map(|c| ((self.seam.1, self.apex), c));
+        core::iter::once((self.seam, self.curved)).chain(second)
+    }
+
+    /// The curved face across the seam between `p` and `q`, either way.
+    fn seam_between(&self, p: u32, q: u32) -> Option<usize> {
+        self.seams()
+            .find(|&((a, b), _)| (a, b) == (p, q) || (b, a) == (p, q))
+            .map(|(_, c)| c)
+    }
 }
 
 impl Groups {
     /// The fan a triangle would be built as: alone in its planar group, one
-    /// side against a curved face and the other two against planar ones.
+    /// side against a curved face and the other two against planar ones, or
+    /// a wedge, two sides against curved faces and the third against a
+    /// planar one.
     fn fan_at(&self, t: usize, triangles: &[[u32; 3]], adjacency: &Adjacency) -> Option<Fan> {
         let g = *self.of.get(t)?;
         if !matches!(self.carriers.get(g), Some(Carrier::Plane(_))) {
             return None;
         }
-        let mut seam = None;
-        for k in 0..3 {
+        let mut sides = [None; 3];
+        for (k, side) in sides.iter_mut().enumerate() {
             let o = self.of[adjacency.twin[3 * t + k]? / 3];
             match self.carriers.get(o) {
                 _ if o == g => return None,
-                Some(Carrier::Curved(_)) if seam.is_none() => seam = Some((k, o)),
+                Some(Carrier::Curved(_)) => *side = Some(o),
                 Some(Carrier::Plane(_)) => {}
                 _ => return None,
             }
         }
-        let (k, curved) = seam?;
+        // The seam is the curved side; a wedge's, the curved side whose
+        // successor in the winding is curved too.
+        let k = match sides.iter().flatten().count() {
+            1 => sides.iter().position(Option::is_some)?,
+            2 => (0..3).find(|&k| sides[k].is_some() && sides[(k + 1) % 3].is_some())?,
+            _ => return None,
+        };
         let tri = triangles[t];
         Some(Fan {
             apex: tri[(k + 2) % 3],
             seam: (tri[k], tri[(k + 1) % 3]),
-            curved,
+            curved: sides[k]?,
+            across: sides[(k + 1) % 3],
         })
     }
 
@@ -7797,7 +7829,7 @@ impl Planner<'_> {
                         faces.len() > 1 && edges.iter().any(|e| self.straight.contains(e));
                     let fan = self
                         .fan_seam_of(&chain, &faces)
-                        .and_then(|g| self.lifted_seam(&chain, g));
+                        .and_then(|(g, wedge)| self.lifted_seam(&chain, g, wedge));
                     let snapped = if fan.is_some() {
                         fan
                     } else if threaded {
@@ -8579,7 +8611,6 @@ impl Planner<'_> {
     /// face, nothing across) is held to its own face's parallels and
     /// rulings, and failing them is fitted onto that face as a section is.
     /// `None` when no curve holds the chain and the faces.
-    /// The curved face a chain is a fan's seam with, if it is one.
     /// The facet a seam that no curve places could be built as a fan
     /// from: one triangle alone in its planar group, its side along the
     /// chain's single span against the curved face across it, its other two
@@ -8612,11 +8643,12 @@ impl Planner<'_> {
             return None;
         }
         let fan = self.groups.fan_at(t, self.triangles, self.adjacency)?;
-        let ends = fan.seam == (p, q) || fan.seam == (q, p);
-        (ends && fan.curved == curved).then_some(t)
+        (fan.seam_between(p, q) == Some(curved)).then_some(t)
     }
 
-    fn fan_seam_of(&self, chain: &[u32], faces: &[usize]) -> Option<usize> {
+    /// The curved face a chain is a fan's seam with, if it is one, and
+    /// whether the fan is a wedge.
+    fn fan_seam_of(&self, chain: &[u32], faces: &[usize]) -> Option<(usize, bool)> {
         let [a, b] = faces[..] else {
             return None;
         };
@@ -8625,16 +8657,17 @@ impl Planner<'_> {
         };
         [(a, b), (b, a)].into_iter().find_map(|(fan, curved)| {
             let f = self.fans.get(&fan)?;
-            let ends = f.seam == (p, q) || f.seam == (q, p);
-            (ends && f.curved == curved).then_some(curved)
+            (f.seam_between(p, q) == Some(curved)).then_some((curved, f.across.is_some()))
         })
     }
 
     /// A fan's seam: the straight line between its two ends in the chart
     /// of the curved face `g`, lifted onto it and interpolated, with its
     /// image there. Its tolerance is how far the image's lift strays from
-    /// the curve. `None` where `g` has no chart to draw the line in.
-    fn lifted_seam(&self, chain: &[u32], g: usize) -> Option<(Snapped, bool, Images)> {
+    /// the curve. `None` where `g` has no chart to draw the line in. A
+    /// wedge's seams are interpolated at evenly spaced parameters, so the
+    /// two share their knots either way along.
+    fn lifted_seam(&self, chain: &[u32], g: usize, even: bool) -> Option<(Snapped, bool, Images)> {
         use ogeom_geom::{Curve2d as _, Curve3d as _};
         /// Points the lifted line is interpolated through.
         const SAMPLES: u32 = 16;
@@ -8677,8 +8710,13 @@ impl Planner<'_> {
         // stand at.
         lifted[0] = p;
         lifted[SAMPLES as usize] = q;
-        let parameters =
-            crate::fit::spaced(&lifted, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+        let parameters = if even {
+            (0..=SAMPLES)
+                .map(|k| f64::from(k) / f64::from(SAMPLES))
+                .collect()
+        } else {
+            crate::fit::spaced(&lifted, crate::fit::Spacing::Centripetal, self.tol).ok()?
+        };
         let curve = crate::fit::interpolate_at(&lifted, &parameters, 3, self.tol).ok()?;
         let image = crate::fit::interpolate_at(&at, &parameters, 3, self.tol).ok()?;
         let image: PlanarCurve = ogeom_geom::BSpline2d::new(
@@ -10333,6 +10371,9 @@ impl Builder<'_> {
         corners: &HashMap<Corner, Shape>,
     ) -> OgeomResult<Option<Shape>> {
         use ogeom_geom::Surface as _;
+        if fan.across.is_some() {
+            return self.wedge_face(fan, rings, edges, corners);
+        }
         let [ring] = rings else {
             return Ok(None);
         };
@@ -10457,6 +10498,162 @@ impl Builder<'_> {
         let outward = normal
             .vector()
             .dot(unit_normal(self.points, [a, b, fan.apex]))
+            >= 0.0;
+        Ok(Some(if outward { face } else { face.reversed() }))
+    }
+
+    /// A wedge's face (see [`Fan`]): the B-spline surface ruled between its
+    /// two seams, the second (from the shared corner to the apex) its
+    /// `v = 0` row and the first its `v = 1` row, both run from the shared
+    /// corner over their common parameter. Each seam's image is its row,
+    /// the third side's the ruling at the far end, and the shared corner an
+    /// edge with no length along the first column. `None` where the face is
+    /// not the triangle the wedge was planned from, or its seams are not
+    /// polynomial splines on one knot vector the same both ways, and the
+    /// facet is built flat.
+    fn wedge_face(
+        &mut self,
+        fan: Fan,
+        rings: &[Vec<Half>],
+        edges: &[Shape],
+        corners: &HashMap<Corner, Shape>,
+    ) -> OgeomResult<Option<Shape>> {
+        use ogeom_geom::Surface as _;
+        let [ring] = rings else {
+            return Ok(None);
+        };
+        let entries = self.entries(ring);
+        if entries.len() != 3 {
+            return Ok(None);
+        }
+        let (a, shared, b) = (fan.seam.0, fan.seam.1, fan.apex);
+        let seam_of = |p: u32, q: u32| self.plan.edge_of.get(&(p.min(q), p.max(q))).map(|e| e.0);
+        let (Some(first), Some(second)) = (seam_of(shared, a), seam_of(shared, b)) else {
+            return Ok(None);
+        };
+        // A seam's control points run from the shared corner, its knots and
+        // range.
+        let from_shared =
+            |edge: usize| -> Option<(ogeom_math::KnotVector, Vec<Point>, (f64, f64))> {
+                let spec = self.plan.edges.get(edge)?;
+                let Curve::BSpline(spline) = &spec.curve else {
+                    return None;
+                };
+                if spline.control_points().iter().any(|c| c.weight != 1.0) {
+                    return None;
+                }
+                let Corner::Mesh(start) = spec.ends[0] else {
+                    return None;
+                };
+                let mut net: Vec<Point> =
+                    spline.control_points().iter().map(|c| c.point()).collect();
+                if start != shared {
+                    net.reverse();
+                }
+                Some((spline.knots().clone(), net, spec.range))
+            };
+        let (Some((knots, top, range)), Some((other, bottom, other_range))) =
+            (from_shared(first), from_shared(second))
+        else {
+            return Ok(None);
+        };
+        let (t0, t1) = range;
+        let values = knots.knots();
+        let even = values
+            .iter()
+            .zip(values.iter().rev())
+            .all(|(x, y)| (x + y - t0 - t1).abs() <= 1e-12 * (t1 - t0).abs().max(1.0));
+        if knots != other || range != other_range || top.len() != bottom.len() || !even {
+            return Ok(None);
+        }
+        let count = top.len();
+        let mut net = Vec::with_capacity(count * 2);
+        for (low, high) in bottom.iter().zip(&top) {
+            net.push(*low);
+            net.push(*high);
+        }
+        let grid = ogeom_math::ControlGrid::new(net, count, 2)?;
+        let along = ogeom_math::KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1)?;
+        let geometry: ogeom_geom::SurfaceGeometry =
+            ogeom_geom::BSplineSurface::new(knots, along, &grid, self.tol)?.into();
+        let surface = self.model.geometry_mut().add_surface(geometry.clone());
+        // Where each corner stands in the chart, read from the edge `edge`.
+        let at = |edge: usize, v: u32| -> Option<Point2> {
+            if v == shared {
+                (edge == first || edge == second)
+                    .then(|| Point2::new(t0, if edge == first { 1.0 } else { 0.0 }))
+            } else if v == a {
+                Some(Point2::new(t1, 1.0))
+            } else if v == b {
+                Some(Point2::new(t1, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut wire = Vec::with_capacity(4);
+        for (k, &(edge, forward)) in entries.iter().enumerate() {
+            let spec = &self.plan.edges[edge];
+            let [Corner::Mesh(from), Corner::Mesh(to)] = spec.ends else {
+                return Ok(None);
+            };
+            let (Some(p), Some(q)) = (at(edge, from), at(edge, to)) else {
+                return Ok(None);
+            };
+            let pcurve: PlanarCurve = ogeom_geom::BSpline2d::new(
+                ogeom_math::KnotVector::new(
+                    vec![spec.range.0, spec.range.0, spec.range.1, spec.range.1],
+                    1,
+                )?,
+                vec![p, q],
+                self.tol,
+            )?
+            .into();
+            crate::build::attach_pcurve(
+                self.model,
+                &edges[edge],
+                pcurve,
+                surface,
+                Location::identity(),
+                spec.range,
+            )?;
+            wire.push(oriented(&edges[edge], forward));
+            // The shared corner closes between the seam that runs into it
+            // and the one that runs out.
+            let reaches = if forward { to } else { from };
+            if reaches == shared {
+                let (next, _) = entries[(k + 1) % entries.len()];
+                let (Some(p), Some(q), Some(vertex)) = (
+                    at(edge, shared),
+                    at(next, shared),
+                    corners.get(&Corner::Mesh(shared)),
+                ) else {
+                    return Ok(None);
+                };
+                let mut data = EdgeData::new();
+                data.degenerate = true;
+                let pole = self
+                    .model
+                    .add_edge(data, &[vertex.clone(), vertex.clone()])?;
+                crate::build::attach_pcurve(
+                    self.model,
+                    &pole,
+                    ogeom_geom::Line2d::segment(p, q, self.tol)?.into(),
+                    surface,
+                    Location::identity(),
+                    (0.0, p.distance(q)),
+                )?;
+                wire.push(pole);
+            }
+        }
+        let wire = self.model.add_wire(&wire)?;
+        let face = self
+            .model
+            .add_face(FaceData::new(surface, Location::identity()), &[wire])?;
+        // Outward where the surface's normal mid-way agrees with the facet's.
+        let normal = geometry.normal_at(f64::midpoint(t0, t1), 0.5, self.tol)?;
+        let outward = normal
+            .vector()
+            .dot(unit_normal(self.points, [a, shared, b]))
             >= 0.0;
         Ok(Some(if outward { face } else { face.reversed() }))
     }

@@ -994,9 +994,8 @@ cone's apex meshes the same). Truth bench and stress baseline
 unchanged; ftc_10 converts in about 7.8 s for 5.9 s (the extra
 rebuilds), ctc_02 and ctc_04 as before.
 
-Open: ctc_02's third facet, between a cylinder and a torus (two curved
-sides), still facets both; a fan from the corner across the torus seam
-would make the cylinder seam a ruling, a chord. The probe classifies two
+ctc_02's third facet, between a cylinder and a torus (two curved
+sides), is built as a wedge (below). The probe classifies two
 points per face against the exact boundary, about 0.45 s on a 165-face
 helical thread (0.05 s before), 0.16 s on ctc_02 (1.0 s before, when
 the flag walk ran).
@@ -1079,6 +1078,18 @@ than a crease (a screw head's flat top beside its sphere, 26 degrees)
 was a smooth region of its own, was offered the sphere as a band, and
 the two came back one sweep with a kink in its profile, faceted whole.
 m5x16_bhcs_loops 278, 1, 2.5e-3 to 20, 0, 1.1e-4.
+
+Done for facets with two curved sides: a single facet between two curved
+faces and a planar one is built as a wedge, the B-spline surface ruled
+between its two seams, each drawn straight in its curved face's chart and
+lifted onto it at evenly spaced parameters so the two share their knots,
+closing at their shared corner on an edge with no length; its third side
+is the ruling at their far ends. ctc_02 1853, 4, 2.7e-5 to 1828, 2,
+2.4e-5 (a torus and a cylinder faceted for Overlaps stay curved);
+grid_point_on_a_diagonal_boundary 741 to 735 faces, 6.22e-4 to 6.25e-4;
+the open thread flank 2035 to 2001 faces; the degenerate spline sliver
+keeps its 13 regions faceted, one for a folded seam where it failed to
+build.
 
 Done for ftc_07, in two steps:
 
