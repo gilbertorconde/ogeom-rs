@@ -3,6 +3,9 @@
 //! diagonal and rebuilt with the default options.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{
     Canonical, FallbackReason, MeshRegion, MeshRegions, MeshSolidOptions, MeshSolidReport, check,
     shape_bounds, solid_from_mesh, volume_properties,
@@ -11,6 +14,7 @@ use ogeom::core::Tolerances;
 use ogeom::geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{EdgeRepr, Model, Shape, ShapeType, explore_unique};
+use walks::edges_walked_one_way;
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -183,6 +187,7 @@ fn comes_back_listed(
     assert!(out.closed, "{name}: {:?}", out.report);
     let diagnosis = check(&back, &out.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+    assert_eq!(edges_walked_one_way(&back, &out.shape), 0, "{name}");
     let off = pcurves_off_their_curves(&back, &out.shape);
     assert!(
         off.is_empty(),

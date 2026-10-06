@@ -10600,10 +10600,6 @@ impl Builder<'_> {
                 wire.push(pole);
             }
         }
-        let wire = self.model.add_wire(&wire)?;
-        let face = self
-            .model
-            .add_face(FaceData::new(surface, Location::identity()), &[wire])?;
         // Outward where the surface's normal mid-way agrees with the facet's.
         let mid = (f64::midpoint(t0, t1), 0.5);
         let normal = geometry.normal_at(mid.0, mid.1, self.tol)?;
@@ -10611,6 +10607,13 @@ impl Builder<'_> {
             .vector()
             .dot(unit_normal(self.points, [a, b, fan.apex]))
             >= 0.0;
+        // The triangle's walk keeps the facet on its left about the facet's
+        // normal; a face turned against its surface stores it walked back.
+        let wire = if outward { wire } else { walked_back(&wire) };
+        let wire = self.model.add_wire(&wire)?;
+        let face = self
+            .model
+            .add_face(FaceData::new(surface, Location::identity()), &[wire])?;
         Ok(Some(if outward { face } else { face.reversed() }))
     }
 
@@ -10757,16 +10760,19 @@ impl Builder<'_> {
                 wire.push(pole);
             }
         }
-        let wire = self.model.add_wire(&wire)?;
-        let face = self
-            .model
-            .add_face(FaceData::new(surface, Location::identity()), &[wire])?;
         // Outward where the surface's normal mid-way agrees with the facet's.
         let normal = geometry.normal_at(f64::midpoint(t0, t1), 0.5, self.tol)?;
         let outward = normal
             .vector()
             .dot(unit_normal(self.points, [a, shared, b]))
             >= 0.0;
+        // The triangle's walk keeps the facet on its left about the facet's
+        // normal; a face turned against its surface stores it walked back.
+        let wire = if outward { wire } else { walked_back(&wire) };
+        let wire = self.model.add_wire(&wire)?;
+        let face = self
+            .model
+            .add_face(FaceData::new(surface, Location::identity()), &[wire])?;
         Ok(Some(if outward { face } else { face.reversed() }))
     }
 
@@ -10918,7 +10924,15 @@ impl Builder<'_> {
                 }
                 ring_edges.push(oriented(&edges[edge], forward));
             }
+            // The triangles' walk keeps the region on its left about its
+            // outward side; a face turned against its surface stores each
+            // ring walked back, so it keeps the face on its left in the chart.
             let sign = if outward { 1.0 } else { -1.0 };
+            let ring_edges = if outward {
+                ring_edges
+            } else {
+                walked_back(&ring_edges)
+            };
             wires.push((area * sign, self.model.add_wire(&ring_edges)?));
         }
         wires.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -11065,14 +11079,17 @@ impl Builder<'_> {
             .add_edge(data, &[from[i].1.clone(), to[j].1.clone()])?;
         // Down its near side where the wire leaves the high rim, up its far
         // side a whole turn over, where the low rim's walk comes round to.
+        // A face turned against its surface walks its wires back, and so
+        // each side of the seam the other way.
         let over = swapped((tau * f64::from(windings[low]), 0.0), round_tube);
-        let back = linear(a, b, range, self.tol)?;
-        let forward = linear(
+        let near = linear(a, b, range, self.tol)?;
+        let far = linear(
             (a.0 + over.0, a.1 + over.1),
             (b.0 + over.0, b.1 + over.1),
             range,
             self.tol,
         )?;
+        let (forward, back) = if outward { (far, near) } else { (near, far) };
         crate::build::attach_seam(
             self.model,
             &seam,
@@ -11094,14 +11111,22 @@ impl Builder<'_> {
         outer.extend(rotated(&from, i));
         outer.push(seam.clone());
         outer.extend(rotated(&to, j));
-        let mut wires = vec![self.model.add_wire(&outer)?];
+        let mut lists = vec![outer];
         for &k in &holes {
-            let ring_edges: Vec<Shape> = self
-                .entries(&rings[k])
-                .into_iter()
-                .map(|(edge, forward)| oriented(&edges[edge], forward))
-                .collect();
-            wires.push(self.model.add_wire(&ring_edges)?);
+            lists.push(
+                self.entries(&rings[k])
+                    .into_iter()
+                    .map(|(edge, forward)| oriented(&edges[edge], forward))
+                    .collect(),
+            );
+        }
+        // The triangles' walk keeps the region on its left about its
+        // outward side; a face turned against its surface stores it walked
+        // back, so it keeps the face on its left in the chart.
+        let mut wires = Vec::with_capacity(lists.len());
+        for list in lists {
+            let list = if outward { list } else { walked_back(&list) };
+            wires.push(self.model.add_wire(&list)?);
         }
         crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
         let mut data = FaceData::new(surface, Location::identity());
@@ -11261,12 +11286,13 @@ impl Builder<'_> {
             Location::identity(),
             seam_range,
         )?;
-        // Counter-clockwise in the chart, then the whole ring the other way
-        // for a face that faces against the surface. Round the axis: along
+        // Counter-clockwise in the chart, whichever side the face faces:
+        // a face turned against its surface keeps its material on the left
+        // of its ring about the surface's normal. Round the axis: along
         // the low rim, up the seam's far side, back along the high rim, down
         // its near side. Round the tube: along the seam's near side, up the
         // high rim, back along the seam's far side, down the low rim.
-        let mut ring = if round_tube {
+        let ring = if round_tube {
             vec![
                 seam.clone(),
                 oriented(&edges[high], high_with),
@@ -11281,10 +11307,6 @@ impl Builder<'_> {
                 seam.reversed(),
             ]
         };
-        if !outward {
-            ring.reverse();
-            ring = ring.iter().map(Shape::reversed).collect();
-        }
         let wire = self.model.add_wire(&ring)?;
         let mut data = FaceData::new(surface, Location::identity());
         data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
@@ -11376,16 +11398,12 @@ impl Builder<'_> {
         )?;
         // Counter-clockwise in the chart: along the rim, up the seam's far
         // side, back along the pole, down the seam's near side.
-        let mut ring = vec![
+        let ring = vec![
             oriented(&edges[rim], with),
             seam.clone(),
             tip.reversed(),
             seam.reversed(),
         ];
-        if !outward {
-            ring.reverse();
-            ring = ring.iter().map(Shape::reversed).collect();
-        }
         let wire = self.model.add_wire(&ring)?;
         let mut data = FaceData::new(surface, Location::identity());
         data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
@@ -11513,10 +11531,6 @@ impl Builder<'_> {
         let mut ring = vec![tip, seam.clone()];
         ring.extend(rim_ring);
         ring.push(seam.reversed());
-        if !outward {
-            ring.reverse();
-            ring = ring.iter().map(Shape::reversed).collect();
-        }
         let wire = self.model.add_wire(&ring)?;
         let mut data = FaceData::new(surface, Location::identity());
         data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
@@ -11639,13 +11653,18 @@ impl Builder<'_> {
             .model
             .add_edge(data, &[starts[i].0.clone(), pole.clone()])?;
         // Down its near side from the pole, round the rim the way the
-        // triangles run, and up its far side a whole turn over.
+        // triangles run, and up its far side a whole turn over. A face
+        // turned against its surface walks its wires back, and so each side
+        // of the seam the other way.
         let over = tau * f64::from(turn);
+        let far = linear((a.0 + over, a.1), (b.0 + over, b.1), range, self.tol)?;
+        let near = linear(a, b, range, self.tol)?;
+        let (forward, back) = if outward { (far, near) } else { (near, far) };
         crate::build::attach_seam(
             self.model,
             &seam,
-            linear((a.0 + over, a.1), (b.0 + over, b.1), range, self.tol)?,
-            linear(a, b, range, self.tol)?,
+            forward,
+            back,
             surface,
             Location::identity(),
             range,
@@ -11668,14 +11687,22 @@ impl Builder<'_> {
         }
         outer.push(seam);
         outer.push(tip);
-        let mut wires = vec![self.model.add_wire(&outer)?];
+        let mut lists = vec![outer];
         for &k in &holes {
-            let ring_edges: Vec<Shape> = self
-                .entries(&rings[k])
-                .into_iter()
-                .map(|(edge, forward)| oriented(&edges[edge], forward))
-                .collect();
-            wires.push(self.model.add_wire(&ring_edges)?);
+            lists.push(
+                self.entries(&rings[k])
+                    .into_iter()
+                    .map(|(edge, forward)| oriented(&edges[edge], forward))
+                    .collect(),
+            );
+        }
+        // The triangles' walk keeps the region on its left about its
+        // outward side; a face turned against its surface stores it walked
+        // back, so it keeps the face on its left in the chart.
+        let mut wires = Vec::with_capacity(lists.len());
+        for list in lists {
+            let list = if outward { list } else { walked_back(&list) };
+            wires.push(self.model.add_wire(&list)?);
         }
         crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
         let mut face_data = FaceData::new(surface, Location::identity());
@@ -11697,8 +11724,10 @@ impl Builder<'_> {
         edges: &[Shape],
     ) -> OgeomResult<Shape> {
         let outward = self.outward(curved, g);
+        // The whole surface's wires as stored, counter-clockwise in the
+        // chart whichever side the face faces.
         let whole = self.whole_face(curved, g, torus_seam_v(curved))?;
-        let whole = if outward { whole } else { whole.reversed() };
+        let whole = whole.oriented(ogeom_topo::Orientation::Forward);
         let Some(ogeom_topo::NodeData::Face(data)) =
             self.model.node(&whole).map(|n| n.data().clone())
         else {
@@ -12071,6 +12100,11 @@ fn chart_trace(
         deviation = deviation.max(curve.point_at(t, tol)?.distance(evaluate(shape, along(f))));
     }
     Ok((curve, range, deviation))
+}
+
+/// A ring walked the other way round.
+fn walked_back(ring: &[Shape]) -> Vec<Shape> {
+    ring.iter().rev().map(Shape::reversed).collect()
 }
 
 fn oriented(edge: &Shape, forward: bool) -> Shape {

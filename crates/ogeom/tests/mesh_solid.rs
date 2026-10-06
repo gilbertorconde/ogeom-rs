@@ -4,6 +4,8 @@
 
 #[path = "support/pcurves.rs"]
 mod pcurves;
+#[path = "support/walks.rs"]
+mod walks;
 
 use std::time::{Duration, Instant};
 
@@ -14,6 +16,7 @@ use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Frame, Point, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape, ShapeType, Triangulation, explore_unique};
+use walks::edges_walked_one_way;
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -5184,6 +5187,7 @@ fn drilled_dome_comes_back(name: &str, on_drum: bool, at: (f64, f64), expected: 
     assert_eq!(kinds(&back, &out.shape), expected, "{name}");
     let diagnosis = check(&back, &out.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+    assert_eq!(edges_walked_one_way(&back, &out.shape), 0, "{name}");
     let drawn = ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).unwrap();
     assert!(drawn.is_closed(), "{name}");
     let (a, b) = (volume(&model, &drilled), volume(&back, &out.shape));
@@ -5416,6 +5420,80 @@ fn a_drafted_boss_s_faceted_corners_come_back_cones() {
 /// closing at its apex inside its one rim. The cone comes back one face
 /// running to its apex, with a ruling for its seam and the apex an edge of
 /// no length.
+/// Faces facing their surfaces away (a bore crossed by a hole, a drill
+/// point, a pocket rounded into a ball) keep their material on the left of
+/// their rings: each edge between two converted faces is walked once each
+/// way, and the part measures what it was drawn from.
+#[test]
+fn faces_facing_their_surfaces_away_walk_each_edge_once_each_way() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let at = |z: f64| Frame::new(Point::new(10.0, 10.0, z), Direction::Z, Direction::X, T).unwrap();
+    let (radius, half) = (3.175_f64, 59.0_f64.to_radians());
+    let depth = radius / half.tan();
+    let shank = ogeom::algo::make_cylinder(&mut model, at(5.0), radius, 8.0, T)
+        .unwrap()
+        .shape;
+    let point = ogeom::algo::make_cone(&mut model, at(5.0 - depth), 0.0, radius, depth, T)
+        .unwrap()
+        .shape;
+    let drill = ogeom::boolean::fuse(&mut model, &shank, &point, T)
+        .unwrap()
+        .shape;
+    let ball = ogeom::algo::make_sphere(&mut model, at(12.0), 6.0, T)
+        .unwrap()
+        .shape;
+    let bore = ogeom::algo::make_cylinder(&mut model, at(-1.0), 3.0, 14.0, T)
+        .unwrap()
+        .shape;
+    let across = Frame::new(Point::new(-1.0, 10.0, 4.0), Direction::X, Direction::Y, T).unwrap();
+    let cross = ogeom::algo::make_cylinder(&mut model, across, 1.5, 22.0, T)
+        .unwrap()
+        .shape;
+    let bored = ogeom::boolean::cut(&mut model, &block, &bore, T)
+        .unwrap()
+        .shape;
+    let parts = [
+        (
+            "a drill point",
+            ogeom::boolean::cut(&mut model, &block, &drill, T),
+        ),
+        (
+            "a ball pocket",
+            ogeom::boolean::cut(&mut model, &block, &ball, T),
+        ),
+        (
+            "a crossed bore",
+            ogeom::boolean::cut(&mut model, &bored, &cross, T),
+        ),
+    ];
+    for (name, part) in parts {
+        let part = part.unwrap().shape;
+        let mesh =
+            ogeom::mesh::triangulate(&model, &part, Deflection::with_chord(0.02).unwrap(), T)
+                .unwrap();
+        let mut back = Model::new();
+        let built = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+        assert!(built.closed, "{name}: {:?}", built.report);
+        let turned = explore_unique(&back, &built.shape, ShapeType::Face)
+            .unwrap()
+            .iter()
+            .filter(|f| f.orientation() == ogeom::topo::Orientation::Reversed)
+            .count();
+        assert!(turned > 0, "{name}: no face faces its surface away");
+        let diagnosis = check(&back, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        assert_eq!(edges_walked_one_way(&back, &built.shape), 0, "{name}");
+        let (want, got) = (volume(&model, &part), volume(&back, &built.shape));
+        assert!(
+            (got - want).abs() < want * 1e-4,
+            "{name}: {got} against {want}"
+        );
+    }
+}
+
 #[test]
 fn a_drill_point_comes_back_a_cone_to_its_apex() {
     let mut model = Model::new();
