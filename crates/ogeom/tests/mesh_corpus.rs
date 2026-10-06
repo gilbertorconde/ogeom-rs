@@ -4,8 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{
-    FallbackReason, MeshSolidOptions, MeshSolidReport, check, shape_bounds, solid_from_mesh,
-    volume_properties,
+    Canonical, FallbackReason, MeshRegion, MeshRegions, MeshSolidOptions, MeshSolidReport, check,
+    shape_bounds, solid_from_mesh, volume_properties,
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
@@ -445,4 +445,188 @@ fn sliver_on_a_diagonal_of_the_grid() {
 fn grid_point_on_a_diagonal_boundary() {
     let report = comes_back("grid_point_on_a_diagonal_boundary.step", true, true);
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+}
+
+/// A degenerate spline sliver meshed and converted: facets beside its
+/// curved regions are built as fans whose ruled surface has no normal
+/// along the seam. Each such fan's build fails, and the curved face its
+/// seam lies on is faceted (named with why); the conversion comes back.
+#[test]
+#[ignore = "heavy"]
+fn a_face_that_cannot_be_built_is_faceted() {
+    let path = format!(
+        "{}/../../tests/corpus/spline_face_fit_runs_away.step",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
+    let mesh = ogeom::mesh::triangulate(
+        model,
+        part,
+        Deflection::with_chord(diagonal * 1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(
+        out.report
+            .fallbacks
+            .iter()
+            .any(|f| f.reason == FallbackReason::BuildFailed),
+        "{:?}",
+        out.report.fallbacks
+    );
+    assert_eq!(out.report.curved_faceted, out.report.fallbacks.len());
+    assert!(
+        ogeom::mesh::triangulate(&back, &out.shape, Deflection::default(), T).is_ok(),
+        "the converted shape does not mesh"
+    );
+}
+
+/// A surface moved off its region: translated by `by` across it (along a
+/// plane's normal, along a curved surface's frame `x`), or with `scale`
+/// its radius grown by that factor.
+fn displaced(surface: &Canonical, by: f64, scale: Option<f64>) -> Option<Canonical> {
+    use ogeom::math::{Cone, Cylinder, Frame, Sphere, Torus, Transform};
+    let shift = |frame: Frame| match surface {
+        Canonical::Plane(_) => Transform::translation(frame.z().vector() * by),
+        _ => Transform::translation(frame.x().vector() * by),
+    };
+    Some(match (surface, scale) {
+        (Canonical::Plane(p), None) => Canonical::Plane(p.transformed(&shift(p.frame()), T).ok()?),
+        (Canonical::Cylinder(c), None) => {
+            Canonical::Cylinder(c.transformed(&shift(c.frame()), T).ok()?)
+        }
+        (Canonical::Cone(c), None) => Canonical::Cone(c.transformed(&shift(c.frame()), T).ok()?),
+        (Canonical::Sphere(s), None) => {
+            Canonical::Sphere(s.transformed(&shift(s.frame()), T).ok()?)
+        }
+        (Canonical::Torus(t), None) => Canonical::Torus(t.transformed(&shift(t.frame()), T).ok()?),
+        (Canonical::Cylinder(c), Some(k)) => {
+            Canonical::Cylinder(Cylinder::new(c.frame(), c.radius() * k, T).ok()?)
+        }
+        (Canonical::Cone(c), Some(k)) => {
+            Canonical::Cone(Cone::new(c.frame(), c.reference_radius() * k, c.half_angle(), T).ok()?)
+        }
+        (Canonical::Sphere(s), Some(k)) => {
+            Canonical::Sphere(Sphere::new(s.frame(), s.radius() * k, T).ok()?)
+        }
+        (Canonical::Torus(t), Some(k)) => {
+            Canonical::Torus(Torus::new(t.frame(), t.major_radius(), t.minor_radius() * k, T).ok()?)
+        }
+        _ => return None,
+    })
+}
+
+/// The corpus part `name`'s own regions, one at a time put on a surface
+/// moved off them (see [`displaced`]): each build still comes back a
+/// valid, closed solid, and a region moved past what its seams can take up
+/// is faceted, named in the report (a plane's triangles gathered again). Up to
+/// `each` regions of each kind are moved, the largest first. Returns how
+/// many builds were made.
+fn displaced_regions_fall_back(name: &str, each: usize) -> usize {
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(path).expect("the corpus file is committed");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
+    let mesh = ogeom::mesh::triangulate(
+        model,
+        part,
+        Deflection::with_chord(diagonal * 1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    let regions = MeshRegions::find(&mesh, &MeshSolidOptions::default(), T).unwrap();
+    let distance = regions.distance();
+    let mut by_kind: std::collections::BTreeMap<u8, Vec<MeshRegion>> =
+        std::collections::BTreeMap::new();
+    for region in regions.regions() {
+        let kind = match &region.surface {
+            Some(Canonical::Plane(_)) => 0,
+            Some(Canonical::Cylinder(_)) => 1,
+            Some(Canonical::Cone(_)) => 2,
+            Some(Canonical::Sphere(_)) => 3,
+            Some(Canonical::Torus(_)) => 4,
+            _ => continue,
+        };
+        by_kind.entry(kind).or_default().push(region);
+    }
+    let mut builds = 0;
+    for (kind, mut list) in by_kind {
+        list.sort_by_key(|a| std::cmp::Reverse(a.triangles.len()));
+        for region in list.into_iter().take(each) {
+            let surface = region.surface.clone().unwrap();
+            let (mut lo, mut hi) = (
+                ogeom::math::Point::new(f64::MAX, f64::MAX, f64::MAX),
+                ogeom::math::Point::new(f64::MIN, f64::MIN, f64::MIN),
+            );
+            for &t in &region.triangles {
+                for v in regions.triangles()[t] {
+                    let p = regions.points()[v as usize];
+                    lo = ogeom::math::Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+                    hi = ogeom::math::Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+                }
+            }
+            // Far off, past what any seam's tolerance takes up, or a few
+            // distances off, which the build may take up or fall back on.
+            let far = (distance * 50.0).max(lo.distance(hi) * 0.02);
+            let near = distance * 4.0;
+            let mut moves = vec![(far, None, true), (near, None, false)];
+            if kind != 0 {
+                moves.extend([(0.0, Some(1.1), true), (0.0, Some(0.5), true)]);
+            }
+            for (by, scale, beyond) in moves {
+                let Some(moved) = displaced(&surface, by, scale) else {
+                    continue;
+                };
+                let mut edited = regions.clone();
+                edited.put_surface_unverified(region.id, moved).unwrap();
+                let what = format!(
+                    "{name}: region {} of kind {kind} moved {by:e}, scaled {scale:?}",
+                    region.id.index()
+                );
+                let mut back = Model::new();
+                let out = match edited.build(&mut back) {
+                    Ok(out) => out,
+                    Err(e) => panic!("{what}: the build failed: {e}"),
+                };
+                builds += 1;
+                assert!(out.closed, "{what}: {:?}", out.report);
+                let diagnosis = check(&back, &out.shape, T).unwrap();
+                assert!(diagnosis.is_valid(), "{what}: {diagnosis}");
+                if beyond {
+                    assert!(
+                        out.report.fallbacks.iter().any(|f| f.region == region.id),
+                        "{what}: not faceted: {:?}",
+                        out.report.fallbacks
+                    );
+                }
+            }
+        }
+    }
+    builds
+}
+
+#[test]
+fn a_displaced_region_falls_back_to_facets() {
+    assert!(displaced_regions_fall_back("nist_ftc_11_asme1_rb.stp", 6) > 0);
+}
+
+#[test]
+#[ignore = "heavy"]
+fn displaced_regions_fall_back_to_facets_across_parts() {
+    for name in [
+        "nist_ctc_01_asme1_rd.stp",
+        "nist_ftc_06_asme1_rd.stp",
+        "nist_ftc_08_asme1_rc.stp",
+        "nist_ftc_09_asme1_rd.stp",
+        "m5x16_bhcs.step",
+    ] {
+        assert!(displaced_regions_fall_back(name, 4) > 0, "{name}");
+    }
 }

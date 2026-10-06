@@ -165,8 +165,10 @@ pub struct MeshSolidReport {
     pub faces: usize,
     /// Faces built on a recognized curved surface.
     pub curved_faces: usize,
-    /// Regions recognized as curved whose boundary could not be placed on
-    /// the surface exactly, and which were faceted instead.
+    /// Regions whose face could not be built on their surface, and which
+    /// were faceted instead: curved regions, and the few planar ones whose
+    /// face failed or whose plane does not hold their vertices, their
+    /// triangles gathered again.
     pub curved_faceted: usize,
     /// Those regions by name, each with why it was faceted, in the order
     /// they fell back: as many as [`MeshSolidReport::curved_faceted`]
@@ -622,7 +624,19 @@ fn build(
         (&found.pieces, &found.depth, found.all_closed, found.flat);
     let mut groups = found.groups.clone();
     let mut report = found.report.clone();
-    let mut released = false;
+    // A plane that does not hold its region's vertices (one a caller put
+    // there) can place none of its boundary; its triangles are gathered
+    // again.
+    let off = planes_off_their_vertices(points, triangles, &groups, flat);
+    let mut released = !off.is_empty();
+    for g in off {
+        withdraw(
+            &mut groups,
+            &mut report,
+            g,
+            FallbackReason::BoundaryNotPlaced,
+        );
+    }
     for t in 0..triangles.len() {
         if matches!(groups.carriers.get(groups.of[t]), Some(Carrier::Gone)) {
             groups.of[t] = usize::MAX;
@@ -655,6 +669,7 @@ fn build(
         HashMap::new()
     };
     let mut absorbing = !absorbed.is_empty();
+    let mut regrouped = Regrouped::default();
     let snaps = std::sync::Mutex::new(SnapCache::new());
     let shape = 'attempt: loop {
         // Plan until every curved face's boundary is exact, faceting the ones
@@ -669,7 +684,7 @@ fn build(
         // any other, and the curved faces beside it are faceted.
         let mut unthreaded: Option<(Groups, MeshSolidReport)> = None;
         let mut threading_refused = false;
-        let shape = loop {
+        let shape = 'build: loop {
             let fans = groups.fans_by_group(triangles, adjacency);
             let planner = Planner {
                 points,
@@ -685,19 +700,45 @@ fn build(
                 snaps: &snaps,
                 fans: &fans,
             };
-            let failed = match planner.plan()? {
-                Err(Replan::Pin(vertices)) => {
+            // A step that fails on the built faces withdraws the faces that
+            // cannot be meshed or measured on their own (or, where none is
+            // found, every recognized one), and the error stands only where
+            // nothing is left to withdraw.
+            let mut step_error = None;
+            macro_rules! or_withdraw {
+                ($label:lifetime, $built:expr, $step:expr) => {
+                    match $step {
+                        Ok(value) => value,
+                        Err(error) => {
+                            step_error = Some(error);
+                            break $label(
+                                failing_faces(model, &groups, $built, tol),
+                                FallbackReason::BuildFailed,
+                            );
+                        }
+                    }
+                };
+            }
+            let failed = match planner.plan() {
+                Err(error) => {
+                    step_error = Some(error);
+                    (
+                        failing_faces(model, &groups, &[], tol),
+                        FallbackReason::BuildFailed,
+                    )
+                }
+                Ok(Err(Replan::Pin(vertices))) => {
                     pinned.extend(vertices);
                     continue;
                 }
-                Err(Replan::Fan(facets)) => {
+                Ok(Err(Replan::Fan(facets))) => {
                     groups.fans.extend(facets);
                     continue;
                 }
-                Err(Replan::Facet(failed)) => (failed, FallbackReason::BoundaryNotPlaced),
-                Ok(plan) => {
+                Ok(Err(Replan::Facet(failed))) => (failed, FallbackReason::BoundaryNotPlaced),
+                Ok(Ok(plan)) => 'checks: {
                     model.begin_operation();
-                    let built = Builder {
+                    let (built, unbuilt) = Builder {
                         model,
                         points,
                         triangles,
@@ -706,77 +747,114 @@ fn build(
                         fans: &fans,
                         tol,
                     }
-                    .build()?;
-                    let astray =
-                        astray_faces(model, points, triangles, &groups, &built, flat, tol)?;
+                    .build();
+                    if !unbuilt.is_empty() {
+                        break 'checks (
+                            unbuilt_culprits(&unbuilt, &groups, adjacency, &fans),
+                            FallbackReason::BuildFailed,
+                        );
+                    }
+                    let astray = or_withdraw!(
+                        'checks,
+                        &built,
+                        astray_faces(model, points, triangles, &groups, &built, flat, tol)
+                    );
                     if astray.is_empty() {
-                        let (shape, bodies) = assemble(
-                            model, points, triangles, pieces, depth, all_closed, &groups, &built,
-                        )?;
-                        let (mut culprits, mut reason) = if options.recognize && all_closed {
-                            body_culprits(
-                                model,
-                                points,
-                                triangles,
-                                &groups,
+                        let (shape, bodies) = or_withdraw!(
+                            'checks,
+                            &built,
+                            assemble(
+                                model, points, triangles, pieces, depth, all_closed, &groups,
                                 &built,
-                                &bodies,
-                                flat,
-                                tol,
-                                &mut report,
-                            )?
+                            )
+                        );
+                        let (mut culprits, mut reason) = if options.recognize && all_closed {
+                            or_withdraw!(
+                                'checks,
+                                &built,
+                                body_culprits(
+                                    model,
+                                    points,
+                                    triangles,
+                                    &groups,
+                                    &built,
+                                    &bodies,
+                                    flat,
+                                    tol,
+                                    &mut report,
+                                )
+                            )
                         } else {
                             (Vec::new(), FallbackReason::TurnedIn)
                         };
                         if culprits.is_empty() && options.recognize && !threading_refused {
-                            let crossed = crossed_seams(
-                                model, &shape, triangles, adjacency, &groups, &built, tol,
-                            )?;
+                            let crossed = or_withdraw!(
+                                'checks,
+                                &built,
+                                crossed_seams(
+                                    model, &shape, triangles, adjacency, &groups, &built, tol,
+                                )
+                            );
                             let before = straight.len();
                             if before == 0 && !crossed.is_empty() {
                                 unthreaded = Some((groups.clone(), report.clone()));
                             }
                             straight.extend(crossed);
                             if straight.len() > before {
-                                continue;
+                                continue 'build;
                             }
                             if let Some((was, then)) = unthreaded.take()
-                                && collapsed_beside(
-                                    model, triangles, &groups, &built, &straight, tol,
-                                )?
+                                && or_withdraw!(
+                                    'checks,
+                                    &built,
+                                    collapsed_beside(
+                                        model, triangles, &groups, &built, &straight, tol,
+                                    )
+                                )
                             {
                                 groups = was;
                                 report = then;
                                 straight.clear();
                                 threading_refused = true;
-                                continue;
+                                continue 'build;
                             }
                         }
                         if culprits.is_empty() && options.recognize {
-                            let backwards = backwards_facets(
-                                model, points, triangles, adjacency, &groups, &built, &fans, tol,
-                            )?;
+                            let backwards = or_withdraw!(
+                                'checks,
+                                &built,
+                                backwards_facets(
+                                    model, points, triangles, adjacency, &groups, &built, &fans,
+                                    tol,
+                                )
+                            );
                             if !backwards.is_empty() {
                                 groups.fans.extend(backwards);
-                                continue;
+                                continue 'build;
                             }
                         }
                         if culprits.is_empty() && options.recognize {
                             let fanned;
-                            (culprits, fanned) =
-                                folded_seams(model, triangles, adjacency, &groups, &built, tol)?;
+                            (culprits, fanned) = or_withdraw!(
+                                'checks,
+                                &built,
+                                folded_seams(model, triangles, adjacency, &groups, &built, tol)
+                            );
                             // A facet folding a curved face beside it is
                             // built as a fan before that face is faceted.
                             if !fanned.is_empty() {
                                 groups.fans.extend(fanned);
-                                continue;
+                                continue 'build;
                             }
                             reason = FallbackReason::FoldedSeam;
                         }
                         if culprits.is_empty() && options.recognize {
                             let turned;
-                            (culprits, turned) =
-                                overlapping_faces(model, &shape, adjacency, &groups, &built, tol)?;
+                            (culprits, turned) = or_withdraw!(
+                                'checks,
+                                &built,
+                                overlapping_faces(model, &shape, adjacency, &groups, &built, tol)
+                            );
                             reason = FallbackReason::Overlaps;
                             // A facet turned in beside one curved face is
                             // built as a fan before that face is faceted.
@@ -790,11 +868,15 @@ fn build(
                                 .collect();
                             if !fanned.is_empty() {
                                 groups.fans.extend(fanned);
-                                continue;
+                                continue 'build;
                             }
                         }
                         if culprits.is_empty() && options.recognize {
-                            culprits = unmatched_faces(model, &shape, &groups, &built, flat, tol)?;
+                            culprits = or_withdraw!(
+                                'checks,
+                                &built,
+                                unmatched_faces(model, &shape, &groups, &built, flat, tol)
+                            );
                             reason = FallbackReason::MeshesOpen;
                         }
                         if culprits.is_empty() {
@@ -825,7 +907,7 @@ fn build(
                             report.patches_narrow = groups.refused.narrow;
                             report.patches_unverified = groups.refused.unverified;
                             report.free_edges_fitted = plan.free_fitted;
-                            break shape;
+                            break 'build shape;
                         }
                         (culprits, reason)
                     } else {
@@ -849,18 +931,29 @@ fn build(
                 }
                 continue;
             }
+            let mut alone = Vec::new();
+            let mut withdrawn = false;
             for g in failed {
-                groups.carriers[g] = Carrier::Gone;
-                report.curved_faceted += 1;
-                report.fallbacks.push(RegionFallback {
-                    region: RegionId(g),
-                    reason,
-                });
-                for of in &mut groups.of {
-                    if *of == g {
-                        *of = usize::MAX;
-                    }
+                if !regrouped.can_withdraw(&groups, g) {
+                    continue;
                 }
+                if matches!(groups.carriers[g], Carrier::Plane(_)) {
+                    alone.extend(regrouped.withdraw_plane(&groups, g));
+                }
+                withdraw(&mut groups, &mut report, g, reason);
+                withdrawn = true;
+            }
+            if !withdrawn {
+                if let Some(error) = step_error {
+                    return Err(error);
+                }
+                ogeom_bail!(Construction, "a facet of the mesh could not be built");
+            }
+            for t in alone {
+                groups.of[t] = groups.carriers.len();
+                groups
+                    .carriers
+                    .push(Carrier::Plane(plane_of(points, triangles[t], tol)?));
             }
             coplanar_groups(
                 points,
@@ -887,6 +980,168 @@ fn build(
         coplanar_distance: flat,
         report,
     })
+}
+
+/// Facet region `g`: its face is not built on its surface, its triangles
+/// are left for the planar faces to gather, and the report names it.
+fn withdraw(groups: &mut Groups, report: &mut MeshSolidReport, g: usize, reason: FallbackReason) {
+    groups.carriers[g] = Carrier::Gone;
+    report.curved_faceted += 1;
+    report.fallbacks.push(RegionFallback {
+        region: RegionId(g),
+        reason,
+    });
+    for of in &mut groups.of {
+        if *of == g {
+            *of = usize::MAX;
+        }
+    }
+}
+
+/// The planar regions some of whose vertices stand off their plane by more
+/// than twice the coplanar distance. Every plane the regions are found on
+/// holds its own vertices within the distance.
+fn planes_off_their_vertices(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    groups: &Groups,
+    flat: f64,
+) -> Vec<usize> {
+    let mut off: Vec<usize> = triangles
+        .iter()
+        .zip(&groups.of)
+        .filter_map(|(tri, &g)| match groups.carriers.get(g) {
+            Some(Carrier::Plane(plane))
+                if tri
+                    .iter()
+                    .any(|&v| plane.distance_to(points[v as usize]) > flat * 2.0) =>
+            {
+                Some(g)
+            }
+            _ => None,
+        })
+        .collect();
+    off.sort_unstable();
+    off.dedup();
+    off
+}
+
+/// The planar regions the build has given up on, by their triangles. A
+/// planar face that fails is gathered again
+/// from its triangles the first time; once its triangles have been
+/// gathered again, it is built a face to each triangle; a face of one
+/// triangle so built is left as it is. A curved region can always be
+/// faceted.
+#[derive(Default)]
+struct Regrouped {
+    once: std::collections::HashSet<usize>,
+}
+
+impl Regrouped {
+    fn can_withdraw(&self, groups: &Groups, g: usize) -> bool {
+        match groups.carriers.get(g) {
+            Some(Carrier::Curved(_)) => true,
+            Some(Carrier::Plane(_)) => {
+                let mut members = groups.of.iter().enumerate().filter(|&(_, &o)| o == g);
+                let Some((first, _)) = members.next() else {
+                    return false;
+                };
+                members.next().is_some() || !self.once.contains(&first)
+            }
+            _ => false,
+        }
+    }
+
+    /// Record planar region `g` as withdrawn; the triangles to build a
+    /// face each, where it has been gathered again already.
+    fn withdraw_plane(&mut self, groups: &Groups, g: usize) -> Vec<usize> {
+        let members: Vec<usize> = (0..groups.of.len())
+            .filter(|&t| groups.of[t] == g)
+            .collect();
+        if members.iter().any(|t| self.once.contains(t)) {
+            members
+        } else {
+            self.once.extend(members.iter().copied());
+            Vec::new()
+        }
+    }
+}
+
+/// The groups to withdraw for faces that could not be built: a curved one
+/// itself; for a fan, the curved face its seam lies on, which leaves it a
+/// flat facet; for another planar face, the curved faces beside it, whose
+/// seams it could not take, or where there are none, the face itself.
+fn unbuilt_culprits(
+    unbuilt: &[usize],
+    groups: &Groups,
+    adjacency: &Adjacency,
+    fans: &HashMap<usize, Fan>,
+) -> Vec<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    for &g in unbuilt {
+        if !matches!(groups.carriers.get(g), Some(Carrier::Plane(_))) {
+            out.insert(g);
+        } else if let Some(fan) = fans.get(&g) {
+            out.insert(fan.curved);
+        } else {
+            let beside: Vec<usize> = adjacency
+                .twin
+                .iter()
+                .enumerate()
+                .filter_map(|(h, twin)| {
+                    let o = groups.of[(*twin)? / 3];
+                    (groups.of[h / 3] == g
+                        && matches!(groups.carriers.get(o), Some(Carrier::Curved(_))))
+                    .then_some(o)
+                })
+                .collect();
+            if beside.is_empty() {
+                out.insert(g);
+            } else {
+                out.extend(beside);
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// The groups to withdraw when a step after the build fails on the built
+/// faces: those whose face cannot be meshed on its own, or whose area
+/// cannot be measured, and where none is found, every recognized region
+/// (with nothing built, every one).
+fn failing_faces(
+    model: &Model,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    tol: Tolerances,
+) -> Vec<usize> {
+    let faces: Vec<(usize, &Shape)> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
+        .collect();
+    let fine = ogeom_mesh::Deflection::with_chord(ogeom_mesh::Deflection::default().chord * 1e-2);
+    let failing = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
+        ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol).is_err()
+            || fine
+                .as_ref()
+                .is_ok_and(|&fine| crate::surface_properties(model, face, fine, tol).is_err())
+    });
+    let found: Vec<usize> = faces
+        .iter()
+        .zip(failing)
+        .filter(|(_, failing)| *failing)
+        .map(|(&(g, _), _)| g)
+        .collect();
+    if !found.is_empty() {
+        return found;
+    }
+    (0..groups.carriers.len())
+        .filter(|&g| {
+            matches!(groups.carriers[g], Carrier::Curved(_))
+                && (built.is_empty() || built.get(g).is_some_and(Option::is_some))
+        })
+        .collect()
 }
 
 /// The recognized faces that overlap a face beside them: a fitted face
@@ -7725,9 +7980,11 @@ impl Planner<'_> {
             let curved = match &curved.shape {
                 Canonical::Cone(cone) if cap => {
                     let (rim, _) = self.entry(&plan, plan.loops[g][0][0]);
-                    let start =
-                        ogeom_geom::Curve3d::point_at(&plan.edges[rim].curve, 0.0, self.tol)?;
-                    let Some(cone) = cone_seamed_through(cone, start, self.tol) else {
+                    let Some(cone) =
+                        ogeom_geom::Curve3d::point_at(&plan.edges[rim].curve, 0.0, self.tol)
+                            .ok()
+                            .and_then(|start| cone_seamed_through(cone, start, self.tol))
+                    else {
                         failed.push(g);
                         continue;
                     };
@@ -7739,7 +7996,10 @@ impl Planner<'_> {
                 }
                 _ => curved,
             };
-            let surface = surface_of(curved, self.points, cap, self.tol)?;
+            let Ok(surface) = surface_of(curved, self.points, cap, self.tol) else {
+                failed.push(g);
+                continue;
+            };
             if matches!(
                 plan.layouts[g],
                 Layout::Open
@@ -9734,11 +9994,48 @@ impl Builder<'_> {
         (edge, along == (a < b))
     }
 
-    /// The faces, one per live group, by group index.
-    fn build(mut self) -> OgeomResult<Vec<Option<Shape>>> {
+    /// The faces, one per live group, by group index, and the groups whose
+    /// face could not be built: an edge that cannot be made fails the
+    /// groups it bounds, and builds no face.
+    fn build(mut self) -> (Vec<Option<Shape>>, Vec<usize>) {
+        let edges = match self.edges() {
+            Ok(edges) => edges,
+            Err(edge) => {
+                let mut failed: Vec<usize> = (0..self.triangles.len() * 3)
+                    .filter(|&h| {
+                        let (a, b) = from_to(self.triangles, h);
+                        self.plan
+                            .edge_of
+                            .get(&(a.min(b), a.max(b)))
+                            .is_some_and(|&(e, _)| e == edge)
+                    })
+                    .map(|h| self.groups.of[h / 3])
+                    .collect();
+                failed.sort_unstable();
+                failed.dedup();
+                return (Vec::new(), failed);
+            }
+        };
+        let (edges, corners) = edges;
+        let mut faces = Vec::with_capacity(self.groups.carriers.len());
+        let mut failed = Vec::new();
+        for g in 0..self.groups.carriers.len() {
+            if let Ok(face) = self.face(g, &edges, &corners) {
+                faces.push(face);
+            } else {
+                failed.push(g);
+                faces.push(None);
+            }
+        }
+        (faces, failed)
+    }
+
+    /// The planned edges and their corners, or the index of the first edge
+    /// that cannot be made.
+    fn edges(&mut self) -> Result<(Vec<Shape>, HashMap<Corner, Shape>), usize> {
         let mut corners: HashMap<Corner, Shape> = HashMap::new();
         let mut edges: Vec<Shape> = Vec::with_capacity(self.plan.edges.len());
-        for spec in &self.plan.edges {
+        for (index, spec) in self.plan.edges.iter().enumerate() {
             for corner in spec.ends {
                 corners.entry(corner).or_insert_with(|| {
                     let at = match corner {
@@ -9752,7 +10049,8 @@ impl Builder<'_> {
             let mut data = EdgeData::on_curve(id, Location::identity(), spec.range);
             // A tolerance measured as a gap is held a millionth wider: the
             // checker measures the same gap again, a rounding apart.
-            data.tolerance = Tolerance::new(spec.tolerance * (1.0 + TOLERANCE_MARGIN))?;
+            data.tolerance =
+                Tolerance::new(spec.tolerance * (1.0 + TOLERANCE_MARGIN)).map_err(|_| index)?;
             let bounds = if spec.ends[0] == spec.ends[1] {
                 vec![
                     corners[&spec.ends[0]].clone(),
@@ -9764,45 +10062,48 @@ impl Builder<'_> {
                     corners[&spec.ends[1]].clone(),
                 ]
             };
-            edges.push(self.model.add_edge(data, &bounds)?);
+            edges.push(self.model.add_edge(data, &bounds).map_err(|_| index)?);
         }
+        Ok((edges, corners))
+    }
 
-        let mut faces = Vec::with_capacity(self.groups.carriers.len());
-        for (g, carrier) in self.groups.carriers.iter().enumerate() {
-            let rings = &self.plan.loops[g];
-            let face = match carrier {
-                Carrier::Gone => None,
-                Carrier::Curved(curved) if self.plan.layouts[g] == Layout::Whole => {
-                    Some(self.whole_face(curved, g, 0.0)?)
+    /// Group `g`'s face on the built edges; `None` for a group with no face.
+    fn face(
+        &mut self,
+        g: usize,
+        edges: &[Shape],
+        corners: &HashMap<Corner, Shape>,
+    ) -> OgeomResult<Option<Shape>> {
+        let (groups, plan) = (self.groups, self.plan);
+        let rings = &plan.loops[g];
+        Ok(match &groups.carriers[g] {
+            Carrier::Gone => None,
+            Carrier::Curved(curved) if plan.layouts[g] == Layout::Whole => {
+                Some(self.whole_face(curved, g, 0.0)?)
+            }
+            _ if rings.is_empty() => None,
+            Carrier::Plane(plane) => match self.fans.get(&g) {
+                Some(fan) => match self.fan_face(*fan, rings, edges, corners)? {
+                    Some(face) => Some(face),
+                    None => Some(self.plane_face(*plane, rings, edges)?),
+                },
+                None => Some(self.plane_face(*plane, rings, edges)?),
+            },
+            Carrier::Curved(curved) => match plan.layouts[g] {
+                Layout::Band { round_tube } => {
+                    Some(self.band_face(curved, rings, edges, round_tube)?)
                 }
-                _ if rings.is_empty() => None,
-                Carrier::Plane(plane) => match self.fans.get(&g) {
-                    Some(fan) => match self.fan_face(*fan, rings, &edges, &corners)? {
-                        Some(face) => Some(face),
-                        None => Some(self.plane_face(*plane, rings, &edges)?),
-                    },
-                    None => Some(self.plane_face(*plane, rings, &edges)?),
-                },
-                Carrier::Curved(curved) => match self.plan.layouts[g] {
-                    Layout::Band { round_tube } => {
-                        Some(self.band_face(curved, rings, &edges, round_tube)?)
-                    }
-                    Layout::Cap => Some(match curved.shape {
-                        Canonical::Cone(_) => self.cone_tip_face(curved, rings, &edges)?,
-                        _ => self.cap_face(curved, rings, &edges)?,
-                    }),
-                    Layout::HoledCap => Some(self.holed_cap_face(curved, g, rings, &edges)?),
-                    Layout::Wrapped => Some(self.wrapped_face(curved, g, rings, &edges)?),
-                    Layout::Holed => Some(self.holed_face(curved, g, rings, &edges)?),
-                    Layout::Threaded => Some(self.threaded_face(curved, g, rings, &edges)?),
-                    Layout::Open | Layout::Whole => {
-                        Some(self.curved_face(curved, g, rings, &edges)?)
-                    }
-                },
-            };
-            faces.push(face);
-        }
-        Ok(faces)
+                Layout::Cap => Some(match curved.shape {
+                    Canonical::Cone(_) => self.cone_tip_face(curved, rings, edges)?,
+                    _ => self.cap_face(curved, rings, edges)?,
+                }),
+                Layout::HoledCap => Some(self.holed_cap_face(curved, g, rings, edges)?),
+                Layout::Wrapped => Some(self.wrapped_face(curved, g, rings, edges)?),
+                Layout::Holed => Some(self.holed_face(curved, g, rings, edges)?),
+                Layout::Threaded => Some(self.threaded_face(curved, g, rings, edges)?),
+                Layout::Open | Layout::Whole => Some(self.curved_face(curved, g, rings, edges)?),
+            },
+        })
     }
 
     /// A ring's planned edges in walking order, repeats run together.

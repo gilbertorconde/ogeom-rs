@@ -97,6 +97,8 @@ pub enum FallbackReason {
     /// Its face's own mesh did not meet its neighbours': the solid would
     /// not tessellate closed.
     MeshesOpen,
+    /// Building its face, or meshing or measuring it once built, failed.
+    BuildFailed,
 }
 
 impl fmt::Display for FallbackReason {
@@ -109,6 +111,7 @@ impl fmt::Display for FallbackReason {
             Self::FoldedSeam => "a seam of it folded in its chart",
             Self::Overlaps => "its face overlapped a neighbour",
             Self::MeshesOpen => "its face did not mesh closed with its neighbours",
+            Self::BuildFailed => "building or meshing its face failed",
         })
     }
 }
@@ -657,6 +660,45 @@ impl MeshRegions {
             Carrier::Curved(c) => c.deviation,
             _ => deviation,
         })
+    }
+
+    /// Put `surface` on a region as given, unverified, keeping how its face
+    /// is laid out: a plane on a planar region, or a curved surface of the
+    /// kind the region is on. What the build makes of a surface its
+    /// vertices do not lie on is what its fallbacks catch; this is how a
+    /// test hands it one. Not part of the supported interface.
+    ///
+    /// # Errors
+    ///
+    /// [`RegionRefusal::NoSuchRegion`], or [`RegionRefusal::NoFit`] where
+    /// the surface is not of the region's kind.
+    #[doc(hidden)]
+    pub fn put_surface_unverified(
+        &mut self,
+        id: RegionId,
+        surface: Canonical,
+    ) -> Result<(), RegionRefusal> {
+        self.held(id)?;
+        let carrier = &mut self.found.groups.carriers[id.0];
+        match (carrier, surface) {
+            (Carrier::Plane(plane), Canonical::Plane(given)) => *plane = given,
+            (Carrier::Curved(curved), given)
+                if core::mem::discriminant(&curved.shape) == core::mem::discriminant(&given) =>
+            {
+                curved.shape = given;
+            }
+            (_, given) => {
+                return Err(RegionRefusal::NoFit(match given {
+                    Canonical::Plane(_) => SurfaceKind::Plane,
+                    Canonical::Cylinder(_) => SurfaceKind::Cylinder,
+                    Canonical::Cone(_) => SurfaceKind::Cone,
+                    Canonical::Sphere(_) => SurfaceKind::Sphere,
+                    Canonical::Torus(_) => SurfaceKind::Torus,
+                    Canonical::Swept(_) => SurfaceKind::Patch,
+                }));
+            }
+        }
+        Ok(())
     }
 
     /// Each region's triangles, by region.

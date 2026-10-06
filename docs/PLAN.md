@@ -1131,6 +1131,28 @@ a folded seam. The truth bench's rim-disc at 0.05 moves from 1.2e-6 to
 6.3e-8 (its mean volume error 3.57e-6 to 3.50e-6); the stress baseline is
 unchanged.
 
+A face that cannot be built no longer fails the conversion. A face whose
+build fails is withdrawn (for a fan, the curved face its seam lies on; for
+another planar face, the curved faces beside it), a check after the build
+that fails withdraws the faces that cannot be meshed or measured on their
+own, or every recognized one where none is found, and a planning failure
+withdraws the recognized regions; each is named with
+`FallbackReason::BuildFailed`. A planar region whose plane does not hold
+its vertices is gathered again from its triangles, and a planar face
+withdrawn a second time is built a face per triangle; the error stands
+only where nothing is left to withdraw. The corpus's degenerate spline
+sliver failed outright (fans with no normal along their seam) and now
+comes back, 243 faces, 13 faceted, 3 of them for `BuildFailed`. Every
+other NIST and corpus part, the truth bench and the stress baseline are
+unchanged, in the same time. Regions of five NIST parts and a screw put
+one at a time on a surface moved off them (a plane offset, a curved
+surface shifted, a radius grown or halved, through
+`MeshRegions::put_surface_unverified`) all come back valid and closed,
+the moved region faceted; before, an offset plane came back with faces
+turned into the material. A conversion of ctc_02 that failed with "the
+face's boundary enclosed no triangulable region" was not reproduced on the
+current build.
+
 **Flags the exact volume trusts.** `volume_properties` takes the closed
 form only where the faces' flags agree. The edge walks tie faces into sets
 that agree among themselves; a face the walks cannot read (a cone apex, a
