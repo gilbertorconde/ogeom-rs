@@ -389,10 +389,7 @@ fn exact_volume_properties(
     // And the faces must agree with each other about which way is out. A
     // boundary that cannot be walked to ask (a pcurve whose domain falls
     // short of its edge's range) is left to the mesh.
-    let Some(flags) = or_mesh(flags_agree(model, shape, tol).map(Some), None)? else {
-        return Ok(None);
-    };
-    if !flags.agree {
+    if !or_mesh(flags_agree(model, shape, tol), false)? {
         return Ok(None);
     }
     // The divergence theorem needs a closed boundary; topology says whether
@@ -409,16 +406,6 @@ fn exact_volume_properties(
                 "the boundary is not closed, so it encloses no volume to measure"
             );
         }
-    }
-    // Sets of faces the walks could not tie together are asked of the
-    // solid itself, a face of each probed off both its sides, and the
-    // closed form is trusted only where every one faces out: one turned
-    // in, or one the probe cannot settle, is left to the mesh, which mends
-    // a minority of turned faces.
-    if !flags.representatives.is_empty()
-        && !all_face_out(model, shape, &flags.representatives, tol)?
-    {
-        return Ok(None);
     }
 
     let reference = reference_point(&exact, tol)?;
@@ -853,12 +840,12 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     Ok(Some(regions))
 }
 
-/// An edge or face occurrence: its node at its placement.
-type Occurrence = (ogeom_topo::TShapeId, ogeom_topo::Location);
-
 /// Edge curves placed once for [`flags_agree`], with their ranges, by edge
 /// occurrence: each is read at several stations of each face it bounds.
-type PlacedCurves = std::collections::HashMap<Occurrence, (ogeom_geom::Curve, (f64, f64))>;
+type PlacedCurves = std::collections::HashMap<
+    (ogeom_topo::TShapeId, ogeom_topo::Location),
+    (ogeom_geom::Curve, (f64, f64)),
+>;
 
 /// Whether the faces agree with each other about which way is out.
 ///
@@ -879,47 +866,230 @@ type PlacedCurves = std::collections::HashMap<Occurrence, (ogeom_geom::Curve, (f
 /// closed-form integral cannot: it would hand the bore back as material.
 /// So where the flags disagree this says so and the mesh is asked instead.
 ///
-/// The comparison ties faces into sets that agree among themselves, and
-/// says nothing about one set against another: a face the walks cannot be
-/// read on (a station at a cone's apex, where the surface has no normal, a
-/// trim that is no closed loop) is a set of its own, and so is each
-/// closed shell. Turning a whole set over turns its share of the volume
-/// over without any edge noticing, so where there is more than one set
-/// [`Flags::representatives`] names a face of each, for the caller to ask
-/// which way it faces. A single set turned over as a whole is the whole
-/// boundary wound inward, and the volume's sign says so.
-///
-/// An edge occurrence is its node at its placement: the top and bottom of
-/// a prism are one edge moved, and each is compared only with the faces
-/// that meet it where it stands.
-pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Flags> {
-    // Moving the whole shape moves every face with it and changes nothing
-    // about whether they agree.
-    let unplaced = shape.located(ogeom_topo::Location::default());
-    let faces = explore(model, &unplaced, Filter::OfType(ShapeType::Face))?;
-    let mut walks: std::collections::HashMap<Occurrence, Vec<(bool, usize, bool)>> =
-        std::collections::HashMap::new();
+/// An instanced solid says nothing here: one edge stands in several places
+/// and nothing in a name tells them apart, so its flags are taken as they
+/// come.
+pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+    let placed_at = ogeom_topo::Location::default();
+    let mut walks: std::collections::HashMap<
+        ogeom_topo::TShapeId,
+        Vec<(bool, ogeom_topo::TShapeId, bool)>,
+    > = std::collections::HashMap::new();
     let mut curves: PlacedCurves = std::collections::HashMap::new();
-    for (index, face) in faces.iter().enumerate() {
-        match face_walks(model, face, &mut curves, tol)? {
-            Some(found) => {
-                for (edge, ahead, outer) in found {
-                    walks.entry(edge).or_default().push((ahead, index, outer));
+    for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        if face.location() != &placed_at {
+            return Ok(true);
+        }
+        let Some(data) = model.node(&face).and_then(|n| n.data().as_face()).cloned() else {
+            return Ok(true);
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            return Ok(true);
+        };
+        let placed = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?;
+        let flag = if face.orientation() == ogeom_topo::Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        };
+        // Where the boundary walks into closed chart loops, their windings
+        // say which side the face lies on at every point, concave or not.
+        if let Some(stations) = crate::mass_chart::material_sides(model, &face, tol) {
+            for (edge, at, toward) in stations {
+                let at = crate::mass_chart::into_domain(&placed, at);
+                let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
+                let raw = du.cross(dv);
+                let inward = du * toward.x + dv * toward.y;
+                if raw.magnitude() <= tol.angular() || inward.magnitude() <= tol.angular() {
+                    return Ok(true);
+                }
+                let out = raw / raw.magnitude() * flag;
+                let walk = out.cross(inward / inward.magnitude());
+                let station = placed.point_at(at.x, at.y, tol)?;
+                let Some(along) = edge_heading(model, &edge, station, &mut curves, tol)? else {
+                    return Ok(true);
+                };
+                walks.entry(edge.node()).or_default().push((
+                    walk.dot(along) > 0.0,
+                    face.node(),
+                    true,
+                ));
+            }
+            continue;
+        }
+        // Otherwise each wire's middle in the chart stands in for the side
+        // the face lies on, and which wire is the boundary:
+        // the one covering the most of it, since a hole is inside what it
+        // is a hole in.
+        let wires = model.ordered_children_of(&face)?;
+        let mut middles: Vec<(ogeom_math::Point2, f64)> = Vec::with_capacity(wires.len());
+        let mut stations: Vec<Vec<(Shape, ogeom_math::Point2)>> = Vec::with_capacity(wires.len());
+        // How often each edge bounds this face: a seam the face uses once
+        // (a half band, cut along its seam) bounds it down one column only.
+        let mut uses: std::collections::HashMap<ogeom_topo::TShapeId, usize> =
+            std::collections::HashMap::new();
+        for wire in &wires {
+            for edge in model.ordered_children_of(wire)? {
+                *uses.entry(edge.node()).or_default() += 1;
+            }
+        }
+        for wire in &wires {
+            let mut here = Vec::new();
+            let mut sum = ogeom_math::Vector2::new(0.0, 0.0);
+            let (mut lo, mut hi) = (
+                ogeom_math::Point2::new(f64::INFINITY, f64::INFINITY),
+                ogeom_math::Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+            );
+            // Seams used once, their column chosen once the rest of the
+            // wire says where the face lies: by the ends of the other
+            // pieces, which meet the used column and not the other.
+            let mut once: Vec<(Shape, [ogeom_topo::PCurveId; 2], (f64, f64))> = Vec::new();
+            let mut ends: Vec<ogeom_math::Point2> = Vec::new();
+            for edge in model.ordered_children_of(wire)? {
+                if edge.location() != &placed_at {
+                    return Ok(true);
+                }
+                let Some(repr) = model
+                    .node(&edge)
+                    .and_then(|n| n.data().as_edge())
+                    .and_then(|d| d.pcurve_for(data.surface, edge.location()))
+                else {
+                    return Ok(true);
+                };
+                // A seam bounds its face twice, once down each column.
+                let sides: Vec<(ogeom_topo::PCurveId, (f64, f64))> = match repr {
+                    EdgeRepr::PCurve { curve, range, .. } => vec![(*curve, *range)],
+                    EdgeRepr::Seam {
+                        forward,
+                        reversed,
+                        range,
+                        ..
+                    } if uses.get(&edge.node()) == Some(&1) => {
+                        once.push((edge.clone(), [*forward, *reversed], *range));
+                        continue;
+                    }
+                    EdgeRepr::Seam {
+                        forward,
+                        reversed,
+                        range,
+                        ..
+                    } => vec![(*forward, *range), (*reversed, *range)],
+                    _ => return Ok(true),
+                };
+                for (id, range) in sides {
+                    let Some(pcurve) = model.geometry().pcurve(id) else {
+                        return Ok(true);
+                    };
+                    ends.push(pcurve.point_at(range.0, tol)?);
+                    ends.push(pcurve.point_at(range.1, tol)?);
+                    // Several stations along each edge, not one: a wire of
+                    // a single closed edge has its own midpoint for a
+                    // middle, and nothing lies from a point toward itself.
+                    const STATIONS: usize = 4;
+                    for step in 1..=STATIONS {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t =
+                            range.0 + (range.1 - range.0) * (step as f64 / (STATIONS + 1) as f64);
+                        let at = pcurve.point_at(t, tol)?;
+                        sum += at.to_vector();
+                        lo = ogeom_math::Point2::new(lo.x.min(at.x), lo.y.min(at.y));
+                        hi = ogeom_math::Point2::new(hi.x.max(at.x), hi.y.max(at.y));
+                        here.push((edge.clone(), at));
+                    }
                 }
             }
-            None => {
-                if *DEBUG_MASS {
-                    eprintln!("MASS face {:?} cannot be walked", face.node());
+            if here.is_empty() && once.is_empty() {
+                return Ok(true);
+            }
+            // A seam used once runs down the column its neighbours meet.
+            for (edge, sides, range) in once {
+                let mut best: Option<(f64, ogeom_topo::PCurveId)> = None;
+                for id in sides {
+                    let Some(pcurve) = model.geometry().pcurve(id) else {
+                        return Ok(true);
+                    };
+                    let mut d = f64::INFINITY;
+                    for t in [range.0, range.1] {
+                        let at = pcurve.point_at(t, tol)?;
+                        for end in &ends {
+                            d = d.min(at.distance(*end));
+                        }
+                    }
+                    if best.is_none_or(|(held, _)| d < held) {
+                        best = Some((d, id));
+                    }
                 }
+                let Some((_, id)) = best else {
+                    return Ok(true);
+                };
+                let Some(pcurve) = model.geometry().pcurve(id) else {
+                    return Ok(true);
+                };
+                const STATIONS: usize = 4;
+                for step in 1..=STATIONS {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = range.0 + (range.1 - range.0) * (step as f64 / (STATIONS + 1) as f64);
+                    let at = pcurve.point_at(t, tol)?;
+                    sum += at.to_vector();
+                    lo = ogeom_math::Point2::new(lo.x.min(at.x), lo.y.min(at.y));
+                    hi = ogeom_math::Point2::new(hi.x.max(at.x), hi.y.max(at.y));
+                    here.push((edge.clone(), at));
+                }
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let middle = ogeom_math::Point2::ORIGIN + sum / here.len() as f64;
+            middles.push((middle, (hi.x - lo.x) * (hi.y - lo.y)));
+            stations.push(here);
+        }
+        let Some(outer) = (0..middles.len()).max_by(|a, b| middles[*a].1.total_cmp(&middles[*b].1))
+        else {
+            return Ok(true);
+        };
+        for (index, here) in stations.into_iter().enumerate() {
+            let (middle, _) = middles[index];
+            for (edge, at) in here {
+                let at = crate::mass_chart::into_domain(&placed, at);
+                let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
+                let raw = du.cross(dv);
+                if raw.magnitude() <= tol.angular() {
+                    return Ok(true);
+                }
+                let out = raw / raw.magnitude() * flag;
+                // Which way the material lies from this point of the
+                // boundary: toward the wire's middle for the face's outer
+                // wire, away from it for a hole.
+                let toward = middle - at;
+                let toward = if index == outer { toward } else { -toward };
+                let inward = du * toward.x + dv * toward.y;
+                if inward.magnitude() <= tol.angular() {
+                    return Ok(true);
+                }
+                let walk = out.cross(inward / inward.magnitude());
+                // Against the edge's own direction, so the two faces'
+                // answers can be compared without comparing vectors. The
+                // direction is read where the edge's curve passes the
+                // station, since neither a pcurve's parameter nor its sense
+                // need be its curve's.
+                let station = placed.point_at(at.x, at.y, tol)?;
+                let Some(along) = edge_heading(model, &edge, station, &mut curves, tol)? else {
+                    return Ok(true);
+                };
+                walks.entry(edge.node()).or_default().push((
+                    walk.dot(along) > 0.0,
+                    face.node(),
+                    index == outer,
+                ));
             }
         }
     }
     if *DEBUG_MASS {
         eprintln!("MASS flags_agree walked {} edges", walks.len());
     }
-    // Which set each face is in, as a forest of parents.
-    let mut parent: Vec<usize> = (0..faces.len()).collect();
-    for ((edge, _), uses) in &walks {
+    for (edge, uses) in &walks {
         // An edge one face walks twice is that face's own seam, however it
         // is written down (a canonicalised drum keeps its as an ordinary
         // pcurve used twice), and one face's seam says nothing about
@@ -932,321 +1102,6 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
             if *DEBUG_MASS {
                 eprintln!("MASS edge {} is walked {uses:?}", edge.index());
             }
-            return Ok(Flags {
-                agree: false,
-                representatives: Vec::new(),
-            });
-        }
-        let first = set_of(&mut parent, uses[0].1);
-        for (_, owner, _) in uses {
-            let other = set_of(&mut parent, *owner);
-            parent[other] = first;
-        }
-    }
-    let mut representatives = Vec::new();
-    for (index, face) in faces.iter().enumerate() {
-        if set_of(&mut parent, index) == index {
-            // Named as the caller's shape holds it, placement and all.
-            representatives.push(face.moved(shape.location()));
-        }
-    }
-    if representatives.len() < 2 {
-        representatives.clear();
-    }
-    Ok(Flags {
-        agree: true,
-        representatives,
-    })
-}
-
-/// The face standing for the set `at` is in, shortening the way there.
-fn set_of(parent: &mut [usize], mut at: usize) -> usize {
-    while parent[at] != at {
-        parent[at] = parent[parent[at]];
-        at = parent[at];
-    }
-    at
-}
-
-/// What [`flags_agree`] found.
-pub(crate) struct Flags {
-    /// Whether every edge the walks could read is walked opposite ways by
-    /// the faces either side of it.
-    pub agree: bool,
-    /// Where the faces fall into more than one set that agrees within
-    /// itself, a face of each set; empty where they are one set.
-    pub representatives: Vec<Shape>,
-}
-
-/// One station of a face's walk round its boundary: the edge occurrence,
-/// whether the walk runs with the edge's own direction there, and whether
-/// the station is on the face's outer boundary.
-type EdgeWalk = (Occurrence, bool, bool);
-
-/// Each station of `face`'s walk along its edges; `None` where the walk
-/// cannot be read on it.
-fn face_walks(
-    model: &Model,
-    face: &Shape,
-    curves: &mut PlacedCurves,
-    tol: Tolerances,
-) -> OgeomResult<Option<Vec<EdgeWalk>>> {
-    use ogeom_geom::Curve2d as _;
-    use ogeom_geom::Surface as _;
-    let placed_at = ogeom_topo::Location::default();
-    let mut walks = Vec::new();
-    let Some(data) = model.node(face).and_then(|n| n.data().as_face()).cloned() else {
-        return Ok(None);
-    };
-    let Some(surface) = model.geometry().surface(data.surface) else {
-        return Ok(None);
-    };
-    let placed = surface
-        .clone()
-        .transformed(&face.transform(model.datums())?, tol)?;
-    let flag = if face.orientation() == ogeom_topo::Orientation::Reversed {
-        -1.0
-    } else {
-        1.0
-    };
-    // Where the boundary walks into closed chart loops, their windings
-    // say which side the face lies on at every point, concave or not.
-    if let Some(stations) = crate::mass_chart::material_sides(model, face, tol) {
-        for (edge, at, toward) in stations {
-            let at = crate::mass_chart::into_domain(&placed, at);
-            let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
-            let raw = du.cross(dv);
-            let inward = du * toward.x + dv * toward.y;
-            if raw.magnitude() <= tol.angular() || inward.magnitude() <= tol.angular() {
-                return Ok(None);
-            }
-            let out = raw / raw.magnitude() * flag;
-            let walk = out.cross(inward / inward.magnitude());
-            let station = placed.point_at(at.x, at.y, tol)?;
-            let Some(along) = edge_heading(model, &edge, station, curves, tol)? else {
-                return Ok(None);
-            };
-            walks.push((
-                (edge.node(), edge.location().clone()),
-                walk.dot(along) > 0.0,
-                true,
-            ));
-        }
-        return Ok(Some(walks));
-    }
-    // The pcurves read below are the unplaced face's.
-    if face.location() != &placed_at {
-        return Ok(None);
-    }
-    // Otherwise each wire's middle in the chart stands in for the side
-    // the face lies on, and which wire is the boundary:
-    // the one covering the most of it, since a hole is inside what it
-    // is a hole in.
-    let wires = model.ordered_children_of(face)?;
-    let mut middles: Vec<(ogeom_math::Point2, f64)> = Vec::with_capacity(wires.len());
-    let mut stations: Vec<Vec<(Shape, ogeom_math::Point2)>> = Vec::with_capacity(wires.len());
-    // How often each edge bounds this face: a seam the face uses once
-    // (a half band, cut along its seam) bounds it down one column only.
-    let mut uses: std::collections::HashMap<ogeom_topo::TShapeId, usize> =
-        std::collections::HashMap::new();
-    for wire in &wires {
-        for edge in model.ordered_children_of(wire)? {
-            *uses.entry(edge.node()).or_default() += 1;
-        }
-    }
-    for wire in &wires {
-        let mut here = Vec::new();
-        let mut sum = ogeom_math::Vector2::new(0.0, 0.0);
-        let (mut lo, mut hi) = (
-            ogeom_math::Point2::new(f64::INFINITY, f64::INFINITY),
-            ogeom_math::Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
-        );
-        // Seams used once, their column chosen once the rest of the
-        // wire says where the face lies: by the ends of the other
-        // pieces, which meet the used column and not the other.
-        let mut once: Vec<(Shape, [ogeom_topo::PCurveId; 2], (f64, f64))> = Vec::new();
-        let mut ends: Vec<ogeom_math::Point2> = Vec::new();
-        for edge in model.ordered_children_of(wire)? {
-            if edge.location() != &placed_at {
-                return Ok(None);
-            }
-            let Some(repr) = model
-                .node(&edge)
-                .and_then(|n| n.data().as_edge())
-                .and_then(|d| d.pcurve_for(data.surface, edge.location()))
-            else {
-                return Ok(None);
-            };
-            // A seam bounds its face twice, once down each column.
-            let sides: Vec<(ogeom_topo::PCurveId, (f64, f64))> = match repr {
-                EdgeRepr::PCurve { curve, range, .. } => vec![(*curve, *range)],
-                EdgeRepr::Seam {
-                    forward,
-                    reversed,
-                    range,
-                    ..
-                } if uses.get(&edge.node()) == Some(&1) => {
-                    once.push((edge.clone(), [*forward, *reversed], *range));
-                    continue;
-                }
-                EdgeRepr::Seam {
-                    forward,
-                    reversed,
-                    range,
-                    ..
-                } => vec![(*forward, *range), (*reversed, *range)],
-                _ => return Ok(None),
-            };
-            for (id, range) in sides {
-                let Some(pcurve) = model.geometry().pcurve(id) else {
-                    return Ok(None);
-                };
-                ends.push(pcurve.point_at(range.0, tol)?);
-                ends.push(pcurve.point_at(range.1, tol)?);
-                // Several stations along each edge, not one: a wire of
-                // a single closed edge has its own midpoint for a
-                // middle, and nothing lies from a point toward itself.
-                const STATIONS: usize = 4;
-                for step in 1..=STATIONS {
-                    #[allow(clippy::cast_precision_loss)]
-                    let t = range.0 + (range.1 - range.0) * (step as f64 / (STATIONS + 1) as f64);
-                    let at = pcurve.point_at(t, tol)?;
-                    sum += at.to_vector();
-                    lo = ogeom_math::Point2::new(lo.x.min(at.x), lo.y.min(at.y));
-                    hi = ogeom_math::Point2::new(hi.x.max(at.x), hi.y.max(at.y));
-                    here.push((edge.clone(), at));
-                }
-            }
-        }
-        if here.is_empty() && once.is_empty() {
-            return Ok(None);
-        }
-        // A seam used once runs down the column its neighbours meet.
-        for (edge, sides, range) in once {
-            let mut best: Option<(f64, ogeom_topo::PCurveId)> = None;
-            for id in sides {
-                let Some(pcurve) = model.geometry().pcurve(id) else {
-                    return Ok(None);
-                };
-                let mut d = f64::INFINITY;
-                for t in [range.0, range.1] {
-                    let at = pcurve.point_at(t, tol)?;
-                    for end in &ends {
-                        d = d.min(at.distance(*end));
-                    }
-                }
-                if best.is_none_or(|(held, _)| d < held) {
-                    best = Some((d, id));
-                }
-            }
-            let Some((_, id)) = best else {
-                return Ok(None);
-            };
-            let Some(pcurve) = model.geometry().pcurve(id) else {
-                return Ok(None);
-            };
-            const STATIONS: usize = 4;
-            for step in 1..=STATIONS {
-                #[allow(clippy::cast_precision_loss)]
-                let t = range.0 + (range.1 - range.0) * (step as f64 / (STATIONS + 1) as f64);
-                let at = pcurve.point_at(t, tol)?;
-                sum += at.to_vector();
-                lo = ogeom_math::Point2::new(lo.x.min(at.x), lo.y.min(at.y));
-                hi = ogeom_math::Point2::new(hi.x.max(at.x), hi.y.max(at.y));
-                here.push((edge.clone(), at));
-            }
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let middle = ogeom_math::Point2::ORIGIN + sum / here.len() as f64;
-        middles.push((middle, (hi.x - lo.x) * (hi.y - lo.y)));
-        stations.push(here);
-    }
-    let Some(outer) = (0..middles.len()).max_by(|a, b| middles[*a].1.total_cmp(&middles[*b].1))
-    else {
-        return Ok(None);
-    };
-    for (index, here) in stations.into_iter().enumerate() {
-        let (middle, _) = middles[index];
-        for (edge, at) in here {
-            let at = crate::mass_chart::into_domain(&placed, at);
-            let (du, dv) = placed.d1_at(at.x, at.y, tol)?;
-            let raw = du.cross(dv);
-            if raw.magnitude() <= tol.angular() {
-                return Ok(None);
-            }
-            let out = raw / raw.magnitude() * flag;
-            // Which way the material lies from this point of the
-            // boundary: toward the wire's middle for the face's outer
-            // wire, away from it for a hole.
-            let toward = middle - at;
-            let toward = if index == outer { toward } else { -toward };
-            let inward = du * toward.x + dv * toward.y;
-            if inward.magnitude() <= tol.angular() {
-                return Ok(None);
-            }
-            let walk = out.cross(inward / inward.magnitude());
-            // Against the edge's own direction, so the two faces'
-            // answers can be compared without comparing vectors. The
-            // direction is read where the edge's curve passes the
-            // station, since neither a pcurve's parameter nor its sense
-            // need be its curve's.
-            let station = placed.point_at(at.x, at.y, tol)?;
-            let Some(along) = edge_heading(model, &edge, station, curves, tol)? else {
-                return Ok(None);
-            };
-            walks.push((
-                (edge.node(), edge.location().clone()),
-                walk.dot(along) > 0.0,
-                index == outer,
-            ));
-        }
-    }
-    Ok(Some(walks))
-}
-
-/// Whether each of `faces` faces out of the solid it bounds; `false` where
-/// a probe cannot settle it. Each is probed against its own solid, not the
-/// whole shape: a compound's lumps may overlap, and a face of one inside
-/// another has material on both its sides.
-fn all_face_out(
-    model: &Model,
-    shape: &Shape,
-    faces: &[Shape],
-    tol: Tolerances,
-) -> OgeomResult<bool> {
-    let solids = explore(model, shape, Filter::OfType(ShapeType::Solid))?;
-    let mut groups = Vec::new();
-    if solids.is_empty() {
-        groups.push((shape.clone(), faces.to_vec()));
-    } else {
-        let mut left = faces.to_vec();
-        for solid in solids {
-            let own: std::collections::HashSet<Occurrence> =
-                explore(model, &solid, Filter::OfType(ShapeType::Face))?
-                    .iter()
-                    .map(|f| (f.node(), f.location().clone()))
-                    .collect();
-            let (mine, rest): (Vec<Shape>, Vec<Shape>) = left
-                .into_iter()
-                .partition(|f| own.contains(&(f.node(), f.location().clone())));
-            left = rest;
-            if !mine.is_empty() {
-                groups.push((solid, mine));
-            }
-        }
-        if !left.is_empty() {
-            return Ok(false);
-        }
-    }
-    for (solid, faces) in groups {
-        let facing = or_mesh(
-            crate::check::faces_facing_in(model, &solid, &faces, tol),
-            Vec::new(),
-        )?;
-        if *DEBUG_MASS {
-            eprintln!("MASS sets probed {facing:?}");
-        }
-        if facing.len() != faces.len() || facing.iter().any(|f| *f != Some(false)) {
             return Ok(false);
         }
     }
