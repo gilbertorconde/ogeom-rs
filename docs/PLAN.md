@@ -874,6 +874,20 @@ error from 5e-4 to 5e-5 and ftc_06's from 8e-5 to 1e-6 (402 faces to
 214), but facets nine more of ftc_07's fillet spheres and slows it by
 half.
 
+**Converted faces folded under a neighbour.** `check` probes every face
+of a solid for orientation, stepping off it by shorter steps until both
+sides answer, where it used to trust the faces' flags whenever they
+agreed along shared edges. That finds planar faces in the converter's
+results for ftc_10, ftc_07 and ctc_02 turned into the material within
+about 0.03 of themselves: a fold, material on the face's outside and a
+thin empty wedge on its inside, under a neighbour that runs past it. The
+converter asks the same probe, so it now catches these and falls back
+to more facets (ftc_10 704 faces to 977, ftc_07 1375 to 1460, ctc_02
+4090 to 4138). Open: what folds these faces, so they come back exact
+without the fallback. The probe classifies two points per face against
+the exact boundary, about 0.45 s on a 165-face helical thread (0.05 s
+before), 0.16 s on ctc_02 (1.0 s before, when the flag walk ran).
+
 **Speed, not correctness.**
 
 - A per-face state cache would let the boolean's build phase read a piece's

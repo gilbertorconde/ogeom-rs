@@ -22,6 +22,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`check` probes every face of a solid for orientation.** A single face
+  turned into its solid passed where the faces' flags could not be compared
+  along their edges (a nearly flat conical or domed cap, a face whose
+  boundary middle lies outside it): a loft whose end patch faced in kept
+  half its volume and read valid. Every face is probed off both its sides,
+  the step shortened on solids thinner than it. The mesh converter asks the
+  same probe and falls back to facets where a converted face folds under its
+  neighbour: three NIST parts come back with a few more faces (ftc_10 from
+  704 to 977) and their volumes unchanged within tolerance.
+
 - **Sweeps hold their walls between stations along the path.** Pipe
   shells, law pipes and helical sweeps were checked along the profile but
   not between stations: a disc swept down a spline turning a quarter within

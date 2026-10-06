@@ -204,20 +204,15 @@ fn check_orientation(
 ///
 /// A face's flag is the only thing that says which side of its surface the
 /// material is on, and a flipped one leaves every edge used twice and the
-/// shell closed: nothing topological sees it. First the flags are asked
-/// about each other (along every shared edge the two faces must walk
-/// opposite ways, see [`crate::mass`]); only where they disagree is each
-/// face probed, by stepping a little off it along its outward normal both
-/// ways and asking which side is material. A face whose outside is inside
-/// is named; a probe that cannot tell (a step landing on the boundary, or
-/// both sides alike on a sliver) names nothing, so a disagreement the probe
-/// cannot confirm stays silent rather than crying wolf. A face whose chart
-/// cannot be walked is not asked at all.
-///
-/// Flags that all agree may all be wrong: a shell turned inside out as a
-/// whole walks every edge consistently. So where they agree, one face of
-/// each shell is probed, and a shell whose probe finds material outside is
-/// named face by face.
+/// shell closed: nothing topological sees it. Nor do the flags asked about
+/// each other along shared edges: that walk reads which side of an edge a
+/// face lies on from its chart, and where the chart cannot say (an apex, a
+/// boundary whose middle is not inside it) it has to take the flags as they
+/// come. So every face is probed: a point a little off it along its outward
+/// normal must lie outside the material and the point as far the other way
+/// inside it. A face whose outside is inside is named; a probe that cannot
+/// tell names nothing, so a face is never named on a guess. A face whose
+/// chart cannot be walked is not asked at all.
 ///
 /// # Errors
 ///
@@ -225,55 +220,22 @@ fn check_orientation(
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) only; a
 /// question the geometry cannot answer names no face.
 pub fn inside_out_faces(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<Vec<Shape>> {
-    // A question the geometry cannot answer (a chart walk off its domain)
-    // is no finding; only cancellation and a broken model are errors.
-    let unsure = |e: ogeom_core::OgeomError| match e {
-        ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_) => Err(e),
-        _ => Ok(Vec::new()),
-    };
-    let agree = match crate::mass::flags_agree(model, solid, tol) {
-        Ok(agree) => agree,
-        Err(e) => return unsure(e),
-    };
     let boundary = match crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol) {
         Ok(boundary) => boundary,
-        Err(e) => return unsure(e),
+        // A question the geometry cannot answer (an open shell, a chart
+        // walk off its domain) is no finding; only cancellation and a
+        // broken model are errors.
+        Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+            return Err(e);
+        }
+        Err(_) => return Ok(Vec::new()),
     };
-    let mut out = Vec::new();
-    if agree {
-        // The first face of a shell that can answer answers for the shell;
-        // a few are tried, since a probe landing on the boundary says
-        // nothing.
-        for shell in explore_unique(model, solid, ShapeType::Shell)? {
-            let faces = explore_unique(model, &shell, ShapeType::Face)?;
-            for face in faces.iter().take(3) {
-                match faces_inward(model, face, &boundary, tol)? {
-                    Some(true) => {
-                        out.extend(faces.iter().cloned());
-                        break;
-                    }
-                    Some(false) => break,
-                    None => {}
-                }
-            }
-        }
-        return Ok(out);
-    }
     let faces = explore_unique(model, solid, ShapeType::Face)?;
-    let inward = ogeom_core::parallel::map_ordered(&faces, |_, face| {
-        faces_inward(model, face, &boundary, tol)
-    });
-    for (face, inward) in faces.into_iter().zip(inward) {
-        if inward? == Some(true) {
-            out.push(face);
-        }
-    }
-    Ok(out)
+    turned_in_against(model, &boundary, &faces, tol)
 }
 
-/// Which of `faces` face into the material of `solid`: each probed as
-/// [`inside_out_faces`] probes a face, without the walk over the whole
-/// solid's orientation flags that tells it which faces to ask about.
+/// Which of `faces` face into the material of `solid`, each probed as
+/// [`inside_out_faces`] probes a face.
 pub(crate) fn faces_turned_in(
     model: &Model,
     solid: &Shape,
@@ -281,8 +243,19 @@ pub(crate) fn faces_turned_in(
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
     let boundary = crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
+    turned_in_against(model, &boundary, faces, tol)
+}
+
+/// The faces of `faces` whose probe against `boundary` finds material on
+/// their outside, probed in parallel.
+fn turned_in_against(
+    model: &Model,
+    boundary: &crate::SolidBoundary,
+    faces: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
     let inward = ogeom_core::parallel::map_ordered(faces, |_, face| {
-        faces_inward(model, face, &boundary, tol)
+        faces_inward(model, face, boundary, tol)
     });
     let mut out = Vec::new();
     for (face, inward) in faces.iter().zip(inward) {
@@ -293,67 +266,82 @@ pub(crate) fn faces_turned_in(
     Ok(out)
 }
 
-/// Whether a face's outward normal points into the solid's material, probed
-/// at the middle of its largest mesh triangle; `None` where the probe
-/// cannot tell.
+/// Whether a face's outward normal points into the solid's material; `None`
+/// where the probe cannot tell.
+///
+/// Probed at the middle of the face's largest mesh triangle, or of the next
+/// largest where that cannot tell. Each probe steps off the face both ways,
+/// first by a fraction of the triangle's size and then by shorter steps: a
+/// step longer than the solid is thick lands past its far side, and one
+/// across a gap narrower than the step lands in the material beyond, and
+/// either leaves both points on the same side. The shortest step stays well
+/// clear of the band within which a point counts as on the face.
 fn faces_inward(
     model: &Model,
     face: &Shape,
     boundary: &crate::SolidBoundary,
     tol: Tolerances,
 ) -> OgeomResult<Option<bool>> {
+    /// How many of the largest triangles are asked before giving up.
+    const PROBES: usize = 3;
     let Ok(mesh) = ogeom_mesh::triangulate_face(model, face, Deflection::default(), tol) else {
-        return Ok(None);
-    };
-    let area = |t: &[u32; 3]| {
-        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
-        (b - a).cross(c - a).magnitude()
-    };
-    let Some(largest) = mesh
-        .triangles
-        .iter()
-        .max_by(|x, y| area(x).total_cmp(&area(y)))
-    else {
         return Ok(None);
     };
     if mesh.parameters.len() != mesh.positions.len() {
         return Ok(None);
     }
-    let uv = largest.map(|i| mesh.parameters[i as usize]);
-    let (u, v) = (
-        (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
-        (uv[0].1 + uv[1].1 + uv[2].1) / 3.0,
-    );
     let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
         return Ok(None);
     };
     let Some(surface) = model.geometry().surface(data.surface) else {
         return Ok(None);
     };
-    let (Ok(point), Ok(normal)) = (surface.point_at(u, v, tol), surface.normal_at(u, v, tol))
-    else {
-        return Ok(None);
+    let area = |t: &[u32; 3]| {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        (b - a).cross(c - a).magnitude()
     };
+    let mut largest: Vec<(f64, &[u32; 3])> = mesh.triangles.iter().map(|t| (area(t), t)).collect();
+    largest.sort_by(|x, y| y.0.total_cmp(&x.0));
     let placement = face.transform(model.datums())?;
-    let point = placement.apply(point);
-    let mut outward = placement.apply_vector(normal.vector());
-    if face.orientation() == ogeom_topo::Orientation::Reversed {
-        outward = -outward;
+    let flip = face.orientation() == ogeom_topo::Orientation::Reversed;
+    // Twenty times the band a point counts as on the face within, and
+    // never below a thousand confusion distances.
+    let shortest = data.tolerance.get().max(tol.confusion() * 1e3) * 20.0;
+    for (size, triangle) in largest.into_iter().take(PROBES) {
+        let uv = triangle.map(|i| mesh.parameters[i as usize]);
+        let (u, v) = (
+            (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
+            (uv[0].1 + uv[1].1 + uv[2].1) / 3.0,
+        );
+        let (Ok(point), Ok(normal)) = (surface.point_at(u, v, tol), surface.normal_at(u, v, tol))
+        else {
+            continue;
+        };
+        let point = placement.apply(point);
+        let mut outward = placement.apply_vector(normal.vector());
+        if flip {
+            outward = -outward;
+        }
+        let mut step = (size.sqrt() * 0.05).max(tol.confusion() * 1e5);
+        loop {
+            ogeom_core::progress::checkpoint()?;
+            if let (Ok(outside), Ok(inside)) = (
+                boundary.holds(model, point + outward * step, tol),
+                boundary.holds(model, point - outward * step, tol),
+            ) {
+                match (outside, inside) {
+                    (crate::Containment::In, crate::Containment::Out) => return Ok(Some(true)),
+                    (crate::Containment::Out, crate::Containment::In) => return Ok(Some(false)),
+                    _ => {}
+                }
+            }
+            if step <= shortest {
+                break;
+            }
+            step = (step * 0.1).max(shortest);
+        }
     }
-    // A step a fraction of the triangle's own size: small enough to stay by
-    // this face, well clear of the boundary band classification allows.
-    let step = (area(largest).sqrt() * 0.05).max(tol.confusion() * 1e5);
-    let (Ok(outside), Ok(inside)) = (
-        boundary.holds(model, point + outward * step, tol),
-        boundary.holds(model, point - outward * step, tol),
-    ) else {
-        return Ok(None);
-    };
-    Ok(match (outside, inside) {
-        (crate::Containment::In, crate::Containment::Out) => Some(true),
-        (crate::Containment::Out, crate::Containment::In) => Some(false),
-        _ => None,
-    })
+    Ok(None)
 }
 
 /// Check that a shape's *tessellation* agrees with its topology.

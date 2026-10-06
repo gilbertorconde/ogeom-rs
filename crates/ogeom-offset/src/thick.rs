@@ -199,17 +199,20 @@ pub fn make_thick_sheet(
         );
     }
     let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
-    if !ogeom_algo::inside_out_faces(model, &solid, tol)?.is_empty() {
-        ogeom_bail!(
-            Construction,
-            "the thickened sheet folds through itself and turns faces inside out"
-        );
-    }
+    // Crossing layers are asked about first: where they cross, material
+    // lies on both sides of a face, so a solid that runs into itself also
+    // shows faces turned in, and the crossing is the cause.
     if !ogeom_algo::check_self_intersection(model, &solid, tol)?.is_empty() {
         ogeom_bail!(
             Construction,
             "the thickened sheet runs into itself; the thickness is larger \
              than the room between its faces"
+        );
+    }
+    if !ogeom_algo::inside_out_faces(model, &solid, tol)?.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "the thickened sheet folds through itself and turns faces inside out"
         );
     }
     if !read.root_is_face {
