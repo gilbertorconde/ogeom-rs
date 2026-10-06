@@ -158,6 +158,38 @@ fn a_face_turned_about_its_middle_keeps_the_volume() {
     sound(&model, turned, 1000.0, 6, "turned");
 }
 
+/// A through bore's wall moved sideways: the wall is carried by the
+/// translation, and the lid and base keep their planes with the ring moved
+/// in them. The bore's axis lands where the shift puts it.
+#[test]
+fn a_through_bore_moves_sideways() {
+    let mut model = Model::new();
+    let block = block(&mut model);
+    let seat = Frame::new(Point::new(10.0, 5.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let pin = make_cylinder(&mut model, seat, 2.0, 7.0, T).unwrap().shape;
+    let bored = ogeom::boolean::cut(&mut model, &block, &pin, T)
+        .unwrap()
+        .shape;
+    let bore = faces_of_kind(&model, &bored, SurfaceKind::Cylinder);
+    let hole = PI * 4.0 * 5.0;
+    let want = 1000.0 - hole;
+    for (dx, dy) in [(3.0, 0.0), (0.5, 0.0), (-3.0, 0.0), (0.0, 1.5)] {
+        let shift = Transform::translation(Vector::new(dx, dy, 0.0));
+        let moved = move_faces(&mut model, &bored, &bore, &shift, T);
+        let at = format!("bore by ({dx}, {dy})");
+        let built = sound(&model, moved, want, 7, &at);
+        let centre = volume_properties(&model, &built.shape, Deflection::default(), T)
+            .unwrap()
+            .centre;
+        let x = (1000.0 * 10.0 - hole * (10.0 + dx)) / want;
+        let y = (1000.0 * 5.0 - hole * (5.0 + dy)) / want;
+        assert!(
+            (centre.x - x).abs() < 1e-9 && (centre.y - y).abs() < 1e-9,
+            "{at}: {centre:?}"
+        );
+    }
+}
+
 /// A ball, its one face offset: a larger ball.
 #[test]
 fn a_ball_offset_is_a_larger_ball() {

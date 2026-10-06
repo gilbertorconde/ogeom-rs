@@ -1818,7 +1818,12 @@ fn assembled_with_seam(
             // A closed form where one exists; on a fitted support, the
             // projected fit the face builder trusts, the measured offset
             // widening the edge.
-            let pcurve = match ogeom_intersect::exact_pcurve_of(&fresh_curve, &prep.surface, tol) {
+            let pcurve = match ogeom_intersect::exact_pcurve_over(
+                &fresh_curve,
+                fresh_range,
+                &prep.surface,
+                tol,
+            ) {
                 Some(exact) => exact,
                 None => {
                     let (fitted, _, _, worst_off, _) =

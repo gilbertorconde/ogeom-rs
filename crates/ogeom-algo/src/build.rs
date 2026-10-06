@@ -597,7 +597,8 @@ pub fn make_face_with_pcurves(
                 };
                 (geometry.clone(), *range)
             };
-            let mut pcurve = match ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) {
+            let mut pcurve = match ogeom_intersect::exact_pcurve_over(&curve, prange, &surface, tol)
+            {
                 Some(exact) => exact,
                 // No closed form: a fitted surface, mostly. The edge lies on
                 // the surface by construction here (a rebuilt boundary, a

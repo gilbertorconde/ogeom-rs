@@ -1553,9 +1553,23 @@ fn exact_pcurve(
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, range, c.cylinder(), tol),
         SurfaceGeometry::Sphere(s) => on_sphere(curve, range, s.sphere(), tol),
-        SurfaceGeometry::Torus(t) => on_torus(curve, t.torus(), tol),
+        SurfaceGeometry::Torus(t) => on_torus(curve, range, t.torus(), tol),
         SurfaceGeometry::Cone(c) => on_cone(curve, range, c.cone(), tol),
         _ => None,
+    }
+}
+
+/// The parameter window of a circle's pcurve that inherits the circle's own
+/// parameter: the whole turn, widened to the range the edge uses. An arc
+/// whose range runs past the turn's end (its start late in the turn, its
+/// end past the circle's origin) is read on the same straight chart line
+/// continued, not wrapped.
+fn circle_window(range: (f64, f64)) -> (f64, f64) {
+    let tau = core::f64::consts::TAU;
+    if range.0.is_finite() && range.1.is_finite() {
+        (range.0.min(range.1).min(0.0), range.0.max(range.1).max(tau))
+    } else {
+        (0.0, tau)
     }
 }
 
@@ -1609,8 +1623,8 @@ fn on_cone(
             Some(
                 Line2d::over(
                     ogeom_math::Axis2::new(Point2::new(phase, local.z), towards),
-                    0.0,
-                    tau,
+                    circle_window(range).0,
+                    circle_window(range).1,
                 )
                 .ok()?
                 .into(),
@@ -1690,7 +1704,12 @@ fn on_cone(
 /// the circle's own angle, phase and winding included, exactly as the
 /// cylinder case does. Fillet faces are tori more often than not, so the
 /// STEP reader is the chief consumer.
-fn on_torus(curve: &Curve, torus: ogeom_math::Torus, tol: Tolerances) -> Option<PlanarCurve> {
+fn on_torus(
+    curve: &Curve,
+    range: (f64, f64),
+    torus: ogeom_math::Torus,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
     let Curve::Circle(c) = curve else {
         return None;
     };
@@ -1699,7 +1718,6 @@ fn on_torus(curve: &Curve, torus: ogeom_math::Torus, tol: Tolerances) -> Option<
     let axis_z = frame.z().vector();
     let normal = circle.frame().z().vector();
     let local = frame.to_local(circle.centre());
-    let tau = core::f64::consts::TAU;
 
     // A parallel of the sweep.
     if normal.cross(axis_z).magnitude() <= tol.angular()
@@ -1729,8 +1747,8 @@ fn on_torus(curve: &Curve, torus: ogeom_math::Torus, tol: Tolerances) -> Option<
         return Some(
             Line2d::over(
                 ogeom_math::Axis2::new(Point2::new(phase, v), towards),
-                0.0,
-                tau,
+                circle_window(range).0,
+                circle_window(range).1,
             )
             .ok()?
             .into(),
@@ -1753,8 +1771,8 @@ fn on_torus(curve: &Curve, torus: ogeom_math::Torus, tol: Tolerances) -> Option<
         return Some(
             Line2d::over(
                 ogeom_math::Axis2::new(Point2::new(u, phase), towards),
-                0.0,
-                tau,
+                circle_window(range).0,
+                circle_window(range).1,
             )
             .ok()?
             .into(),
@@ -1917,8 +1935,8 @@ fn on_cylinder(
             Some(
                 Line2d::over(
                     ogeom_math::Axis2::new(Point2::new(phase, local.z), towards),
-                    0.0,
-                    core::f64::consts::TAU,
+                    circle_window(range).0,
+                    circle_window(range).1,
                 )
                 .ok()?
                 .into(),
@@ -2151,8 +2169,8 @@ fn on_sphere(
     Some(
         Line2d::over(
             ogeom_math::Axis2::new(Point2::new(phase, latitude), towards),
-            0.0,
-            core::f64::consts::TAU,
+            circle_window(range).0,
+            circle_window(range).1,
         )
         .ok()?
         .into(),
@@ -2863,6 +2881,39 @@ mod tests {
             }
         }
     }
+
+    /// An arc whose range runs past the end of its circle's turn (from late
+    /// in the turn across the circle's origin) has a pcurve on a surface of
+    /// revolution over that whole range, the same point at every parameter
+    /// of it.
+    #[test]
+    fn an_arc_across_its_circles_origin_has_a_pcurve_over_its_range() {
+        let drum = cylinder(Vector::Z, 2.0);
+        let ball = sphere(Point::ORIGIN, 2.0);
+        let ground = plane(Point::ORIGIN, Vector::Z);
+        for surface in [&drum, &ball] {
+            let SurfaceIntersection::Along(curves) =
+                intersect_surfaces(surface, &ground, IntersectOptions::default(), T).unwrap()
+            else {
+                panic!("a plane through the axis's normal meets it in a circle");
+            };
+            let circle = curves[0].curve.clone();
+            let tau = core::f64::consts::TAU;
+            for range in [(4.7, tau + 1.0), (-1.0, 1.5)] {
+                let pcurve = exact_pcurve_over(&circle, range, surface, T).expect("a parallel");
+                for i in 0..=8 {
+                    let t = (range.1 - range.0).mul_add(f64::from(i) / 8.0, range.0);
+                    let at = pcurve.point_at(t, T).unwrap();
+                    let lifted = surface.point_at(at.x.rem_euclid(tau), at.y, T).unwrap();
+                    assert!(
+                        lifted.distance(circle.point_at(t, T).unwrap()) < 1e-9,
+                        "{range:?} at {t}"
+                    );
+                }
+            }
+        }
+    }
+
     /// A plane through a cone's apex: tangent, it touches along one ruling;
     /// steeper, it holds two; shallower, it meets the apex alone. Every
     /// ruling lies on both surfaces and stays within the cone's window.
