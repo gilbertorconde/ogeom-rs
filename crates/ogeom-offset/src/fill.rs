@@ -13,9 +13,11 @@
 //! surface must pass through. Its face is bounded by the given edges
 //! themselves, each carrying a pcurve on the fitted patch, so sewing it to
 //! the faces around it finds the edges already shared. The patch is a
-//! height field over the plane the boundary loop spans, fitted over a
-//! rectangle wider than the hole and trimmed by the edges; every deviation
-//! the caller asked about is measured along every side and reported.
+//! height field over the plane the boundary loop spans, or where the loop
+//! or its supports turn square to that plane a patch free in all three
+//! coordinates over a chart drawn from the loop, fitted over a rectangle
+//! wider than the hole and trimmed by the edges; every deviation the caller
+//! asked about is measured along every side and reported.
 
 use ogeom_algo::{Built, History, make_natural_face};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};

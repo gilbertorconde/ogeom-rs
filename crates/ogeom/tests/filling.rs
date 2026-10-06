@@ -658,3 +658,234 @@ fn two_semicircles_in_crossing_planes_fill_within_tolerance() {
         );
     }
 }
+
+/// The tube's radius and height.
+const TUBE: (f64, f64) = (5.0, 10.0);
+
+/// A tube standing on a circle at z = 0, as two half arcs or one closed
+/// edge, swept up: its wall faces, and its top rim as sides meeting them
+/// at `continuity`.
+fn tube_rim(
+    model: &mut Model,
+    halves: bool,
+    continuity: ogeom::geom::Continuity,
+) -> (Vec<Shape>, Vec<ogeom::offset::FillBoundary>) {
+    use ogeom::geom::CircleCurve;
+    use ogeom::math::{Circle, Frame, Vector};
+    use ogeom::offset::FillBoundary;
+    use std::f64::consts::{PI, TAU};
+
+    let (r, h) = TUBE;
+    let circle: ogeom::geom::Curve =
+        CircleCurve::new(Circle::new(Frame::WORLD, r, T).unwrap()).into();
+    let edges = if halves {
+        let ends = [Point::new(r, 0.0, 0.0), Point::new(-r, 0.0, 0.0)]
+            .map(|p| ogeom::algo::make_vertex(model, p).shape);
+        [(0.0, PI, 0, 1), (PI, TAU, 1, 0)]
+            .map(|(a, b, from, to)| {
+                ogeom::algo::make_edge_between(
+                    model,
+                    circle.clone(),
+                    (a, b),
+                    &ends[from],
+                    &ends[to],
+                    T,
+                )
+                .unwrap()
+                .shape
+            })
+            .to_vec()
+    } else {
+        vec![
+            ogeom::algo::make_edge(model, circle, (0.0, TAU), T)
+                .unwrap()
+                .shape,
+        ]
+    };
+    let wire = ogeom::algo::make_wire(model, &edges, T).unwrap().shape;
+    let walls = ogeom::algo::make_prism(model, &wire, Vector::new(0.0, 0.0, h), T)
+        .unwrap()
+        .shape;
+    let wall_faces =
+        ogeom::topo::explore_unique(model, &walls, ogeom::topo::ShapeType::Face).unwrap();
+    let mut sides = Vec::new();
+    for face in &wall_faces {
+        for edge in edges_at_height(model, face, h) {
+            sides.push(FillBoundary {
+                edge,
+                support: Some(face.clone()),
+                continuity,
+            });
+        }
+    }
+    assert_eq!(sides.len(), edges.len(), "one rim edge per wall edge");
+    (wall_faces, sides)
+}
+
+/// What a cap on a tube achieved.
+struct Cap {
+    /// Where the cap crosses the tube's axis.
+    top: f64,
+    /// The largest distance from the rim circle to the cap's surface.
+    rim_off: f64,
+    /// The largest distance from the cap's mesh, turned a quarter and an
+    /// eighth of a turn about the axis, to its surface.
+    turned_off: f64,
+    /// The worst tangency, gap and curvature difference against the wall.
+    tangency: f64,
+    gap: f64,
+    curvature: f64,
+}
+
+/// The tube [`tube_rim`] builds, its top rim filled meeting the wall at
+/// `continuity`; the cap sewn to the wall leaves only the bottom rim open,
+/// and `check` finds nothing else wrong with the sewn sheet.
+fn capped_tube(halves: bool, continuity: ogeom::geom::Continuity, tolerance: f64) -> Cap {
+    use ogeom::offset::make_filling_n;
+    use std::f64::consts::PI;
+
+    let (r, h) = TUBE;
+    let mut model = Model::new();
+    let (wall_faces, sides) = tube_rim(&mut model, halves, continuity);
+    let filled = make_filling_n(&mut model, &sides, &[], tolerance, T).unwrap();
+    let face = filled.built.shape.clone();
+    let surface = surface_of(&model, &face);
+
+    let top = ogeom::algo::project_on_surface(&surface, Point::new(0.0, 0.0, h + r), 32, T)
+        .unwrap()
+        .point;
+    assert!(
+        top.x.hypot(top.y) < 1e-3,
+        "the cap crowns on the axis: {top:?}"
+    );
+    let rim_off = worst_off(
+        &surface,
+        (0..360).map(|k| {
+            let a = f64::from(k).to_radians();
+            Point::new(r * a.cos(), r * a.sin(), h)
+        }),
+    );
+    let mesh = valid_mesh(&model, &face);
+    let turned_off = [PI / 2.0, PI / 4.0]
+        .map(|a| {
+            mirrored_off(&surface, &mesh, |p| {
+                Point::new(
+                    p.x * a.cos() - p.y * a.sin(),
+                    p.x * a.sin() + p.y * a.cos(),
+                    p.z,
+                )
+            })
+        })
+        .into_iter()
+        .fold(0.0, f64::max);
+
+    let mut all = wall_faces.clone();
+    all.push(face.clone());
+    let sewn = ogeom::algo::sew(&mut model, &all, T).unwrap();
+    assert_eq!(sewn.shells.len(), 1, "the wall and the cap make one shell");
+    assert_eq!(
+        sewn.free_edges.len(),
+        sides.len(),
+        "only the bottom rim stays open"
+    );
+    let shell = sewn.shells[0].clone();
+    let face = sewn
+        .history
+        .modified(&face)
+        .first()
+        .cloned()
+        .unwrap_or(face);
+    // The open bottom rim is the shell's one finding.
+    let diagnosis = ogeom::algo::check(&model, &shell, T).unwrap();
+    assert!(
+        diagnosis.is_usable()
+            && diagnosis
+                .problems
+                .iter()
+                .all(|p| p.kind == ogeom::topo::ShapeType::Shell),
+        "{diagnosis}"
+    );
+    let contacts = ogeom::fillet::analyse_blend(&model, &shell, &face, 41, T).unwrap();
+    assert_eq!(contacts.len(), sides.len(), "the cap meets every wall");
+    let (mut tangency, mut gap, mut curvature) = (0.0f64, 0.0f64, 0.0f64);
+    for contact in &contacts {
+        tangency = tangency.max(contact.tangency_error);
+        gap = gap.max(contact.gap);
+        curvature = curvature.max(contact.curvature_error);
+    }
+    Cap {
+        top: top.z,
+        rim_off,
+        turned_off,
+        tangency,
+        gap,
+        curvature,
+    }
+}
+
+#[test]
+fn a_tangent_cap_closes_a_tube() {
+    use ogeom::geom::Continuity;
+
+    // The wall stands square to the rim's plane all round, so the cap
+    // leaves the rim straight up and crowns above it; the tube is round,
+    // so the cap is too. A G2 cap leaves the rim unbent, as the wall
+    // stands straight.
+    let tolerance = 1e-3;
+    for (halves, continuity) in [
+        (true, Continuity::G1),
+        (false, Continuity::G1),
+        (true, Continuity::G2),
+        (false, Continuity::G2),
+    ] {
+        let cap = capped_tube(halves, continuity, tolerance);
+        let case = format!("{continuity:?}, halves {halves}");
+        assert!(cap.top > 10.5, "{case}: the cap crowns at {}", cap.top);
+        assert!(
+            cap.rim_off <= tolerance,
+            "{case}: the rim stands {} off",
+            cap.rim_off
+        );
+        // Round to within a fiftieth of its 2.5 crown: the net the patch
+        // is fitted on is square, the cap round.
+        assert!(
+            cap.turned_off <= 0.05,
+            "{case}: turned, {} off",
+            cap.turned_off
+        );
+        assert!(cap.gap <= tolerance, "{case}: a gap of {}", cap.gap);
+        assert!(
+            cap.tangency <= tolerance,
+            "{case}: {} radians from tangent",
+            cap.tangency
+        );
+        if continuity == Continuity::G2 {
+            assert!(
+                cap.curvature <= tolerance,
+                "{case}: the curvature differs by {}",
+                cap.curvature
+            );
+        }
+    }
+}
+
+#[test]
+fn a_tangent_cap_through_a_point_is_refused_naming_the_walls_angle() {
+    use ogeom::geom::Continuity;
+    use ogeom::offset::make_filling_n;
+
+    // The cap's chart is drawn from its rim, which places no interior
+    // point; the refusal says how steep the wall stands and how steep a
+    // height over the rim's plane may be.
+    let mut model = Model::new();
+    let (_, sides) = tube_rim(&mut model, true, Continuity::G1);
+    let crown = ogeom::algo::make_vertex(&mut model, Point::new(0.0, 0.0, 12.0)).shape;
+    match make_filling_n(&mut model, &sides, &[crown], 1e-3, T) {
+        Err(ogeom::core::OgeomError::Construction(message)) => {
+            let message = message.to_string();
+            assert!(message.contains("at 90.0 degrees"), "{message}");
+            assert!(message.contains("past the 84.3"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}

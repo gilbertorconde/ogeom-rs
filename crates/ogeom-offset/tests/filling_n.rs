@@ -655,14 +655,16 @@ fn refusals_name_what_is_wrong() {
     let message = construction_error(make_filling_n(&mut model, &wrong, &[], 1e-5, T));
     assert!(message.contains("does not hold"), "{message}");
 
-    // Tangent to a vertical wall along a level hole: the fill would stand
-    // square to the plane the hole spans, which no height field does.
+    // Tangent to four walls meeting square at the corners: a surface
+    // through a corner holds both top edges' tangents, so it cannot be
+    // tangent to both walls, which stand 45 degrees off each other's edge.
     let mut steep = sides.clone();
     for side in &mut steep {
         side.continuity = Continuity::G1;
     }
     let message = construction_error(make_filling_n(&mut model, &steep, &[], 1e-5, T));
-    assert!(message.contains("square to the plane"), "{message}");
+    assert!(message.contains("no surface is tangent"), "{message}");
+    assert!(message.contains("45.0 degrees"), "{message}");
 
     // A point outside the hole.
     let outside = make_vertex(&mut model, Point::new(3.0, 0.0, 0.0)).shape;

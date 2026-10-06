@@ -37,6 +37,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Fillings take saddles, crossing semicircles and tube caps (#121, #122,
+  #123).** `make_filling_n` read rounding noise along a straight side as
+  the loop crossing itself, refusing a four-line saddle; a point within
+  rounding of a line counts as on it. A loop whose corners look smooth from
+  the plane it spans (two semicircles meeting square in crossing planes),
+  and tangent sides whose supports stand square to that plane (a cap on a
+  tube), are filled by a patch free in all three coordinates over a chart
+  drawn from the loop, without folds; a tube's G1 and G2 cap leaves the rim
+  along the wall. A corner where no surface can be tangent to both supports
+  is refused naming the angle, and a steep support's refusal states its
+  angle and the limit.
+
 - **STEP keeps a file's pcurves, and sewing keeps a reversed face's
   rings.** The reader derived every edge's pcurves itself; it keeps the
   file's pcurve where it follows the curve within twice the projection's

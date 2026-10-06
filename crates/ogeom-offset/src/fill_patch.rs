@@ -16,14 +16,18 @@
 //!
 //! A loop whose corner is seen smooth along the plane's normal is no
 //! height field over it: the two sides meeting there ask for two slopes at
-//! one point. The free patch fits all three coordinates of its control
-//! points over a chart the caller draws from the loop itself, each
-//! condition fixing a derivative of the point `S(u, v)`. Every condition is
-//! still linear, and the three coordinates share one matrix.
+//! one point. Nor is a hole whose sides' supports stand square to the
+//! plane, as a tube's wall does to its rim's. The free patch fits all three
+//! coordinates of its control points over a chart the caller draws from
+//! the loop itself, each condition fixing a derivative of the point
+//! `S(u, v)`: a point condition fixes `S`, and a tangent ribbon fixes the
+//! derivative of `S` across the side, a vector that may run square to the
+//! plane. Every condition is still linear, and the three coordinates share
+//! one matrix.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::BSplineSurface;
-use ogeom_math::{ControlGrid, KnotVector, Point, Point2, Vector};
+use ogeom_math::{ControlGrid, KnotVector, Point, Point2, Vector, Vector2};
 
 /// The degree of the height patch in both directions: cubic, so the
 /// curvature a G2 side asks for is continuous across the patch.
@@ -71,6 +75,26 @@ impl<const D: usize> Condition<D> {
         Self {
             at,
             terms: [(order.0, order.1, 1.0), (0, 0, 0.0), (0, 0, 0.0)],
+            target,
+            weight,
+        }
+    }
+
+    /// The first (`second` false) or second derivative along the unit
+    /// chart direction `d`.
+    pub fn along(at: Point2, d: Vector2, second: bool, target: [f64; D], weight: f64) -> Self {
+        let terms = if second {
+            [
+                (2, 0, d.x * d.x),
+                (1, 1, 2.0 * d.x * d.y),
+                (0, 2, d.y * d.y),
+            ]
+        } else {
+            [(1, 0, d.x), (0, 1, d.y), (0, 0, 0.0)]
+        };
+        Self {
+            at,
+            terms,
             target,
             weight,
         }

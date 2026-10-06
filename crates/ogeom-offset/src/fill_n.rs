@@ -87,8 +87,9 @@ const BUDGET: f64 = 0.1;
 /// The least weight of the bending energy: below it rounding rather than
 /// the energy would settle the controls the conditions leave free.
 const LEAST_SMOOTHING: f64 = 1e-12;
-/// The least cosine between a support's normal and the plane's normal:
-/// about 84 degrees.
+/// The least cosine between a support's normal and the plane's normal for
+/// a height over the plane to meet it (about 84 degrees between them);
+/// below it the free patch does.
 const MIN_LIFT: f64 = 0.1;
 /// A constraint point's weight, as the share of the hole's size a boundary
 /// sample of that length would carry.
@@ -99,6 +100,9 @@ const PER_CURVE: usize = 32;
 /// plane's normal for a height over that plane to fill it; below it the
 /// free patch does.
 const KEEP: f64 = 0.25;
+/// Stations per tangent side at which its support's lift off the plane is
+/// read.
+const STEEP_SAMPLES: usize = 256;
 /// Samples per side for the chart the free patch is drawn over.
 const CHART_SAMPLES: usize = 128;
 /// The largest share of a half turn a corner of that chart turns.
@@ -124,10 +128,16 @@ const CORNER: f64 = 0.0175;
 /// residual no longer outweighs the energy, or the refinement runs out.
 /// Where a corner of the loop is seen smooth along the plane's normal (two
 /// sides meeting at an angle, each in a plane through that normal), no
-/// height over the plane meets both sides there: the patch is then fitted
-/// in all three coordinates over a chart drawn from the loop itself, whose
-/// corners are the loop's, and refined until it also does not fold over
-/// inside the hole.
+/// height over the plane meets both sides there; nor does one where a G1
+/// or G2 side's support stands within about 6 degrees of square to the
+/// plane, as a tube's wall does to its rim. The patch is then fitted in all
+/// three coordinates over a chart drawn from the loop itself, whose
+/// corners are the loop's: a tangent side fixes the patch's derivative
+/// across it to run into the support, square to the edge, at the side's
+/// own speed (so a cap leaves a tube's rim along the wall and crowns above
+/// it), and a G2 side fixes the second derivative across it to bend as the
+/// support does; the net is refined until the patch also does not fold
+/// over inside the hole.
 /// The face is trimmed by the given edges themselves where they are not
 /// placed and share vertex nodes end to end, each given a pcurve on the
 /// patch; any other side is stood in for by a new edge on its curve
@@ -163,11 +173,15 @@ const CORNER: f64 = 0.0175;
 /// - the loop encloses no area, or crosses itself seen along the normal of
 ///   the plane it spans (the plane it encloses the most area seen square
 ///   to), so the hole is not a height field over that plane;
-/// - a G1 or G2 side's support stands within about 6 degrees of square to
-///   that plane;
+/// - two sides meet at a corner where a G1 or G2 side's support stands off
+///   the other side's tangent by more than `tolerance`, so no surface is
+///   tangent to it there;
+/// - a G1 or G2 side's support uses its edge both ways or neither where the
+///   patch is drawn over the loop's own chart;
 /// - a constraint is neither a vertex nor an edge, or lies outside the hole
-///   seen along the plane's normal, or is given where a corner of the loop
-///   is seen smooth along it;
+///   seen along the plane's normal, or is given where the patch is drawn
+///   over the loop's own chart (the message names the corner or the
+///   support's angle to the plane that called for it);
 /// - the loop's corners turn so far that no chart drawn from it closes.
 ///
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the finest
@@ -227,15 +241,30 @@ pub fn make_filling_n(
     // A corner seen smooth along the plane's normal asks a height over the
     // plane for two slopes at one point, one from each side; the free patch
     // over a chart drawn from the loop, whose corners are the loop's, takes
-    // it.
+    // it. So does a support standing square to the plane, which asks a
+    // height for an infinite slope: the free patch's derivative across a
+    // side is a vector, which may run square to the plane.
     let corners = corners_of(&sides, &order, tol)?;
-    let free = kept_turn(frame.n, &corners) < KEEP;
+    tangent_corners(&sides, &order, &corners, tolerance, tol)?;
+    let steepest = steepest_support(&sides, &frame, tol)?;
+    let free =
+        kept_turn(frame.n, &corners) < KEEP || steepest.is_some_and(|(_, lift)| lift < MIN_LIFT);
     if free && !interior.is_empty() {
+        let why = match steepest {
+            Some((i, lift)) if lift < MIN_LIFT => format!(
+                "side {i}'s support stands at {:.1} degrees to the plane the \
+                 boundary spans, past the {:.1} a height over that plane takes",
+                lift.acos().to_degrees(),
+                MIN_LIFT.acos().to_degrees()
+            ),
+            _ => "a corner of the boundary loop is seen smooth along the normal \
+                  of the plane it spans"
+                .to_owned(),
+        };
         ogeom_bail!(
             Construction,
-            "a corner of the boundary loop is seen smooth along the normal of \
-             the plane it spans, so the filling is drawn over a chart of the \
-             loop's own, which places no interior constraints"
+            "{why}, so the filling is drawn over a chart of the loop's own, \
+             which places no interior constraints"
         );
     }
     let mut traces = Vec::with_capacity(sides.len());
@@ -385,6 +414,11 @@ struct Support {
     surface: SurfaceGeometry,
     pcurve: PlanarCurve,
     prange: (f64, f64),
+    /// Which side of the edge the support's material lies on: the
+    /// direction into it is `material · (normal × d1)`, the surface's
+    /// normal crossed with the edge curve's derivative. `None` where the
+    /// face uses the edge both ways or neither.
+    material: Option<f64>,
 }
 
 /// One side, read and checked.
@@ -527,10 +561,25 @@ fn read_support(
         ogeom_bail!(Dangling, "side {i}'s support is not in this model");
     };
     let face_placed = !(face.location().is_identity() && face_data.location.is_identity());
-    let holds = explore(model, face, Filter::OfType(ShapeType::Edge))?
+    // A face's material lies on the left of each edge as its wire walks
+    // it, seen from the face's side of its surface.
+    let uses: Vec<Orientation> = explore(model, face, Filter::OfType(ShapeType::Edge))?
         .iter()
-        .any(|e| e.is_same(edge));
-    if !holds {
+        .filter(|e| e.is_same(edge))
+        .map(Shape::orientation)
+        .collect();
+    let sense = |o: Orientation| match o {
+        Orientation::Forward => Some(1.0),
+        Orientation::Reversed => Some(-1.0),
+        _ => None,
+    };
+    let material = match uses.as_slice() {
+        [first, rest @ ..] if rest.iter().all(|o| o == first) => sense(face.orientation())
+            .zip(sense(*first))
+            .map(|(f, e)| f * e),
+        _ => None,
+    };
+    if uses.is_empty() {
         ogeom_bail!(
             Construction,
             "side {i}'s support face does not hold the side's edge at its placement"
@@ -611,6 +660,7 @@ fn read_support(
         surface,
         pcurve,
         prange,
+        material,
     })
 }
 
@@ -1293,10 +1343,11 @@ fn side_conditions(
         if lift.abs() < MIN_LIFT {
             ogeom_bail!(
                 Construction,
-                "side {}'s support stands within {:.1} degrees of square to the \
-                 plane the boundary spans; the hole is not a height field over it",
+                "side {}'s support stands at {:.1} degrees to the plane the \
+                 boundary spans, past the {:.1} a height over that plane takes",
                 side.entry,
-                lift.abs().asin().to_degrees()
+                lift.abs().acos().to_degrees(),
+                MIN_LIFT.acos().to_degrees()
             );
         }
         // The support's normal on the plane's side, and the slopes that
@@ -1369,6 +1420,143 @@ fn free_conditions(
         let p = side.curve.point_at(t, tol)?;
         let at = pcurve.point_at(t, tol)?;
         out.push(Condition::partial(at, (0, 0), [p.x, p.y, p.z], root / size));
+        if side.order == 0 {
+            continue;
+        }
+        let (Some((uv, normal)), Some(support)) = (side.support_at(t, tol)?, &side.support) else {
+            continue;
+        };
+        let Some(material) = support.material else {
+            ogeom_bail!(
+                Construction,
+                "side {}'s support uses its edge both ways or neither, so which \
+                 side of it the filling leaves from is not known",
+                side.entry
+            );
+        };
+        // The chart walks the loop counter-clockwise, so the hole lies on
+        // the left of the walk and the support on its right: the ribbon
+        // runs across the side along the chart's outward normal, into the
+        // support, at the speed the side runs at along it.
+        let d1 = side.curve.d1_at(t, tol)?;
+        let c1 = pcurve.d1_at(t, tol)?;
+        let walk = if side.reversed { -1.0 } else { 1.0 };
+        let speed = c1.magnitude();
+        if speed <= f64::MIN_POSITIVE {
+            continue;
+        }
+        let along = c1 * (walk / speed);
+        let outward = Vector2::new(along.y, -along.x);
+        let into = normal.cross(d1) * material;
+        let Ok(into) = Direction::new(into, tol) else {
+            continue;
+        };
+        let into = into.vector();
+        let ribbon = into * (d1.magnitude() / speed);
+        out.push(Condition::along(
+            at,
+            outward,
+            false,
+            [ribbon.x, ribbon.y, ribbon.z],
+            root,
+        ));
+        if side.order < 2 {
+            continue;
+        }
+        // Across the side the patch bends as the support does: the second
+        // derivative along the ribbon has the support's normal curvature
+        // there times the ribbon's squared length along the normal, and
+        // nothing along the surface.
+        let curvature = support.surface.curvature_at(uv.x, uv.y, tol)?;
+        let Some(bend) = curvature.normal_curvature(into) else {
+            continue;
+        };
+        let second = curvature.normal.vector() * (bend * ribbon.dot(ribbon));
+        out.push(Condition::along(
+            at,
+            outward,
+            true,
+            [second.x, second.y, second.z],
+            root * size,
+        ));
+    }
+    Ok(())
+}
+
+/// The tangent sides' supports' least lift off the plane, at stations
+/// spread over each: the side and the cosine between the support's normal
+/// and the plane's. `None` with no tangent side.
+fn steepest_support(
+    sides: &[Side],
+    frame: &PlaneFrame,
+    tol: Tolerances,
+) -> OgeomResult<Option<(usize, f64)>> {
+    let mut steepest: Option<(usize, f64)> = None;
+    for side in sides.iter().filter(|s| s.order > 0) {
+        for k in 0..=STEEP_SAMPLES {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a sample index, far below the mantissa"
+            )]
+            let t = side.parameter(k as f64 / STEEP_SAMPLES as f64);
+            let Some((_, normal)) = side.support_at(t, tol)? else {
+                continue;
+            };
+            let lift = normal.dot(frame.n).abs();
+            if steepest.is_none_or(|(_, least)| lift < least) {
+                steepest = Some((side.entry, lift));
+            }
+        }
+    }
+    Ok(steepest)
+}
+
+/// Refuse a corner where two sides meet and no surface is tangent to the
+/// supports of both: a surface through the corner holds both sides'
+/// tangents in its tangent plane, so a tangent side's support must hold
+/// the other side's tangent too, and stands off tangent to any filling by
+/// at least the angle between that tangent and its own tangent plane.
+fn tangent_corners(
+    sides: &[Side],
+    order: &[usize],
+    corners: &[(Vector, Vector, f64)],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for (k, (arrive, leave, _)) in corners.iter().enumerate() {
+        let (a, b) = (&sides[order[k]], &sides[order[(k + 1) % order.len()]]);
+        let end = |side: &Side, last: bool| {
+            if last == side.reversed {
+                side.range.0
+            } else {
+                side.range.1
+            }
+        };
+        for (side, at, other, tangent) in
+            [(a, end(a, true), b, *leave), (b, end(b, false), a, *arrive)]
+        {
+            if side.order == 0 {
+                continue;
+            }
+            let Some((_, normal)) = side.support_at(at, tol)? else {
+                continue;
+            };
+            let off = normal.dot(tangent).abs().min(1.0).asin();
+            if off > tolerance {
+                ogeom_bail!(
+                    Construction,
+                    "sides {} and {} meet at a corner no surface is tangent to \
+                     both supports at: side {}'s support stands {:.1} degrees off \
+                     side {}'s tangent there, past the tolerance of {tolerance} \
+                     radians",
+                    side.entry,
+                    other.entry,
+                    side.entry,
+                    off.to_degrees(),
+                    other.entry,
+                );
+            }
+        }
     }
     Ok(())
 }
