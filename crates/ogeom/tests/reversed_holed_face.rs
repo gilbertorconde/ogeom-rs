@@ -267,3 +267,50 @@ fn a_drill_down_the_bore_meets_no_material() {
         "the drill shares {shared} with the plate"
     );
 }
+
+/// The base carried by translation downward: a pipe whose section is a
+/// face used reversed is the same plate below it.
+#[test]
+fn a_fixed_pipe_of_the_reversed_base_is_the_plate_again() {
+    let mut model = Model::new();
+    let (_, base) = plate(&mut model);
+    let spine = ogeom::algo::make_edge(
+        &mut model,
+        ogeom::geom::LineCurve::segment(Point::ORIGIN, Point::new(0.0, 0.0, -THICK), T)
+            .unwrap()
+            .into(),
+        (0.0, THICK),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let spine = ogeom::algo::make_wire(&mut model, &[spine], T)
+        .unwrap()
+        .shape;
+    let pipe = ogeom::offset::make_pipe_shell_with(
+        &mut model,
+        &base,
+        &spine,
+        &ogeom::offset::PipeLaw::Fixed,
+        ogeom::offset::PipeCorners::Mitre,
+        1e-3,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let diagnosis = ogeom::algo::check(&model, &pipe, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let v = volume(&model, &pipe);
+    let want = net_area() * THICK;
+    assert!((v - want).abs() < want * 1e-3, "{v} against {want}");
+    for face in explore_unique(&model, &pipe, ShapeType::Face).unwrap() {
+        let stored = model.children_of(&face).unwrap();
+        if stored.len() == 2 {
+            assert!(
+                spread(&model, &stored[0]) > W,
+                "a cap stores its bore first"
+            );
+        }
+    }
+}
+

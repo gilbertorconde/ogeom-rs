@@ -46,7 +46,10 @@ pub(crate) fn fixed_pipe(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let rings: Vec<Shape> = match model.kind_of(profile)? {
-        ShapeType::Face => model.ordered_children_of(profile)?,
+        // The outer ring first, as the face stores it, each walked under
+        // the face's sense: the walk of a reversed face lists its holes
+        // first.
+        ShapeType::Face => model.children_of(profile)?,
         ShapeType::Wire => vec![profile.clone()],
         _ => ogeom_bail!(Construction, "a pipe sweeps a planar face or wire"),
     };
