@@ -923,7 +923,8 @@ impl BoxGrid {
 /// Polylines with their boxes, for asking [`inside_many`] of many points.
 struct Boxed<'a> {
     lines: &'a [&'a [Point2]],
-    boxes: Vec<(f64, f64, f64)>,
+    /// `(low x, high x, low y, high y)` of each line.
+    boxes: Vec<(f64, f64, f64, f64)>,
 }
 
 impl<'a> Boxed<'a> {
@@ -932,26 +933,39 @@ impl<'a> Boxed<'a> {
             .iter()
             .map(|line| {
                 line.iter().fold(
-                    (f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
-                    |(low_y, high_y, high_x), q| (low_y.min(q.y), high_y.max(q.y), high_x.max(q.x)),
+                    (
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                    ),
+                    |(lx, hx, ly, hy), q| (lx.min(q.x), hx.max(q.x), ly.min(q.y), hy.max(q.y)),
                 )
             })
             .collect();
         Self { lines, boxes }
     }
 
-    /// [`inside_many`], skipping the polylines the ray cannot cross: one
-    /// wholly above or below the point's height, where no segment
-    /// straddles it, or wholly left of it, where the exact side test puts
-    /// the point right of every segment that does.
+    /// [`inside_many`] along the leaning ray, skipping the polylines whose
+    /// box stands wholly on one side of its line. A probe stands midway
+    /// between its own cycle's vertex heights, which a symmetric face puts
+    /// level with a corner of the boundary; two strands ending at that
+    /// corner a rounding apart in height straddle a level ray both or
+    /// neither. The leaning ray passes no corner.
     fn inside(&self, p: Point2) -> bool {
+        let shifted = [p.x + 1.0, p.y + SLANT];
+        let above = |x: f64, y: f64| Exact::orient2d([p.x, p.y], shifted, [x, y]) == Sign::Positive;
         let mut inside = false;
-        for (line, &(low_y, high_y, high_x)) in self.lines.iter().zip(&self.boxes) {
-            if low_y > p.y || high_y <= p.y || high_x < p.x {
+        for (line, &(lx, hx, ly, hy)) in self.lines.iter().zip(&self.boxes) {
+            if lx.partial_cmp(&hx).is_none_or(core::cmp::Ordering::is_gt) {
+                continue;
+            }
+            let corners = [above(lx, ly), above(lx, hy), above(hx, ly), above(hx, hy)];
+            if corners.iter().all(|&c| c == corners[0]) {
                 continue;
             }
             for w in line.windows(2) {
-                if ray_crosses_segment::<Exact>(w[0], w[1], p) {
+                if slanted_ray_crosses_segment::<Exact>(w[0], w[1], p) {
                     inside = !inside;
                 }
             }
@@ -1477,6 +1491,39 @@ mod tests {
         ];
         let pieces = assemble(&strands, 1e-3).unwrap();
         assert_eq!(pieces.len(), 2);
+    }
+
+    /// A parallelogram whose left and right corners stand level at height
+    /// 0, cut by two chords into three strips. The middle strip's probe
+    /// stands midway between its corners' heights, level with the right
+    /// corner, where the two boundary strands ending there disagree in
+    /// height by a rounding: the strip is material all the same, and the
+    /// three strips make the whole parallelogram.
+    #[test]
+    fn a_strip_whose_probe_is_level_with_a_corner_is_kept() {
+        let p = Point2::new;
+        let boundary = |a: Point2, b: Point2, tag: usize| Strand {
+            polyline: vec![a, b],
+            tag,
+            boundary: true,
+        };
+        let strands = vec![
+            boundary(p(0.0, 0.0), p(20.0, -5.0), 0),
+            boundary(p(20.0, -5.0), p(20.4375, -3.25), 1),
+            boundary(p(20.4375, -3.25), p(20.875, -1.5), 2),
+            boundary(p(20.875, -1.5), p(21.25, 0.0), 3),
+            boundary(p(21.25, 4.4e-16), p(1.25, 5.0), 4),
+            boundary(p(1.25, 5.0), p(0.8125, 3.25), 5),
+            boundary(p(0.8125, 3.25), p(0.375, 1.5), 6),
+            boundary(p(0.375, 1.5), p(0.0, 0.0), 7),
+            strand(p(0.8125, 3.25), p(20.875, -1.5), 8),
+            strand(p(20.4375, -3.25), p(0.375, 1.5), 9),
+        ];
+        let pieces = assemble(&strands, 1e-6).unwrap();
+        let areas: Vec<f64> = pieces.iter().map(|q| area(&q.outlines[0]).abs()).collect();
+        assert_eq!(pieces.len(), 3, "{areas:?}");
+        let whole: f64 = areas.iter().sum();
+        assert!((whole - 106.25).abs() < 1e-9, "{areas:?}");
     }
 
     #[test]
