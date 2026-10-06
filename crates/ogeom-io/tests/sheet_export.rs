@@ -509,3 +509,88 @@ fn a_boundary_whose_pieces_run_against_the_loop_reads() {
         assert_same_faces(&original, &face_records(model, part));
     }
 }
+
+/// The upper half disc of radius 5 about (5, 0, 0) on z = 0, with a hole of
+/// radius 1 at (5, 2, 0), every edge on a trimmed curve that runs against
+/// its basis: the diameter on a line about its middle, the arc on the
+/// second half turn of a whole circle about +z (its first half turn would
+/// be the lower half), the hole on a whole circle about +z, which so runs
+/// clockwise. Area 11.5π, facing +z.
+fn half_disc_on_reversed_trims(model: &mut Model) -> Shape {
+    use ogeom_geom::{CircleCurve, Curve, LineCurve, PlaneSurface, Reversible as _, TrimmedCurve};
+    use ogeom_math::{Axis, Circle, Direction, Plane};
+    use std::f64::consts::{PI, TAU};
+    let backwards = |basis: Curve, start: f64, end: f64| {
+        Curve::Trimmed(Box::new(TrimmedCurve::new(basis, start, end, T).unwrap())).reversed()
+    };
+    let (a, m, b) = (
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(5.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+    );
+    let [va, vb] = [a, b].map(|p| ogeom_algo::make_vertex(model, p).shape);
+    // At u the basis is at -u, so the edge stands at m + u along +x, from
+    // a at -5 to b at 5.
+    let line = backwards(
+        Curve::Line(LineCurve::new(Axis::new(m, -Direction::X))),
+        -10.0,
+        10.0,
+    );
+    let line_edge = ogeom_algo::make_edge_between(model, line, (-5.0, 5.0), &va, &vb, T)
+        .unwrap()
+        .shape;
+    // At u the basis is at angle 2π - u: from a at π over the top to b.
+    let circle = |centre: Point, r: f64| {
+        let frame = Frame::new(centre, Direction::Z, Direction::X, T).unwrap();
+        Curve::Circle(CircleCurve::new(Circle::new(frame, r, T).unwrap()))
+    };
+    let arc = backwards(circle(m, 5.0), 0.0, TAU);
+    let arc_edge = ogeom_algo::make_edge_between(model, arc, (PI, TAU), &va, &vb, T)
+        .unwrap()
+        .shape;
+    let hole = backwards(circle(Point::new(5.0, 2.0, 0.0), 1.0), 0.0, TAU);
+    let hole_edge = ogeom_algo::make_edge(model, hole, (0.0, TAU), T)
+        .unwrap()
+        .shape;
+    let plane = PlaneSurface::new(Plane::new(Frame::WORLD));
+    ogeom_algo::make_face_with_pcurves(
+        model,
+        plane.into(),
+        &[vec![line_edge, arc_edge.reversed()], vec![hole_edge]],
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+/// A face bounded by trimmed curves running against their bases reads
+/// back as the face it was, in the same place: each piece goes out at its
+/// own points, not at the trim's range read on the basis.
+#[test]
+fn trimmed_curves_running_backwards_round_trip_through_iges_in_place() {
+    let mut model = Model::new();
+    let face = half_disc_on_reversed_trims(&mut model);
+    assert_valid(&model, &face);
+    let original = face_records(&model, &face);
+    let expected = 11.5 * std::f64::consts::PI;
+    assert!((original[0].0 - expected).abs() < 1e-6, "{original:?}");
+    let centre = |model: &Model, shape: &Shape| {
+        ogeom_algo::surface_properties(model, shape, Deflection::default(), T)
+            .unwrap()
+            .centre
+    };
+    let before = centre(&model, &face);
+    assert!(before.y > 1.0, "{before:?}");
+
+    let text = ogeom_io::write_iges(&document_of(model, face), T).unwrap();
+    let import = ogeom_io::read_iges(&text, T).unwrap();
+    let model = import.document.model();
+    let part = &part_shapes(&import.document)[0];
+    assert_usable(model, part);
+    assert_same_faces(&original, &face_records(model, part));
+    let after = centre(model, part);
+    assert!(
+        after.distance(before) < 1e-6,
+        "{after:?} against {before:?}"
+    );
+}

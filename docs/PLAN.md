@@ -307,8 +307,9 @@ agree with the ring.
   each other (it reads the inside-out volume), and a blend wedge, which
   is oriented by construction and whose band wedges can overlap in the
   mesh so the sign reads wrong (a cross-bore band wedge of 8.4 mm3
-  meshed to -304). Still open: the writer reads a trimmed curve's range
-  on its basis without the trim's own sense flag.
+  meshed to -304). The writer puts a trimmed curve that runs against its
+  basis out at its own points: its range mirrored in its domain, walked
+  the other way on the basis.
 
 The fillet's side test no longer trusts the walk where the chart's chords
 cannot settle it.

@@ -19,6 +19,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`make_solid` turns a consistent shell facing the wrong way.** A closed
+  shell whose faces all agree but face in made an inside-out solid; the
+  outer shell is turned to face out and a void's shell to face into its
+  cavity, so an imported shell with every face reversed becomes a valid
+  solid. Sewing keeps such a shell as given, since it may bound a void, and
+  builders that want a shell facing in use `Model::add_solid`.
+
+- **IGES writes a reversed trimmed curve at its own points.** A trim running
+  against its basis was written over the basis's forward range, so a
+  reversed half circle came back as the other half.
+
 - **IGES trimmed-surface boundaries round-trip with reversed edges.** Each
   boundary piece was written in its curve's own direction, so a sheet or
   shell with an edge used reversed (any reversed face) was refused on

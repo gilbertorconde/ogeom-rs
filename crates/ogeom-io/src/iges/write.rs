@@ -601,6 +601,12 @@ impl Writer<'_> {
                     params,
                 }))
             }
+            // A reversed trim runs its basis backwards, each parameter
+            // mirrored in its own domain.
+            Curve::Trimmed(t) if t.is_reversed() => {
+                let (lo, hi) = ogeom_geom::Curve3d::domain(curve);
+                self.curve(t.basis(), (lo + hi - range.1, lo + hi - range.0), !forward)
+            }
             Curve::Trimmed(t) => self.curve(t.basis(), range, forward),
             Curve::BSpline(b) if forward => self.nurbs_curve(b, range),
             Curve::BSpline(b) => {
