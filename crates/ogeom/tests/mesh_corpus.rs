@@ -429,11 +429,15 @@ fn a_socket_head_screw() {
 
 /// The disc capping its chamfered end has every corner on the chamfer's
 /// cone, and its facets near the rim sag no more than a chord of the cone
-/// would; the cone takes none of them, and comes back curved.
+/// would; the cone takes none of them, and comes back curved. The drill
+/// point under its hex socket meets six flat faces along arcs of one
+/// circle, and closes at its apex as a point met by one rim does. It comes
+/// back on the source's twenty faces.
 #[test]
 fn a_button_head_screw() {
     let report = comes_back("m5x16_bhcs.step", true, true);
-    assert!(report.curved_faceted <= 1, "{:?}", report.fallbacks);
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+    assert!(report.faces <= 20, "{} faces came back", report.faces);
 }
 
 /// A turned part some of whose curved faces meet their neighbours all but

@@ -1066,6 +1066,13 @@ the cone took it and could not close (BoundaryNotPlaced). m5x16_bhcs 212,
 and offset the socket's faceted drill point, which stands outside its
 cone); m5x16_bhcs_loops 470, 3, 2.5e-3 to 439, 2, 2.4e-3.
 
+A drill point whose rim is arcs of one circle met by several faces (the
+cone under a hex socket, its base circle touching the six walls) is laid
+out as a cap as one with a single rim circle is: the arcs in turn along
+the parallel's line in the chart, the seam a ruling up from the rim's
+first vertex. m5x16_bhcs 181, 1, 2.0e-4 to 20, 0, 1.1e-4 (the source's
+twenty faces); m5x16_bhcs_loops 439, 2 to 278, 1.
+
 Done for ftc_07, in two steps:
 
 - Its rounds of radius 0.43 along the drafted walls' foot are meshed

@@ -3529,6 +3529,79 @@ fn cone_seamed_through(cone: &Cone, at: Point, tol: Tolerances) -> Option<Cone> 
     Cone::new(frame, cone.reference_radius(), cone.half_angle(), tol).ok()
 }
 
+/// A ring's planned edges in walking order, repeats run together, as
+/// `entry` names each half-edge's.
+fn walk_entries(ring: &[Half], entry: impl Fn(Half) -> (usize, bool)) -> Vec<(usize, bool)> {
+    let mut entries: Vec<(usize, bool)> = Vec::new();
+    for &h in ring {
+        let e = entry(h);
+        if entries.last() != Some(&e) {
+            entries.push(e);
+        }
+    }
+    if entries.len() > 1 && entries.first() == entries.last() {
+        entries.pop();
+    }
+    entries
+}
+
+/// Where a cone's rim starts, walked as `entries` run: the rim one full
+/// circle (its own start), or arcs of one parallel of the cone, each a
+/// circle about the cone's axis through the same height within `reach`,
+/// together going once round (the first one's start as walked). `None`
+/// for any other rim.
+fn cone_rim_start(
+    cone: &Cone,
+    specs: &[EdgeSpec],
+    entries: &[(usize, bool)],
+    reach: f64,
+    tol: Tolerances,
+) -> Option<Point> {
+    use ogeom_geom::Curve3d as _;
+    if entries.iter().any(|&(e, _)| e == usize::MAX) {
+        return None;
+    }
+    if let [(edge, _)] = entries {
+        let spec = &specs[*edge];
+        return if spec.closed_circle {
+            spec.curve.point_at(0.0, tol).ok()
+        } else {
+            None
+        };
+    }
+    let frame = cone.frame();
+    let (o, z) = (frame.origin(), frame.z().vector());
+    let mut height: Option<f64> = None;
+    let (mut sweep, mut slack) = (0.0, 0.0);
+    for &(edge, _) in entries {
+        let spec = &specs[edge];
+        let Curve::Circle(c) = &spec.curve else {
+            return None;
+        };
+        let circle = c.circle();
+        let w = circle.frame().origin() - o;
+        let along = w.dot(z);
+        if circle.frame().z().vector().cross(z).magnitude() > tol.angular()
+            || (w - z * along).magnitude() > reach
+            || (cone.radius_at(along) - circle.radius()).abs() > reach
+            || height.is_some_and(|h| (h - along).abs() > reach)
+        {
+            return None;
+        }
+        height = Some(along);
+        sweep += (spec.range.1 - spec.range.0).abs();
+        slack = reach / circle.radius();
+    }
+    if (sweep - core::f64::consts::TAU).abs() > slack {
+        return None;
+    }
+    let (edge, forward) = entries[0];
+    let spec = &specs[edge];
+    spec.curve
+        .point_at(if forward { spec.range.0 } else { spec.range.1 }, tol)
+        .ok()
+}
+
 /// The same surface on another frame whose axis is the same line: its
 /// radii kept, a cone's reference radius carried to the new origin.
 fn on_frame(shape: &Canonical, frame: Frame, tol: Tolerances) -> Option<Canonical> {
@@ -8040,7 +8113,12 @@ impl Planner<'_> {
             } else if thread.is_some() {
                 Some(Layout::Threaded)
             } else if (curved.wraps && curved.wraps_v) || !circles {
-                wrapped()
+                // A drill's point whose rim is arcs of one circle, met by
+                // several faces, closes at its apex as one met by one.
+                wrapped().or_else(|| {
+                    (rings.len() == 1 && self.cone_tip(&plan, curved, &rings[0]))
+                        .then_some(Layout::Cap)
+                })
             } else if rings.len() == 1
                 && ((sphere && curved.fixed) || self.cone_tip(&plan, curved, &rings[0]))
             {
@@ -8103,11 +8181,9 @@ impl Planner<'_> {
             let turned;
             let curved = match &curved.shape {
                 Canonical::Cone(cone) if cap => {
-                    let (rim, _) = self.entry(&plan, plan.loops[g][0][0]);
-                    let Some(cone) =
-                        ogeom_geom::Curve3d::point_at(&plan.edges[rim].curve, 0.0, self.tol)
-                            .ok()
-                            .and_then(|start| cone_seamed_through(cone, start, self.tol))
+                    let entries = walk_entries(&plan.loops[g][0], |h| self.entry(&plan, h));
+                    let Some(cone) = cone_rim_start(cone, &plan.edges, &entries, reach, self.tol)
+                        .and_then(|start| cone_seamed_through(cone, start, self.tol))
                     else {
                         failed.push(g);
                         continue;
@@ -8177,23 +8253,18 @@ impl Planner<'_> {
     }
 
     /// Whether a cone's face closes at its apex inside one rim: the rim one
-    /// full circle starting off the axis, a vertex of the region at the
-    /// apex within the reach, and every vertex on the apex's own nappe. A
-    /// drill's point is such a face; its surface is the cone turned about
-    /// its axis so its seam runs through the rim's start.
+    /// full circle starting off the axis, or arcs of one parallel of the
+    /// cone going once round (see [`cone_rim_start`]), a vertex of the
+    /// region at the apex within the reach, and every vertex on the apex's
+    /// own nappe. A drill's point is such a face; its surface is the cone
+    /// turned about its axis so its seam runs through the rim's start.
     fn cone_tip(&self, plan: &Plan, curved: &Curved, ring: &[Half]) -> bool {
-        use ogeom_geom::Curve3d as _;
         let Canonical::Cone(cone) = &curved.shape else {
             return false;
         };
-        let (edge, _) = self.entry(plan, ring[0]);
-        if edge == usize::MAX
-            || !plan.edges[edge].closed_circle
-            || ring.iter().any(|&h| self.entry(plan, h).0 != edge)
-        {
-            return false;
-        }
-        let Ok(start) = plan.edges[edge].curve.point_at(0.0, self.tol) else {
+        let reach = self.flat * REACH;
+        let entries = walk_entries(ring, |h| self.entry(plan, h));
+        let Some(start) = cone_rim_start(cone, &plan.edges, &entries, reach, self.tol) else {
             return false;
         };
         if cone_seamed_through(cone, start, self.tol).is_none() {
@@ -8202,7 +8273,6 @@ impl Planner<'_> {
         let frame = cone.frame();
         let axis = frame.z().vector();
         let apex = frame.origin() + axis * (-cone.reference_radius() / cone.half_angle().tan());
-        let reach = self.flat * REACH;
         let mut nearest = f64::INFINITY;
         for &v in &curved.vertices {
             let p = self.points[v as usize];
@@ -10232,17 +10302,7 @@ impl Builder<'_> {
 
     /// A ring's planned edges in walking order, repeats run together.
     fn entries(&self, ring: &[Half]) -> Vec<(usize, bool)> {
-        let mut entries: Vec<(usize, bool)> = Vec::new();
-        for &h in ring {
-            let entry = self.entry(h);
-            if entries.last() != Some(&entry) {
-                entries.push(entry);
-            }
-        }
-        if entries.len() > 1 && entries.first() == entries.last() {
-            entries.pop();
-        }
-        entries
+        walk_entries(ring, |h| self.entry(h))
     }
 
     fn has_pcurve(&self, edge: &Shape, surface: ogeom_topo::SurfaceId) -> bool {
@@ -11041,25 +11101,67 @@ impl Builder<'_> {
         let outward = self.outward(curved, g);
         let frame = cone.frame();
         let v_apex = -cone.reference_radius() / cone.half_angle().tan();
-        let (rim, _) = self.entry(rings[0][0]);
-        let spec = &self.plan.edges[rim];
-        let Curve::Circle(c) = &spec.curve else {
-            ogeom_bail!(Construction, "a cone's rim is not a circle");
+        // The rim walked so the chart's angle falls from a whole turn to
+        // nothing: each arc's image is the parallel's line over its angles,
+        // read off the arc's own parameter.
+        let mut walk = self.entries(&rings[0]);
+        let first = {
+            let (edge, forward) = walk[0];
+            let Curve::Circle(c) = &self.plan.edges[edge].curve else {
+                ogeom_bail!(Construction, "a cone's rim is not a circle");
+            };
+            let with = c.circle().frame().z().vector().dot(frame.z().vector()) > 0.0;
+            with == forward
         };
-        let with = c.circle().frame().z().vector().dot(frame.z().vector()) > 0.0;
-        let start = spec.curve.point_at(0.0, self.tol)?;
+        if first {
+            walk.reverse();
+            for entry in &mut walk {
+                entry.1 = !entry.1;
+            }
+        }
+        let start = {
+            let (edge, forward) = walk[0];
+            let spec = &self.plan.edges[edge];
+            spec.curve
+                .point_at(if forward { spec.range.0 } else { spec.range.1 }, self.tol)?
+        };
         let v_rim = (start - frame.origin()).dot(frame.z().vector());
-        let (a, b) = if with { (0.0, tau) } else { (tau, 0.0) };
-        crate::build::attach_pcurve(
-            self.model,
-            &edges[rim],
-            linear((a, v_rim), (b, v_rim), (0.0, tau), self.tol)?,
-            surface,
-            Location::identity(),
-            (0.0, tau),
-        )?;
-        let Some(rim_vertex) = self.model.children_of(&edges[rim])?.first().cloned() else {
-            ogeom_bail!(Construction, "a rim has no vertex");
+        let mut u = tau;
+        let mut rim_ring = Vec::with_capacity(walk.len());
+        for (k, &(edge, forward)) in walk.iter().enumerate() {
+            let spec = &self.plan.edges[edge];
+            let Curve::Circle(c) = &spec.curve else {
+                ogeom_bail!(Construction, "a cone's rim is not a circle");
+            };
+            let with = c.circle().frame().z().vector().dot(frame.z().vector()) > 0.0;
+            let (t0, t1) = spec.range;
+            let span = (t1 - t0).abs();
+            let end = if k + 1 == walk.len() { 0.0 } else { u - span };
+            // Walked forward, the edge's start is where the walk is; the
+            // angle falls along the walk.
+            let (a, b) = if forward { (u, end) } else { (end, u) };
+            if with == forward && walk.len() > 1 {
+                ogeom_bail!(Construction, "a cone's rim arcs turn against each other");
+            }
+            crate::build::attach_pcurve(
+                self.model,
+                &edges[edge],
+                linear((a, v_rim), (b, v_rim), (t0, t1), self.tol)?,
+                surface,
+                Location::identity(),
+                (t0, t1),
+            )?;
+            rim_ring.push(oriented(&edges[edge], forward));
+            u = end;
+        }
+        let rim_vertex = {
+            let (edge, forward) = walk[0];
+            let ends = self.model.children_of(&edges[edge])?;
+            let vertex = if forward { ends.first() } else { ends.last() };
+            let Some(vertex) = vertex.cloned() else {
+                ogeom_bail!(Construction, "a rim has no vertex");
+            };
+            vertex
         };
         let at_apex = frame.origin() + frame.z().vector() * v_apex;
         let apex = self.model.add_vertex(VertexData::new(at_apex));
@@ -11094,12 +11196,9 @@ impl Builder<'_> {
         )?;
         // Counter-clockwise in the chart: along the apex, up the seam's far
         // side, back along the rim, down the seam's near side.
-        let mut ring = vec![
-            tip,
-            seam.clone(),
-            oriented(&edges[rim], !with),
-            seam.reversed(),
-        ];
+        let mut ring = vec![tip, seam.clone()];
+        ring.extend(rim_ring);
+        ring.push(seam.reversed());
         if !outward {
             ring.reverse();
             ring = ring.iter().map(Shape::reversed).collect();
