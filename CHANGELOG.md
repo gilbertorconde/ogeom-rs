@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-06
+
+A patch release: no breaking API changes. More silent wrong answers are
+closed. `check` probes every face of a solid for orientation, and an exact
+volume settles each face's orientation before trusting it, so a face
+turned into its solid can no longer pass as valid or give a wrong volume.
+Sweeps hold their walls between stations along the path, drafts and loft
+end patches hold their geometry between samples, and a helical sweep
+through part of a turn ends on an outward cap. A trimmed spline face's
+exact volume is up to a hundred times faster, and converted parts keep
+their straight-threaded seams.
+
 ### Changed
 
 - **A trimmed spline face's exact volume settles on what it returns.** The
@@ -3626,7 +3638,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.8.0...v0.9.0
