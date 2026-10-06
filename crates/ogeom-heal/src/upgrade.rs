@@ -194,13 +194,22 @@ fn unify(
             };
             data.surface
         };
-        // Every boundary edge needs a pcurve for the kept surface; a plane's
-        // is direct projection.
+        // Every boundary edge needs a pcurve for the kept surface: the one
+        // it carries on another member's chart, moved across, or else a
+        // projection.
         let Some(carrier) = carriers[keeper].clone() else {
             continue;
         };
+        let mut charts: Vec<(SurfaceId, Carrier)> = Vec::with_capacity(members.len());
+        for &i in &members[1..] {
+            if let (Some(NodeData::Face(data)), Some(c)) =
+                (model.node(&faces[i]).map(|n| n.data()), &carriers[i])
+            {
+                charts.push((data.surface, c.clone()));
+            }
+        }
         for edge in &boundary {
-            ensure_planar_pcurve(model, edge, surface_id, &carrier, tol)?;
+            ensure_planar_pcurve(model, edge, surface_id, &carrier, &charts, tol)?;
         }
         let wire = ogeom_algo::make_wire_unordered(model, &boundary, tol)?.shape;
         let merged = {
@@ -261,8 +270,13 @@ fn carrier_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     }))
 }
 
-/// Attach a pcurve for `surface_id` to `edge` if it does not carry one:
-/// direct projection into the stored plane's own frame, exact.
+/// Attach a pcurve for `surface_id` to `edge` if it does not carry one.
+///
+/// A pcurve the edge carries on one of `charts` (another face on the same
+/// plane) is moved into the stored plane's frame by the rigid map between
+/// the two charts, which keeps its kind and its parameter: an arc stays
+/// the arc it was. With none, a line is projected directly, exact, and any
+/// other curve is fitted by projection.
 ///
 /// The chart is the *stored* plane's, so the world point is carried back
 /// through the face's placement before it is flattened; a pcurve read under
@@ -272,9 +286,10 @@ fn ensure_planar_pcurve(
     edge: &Shape,
     surface_id: SurfaceId,
     carrier: &Carrier,
+    charts: &[(SurfaceId, Carrier)],
     tol: Tolerances,
 ) -> OgeomResult<()> {
-    let (curve, range, has) = {
+    let (curve, range, has, sibling) = {
         let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
             ogeom_bail!(Construction, "edge holds no edge data");
         };
@@ -282,29 +297,97 @@ fn ensure_planar_pcurve(
         let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
             ogeom_bail!(Construction, "an edge with no curve cannot be unified over");
         };
-        (*curve, *range, has)
+        let sibling = charts.iter().find_map(|(surface, chart)| {
+            match data.pcurve_for(*surface, edge.location()) {
+                Some(EdgeRepr::PCurve { curve, range, .. }) => Some((*curve, *range, chart)),
+                _ => None,
+            }
+        });
+        (*curve, *range, has, sibling)
     };
     if has {
         return Ok(());
+    }
+    if let Some((pcurve, prange, chart)) = sibling
+        && let Some(moved) = model.geometry().pcurve(pcurve).cloned()
+        && let Some(map) = chart_to_chart(chart, carrier, tol)?
+    {
+        return ogeom_algo::attach_pcurve(
+            model,
+            edge,
+            moved.transformed(&map, tol)?,
+            surface_id,
+            edge.location().clone(),
+            prange,
+        );
     }
     let Some(geometry) = model.geometry().curve(curve).cloned() else {
         ogeom_bail!(Construction, "edge refers to a curve not in this model");
     };
     let back = carrier.placement.inverse()?;
-    let flat = |p: ogeom_math::Point| {
-        let local = carrier.stored.frame().to_local(back.apply(p));
-        Point2::new(local.x, local.y)
+    let pcurve = if matches!(geometry, ogeom_geom::Curve::Line(_)) {
+        let flat = |p: ogeom_math::Point| {
+            let local = carrier.stored.frame().to_local(back.apply(p));
+            Point2::new(local.x, local.y)
+        };
+        let a = flat(geometry.point_at(range.0, tol)?);
+        let b = flat(geometry.point_at(range.1, tol)?);
+        chart_line(a, b, range, tol)?
+    } else {
+        let local = ogeom_geom::Transformable::transformed(&geometry, &back, tol)?;
+        let plane = SurfaceGeometry::Plane(ogeom_geom::PlaneSurface::new(carrier.stored));
+        ogeom_algo::pcurve_fit::fit_projected_pcurve(&local, range, &plane, tol)?.0
     };
-    let a = flat(geometry.point_at(range.0, tol)?);
-    let b = flat(geometry.point_at(range.1, tol)?);
     ogeom_algo::attach_pcurve(
         model,
         edge,
-        chart_line(a, b, range, tol)?,
+        pcurve,
         surface_id,
         edge.location().clone(),
         range,
     )
+}
+
+/// The rigid map taking `from`'s stored chart onto `to`'s, two charts of
+/// one plane: a turn and a shift, with a mirror where their frames run
+/// opposite ways round. `None` where the charts are not one plane.
+fn chart_to_chart(
+    from: &Carrier,
+    to: &Carrier,
+    tol: Tolerances,
+) -> OgeomResult<Option<ogeom_math::Transform2>> {
+    use ogeom_math::{Point, Transform2, Vector2};
+    let into = to.placement.inverse()?;
+    let lift = |u: f64, v: f64| {
+        let world = from
+            .placement
+            .apply(from.stored.frame().to_world(Point::new(u, v, 0.0)));
+        to.stored.frame().to_local(into.apply(world))
+    };
+    let (o, x, y) = (lift(0.0, 0.0), lift(1.0, 0.0), lift(0.0, 1.0));
+    if [o, x, y].iter().any(|p| p.z.abs() > tol.confusion()) {
+        return Ok(None);
+    }
+    let ex = Vector2::new(x.x - o.x, x.y - o.y);
+    let ey = Vector2::new(y.x - o.x, y.y - o.y);
+    let turn = Transform2::rotation(Point2::ORIGIN, ex.y.atan2(ex.x));
+    let shift = Transform2::translation(Vector2::new(o.x, o.y));
+    let map = if ex.x.mul_add(ey.y, -(ex.y * ey.x)) > 0.0 {
+        shift * turn
+    } else {
+        let flip = Transform2::line_mirror(
+            Point2::ORIGIN,
+            Direction2::new(Vector2::new(0.0, 1.0), tol)?,
+        );
+        shift * turn * flip
+    };
+    // The charts are rigid images of each other, so the map built from the
+    // first axis must carry the second one where it lands too.
+    let lands = map.apply(Point2::new(0.0, 1.0));
+    if lands.distance(Point2::new(y.x, y.y)) > tol.confusion() {
+        return Ok(None);
+    }
+    Ok(Some(map))
 }
 
 /// The chart line running from `a` at `range.0` to `b` at `range.1`.

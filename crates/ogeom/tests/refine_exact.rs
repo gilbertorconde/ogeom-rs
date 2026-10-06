@@ -77,3 +77,59 @@ fn a_refined_solid_measures_exactly() {
     let v = exact_volume(&model, &refined);
     assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
 }
+
+/// An L-section bar, outline on the XZ plane swept 30 along -Y, with its
+/// re-entrant edge at (5, y, 5) rounded at radius 4.
+fn filleted_bracket(model: &mut Model) -> Shape {
+    use ogeom::algo::{make_face, make_polygon, make_prism};
+    let pts = [
+        (0.0, 0.0),
+        (40.0, 0.0),
+        (40.0, 5.0),
+        (5.0, 5.0),
+        (5.0, 30.0),
+        (0.0, 30.0),
+    ]
+    .map(|(x, z)| Point::new(x, 0.0, z));
+    let wire = make_polygon(model, &pts, true, T).unwrap().shape;
+    let frame = Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap();
+    let plane = ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(frame));
+    let face = make_face(model, plane.into(), &[wire], T).unwrap().shape;
+    let bar = make_prism(model, &face, ogeom::math::Vector::new(0.0, -30.0, 0.0), T)
+        .unwrap()
+        .shape;
+    let at = |v: &Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+    let corner = ogeom::topo::explore_unique(model, &bar, ogeom::topo::ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom::algo::edge_vertices(model, e).unwrap().unwrap();
+            [at(&a), at(&b)]
+                .iter()
+                .all(|p| (p.x - 5.0).abs() < 1e-9 && (p.z - 5.0).abs() < 1e-9)
+        })
+        .expect("the bar has its re-entrant edge");
+    ogeom::fillet::fillet_edge(model, &bar, &corner, 4.0, T)
+        .unwrap()
+        .shape
+}
+
+/// Unifying a solid whose plane faces carry a blend's arc keeps those
+/// faces on the closed-form path.
+#[test]
+fn a_refined_filleted_bracket_measures_exactly() {
+    let mut model = Model::new();
+    let bracket = filleted_bracket(&mut model);
+    let before = exact_volume(&model, &bracket);
+    let pi = core::f64::consts::PI;
+    let want = 325.0 * 30.0 + (16.0 - 4.0 * pi) * 30.0;
+    assert!((before - want).abs() < 1e-9, "{before} against {want}");
+    let refined = ogeom::heal::unify_same_domain(&mut model, &bracket, T)
+        .unwrap()
+        .0
+        .shape;
+    let after = exact_volume(&model, &refined);
+    assert!((after - before).abs() < 1e-9, "{after} against {before}");
+    let report = ogeom::algo::check(&model, &refined, T).unwrap();
+    assert!(report.is_valid(), "{report:?}");
+}
