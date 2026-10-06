@@ -3,7 +3,10 @@
 //! diagonal and rebuilt with the default options.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use ogeom::algo::{MeshSolidOptions, check, shape_bounds, solid_from_mesh, volume_properties};
+use ogeom::algo::{
+    FallbackReason, MeshSolidOptions, MeshSolidReport, check, shape_bounds, solid_from_mesh,
+    volume_properties,
+};
 use ogeom::core::Tolerances;
 use ogeom::geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom::mesh::Deflection;
@@ -29,7 +32,8 @@ fn curved(model: &Model, shape: &Shape) -> usize {
 /// How many edges of a shape's faces, each meshed on its own with the
 /// edges drawn alike for every face, are used other than twice: where a
 /// face's boundary leaves a gap its neighbours do not fill, with no weld to
-/// close it.
+/// close it. A triangle with two corners at one point (at an apex, where
+/// the chart's row lifts to the apex) covers nothing and is not counted.
 fn unmatched_face_edges(model: &Model, shape: &Shape) -> usize {
     let deflection = Deflection::default();
     let chords = ogeom::mesh::edge_chords_for(model, shape, deflection, T).unwrap();
@@ -39,6 +43,10 @@ fn unmatched_face_edges(model: &Model, shape: &Shape) -> usize {
         let mesh =
             ogeom::mesh::triangulate_face_with(model, &face, deflection, &chords, T).unwrap();
         for t in &mesh.triangles {
+            let [p, q, r] = t.map(|i| key(&mesh.positions[i as usize]));
+            if p == q || q == r || r == p {
+                continue;
+            }
             for k in 0..3 {
                 let (a, b) = (
                     key(&mesh.positions[t[k] as usize]),
@@ -143,8 +151,8 @@ fn pcurves_off_their_curves(model: &Model, shape: &Shape) -> Vec<(f64, f64)> {
 /// of its volume, tessellating closed where `closed` says it does, its faces
 /// meshed one by one meeting edge to edge where `meet` says they do, every
 /// pcurve within its edge's tolerance of the edge's curve, and with curved
-/// faces where the part has them. Returns how many faces it came back with.
-fn comes_back(name: &str, closed: bool, meet: bool) -> usize {
+/// faces where the part has them. Returns what the conversion reported.
+fn comes_back(name: &str, closed: bool, meet: bool) -> MeshSolidReport {
     let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(path).expect("the corpus file is committed");
     let import = ogeom::io::read_step(&text, T).unwrap();
@@ -198,7 +206,7 @@ fn comes_back(name: &str, closed: bool, meet: bool) -> usize {
             "{name}: nothing curved came back"
         );
     }
-    out.report.faces
+    out.report
 }
 
 #[test]
@@ -216,12 +224,20 @@ fn nist_ctc_03() {
 /// mesh's boundary between them. The edge there is threaded along the
 /// boundary through points resting on both, and keeps within twenty
 /// coplanar distances of each; threaded through the boundary's vertices
-/// alone it stands off them by its long spans' sag.
+/// alone it stands off them by its long spans' sag. Facets round its large
+/// bore are chords whose planes meet the bore past their far corners; they
+/// come back as fans, and the bore curved.
 #[test]
 #[ignore = "heavy"]
 fn nist_ctc_02() {
     let name = "nist_ctc_02_asme1_rc.stp";
-    comes_back(name, true, true);
+    let report = comes_back(name, true, true);
+    let overlaps = report
+        .fallbacks
+        .iter()
+        .filter(|f| f.reason == FallbackReason::Overlaps)
+        .count();
+    assert!(overlaps <= 2, "{overlaps} faces faceted for overlaps");
     let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
     let model = import.document.model();
@@ -307,14 +323,23 @@ fn nist_ftc_09() {
 
 /// Its seams end a little off the corners they meet at, each on its own
 /// side, within the corners' tolerance; drawn from the corners themselves,
-/// the faces round each one meet at one point and the mesh closes. Its
-/// seams threaded straight leave facets turned into the material beside a
-/// cylinder; that cylinder alone is faceted, and the threading stands.
+/// the faces round each one meet at one point and the mesh closes. Facets
+/// beside a cylinder meet it all but tangentially, and built flat they
+/// turn into the material; built as fans onto the cylinder, it stays
+/// curved.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_10() {
-    let faces = comes_back("nist_ftc_10_asme1_rb.stp", true, true);
-    assert!(faces <= 760, "{faces} faces came back");
+    let report = comes_back("nist_ftc_10_asme1_rb.stp", true, true);
+    assert!(report.faces <= 700, "{} faces came back", report.faces);
+    assert!(
+        !report
+            .fallbacks
+            .iter()
+            .any(|f| f.reason == FallbackReason::Overlaps),
+        "a curved face was faceted for a facet turned in beside it: {:?}",
+        report.fallbacks
+    );
 }
 
 #[test]

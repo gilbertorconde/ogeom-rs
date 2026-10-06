@@ -21,6 +21,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A facet folded against a curved face is built as a fan.** Mesh
+  conversion faceted a curved face where a single-triangle facet beside it
+  met it almost tangentially and folded under it; such a facet is a ruled
+  fan from its far corner to the seam on the curved surface, so the curved
+  face stays curved. NIST parts convert to fewer faces (687 instead of 726,
+  4115 instead of 4138).
+
 - **A void turned inside out is weighed as a void.** `volume_properties`
   sent a solid whose void shell had every face reversed to the mesh, which
   added the cavity to the volume (a block of 1000 with a void of 64 measured

@@ -924,14 +924,44 @@ stayed faceted (a chamfer, a drafted wall, a blend):
   ray through the opening reaches the curved face from inside: In. At
   0.1, past the tolerance, the probe answers right.
 
-Open: both want the facet's own surface to meet the curved one along
-the seam lifted onto it. A ruled fan from the facet's far corner to that
-lifted curve would share every edge exactly (lines with the facets
-beside it, the lifted curve with the curved face) and fit the true
-surface closer than the plane does; it needs a degenerate edge at the
-apex. Recognizing the faceted neighbour (ftc_07's walls fall back as
+Done for single facets: a facet of one triangle with one side on a
+curved face and two on planar ones is built as a fan when it is found
+turned in, or when its loop as built winds the wrong way round its
+plane (the seam bulging past its far corner). The fan is a B-spline
+ruled from the far corner (its `v = 0` row, closed on an edge with no
+length, as a cone's apex) to the seam drawn straight in the curved
+face's chart and lifted onto it; every edge is shared exactly, and the
+seam's tolerance is the lift's interpolation error (about 5e-7).
+Measured against the build before (faces, curved faces faceted, volume
+error):
+
+- ftc_10: 726 to 687 faces, 11 to 10 faceted (the radius 6 cylinder
+  stays curved; three fans), 3.8e-4 to 1.4e-4.
+- ctc_02: 4138 to 4115 faces, 84 to 83 faceted, seven fans (six round
+  the 57.5 bore, which stays curved, one on a cone). The volume now
+  takes the closed form (before, one torus face fell to the mesh) and
+  reads 1.3e-3 for 1.6e-4; the closed tessellation of the same result
+  reads 1.7e-4. The difference is five R 112 r 10 tori whose chart
+  integral comes out 1.8% under their fine mesh's area (2369 for 2412,
+  the source triangles giving 2326), each 11500 short in volume: an
+  error of the chart integration, open, not of the fans.
+- ctc_04: 1213 to 1204 faces, its one Overlaps fallback gone.
+- ftc_07 unchanged: its six tori turned in lie against drafted walls of
+  26 and 64 triangles, not single facets, so no fan applies.
+
+Every face meshed on its own still meets its neighbours, counting no
+triangle with two corners at one point (an apex row's; a primitive
+cone's apex meshes the same). Truth bench and stress baseline
+unchanged; ftc_10 converts in about 7.8 s for 5.9 s (the extra
+rebuilds), ctc_02 and ctc_04 as before.
+
+Open: ctc_02's third facet, between a cylinder and a torus (two curved
+sides), still facets both; a fan from the corner across the torus seam
+would make the cylinder seam a ruling, a chord. ftc_07 wants its
+faceted neighbour recognized (its walls fall back as
 BoundaryNotPlaced, among near-flat regions fitted as spheres of radius
-thousands) would remove the facets instead. The probe classifies two
+thousands), or the seam with a large planar face lifted onto the small
+torus with the gap on the plane's side. The probe classifies two
 points per face against the exact boundary, about 0.45 s on a 165-face
 helical thread (0.05 s before), 0.16 s on ctc_02 (1.0 s before, when
 the flag walk ran).
