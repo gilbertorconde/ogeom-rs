@@ -8508,9 +8508,10 @@ impl Planner<'_> {
         longest: f64,
     ) -> Option<(Curve, (f64, f64), f64)> {
         use ogeom_geom::Curve3d as _;
-        // A cubic through the points first; where it overshoots between
-        // them (a short span beside long ones), the polyline through them.
-        for degree in [3, 1] {
+        // A cubic through the points first (a parabola through three);
+        // where it overshoots between them (a short span beside long ones),
+        // the polyline through them.
+        for degree in [3.min(on.len().saturating_sub(1)), 1] {
             let (curve, samples): (Curve, Vec<f64>) = if on.len() == 2 {
                 let length = on[0].distance(on[1]);
                 let line: Curve = LineCurve::segment(on[0], on[1], self.tol).ok()?.into();

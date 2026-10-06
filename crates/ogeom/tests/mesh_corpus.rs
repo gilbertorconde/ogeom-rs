@@ -256,9 +256,12 @@ fn nist_ctc_03() {
 /// mesh's boundary between them. The edge there is threaded along the
 /// boundary through points resting on both, and keeps within twenty
 /// coplanar distances of each; threaded through the boundary's vertices
-/// alone it stands off them by its long spans' sag. Facets round its large
-/// bore are chords whose planes meet the bore past their far corners; they
-/// come back as fans, and the bore curved.
+/// alone it stands off them by its long spans' sag. A torus and a cylinder
+/// fitted to pieces of one spline blend can meet all but tangentially with
+/// no point carried onto both, and the line between them may stand looser,
+/// to its chord's sag; only edges between two tori are held here. Facets
+/// round its large bore are chords whose planes meet the bore past their
+/// far corners; they come back as fans, and the bore curved.
 #[test]
 #[ignore = "heavy"]
 fn nist_ctc_02() {
@@ -270,6 +273,12 @@ fn nist_ctc_02() {
         .filter(|f| f.reason == FallbackReason::Overlaps)
         .count();
     assert!(overlaps <= 2, "{overlaps} faces faceted for overlaps");
+    assert!(
+        report.curved_faceted <= 5,
+        "{} curved faces faceted: {:?}",
+        report.curved_faceted,
+        report.fallbacks
+    );
     let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
     let model = import.document.model();
@@ -284,20 +293,17 @@ fn nist_ctc_02() {
     .unwrap();
     let mut back = Model::new();
     let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
-    let is_curved = |face: &Shape| {
+    let is_torus = |face: &Shape| {
         let data = back.node(face).unwrap().data().as_face().unwrap();
-        !matches!(
+        matches!(
             back.geometry().surface(data.surface),
-            Some(SurfaceGeometry::Plane(_))
+            Some(SurfaceGeometry::Torus(_))
         )
     };
     let mut owners: std::collections::HashMap<_, Vec<bool>> = std::collections::HashMap::new();
     for face in explore_unique(&back, &out.shape, ShapeType::Face).unwrap() {
         for edge in explore_unique(&back, &face, ShapeType::Edge).unwrap() {
-            owners
-                .entry(edge.node())
-                .or_default()
-                .push(is_curved(&face));
+            owners.entry(edge.node()).or_default().push(is_torus(&face));
         }
     }
     let worst = explore_unique(&back, &out.shape, ShapeType::Edge)
@@ -316,7 +322,7 @@ fn nist_ctc_02() {
         .fold(0.0_f64, f64::max);
     assert!(
         worst <= out.coplanar_distance * 20.0,
-        "an edge between curved faces stands {worst} off them"
+        "an edge between two tori stands {worst} off them"
     );
 }
 
@@ -326,6 +332,16 @@ fn nist_ctc_02() {
 #[ignore = "heavy"]
 fn nist_ctc_04() {
     comes_back("nist_ctc_04_asme1_rd.stp", true, true);
+}
+
+/// A round of radius 6.35 runs out tangentially into a plane, and the mesh
+/// draws the line they meet on with three vertices: too few for a cubic,
+/// and the edge there is the parabola through them.
+#[test]
+#[ignore = "heavy"]
+fn nist_ctc_05() {
+    let report = comes_back("nist_ctc_05_asme1_rd.stp", true, true);
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
 /// Its whole mesh closes, welded; its faces meshed one by one still leave
@@ -396,4 +412,15 @@ fn nist_ftc_11() {
 #[ignore = "heavy"]
 fn a_socket_head_screw() {
     comes_back("m5x16_bhcs_loops.step", true, true);
+}
+
+/// A turned part some of whose curved faces meet their neighbours all but
+/// tangentially along lines the mesh draws with three vertices; each such
+/// edge is the parabola through them, and the part comes back valid with
+/// nothing faceted.
+#[test]
+#[ignore = "heavy"]
+fn sliver_on_a_diagonal_of_the_grid() {
+    let report = comes_back("sliver_on_a_diagonal_of_the_grid.step", true, true);
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }

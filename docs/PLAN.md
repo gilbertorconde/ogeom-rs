@@ -776,14 +776,19 @@ after.
      plane: the bar's hill at 0.8 high instead of 0.5 stays faceted, the
      fit running out at 1.24e-5 against a target of 1.23e-5;
    - cones and tori are threaded the same way, but not measured;
-   - a chain of three vertices between a patch (or any curved face) and its
-     neighbour gets no chord: a cubic needs four points and the threading
-     gives up rather than trying the polyline. Threading three with a
-     parabola lets a hill running out into the flat with its curvature too
-     (60 cells across) build; across the corpus it moves outcomes both
-     ways (ctc_02 from 4090 faces to 3849, ftc_06 from 402 to 355,
-     sliver_on_a_diagonal_of_the_grid valid, but ftc_07 from 1375 faces
-     to 1408 and 114 faceted to 119), so it waits for its own measurement;
+   - a chain of three vertices between a curved face and its neighbour:
+     done, threaded with the parabola through them (a cubic needs four
+     points, and the threading gave up). Carrying points onto both
+     surfaces does not serve along a tangency: a point between two of the
+     vertices moves along the plane far farther than the gap it closes.
+     Measured (faces, curved faces faceted, volume error): ctc_05 378, 1,
+     1.22e-4 to 318, 0, 1.25e-4 (a round of radius 6.35 running out into
+     a plane); ctc_02 1997, 8, 4.3e-5 to 1861, 5, 2.9e-5;
+     sliver_on_a_diagonal_of_the_grid 1191, 3, 4.1e-4, invalid to 1008, 0,
+     5.5e-6, valid. ftc_07, the rest of the NIST and corpus parts, the
+     truth bench and the stress baseline are unchanged. One edge of ctc_02 between a torus and a cylinder fitted
+     to pieces of one spline blend now stands 0.21 off (45 coplanar
+     distances), a line chord where no point carries onto both;
    - between vertices the fit is no closer to the true surface than its
      knots allow. Measured against the exact surface, by distance from a
      free edge in cells: the bumped sheet at 10 cells across 1.5 times the
