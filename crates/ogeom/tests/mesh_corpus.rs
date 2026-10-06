@@ -327,11 +327,15 @@ fn nist_ctc_02() {
 }
 
 /// A fitted face here ran past a facet it should have ended on, and the
-/// solid came back with the facet facing into material.
+/// solid came back with the facet facing into material. A round along a
+/// plane's edge turns round a rounded corner on a torus meshed a few facets
+/// round, whose pieces lie on spheres as exactly as on the torus; each is
+/// put on the torus the round turns on, and nothing is faceted.
 #[test]
 #[ignore = "heavy"]
 fn nist_ctc_04() {
-    comes_back("nist_ctc_04_asme1_rd.stp", true, true);
+    let report = comes_back("nist_ctc_04_asme1_rd.stp", true, true);
+    assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
 /// A round of radius 6.35 runs out tangentially into a plane, and the mesh

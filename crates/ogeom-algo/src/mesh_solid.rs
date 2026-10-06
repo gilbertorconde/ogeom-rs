@@ -4416,17 +4416,35 @@ fn tangent_blends(
                     .iter()
                     .filter_map(|&j| shape_of(groups, j))
                     .collect();
-                corner_ball(&sphere, &around, flat, tol).or_else(|| {
-                    let [plane] = &flanks[i][..] else {
-                        return None;
-                    };
-                    let torus = around.iter().find_map(|support| {
-                        let torus = tangent_torus(plane, support, &samples[i], tol)?;
-                        (worst_deviation(&torus, &samples[i]) <= flat).then_some(torus)
-                    })?;
-                    tori = true;
-                    Some(torus)
-                })
+                let holds = |torus: Canonical| {
+                    (worst_deviation(&torus, &samples[i]) <= flat).then_some(torus)
+                };
+                corner_ball(&sphere, &around, flat, tol)
+                    .or_else(|| {
+                        let [plane] = &flanks[i][..] else {
+                            return None;
+                        };
+                        let torus = around.iter().find_map(|support| {
+                            holds(tangent_torus(plane, support, &samples[i], tol)?)
+                        })?;
+                        tori = true;
+                        Some(torus)
+                    })
+                    .or_else(|| {
+                        let torus = flanks[i].iter().find_map(|plane| {
+                            supports[i].iter().find_map(|&j| {
+                                let ends: Vec<Point> = samples[j]
+                                    .iter()
+                                    .copied()
+                                    .filter(|p| samples[i].contains(p))
+                                    .collect();
+                                let round = shape_of(groups, j)?;
+                                holds(turning_round(plane, &round, &samples[i], &ends, flat, tol)?)
+                            })
+                        })?;
+                        tori = true;
+                        Some(torus)
+                    })
             }
             _ => None,
         };
@@ -4592,6 +4610,92 @@ fn tangent_torus(
     Some(Canonical::Torus(
         Torus::new(on, centre.0, radius, tol).ok()?,
     ))
+}
+
+/// The torus a round along a plane turns on where the plane's edge it
+/// follows turns: its axis square to the plane, its tube the round's, and
+/// the circle of its tube's centres tangent to the round's axis (which
+/// lies at the round's radius from the plane, within `flat`) where the
+/// round ends. `ends` are the points the round and `pts` share, its end
+/// section: they fix where along the axis the round ends. `None` where the
+/// round does not lie so, or its end is no section square to its axis.
+///
+/// With `a` a point of the round's axis, `d` its direction, `n` the plane's
+/// normal and `e = n × d`, a point `q` is at `(u, v, z)` along `d`, `e` and
+/// `n` from `a`. The torus centred at `a + t d + R e`, of major radius `|R|`
+/// and tube `r`, holds `q` where `(u - t)² + v² - s² = 2 R (v ± s)`,
+/// `s = √(r² - z²)`, the sign that of `R` times the side of the tube the
+/// point is on: `R` is solved by least squares for each sign, the one
+/// holding the points closer taken. Without the end fixing `t` the points
+/// do not tell the torus from a sphere through them (`R = 0`), which a
+/// few facets of it fit as closely.
+fn turning_round(
+    plane: &Plane,
+    support: &Canonical,
+    pts: &[Point],
+    ends: &[Point],
+    flat: f64,
+    tol: Tolerances,
+) -> Option<Canonical> {
+    let Canonical::Cylinder(round) = support else {
+        return None;
+    };
+    let (a, d, r) = (
+        round.frame().origin(),
+        round.frame().z().vector(),
+        round.radius(),
+    );
+    let n = plane.frame().z().vector();
+    if d.dot(n).abs() > 1e-9
+        || ((a - plane.frame().origin()).dot(n).abs() - r).abs() > flat
+        || ends.len() < 2
+    {
+        return None;
+    }
+    let along: Vec<f64> = ends.iter().map(|p| (*p - a).dot(d)).collect();
+    #[allow(clippy::cast_precision_loss, reason = "vertex counts are small")]
+    let t = along.iter().sum::<f64>() / along.len() as f64;
+    if along.iter().any(|u| (u - t).abs() > flat) {
+        return None;
+    }
+    let e = n.cross(d);
+    let local: Vec<(f64, f64, f64)> = pts
+        .iter()
+        .map(|p| {
+            let w = *p - a;
+            let z = w.dot(n).clamp(-r, r);
+            (w.dot(d) - t, w.dot(e), (r * r - z * z).sqrt())
+        })
+        .collect();
+    let mut best: Option<(f64, Canonical)> = None;
+    for side in [1.0_f64, -1.0] {
+        let (mut cc, mut cy) = (0.0, 0.0);
+        for &(u, v, s) in &local {
+            let c = 2.0 * side.mul_add(s, v);
+            cc += c * c;
+            cy += c * (u.mul_add(u, v * v) - s * s);
+        }
+        if cc <= flat * flat {
+            continue;
+        }
+        let major = cy / cc;
+        if major.abs() <= r {
+            continue;
+        }
+        let centre = a + d * t + e * major;
+        let Ok(frame) = Frame::new(centre, plane.frame().z(), round.frame().z(), tol) else {
+            continue;
+        };
+        let Ok(torus) = Torus::new(frame, major.abs(), r, tol) else {
+            continue;
+        };
+        let torus = Canonical::Torus(torus);
+        let off = worst_deviation(&torus, pts);
+        if best.as_ref().is_none_or(|(o, _)| off < *o) {
+            best = Some((off, torus));
+        }
+    }
+    best.map(|(_, torus)| torus)
 }
 
 /// The ball where cylinders of its own radius meet: centred at the point

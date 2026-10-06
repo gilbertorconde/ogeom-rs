@@ -1041,6 +1041,22 @@ other parts, the truth bench and the stress baseline unchanged. ftc_10's
 last fallback is a cylinder of seven triangles
 fitted across a torus and a plane's edge (a vertex 0.07 off the torus).
 
+A round along a plane's edge that turns round a rounded corner goes on as
+a torus, and met a few facets round, that torus can come apart into
+pieces whose vertices lie on spheres as exactly as on it, with no
+cylinder square to the plane beside them to fix it (the corner's own
+cylinder stayed facets). A sphere beside a plane and a round (a cylinder
+whose axis runs parallel to the plane at its radius) is now put on the
+torus the round turns on: its axis square to the plane, its tube the
+round's, the circle of its tube's centres tangent to the round's axis
+where the round ends, which the vertices the two regions share fix; the
+major radius is solved from the sphere's vertices. Without the round's
+end the points do not tell the torus from a sphere through them.
+Measured (faces, curved faces faceted, volume error): ctc_04 588, 2,
+1.06e-4 to 581, 0, 1.07e-4 (two spheres of radius 5.11 on a torus R 8
+r 5). The other parts, the truth bench and the stress baseline are
+unchanged.
+
 Done for ftc_07, in two steps:
 
 - Its rounds of radius 0.43 along the drafted walls' foot are meshed
