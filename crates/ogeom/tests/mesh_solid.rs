@@ -2,6 +2,9 @@
 //! regions, topology from its own connectivity, windings made to agree.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/pcurves.rs"]
+mod pcurves;
+
 use std::time::{Duration, Instant};
 
 use ogeom::algo::{
@@ -3500,14 +3503,14 @@ fn converted_parts() -> Vec<(&'static str, Model, Shape)> {
 }
 
 /// A converted solid written to STEP reads back valid, on the same kinds of
-/// surface and with the same volume.
+/// surface, with the pcurves it went out with and the same volume.
 #[test]
 #[ignore = "heavy"]
 fn converted_solids_come_back_through_step() {
     for (name, model, shape) in converted_parts() {
         let before = (kinds_and_patches(&model, &shape), volume(&model, &shape));
-        let mut document = ogeom::doc::Document::over(model);
-        document.add_part(name, shape);
+        let mut document = ogeom::doc::Document::over(model.clone());
+        document.add_part(name, shape.clone());
         let text = ogeom::io::write_step(&document, T).unwrap();
         let import = ogeom::io::read_step(&text, T).unwrap();
         let back = import.document.model();
@@ -3517,6 +3520,11 @@ fn converted_solids_come_back_through_step() {
         let diagnosis = check(back, solid, T).unwrap();
         assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
         assert_eq!(kinds_and_patches(back, solid), before.0, "{name}");
+        let (same, total) = pcurves::kept((&model, &shape), (back, solid), T);
+        assert_eq!(
+            same, total,
+            "{name}: the pcurves come back as they went out"
+        );
         let after = volume(back, solid);
         assert!(
             (after - before.1).abs() <= before.1 * 1e-6,

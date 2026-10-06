@@ -11,6 +11,12 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **STEP carries each edge's pcurves.** Edges are written as surface curves
+  with a pcurve on each face (a seam curve with both sides on a closed
+  face), wherever the file can state them exactly in the curve's parameter.
+
 ### Changed
 
 - **Less overhead on the faces a boolean leaves alone.** Edge lookups while
@@ -30,6 +36,15 @@ bump may break the API and a patch bump may not.
   curves, and the budgets `SAMPLED_SPANS` and `SAMPLED_LOOP_SPANS`.
 
 ### Fixed
+
+- **STEP keeps a file's pcurves, and sewing keeps a reversed face's
+  rings.** The reader derived every edge's pcurves itself; it keeps the
+  file's pcurve where it follows the curve within twice the projection's
+  distance, so a part comes back bounded as it was written (a converted
+  part's 1842 pcurves come back as written and its volume unchanged).
+  Sewing rebuilt a reversed face, such as a boolean cut's tool faces, with
+  its rings walked backward, the same way as the face beside it; it keeps
+  them as stored.
 
 - **Swept solids walk each edge once each way.** A prism or revolution
   over a profile edge walked backward, a profile ring wound against its

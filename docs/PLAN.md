@@ -129,26 +129,26 @@ harness's crease list takes both kinds.
 **Edges walked the same way by both their faces.** The data model has each
 edge between two faces walked once each way, senses composed: each face
 keeps its material on the left of its rings about its surface's normal.
-Prisms, tapered prisms, revolutions, baked shapes and revolution bands do.
-Three producers break it with a fix measured and held, and more are
-still to fix; once none breaks it, `check` gains the rule.
+Prisms, tapered prisms, revolutions, baked shapes, revolution bands and
+sewing do. One producer breaks it with a fix measured and held, and more
+are still to fix; once none breaks it, `check` gains the rule.
 
-- Sewing rebuilds a reversed face by reading its wires under its own
-  sense and then reversing the rebuilt face again (`rebuild_face`,
-  `split_at_vertices`), so every boolean cut's tool faces walk their rings
-  backward. Reading the stored wires fixes it and keeps every default test
-  and the stress run, but the rough box's converter tests start from the
-  rounded box's tessellation with its corner vertices bumped by index, and
-  the tessellator numbers a reversed face's vertices along its rings: the
-  fix makes a different rough box. On it the converter bounds a fillet
-  cylinder by a threaded edge 0.018 loose whose pcurve on the cylinder is
-  the straight iso line; STEP carries no pcurves, the reader projects the
-  edge's curve instead, and the volume read back moves by 7e-6 against the
-  test's 1e-6. Either STEP writes pcurves and the reader keeps them where
-  they lie within the edge's tolerance, or the converter takes the
-  projected image where the straight one strays along the face further
-  than the curve stands off it (measured: the round trip then holds, and
-  corpus volumes move by up to 6.5e-6, some away from the source part).
+- Sewing rebuilt a reversed face by reading its wires under its own sense
+  and then reversing the rebuilt face again; it reads the stored wires
+  now. That made a different rough box for the converter tests (the
+  tessellator numbers a reversed face's vertices along its rings), and on
+  it the converter bounds a fillet cylinder by an edge 0.018 loose with
+  the straight iso line as its pcurve. STEP now carries each edge's
+  pcurves where the file can state them exactly (`SURFACE_CURVE`,
+  `SEAM_CURVE`, `PCURVE`), and the reader keeps a file's pcurve where its
+  lifted gap is within twice the projection's (the iso line stands 0.0183
+  off the curve, the projection 0.0096); the converted parts come back
+  with every pcurve and their volume to the last digit. Left: an edge's
+  pcurve the file cannot state in the curve's parameter (a reversed or
+  left-handed conic, a trig or offset trace, a curve written as a spline
+  conversion) is still derived on reading, and a foreign file's pcurves
+  are read without its length or angle unit, so one in inches or degrees
+  fails the gap test and is derived.
 - The STEP reader stores a face turned against its surface with the
   file's loops as written and then turns the face, so each such face walks
   its loops backward (168 edges on `nist_ctc_01`). Storing the loops
@@ -158,9 +158,9 @@ still to fix; once none breaks it, `check` gains the rule.
   heavy converter tests on corpus meshes (`nist_ftc_07`, `nist_ftc_10`, the
   sliver on a diagonal, displaced regions on `nist_ftc_08`) fall back a
   region they did not.
-- A shell check run over the default tests with both held fixes in flags
-  77: the offset crate's lofts between polygons, pipes (their caps on the
-  torus), pipe shells with curved legs, laws or sections, helical sweeps
+- A shell check run over the default tests with the sewing fix and the
+  held reader fix in flags 77: the offset crate's lofts between polygons,
+  pipes (their caps on the torus), pipe shells with curved legs, laws or sections, helical sweeps
   and skinned pipes (42); the mesh converter (18); draft (3); a fuse
   with a mirrored body (2); seam healing followed by a drill (2);
   defeature (2); recognising a bore's spline as a cylinder (2); the IGES

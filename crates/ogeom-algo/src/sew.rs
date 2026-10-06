@@ -855,8 +855,10 @@ fn split_at_vertices(
             out.push(face.clone());
             continue;
         }
+        // Read as stored, the face's own sense put back below.
+        let stored = face.oriented(Orientation::Forward);
         let mut wires = Vec::new();
-        for wire in model.ordered_children_of(face)? {
+        for wire in model.ordered_children_of(&stored)? {
             let mut ring = Vec::new();
             for edge in model.ordered_children_of(&wire)? {
                 match pieces.get(&edge.node()) {
@@ -1699,8 +1701,12 @@ fn rebuild_face(
     // rebuilding it would only mint a node identical to the one there.
     let mut touched = false;
 
+    // The wires are read as the face stores them, its own sense left out:
+    // the rebuilt face takes that sense back at the end, and reading them
+    // under it as well would turn every ring of a reversed face around.
+    let stored = face.oriented(Orientation::Forward);
     let mut wires = Vec::new();
-    for wire in model.ordered_children_of(face)? {
+    for wire in model.ordered_children_of(&stored)? {
         let mut ring = Vec::new();
         for edge in model.ordered_children_of(&wire)? {
             match merged.get(&edge.node()) {
@@ -2177,6 +2183,51 @@ mod tests {
         assert_eq!(sewn.free_edges.len(), 6);
         assert!(!is_shell_closed(&model, &sewn.shells[0]).unwrap());
         assert!(sewn.history.is_affected(&left));
+    }
+
+    /// A face presented reversed, its rings wound against its surface's
+    /// normal, beside one presented as built: both face up, so the edge
+    /// they share is walked once each way. Rebuilt onto the shared edge,
+    /// the reversed face still walks it against its neighbour.
+    #[test]
+    fn a_reversed_face_rebuilt_onto_a_shared_edge_keeps_its_walk() {
+        let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+        let mut model = Model::new();
+        let left = loose_square(
+            &mut model,
+            [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)],
+        );
+        // Wound clockwise seen from above: its plane faces down, and the
+        // face is presented the other way round.
+        let right = loose_square(
+            &mut model,
+            [at(1.0, 0.0), at(1.0, 1.0), at(2.0, 1.0), at(2.0, 0.0)],
+        )
+        .reversed();
+        let sewn = sew(&mut model, &[left, right], T).unwrap();
+        assert_eq!(sewn.joined, 1, "one shared edge");
+        let mut walks: HashMap<TShapeId, (usize, usize)> = HashMap::new();
+        for face in ogeom_topo::explore(
+            &model,
+            &sewn.shells[0],
+            ogeom_topo::Filter::OfType(ShapeType::Face),
+        )
+        .unwrap()
+        {
+            for edge in
+                ogeom_topo::explore(&model, &face, ogeom_topo::Filter::OfType(ShapeType::Edge))
+                    .unwrap()
+            {
+                let entry = walks.entry(edge.node()).or_default();
+                if edge.orientation() == Orientation::Forward {
+                    entry.0 += 1;
+                } else {
+                    entry.1 += 1;
+                }
+            }
+        }
+        let shared: Vec<_> = walks.values().filter(|(f, r)| f + r == 2).collect();
+        assert_eq!(shared, [&(1, 1)], "the shared edge, walked once each way");
     }
 
     /// Twin edges whose ends are two vertices apart by more than either
