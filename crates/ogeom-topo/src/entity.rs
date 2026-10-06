@@ -747,6 +747,11 @@ impl Default for EdgeData {
 }
 
 /// A face: a surface, where it sits, and how far the face may stray from it.
+///
+/// The face's node stores its wires outer first, holes after. A reversed
+/// face walks them backward ([`Model::ordered_children_of`](crate::Model::ordered_children_of)),
+/// so the outer wire is read from the store
+/// ([`Model::outer_wire`](crate::Model::outer_wire)), never from the walk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FaceData {
     /// The surface.

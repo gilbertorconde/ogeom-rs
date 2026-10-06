@@ -834,6 +834,10 @@ impl Model {
 
     /// Add a face bounded by the given wires.
     ///
+    /// The first wire is the outer boundary and any others are holes, and
+    /// the face keeps them in that order whichever way it is later used; see
+    /// [`Model::outer_wire`].
+    ///
     /// A face with no wires covers its surface's whole domain, and is recorded
     /// as naturally restricted.
     ///
@@ -975,6 +979,14 @@ impl Model {
     /// [`Model::children_of`] stays the raw accessor: it returns what is
     /// stored, which is what a rebuild or a comparison wants.
     ///
+    /// A reversed face's wires come back reversed too, so its holes are
+    /// listed before its outer wire. A face stores its outer wire first, and
+    /// that is the only place the order means anything: code that wants the
+    /// outer wire asks [`Model::outer_wire`], and code that wants every wire
+    /// walked under the face's sense, outer first, asks
+    /// [`Model::children_of`], whose wires carry the face's orientation in
+    /// stored order.
+    ///
     /// # Errors
     ///
     /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the shape does not
@@ -985,6 +997,25 @@ impl Model {
             children.reverse();
         }
         Ok(children)
+    }
+
+    /// A face's outer wire, carrying the face's placement and orientation,
+    /// or `None` for a face with no wires (one covering its whole surface).
+    ///
+    /// The outer wire is the first one the face stores, whichever way the
+    /// face is used. [`Model::ordered_children_of`] on a reversed face lists
+    /// the holes first, so its first wire is not this one.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the face does not
+    /// resolve in this model; [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+    /// if the shape is not a face.
+    pub fn outer_wire(&self, face: &Shape) -> OgeomResult<Option<Shape>> {
+        if self.kind_of(face)? != ShapeType::Face {
+            ogeom_bail!(Construction, "only a face has an outer wire");
+        }
+        Ok(self.children_of(face)?.into_iter().next())
     }
 
     /// Widen a shape's tolerance, and every sub-shape's with it.

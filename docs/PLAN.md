@@ -1573,3 +1573,10 @@ These are settled. They are listed so nobody reopens them by accident.
   integer program is out for the same kernel reason: its time has no bound.
 - **Glue is subsumed** by the boolean's same-domain unification, which already
   skips nothing it needs and unifies what glue would.
+- **A reversed face walks its wires backward, and its outer wire is the stored
+  first.** `ordered_children_of` reverses a reversed parent's children, which
+  a wire's walk needs and which lists a reversed face's holes before its
+  outer wire. A face stores its outer wire first. Code that wants the outer
+  wire reads `Model::outer_wire`; code that wants every wire under the face's
+  sense, outer first, reads `children_of`. Most readers pick the outer ring
+  by area and do not depend on either order.
