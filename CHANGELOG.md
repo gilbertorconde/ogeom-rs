@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-10-07
+
+A patch release: no breaking API changes. A reversed face's holes are no
+longer taken for its outer wire (STEP and IGES export marked a hole as the
+outer bound), and STEP and IGES write a reversed circle, ellipse or trimmed
+curve at its own points. IGES trimmed-surface boundaries round-trip with
+reversed edges, sewing matches closed edges in sense, and `make_solid`
+turns a consistent shell facing the wrong way. Fillets over a sphere's pole
+build and mesh closed at every turn, a band round crossed bores meshes to
+its volume, and points beside an edge near a pole classify in or out.
+
 ### Added
 
 - **`CircleCurve::forward` and `EllipseCurve::forward`.** The same curve
@@ -4041,7 +4052,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.7...HEAD
+[0.9.7]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.3...v0.9.4
