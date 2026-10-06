@@ -11,6 +11,22 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A void turned inside out is weighed as a void.** `volume_properties`
+  sent a solid whose void shell had every face reversed to the mesh, which
+  added the cavity to the volume (a block of 1000 with a void of 64 measured
+  1064, not 936). A whole shell facing in is turned over in the closed
+  form, and the mesh path probes every face of a solid with several shells
+  as `check` does.
+
+- **A pipe shell's wall at a curved corner holds between rows.** A curved
+  leg meeting another leg at a crossing was fitted through its rows only: a
+  disc down an arc turning onto a straight leg stood 7.3e-3 off at a 1e-4
+  target, and a square section through the same corner was refused. The
+  run is checked between its rows (7.7e-5 off) and the square section
+  builds.
+
 ## [0.9.3] - 2026-10-06
 
 A patch release: no breaking API changes. More silent wrong answers are

@@ -392,3 +392,69 @@ fn a_metre_cube_and_a_long_drum_measure_exactly_and_at_once() {
         started.elapsed()
     );
 }
+
+/// A void is a shell of its own, so turned inside out as a whole (every
+/// face of it reversed) no edge notices: the faces agree with each other
+/// and the mesh, which mends a minority of turned faces within each piece,
+/// would weigh the cavity as material. Each shell of a solid with several
+/// is asked which way it faces: the whole void turned over is turned back
+/// and weighed in closed form, and a block with a face of its own turned as
+/// well is meshed with every face asked, the void still subtracted.
+#[test]
+fn a_void_turned_inside_out_is_still_a_void() {
+    use ogeom::topo::{ShapeType, explore_unique};
+    let chord = Deflection::with_chord(1e-3).unwrap();
+    for spherical in [false, true] {
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let (cavity, void) = if spherical {
+            let centre =
+                Frame::new(Point::new(5.0, 5.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+            (
+                ogeom::algo::make_sphere(&mut model, centre, 2.0, T)
+                    .unwrap()
+                    .shape,
+                4.0 / 3.0 * std::f64::consts::PI * 8.0,
+            )
+        } else {
+            let corner =
+                Frame::new(Point::new(3.0, 3.0, 3.0), Direction::Z, Direction::X, T).unwrap();
+            (
+                ogeom::algo::make_box(&mut model, corner, (4.0, 4.0, 4.0), T)
+                    .unwrap()
+                    .shape,
+                64.0,
+            )
+        };
+        let want = 1000.0 - void;
+        let outer = explore_unique(&model, &block, ShapeType::Face).unwrap();
+        // The cavity's own faces face out of it, into the block's material.
+        let turned_void = explore_unique(&model, &cavity, ShapeType::Face).unwrap();
+        let honest_void: Vec<Shape> = turned_void.iter().map(Shape::reversed).collect();
+        let mut turned_outer = outer.clone();
+        turned_outer[0] = turned_outer[0].reversed();
+        for (name, outer, inner, exact) in [
+            ("as built", &outer, &honest_void, true),
+            ("void turned", &outer, &turned_void, true),
+            ("outer face turned", &turned_outer, &honest_void, false),
+            ("both turned", &turned_outer, &turned_void, false),
+        ] {
+            let o = ogeom::algo::make_shell(&mut model, outer).unwrap().shape;
+            let i = ogeom::algo::make_shell(&mut model, inner).unwrap().shape;
+            let solid = ogeom::algo::make_solid(&mut model, &[o, i]).unwrap().shape;
+            let measured = ogeom::algo::volume_properties(&model, &solid, chord, T).unwrap();
+            assert_eq!(
+                measured.deflection == 0.0,
+                exact,
+                "sphere {spherical}, {name}: closed form {exact}"
+            );
+            assert!(
+                (measured.mass - want).abs() < want * 1e-4,
+                "sphere {spherical}, {name}: {} against {want}",
+                measured.mass
+            );
+        }
+    }
+}

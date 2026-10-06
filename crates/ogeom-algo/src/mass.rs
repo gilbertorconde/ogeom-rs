@@ -218,6 +218,11 @@ pub fn surface_properties(
 
 /// The volume a shape encloses, and how it is distributed.
 ///
+/// Each shell of a solid with several is weighed facing out of the solid's
+/// material, as a probe off its faces finds: a void whose faces all point
+/// into the material (turned inside out as a whole, which no edge between
+/// its faces shows) is still taken away, not added.
+///
 /// # Errors
 ///
 /// As [`surface_properties`], plus
@@ -235,6 +240,9 @@ pub fn volume_properties(
     deflection.validate()?;
     if let Some(exact) = exact_volume_properties(model, shape, tol)? {
         return Ok(exact);
+    }
+    if let Some(probed) = probed_mesh_volume(model, shape, deflection, tol)? {
+        return Ok(probed);
     }
     let (mut mesh, chords) = ogeom_mesh::triangulate_with_chords(model, shape, deflection, tol)?;
     if mesh.is_empty() {
@@ -290,6 +298,99 @@ pub fn volume_properties(
         );
     }
     Ok(acc.finish(deflection.chord))
+}
+
+/// The meshed volume of a shape holding a solid with more than one shell,
+/// each face turned out by probing it against its own solid; `None` where
+/// no solid of `shape` has more than one shell.
+///
+/// The whole-shape mesh mends a minority of turned faces within each
+/// connected piece, and a void is a piece of its own: turned inside out as
+/// a whole it agrees with itself and is weighed as material. So every face
+/// under a solid is asked which way it faces, as `check` asks, and one
+/// facing in is counted turned over. A face the probe cannot settle is
+/// counted as its flag says.
+fn probed_mesh_volume(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Option<MassProperties>> {
+    let solids = explore(model, shape, Filter::OfType(ShapeType::Solid))?;
+    let mut several = false;
+    for solid in &solids {
+        several |= explore(model, solid, Filter::OfType(ShapeType::Shell))?.len() > 1;
+    }
+    if !several {
+        return Ok(None);
+    }
+    for shell in explore_unique(model, shape, ShapeType::Shell)? {
+        if !crate::build::is_shell_closed(model, &shell)? {
+            ogeom_bail!(
+                Construction,
+                "the boundary is not closed, so it encloses no volume to measure"
+            );
+        }
+    }
+    // Every face with the solid it bounds, then any face under none.
+    let mut faces: Vec<(Shape, Option<usize>)> = Vec::new();
+    let mut seen: std::collections::HashSet<Occurrence> = std::collections::HashSet::new();
+    for (at, solid) in solids.iter().enumerate() {
+        for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+            seen.insert((face.node(), face.location().clone()));
+            faces.push((face, Some(at)));
+        }
+    }
+    for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        if !seen.contains(&(face.node(), face.location().clone())) {
+            faces.push((face, None));
+        }
+    }
+    let mut boundaries: Vec<Option<crate::SolidBoundary>> = Vec::with_capacity(solids.len());
+    for solid in &solids {
+        boundaries.push(or_mesh(
+            crate::check::probe_boundary(model, solid, tol).map(Some),
+            None,
+        )?);
+    }
+    let chords = ogeom_mesh::edge_chords_for(model, shape, deflection, tol)?;
+    let meshes = ogeom_core::parallel::map_ordered(&faces, |_, (face, at)| {
+        let mesh = ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol)?;
+        let boundary = at.and_then(|at| boundaries[at].as_ref());
+        let inward = match boundary {
+            Some(boundary) => {
+                or_mesh(crate::check::faces_inward(model, face, boundary, tol), None)?
+            }
+            None => None,
+        };
+        Ok((mesh, inward == Some(true)))
+    });
+    let mut acc = Accumulator::new();
+    let mut apex: Option<Point> = None;
+    for one in meshes {
+        let (mesh, turned) = one?;
+        let Some(&first) = mesh.positions.first() else {
+            continue;
+        };
+        // Any apex serves, as for the whole-shape mesh.
+        let apex = *apex.get_or_insert(first);
+        let sign = if turned { -1.0 } else { 1.0 };
+        for triangle in &mesh.triangles {
+            let [a, b, c] = triangle.map(|i| mesh.positions[i as usize]);
+            let volume = (a - apex).dot((b - apex).cross(c - apex)) / 6.0;
+            acc.add(&[apex, a, b, c], volume * sign);
+        }
+    }
+    if apex.is_none() {
+        return Ok(Some(MassProperties::none(deflection.chord)));
+    }
+    if acc.mass < 0.0 {
+        ogeom_bail!(
+            Construction,
+            "the boundary is wound inward, so the volume came out negative"
+        );
+    }
+    Ok(Some(acc.finish(deflection.chord)))
 }
 
 // --- exact properties on the exact surfaces ----------------------------------
@@ -369,12 +470,17 @@ fn exact_volume_properties(
         return Ok(None);
     }
     let mut exact = Vec::with_capacity(faces.len());
-    for face in &faces {
+    // The face each region of `exact` belongs to.
+    let mut region_of: Vec<usize> = Vec::with_capacity(faces.len());
+    for (at, face) in faces.iter().enumerate() {
         // A face the closed forms cannot evaluate (a chart point a hair off
         // its surface's domain) is left to the mesh, like one they do not
         // speak at all.
         match or_mesh(integrable_face(model, face, tol), None)? {
-            Some(found) => exact.extend(found),
+            Some(found) => {
+                region_of.extend(std::iter::repeat_n(at, found.len()));
+                exact.extend(found);
+            }
             None => {
                 if *DEBUG_MASS {
                     eprintln!(
@@ -411,13 +517,42 @@ fn exact_volume_properties(
         }
     }
     // Sets of faces the walks could not tie together are asked of the
-    // solid itself, a face of each probed off both its sides, and the
-    // closed form is trusted only where every set faces out: one turned
-    // in, or one no face of which the probe can settle, is left to the
-    // mesh, which mends a minority of turned faces.
-    if !flags.sets.is_empty() && !all_sets_face_out(model, shape, &flags.sets, tol)? {
-        return Ok(None);
+    // solid itself, a face of each probed off both its sides. A set facing
+    // in that is a whole shell of a solid with several (a void turned
+    // inside out) is turned over as a whole. Any other set turned in, or
+    // one no face of which the probe can settle, is left to the mesh,
+    // which mends a minority of turned faces.
+    let mut turned: std::collections::HashSet<Occurrence> = std::collections::HashSet::new();
+    if !flags.sets.is_empty() {
+        let Some(inward) = sets_facing_in(model, shape, &flags.sets, tol)? else {
+            return Ok(None);
+        };
+        let shells = shells_of_several(model, shape)?;
+        for (set, inward) in flags.sets.iter().zip(inward) {
+            if !inward {
+                continue;
+            }
+            let held: std::collections::HashSet<Occurrence> = set
+                .iter()
+                .map(|f| (f.node(), f.location().clone()))
+                .collect();
+            if !shells.contains(&held) {
+                return Ok(None);
+            }
+            turned.extend(held);
+        }
     }
+    let sign: Vec<f64> = region_of
+        .iter()
+        .map(|&at| {
+            let face = &faces[at];
+            if turned.contains(&(face.node(), face.location().clone())) {
+                -1.0
+            } else {
+                1.0
+            }
+        })
+        .collect();
 
     let reference = reference_point(&exact, tol)?;
     // Each face's moments are summed on their own, and added in the faces'
@@ -454,9 +589,9 @@ fn exact_volume_properties(
         )
     });
     let mut total = Moments::zero();
-    for face in summed {
+    for (face, sign) in summed.into_iter().zip(sign) {
         match or_mesh(face, None)? {
-            Some(sums) => total.add(&sums),
+            Some(sums) => total.add_signed(&sums, sign),
             None => return Ok(None),
         }
     }
@@ -564,9 +699,14 @@ impl Moments {
     }
 
     fn add(&mut self, other: &Self) {
-        self.mass += other.mass;
-        self.first += other.first;
-        self.second = add(self.second, other.second);
+        self.add_signed(other, 1.0);
+    }
+
+    /// Add `other` times `sign`: `-1` for a face turned over.
+    fn add_signed(&mut self, other: &Self, sign: f64) {
+        self.mass += other.mass * sign;
+        self.first += other.first * sign;
+        self.second = add(self.second, scale_matrix(other.second, sign));
     }
 }
 
@@ -1204,8 +1344,8 @@ fn face_walks(
     Ok(Some(walks))
 }
 
-/// Whether each of `sets` faces out of the solid it bounds; `false` where
-/// no face of a set settles it.
+/// Whether each of `sets` faces into the solid it bounds; `None` where no
+/// face of some set settles it.
 ///
 /// A set agrees within itself, so any one of its faces answers for all of
 /// them, and a face the probe cannot settle hands the question to the
@@ -1215,12 +1355,12 @@ fn face_walks(
 /// at every round after, in parallel. Each face is probed against its own
 /// solid, not the whole shape: a compound's lumps may overlap, and a face
 /// of one inside another has material on both its sides.
-fn all_sets_face_out(
+fn sets_facing_in(
     model: &Model,
     shape: &Shape,
     sets: &[Vec<Shape>],
     tol: Tolerances,
-) -> OgeomResult<bool> {
+) -> OgeomResult<Option<Vec<bool>>> {
     let solids = explore(model, shape, Filter::OfType(ShapeType::Solid))?;
     // Which solid each face bounds, by occurrence.
     let mut owner: std::collections::HashMap<Occurrence, usize> = std::collections::HashMap::new();
@@ -1244,12 +1384,13 @@ fn all_sets_face_out(
         let mut faces = std::collections::VecDeque::with_capacity(faces_of.len());
         for face in faces_of {
             let Some(&at) = owner.get(&(face.node(), face.location().clone())) else {
-                return Ok(false);
+                return Ok(None);
             };
             faces.push_back((at, face));
         }
         pending.push((set, faces));
     }
+    let mut inward = vec![false; sets.len()];
     let mut take = 1;
     loop {
         let mut asked: Vec<(usize, usize, &Shape)> = Vec::new();
@@ -1268,7 +1409,7 @@ fn all_sets_face_out(
                     None,
                 )?
                 else {
-                    return Ok(false);
+                    return Ok(None);
                 };
                 boundaries[at] = Some(boundary);
             }
@@ -1285,10 +1426,9 @@ fn all_sets_face_out(
             if *DEBUG_MASS {
                 eprintln!("MASS set {set} probed {facing:?}");
             }
-            match facing {
-                Some(true) => return Ok(false),
-                Some(false) => settled[set] = true,
-                None => {}
+            if let Some(facing) = facing {
+                inward[set] = facing;
+                settled[set] = true;
             }
         }
         // A set out of faces with none settled is left to the mesh.
@@ -1297,15 +1437,39 @@ fn all_sets_face_out(
                 if *DEBUG_MASS {
                     eprintln!("MASS set {set}: no face settles it");
                 }
-                return Ok(false);
+                return Ok(None);
             }
         }
         pending.retain(|(set, _)| !settled[*set]);
         if pending.is_empty() {
-            return Ok(true);
+            return Ok(Some(inward));
         }
         take *= 2;
     }
+}
+
+/// The faces of every shell of a solid with more than one shell, each
+/// shell's faces by occurrence.
+fn shells_of_several(
+    model: &Model,
+    shape: &Shape,
+) -> OgeomResult<Vec<std::collections::HashSet<Occurrence>>> {
+    let mut out = Vec::new();
+    for solid in explore(model, shape, Filter::OfType(ShapeType::Solid))? {
+        let shells = explore(model, &solid, Filter::OfType(ShapeType::Shell))?;
+        if shells.len() < 2 {
+            continue;
+        }
+        for shell in shells {
+            out.push(
+                explore(model, &shell, Filter::OfType(ShapeType::Face))?
+                    .iter()
+                    .map(|f| (f.node(), f.location().clone()))
+                    .collect(),
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// An edge's own direction in space where its curve passes nearest `at`:

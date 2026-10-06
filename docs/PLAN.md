@@ -953,6 +953,19 @@ second round (a 0.0005 sheet beside a drum). Stress time unchanged in
 paired runs (14.5 and 15.1 s against 14.8 and 15.1 s). Open: a face
 whose boundary middle lies outside it can still read its walk
 backwards, and if it is also turned over the two errors cancel unseen.
+A void turned inside out as a whole (every face of its shell reversed)
+agrees with itself, and the mesh mends only a minority within each
+connected piece: a 10 block with a 4 box void so turned weighed 1064 for
+936, with a sphere of radius 2, 1031.4 for 966.5. A set facing in that is
+a whole shell of a solid with several is now turned over in the closed
+form (936 and 966.49, exact). Where such a solid goes to the mesh (a face
+of the block turned as well), every face under a solid is probed as
+`check` probes it, meshed on its own on the shape's agreed chords, and a
+face facing in is counted turned: 936, and 966.52 at a 1e-3 chord. A face
+the probe cannot settle there counts as its flag says, with no mending.
+One turned face of the void or of the block, the other shell right, was
+already mended. The mesh path pays one probe per face only for solids
+with more than one shell.
 
 **Speed, not correctness.**
 
