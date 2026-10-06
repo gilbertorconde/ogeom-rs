@@ -493,7 +493,21 @@ pub fn make_loft(
         }
         let surface: SurfaceGeometry =
             PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        Ok(make_face_with_pcurves(model, surface, &[edges], tol)?.shape)
+        // The ring keeps the material on its left about the outward normal:
+        // one walking the corners clockwise about it is walked back.
+        let turn = (0..corners.len())
+            .map(|i| {
+                corners[i]
+                    .to_vector()
+                    .cross(corners[(i + 1) % corners.len()].to_vector())
+            })
+            .fold(Vector::new(0.0, 0.0, 0.0), |sum, v| sum + v);
+        let ring = if turn.dot(normal) < 0.0 {
+            walked_back(&edges)
+        } else {
+            edges
+        };
+        Ok(make_face_with_pcurves(model, surface, &[ring], tol)?.shape)
     };
 
     let mut faces: Vec<Shape> = Vec::with_capacity(n + 2);
@@ -7045,6 +7059,12 @@ fn realized_profile_wound(
     let surface: SurfaceGeometry =
         PlaneSurface::over(moved_plane, (-reach, reach), (-reach, reach))?.into();
     Ok(ogeom_algo::make_face_with_pcurves(model, surface, &wires, tol)?.shape)
+}
+
+/// `ring` walked the other way round: its edges in reverse order, each
+/// reversed.
+fn walked_back(ring: &[Shape]) -> Vec<Shape> {
+    ring.iter().rev().map(Shape::reversed).collect()
 }
 
 /// Twice the signed area a ring of edges encloses about `axis`, from its

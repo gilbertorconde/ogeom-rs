@@ -2,6 +2,9 @@
 //! patches where they cannot.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{check, make_polygon, volume_properties};
 use ogeom::core::Tolerances;
 use ogeom::math::Point;
@@ -65,4 +68,51 @@ fn a_twisted_loft_has_bilinear_walls_and_the_prismoid_s_volume() {
         (measured - expected).abs() < expected * 2e-3,
         "the prismoid's volume: {measured} against {expected}"
     );
+}
+
+/// A ruled loft between polygons walks every edge once each way, whichever
+/// way round its sections run: square frusta, straight and turned an
+/// eighth of a turn, both sections walked either way, are valid and
+/// measure as the prismoid.
+#[test]
+fn a_ruled_loft_walks_each_edge_once_each_way() {
+    let fine = Deflection {
+        chord: 1e-3,
+        ..Deflection::default()
+    };
+    let square = |r: f64, turn: f64, z: f64, back: bool| -> Vec<Point> {
+        let mut corners: Vec<Point> = (0..4)
+            .map(|i| {
+                let angle = turn + std::f64::consts::FRAC_PI_2 * f64::from(i);
+                Point::new(r * angle.cos(), r * angle.sin(), z)
+            })
+            .collect();
+        if back {
+            corners.reverse();
+        }
+        corners
+    };
+    for turn in [0.0, std::f64::consts::FRAC_PI_4] {
+        for back in [false, true] {
+            let mut model = Model::new();
+            let low = square(4.0, 0.0, 0.0, back);
+            let high = square(2.0, turn, 3.0, back);
+            let bottom = make_polygon(&mut model, &low, true, T).unwrap().shape;
+            let top = make_polygon(&mut model, &high, true, T).unwrap().shape;
+            let solid = ogeom::offset::make_loft(&mut model, &bottom, &top, T)
+                .unwrap()
+                .shape;
+            let label = format!("turn {turn}, walked back {back}");
+            assert_eq!(walks::edges_walked_one_way(&model, &solid), 0, "{label}");
+            let found = check(&model, &solid, T).unwrap();
+            assert!(found.is_valid(), "{label}: {found}");
+            let mid: Vec<Point> = low.iter().zip(&high).map(|(a, b)| a.midpoint(*b)).collect();
+            let expected = 3.0 * (area(&low) + 4.0 * area(&mid) + area(&high)) / 6.0;
+            let measured = volume_properties(&model, &solid, fine, T).unwrap().mass;
+            assert!(
+                (measured - expected).abs() < expected * 2e-3,
+                "{label}: {measured} against {expected}"
+            );
+        }
+    }
 }
