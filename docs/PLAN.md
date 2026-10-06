@@ -129,9 +129,9 @@ harness's crease list takes both kinds.
 **Edges walked the same way by both their faces.** The data model has each
 edge between two faces walked once each way, senses composed: each face
 keeps its material on the left of its rings about its surface's normal.
-Prisms, tapered prisms, revolutions, baked shapes, revolution bands and
-sewing do. One producer breaks it with a fix measured and held, and more
-are still to fix; once none breaks it, `check` gains the rule.
+Prisms, tapered prisms, revolutions, baked shapes, revolution bands,
+sewing and the STEP reader do. More producers are still to fix; once
+none breaks it, `check` gains the rule.
 
 - Sewing rebuilt a reversed face by reading its wires under its own sense
   and then reversing the rebuilt face again; it reads the stored wires
@@ -149,15 +149,46 @@ are still to fix; once none breaks it, `check` gains the rule.
   conversion) is still derived on reading, and a foreign file's pcurves
   are read without its length or angle unit, so one in inches or degrees
   fails the gap test and is derived.
-- The STEP reader stores a face turned against its surface with the
-  file's loops as written and then turns the face, so each such face walks
-  its loops backward (168 edges on `nist_ctc_01`). Storing the loops
-  walked back fixes every third-party corpus file; the two ogeom-written
-  screw files were written from such faces and need their reversed faces'
-  bounds flipped. Reversed faces then tessellate differently, and four
-  heavy converter tests on corpus meshes (`nist_ftc_07`, `nist_ftc_10`, the
-  sliver on a diagonal, displaced regions on `nist_ftc_08`) fall back a
-  region they did not.
+- The STEP reader stores a face turned against its surface with its
+  loops walked back, so every third-party corpus file reads with each
+  edge walked once each way (it was 166 edges on `nist_ctc_01`). The two
+  ogeom-written screw files were written from faces read the old way and
+  have their reversed faces' bounds flipped; any other file written so
+  is repaired on reading: where a shell's edges pick out a consistent set
+  of faces turned against their surfaces whose loops, walked back, leave
+  every edge walked once each way, those faces are rebuilt and the report
+  says so. No third-party corpus file sets it off.
+- Reversed faces now tessellate in another order, which showed how much
+  the mesh converter hangs on the order a mesh lists its triangles and
+  their corners: with the old reader's meshes, shuffling the triangles or
+  turning each triangle's corners gave `nist_ftc_07` up to 40 faceted
+  regions and `nist_ftc_10` up to four. Three fixes hold: a first sample
+  too small to be fitted as a torus grows to the next stage instead of
+  ending the seed (`nist_ftc_07` comes back whatever corner each triangle
+  lists first, and corpus parts come back on fewer faces: `nist_ctc_02`
+  1807 to 1609, `nist_ctc_04` 581 to 483, `nist_ftc_10` 420 to 331); a
+  curved fit whose distances round past the tolerance is refused (a
+  sphere centred 1e17 off took 740 triangles of planes, cylinders and
+  tori on `nist_ftc_10`); and facets beside a face that reaches past its
+  triangles are fanned before the face is faceted (the sliver part, any
+  triangle order). Two more held once the reader fix changed the
+  meshes: a last-resort seam is threaded only through vertices lying on
+  both faces (a cone moved 0.077 off a corner of `nist_ftc_08` was joined
+  by a chord 0.12 loose instead of falling back), and a curved face that
+  took facets in gives them back before a face beside a turned-in facet
+  is blamed (on `nist_ftc_10` a coarse cylinder that absorbed a strip of
+  facets covered its neighbours, and the corner ball beside them was
+  faceted; the part now comes back on 314 faces with nothing faceted).
+- Open: with the reader fix a torus corner of `nist_ftc_08` a few facets
+  round (32 triangles between two fillet cylinders and the floor) is no
+  longer recognized. Every sample of it reaches into the cylinders and
+  fits nothing; a one-row sample of its bottom fits a cone, which takes
+  eight of its triangles and three of the floor's, and the rest stay
+  planar facets. Nothing falls back, but the corner is facets where it
+  was a torus.
+- The converter's own output still walks edges the same way from both
+  faces (134 on `nist_ctc_01`, 246 on `nist_ftc_10`); it is among the
+  producers the shell check below lists.
 - A shell check run over the default tests with the sewing fix and the
   held reader fix in flags 77: the offset crate's lofts between polygons,
   pipes (their caps on the torus), pipe shells with curved legs, laws or sections, helical sweeps

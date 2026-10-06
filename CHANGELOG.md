@@ -13,6 +13,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Reversed STEP faces read with their loops as the file walks them.** The
+  reader stored a reversed face's loops as written and then turned the face
+  over, so every such face walked its loops backward; every edge of a
+  third-party file now reads walked once each way. Files written by earlier
+  ogeom with backward loops on such faces are repaired on reading.
+
+- **Mesh conversion places a tangent seam only through its vertices.** A
+  chord seam between two faces meeting almost tangentially was built even
+  where its vertices stood far off a surface; a surface standing off its
+  vertices now falls back to facets. A curved face that absorbed facets and
+  ran over its neighbours gives them back before anything is faceted, so
+  every corpus part converts with no faceted region.
+
 - **Sewing turns over a face that faces into the closed shell it joins.**
   A box sewn from sheets with a lid filled the wrong way round made a solid
   `check` called reversed; where two faces walk a shared edge the same way,
