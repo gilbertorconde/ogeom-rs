@@ -15,7 +15,7 @@ use ogeom_topo::{
     EdgeRepr, Filter, Location, Model, NodeData, Orientation, Shape, ShapeType, explore,
 };
 
-use crate::fill_patch::{Condition, DEGREE, PlaneFrame, fit_height};
+use crate::fill_patch::{Condition, DEGREE, PlaneFrame, fit_free, fit_height};
 
 /// One side of an N-sided filling.
 #[derive(Debug, Clone)]
@@ -95,6 +95,17 @@ const MIN_LIFT: f64 = 0.1;
 const POINT_SHARE: f64 = 0.05;
 /// Samples per constraint curve.
 const PER_CURVE: usize = 32;
+/// The least share of each corner's turn the loop keeps seen along its
+/// plane's normal for a height over that plane to fill it; below it the
+/// free patch does.
+const KEEP: f64 = 0.25;
+/// Samples per side for the chart the free patch is drawn over.
+const CHART_SAMPLES: usize = 128;
+/// The largest share of a half turn a corner of that chart turns.
+const MOST_TURN: f64 = 0.9;
+/// The least angle, in radians, between the tangents meeting at a corner
+/// of the loop for it to count as one: about a degree.
+const CORNER: f64 = 0.0175;
 
 /// Fill the hole a loop of edges bounds with one face meeting each side's
 /// support at the continuity asked.
@@ -111,6 +122,12 @@ const PER_CURVE: usize = 32;
 /// `tolerance` so it costs the conditions a small share of it; the control
 /// net is refined until every side meets `tolerance` and the conditions'
 /// residual no longer outweighs the energy, or the refinement runs out.
+/// Where a corner of the loop is seen smooth along the plane's normal (two
+/// sides meeting at an angle, each in a plane through that normal), no
+/// height over the plane meets both sides there: the patch is then fitted
+/// in all three coordinates over a chart drawn from the loop itself, whose
+/// corners are the loop's, and refined until it also does not fold over
+/// inside the hole.
 /// The face is trimmed by the given edges themselves where they are not
 /// placed and share vertex nodes end to end, each given a pcurve on the
 /// patch; any other side is stood in for by a new edge on its curve
@@ -149,7 +166,9 @@ const PER_CURVE: usize = 32;
 /// - a G1 or G2 side's support stands within about 6 degrees of square to
 ///   that plane;
 /// - a constraint is neither a vertex nor an edge, or lies outside the hole
-///   seen along the plane's normal.
+///   seen along the plane's normal, or is given where a corner of the loop
+///   is seen smooth along it;
+/// - the loop's corners turn so far that no chart drawn from it closes.
 ///
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the finest
 /// control net still misses `tolerance`, naming the side and the deviation.
@@ -205,6 +224,35 @@ pub fn make_filling_n(
         }
     }
 
+    // A corner seen smooth along the plane's normal asks a height over the
+    // plane for two slopes at one point, one from each side; the free patch
+    // over a chart drawn from the loop, whose corners are the loop's, takes
+    // it.
+    let corners = corners_of(&sides, &order, tol)?;
+    let free = kept_turn(frame.n, &corners) < KEEP;
+    if free && !interior.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "a corner of the boundary loop is seen smooth along the normal of \
+             the plane it spans, so the filling is drawn over a chart of the \
+             loop's own, which places no interior constraints"
+        );
+    }
+    let mut traces = Vec::with_capacity(sides.len());
+    let mut lengths = Vec::with_capacity(sides.len());
+    for side in &sides {
+        if !free {
+            traces.push(trace(side, &frame, tolerance, tol)?);
+        }
+        lengths.push(side_length(side, tol)?);
+    }
+    let chart_outline = if free {
+        traces = boundary_chart(&sides, &order, &corners, tolerance, tol)?;
+        traced_outline(&sides, &order, &traces, tol)?
+    } else {
+        chart_outline
+    };
+
     // The rectangle the patch covers: the hole and a margin round it.
     let (mut lo, mut hi) = (
         Point2::new(f64::INFINITY, f64::INFINITY),
@@ -221,13 +269,6 @@ pub fn make_filling_n(
     );
     let (du, dv) = (domain.0.1 - domain.0.0, domain.1.1 - domain.1.0);
     let size = du.max(dv);
-
-    let mut traces = Vec::with_capacity(sides.len());
-    let mut lengths = Vec::with_capacity(sides.len());
-    for side in &sides {
-        traces.push(trace(side, &frame, tolerance, tol)?);
-        lengths.push(side_length(side, tol)?);
-    }
 
     let smoothing = smoothing_for(&sides, tolerance, size);
     let mut last_miss = String::new();
@@ -246,27 +287,43 @@ pub fn make_filling_n(
         let controls = (count(du), count(dv));
         let samples = 4 * controls.0.max(controls.1) + 8;
 
-        let mut conditions = Vec::new();
-        for (side, length) in sides.iter().zip(&lengths) {
-            side_conditions(
-                side,
-                *length / size,
-                size,
-                samples,
-                &frame,
-                &mut conditions,
-                tol,
-            )?;
-        }
-        for (p, share) in &interior {
-            conditions.push(Condition {
-                at: frame.chart(*p),
-                order: (0, 0),
-                target: frame.height(*p),
-                weight: share.sqrt() / size,
-            });
-        }
-        let fit = fit_height(&frame, domain, controls, &conditions, smoothing, tol)?;
+        let fit = if free {
+            let mut conditions = Vec::new();
+            for ((side, length), pcurve) in sides.iter().zip(&lengths).zip(&traces) {
+                free_conditions(
+                    side,
+                    pcurve,
+                    *length / size,
+                    size,
+                    samples,
+                    &mut conditions,
+                    tol,
+                )?;
+            }
+            fit_free(domain, controls, &conditions, smoothing, tol)?
+        } else {
+            let mut conditions = Vec::new();
+            for (side, length) in sides.iter().zip(&lengths) {
+                side_conditions(
+                    side,
+                    *length / size,
+                    size,
+                    samples,
+                    &frame,
+                    &mut conditions,
+                    tol,
+                )?;
+            }
+            for (p, share) in &interior {
+                conditions.push(Condition::partial(
+                    frame.chart(*p),
+                    (0, 0),
+                    [frame.height(*p)],
+                    share.sqrt() / size,
+                ));
+            }
+            fit_height(&frame, domain, controls, &conditions, smoothing, tol)?
+        };
         let surface = fit.surface;
 
         let mut reports = Vec::with_capacity(sides.len());
@@ -281,6 +338,13 @@ pub fn make_filling_n(
 
         if let Some(miss) = first_miss(&sides, &reports, constraint_gap, tolerance) {
             last_miss = format!("at {}x{} controls, {miss}", controls.0, controls.1);
+            continue;
+        }
+        if free && folds(&surface, &chart_outline, domain, tol)? {
+            last_miss = format!(
+                "at {}x{} controls, the patch folds over inside the hole",
+                controls.0, controls.1
+            );
             continue;
         }
         fallback = Some((surface, reports, constraint_gap));
@@ -755,6 +819,158 @@ fn frame_of(outline: &[Point], tol: Tolerances) -> OgeomResult<PlaneFrame> {
     Ok(PlaneFrame { origin, e1, e2, n })
 }
 
+/// The loop's corners in its walking order, corner `k` where side
+/// `order[k]` ends and side `order[k + 1]` begins: the unit tangents
+/// arriving and leaving, and the angle between them, zero where the loop
+/// runs on smoothly (within [`CORNER`]) or a tangent vanishes.
+fn corners_of(
+    sides: &[Side],
+    order: &[usize],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Vector, Vector, f64)>> {
+    let walked = |side: &Side, end: bool| -> OgeomResult<Option<Vector>> {
+        let t = if end == side.reversed {
+            side.range.0
+        } else {
+            side.range.1
+        };
+        let d = side.curve.d1_at(t, tol)?;
+        let d = if side.reversed { d * -1.0 } else { d };
+        Ok(Direction::new(d, tol).ok().map(Direction::vector))
+    };
+    let mut out = Vec::with_capacity(order.len());
+    for (k, &i) in order.iter().enumerate() {
+        let next = &sides[order[(k + 1) % order.len()]];
+        let corner = match (walked(&sides[i], true)?, walked(next, false)?) {
+            (Some(a), Some(b)) => {
+                let turn = a.cross(b).magnitude().atan2(a.dot(b));
+                (a, b, if turn > CORNER { turn } else { 0.0 })
+            }
+            _ => (Vector::ZERO, Vector::ZERO, 0.0),
+        };
+        out.push(corner);
+    }
+    Ok(out)
+}
+
+/// The least share of its turn any corner of the loop still turns seen
+/// along the unit `n`; one where the loop has no corners.
+fn kept_turn(n: Vector, corners: &[(Vector, Vector, f64)]) -> f64 {
+    let flat = |v: Vector| v - n * v.dot(n);
+    let mut worst = 1.0f64;
+    for (a, b, turn) in corners {
+        if *turn > 0.0 {
+            let (a, b) = (flat(*a), flat(*b));
+            let seen = a.cross(b).magnitude().atan2(a.dot(b));
+            worst = worst.min((seen / turn).min(1.0));
+        }
+    }
+    worst
+}
+
+/// A chart drawn from the loop itself, for the free patch: each side's
+/// pcurve, by side index, at the side's own parameter.
+///
+/// The chart walks the loop at the loop's own speed, turning at each corner
+/// by the corner's turn (held under [`MOST_TURN`] of a half turn, and
+/// scaled down together where they would leave the sides no turn of their
+/// own) and spreading the rest of a full turn evenly along its length, so
+/// its corners are the loop's corners and it is smooth wherever the loop
+/// is. Such a walk ends short of where it began by a little; that drift is
+/// taken out evenly along it, one vector off every step's velocity, which
+/// leaves the walk smooth where it was smooth and its corners corners.
+fn boundary_chart(
+    sides: &[Side],
+    order: &[usize],
+    corners: &[(Vector, Vector, f64)],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<PlanarCurve>> {
+    use std::f64::consts::{PI, TAU};
+    // Each side at even parameters, with the length walked from where the
+    // loop enters the side.
+    let mut walks: Vec<(Vec<f64>, Vec<f64>, f64)> =
+        vec![(Vec::new(), Vec::new(), 0.0); sides.len()];
+    let mut total = 0.0;
+    for &i in order {
+        let side = &sides[i];
+        let mut params = Vec::with_capacity(CHART_SAMPLES + 1);
+        let mut along = Vec::with_capacity(CHART_SAMPLES + 1);
+        let mut previous = side.curve.point_at(side.range.0, tol)?;
+        let mut length = 0.0;
+        for k in 0..=CHART_SAMPLES {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a sample index, far below the mantissa"
+            )]
+            let t = side.parameter(k as f64 / CHART_SAMPLES as f64);
+            let p = side.curve.point_at(t, tol)?;
+            length += p.distance(previous);
+            previous = p;
+            params.push(t);
+            along.push(length);
+        }
+        if side.reversed {
+            for a in &mut along {
+                *a = length - *a;
+            }
+        }
+        total += length;
+        walks[i] = (params, along, length);
+    }
+    if total <= tol.confusion() {
+        ogeom_bail!(Construction, "the boundary loop has no length");
+    }
+    let turns: Vec<f64> = corners.iter().map(|c| c.2.min(MOST_TURN * PI)).collect();
+    let sum: f64 = turns.iter().sum();
+    let scale = if sum > MOST_TURN * TAU {
+        MOST_TURN * TAU / sum
+    } else {
+        1.0
+    };
+    let bend = sum.mul_add(-scale, TAU) / total;
+    // The point a walk of length `s` from `start`, heading `heading`,
+    // reaches turning at `bend`.
+    let arc = |start: Point2, heading: f64, s: f64| -> Point2 {
+        let delta = bend * s;
+        if delta.abs() < 1e-9 {
+            start + Vector2::new(heading.cos(), heading.sin()) * s
+        } else {
+            start
+                + Vector2::new(
+                    (heading + delta).sin() - heading.sin(),
+                    heading.cos() - (heading + delta).cos(),
+                ) * (1.0 / bend)
+        }
+    };
+    let mut starts = vec![(Point2::new(0.0, 0.0), 0.0, 0.0); sides.len()];
+    let (mut at, mut heading, mut walked) = (Point2::new(0.0, 0.0), 0.0f64, 0.0f64);
+    for (k, &i) in order.iter().enumerate() {
+        starts[i] = (at, heading, walked);
+        let length = walks[i].2;
+        at = arc(at, heading, length);
+        heading += bend.mul_add(length, turns[k] * scale);
+        walked += length;
+    }
+    let drift = at - Point2::new(0.0, 0.0);
+    if drift.magnitude() > 0.5 * total / TAU {
+        ogeom_bail!(
+            Construction,
+            "the boundary loop's corners leave no chart drawn from it closing"
+        );
+    }
+    let mut out = Vec::with_capacity(sides.len());
+    for (i, (params, along, _)) in walks.iter().enumerate() {
+        let (start, heading, before) = starts[i];
+        let points: Vec<Point2> = along
+            .iter()
+            .map(|&s| arc(start, heading, s) - drift * ((before + s) / total))
+            .collect();
+        let fitted = ogeom_geom::fit::fit_points_2d_at(params, &points, 3, tolerance * 1e-2, tol)?;
+        out.push(PlanarCurve::BSpline(fitted.curve));
+    }
+    Ok(out)
+}
 /// Whether a closed polygon crosses itself: any two segments that are not
 /// neighbours crossing, each segment's ends standing clear of the other's
 /// line on opposite sides.
@@ -1045,7 +1261,7 @@ fn side_conditions(
     size: f64,
     samples: usize,
     frame: &PlaneFrame,
-    out: &mut Vec<Condition>,
+    out: &mut Vec<Condition<1>>,
     tol: Tolerances,
 ) -> OgeomResult<()> {
     #[expect(
@@ -1061,12 +1277,12 @@ fn side_conditions(
         let t = side.parameter(k as f64 / samples as f64);
         let p = side.curve.point_at(t, tol)?;
         let at = frame.chart(p);
-        out.push(Condition {
+        out.push(Condition::partial(
             at,
-            order: (0, 0),
-            target: frame.height(p),
-            weight: root / size,
-        });
+            (0, 0),
+            [frame.height(p)],
+            root / size,
+        ));
         if side.order == 0 {
             continue;
         }
@@ -1088,18 +1304,8 @@ fn side_conditions(
         let normal = if lift < 0.0 { normal * -1.0 } else { normal };
         let lift = lift.abs();
         let (hu, hv) = (-normal.dot(frame.e1) / lift, -normal.dot(frame.e2) / lift);
-        out.push(Condition {
-            at,
-            order: (1, 0),
-            target: hu,
-            weight: root,
-        });
-        out.push(Condition {
-            at,
-            order: (0, 1),
-            target: hv,
-            weight: root,
-        });
+        out.push(Condition::partial(at, (1, 0), [hu], root));
+        out.push(Condition::partial(at, (0, 1), [hv], root));
         if side.order < 2 {
             continue;
         }
@@ -1131,15 +1337,127 @@ fn side_conditions(
             ((1, 1), second(su, sv)),
             ((0, 2), second(sv, sv)),
         ] {
-            out.push(Condition {
-                at,
-                order,
-                target,
-                weight: root * size,
-            });
+            out.push(Condition::partial(at, order, [target], root * size));
         }
     }
     Ok(())
+}
+
+/// The free patch's conditions along one side: the side's points, at its
+/// pcurve on the chart drawn from the loop, weighted as in
+/// [`side_conditions`].
+fn free_conditions(
+    side: &Side,
+    pcurve: &PlanarCurve,
+    share: f64,
+    size: f64,
+    samples: usize,
+    out: &mut Vec<Condition<3>>,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a sample count, far below the mantissa"
+    )]
+    let root = (share / samples as f64).max(f64::MIN_POSITIVE).sqrt();
+    for k in 0..=samples {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a sample index, far below the mantissa"
+        )]
+        let t = side.parameter(k as f64 / samples as f64);
+        let p = side.curve.point_at(t, tol)?;
+        let at = pcurve.point_at(t, tol)?;
+        out.push(Condition::partial(at, (0, 0), [p.x, p.y, p.z], root / size));
+    }
+    Ok(())
+}
+
+/// Points round the loop on the chart, in its walking order.
+fn traced_outline(
+    sides: &[Side],
+    order: &[usize],
+    traces: &[PlanarCurve],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Point2>> {
+    let mut out = Vec::with_capacity(order.len() * OUTLINE_SAMPLES);
+    for &i in order {
+        let side = &sides[i];
+        for k in 0..OUTLINE_SAMPLES {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a sample index, far below the mantissa"
+            )]
+            let mut f = k as f64 / OUTLINE_SAMPLES as f64;
+            if side.reversed {
+                f = 1.0 - f;
+            }
+            out.push(traces[i].point_at(side.parameter(f), tol)?);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a free patch folds over inside the hole: on a grid over the
+/// chart, inside its outline, the normal vanishes against the largest, or
+/// turns over between neighbouring samples.
+fn folds(
+    surface: &BSplineSurface,
+    outline: &[Point2],
+    domain: ((f64, f64), (f64, f64)),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    const GRID: usize = 40;
+    let ((ua, ub), (va, vb)) = domain;
+    let mut normals = vec![None; (GRID + 1) * (GRID + 1)];
+    let mut largest = 0.0f64;
+    for i in 0..=GRID {
+        for j in 0..=GRID {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a grid index, far below the mantissa"
+            )]
+            let q = Point2::new(
+                (ub - ua).mul_add(i as f64 / GRID as f64, ua),
+                (vb - va).mul_add(j as f64 / GRID as f64, va),
+            );
+            if !inside(outline, q) {
+                continue;
+            }
+            let (du, dv) = surface.d1_at(q.x, q.y, tol)?;
+            let normal = du.cross(dv);
+            largest = largest.max(normal.magnitude());
+            normals[i * (GRID + 1) + j] = Some(normal);
+        }
+    }
+    for i in 0..=GRID {
+        for j in 0..=GRID {
+            let Some(here) = normals[i * (GRID + 1) + j] else {
+                continue;
+            };
+            if here.magnitude() <= 1e-6 * largest {
+                return Ok(true);
+            }
+            let right = if i < GRID {
+                normals[(i + 1) * (GRID + 1) + j]
+            } else {
+                None
+            };
+            let up = if j < GRID {
+                normals[i * (GRID + 1) + j + 1]
+            } else {
+                None
+            };
+            if [right, up]
+                .into_iter()
+                .flatten()
+                .any(|n| n.dot(here) <= 0.0)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Measure one side at `stations` spread over its edge: the gap between

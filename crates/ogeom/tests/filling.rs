@@ -458,6 +458,31 @@ fn strips_tangent_to_a_dome_fill_tangent_to_each() {
     }
 }
 
+/// An arc of the circle of radius `r` round `centre` in the plane square to
+/// `normal`, starting along `start` and turning `sweep` about `normal`.
+fn arc_edge(
+    model: &mut Model,
+    centre: Point,
+    normal: ogeom::math::Vector,
+    start: ogeom::math::Vector,
+    r: f64,
+    sweep: f64,
+) -> Shape {
+    use ogeom::geom::CircleCurve;
+    use ogeom::math::{Circle, Direction, Frame};
+    let frame = Frame::new(
+        centre,
+        Direction::new(normal, T).unwrap(),
+        Direction::new(start, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let circle = CircleCurve::new(Circle::new(frame, r, T).unwrap());
+    ogeom::algo::make_edge(model, circle.into(), (0.0, sweep), T)
+        .unwrap()
+        .shape
+}
+
 /// A line edge from `a` to `b` on vertices of its own.
 fn line_edge(model: &mut Model, a: Point, b: Point) -> Shape {
     let line = ogeom::algo::make_polygon(model, &[a, b], false, T)
@@ -488,18 +513,21 @@ fn worst_off(surface: &SurfaceGeometry, points: impl IntoIterator<Item = Point>)
         .fold(0.0, f64::max)
 }
 
-/// The face is valid under `check`, and its mesh, reflected by `mirror`,
-/// lies on the surface within `slack`: a loop that maps onto itself under
-/// the reflection is filled by a face that does too.
-fn valid_and_mirrored(model: &Model, face: &Shape, mirror: impl Fn(Point) -> Point, slack: f64) {
+/// The mesh of a face that `check` finds valid.
+fn valid_mesh(model: &Model, face: &Shape) -> Vec<Point> {
     let diagnosis = ogeom::algo::check(model, face, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
-    let surface = surface_of(model, face);
     let mesh =
         ogeom::mesh::triangulate_face(model, face, ogeom::mesh::Deflection::default(), T).unwrap();
     assert!(mesh.positions.len() > 10);
-    let off = worst_off(&surface, mesh.positions.iter().map(|p| mirror(*p)));
-    assert!(off <= slack, "the mirrored mesh stands {off} off the face");
+    mesh.positions
+}
+
+/// How far the mesh, reflected by `mirror`, stands off the surface: a loop
+/// that maps onto itself under the reflection is filled by a face that
+/// does too.
+fn mirrored_off(surface: &SurfaceGeometry, mesh: &[Point], mirror: impl Fn(Point) -> Point) -> f64 {
+    worst_off(surface, mesh.iter().map(|p| mirror(*p)))
 }
 
 #[test]
@@ -535,7 +563,12 @@ fn a_four_line_saddle_fills_over_the_plane_it_projects_simply_on() {
     });
     let off = worst_off(&surface, lines);
     assert!(off <= tolerance, "a side stands {off} off the filling");
-    valid_and_mirrored(&model, &face, |q| Point::new(-q.x, q.y, q.z), tolerance);
+    let mesh = valid_mesh(&model, &face);
+    let off = mirrored_off(&surface, &mesh, |q| Point::new(-q.x, q.y, q.z));
+    assert!(
+        off <= tolerance,
+        "the mirrored mesh stands {off} off the face"
+    );
     // The ruled saddle the four lines bound, against which a fair filling
     // stands within a small share of the hole's 20 units.
     let bilinear = (1..10).flat_map(|i| {
@@ -551,4 +584,77 @@ fn a_four_line_saddle_fills_over_the_plane_it_projects_simply_on() {
     });
     let off = worst_off(&surface, bilinear);
     assert!(off <= 0.1, "the filling strays {off} from the ruled saddle");
+}
+
+#[test]
+fn two_semicircles_in_crossing_planes_fill_within_tolerance() {
+    use ogeom::geom::Continuity;
+    use ogeom::math::Vector;
+    use ogeom::offset::{FillBoundary, make_filling_n};
+
+    // One semicircle rises over the x axis in the XZ plane, the other dips
+    // below it in the XY plane: they meet at a right angle at both ends,
+    // and seen along the loop's own plane the two corners are smooth.
+    let r = 10.0;
+    let pi = std::f64::consts::PI;
+    let mut model = Model::new();
+    let up = arc_edge(
+        &mut model,
+        Point::ORIGIN,
+        Vector::new(0.0, 1.0, 0.0),
+        Vector::new(-1.0, 0.0, 0.0),
+        r,
+        pi,
+    );
+    let down = arc_edge(
+        &mut model,
+        Point::ORIGIN,
+        Vector::new(0.0, 0.0, -1.0),
+        Vector::new(1.0, 0.0, 0.0),
+        r,
+        pi,
+    );
+    let sides = [up, down].map(|edge| FillBoundary {
+        edge,
+        support: None,
+        continuity: Continuity::C0,
+    });
+    let tolerance = 1e-3;
+    let filled = make_filling_n(&mut model, &sides, &[], tolerance, T).unwrap();
+    let face = filled.built.shape.clone();
+    let surface = surface_of(&model, &face);
+    let arcs = (0..=200).flat_map(|k| {
+        let a = pi * f64::from(k) / 200.0;
+        [
+            Point::new(-r * a.cos(), 0.0, r * a.sin()),
+            Point::new(r * a.cos(), -r * a.sin(), 0.0),
+        ]
+    });
+    let off = worst_off(&surface, arcs);
+    assert!(off <= tolerance, "an arc stands {off} off the filling");
+
+    // The loop maps onto itself reflected across x = 0, and swapped arc
+    // for arc by (x, y, z) -> (x, -z, -y); it bounds the quarter of the
+    // slab -10 <= x <= 10 with y <= 0 <= z, which is convex, so a fair
+    // filling stays in it.
+    let mesh = valid_mesh(&model, &face);
+    for (name, mirror) in [
+        (
+            "across x = 0",
+            (|p: Point| Point::new(-p.x, p.y, p.z)) as fn(Point) -> Point,
+        ),
+        ("arc for arc", |p: Point| Point::new(p.x, -p.z, -p.y)),
+    ] {
+        let off = mirrored_off(&surface, &mesh, mirror);
+        assert!(
+            off <= tolerance,
+            "reflected {name}, the mesh stands {off} off the face"
+        );
+    }
+    for p in &mesh {
+        assert!(
+            p.x.abs() <= r + tolerance && p.y <= tolerance && p.z >= -tolerance,
+            "a mesh point outside the quarter slab: {p:?}"
+        );
+    }
 }

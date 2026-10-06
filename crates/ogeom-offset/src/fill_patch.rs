@@ -13,6 +13,13 @@
 //! The surface itself is an ordinary B-spline patch: the plane part is
 //! carried by control points at the Greville abscissae, which reproduce a
 //! linear function exactly, so the patch's chart is the plane's.
+//!
+//! A loop whose corner is seen smooth along the plane's normal is no
+//! height field over it: the two sides meeting there ask for two slopes at
+//! one point. The free patch fits all three coordinates of its control
+//! points over a chart the caller draws from the loop itself, each
+//! condition fixing a derivative of the point `S(u, v)`. Every condition is
+//! still linear, and the three coordinates share one matrix.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::BSplineSurface;
@@ -45,15 +52,29 @@ impl PlaneFrame {
     }
 }
 
-/// One linear condition on the height: its derivative of order
-/// `(order_u, order_v)` at `at` equals `target`, the row scaled by
-/// `weight` before squaring.
+/// One linear condition on the patch's `D` fitted components (the height,
+/// or a point's three coordinates): a derivative of them at `at` equals
+/// `target`, the row scaled by `weight` before squaring. The derivative is
+/// a sum of partial derivatives, each `(order_u, order_v, coefficient)`,
+/// orders at most two.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Condition {
+pub(crate) struct Condition<const D: usize> {
     pub at: Point2,
-    pub order: (usize, usize),
-    pub target: f64,
+    pub terms: [(usize, usize, f64); 3],
+    pub target: [f64; D],
     pub weight: f64,
+}
+
+impl<const D: usize> Condition<D> {
+    /// The partial derivative of order `(order_u, order_v)`.
+    pub fn partial(at: Point2, order: (usize, usize), target: [f64; D], weight: f64) -> Self {
+        Self {
+            at,
+            terms: [(order.0, order.1, 1.0), (0, 0, 0.0), (0, 0, 0.0)],
+            target,
+            weight,
+        }
+    }
 }
 
 /// A symmetric positive definite matrix held as its lower band.
@@ -88,12 +109,12 @@ impl Banded {
         if d > self.band { 0.0 } else { self.rows[hi][d] }
     }
 
-    /// Solve by banded Cholesky; `None` where the matrix is not positive
-    /// definite to working precision.
-    fn solve(&self, rhs: &[f64]) -> Option<Vec<f64>> {
+    /// The banded Cholesky factor, `factor[k][d]` being `L(k, k - d)`;
+    /// `None` where the matrix is not positive definite to working
+    /// precision.
+    fn factor(&self) -> Option<Vec<Vec<f64>>> {
         let n = self.size;
         let b = self.band;
-        // factor[k][d] is L(k, k - d).
         let mut factor = vec![vec![0.0f64; b + 1]; n];
         for k in 0..n {
             let first = k.saturating_sub(b);
@@ -113,6 +134,13 @@ impl Banded {
                 }
             }
         }
+        Some(factor)
+    }
+
+    /// Solve with the factor [`Banded::factor`] gave.
+    fn solve(&self, factor: &[Vec<f64>], rhs: &[f64]) -> Vec<f64> {
+        let n = self.size;
+        let b = self.band;
         let mut y = vec![0.0f64; n];
         for k in 0..n {
             let mut sum = rhs[k];
@@ -129,16 +157,19 @@ impl Banded {
             }
             x[k] = sum / factor[k][0];
         }
-        Some(x)
+        x
     }
 }
 
-/// The non-zero basis derivatives of one order at `t`: the first index and
-/// the values.
-fn basis_of(knots: &KnotVector, t: f64, order: usize) -> (usize, Vec<f64>) {
+/// The non-zero basis functions and their first two derivatives at `t`:
+/// the first index, and the values by order.
+fn basis_of(knots: &KnotVector, t: f64) -> (usize, [Vec<f64>; 3]) {
     let span = knots.span_unchecked(t);
-    let rows = knots.basis_derivatives(span, t, order);
-    (span - DEGREE, rows[order].to_vec())
+    let rows = knots.basis_derivatives(span, t, 2);
+    (
+        span - DEGREE,
+        [rows[0].to_vec(), rows[1].to_vec(), rows[2].to_vec()],
+    )
 }
 
 /// `∫ N_i^(r) N_j^(r)` over the knot domain, for `r` = 0, 1, 2: the Gram
@@ -178,30 +209,32 @@ fn gram(knots: &KnotVector, count: usize) -> [Vec<Vec<f64>>; 3] {
     out
 }
 
-/// A fitted height patch and how far it misses its conditions.
-pub(crate) struct HeightFit {
+/// A fitted patch and how far it misses its conditions.
+pub(crate) struct PatchFit {
     pub surface: BSplineSurface,
     /// The conditions' weighted squared residuals, summed.
     pub residual: f64,
 }
 
-/// Fit the height over `domain` with `controls` control heights per
-/// direction to `conditions`, with the thin-plate energy at `smoothing`.
-///
-/// # Errors
-///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// the control counts cannot carry the degree, and
-/// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) if the system
-/// is singular.
-pub(crate) fn fit_height(
-    frame: &PlaneFrame,
+/// The controls of one fit: the knots, the `D` components of every
+/// control (row-major, `v` fastest) and the residual.
+struct Net<const D: usize> {
+    u_knots: KnotVector,
+    v_knots: KnotVector,
+    values: Vec<[f64; D]>,
+    residual: f64,
+}
+
+/// Fit `D` components over `domain` with `controls` controls per
+/// direction to `conditions`, with the thin-plate energy at `smoothing`
+/// on each component. The components share one matrix and are solved
+/// apart.
+fn solve_net<const D: usize>(
     domain: ((f64, f64), (f64, f64)),
     controls: (usize, usize),
-    conditions: &[Condition],
+    conditions: &[Condition<D>],
     smoothing: f64,
-    tol: Tolerances,
-) -> OgeomResult<HeightFit> {
+) -> OgeomResult<Net<D>> {
     let (nu, nv) = controls;
     let ((ua, ub), (va, vb)) = domain;
     let u_knots = KnotVector::clamped_uniform(DEGREE, nu)?.reparameterized(ua, ub)?;
@@ -209,7 +242,7 @@ pub(crate) fn fit_height(
     let size = nu * nv;
     let band = DEGREE * nv + DEGREE;
     let mut matrix = Banded::new(size, band);
-    let mut rhs = vec![0.0f64; size];
+    let mut rhs = vec![[0.0f64; D]; size];
 
     // The bending energy ∫∫ h_uu² + 2 h_uv² + h_vv².
     let [gu0, gu1, gu2] = gram(&u_knots, nu);
@@ -234,17 +267,27 @@ pub(crate) fn fit_height(
     // The conditions, as least-squares rows.
     let mut rows = Vec::with_capacity(conditions.len());
     for c in conditions {
-        let (fu, bu) = basis_of(&u_knots, c.at.x.clamp(ua, ub), c.order.0);
-        let (fv, bv) = basis_of(&v_knots, c.at.y.clamp(va, vb), c.order.1);
-        let mut row: Vec<(usize, f64)> = Vec::with_capacity(bu.len() * bv.len());
-        for (i, a) in bu.iter().enumerate() {
-            for (j, b) in bv.iter().enumerate() {
-                row.push(((fu + i) * nv + (fv + j), c.weight * a * b));
+        let (fu, bu) = basis_of(&u_knots, c.at.x.clamp(ua, ub));
+        let (fv, bv) = basis_of(&v_knots, c.at.y.clamp(va, vb));
+        let mut local = [[0.0f64; DEGREE + 1]; DEGREE + 1];
+        for &(ou, ov, coefficient) in &c.terms {
+            for (line, a) in local.iter_mut().zip(&bu[ou]) {
+                for (slot, b) in line.iter_mut().zip(&bv[ov]) {
+                    *slot += coefficient * a * b;
+                }
             }
         }
-        let target = c.weight * c.target;
+        let mut row: Vec<(usize, f64)> = Vec::with_capacity((DEGREE + 1) * (DEGREE + 1));
+        for (i, line) in local.iter().enumerate() {
+            for (j, value) in line.iter().enumerate() {
+                row.push(((fu + i) * nv + (fv + j), c.weight * value));
+            }
+        }
+        let target = c.target.map(|t| c.weight * t);
         for &(k, a) in &row {
-            rhs[k] += a * target;
+            for (slot, t) in rhs[k].iter_mut().zip(target) {
+                *slot += a * t;
+            }
             for &(k2, b) in &row {
                 if k2 <= k {
                     matrix.add(k, k2, a * b);
@@ -254,18 +297,53 @@ pub(crate) fn fit_height(
         rows.push((row, target));
     }
 
-    let Some(heights) = matrix.solve(&rhs) else {
+    let Some(factor) = matrix.factor() else {
         ogeom_bail!(
             Numeric,
             "the filling's system is singular at {nu}x{nv} controls"
         );
     };
+    let mut values = vec![[0.0f64; D]; size];
+    for d in 0..D {
+        let column: Vec<f64> = rhs.iter().map(|r| r[d]).collect();
+        for (slot, x) in values.iter_mut().zip(matrix.solve(&factor, &column)) {
+            slot[d] = x;
+        }
+    }
     let mut residual = 0.0f64;
     for (row, target) in &rows {
-        let value: f64 = row.iter().map(|&(k, a)| a * heights[k]).sum();
-        residual += (value - target).powi(2);
+        for (d, t) in target.iter().enumerate() {
+            let value: f64 = row.iter().map(|&(k, a)| a * values[k][d]).sum();
+            residual += (value - t).powi(2);
+        }
     }
+    Ok(Net {
+        u_knots,
+        v_knots,
+        values,
+        residual,
+    })
+}
 
+/// Fit the height over `domain` with `controls` control heights per
+/// direction to `conditions`, with the thin-plate energy at `smoothing`.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// the control counts cannot carry the degree, and
+/// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) if the system
+/// is singular.
+pub(crate) fn fit_height(
+    frame: &PlaneFrame,
+    domain: ((f64, f64), (f64, f64)),
+    controls: (usize, usize),
+    conditions: &[Condition<1>],
+    smoothing: f64,
+    tol: Tolerances,
+) -> OgeomResult<PatchFit> {
+    let (nu, nv) = controls;
+    let net = solve_net(domain, controls, conditions, smoothing)?;
     // Greville abscissae carry the plane part exactly.
     let greville = |knots: &KnotVector, i: usize| -> f64 {
         let k = knots.knots();
@@ -274,19 +352,50 @@ pub(crate) fn fit_height(
         let count = window.len() as f64;
         window.iter().sum::<f64>() / count
     };
-    let mut control = Vec::with_capacity(size);
+    let mut control = Vec::with_capacity(nu * nv);
     for i in 0..nu {
-        let u = greville(&u_knots, i);
+        let u = greville(&net.u_knots, i);
         for j in 0..nv {
-            let v = greville(&v_knots, j);
-            control
-                .push(frame.origin + frame.e1 * u + frame.e2 * v + frame.n * heights[i * nv + j]);
+            let v = greville(&net.v_knots, j);
+            let h = net.values[i * nv + j][0];
+            control.push(frame.origin + frame.e1 * u + frame.e2 * v + frame.n * h);
         }
     }
     let grid = ControlGrid::new(control, nu, nv)?;
-    Ok(HeightFit {
-        surface: BSplineSurface::new(u_knots, v_knots, &grid, tol)?,
-        residual,
+    Ok(PatchFit {
+        surface: BSplineSurface::new(net.u_knots, net.v_knots, &grid, tol)?,
+        residual: net.residual,
+    })
+}
+
+/// Fit a patch whose control points' three coordinates are all free over
+/// `domain`, with `controls` controls per direction, to `conditions` on
+/// the point `S(u, v)`, with the thin-plate energy at `smoothing` on each
+/// coordinate. Where the height patch keeps `(u, v)` as the plane's
+/// coordinates, this one leaves the chart to the conditions: `(u, v)` is
+/// whatever chart they are placed on.
+///
+/// # Errors
+///
+/// As [`fit_height`].
+pub(crate) fn fit_free(
+    domain: ((f64, f64), (f64, f64)),
+    controls: (usize, usize),
+    conditions: &[Condition<3>],
+    smoothing: f64,
+    tol: Tolerances,
+) -> OgeomResult<PatchFit> {
+    let (nu, nv) = controls;
+    let net = solve_net(domain, controls, conditions, smoothing)?;
+    let control: Vec<Point> = net
+        .values
+        .iter()
+        .map(|[x, y, z]| Point::new(*x, *y, *z))
+        .collect();
+    let grid = ControlGrid::new(control, nu, nv)?;
+    Ok(PatchFit {
+        surface: BSplineSurface::new(net.u_knots, net.v_knots, &grid, tol)?,
+        residual: net.residual,
     })
 }
 
@@ -316,12 +425,12 @@ mod tests {
         for i in 0..=20 {
             for j in 0..=20 {
                 let (x, y) = (f64::from(i) / 10.0 - 1.0, f64::from(j) / 10.0 - 1.0);
-                conditions.push(Condition {
-                    at: Point2::new(x, y),
-                    order: (0, 0),
-                    target: h(x, y),
-                    weight: 1.0,
-                });
+                conditions.push(Condition::partial(
+                    Point2::new(x, y),
+                    (0, 0),
+                    [h(x, y)],
+                    1.0,
+                ));
             }
         }
         let patch = fit_height(
@@ -346,21 +455,21 @@ mod tests {
         // A plane's own value at one point, slopes everywhere along a line,
         // and a bend: the fit honours the derivative orders, read back from
         // the surface's own derivatives.
-        let mut conditions = vec![Condition {
-            at: Point2::new(0.0, 0.0),
-            order: (0, 0),
-            target: 0.25,
-            weight: 1.0,
-        }];
+        let mut conditions = vec![Condition::partial(
+            Point2::new(0.0, 0.0),
+            (0, 0),
+            [0.25],
+            1.0,
+        )];
         for k in 0..=10 {
             let y = f64::from(k) / 5.0 - 1.0;
             for (order, target) in [((1, 0), 0.5), ((0, 1), -0.25), ((2, 0), 0.0)] {
-                conditions.push(Condition {
-                    at: Point2::new(0.0, y),
+                conditions.push(Condition::partial(
+                    Point2::new(0.0, y),
                     order,
-                    target,
-                    weight: 1.0,
-                });
+                    [target],
+                    1.0,
+                ));
             }
         }
         let patch = fit_height(
