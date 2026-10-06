@@ -17,7 +17,7 @@
 //! doubled until it is.
 //!
 //! A sheet has one face per section edge (per span between neighbouring
-//! sections for a ruled loft), the faces meeting on shared edges. Sections
+//! sections for a ruled loft, per spine edge for a sweep), the faces meeting on shared edges. Sections
 //! with different edge counts are matched by arc length: each section's
 //! edges are split where the others' breaks fall, as fractions of its
 //! length, the pieces keeping their exact form. A section edge that bounds
@@ -259,7 +259,9 @@ pub fn make_loft_surface(
 /// The profile is an edge or a wire, open or closed, planar or not, swept
 /// as it stands: it is the sheet's first section, and `law` turns it about
 /// the spine the way it turns a pipe's section ([`PipeLaw::Fixed`] carries
-/// it by translation). The sheet has one face per profile edge and no
+/// it by translation). The sheet has one face per profile edge and spine
+/// edge, each spine edge's faces skinned through their own copies and
+/// meeting the next edge's on the copy at the edges' shared vertex, and no
 /// caps; its far end is the profile where the law carries it to the
 /// spine's end. The skin passes through rigid copies of the profile placed
 /// along the spine, exactly, and keeps within ten confusions of the swept
@@ -284,14 +286,23 @@ pub fn make_sweep_surface(
 ) -> OgeomResult<Built> {
     let section = read_section(model, profile, "sweep profile", tol)?;
     let target = tol.confusion() * 10.0;
-    let motions = |model: &Model, density: usize| -> OgeomResult<Vec<Transform>> {
+    let motions = |model: &Model, density: usize| -> OgeomResult<Placements> {
         let stations = sweep_stations(model, spine, density, tol)?;
+        let breaks = stations
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| pair[0].edge != pair[1].edge)
+            .map(|(k, _)| k)
+            .collect();
         if matches!(law, PipeLaw::Fixed) {
             let start = stations[0].at;
-            return Ok(stations
-                .iter()
-                .map(|s| Transform::translation(s.at - start))
-                .collect());
+            return Ok(Placements {
+                motions: stations
+                    .iter()
+                    .map(|s| Transform::translation(s.at - start))
+                    .collect(),
+                breaks,
+            });
         }
         let normals = law_normals(model, &stations, law, target, tol)?;
         let start = station_frame(&stations[0], normals[0], tol)?;
@@ -300,7 +311,10 @@ pub fn make_sweep_surface(
             let frame = station_frame(s, *n, tol)?;
             out.push(Transform::from_frame(&frame) * Transform::to_frame(&start));
         }
-        Ok(out)
+        Ok(Placements {
+            motions: out,
+            breaks,
+        })
     };
     let shape = swept_sheet(model, &section, motions, target, tol)?;
     let mut history = History::new();
@@ -395,7 +409,7 @@ pub fn make_sweep_two_rails(
     };
     let (start_frame, start_width) = frame_at(0.0)?;
     let target = tol.confusion() * 10.0;
-    let motions = |_: &Model, density: usize| -> OgeomResult<Vec<Transform>> {
+    let motions = |_: &Model, density: usize| -> OgeomResult<Placements> {
         let count = 32 * density;
         let mut out = Vec::with_capacity(count + 1);
         for i in 0..=count {
@@ -405,7 +419,10 @@ pub fn make_sweep_two_rails(
             let scale = Transform::scaling(Point::ORIGIN, width / start_width, tol)?;
             out.push(Transform::from_frame(&frame) * scale * Transform::to_frame(&start_frame));
         }
-        Ok(out)
+        Ok(Placements {
+            motions: out,
+            breaks: Vec::new(),
+        })
     };
     let shape = swept_sheet(model, &section, motions, target, tol)?;
     let mut history = History::new();
@@ -1427,14 +1444,27 @@ fn foot_on(section: &BSplineCurve, p: Point, guess: f64, tol: Tolerances) -> Oge
     Ok(u)
 }
 
+/// Where a sweep places its profile at one density: a run of motions and
+/// the motions at which the path passes from one piece to the next.
+struct Placements {
+    /// An odd run of motions, the first the identity.
+    motions: Vec<Transform>,
+    /// Indices into `motions`, each even, where one piece of the path
+    /// ends and the next begins.
+    breaks: Vec<usize>,
+}
+
 /// A sheet swept from copies of `profile` placed by `motions`: for a
 /// density, an odd run of placements whose even members the skin passes
 /// through and whose odd members (halfway between) it is measured against.
-/// The density doubles until the skin keeps within `target` of them.
+/// The skin is one face per profile edge and piece of the path, each
+/// piece's skin interpolating its own copies, so a path that is smooth
+/// only to its tangent at a break is not smoothed across it. The density
+/// doubles until the skin keeps within `target` of the halfway copies.
 fn swept_sheet(
     model: &mut Model,
     profile: &Section,
-    motions: impl Fn(&Model, usize) -> OgeomResult<Vec<Transform>>,
+    motions: impl Fn(&Model, usize) -> OgeomResult<Placements>,
     target: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
@@ -1442,7 +1472,10 @@ fn swept_sheet(
     let mut density = 1;
     let mut reached = (f64::INFINITY, 0);
     loop {
-        let placed = motions(model, density)?;
+        let Placements {
+            motions: placed,
+            breaks,
+        } = motions(model, density)?;
         let skin_count = placed.len().div_ceil(2);
         if skin_count > MOST_SWEEP_SECTIONS {
             ogeom_bail!(
@@ -1468,53 +1501,62 @@ fn swept_sheet(
                 closed: profile.closed,
             });
         }
-        let mut chords = Vec::with_capacity(skin_count);
-        for k in 0..skin_count - 1 {
-            chords.push(section_chord(&sections[k], &sections[k + 1], k, tol)?);
-        }
-        let params = unit_params(&chords);
-        let mut surfaces = Vec::with_capacity(count);
-        for e in 0..count {
-            let rows: Vec<Vec<Weighted<Point>>> = sections
+        let mut bounds = vec![0];
+        bounds.extend(
+            breaks
                 .iter()
-                .map(|s| s.edges[e].curve.control_points().to_vec())
-                .collect();
-            let (v_knots, net) = interpolated(&rows, &params, tol)?;
-            surfaces.push(vec![surface_of(
-                profile.edges[e].curve.knots(),
-                v_knots,
-                &net,
-                tol,
-            )?]);
+                .filter(|b| **b % 2 == 0)
+                .map(|b| b / 2)
+                .filter(|k| (1..skin_count - 1).contains(k)),
+        );
+        bounds.push(skin_count - 1);
+        let spans: Vec<(usize, usize)> = bounds.windows(2).map(|w| (w[0], w[1])).collect();
+        let mut surfaces: Vec<Vec<BSplineSurface>> = vec![Vec::with_capacity(spans.len()); count];
+        let mut span_params = Vec::with_capacity(spans.len());
+        for &(lo, hi) in &spans {
+            let mut chords = Vec::with_capacity(hi - lo);
+            for k in lo..hi {
+                chords.push(section_chord(&sections[k], &sections[k + 1], k, tol)?);
+            }
+            let params = unit_params(&chords);
+            for (e, per_span) in surfaces.iter_mut().enumerate() {
+                let rows: Vec<Vec<Weighted<Point>>> = sections[lo..=hi]
+                    .iter()
+                    .map(|s| s.edges[e].curve.control_points().to_vec())
+                    .collect();
+                let (v_knots, net) = interpolated(&rows, &params, tol)?;
+                per_span.push(surface_of(
+                    profile.edges[e].curve.knots(),
+                    v_knots,
+                    &net,
+                    tol,
+                )?);
+            }
+            span_params.push(params);
         }
-        // Halfway copies, projected onto the skin from where they should
-        // land.
+        // Halfway copies, projected onto the skin of their span from where
+        // they should land.
         let mut worst: f64 = 0.0;
-        for (e, piece) in profile.edges.iter().enumerate() {
-            let geometry: SurfaceGeometry = surfaces[e][0].clone().into();
-            for (h, motion) in placed.iter().enumerate().skip(1).step_by(2) {
-                let k = h / 2;
-                let guess_v = f64::midpoint(params[k], params[k + 1]);
-                for i in 0..=16 {
-                    let u = f64::from(i) / 16.0;
-                    let p = motion.apply(piece.curve.point_at(u, tol)?);
-                    let foot =
-                        ogeom_algo::project_on_surface_from(&geometry, p, (u, guess_v), tol)?;
-                    worst = worst.max(foot.distance);
+        for (s, &(lo, hi)) in spans.iter().enumerate() {
+            let params = &span_params[s];
+            for (e, piece) in profile.edges.iter().enumerate() {
+                let geometry: SurfaceGeometry = surfaces[e][s].clone().into();
+                for k in lo..hi {
+                    let motion = &placed[2 * k + 1];
+                    let guess_v = f64::midpoint(params[k - lo], params[k - lo + 1]);
+                    for i in 0..=16 {
+                        let u = f64::from(i) / 16.0;
+                        let p = motion.apply(piece.curve.point_at(u, tol)?);
+                        let foot =
+                            ogeom_algo::project_on_surface_from(&geometry, p, (u, guess_v), tol)?;
+                        worst = worst.max(foot.distance);
+                    }
                 }
             }
         }
         reached = (worst, skin_count);
         if worst <= target {
-            return sheet(
-                model,
-                &sections,
-                &surfaces,
-                &[(0, skin_count - 1)],
-                false,
-                false,
-                tol,
-            );
+            return sheet(model, &sections, &surfaces, &spans, false, false, tol);
         }
         density *= 2;
     }

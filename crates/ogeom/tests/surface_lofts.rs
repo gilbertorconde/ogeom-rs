@@ -1322,3 +1322,114 @@ fn a_fixed_sweep_along_a_line_is_the_extrusion() {
         assert!(q.y > -1e-9 && (-1e-9..=4.0 + 1e-9).contains(&p.z));
     }
 }
+
+#[test]
+fn a_sweep_surface_follows_a_line_into_a_tangent_arc() {
+    let mut model = Model::new();
+    // A line along +X to (10, 0, 0), then a quarter of the circle of
+    // radius 5 about (10, 5, 0), tangent to it, up to (15, 5, 0).
+    let start = make_vertex(&mut model, Point::ORIGIN).shape;
+    let join = make_vertex(&mut model, Point::new(10.0, 0.0, 0.0)).shape;
+    let end = make_vertex(&mut model, Point::new(15.0, 5.0, 0.0)).shape;
+    let straight: Curve = LineCurve::segment(Point::ORIGIN, Point::new(10.0, 0.0, 0.0), T)
+        .unwrap()
+        .into();
+    let range = straight.domain();
+    let line = make_edge_between(&mut model, straight, range, &start, &join, T)
+        .unwrap()
+        .shape;
+    let circle = Circle::new(
+        Frame::new(
+            Point::new(10.0, 5.0, 0.0),
+            Direction::new(Vector::new(0.0, 0.0, 1.0), T).unwrap(),
+            Direction::new(Vector::new(1.0, 0.0, 0.0), T).unwrap(),
+            T,
+        )
+        .unwrap(),
+        5.0,
+        T,
+    )
+    .unwrap();
+    let bend = make_edge_between(
+        &mut model,
+        CircleCurve::new(circle).into(),
+        (-PI / 2.0, 0.0),
+        &join,
+        &end,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let spine = make_wire(&mut model, &[line, bend], T).unwrap().shape;
+    let profile = make_polygon(
+        &mut model,
+        &[Point::new(0.0, -1.0, 0.0), Point::new(0.0, 1.0, 0.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let sheet = make_sweep_surface(
+        &mut model,
+        &profile,
+        &spine,
+        &PipeLaw::RotationMinimizing,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fs = faces(&model, &sheet);
+    assert_eq!(fs.len(), 2, "one face per piece of the spine");
+    sound_sheet(&model, &sheet, 6);
+    // The swept segment is the flat band of half-width 1 about the spine:
+    // the point at profile fraction `f` stands `2f - 1` to the spine's
+    // left, which is `y` along the line and `5 - rho` round the arc.
+    let mut worst: f64 = 0.0;
+    for face in &fs {
+        let s = surface(&model, face);
+        let ((u0, u1), (v0, v1)) = s.domain();
+        for i in 0..=16 {
+            let f = f64::from(i) / 16.0;
+            for j in 0..=400 {
+                let u = u0 + (u1 - u0) * f;
+                let v = v0 + (v1 - v0) * f64::from(j) / 400.0;
+                let p = s.point_at(u, v, T).unwrap();
+                let left = if p.x <= 10.0 {
+                    p.y
+                } else {
+                    assert!(p.y <= 5.0 + 1e-9, "{p:?} runs past the arc's end");
+                    5.0 - (p.x - 10.0).hypot(p.y - 5.0)
+                };
+                worst = worst.max(p.z.abs()).max((left - (2.0 * f - 1.0)).abs());
+            }
+        }
+    }
+    assert!(
+        worst < 1e-6,
+        "the sheet strays {worst:.3e} from the swept band"
+    );
+    // The far border is the profile carried to the arc's end.
+    let corners: Vec<Point> = explore(&model, &sheet, Filter::OfType(ShapeType::Vertex))
+        .unwrap()
+        .iter()
+        .map(|v| {
+            let NodeData::Vertex(data) = model.node(v).unwrap().data() else {
+                panic!("not a vertex");
+            };
+            data.point
+        })
+        .collect();
+    for far in [Point::new(16.0, 5.0, 0.0), Point::new(14.0, 5.0, 0.0)] {
+        assert!(
+            corners.iter().any(|c| c.distance(far) < 1e-9),
+            "no corner at {far:?}"
+        );
+    }
+    // Width 2 along a spine of length 10 + 5 pi / 2.
+    let area =
+        ogeom::algo::surface_properties(&model, &sheet, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let want = 20.0 + 5.0 * PI;
+    assert!((area - want).abs() < want * 1e-6, "{area} against {want}");
+}
