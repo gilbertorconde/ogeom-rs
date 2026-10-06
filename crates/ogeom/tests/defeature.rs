@@ -3,6 +3,9 @@
 //! cut from, not against plausibility.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::core::Tolerances;
 use ogeom::geom::SurfaceGeometry;
 use ogeom::math::{Direction, Frame, Point};
@@ -264,6 +267,7 @@ fn two_meeting_fillets_remove_in_one_call() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
     assert_eq!(
         explore_unique(&model, &restored, ShapeType::Face)
             .unwrap()
@@ -309,6 +313,7 @@ fn two_flush_fillets_and_their_cap_remove_in_one_call() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
     assert_eq!(
         explore_unique(&model, &restored, ShapeType::Face)
             .unwrap()
@@ -354,6 +359,7 @@ fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
     assert_eq!(
         explore_unique(&model, &restored, ShapeType::Face)
             .unwrap()
@@ -487,6 +493,11 @@ fn a_rim_blend_removes_and_its_rim_comes_back() {
             diagnosis.problems
         );
         assert_eq!(
+            walks::edges_walked_one_way(&model, &back),
+            0,
+            "{case} bevel {bevel}"
+        );
+        assert_eq!(
             explore_unique(&model, &back, ShapeType::Face)
                 .unwrap()
                 .len(),
@@ -612,6 +623,7 @@ fn a_tangent_chain_of_blends_removes_in_one_call() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
     assert_eq!(
         explore_unique(&model, &restored, ShapeType::Face)
             .unwrap()
@@ -648,6 +660,7 @@ fn a_loop_of_four_fillets_removes_in_one_call() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
     assert_eq!(
         explore_unique(&model, &restored, ShapeType::Face)
             .unwrap()

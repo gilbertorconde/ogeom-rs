@@ -160,7 +160,9 @@ pub fn remove_faces(
     let mut untouched: Vec<Shape> = Vec::new();
     let mut touched: Vec<Touched> = Vec::new();
     for face in &survivors {
-        let wires = model.ordered_children_of(face)?;
+        // The wires as the face stores them: a rebuilt face takes the old
+        // one's sense on top of them.
+        let wires = model.ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))?;
         let mut kept = Vec::new();
         let (mut whole, mut partial, mut outer) = (false, false, false);
         for (index, wire) in wires.iter().enumerate() {
@@ -869,8 +871,10 @@ fn rebuild_interrupted(
     let surface = surface.transformed(&placement, tol)?;
     let rim_nodes: HashSet<TShapeId> = rims.iter().map(Shape::node).collect();
 
+    // The wires as the face stores them: the rebuilt face takes the old
+    // one's sense on top of them.
     let mut wires: Vec<Vec<Shape>> = Vec::new();
-    for wire in model.ordered_children_of(face)? {
+    for wire in model.ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))? {
         let edges = model.ordered_children_of(&wire)?;
         let touched = edges.iter().any(|e| rim_nodes.contains(&e.node()));
         if !touched {
