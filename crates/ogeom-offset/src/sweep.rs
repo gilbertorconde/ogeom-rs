@@ -1410,7 +1410,8 @@ fn skinned_solid(
         }
         let cap_surface: SurfaceGeometry =
             PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        let wire = ogeom_algo::make_wire(model, std::slice::from_ref(ring), tol)?.shape;
+        let walked = walked_about(model, std::slice::from_ref(ring), outward, true, tol)?;
+        let wire = ogeom_algo::make_wire(model, &walked, tol)?.shape;
         let face =
             ogeom_algo::make_face(model, cap_surface.clone(), std::slice::from_ref(&wire), tol)?
                 .shape;
@@ -1710,7 +1711,8 @@ fn skinned_solid_to_apex(
         }
         let cap_surface: SurfaceGeometry =
             PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        let wire = ogeom_algo::make_wire(model, std::slice::from_ref(&ring0), tol)?.shape;
+        let walked = walked_about(model, std::slice::from_ref(&ring0), cap_outward, true, tol)?;
+        let wire = ogeom_algo::make_wire(model, &walked, tol)?.shape;
         let face =
             ogeom_algo::make_face(model, cap_surface.clone(), std::slice::from_ref(&wire), tol)?
                 .shape;
@@ -2859,9 +2861,26 @@ fn plane_cap(
     }
     let surface: SurfaceGeometry =
         PlaneSurface::over(cap_plane, (-reach, reach), (-reach, reach))?.into();
+    // Each loop keeps the material on its left about `outward`: the one
+    // enclosing the most turns positively, any other negatively, and a loop
+    // walked against that is walked back.
+    let turns: Vec<f64> = loops
+        .iter()
+        .map(|edges| ring_turning(model, edges, outward, tol))
+        .collect::<OgeomResult<_>>()?;
+    let outer = turns
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+        .map_or(0, |(i, _)| i);
     let mut wires = Vec::with_capacity(loops.len());
-    for edges in loops {
-        wires.push(ogeom_algo::make_wire(model, edges, tol)?.shape);
+    for (i, (edges, turn)) in loops.iter().zip(&turns).enumerate() {
+        let ring = if (*turn > 0.0) == (i == outer) {
+            edges.clone()
+        } else {
+            walked_back(edges)
+        };
+        wires.push(ogeom_algo::make_wire(model, &ring, tol)?.shape);
     }
     let face = ogeom_algo::make_face(model, surface, &wires, tol)?.shape;
     let cap_id = {
@@ -7060,6 +7079,25 @@ fn realized_profile_wound(
     let surface: SurfaceGeometry =
         PlaneSurface::over(moved_plane, (-reach, reach), (-reach, reach))?.into();
     Ok(ogeom_algo::make_face_with_pcurves(model, surface, &wires, tol)?.shape)
+}
+
+/// `ring` walked so it turns about `axis` positively where `outer`,
+/// negatively otherwise: a face whose normal is `axis` keeps its material
+/// on the left of an outer ring walked so, and of a hole walked the other
+/// way.
+fn walked_about(
+    model: &Model,
+    ring: &[Shape],
+    axis: Vector,
+    outer: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    let turn = ring_turning(model, ring, axis, tol)?;
+    Ok(if (turn > 0.0) == outer {
+        ring.to_vec()
+    } else {
+        walked_back(ring)
+    })
 }
 
 /// `ring` walked the other way round: its edges in reverse order, each

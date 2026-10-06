@@ -2,6 +2,9 @@
 //! representable: a corner stays a corner and a circle a circle.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{check, make_edge, make_polygon, make_wire, volume_properties};
 use ogeom::core::Tolerances;
 use ogeom::geom::CircleCurve;
@@ -106,4 +109,68 @@ fn circles_of_three_radii_loft_round() {
         v > core::f64::consts::PI * 16.0 * 10.0 && v < core::f64::consts::PI * 49.0 * 10.0,
         "{v}"
     );
+}
+
+/// A skinned loft's end caps walk their rings against the wall beside
+/// them, whichever way the sections run: squares (a strip per side) and
+/// circles set off the axis (one wall), each walked either way, are valid,
+/// walk every edge once each way, and measure as the prism and the oblique
+/// cylinder.
+#[test]
+fn a_skinned_loft_walks_each_edge_once_each_way() {
+    for back in [false, true] {
+        let mut model = Model::new();
+        let section = |model: &mut Model, z: f64| -> Shape {
+            let mut pts = [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)]
+                .map(|(x, y)| Point::new(x, y, z));
+            if back {
+                pts.reverse();
+            }
+            make_polygon(model, &pts, true, T).unwrap().shape
+        };
+        let (a, b) = (section(&mut model, 0.0), section(&mut model, 15.0));
+        let solid = loft(&mut model, &[a, b]);
+        assert_eq!(
+            walks::edges_walked_one_way(&model, &solid),
+            0,
+            "squares, back {back}"
+        );
+        let v = volume(&model, &solid);
+        assert!(
+            (v - 1500.0).abs() < 1500.0 * 1e-4,
+            "squares, back {back}: {v}"
+        );
+
+        let mut model = Model::new();
+        let section = |model: &mut Model, x: f64, z: f64| -> Shape {
+            let frame = Frame::new(Point::new(x, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+            let c = Circle::new(frame, 5.0, T).unwrap();
+            let e = make_edge(
+                model,
+                CircleCurve::new(c).into(),
+                (0.0, core::f64::consts::TAU),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let e = if back { e.reversed() } else { e };
+            make_wire(model, &[e], T).unwrap().shape
+        };
+        let (a, b) = (
+            section(&mut model, 0.0, 0.0),
+            section(&mut model, 3.0, 15.0),
+        );
+        let solid = loft(&mut model, &[a, b]);
+        assert_eq!(
+            walks::edges_walked_one_way(&model, &solid),
+            0,
+            "circles, back {back}"
+        );
+        let want = core::f64::consts::PI * 25.0 * 15.0;
+        let v = volume(&model, &solid);
+        assert!(
+            (v - want).abs() < want * 1e-4,
+            "circles, back {back}: {v} against {want}"
+        );
+    }
 }

@@ -1,6 +1,9 @@
 //! Lofts and pipes closing to a point through several sections.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{make_edge, make_polygon, make_wire, volume_properties};
 use ogeom::core::Tolerances;
 use ogeom::geom::CircleCurve;
@@ -54,6 +57,7 @@ fn a_skinned_loft_of_rectangles_closes_to_a_point() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &loft, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &loft), 0);
     assert!(has_vertex_at(&model, &loft, Point::new(5.0, 10.0, 10.0)));
     // The skin passes through the middle rectangle: just inside its corners
     // and sides is material, just outside is not.
@@ -88,6 +92,7 @@ fn a_skinned_loft_of_circles_closes_to_a_point_on_the_axis() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &loft, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &loft), 0);
     assert!(has_vertex_at(&model, &loft, Point::new(0.0, 0.0, 10.0)));
     let mesh =
         ogeom::mesh::triangulate(&model, &loft, Deflection::with_chord(1e-3).unwrap(), T).unwrap();
