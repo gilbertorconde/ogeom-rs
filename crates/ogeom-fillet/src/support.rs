@@ -984,14 +984,26 @@ pub(crate) fn ball_fits(
             // A hair's step, and a hair whatever the radius: a step scaled
             // by a huge setback lands off the face on both sides.
             let hair = (setback * 1e-3).clamp(tol.confusion() * 10.0, tol.confusion() * 1e5);
-            for side in [d, -d] {
-                let (u, v) =
-                    ogeom_algo::project_on_surface(surface, p + side * hair, 16, tol)?.parameters;
-                if chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)? {
-                    return Ok(Some(side));
+            let lands = |step: Vector| -> OgeomResult<bool> {
+                let (u, v) = ogeom_algo::project_on_surface(surface, p + step, 16, tol)?.parameters;
+                chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)
+            };
+            let near = [lands(d * hair)?, lands(-d * hair)?];
+            // A hair's step lands in the face on both sides where the
+            // face's trim turns back close to the edge, inside the chord
+            // its chart is drawn with. The whole setback, landing in the
+            // face on one side only, settles it there.
+            if near == [true, true] {
+                let far = [lands(d * setback)?, lands(-d * setback)?];
+                if far == [false, true] {
+                    return Ok(Some(-d));
                 }
             }
-            Ok(None)
+            Ok(match near {
+                [true, _] => Some(d),
+                [false, true] => Some(-d),
+                [false, false] => None,
+            })
         };
         let (Some(d0), Some(d1)) = (into(face0, &s0, n0, *rev0)?, into(face1, &s1, n1, *rev1)?)
         else {
