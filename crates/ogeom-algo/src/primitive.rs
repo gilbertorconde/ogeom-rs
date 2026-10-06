@@ -1439,7 +1439,9 @@ pub fn make_half_space(
         face.clone()
     };
     let shell = make_shell(model, std::slice::from_ref(&boundary))?.shape;
-    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    // Put together raw: the material outside a closed face is a shell
+    // facing into what it encloses, which `make_solid` would turn out.
+    let solid = model.add_solid(std::slice::from_ref(&shell))?;
     model.set_derived(&solid, std::slice::from_ref(face), roles::FACE_LATERAL)?;
 
     let mut history = crate::history::History::new();

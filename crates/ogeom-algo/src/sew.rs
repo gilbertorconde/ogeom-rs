@@ -252,8 +252,11 @@ impl Sewn {
 /// first across their shared edges until each is walked once each way,
 /// keeping the orientation most of them already have (open shells too);
 /// a closed shell whose faces were turned is then made to face out of the
-/// volume it bounds. A shell that admits no such orientation (a band with
-/// a half twist) keeps its faces as given, and
+/// volume it bounds. A closed shell whose faces already agree is kept as
+/// given, facing in or out: it may bound a void, which only the solid it
+/// joins can say, and [`make_solid`](crate::make_solid) turns it to face
+/// out as an outer shell or in as a void. A shell that admits no such
+/// orientation (a band with a half twist) keeps its faces as given, and
 /// [`Sewn::edges_walked_one_way`] names the edges that show it.
 ///
 /// Nothing is moved. See the module documentation.
@@ -2362,6 +2365,28 @@ mod tests {
         }
         for face in &faces[4..] {
             assert!(sewn.history.copy_of(face).is_some());
+        }
+        let volume = solid_volume(&mut model, &sewn.shells[0]);
+        assert!((volume - 500.0).abs() < 1e-9, "{volume}");
+    }
+
+    /// A box whose six faces all face in, so every edge is already walked
+    /// once each way: sewing turns nothing (the shell may bound a void),
+    /// and the solid made of it faces out.
+    #[test]
+    fn a_closed_shell_facing_in_throughout_makes_a_solid_facing_out() {
+        let mut model = Model::new();
+        let mut faces = box_faces(&mut model, true, true);
+        faces[5] = faces[5].reversed();
+        let sewn = sew(&mut model, &faces, T).unwrap();
+        assert!(sewn.free_edges.is_empty());
+        for face in &faces {
+            let image = sewn
+                .history
+                .copy_of(face)
+                .cloned()
+                .unwrap_or_else(|| sewn.history.modified(face)[0].clone());
+            assert_eq!(image.orientation(), face.orientation());
         }
         let volume = solid_volume(&mut model, &sewn.shells[0]);
         assert!((volume - 500.0).abs() < 1e-9, "{volume}");

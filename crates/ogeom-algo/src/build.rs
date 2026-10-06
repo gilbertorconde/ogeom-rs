@@ -1056,17 +1056,59 @@ pub fn make_shell(model: &mut Model, faces: &[Shape]) -> OgeomResult<Built> {
 ///
 /// The first shell is the outer boundary; any others are voids inside it.
 ///
+/// Every face of a solid faces away from its material: the outer shell
+/// out of the volume it bounds, a void's shell into its cavity. A closed
+/// shell whose faces agree with each other (every edge walked once each
+/// way) but face the other way is used turned over: the outer shell where
+/// its meshed volume comes out negative, a void's where it comes out
+/// positive. A shell that is open, whose faces disagree, or whose mesh
+/// does not close is used as given; so is anything put together with
+/// [`Model::add_solid`], for a builder whose shell faces in on purpose
+/// (the material outside a closed face).
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a child is not
 /// a shell, or the list is empty.
 pub fn make_solid(model: &mut Model, shells: &[Shape]) -> OgeomResult<Built> {
-    let solid = model.add_solid(shells)?;
+    let mut used = Vec::with_capacity(shells.len());
+    for (i, shell) in shells.iter().enumerate() {
+        let encloses = enclosed_volume(model, shell)?;
+        let inside_out = encloses.is_some_and(|v| if i == 0 { v < 0.0 } else { v > 0.0 });
+        used.push(if inside_out {
+            shell.reversed()
+        } else {
+            shell.clone()
+        });
+    }
+    let solid = model.add_solid(&used)?;
     let mut history = History::new();
     for shell in shells {
         history.generate(shell, solid.clone());
     }
     Ok(Built::new(solid, history))
+}
+
+/// The signed volume a closed shell's mesh encloses, positive where its
+/// faces face out; `None` for anything else: an open shell, one with an
+/// edge both its faces walk the same way (no whole turn makes it right),
+/// or one whose mesh does not close.
+fn enclosed_volume(model: &Model, shell: &Shape) -> OgeomResult<Option<f64>> {
+    if model.node(shell).map(ogeom_topo::TShape::kind) != Some(ShapeType::Shell)
+        || !is_shell_closed(model, shell)?
+        || !crate::check::walked_one_way(model, shell)?.is_empty()
+    {
+        return Ok(None);
+    }
+    Ok(ogeom_mesh::triangulate(
+        model,
+        shell,
+        ogeom_mesh::Deflection::default(),
+        Tolerances::default(),
+    )
+    .ok()
+    .filter(ogeom_topo::Triangulation::is_closed)
+    .map(|mesh| mesh.volume()))
 }
 
 /// Whether every edge in a shell is shared by exactly two faces.
@@ -3776,5 +3818,54 @@ mod band_tests {
         let surface: SurfaceGeometry = ogeom_geom::SphereSurface::new(sphere).into();
         let rim = ring(&mut model, Frame::WORLD, 3.0);
         assert!(crate::make_apex_band(&mut model, &surface, &rim, T).is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod solid_tests {
+    use super::*;
+    use ogeom_math::Frame;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// The one shell of a box `size` on a side with its corner at `corner`.
+    fn box_shell(model: &mut Model, corner: f64, size: f64) -> Shape {
+        let frame = Frame::new(
+            Point::new(corner, corner, corner),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let solid = crate::make_box(model, frame, (size, size, size), T)
+            .unwrap()
+            .shape;
+        model.children_of(&solid).unwrap()[0].clone()
+    }
+
+    /// A 10 mm cube with a 2 mm cubic void, the void given facing into
+    /// its cavity or out of it and the outer shell facing out or in: the
+    /// solid comes back with its outer shell facing out and its void
+    /// facing in, valid, 992 mm3.
+    #[test]
+    fn a_solid_faces_out_and_its_void_faces_in_however_given() {
+        for (outer_in, void_out) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut model = Model::new();
+            let outer = box_shell(&mut model, 0.0, 10.0);
+            let void = box_shell(&mut model, 4.0, 2.0);
+            let outer = if outer_in { outer.reversed() } else { outer };
+            let void = if void_out { void } else { void.reversed() };
+            let solid = make_solid(&mut model, &[outer, void]).unwrap().shape;
+            let d = crate::check(&model, &solid, T).unwrap();
+            assert!(d.is_valid(), "{outer_in} {void_out}: {d}");
+            let shells = model.children_of(&solid).unwrap();
+            assert!(enclosed_volume(&model, &shells[0]).unwrap().unwrap() > 0.0);
+            assert!(enclosed_volume(&model, &shells[1]).unwrap().unwrap() < 0.0);
+            let v = crate::volume_properties(&model, &solid, ogeom_mesh::Deflection::default(), T)
+                .unwrap()
+                .mass;
+            assert!((v - 992.0).abs() < 1e-9, "{outer_in} {void_out}: {v}");
+        }
     }
 }

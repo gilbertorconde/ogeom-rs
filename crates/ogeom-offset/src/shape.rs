@@ -29,7 +29,7 @@
 use crate::wire2d::Join;
 use ogeom_algo::{
     Built, History, edge_vertices, make_edge, make_edge_between, make_face_with_pcurves,
-    make_revolution_band, make_solid, make_vertex, sew,
+    make_revolution_band, make_vertex, sew,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
@@ -1487,7 +1487,9 @@ pub(crate) fn rebuilt(
             sewn.shells[0].clone()
         }
     };
-    let built = make_solid(model, std::slice::from_ref(&outer))?;
+    // Put together raw: `make_solid` would turn an inside-out shell to
+    // face out, and the guard below reads it.
+    let offset = model.add_solid(std::slice::from_ref(&outer))?;
 
     // The one global guard the local checks cannot give: an offset that
     // moved faces past each other builds a shell that is closed and inside
@@ -1499,7 +1501,7 @@ pub(crate) fn rebuilt(
     // The finer retry is a fraction of the part's own size, not a fixed
     // length: a metre-sized part meshed at a tenth of a micron is millions
     // of triangles for a sign.
-    let size = ogeom_algo::shape_bounds(model, &built.shape, tol)?.diagonal();
+    let size = ogeom_algo::shape_bounds(model, &offset, tol)?.diagonal();
     let fine = (size * 1e-5).clamp(
         tol.confusion() * 1e2,
         ogeom_mesh::Deflection::default().chord,
@@ -1511,7 +1513,7 @@ pub(crate) fn rebuilt(
             chord,
             ..ogeom_mesh::Deflection::default()
         };
-        match ogeom_algo::volume_properties(model, &built.shape, deflection, tol) {
+        match ogeom_algo::volume_properties(model, &offset, deflection, tol) {
             Ok(props) => {
                 mass = Some(props.mass);
                 break;
@@ -1535,8 +1537,8 @@ pub(crate) fn rebuilt(
         ogeom_bail!(Construction, "the offset collapses the solid");
     }
 
-    history.modify(solid, built.shape.clone());
-    Ok(Built::new(built.shape, history))
+    history.modify(solid, offset.clone());
+    Ok(Built::new(offset, history))
 }
 
 /// Rebuild a seam for a face assembled wire by wire: the same iso-column on

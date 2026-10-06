@@ -813,7 +813,7 @@ fn check_shell(model: &Model, shell: &Shape, found: &mut Diagnosis) -> OgeomResu
 /// an edge with one face or more than two says nothing. A degenerate edge
 /// (a pole, an apex) bounds nothing and is not asked, and a seam, walked
 /// both ways by its one face, passes.
-fn walked_one_way(model: &Model, shape: &Shape) -> OgeomResult<Vec<Shape>> {
+pub(crate) fn walked_one_way(model: &Model, shape: &Shape) -> OgeomResult<Vec<Shape>> {
     type Walks = (Shape, usize, usize);
     let mut walks: HashMap<(TShapeId, ogeom_topo::Location), Walks> = HashMap::new();
     let mut order = Vec::new();

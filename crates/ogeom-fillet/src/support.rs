@@ -791,11 +791,14 @@ pub(crate) fn apply_wedge(
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the blend wedge did not close");
     }
-    let wedge = ogeom_algo::make_solid(model, std::slice::from_ref(&sewn.shells[0]))?;
+    // Put together raw: a wedge is oriented by construction, and a band
+    // wedge whose faces overlap in its mesh would read its volume's sign
+    // wrong and be turned inside out by `make_solid`.
+    let wedge = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
     let set_aside = WEDGES.with(|held| {
         held.borrow_mut().as_mut().map(|wedges| {
             wedges.push(Wedge {
-                solid: wedge.shape.clone(),
+                solid: wedge.clone(),
                 additive,
                 edge: edge.cloned(),
                 melt_refusal: None,
@@ -810,9 +813,9 @@ pub(crate) fn apply_wedge(
         return Ok(ogeom_algo::Built::new(solid.clone(), history));
     }
     let mut result = if additive {
-        ogeom_bool::fuse(model, solid, &wedge.shape, tol)?
+        ogeom_bool::fuse(model, solid, &wedge, tol)?
     } else {
-        ogeom_bool::cut(model, solid, &wedge.shape, tol)?
+        ogeom_bool::cut(model, solid, &wedge, tol)?
     };
     if let Some(edge) = edge {
         result.history.delete(edge);

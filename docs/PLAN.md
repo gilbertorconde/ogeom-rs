@@ -293,10 +293,22 @@ agree with the ring.
   closed edges (a cap's rim against a wall's) by their ends, which agree
   both ways round, so it took them as walked the same way and turned the
   caps of a cylinder read from trimmed surfaces to face in; it compares
-  their quarter points now. Still open: a closed shell whose faces all
-  face in reads as an inside-out solid (sewing turns a closed group whole
-  only where it turned some of its faces), and the writer reads a trimmed
-  curve's range on its basis without the trim's own sense flag.
+  their quarter points now. A closed shell whose faces all agree but
+  face in (every face of an IGES or STEP shell reversed) is a sound void,
+  so sewing keeps it; `make_solid` turns it: its first shell to face out
+  where its meshed volume is negative, each further shell to face into
+  its cavity where positive, only where every edge is walked once each
+  way and the mesh closes. Over the stress run that is 520 shells
+  meshed for 0.80 s of 64 s on one thread (48 ms the largest), and over
+  the workspace with the heavy tier it turns only the voids and shells
+  the tests give the wrong way out. Builders whose shell faces in on
+  purpose put the solid together with `Model::add_solid`: a half space
+  outside a closed face, the offset's guard against faces moved past
+  each other (it reads the inside-out volume), and a blend wedge, which
+  is oriented by construction and whose band wedges can overlap in the
+  mesh so the sign reads wrong (a cross-bore band wedge of 8.4 mm3
+  meshed to -304). Still open: the writer reads a trimmed curve's range
+  on its basis without the trim's own sense flag.
 
 The fillet's side test no longer trusts the walk where the chart's chords
 cannot settle it.

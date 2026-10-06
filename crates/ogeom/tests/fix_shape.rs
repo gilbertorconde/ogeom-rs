@@ -424,7 +424,8 @@ fn a_solid_inside_out_as_a_whole_is_turned() {
         .map(|f| f.reversed())
         .collect();
     let shell = ogeom::algo::make_shell(&mut model, &faces).unwrap().shape;
-    let inside_out = ogeom::algo::make_solid(&mut model, &[shell]).unwrap().shape;
+    // Put together raw: `make_solid` would turn the shell to face out.
+    let inside_out = model.add_solid(&[shell]).unwrap();
     let broken = ogeom::algo::check(&model, &inside_out, T).unwrap();
     assert!(!broken.is_valid());
     assert_eq!(broken.problems.len(), 6, "{broken}");
@@ -463,9 +464,8 @@ fn a_located_void_turned_right_way_out_stays_in_place() {
         .map(|f| f.reversed().moved(&place))
         .collect();
     let void = model.add_shell(&faces).unwrap().reversed();
-    let solid = ogeom::algo::make_solid(&mut model, &[outer_shell, void])
-        .unwrap()
-        .shape;
+    // Put together raw: `make_solid` would turn the void to face in.
+    let solid = model.add_solid(&[outer_shell, void]).unwrap();
 
     let fixed = ogeom::heal::fix_shape(&mut model, &solid, T).unwrap();
     assert_eq!(fixed.report.faces_turned, 6, "{:?}", fixed.report);
