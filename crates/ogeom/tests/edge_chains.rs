@@ -263,3 +263,86 @@ fn fillet_chains_close_an_apex() {
         assert_eq!(counts, (spheres, cylinders), "half width {half_y}");
     }
 }
+
+/// A 10 mm cube shaved by a drum of radius 6 standing on its centre: each
+/// side face is flat between `5 - sqrt(11)` and `5 + sqrt(11)` and the drum
+/// rounds the corners between.
+fn shaved_cube(model: &mut Model) -> Shape {
+    let block = ogeom::algo::make_box(model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let foot = Frame::new(Point::new(5.0, 5.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(model, foot, 6.0, 12.0, T)
+        .unwrap()
+        .shape;
+    ogeom::boolean::common(model, &block, &drum, T)
+        .unwrap()
+        .shape
+}
+
+/// The midpoint integral of `f` over `[a, b]` in `n` steps.
+fn integral(a: f64, b: f64, n: u32, f: impl Fn(f64) -> f64) -> f64 {
+    let h = (b - a) / f64::from(n);
+    (0..n)
+        .map(|i| f((f64::from(i) + 0.5).mul_add(h, a)))
+        .sum::<f64>()
+        * h
+}
+
+/// What rounding the shaved cube's front bottom edge and the upright edge
+/// at its end takes off, as the union of the two blends each rounds alone.
+/// The bottom edge's blend is a prism along x, an `r` square less a
+/// quarter disc, capped flush where the flat ends at `x = 5 + sqrt(11)`.
+/// The upright's is a prism along z the full height, its section the
+/// sliver between the front plane, the drum and the ball touching both.
+/// They overlap where that sliver, short of the cap, stands over the
+/// bottom blend's section.
+fn shaved_corner_removed(r: f64) -> f64 {
+    let end = 5.0 + 11.0_f64.sqrt();
+    let flat = 2.0 * 11.0_f64.sqrt();
+    let bottom = flat * r * r * (1.0 - core::f64::consts::FRAC_PI_4);
+    // The upright's ball: a radius off the front plane and in from the
+    // drum, touching the drum where the line from its axis through the
+    // ball's centre meets it.
+    let centre_x = 5.0 + ((6.0 - r).powi(2) - (r - 5.0).powi(2)).sqrt();
+    let top = (r - 5.0).mul_add(6.0 / (6.0 - r), 5.0);
+    let ball = |y: f64| centre_x + r.mul_add(r, -(y - r).powi(2)).max(0.0).sqrt();
+    let drum = |y: f64| 5.0 + (36.0 - (y - 5.0).powi(2)).sqrt();
+    let sliver = integral(0.0, top, 200_000, |y| drum(y) - ball(y));
+    let under = |y: f64| r - r.mul_add(r, -(y - r).powi(2)).max(0.0).sqrt();
+    let overlap = integral(0.0, top.min(r), 200_000, |y| {
+        under(y) * (drum(y).min(end) - ball(y)).max(0.0)
+    });
+    bottom + 10.0 * sliver - overlap
+}
+
+/// The front bottom edge of the shaved cube rounded first and the upright
+/// edge it ends at second: the bottom blend's flush cap meets the drum
+/// along the upright's own line, a corner of the cap's that is no piece of
+/// the upright. The upright is found where it still lies between the
+/// front plane and the drum, rounds the full height through the bottom
+/// blend, and the two take off their union.
+#[test]
+fn an_edge_meeting_a_capped_blend_at_a_drum_is_not_its_cap() {
+    let mut model = Model::new();
+    let part = shaved_cube(&mut model);
+    let before = volume(&model, &part);
+    let end = 5.0 + 11.0_f64.sqrt();
+    let bottom = edge_near(&model, &part, Point::new(5.0, 0.0, 0.0));
+    let upright = edge_near(&model, &part, Point::new(end, 0.0, 5.0));
+    for r in [0.5, 1.0] {
+        let mut copy = model.clone();
+        let rounded =
+            ogeom::fillet::fillet_edges(&mut copy, &part, &[bottom.clone(), upright.clone()], r, T)
+                .unwrap()
+                .shape;
+        let diagnosis = ogeom::algo::check(&copy, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "r {r}: {:?}", diagnosis.problems);
+        let removed = before - volume(&copy, &rounded);
+        let want = shaved_corner_removed(r);
+        assert!(
+            (removed - want).abs() < want * 1e-7,
+            "r {r}: took off {removed}, the union is {want}"
+        );
+    }
+}

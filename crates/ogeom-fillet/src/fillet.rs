@@ -389,6 +389,17 @@ pub fn fillet_edges(
             }
             continue;
         }
+        // The faces the edge lies between on the solid as given: what a
+        // piece of it re-found later still lies between.
+        let mut hosts: Vec<Shape> = Vec::new();
+        for face in explore_unique(model, solid, ShapeType::Face)? {
+            if explore_unique(model, &face, ShapeType::Edge)?
+                .iter()
+                .any(|e| e.node() == edge.node())
+            {
+                hosts.push(face);
+            }
+        }
         // The edge as it stands on the current solid: itself on the first
         // step, and afterwards whatever the earlier blends left of it: one
         // re-found stand-in, or the pieces a blend running out across it
@@ -415,7 +426,7 @@ pub fn fillet_edges(
                 }
                 let mut found = Vec::with_capacity(traced.len());
                 for one in traced {
-                    match refind_edges(model, &b.shape, one, tol) {
+                    match refind_edges(model, &b.shape, one, &hosts, tol) {
                         Ok(live) => found.extend(live),
                         Err(_) if on_blended_crease || on_round_rim(model, one, &round_rims) => {}
                         Err(e) => return Err(e),
@@ -436,7 +447,7 @@ pub fn fillet_edges(
         for target in &targets {
             // Each piece's blend replaces the solid; the next piece is
             // re-found on what that blend left.
-            let live = match refind_edges(model, &current, target, tol) {
+            let live = match refind_edges(model, &current, target, &hosts, tol) {
                 Ok(live) => live,
                 Err(_) if on_round_rim(model, target, &round_rims) => continue,
                 Err(e) => return Err(e),
@@ -1162,11 +1173,16 @@ fn same_circle(a: &ogeom_math::Circle, b: &ogeom_math::Circle, tol: Tolerances) 
 /// very line the sought one runs on (an L-bracket's front blend caps in
 /// the wall's plane, along the wall's own top line) and there the two
 /// faces are tangent: a seam across one flat, no corner to round, and no
-/// part of what was asked for.
+/// part of what was asked for. Nor is a corner between other surfaces: a
+/// cap standing square to the line where a curved host leaves it meets
+/// that host along the very line, a corner of the cap's and none of the
+/// edge's. A piece lies between the surfaces of `hosts`, the faces the
+/// edge lay between where it was asked for.
 fn refind_edges(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
+    hosts: &[Shape],
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
     use ogeom_geom::Curve3d as _;
@@ -1237,6 +1253,21 @@ fn refind_edges(
         // words.
         if matches!(normals.as_slice(), [first, second]
             if first.cross(*second).magnitude() <= 1e-2)
+        {
+            continue;
+        }
+        let mut host_normals: Vec<Vector> = Vec::with_capacity(hosts.len());
+        for host in hosts {
+            if let Some(normal) = crate::marched::face_normal_near(model, host, mid, tol)? {
+                host_normals.push(normal);
+            }
+        }
+        let along = |a: &[Vector], b: &[Vector]| {
+            a.iter()
+                .all(|n| b.iter().any(|m| n.cross(*m).magnitude() <= 1e-4))
+        };
+        if let ([_, _], [_, _]) = (normals.as_slice(), host_normals.as_slice())
+            && !(along(&normals, &host_normals) && along(&host_normals, &normals))
         {
             continue;
         }
