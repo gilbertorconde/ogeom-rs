@@ -130,9 +130,11 @@ harness's crease list takes both kinds.
 edge between two faces walked once each way, senses composed: each face
 keeps its material on the left of its rings about its surface's normal.
 Prisms, tapered prisms, revolutions, baked shapes, revolution bands,
-sewing, the STEP reader and the offset crate's lofts, pipes and sweeps
-do. More producers are still to fix; once
-none breaks it, `check` gains the rule.
+sewing, the STEP reader, the offset crate's lofts, pipes and sweeps,
+the mesh converter, rebuilt faces whose chart turns (a reflecting bake,
+a restated surface), seaming and ring re-anchoring, surface recognition,
+face removal, the IGES writer and sheet rounds do. More producers are
+still to fix; once none breaks it, `check` gains the rule.
 
 - Sewing rebuilt a reversed face by reading its wires under its own sense
   and then reversing the rebuilt face again; it reads the stored wires
@@ -187,17 +189,6 @@ none breaks it, `check` gains the rule.
   eight of its triangles and three of the floor's, and the rest stay
   planar facets. Nothing falls back, but the corner is facets where it
   was a torus.
-- The converter's own output still walks edges the same way from both
-  faces (134 on `nist_ctc_01`, 246 on `nist_ftc_10`); it is among the
-  producers the shell check below lists.
-- A shell check run over the default tests with the sewing fix and the
-  held reader fix in flags 77: the offset crate's lofts between polygons,
-  pipes (their caps on the torus), pipe shells with curved legs, laws or sections, helical sweeps
-  and skinned pipes (42); the mesh converter (18); draft (3); a fuse
-  with a mirrored body (2); seam healing followed by a drill (2);
-  defeature (2); recognising a bore's spline as a cylinder (2); the IGES
-  reader (2); a face offset, a thick solid and a sheet fillet (1 each); and
-  a hand-built prism test whose bottom face winds the wrong way (1).
 - The offset crate's 42 are fixed, every measured volume and centroid
   unchanged: a ruled loft's planar faces walked their corners in section
   order whatever side the material was on (the bottom cap always against
@@ -216,6 +207,34 @@ none breaks it, `check` gains the rule.
   and thread integration tests now flags only draft (`apply_draft`'s
   rebuilt faces) and the fillet wedges a thick solid's rounded corners go
   through.
+- The converter stores every face's rings counter-clockwise in its
+  chart, walked back from the triangles where the face is turned (it was
+  134 edges on `nist_ctc_01`, 246 on `nist_ftc_10`, none left on the
+  corpus or the truth bench). Faces and volumes are unchanged: an exact
+  volume taken about a fixed point agrees to the last digits; about the
+  first face's anchor, which the walk moves, a converted part that does
+  not close exactly differs by up to 6e-6 (`nist_ftc_10`).
+- A shell check run over the default tests (each closed shell an edge of
+  which two faces walk the same way) flagged 80 tests, now 52. Three
+  build a face turned inside out on purpose (`check_orientation`,
+  `fix_shape`). The rest are the offset crate's: lofts, pipes, pipe
+  shells and sweeps; draft (a fitted patch wall, the drafted spline
+  wall, the prism walls in `instanced`); and moving or offsetting faces
+  (`direct_edit`, the converted block). Face offset and draft read each
+  face's wires in `rebuilt` (`ogeom-offset/src/shape.rs`) under the face's
+  sense and turn the rebuilt face again; reading
+  `prep.shape.oriented(Orientation::Forward)` clears `direct_edit`,
+  `instanced` and the converted block's offsets, and all but one draft
+  test.
+- Fixed with the same cause (rings read under a face's sense, then the
+  face turned again): seaming and ring re-anchoring, surface
+  recognition, face removal and the IGES writer (whose reader takes loops
+  about the surface's normal and turns the face by the shell's flag).
+  A rebuilt face whose new chart runs the other way (a reflecting bake of
+  a plane, a recognised spline facing its axis) walks its rings back, its
+  pole rows with them; a band of rings running clockwise stores its loop
+  walked back; a sheet round's ring is made counter-clockwise before the
+  round is turned to face its axis.
 
 - Sewing cannot orient by the walk while producers break it: turning faces
   breadth first over shared edges failed 132 default tests (fillet wedges,
