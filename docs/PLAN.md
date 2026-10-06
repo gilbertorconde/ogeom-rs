@@ -1057,6 +1057,15 @@ Measured (faces, curved faces faceted, volume error): ctc_04 588, 2,
 r 5). The other parts, the truth bench and the stress baseline are
 unchanged.
 
+A flat face much larger than a curved region's facets joins the region
+whole only where each of its facets lies on the surface as the surface's
+own would (sagging and leaning as a chord of it), not only its corners:
+a disc capping a chamfer's cone has every corner on the cone's rim, and
+the cone took it and could not close (BoundaryNotPlaced). m5x16_bhcs 212,
+2, 9.3e-5 to 181, 1, 2.0e-4 (the chamfer's facets stood inside the cone
+and offset the socket's faceted drill point, which stands outside its
+cone); m5x16_bhcs_loops 470, 3, 2.5e-3 to 439, 2, 2.4e-3.
+
 Done for ftc_07, in two steps:
 
 - Its rounds of radius 0.43 along the drafted walls' foot are meshed

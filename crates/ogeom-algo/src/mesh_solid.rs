@@ -5806,15 +5806,26 @@ fn recognized_regions(
                         // region's own (a plane tangent to it) comes with its
                         // whole face or not at all: its corners by the
                         // tangent line lie on the surface, its far ones not.
+                        // Every facet of it must lie on the surface as one
+                        // of the surface's own would: a disc capping a cone
+                        // has every corner on the cone's rim, and the facet
+                        // across its middle leans from the cone and sags
+                        // far below it.
                         let patch = patches.of[other];
                         let taken: Vec<usize> = if patches.area[patch] > typical * PATCH_SCALE {
                             let whole = &patches.members[patch];
                             let on = whole.iter().all(|&t| {
+                                let corners = triangles[t].map(|v| points[v as usize]);
                                 mine.contains(&t)
                                     || (groups.of[t] == usize::MAX
-                                        && triangles[t].iter().all(|&v| {
-                                            shape.distance_to(points[v as usize]) <= flat
-                                        }))
+                                        && corners.iter().all(|p| shape.distance_to(*p) <= flat)
+                                        && sags_as_the_surface(&shape, corners, flat)
+                                        && (is_sliver(corners)
+                                            || leans_as_the_surface(
+                                                &shape,
+                                                corners,
+                                                mesh.normals[t],
+                                            )))
                             });
                             if !on {
                                 continue;
