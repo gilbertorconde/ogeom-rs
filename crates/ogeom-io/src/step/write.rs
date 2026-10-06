@@ -13,14 +13,23 @@
 //! both. Surfaces the format has no analytic name for (extrusions,
 //! revolutions) go out as their exact rational B-spline patches, so nothing
 //! is fitted on the way out.
+//!
+//! An edge's pcurves go out with it, as the `PCURVE`s of a `SURFACE_CURVE`
+//! (a `SEAM_CURVE` where one face's surface meets itself along it), wherever
+//! the file's parameterizations are this kernel's own: the curve and the
+//! surface written analytically or as the same spline, in right-handed
+//! frames, under a placement that neither scales nor mirrors, and the pcurve
+//! a line, a forward conic or a spline, restated over the curve's parameter
+//! where the edge keeps it over a range of its own. Elsewhere the edge
+//! carries its curve alone and a reader derives the pcurves.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_doc::{Document, ProductId, ProductKind};
 use ogeom_geom::Transformable as _;
-use ogeom_geom::{Curve, SurfaceGeometry};
-use ogeom_math::{Frame, Point, Transform, Vector};
-use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, explore};
-use std::collections::HashMap;
+use ogeom_geom::{Curve, PlanarCurve, SurfaceGeometry};
+use ogeom_math::{Frame, Handedness, Point, Point2, Transform, Vector};
+use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, SurfaceId, explore};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 /// Write a document as a STEP exchange file.
@@ -53,6 +62,8 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         written_nodes: Vec::new(),
         written_edges: Vec::new(),
         curve_font: None,
+        surface_curves: BTreeMap::new(),
+        parametric_context: None,
         tol,
     };
 
@@ -143,6 +154,8 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
             anchor_pds = Some((pds, sr));
         }
     }
+
+    writer.surface_curves()?;
 
     // Assembly edges: one usage occurrence per instance, its placement said
     // through the transformation between the parent's world frame and the
@@ -288,7 +301,54 @@ struct Writer<'a> {
     written_edges: Vec<(ogeom_topo::TShapeId, u64)>,
     /// The one curve font every edge style shares, once written.
     curve_font: Option<u64>,
+    /// Every `EDGE_CURVE` written, by its entity id, with the pcurves its
+    /// faces gave it; rewritten over a surface curve once all are known.
+    surface_curves: BTreeMap<u64, EdgeCurve>,
+    /// The parameter-space context every pcurve's representation shares.
+    parametric_context: Option<u64>,
     tol: Tolerances,
+}
+
+/// An `EDGE_CURVE` as written, and the pcurves its faces hold on it.
+struct EdgeCurve {
+    from: u64,
+    to: u64,
+    curve: u64,
+    /// The edge's range on its curve.
+    range: (f64, f64),
+    /// Whether the curve went out in this kernel's own parameterization,
+    /// so a pcurve over the same range means the same points to a reader.
+    exact: bool,
+    /// Per face surface entity, its pcurves (one, or a seam's two) and
+    /// how their parameter follows the curve's.
+    pcurves: Vec<(u64, Vec<PlanarCurve>, Pace)>,
+}
+
+/// How a pcurve's parameter follows its edge's curve's: `shift + scale * t`
+/// at the curve's `t`. An edge may state its pcurve over a range of its
+/// own, the two related this way.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pace {
+    scale: f64,
+    shift: f64,
+}
+
+impl Pace {
+    const SAME: Self = Self {
+        scale: 1.0,
+        shift: 0.0,
+    };
+
+    /// The pace taking the curve's range onto the pcurve's, the same one
+    /// where the two agree.
+    fn between(curve: (f64, f64), pcurve: (f64, f64), slack: f64) -> Option<Self> {
+        if (curve.0 - pcurve.0).abs() <= slack && (curve.1 - pcurve.1).abs() <= slack {
+            return Some(Self::SAME);
+        }
+        let scale = (pcurve.1 - pcurve.0) / (curve.1 - curve.0);
+        let shift = scale.mul_add(-curve.0, pcurve.0);
+        (scale.is_finite() && shift.is_finite() && scale > 0.0).then_some(Self { scale, shift })
+    }
 }
 
 impl Writer<'_> {
@@ -431,7 +491,7 @@ impl Writer<'_> {
 
     fn face(&mut self, face: &Shape) -> OgeomResult<u64> {
         let placement = face.transform(self.model.datums())?;
-        let surface = {
+        let (surface, held) = {
             let Some(node) = self.model.node(face) else {
                 ogeom_bail!(Dangling, "face is not in this model");
             };
@@ -441,9 +501,16 @@ impl Writer<'_> {
             let Some(surface) = self.model.geometry().surface(data.surface) else {
                 ogeom_bail!(Dangling, "face refers to a surface not in this model");
             };
-            surface.clone().transformed(&placement, self.tol)?
+            (
+                surface.clone().transformed(&placement, self.tol)?,
+                data.surface,
+            )
         };
         let surface_id = self.surface(&surface)?;
+        // The face's pcurves mean the same points in the file only where
+        // the surface's parameters do.
+        let chart = (rigid(&placement) && surface_states_parameters(&surface))
+            .then_some((held, surface_id));
 
         let mut bounds = Vec::new();
         for (index, wire) in self.model.ordered_children_of(face)?.iter().enumerate() {
@@ -452,7 +519,7 @@ impl Writer<'_> {
             } else {
                 "FACE_BOUND"
             };
-            let loop_id = self.wire(wire)?;
+            let loop_id = self.wire(wire, chart)?;
             bounds.push(self.entity(format!("{keyword}('',#{loop_id},.T.)")));
         }
         let list = bounds
@@ -472,8 +539,9 @@ impl Writer<'_> {
 
     /// A wire as an `EDGE_LOOP`, or a `VERTEX_LOOP` when every edge in it is
     /// degenerate: a pole or an apex has no curve to serialize, and STEP's
-    /// own spelling for it is the loop of one vertex.
-    fn wire(&mut self, wire: &Shape) -> OgeomResult<u64> {
+    /// own spelling for it is the loop of one vertex. Each edge's pcurve on
+    /// `chart`, the face's surface and its entity, is noted for its edge.
+    fn wire(&mut self, wire: &Shape, chart: Option<(SurfaceId, u64)>) -> OgeomResult<u64> {
         let children = self.model.ordered_children_of(wire)?;
         let degenerate = |edge: &Shape| {
             self.model
@@ -495,6 +563,9 @@ impl Writer<'_> {
                 continue;
             }
             let edge_id = self.edge(edge)?;
+            if let Some(chart) = chart {
+                self.note_pcurves(edge, edge_id, chart);
+            }
             let sense = if edge.orientation() == ogeom_topo::Orientation::Reversed {
                 ".F."
             } else {
@@ -531,6 +602,7 @@ impl Writer<'_> {
             };
             (geometry.clone().transformed(&placement, self.tol)?, *range)
         };
+        let exact = curve_states_parameter(&curve);
         let curve_id = self.curve(&curve, range)?;
         let vertices = self.model.children_of(edge)?;
         let (from, to) = match vertices.len() {
@@ -550,7 +622,201 @@ impl Writer<'_> {
         ));
         self.edges.insert(key, id);
         self.written_edges.push((edge.node(), id));
+        self.surface_curves.insert(
+            id,
+            EdgeCurve {
+                from: from_id,
+                to: to_id,
+                curve: curve_id,
+                range,
+                exact,
+                pcurves: Vec::new(),
+            },
+        );
         Ok(id)
+    }
+
+    /// Note the pcurves `edge` holds on a face's surface, the surface and
+    /// the entity written for it, where they state the edge over its own
+    /// range in a form the file carries exactly.
+    fn note_pcurves(&mut self, edge: &Shape, edge_id: u64, (held, surface_id): (SurfaceId, u64)) {
+        let Some(record) = self.surface_curves.get_mut(&edge_id) else {
+            return;
+        };
+        if !record.exact || record.pcurves.iter().any(|(s, ..)| *s == surface_id) {
+            return;
+        }
+        let Some(data) = self.model.node(edge).and_then(|n| n.data().as_edge()) else {
+            return;
+        };
+        let (ids, range) = match data.pcurve_for(held, edge.location()) {
+            Some(EdgeRepr::PCurve { curve, range, .. }) => (vec![*curve], *range),
+            Some(EdgeRepr::Seam {
+                forward,
+                reversed,
+                range,
+                ..
+            }) => (vec![*forward, *reversed], *range),
+            _ => return,
+        };
+        let Some(pace) = Pace::between(record.range, range, self.tol.parametric()) else {
+            return;
+        };
+        let mut curves = Vec::with_capacity(ids.len());
+        for id in ids {
+            match self.model.geometry().pcurve(id) {
+                Some(pcurve) if planar_stated(pcurve, pace) => curves.push(pcurve.clone()),
+                _ => return,
+            }
+        }
+        record.pcurves.push((surface_id, curves, pace));
+    }
+
+    /// Every written edge that gathered pcurves, rewritten over a
+    /// `SURFACE_CURVE` carrying them, or a `SEAM_CURVE` where its two lie
+    /// on one face's surface. The `EDGE_CURVE` keeps its entity id, so
+    /// whatever already refers to it still does.
+    fn surface_curves(&mut self) -> OgeomResult<()> {
+        let records = std::mem::take(&mut self.surface_curves);
+        for (edge_id, record) in &records {
+            let count: usize = record.pcurves.iter().map(|(_, c, _)| c.len()).sum();
+            let keyword = match (record.pcurves.len(), count) {
+                (1, 2) => "SEAM_CURVE",
+                (1, 1) | (2, 2) => "SURFACE_CURVE",
+                _ => continue,
+            };
+            let mut uses = Vec::with_capacity(count);
+            for (surface_id, curves, pace) in &record.pcurves {
+                for curve in curves {
+                    let planar = self.planar_curve(curve, *pace)?;
+                    let context = self.parametric_context();
+                    let definition = self.entity(format!(
+                        "DEFINITIONAL_REPRESENTATION('',(#{planar}),#{context})"
+                    ));
+                    uses.push(self.entity(format!("PCURVE('',#{surface_id},#{definition})")));
+                }
+            }
+            let list = reference_list(&uses);
+            let curve = self.entity(format!(
+                "{keyword}('',#{},({list}),.PCURVE_S1.)",
+                record.curve
+            ));
+            let (from, to) = (record.from, record.to);
+            let Some(text) = usize::try_from(*edge_id)
+                .ok()
+                .and_then(|i| i.checked_sub(1))
+                .and_then(|i| self.entities.get_mut(i))
+            else {
+                ogeom_bail!(Construction, "an edge entity was lost before its pcurves");
+            };
+            *text = format!("EDGE_CURVE('',#{from},#{to},#{curve},.T.)");
+        }
+        self.surface_curves = records;
+        Ok(())
+    }
+
+    /// The context a pcurve's representation lives in: two dimensions of
+    /// a surface's parameters.
+    fn parametric_context(&mut self) -> u64 {
+        if let Some(id) = self.parametric_context {
+            return id;
+        }
+        let id = self.entity(
+            "(GEOMETRIC_REPRESENTATION_CONTEXT(2)PARAMETRIC_REPRESENTATION_CONTEXT()REPRESENTATION_CONTEXT('2D SPACE',''))".into(),
+        );
+        self.parametric_context = Some(id);
+        id
+    }
+
+    fn point2(&mut self, p: Point2) -> u64 {
+        self.entity(format!("CARTESIAN_POINT('',({},{}))", real(p.x), real(p.y)))
+    }
+
+    fn direction2(&mut self, v: ogeom_math::Vector2) -> u64 {
+        self.entity(format!("DIRECTION('',({},{}))", real(v.x), real(v.y)))
+    }
+
+    fn placement2(&mut self, frame: &ogeom_math::Frame2) -> u64 {
+        let origin = self.point2(frame.origin());
+        let x = self.direction2(frame.x().vector());
+        self.entity(format!("AXIS2_PLACEMENT_2D('',#{origin},#{x})"))
+    }
+
+    /// A pcurve [`planar_stated`] admits, over its edge's curve's
+    /// parameter: at the curve's `t`, the pcurve's point at `pace`'s image
+    /// of `t`.
+    fn planar_curve(&mut self, curve: &PlanarCurve, pace: Pace) -> OgeomResult<u64> {
+        match curve {
+            PlanarCurve::Line(line) => {
+                let axis = line.axis();
+                let direction = axis.direction.vector();
+                let origin = self.point2(axis.location + direction * pace.shift);
+                let d = self.direction2(direction);
+                let vector = self.entity(format!("VECTOR('',#{d},{})", real(pace.scale)));
+                Ok(self.entity(format!("LINE('',#{origin},#{vector})")))
+            }
+            PlanarCurve::Circle(c) => {
+                let circle = c.circle();
+                let frame = self.placement2(&circle.frame());
+                Ok(self.entity(format!("CIRCLE('',#{frame},{})", real(circle.radius()))))
+            }
+            PlanarCurve::Ellipse(e) => {
+                let ellipse = e.ellipse();
+                let frame = self.placement2(&ellipse.frame());
+                Ok(self.entity(format!(
+                    "ELLIPSE('',#{frame},{},{})",
+                    real(ellipse.major_radius()),
+                    real(ellipse.minor_radius())
+                )))
+            }
+            PlanarCurve::BSpline(b) => {
+                let control: Vec<String> = b
+                    .control_points()
+                    .iter()
+                    .map(|c| {
+                        let p = Point2::from_vector(c.scaled.to_vector() / c.weight);
+                        format!("#{}", self.point2(p))
+                    })
+                    .collect();
+                let (mults, knots) = compress_knots(b.knots().knots());
+                let knots: Vec<f64> = if pace == Pace::SAME {
+                    knots
+                } else {
+                    knots
+                        .iter()
+                        .map(|k| (k - pace.shift) / pace.scale)
+                        .collect()
+                };
+                let degree = b.knots().degree();
+                let control = control.join(",");
+                let mults = mults
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let knots = knots.iter().map(|k| real(*k)).collect::<Vec<_>>().join(",");
+                if b.is_rational() {
+                    let weights = b
+                        .control_points()
+                        .iter()
+                        .map(|c| real(c.weight))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    Ok(self.entity(format!(
+                        "(BOUNDED_CURVE()B_SPLINE_CURVE({degree},({control}),.UNSPECIFIED.,.F.,.F.)B_SPLINE_CURVE_WITH_KNOTS(({mults}),({knots}),.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE(({weights}))REPRESENTATION_ITEM(''))"
+                    )))
+                } else {
+                    Ok(self.entity(format!(
+                        "B_SPLINE_CURVE_WITH_KNOTS('',{degree},({control}),.UNSPECIFIED.,.F.,.F.,({mults}),({knots}),.UNSPECIFIED.)"
+                    )))
+                }
+            }
+            PlanarCurve::Trimmed(t) => self.planar_curve(t.basis(), pace),
+            PlanarCurve::Offset(_) | PlanarCurve::Trig(_) => ogeom_bail!(
+                Construction,
+                "a pcurve with no exact spelling in the file was admitted"
+            ),
+        }
     }
 
     fn vertex(&mut self, vertex: &Shape, placement: &Transform) -> OgeomResult<u64> {
@@ -1149,6 +1415,76 @@ impl Writer<'_> {
         ));
         let psa = self.entity(format!("PRESENTATION_STYLE_ASSIGNMENT((#{style}))"));
         self.entity(format!("STYLED_ITEM('',(#{psa}),#{item})"))
+    }
+}
+
+/// Whether a placement keeps every surface's parameters: no scale, no
+/// mirror.
+fn rigid(placement: &Transform) -> bool {
+    (placement.scale_factor() - 1.0).abs() <= 1e-12 && placement.preserves_handedness()
+}
+
+/// Whether a curve goes out in this kernel's own parameterization: the
+/// analytic spellings STEP parameterizes the same way, in right-handed
+/// frames and running forward, a spline as itself, an offset of one of
+/// these. Everything else goes out as a conversion with a parameter of its
+/// own.
+fn curve_states_parameter(curve: &Curve) -> bool {
+    match curve {
+        Curve::Line(_) | Curve::BSpline(_) => true,
+        Curve::Circle(c) => {
+            !c.is_reversed() && c.circle().frame().handedness() == Handedness::Right
+        }
+        Curve::Ellipse(e) => {
+            !e.is_reversed() && e.ellipse().frame().handedness() == Handedness::Right
+        }
+        Curve::Hyperbola(h) => {
+            !h.is_reversed() && h.hyperbola().frame().handedness() == Handedness::Right
+        }
+        Curve::Offset(o) => curve_states_parameter(o.basis()),
+        _ => false,
+    }
+}
+
+/// Whether a surface goes out in this kernel's own parameterization: the
+/// elementary surfaces in right-handed frames, splines as themselves, and
+/// sweeps and offsets of curves and surfaces that do.
+fn surface_states_parameters(surface: &SurfaceGeometry) -> bool {
+    let right = |frame: Frame| frame.handedness() == Handedness::Right;
+    match surface {
+        SurfaceGeometry::Plane(s) => right(s.plane().frame()),
+        SurfaceGeometry::Cylinder(s) => right(s.cylinder().frame()),
+        SurfaceGeometry::Cone(s) => right(s.cone().frame()),
+        SurfaceGeometry::Sphere(s) => right(s.sphere().frame()),
+        SurfaceGeometry::Torus(s) => right(s.torus().frame()),
+        SurfaceGeometry::BSpline(_) => true,
+        SurfaceGeometry::Revolution(r) => curve_states_parameter(r.curve()),
+        SurfaceGeometry::Extrusion(e) => curve_states_parameter(e.curve()),
+        SurfaceGeometry::Trimmed(t) => surface_states_parameters(t.basis()),
+        SurfaceGeometry::Offset(o) => surface_states_parameters(o.basis()),
+    }
+}
+
+/// Whether a pcurve has an exact spelling in the file over its edge's
+/// curve's parameter, `pace` relating the two: a line or a spline at any
+/// pace, a circle or ellipse running forward in a right-handed frame at
+/// the curve's own, or a forward trim of one of these, which states its
+/// basis.
+fn planar_stated(curve: &PlanarCurve, pace: Pace) -> bool {
+    match curve {
+        PlanarCurve::Line(_) | PlanarCurve::BSpline(_) => true,
+        PlanarCurve::Circle(c) => {
+            pace == Pace::SAME
+                && !c.is_reversed()
+                && c.circle().frame().handedness() == Handedness::Right
+        }
+        PlanarCurve::Ellipse(e) => {
+            pace == Pace::SAME
+                && !e.is_reversed()
+                && e.ellipse().frame().handedness() == Handedness::Right
+        }
+        PlanarCurve::Trimmed(t) => !t.is_reversed() && planar_stated(t.basis(), pace),
+        PlanarCurve::Offset(_) | PlanarCurve::Trig(_) => false,
     }
 }
 

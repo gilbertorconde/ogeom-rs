@@ -67,7 +67,7 @@ fn an_edge_dressed_as_a_surface_curve_still_reads() {
     let text = ogeom::io::write_step(&document, T).unwrap();
     let wrapped = dressed(&text);
     assert!(
-        wrapped.contains("SURFACE_CURVE"),
+        wrapped.contains(".CURVE_3D."),
         "the fixture really re-dressed the edges"
     );
 

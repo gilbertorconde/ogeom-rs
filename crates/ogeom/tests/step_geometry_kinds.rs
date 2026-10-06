@@ -280,14 +280,21 @@ impl Deck {
         volume(import.document.model(), &import.solids[0])
     }
 
-    /// The first straight edge: its EDGE_CURVE, its LINE, and its two
-    /// vertices' CARTESIAN_POINTs.
+    /// The first straight edge: the entity naming its LINE (the
+    /// EDGE_CURVE, or the SURFACE_CURVE or SEAM_CURVE carrying its pcurves
+    /// beside the line), the LINE, and its two vertices' CARTESIAN_POINTs.
     fn first_line_edge(&self) -> (u64, u64, u64, u64) {
         for edge in self.find("EDGE_CURVE") {
             let r = self.refs(edge);
-            let (va, vb, curve) = (r[0], r[1], r[2]);
+            let (va, vb, mut holder, mut curve) = (r[0], r[1], edge, r[2]);
+            if ["SURFACE_CURVE(", "SEAM_CURVE("]
+                .iter()
+                .any(|k| self.body(curve).starts_with(k))
+            {
+                (holder, curve) = (curve, self.refs(curve)[0]);
+            }
             if self.body(curve).starts_with("LINE(") {
-                return (edge, curve, self.refs(va)[0], self.refs(vb)[0]);
+                return (holder, curve, self.refs(va)[0], self.refs(vb)[0]);
             }
         }
         panic!("the cube has a straight edge");
