@@ -1001,6 +1001,20 @@ points per face against the exact boundary, about 0.45 s on a 165-face
 helical thread (0.05 s before), 0.16 s on ctc_02 (1.0 s before, when
 the flag walk ran).
 
+Done for facets whose seam does not place: a single facet beside a
+curved face, a chord of a spline face left faceted, can cut across the
+curved surface's curvature, its shared span standing off that surface by
+just over a twentieth of its length, so no chord holds and the section
+solve finds no crossing. Where the span is the facet's only side on a
+curved face, the facet is built as a fan before the curved face is
+faceted. Measured (faces, curved faces faceted, volume error):
+grid_point_on_a_diagonal_boundary 823, 3, 6.3e-4 to 744, 1, 6.2e-4 (a
+cylinder and a torus); ctc_02 1861, 5, 2.9e-5 to 1854, 4, 2.9e-5. The
+other parts, the truth bench and the stress baseline are unchanged.
+ctc_02's torus of radius 10 fitted to a spline blend (r39 of its regions)
+still facets: two of its chains with facets have three vertices, and the
+parabola through them stands 0.24 off for a limit of 0.20.
+
 Done for ftc_07, in two steps:
 
 - Its rounds of radius 0.43 along the drafted walls' foot are meshed

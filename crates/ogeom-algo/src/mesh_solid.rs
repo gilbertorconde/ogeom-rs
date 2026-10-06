@@ -690,6 +690,10 @@ fn build(
                     pinned.extend(vertices);
                     continue;
                 }
+                Err(Replan::Fan(facets)) => {
+                    groups.fans.extend(facets);
+                    continue;
+                }
                 Err(Replan::Facet(failed)) => (failed, FallbackReason::BoundaryNotPlaced),
                 Ok(plan) => {
                     model.begin_operation();
@@ -7018,10 +7022,12 @@ struct Planner<'a> {
 /// A chain of boundary vertices between two kept ones, and its mesh edges.
 type Chain = (Vec<u32>, Vec<(u32, u32)>);
 
-/// Why a plan was refused: curved faces to facet, or vertices to keep.
+/// Why a plan was refused: curved faces to facet, vertices to keep, or
+/// facets to build as fans.
 enum Replan {
     Facet(Vec<usize>),
     Pin(Vec<u32>),
+    Fan(Vec<usize>),
 }
 
 /// Whether a triangle with its corners on `shape` stands off it at its
@@ -7173,6 +7179,7 @@ impl Planner<'_> {
             free_fitted: 0,
         };
         let mut failed: Vec<usize> = Vec::new();
+        let mut fan_wanted: Vec<usize> = Vec::new();
         let mut keys: Vec<(u32, u32)> = edge_faces.keys().copied().collect();
         keys.sort_unstable();
         // The chain of boundary edges from `key` to the next kept vertex,
@@ -7317,6 +7324,9 @@ impl Planner<'_> {
                             }
                         }
                         None => {
+                            if let Some(t) = self.fan_for(&chain, &faces) {
+                                fan_wanted.push(t);
+                            }
                             for g in faces {
                                 if self.curved(g).is_some() && !failed.contains(&g) {
                                     failed.push(g);
@@ -7674,7 +7684,9 @@ impl Planner<'_> {
             }
             plan.surfaces[g] = Some(surface);
         }
-        if failed.is_empty() {
+        if !fan_wanted.is_empty() {
+            Ok(Err(Replan::Fan(fan_wanted)))
+        } else if failed.is_empty() {
             Ok(Ok(plan))
         } else {
             Ok(Err(Replan::Facet(failed)))
@@ -8012,6 +8024,42 @@ impl Planner<'_> {
     /// rulings, and failing them is fitted onto that face as a section is.
     /// `None` when no curve holds the chain and the faces.
     /// The curved face a chain is a fan's seam with, if it is one.
+    /// The facet a seam that no curve places could be built as a fan
+    /// from: one triangle alone in its planar group, its side along the
+    /// chain's single span against the curved face across it, its other two
+    /// against planar faces, and not a fan already. Its seam is then the
+    /// span drawn straight in the curved face's chart, where no curve
+    /// through the span's ends keeps to both the facet's plane and the
+    /// curved surface (a chord of a neighbour left faceted, cutting across
+    /// the curved surface's curvature).
+    fn fan_for(&self, chain: &[u32], faces: &[usize]) -> Option<usize> {
+        let [a, b] = faces[..] else {
+            return None;
+        };
+        let [p, q] = chain[..] else {
+            return None;
+        };
+        let (facet, curved) = match (self.curved(a), self.curved(b)) {
+            (Some(_), None) => (b, a),
+            (None, Some(_)) => (a, b),
+            _ => return None,
+        };
+        let mut members = self
+            .groups
+            .of
+            .iter()
+            .enumerate()
+            .filter(|&(_, &g)| g == facet)
+            .map(|(t, _)| t);
+        let t = members.next()?;
+        if members.next().is_some() || self.groups.fans.contains(&t) {
+            return None;
+        }
+        let fan = self.groups.fan_at(t, self.triangles, self.adjacency)?;
+        let ends = fan.seam == (p, q) || fan.seam == (q, p);
+        (ends && fan.curved == curved).then_some(t)
+    }
+
     fn fan_seam_of(&self, chain: &[u32], faces: &[usize]) -> Option<usize> {
         let [a, b] = faces[..] else {
             return None;

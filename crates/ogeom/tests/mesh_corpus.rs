@@ -274,7 +274,7 @@ fn nist_ctc_02() {
         .count();
     assert!(overlaps <= 2, "{overlaps} faces faceted for overlaps");
     assert!(
-        report.curved_faceted <= 5,
+        report.curved_faceted <= 4,
         "{} curved faces faceted: {:?}",
         report.curved_faceted,
         report.fallbacks
@@ -423,4 +423,22 @@ fn a_socket_head_screw() {
 fn sliver_on_a_diagonal_of_the_grid() {
     let report = comes_back("sliver_on_a_diagonal_of_the_grid.step", true, true);
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+}
+
+/// A turned part whose rounds meet single facets, chords of a spline
+/// face left faceted, across their curvature: the span they share stands
+/// off the round by more than a chord may, and each such facet comes back
+/// as a fan onto the round, which stays curved.
+#[test]
+#[ignore = "heavy"]
+fn grid_point_on_a_diagonal_boundary() {
+    let report = comes_back("grid_point_on_a_diagonal_boundary.step", true, true);
+    assert!(
+        !report
+            .fallbacks
+            .iter()
+            .any(|f| f.reason == FallbackReason::BoundaryNotPlaced),
+        "{:?}",
+        report.fallbacks
+    );
 }
