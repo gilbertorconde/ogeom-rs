@@ -2232,6 +2232,13 @@ impl<'a> Reader<'a> {
                 *wire = make_wire(&mut self.model, &closed, self.tol)?.shape;
             }
         }
+        // A file walks each loop with the face's material on its left about
+        // the face's own normal; a face turned against its surface is stored
+        // with its loops walked back, so that turning it walks them as
+        // written.
+        if !face_forward {
+            wires = walked_back(&mut self.model, &wires, self.tol)?;
+        }
         let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
         let shape = if face_forward {
             built
@@ -4182,6 +4189,18 @@ struct PdEntry {
     name: String,
     shapes: Vec<Shape>,
     children: Vec<(u64, Transform, Option<String>)>,
+}
+
+/// Each wire walked the other way round: its edges in reverse order, each
+/// reversed.
+fn walked_back(model: &mut Model, wires: &[Shape], tol: Tolerances) -> OgeomResult<Vec<Shape>> {
+    wires
+        .iter()
+        .map(|wire| {
+            let back = model.ordered_children_of(&wire.reversed())?;
+            Ok(make_wire(model, &back, tol)?.shape)
+        })
+        .collect()
 }
 
 /// An edge's pcurve on a surface: the file's own where it lies within the

@@ -913,3 +913,62 @@ fn a_face_rebuilt_by_ring_reanchoring_keeps_its_side() {
         "the rebuilt underside faces down still"
     );
 }
+
+/// How many edges of a shape's shells two faces walk the same way. Each
+/// face keeps its material on the left of its loops, so an edge between
+/// two faces is walked once each way.
+fn walked_the_same_way(model: &ogeom::topo::Model, shape: &ogeom::topo::Shape) -> usize {
+    use std::collections::HashMap;
+    let mut same = 0;
+    for shell in explore_unique(model, shape, ShapeType::Shell).unwrap() {
+        let mut walks: HashMap<_, Vec<ogeom::topo::Orientation>> = HashMap::new();
+        for face in explore(model, &shell, Filter::OfType(ShapeType::Face)).unwrap() {
+            for wire in model.children_of(&face).unwrap() {
+                for edge in model.children_of(&wire).unwrap() {
+                    let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                    if !data.degenerate {
+                        walks
+                            .entry((edge.node(), edge.location().clone()))
+                            .or_default()
+                            .push(edge.orientation());
+                    }
+                }
+            }
+        }
+        same += walks
+            .values()
+            .filter(|w| w.len() == 2 && w[0] == w[1])
+            .count();
+    }
+    same
+}
+
+/// Faces turned against their surfaces read with their loops as the file
+/// walks them about the face's own normal: every edge of every part read
+/// is walked once each way.
+#[test]
+fn every_edge_reads_walked_once_each_way() {
+    for name in [
+        "nist_ctc_01_asme1_rd.stp",
+        "nist_ftc_09_asme1_rd.stp",
+        "m5x16_bhcs.step",
+        "sliver_on_a_diagonal_of_the_grid.step",
+    ] {
+        let import = ogeom::io::read_step(&corpus(name), T).unwrap();
+        assert!(
+            !import
+                .report
+                .warnings
+                .iter()
+                .any(|w| w.contains("walked back")),
+            "{name}"
+        );
+        for solid in &import.solids {
+            assert_eq!(
+                walked_the_same_way(import.document.model(), solid),
+                0,
+                "{name}"
+            );
+        }
+    }
+}
