@@ -4202,9 +4202,12 @@ pub fn make_helical_sweep(
         }
         let surface: SurfaceGeometry =
             PlaneSurface::over(cap_plane, (-reach, reach), (-reach, reach))?.into();
+        // The material on the left of each ring about the outward normal:
+        // the profile's first ring is its outer one.
         let mut wires = Vec::with_capacity(loops.len());
-        for edges in loops {
-            wires.push(ogeom_algo::make_wire(model, edges, tol)?.shape);
+        for (li, edges) in loops.iter().enumerate() {
+            let ring = walked_about(model, edges, normal, li == 0, tol)?;
+            wires.push(ogeom_algo::make_wire(model, &ring, tol)?.shape);
         }
         let face = ogeom_algo::make_face(model, surface, &wires, tol)?.shape;
         let cap_id = {

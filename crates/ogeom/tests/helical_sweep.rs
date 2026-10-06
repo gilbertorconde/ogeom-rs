@@ -4,6 +4,9 @@
 //! profile does.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{check, make_face, make_polygon, shape_bounds, volume_properties};
 use ogeom::core::Tolerances;
 use ogeom::geom::PlaneSurface;
@@ -602,6 +605,72 @@ fn a_thread_cut_into_a_rod_is_the_same_at_any_start_angle() {
         assert!(
             (v - first).abs() < first * 1e-5,
             "{v} at {degrees} degrees against {first}"
+        );
+    }
+}
+
+/// A helical sweep's caps walk their rings against the walls beside them:
+/// a rectangle walked either way, and one with a square hole, through
+/// half a turn of either hand, are valid, walk every edge once
+/// each way, and measure as Pappus says.
+#[test]
+fn a_helical_sweep_walks_each_edge_once_each_way() {
+    let ring = |corners: [(f64, f64); 4], back: bool| -> Vec<Point> {
+        let mut pts: Vec<Point> = corners
+            .iter()
+            .map(|&(x, z)| Point::new(x, 0.0, z))
+            .collect();
+        if back {
+            pts.reverse();
+        }
+        pts
+    };
+    let outer = [(10.0, 0.0), (12.0, 0.0), (12.0, 2.0), (10.0, 2.0)];
+    let hole = [(10.5, 0.5), (11.5, 0.5), (11.5, 1.5), (10.5, 1.5)];
+    for (back, holed, left_handed) in [
+        (false, false, false),
+        (true, false, true),
+        (false, true, false),
+    ] {
+        let mut model = Model::new();
+        let mut wires = vec![
+            make_polygon(&mut model, &ring(outer, back), true, T)
+                .unwrap()
+                .shape,
+        ];
+        if holed {
+            wires.push(
+                make_polygon(&mut model, &ring(hole, !back), true, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+        let plane = Plane::new(Frame::new(Point::ORIGIN, -Direction::Y, Direction::X, T).unwrap());
+        let profile = make_face(&mut model, PlaneSurface::new(plane).into(), &wires, T)
+            .unwrap()
+            .shape;
+        let sweep = ogeom::offset::make_helical_sweep(
+            &mut model,
+            &profile,
+            z_axis(),
+            5.0,
+            0.5,
+            left_handed,
+            0.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let label = format!("back {back}, holed {holed}, left {left_handed}");
+        assert_eq!(walks::edges_walked_one_way(&model, &sweep), 0, "{label}");
+        let diagnosis = check(&model, &sweep, T).unwrap();
+        assert!(diagnosis.is_valid(), "{label}: {diagnosis}");
+        let area = if holed { 3.0 } else { 4.0 };
+        let want = area * core::f64::consts::TAU * 11.0 * 0.5;
+        let v = volume(&model, &sweep);
+        assert!(
+            (v - want).abs() < want * 1e-3,
+            "{label}: {v} against {want}"
         );
     }
 }
