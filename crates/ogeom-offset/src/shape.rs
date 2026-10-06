@@ -1436,7 +1436,10 @@ pub(crate) fn rebuilt(
         } else {
             let mut wires: Vec<Vec<Shape>> = Vec::new();
             let mut face_uses: HashMap<TShapeId, usize> = HashMap::new();
-            for wire in explore(model, &prep.shape, Filter::OfType(ShapeType::Wire))? {
+            // The wires as the face stores them: the rebuilt face takes the
+            // old one's sense below.
+            let stored = prep.shape.oriented(Orientation::Forward);
+            for wire in explore(model, &stored, Filter::OfType(ShapeType::Wire))? {
                 let mut edges: Vec<Shape> = Vec::new();
                 // The wire's own order, not the walker's: a rebuilt wire is
                 // re-chained edge to edge, and the walk order is not a chain.

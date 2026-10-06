@@ -3583,6 +3583,7 @@ fn offsets_and_moves_on_a_converted_block_match_the_exact_block() {
             .shape;
         for edited in [&offset, &moved] {
             assert!(check(m, edited, T).unwrap().is_valid());
+            assert_eq!(edges_walked_one_way(m, edited), 0);
         }
         changes.push([volume(m, &offset) - before, volume(m, &moved) - before]);
     }

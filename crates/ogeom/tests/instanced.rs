@@ -3,6 +3,9 @@
 //! node alone reads one name as two places.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom_core::Tolerances;
 use ogeom_math::{Plane, Point, Vector};
 use ogeom_topo::{Filter, ShapeType, explore};
@@ -118,6 +121,7 @@ fn a_prism_shells_open_at_the_top() {
             .unwrap();
     let diagnosis = ogeom_algo::check(&model, &shelled.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert_eq!(walks::edges_walked_one_way(&model, &shelled.shape), 0);
     // The walls hold half a unit each way. The open top keeps the cavity's
     // full height: 192 less 7 by 5 by 3.5.
     assert!((volume(&model, &shelled.shape) - 69.5).abs() < 1e-6);
@@ -144,6 +148,7 @@ fn a_prism_wall_takes_a_draft() {
     .unwrap();
     let diagnosis = ogeom_algo::check(&model, &drafted.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert_eq!(walks::edges_walked_one_way(&model, &drafted.shape), 0);
     // One wall leans in from the neutral plane at the base: the removed
     // wedge is the wall's length times the leaning triangle.
     let expected = 8.0_f64.mul_add(-(4.0 * 4.0 / 2.0 * angle.tan()), 192.0);

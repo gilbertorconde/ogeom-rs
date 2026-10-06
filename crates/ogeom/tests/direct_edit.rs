@@ -2,6 +2,9 @@
 //! around them following, the solid staying closed.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/walks.rs"]
+mod walks;
+
 use ogeom::algo::{
     Built, check, face_normal, make_box, make_cylinder, make_sphere, volume_properties,
 };
@@ -50,6 +53,7 @@ fn sound(model: &Model, built: OgeomResult<Built>, want: f64, faces: usize, at: 
     let built = built.unwrap_or_else(|e| panic!("{at}: {e}"));
     let diagnosis = check(model, &built.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{at}: {diagnosis}");
+    assert_eq!(walks::edges_walked_one_way(model, &built.shape), 0, "{at}");
     let v = volume(model, &built.shape);
     assert!((v - want).abs() < want * 1e-9, "{at}: {v} against {want}");
     let count = explore_unique(model, &built.shape, ShapeType::Face)
