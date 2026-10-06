@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Fillet wedges walk each edge once each way.** Rim arc wedges and
+  marched blend wedges (closed, run-out, pinched, face blends) built faces
+  whose rings ran the same way as the face beside them; each keeps its
+  material on the left of its rings. `make_band_between` walks its lower
+  ring forward whichever order the rings are given.
+
 - **Every other producer walks each edge once each way.** Faces built by
   the mesh converter, by baking a reflecting placement or restating a
   surface, by seam healing, ring re-anchoring and surface recognition, by
@@ -62,6 +68,11 @@ corpus with no curved face faceted. Fillets the stress run refused now
 round, and a boolean on a large solid leaves less work on untouched faces.
 
 ### Added
+
+- **`check` names an edge both its faces walk the same way.** In a shell,
+  each edge between two faces is walked once each way when every face keeps
+  its material on the left of its rings; an edge both faces walk the same
+  way is a suspect finding, in closed shells and sheets.
 
 - **A folded sheet thickens into one solid (#124).** `make_thick_sheet`
   joins faces meeting at a crease with a mitre on either side, where the

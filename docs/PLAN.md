@@ -134,9 +134,9 @@ sewing, the STEP reader, the offset crate's lofts, pipes and sweeps,
 the mesh converter, rebuilt faces whose chart turns (a reflecting bake,
 a restated surface), seaming and ring re-anchoring, surface recognition,
 face removal, the IGES writer, sheet rounds, faces rebuilt by draft,
-offset or move, and straight and rim blend wedges do. Marched and face
-blend wedges are still to fix; once none breaks it, `check` gains the
-rule.
+offset or move, and every blend wedge do. `check` names an edge with two
+faces in a shell, closed or open, that both walk the same way, as a
+suspect finding.
 
 - Sewing rebuilt a reversed face by reading its wires under its own sense
   and then reversing the rebuilt face again; it reads the stored wires
@@ -224,8 +224,22 @@ rule.
   whose results are sound: marched blends (converted edges and
   rims, spline edges, a branch cylinder's seam, the crossed bores' loop,
   pinched drums), face blends capped flush or running off a side, crease
-  arcs split at a seam, and a tangent chain's wedges; each walks one to
-  six edges the same way.
+  arcs split at a seam, and a tangent chain's wedges; each walked one to
+  six edges the same way. None does now, over the whole workspace with
+  the heavy tier: a rim arc's end caps walk back where their corners turn
+  against their outward normals and its other faces run their rings
+  anticlockwise in their charts; a marched band's run-out legs and caps
+  walk back by the side the rail and the corners stand on, its annular
+  legs run the outer ring anticlockwise and the hole clockwise, and a band
+  between two rings walks its lower ring forward.
+- `check` gained the rule. Over the workspace with the heavy tier and the
+  stress run at seeds 1 to 3 it names only the faces the orientation and
+  repair tests turn inside out on purpose, which expect it; no sheet is
+  named, so open shells are asked too. The count costs under a
+  millisecond on the corpus parts (0.3 ms on `nist_ctc_02`'s 663 faces,
+  whose check takes 0.34 s). A closed marched band's wedge also has
+  vertices tighter than its widened rails, which `check` names as broken;
+  the rails are widened in place without carrying their vertices.
 - Fixed with the same cause (rings read under a face's sense, then the
   face turned again): seaming and ring re-anchoring, surface
   recognition, face removal and the IGES writer (whose reader takes loops
@@ -250,9 +264,9 @@ rule.
   turn (boxes with a lid filled the wrong way round), the rest are left
   as given. On a thin fillet wedge of the crossed bores the probe names
   faces facing out, and the two checks refuse the turn. Open shells are
-  not turned. Once no producer breaks the walk, sewing can turn faces by
-  the walk alone, open shells included, and name a shell with no
-  consistent orientation.
+  not turned. No producer the tests reach breaks the walk now, so
+  sewing can turn faces by the walk alone, open shells included, and
+  name a shell with no consistent orientation: the next step.
 
 The fillet's side test no longer trusts the walk where the chart's chords
 cannot settle it.
