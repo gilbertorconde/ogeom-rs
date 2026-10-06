@@ -1599,10 +1599,11 @@ fn cut_edges(
         let reach = vertex_point(model, start)?
             .distance(segment.curve.point_at(range.0, tol)?)
             .max(vertex_point(model, end)?.distance(segment.curve.point_at(range.1, tol)?));
-        data.widen(Tolerance::new(
-            reach.max(segment.tolerance) + tol.confusion(),
-        )?);
         let edge = model.add_edge(data, &[start.clone(), end.clone()])?;
+        model.widen(
+            &edge,
+            Tolerance::new(reach.max(segment.tolerance) + tol.confusion())?,
+        )?;
         let walked = if t0 <= t1 {
             edge.clone()
         } else {

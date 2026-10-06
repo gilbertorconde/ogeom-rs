@@ -10,7 +10,7 @@
 //! disagreement, and either confirm the claim or widen the edge's tolerance
 //! until the claim is true. Either way, afterwards the flag *means* something.
 
-use ogeom_core::{OgeomResult, Tolerances};
+use ogeom_core::{OgeomResult, Tolerance, Tolerances};
 use ogeom_geom::{Curve2d as _, Curve3d as _, Surface as _};
 use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, TShapeId, explore};
 
@@ -147,10 +147,8 @@ pub fn repair_same_parameter(
             report.agreed += 1;
         } else {
             report.widened += 1;
-            if let Some(node) = model.node_mut(&edge)
-                && let NodeData::Edge(data) = node.data_mut()
-            {
-                data.tolerance = data.tolerance.widen_to(worst + tol.confusion());
+            if worst.is_finite() {
+                model.widen(&edge, Tolerance::new(worst + tol.confusion())?)?;
             }
         }
         set_flag(model, &edge, true);

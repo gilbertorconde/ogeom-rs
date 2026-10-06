@@ -1129,8 +1129,8 @@ fn cut_face(
             .collect::<OgeomResult<Vec<f64>>>()?
             .into_iter()
             .fold(0.0_f64, f64::max);
-        edge_data.widen(ogeom_core::Tolerance::new(reach + tol.confusion())?);
         let edge = model.add_edge(edge_data, &[start.clone(), end.clone()])?;
+        model.widen(&edge, ogeom_core::Tolerance::new(reach + tol.confusion())?)?;
         let polyline: Vec<Point2> = (0..=16)
             .map(|k| {
                 let w = w0 + (w1 - w0) * f64::from(k) / 16.0;
