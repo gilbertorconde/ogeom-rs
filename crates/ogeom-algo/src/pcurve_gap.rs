@@ -125,8 +125,11 @@ fn peak_about(
 }
 
 /// The distance from `target` to the nearest point of `curve` over `range`:
-/// a scan, then a golden-section search about the nearest sample.
-fn nearest_on_stretch(
+/// a scan, then a golden-section search about each sample nearer than the
+/// samples beside it. A closed curve's two ends are one point, and a target
+/// just short of one end is nearest a point beside that end, though the
+/// other end's sample ties with it.
+pub(crate) fn nearest_on_stretch(
     curve: &Curve,
     range: (f64, f64),
     target: Point,
@@ -135,26 +138,34 @@ fn nearest_on_stretch(
     const SCAN: u32 = 64;
     let at = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(target)) };
     let step = (range.1 - range.0) / f64::from(SCAN);
-    let mut best = (range.0, at(range.0)?);
-    for k in 1..=SCAN {
-        let t = range.0 + step * f64::from(k);
-        let d = at(t)?;
-        if d < best.1 {
-            best = (t, d);
-        }
-    }
+    let scan = (0..=SCAN)
+        .map(|k| {
+            let t = range.0 + step * f64::from(k);
+            Ok((t, at(t)?))
+        })
+        .collect::<OgeomResult<Vec<(f64, f64)>>>()?;
     let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
-    let (mut a, mut b) = ((best.0 - step.abs()).max(lo), (best.0 + step.abs()).min(hi));
     let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
-    for _ in 0..80 {
-        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
-        if at(c)? < at(d)? {
-            b = d;
-        } else {
-            a = c;
+    let mut nearest = f64::INFINITY;
+    for (k, &(t, d)) in scan.iter().enumerate() {
+        nearest = nearest.min(d);
+        let low = k == 0 || scan[k - 1].1 >= d;
+        let high = k + 1 == scan.len() || scan[k + 1].1 >= d;
+        if !(low && high) {
+            continue;
         }
+        let (mut a, mut b) = ((t - step.abs()).max(lo), (t + step.abs()).min(hi));
+        for _ in 0..80 {
+            let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+            if at(c)? < at(d)? {
+                b = d;
+            } else {
+                a = c;
+            }
+        }
+        nearest = nearest.min(at(f64::midpoint(a, b))?);
     }
-    Ok(best.1.min(at(f64::midpoint(a, b))?))
+    Ok(nearest)
 }
 
 /// The widest gap between `edge`'s curve and any of its pcurves at the
@@ -275,6 +286,20 @@ mod tests {
     use ogeom_math::{KnotVector, Plane, Point2};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A point of a whole circle just short of where it closes is on the
+    /// circle, though its start, the same point as its end, ties with
+    /// the end as the nearest sample.
+    #[test]
+    fn a_point_short_of_a_closed_curve_s_end_is_on_it() {
+        use ogeom_geom::CircleCurve;
+        use ogeom_math::{Circle, Frame};
+        let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 0.5, T).unwrap()).into();
+        let range = (0.0, core::f64::consts::TAU);
+        let target = circle.point_at(range.1 - 0.01, T).unwrap();
+        let nearest = nearest_on_stretch(&circle, range, target, T).unwrap();
+        assert!(nearest < 1e-9, "{nearest}");
+    }
 
     /// A pcurve rising to a corner half way between two samples, along a
     /// straight edge on the plane: the samples either side stand short of

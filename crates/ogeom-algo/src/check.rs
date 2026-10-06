@@ -645,47 +645,15 @@ pub(crate) fn pcurve_off_curve(
         };
         let mut gap = on_curve.distance(lifted);
         if gap > reach && !paced {
-            gap = gap.min(nearest_on_stretch(curve, range, lifted, tol)?);
+            gap = gap.min(crate::pcurve_gap::nearest_on_stretch(
+                curve, range, lifted, tol,
+            )?);
         }
         if gap > reach && widest.is_none_or(|(g, _)| gap > g) {
             widest = Some((gap, t));
         }
     }
     Ok(widest)
-}
-
-/// The distance from `target` to the nearest point of `curve` over `range`:
-/// a scan, then a golden-section search about the nearest sample.
-fn nearest_on_stretch(
-    curve: &ogeom_geom::Curve,
-    range: (f64, f64),
-    target: ogeom_math::Point,
-    tol: Tolerances,
-) -> OgeomResult<f64> {
-    const SCAN: u32 = 32;
-    let at = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(target)) };
-    let step = (range.1 - range.0) / f64::from(SCAN);
-    let mut best = (range.0, at(range.0)?);
-    for k in 1..=SCAN {
-        let t = range.0 + step * f64::from(k);
-        let d = at(t)?;
-        if d < best.1 {
-            best = (t, d);
-        }
-    }
-    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
-    let step = step.abs();
-    let (mut a, mut b) = ((best.0 - step).max(lo), (best.0 + step).min(hi));
-    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
-    for _ in 0..60 {
-        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
-        if at(c)? < at(d)? {
-            b = d;
-        } else {
-            a = c;
-        }
-    }
-    Ok(best.1.min(at(f64::midpoint(a, b))?))
 }
 
 /// A wire's edges must meet end to end.
