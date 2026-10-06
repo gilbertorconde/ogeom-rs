@@ -1577,10 +1577,16 @@ pub fn make_revolution_band(
         )?
         .into())
     };
+    // The walk runs counter-clockwise in the chart where the first ring
+    // turns with `u` along the lower row, or against it along the upper; the
+    // other way round, the ring is walked back, so the face keeps its
+    // material on the left about the surface's normal.
+    let counter_clockwise = (rings[0].winding > 0.0) == (va < vb);
     // The first seam occurrence in the wire is `up`; the triangulator hands
     // a Forward occurrence the `forward` pcurve. `up` is Forward exactly
-    // when the seam was built upward.
-    let (forward_col, reversed_col) = if downward {
+    // when the seam was built upward, and it stands where the first ring's
+    // walk ends, or where it starts when the ring is walked back.
+    let (forward_col, reversed_col) = if downward == counter_clockwise {
         (other_col, bottom_end)
     } else {
         (bottom_end, other_col)
@@ -1605,7 +1611,16 @@ pub fn make_revolution_band(
     } else {
         rings[1].edge.clone()
     };
-    let ring = vec![rings[0].edge.clone(), up.clone(), top, up.reversed()];
+    let ring = if counter_clockwise {
+        vec![rings[0].edge.clone(), up.clone(), top, up.reversed()]
+    } else {
+        vec![
+            rings[0].edge.reversed(),
+            up.clone(),
+            top.reversed(),
+            up.reversed(),
+        ]
+    };
     let wire = make_wire(model, &ring, tol)?.shape;
     Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
 }
@@ -3539,6 +3554,80 @@ mod band_tests {
         )
         .unwrap()
         .shape
+    }
+
+    /// The area a face's stored rings enclose in its surface's chart,
+    /// walked as stored: positive where they keep the face on their left.
+    fn chart_area(model: &Model, face: &Shape) -> f64 {
+        use ogeom_geom::Curve2d as _;
+        let surface = model.node(face).unwrap().data().as_face().unwrap().surface;
+        let mut points = Vec::new();
+        for wire in model
+            .ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))
+            .unwrap()
+        {
+            for edge in model.ordered_children_of(&wire).unwrap() {
+                let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                let forward = edge.orientation() == ogeom_topo::Orientation::Forward;
+                let (curve, range) = match data.pcurve_for(surface, edge.location()).unwrap() {
+                    EdgeRepr::PCurve { curve, range, .. } => (*curve, *range),
+                    EdgeRepr::Seam {
+                        forward: f,
+                        reversed: r,
+                        range,
+                        ..
+                    } => (if forward { *f } else { *r }, *range),
+                    _ => unreachable!("a pcurve was asked for"),
+                };
+                let pcurve = model.geometry().pcurve(curve).unwrap();
+                for k in 0..32 {
+                    let f = f64::from(k) / 32.0;
+                    let t = if forward {
+                        range.0 + (range.1 - range.0) * f
+                    } else {
+                        range.1 + (range.0 - range.1) * f
+                    };
+                    points.push(pcurve.point_at(t, T).unwrap());
+                }
+            }
+        }
+        (0..points.len())
+            .map(|i| {
+                let (a, b) = (points[i], points[(i + 1) % points.len()]);
+                a.x * b.y - b.x * a.y
+            })
+            .sum::<f64>()
+            / 2.0
+    }
+
+    /// A band keeps its face on the left of its ring in the surface's
+    /// chart, whichever ring comes first and whichever way each circle
+    /// turns: a drum's wall between two rims, a quarter turn of chart
+    /// height two wide.
+    #[test]
+    fn a_band_keeps_its_face_on_the_left_whichever_way_its_rings_come() {
+        let mut model = Model::new();
+        let cylinder = ogeom_math::Cylinder::new(Frame::WORLD, 2.0, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(cylinder, (-1.0, 3.0))
+            .unwrap()
+            .into();
+        let at = |z: f64, up: bool| {
+            let axis = if up {
+                ogeom_math::Direction::Z
+            } else {
+                -ogeom_math::Direction::Z
+            };
+            Frame::new(Point::new(0.0, 0.0, z), axis, ogeom_math::Direction::X, T).unwrap()
+        };
+        for (first_up, second_up) in [(true, true), (false, true), (true, false)] {
+            let low = ring(&mut model, at(0.0, first_up), 2.0);
+            let high = ring(&mut model, at(2.0, second_up), 2.0);
+            for (a, b) in [(&low, &high), (&high, &low)] {
+                let face = make_revolution_band(&mut model, &surface, a, b, T).unwrap();
+                let area = chart_area(&model, &face);
+                assert_relative_eq!(area, TAU * 2.0, max_relative = 1e-9);
+            }
+        }
     }
 
     #[test]
