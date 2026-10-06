@@ -688,6 +688,7 @@ fn sampled<const D: usize, P>(
                 tolerance * 0.5,
                 closed,
                 interpolate,
+                &[],
             )?;
             let Some(control) = controls.pop() else {
                 ogeom_bail!(NotDone, "the curve fit solved nothing");
@@ -812,6 +813,7 @@ pub fn fit_trace_sampled(
                 tolerance * 0.5,
                 false,
                 interpolate,
+                &[],
             )?;
             let Some(control) = controls.pop() else {
                 ogeom_bail!(NotDone, "the trace fit solved nothing");
@@ -1817,7 +1819,14 @@ fn fit_surface_grid_parameterized(
 
     let (u_params, v_params) = averaged_parameters(&raw, by_chord);
     fit_grid_on(
-        rows, &raw, &u_params, &v_params, degree, tolerance, closed_v, false, tol,
+        rows,
+        &raw,
+        (&u_params, &v_params),
+        degree,
+        tolerance,
+        (closed_v, false),
+        (&[], &[]),
+        tol,
     )
 }
 
@@ -1918,6 +1927,33 @@ pub fn fit_surface_grid_at(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    fit_surface_grid_at_with_knots(u_params, v_params, rows, degree, tolerance, (&[], &[]), tol)
+}
+
+/// Interior knots a fit keeps, `(parameter, multiplicity)`.
+type Kept<'a> = &'a [(f64, usize)];
+
+/// As [`fit_surface_grid_at`], each direction's knots starting from the
+/// interior knots given for it, `(parameter, multiplicity)`, and keeping
+/// them. Where the chart the points come from is only C0 or C1 along a
+/// parameter line, a knot there of multiplicity `degree` or `degree - 1`
+/// lets the fit turn as the chart does; without one, a fit smoother than
+/// its data converges on such a line only as fast as its spans shrink.
+/// A multiplicity past the degree counts as the degree, and a knot outside
+/// the parameters' open range is not used.
+///
+/// # Errors
+///
+/// As [`fit_surface_grid_at`].
+pub fn fit_surface_grid_at_with_knots(
+    u_params: &[f64],
+    v_params: &[f64],
+    rows: &[Vec<Point>],
+    degree: usize,
+    tolerance: f64,
+    knots: (Kept<'_>, Kept<'_>),
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
     if !tolerance.is_finite() || tolerance <= 0.0 {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
     }
@@ -1941,7 +1977,14 @@ pub fn fit_surface_grid_at(
         .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
         .collect();
     fit_grid_on(
-        rows, &raw, u_params, v_params, degree, tolerance, false, false, tol,
+        rows,
+        &raw,
+        (u_params, v_params),
+        degree,
+        tolerance,
+        (false, false),
+        knots,
+        tol,
     )
 }
 
@@ -2072,12 +2115,11 @@ pub fn fit_surface_sampled(
             let fitted = fit_grid_on(
                 &rows,
                 &raw,
-                &us,
-                &vs,
+                (&us, &vs),
                 degree,
                 tolerance * 0.5,
-                sampling.closed_v,
-                interpolate,
+                (sampling.closed_v, interpolate),
+                (&[], &[]),
                 tol,
             )?;
             let (between, split_u, split_v) = measured_between(
@@ -2196,18 +2238,24 @@ fn measured_between(
 fn fit_grid_on(
     rows: &[Vec<Point>],
     raw: &[Vec<[f64; 3]>],
-    u_params: &[f64],
-    v_params: &[f64],
+    (u_params, v_params): (&[f64], &[f64]),
     degree: usize,
     tolerance: f64,
-    closed_v: bool,
-    interpolate: bool,
+    (closed_v, interpolate): (bool, bool),
+    (u_kept, v_kept): (Kept<'_>, Kept<'_>),
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::BSplineSurface>> {
     use crate::traits::Surface as _;
     // Pass one: every row on one shared knot vector.
-    let (u_knots, row_controls) =
-        fit_family::<3>(raw, u_params, degree, tolerance * 0.5, false, interpolate)?;
+    let (u_knots, row_controls) = fit_family::<3>(
+        raw,
+        u_params,
+        degree,
+        tolerance * 0.5,
+        false,
+        interpolate,
+        u_kept,
+    )?;
     // Pass two: the columns of control points, against the v parameters.
     let k = u_knots.control_point_count();
     let control_columns: Vec<Vec<[f64; 3]>> = (0..k)
@@ -2220,6 +2268,7 @@ fn fit_grid_on(
         tolerance * 0.5,
         closed_v,
         interpolate,
+        v_kept,
     )?;
     let l = v_knots.control_point_count();
 
@@ -2256,7 +2305,9 @@ type FamilyRound<const D: usize> = (KnotVector, Vec<Vec<[f64; D]>>, f64);
 
 /// Fit a family of point rows sharing parameters onto one knot vector,
 /// refined against the worst residual across the whole family, parameters
-/// held fixed.
+/// held fixed. The `kept` interior knots, `(parameter, multiplicity)`,
+/// are in the vector from the start and stay; they are not combined with
+/// interpolation, whose knots follow the parameters alone.
 fn fit_family<const D: usize>(
     family: &[Vec<[f64; D]>],
     parameters: &[f64],
@@ -2264,14 +2315,22 @@ fn fit_family<const D: usize>(
     tolerance: f64,
     closed: bool,
     interpolate: bool,
+    kept: Kept<'_>,
 ) -> OgeomResult<(KnotVector, Vec<Vec<[f64; D]>>)> {
     let degree = degree.min(parameters.len() - 1).max(1);
     let (a, b) = (parameters[0], parameters[parameters.len() - 1]);
     let mut knots = if interpolate {
         interpolating_knots(degree, parameters)?
     } else {
-        single_span(degree, a, b)?
+        let mut knots = single_span(degree, a, b)?;
+        for &(at, multiplicity) in kept {
+            if at > a && at < b {
+                knots = knots.with_knot_inserted(at, multiplicity.min(degree))?;
+            }
+        }
+        knots
     };
+    let kept = !interpolate && kept.iter().any(|&(at, _)| at > a && at < b);
     const ROUNDS: usize = 24;
     let mut best: Option<FamilyRound<D>> = None;
     for _ in 0..ROUNDS {
@@ -2312,7 +2371,11 @@ fn fit_family<const D: usize>(
         };
         // A refinement past one control point per datum leaves spans with
         // no data and cannot be solved. The last step there is the
-        // interpolating spline, which meets every datum exactly.
+        // interpolating spline, which meets every datum exactly, unless
+        // knots are kept, which it would drop.
+        if kept && refined.control_point_count() > parameters.len() {
+            break;
+        }
         knots = if refined.control_point_count() > parameters.len() && !closed {
             interpolating_knots(degree, parameters)?
         } else {

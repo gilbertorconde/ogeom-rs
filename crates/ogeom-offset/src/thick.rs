@@ -1097,6 +1097,8 @@ fn moved_surface(
         }
     }
 
+    let corners = chart_corners(base, face.window);
+
     // A fit at the chart's own parameters, refined until the points it was
     // not fitted to (the cell centres and edge middles) agree too, or the
     // finest net is reached and the closest fit stands against the bound.
@@ -1127,7 +1129,20 @@ fn moved_surface(
         let rows: Vec<Vec<Point>> = (0..=n as usize)
             .map(|j| (0..=n as usize).map(|i| fine[2 * j][2 * i]).collect())
             .collect();
-        let fitted = ogeom_geom::fit::fit_surface_grid_at(&us, &vs, &rows, 3, target * 0.5, tol)?;
+        // The chart's corner lines stand in the fit as knots it may turn
+        // at, once the net is fine enough to hold them.
+        let held = |kept: &[(f64, usize)]| 4 + 3 * kept.len() <= n as usize + 1;
+        let kept_u: &[(f64, usize)] = if held(&corners.0) { &corners.0 } else { &[] };
+        let kept_v: &[(f64, usize)] = if held(&corners.1) { &corners.1 } else { &[] };
+        let fitted = ogeom_geom::fit::fit_surface_grid_at_with_knots(
+            &us,
+            &vs,
+            &rows,
+            3,
+            target * 0.5,
+            (kept_u, kept_v),
+            tol,
+        )?;
         let mut surface: SurfaceGeometry = fitted.curve.into();
         let mut worst = fitted.error;
         for j in 0..=2 * n {
@@ -1181,6 +1196,36 @@ fn moved_surface(
         }
         spans *= 2;
     }
+}
+
+/// Interior knots, `(parameter, multiplicity)`.
+type Knots = Vec<(f64, usize)>;
+
+/// Where a B-spline chart turns: the interior knots, in `u` and in `v`,
+/// across which the moved points are only C0, each as a cubic fit's knot
+/// of full multiplicity. A point of the surface is as smooth as its basis
+/// is at a knot and its normal one order less, so the moved point is C0
+/// wherever the surface is C1 or less.
+fn chart_corners(
+    surface: &SurfaceGeometry,
+    ((u0, u1), (v0, v1)): ((f64, f64), (f64, f64)),
+) -> (Knots, Knots) {
+    let SurfaceGeometry::BSpline(b) = surface else {
+        return (Vec::new(), Vec::new());
+    };
+    let corners = |knots: &ogeom_math::KnotVector, (lo, hi): (f64, f64)| {
+        let degree = knots.degree();
+        knots
+            .distinct()
+            .into_iter()
+            .filter(|&(at, multiplicity)| at > lo && at < hi && multiplicity + 1 >= degree)
+            .map(|(at, _)| (at, 3))
+            .collect()
+    };
+    (
+        corners(b.u_knots(), (u0, u1)),
+        corners(b.v_knots(), (v0, v1)),
+    )
 }
 
 /// The two principal curvatures at `(u, v)`, signed positive where the
