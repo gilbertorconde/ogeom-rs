@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-06
+
+A patch release: no breaking API changes. Exact mass properties weigh a
+void turned inside out as a void and close the sliver a chord leaves
+beside its arc, so converted parts bounded by chords measure what their
+tessellation does. The mesh converter rebuilds drill points, narrow rounds,
+drafted corners, facets folded against curved faces and tangent chords as
+exact faces: NIST parts convert to far fewer faces, one from 4104 to 1997
+and another with no face left faceted. A pipe shell's wall holds between
+rows at a curved corner, and the area of a spline face that folds over
+settles at once.
+
 ### Changed
 
 - **The area of a spline face that folds over settles at once.** Where a
@@ -3699,7 +3711,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.0...v0.9.1
