@@ -1025,6 +1025,26 @@ All valid and tessellating closed; the other corpus parts, the truth
 bench and the stress baseline come back unchanged. A blind hole with a
 drill point, meshed and converted, pins it.
 
+Tori standing in for cylinders: done. ctc_03's rounds (radius 9.5 to
+12.7) and two of ctc_05's walls (radius 279.4) came back as tori of major
+radius 1e3 to 3e4 whose tube radius differs from it by the cylinder's: a
+torus that close to its axis is the cylinder about it to within the
+samples. The cylinder fit itself missed them (its axis read from a strip a
+few rows wide, it stood 7 to 20 off), so no simpler fit was there to tie.
+Now a torus that fits, with its tube radius (or its major radius) ten
+times the samples' span or more, seeds the cylinder about its axis (or
+along its tube), refined and kept where it ties the torus; requiring the
+torus to fit keeps a strip across a real fillet, which neither fits, from
+seeding a cylinder along it. Measured: ctc_03 7 tori to none (169 faces,
+volume error 6.5e-5, unchanged), ctc_05 7 tori to 5 (378 faces, 1.3e-4 to
+1.2e-4), ftc_11 4 tori to 2 tori and 2 cylinders (the source's kinds),
+ctc_01 and m5x16_bhcs_loops each a torus to the source's cylinder,
+ftc_08 328 faces to 317 with one more region faceted (4 to 5), and
+grid_point_on_a_diagonal_boundary 826 to 823 with one region faceted for
+a folded seam. The truth bench's rim-disc at 0.05 moves from 1.2e-6 to
+6.3e-8 (its mean volume error 3.57e-6 to 3.50e-6); the stress baseline is
+unchanged.
+
 **Flags the exact volume trusts.** `volume_properties` takes the closed
 form only where the faces' flags agree. The edge walks tie faces into sets
 that agree among themselves; a face the walks cannot read (a cone apex, a

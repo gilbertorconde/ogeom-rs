@@ -458,6 +458,40 @@ fn curved_fits(
             deviation,
         });
     }
+    // A torus far larger than the samples' span is a cylinder there: about
+    // its axis where its tube's radius dwarfs the span, along its tube
+    // where its major radius does. The cylinder fit can miss such a strip
+    // (a few rows of samples tell its axis poorly), and the torus would
+    // stand in for it. Where the torus fits, the cylinder it points to is
+    // fitted too, and kept where it ties the torus.
+    let degenerate: Vec<Recognized> = fits
+        .iter()
+        .filter_map(|f| {
+            let Canonical::Torus(t) = &f.surface else {
+                return None;
+            };
+            if f.deviation > hopeless {
+                return None;
+            }
+            let seed = cylinder_in_torus(t, &sub_points, tol)?;
+            let refined = refine(seed.clone(), &sub_points, hopeless, tol).unwrap_or(seed);
+            let deviation = worst_deviation(&refined, points);
+            (deviation <= tie(f.deviation, hopeless)).then_some(Recognized {
+                surface: refined,
+                deviation,
+            })
+        })
+        .collect();
+    for found in degenerate {
+        match fits
+            .iter_mut()
+            .find(|f| matches!(f.surface, Canonical::Cylinder(_)))
+        {
+            Some(cylinder) if cylinder.deviation <= found.deviation => {}
+            Some(cylinder) => *cylinder = found,
+            None => fits.push(found),
+        }
+    }
     // Samples on a band's two rims fit a whole family of spheres and tori,
     // each as closely as the cone the band's rungs draw: the round fits say
     // nothing the mesh does, and give way to the ruled one.
@@ -466,6 +500,62 @@ fn curved_fits(
         fits.push(band);
     }
     fits
+}
+
+/// How far a fit may miss the samples and still tie the best one, missing
+/// them by `best`: twice that, or a thousandth of the tolerance.
+fn tie(best: f64, tolerance: f64) -> f64 {
+    (2.0 * best).max(tolerance * 1e-3)
+}
+
+/// The cylinder a torus far larger than the samples' span stands in for,
+/// where one of its radii is ten times the span or more: about its axis
+/// through the samples' mean distance from it where the tube's radius is,
+/// along the tube's spine at the samples' mean angle where the major
+/// radius is.
+fn cylinder_in_torus(torus: &Torus, points: &[Point], tol: Tolerances) -> Option<Canonical> {
+    let first = *points.first()?;
+    let span = points
+        .iter()
+        .map(|p| p.distance(first))
+        .fold(0.0_f64, f64::max);
+    if span <= tol.confusion() {
+        return None;
+    }
+    let frame = torus.frame();
+    let (o, z) = (frame.origin(), frame.z().vector());
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "sample counts are far below 2^52"
+    )]
+    let count = points.len() as f64;
+    if torus.minor_radius() >= span * 10.0 {
+        let radius = points
+            .iter()
+            .map(|p| {
+                let r = *p - o;
+                (r - z * r.dot(z)).magnitude()
+            })
+            .sum::<f64>()
+            / count;
+        return Some(Canonical::Cylinder(Cylinder::new(frame, radius, tol).ok()?));
+    }
+    if torus.major_radius() >= span * 10.0 {
+        let (x, y) = (frame.x().vector(), frame.y().vector());
+        let (s, c) = points.iter().fold((0.0, 0.0), |(s, c), p| {
+            let r = *p - o;
+            let a = r.dot(y).atan2(r.dot(x));
+            (s + a.sin(), c + a.cos())
+        });
+        let angle = s.atan2(c);
+        let radial = x * angle.cos() + y * angle.sin();
+        let spine = o + radial * torus.major_radius();
+        let along = Direction::new(z.cross(radial), tol).ok()?;
+        return Some(Canonical::Cylinder(
+            Cylinder::new(Frame::about(spine, along), torus.minor_radius(), tol).ok()?,
+        ));
+    }
+    None
 }
 
 /// The fit to take among those within the tolerance: the closest (a
@@ -483,7 +573,7 @@ fn curved_fits(
 /// lays the facets' cross chords on itself as their plane does, and misses
 /// the samples by orders more than the round's own cylinder.
 fn choose(fits: &[Recognized], chords: &[(Point, Point)], tolerance: f64) -> Option<Recognized> {
-    let tie = |best: f64| (2.0 * best).max(tolerance * 1e-3);
+    let tie = |best: f64| tie(best, tolerance);
     let within: Vec<&Recognized> = fits.iter().filter(|f| f.deviation <= tolerance).collect();
     let closest = within
         .iter()

@@ -214,9 +214,41 @@ fn nist_ctc_01() {
     comes_back("nist_ctc_01_asme1_rd.stp", true, true);
 }
 
+/// Its rounds of radius 9.5 to 12.7 are strips a few rows wide, whose
+/// axis the cylinder fit can miss; a torus thousands in radius fits them
+/// as closely, and they come back on the cylinder it stands in for.
 #[test]
 fn nist_ctc_03() {
-    comes_back("nist_ctc_03_asme1_rc.stp", true, true);
+    let name = "nist_ctc_03_asme1_rc.stp";
+    comes_back(name, true, true);
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
+    let mesh = ogeom::mesh::triangulate(
+        model,
+        part,
+        Deflection::with_chord(diagonal * 1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let huge: Vec<f64> = explore_unique(&back, &out.shape, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter_map(|face| {
+            let data = back.node(face).unwrap().data().as_face().unwrap();
+            match back.geometry().surface(data.surface) {
+                Some(SurfaceGeometry::Torus(t)) if t.torus().major_radius() > diagonal => {
+                    Some(t.torus().major_radius())
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    assert!(huge.is_empty(), "tori standing in for cylinders: {huge:?}");
 }
 
 /// Its blends come back as tori fitted side by side, meeting at so slight
