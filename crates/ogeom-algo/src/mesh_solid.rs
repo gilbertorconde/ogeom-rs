@@ -8965,6 +8965,15 @@ impl Planner<'_> {
         if longest <= self.tol.confusion() {
             return None;
         }
+        // The chain's own vertices lie on both surfaces, to the reach; the
+        // sag a chord may stand off between them covers the surfaces'
+        // bulge over the chain, not a surface standing off its vertices.
+        if on
+            .iter()
+            .any(|&p| fa(p).abs() > reach || fb(p).abs() > reach)
+        {
+            return None;
+        }
         // Between a canonical surface and a patch running out into it
         // tangentially, the chain is threaded in the canonical surface's
         // chart and lifted onto it: a curve through the vertices alone
