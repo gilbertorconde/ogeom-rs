@@ -34,7 +34,11 @@
 //! distances), while its neighbour across the edge runs along the curve, would
 //! leave a slit in the boundary the divergence theorem closes over. The
 //! strip between the lifted pcurve and the curve is integrated with the
-//! face as a ruled surface, so the faces still close.
+//! face as a ruled surface, so the faces still close; an area counts it
+//! as surface the face lacks, or takes it away where it lies back over the
+//! face.
+
+use core::f64::consts::FRAC_1_SQRT_2;
 
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{
@@ -74,20 +78,28 @@ struct Ribbon {
     /// How far the piece was found to stand off the curve at most; a
     /// nearest point further than twice this is a wrong one.
     reach: f64,
+    /// The strip's lobes in walking order, each as the piece's parameter
+    /// where it ends and whether it lies back over the face, which then
+    /// counts its area already: an area takes such a lobe away, and adds
+    /// one lying out past the face's edge or standing up from it. A lobe
+    /// ends where the piece crosses the curve and the rulings turn round,
+    /// or where their feet come to rest at an end of the curve; the last
+    /// ends with the piece.
+    lobes: Vec<(f64, bool)>,
 }
 
 impl Ribbon {
-    /// The point of the curve nearest `at`, the curve's tangent there, and
-    /// how fast that point moves along the curve as `at` moves by `moving`.
-    /// `guess` starts the search; the parameter is held in the edge's range,
-    /// where it stands still.
+    /// The point of the curve nearest `at`, the curve's tangent there, how
+    /// fast that point moves along the curve as `at` moves by `moving`, and
+    /// whether it is held at an end of the edge's range, where it stands
+    /// still. `guess` starts the search.
     fn nearest(
         &self,
         at: Point,
         moving: Vector,
         guess: f64,
         tol: Tolerances,
-    ) -> OgeomResult<(Point, Vector, f64)> {
+    ) -> OgeomResult<(Point, Vector, f64, bool)> {
         let (lo, hi) = (
             self.range.0.min(self.range.1),
             self.range.0.max(self.range.1),
@@ -116,13 +128,14 @@ impl Ribbon {
             );
         }
         let slope = d[1].dot(d[1]) + (point - at).dot(d[2]);
+        let held = tau <= lo || tau >= hi;
         // Differentiating `(C(tau) - at) . C'(tau) = 0` along the piece.
-        let rate = if tau <= lo || tau >= hi || slope <= 0.0 {
+        let rate = if held || slope <= 0.0 {
             0.0
         } else {
             moving.dot(d[1]) / slope
         };
-        Ok((point, d[1], rate))
+        Ok((point, d[1], rate, held))
     }
 }
 
@@ -255,8 +268,23 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
             0.0
         },
     );
+    let Walked {
+        placed,
+        handedness,
+        mut loops,
+        scale,
+        ..
+    } = walked;
+    for (segments, region) in &mut loops {
+        for segment in segments.iter_mut() {
+            if let Some(mut ribbon) = segment.ribbon.take() {
+                ribbon.lobes = lobes(&placed, segment, &ribbon, *region, tol);
+                segment.ribbon = Some(ribbon);
+            }
+        }
+    }
     let mut bridges = Vec::new();
-    for (segments, region) in &walked.loops {
+    for (segments, region) in &loops {
         for (k, segment) in segments.iter().enumerate() {
             let next = &segments[(k + 1) % segments.len()];
             let (end, _) = segment.at(segment.t1, tol)?;
@@ -273,17 +301,112 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
     Ok(Some(ChartFace {
         knot_lines,
         bridges,
-        surface: walked.placed,
-        loops: walked.loops,
-        sign: walked.handedness
+        surface: placed,
+        loops,
+        sign: handedness
             * if face.orientation() == Orientation::Reversed {
                 -1.0
             } else {
                 1.0
             },
         u_ref,
-        scale: walked.scale,
+        scale,
     }))
+}
+
+/// A piece's strip split into lobes where the piece crosses its edge's
+/// curve (see [`Ribbon::lobes`]), and where its rulings' feet come to rest
+/// at an end of the curve. A lobe lies back over the face where its
+/// rulings, read at a few points, run on the whole within half a right
+/// angle of straight into the face. Each lobe is one answer and its ends
+/// break the panels, so the strip's area is smooth across every panel and
+/// every run counts it the same way.
+fn lobes(
+    placed: &SurfaceGeometry,
+    segment: &Segment,
+    ribbon: &Ribbon,
+    region: f64,
+    tol: Tolerances,
+) -> Vec<(f64, bool)> {
+    // The face lies to the left of the walk in the chart where the region
+    // counts positive.
+    let turn = region * (segment.t1 - segment.t0).signum();
+    // The ruling at `t`, the unit direction into the face there, and
+    // whether the ruling's foot is held at an end of the curve.
+    let ruling = |t: f64| -> Option<(Vector, Vector, bool)> {
+        let (at, d) = segment.at(t, tol).ok()?;
+        let at = into_domain(placed, at);
+        let (point, du, dv) = placed.point_d1_at(at.x, at.y, tol).ok()?;
+        let share = if segment.t1 == segment.t0 {
+            0.0
+        } else {
+            (t - segment.t0) / (segment.t1 - segment.t0)
+        };
+        let guess = ribbon.ends.0 + (ribbon.ends.1 - ribbon.ends.0) * share;
+        let (target, _, _, held) = ribbon
+            .nearest(point, du * d.x + dv * d.y, guess, tol)
+            .ok()?;
+        let inward = (dv * d.x - du * d.y) * turn;
+        let length = inward.magnitude();
+        (length > 0.0).then(|| (target - point, inward / length, held))
+    };
+    const SAMPLES: u32 = 32;
+    let at = |k: u32| segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / f64::from(SAMPLES);
+    let mut ends = Vec::new();
+    // The last sample read: where, its ruling, and whether its foot was held.
+    let mut last: Option<(f64, Vector, bool)> = None;
+    for k in 0..=SAMPLES {
+        let Some((across, _, held)) = ruling(at(k)) else {
+            continue;
+        };
+        if let Some((from, before, was_held)) = last {
+            let turned = across.dot(before) < 0.0;
+            if turned || held != was_held {
+                // Where the rulings shrink to nothing and turn round, or
+                // where the foot comes to rest, by bisection.
+                let changed = |x: &(Vector, Vector, bool)| {
+                    if turned {
+                        x.0.dot(before) < 0.0
+                    } else {
+                        x.2 != was_held
+                    }
+                };
+                let (mut lo, mut hi) = (from, at(k));
+                for _ in 0..50 {
+                    let mid = f64::midpoint(lo, hi);
+                    match ruling(mid) {
+                        Some(x) if !changed(&x) => lo = mid,
+                        Some(_) => hi = mid,
+                        None => break,
+                    }
+                }
+                let end = f64::midpoint(lo, hi);
+                if end != segment.t0 && end != segment.t1 {
+                    ends.push(end);
+                }
+            }
+        }
+        let before = match last {
+            Some((_, before, _)) if across.magnitude() == 0.0 => before,
+            _ => across,
+        };
+        last = Some((at(k), before, held));
+    }
+    ends.push(segment.t1);
+    let mut start = segment.t0;
+    let mut out = Vec::with_capacity(ends.len());
+    for end in ends {
+        let (mut into, mut width) = (0.0, 0.0);
+        for k in 1..=5 {
+            if let Some((across, inward, _)) = ruling(start + (end - start) * f64::from(k) / 6.0) {
+                into += across.dot(inward);
+                width += across.magnitude();
+            }
+        }
+        out.push((end, into > FRAC_1_SQRT_2 * width));
+        start = end;
+    }
+    out
 }
 
 /// `1` for a placement that keeps a chart's metric and handedness, `-1` for
@@ -300,6 +423,74 @@ pub(crate) fn rigid_handedness(placement: &ogeom_math::Transform) -> Option<f64>
         }
         _ => None,
     }
+}
+
+/// Whether a pcurve of the face runs beside its edge's curve (see
+/// [`Fit::Beside`]) further than [`BESIDE`] confusion distances: the
+/// region its pcurves bound then leaves a strip open against the neighbour
+/// across that edge, wide enough to weigh, which only the chart loops
+/// close. Only edges stating that much are read.
+pub(crate) fn runs_wide_of_an_edge(
+    model: &Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        return Ok(false);
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        return Ok(false);
+    };
+    let mut placed = None;
+    for wire in model.ordered_children_of(face)? {
+        for edge in model.ordered_children_of(&wire)? {
+            let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                continue;
+            };
+            if edge_data.tolerance.get() <= tol.confusion() * BESIDE {
+                continue;
+            }
+            let (ids, range) = match edge_data.pcurve_for(data.surface, edge.location()) {
+                Some(EdgeRepr::PCurve { curve, range, .. }) => (vec![*curve], *range),
+                Some(EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    ..
+                }) => (vec![*forward, *reversed], *range),
+                _ => continue,
+            };
+            if placed.is_none() {
+                let placement = face.transform(model.datums())?;
+                if rigid_handedness(&placement).is_none() {
+                    return Ok(false);
+                }
+                placed = Some(surface.clone().transformed(&placement, tol)?);
+            }
+            let Some(placed) = placed.as_ref() else {
+                continue;
+            };
+            for id in ids {
+                let Some(curve) = model.geometry().pcurve(id) else {
+                    continue;
+                };
+                let segment = Segment {
+                    edge: edge.clone(),
+                    curve: curve.clone(),
+                    t0: range.0,
+                    t1: range.1,
+                    shift: Vector2::new(0.0, 0.0),
+                    ribbon: None,
+                };
+                if let Fit::Beside(ribbon) = fit_to_edge(model, &edge, placed, &segment, tol)?
+                    && ribbon.reach > tol.confusion() * BESIDE
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// A face's boundary walked into closed chart loops.
@@ -591,7 +782,7 @@ fn walk(
         if strict {
             match fit_to_edge(model, edge, placed, &segment, tol)? {
                 Fit::Along => {}
-                Fit::Beside(ribbon) => segment.ribbon = Some(ribbon),
+                Fit::Beside(ribbon) => segment.ribbon = Some(*ribbon),
                 Fit::Off => return Ok(None),
             }
         }
@@ -606,10 +797,11 @@ fn walk(
 
 /// How far, in confusion distances, a piece's lifted pcurve may run beside
 /// its edge's curve and still be integrated, with the strip between them:
-/// a thousandth of a millimetre at millimetre tolerances. The strip's
-/// rulings are straight, and a ruled strip of width `w` departs from any
-/// smooth surface through both its sides by about `w^2` times the
-/// curvature, so what it leaves out of a volume goes as `w^3`.
+/// a thousandth of a millimetre at millimetre tolerances, or on a curve
+/// with a closed form as far as the edge states. The strip's rulings are
+/// straight, and a ruled strip of width `w` departs from any smooth
+/// surface through both its sides by about `w^2` times the curvature, so
+/// what it leaves out of a volume goes as `w^3`.
 const BESIDE: f64 = 1e4;
 
 /// How a piece's lifted pcurve lies against its edge's own curve.
@@ -619,9 +811,11 @@ enum Fit {
     /// the edge has no curve of its own (a pole) to stray from.
     Along,
     /// Beside it, further than that but within [`BESIDE`] confusion
-    /// distances: a fitted section whose edge took a curve close by for
-    /// its own. The strip between is integrated with the face.
-    Beside(Ribbon),
+    /// distances, or on a curve with a closed form within the edge's
+    /// stated tolerance: a fitted section whose edge took a curve close by
+    /// for its own, or a chord standing for an arc. The strip between is
+    /// integrated with the face.
+    Beside(Box<Ribbon>),
     /// Further: the region the pcurve bounds is not the face's, and the
     /// face is left to the mesh, which takes its boundary from the edge.
     Off,
@@ -693,13 +887,23 @@ fn fit_to_edge(
     if along {
         return Ok(Fit::Along);
     }
-    // Beside the curve all the way, ends included.
+    // Beside the curve all the way, ends included. On a curve with a
+    // closed form the edge's stated tolerance bounds the strip too: an edge
+    // taking a straight chord or an arc for a curved section states the
+    // chord's sag, its neighbour across the edge is bounded by the chord,
+    // and the sliver between the chord and the pcurve is the face's to
+    // close however wide it is.
     const SAMPLES: u32 = 16;
+    let widest_strip = if exact && within_stated {
+        (tol.confusion() * BESIDE).max(stated)
+    } else {
+        tol.confusion() * BESIDE
+    };
     let mut widest: f64 = close;
     for k in 0..=SAMPLES {
         let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / f64::from(SAMPLES);
         widest = widest.max(nearest(&curve, *range, lifted(t)?, tol)?);
-        if widest > tol.confusion() * BESIDE {
+        if widest > widest_strip {
             return Ok(if within_stated { Fit::Along } else { Fit::Off });
         }
     }
@@ -719,12 +923,13 @@ fn fit_to_edge(
     } else {
         (range.1, range.0)
     };
-    Ok(Fit::Beside(Ribbon {
+    Ok(Fit::Beside(Box::new(Ribbon {
         curve,
         range: *range,
         ends,
         reach: widest,
-    }))
+        lobes: Vec::new(),
+    })))
 }
 
 /// A chart point brought into the surface's domain where a pcurve fitted
@@ -1071,7 +1276,13 @@ impl ChartFace {
         for (segments, region) in &self.loops {
             for segment in segments {
                 if let Some(ribbon) = &segment.ribbon {
-                    let breaks = self.outer_breaks(segment, tol)?;
+                    let mut breaks = self.outer_breaks(segment, tol)?;
+                    breaks.extend(ribbon.lobes.iter().map(|(end, _)| *end));
+                    breaks.sort_by(f64::total_cmp);
+                    if segment.t1 < segment.t0 {
+                        breaks.reverse();
+                    }
+                    breaks.dedup();
                     for pair in breaks.windows(2) {
                         for k in 0..fine {
                             let a = pair[0] + (pair[1] - pair[0]) * f64::from(k) / f64::from(fine);
@@ -1145,15 +1356,25 @@ impl ChartFace {
             (t - segment.t0) / (segment.t1 - segment.t0)
         };
         let guess = ribbon.ends.0 + (ribbon.ends.1 - ribbon.ends.0) * share;
-        let (target, tangent, rate) = ribbon.nearest(point, moving, guess, tol)?;
+        let (target, tangent, rate, _) = ribbon.nearest(point, moving, guess, tol)?;
         let across = target - point;
+        let ahead = (segment.t1 - segment.t0).signum();
+        let over = ribbon
+            .lobes
+            .iter()
+            .find(|(end, _)| (end - t) * ahead >= 0.0)
+            .is_some_and(|(_, over)| *over);
         for (s, ws) in rule(3, 0.0, 1.0) {
             let sweep = moving * (1.0 - s) + tangent * (rate * s);
-            sink((
-                point + across * s,
-                sweep.cross(across),
-                -self.sign * outer * ws,
-            ));
+            let (n, w) = (sweep.cross(across), -self.sign * outer * ws);
+            // The weight's sign is the area's (see [`Ribbon::lobes`]); the
+            // product `n w`, which a volume takes, is the strip's own
+            // either way.
+            if (w < 0.0) == over {
+                sink((point + across * s, n, w));
+            } else {
+                sink((point + across * s, -n, -w));
+            }
         }
         Ok(())
     }

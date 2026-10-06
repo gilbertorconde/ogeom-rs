@@ -408,3 +408,161 @@ fn a_rounded_box_drilled_along_a_round_s_edge_measures_exactly() {
         whole.mass
     );
 }
+
+/// A prism over a sector of radius `r` and angle `angle`, `h` high, whose
+/// arc edge (one edge, at the bottom and moved to the top) takes the arc's
+/// straight chord for its curve and states the chord's sag as its
+/// tolerance. The round wall, a chart rectangle, keeps the arc for its
+/// pcurves; the caps are bounded by the chord where `chord_caps`, and keep
+/// the arc for theirs otherwise.
+fn sector_prism_with_a_chord(r: f64, angle: f64, h: f64, chord_caps: bool) -> (Model, Shape) {
+    use ogeom::core::Tolerance;
+    use ogeom::geom::{CircleCurve, Curve2d as _, Line2d, PlanarCurve, SurfaceGeometry};
+    use ogeom::math::Circle;
+    use ogeom::topo::{EdgeRepr, NodeData, ShapeType, explore_unique};
+    let mut model = Model::new();
+    let (o, a, b) = (
+        Point::ORIGIN,
+        Point::new(r, 0.0, 0.0),
+        Point::new(r * angle.cos(), r * angle.sin(), 0.0),
+    );
+    let [vo, va, vb] = [o, a, b].map(|p| model.add_vertex(VertexData::new(p)));
+    let line = |model: &mut Model, from: &Shape, p: Point, to: &Shape, q: Point| {
+        let curve = LineCurve::segment(p, q, T).unwrap();
+        let range = curve.domain();
+        make_edge_between(model, Curve::Line(curve), range, from, to, T)
+            .unwrap()
+            .shape
+    };
+    let out = line(&mut model, &vo, o, &va, a);
+    let back = line(&mut model, &vb, b, &vo, o);
+    let arc = Curve::Circle(CircleCurve::new(Circle::new(Frame::WORLD, r, T).unwrap()));
+    let arc_edge = make_edge_between(&mut model, arc, (0.0, angle), &va, &vb, T)
+        .unwrap()
+        .shape;
+    let prism = prism_of(&mut model, vec![out, arc_edge, back], h);
+
+    let rim = explore_unique(&model, &prism, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let data = model.node(e).unwrap().data().as_edge().unwrap();
+            let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+                return false;
+            };
+            matches!(model.geometry().curve(*curve), Some(Curve::Circle(_)))
+        })
+        .expect("the prism has an arc");
+    let data = model.node(&rim).unwrap().data().as_edge().unwrap().clone();
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        unreachable!()
+    };
+    let (start, end) = {
+        let arc = model.geometry().curve(*curve).unwrap();
+        (
+            arc.point_at(range.0, T).unwrap(),
+            arc.point_at(range.1, T).unwrap(),
+        )
+    };
+    let chord = LineCurve::segment(start, end, T).unwrap();
+    let chord_range = chord.domain();
+    let chord = model.geometry_mut().add_curve(Curve::Line(chord));
+    let mut representations = data.representations.clone();
+    for repr in &mut representations {
+        match repr {
+            EdgeRepr::Curve3d { curve, range, .. } => {
+                *curve = chord;
+                *range = chord_range;
+            }
+            EdgeRepr::PCurve {
+                curve,
+                range,
+                surface,
+                ..
+            } if chord_caps
+                && matches!(
+                    model.geometry().surface(*surface),
+                    Some(SurfaceGeometry::Plane(_))
+                ) =>
+            {
+                let old = model.geometry().pcurve(*curve).unwrap().clone();
+                let line = Line2d::segment(
+                    old.point_at(range.0, T).unwrap(),
+                    old.point_at(range.1, T).unwrap(),
+                    T,
+                )
+                .unwrap();
+                *range = line.domain();
+                *curve = model.geometry_mut().add_pcurve(PlanarCurve::Line(line));
+            }
+            _ => {}
+        }
+    }
+    let NodeData::Edge(edge) = model.node_mut(&rim).unwrap().data_mut() else {
+        unreachable!()
+    };
+    edge.representations = representations.into_iter().collect();
+    edge.assert_same_parameter(false);
+    let sag = r * (1.0 - (angle * 0.5).cos());
+    model
+        .widen(&rim, Tolerance::new(sag * 1.001).unwrap())
+        .unwrap();
+    (model, prism)
+}
+
+/// A sector prism of radius 10 and angle 0.6, 5 high, whose arc edge takes
+/// the arc's chord for its curve and states the chord's sag, 0.45 (see
+/// [`sector_prism_with_a_chord`]). The sliver between chord and arc at each
+/// end is closed by the strips integrated with the faces whose pcurves keep
+/// the arc. With caps bounded by the chord, the wall's strip closes it:
+/// the wall's area is its own plus both slivers'. With caps that keep the
+/// arc too, the caps' strips lie back over them and take the slivers away,
+/// and the wall's strips add them, so the two cancel in the volume. Either
+/// way the volume and the whole surface are the sector prism's, and each
+/// cap is the triangle under the chord, each to a part in a billion
+/// against closed forms. Without the strips the volume misses the flux
+/// through the slivers.
+#[test]
+fn a_chord_standing_off_its_arc_by_its_sag_closes_with_the_strips() {
+    use ogeom::geom::SurfaceGeometry;
+    use ogeom::topo::{ShapeType, explore_unique};
+    let (r, angle, h) = (10.0_f64, 0.6_f64, 5.0_f64);
+    let sector = 0.5 * r * r * angle;
+    let sliver = 0.5 * r * r * (angle - angle.sin());
+    let triangle = 0.5 * r * r * angle.sin();
+    for chord_caps in [true, false] {
+        let (model, prism) = sector_prism_with_a_chord(r, angle, h, chord_caps);
+        let v = volume_properties(&model, &prism, Deflection::default(), T).unwrap();
+        assert_eq!(v.deflection, 0.0, "{chord_caps}: integrated, not meshed");
+        assert!(
+            (v.mass - sector * h).abs() < 1e-9 * sector * h,
+            "{chord_caps}: volume {} against {}",
+            v.mass,
+            sector * h
+        );
+        let whole = 2.0 * sector + r * angle * h + 2.0 * r * h;
+        let s = surface_properties(&model, &prism, Deflection::default(), T).unwrap();
+        assert_eq!(s.deflection, 0.0, "{chord_caps}: integrated, not meshed");
+        assert!(
+            (s.mass - whole).abs() < 1e-9 * whole,
+            "{chord_caps}: area {} against {whole}",
+            s.mass
+        );
+        for face in explore_unique(&model, &prism, ShapeType::Face).unwrap() {
+            let data = model.node(&face).unwrap().data().as_face().unwrap();
+            let want = match model.geometry().surface(data.surface) {
+                Some(SurfaceGeometry::Plane(p)) if p.plane().normal().vector().z.abs() > 0.5 => {
+                    triangle
+                }
+                Some(SurfaceGeometry::Plane(_)) => r * h,
+                _ => r * angle * h + 2.0 * sliver,
+            };
+            let a = surface_properties(&model, &face, Deflection::default(), T).unwrap();
+            assert!(
+                (a.mass - want).abs() < 1e-9 * want,
+                "{chord_caps}: face {} against {want}",
+                a.mass
+            );
+        }
+    }
+}

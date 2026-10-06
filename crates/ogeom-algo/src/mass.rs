@@ -903,7 +903,12 @@ fn integrable_face(
     face: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Option<Vec<ExactFace>>> {
-    if let Some(found) = exact_face(model, face, tol)? {
+    // A chart rectangle or disc takes its region from the pcurves alone,
+    // so a face with a pcurve standing wide of its edge's curve goes round
+    // its chart loops, which close the strip between them.
+    if !crate::mass_chart::runs_wide_of_an_edge(model, face, tol)?
+        && let Some(found) = exact_face(model, face, tol)?
+    {
         return Ok(Some(found));
     }
     Ok(crate::mass_chart::chart_face(model, face, tol)

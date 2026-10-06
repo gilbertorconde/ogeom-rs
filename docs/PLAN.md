@@ -143,6 +143,32 @@ off its curve, sampled at 33 points (2.2e-5 to 4.0e-5 on the torus drills,
 up to 1.2e-4 on `nist_ftc_11`, where the edges stated 1e-7), and the exact
 integral still takes the strip on a curve with a closed form whose pcurve
 stands off it by more than a hundred confusions, whatever its tolerance.
+On such a curve the strip is now taken as wide as the edge states, not
+only to a thousandth: mesh conversion bounded a planar face by a straight
+chord stating its sag (0.49 on `nist_ctc_02`'s blends) while the torus
+beside it kept the arc, and the sliver between was a hole in the
+boundary. Five tori there came out 1.8% under their mesh area and the
+converted volume 1.29e-3 under the part, against 1.7e-4 for its fine
+tessellation; with the strips, 1.75e-4. (The converter no longer leaves
+those chords: the converted part now measures 4.3e-5 under, 3.7e-5
+without the strips.) A face the chart rectangle or disc would take goes
+round its chart loops where a pcurve stands that wide of its edge, so it
+gets the strip too. An area counts a strip as surface the face lacks, or
+takes it away where it lies back over the face, decided once per lobe (a
+lobe ends where the pcurve crosses the curve or a ruling's foot comes to
+rest at the curve's end, and breaks the panels); it was counted with the
+sign of the walk, so half the strips subtracted. Moving the reference
+point by 1340 now moves the converted volumes by 1904 (`nist_ctc_02`,
+4241 before), 15 (`nist_ctc_04`, 4888) and 134 (`nist_ftc_10`, 308): a
+closed boundary would not move at all. Corpus areas move by up to the
+strips' own area, 4.5e-5 of a face on the original `nist_ctc_02` and 0.4%
+on small faces of `nist_ftc_07`.
+Left: a fitted curve's pcurves within its stated tolerance are still
+taken as along, so a converted face bounded by fitted edges stating
+2e-2 to 5e-2 still leaves slits (two converted `nist_ctc_02` tori 0.2% and
+0.7% under a fine mesh); whether they are what still moves with the
+reference is not measured. The original `nist_ctc_02` moves by 923 with the reference, with
+or without the strips.
 
 `check` compares an edge's pcurves with its curve only where the edge
 claims `same_parameter`, which almost no producer sets, so a pcurve

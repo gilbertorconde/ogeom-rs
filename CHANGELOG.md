@@ -21,6 +21,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Exact mass properties close the sliver a chord leaves beside its
+  arc.** An edge taking a straight chord or another closed-form curve for a
+  curved section, stating the sag as its tolerance, left the strip between
+  the face's pcurve and the curve open wherever it was wider than a
+  thousandth, faces measured as chart rectangles ignored it altogether, and
+  areas counted strips by walk direction. Such strips are closed as wide as
+  the edge's tolerance allows and count as added surface: a converted part
+  bounded by chords measured 1.3e-3 under its volume and its blend tori
+  1.8% under their area; it now matches its fine tessellation.
+
 - **Drill points, stand-in tori and tangent chords convert exact.** A cone
   closing at its apex inside one rim (a drill point) had no layout and fell
   to facets; it is built like a sphere's cap, its seam running from the
