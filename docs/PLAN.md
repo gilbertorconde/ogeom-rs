@@ -133,8 +133,10 @@ Prisms, tapered prisms, revolutions, baked shapes, revolution bands,
 sewing, the STEP reader, the offset crate's lofts, pipes and sweeps,
 the mesh converter, rebuilt faces whose chart turns (a reflecting bake,
 a restated surface), seaming and ring re-anchoring, surface recognition,
-face removal, the IGES writer and sheet rounds do. More producers are
-still to fix; once none breaks it, `check` gains the rule.
+face removal, the IGES writer, sheet rounds, faces rebuilt by draft,
+offset or move, and straight and rim blend wedges do. Marched and face
+blend wedges are still to fix; once none breaks it, `check` gains the
+rule.
 
 - Sewing rebuilt a reversed face by reading its wires under its own sense
   and then reversing the rebuilt face again; it reads the stored wires
@@ -215,17 +217,15 @@ still to fix; once none breaks it, `check` gains the rule.
   first face's anchor, which the walk moves, a converted part that does
   not close exactly differs by up to 6e-6 (`nist_ftc_10`).
 - A shell check run over the default tests (each closed shell an edge of
-  which two faces walk the same way) flagged 80 tests, now 52. Three
-  build a face turned inside out on purpose (`check_orientation`,
-  `fix_shape`). The rest are the offset crate's: lofts, pipes, pipe
-  shells and sweeps; draft (a fitted patch wall, the drafted spline
-  wall, the prism walls in `instanced`); and moving or offsetting faces
-  (`direct_edit`, the converted block). Face offset and draft read each
-  face's wires in `rebuilt` (`ogeom-offset/src/shape.rs`) under the face's
-  sense and turn the rebuilt face again; reading
-  `prep.shape.oriented(Orientation::Forward)` clears `direct_edit`,
-  `instanced` and the converted block's offsets, and all but one draft
-  test.
+  which two faces walk the same way) flagged 80 tests and now flags the
+  three that build a face turned inside out on purpose
+  (`check_orientation`, `fix_shape`). Run on each blend wedge before it
+  is applied as well, it flagged 105 more tests and now 26, all wedges
+  whose results are sound: marched blends (converted edges and
+  rims, spline edges, a branch cylinder's seam, the crossed bores' loop,
+  pinched drums), face blends capped flush or running off a side, crease
+  arcs split at a seam, and a tangent chain's wedges; each walks one to
+  six edges the same way.
 - Fixed with the same cause (rings read under a face's sense, then the
   face turned again): seaming and ring re-anchoring, surface
   recognition, face removal and the IGES writer (whose reader takes loops
@@ -234,7 +234,10 @@ still to fix; once none breaks it, `check` gains the rule.
   a plane, a recognised spline facing its axis) walks its rings back, its
   pole rows with them; a band of rings running clockwise stores its loop
   walked back; a sheet round's ring is made counter-clockwise before the
-  round is turned to face its axis.
+  round is turned to face its axis. Draft, face offset and move read the
+  stored rings too. A blend wedge's planar face winds its corners about
+  its outward normal, a fillet cap walks back where its corners turn
+  against it, and a rim's annulus walks its wider ring with its normal.
 
 - Sewing cannot orient by the walk while producers break it: turning faces
   breadth first over shared edges failed 132 default tests (fillet wedges,

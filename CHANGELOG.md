@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Every other producer walks each edge once each way.** Faces built by
+  the mesh converter, by baking a reflecting placement or restating a
+  surface, by seam healing, ring re-anchoring and surface recognition, by
+  face removal, draft, face offset and move, by sheet rounds and by
+  straight and rim blend wedges, and faces written to IGES, keep their
+  material on the left of their rings. A reversed IGES face was written
+  with its loops under the face's sense.
+
 - **Lofts, pipes and sweeps walk each edge once each way.** Lofts between
   polygons, pipes along part of a circle, skinned lofts and pipes, pipes
   through sections or along law-driven frames, helical sweeps and pipe
