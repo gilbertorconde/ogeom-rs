@@ -138,6 +138,14 @@ offset or move, and every blend wedge do. `check` names an edge with two
 faces in a shell, closed or open, that both walk the same way, as a
 suspect finding.
 
+A face whose ring is wound against its own surface's normal (a planar cap
+built from a ring walked clockwise about the plane it was given) is
+ambiguous: sewing trusts the ring and turns it with the faces beside it,
+so a ruled sheet closed by such a cap can come back with that cap facing
+in. Where the cap has no pcurves the shell cannot be meshed to settle it.
+`make_face` given a plane and a ring could refuse or turn the plane to
+agree with the ring.
+
 - Sewing rebuilt a reversed face by reading its wires under its own sense
   and then reversing the rebuilt face again; it reads the stored wires
   now. That made a different rough box for the converter tests (the
@@ -253,20 +261,27 @@ suspect finding.
   its outward normal, a fillet cap walks back where its corners turn
   against it, and a rim's annulus walks its wider ring with its normal.
 
-- Sewing cannot orient by the walk while producers break it: turning faces
-  breadth first over shared edges failed 132 default tests (fillet wedges,
-  the mesh converter, defeature, sweeps, drills), whose faces face out
-  with rings wound against their normals. 544 closed groups sewn in the
-  default tests have faces walking a shared edge the same way. Sewing now
-  probes such a closed group's faces against its solid and turns those
-  facing in, only where the turn leaves every shared edge walked once
-  each way and the shell enclosing a positive meshed volume: 3 groups
-  turn (boxes with a lid filled the wrong way round), the rest are left
-  as given. On a thin fillet wedge of the crossed bores the probe names
-  faces facing out, and the two checks refuse the turn. Open shells are
-  not turned. No producer the tests reach breaks the walk now, so
-  sewing can turn faces by the walk alone, open shells included, and
-  name a shell with no consistent orientation: the next step.
+- Sewing orients by the walk: in each sewn group the faces are turned
+  breadth first over their shared edges until every edge two of them
+  share is walked once each way, each connected run keeping the
+  orientation most of its faces have (its first face's on a tie), open
+  sheets too. A closed group whose faces were turned is then turned whole
+  where its meshed volume comes out negative. A group with no consistent
+  orientation (a half-twisted band) keeps its faces as given, and
+  `Sewn::edges_walked_one_way` names the edges that show it. The probe
+  and its two guards are gone. Over the workspace with the heavy tier,
+  14 groups turn (17 faces), each face genuinely against its neighbours:
+  boxes with a lid filled the wrong way round (two sew tests and two of
+  the measured box's four builds; walls facing in turn the box whole), a
+  sheet with one square wound the other way, a floor filled facing up
+  into an extruded square, a blend surface whose ring runs against both
+  strips it joins (six blends in the bridge tests), a floor and wall
+  built to walk their crease the same way (the thick sheet test now turns
+  the sewn wall back itself), and a ruled sheet's bottom cap whose ring
+  is wound against its plane's normal (it now faces into the box; its
+  caps carry no pcurves, so the volume cannot be meshed to settle it).
+  No other result changed. The stress run at seeds 1 to 3 turns nothing
+  and its outcomes are unchanged.
 
 The fillet's side test no longer trusts the walk where the chart's chords
 cannot settle it.

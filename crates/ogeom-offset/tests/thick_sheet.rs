@@ -509,7 +509,8 @@ fn a_shell_of_coplanar_faces_thickens_and_offsets_as_one() {
 
 /// The square floor [0, 10]^2 in z = 0, facing up, sewn to a square wall
 /// rising 10 from its edge at x = 10, bounded counter-clockwise about
-/// its normal: back over the floor (-X) when `back`, else away (+X).
+/// its normal: back over the floor (-X) when `back`, else away (+X), where
+/// it walks the edge it shares with the floor the way the floor does.
 fn floor_and_wall(model: &mut Model, back: bool) -> Shape {
     let floor = square(model, 0.0, 10.0);
     let wall = {
@@ -533,11 +534,24 @@ fn floor_and_wall(model: &mut Model, back: bool) -> Shape {
             .unwrap()
             .shape
     };
-    let sewn = ogeom_algo::sew(model, &[floor, wall], T).unwrap();
+    let sewn = ogeom_algo::sew(model, &[floor, wall.clone()], T).unwrap();
     let [shell] = sewn.shells.as_slice() else {
         panic!("two shells");
     };
-    shell.clone()
+    if back {
+        return shell.clone();
+    }
+    // Sewing turns the wall to walk the shared edge against the floor;
+    // turned back, it faces away and the sheet disagrees with itself.
+    let [turned] = sewn.history.modified(&wall) else {
+        panic!("sewing turns the wall");
+    };
+    let faces: Vec<Shape> = explore(model, shell, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .map(|f| if f == *turned { f.reversed() } else { f })
+        .collect();
+    ogeom_algo::make_shell(model, &faces).unwrap().shape
 }
 
 #[test]

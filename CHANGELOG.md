@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Sewing orients the faces it joins by their walk.** Each edge two faces
+  share ends up walked once each way, open sheets included, keeping the
+  orientation most faces already have; a closed shell is then made to face
+  out. A shell that cannot be oriented (a half-twisted band) keeps its
+  faces, and the new `Sewn::edges_walked_one_way` names the edges that
+  show it.
+
 - **A widened edge carries its vertices, and a widened face its edges.**
   Marched fillet bands, offset rebuilds, splitting, dividing,
   same-parameter, sweep rails, converted edges, IGES pcurve gaps, and faces
