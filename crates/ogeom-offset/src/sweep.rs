@@ -2544,10 +2544,30 @@ fn planar_strip(
     let rail1 = border(model, shared[3], column(last), Side::Column(last), c10, c11)?;
 
     // The loop runs across, up, back and down: counter-clockwise about the
-    // normal from the first row's run to the first column's.
-    let across = rows[0][last] - rows[0][0];
-    let up = rows[rows.len() - 1][0] - rows[0][0];
-    let normal = Direction::new(across.cross(up), tol)?;
+    // normal it turns about, read from the whole border sampled in that
+    // order. The first row's chord and the first column's are no guide: on
+    // a strip starting from a corner's join row they can lie along one line.
+    let border: Vec<Point> = rows[0]
+        .iter()
+        .copied()
+        .chain(rows.iter().skip(1).map(|row| row[last]))
+        .chain(rows[top_row].iter().rev().skip(1).copied())
+        .chain(
+            rows.iter()
+                .rev()
+                .skip(1)
+                .take(top_row.saturating_sub(1))
+                .map(|row| row[0]),
+        )
+        .collect();
+    let turn = (0..border.len())
+        .map(|i| (border[i] - border[0]).cross(border[(i + 1) % border.len()] - border[0]))
+        .fold(Vector::new(0.0, 0.0, 0.0), |sum, v| sum + v);
+    let normal = if turn.dot(plane.normal().vector()) >= 0.0 {
+        plane.normal()
+    } else {
+        plane.normal().reversed()
+    };
     let wound = Plane::through(plane.origin(), normal);
     let reach = rows
         .iter()
@@ -6607,9 +6627,12 @@ fn pipe_shell_law(
         }
         let cap_surface: SurfaceGeometry =
             PlaneSurface::over(cap_plane, (-reach, reach), (-reach, reach))?.into();
+        // The material on the left of each ring about the outward normal:
+        // the profile's first loop is its outer one.
         let mut wires: Vec<Shape> = Vec::with_capacity(loop_edges.len());
-        for edges in &loop_edges {
-            wires.push(ogeom_algo::make_wire(model, edges, tol)?.shape);
+        for (li, edges) in loop_edges.iter().enumerate() {
+            let ring = walked_about(model, edges, outward, li == 0, tol)?;
+            wires.push(ogeom_algo::make_wire(model, &ring, tol)?.shape);
         }
         let face = ogeom_algo::make_face(model, cap_surface.clone(), &wires, tol)?.shape;
         let cap_id = {
