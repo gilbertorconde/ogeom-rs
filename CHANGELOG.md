@@ -13,6 +13,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A worm and a bearing standing on one plane combine (#128).** An exact
+  section on a curved face met a fitted boundary edge only within the
+  confusion distance unless the edge was a line or conic, and a near miss
+  running a long way along the curves was read as a touch; the section
+  meets any boundary edge within that edge's tolerance, and a near miss is
+  dropped only where the curves are tangent. A grooved worm against a ring
+  whose flat faces cut its lands closes for common, cut and fuse at every
+  height tried.
+
+- **Moving a bore sideways, and removing it from an extruded plate (#130,
+  #129).** A circle's exact pcurve on a cylinder, cone, sphere or torus
+  covered one turn from the circle's origin, so an arc running past the
+  origin, as a moved bore's split ring does, failed to evaluate; it covers
+  the edge's range. A bore's wall removed from an extruded plate, whose
+  base is used reversed, makes the plate whole.
+
 - **A unified face keeps its curved edges' pcurves (#132).**
   `unify_same_domain` gave every boundary edge of a merged plane a chord
   between its ends as its pcurve, which stood 0.9 off a fillet's arc, so

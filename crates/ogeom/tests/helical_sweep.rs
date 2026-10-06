@@ -674,3 +674,120 @@ fn a_helical_sweep_walks_each_edge_once_each_way() {
         );
     }
 }
+
+/// A grooved shaft and a stepped ring standing on one plane. The ring's
+/// recessed annuli cross the shaft's lands, so each meets the shaft's
+/// cylinder in an exact circle that crosses the land's fitted borders at the
+/// helix's shallow lead, a fitted border standing off the cylinder by more
+/// than the confusion distance but within its own tolerance. Common, cut and
+/// fuse each close into a valid solid, and they add up: cut and common are
+/// the shaft, fuse and common are both solids.
+#[test]
+fn a_grooved_shaft_and_a_stepped_ring_on_one_plane_add_up() {
+    let mut model = Model::new();
+    let h = 11.0;
+    let core = axial_face(
+        &mut model,
+        &[
+            (0.0, 0.0),
+            (7.0, 0.0),
+            (8.0, 1.0),
+            (8.0, h - 1.0),
+            (7.0, h),
+            (0.0, h),
+        ],
+        0.0,
+    );
+    let core = ogeom::algo::make_revolution(&mut model, &core, z_axis(), core::f64::consts::TAU, T)
+        .unwrap()
+        .shape;
+    // A trapezoid groove, wider than the land between its turns, run down
+    // from the top past the bottom face.
+    let profile = axial_face(
+        &mut model,
+        &[
+            (11.14, h - 0.73),
+            (8.31, h - 0.73),
+            (3.5, h - 2.48),
+            (3.5, h - 3.8),
+            (8.31, h - 5.55),
+            (11.14, h - 5.55),
+        ],
+        0.0,
+    );
+    let pitch = core::f64::consts::TAU;
+    let axis = Axis::new(Point::new(0.0, 0.0, h), -Direction::Z);
+    let groove = ogeom::offset::make_helical_sweep(
+        &mut model,
+        &profile,
+        axis,
+        pitch,
+        (h + core::f64::consts::PI) / pitch,
+        false,
+        0.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let shaft = ogeom::boolean::cut(&mut model, &core, &groove, T)
+        .unwrap()
+        .shape;
+    // A ring from radius 4 to 11, 7 tall, chamfered, with a shallow recess
+    // from radius 6.66 to 8.34 in either face.
+    let ring = axial_face(
+        &mut model,
+        &[
+            (4.0, 0.3),
+            (4.3, 0.0),
+            (6.66, 0.0),
+            (6.66, 0.3),
+            (8.34, 0.3),
+            (8.34, 0.0),
+            (10.7, 0.0),
+            (11.0, 0.3),
+            (11.0, 6.7),
+            (10.7, 7.0),
+            (8.34, 7.0),
+            (8.34, 6.7),
+            (6.66, 6.7),
+            (6.66, 7.0),
+            (4.3, 7.0),
+            (4.0, 6.7),
+        ],
+        0.0,
+    );
+    let ring = ogeom::algo::make_revolution(&mut model, &ring, z_axis(), core::f64::consts::TAU, T)
+        .unwrap()
+        .shape;
+    // The volumes the exact integral gives: the identities are held to a
+    // millionth, finer than a fine tessellation measures.
+    let exact = |model: &Model, shape: &Shape| {
+        volume_properties(model, shape, Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let (a, b) = (exact(&model, &shaft), exact(&model, &ring));
+    let mut measured = |op: &str| {
+        let built = match op {
+            "common" => ogeom::boolean::common(&mut model, &shaft, &ring, T),
+            "cut" => ogeom::boolean::cut(&mut model, &shaft, &ring, T),
+            _ => ogeom::boolean::fuse(&mut model, &shaft, &ring, T),
+        }
+        .unwrap_or_else(|e| panic!("{op}: {e}"))
+        .shape;
+        let diagnosis = check(&model, &built, T).unwrap();
+        assert!(diagnosis.is_valid(), "{op}: {diagnosis}");
+        exact(&model, &built)
+    };
+    let (common, cut, fuse) = (measured("common"), measured("cut"), measured("fuse"));
+    let ring_inside = core::f64::consts::PI * (64.0 - 16.0) * 7.0;
+    assert!(common > 0.0 && common < ring_inside, "common {common}");
+    assert!(
+        (cut + common - a).abs() < a * 1e-6,
+        "{cut} + {common} against {a}"
+    );
+    assert!(
+        (fuse + common - a - b).abs() < (a + b) * 1e-6,
+        "{fuse} + {common} against {a} + {b}"
+    );
+}

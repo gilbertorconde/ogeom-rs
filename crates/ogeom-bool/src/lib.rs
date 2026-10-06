@@ -3000,13 +3000,10 @@ fn fill(
                     }
                     // An edge within its own radius of the face (the boundary
                     // of a merged group of near-coplanar facets, a ruling of a
-                    // fitted cone) stands off the surface the section lies on
-                    // by as much, and meets the section only that near. A near
-                    // miss there is the crossing. On a plane that is always
-                    // so. A curved face's fitted rail can pass that near a
-                    // section without crossing it, running beside it, so on a
-                    // curved face the edge's radius counts only for a line or
-                    // a conic meeting an exact section across it. A fitted
+                    // fitted cone, a fitted rail between a cylinder and a
+                    // helical flank) stands off the surface the section lies
+                    // on by as much, and meets an exact section only that
+                    // near. A near miss there is the crossing. A fitted
                     // section states only its own error, so its reach takes
                     // in the edge's radius on any face: where a rail grazes
                     // the other face, the section leaves its face as far
@@ -3017,15 +3014,7 @@ fn fill(
                         reach
                     };
                     let planar = matches!(own.surface, SurfaceGeometry::Plane(_));
-                    let analytic = matches!(
-                        *e.curve,
-                        Curve::Line(_)
-                            | Curve::Circle(_)
-                            | Curve::Ellipse(_)
-                            | Curve::Hyperbola(_)
-                            | Curve::Parabola(_)
-                    );
-                    let widened = planar || (analytic && section.tolerance <= 0.0);
+                    let widened = planar || section.tolerance <= 0.0;
                     let edge_reach = if widened { reach + e.tolerance } else { reach };
                     let cc = CurveCurveOptions {
                         gap: cc.gap.max(edge_reach),
@@ -3036,16 +3025,22 @@ fn fill(
                         if crossing.gap > edge_reach {
                             continue;
                         }
+                        // On a curved face a rail can pass within its radius
+                        // of a section without crossing it, running beside
+                        // it: a near miss past the section's own reach counts
+                        // only where the two meet at an angle. A rail
+                        // crossing at a helix's shallow lead stays within its
+                        // radius for a stretch many radii long and still
+                        // crosses.
                         if !planar
                             && crossing.gap > reach
-                            && (crossing.reach > 0.0
-                                || tangential(
-                                    &section.curve,
-                                    crossing.on_a,
-                                    &e.curve,
-                                    crossing.on_b,
-                                    tol,
-                                )?)
+                            && tangential(
+                                &section.curve,
+                                crossing.on_a,
+                                &e.curve,
+                                crossing.on_b,
+                                tol,
+                            )?
                         {
                             continue;
                         }
