@@ -6,16 +6,19 @@
 //! with more corners than samples) leaves a fit that meets its target at
 //! every sample and misses the trace between them. These fits sample a
 //! source curve at its own breaks, check each interval between samples
-//! at its quarters, split the intervals that miss, and report the worst
-//! distance measured anywhere, not the worst at the samples.
+//! at its eighths, split the intervals that miss, and report the worst
+//! distance measured anywhere, not the worst at the samples. The fits are
+//! [`ogeom_geom::fit::fit_curve_sampled`] and its planar twin; this module
+//! chooses where they start.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::fit::Fitted;
 use ogeom_geom::{BSpline2d, BSplineCurve, Curve, Curve2d as _, Curve3d as _, PlanarCurve};
 use ogeom_math::{KnotVector, Point, Point2};
 
-/// The most samples a trace is refined to.
-const MOST: usize = 8192;
+/// The most intervals a trace is sampled at, as many as a sampled fit
+/// refines to.
+const MOST: usize = ogeom_geom::fit::SAMPLED_SPANS;
 
 /// The parameters to start a fit of `curve` over `range` from: each span of
 /// the curve (between its distinct knots) cut in `degree + 1` pieces, and
@@ -221,15 +224,17 @@ pub fn joined(pieces: &[BSplineCurve], tol: Tolerances) -> OgeomResult<(BSplineC
 }
 
 /// A space curve fitted to `trace` at its own parameters, starting from the
-/// samples at `stations` (strictly increasing), measured at each
-/// interval's quarters as well as at the samples, and the intervals that
-/// miss `tolerance` split until it holds everywhere measured or the
-/// samples reach the budget. The best fit either way, its `error` the worst
-/// distance measured and `met` whether that is within `tolerance`.
+/// samples at `stations` (strictly increasing): the open case of
+/// [`ogeom_geom::fit::fit_curve_sampled`]. Each interval is measured at its
+/// eighths as well as at the samples, and the intervals that miss
+/// `tolerance` are split until it holds everywhere measured or the samples
+/// reach [`ogeom_geom::fit::SAMPLED_SPANS`] intervals. The best fit either
+/// way, its `error` the worst distance measured and `met` whether that is
+/// within `tolerance`.
 ///
 /// # Errors
 ///
-/// As `trace`, and as [`ogeom_geom::fit::fit_points_at`].
+/// As `trace`, and as [`ogeom_geom::fit::fit_curve_sampled`].
 pub fn fit_traced(
     trace: impl FnMut(f64) -> OgeomResult<Point>,
     stations: &[f64],
@@ -237,16 +242,7 @@ pub fn fit_traced(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<BSplineCurve>> {
-    refined(
-        trace,
-        stations,
-        tolerance,
-        |params, points| {
-            ogeom_geom::fit::fit_points_at(params, points, degree, tolerance * 0.5, tol)
-        },
-        |curve, t| curve.point_at(t, tol),
-        Point::distance,
-    )
+    ogeom_geom::fit::fit_curve_sampled(trace, stations, false, degree, tolerance, tol)
 }
 
 /// As [`fit_traced`], in the plane: a chart image fitted at the parameters
@@ -254,7 +250,7 @@ pub fn fit_traced(
 ///
 /// # Errors
 ///
-/// As `trace`, and as [`ogeom_geom::fit::fit_points_2d_at`].
+/// As `trace`, and as [`ogeom_geom::fit::fit_curve_2d_sampled`].
 pub fn fit_traced_2d(
     trace: impl FnMut(f64) -> OgeomResult<Point2>,
     stations: &[f64],
@@ -262,90 +258,7 @@ pub fn fit_traced_2d(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<BSpline2d>> {
-    refined(
-        trace,
-        stations,
-        tolerance,
-        |params, points| {
-            ogeom_geom::fit::fit_points_2d_at(params, points, degree, tolerance * 0.5, tol)
-        },
-        |curve, t| curve.point_at(t, tol),
-        Point2::distance,
-    )
-}
-
-/// The refinement both fits share: fit through the samples, measure at
-/// each interval's quarters, split the intervals that miss at their
-/// middles.
-fn refined<P: Copy, C>(
-    mut trace: impl FnMut(f64) -> OgeomResult<P>,
-    stations: &[f64],
-    tolerance: f64,
-    fit: impl Fn(&[f64], &[P]) -> OgeomResult<Fitted<C>>,
-    eval: impl Fn(&C, f64) -> OgeomResult<P>,
-    distance: impl Fn(P, P) -> f64,
-) -> OgeomResult<Fitted<C>> {
-    if !(tolerance > 0.0 && tolerance.is_finite()) {
-        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
-    }
-    if stations.len() < 2 || stations.windows(2).any(|w| w[1] <= w[0]) {
-        ogeom_bail!(
-            Construction,
-            "a traced fit needs strictly increasing parameters"
-        );
-    }
-    // Every point evaluated, by parameter: a split interval's new samples
-    // are quarters already measured.
-    let mut seen: std::collections::HashMap<u64, P> = std::collections::HashMap::new();
-    let mut at = |t: f64| -> OgeomResult<P> {
-        if let Some(p) = seen.get(&t.to_bits()) {
-            return Ok(*p);
-        }
-        let p = trace(t)?;
-        seen.insert(t.to_bits(), p);
-        Ok(p)
-    };
-    let mut params = stations.to_vec();
-    let mut best: Option<Fitted<C>> = None;
-    loop {
-        let points = params
-            .iter()
-            .map(|&t| at(t))
-            .collect::<OgeomResult<Vec<P>>>()?;
-        let fitted = fit(&params, &points)?;
-        let mut error = fitted.error;
-        let mut next = Vec::with_capacity(params.len() * 2);
-        for pair in params.windows(2) {
-            next.push(pair[0]);
-            let quarters = [0.25, 0.5, 0.75].map(|f| pair[0] + (pair[1] - pair[0]) * f);
-            let mut missed = false;
-            for &t in &quarters {
-                let off = distance(at(t)?, eval(&fitted.curve, t)?);
-                error = error.max(off);
-                missed |= off > tolerance;
-            }
-            if missed && quarters[1] > pair[0] && quarters[1] < pair[1] {
-                next.push(quarters[1]);
-            }
-        }
-        next.push(params[params.len() - 1]);
-        let candidate = Fitted {
-            curve: fitted.curve,
-            error,
-            met: error <= tolerance,
-        };
-        if candidate.met {
-            return Ok(candidate);
-        }
-        if best.as_ref().is_none_or(|b| error < b.error) {
-            best = Some(candidate);
-        }
-        if next.len() == params.len() || next.len() > MOST + 1 {
-            break;
-        }
-        params = next;
-    }
-    best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the trace could not be fitted"))
+    ogeom_geom::fit::fit_curve_2d_sampled(trace, stations, false, degree, tolerance, tol)
 }
 
 #[cfg(test)]

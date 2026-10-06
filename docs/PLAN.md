@@ -411,21 +411,29 @@ over in a sliver near a crest) doubled its panels five times, about 5 s,
 and stood 4.6e-10 off its area; it settles on the first doubling in
 0.07 s, within 1e-10. Volumes and every other area the tests measure are
 unchanged to the last bit.
+The two fits held between their samples are one: `fit_traced` and
+`fit_traced_2d` are the open case of `fit_curve_sampled` and its planar
+twin `fit_curve_2d_sampled`, one refinement in either dimension. The
+least-squares fit first and the spline through every sample where it
+misses, every span measured at its eighths, an open fit refined to 8192
+spans (`SAMPLED_SPANS`) and a closed one to 1024 (`SAMPLED_LOOP_SPANS`:
+its join couples the ends, so its system is solved whole, and a closed
+ring at 1e-7 that took 8192 spans cost 1 s a fit). Every caller was
+measured against its own trace at 20000 points over the range and 16 in
+each final span, over the default tier, the heavy helical sweep and
+thread groove tests and the stress run: no fit stands further off than
+before. The sweeps' fits are unchanged; the traced ones came closer and
+mostly cheaper. A projected helix stood at 0.97 of its target and stands
+at 0.20, on a third of the samples (2 s to 0.03 s); a re-anchored
+boundary 0.42 to 1e-10; a varying IGES offset stood 0.1% past its target
+between the quarter points and stands within it.
 Left:
 - `check` passed a skinned loft whose nearly flat end patch faced into the
   solid (the exact volume then came out 607 for 1278), and the mesh's
   volume did not see it either.
-- `fit_curve_sampled` (ogeom-geom) and `ogeom_algo::traced::fit_traced`
-  do the same job but not the same fit: `fit_traced` fits through every
-  sample with `fit_points_at`, measures each interval's quarter points
-  and allows 8192 samples, and has a planar twin (`fit_traced_2d`);
-  `fit_curve_sampled` tries the least-squares fit before the
-  interpolating one, measures eighths, allows 1024 spans and takes a
-  closed curve. One cannot replace the other without changing the fits of
-  its callers (the boolean, healing, IGES reading, plane projection and
-  `build.rs` through `traced`; the sweeps through `fit_curve_sampled`);
-  unifying them means picking one rule and re-measuring those callers,
-  with a 2D form added to ogeom-geom.
+- A blended pipe section fitted to a tenth of the sweep's tolerance
+  stands 0.8% past that tenth between its eighths on one ring (still a
+  tenth of the tolerance); the eighths do not see it.
 - `general_draft` on a closed face whose seam is closed only to position
   (a skinned loft's wall): the face's normal turns across the seam and the
   exact draft's rulings with it, so the drafted wall closes on the mean

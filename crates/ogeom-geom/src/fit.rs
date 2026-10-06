@@ -554,16 +554,29 @@ pub fn fit_points_at(
     })
 }
 
+/// The most spans an open sampled fit refines its samples to
+/// ([`fit_curve_sampled`], [`fit_curve_2d_sampled`]).
+pub const SAMPLED_SPANS: usize = 8192;
+
+/// The most spans a closed sampled fit refines its samples to. A loop's
+/// join couples its first and last control points, so its least-squares
+/// system is solved whole rather than as a band, at a cost that grows
+/// with the cube of the samples.
+pub const SAMPLED_LOOP_SPANS: usize = 1024;
+
 /// Fit a curve to the geometry `point` traces over its parameter, measured
 /// between the samples as well as at them: the curve counterpart of
 /// [`fit_surface_sampled`].
 ///
-/// The fit is same-parameter with `point`, fitted at `ts` to start with;
-/// every span's eighth points are compared with `point` there, a miss
-/// splits the span, and this repeats until `tolerance` holds at every point measured
-/// or the samples would pass 1024 spans. Where `closed`, the last of `ts`
-/// is the first again and the fit crosses its join C1. The best fit is
-/// returned either way, its error the worst measured.
+/// The fit is same-parameter with `point`, fitted at `ts` to start with:
+/// the least-squares fit first, and where it misses, the spline through
+/// every sample. Every span's eighth points are compared with `point`
+/// there, a miss splits the span at its middle, and this repeats until
+/// `tolerance` holds at every point measured or the samples would pass
+/// [`SAMPLED_SPANS`] spans. Where `closed`, the last of `ts` is the first
+/// again, the fit crosses its join C1 and refines to at most
+/// [`SAMPLED_LOOP_SPANS`] spans. The best fit is returned either
+/// way, its error the worst distance measured.
 ///
 /// # Errors
 ///
@@ -571,15 +584,63 @@ pub fn fit_points_at(
 /// tolerance is not a distance, the degree is zero or the parameters do not
 /// strictly increase with at least two; whatever `point` refuses.
 pub fn fit_curve_sampled(
-    mut point: impl FnMut(f64) -> OgeomResult<Point>,
+    point: impl FnMut(f64) -> OgeomResult<Point>,
     ts: &[f64],
     closed: bool,
     degree: usize,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<BSplineCurve>> {
-    use crate::traits::Curve3d as _;
-    const MOST: usize = 1024;
+    let (knots, control, error, met) =
+        sampled::<3, Point>(point, |p| [p.x, p.y, p.z], ts, closed, degree, tolerance)?;
+    Ok(Fitted {
+        curve: build_curve_3(knots, control, tol)?,
+        error,
+        met,
+    })
+}
+
+/// As [`fit_curve_sampled`], in the plane: a chart image fitted at the
+/// parameters of the curve it annotates. The distances are in the trace's
+/// own units.
+///
+/// # Errors
+///
+/// As [`fit_curve_sampled`].
+pub fn fit_curve_2d_sampled(
+    point: impl FnMut(f64) -> OgeomResult<Point2>,
+    ts: &[f64],
+    closed: bool,
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSpline2d>> {
+    let (knots, control, error, met) =
+        sampled::<2, Point2>(point, |p| [p.x, p.y], ts, closed, degree, tolerance)?;
+    let curve = BSpline2d::new(
+        knots,
+        control
+            .into_iter()
+            .map(|c| Point2::new(c[0], c[1]))
+            .collect(),
+        tol,
+    )?;
+    Ok(Fitted { curve, error, met })
+}
+
+/// The best sampled fit: knots, control points, the worst distance
+/// measured, and whether that is within the tolerance.
+type SampledFit<const D: usize> = (KnotVector, Vec<[f64; D]>, f64, bool);
+
+/// The refinement both sampled fits share, in `D` coordinates.
+fn sampled<const D: usize, P>(
+    mut trace: impl FnMut(f64) -> OgeomResult<P>,
+    coords: impl Fn(&P) -> [f64; D],
+    ts: &[f64],
+    closed: bool,
+    degree: usize,
+    tolerance: f64,
+) -> OgeomResult<SampledFit<D>> {
     if !(tolerance > 0.0 && tolerance.is_finite()) {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
     }
@@ -592,32 +653,35 @@ pub fn fit_curve_sampled(
             "a sampled fit needs strictly increasing parameters, at least two"
         );
     }
+    let most = if closed {
+        SAMPLED_LOOP_SPANS
+    } else {
+        SAMPLED_SPANS
+    };
     let mut ts = ts.to_vec();
-    let mut seen: std::collections::HashMap<u64, Point> = std::collections::HashMap::new();
-    let mut at = |t: f64| -> OgeomResult<Point> {
+    // Every point evaluated, by parameter: a split span's new sample and
+    // most of its new eighths were measured before.
+    let mut seen: std::collections::HashMap<u64, [f64; D]> = std::collections::HashMap::new();
+    let mut at = |t: f64| -> OgeomResult<[f64; D]> {
         if let Some(p) = seen.get(&t.to_bits()) {
             return Ok(*p);
         }
-        let p = point(t)?;
+        let p = coords(&trace(t)?);
         seen.insert(t.to_bits(), p);
         Ok(p)
     };
-    let mut best: Option<Fitted<BSplineCurve>> = None;
+    let mut best: Option<(KnotVector, Vec<[f64; D]>, f64)> = None;
     loop {
-        let mut points = ts
-            .iter()
-            .map(|t| at(*t))
-            .collect::<OgeomResult<Vec<Point>>>()?;
+        let mut data = ts.iter().map(|t| at(*t)).collect::<OgeomResult<Vec<_>>>()?;
         if closed {
-            points[ts.len() - 1] = points[0];
+            data[ts.len() - 1] = data[0];
         }
-        let data: Vec<[f64; 3]> = points.iter().map(|p| [p.x, p.y, p.z]).collect();
         // As the surface fit: the lean least-squares fit first, and where
         // it strays between the samples, the spline through every sample
         // decides where to refine.
         let mut split: Vec<bool> = Vec::new();
         for interpolate in [false, true] {
-            let (knots, mut controls) = fit_family::<3>(
+            let (knots, mut controls) = fit_family::<D>(
                 std::slice::from_ref(&data),
                 &ts,
                 degree,
@@ -628,30 +692,23 @@ pub fn fit_curve_sampled(
             let Some(control) = controls.pop() else {
                 ogeom_bail!(NotDone, "the curve fit solved nothing");
             };
-            let curve = build_curve_3(knots, control, tol)?;
-            let mut error = 0.0_f64;
-            for (t, p) in ts.iter().zip(&points) {
-                error = error.max(curve.point_at(*t, tol)?.distance(*p));
-            }
+            let mut error = residuals::<D>(&knots, &control, &data, &ts)
+                .iter()
+                .fold(0.0_f64, |acc, e| acc.max(e.1));
             split = vec![false; ts.len() - 1];
             for (i, pair) in ts.windows(2).enumerate() {
                 let mut off = 0.0_f64;
                 for t in eighths(pair[0], pair[1]) {
-                    off = off.max(at(t)?.distance(curve.point_at(t, tol)?));
+                    off = off.max(distance::<D>(&at(t)?, &position::<D>(&knots, &control, t)));
                 }
                 error = error.max(off);
                 split[i] = off > tolerance;
             }
-            let candidate = Fitted {
-                curve,
-                error,
-                met: error <= tolerance,
-            };
-            if candidate.met {
-                return Ok(candidate);
+            if error <= tolerance {
+                return Ok((knots, control, error, true));
             }
-            if best.as_ref().is_none_or(|b| error < b.error) {
-                best = Some(candidate);
+            if best.as_ref().is_none_or(|b| error < b.2) {
+                best = Some((knots, control, error));
             }
         }
         let mut next = Vec::with_capacity(ts.len() * 2);
@@ -662,12 +719,15 @@ pub fn fit_curve_sampled(
             }
         }
         next.push(ts[ts.len() - 1]);
-        if next.len() == ts.len() || next.len() > MOST + 1 {
+        if next.len() == ts.len() || next.len() > most + 1 {
             break;
         }
         ts = next;
     }
-    best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the curve could not be sampled"))
+    let Some((knots, control, error)) = best else {
+        ogeom_bail!(Construction, "the curve could not be sampled");
+    };
+    Ok((knots, control, error, false))
 }
 
 /// Fit a curve on a surface and its chart image together to the trace
@@ -2684,23 +2744,25 @@ fn residuals<const D: usize>(
     points: &[[f64; D]],
     parameters: &[f64],
 ) -> Vec<(f64, f64)> {
-    let degree = knots.degree();
     parameters
         .iter()
         .zip(points)
-        .map(|(&u, p)| {
-            let span = knots.span_unchecked(u);
-            let basis = knots.basis(span, u);
-            let first = span - degree;
-            let mut at = [0.0; D];
-            for (j, b) in basis.iter().enumerate() {
-                for d in 0..D {
-                    at[d] += b * control[first + j][d];
-                }
-            }
-            (u, distance::<D>(&at, p))
-        })
+        .map(|(&u, p)| (u, distance::<D>(&position::<D>(knots, control, u), p)))
         .collect()
+}
+
+/// The curve's point at `u`, from raw knots and control.
+fn position<const D: usize>(knots: &KnotVector, control: &[[f64; D]], u: f64) -> [f64; D] {
+    let span = knots.span_unchecked(u);
+    let basis = knots.basis(span, u);
+    let first = span - knots.degree();
+    let mut at = [0.0; D];
+    for (j, b) in basis.iter().enumerate() {
+        for d in 0..D {
+            at[d] += b * control[first + j][d];
+        }
+    }
+    at
 }
 
 /// How far the curve strays between samples, charged to the samples.
@@ -3439,5 +3501,44 @@ mod tests {
             let b = pb.point_at(t, T).unwrap();
             assert!((b.x + 0.2).abs() < 1e-6);
         }
+    }
+
+    /// A planar loop weaving faster than its starting samples closes C1 and
+    /// holds its tolerance everywhere, not only where it was measured.
+    #[test]
+    fn a_sampled_planar_loop_closes_and_holds_between_its_samples() {
+        use crate::traits::Curve2d as _;
+        let tau = core::f64::consts::TAU;
+        let at = |t: f64| {
+            let r = 0.1f64.mul_add((9.0 * tau * t).sin(), 1.0);
+            Point2::new(r * (tau * t).cos(), r * (tau * t).sin())
+        };
+        let start: Vec<f64> = (0..=12).map(|i| f64::from(i) / 12.0).collect();
+        let fitted = fit_curve_2d_sampled(|t| Ok(at(t)), &start, true, 3, 1e-6, T).unwrap();
+        assert!(fitted.met, "{}", fitted.error);
+        let curve = &fitted.curve;
+        let (a, b) = (
+            curve.point_at(0.0, T).unwrap(),
+            curve.point_at(1.0, T).unwrap(),
+        );
+        assert!(
+            a.distance(b) < 1e-12,
+            "the loop is open by {}",
+            a.distance(b)
+        );
+        let (da, db) = (
+            curve.derivatives_at(0.0, 1, T).unwrap()[1],
+            curve.derivatives_at(1.0, 1, T).unwrap()[1],
+        );
+        assert!(
+            (da - db).magnitude() < 1e-6 * da.magnitude(),
+            "{da:?} against {db:?}"
+        );
+        let mut worst = 0.0_f64;
+        for i in 0..=7919 {
+            let t = (f64::from(i) + 0.37) / 7920.0;
+            worst = worst.max(curve.point_at(t, T).unwrap().distance(at(t)));
+        }
+        assert!(worst <= 1e-6, "{worst}");
     }
 }

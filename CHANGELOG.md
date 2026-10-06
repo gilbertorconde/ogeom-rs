@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **One fitter for curves measured between their samples.**
+  `ogeom_algo::traced::fit_traced` and `fit_traced_2d` call
+  `ogeom_geom::fit::fit_curve_sampled`: the least-squares fit first, the
+  spline through every sample where it misses, each interval checked at its
+  eighths. Traced fits come out closer and mostly faster (a helix projected
+  onto a plane at a fifth of its target instead of all of it, about seventy
+  times faster). Added `fit_curve_2d_sampled`, which also takes closed
+  curves, and the budgets `SAMPLED_SPANS` and `SAMPLED_LOOP_SPANS`.
+
 ### Fixed
 
 - **Fillets the stress run refused.** A fillet on the loop where two bores
