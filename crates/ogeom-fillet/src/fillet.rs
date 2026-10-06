@@ -1424,10 +1424,21 @@ fn revolved_arc_fillet(
     let radial1 = segment_between(model, (&va1, apex_at(theta1)), (&vc1, cap_at(theta1)), tol)?;
     let quarter0 = quarter(model, theta0, &vw0, &vc0)?;
     let quarter1 = quarter(model, theta1, &vw1, &vc1)?;
+    // Each face keeps itself on the left of its ring in its own chart: a
+    // ring given turning the other way is walked back.
+    let walked = |edges: Vec<Shape>, back: bool| -> Vec<Shape> {
+        if back {
+            edges.iter().rev().map(Shape::reversed).collect()
+        } else {
+            edges
+        }
+    };
 
     // The wall patch: the solid wall's own chart between the contact ring
     // and the rim, over the window, its chart reaching past the rim on
-    // both sides whichever side of the cap the wall stands on.
+    // both sides whichever side of the cap the wall stands on. The ring
+    // runs the contact ring forward and the rim back, anticlockwise in the
+    // chart where the contact ring stands below the rim.
     let wall_patch = {
         let below = radius + 1.0;
         let origin = seat.centre - seat.up * below;
@@ -1436,12 +1447,15 @@ fn revolved_arc_fillet(
             (0.0, 2.0 * below),
         )?
         .into();
-        let edges = vec![
-            arc_wall.clone(),
-            ruling1.clone(),
-            arc_apex.reversed(),
-            ruling0.clone(),
-        ];
+        let edges = walked(
+            vec![
+                arc_wall.clone(),
+                ruling1.clone(),
+                arc_apex.reversed(),
+                ruling0.clone(),
+            ],
+            seat.tau < 0.0,
+        );
         let face = face_from_edges(model, surface, &edges, tol)?;
         if seat.sigma * seat.tau < 0.0 {
             face.reversed()
@@ -1451,22 +1465,32 @@ fn revolved_arc_fillet(
     };
 
     // The cap sector: the cap plane between the rim and the contact ring.
+    // The ring runs the rim forward about `up`, which turns it about the
+    // plane's normal `up * tau` where the rim is the wider ring and the cap
+    // faces up, or the narrower and it faces down.
     let cap_sector = {
         let plane = Plane::through(seat.centre, Direction::new(seat.up * seat.tau, tol)?);
         let reach = (seat.radius + radius + 1.0) * 2.0;
         let surface: SurfaceGeometry =
             PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        let edges = vec![
-            arc_apex.clone(),
-            radial1.clone(),
-            arc_cap.reversed(),
-            radial0.clone(),
-        ];
+        let rim_wider = seat.radius > tube_rho;
+        let edges = walked(
+            vec![
+                arc_apex.clone(),
+                radial1.clone(),
+                arc_cap.reversed(),
+                radial0.clone(),
+            ],
+            rim_wider != (seat.tau > 0.0),
+        );
         face_from_edges(model, surface, &edges, tol)?
     };
 
     // The blend: the quarter-tube patch over the window, reversed as the
-    // full rim's band is: its natural normal points into the wedge.
+    // full rim's band is: its natural normal points into the wedge. The
+    // ring runs the wall's contact forward and the cap's back, anticlockwise
+    // in the torus chart where the tube's angle grows from the wall's contact
+    // to the cap's, which is where `sigma` is positive.
     let blend_patch = {
         let surface: SurfaceGeometry = TorusSurface::new(Torus::new(
             wedge_frame_at(tube_level)?,
@@ -1475,37 +1499,51 @@ fn revolved_arc_fillet(
             tol,
         )?)
         .into();
-        let edges = vec![
-            arc_wall.clone(),
-            quarter1.clone(),
-            arc_cap.reversed(),
-            quarter0.reversed(),
-        ];
+        let edges = walked(
+            vec![
+                arc_wall.clone(),
+                quarter1.clone(),
+                arc_cap.reversed(),
+                quarter0.reversed(),
+            ],
+            seat.sigma < 0.0,
+        );
         face_from_edges(model, surface, &edges, tol)?.reversed()
     };
 
     // The end caps: planar triangles in the meridian half-planes, outward
     // along the rim's travel: behind it at the start, ahead at the end.
+    // Each ring is walked back where the corners it passes in turn
+    // against `outward`, so the cap keeps itself on the left: the quarter
+    // arc bulges toward the rim corner and never past it, so the corners'
+    // turn is the ring's.
     let tangent_at = |theta: f64| seat.up.cross(dir_at(theta));
-    let end_cap =
-        |model: &mut Model, theta: f64, outward: Vector, edges: Vec<Shape>| -> OgeomResult<Shape> {
-            let plane = Plane::through(apex_at(theta), Direction::new(outward, tol)?);
-            let reach = (seat.radius + radius + 1.0) * 2.0;
-            let surface: SurfaceGeometry =
-                PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-            face_from_edges(model, surface, &edges, tol)
-        };
+    let end_cap = |model: &mut Model,
+                   theta: f64,
+                   outward: Vector,
+                   edges: Vec<Shape>,
+                   [p, q, r]: [Point; 3]|
+     -> OgeomResult<Shape> {
+        let plane = Plane::through(apex_at(theta), Direction::new(outward, tol)?);
+        let reach = (seat.radius + radius + 1.0) * 2.0;
+        let surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let edges = walked(edges, (q - p).cross(r - p).dot(outward) < 0.0);
+        face_from_edges(model, surface, &edges, tol)
+    };
     let cap_start = end_cap(
         model,
         theta0,
         -tangent_at(theta0),
         vec![ruling0.clone(), quarter0.clone(), radial0.clone()],
+        [apex_at(theta0), wall_at(theta0), cap_at(theta0)],
     )?;
     let cap_end = end_cap(
         model,
         theta1,
         tangent_at(theta1),
         vec![ruling1.clone(), radial1.clone(), quarter1.reversed()],
+        [wall_at(theta1), apex_at(theta1), cap_at(theta1)],
     )?;
 
     let faces = [wall_patch, cap_sector, blend_patch, cap_start, cap_end];

@@ -1398,4 +1398,128 @@ mod tests {
             );
         }
     }
+
+    /// A stadium prism from `z0` up `height`: two runs of `length` along
+    /// x joined by semicircles of radius `r`, centred on (0, 0) and
+    /// (`length`, 0).
+    fn stadium(model: &mut Model, length: f64, r: f64, z0: f64, height: f64) -> Shape {
+        use ogeom_math::{Circle, Direction, Plane, Vector};
+        let corner = |x: f64, y: f64| Point::new(x, y, z0);
+        let [tl, tr, br, bl] = [(0.0, r), (length, r), (length, -r), (0.0, -r)]
+            .map(|(x, y)| ogeom_algo::make_vertex(model, corner(x, y)).shape);
+        let arc = |model: &mut Model, cx: f64, x: Direction, from: &Shape, to: &Shape| {
+            let frame = Frame::new(corner(cx, 0.0), Direction::Z, x, T).unwrap();
+            let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(
+                Circle::new(frame, r, T).unwrap(),
+            ));
+            ogeom_algo::make_edge_between(model, curve, (0.0, core::f64::consts::PI), from, to, T)
+                .unwrap()
+                .shape
+        };
+        let top = super::segment_between(model, (&tl, corner(0.0, r)), (&tr, corner(length, r)), T)
+            .unwrap();
+        let right = arc(model, length, -Direction::Y, &br, &tr);
+        let bottom =
+            super::segment_between(model, (&br, corner(length, -r)), (&bl, corner(0.0, -r)), T)
+                .unwrap();
+        let left = arc(model, 0.0, Direction::Y, &tl, &bl);
+        let plane = ogeom_geom::PlaneSurface::over(
+            Plane::through(corner(0.0, 0.0), Direction::Z),
+            (-100.0, 100.0),
+            (-100.0, 100.0),
+        )
+        .unwrap();
+        let face = ogeom_algo::make_face_with_pcurves(
+            model,
+            plane.into(),
+            &[vec![left, bottom.reversed(), right, top.reversed()]],
+            T,
+        )
+        .unwrap()
+        .shape;
+        ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, height), T)
+            .unwrap()
+            .shape
+    }
+
+    /// The wedges an arc of a rim takes away or fills walk each edge between
+    /// two of their faces once each way, whichever side of the rim the cap
+    /// and the material stand on, and hold the volume the blend removes or
+    /// adds: a quarter round's section swept round the half turn at its
+    /// centroid's radius, inside the rim where the wall faces out and
+    /// outside it where the wall faces the axis or the rim is concave.
+    #[test]
+    fn rim_arc_wedges_walk_each_edge_once_each_way() {
+        let mut model = Model::new();
+        let (length, r) = (10.0, 5.0);
+        let post = stadium(&mut model, length, r, 0.0, 4.0);
+        let block = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(
+                Point::new(-10.0, -10.0, 0.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            (30.0, 20.0, 4.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let bore = stadium(&mut model, length, r, -1.0, 6.0);
+        let slot = ogeom_bool::cut(&mut model, &block, &bore, T).unwrap().shape;
+        let plate = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(
+                Point::new(-10.0, -10.0, -4.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            (30.0, 20.0, 4.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let boss = ogeom_bool::fuse(&mut model, &plate, &post, T)
+            .unwrap()
+            .shape;
+        let pi = core::f64::consts::PI;
+        let section = 1.0 - pi / 4.0;
+        let centroid = (10.0 - 3.0 * pi) / (12.0 - 3.0 * pi);
+        let inside = pi * (r - centroid) * section;
+        let outside = pi * (r + centroid) * section;
+        let at = |z: f64| Point::new(length + r / 2.0, 0.0, z);
+        let cases = [
+            ("post top", &post, at(4.0), inside),
+            ("post foot", &post, at(0.0), inside),
+            ("slot top", &slot, at(4.0), outside),
+            ("slot foot", &slot, at(0.0), outside),
+            ("boss foot", &boss, at(0.0), outside),
+        ];
+        for (name, solid, near, expected) in cases {
+            let rim = edge_at(&model, solid, near);
+            let (made, wedges) =
+                super::collecting_wedges(|| crate::fillet_edge(&mut model, solid, &rim, 1.0, T));
+            made.unwrap();
+            let [wedge] = &wedges[..] else {
+                panic!("{name}: one wedge, not {}", wedges.len());
+            };
+            assert_eq!(walked_one_way(&model, &wedge.solid), 0, "{name}");
+            let volume = ogeom_algo::volume_properties(
+                &model,
+                &wedge.solid,
+                ogeom_mesh::Deflection::default(),
+                T,
+            )
+            .unwrap()
+            .mass;
+            assert!(
+                (volume - expected).abs() < expected * 1e-6,
+                "{name}: {volume} against {expected}"
+            );
+        }
+    }
 }
