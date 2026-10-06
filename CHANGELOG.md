@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-06
+
+A patch release: no breaking API changes. It closes issues #120 to #126:
+fillings over crossing semicircles, a four-line saddle and a tube's
+tangent cap; a sweep surface through a tangent join; a folded sheet
+thickened with a mitre; a sewn box measured exactly; and a STEP file that
+0.9.0 read clean reading clean again. STEP carries each edge's pcurves both
+ways, sewing keeps a reversed face's rings, swept solids walk each edge
+once each way, and the mesh converter converts every NIST solid in the
+corpus with no curved face faceted. Fillets the stress run refused now
+round, and a boolean on a large solid leaves less work on untouched faces.
+
 ### Added
 
 - **A folded sheet thickens into one solid (#124).** `make_thick_sheet`
@@ -3845,7 +3857,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.1...v0.9.2
