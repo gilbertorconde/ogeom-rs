@@ -1957,11 +1957,7 @@ fn rail(
         &raised,
         tol,
     )?;
-    if let Some(node) = model.node_mut(&built.shape)
-        && let ogeom_topo::NodeData::Edge(edge) = node.data_mut()
-    {
-        edge.tolerance = edge.tolerance.widen(doubt);
-    }
+    model.widen(&built.shape, doubt)?;
     model.set_derived(&built.shape, std::slice::from_ref(&base), roles::SWEEP_RAIL)?;
     rails.insert(base.node(), built.shape.clone());
     Ok(built.shape)

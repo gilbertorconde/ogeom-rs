@@ -932,11 +932,8 @@ fn convert_edge(
         resolve(model, &old[old.len() - 1])?
     };
     let built = make_edge_between(model, curve.clone(), new_range, &va, &vb, tol)?.shape;
-    if data.tolerance.get() > tol.confusion()
-        && let Some(node) = model.node_mut(&built)
-        && let NodeData::Edge(fresh) = node.data_mut()
-    {
-        fresh.tolerance = fresh.tolerance.widen_to(data.tolerance.get());
+    if data.tolerance.get() > tol.confusion() {
+        model.widen(&built, data.tolerance)?;
     }
     Ok((built, curve, new_range))
 }
