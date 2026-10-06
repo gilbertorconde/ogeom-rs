@@ -886,7 +886,8 @@ as the backstop; no converter or corpus test needs it now. Still open: carrying 
 curved faces, not only those past the reach, brings ctc_02's volume
 error from 5e-4 to 5e-5 and ftc_06's from 8e-5 to 1e-6 (402 faces to
 214), but facets nine more of ftc_07's fillet spheres and slows it by
-half.
+half (those spheres are its rounds' cylinders now: worth measuring
+again).
 
 **Converted faces folded under a neighbour.** `check` probes every face
 of a solid for orientation, stepping off it by shorter steps until both
@@ -946,8 +947,9 @@ error):
   the source triangles giving 2326), each 11500 short in volume: an
   error of the chart integration, open, not of the fans.
 - ctc_04: 1213 to 1204 faces, its one Overlaps fallback gone.
-- ftc_07 unchanged: its six tori turned in lie against drafted walls of
-  26 and 64 triangles, not single facets, so no fan applies.
+- ftc_07 unchanged: its six tori turned in lie against faceted corners
+  of drafted walls, runs of several facets, so no fan applies (built
+  since as cones, below).
 
 Every face meshed on its own still meets its neighbours, counting no
 triangle with two corners at one point (an apex row's; a primitive
@@ -957,14 +959,50 @@ rebuilds), ctc_02 and ctc_04 as before.
 
 Open: ctc_02's third facet, between a cylinder and a torus (two curved
 sides), still facets both; a fan from the corner across the torus seam
-would make the cylinder seam a ruling, a chord. ftc_07 wants its
-faceted neighbour recognized (its walls fall back as
-BoundaryNotPlaced, among near-flat regions fitted as spheres of radius
-thousands), or the seam with a large planar face lifted onto the small
-torus with the gap on the plane's side. The probe classifies two
+would make the cylinder seam a ruling, a chord. The probe classifies two
 points per face against the exact boundary, about 0.45 s on a 165-face
 helical thread (0.05 s before), 0.16 s on ctc_02 (1.0 s before, when
 the flag walk ran).
+
+Done for ftc_07, in two steps:
+
+- Its rounds of radius 0.43 along the drafted walls' foot are meshed
+  a few rows across, with fans of long facets from single corners. A
+  seed on such a strip fitted the round's cylinder exactly (1e-15) and a
+  sphere of radius 2e3 to 1e5 within 1e-5 to 3e-4, and the sphere won
+  the chord count (recognition prefers the fit laying most mesh edges on
+  itself) by laying the strip's cross chords on itself as their plane
+  does. A sphere or torus the samples tell from a closer fit (farther
+  than twice it, or a thousandth of the distance) now takes no part in
+  the count; a ruled fit still wins over a round one the samples cannot
+  tell it from (a torus band whose two rows lie on a sphere exactly and
+  on a cone at 2e-4, in sliver_on_a_diagonal_of_the_grid, stays a cone).
+  ftc_07: 1460 to 1163 faces, 117 to 14 regions faceted, no sphere fits;
+  ctc_05 gives one torus of radius 3e4 back to its cylinder.
+- The drafted walls' corners are cones of 1 and 2 degrees meshed two to
+  six facets round and one high: seven vertices, too few to fit a cone
+  (nine) or for recognition to grow from. They stayed planar facets and
+  the tori at their foot folded under them (Overlaps). `faceted_rounds`
+  takes runs of planar facets joined across smooth edges between two
+  planes, finds the rulings the run shares with each plane, and puts the
+  run on the cone whose axis lies in each ruling's plane with its face's
+  normal (a cylinder tangent to both where the rulings are parallel),
+  verified at every vertex and against each facet's sag. A polygon whose
+  flanking sides are chords too fails: the surface tangent to them along
+  their edges misses its corners. ftc_07: 1163 to 927 faces, 14 to 8
+  faceted (the countersinks' cones, BoundaryNotPlaced, untouched), all
+  six tori built, volume error 2.2e-5 (1.8e-5 at the start), valid,
+  tessellates closed, 11.0 s to 5.4 s. Elsewhere: ctc_01 223 to 220,
+  ctc_02 4115 to 4104, ctc_03 201 to 169 (volume error 1.1e-4 to
+  6.5e-5), ctc_04 1204 to 1184, ctc_05 658 to 648, ftc_08 346 to 328,
+  ftc_09 145 to 132 (2.5e-5 to 2.2e-6). ctc_02 and ftc_08 each report
+  one more faceted region: a run put on its cylinder whose seams do not
+  place, built as the facets it was. Truth bench and stress baseline
+  unchanged. A synthetic drafted boss (corners four facets round, a
+  fillet at the foot) pins it: before, no cones and three tori folded.
+
+Open on ftc_07: the eight countersink cones (half angle 59 degrees)
+beside radius 3.175 cylinders fall back as BoundaryNotPlaced.
 
 **Flags the exact volume trusts.** `volume_properties` takes the closed
 form only where the faces' flags agree. The edge walks tie faces into sets

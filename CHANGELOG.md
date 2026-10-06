@@ -21,6 +21,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Narrow rounds and drafted corners convert to their own surfaces.** A
+  narrow round meshed only a few rows across came back as near-flat
+  spheres hundreds of thousands of times its size, which won the chord
+  tie-break over the round's exact cylinder; a sphere or torus missing the
+  points by more than a closer fit no longer takes part in it. The corners
+  of drafted walls, meshed too few facets round to fit on their own, come
+  back as cones tangent to the walls, so the fillets at their foot no
+  longer fold under them. A NIST part converts to 927 faces instead of
+  1460 with every torus built, and most of the others to fewer faces.
+
 - **A facet folded against a curved face is built as a fan.** Mesh
   conversion faceted a curved face where a single-triangle facet beside it
   met it almost tangentially and folded under it; such a facet is a ruled

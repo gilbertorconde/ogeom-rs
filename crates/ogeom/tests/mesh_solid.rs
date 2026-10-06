@@ -5300,3 +5300,106 @@ fn hill_dome_comes_back(rings: u32, turn: u32) {
     assert!((volume - exact).abs() <= flat * 100.0 * pi * pi / 8.0);
     assert!((volume - exact).abs() < (mesh_volume - exact).abs());
 }
+
+/// A boss on a plate: a square with round corners, its walls drafted 2
+/// degrees, filleted to the plate at its foot. Its profile (top edge, the
+/// wall, the fillet in `fillet_steps` facets, the plate's top and outer
+/// wall) is swept along the outline, each corner in `corner_steps`
+/// facets: along the sides the wall is a plane and the fillet a cylinder,
+/// round the corners a cone and a torus. The top and bottom are fans.
+fn drafted_boss(corner_steps: u32, fillet_steps: u32) -> Triangulation {
+    let (half, rho, height, fillet) = (10.0_f64, 7.0_f64, 2.2_f64, 0.5_f64);
+    let (plate, thick) = (5.0, 3.0);
+    let draft = 2.0_f64.to_radians();
+    // The wall leans in as it rises: r = rho - z tan(draft). The fillet's
+    // centre stands a fillet radius off both the plate and the wall.
+    let centre = (rho - fillet * draft.tan() + fillet / draft.cos(), fillet);
+    let mut profile = vec![(rho - height * draft.tan(), height)];
+    for k in 0..=fillet_steps {
+        let a = core::f64::consts::PI
+            + draft
+            + (core::f64::consts::FRAC_PI_2 - draft) * f64::from(k) / f64::from(fillet_steps);
+        profile.push((centre.0 + fillet * a.cos(), centre.1 + fillet * a.sin()));
+    }
+    profile.push((centre.0 + plate, 0.0));
+    profile.push((centre.0 + plate, -thick));
+    let mut ring = Vec::new();
+    for (q, (cx, cy)) in [
+        (0.0, (half, half)),
+        (1.0, (-half, half)),
+        (2.0, (-half, -half)),
+        (3.0, (half, -half)),
+    ] {
+        for k in 0..=corner_steps {
+            let a = (q + f64::from(k) / f64::from(corner_steps)) * core::f64::consts::FRAC_PI_2;
+            ring.push(((cx, cy), (a.cos(), a.sin())));
+        }
+    }
+    let (m, rows) = (
+        u32::try_from(ring.len()).unwrap(),
+        u32::try_from(profile.len()).unwrap(),
+    );
+    let mut t = Triangulation::new();
+    for &(r, z) in &profile {
+        for &((cx, cy), (nx, ny)) in &ring {
+            t.positions.push(Point::new(cx + nx * r, cy + ny * r, z));
+        }
+    }
+    for k in 0..rows - 1 {
+        for i in 0..m {
+            let j = (i + 1) % m;
+            let (a, b, c, d) = (k * m + i, k * m + j, (k + 1) * m + j, (k + 1) * m + i);
+            t.triangles.push([a, c, b]);
+            t.triangles.push([a, d, c]);
+        }
+    }
+    let (cap, bottom) = (rows * m, rows * m + 1);
+    t.positions.push(Point::new(0.0, 0.0, height));
+    t.positions.push(Point::new(0.0, 0.0, -thick));
+    let last = (rows - 1) * m;
+    for i in 0..m {
+        let j = (i + 1) % m;
+        t.triangles.push([cap, i, j]);
+        t.triangles.push([bottom, last + j, last + i]);
+    }
+    t
+}
+
+/// A drafted boss's corners meshed four facets round and one high, each
+/// facet a chord between the walls tangent to the corner: too few
+/// vertices for a cone to be fitted to a corner alone, but the walls fix
+/// its axis and the rulings between the facets verify it. The corners
+/// come back cones, and the fillet at their foot tori seamed to them;
+/// left as facets, the corners fold the tori under them.
+#[test]
+fn a_drafted_boss_s_faceted_corners_come_back_cones() {
+    let mesh = drafted_boss(4, 4);
+    let mut model = Model::new();
+    let built = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(built.closed, "{:?}", built.report);
+    let diagnosis = check(&model, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(
+        built.report.curved_faceted, 0,
+        "{:?}",
+        built.report.fallbacks
+    );
+    let (mut cones, mut tori) = (0, 0);
+    for face in explore_unique(&model, &built.shape, ShapeType::Face).unwrap() {
+        let data = model.node(&face).unwrap().data().as_face().unwrap();
+        match model.geometry().surface(data.surface).unwrap() {
+            ogeom::geom::SurfaceGeometry::Cone(c) => {
+                assert!(
+                    (c.cone().half_angle().abs() - 2.0_f64.to_radians()).abs() < 1e-9,
+                    "{c:?}"
+                );
+                cones += 1;
+            }
+            ogeom::geom::SurfaceGeometry::Torus(_) => tori += 1,
+            _ => {}
+        }
+    }
+    assert_eq!((cones, tori), (4, 4));
+    let drawn = ogeom::mesh::triangulate(&model, &built.shape, Deflection::default(), T).unwrap();
+    assert!(drawn.is_closed());
+}

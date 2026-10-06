@@ -308,12 +308,15 @@ fn nist_ftc_06() {
 /// few rows across, with fans of long facets from single corners; each
 /// strip of them comes back on its round's cylinder, where a sphere tens
 /// of thousands in radius through the strip would lay the facets' cross
-/// chords on itself and fall back to facets.
+/// chords on itself and fall back to facets. The corners of its drafted
+/// walls are cones meshed a few facets round, too few vertices to fit
+/// alone; the walls tangent to them fix them, and the tori at their foot
+/// seam to them. What falls back is the countersinks' cones.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_07() {
     let report = comes_back("nist_ftc_07_asme1_rd.stp", true, true);
-    assert!(report.curved_faceted <= 14, "{:?}", report.fallbacks);
+    assert!(report.curved_faceted <= 8, "{:?}", report.fallbacks);
 }
 
 #[test]

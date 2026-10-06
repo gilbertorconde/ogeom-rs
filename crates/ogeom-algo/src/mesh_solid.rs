@@ -3376,6 +3376,27 @@ fn segment(
             &mut planes,
             tol,
         )?;
+        if faceted_rounds(
+            points,
+            triangles,
+            adjacency,
+            &mut groups,
+            &planes,
+            options.crease.cos(),
+            flat,
+            tol,
+        ) {
+            planes = groups.clone();
+            coplanar_groups(
+                points,
+                triangles,
+                adjacency,
+                options,
+                flat,
+                &mut planes,
+                tol,
+            )?;
+        }
         tangent_rounds(
             points,
             triangles,
@@ -3589,6 +3610,264 @@ fn tangent_cylinder(
     Some(Canonical::Cylinder(
         Cylinder::new(Frame::about(through, axis), radius, tol).ok()?,
     ))
+}
+
+/// The most facets a round left faceted between two planes may span and
+/// still be put on its surface by [`faceted_rounds`].
+const FACETED_ROUND_FACETS: usize = 12;
+
+/// Put a round recognition left as facets between two flat faces tangent
+/// to it on its cylinder or cone.
+///
+/// A round a few facets across and short along its rulings (a drafted
+/// wall's corner, met by a fillet at its foot) has too few vertices for
+/// any fit to say what it is, and stays a run of planar facets, each a
+/// chord between two rulings. The faces either side of the run meet it
+/// across smooth edges along rulings, and are tangent to the round there:
+/// each such ruling and its face's normal span a plane holding the axis,
+/// so the two fix the axis (a cone's through the rulings' meeting point,
+/// a cylinder's where they are parallel, square to both normals), and
+/// the run's vertices fix the radius. The rulings between the facets
+/// verify it: every vertex of the run within `flat` of the surface, and
+/// each facet sagging from it as a chord does. A polygon whose sides are
+/// all chords, the flanking ones too, is no such round: a surface tangent
+/// to its flanking sides along their edges misses its corners.
+///
+/// Runs are the planar groups of `planes` (the groups with the planes
+/// grown) joined across smooth edges, each joined so to two others; runs
+/// of two to [`FACETED_ROUND_FACETS`] facets between two planes are tried
+/// longest first, none overlapping or flanked by one already taken. Each
+/// verified run becomes a curved region of `groups`. Returns whether any
+/// did.
+#[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
+fn faceted_rounds(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &mut Groups,
+    planes: &Groups,
+    cos_crease: f64,
+    flat: f64,
+    tol: Tolerances,
+) -> bool {
+    let count = planes.carriers.len();
+    let plane = |j: usize| match planes.carriers.get(j) {
+        Some(Carrier::Plane(plane)) => Some(*plane),
+        _ => None,
+    };
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (t, &j) in planes.of.iter().enumerate() {
+        if groups.of[t] == usize::MAX && plane(j).is_some() {
+            members[j].push(t);
+        }
+    }
+    let mut beside: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (h, twin) in adjacency.twin.iter().enumerate() {
+        let Some(g) = *twin else {
+            continue;
+        };
+        let (t, u) = (h / 3, g / 3);
+        let (a, b) = (planes.of[t], planes.of[u]);
+        if a == b
+            || members[a].is_empty()
+            || members[b].is_empty()
+            || unit_normal(points, triangles[t]).dot(unit_normal(points, triangles[u])) < cos_crease
+        {
+            continue;
+        }
+        beside[a].push(b);
+    }
+    for list in &mut beside {
+        list.sort_unstable();
+        list.dedup();
+    }
+    // Chains of facets each joined smoothly to two others, in order, with
+    // whether they close on themselves and the groups past their two ends.
+    let mut chained = vec![false; count];
+    let mut chains: Vec<(Vec<usize>, bool, [usize; 2])> = Vec::new();
+    for start in 0..count {
+        if chained[start] || beside[start].len() != 2 {
+            continue;
+        }
+        let walk = |from: usize, towards: usize, chained: &mut [bool]| {
+            let (mut previous, mut at) = (from, towards);
+            let mut run = Vec::new();
+            while beside[at].len() == 2 && !chained[at] {
+                chained[at] = true;
+                run.push(at);
+                let next = if beside[at][0] == previous {
+                    beside[at][1]
+                } else {
+                    beside[at][0]
+                };
+                (previous, at) = (at, next);
+            }
+            (run, at)
+        };
+        chained[start] = true;
+        let (left, left_end) = walk(start, beside[start][0], &mut chained);
+        let (right, right_end) = walk(start, beside[start][1], &mut chained);
+        let ring = left_end == start || right_end == start;
+        let mut chain: Vec<usize> = left.into_iter().rev().collect();
+        chain.push(start);
+        chain.extend(right);
+        chains.push((chain, ring, [left_end, right_end]));
+    }
+    // Every window of each chain with what flanks it, longest first.
+    let mut windows: Vec<(Vec<usize>, usize, usize)> = Vec::new();
+    for (chain, ring, ends) in &chains {
+        let m = chain.len();
+        let longest = if *ring { m.saturating_sub(2) } else { m };
+        for length in 2..=longest.min(FACETED_ROUND_FACETS) {
+            let starts = if *ring { m } else { m + 1 - length };
+            for i in 0..starts {
+                let run: Vec<usize> = (i..i + length).map(|k| chain[k % m]).collect();
+                let (before, after) = if *ring {
+                    (chain[(i + m - 1) % m], chain[(i + length) % m])
+                } else {
+                    (
+                        if i == 0 { ends[0] } else { chain[i - 1] },
+                        if i + length == m {
+                            ends[1]
+                        } else {
+                            chain[i + length]
+                        },
+                    )
+                };
+                windows.push((run, before, after));
+            }
+        }
+    }
+    windows.sort_by_key(|(run, _, _)| core::cmp::Reverse(run.len()));
+    let mut claimed = vec![false; count];
+    let mut changed = false;
+    for (run, before, after) in windows {
+        if [before, after].iter().chain(&run).any(|&j| claimed[j]) || before == after {
+            continue;
+        }
+        let (Some(a), Some(b)) = (plane(before), plane(after)) else {
+            continue;
+        };
+        let tris: Vec<usize> = run.iter().flat_map(|&j| members[j].clone()).collect();
+        let Some(shape) = round_between(
+            points,
+            triangles,
+            adjacency,
+            planes,
+            &tris,
+            [(before, a), (after, b)],
+            flat,
+            tol,
+        ) else {
+            continue;
+        };
+        let mut vertices: Vec<u32> = tris.iter().flat_map(|&t| triangles[t]).collect();
+        vertices.sort_unstable();
+        vertices.dedup();
+        let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
+        let deviation = worst_deviation(&shape, &pts);
+        let g = groups.carriers.len();
+        for &t in &tris {
+            groups.of[t] = g;
+        }
+        groups.carriers.push(Carrier::Curved(Curved {
+            shape,
+            deviation,
+            fitted: deviation,
+            centre: (0.0, 0.0),
+            wraps: false,
+            wraps_v: false,
+            fixed: false,
+            vertices,
+            patch: None,
+        }));
+        for &j in &run {
+            claimed[j] = true;
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// The cylinder or cone through the triangles `tris` tangent to the two
+/// flanking planes along the rulings the triangles share with them, where
+/// it holds every vertex within `flat` and every triangle sags from it as
+/// a chord: see [`faceted_rounds`]. Each flank is its group in `planes`
+/// and its plane.
+#[allow(clippy::too_many_arguments, reason = "the run and its flanks")]
+fn round_between(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    planes: &Groups,
+    tris: &[usize],
+    flanks: [(usize, Plane); 2],
+    flat: f64,
+    tol: Tolerances,
+) -> Option<Canonical> {
+    // The ruling the run shares with a flank: the line through the
+    // farthest two of the shared edges' ends, holding the others.
+    let ruling = |flank: usize| -> Option<(Point, Vector)> {
+        let mut ends: Vec<Point> = Vec::new();
+        for &t in tris {
+            for h in 3 * t..3 * t + 3 {
+                if adjacency.twin[h].is_some_and(|g| planes.of[g / 3] == flank) {
+                    let (p, q) = from_to(triangles, h);
+                    ends.extend([points[p as usize], points[q as usize]]);
+                }
+            }
+        }
+        let (mut far, mut length) = ((*ends.first()?, *ends.first()?), 0.0);
+        for (i, &p) in ends.iter().enumerate() {
+            for &q in &ends[i + 1..] {
+                if p.distance(q) > length {
+                    (far, length) = ((p, q), p.distance(q));
+                }
+            }
+        }
+        if length <= flat
+            || ends
+                .iter()
+                .any(|&p| distance_to_line(p, far.0, far.1) > flat)
+        {
+            return None;
+        }
+        Some((far.0, (far.1 - far.0) / length))
+    };
+    let (p1, d1) = ruling(flanks[0].0)?;
+    let (p2, d2) = ruling(flanks[1].0)?;
+    let (n1, n2) = (
+        flanks[0].1.frame().z().vector(),
+        flanks[1].1.frame().z().vector(),
+    );
+    let mut vertices: Vec<u32> = tris.iter().flat_map(|&t| triangles[t]).collect();
+    vertices.sort_unstable();
+    vertices.dedup();
+    let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
+    let holds = |shape: &Canonical| {
+        worst_deviation(shape, &pts) <= flat
+            && tris.iter().all(|&t| {
+                sags_as_the_surface(shape, triangles[t].map(|v| points[v as usize]), flat)
+            })
+    };
+    // A cone's axis lies in the plane of each tangent ruling and its face's
+    // normal, and passes through where the rulings meet.
+    let axis = n1.cross(d1).cross(n2.cross(d2));
+    let across = d1.cross(d2);
+    if across.magnitude() > tol.angular() && axis.magnitude() > tol.angular() {
+        // The rulings' closest points: their meeting point, the apex.
+        let w = p1 - p2;
+        let (b, d, e) = (d1.dot(d2), d1.dot(w), d2.dot(w));
+        let s = (b * e - d) / (1.0 - b * b);
+        let apex = p1 + d1 * s;
+        if let Ok(axis) = Direction::new(axis, tol)
+            && let Some(shape) = crate::recognize::ruled_about(&pts, apex, axis, flat, tol)
+            && holds(&shape)
+        {
+            return Some(shape);
+        }
+    }
+    tangent_cylinder(&flanks[0].1, &flanks[1].1, &pts, None, tol).filter(holds)
 }
 
 /// Put fillets and corner balls on the surfaces their neighbours fix.
