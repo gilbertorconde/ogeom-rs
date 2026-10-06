@@ -888,6 +888,23 @@ without the fallback. The probe classifies two points per face against
 the exact boundary, about 0.45 s on a 165-face helical thread (0.05 s
 before), 0.16 s on ctc_02 (1.0 s before, when the flag walk ran).
 
+**Flags the exact volume trusts.** `volume_properties` takes the closed
+form only where the faces' flags agree. The edge walks tie faces into sets
+that agree among themselves; a face the walks cannot read (a cone apex, a
+trim that is no loop) is a set of its own, and so is each closed shell.
+Where there is more than one set, a face of each is probed as `check`
+probes it, against its own solid, and one facing in or one the probe
+cannot settle sends the volume to the mesh, which mends a minority of
+turned faces. Placed faces (a prism's top) are walked, an edge
+occurrence being its node at its placement, and the shape's own
+placement is set aside. Cost: a drum with a cone cap 0.11 to 0.77 ms per
+call (probed), a prism 0.55 to 0.63 ms, a box unchanged; on the stress
+run 252 solids are probed over 1129 exact volumes, all deciding outward,
+and its time is unchanged in paired runs (15.2 to 15.4 s against 15.5
+s). Open: a face whose boundary
+middle lies outside it can still read its walk backwards, and if it is
+also turned over the two errors cancel unseen.
+
 **Speed, not correctness.**
 
 - A per-face state cache would let the boolean's build phase read a piece's

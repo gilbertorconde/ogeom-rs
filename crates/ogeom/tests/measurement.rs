@@ -245,6 +245,79 @@ fn a_shell_whose_faces_disagree_is_left_to_the_mesh() {
     }
 }
 
+/// A face the edge walks cannot compare (a cone cap whose apex has no
+/// normal) is asked by probing the solid off both its sides, and turned
+/// over it is left to the mesh like any other disagreement, never weighed
+/// in closed form with its share of the volume counted backwards.
+///
+/// The cap is all but flat, so counting it backwards is only three parts
+/// in a thousand wrong: the mesh is asked at a chord fine enough to land
+/// within one.
+#[test]
+fn a_face_the_walks_cannot_compare_is_probed_before_it_is_believed() {
+    use ogeom::topo::{ShapeType, explore_unique};
+    let mut model = Model::new();
+    // A drum of radius 5 and height 10 along `y`, its top a cone rising
+    // 0.05 to the axis.
+    let (radius, height, rise) = (5.0, 10.0, 0.05);
+    let pts = [
+        (0.0, 0.0),
+        (radius, 0.0),
+        (radius, height),
+        (0.0, height + rise),
+    ]
+    .map(|(x, y)| Point::new(x, y, 0.0));
+    let wire = ogeom::algo::make_polygon(&mut model, &pts, true, T)
+        .unwrap()
+        .shape;
+    let plane = ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(Frame::WORLD)).into();
+    let profile = ogeom::algo::make_face(&mut model, plane, &[wire], T)
+        .unwrap()
+        .shape;
+    let axis = ogeom::math::Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Y,
+    };
+    let drum = ogeom::algo::make_revolution(&mut model, &profile, axis, std::f64::consts::TAU, T)
+        .unwrap()
+        .shape;
+    let pi = std::f64::consts::PI;
+    let want = pi * radius * radius * (height + rise / 3.0);
+    let honest = ogeom::algo::volume_properties(&model, &drum, Deflection::default(), T).unwrap();
+    assert_eq!(honest.deflection, 0.0, "the drum is weighed exactly");
+    assert!(
+        (honest.mass - want).abs() < 1e-9,
+        "{} against {want}",
+        honest.mass
+    );
+
+    let faces = explore_unique(&model, &drum, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 3);
+    for which in 0..faces.len() {
+        let mut held = faces.clone();
+        held[which] = held[which].reversed();
+        let shell = ogeom::algo::make_shell(&mut model, &held).unwrap().shape;
+        let turned = ogeom::algo::make_solid(&mut model, &[shell]).unwrap().shape;
+        let measured = ogeom::algo::volume_properties(
+            &model,
+            &turned,
+            Deflection::with_chord(1e-3).unwrap(),
+            T,
+        )
+        .unwrap();
+        assert!(
+            measured.deflection > 0.0,
+            "face {which} turned over: the mesh was asked, not the closed form ({})",
+            measured.mass
+        );
+        assert!(
+            (measured.mass - want).abs() < want * 1e-3,
+            "face {which} turned over: and it mends the flag, {} against {want}",
+            measured.mass
+        );
+    }
+}
+
 #[test]
 fn a_metre_cube_and_a_long_drum_measure_exactly_and_at_once() {
     let mut model = Model::new();

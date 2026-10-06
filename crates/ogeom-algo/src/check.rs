@@ -246,6 +246,21 @@ pub(crate) fn faces_turned_in(
     turned_in_against(model, &boundary, faces, tol)
 }
 
+/// For each of `faces`, whether it faces into the material of `solid`,
+/// probed as [`inside_out_faces`] probes a face; `None` where the probe
+/// cannot tell.
+pub(crate) fn faces_facing_in(
+    model: &Model,
+    solid: &Shape,
+    faces: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Option<bool>>> {
+    let boundary = crate::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
+    ogeom_core::parallel::map_ordered(faces, |_, face| faces_inward(model, face, &boundary, tol))
+        .into_iter()
+        .collect()
+}
+
 /// The faces of `faces` whose probe against `boundary` finds material on
 /// their outside, probed in parallel.
 fn turned_in_against(

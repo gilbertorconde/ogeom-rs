@@ -22,6 +22,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An exact volume never takes a face's sign on trust.**
+  `volume_properties` read a face whose orientation it could not compare
+  along its edges (a cone apex, a face placed inside the shape, a separate
+  shell) as agreeing, so a face turned into its solid gave a wrong exact
+  volume: a drum with a nearly flat cone cap turned in measured 784.09
+  where it holds 786.71. One face of each group the edge walk cannot tie is
+  probed against the solid, and the volume falls back to the mesh where one
+  faces in or cannot be decided. A prism's placed top is compared too.
+
 - **`check` probes every face of a solid for orientation.** A single face
   turned into its solid passed where the faces' flags could not be compared
   along their edges (a nearly flat conical or domed cap, a face whose
