@@ -6,7 +6,7 @@
 use ogeom_core::Tolerances;
 use ogeom_math::{Frame, Point, Vector};
 use ogeom_mesh::Deflection;
-use ogeom_topo::{Filter, Model, Shape, ShapeType, explore};
+use ogeom_topo::{Filter, Model, Orientation, Shape, ShapeType, explore};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -322,4 +322,190 @@ fn a_coloured_sheet_keeps_its_colour_through_step() {
             && (colour.b - teal.b).abs() < 1e-6,
         "{colour:?}"
     );
+}
+
+/// A half disc of radius 5 on z = 0 with a hole of radius 1, every edge
+/// used against its curve: its outer boundary walks a line, a B-spline and
+/// an arc, each built the other way, and its hole is a counter-clockwise
+/// circle walked clockwise. Area 11.5π, facing +z.
+fn backwards_half_disc(model: &mut Model) -> Shape {
+    use ogeom_geom::{BSplineCurve, CircleCurve, Curve, LineCurve, PlaneSurface};
+    use ogeom_math::{Circle, Direction, KnotVector, Plane};
+    let (a, m, b) = (
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(5.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+    );
+    let [va, vm, vb] = [a, m, b].map(|p| ogeom_algo::make_vertex(model, p).shape);
+    let line = Curve::Line(LineCurve::segment(m, a, T).unwrap());
+    let line_edge = ogeom_algo::make_edge_between(model, line, (0.0, 5.0), &vm, &va, T)
+        .unwrap()
+        .shape;
+    // Runs from b at 10 - 6u, so it reaches m at 5/6.
+    let spline = Curve::BSpline(
+        BSplineCurve::new(
+            KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).unwrap(),
+            vec![b, Point::new(7.0, 0.0, 0.0), Point::new(4.0, 0.0, 0.0)],
+            T,
+        )
+        .unwrap(),
+    );
+    let spline_edge = ogeom_algo::make_edge_between(model, spline, (0.0, 5.0 / 6.0), &vb, &vm, T)
+        .unwrap()
+        .shape;
+    // About -z, from a over the top to b.
+    let below = Frame::new(m, -Direction::Z, Direction::X, T).unwrap();
+    let arc = Curve::Circle(CircleCurve::new(Circle::new(below, 5.0, T).unwrap()));
+    let arc_edge = ogeom_algo::make_edge_between(
+        model,
+        arc,
+        (std::f64::consts::PI, std::f64::consts::TAU),
+        &va,
+        &vb,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let centre = Frame::new(Point::new(5.0, 2.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let hole = Curve::Circle(CircleCurve::new(Circle::new(centre, 1.0, T).unwrap()));
+    let hole_edge = ogeom_algo::make_edge(model, hole, (0.0, std::f64::consts::TAU), T)
+        .unwrap()
+        .shape;
+    let outer = vec![
+        line_edge.reversed(),
+        spline_edge.reversed(),
+        arc_edge.reversed(),
+    ];
+    let plane = PlaneSurface::new(Plane::new(Frame::WORLD));
+    ogeom_algo::make_face_with_pcurves(model, plane.into(), &[outer, vec![hole_edge.reversed()]], T)
+        .unwrap()
+        .shape
+}
+
+fn assert_valid(model: &Model, shape: &Shape) {
+    let diagnosis = ogeom_algo::check(model, shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+}
+
+fn assert_usable(model: &Model, shape: &Shape) {
+    let diagnosis = ogeom_algo::check(model, shape, T).unwrap();
+    assert!(diagnosis.is_usable(), "{diagnosis}");
+}
+
+/// A boundary whose pieces all run against their curves reads back as the
+/// face it was: each piece goes out the way the wire walks it.
+#[test]
+fn a_boundary_walking_its_curves_backwards_round_trips_through_iges() {
+    let mut model = Model::new();
+    let face = backwards_half_disc(&mut model);
+    assert_valid(&model, &face);
+    let original = face_records(&model, &face);
+    let expected = 11.5 * std::f64::consts::PI;
+    assert!((original[0].0 - expected).abs() < 1e-6, "{original:?}");
+
+    let text = ogeom_io::write_iges(&document_of(model, face), T).unwrap();
+    let import = ogeom_io::read_iges(&text, T).unwrap();
+    let model = import.document.model();
+    let part = &part_shapes(&import.document)[0];
+    // A lone face is open along its boundary, which is all `check` finds.
+    assert_usable(model, part);
+    assert_same_faces(&original, &face_records(model, part));
+}
+
+/// The closed shells of a cylinder and of the backwards half disc swept 3
+/// up, written as trimmed surfaces,
+/// read back as valid solids (each edge walked once each way) of the same
+/// volume with the same faces. Between them they hold reversed faces and
+/// boundaries whose first edge the wire walks against its curve.
+#[test]
+fn closed_shells_of_trimmed_surfaces_round_trip_as_their_solids() {
+    let mut reversed_faces = 0;
+    let mut backwards_first_edges = 0;
+    for (name, expected) in [
+        ("prism", 11.5 * std::f64::consts::PI * 3.0),
+        ("cylinder", std::f64::consts::PI * 16.0 * 7.0),
+    ] {
+        let mut model = Model::new();
+        let solid = if name == "prism" {
+            let face = backwards_half_disc(&mut model);
+            ogeom_algo::make_prism(&mut model, &face, Vector::new(0.0, 0.0, 3.0), T)
+        } else {
+            ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 4.0, 7.0, T)
+        }
+        .unwrap()
+        .shape;
+        let faces = faces_or_edges(&model, &solid, ShapeType::Face);
+        for face in &faces {
+            reversed_faces += usize::from(face.orientation() == Orientation::Reversed);
+            for wire in model.ordered_children_of(face).unwrap() {
+                let first = model.ordered_children_of(&wire).unwrap().remove(0);
+                backwards_first_edges += usize::from(first.orientation() == Orientation::Reversed);
+            }
+        }
+        let shell = ogeom_algo::make_shell(&mut model, &faces).unwrap().shape;
+        let original = face_records(&model, &shell);
+
+        let text = ogeom_io::write_iges(&document_of(model, shell), T).unwrap();
+        let import = ogeom_io::read_iges(&text, T).unwrap();
+        assert_eq!(import.solids.len(), 1, "{name}");
+        let model = import.document.model();
+        let read = &import.solids[0];
+        assert_valid(model, read);
+        // Faces on curved surfaces state their normal at a point of their
+        // own parameterization, which the file need not keep; the check above
+        // already asks every face to face out.
+        let areas =
+            |records: Vec<(f64, Vector)>| records.into_iter().map(|r| r.0).collect::<Vec<_>>();
+        let (before, after) = (areas(original), areas(face_records(model, read)));
+        assert_eq!(before.len(), after.len(), "{name}");
+        for (a, b) in before.iter().zip(&after) {
+            assert!((a - b).abs() < 1e-6 * a, "{name}: area {b} against {a}");
+        }
+        let found = volume(model, read);
+        assert!(
+            (found - expected).abs() < 1e-6 * expected,
+            "{name}: {found} against {expected}"
+        );
+    }
+    assert!(reversed_faces > 0 && backwards_first_edges > 0);
+}
+
+/// The deck with the first `count` lines (110) of its parameter section
+/// running the other way: each line's two end points exchanged, which keeps
+/// every record's length.
+fn lines_turned(text: &str, count: usize) -> String {
+    let mut left = count;
+    text.lines()
+        .map(|record| {
+            let Some(body) = record.strip_prefix("110,").filter(|_| left > 0) else {
+                return format!("{record}\n");
+            };
+            left -= 1;
+            let end = body.find(';').unwrap();
+            let values: Vec<&str> = body[..end].split(',').collect();
+            assert_eq!(values.len(), 6, "{record}");
+            let turned = [&values[3..], &values[..3]].concat().join(",");
+            format!("110,{turned}{}\n", &body[end..])
+        })
+        .collect()
+}
+
+/// Boundaries whose pieces run each as its curve does, whichever way the
+/// loop walks it: the first piece backwards, or every piece backwards. Each
+/// reads back as the square it bounds.
+#[test]
+fn a_boundary_whose_pieces_run_against_the_loop_reads() {
+    let mut model = Model::new();
+    let face = square_face(&mut model);
+    let original = face_records(&model, &face);
+    let text = ogeom_io::write_iges(&document_of(model, face), T).unwrap();
+    for count in [1, 4] {
+        let edited = lines_turned(&text, count);
+        assert_ne!(edited, text);
+        let import = ogeom_io::read_iges(&edited, T).unwrap();
+        let model = import.document.model();
+        let part = &part_shapes(&import.document)[0];
+        assert_usable(model, part);
+        assert_same_faces(&original, &face_records(model, part));
+    }
 }

@@ -19,6 +19,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **IGES trimmed-surface boundaries round-trip with reversed edges.** Each
+  boundary piece was written in its curve's own direction, so a sheet or
+  shell with an edge used reversed (any reversed face) was refused on
+  reading; pieces are written the way the wire walks them, a circle or
+  ellipse running backwards along its curve at its own points, and the
+  reader chains a boundary from either end of its first piece, so decks
+  written the old way read too.
+
+- **Sewing matches two closed edges in sense by their quarter points.** A
+  cap's rim against a wall's coincides end to end both ways round, so
+  sewing could read them as walked the same way: a cylinder read from
+  trimmed surfaces came back with its caps facing in.
+
 - **A reversed face's holes are no longer taken for its outer wire.** STEP
   export of a reversed face with holes marked a hole as
   `FACE_OUTER_BOUND`, and IGES export of one as a trimmed surface wrote a

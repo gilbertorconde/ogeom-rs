@@ -1625,10 +1625,11 @@ impl<'a> Reader<'a> {
     /// Boundary segments into a closed chain of edges, head to tail.
     ///
     /// Surface files are loose about sense (a boundary's segments arrive in
-    /// order but each may run either way), so the chain is stitched by
-    /// geometry: each segment joins whichever of its ends sits at the chain's
-    /// current head, and the last vertex is the first, which is what closes
-    /// the wire.
+    /// order but each may run either way, the first included), so the chain
+    /// is stitched by geometry: the walk starts from either end of the first
+    /// segment, each later segment joins whichever of its ends sits at the
+    /// chain's current head, and the last vertex is the first, which is what
+    /// closes the wire. The start whose walk closes is taken.
     fn wire_edges(
         &mut self,
         face_de: i64,
@@ -1663,21 +1664,55 @@ impl<'a> Reader<'a> {
             return Ok(vec![edge]);
         }
 
-        let head = make_vertex(&mut self.model, ends[0].0).shape;
-        let mut at = ends[0].0;
-        let mut at_vertex = head.clone();
-        let mut edges = Vec::with_capacity(n);
-        for (i, ((curve, range), (s, e))) in segments.into_iter().zip(ends).enumerate() {
-            let forward = at.distance(s) <= at.distance(e);
-            let (this_end, this_point) = if forward { (e, e) } else { (s, s) };
-            let gap = at.distance(if forward { s } else { e });
-            if gap > weld {
+        // Each segment's sense along the walk from `start` and how far the
+        // walk ends from it, or the first segment that leaves a gap and how
+        // wide it is.
+        let walk = |start: Point| -> Result<(Vec<bool>, f64), (usize, f64)> {
+            let mut at = start;
+            let mut senses = Vec::with_capacity(n);
+            for (i, &(s, e)) in ends.iter().enumerate() {
+                let forward = at.distance(s) <= at.distance(e);
+                let gap = at.distance(if forward { s } else { e });
+                if gap > weld {
+                    return Err((i, gap));
+                }
+                senses.push(forward);
+                at = if forward { e } else { s };
+            }
+            Ok((senses, at.distance(start)))
+        };
+        // The walk that closes, the forward one first; failing that, a walk
+        // with no gap inside it, whose last edge is welded to the head.
+        let walks = [ends[0].0, ends[0].1].map(|start| (start, walk(start)));
+        let chosen = walks
+            .iter()
+            .find(|(_, w)| matches!(w, Ok((_, gap)) if *gap <= weld))
+            .or_else(|| walks.iter().find(|(_, w)| w.is_ok()));
+        let (start, senses) = match chosen {
+            Some((start, Ok((senses, _)))) => (*start, senses.clone()),
+            _ => {
+                // Report the walk that got further.
+                let reached = |w: &Result<(Vec<bool>, f64), (usize, f64)>| match w {
+                    Err(failure) => *failure,
+                    Ok(_) => (n, 0.0),
+                };
+                let (a, b) = (reached(&walks[0].1), reached(&walks[1].1));
+                let (i, gap) = if b.0 > a.0 { b } else { a };
                 ogeom_bail!(
                     Construction,
                     "D{face_de}: boundary segment {i} starts {gap:.2e} from \
                      where the previous one ended"
                 );
             }
+        };
+
+        let head = make_vertex(&mut self.model, start).shape;
+        let mut at_vertex = head.clone();
+        let mut edges = Vec::with_capacity(n);
+        for (i, (((curve, range), (s, e)), forward)) in
+            segments.into_iter().zip(ends).zip(senses).enumerate()
+        {
+            let this_end = if forward { e } else { s };
             let last = i + 1 == n;
             let next_vertex = if last {
                 head.clone()
@@ -1710,7 +1745,6 @@ impl<'a> Reader<'a> {
                 .reversed()
             };
             edges.push(edge);
-            at = this_point;
             at_vertex = next_vertex;
         }
         Ok(edges)

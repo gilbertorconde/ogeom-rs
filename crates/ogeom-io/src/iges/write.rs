@@ -17,6 +17,7 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
+use ogeom_geom::Reversible as _;
 use ogeom_geom::Surface as _;
 use ogeom_geom::Transformable as _;
 use ogeom_geom::{BSplineCurve, Curve, SurfaceGeometry};
@@ -339,11 +340,14 @@ impl Writer<'_> {
 
     /// A wire's edges as one model-space curve: the edge's own curve when
     /// there is one, a composite curve (102) of them when there are more,
-    /// `None` when every edge is degenerate. Each piece runs along its own
-    /// curve, in the wire's order.
+    /// `None` when every edge is degenerate. Each piece runs the way the wire
+    /// walks it, in the wire's order: the composite curve has no sense flag
+    /// for its pieces, so an edge the wire uses reversed goes out as its
+    /// curve reversed.
     fn boundary_curve(&mut self, wire: &Shape) -> OgeomResult<Option<usize>> {
         let mut pieces = Vec::new();
         for edge in self.model.ordered_children_of(wire)? {
+            let forward = edge.orientation() != ogeom_topo::Orientation::Reversed;
             let (curve, range) = {
                 let Some(data) = self.model.node(&edge).and_then(|n| n.data().as_edge()) else {
                     ogeom_bail!(Construction, "edge node holds no edge data");
@@ -360,7 +364,7 @@ impl Writer<'_> {
                 let placement = edge.transform(self.model.datums())?;
                 (geometry.clone().transformed(&placement, self.tol)?, *range)
             };
-            pieces.push(self.curve(&curve, range)?);
+            pieces.push(self.curve(&curve, range, forward)?);
         }
         match pieces.as_slice() {
             [] => Ok(None),
@@ -459,7 +463,7 @@ impl Writer<'_> {
             };
             (geometry.clone().transformed(&placement, self.tol)?, *range)
         };
-        let curve_entity = self.curve(&curve, range)?;
+        let curve_entity = self.curve(&curve, range, true)?;
         let vertices = self.model.children_of(edge)?;
         let (from, to) = match vertices.len() {
             0 => ogeom_bail!(Construction, "an edge with no vertices cannot be written"),
@@ -503,12 +507,25 @@ impl Writer<'_> {
         Ok(index)
     }
 
-    /// A curve over a range, in its IGES spelling.
-    fn curve(&mut self, curve: &Curve, range: (f64, f64)) -> OgeomResult<usize> {
+    /// A curve over a range, in its IGES spelling, running from `range.0`
+    /// to `range.1` when `forward` and the other way when not.
+    fn curve(&mut self, curve: &Curve, range: (f64, f64), forward: bool) -> OgeomResult<usize> {
+        // The angle on the underlying conic at each end of the walk.
+        let walk = |reversed: bool| {
+            let angle = |u: f64| if reversed { -u } else { u };
+            let (s, e) = if forward { range } else { (range.1, range.0) };
+            // A conic arc runs counter-clockwise about its frame's `z`; one
+            // walked clockwise goes out about the frame turned over `x`,
+            // where each angle negates.
+            let counter_clockwise = reversed != forward;
+            let sign = if counter_clockwise { 1.0 } else { -1.0 };
+            (sign * angle(s), sign * angle(e), counter_clockwise)
+        };
         match curve {
             Curve::Line(line) => {
-                let a = line.point_at(range.0, self.tol)?;
-                let b = line.point_at(range.1, self.tol)?;
+                let (from, to) = if forward { range } else { (range.1, range.0) };
+                let a = line.point_at(from, self.tol)?;
+                let b = line.point_at(to, self.tol)?;
                 Ok(self.push(Pending {
                     kind: 110,
                     form: 0,
@@ -529,8 +546,13 @@ impl Writer<'_> {
             Curve::Circle(c) => {
                 let circle = c.circle();
                 let r = circle.radius();
-                let transform = self.transform_entity(&circle.frame());
-                let (s, e) = (range.0, range.1);
+                let (s, e, counter_clockwise) = walk(c.is_reversed());
+                let frame = if counter_clockwise {
+                    circle.frame()
+                } else {
+                    circle.frame().with_z_reversed()
+                };
+                let transform = self.transform_entity(&frame);
                 let params = format!(
                     "0.,0.,0.,{},{},{},{}",
                     fmt(r * s.cos()),
@@ -550,10 +572,16 @@ impl Writer<'_> {
             Curve::Ellipse(el) => {
                 let ellipse = el.ellipse();
                 let (a, b) = (ellipse.major_radius(), ellipse.minor_radius());
-                let transform = self.transform_entity(&ellipse.frame());
+                let (s, e, counter_clockwise) = walk(el.is_reversed());
+                let frame = if counter_clockwise {
+                    ellipse.frame()
+                } else {
+                    ellipse.frame().with_z_reversed()
+                };
+                let transform = self.transform_entity(&frame);
                 let at = |t: f64| (a * t.cos(), b * t.sin());
-                let (sx, sy) = at(range.0);
-                let (ex, ey) = at(range.1);
+                let (sx, sy) = at(s);
+                let (ex, ey) = at(e);
                 // x²/a² + y²/b² − 1 = 0, spelt in the general coefficients.
                 let params = format!(
                     "{},0.,{},0.,0.,-1.,0.,{},{},{},{}",
@@ -573,12 +601,21 @@ impl Writer<'_> {
                     params,
                 }))
             }
-            Curve::Trimmed(t) => self.curve(t.basis(), range),
-            Curve::BSpline(b) => self.nurbs_curve(b, range),
+            Curve::Trimmed(t) => self.curve(t.basis(), range, forward),
+            Curve::BSpline(b) if forward => self.nurbs_curve(b, range),
+            Curve::BSpline(b) => {
+                // Reversal keeps the domain and mirrors each parameter in it.
+                let (lo, hi) = ogeom_geom::Curve3d::domain(b);
+                let back = reversed_bspline(b)?;
+                self.nurbs_curve(&back, (lo + hi - range.1, lo + hi - range.0))
+            }
             other => {
                 // The exact conversion carries anything with a closed NURBS
                 // form; what has none (a helix) is refused by name there.
-                let bspline = other.to_bspline_over(range, self.tol)?;
+                let mut bspline = other.to_bspline_over(range, self.tol)?;
+                if !forward {
+                    bspline = reversed_bspline(&bspline)?;
+                }
                 self.nurbs_curve(&bspline, ogeom_geom::Curve3d::domain(&bspline))
             }
         }
@@ -930,6 +967,14 @@ impl Writer<'_> {
         );
         push_record(&mut s, &tail, 'T', 1);
         s
+    }
+}
+
+/// The same B-spline traversed the other way, over the same domain.
+fn reversed_bspline(b: &BSplineCurve) -> OgeomResult<BSplineCurve> {
+    match Curve::BSpline(b.clone()).reversed() {
+        Curve::BSpline(back) => Ok(back),
+        _ => ogeom_bail!(Construction, "a reversed B-spline is a B-spline"),
     }
 }
 

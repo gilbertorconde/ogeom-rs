@@ -283,6 +283,21 @@ agree with the ring.
   No other result changed. The stress run at seeds 1 to 3 turns nothing
   and its outcomes are unchanged.
 
+- IGES trimmed surfaces (144) carry each boundary as one composite curve
+  (102), which has no sense flag for its pieces. The writer puts each
+  piece out the way the wire walks it (a reversed line with its ends
+  exchanged, a conic about its frame turned over, a B-spline reversed),
+  and the reader starts its chain from either end of the first piece,
+  taking the start whose walk closes, so decks written with the pieces in
+  their curves' own direction read too. Sewing told the sense of two
+  closed edges (a cap's rim against a wall's) by their ends, which agree
+  both ways round, so it took them as walked the same way and turned the
+  caps of a cylinder read from trimmed surfaces to face in; it compares
+  their quarter points now. Still open: a closed shell whose faces all
+  face in reads as an inside-out solid (sewing turns a closed group whole
+  only where it turned some of its faces), and the writer reads a trimmed
+  curve's range on its basis without the trim's own sense flag.
+
 The fillet's side test no longer trusts the walk where the chart's chords
 cannot settle it.
 
