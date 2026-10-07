@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-10-07
+
+A patch release: no breaking API changes. A prism far from the origin keeps
+its rails and its facing, a torus whose hole nearly closes meshes like an
+open one, a dropped coincident piece and every sub-shape of a moved shape
+trace through history, and `check` reports a seam stored as plain pcurves
+while `fix_shape` repairs it (a solid saved from 0.9.9). Building
+primitives is about five times faster again, exact hidden lines run in
+parallel and ask fewer faces, and hidden line removal splits an edge where
+it passes behind a contour. The benches cover mass properties, `check`,
+`fix_shape`, mesh conversion, exchange, hidden lines and offsets, and take
+`--threads`.
+
 ### Added
 
 - **`PreparedSurface` keeps a surface's seeding for many curve
@@ -4369,7 +4382,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.10...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.11...HEAD
+[0.9.11]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.7...v0.9.8
