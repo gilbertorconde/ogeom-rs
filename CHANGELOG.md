@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **Primitives are built without meshing them to check their facing.**
+  Boxes, wedges, polyhedra, cylinders, spheres, cones and tori wind their
+  faces outward by construction, and skip the probe `make_solid` runs on a
+  closed shell to turn one facing inward; building a box is about five
+  times faster again. `make_solid` still turns imported and sewn shells.
+
 ### Fixed
 
 - **Hidden line removal splits an edge where it passes behind a

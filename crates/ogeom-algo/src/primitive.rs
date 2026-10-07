@@ -17,7 +17,7 @@ use ogeom_math::{
 };
 use ogeom_topo::{Model, Shape, ShapeType};
 
-use crate::build::{make_edge_between, make_face_on, make_shell, make_solid, make_wire};
+use crate::build::{make_edge_between, make_face_on, make_shell, make_wire};
 use crate::history::Built;
 use ogeom_topo::{EdgeData, VertexData};
 
@@ -505,7 +505,7 @@ fn box_like_named(
     }
 
     let shell = make_shell(model, &faces)?.shape;
-    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    let solid = outward_solid(model, &shell)?;
     Ok(Built::from_nothing(solid))
 }
 
@@ -579,8 +579,18 @@ fn faceted_solid(
         faces.push(make_face_on(model, surface, std::slice::from_ref(&wire), tol)?.shape);
     }
     let shell = make_shell(model, &faces)?.shape;
-    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    let solid = outward_solid(model, &shell)?;
     Ok(Built::from_nothing(solid))
+}
+
+/// The solid bounded by a primitive's one shell.
+///
+/// Every primitive winds its faces to look out of the volume they bound
+/// (a mirrored frame is made right-handed first), so the shell is put
+/// together as built: the probe [`make_solid`](crate::make_solid) runs for
+/// a shell facing in would mesh it only to find it facing out.
+fn outward_solid(model: &mut Model, shell: &Shape) -> OgeomResult<Shape> {
+    model.add_solid(std::slice::from_ref(shell))
 }
 
 /// The plane of a box face, with its normal pointing outward.
@@ -698,7 +708,7 @@ pub fn make_cylinder(
     model.set_derived(&top, &[], roles::FACE_MAX_Z)?;
 
     let shell = make_shell(model, &[lateral, bottom, top])?.shape;
-    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    let solid = outward_solid(model, &shell)?;
     Ok(Built::from_nothing(solid))
 }
 
@@ -758,7 +768,7 @@ pub fn make_sphere(
     model.set_derived(&face, &[], roles::FACE_LATERAL)?;
 
     let shell = make_shell(model, std::slice::from_ref(&face))?.shape;
-    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    let solid = outward_solid(model, &shell)?;
     Ok(Built::from_nothing(solid))
 }
 
@@ -1133,7 +1143,7 @@ pub fn make_cone(
     faces.push(far_cap);
 
     let shell = make_shell(model, &faces)?.shape;
-    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    let solid = outward_solid(model, &shell)?;
     Ok(Built::from_nothing(solid))
 }
 
@@ -1184,7 +1194,7 @@ pub fn make_torus(
     model.set_derived(&face, &[], roles::FACE_LATERAL)?;
 
     let shell = make_shell(model, std::slice::from_ref(&face))?.shape;
-    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    let solid = outward_solid(model, &shell)?;
     Ok(Built::from_nothing(solid))
 }
 
@@ -2357,7 +2367,7 @@ mod more_primitive_tests {
             let shell = make_shell(&mut model, std::slice::from_ref(&face))
                 .unwrap()
                 .shape;
-            let solid = make_solid(&mut model, std::slice::from_ref(&shell))
+            let solid = crate::make_solid(&mut model, std::slice::from_ref(&shell))
                 .unwrap()
                 .shape;
             let diagnosis = crate::check(&model, &solid, T).unwrap();
