@@ -38,17 +38,29 @@ pub fn project_on_surface(
     samples: usize,
     tol: Tolerances,
 ) -> OgeomResult<SurfaceProjection> {
-    // A plane, a cylinder and a sphere have their nearest point in closed
-    // form, unique off the axis or the centre: where it lies inside the
+    // An elementary surface has its nearest point in closed form, and a
+    // swept one through its profile: where that foot lies inside the
     // surface's window, the grid below would find the same basin by a
     // thousand evaluations.
-    if let Some(seed) = closed_form_foot(surface, target, tol)
-        && let Ok(found) = refine_foot(surface, target, seed, tol)
-    {
+    if let Some(found) = closed_form(
+        surface,
+        target,
+        Profile::of(surface, samples, tol).as_ref(),
+        tol,
+    ) {
         return Ok(found);
     }
-    let (us, vs) = seed_lines(surface, samples);
+    grid_projection(surface, target, samples, tol)
+}
 
+/// The nearest point from the seed grid alone.
+fn grid_projection(
+    surface: &SurfaceGeometry,
+    target: Point,
+    samples: usize,
+    tol: Tolerances,
+) -> OgeomResult<SurfaceProjection> {
+    let (us, vs) = seed_lines(surface, samples);
     let mut scan = Scan::default();
     for &u in &us {
         let mut row = Row::with_capacity(vs.len());
@@ -64,13 +76,33 @@ pub fn project_on_surface(
     scan.finish().refine(surface, target, tol)
 }
 
-/// The parameters of the nearest point where a closed form gives it and it
-/// needs no clamping into the window: a plane's orthogonal foot, a
-/// cylinder's for a point off its axis, a sphere's for a point off its
-/// centre. `None` for any other surface, or a foot outside the window.
+/// The nearest point where a closed form or a profile scan finds it
+/// inside the surface's window, polished by [`refine_foot`]; `None` for any
+/// other surface, a foot outside the window, or a polish that fails.
+///
+/// `profile` is [`Profile::of`] the same surface.
+fn closed_form(
+    surface: &SurfaceGeometry,
+    target: Point,
+    profile: Option<&Profile>,
+    tol: Tolerances,
+) -> Option<SurfaceProjection> {
+    if let Some(profile) = profile {
+        return profile.project(surface, target, tol);
+    }
+    let seed = closed_form_foot(surface, target, surface.domain(), tol)?;
+    refine_foot(surface, target, seed, tol).ok()
+}
+
+/// The parameters of an elementary surface's nearest point where they lie
+/// in `window`: a plane's orthogonal foot, a cylinder's, cone's or torus's
+/// for a point off the axis, a sphere's for a point off its centre. A
+/// trimmed surface asks its basis, an angle shifted by whole turns into the
+/// trim. `None` for any other surface, or a foot outside the window.
 fn closed_form_foot(
     surface: &SurfaceGeometry,
     target: Point,
+    window: ((f64, f64), (f64, f64)),
     tol: Tolerances,
 ) -> Option<(f64, f64)> {
     use ogeom_math::elementary;
@@ -79,13 +111,188 @@ fn closed_form_foot(
         SurfaceGeometry::Cylinder(c) => {
             elementary::cylinder_parameters(&c.cylinder(), target, tol).ok()?
         }
+        SurfaceGeometry::Cone(c) => elementary::cone_parameters(&c.cone(), target, tol).ok()?,
         SurfaceGeometry::Sphere(s) => {
             elementary::sphere_parameters(&s.sphere(), target, tol).ok()?
         }
+        SurfaceGeometry::Torus(t) => elementary::torus_parameters(&t.torus(), target, tol).ok()?,
+        SurfaceGeometry::Trimmed(t) => return closed_form_foot(t.basis(), target, window, tol),
         _ => return None,
     };
-    let ((u0, u1), (v0, v1)) = surface.domain();
-    (u >= u0 && u <= u1 && v >= v0 && v <= v1).then_some((u, v))
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let u = into_window(u, window.0, surface.is_periodic_u().then_some(ub - ua))?;
+    let v = into_window(v, window.1, surface.is_periodic_v().then_some(vb - va))?;
+    Some((u, v))
+}
+
+/// `t` in `[from, to]`, shifted by whole periods where the direction has
+/// one; `None` where no shift lands inside.
+fn into_window(t: f64, (from, to): (f64, f64), period: Option<f64>) -> Option<f64> {
+    if t >= from && t <= to {
+        return Some(t);
+    }
+    let period = period.filter(|p| *p > 0.0)?;
+    let shifted = ((from - t) / period).ceil().mul_add(period, t);
+    (shifted >= from && shifted <= to).then_some(shifted)
+}
+
+/// A profile scan: per sample, its square distance across the sweep and
+/// the seed it gives where the sweep coordinate is inside the window.
+type ProfileScan = smallvec::SmallVec<[(f64, Option<(f64, f64)>); 64]>;
+
+/// How a swept surface reduces to its profile.
+#[derive(Debug, Clone, Copy)]
+enum Sweep {
+    /// An extrusion along a unit direction: `u` runs along the profile,
+    /// `v` is the distance swept.
+    Extrusion(ogeom_math::Vector),
+    /// A revolution about an axis: `u` is the angle, `v` runs along the
+    /// profile.
+    Revolution(ogeom_math::Axis),
+}
+
+/// A swept surface's profile, sampled once for a one-dimensional foot scan.
+///
+/// The distance from a target to an extrusion's line through a profile
+/// point is the distance across the sweep direction, and to a
+/// revolution's circle through a profile point the distance in the
+/// half-plane through the axis: each is the least over the sweep
+/// coordinate, which then follows in closed form. So a scan along the
+/// profile alone finds the basins the whole grid would, from one surface
+/// line of samples instead of a grid of them.
+#[derive(Debug, Clone)]
+struct Profile {
+    sweep: Sweep,
+    /// The sweep coordinate of the sampled line: the window's first.
+    at: f64,
+    /// `(profile parameter, point on the line)` per sample, `None` where
+    /// the surface would not evaluate.
+    samples: Vec<(f64, Option<Point>)>,
+}
+
+impl Profile {
+    /// The profile of an extrusion or a revolution, plain or trimmed,
+    /// sampled as [`seed_lines`] seeds its profile direction; `None` for any
+    /// other surface.
+    fn of(surface: &SurfaceGeometry, samples: usize, tol: Tolerances) -> Option<Self> {
+        let basis = match surface {
+            SurfaceGeometry::Trimmed(t) => t.basis(),
+            other => other,
+        };
+        let sweep = match basis {
+            SurfaceGeometry::Extrusion(e) => Sweep::Extrusion(e.direction().vector()),
+            SurfaceGeometry::Revolution(r) => Sweep::Revolution(r.axis()),
+            _ => return None,
+        };
+        let (us, vs) = seed_lines(surface, samples);
+        let ((ua, _), (va, _)) = surface.domain();
+        let (at, along) = match sweep {
+            Sweep::Extrusion(_) => (va, us),
+            Sweep::Revolution(_) => (ua, vs),
+        };
+        let samples = along
+            .into_iter()
+            .map(|t| {
+                let point = match sweep {
+                    Sweep::Extrusion(_) => surface.point_at(t, at, tol),
+                    Sweep::Revolution(_) => surface.point_at(at, t, tol),
+                };
+                (t, point.ok())
+            })
+            .collect();
+        Some(Self { sweep, at, samples })
+    }
+
+    /// A sample's square distance to `target` across the sweep, and the
+    /// surface parameters of the nearest point on its sweep line or circle;
+    /// `None` for a target on a revolution's axis, where every angle is
+    /// as near.
+    fn reduce(
+        &self,
+        t: f64,
+        point: Point,
+        target: Point,
+        tol: Tolerances,
+    ) -> Option<(f64, (f64, f64))> {
+        match self.sweep {
+            Sweep::Extrusion(d) => {
+                let gap = point - target;
+                let along = gap.dot(d);
+                let across = gap - d * along;
+                Some((across.dot(across), (t, self.at - along)))
+            }
+            Sweep::Revolution(axis) => {
+                let d = axis.direction.vector();
+                let split = |p: Point| {
+                    let off = p - axis.location;
+                    let height = off.dot(d);
+                    (off - d * height, height)
+                };
+                let (to, height_to) = split(target);
+                let (from, height_from) = split(point);
+                let (ring_to, ring_from) = (to.magnitude(), from.magnitude());
+                if ring_to <= tol.confusion() {
+                    return None;
+                }
+                let turn = from.cross(to).dot(d).atan2(from.dot(to));
+                let gap = (ring_to - ring_from).hypot(height_to - height_from);
+                Some((gap * gap, (self.at + turn, t)))
+            }
+        }
+    }
+
+    /// The nearest point, from every basin of the profile scan whose sweep
+    /// coordinate lies in the window, nearest first; `None` where the
+    /// nearest basin's lies outside it, or nothing evaluates.
+    fn project(
+        &self,
+        surface: &SurfaceGeometry,
+        target: Point,
+        tol: Tolerances,
+    ) -> Option<SurfaceProjection> {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let (sweep_window, period) = match self.sweep {
+            Sweep::Extrusion(_) => ((va, vb), surface.is_periodic_v().then_some(vb - va)),
+            Sweep::Revolution(_) => ((ua, ub), surface.is_periodic_u().then_some(ub - ua)),
+        };
+        let mut scan = ProfileScan::with_capacity(self.samples.len());
+        for &(t, point) in &self.samples {
+            let (d, seed) = match point {
+                Some(point) => {
+                    let (d, (u, v)) = self.reduce(t, point, target, tol)?;
+                    // The sweep coordinate inside the window, or no seed.
+                    let seed = match self.sweep {
+                        Sweep::Extrusion(_) => into_window(v, sweep_window, period).map(|v| (u, v)),
+                        Sweep::Revolution(_) => {
+                            into_window(u, sweep_window, period).map(|u| (u, v))
+                        }
+                    };
+                    (d, seed)
+                }
+                None => (f64::INFINITY, None),
+            };
+            scan.push((d, seed));
+        }
+        // The nearest sample decides: where its foot across the sweep is
+        // outside the window, the nearest point is on the window's border,
+        // and the grid finds it.
+        let nearest = scan
+            .iter()
+            .filter(|s| s.0.is_finite())
+            .min_by(|a, b| a.0.total_cmp(&b.0))?;
+        nearest.1?;
+        let mut starts = Starts::default();
+        for (i, &(d, seed)) in scan.iter().enumerate() {
+            let Some(at) = seed else { continue };
+            let lo = i.saturating_sub(1);
+            let hi = (i + 1).min(scan.len() - 1);
+            if scan[lo..=hi].iter().any(|c| c.0 < d) {
+                continue;
+            }
+            starts.offer((i, 0), at, d);
+        }
+        starts.refine(surface, target, tol).ok()
+    }
 }
 
 /// One row of a seed scan: `(u, v, square distance)` per cell, a gap where
@@ -311,6 +518,8 @@ pub struct SurfaceSeeds {
     /// `(parameters, point)` per cell, row by row; a gap where the surface
     /// would not evaluate.
     rows: Vec<Vec<(f64, f64, Option<Point>)>>,
+    /// A swept surface's profile scan, which answers in place of the grid.
+    profile: Option<Profile>,
 }
 
 impl SurfaceSeeds {
@@ -330,7 +539,10 @@ impl SurfaceSeeds {
             }
             rows.push(row);
         }
-        Ok(Self { rows })
+        Ok(Self {
+            rows,
+            profile: Profile::of(surface, samples, tol),
+        })
     }
 
     /// Project `target`, seeded from the stored grid, bit-identical to
@@ -345,11 +557,9 @@ impl SurfaceSeeds {
         target: Point,
         tol: Tolerances,
     ) -> OgeomResult<SurfaceProjection> {
-        // The same closed-form foot [`project_on_surface`] takes first, so
-        // the two answer alike to the bit.
-        if let Some(seed) = closed_form_foot(surface, target, tol)
-            && let Ok(found) = refine_foot(surface, target, seed, tol)
-        {
+        // The same closed form [`project_on_surface`] takes first, so the
+        // two answer alike to the bit.
+        if let Some(found) = closed_form(surface, target, self.profile.as_ref(), tol) {
             return Ok(found);
         }
         let mut scan = Scan::default();
@@ -624,6 +834,99 @@ mod tests {
                 found.parameters
             );
             assert!((found.distance - 0.3).abs() < 1e-9, "{}", found.distance);
+        }
+    }
+
+    /// The closed forms and the profile scan answer at least as near as the
+    /// grid they replace, on every surface they cover: a cone (both nappes
+    /// in reach), a spindle torus, a trimmed drum whose window starts past a
+    /// whole turn, an extrusion of a skew spline, a full and a partial
+    /// revolution of a spline. Targets are spread over a box around each,
+    /// off the axis and on it; each answer is a foot whatever the path, and
+    /// a stored grid answers to the bit as the per-call projection does.
+    #[test]
+    fn closed_forms_are_no_farther_than_the_grid() {
+        use crate::{
+            ConeSurface, Curve, ExtrusionSurface, RevolutionSurface, TorusSurface, TrimmedSurface,
+            curve::BSplineCurve,
+        };
+        use ogeom_math::{Axis, Cone, Direction, KnotVector, Torus};
+        let tilted = Frame::new(
+            Point::new(0.3, -0.2, 0.1),
+            Direction::from_coords(0.2, 0.1, 1.0, T).unwrap(),
+            Direction::from_coords(1.0, 0.0, 0.0, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let spline = Curve::BSpline(
+            BSplineCurve::new(
+                KnotVector::clamped_uniform(3, 6).unwrap(),
+                vec![
+                    Point::new(1.0, 0.0, -1.0),
+                    Point::new(1.6, 0.4, -0.5),
+                    Point::new(0.7, -0.3, 0.0),
+                    Point::new(1.9, 0.2, 0.4),
+                    Point::new(1.2, 0.5, 0.9),
+                    Point::new(0.5, 0.1, 1.4),
+                ],
+                T,
+            )
+            .unwrap(),
+        );
+        let skew = Direction::from_coords(0.1, 0.3, 1.0, T).unwrap();
+        let z = Axis::new(
+            Point::ORIGIN,
+            Direction::from_coords(0.0, 0.0, 1.0, T).unwrap(),
+        );
+        let drum: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(tilted, 1.0, T).unwrap(), (-1.0, 1.0))
+                .unwrap()
+                .into();
+        let surfaces: Vec<SurfaceGeometry> = vec![
+            ConeSurface::new(Cone::new(tilted, 0.4, 0.5, T).unwrap(), (-2.0, 1.5))
+                .unwrap()
+                .into(),
+            TorusSurface::new(Torus::new(tilted, 1.0, 1.3, T).unwrap()).into(),
+            SurfaceGeometry::Trimmed(Box::new(
+                TrimmedSurface::new(drum, (7.0, 9.5), (-0.8, 0.6), T).unwrap(),
+            )),
+            SurfaceGeometry::Extrusion(Box::new(
+                ExtrusionSurface::over(spline.clone(), skew, (-1.0, 1.5)).unwrap(),
+            )),
+            SurfaceGeometry::Revolution(Box::new(
+                RevolutionSurface::new(spline.clone(), z, core::f64::consts::TAU).unwrap(),
+            )),
+            SurfaceGeometry::Revolution(Box::new(RevolutionSurface::new(spline, z, 2.0).unwrap())),
+        ];
+        for surface in &surfaces {
+            let mut closed = 0;
+            let seeds = SurfaceSeeds::over(surface, 24, T).unwrap();
+            for i in 0..7 {
+                for j in 0..7 {
+                    for k in 0..5 {
+                        let target = Point::new(
+                            f64::from(i).mul_add(0.55, -1.6),
+                            f64::from(j).mul_add(0.5, -1.4),
+                            f64::from(k).mul_add(0.7, -1.3),
+                        );
+                        let found = project_on_surface(surface, target, 24, T).unwrap();
+                        let profile = Profile::of(surface, 24, T);
+                        if closed_form(surface, target, profile.as_ref(), T).is_some() {
+                            closed += 1;
+                        }
+                        let grid = grid_projection(surface, target, 24, T).unwrap();
+                        assert!(
+                            found.distance <= grid.distance + 1e-9,
+                            "{:?} at {target:?}: {} against the grid's {}",
+                            surface.kind(),
+                            found.distance,
+                            grid.distance
+                        );
+                        assert_eq!(seeds.project(surface, target, T).unwrap(), found);
+                    }
+                }
+            }
+            assert!(closed > 0, "{:?} never took a closed form", surface.kind());
         }
     }
 
