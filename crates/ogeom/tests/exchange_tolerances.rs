@@ -195,6 +195,12 @@ const R: f64 = 10.0;
 /// starts at the north pole and runs through the south pole halfway round,
 /// as an exchange file states it.
 fn half_ball_with_a_meridian_rim() -> ogeom::doc::Document {
+    half_ball(true)
+}
+
+/// The half ball as a solid, or as its closed shell alone (a sheet, which
+/// IGES writes as independent trimmed surfaces).
+fn half_ball(as_solid: bool) -> ogeom::doc::Document {
     use ogeom::geom::{CircleCurve, Curve, PlaneSurface, SphereSurface, SurfaceGeometry};
     use ogeom::math::{Circle, Direction, Frame, Plane, Point, Sphere};
     use ogeom::topo::{FaceData, Location};
@@ -237,9 +243,13 @@ fn half_ball_with_a_meridian_rim() -> ogeom::doc::Document {
         );
     }
     let shell = model.add_shell(&faces).unwrap();
-    let solid = model.add_solid(&[shell]).unwrap();
+    let body = if as_solid {
+        model.add_solid(&[shell]).unwrap()
+    } else {
+        shell
+    };
     let mut document = ogeom::doc::Document::over(model);
-    document.add_part("half ball", solid);
+    document.add_part("half ball", body);
     document
 }
 
@@ -296,6 +306,48 @@ fn a_rim_through_a_sphere_pole_reads_cut_at_the_pole() {
             "{format}: volume {measured} against {exact}"
         );
     }
+}
+
+/// The half ball written as two independent trimmed surfaces (144), each
+/// bounded by the whole meridian circle. The rim is cut at the pole in both
+/// faces alike, the flat one included, so the faces sew piece to piece into
+/// a closed shell: two exact meridians, nothing widened, the exact volume.
+#[test]
+fn trimmed_surfaces_bounded_through_a_sphere_pole_read_cut_at_the_pole() {
+    let text = ogeom::io::write_iges(&half_ball(false), T).unwrap();
+    let iges = ogeom::io::read_iges(&text, T).unwrap();
+    let model = iges.document.model();
+    assert!(
+        iges.report
+            .warnings
+            .iter()
+            .all(|w| !w.contains("fit stopped")),
+        "{:?}",
+        iges.report.warnings
+    );
+    assert_eq!(iges.solids.len(), 1, "sewn closed: {:?}", iges.report);
+    let solid = &iges.solids[0];
+    assert_eq!(widest_pcurve_excess(model, solid), None);
+    let mut rims = 0;
+    for edge in explore_unique(model, solid, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        assert!(
+            data.tolerance.get() <= T.confusion(),
+            "an edge states {}",
+            data.tolerance.get()
+        );
+        rims += usize::from(!data.degenerate);
+    }
+    assert_eq!(rims, 2, "the rim in two meridians");
+    let diagnosis = check(model, solid, T).unwrap();
+    let broken = diagnosis.of(Severity::Broken);
+    assert!(broken.is_empty(), "{broken:?}");
+    let exact = 2.0 / 3.0 * core::f64::consts::PI * R.powi(3);
+    let measured = volume(model, solid).unwrap();
+    assert!(
+        (measured - exact).abs() <= exact * 1e-3,
+        "volume {measured} against {exact}"
+    );
 }
 
 /// A STEP file that styles the meridian rim and dimensions it through a

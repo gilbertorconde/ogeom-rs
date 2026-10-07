@@ -103,6 +103,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         edges: HashMap::new(),
         pieces: HashMap::new(),
         pole_vertices: Vec::new(),
+        trim_poles: Vec::new(),
         vertex_misses: (0, 0.0),
         depth: 0,
         tol,
@@ -147,6 +148,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         .map(|(de, _)| *de)
         .collect();
     let total = face_des.len() as u64;
+    reader.trim_poles = reader.poles_of_trims(&face_des);
     for (done, de) in face_des.into_iter().enumerate() {
         ogeom_core::progress::checkpoint()?;
         ogeom_core::progress::stage_at("iges: face", done as u64 + 1, total);
@@ -291,6 +293,10 @@ struct Reader<'a> {
     pieces: HashMap<(i64, i64), Vec<Shape>>,
     /// The vertices made at poles, shared by every piece that meets one.
     pole_vertices: Vec<Shape>,
+    /// The chart poles of every surface among the trimmed surfaces being
+    /// read to sew together: each boundary segment through one is cut
+    /// there, whichever face it bounds.
+    trim_poles: Vec<Point>,
     /// Vertices a curve end missed by more than the confusion tolerance
     /// and that widened to cover it: how many, and the widest miss.
     vertex_misses: (usize, f64),
@@ -1617,9 +1623,96 @@ impl<'a> Reader<'a> {
         let mut wires = Vec::new();
         for boundary in boundaries {
             let segments = self.boundary_segments(boundary)?;
-            wires.push(self.wire_edges(de, segments)?);
+            let segments = self.cut_at_trim_poles(segments);
+            let edges = self.wire_edges(de, segments)?;
+            self.cover_trim_poles(&edges)?;
+            wires.push(edges);
         }
         self.assemble_face(surface, wires)
+    }
+
+    /// The chart poles of the surfaces of these trimmed (144) and bounded
+    /// (143) surfaces, one point per pole; anything unreadable is passed
+    /// over for its face to report.
+    fn poles_of_trims(&mut self, face_des: &[i64]) -> Vec<Point> {
+        let mut out: Vec<Point> = Vec::new();
+        for &de in face_des {
+            let surface_de = match self.entity(de) {
+                Ok(e) if e.kind == 144 => e.at(0).int(),
+                Ok(e) if e.kind == 143 => e.at(1).int(),
+                _ => continue,
+            };
+            let Ok(surface) = self.surface(surface_de) else {
+                continue;
+            };
+            for pole in crate::pcurves::chart_poles(&surface, self.tol) {
+                if out.iter().all(|p| p.distance(pole) > self.tol.confusion()) {
+                    out.push(pole);
+                }
+            }
+        }
+        out
+    }
+
+    /// Boundary segments cut where they run through a pole in
+    /// `trim_poles`, each piece over its own window of the curve.
+    ///
+    /// No single image of a curve through a pole follows it through the
+    /// chart: at the pole it leaves along another column than the one it
+    /// arrived on. Trimmed surfaces share no edges, so the cut is made on
+    /// every face's segments alike, a face whose surface has no pole there
+    /// included: the neighbour across a sphere's meridian rim then has the
+    /// same pieces, and the faces sew piece to piece.
+    fn cut_at_trim_poles(&self, segments: Vec<(Curve, (f64, f64))>) -> Vec<(Curve, (f64, f64))> {
+        if self.trim_poles.is_empty() {
+            return segments;
+        }
+        let mut out = Vec::with_capacity(segments.len());
+        for (curve, range) in segments {
+            let crossings =
+                crate::pcurves::pole_crossings(&curve, range, &self.trim_poles, self.tol);
+            let mut from = range.0;
+            for (t, ..) in crossings {
+                out.push((curve.clone(), (from, t)));
+                from = t;
+            }
+            out.push((curve, (from, range.1)));
+        }
+        out
+    }
+
+    /// Widen each vertex of `edges` that stands near a pole in
+    /// `trim_poles`, off it by more than the confusion distance, to reach
+    /// the pole: the vertex a cut put on the curve is the pole's.
+    fn cover_trim_poles(&mut self, edges: &[Shape]) -> OgeomResult<()> {
+        let reach = self.tol.confusion() * 100.0;
+        for edge in edges {
+            let Some((first, last)) = ogeom_algo::edge_vertices(&self.model, edge)? else {
+                continue;
+            };
+            for vertex in [first, last] {
+                let Some(at) = self
+                    .model
+                    .node(&vertex)
+                    .and_then(|n| n.data().as_vertex())
+                    .map(|d| d.point)
+                else {
+                    continue;
+                };
+                let off = self
+                    .trim_poles
+                    .iter()
+                    .map(|p| p.distance(at))
+                    .fold(f64::INFINITY, f64::min);
+                if off > self.tol.confusion() && off <= reach {
+                    self.model.widen(
+                        &vertex,
+                        ogeom_core::Tolerance::new(off + self.tol.confusion())?,
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Boundary segments into a closed chain of edges, head to tail.
@@ -2667,23 +2760,42 @@ impl<'a> Reader<'a> {
             );
         }
         let count = entity.count(2);
+        let members: Vec<i64> = (0..count).map(|i| entity.at(3 + i).int()).collect();
         let (mut solids, mut faces) = (Vec::new(), Vec::new());
-        for i in 0..count {
-            let member = entity.at(3 + i).int();
-            let Some(kind) = self.file.entity(member).map(|m| m.kind) else {
-                continue;
-            };
-            match kind {
-                186 => solids.push(self.manifold_solid(member)?),
-                143 | 144 => faces.push(self.face(member)?),
-                408 => {
-                    let (s, f) = self.instance(member, built, depth + 1)?;
-                    solids.extend(s);
-                    faces.extend(f);
+        let trims: Vec<i64> = members
+            .iter()
+            .copied()
+            .filter(|&m| {
+                self.file
+                    .entity(m)
+                    .is_some_and(|e| matches!(e.kind, 143 | 144))
+            })
+            .collect();
+        let poles = self.poles_of_trims(&trims);
+        // A nested definition reads its own trims against its own poles,
+        // and the enclosing ones are back in force once it is read.
+        let outer_poles = core::mem::replace(&mut self.trim_poles, poles);
+        let mut read_members = || -> OgeomResult<()> {
+            for &member in &members {
+                let Some(kind) = self.file.entity(member).map(|m| m.kind) else {
+                    continue;
+                };
+                match kind {
+                    186 => solids.push(self.manifold_solid(member)?),
+                    143 | 144 => faces.push(self.face(member)?),
+                    408 => {
+                        let (s, f) = self.instance(member, built, depth + 1)?;
+                        solids.extend(s);
+                        faces.extend(f);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
+            Ok(())
+        };
+        let read = read_members();
+        self.trim_poles = outer_poles;
+        read?;
         built.insert(de, (solids.clone(), faces.clone()));
         Ok((solids, faces))
     }
@@ -3147,6 +3259,7 @@ mod tests {
             edges: HashMap::new(),
             pieces: HashMap::new(),
             pole_vertices: Vec::new(),
+            trim_poles: Vec::new(),
             vertex_misses: (0, 0.0),
             depth: 0,
             tol: T,

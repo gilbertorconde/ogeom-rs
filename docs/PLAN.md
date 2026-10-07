@@ -159,8 +159,10 @@ so one in inches or degrees fails the gap test and is derived.
 
 **Edges through a pole on reading.** Both readers cut an edge through a pole
 of a face it bounds (a sphere's pole, a cone's apex, a patch's collapsed side)
-before any face is built. Not cut: IGES trimmed surfaces (144), whose faces
-sew whole edge to whole edge, and pcurves other producers build through a
+before any face is built. IGES trimmed surfaces (143, 144) cut every boundary
+segment through a pole of any surface read with them, so neighbours sew piece
+to piece. Not cut: a trim placed by one subfigure instance against a pole of
+a surface placed by another, and pcurves other producers build through a
 pole. The cut edge stays in the model unused, and a STEP style or shape
 aspect naming its file id lands on every piece.
 

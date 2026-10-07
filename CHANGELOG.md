@@ -25,6 +25,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A placed dome or ball drilled through its pole closes.** A sphere
+  face whose pole a curved wall passes through is re-charted when its solid
+  is moved, rotated, mirrored or scaled, or lies on a left-handed sphere,
+  and a mirrored or scaled whole ball drilled that way no longer gives a
+  wrong volume.
+
+- **IGES trimmed surfaces bounded through a pole read in exact pieces.** A
+  boundary of a trimmed or bounded surface (143, 144) that runs through a
+  pole of a surface read with it (a sphere's pole, a cone's apex, a patch's
+  collapsed side) is cut at the pole in every face it bounds, so the faces
+  still sew and each piece takes an exact pcurve. A half ball bounded by a
+  meridian circle reads closed with the exact volume.
+
 - **A boolean between nearly coplanar planar faces that only touch
   refuses less.** A face lying on one side of the other's plane, to
   rounding, is no longer split by the planes' line, which rounding alone
