@@ -5439,6 +5439,10 @@ struct GeneralFused {
     /// are carried for the consumers that want the contact itself.
     tangents: Vec<TangentRec>,
     pieces: Vec<FacePiece>,
+    /// Pieces of the two arguments standing for one patch of one surface,
+    /// as indices into `pieces`: the first argument's piece, then the
+    /// second's.
+    coincident: Vec<(usize, usize)>,
     /// Junctions several paves describe, each resolved once for every
     /// strand that ends in it.
     junctions: Vec<Junction>,
@@ -6389,7 +6393,12 @@ fn distance_to_edge_curve(
 }
 
 /// Pair up the pieces two coincident faces contribute for the same patch of
-/// one surface, and mark the second argument's copy as stood in for.
+/// one surface, and mark the second argument's copy as stood in for where
+/// the material is on the same side.
+///
+/// Returns each pair, first argument's piece first, the opposed ones
+/// included: whichever of the two the operation drops, its face is recorded
+/// as having become the one it keeps.
 ///
 /// The substitution is by *region*, not by argument: a piece of `b` is a
 /// duplicate exactly where a piece of `a`, on the same side and on a surface
@@ -6397,23 +6406,32 @@ fn distance_to_edge_curve(
 /// `a` has nothing there (a bore refilled by the cylinder that cut it, whose
 /// caps fill holes the part no longer has faces for), nothing stands in, and
 /// `b`'s piece is the only description of that patch there is.
-fn mark_covered_coincidences(ga: &GSolid, gb: &GSolid, pieces: &mut [FacePiece], tol: Tolerances) {
+fn mark_covered_coincidences(
+    ga: &GSolid,
+    gb: &GSolid,
+    pieces: &mut [FacePiece],
+    tol: Tolerances,
+) -> Vec<(usize, usize)> {
+    let on = |state: PieceState| matches!(state, PieceState::OnAligned | PieceState::OnOpposed);
     // Which pieces of the first argument stand on a shared surface.
-    let from_a: Vec<(usize, usize)> = pieces
+    let from_a: Vec<(usize, usize, PieceState)> = pieces
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.from_a && p.state == PieceState::OnAligned)
-        .map(|(i, p)| (i, p.face))
+        .filter(|(_, p)| p.from_a && on(p.state))
+        .map(|(i, p)| (i, p.face, p.state))
         .collect();
     if from_a.is_empty() {
-        return;
+        return Vec::new();
     }
-    let mut covered: Vec<usize> = Vec::new();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
     for (index, piece) in pieces.iter().enumerate() {
-        if piece.from_a || piece.state != PieceState::OnAligned {
+        if piece.from_a || !on(piece.state) {
             continue;
         }
-        for &(other, face_a) in &from_a {
+        for &(other, face_a, state) in &from_a {
+            if state != piece.state {
+                continue;
+            }
             let host = &ga.faces[face_a];
             // The point `b`'s piece stands at, read in `a`'s face's chart,
             // as far off it as the two faces say they may stand. A point
@@ -6430,14 +6448,17 @@ fn mark_covered_coincidences(ga: &GSolid, gb: &GSolid, pieces: &mut [FacePiece],
             // comes back outside whenever that missing segment would have
             // been crossed.
             if inside_rings(&pieces[other].outlines, at) {
-                covered.push(index);
+                pairs.push((other, index));
                 break;
             }
         }
     }
-    for index in covered {
-        pieces[index].covered = true;
+    for &(_, index) in &pairs {
+        if pieces[index].state == PieceState::OnAligned {
+            pieces[index].covered = true;
+        }
     }
+    pairs
 }
 
 /// The face-bound filter's audit: admit every pair, and name any the filter
@@ -8105,7 +8126,7 @@ fn general_fuse_as(
         pieces.extend(face_pieces);
         junctions.extend(face_junctions);
     }
-    mark_covered_coincidences(&ga, &gb, &mut pieces, tol);
+    let coincident = mark_covered_coincidences(&ga, &gb, &mut pieces, tol);
     if *ARRANGE_DEBUG {
         for (fi, partners) in same_a.iter().enumerate() {
             if !partners.is_empty() {
@@ -8161,6 +8182,7 @@ fn general_fuse_as(
         contacts,
         tangents,
         pieces,
+        coincident,
         junctions,
     })
 }
@@ -9479,7 +9501,9 @@ fn rebuilt_pieces(
     }
     let mut faces = Vec::new();
     let mut kept_sources: std::collections::HashSet<Shape> = std::collections::HashSet::new();
+    let mut built_of: hashbrown::HashMap<usize, usize> = hashbrown::HashMap::new();
     for (slot, &(index, flip)) in kept.iter().enumerate() {
+        built_of.insert(index, slot);
         let piece = &fused.pieces[index];
         let mut built = build_piece(&mut rebuild, fused, piece, tol)?;
         if flip {
@@ -9501,9 +9525,28 @@ fn rebuilt_pieces(
         );
     }
     let holes = holes_put_back(rebuild.model, fused, kept, tol)?;
+    // A piece dropped because the other argument's coincident piece is
+    // kept for the same patch: its face became that piece's face.
+    let mut stood_for: std::collections::HashSet<Shape> = std::collections::HashSet::new();
+    for &(index_a, index_b) in &fused.coincident {
+        let (dropped, standing) = match (built_of.get(&index_a), built_of.get(&index_b)) {
+            (Some(&slot), None) => (index_b, slot),
+            (None, Some(&slot)) => (index_a, slot),
+            _ => continue,
+        };
+        let source = source_face(&fused.pieces[dropped]);
+        if !history
+            .modified(&source)
+            .iter()
+            .any(|f| f.is_same(&faces[standing]))
+        {
+            history.modify(&source, faces[standing].clone());
+        }
+        stood_for.insert(source);
+    }
     for piece in &fused.pieces {
         let source = source_face(piece);
-        if !kept_sources.contains(&source) {
+        if !kept_sources.contains(&source) && !stood_for.contains(&source) {
             history.delete(&source);
         }
     }
@@ -11866,5 +11909,130 @@ mod tests {
             .filter(|face| local.history.copy_of(face).is_some())
             .count();
         assert_eq!(copied, 580);
+    }
+
+    /// The face a primitive builder gave `role`.
+    fn face_with_role(model: &Model, solid: &Shape, role: ogeom_core::Role) -> Shape {
+        explore_unique(model, solid, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                matches!(
+                    model.provenance_of(f),
+                    Some(
+                        ogeom_core::Provenance::Primitive { role: r, .. }
+                            | ogeom_core::Provenance::Derived { role: r, .. }
+                    ) if *r == role
+                )
+            })
+            .unwrap()
+    }
+
+    /// The faces of `result` that `history` traces from `source`.
+    fn traced_into(model: &Model, result: &Shape, history: &History, source: &Shape) -> Vec<Shape> {
+        explore_unique(model, result, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .filter(|r| history.trace(source).iter().any(|t| t.is_same(r)))
+            .collect()
+    }
+
+    /// A cylinder's caps lying in a cube's faces: the common keeps the
+    /// cube's piece of each, and each cap traces to that face; the fuse
+    /// keeps one face per cap plane too, which both trace to. The
+    /// cylinder's side, half outside the cube, is not lost in the common.
+    #[test]
+    fn a_coincident_piece_dropped_for_the_others_traces_to_it() {
+        use ogeom_algo::primitive::roles::{FACE_MAX_Z, FACE_MIN_Z};
+        let mut model = Model::new();
+        let cube = make_box(&mut model, Frame::WORLD, (100.0, 100.0, 100.0), T)
+            .unwrap()
+            .shape;
+        let cylinder = make_cylinder(&mut model, Frame::WORLD, 50.0, 100.0, T)
+            .unwrap()
+            .shape;
+        for keep_in in [true, false] {
+            let built = if keep_in {
+                common(&mut model, &cube, &cylinder, T).unwrap()
+            } else {
+                fuse(&mut model, &cube, &cylinder, T).unwrap()
+            };
+            let expected = if keep_in {
+                PI * 50.0 * 50.0 * 100.0 / 4.0
+            } else {
+                1e6 + PI * 50.0 * 50.0 * 100.0 * 3.0 / 4.0
+            };
+            let v = volume(&model, &built.shape);
+            assert!(
+                (v - expected).abs() <= 1e-3 * expected,
+                "{v} against {expected}"
+            );
+            for role in [FACE_MIN_Z, FACE_MAX_Z] {
+                let (side, cap) = (
+                    face_with_role(&model, &cube, role),
+                    face_with_role(&model, &cylinder, role),
+                );
+                assert!(!built.history.is_deleted(&cap));
+                let from_cap = traced_into(&model, &built.shape, &built.history, &cap);
+                let from_side = traced_into(&model, &built.shape, &built.history, &side);
+                let shared = from_cap
+                    .iter()
+                    .filter(|f| from_side.iter().any(|g| g.is_same(f)))
+                    .count();
+                assert_eq!(shared, 1, "common {keep_in}");
+            }
+        }
+    }
+
+    /// A slot cut into a step already cut, its floor partly on the step's
+    /// floor: the cut keeps the step's floor there and the slot's floor
+    /// traces to it as well as to its own piece; the slot's ends, which lie
+    /// in the block's sides with the material on the same side, are cut
+    /// away and stay deleted.
+    #[test]
+    fn a_tool_face_on_a_floor_a_cut_left_traces_to_that_floor() {
+        use ogeom_algo::primitive::roles::{FACE_MAX_Z, FACE_MIN_X, FACE_MIN_Z};
+        let mut model = Model::new();
+        let block = make_box(&mut model, Frame::WORLD, (100.0, 100.0, 50.0), T)
+            .unwrap()
+            .shape;
+        let step = make_box(
+            &mut model,
+            frame_at(Point::new(50.0, -10.0, 30.0)),
+            (60.0, 120.0, 20.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let slot = make_box(
+            &mut model,
+            frame_at(Point::new(-10.0, 40.0, 30.0)),
+            (120.0, 20.0, 30.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let (step_floor, slot_floor) = (
+            face_with_role(&model, &step, FACE_MIN_Z),
+            face_with_role(&model, &slot, FACE_MIN_Z),
+        );
+        let stepped = cut(&mut model, &block, &step, T).unwrap();
+        let slotted = cut(&mut model, &stepped.shape, &slot, T).unwrap();
+        let history = stepped.history.then(&slotted.history);
+        let v = volume(&model, &slotted.shape);
+        assert!((v - 380_000.0).abs() <= 1e-6 * 380_000.0, "{v}");
+        let from_slot = traced_into(&model, &slotted.shape, &history, &slot_floor);
+        let from_step = traced_into(&model, &slotted.shape, &history, &step_floor);
+        assert_eq!(from_slot.len(), 2);
+        let shared = from_slot
+            .iter()
+            .filter(|f| from_step.iter().any(|g| g.is_same(f)))
+            .count();
+        assert_eq!(shared, 1);
+        // Faces whose material is gone stay gone: the slot's top and its
+        // end outside the block.
+        for role in [FACE_MAX_Z, FACE_MIN_X] {
+            assert!(history.is_deleted(&face_with_role(&model, &slot, role)));
+        }
     }
 }
