@@ -285,7 +285,7 @@ fn rebuild(
         restate,
         tol,
         history: History::new(),
-        new_vertices: HashMap::new(),
+        new_vertices: NewVertices::default(),
         new_edges: HashMap::new(),
         rederived: Vec::new(),
     };
@@ -304,7 +304,7 @@ struct Rebuild<'a> {
     tol: Tolerances,
     history: History,
     /// Each vertex occurrence's twin, by node and position.
-    new_vertices: HashMap<(TShapeId, [u64; 3]), Shape>,
+    new_vertices: NewVertices,
     /// Each edge occurrence's twin, by node and placement.
     new_edges: HashMap<(TShapeId, [u64; 3]), ConvertedEdge>,
     /// The edges given a pcurve that is not a closed form of their curve
@@ -472,10 +472,11 @@ impl Rebuild<'_> {
                         };
                         map(vertex.transform(model.datums())?.apply(v.point))
                     };
-                    let new_vertex = new_vertices
-                        .entry((vertex.node(), point_bits(at)))
-                        .or_insert_with(|| make_vertex(model, at).shape)
-                        .clone();
+                    let reach = model
+                        .node(&vertex)
+                        .and_then(|n| n.data().as_vertex())
+                        .map_or(0.0, |v| v.tolerance.get());
+                    let new_vertex = new_vertices.at(model, vertex.node(), at, reach, tol);
                     let mut degenerate = ogeom_topo::EdgeData::new();
                     degenerate.degenerate = true;
                     let new_edge = model.add_edge(degenerate, &[new_vertex.clone(), new_vertex])?;
@@ -853,7 +854,7 @@ fn convert_edge(
     data: &ogeom_topo::EdgeData,
     map: &dyn Fn(Point) -> Point,
     restate: Restate<'_>,
-    vertices: &mut HashMap<(TShapeId, [u64; 3]), Shape>,
+    vertices: &mut NewVertices,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Curve, (f64, f64))> {
     let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
@@ -895,7 +896,7 @@ fn convert_edge(
         (placed, range_on_placed)
     };
     // Vertices are shared across every edge that meets them: cached by the
-    // old node and the old vertex's own mapped point: the same bits every
+    // old node and the old vertex's own mapped point: the point every
     // neighbouring edge computes, unlike each spline's evaluated end.
     let old = model.children_of(edge)?;
     if old.is_empty() {
@@ -912,10 +913,7 @@ fn convert_edge(
         // far cap references the profile's vertex nodes under the travel,
         // and an edge placed identically still ends on a moved vertex.
         let at = map(occurrence.transform(model.datums())?.apply(data.point));
-        let fresh = vertices
-            .entry((occurrence.node(), point_bits(at)))
-            .or_insert_with(|| make_vertex(model, at).shape)
-            .clone();
+        let fresh = vertices.at(model, occurrence.node(), at, data.tolerance.get(), tol);
         // The old vertex's recorded slop (a file's, or a fit's) is the
         // new one's too: the curves it meets are the same curves, moved
         // exactly, and a vertex born at the default tolerance would refuse
@@ -1133,7 +1131,15 @@ fn exact_iso_pcurve(
             b.x = nu1;
         }
     } else {
-        let u = f64::midpoint(a.x, b.x);
+        // A column's end on a pole images to every u there, and the
+        // projection answers with any of them; the edge's middle images
+        // to its own column. Of the three, the median is the column
+        // whichever end, if either, stands on a pole.
+        let middle = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
+        let m = crate::measure::project_on_surface(surface, middle, 24, tol)?
+            .parameters
+            .0;
+        let u = a.x.max(b.x).min(m).max(a.x.min(b.x));
         a.x = u;
         b.x = u;
         if (a.y - b.y).abs() < (nv1 - nv0) * 1e-9 {
@@ -1523,6 +1529,36 @@ fn transformed_patch(
         }
     });
     ogeom_geom::BSplineSurface::rational(patch.u_knots().clone(), patch.v_knots().clone(), mapped)
+}
+
+/// The rebuilt vertices, by the old vertex node they stand for.
+///
+/// One old vertex placed at two points that coincide within its tolerance
+/// (a profile's end on the axis of a turn, under the profile's placement
+/// and under the turn's) is one new vertex, so every edge that meets it
+/// there ends on the same node.
+#[derive(Default)]
+struct NewVertices(HashMap<TShapeId, Vec<(Point, Shape)>>);
+
+impl NewVertices {
+    /// The new vertex for the old `node` placed at `at`, made on first ask.
+    fn at(
+        &mut self,
+        model: &mut Model,
+        node: TShapeId,
+        at: Point,
+        reach: f64,
+        tol: Tolerances,
+    ) -> Shape {
+        let reach = reach.max(tol.confusion());
+        let made = self.0.entry(node).or_default();
+        if let Some((_, found)) = made.iter().find(|(p, _)| p.distance(at) <= reach) {
+            return found.clone();
+        }
+        let fresh = make_vertex(model, at).shape;
+        made.push((at, fresh.clone()));
+        fresh
+    }
 }
 
 /// A rigid placement quantized for deduplication keys.
