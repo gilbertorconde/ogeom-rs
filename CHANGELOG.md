@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean between nearly coplanar planar faces that only touch
+  refuses less.** A face lying on one side of the other's plane, to
+  rounding, is no longer split by the planes' line, which rounding alone
+  placed across a converted corner facet meeting a pad's wall at a vertex,
+  or along a facet's side edge beside the next wall. A pad into a slab
+  drafted 0.00001 cuts and fuses at 45 of 60 row-count sets, against 34.
+
 - **Sub-micron holes stay holes.** An inner ring is dropped as a slit only
   where its edges walk out and back through the same vertices and it is
   thinner than a micron; a ring that goes round (a wall poked through by
