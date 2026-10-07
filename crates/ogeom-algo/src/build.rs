@@ -511,10 +511,15 @@ pub(crate) fn edges_turn(
             points.push(placement.apply(geometry.point_at(t, tol)?));
         }
     }
+    // About the walk's own first point: the sum is the same about any
+    // point, and about one far off it is a difference of huge products.
+    let Some(&anchor) = points.first() else {
+        return Ok(0.0);
+    };
     let mut newell = ogeom_math::Vector::ZERO;
     for i in 0..points.len() {
         let (a, b) = (points[i], points[(i + 1) % points.len()]);
-        newell += (a - ogeom_math::Point::ORIGIN).cross(b - ogeom_math::Point::ORIGIN);
+        newell += (a - anchor).cross(b - anchor);
     }
     Ok(newell.dot(axis))
 }

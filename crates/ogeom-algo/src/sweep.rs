@@ -1901,15 +1901,14 @@ fn rail(
     // walls they sweep by as much, all along the rail.
     let doubt = data.tolerance;
 
-    let line = ogeom_geom::LineCurve::segment(from, from + vector, tol)?;
-    let built = crate::build::make_edge_between(
-        model,
-        line.into(),
-        (0.0, vector.magnitude()),
-        &base,
-        &raised,
-        tol,
-    )?;
+    // Along the travel itself, its parameter the distance travelled: a
+    // segment between `from` and `from + vector` would measure its length
+    // off two far points and could come out short of the travel.
+    let travel = vector.magnitude();
+    let axis = Axis::new(from, Direction::new(vector, tol)?);
+    let line = ogeom_geom::LineCurve::over(axis, 0.0, travel)?;
+    let built =
+        crate::build::make_edge_between(model, line.into(), (0.0, travel), &base, &raised, tol)?;
     model.widen(&built.shape, doubt)?;
     model.set_derived(&built.shape, std::slice::from_ref(&base), roles::SWEEP_RAIL)?;
     rails.insert(base.node(), built.shape.clone());

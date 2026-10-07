@@ -87,16 +87,23 @@ impl Triangulation {
     ///
     /// Meaningful only for a mesh that is closed and consistently wound
     /// outward: each triangle contributes the signed volume of the tetrahedron
-    /// it forms with the origin, and the contributions cancel except over the
-    /// enclosed region. An open mesh gives a number with no meaning, and a mesh
-    /// wound inward gives the negative, which is why
+    /// it forms with the mesh's first position, and the contributions cancel
+    /// except over the enclosed region. An open mesh gives a number with no
+    /// meaning, and a mesh wound inward gives the negative, which is why
     /// [`Triangulation::is_closed`] exists to be asked first.
+    ///
+    /// The apex is a point of the mesh rather than the origin so a mesh far
+    /// from the origin sums tetrahedra of its own size, not slivers of huge
+    /// ones whose volumes cancel to rounding.
     #[must_use]
     pub fn volume(&self) -> f64 {
+        let Some(&apex) = self.positions.first() else {
+            return 0.0;
+        };
         self.triangles
             .iter()
             .map(|t| {
-                let [a, b, c] = t.map(|i| self.positions[i as usize].to_vector());
+                let [a, b, c] = t.map(|i| self.positions[i as usize] - apex);
                 a.dot(b.cross(c)) / 6.0
             })
             .sum()
