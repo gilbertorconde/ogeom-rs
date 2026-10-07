@@ -28,6 +28,9 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Pipes through sections match each section's start without copying
+  the loop.** A pipe through two circles is about 13 times faster.
+
 - **Tessellation repeats less work, with identical meshes.** The stored
   tessellation indexes each face mesh once and draws each edge once (13%
   faster on the largest corpus part); grid refinement samples each grid

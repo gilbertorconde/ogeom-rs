@@ -3234,75 +3234,84 @@ fn dense_wire(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Vec<P
     Ok(dense)
 }
 
-/// `count` points at even fractions of a closed polyline's length, from
-/// its first point.
-fn resampled(dense: &[Point], count: usize) -> Vec<Point> {
-    let mut lengths = vec![0.0];
-    for w in dense.windows(2) {
-        let last = lengths[lengths.len() - 1];
-        lengths.push(last + w[0].distance(w[1]));
-    }
-    let closing = dense[dense.len() - 1].distance(dense[0]);
-    let total = lengths[lengths.len() - 1] + closing;
-    let mut out = Vec::with_capacity(count);
-    let mut cursor = 0usize;
-    for s in 0..count {
-        #[allow(clippy::cast_precision_loss)]
-        let target = total * (s as f64) / (count as f64);
-        while cursor + 1 < lengths.len() && lengths[cursor + 1] < target {
-            cursor += 1;
-        }
-        let (a, b) = (dense[cursor], dense[(cursor + 1) % dense.len()]);
-        let la = lengths[cursor];
-        let lb = if cursor + 1 < lengths.len() {
-            lengths[cursor + 1]
-        } else {
-            total
-        };
-        let f = if lb > la {
-            (target - la) / (lb - la)
-        } else {
-            0.0
-        };
-        out.push(a + (b - a) * f.clamp(0.0, 1.0));
-    }
-    out
-}
-
 /// A section's dense polyline in its own frame, started and run where its
 /// `count` samples best match the section before (`previous`, in its
 /// frame): a section's start and sense are accidents of how it was drawn,
 /// and matched as given they twist the blend. Every start of the dense
-/// polyline is tried both ways; the given start and sense win a tie.
+/// polyline is a candidate both ways; the given start and sense win a tie.
+///
+/// A start's samples are read off one arc-length parametrisation per sense,
+/// shifted by the start's length. The cost is a smooth function of that
+/// shift, so it is read at about `8 * count` starts first and then at every
+/// start next to a coarse local minimum, in the order an exhaustive scan
+/// would visit them.
 fn matched_loop(dense: &[Point], count: usize, previous: &[Point]) -> ArcLoop {
-    let cost = |samples: &[Point]| -> f64 {
-        samples
-            .iter()
+    let n = dense.len();
+    let ways = [
+        ArcLoop::new(dense.to_vec()),
+        ArcLoop::new(dense.iter().rev().copied().collect()),
+    ];
+    #[allow(clippy::cast_precision_loss, reason = "a sample count")]
+    fn samples(arc: &ArcLoop, start: usize, count: usize) -> impl Iterator<Item = Point> + '_ {
+        let offset = arc.lengths[start] / arc.total;
+        (0..count).map(move |k| {
+            let f = offset + k as f64 / count as f64;
+            arc.at(if f >= 1.0 { f - 1.0 } else { f })
+        })
+    }
+    let cost = |arc: &ArcLoop, start: usize| -> f64 {
+        samples(arc, start, count)
             .zip(previous)
-            .map(|(p, q)| (*p - *q).dot(*p - *q))
+            .map(|(p, q)| (p - *q).dot(p - *q))
             .sum()
     };
-    let mut best = dense.to_vec();
-    let mut held = cost(&resampled(dense, count));
     let scale: f64 = previous
         .iter()
-        .chain(&resampled(dense, count))
-        .map(|p| (*p - Point::ORIGIN).dot(*p - Point::ORIGIN))
+        .copied()
+        .chain(samples(&ways[0], 0, count))
+        .map(|p| (p - Point::ORIGIN).dot(p - Point::ORIGIN))
         .sum();
     let slack = scale * 1e-12;
-    let backward: Vec<Point> = dense.iter().rev().copied().collect();
-    for way in [dense, &backward[..]] {
-        for start in 0..way.len() {
-            let mut turned = way.to_vec();
-            turned.rotate_left(start);
-            let c = cost(&resampled(&turned, count));
+    let coarse = 8 * count.max(1);
+    let mut held = cost(&ways[0], 0);
+    let mut best = (0, 0);
+    for (w, arc) in ways.iter().enumerate() {
+        let mut tried = vec![n <= 2 * coarse; n];
+        if n > 2 * coarse {
+            let picks: Vec<usize> = (0..coarse).map(|j| j * n / coarse).collect();
+            let costs: Vec<f64> = picks.iter().map(|&i| cost(arc, i)).collect();
+            for j in 0..coarse {
+                let (before, after) = ((j + coarse - 1) % coarse, (j + 1) % coarse);
+                if costs[j] <= costs[before] && costs[j] <= costs[after] {
+                    let (from, to) = (picks[before], picks[after]);
+                    let mut i = from;
+                    loop {
+                        tried[i] = true;
+                        if i == to {
+                            break;
+                        }
+                        i = (i + 1) % n;
+                    }
+                }
+            }
+        }
+        for start in (0..n).filter(|&i| tried[i]) {
+            let c = cost(arc, start);
             if c < held - slack {
                 held = c;
-                best = turned;
+                best = (w, start);
             }
         }
     }
-    ArcLoop::new(best)
+    let [forward, backward] = ways;
+    let (way, start) = best;
+    let arc = if way == 0 { forward } else { backward };
+    if start == 0 {
+        return arc;
+    }
+    let mut turned = arc.dense;
+    turned.rotate_left(start);
+    ArcLoop::new(turned)
 }
 
 /// Sweep a circular profile along a free-form spine, skinned.
