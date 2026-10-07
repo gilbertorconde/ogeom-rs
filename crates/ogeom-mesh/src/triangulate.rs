@@ -220,7 +220,11 @@ fn triangulate_reporting_from(
         // one line in the chart. It is drawn as a fan across each ring its
         // edges walked, at the points its neighbours share along those
         // edges, so the whole mesh still closes over it.
-        return Ok((sliver_fan(&walked, surface, tol), Verdict::Whole));
+        let reversed = face.orientation() == Orientation::Reversed;
+        return Ok((
+            sliver_fan(&walked, surface, &placement, reversed, tol),
+            Verdict::Whole,
+        ));
     }
     let phase = std::time::Instant::now();
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
@@ -281,10 +285,12 @@ fn triangulate_reporting_from(
     // Lift into space. The normal follows the face's orientation, not the
     // surface's: a reversed face presents the other side, and a renderer or a
     // volume computation that ignored that would have the solid inside out.
-    // A reflecting placement flips it once more: the mirrored chart's
-    // natural normal points the other way through the same flag.
-    let flip = (face.orientation() == Orientation::Reversed)
-        != !face.location().preserves_handedness(model.datums())?;
+    // A reflecting placement carries the surface's normal to the image's
+    // as it is, but turns the chart over: triangles wound counter-clockwise
+    // in the chart wind the other way in space, so the winding turns once
+    // more and the normal does not.
+    let reversed = face.orientation() == Orientation::Reversed;
+    let flip = reversed != !face.location().preserves_handedness(model.datums())?;
     let mut mesh = Triangulation::new();
     mesh.deflection_met = met;
     let mut hits = 0_usize;
@@ -301,7 +307,7 @@ fn triangulate_reporting_from(
         let normal =
             limit_normal(surface, u, v, tol).map_or(Vector::ZERO, |n| placement.apply_vector(n));
         mesh.positions.push(point);
-        mesh.normals.push(if flip { -normal } else { normal });
+        mesh.normals.push(if reversed { -normal } else { normal });
         mesh.parameters.push((u, v));
     }
     if *MESH_DEBUG_REFINE && (rings_ms + region_ms) > 50.0 {
@@ -1630,10 +1636,14 @@ pub fn open_chart_ring(
 }
 
 /// A face with no area as a fan of triangles across each of its walked
-/// rings, every point where its edges put it.
+/// rings, every point where its edges put it. Its normals are the
+/// surface's carried through the face's placement, turned where the face
+/// is reversed.
 fn sliver_fan(
     walked: &[Vec<(Point2, Point)>],
     surface: &SurfaceGeometry,
+    placement: &ogeom_math::Transform,
+    reversed: bool,
     tol: Tolerances,
 ) -> Triangulation {
     let mut mesh = Triangulation::new();
@@ -1642,11 +1652,12 @@ fn sliver_fan(
         for (uv, at) in ring {
             mesh.positions.push(*at);
             mesh.parameters.push((uv.x, uv.y));
-            mesh.normals.push(
-                surface
-                    .normal_at(uv.x, uv.y, tol)
-                    .map_or(ogeom_math::Vector::Z, |n| n.vector()),
-            );
+            let normal = surface
+                .normal_at(uv.x, uv.y, tol)
+                .map_or(ogeom_math::Vector::Z, |n| {
+                    placement.apply_vector(n.vector())
+                });
+            mesh.normals.push(if reversed { -normal } else { normal });
         }
         let count = u32::try_from(ring.len()).unwrap_or(0);
         for k in 1..count.saturating_sub(1) {
@@ -3939,6 +3950,75 @@ mod tests {
             (b - a).cross(c - a)
         };
         assert!(winding(&forward, 0).dot(winding(&backward, 0)) < 0.0);
+    }
+
+    /// Triangles whose winding points against the sum of their vertex
+    /// normals.
+    fn against(mesh: &Triangulation) -> usize {
+        mesh.triangles
+            .iter()
+            .filter(|t| {
+                let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                let facing = (b - a).cross(c - a);
+                let normal = t
+                    .iter()
+                    .fold(Vector::ZERO, |sum, &k| sum + mesh.normals[k as usize]);
+                facing.dot(normal) < 0.0
+            })
+            .collect::<Vec<_>>()
+            .len()
+    }
+
+    #[test]
+    fn a_mirrored_face_is_shaded_the_way_its_triangles_face() {
+        // A reflection turns the chart's natural normal over, so the
+        // winding has to turn to keep facing the way the image faces; the
+        // normals are the original's carried through the mirror and do not.
+        use ogeom_geom::{CircleCurve, Curve};
+        use ogeom_math::{Circle, Transform};
+        let mut model = Model::new();
+        let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+        let circle = Circle::new(frame, 10.0, T).unwrap();
+        let arc = ogeom_algo::make_edge(
+            &mut model,
+            Curve::Circle(CircleCurve::new(circle)),
+            (0.0, std::f64::consts::PI),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let wall = ogeom_algo::make_prism(&mut model, &arc, Vector::new(0.0, 0.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let face = explore_unique(&model, &wall, ShapeType::Face)
+            .unwrap()
+            .remove(0);
+        let copy = ogeom_algo::copied(&mut model, &face).unwrap().shape;
+        let mirror = Transform::plane_mirror(Point::ORIGIN, Direction::Y);
+        let image = ogeom_algo::transformed(&mut model, &copy, mirror)
+            .unwrap()
+            .shape;
+        for f in [&face, &image, &image.reversed()] {
+            let mesh = triangulate_face(&model, f, Deflection::default(), T).unwrap();
+            assert!(mesh.triangle_count() > 0);
+            assert_eq!(against(&mesh), 0, "{} triangles", mesh.triangle_count());
+        }
+        // The image's normal at (10, 0, 0) is the original's there, which
+        // the mirror leaves where it was.
+        let original = triangulate_face(&model, &face, Deflection::default(), T).unwrap();
+        let mirrored = triangulate_face(&model, &image, Deflection::default(), T).unwrap();
+        let at = |mesh: &Triangulation| {
+            let i = mesh
+                .positions
+                .iter()
+                .position(|p| p.distance(Point::new(10.0, 0.0, 0.0)) < 1e-9)
+                .unwrap();
+            mesh.normals[i]
+        };
+        assert!(at(&mirrored).is_equal(at(&original), T));
+        // The whole-shape path agrees.
+        let whole = triangulate(&model, &image, Deflection::default(), T).unwrap();
+        assert_eq!(against(&whole), 0);
     }
 
     #[test]
