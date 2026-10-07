@@ -170,13 +170,7 @@ impl Triangulation {
         }
         // Border vertices: endpoints of triangle edges used an odd number of
         // times.
-        let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
-        for t in &self.triangles {
-            for i in 0..3 {
-                let (a, b) = (t[i], t[(i + 1) % 3]);
-                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
-            }
-        }
+        let uses = edge_uses(&self.triangles);
         let mut border: Vec<u32> = uses
             .iter()
             .filter(|&(_, &n)| n % 2 == 1)
@@ -261,13 +255,7 @@ impl Triangulation {
         if !reach.is_finite() || reach <= 0.0 {
             return self.clone();
         }
-        let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
-        for t in &self.triangles {
-            for i in 0..3 {
-                let (a, b) = (t[i], t[(i + 1) % 3]);
-                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
-            }
-        }
+        let uses = edge_uses(&self.triangles);
         let border_edges: Vec<(u32, u32)> = uses
             .iter()
             .filter(|&(_, &n)| n % 2 == 1)
@@ -280,10 +268,19 @@ impl Triangulation {
             border_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
         border_vertices.sort_unstable();
         border_vertices.dedup();
+        // Cells about a border segment long, so a segment's box spans few.
+        #[allow(clippy::cast_precision_loss, reason = "a mean over a count")]
+        let spacing = border_edges
+            .iter()
+            .map(|&(a, b)| self.positions[a as usize].distance(self.positions[b as usize]))
+            .sum::<f64>()
+            / border_edges.len() as f64;
+        let grid = PointGrid::over(&self.positions, &border_vertices, spacing, reach);
 
         // For every border segment, the border vertices sitting on its
-        // interior, ordered along it.
+        // interior, ordered along it (by vertex where two stand level).
         let mut splits: FastMap<(u32, u32), Vec<u32>> = FastMap::default();
+        let mut near: Vec<u32> = Vec::new();
         for &(a, b) in &border_edges {
             let (pa, pb) = (self.positions[a as usize], self.positions[b as usize]);
             let d = pb - pa;
@@ -291,7 +288,12 @@ impl Triangulation {
             if l2 <= 0.0 {
                 continue;
             }
-            let mut on: Vec<(f64, u32)> = border_vertices
+            near.clear();
+            match &grid {
+                Some(grid) => grid.within(pa, pb, reach, &mut near),
+                None => near.extend_from_slice(&border_vertices),
+            }
+            let mut on: Vec<(f64, u32)> = near
                 .iter()
                 .filter(|&&v| v != a && v != b)
                 .filter_map(|&v| {
@@ -306,7 +308,7 @@ impl Triangulation {
             if on.is_empty() {
                 continue;
             }
-            on.sort_by(|x, y| x.0.total_cmp(&y.0));
+            on.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
             splits.insert((a, b), on.into_iter().map(|(_, v)| v).collect());
         }
         if splits.is_empty() {
@@ -365,17 +367,26 @@ impl Triangulation {
     pub fn sealed(&self, width: f64) -> Self {
         use ogeom_core::FastMap;
         let mut out = self.clone();
-        // Folds.
-        let mut seen: FastMap<[u32; 3], Vec<usize>> = FastMap::default();
-        for (i, t) in out.triangles.iter().enumerate() {
-            let mut key = *t;
-            key.sort_unstable();
-            seen.entry(key).or_default().push(i);
-        }
+        // Folds: the triangles on each set of three vertices, in order.
+        let mut keyed: Vec<([u32; 3], usize)> = out
+            .triangles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let mut key = *t;
+                key.sort_unstable();
+                (key, i)
+            })
+            .collect();
+        keyed.sort_unstable();
         let mut drop = vec![false; out.triangles.len()];
-        for list in seen.values() {
-            let mut open: Vec<usize> = Vec::new();
-            for &i in list {
+        let mut open: Vec<usize> = Vec::new();
+        for group in keyed.chunk_by(|x, y| x.0 == y.0) {
+            if group.len() < 2 {
+                continue;
+            }
+            open.clear();
+            for &(_, i) in group {
                 let t = out.triangles[i];
                 let reverse = open.iter().position(|&j| {
                     let u = out.triangles[j];
@@ -400,13 +411,7 @@ impl Triangulation {
             return out;
         }
         // Cracks: each border edge walked the other way from its triangle.
-        let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
-        for t in &out.triangles {
-            for k in 0..3 {
-                let (a, b) = (t[k], t[(k + 1) % 3]);
-                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
-            }
-        }
+        let uses = edge_uses(&out.triangles);
         let mut onward: FastMap<u32, Vec<u32>> = FastMap::default();
         for t in &out.triangles {
             for k in 0..3 {
@@ -419,11 +424,18 @@ impl Triangulation {
         let mut done: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
         let mut starts: Vec<u32> = onward.keys().copied().collect();
         starts.sort_unstable();
-        for start in starts {
+        // The walk each vertex was last put on a ring by, plus one.
+        let mut on_walk: Vec<u32> = vec![0; out.positions.len()];
+        #[allow(clippy::cast_possible_truncation)]
+        for (walk, start) in starts.into_iter().enumerate() {
+            let walk = walk as u32 + 1;
             if done.contains(&start) {
                 continue;
             }
             let mut ring = vec![start];
+            if let Some(mark) = on_walk.get_mut(start as usize) {
+                *mark = walk;
+            }
             let mut at = start;
             let closed = loop {
                 let Some(next) = onward.get(&at) else {
@@ -435,10 +447,17 @@ impl Triangulation {
                 if next == start {
                     break true;
                 }
-                if ring.contains(&next) || ring.len() > onward.len() {
+                let seen = match on_walk.get(next as usize) {
+                    Some(&mark) => mark == walk,
+                    None => ring.contains(&next),
+                };
+                if seen || ring.len() > onward.len() {
                     break false;
                 }
                 ring.push(next);
+                if let Some(mark) = on_walk.get_mut(next as usize) {
+                    *mark = walk;
+                }
                 at = next;
             };
             for &v in &ring {
@@ -502,7 +521,10 @@ impl Triangulation {
             )
         };
 
-        let mut buckets: FastMap<(i64, i64, i64), Vec<u32>> = FastMap::default();
+        // Each cell's first and last vertex, and each vertex's successor in
+        // its cell: the cells read back in the order they were filled.
+        let mut buckets: FastMap<(i64, i64, i64), (u32, u32)> = FastMap::default();
+        let mut next_in_cell: Vec<u32> = Vec::with_capacity(self.positions.len());
         let mut remap = vec![0_u32; self.positions.len()];
         let mut out = Self::new();
         out.deflection_met = self.deflection_met;
@@ -513,18 +535,20 @@ impl Triangulation {
             'search: for dx in -1..=1 {
                 for dy in -1..=1 {
                     for dz in -1..=1 {
-                        for &candidate in buckets
-                            .get(&(
-                                kx.saturating_add(dx),
-                                ky.saturating_add(dy),
-                                kz.saturating_add(dz),
-                            ))
-                            .map_or(&[][..], Vec::as_slice)
-                        {
+                        let Some(&(first, _)) = buckets.get(&(
+                            kx.saturating_add(dx),
+                            ky.saturating_add(dy),
+                            kz.saturating_add(dz),
+                        )) else {
+                            continue;
+                        };
+                        let mut candidate = first;
+                        while candidate != u32::MAX {
                             if out.positions[candidate as usize].is_equal(*position, tol) {
                                 found = Some(candidate);
                                 break 'search;
                             }
+                            candidate = next_in_cell[candidate as usize];
                         }
                     }
                 }
@@ -546,7 +570,13 @@ impl Triangulation {
                 {
                     out.parameters.push(uv);
                 }
-                buckets.entry((kx, ky, kz)).or_default().push(fresh);
+                next_in_cell.push(u32::MAX);
+                if let Some((_, last)) = buckets.get_mut(&(kx, ky, kz)) {
+                    next_in_cell[*last as usize] = fresh;
+                    *last = fresh;
+                } else {
+                    buckets.insert((kx, ky, kz), (fresh, fresh));
+                }
                 fresh
             });
             remap[index] = target;
@@ -561,6 +591,99 @@ impl Triangulation {
             }
         }
         out
+    }
+}
+
+/// How many triangles use each undirected edge, keyed (smaller, larger).
+fn edge_uses(triangles: &[[u32; 3]]) -> ogeom_core::FastMap<(u32, u32), usize> {
+    let mut uses: ogeom_core::FastMap<(u32, u32), usize> = ogeom_core::FastMap::default();
+    // A closed mesh has three edges to every two triangles; sized for that,
+    // the table is never grown while it is filled.
+    uses.reserve(triangles.len() * 3 / 2 + 3);
+    for t in triangles {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    uses
+}
+
+/// Some of a mesh's vertices bucketed by a cubic grid, for the ones near a
+/// segment.
+struct PointGrid {
+    cell: f64,
+    /// Each occupied cell's vertices.
+    cells: ogeom_core::FastMap<(i64, i64, i64), Vec<u32>>,
+    /// The vertices, for a query whose box spans more cells than there are
+    /// vertices to look at.
+    all: Vec<u32>,
+}
+
+impl PointGrid {
+    /// `vertices` of `positions` in cells of about `spacing`, never finer
+    /// than `reach`; `None` where no finite cell size fits.
+    fn over(positions: &[Point], vertices: &[u32], spacing: f64, reach: f64) -> Option<Self> {
+        let cell = spacing.max(reach);
+        if !cell.is_finite() || cell <= 0.0 {
+            return None;
+        }
+        let mut cells: ogeom_core::FastMap<(i64, i64, i64), Vec<u32>> =
+            ogeom_core::FastMap::default();
+        for &v in vertices {
+            cells
+                .entry(Self::key(positions[v as usize], cell))
+                .or_default()
+                .push(v);
+        }
+        Some(Self {
+            cell,
+            cells,
+            all: vertices.to_vec(),
+        })
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn key(p: Point, cell: f64) -> (i64, i64, i64) {
+        (
+            (p.x / cell).floor() as i64,
+            (p.y / cell).floor() as i64,
+            (p.z / cell).floor() as i64,
+        )
+    }
+
+    /// Every vertex that may lie within `reach` of the segment from `a` to
+    /// `b`, and some that do not: those in the cells round the segment's
+    /// box widened by `reach`, with a cell to spare each way for rounding.
+    fn within(&self, a: Point, b: Point, reach: f64, out: &mut Vec<u32>) {
+        let low = Point::new(
+            a.x.min(b.x) - reach,
+            a.y.min(b.y) - reach,
+            a.z.min(b.z) - reach,
+        );
+        let high = Point::new(
+            a.x.max(b.x) + reach,
+            a.y.max(b.y) + reach,
+            a.z.max(b.z) + reach,
+        );
+        let (lo, hi) = (Self::key(low, self.cell), Self::key(high, self.cell));
+        let span = |l: i64, h: i64| h.saturating_sub(l).saturating_add(3).unsigned_abs();
+        let boxed = span(lo.0, hi.0)
+            .saturating_mul(span(lo.1, hi.1))
+            .saturating_mul(span(lo.2, hi.2));
+        if boxed > self.cells.len() as u64 {
+            out.extend_from_slice(&self.all);
+            return;
+        }
+        for x in lo.0.saturating_sub(1)..=hi.0.saturating_add(1) {
+            for y in lo.1.saturating_sub(1)..=hi.1.saturating_add(1) {
+                for z in lo.2.saturating_sub(1)..=hi.2.saturating_add(1) {
+                    if let Some(found) = self.cells.get(&(x, y, z)) {
+                        out.extend_from_slice(found);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -759,5 +882,47 @@ mod tests {
             "the fold is cancelled"
         );
         assert!(unfolded.is_closed());
+    }
+
+    /// Two strips meeting along a line, one drawn to twice the other's
+    /// spacing there: every segment of the coarse side has a vertex of the
+    /// fine side at its middle, and stitching splits each at it.
+    #[test]
+    fn a_coarse_border_is_split_at_its_neighbours_vertices() {
+        const N: u32 = 60;
+        let mut mesh = Triangulation::new();
+        // The fine strip: a bottom row and a shared row at y = 1.
+        for y in [0.0, 1.0] {
+            for x in 0..=N {
+                mesh.positions.push(Point::new(f64::from(x), y, 0.0));
+            }
+        }
+        let top = |x: u32| N + 1 + x;
+        for x in 0..N {
+            mesh.triangles.push([x, x + 1, top(x + 1)]);
+            mesh.triangles.push([x, top(x + 1), top(x)]);
+        }
+        // The coarse strip above, on every other vertex of the shared row.
+        let apex = top(N) + 1;
+        for x in (0..=N).step_by(2) {
+            mesh.positions.push(Point::new(f64::from(x), 2.0, 0.0));
+        }
+        for (i, x) in (0..N).step_by(2).enumerate() {
+            let i = u32::try_from(i).unwrap();
+            let (a, b) = (apex + i, apex + i + 1);
+            mesh.triangles.push([top(x), top(x + 2), b]);
+            mesh.triangles.push([top(x), b, a]);
+        }
+
+        let stitched = mesh.border_stitched(1e-6);
+        let uses = edge_uses(&stitched.triangles);
+        for x in 0..N {
+            assert_eq!(
+                uses.get(&(top(x), top(x + 1))),
+                Some(&2),
+                "the shared row's segment at {x} is used from both sides"
+            );
+        }
+        assert_eq!(stitched.positions, mesh.positions, "no vertex moves");
     }
 }
