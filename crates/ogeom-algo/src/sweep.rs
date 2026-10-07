@@ -32,7 +32,9 @@ use ogeom_geom::{Curve3d, ExtrusionSurface, Line2d, PlanarCurve, Transformable};
 use ogeom_math::{Axis, Circle, Direction, Frame, Point, Point2, Transform, Vector};
 use ogeom_topo::{EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, TShapeId};
 
-use crate::build::{make_face_on, make_shell, make_solid, make_wire};
+use crate::build::{
+    edges_turn, make_face_on, make_shell, make_solid, make_wire, walked_back, wire_turn,
+};
 use crate::history::{Built, History};
 
 /// Roles a sweep assigns.
@@ -662,55 +664,6 @@ fn rewound(
     }
     let built = model.add_face(rebuilt, &wires)?;
     Ok(built.moved(face.location()).oriented(face.orientation()))
-}
-
-/// A fresh wire walking `wire`'s edges the other way round.
-fn walked_back(model: &mut Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
-    let edges = model.ordered_children_of(&wire.reversed())?;
-    Ok(make_wire(model, &edges, tol)?.shape)
-}
-
-/// How a wire turns about `axis`: twice the area it encloses projected
-/// square to the axis, signed by the right-hand rule, from points sampled
-/// along its edges in traversal order.
-fn wire_turn(model: &Model, wire: &Shape, axis: Vector, tol: Tolerances) -> OgeomResult<f64> {
-    edges_turn(model, &model.ordered_children_of(wire)?, axis, tol)
-}
-
-/// How a closed walk of edge occurrences turns about `axis`, as
-/// [`wire_turn`] measures a wire's.
-fn edges_turn(model: &Model, edges: &[Shape], axis: Vector, tol: Tolerances) -> OgeomResult<f64> {
-    use ogeom_geom::Curve3d as _;
-    let mut points: Vec<ogeom_math::Point> = Vec::new();
-    for edge in edges {
-        let Some(EdgeRepr::Curve3d { curve, range, .. }) = model
-            .node(edge)
-            .and_then(|n| n.data().as_edge())
-            .and_then(|d| d.curve3d())
-        else {
-            continue;
-        };
-        let Some(geometry) = model.geometry().curve(*curve) else {
-            continue;
-        };
-        let placement = edge.transform(model.datums())?;
-        const SAMPLES: u32 = 16;
-        for k in 0..SAMPLES {
-            let f = f64::from(k) / f64::from(SAMPLES);
-            let t = if edge.orientation() == ogeom_topo::Orientation::Reversed {
-                range.1 + (range.0 - range.1) * f
-            } else {
-                range.0 + (range.1 - range.0) * f
-            };
-            points.push(placement.apply(geometry.point_at(t, tol)?));
-        }
-    }
-    let mut newell = Vector::ZERO;
-    for i in 0..points.len() {
-        let (a, b) = (points[i], points[(i + 1) % points.len()]);
-        newell += (a - ogeom_math::Point::ORIGIN).cross(b - ogeom_math::Point::ORIGIN);
-    }
-    Ok(newell.dot(axis))
 }
 
 /// Every face a wire sweeps out.

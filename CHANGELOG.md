@@ -22,6 +22,14 @@ bump may break the API and a patch bump may not.
   into a 22-face one, down from 23 times. `SolidBoundary::of_closed` builds
   a classifier without checking closure again.
 
+### Fixed
+
+- **A planar face walks its rings about its plane.** `make_face` on a
+  plane keeps the plane's normal and walks the outer ring counter-clockwise
+  about it and each hole clockwise, whichever way the wires were walked, so
+  a cap sewn onto a sheet faces out. `make_face_with_pcurves` still walks
+  its rings as listed.
+
 ## [0.9.8] - 2026-10-07
 
 A patch release: no breaking API changes. Booleans take imported parts with

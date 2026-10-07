@@ -1208,6 +1208,24 @@ fn a_ruled_sheet_between_two_squares_sews_with_their_caps_into_a_closed_shell() 
     let sewn = ogeom::algo::sew(&mut model, &all, T).unwrap();
     assert_eq!(sewn.shells.len(), 1);
     assert!(ogeom::algo::is_shell_closed(&model, &sewn.shells[0]).unwrap());
+    // Each cap was given a plane facing out of the shell and a ring wound
+    // the other way about it at the bottom: both caps still face out, and
+    // so does every wall.
+    let caps = faces(&model, &sewn.shells[0])
+        .into_iter()
+        .map(|f| ogeom::algo::face_normal(&model, &f, T).unwrap())
+        .filter(|(_, n)| n.x.abs() < 1e-9 && n.y.abs() < 1e-9)
+        .map(|(p, n)| (p.z, n.z.signum()))
+        .collect::<Vec<_>>();
+    assert_eq!(caps.len(), 2, "{caps:?}");
+    for (z, up) in caps {
+        assert_eq!(up, if z < 1.5 { -1.0 } else { 1.0 }, "the cap at z = {z}");
+    }
+    let middle = Point::new(1.1, 1.1, 1.5);
+    for face in faces(&model, &sewn.shells[0]) {
+        let (p, n) = ogeom::algo::face_normal(&model, &face, T).unwrap();
+        assert!((p - middle).dot(n) > 0.0, "a face at {p:?} faces in");
+    }
 }
 
 #[test]

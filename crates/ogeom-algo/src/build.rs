@@ -461,10 +461,70 @@ pub(crate) fn one_point(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) ->
     Ok(pa.distance(pb) <= data.tolerance.get().max(tol.confusion()))
 }
 
+/// A fresh wire walking `wire`'s edges the other way round.
+pub(crate) fn walked_back(model: &mut Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
+    let edges = model.ordered_children_of(&wire.reversed())?;
+    Ok(make_wire(model, &edges, tol)?.shape)
+}
+
+/// How a wire turns about `axis`: twice the area it encloses projected
+/// square to the axis, signed by the right-hand rule, from points sampled
+/// along its edges in traversal order.
+pub(crate) fn wire_turn(
+    model: &Model,
+    wire: &Shape,
+    axis: ogeom_math::Vector,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    edges_turn(model, &model.ordered_children_of(wire)?, axis, tol)
+}
+
+/// How a closed walk of edge occurrences turns about `axis`, as
+/// [`wire_turn`] measures a wire's.
+pub(crate) fn edges_turn(
+    model: &Model,
+    edges: &[Shape],
+    axis: ogeom_math::Vector,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    let mut points: Vec<ogeom_math::Point> = Vec::new();
+    for edge in edges {
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = model
+            .node(edge)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.curve3d())
+        else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let placement = edge.transform(model.datums())?;
+        const SAMPLES: u32 = 16;
+        for k in 0..SAMPLES {
+            let f = f64::from(k) / f64::from(SAMPLES);
+            let t = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                range.1 + (range.0 - range.1) * f
+            } else {
+                range.0 + (range.1 - range.0) * f
+            };
+            points.push(placement.apply(geometry.point_at(t, tol)?));
+        }
+    }
+    let mut newell = ogeom_math::Vector::ZERO;
+    for i in 0..points.len() {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        newell += (a - ogeom_math::Point::ORIGIN).cross(b - ogeom_math::Point::ORIGIN);
+    }
+    Ok(newell.dot(axis))
+}
+
 /// Build a face on `surface`, bounded by `wires`.
 ///
 /// The first wire is the outer boundary; any others are holes. Every wire must
-/// be closed, since an open boundary encloses nothing.
+/// be closed, since an open boundary encloses nothing. On a plane the face
+/// faces the plane's normal and walks its outer boundary counter-clockwise
+/// about it and its holes clockwise, whichever way the wires were walked.
 ///
 /// # Errors
 ///
@@ -488,8 +548,48 @@ pub fn make_face(
         }
     }
 
+    let wound = wound_to_plane(model, &surface, wires, tol)?;
     let id = model.geometry_mut().add_surface(surface);
-    make_face_on(model, id, wires, tol)
+    let mut built = make_face_on(model, id, &wound, tol)?;
+    for (given, used) in wires.iter().zip(&wound) {
+        if !given.is_same(used) {
+            built.history.generate(given, built.shape.clone());
+        }
+    }
+    Ok(built)
+}
+
+/// `wires` as a face on `surface` walks them: on a plane, the outer ring
+/// counter-clockwise about the plane's normal and each hole clockwise, so
+/// the material lies on the left of every ring seen from the side the
+/// face faces. A ring wound the other way is replaced by a fresh wire
+/// walking its edges back; the plane, and so the face's normal, is kept.
+/// Any other surface, and a ring enclosing no area, is left as given.
+fn wound_to_plane(
+    model: &mut Model,
+    surface: &SurfaceGeometry,
+    wires: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    use ogeom_geom::Surface as _;
+    let SurfaceGeometry::Plane(plane) = surface else {
+        return Ok(wires.to_vec());
+    };
+    let normal = plane.normal_at(0.0, 0.0, tol)?.vector();
+    let mut wound = Vec::with_capacity(wires.len());
+    for (i, wire) in wires.iter().enumerate() {
+        let turn = wire_turn(model, wire, normal, tol)?;
+        let want = if i == 0 { 1.0 } else { -1.0 };
+        // Twice the enclosed area: a ring closing on itself within the
+        // confusion distance encloses nothing to wind about.
+        let against = turn * want < -tol.confusion() * tol.confusion();
+        wound.push(if against {
+            walked_back(model, wire, tol)?
+        } else {
+            wire.clone()
+        });
+    }
+    Ok(wound)
 }
 
 /// Build a face on a surface the model already holds.
@@ -541,6 +641,10 @@ pub fn make_face_on(
 /// manufacture disagreement where none exists, so an edge with no closed
 /// form is refused instead.
 ///
+/// Each ring is walked as its edges are listed, on a plane too: a rebuilt
+/// face whose ring winds against its surface was driven through itself,
+/// and the face keeps that for the checks downstream to find.
+///
 /// # Errors
 ///
 /// As [`make_wire`] and [`make_face`], and
@@ -556,7 +660,8 @@ pub fn make_face_with_pcurves(
     for edges in wires {
         rings.push(make_wire(model, edges, tol)?.shape);
     }
-    let built = make_face(model, surface.clone(), &rings, tol)?;
+    let id = model.geometry_mut().add_surface(surface.clone());
+    let built = make_face_on(model, id, &rings, tol)?;
     let surface_id = {
         let Some(node) = model.node(&built.shape) else {
             ogeom_bail!(Dangling, "the face just built is not in this model");
@@ -2504,6 +2609,59 @@ fn iso_curve_parameter_at(surface: &SurfaceGeometry, v: f64) -> f64 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A plane keeps its normal and the face walks its rings about it:
+    /// an outline wound clockwise and a hole wound counter-clockwise are
+    /// both walked back.
+    #[test]
+    fn a_planar_face_walks_its_rings_about_its_plane() {
+        let tol = ogeom_core::Tolerances::millimetres();
+        let mut model = Model::new();
+        let ring = |model: &mut Model, corners: &[(f64, f64)]| {
+            let points: Vec<Point> = corners
+                .iter()
+                .map(|&(x, y)| Point::new(x, y, 0.0))
+                .collect();
+            make_polygon(model, &points, true, tol).unwrap().shape
+        };
+        let outline = ring(
+            &mut model,
+            &[(0.0, 0.0), (0.0, 4.0), (4.0, 4.0), (4.0, 0.0)],
+        );
+        let hole = ring(
+            &mut model,
+            &[(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)],
+        );
+        let plane = ogeom_math::Plane::new(ogeom_math::Frame::WORLD);
+        let face = make_face(
+            &mut model,
+            ogeom_geom::PlaneSurface::new(plane).into(),
+            &[outline.clone(), hole.clone()],
+            tol,
+        )
+        .unwrap();
+        let z = ogeom_math::Vector::new(0.0, 0.0, 1.0);
+        let wires = model.children_of(&face.shape).unwrap();
+        assert!(wire_turn(&model, &wires[0], z, tol).unwrap() > 0.0);
+        assert!(wire_turn(&model, &wires[1], z, tol).unwrap() < 0.0);
+        assert_eq!(
+            face.history.generated(&outline),
+            std::slice::from_ref(&face.shape)
+        );
+        assert_eq!(
+            face.history.generated(&hole),
+            std::slice::from_ref(&face.shape)
+        );
+        use ogeom_geom::Surface as _;
+        let data = model.node(&face.shape).unwrap().data().as_face().unwrap();
+        let normal = model
+            .geometry()
+            .surface(data.surface)
+            .unwrap()
+            .normal_at(0.0, 0.0, tol)
+            .unwrap();
+        assert!(normal.vector().dot(z) > 0.0);
+    }
 
     /// A face on a fitted surface builds with fitted trims: the closed-form
     /// refusal falls back to the projected fit, which is what lets a

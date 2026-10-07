@@ -144,13 +144,6 @@ plane runs along a row of the face's mesh, the wall's border rows fit to
 
 ### Construction and exchange
 
-**A planar face whose ring winds against its plane.** `make_face` given a
-plane and a ring walked clockwise about the plane's normal builds a face that
-is ambiguous. Sewing trusts the ring and turns it with its neighbours, so a
-ruled sheet closed by such a cap can come back with the cap facing in; where
-the cap has no pcurves the shell cannot be meshed to settle it. `make_face`
-could refuse such a ring, or turn the plane to agree with it.
-
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's
 pcurve where its lifted gap is within twice the projection's. A pcurve the
 file cannot state in the curve's parameter (a reversed or left-handed conic,
