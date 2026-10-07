@@ -253,6 +253,12 @@ geometry. Composition keeps the mark only where every step copied the shape or
 left it alone. Results stay new nodes: an operation edits its own result in
 place, and a node shared with an earlier solid would change it too.
 
+A placement (`transformed`) makes no node, but placement is part of a
+shape's identity, so it records the input and every sub-shape below it as
+modified into its occurrence in the moved shape: the same node under the
+new placement. These are modifications, not copies: the image stands
+elsewhere.
+
 > *Elsewhere:* `Generated` / `Modified` / `IsDeleted` on the operation base
 > class, plus a standalone history object.
 

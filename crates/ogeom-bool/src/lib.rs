@@ -12035,4 +12035,38 @@ mod tests {
             assert!(history.is_deleted(&face_with_role(&model, &slot, role)));
         }
     }
+
+    /// A cut followed by a move: each face of the cut's inputs that is not
+    /// deleted traces to faces of the moved result, and to nothing else.
+    #[test]
+    fn a_cut_then_a_move_traces_its_inputs_to_the_moved_result() {
+        let mut model = Model::new();
+        let (a, b) = boxes(&mut model);
+        let cut_out = cut(&mut model, &a, &b, T).unwrap();
+        let moved = ogeom_algo::transformed(
+            &mut model,
+            &cut_out.shape,
+            ogeom_math::Transform::translation(ogeom_math::Vector::new(100.0, 0.0, 0.0)),
+        )
+        .unwrap();
+        let history = cut_out.history.then(&moved.history);
+        let result = explore_unique(&model, &moved.shape, ShapeType::Face).unwrap();
+        let mut traced = 0;
+        for face in explore_unique(&model, &a, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .chain(explore_unique(&model, &b, ShapeType::Face).unwrap())
+        {
+            if history.is_deleted(&face) {
+                continue;
+            }
+            let images = history.trace(&face);
+            assert!(!images.is_empty());
+            for image in images {
+                assert!(result.iter().any(|r| r.is_same(image)));
+            }
+            traced += 1;
+        }
+        assert_eq!(traced, 9);
+    }
 }

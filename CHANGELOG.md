@@ -44,6 +44,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A coincident piece dropped for the other argument's traces to it
+  (#143).** `common`, `fuse` and `cut` record a face whose piece is dropped
+  for the other argument's coincident piece as modified into that piece,
+  not deleted, so `trace` finds the face that now stands for its patch.
+
+- **A move traces every sub-shape (#145).** `transformed` records every
+  sub-shape of the input as modified into its occurrence in the moved
+  shape, so `trace` and `is_affected` answer for faces, edges and
+  vertices, alone or composed through `then`.
+
 - **Hidden line removal splits an edge where it passes behind a
   contour.** An edge partly behind a face is drawn part visible and part
   hidden, where a straight one was drawn wholly one or the other; the exact

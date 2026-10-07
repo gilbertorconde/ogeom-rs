@@ -166,6 +166,14 @@ a surface placed by another, and pcurves other producers build through a
 pole. The cut edge stays in the model unused, and a STEP style or shape
 aspect naming its file id lands on every piece.
 
+**History of an affine rebuild.** `general_transformed_shape` with a shear
+or an uneven scale rebuilds the shape and records its faces, edges and
+containers, but not its vertices or wires: a vertex of the input traces to
+itself, which is no vertex of the result. A similarity goes through
+`transformed`, which records every sub-shape. `Model::placed` and document
+instances emit no history at all; a caller naming sub-shapes across them
+uses `transformed`.
+
 ### Mesh conversion
 
 `solid_from_mesh` rebuilds planes, the four canonical surfaces, extrusions,

@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use ogeom_core::{OgeomResult, ogeom_bail};
 use ogeom_math::Transform;
-use ogeom_topo::{Location, Model, NodeData, Shape, ShapeType, TShapeId};
+use ogeom_topo::{Location, Model, NodeData, Shape, ShapeType, TShapeId, explore_unique};
 
 use crate::history::{Built, History};
 
@@ -48,6 +48,13 @@ pub mod roles {
 ///
 /// Cheap and exact: the result names the same topology nodes and the same
 /// geometry, at a new placement.
+///
+/// The history records the shape and every sub-shape below it as modified
+/// into its occurrence in the moved shape: the same node under the new
+/// placement. A placement is part of a sub-shape's identity, so without the
+/// record a face of the input would trace to itself, which is no face of
+/// the result. The records cost one walk of the input's unique sub-shapes;
+/// no node is made.
 ///
 /// There is no way to pass something that is *not* a placement. [`Transform`]
 /// is a similarity by construction (rigid motion with a uniform scale), and a
@@ -68,10 +75,27 @@ pub fn transformed(model: &mut Model, shape: &Shape, transform: Transform) -> Og
     }
     model.begin_operation();
     let datum = model.add_datum(transform);
-    let moved = shape.moved(&Location::of(datum));
+    let by = Location::of(datum);
+    let moved = shape.moved(&by);
 
     let mut history = History::new();
     history.modify(shape, moved.clone());
+    for kind in [
+        ShapeType::CompSolid,
+        ShapeType::Solid,
+        ShapeType::Shell,
+        ShapeType::Face,
+        ShapeType::Wire,
+        ShapeType::Edge,
+        ShapeType::Vertex,
+    ] {
+        for part in explore_unique(model, shape, kind)? {
+            if !part.is_same(shape) {
+                let image = part.moved(&by);
+                history.modify(&part, image);
+            }
+        }
+    }
     Ok(Built::new(moved, history))
 }
 
@@ -191,7 +215,6 @@ mod tests {
     use ogeom_core::Tolerances;
     use ogeom_math::{Axis, Direction, Frame, Point, Vector};
     use ogeom_mesh::Deflection;
-    use ogeom_topo::explore_unique;
 
     const T: Tolerances = Tolerances::millimetres();
 
@@ -219,6 +242,44 @@ mod tests {
         assert_eq!(model.node_count(), before, "a placement copied something");
         assert!(moved.is_partner(&solid), "the same topology, elsewhere");
         assert!(!moved.is_same(&solid), "but at a different placement");
+    }
+
+    /// Each face, edge and vertex of a box, moved, mirrored or scaled,
+    /// traces to exactly one sub-shape of the result of its kind, the one
+    /// with its role, and reads as affected.
+    #[test]
+    fn every_sub_shape_traces_to_its_occurrence_in_the_moved_shape() {
+        let mut model = Model::new();
+        let cube = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        for transform in [
+            Transform::translation(Vector::new(100.0, 0.0, 0.0)),
+            Transform::plane_mirror(Point::ORIGIN, Direction::X),
+            Transform::scaling(Point::ORIGIN, 2.0, T).unwrap(),
+        ] {
+            let moved = transformed(&mut model, &cube, transform).unwrap();
+            assert!(moved.history.trace(&cube)[0].is_same(&moved.shape));
+            for (kind, count) in [
+                (ShapeType::Face, 6),
+                (ShapeType::Edge, 12),
+                (ShapeType::Vertex, 8),
+            ] {
+                let result = explore_unique(&model, &moved.shape, kind).unwrap();
+                let parts = explore_unique(&model, &cube, kind).unwrap();
+                assert_eq!(parts.len(), count);
+                for part in &parts {
+                    assert!(moved.history.is_affected(part));
+                    let found: Vec<&Shape> = result
+                        .iter()
+                        .filter(|r| moved.history.trace(part).iter().any(|t| t.is_same(r)))
+                        .collect();
+                    assert_eq!(found.len(), 1, "{kind:?}");
+                    assert_eq!(found[0].node(), part.node());
+                    assert_eq!(model.provenance_of(found[0]), model.provenance_of(part));
+                }
+            }
+        }
     }
 
     #[test]
