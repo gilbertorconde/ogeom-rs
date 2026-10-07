@@ -319,25 +319,25 @@ fn bisect(
     while let Some((t1, p1)) = pending.pop() {
         let t0 = *parameters.last().unwrap_or(&t1);
         let p0 = points.last().copied().unwrap_or(p1);
-        if splitting && needs_split(curve, (t0, t1), (p0, p1), (lo, hi), deflection, tol)? {
+        if splitting
+            && let Some((mid, on_curve)) =
+                needs_split(curve, (t0, t1), (p0, p1), (lo, hi), deflection, tol)?
+        {
             // The count the cap sees is every point currently alive, settled
             // and pending together.
             if parameters.len() + pending.len() + 1 > deflection.max_segments {
                 met = false;
                 splitting = false;
-            } else {
-                let mid = f64::midpoint(t0, t1);
+            } else if mid <= t0 || mid >= t1 {
                 // A split that does not actually divide the interval means
                 // the parameters have reached the resolution of f64;
                 // refining further would loop without improving anything.
-                if mid <= t0 || mid >= t1 {
-                    met = false;
-                    splitting = false;
-                } else {
-                    pending.push((t1, p1));
-                    pending.push((mid, curve.point_at(mid, tol)?));
-                    continue;
-                }
+                met = false;
+                splitting = false;
+            } else {
+                pending.push((t1, p1));
+                pending.push((mid, on_curve));
+                continue;
             }
         }
         parameters.push(t1);
@@ -413,7 +413,8 @@ fn circle_halvings(
     None
 }
 
-/// Whether one segment violates either tolerance.
+/// Where one segment that violates either tolerance splits: its middle
+/// parameter and the curve's point there. `None` for a segment within both.
 fn needs_split(
     curve: &Curve,
     parameters: (f64, f64),
@@ -421,10 +422,11 @@ fn needs_split(
     whole: (f64, f64),
     deflection: Deflection,
     tol: Tolerances,
-) -> OgeomResult<bool> {
+) -> OgeomResult<Option<(f64, Point)>> {
     let (a, b) = parameters;
     let mid = f64::midpoint(a, b);
     let on_curve = curve.point_at(mid, tol)?;
+    let split = Some((mid, on_curve));
 
     // Chord error, measured at the midpoint. Not a bound on the true maximum
     // deviation, which would need the curve's second derivative over the span;
@@ -434,7 +436,7 @@ fn needs_split(
         |axis| axis.distance_to(on_curve),
     );
     if chord > deflection.chord {
-        return Ok(true);
+        return Ok(split);
     }
 
     // Angular error: how far the tangent turns across the segment. Chord error
@@ -453,13 +455,13 @@ fn needs_split(
     // every segment of which is under the chord and a thirteenth of the
     // whole.
     if ends.0.distance(ends.1) <= deflection.chord && (b - a) <= (whole.1 - whole.0) / 16.0 {
-        return Ok(false);
+        return Ok(None);
     }
     let (Ok(start), Ok(end)) = (curve.tangent_at(a, tol), curve.tangent_at(b, tol)) else {
         // A cusp has no tangent to compare; the chord test still governs.
-        return Ok(false);
+        return Ok(None);
     };
-    Ok(start.angle(end) > deflection.angular)
+    Ok(split.filter(|_| start.angle(end) > deflection.angular))
 }
 
 /// Discretize a pcurve with its chord tolerance measured *in space*,

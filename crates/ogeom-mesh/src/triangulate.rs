@@ -2786,16 +2786,8 @@ fn domain_ring(surface: &SurfaceGeometry, deflection: Deflection, tol: Tolerance
         return Vec::new();
     }
 
-    let along_u = |v: f64| {
-        refine_direction(ua, ub, deflection.chord, |a, b| {
-            cell_error(surface, (a, v), (b, v), deflection, tol)
-        })
-    };
-    let along_v = |u: f64| {
-        refine_direction(va, vb, deflection.chord, |a, b| {
-            cell_error(surface, (u, a), (u, b), deflection, tol)
-        })
-    };
+    let along_u = |v: f64| refine_line(surface, (ua, ub), |u| (u, v), deflection, tol).0;
+    let along_v = |u: f64| refine_line(surface, (va, vb), |v| (u, v), deflection, tol).0;
 
     // Counter-clockwise around the rectangle. Each side drops its final point,
     // which the next side contributes: a repeated vertex would be a
@@ -3094,6 +3086,10 @@ fn triangulate_region_inner(
         // it and however many rounds it survives.
         let mut sags: ogeom_core::FastMap<([u64; 2], [u64; 2]), bool> =
             ogeom_core::FastMap::default();
+        // And a vertex's point on the surface is asked once, however many
+        // chart edges end at it.
+        let mut lifted: ogeom_core::FastMap<[u64; 2], Option<Point>> =
+            ogeom_core::FastMap::default();
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
             let before = cdt.num_vertices();
@@ -3137,8 +3133,22 @@ fn triangulate_region_inner(
                         (bits(b), bits(a))
                     };
                     *sags.entry(key).or_insert_with(|| {
-                        sag_between(surface, scale.from(a.0, a.1), scale.from(b.0, b.1), tol)
-                            > deflection.chord * 3.0
+                        let (from, to) = (scale.from(a.0, a.1), scale.from(b.0, b.1));
+                        let mut lift = |p: (f64, f64), uv: (f64, f64)| {
+                            *lifted
+                                .entry(bits(p))
+                                .or_insert_with(|| GridSample::point_at(surface, uv, tol))
+                        };
+                        let (start, end) = (lift(a, from), lift(b, to));
+                        let mid = (f64::midpoint(from.0, to.0), f64::midpoint(from.1, to.1));
+                        let sag = match (start, end, GridSample::point_at(surface, mid, tol)) {
+                            (Some(start), Some(end), Some(middle)) => {
+                                chord_sag(start, end, middle, tol)
+                            }
+                            // Off the surface's domain; nothing to refine towards.
+                            _ => 0.0,
+                        };
+                        sag > deflection.chord * 3.0
                     })
                 });
                 if sagged {
@@ -3314,12 +3324,14 @@ fn add_interior_points(
     let probes: Vec<f64> = (0..=U_PROBES)
         .map(|i| low.x + (high.x - low.x) * i as f64 / U_PROBES as f64)
         .collect();
-    let rows = refine_direction(low.y, high.y, deflection.chord, |a, b| {
-        probes
-            .iter()
-            .map(|u| cell_error(surface, (*u, a), (*u, b), deflection, tol))
-            .fold(0.0_f64, f64::max)
-    });
+    let (rows, row_samples) = refine_lines(
+        surface,
+        (low.y, high.y),
+        &probes,
+        |u, v| (u, v),
+        deflection,
+        tol,
+    );
 
     // Sag alone leaves a cylinder one row: it is straight along its axis, so
     // nothing along `v` ever sags. But the triangulation is Delaunay in the
@@ -3344,20 +3356,18 @@ fn add_interior_points(
             _ => 0.0,
         }
     };
+    // The columns along one row: the u resolution measured at that row.
+    let columns_at = |v: f64| refine_line(surface, (low.x, high.x), |u| (u, v), deflection, tol);
     let rows = spread_to_aspect(
         rows,
         low.x,
         high.x,
-        |v| {
-            let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
-                cell_error(surface, (a, v), (b, v), deflection, tol)
-            });
-            columns.len()
-        },
-        |a, b| {
-            probes
+        |v| columns_at(v).0.len(),
+        |i| {
+            row_samples[i]
                 .iter()
-                .map(|&u| span((u, a), (u, b)))
+                .zip(&row_samples[i + 1])
+                .map(|(a, b)| a.distance(b))
                 .fold(0.0_f64, f64::max)
         },
         |a, b, v| span((a, v), (b, v)),
@@ -3365,9 +3375,7 @@ fn add_interior_points(
 
     if *MESH_DEBUG_REFINE {
         let v = f64::midpoint(low.y, high.y);
-        let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
-            cell_error(surface, (a, v), (b, v), deflection, tol)
-        });
+        let (columns, _) = columns_at(v);
         eprintln!(
             "GRID u [{:.3},{:.3}] v [{:.3},{:.3}]: {} rows after aspect, {} columns at the middle row, chord {}",
             low.x,
@@ -3389,9 +3397,7 @@ fn add_interior_points(
         // chart scale a keep-out band is measured against along `v`.
         let dv = (v - rows[row - 1]).abs().min((rows[row + 1] - v).abs());
         // Each row gets its own u resolution, measured at that row.
-        let columns = refine_direction(low.x, high.x, deflection.chord, |a, b| {
-            cell_error(surface, (a, v), (b, v), deflection, tol)
-        });
+        let (columns, column_samples) = columns_at(v);
         // The same the other way round: a surface straight along `u` gets
         // two columns from sag, and a row a hundred millimetres wide would
         // bridge across the rows as badly as the bore bridged its columns.
@@ -3400,7 +3406,7 @@ fn add_interior_points(
             low.y,
             high.y,
             |_| rows.len(),
-            |a, b| span((a, v), (b, v)),
+            |i| column_samples[i].distance(&column_samples[i + 1]),
             |a, b, u| span((u, a), (u, b)),
         );
         for (column, &u) in columns
@@ -3598,16 +3604,16 @@ const CELL_ASPECT: f64 = 6.0;
 /// Written for rows against columns and used both ways round. `lines`
 /// are the parameters sag chose in this direction; `lo..hi` is the chart
 /// range the other way; `crossings_at(t)` counts the lines the other way
-/// at parameter `t` of this one; `length(a, b)` is the extent in space
-/// between two lines of this direction; `width(a, b, t)` is the extent in
-/// space between two parameters of the other direction, along this one's
-/// line `t`.
+/// at parameter `t` of this one; `length(i)` is the extent in space
+/// between lines `i` and `i + 1` of this direction; `width(a, b, t)` is
+/// the extent in space between two parameters of the other direction,
+/// along this one's line `t`.
 fn spread_to_aspect(
     lines: Vec<f64>,
     lo: f64,
     hi: f64,
     crossings_at: impl Fn(f64) -> usize,
-    length: impl Fn(f64, f64) -> f64,
+    length: impl Fn(usize) -> f64,
     width: impl Fn(f64, f64, f64) -> f64,
 ) -> Vec<f64> {
     if lines.len() < 2 {
@@ -3639,10 +3645,10 @@ fn spread_to_aspect(
         return lines;
     }
     let mut out = Vec::with_capacity(lines.len());
-    for pair in lines.windows(2) {
+    for (i, pair) in lines.windows(2).enumerate() {
         let (a, b) = (pair[0], pair[1]);
         out.push(a);
-        let tall = length(a, b);
+        let tall = length(i);
         let pieces = (tall / (CELL_ASPECT * cell)).ceil();
         if pieces.is_finite() && pieces > 1.0 {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -3674,43 +3680,164 @@ const REFINEMENT_ROUNDS: usize = 12;
 /// exhausted allocator.
 const MAX_DIRECTION_STEPS: usize = 512;
 
-/// Subdivide `[lo, hi]` until no sub-interval sags further than `chord`.
+/// Subdivide `[lo, hi]` until no sub-interval errs further than `chord`.
 ///
 /// The same adaptive bisection [`discretize`] uses on a curve, applied to a
-/// line through parameter space. Returns the parameters in increasing order,
-/// endpoints included.
-fn refine_direction<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F) -> Vec<f64> {
-    let mut values = vec![lo, f64::midpoint(lo, hi), hi];
+/// line through parameter space. Each value is sampled once, by `sample`;
+/// an interval is judged by `error` from its two ends' samples and what
+/// `middle` gives at its midpoint, and a split keeps that middle, finished
+/// by `promote`, as the new value's sample. Returns the parameters in
+/// increasing order, endpoints included, with their samples.
+fn refine_direction<S, M>(
+    (lo, hi): (f64, f64),
+    chord: f64,
+    sample: impl Fn(f64) -> S,
+    middle: impl Fn(f64) -> M,
+    error: impl Fn(&S, &S, &M) -> f64,
+    promote: impl Fn(f64, M) -> S,
+) -> (Vec<f64>, Vec<S>) {
+    let centre = f64::midpoint(lo, hi);
+    let mut values = vec![lo, centre, hi];
+    let mut samples = vec![sample(lo), sample(centre), sample(hi)];
     // A cursor rather than a rescan. Splitting an interval cannot change
-    // whether an *earlier* one sags (the earlier one's endpoints do not move),
-    // so restarting the search at zero re-measures intervals already known
-    // to be good, and re-measuring is what costs: each measurement here is
-    // several `sag_between` calls and each of those is three surface
-    // evaluations. Reaching n points that way costs on the order of n²
-    // measurements; walking forward costs n, and splits in the same
-    // left-to-right order, so the values come out identical, including where
-    // the step cap truncates them.
+    // whether an *earlier* one errs (the earlier one's endpoints do not
+    // move), so restarting the search at zero re-measures intervals already
+    // known to be good. Walking forward measures each interval once and
+    // splits in the same left-to-right order a rescan would, so the values
+    // come out identical, including where the step cap truncates them.
     let mut i = 0;
     while i + 1 < values.len() && values.len() < MAX_DIRECTION_STEPS {
-        if sag(values[i], values[i + 1]) <= chord {
+        let mid = f64::midpoint(values[i], values[i + 1]);
+        let at_mid = middle(mid);
+        if error(&samples[i], &samples[i + 1], &at_mid) <= chord {
             i += 1;
             continue;
         }
-        let mid = f64::midpoint(values[i], values[i + 1]);
         // A split that does not divide the interval means the parameters have
         // reached the resolution of f64, and refining further would loop.
         if mid <= values[i] || mid >= values[i + 1] {
             break;
         }
         values.insert(i + 1, mid);
+        samples.insert(i + 1, promote(mid, at_mid));
     }
-    values
+    (values, samples)
+}
+
+/// What a grid line knows of the surface at one of its parameters: the
+/// point and the normal there, where the surface gives them.
+#[derive(Clone, Copy)]
+struct GridSample {
+    point: Option<Point>,
+    normal: Option<Direction>,
+}
+
+impl GridSample {
+    fn at(surface: &SurfaceGeometry, uv: (f64, f64), tol: Tolerances) -> Self {
+        Self {
+            point: Self::point_at(surface, uv, tol),
+            normal: Self::normal_at(surface, uv, tol),
+        }
+    }
+
+    fn point_at(surface: &SurfaceGeometry, (u, v): (f64, f64), tol: Tolerances) -> Option<Point> {
+        surface.point_at(u, v, tol).ok()
+    }
+
+    fn normal_at(
+        surface: &SurfaceGeometry,
+        (u, v): (f64, f64),
+        tol: Tolerances,
+    ) -> Option<Direction> {
+        surface.normal_at(u, v, tol).ok()
+    }
+
+    /// How far apart two samples are in space; nothing where either has no
+    /// point.
+    fn distance(&self, other: &Self) -> f64 {
+        match (self.point, other.point) {
+            (Some(a), Some(b)) => a.distance(b),
+            _ => 0.0,
+        }
+    }
+}
+
+/// A grid line through `range` of one chart direction, refined until no
+/// cell edge along it is further from honest than the chord (see
+/// [`cell_error`]), with the line's samples at every value. `at(t)` is the
+/// chart point at `t` along the line.
+fn refine_line(
+    surface: &SurfaceGeometry,
+    range: (f64, f64),
+    at: impl Fn(f64) -> (f64, f64),
+    deflection: Deflection,
+    tol: Tolerances,
+) -> (Vec<f64>, Vec<GridSample>) {
+    refine_direction(
+        range,
+        deflection.chord,
+        |t| GridSample::at(surface, at(t), tol),
+        |t| GridSample::point_at(surface, at(t), tol),
+        |a, b, m| cell_error(a, b, *m, deflection, tol),
+        |t, point| GridSample {
+            point,
+            normal: GridSample::normal_at(surface, at(t), tol),
+        },
+    )
+}
+
+/// As [`refine_line`] over several lines at once, sharing their values:
+/// `lines` are the lines by their parameter in the other direction,
+/// `at(line, t)` the chart point at `t` along one of them, and an
+/// interval's error the worst across them.
+fn refine_lines(
+    surface: &SurfaceGeometry,
+    range: (f64, f64),
+    lines: &[f64],
+    at: impl Fn(f64, f64) -> (f64, f64),
+    deflection: Deflection,
+    tol: Tolerances,
+) -> (Vec<f64>, Vec<Vec<GridSample>>) {
+    refine_direction(
+        range,
+        deflection.chord,
+        |t| {
+            lines
+                .iter()
+                .map(|&line| GridSample::at(surface, at(line, t), tol))
+                .collect::<Vec<_>>()
+        },
+        |t| {
+            lines
+                .iter()
+                .map(|&line| GridSample::point_at(surface, at(line, t), tol))
+                .collect::<Vec<_>>()
+        },
+        |a, b, m| {
+            a.iter()
+                .zip(b)
+                .zip(m)
+                .map(|((a, b), m)| cell_error(a, b, *m, deflection, tol))
+                .fold(0.0_f64, f64::max)
+        },
+        |t, points| {
+            lines
+                .iter()
+                .zip(points)
+                .map(|(&line, point)| GridSample {
+                    point,
+                    normal: GridSample::normal_at(surface, at(line, t), tol),
+                })
+                .collect()
+        },
+    )
 }
 
 /// How far a grid cell's edge is from honest, as a sag: the chord sag
 /// itself, or the normal's turn across it scaled so that a turn of the
 /// angular deflection weighs the same as a sag of the chord, whichever
-/// is worse.
+/// is worse. From the edge's two ends and the surface's point at its
+/// middle; the sag is nothing where any of the three is missing.
 ///
 /// The chord alone is what the boundary's edges are *not* drawn to: a
 /// curve is discretized to both deflections, so a bore's rims come out
@@ -3719,44 +3846,31 @@ fn refine_direction<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F
 /// length in from each rim. The interior is held to the same two limits
 /// the boundary is.
 fn cell_error(
-    surface: &SurfaceGeometry,
-    from: (f64, f64),
-    to: (f64, f64),
+    from: &GridSample,
+    to: &GridSample,
+    middle: Option<Point>,
     deflection: Deflection,
     tol: Tolerances,
 ) -> f64 {
-    let sag = sag_between(surface, from, to, tol);
-    let turn = match (
-        surface.normal_at(from.0, from.1, tol),
-        surface.normal_at(to.0, to.1, tol),
-    ) {
-        (Ok(a), Ok(b)) => a.angle(b),
+    let sag = match (from.point, to.point, middle) {
+        (Some(a), Some(b), Some(m)) => chord_sag(a, b, m, tol),
+        // Off the surface's domain; nothing to refine towards.
+        _ => 0.0,
+    };
+    let turn = match (from.normal, to.normal) {
+        (Some(a), Some(b)) => a.angle(b),
         // A pole or an apex has no normal to compare; the sag still governs.
         _ => 0.0,
     };
     sag.max(turn / deflection.angular * deflection.chord)
 }
 
-/// How far the surface departs from the chord joining two parameter points.
+/// How far `m` stands off the chord from `a` to `b`.
 ///
 /// Measured in space, which is the only place the number means anything: the
 /// same step in `u` covers a metre at a sphere's equator and a millimetre near
 /// its pole.
-fn sag_between(
-    surface: &SurfaceGeometry,
-    from: (f64, f64),
-    to: (f64, f64),
-    tol: Tolerances,
-) -> f64 {
-    let mid = (f64::midpoint(from.0, to.0), f64::midpoint(from.1, to.1));
-    let (Ok(a), Ok(b), Ok(m)) = (
-        surface.point_at(from.0, from.1, tol),
-        surface.point_at(to.0, to.1, tol),
-        surface.point_at(mid.0, mid.1, tol),
-    ) else {
-        // Off the surface's domain; nothing to refine towards.
-        return 0.0;
-    };
+fn chord_sag(a: Point, b: Point, m: Point, tol: Tolerances) -> f64 {
     ogeom_math::Axis::through(a, b, tol).map_or_else(|_| a.distance(m), |axis| axis.distance_to(m))
 }
 
@@ -4078,7 +4192,15 @@ mod tests {
         ];
         for (name, sag) in cases {
             for chord in [1.0, 0.1, 0.01, 1e-3] {
-                let walked = refine_direction(0.0, 1.0, chord, &sag);
+                let (walked, samples) = refine_direction(
+                    (0.0, 1.0),
+                    chord,
+                    |t| t,
+                    |t| t,
+                    |a, b, _| sag(*a, *b),
+                    |t, _| t,
+                );
+                assert_eq!(walked, samples, "{name}: each value keeps its own sample");
                 let rescanned = refine_by_rescan(0.0, 1.0, chord, &sag);
                 assert_eq!(
                     walked, rescanned,
@@ -4768,7 +4890,7 @@ mod predicate_tests {
             0.0,
             16.0,
             |_| 17,
-            |a, b| (b - a).abs(),
+            |i| (sagged[i + 1] - sagged[i]).abs(),
             |a, b, _| (b - a).abs(),
         );
         assert_eq!(
@@ -4787,7 +4909,7 @@ mod predicate_tests {
             0.0,
             16.0,
             |_| 3,
-            |a, b| (b - a).abs(),
+            |i| (sagged[i + 1] - sagged[i]).abs(),
             |a, b, _| (b - a).abs(),
         );
         assert_eq!(flat, sagged);
@@ -4799,7 +4921,7 @@ mod predicate_tests {
             0.0,
             16.0,
             |_| 17,
-            |a, b| (b - a).abs(),
+            |i| (fine[i + 1] - fine[i]).abs(),
             |a, b, _| (b - a).abs(),
         );
         assert_eq!(same, fine);
