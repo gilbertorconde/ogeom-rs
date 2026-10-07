@@ -423,18 +423,21 @@ fn seat(
         };
         // The guide parameter is held: at the seed there is nothing yet to
         // march along, only a section to find.
-        let system = |x: &[f64]| {
+        let system = |x: &[f64; 4]| {
             let mut full = [x[0], x[1], x[2], x[3], at];
             contact.clamp(&mut full);
-            let (mut residual, jacobian) = contact
-                .system(&full, tol)
-                .unwrap_or_else(|| (vec![0.0; 4], vec![vec![0.0; 5]; 4]));
-            residual.truncate(4);
-            let jacobian = jacobian
-                .into_iter()
-                .take(4)
-                .map(|row| row[..4].to_vec())
-                .collect();
+            let mut residual = [0.0; 4];
+            let mut jacobian = [[0.0; 4]; 4];
+            if let Some((rows, matrix)) = contact.system(&full, tol) {
+                for (to, from) in residual.iter_mut().zip(&rows) {
+                    *to = *from;
+                }
+                for (to, row) in jacobian.iter_mut().zip(&matrix) {
+                    for (entry, from) in to.iter_mut().zip(row) {
+                        *entry = *from;
+                    }
+                }
+            }
             (residual, jacobian)
         };
         let criteria = solve::Criteria {
@@ -442,19 +445,14 @@ fn seat(
             step: tol.parametric(),
             max_iterations: 80,
         };
-        let Ok(found) = solve::newton_system(system, &start[..4], criteria) else {
+        let seed = [start[0], start[1], start[2], start[3]];
+        let Ok((found, norm, _, _)) = solve::newton_system_fixed(system, seed, criteria) else {
             continue;
         };
-        if found.residual > tol.confusion() {
+        if norm > tol.confusion() {
             continue;
         }
-        let mut x = [
-            found.value[0],
-            found.value[1],
-            found.value[2],
-            found.value[3],
-            at,
-        ];
+        let mut x = [found[0], found[1], found[2], found[3], at];
         contact.clamp(&mut x);
         let (Ok(p1), Ok(p2)) = (
             first.point_at(x[0], x[1], tol),
@@ -532,12 +530,14 @@ impl Condition for BallContact<'_> {
         x: &[f64],
         tol: Tolerances,
     ) -> Option<((Vec<f64>, Vec<Vec<f64>>), Point, Vec<Vector>)> {
-        let p1 = self.first.point_at(x[0], x[1], tol).ok()?;
-        let p2 = self.second.point_at(x[2], x[3], tol).ok()?;
-        let (a1, b1) = self.first.d1_at(x[0], x[1], tol).ok()?;
-        let (a2, b2) = self.second.d1_at(x[2], x[3], tol).ok()?;
-        let (n1, dn1u, dn1v) = normal_and_derivatives(self.first, x[0], x[1], tol)?;
-        let (n2, dn2u, dn2v) = normal_and_derivatives(self.second, x[2], x[3], tol)?;
+        // One jet per support: the point, both tangents and the normal's
+        // derivatives all come from the same evaluation.
+        let first = self.first.jet_at(x[0], x[1], tol).ok()?;
+        let second = self.second.jet_at(x[2], x[3], tol).ok()?;
+        let (p1, a1, b1) = (first.point, first.du, first.dv);
+        let (p2, a2, b2) = (second.point, second.du, second.dv);
+        let (n1, dn1u, dn1v) = normal_and_derivatives_of(&first, tol)?;
+        let (n2, dn2u, dn2v) = normal_and_derivatives_of(&second, tol)?;
         let (s1, s2) = (
             f64::from(self.sides.first) * self.radius,
             f64::from(self.sides.second) * self.radius,
@@ -589,6 +589,18 @@ impl Condition for BallContact<'_> {
             p1,
             vec![a1, b1, Vector::ZERO, Vector::ZERO, Vector::ZERO],
         ))
+    }
+
+    fn tangent_from(
+        &self,
+        _x: &[f64],
+        jacobian: &[Vec<f64>],
+        gradient: &[Vector],
+        tol: Tolerances,
+    ) -> Option<Vector> {
+        // No formula of its own: the null space of what the walker's
+        // correction already evaluated.
+        ogeom_intersect::walk::null_tangent(jacobian, gradient, tol)
     }
 
     fn clamp(&self, x: &mut [f64]) {
@@ -662,14 +674,12 @@ fn unit_normal(surface: &SurfaceGeometry, u: f64, v: f64, tol: Tolerances) -> Op
 /// Exactly, from the surface's own second derivatives: with `c = Sᵤ × Sᵥ` the
 /// unnormalized normal, `∂n/∂u` is the part of `∂c/∂u` across `n`, over
 /// `|c|`: the projection is what keeps a unit vector unit.
-fn normal_and_derivatives(
-    surface: &SurfaceGeometry,
-    u: f64,
-    v: f64,
+fn normal_and_derivatives_of(
+    jet: &ogeom_geom::SurfaceJet,
     tol: Tolerances,
 ) -> Option<(Vector, Vector, Vector)> {
-    let (su, sv) = surface.d1_at(u, v, tol).ok()?;
-    let (suu, suv, svv) = surface.d2_at(u, v, tol).ok()?;
+    let (su, sv) = (jet.du, jet.dv);
+    let (suu, suv, svv) = (jet.d2u, jet.duv, jet.d2v);
     let cross = su.cross(sv);
     let length = cross.magnitude();
     if length <= tol.confusion() {

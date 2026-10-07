@@ -950,8 +950,19 @@ impl ogeom_intersect::walk::Condition for SilhouetteOn<'_> {
     }
 
     fn system(&self, x: &[f64], tol: Tolerances) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
-        let (su, sv) = self.surface.d1_at(x[0], x[1], tol).ok()?;
-        let (suu, suv, svv) = self.surface.d2_at(x[0], x[1], tol).ok()?;
+        Some(self.system_at(x, tol)?.0)
+    }
+
+    fn system_at(
+        &self,
+        x: &[f64],
+        tol: Tolerances,
+    ) -> Option<((Vec<f64>, Vec<Vec<f64>>), Point, Vec<Vector>)> {
+        // One jet: the residual, the walker's point and its gradient all
+        // come from the same evaluation.
+        let jet = self.surface.jet_at(x[0], x[1], tol).ok()?;
+        let (su, sv) = (jet.du, jet.dv);
+        let (suu, suv, svv) = (jet.d2u, jet.duv, jet.d2v);
         let cross = su.cross(sv);
         let length = cross.magnitude();
         if length <= tol.confusion() {
@@ -965,9 +976,23 @@ impl ogeom_intersect::walk::Condition for SilhouetteOn<'_> {
         let du = across(suu.cross(sv) + su.cross(suv));
         let dv = across(suv.cross(sv) + su.cross(svv));
         Some((
-            vec![normal.dot(self.along)],
-            vec![vec![du.dot(self.along), dv.dot(self.along)]],
+            (
+                vec![normal.dot(self.along)],
+                vec![vec![du.dot(self.along), dv.dot(self.along)]],
+            ),
+            jet.point,
+            vec![su, sv],
         ))
+    }
+
+    fn tangent_from(
+        &self,
+        _x: &[f64],
+        jacobian: &[Vec<f64>],
+        gradient: &[Vector],
+        tol: Tolerances,
+    ) -> Option<Vector> {
+        ogeom_intersect::walk::null_tangent(jacobian, gradient, tol)
     }
 
     fn clamp(&self, x: &mut [f64]) {

@@ -863,34 +863,45 @@ where
     Ok((x, norm, Convergence::Exhausted, criteria.max_iterations))
 }
 
-/// `A x = b` by Gaussian elimination with partial pivoting. `None` at a
-/// zero pivot, as an LU factorisation refuses one.
+/// `A x = b` by LU with partial pivoting, `None` at a zero pivot.
+///
+/// The arithmetic is the general solver's LU step for step: the first
+/// largest magnitude pivots, the multipliers are the column times the
+/// pivot's reciprocal, and the back substitution runs column by column from
+/// the last. So a system moved from [`newton_system`] to
+/// [`newton_system_fixed`] solves to the same bits.
 fn solve_fixed<const N: usize>(mut a: [[f64; N]; N], mut b: [f64; N]) -> Option<[f64; N]> {
     for col in 0..N {
-        let pivot = (col..N).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
-        if a[pivot][col] == 0.0 || !a[pivot][col].is_finite() {
+        let mut pivot = col;
+        for row in col + 1..N {
+            if a[row][col].abs() > a[pivot][col].abs() {
+                pivot = row;
+            }
+        }
+        let diag = a[pivot][col];
+        if diag == 0.0 {
             return None;
         }
         a.swap(col, pivot);
         b.swap(col, pivot);
+        let inverse = 1.0 / diag;
         let head = a[col];
         for row in col + 1..N {
-            let factor = a[row][col] / head[col];
-            for (entry, above) in a[row].iter_mut().zip(&head).skip(col) {
+            let factor = a[row][col] * inverse;
+            for (entry, above) in a[row].iter_mut().zip(&head).skip(col + 1) {
                 *entry -= factor * above;
             }
             b[row] -= factor * b[col];
         }
     }
-    let mut x = [0.0; N];
-    for row in (0..N).rev() {
-        let mut sum = b[row];
-        for (entry, known) in a[row].iter().zip(&x).skip(row + 1) {
-            sum -= entry * known;
+    for col in (0..N).rev() {
+        b[col] /= a[col][col];
+        let known = b[col];
+        for row in 0..col {
+            b[row] -= a[row][col] * known;
         }
-        x[row] = sum / a[row][row];
     }
-    Some(x)
+    Some(b)
 }
 
 /// A two-unknown [`newton_system`], allocation-free.
@@ -1331,5 +1342,54 @@ mod tests {
         .unwrap();
         assert_eq!(s.convergence, Convergence::Exhausted);
         assert!(!s.convergence.is_converged());
+    }
+
+    /// The fixed-size solver lands on the general one's bits: the same
+    /// iterates, verdict and count, on nonlinear systems of three, four and
+    /// five unknowns whose Jacobians need pivoting and have ties for it.
+    #[test]
+    fn the_fixed_solver_matches_the_general_one_to_the_bit() {
+        fn check<const N: usize>(start: [f64; N]) {
+            let system = |x: &[f64]| {
+                let mut r = vec![0.0; N];
+                let mut j = vec![vec![0.0; N]; N];
+                for i in 0..N {
+                    let k = (i + 1) % N;
+                    #[allow(clippy::cast_precision_loss)]
+                    let weight = 1.0 + i as f64 * 0.37;
+                    r[i] = x[i].mul_add(x[k], -weight) + x[k].sin() * 0.3;
+                    j[i][i] += x[k];
+                    j[i][k] += x[i] + x[k].cos() * 0.3;
+                }
+                (r, j)
+            };
+            let criteria = Criteria {
+                residual: 1e-14,
+                step: 1e-15,
+                max_iterations: 60,
+            };
+            let general = newton_system(system, &start, criteria).unwrap();
+            let fixed = newton_system_fixed(
+                |x: &[f64; N]| {
+                    let (r, j) = system(x);
+                    let mut rows = [[0.0; N]; N];
+                    for (to, from) in rows.iter_mut().zip(&j) {
+                        to.copy_from_slice(from);
+                    }
+                    (r.try_into().unwrap(), rows)
+                },
+                start,
+                criteria,
+            )
+            .unwrap();
+            assert_eq!(general.value, fixed.0.to_vec());
+            assert_eq!(general.residual.to_bits(), fixed.1.to_bits());
+            assert_eq!(general.convergence, fixed.2);
+            assert_eq!(general.iterations, fixed.3);
+        }
+        check([1.0, 1.0, 1.0]);
+        check([0.5, 2.0, -1.0, 1.5]);
+        check([1.0, -1.0, 1.0, -1.0, 2.0]);
+        check([3.0, 0.2, 0.7, 1.1, 0.4]);
     }
 }

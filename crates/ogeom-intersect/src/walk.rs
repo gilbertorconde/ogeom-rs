@@ -114,18 +114,46 @@ pub trait Condition {
     /// direction it found is real or is the residual's own noise.
     fn tangent(&self, x: &[f64], tol: Tolerances) -> Option<Vector> {
         let (_, jacobian) = self.system(x, tol)?;
-        let null = null_vector(&jacobian, self.unknowns())?;
         let gradient = self.position_gradient(x, tol)?;
-        let mut out = Vector::ZERO;
-        for (g, n) in gradient.iter().zip(&null) {
-            out += *g * *n;
-        }
-        let length = out.magnitude();
-        if length <= tol.confusion() {
-            return None;
-        }
-        Some(out / length)
+        null_tangent(&jacobian, &gradient, tol)
     }
+
+    /// [`Condition::tangent`] at `x`, given the system's Jacobian and the
+    /// position gradient already evaluated there: the walker's correction
+    /// ends on them, so the tangent at the point it lands on need not
+    /// evaluate the condition again.
+    ///
+    /// The default asks [`Condition::tangent`], which is right for any
+    /// condition with its own formula; one that keeps the null-space default
+    /// answers with [`null_tangent`] over what it is given.
+    fn tangent_from(
+        &self,
+        x: &[f64],
+        jacobian: &[Vec<f64>],
+        gradient: &[Vector],
+        tol: Tolerances,
+    ) -> Option<Vector> {
+        let _ = (jacobian, gradient);
+        self.tangent(x, tol)
+    }
+}
+
+/// The unit space tangent of a condition's curve from its Jacobian (the
+/// `n − 1` rows of its equations) and its position gradient: the Jacobian's
+/// null vector carried into space. What [`Condition::tangent`] answers by
+/// default. `None` where the Jacobian has full rank or the tangent vanishes.
+#[must_use]
+pub fn null_tangent(jacobian: &[Vec<f64>], gradient: &[Vector], tol: Tolerances) -> Option<Vector> {
+    let null = null_vector(jacobian, gradient.len())?;
+    let mut out = Vector::ZERO;
+    for (g, n) in gradient.iter().zip(&null) {
+        out += *g * *n;
+    }
+    let length = out.magnitude();
+    if length <= tol.confusion() {
+        return None;
+    }
+    Some(out / length)
 }
 
 /// One walked curve.
@@ -252,17 +280,28 @@ pub fn walk_one_way<C: Condition + ?Sized>(
 
         let mut taken = None;
         for _ in 0..40 {
-            let Some(next) = correct(condition, &at, (here, direction, step), tol) else {
+            let Some((state, point, evaluated)) =
+                correct(condition, &at, (here, direction, step), tol)
+            else {
                 step *= 0.5;
                 if step <= tol.confusion() {
                     break;
                 }
                 continue;
             };
+            let next = (state, point);
             // Like against like: the *travel* direction at the next point,
             // sensed the same way, or a backward walk would read every step
             // as a half turn and crawl to a halt.
-            let there = oriented(condition, &next.0, Some(direction), sense, tol);
+            let there = match evaluated {
+                Some((jacobian, gradient)) => orient(
+                    condition,
+                    condition.tangent_from(&next.0, &jacobian, &gradient, tol),
+                    Some(direction),
+                    sense,
+                ),
+                None => oriented(condition, &next.0, Some(direction), sense, tol),
+            };
             let turn = there.map_or(0.0, |t| direction.dot(t).clamp(-1.0, 1.0).acos());
             let sag = step * turn / 8.0;
             if sag <= options.chord || step <= tol.confusion() * 8.0 {
@@ -329,7 +368,17 @@ fn oriented<C: Condition + ?Sized>(
     sense: f64,
     tol: Tolerances,
 ) -> Option<Vector> {
-    let direction = condition.tangent(at, tol)?;
+    orient(condition, condition.tangent(at, tol), heading, sense)
+}
+
+/// A tangent turned to keep going the way the walk is going.
+fn orient<C: Condition + ?Sized>(
+    condition: &C,
+    direction: Option<Vector>,
+    heading: Option<Vector>,
+    sense: f64,
+) -> Option<Vector> {
+    let direction = direction?;
     if condition.tangent_is_oriented() {
         // The condition's own sign, kept exactly, including where it flips.
         return Some(direction * sense);
@@ -347,24 +396,114 @@ fn oriented<C: Condition + ?Sized>(
     })
 }
 
+/// Where a correction landed: the state, its point, and the condition's
+/// own Jacobian rows and position gradient there when the correction's last
+/// evaluation was at that state.
+type Landed = (Vec<f64>, Point, Option<(Vec<Vec<f64>>, Vec<Vector>)>);
+
 /// Bring a guess onto the condition, landing a stated distance along.
 ///
 /// The condition's own `n − 1` equations say *on the curve*; the walker's one
 /// more says *this far along it*. Without that row the system would be
 /// underdetermined and Newton would wander along the curve instead of
 /// converging to a point on it.
+///
+/// The sizes walked here (two to five unknowns) solve on the stack.
 fn correct<C: Condition + ?Sized>(
+    condition: &C,
+    from: &[f64],
+    travel: (Point, Vector, f64),
+    tol: Tolerances,
+) -> Option<Landed> {
+    match condition.unknowns() {
+        2 => correct_fixed::<C, 2>(condition, from, travel, tol),
+        3 => correct_fixed::<C, 3>(condition, from, travel, tol),
+        4 => correct_fixed::<C, 4>(condition, from, travel, tol),
+        5 => correct_fixed::<C, 5>(condition, from, travel, tol),
+        _ => correct_any(condition, from, travel, tol),
+    }
+}
+
+/// The correction's stopping rule: on the curve to a hundredth of the
+/// confusion, or steps under the parametric tolerance.
+fn correction_criteria(tol: Tolerances) -> solve::Criteria {
+    solve::Criteria {
+        residual: tol.confusion() * 0.01,
+        step: tol.parametric(),
+        max_iterations: 40,
+    }
+}
+
+/// One evaluation of a correction: the clamped state, its point, the
+/// condition's Jacobian rows and the position gradient.
+type Evaluated<const N: usize> = ([f64; N], Point, Vec<Vec<f64>>, Vec<Vector>);
+
+/// [`correct`] for `N` unknowns, allocation-free in the solve, keeping the
+/// last evaluation so the landing hands back its Jacobian.
+fn correct_fixed<C: Condition + ?Sized, const N: usize>(
     condition: &C,
     from: &[f64],
     (anchor, along, reach): (Point, Vector, f64),
     tol: Tolerances,
-) -> Option<(Vec<f64>, Point)> {
+) -> Option<Landed> {
+    let start: [f64; N] = from.try_into().ok()?;
+    let mut last: Option<Evaluated<N>> = None;
+    let system = |x: &[f64; N]| {
+        let mut at = *x;
+        condition.clamp(&mut at);
+        last = None;
+        // Where the condition cannot be evaluated the residual is infinite,
+        // so the damped step backs off; a zero there would read as a root.
+        let mut residual = [f64::INFINITY; N];
+        let mut jacobian = [[0.0; N]; N];
+        let Some(((rows, matrix), point, gradient)) = condition.system_at(&at, tol) else {
+            return (residual, jacobian);
+        };
+        if rows.len() + 1 != N
+            || matrix.len() + 1 != N
+            || gradient.len() != N
+            || matrix.iter().any(|row| row.len() != N)
+        {
+            return (residual, jacobian);
+        }
+        residual[..N - 1].copy_from_slice(&rows);
+        for (to, row) in jacobian.iter_mut().zip(&matrix) {
+            to.copy_from_slice(row);
+        }
+        residual[N - 1] = (point - anchor).dot(along) - reach;
+        for (entry, g) in jacobian[N - 1].iter_mut().zip(&gradient) {
+            *entry = g.dot(along);
+        }
+        last = Some((at, point, matrix, gradient));
+        (residual, jacobian)
+    };
+    let (found, norm, _, _) =
+        solve::newton_system_fixed(system, start, correction_criteria(tol)).ok()?;
+    if norm > tol.confusion() {
+        return None;
+    }
+    let mut at = found;
+    condition.clamp(&mut at);
+    if let Some((evaluated, point, matrix, gradient)) = last
+        && evaluated == at
+    {
+        return Some((at.to_vec(), point, Some((matrix, gradient))));
+    }
+    let point = condition.position(&at, tol)?;
+    Some((at.to_vec(), point, None))
+}
+
+/// [`correct`] for any number of unknowns, on the general solver.
+fn correct_any<C: Condition + ?Sized>(
+    condition: &C,
+    from: &[f64],
+    (anchor, along, reach): (Point, Vector, f64),
+    tol: Tolerances,
+) -> Option<Landed> {
     let n = condition.unknowns();
     let system = |x: &[f64]| {
         let mut at = x.to_vec();
         condition.clamp(&mut at);
-        // Where the condition cannot be evaluated the residual is infinite,
-        // so the damped step backs off; a zero there would read as a root.
         let Some(((mut residual, mut jacobian), point, gradient)) = condition.system_at(&at, tol)
         else {
             return (vec![f64::INFINITY; n], vec![vec![0.0; n]; n]);
@@ -373,19 +512,14 @@ fn correct<C: Condition + ?Sized>(
         jacobian.push(gradient.iter().map(|g| g.dot(along)).collect());
         (residual, jacobian)
     };
-    let criteria = solve::Criteria {
-        residual: tol.confusion() * 0.01,
-        step: tol.parametric(),
-        max_iterations: 40,
-    };
-    let found = solve::newton_system(system, from, criteria).ok()?;
+    let found = solve::newton_system(system, from, correction_criteria(tol)).ok()?;
     if found.residual > tol.confusion() {
         return None;
     }
     let mut at = found.value;
     condition.clamp(&mut at);
     let point = condition.position(&at, tol)?;
-    Some((at, point))
+    Some((at, point, None))
 }
 
 /// The null vector of an `(n − 1) × n` matrix: the generalized cross product.

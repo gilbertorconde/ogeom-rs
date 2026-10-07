@@ -541,10 +541,8 @@ impl crate::walk::Condition for SurfacePair<'_> {
         x: &[f64],
         tol: Tolerances,
     ) -> Option<((Vec<f64>, Vec<Vec<f64>>), Point, Vec<Vector>)> {
-        let pa = self.a.point_at(x[0], x[1], tol).ok()?;
-        let pb = self.b.point_at(x[2], x[3], tol).ok()?;
-        let (au, av) = self.a.d1_at(x[0], x[1], tol).ok()?;
-        let (bu, bv) = self.b.d1_at(x[2], x[3], tol).ok()?;
+        let (pa, au, av) = self.a.point_d1_at(x[0], x[1], tol).ok()?;
+        let (pb, bu, bv) = self.b.point_d1_at(x[2], x[3], tol).ok()?;
         let gap = pa - pb;
         Some((
             (
@@ -598,6 +596,25 @@ impl crate::walk::Condition for SurfacePair<'_> {
             },
             tol,
         )
+    }
+
+    fn tangent_from(
+        &self,
+        x: &[f64],
+        jacobian: &[Vec<f64>],
+        gradient: &[Vector],
+        tol: Tolerances,
+    ) -> Option<Vector> {
+        // The system's columns are the two surfaces' first derivatives, the
+        // second's negated: the normals the tangent is made of.
+        if jacobian.len() != 3 || jacobian.iter().any(|row| row.len() != 4) {
+            return self.tangent(x, tol);
+        }
+        let _ = gradient;
+        let column = |c: usize| Vector::new(jacobian[0][c], jacobian[1][c], jacobian[2][c]);
+        let na = unit_normal(column(0), column(1), tol)?;
+        let nb = unit_normal(-column(2), -column(3), tol)?;
+        tangent_of_normals(na, nb, tol)
     }
 }
 
@@ -682,14 +699,18 @@ fn land_on_edge(pair: &SurfacePair<'_>, walked: &mut crate::walk::Walked, tol: T
     }
     bounds.sort_by(|x, y| x.0.total_cmp(&y.0));
     for (_, k, bound) in bounds {
-        let system = |x: &[f64]| {
-            let Some(((mut residual, mut jacobian), _, _)) = pair.system_at(x, tol) else {
-                return (vec![f64::INFINITY; 4], vec![vec![0.0; 4]; 4]);
+        let system = |x: &[f64; 4]| {
+            let mut residual = [f64::INFINITY; 4];
+            let mut jacobian = [[0.0; 4]; 4];
+            let Some(((rows, matrix), _, _)) = pair.system_at(x, tol) else {
+                return (residual, jacobian);
             };
-            residual.push(x[k] - bound);
-            let mut row = vec![0.0; 4];
-            row[k] = 1.0;
-            jacobian.push(row);
+            residual[..3].copy_from_slice(&rows);
+            for (to, row) in jacobian.iter_mut().zip(&matrix) {
+                to.copy_from_slice(row);
+            }
+            residual[3] = x[k] - bound;
+            jacobian[3][k] = 1.0;
             (residual, jacobian)
         };
         let criteria = solve::Criteria {
@@ -697,13 +718,15 @@ fn land_on_edge(pair: &SurfacePair<'_>, walked: &mut crate::walk::Walked, tol: T
             step: tol.parametric(),
             max_iterations: 40,
         };
-        let Ok(found) = solve::newton_system(system, last, criteria) else {
+        let Ok(start) = <[f64; 4]>::try_from(last.as_slice()) else {
+            return;
+        };
+        let Ok((at, norm, _, _)) = solve::newton_system_fixed(system, start, criteria) else {
             continue;
         };
-        if found.residual > tol.confusion() {
+        if norm > tol.confusion() {
             continue;
         }
-        let at = found.value;
         let within = [(pair.a, 0_usize), (pair.b, 2)]
             .iter()
             .all(|(surface, first)| {
@@ -730,10 +753,10 @@ fn land_on_edge(pair: &SurfacePair<'_>, walked: &mut crate::walk::Walked, tol: T
             continue;
         }
         if ahead.magnitude() <= tol.confusion() {
-            walked.states[n - 1] = at;
+            walked.states[n - 1] = at.to_vec();
             walked.points[n - 1] = point;
         } else {
-            walked.states.push(at);
+            walked.states.push(at.to_vec());
             walked.points.push(point);
         }
         return;
@@ -773,6 +796,12 @@ fn tangent_at(
 ) -> Option<Vector> {
     let na = normal_at(a, at.on_a, tol)?;
     let nb = normal_at(b, at.on_b, tol)?;
+    tangent_of_normals(na, nb, tol)
+}
+
+/// The intersection tangent from the two unit normals, as [`tangent_at`]
+/// decides it.
+fn tangent_of_normals(na: Vector, nb: Vector, tol: Tolerances) -> Option<Vector> {
     let cross = na.cross(nb);
     let length = cross.magnitude();
     // The decision is made through intervals rather than a bare compare:
@@ -800,6 +829,11 @@ fn tangent_at(
 /// A surface's unit normal at a parameter.
 fn normal_at(surface: &SurfaceGeometry, at: (f64, f64), tol: Tolerances) -> Option<Vector> {
     let (du, dv) = surface.d1_at(at.0, at.1, tol).ok()?;
+    unit_normal(du, dv, tol)
+}
+
+/// The unit normal of two tangents, `None` where they are parallel.
+fn unit_normal(du: Vector, dv: Vector, tol: Tolerances) -> Option<Vector> {
     let cross = du.cross(dv);
     let length = cross.magnitude();
     if length <= tol.confusion() {
@@ -847,12 +881,9 @@ fn correct(
         // Where either surface cannot be evaluated the residual is
         // infinite, so the damped step backs off rather than reading a
         // made-up point as a root.
-        let (Ok(pa), Ok(pb), Ok((au, av)), Ok((bu, bv))) = (
-            a.point_at(ua, va, tol),
-            b.point_at(ub, vb, tol),
-            a.d1_at(ua, va, tol),
-            b.d1_at(ub, vb, tol),
-        ) else {
+        let (Ok((pa, au, av)), Ok((pb, bu, bv))) =
+            (a.point_d1_at(ua, va, tol), b.point_d1_at(ub, vb, tol))
+        else {
             return ([f64::INFINITY; 4], [[0.0; 4]; 4]);
         };
 
@@ -1539,14 +1570,14 @@ fn touching_point(
     // Forward differences: the Jacobian's own error slows the iteration and
     // moves no root.
     const STEP: f64 = 1e-7;
-    let system = |x: &[f64]| {
-        let failed = || (vec![f64::INFINITY; 5], vec![vec![0.0; 5]; 5]);
+    let system = |x: &[f64; 5]| {
+        let failed = || ([f64::INFINITY; 5], [[0.0; 5]; 5]);
         let Some(here) = eval(x) else {
             return failed();
         };
-        let mut jacobian = vec![vec![0.0; 5]; 5];
+        let mut jacobian = [[0.0; 5]; 5];
         for k in 0..5 {
-            let mut moved = x.to_vec();
+            let mut moved = *x;
             moved[k] += STEP;
             let Some(there) = eval(&moved) else {
                 return failed();
@@ -1555,7 +1586,7 @@ fn touching_point(
                 row[k] = (t - h) / STEP;
             }
         }
-        (here.to_vec(), jacobian)
+        (here, jacobian)
     };
     let criteria = solve::Criteria {
         residual: tol.confusion() * 1e-3,
@@ -1563,11 +1594,10 @@ fn touching_point(
         max_iterations: 50,
     };
     let start = [on_a.0, on_a.1, on_b.0, on_b.1, 0.0];
-    let found = solve::newton_system(system, &start, criteria).ok()?;
-    if found.residual > tol.confusion() || found.value[4].abs() > tol.confusion() {
+    let (x, norm, _, _) = solve::newton_system_fixed(system, start, criteria).ok()?;
+    if norm > tol.confusion() || x[4].abs() > tol.confusion() {
         return None;
     }
-    let x = &found.value;
     let (on_a, on_b) = (clamp(a, x[0], x[1]), clamp(b, x[2], x[3]));
     let point = a.point_at(on_a.0, on_a.1, tol).ok()?;
     if b.point_at(on_b.0, on_b.1, tol).ok()?.distance(point) > tol.confusion() {
