@@ -22,6 +22,23 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **`check` runs in parallel.** Its per-edge, per-wire, per-face and
+  containment checks give the same diagnosis in the same order;
+  self-intersection finds candidate face pairs by a box sweep and measures
+  them in parallel (11.9 s to 1.3 s on the largest corpus part at 20
+  threads).
+
+- **The IGES reader derives edge pcurves in parallel** ahead of the face
+  walk, as the STEP reader does, with identical warnings and output.
+
+- **`repair_same_parameter` measures edges in parallel with the dense
+  lifted-gap measure,** at matched parameters on the surface where the
+  pcurve is placed, so it widens edges the old 24-sample check missed; an
+  edge it cannot measure keeps its flag. `fix_shape` builds a face's
+  surface only when an edge needs a trim and fits trims in parallel; a
+  trim refused at the cap reports its exact offset, and
+  `pcurve_fit::fit_projected_pcurve_within` returns the refusal as a value.
+
 - **Faster nearest points on cones, tori and swept surfaces.** Cones,
   tori and trimmed elementary surfaces are projected in closed form, and
   extrusions and revolutions through one scan of their profile instead of
