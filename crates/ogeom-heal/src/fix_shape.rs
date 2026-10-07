@@ -39,7 +39,7 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_mesh::Deflection;
 use ogeom_topo::{Model, Shape, ShapeType, TShapeId, explore_unique};
 
-use crate::{Reshape, fix_face_pcurves, reduce_tolerances};
+use crate::{Reshape, reduce_tolerances};
 
 /// What [`fix_shape`] did, and what it found before and after.
 #[derive(Debug, Clone)]
@@ -112,11 +112,18 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     ogeom_algo::join_seam_columns(model, &current, tol)?;
 
     // Trims for edges that have none on a face they bound.
-    let mut edges_trimmed = 0;
-    for face in explore_unique(model, &current, ShapeType::Face)? {
-        let trims = fix_face_pcurves(model, &face, tol.confusion() * TRIM_CAP, tol)?;
-        edges_trimmed += trims.fitted;
+    // Every face planned, the fits made side by side, then attached face
+    // by face in order.
+    let plans = explore_unique(model, &current, ShapeType::Face)?
+        .iter()
+        .map(|face| crate::fix::plan_trims(model, face, tol))
+        .collect::<OgeomResult<Vec<_>>>()?;
+    let fits = crate::fix::fit_trims(&plans, tol.confusion() * TRIM_CAP, tol);
+    let mut trims = crate::FixedTrims::default();
+    for (plan, fits) in plans.into_iter().zip(fits) {
+        crate::fix::attach_trims(model, plan, fits, tol, &mut trims)?;
     }
+    let edges_trimmed = trims.fitted;
 
     // Loose faces sewn: a compound of faces, or an open shell.
     let mut sewn = None;

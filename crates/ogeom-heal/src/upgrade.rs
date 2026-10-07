@@ -816,7 +816,7 @@ pub fn reduce_tolerances(model: &mut Model, shape: &Shape, tol: Tolerances) -> O
     // measures run side by side.
     let measured = {
         let model = &*model;
-        ogeom_core::parallel::map_ordered(&edges, |_, edge| measure_edge(model, edge, tol))
+        ogeom_core::parallel::map_ordered(&edges, |_, edge| measure_edge(model, edge, false, tol))
     };
     let mut shrunk = 0;
     for (edge, measured) in edges.iter().zip(measured) {
@@ -834,8 +834,15 @@ pub fn reduce_tolerances(model: &mut Model, shape: &Shape, tol: Tolerances) -> O
 }
 
 /// How far an edge's pcurves stand from its curve, or `None` where it has
-/// no curve or no pcurve to measure.
-fn measure_edge(model: &Model, edge: &Shape, tol: Tolerances) -> Option<f64> {
+/// no curve or no pcurve to measure. Each lifted point is held to the
+/// curve's point at the same parameter where `paced` or where the edge
+/// claims same parameter, and otherwise to the nearest point of the curve.
+pub(crate) fn measure_edge(
+    model: &Model,
+    edge: &Shape,
+    paced: bool,
+    tol: Tolerances,
+) -> Option<f64> {
     let data = model.node(edge).and_then(|n| n.data().as_edge())?;
     let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
         return None;
@@ -893,7 +900,7 @@ fn measure_edge(model: &Model, edge: &Shape, tol: Tolerances) -> Option<f64> {
                 (geometry, *range),
                 (pcurve, prange),
                 surface_geometry,
-                data.same_parameter(),
+                paced || data.same_parameter(),
                 tol,
             ) else {
                 continue;

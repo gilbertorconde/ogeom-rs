@@ -44,92 +44,227 @@ pub fn fix_face_pcurves(
     cap: f64,
     tol: Tolerances,
 ) -> OgeomResult<FixedTrims> {
+    let plan = plan_trims(model, face, tol)?;
+    let fits = fit_trims(std::slice::from_ref(&plan), cap, tol);
+    let mut report = FixedTrims::default();
+    for (plan, fits) in [plan].into_iter().zip(fits) {
+        attach_trims(model, plan, fits, tol, &mut report)?;
+    }
+    Ok(report)
+}
+
+/// A face's edge uses as the trim fix finds them, in wire order: each
+/// with the curve to project where it holds no pcurve on the face.
+pub(crate) struct TrimPlan {
+    surface_id: ogeom_topo::SurfaceId,
+    /// The face's surface where the face stands, made only when some edge
+    /// needs a fit.
+    surface: Option<ogeom_geom::SurfaceGeometry>,
+    uses: Vec<(Shape, Option<Projected>)>,
+}
+
+/// A curve where its edge stands, over the edge's range, to project.
+type Projected = (ogeom_geom::Curve, (f64, f64));
+
+/// What one edge's fit came to: the pcurve with the worst sample offset
+/// and the offset the edge must state, or a refusal at the offset
+/// measured.
+pub(crate) enum TrimFit {
+    Fitted {
+        pcurve: ogeom_geom::PlanarCurve,
+        worst_off: f64,
+        off: f64,
+    },
+    Refused(f64),
+}
+
+/// Find what [`fix_face_pcurves`] would fit on `face`, without fitting:
+/// the face is unshared, and each edge use without a pcurve on it is
+/// given its curve where the face stands.
+///
+/// # Errors
+///
+/// As [`fix_face_pcurves`].
+pub(crate) fn plan_trims(
+    model: &mut Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<TrimPlan> {
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "fix_face_pcurves fixes a face");
     }
     model.unshare(face)?;
-    let (surface_id, surface) = {
+    let surface_id = {
         let Some(node) = model.node(face) else {
             ogeom_bail!(Dangling, "face is not in this model");
         };
         let NodeData::Face(data) = node.data() else {
             ogeom_bail!(Construction, "face node holds no face data");
         };
-        let Some(stored) = model.geometry().surface(data.surface) else {
+        if model.geometry().surface(data.surface).is_none() {
             ogeom_bail!(Dangling, "face refers to a surface not in this model");
-        };
-        let placement = face.transform(model.datums())?;
-        (data.surface, stored.transformed(&placement, tol)?)
+        }
+        data.surface
     };
-
-    let mut report = FixedTrims::default();
+    let mut uses = Vec::new();
     for wire in model.ordered_children_of(face)? {
         for edge in model.ordered_children_of(&wire)? {
-            let (curve, range) = {
-                let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
-                    continue;
-                };
-                if data.pcurve_for(surface_id, edge.location()).is_some() {
-                    report.already += 1;
-                    continue;
-                }
-                let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                    ogeom_bail!(
-                        Construction,
-                        "an edge has no space curve; nothing can be projected"
-                    );
-                };
-                let Some(geometry) = model.geometry().curve(*curve) else {
-                    ogeom_bail!(Dangling, "an edge names a curve not in this model");
-                };
-                let placed = edge.transform(model.datums())?;
-                (geometry.clone().transformed(&placed, tol)?, *range)
+            let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                continue;
             };
-            match ogeom_algo::pcurve_fit::fit_projected_pcurve_capped(
-                &curve, range, &surface, cap, tol,
-            ) {
-                Ok((pcurve, _, _, worst_off, _)) => {
-                    report.fitted += 1;
-                    report.worst = report.worst.max(worst_off);
-                    // The edge states where the fitted chart lies, lifted
-                    // and measured densely against the curve, as well as
-                    // the offset its samples sat at.
-                    let gap = ogeom_algo::pcurve_fit::lifted_gap(
-                        (&curve, range),
-                        (&pcurve, range),
-                        &surface,
-                        false,
-                        tol,
-                    )?;
-                    // Its vertices widen with it: what bounds the edge is
-                    // never tighter than the edge.
-                    let off = gap.max(worst_off);
-                    if off > tol.confusion() {
-                        model.widen(&edge, ogeom_core::Tolerance::new(off + tol.confusion())?)?;
-                    }
-                    ogeom_algo::attach_pcurve(
-                        model,
-                        &edge,
-                        pcurve,
-                        surface_id,
-                        ogeom_topo::Location::identity(),
-                        range,
-                    )?;
-                }
-                Err(refusal) => {
-                    // The measured offset travels in the message; the report
-                    // carries the number a consumer acts on.
-                    let off = refusal
-                        .to_string()
-                        .split_whitespace()
-                        .find_map(|w| w.parse::<f64>().ok())
-                        .unwrap_or(f64::INFINITY);
-                    report.refused.push((edge.clone(), off));
-                }
+            if data.pcurve_for(surface_id, edge.location()).is_some() {
+                uses.push((edge, None));
+                continue;
             }
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                ogeom_bail!(
+                    Construction,
+                    "an edge has no space curve; nothing can be projected"
+                );
+            };
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                ogeom_bail!(Dangling, "an edge names a curve not in this model");
+            };
+            let placed = edge.transform(model.datums())?;
+            let job = (geometry.clone().transformed(&placed, tol)?, *range);
+            uses.push((edge, Some(job)));
         }
     }
-    Ok(report)
+    let surface = if uses.iter().any(|(_, job)| job.is_some()) {
+        let placement = face.transform(model.datums())?;
+        model
+            .geometry()
+            .surface(surface_id)
+            .map(|stored| stored.transformed(&placement, tol))
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(TrimPlan {
+        surface_id,
+        surface,
+        uses,
+    })
+}
+
+/// Fit every planned edge of `plans` in parallel, each use's fit in its
+/// plan's place: `None` for a use that needs none.
+pub(crate) fn fit_trims(
+    plans: &[TrimPlan],
+    cap: f64,
+    tol: Tolerances,
+) -> Vec<Vec<Option<OgeomResult<TrimFit>>>> {
+    let jobs: Vec<(usize, usize)> = plans
+        .iter()
+        .enumerate()
+        .flat_map(|(p, plan)| {
+            plan.uses
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, job))| job.is_some())
+                .map(move |(u, _)| (p, u))
+        })
+        .collect();
+    let fitted = ogeom_core::parallel::map_ordered(&jobs, |_, &(p, u)| {
+        let plan = &plans[p];
+        let (Some((curve, range)), Some(surface)) = (&plan.uses[u].1, &plan.surface) else {
+            ogeom_bail!(Construction, "a planned trim has nothing to fit");
+        };
+        fit_trim(curve, *range, surface, cap, tol)
+    });
+    let mut out: Vec<Vec<Option<OgeomResult<TrimFit>>>> = plans
+        .iter()
+        .map(|plan| plan.uses.iter().map(|_| None).collect())
+        .collect();
+    for ((p, u), fit) in jobs.into_iter().zip(fitted) {
+        out[p][u] = Some(fit);
+    }
+    out
+}
+
+/// One edge's projected trim on a surface, held to `cap`.
+fn fit_trim(
+    curve: &ogeom_geom::Curve,
+    range: (f64, f64),
+    surface: &ogeom_geom::SurfaceGeometry,
+    cap: f64,
+    tol: Tolerances,
+) -> OgeomResult<TrimFit> {
+    use ogeom_algo::pcurve_fit::CappedFit;
+    match ogeom_algo::pcurve_fit::fit_projected_pcurve_within(curve, range, surface, cap, tol) {
+        Ok(CappedFit::Fitted((pcurve, _, _, worst_off, _))) => {
+            // The edge states where the fitted chart lies, lifted and
+            // measured densely against the curve, as well as the offset
+            // its samples sat at.
+            let gap = ogeom_algo::pcurve_fit::lifted_gap(
+                (curve, range),
+                (&pcurve, range),
+                surface,
+                false,
+                tol,
+            )?;
+            Ok(TrimFit::Fitted {
+                pcurve,
+                worst_off,
+                off: gap.max(worst_off),
+            })
+        }
+        Ok(CappedFit::TooFar(off)) => Ok(TrimFit::Refused(off)),
+        // A projection that cannot converge measured no offset.
+        Err(_) => Ok(TrimFit::Refused(f64::INFINITY)),
+    }
+}
+
+/// Attach a face's fitted trims in wire order, counting into `report`. A
+/// use that has gained its pcurve since it was planned (an edge the wire
+/// walks twice, or that a face on the same surface fixed first) is left
+/// alone.
+///
+/// # Errors
+///
+/// As [`fix_face_pcurves`].
+pub(crate) fn attach_trims(
+    model: &mut Model,
+    plan: TrimPlan,
+    fits: Vec<Option<OgeomResult<TrimFit>>>,
+    tol: Tolerances,
+    report: &mut FixedTrims,
+) -> OgeomResult<()> {
+    for ((edge, job), fit) in plan.uses.into_iter().zip(fits) {
+        let attached = model
+            .node(&edge)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|data| data.pcurve_for(plan.surface_id, edge.location()).is_some());
+        let (Some((_, range)), Some(fit), false) = (job, fit, attached) else {
+            report.already += 1;
+            continue;
+        };
+        match fit? {
+            TrimFit::Fitted {
+                pcurve,
+                worst_off,
+                off,
+            } => {
+                report.fitted += 1;
+                report.worst = report.worst.max(worst_off);
+                // Its vertices widen with it: what bounds the edge is never
+                // tighter than the edge.
+                if off > tol.confusion() {
+                    model.widen(&edge, ogeom_core::Tolerance::new(off + tol.confusion())?)?;
+                }
+                ogeom_algo::attach_pcurve(
+                    model,
+                    &edge,
+                    pcurve,
+                    plan.surface_id,
+                    ogeom_topo::Location::identity(),
+                    range,
+                )?;
+            }
+            TrimFit::Refused(off) => report.refused.push((edge, off)),
+        }
+    }
+    Ok(())
 }
 
 /// What [`reanchor_boundaries`] did.

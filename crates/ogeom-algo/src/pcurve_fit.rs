@@ -149,6 +149,38 @@ pub fn fit_projected_pcurve_capped(
     cap: f64,
     tol: Tolerances,
 ) -> FittedPcurve {
+    match fit_projected_pcurve_within(curve, range, surface, cap, tol)? {
+        CappedFit::Fitted(fitted) => Ok(fitted),
+        CappedFit::TooFar(worst_off) => ogeom_bail!(
+            Construction,
+            "the edge sits {worst_off:.2e} from the surface it should bound"
+        ),
+    }
+}
+
+/// What [`fit_projected_pcurve_within`] made of an edge.
+#[derive(Debug, Clone)]
+pub enum CappedFit {
+    /// The fit, as [`fit_projected_pcurve_capped`] returns it.
+    Fitted((PlanarCurve, f64, bool, f64, Option<String>)),
+    /// Refused: some sample sits this far from the surface, past the cap.
+    TooFar(f64),
+}
+
+/// [`fit_projected_pcurve_capped`], with a refusal at the cap returned as
+/// the offset measured rather than as an error.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// the projection cannot converge at all.
+pub fn fit_projected_pcurve_within(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    cap: f64,
+    tol: Tolerances,
+) -> OgeomResult<CappedFit> {
     const SAMPLES: usize = 96;
     let mut parameters = Vec::with_capacity(SAMPLES + 1);
     let mut trace = Vec::with_capacity(SAMPLES + 1);
@@ -179,10 +211,7 @@ pub fn fit_projected_pcurve_capped(
     // cannot refuse an edge that is actually on its surface.
     let worst_off = offs.iter().copied().fold(0.0_f64, f64::max);
     if worst_off > cap {
-        ogeom_bail!(
-            Construction,
-            "the edge sits {worst_off:.2e} from the surface it should bound"
-        );
+        return Ok(CappedFit::TooFar(worst_off));
     }
     let mut space_run = 0.0;
     let mut parameter_run = 0.0;
@@ -563,7 +592,13 @@ pub fn fit_projected_pcurve_capped(
              bounds; the file's own slop, carried into the chart"
         )
     });
-    Ok((fitted.curve.into(), error, met, worst_off, slop))
+    Ok(CappedFit::Fitted((
+        fitted.curve.into(),
+        error,
+        met,
+        worst_off,
+        slop,
+    )))
 }
 
 /// How far `pcurve`, lifted through `surface`, stands from `curve`, each
