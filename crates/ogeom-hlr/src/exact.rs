@@ -20,10 +20,11 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve, Surface as _, SurfaceGeometry};
-use ogeom_math::{Axis, Circle, Direction, Frame, Point, Point2, Vector};
+use ogeom_math::{Axis, Circle, Direction, Frame, Point, Point2, Transform, Vector};
 use ogeom_mesh::Deflection;
-use ogeom_topo::{Model, NodeData, Shape, ShapeType, explore_unique};
+use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, explore_unique};
 
+use crate::crossings::{Contours, locate};
 use crate::project::{Drawing, DrawnCurve, Source, View, Visibility};
 
 /// One silhouette curve, and the face it belongs to.
@@ -280,27 +281,94 @@ pub fn project_exact(
     if faces.is_empty() {
         ogeom_bail!(Construction, "a shape with no faces draws nothing");
     }
-    let mut drawing = Drawing::default();
 
+    // Every curve is sampled before any is classified: the projection of
+    // each is a contour the others may pass behind.
+    let mut traced: Vec<Traced> = Vec::new();
     for edge in explore_unique(model, shape, ShapeType::Edge)? {
-        let Ok(points) = ogeom_mesh::polyline_of_edge(model, &edge, deflection, tol) else {
-            continue;
-        };
-        classify(
-            &mut drawing,
-            &points,
-            Source::Edge(edge.clone()),
-            view,
-            &faces,
-            tol,
-        )?;
+        traced.extend(traced_edge(model, &edge, deflection, tol));
     }
-
     for silhouette in silhouettes(model, shape, view.toward_eye(), tol)? {
-        let points = sampled(&silhouette.curve, silhouette.range, deflection, tol)?;
-        classify(&mut drawing, &points, Source::Silhouette, view, &faces, tol)?;
+        let line = ogeom_mesh::discretize(&silhouette.curve, silhouette.range, deflection, tol)?;
+        traced.push(Traced {
+            curve: silhouette.curve,
+            placement: Transform::IDENTITY,
+            parameters: line.parameters,
+            points: line.points,
+            source: Source::Silhouette,
+        });
+    }
+    let projected: Vec<Vec<Point2>> = traced
+        .iter()
+        .map(|t| t.points.iter().map(|p| view.project(*p)).collect())
+        .collect();
+    let contours = Contours::new(
+        projected
+            .iter()
+            .flat_map(|line| line.windows(2).map(|w| (w[0], w[1])))
+            .collect(),
+    );
+
+    let mut drawing = Drawing::default();
+    for (curve, line) in traced.iter().zip(&projected) {
+        classify(&mut drawing, curve, line, view, &faces, &contours, tol)?;
     }
     Ok(drawing)
+}
+
+/// A curve to draw: its exact geometry, and the samples its polyline is
+/// drawn through.
+struct Traced {
+    curve: Curve,
+    /// Where the curve's own coordinates stand in the world.
+    placement: Transform,
+    /// The curve parameter at each sample, in drawing order.
+    parameters: Vec<f64>,
+    /// The samples, in the world.
+    points: Vec<Point>,
+    source: Source,
+}
+
+impl Traced {
+    /// The exact point at a position along the samples (`k + f`: the
+    /// fraction `f` of the way from sample `k` to the next in parameter).
+    fn at(&self, position: f64, tol: Tolerances) -> OgeomResult<Point> {
+        let (k, f) = locate(position, self.parameters.len());
+        let (t0, t1) = (self.parameters[k], self.parameters[k + 1]);
+        Ok(self
+            .placement
+            .apply(self.curve.point_at((t1 - t0).mul_add(f, t0), tol)?))
+    }
+}
+
+/// An edge's curve and samples, in the edge's own direction; `None` for an
+/// edge with no curve to draw.
+fn traced_edge(
+    model: &Model,
+    edge: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> Option<Traced> {
+    let data = model.node(edge)?.data().as_edge()?;
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        return None;
+    };
+    let curve = model.geometry().curve(*curve)?.clone();
+    let placement = edge.transform(model.datums()).ok()?;
+    let line = ogeom_mesh::discretize(&curve, *range, deflection, tol).ok()?;
+    let mut points: Vec<Point> = line.points.iter().map(|p| placement.apply(*p)).collect();
+    let mut parameters = line.parameters;
+    if edge.orientation() == Orientation::Reversed {
+        points.reverse();
+        parameters.reverse();
+    }
+    Some(Traced {
+        curve,
+        placement,
+        parameters,
+        points,
+        source: Source::Edge(edge.clone()),
+    })
 }
 
 /// A face that can stand between a point and the eye: its surface in world
@@ -333,50 +401,99 @@ fn blockers(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<Bl
     Ok(out)
 }
 
-/// Split a polyline into visible and hidden runs, asking the faces.
+/// Split a curve into visible and hidden runs, asking the faces.
+///
+/// The samples are cut where the projection crosses another drawn curve,
+/// and each piece is classified at its middle on the exact curve. Where two
+/// neighbouring pieces disagree, the change is bisected on the curve until
+/// its two sides are the confusion tolerance apart, so the runs meet where
+/// the curve passes behind an outline rather than at a sample.
 fn classify(
     drawing: &mut Drawing,
-    points: &[Point],
-    source: Source,
+    traced: &Traced,
+    projected: &[Point2],
     view: &View,
     faces: &[Blocker],
+    contours: &Contours,
     tol: Tolerances,
 ) -> OgeomResult<()> {
-    let mut run: Vec<Point2> = Vec::new();
-    let mut held: Option<Visibility> = None;
-    let mut flush = |run: &mut Vec<Point2>, visibility: Option<Visibility>| {
+    if traced.points.len() < 2 {
+        return Ok(());
+    }
+    let seen = |position: f64| -> OgeomResult<Visibility> {
+        Ok(if occluded(traced.at(position, tol)?, view, faces, tol)? {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        })
+    };
+    let change_between = |mut lo: f64, mut hi: f64, was: Visibility| -> OgeomResult<f64> {
+        for _ in 0..64 {
+            if traced.at(lo, tol)?.distance(traced.at(hi, tol)?) <= tol.confusion() {
+                break;
+            }
+            let mid = f64::midpoint(lo, hi);
+            if seen(mid)? == was {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        Ok(f64::midpoint(lo, hi))
+    };
+    let drawn_at =
+        |position: f64| -> OgeomResult<Point2> { Ok(view.project(traced.at(position, tol)?)) };
+    let mut flush = |run: &mut Vec<Point2>, visibility: Visibility| {
         if run.len() < 2 {
             run.clear();
             return;
         }
         let curve = DrawnCurve {
             points: std::mem::take(run),
-            visibility: visibility.unwrap_or(Visibility::Visible),
-            source: source.clone(),
+            visibility,
+            source: traced.source.clone(),
         };
-        if visibility == Some(Visibility::Hidden) {
+        if visibility == Visibility::Hidden {
             drawing.hidden.push(curve);
         } else {
             drawing.visible.push(curve);
         }
     };
-    for point in points {
-        let visibility = if occluded(*point, view, faces, tol)? {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
-        };
-        if held.is_some_and(|was| was != visibility) {
-            // The change happens somewhere between the two samples. The run
-            // ends at the sample that changed, so the two runs meet there.
-            let last = run.last().copied();
-            flush(&mut run, held);
-            if let Some(last) = last {
-                run.push(last);
+
+    let positions = contours.split(projected, tol);
+    let middles: Vec<f64> = positions
+        .windows(2)
+        .map(|w| f64::midpoint(w[0], w[1]))
+        .collect();
+    let mut verdicts = Vec::with_capacity(middles.len());
+    for middle in &middles {
+        verdicts.push(seen(*middle)?);
+    }
+    let Some(&first) = verdicts.first() else {
+        return Ok(());
+    };
+    let mut run = vec![drawn_at(positions[0])?];
+    let mut held = first;
+    for (i, &verdict) in verdicts.iter().enumerate() {
+        if verdict != held {
+            // The run so far ends at the change and the next starts there;
+            // the piece boundary goes to whichever side it is on.
+            let boundary = positions[i];
+            let change = change_between(middles[i - 1], middles[i], held)?;
+            let at_change = drawn_at(change)?;
+            if change < boundary {
+                run.pop();
+                run.push(at_change);
+                flush(&mut run, held);
+                run = vec![at_change, drawn_at(boundary)?];
+            } else {
+                run.push(at_change);
+                flush(&mut run, held);
+                run = vec![at_change];
             }
+            held = verdict;
         }
-        held = Some(visibility);
-        run.push(view.project(*point));
+        run.push(drawn_at(positions[i + 1])?);
     }
     flush(&mut run, held);
     Ok(())
@@ -524,20 +641,6 @@ fn within_trim(
         out.push((from, t1));
     }
     Ok(out)
-}
-
-/// A curve's polyline over a range, at the given deflection: the same
-/// discretization the model's edges are drawn with, which follows the
-/// curve's turning. A step count taken from the straight distance between
-/// the range's ends draws a closed silhouette (a sphere's great circle, a
-/// torus's loop, whose ends coincide) as an octagon.
-fn sampled(
-    curve: &Curve,
-    range: (f64, f64),
-    deflection: Deflection,
-    tol: Tolerances,
-) -> OgeomResult<Vec<Point>> {
-    Ok(ogeom_mesh::discretize(curve, range, deflection, tol)?.points)
 }
 
 /// Even-odd containment against chart rings.

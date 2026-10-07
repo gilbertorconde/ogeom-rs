@@ -4,11 +4,13 @@
 //! places: the model's own edges, discretized by the same machinery every
 //! face boundary uses, and the tessellation's silhouettes, the mesh edges
 //! where the surface turns away from the eye. Every sampled segment is
-//! classified by casting its midpoint toward the eye against the whole
-//! mesh: a triangle strictly in front hides it. Runs of same-classified
-//! segments merge back into polylines, so a curve that dips behind a boss
-//! comes out as visible, hidden, visible: three curves, which is what a
-//! drawing shows.
+//! split where its projection crosses a contour of the mesh (a silhouette
+//! or a free border), the only places its visibility can change, and each
+//! piece is classified by casting its midpoint toward the eye against the
+//! whole mesh: a triangle strictly in front hides it. Runs of
+//! same-classified pieces merge back into polylines, so a curve that dips
+//! behind a boss comes out as visible, hidden, visible: three curves, which
+//! is what a drawing shows.
 //!
 //! Polygonal, not exact: the classification is as fine as the tessellation
 //! and the sampling. The exact half (silhouettes in closed form, visibility
@@ -18,6 +20,8 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Direction, Frame, Point, Point2, Vector};
 use ogeom_mesh::Deflection;
 use ogeom_topo::{Filter, Model, Shape, ShapeType, Triangulation, explore};
+
+use crate::crossings::{Contours, locate};
 
 /// Which side of the pencil a curve lands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +139,60 @@ pub fn project(
     let clearance = deflection.chord.max(tol.confusion() * 1e3) * 4.0;
     let occluders = Occluders::over(&mesh, view);
 
+    // The contours: interior mesh edges whose triangles disagree about
+    // facing the eye, border edges, and edges more than two triangles
+    // share. Faces are meshed apart, so the mesh is welded first: otherwise
+    // every face's border would read as one. The silhouettes drawn are the
+    // contours that turn away from the eye and the borders of front faces.
+    let welded = mesh.welded(tol);
+    let toward_eye = view.toward_eye();
+    let mut uses: std::collections::HashMap<(u32, u32), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (t, triangle) in welded.triangles.iter().enumerate() {
+        for i in 0..3 {
+            let (a, b) = (triangle[i], triangle[(i + 1) % 3]);
+            uses.entry((a.min(b), a.max(b))).or_default().push(t);
+        }
+    }
+    let facing = |t: usize| -> f64 {
+        let [a, b, c] = welded.triangles[t];
+        let (pa, pb, pc) = (
+            welded.positions[a as usize],
+            welded.positions[b as usize],
+            welded.positions[c as usize],
+        );
+        (pb - pa).cross(pc - pa).dot(toward_eye)
+    };
+    let mut edges: Vec<(&(u32, u32), &Vec<usize>)> = uses.iter().collect();
+    edges.sort_by_key(|&(&(a, b), _)| (a, b));
+    let mut contours: Vec<(Point2, Point2)> = Vec::new();
+    let mut silhouettes: Vec<[Point; 2]> = Vec::new();
+    for (&(a, b), triangles) in edges {
+        let (contour, silhouette) = match triangles.as_slice() {
+            [t] => (true, facing(*t) > 0.0),
+            [s, t] => {
+                let turns = (facing(*s) > 0.0) != (facing(*t) > 0.0);
+                (turns, turns)
+            }
+            _ => (true, false),
+        };
+        let points = [welded.positions[a as usize], welded.positions[b as usize]];
+        if contour {
+            contours.push((view.project(points[0]), view.project(points[1])));
+        }
+        if silhouette {
+            silhouettes.push(points);
+        }
+    }
+    let contours = Contours::new(contours);
+    let classifier = Classifier {
+        view,
+        occluders: &occluders,
+        contours: &contours,
+        clearance,
+        tol,
+    };
+
     let mut drawing = Drawing::default();
 
     // The model's own edges, their segments kept so a silhouette along one
@@ -150,64 +208,14 @@ pub fn project(
             continue;
         };
         drawn.add(&points);
-        classify_into(
-            &mut drawing,
-            &points,
-            Source::Edge(edge.clone()),
-            view,
-            &occluders,
-            clearance,
-            tol,
-        );
+        classifier.classify_into(&mut drawing, &points, Source::Edge(edge.clone()));
     }
 
-    // Silhouettes: interior mesh edges whose triangles disagree about facing
-    // the eye, and border edges, which are their own outline. Faces are
-    // meshed apart, so the mesh is welded first: otherwise every face's
-    // border would read as an outline.
-    let mesh = mesh.welded(tol);
-    let toward_eye = view.toward_eye();
-    let mut uses: std::collections::HashMap<(u32, u32), Vec<usize>> =
-        std::collections::HashMap::new();
-    for (t, triangle) in mesh.triangles.iter().enumerate() {
-        for i in 0..3 {
-            let (a, b) = (triangle[i], triangle[(i + 1) % 3]);
-            uses.entry((a.min(b), a.max(b))).or_default().push(t);
-        }
-    }
-    let facing = |t: usize| -> f64 {
-        let [a, b, c] = mesh.triangles[t];
-        let (pa, pb, pc) = (
-            mesh.positions[a as usize],
-            mesh.positions[b as usize],
-            mesh.positions[c as usize],
-        );
-        (pb - pa).cross(pc - pa).dot(toward_eye)
-    };
-    let mut edges: Vec<(&(u32, u32), &Vec<usize>)> = uses.iter().collect();
-    edges.sort_by_key(|&(&(a, b), _)| (a, b));
-    for (&(a, b), triangles) in edges {
-        let silhouette = match triangles.as_slice() {
-            [t] => facing(*t) > 0.0,
-            [s, t] => (facing(*s) > 0.0) != (facing(*t) > 0.0),
-            _ => false,
-        };
-        if !silhouette {
-            continue;
-        }
-        let points = [mesh.positions[a as usize], mesh.positions[b as usize]];
+    for points in silhouettes {
         if drawn.holds(points[0], points[1]) {
             continue;
         }
-        classify_into(
-            &mut drawing,
-            &points,
-            Source::Silhouette,
-            view,
-            &occluders,
-            clearance,
-            tol,
-        );
+        classifier.classify_into(&mut drawing, &points, Source::Silhouette);
     }
     Ok(drawing)
 }
@@ -287,62 +295,72 @@ impl DrawnSegments {
     }
 }
 
-/// Split a polyline into visible and hidden runs against the mesh.
-fn classify_into(
-    drawing: &mut Drawing,
-    points: &[Point],
-    source: Source,
-    view: &View,
-    occluders: &Occluders<'_>,
+/// What a polyline is classified against: the mesh that hides, and the
+/// contours where hiding can begin or end.
+struct Classifier<'a> {
+    view: &'a View,
+    occluders: &'a Occluders<'a>,
+    contours: &'a Contours,
     clearance: f64,
     tol: Tolerances,
-) {
-    let mut run: Vec<Point2> = Vec::new();
-    let mut run_visibility: Option<Visibility> = None;
-    let mut flush = |run: &mut Vec<Point2>, visibility: Option<Visibility>| {
-        if run.len() < 2 {
-            run.clear();
-            return;
-        }
-        let curve = DrawnCurve {
-            points: std::mem::take(run),
-            visibility: visibility.unwrap_or(Visibility::Visible),
-            source: source.clone(),
+}
+
+impl Classifier<'_> {
+    /// Split a polyline into visible and hidden runs against the mesh.
+    ///
+    /// Each segment is cut where its projection crosses a contour, and each
+    /// piece is classified by one ray from its middle: between two
+    /// crossings nothing can pass in front of it.
+    fn classify_into(&self, drawing: &mut Drawing, points: &[Point], source: Source) {
+        let (view, tol) = (self.view, self.tol);
+        let mut run: Vec<Point2> = Vec::new();
+        let mut run_visibility: Option<Visibility> = None;
+        let mut flush = |run: &mut Vec<Point2>, visibility: Option<Visibility>| {
+            if run.len() < 2 {
+                run.clear();
+                return;
+            }
+            let curve = DrawnCurve {
+                points: std::mem::take(run),
+                visibility: visibility.unwrap_or(Visibility::Visible),
+                source: source.clone(),
+            };
+            match visibility {
+                Some(Visibility::Hidden) => drawing.hidden.push(curve),
+                _ => drawing.visible.push(curve),
+            }
         };
-        match visibility {
-            Some(Visibility::Hidden) => drawing.hidden.push(curve),
-            _ => drawing.visible.push(curve),
-        }
-    };
-    for pair in points.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        let (pa, pb) = (view.project(a), view.project(b));
-        if pa.distance(pb) <= tol.confusion() {
-            // Projects to a point: not a line in a drawing.
-            flush(&mut run, run_visibility);
-            run_visibility = None;
-            continue;
-        }
-        let mid = Point::new(
-            f64::midpoint(a.x, b.x),
-            f64::midpoint(a.y, b.y),
-            f64::midpoint(a.z, b.z),
-        );
-        let visibility = if occluders.occlude(mid, view, clearance) {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
+        let projected: Vec<Point2> = points.iter().map(|p| view.project(*p)).collect();
+        let at = |position: f64| -> Point {
+            let (k, f) = locate(position, points.len());
+            points[k] + (points[k + 1] - points[k]) * f
         };
-        if run_visibility != Some(visibility) {
-            flush(&mut run, run_visibility);
-            run_visibility = Some(visibility);
+        for pair in self.contours.split(&projected, tol).windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            let (k, _) = locate(from, points.len());
+            if projected[k].distance(projected[k + 1]) <= tol.confusion() {
+                // Projects to a point: not a line in a drawing.
+                flush(&mut run, run_visibility);
+                run_visibility = None;
+                continue;
+            }
+            let middle = at(f64::midpoint(from, to));
+            let visibility = if self.occluders.occlude(middle, view, self.clearance) {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            };
+            if run_visibility != Some(visibility) {
+                flush(&mut run, run_visibility);
+                run_visibility = Some(visibility);
+            }
+            if run.is_empty() {
+                run.push(view.project(at(from)));
+            }
+            run.push(view.project(at(to)));
         }
-        if run.is_empty() {
-            run.push(pa);
-        }
-        run.push(pb);
+        flush(&mut run, run_visibility);
     }
-    flush(&mut run, run_visibility);
 }
 
 /// A mesh's triangles binned by where they project in the view.
@@ -626,6 +644,53 @@ mod tests {
         let drawing = super::project(&model, &drum.shape, &side, fine(), T).unwrap();
         let visible = silhouette_length(&drawing, Visibility::Visible);
         assert!((visible - 16.0).abs() < 1e-6, "two generators: {visible}");
+    }
+
+    /// A bar under a block that covers its far end, seen from above: the
+    /// bar's top edge is one straight segment, visible up to the block's
+    /// side and hidden past it.
+    #[test]
+    fn a_straight_edge_half_under_a_block_is_split_at_the_blocks_outline() {
+        let mut model = Model::new();
+        let bar = ogeom_algo::make_box(&mut model, MFrame::WORLD, (20.0, 1.0, 1.0), T).unwrap();
+        let at = MFrame::new(Point::new(12.0, -5.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+        let block = ogeom_algo::make_box(&mut model, at, (20.0, 10.0, 2.0), T).unwrap();
+        let both = ogeom_algo::build::make_compound(&mut model, &[bar.shape.clone(), block.shape])
+            .unwrap();
+        let view =
+            View::looking(Vector::new(0.0, 0.0, -1.0), Vector::new(0.0, 1.0, 0.0), T).unwrap();
+        let drawing = super::project(&model, &both.shape, &view, fine(), T).unwrap();
+
+        let top = explore(&model, &bar.shape, Filter::OfType(ShapeType::Edge))
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let points = ogeom_mesh::polyline_of_edge(&model, e, fine(), T).unwrap();
+                points.len() == 2
+                    && points
+                        .iter()
+                        .all(|p| p.y.abs() < 1e-9 && (p.z - 1.0).abs() < 1e-9)
+            })
+            .unwrap();
+        let spans = |curves: &[DrawnCurve]| -> Vec<(f64, f64)> {
+            curves
+                .iter()
+                .filter(|c| matches!(&c.source, Source::Edge(e) if e.node() == top.node()))
+                .map(|c| {
+                    let xs = c.points.iter().map(|p| p.x);
+                    (
+                        xs.clone().fold(f64::INFINITY, f64::min),
+                        xs.fold(f64::NEG_INFINITY, f64::max),
+                    )
+                })
+                .collect()
+        };
+        let visible = spans(&drawing.visible);
+        let hidden = spans(&drawing.hidden);
+        assert_eq!(visible.len(), 1, "{visible:?} {hidden:?}");
+        assert_eq!(hidden.len(), 1, "{hidden:?}");
+        assert!(visible[0].0.abs() < 1e-9 && (visible[0].1 - 12.0).abs() < 1e-9);
+        assert!((hidden[0].0 - 12.0).abs() < 1e-9 && (hidden[0].1 - 20.0).abs() < 1e-9);
     }
 
     #[test]

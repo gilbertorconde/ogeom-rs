@@ -254,3 +254,70 @@ fn a_balls_outline_is_drawn_round_not_as_an_octagon() {
         assert!(length * length / 24.0 <= chord * 1.5, "a chord of {length}");
     }
 }
+
+/// A bar under a block that covers its far end, seen from above. The bar's
+/// top edge is a line, sampled at its two ends only; it is visible up to
+/// the block's side and hidden past it, and the two runs meet there.
+#[test]
+fn a_straight_edge_half_under_a_block_changes_at_the_blocks_side() {
+    let mut model = Model::new();
+    let bar = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(
+        Point::new(12.0, -5.0, 5.0),
+        ogeom::math::Direction::Z,
+        ogeom::math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let block = ogeom::algo::make_box(&mut model, at, (20.0, 10.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let both = ogeom::algo::make_compound(&mut model, &[bar.clone(), block])
+        .unwrap()
+        .shape;
+    let view = ogeom::hlr::View::looking(-Vector::Z, Vector::Y, T).unwrap();
+    let drawing =
+        ogeom::hlr::exact::project_exact(&model, &both, &view, Deflection::default(), T).unwrap();
+
+    let top = explore_unique(&model, &bar, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let points =
+                ogeom::mesh::polyline_of_edge(&model, e, Deflection::default(), T).unwrap();
+            points.len() == 2
+                && points
+                    .iter()
+                    .all(|p| p.y.abs() < 1e-9 && (p.z - 1.0).abs() < 1e-9)
+        })
+        .unwrap();
+    let spans = |curves: &[ogeom::hlr::DrawnCurve]| -> Vec<(f64, f64)> {
+        curves
+            .iter()
+            .filter(|c| matches!(&c.source, ogeom::hlr::Source::Edge(e) if e.node() == top.node()))
+            .map(|c| {
+                let xs = c.points.iter().map(|p| p.x);
+                (
+                    xs.clone().fold(f64::INFINITY, f64::min),
+                    xs.fold(f64::NEG_INFINITY, f64::max),
+                )
+            })
+            .collect()
+    };
+    let (visible, hidden) = (spans(&drawing.visible), spans(&drawing.hidden));
+    assert_eq!(
+        (visible.len(), hidden.len()),
+        (1, 1),
+        "{visible:?} {hidden:?}"
+    );
+    assert!(
+        visible[0].0.abs() < 1e-9 && (visible[0].1 - 12.0).abs() < 1e-6,
+        "{visible:?}"
+    );
+    assert!(
+        (hidden[0].0 - 12.0).abs() < 1e-6 && (hidden[0].1 - 20.0).abs() < 1e-9,
+        "{hidden:?}"
+    );
+}

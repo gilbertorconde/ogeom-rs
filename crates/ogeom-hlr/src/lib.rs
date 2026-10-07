@@ -3,6 +3,7 @@
 //!
 //! *Elsewhere:* `HLRAlgo`, `HLRBRep`, `HLRTopoBRep` and `HLRAppli`.
 
+mod crossings;
 pub mod exact;
 pub mod project;
 pub mod section;

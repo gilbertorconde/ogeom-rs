@@ -295,10 +295,6 @@ Kernel threading already runs through `ogeom_core::parallel::map_ordered`
 (scoped threads, results in item order, bit-identical at any thread count).
 
 **Correctness first.**
-- HLR draws a straight edge wholly visible or wholly hidden: one ray at the
-  segment's middle (`ogeom-hlr/src/project.rs`), samples only on the exact
-  path. Split each projected edge where it crosses a projected contour and
-  test each interval (Appel's quantitative invisibility).
 - The 2D wire offset can drop a valid piece beside a large concave arc: its
   survivor test measures against a 33-point polyline
   (`ogeom-offset/src/wire2d.rs`). Measure to the exact arc.
