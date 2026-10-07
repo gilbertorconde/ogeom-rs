@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Face meshes kept by what a face is made of.** `FaceMeshCache`,
+  `triangulate_face_kept`, `triangulate_with_face_meshes`,
+  `face_meshes_for` and `ogeom_topo::face_content`: each face's mesh comes
+  back beside the welded whole, drawn once, and can be kept across models
+  by what each face is made of; a kept mesh is the one drawing it again
+  gives.
+
+### Changed
+
+- **Converting a mesh to a solid repeats less work.** Edge fits, face
+  meshes, face areas and exact face integrals are kept across the
+  conversion's builds. The result is unchanged; the largest corpus part
+  converts about 1.5 times faster on one thread, mid-size parts 15 to 40%
+  faster.
+
 ## [0.9.11] - 2026-10-07
 
 A patch release: no breaking API changes. A prism far from the origin keeps
