@@ -314,19 +314,49 @@ pub fn fillet_edges(
     // closes on itself (a junction loop the march follows round), so a
     // later edge of the same crease that the blend consumed is rounded
     // already, not interfered with.
-    let hosts_of = |model: &Model, edge: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
-        let mut out = Vec::new();
-        for face in explore_unique(model, solid, ShapeType::Face)? {
-            if explore_unique(model, &face, ShapeType::Edge)?
-                .iter()
-                .any(|e| e.node() == edge.node())
-            {
-                out.push(face.node());
+    let mut host_faces: std::collections::HashMap<ogeom_topo::TShapeId, Vec<Shape>> =
+        std::collections::HashMap::new();
+    for face in explore_unique(model, solid, ShapeType::Face)? {
+        for e in explore_unique(model, &face, ShapeType::Edge)? {
+            let held = host_faces.entry(e.node()).or_default();
+            if !held.iter().any(|f| f.is_same(&face)) {
+                held.push(face.clone());
             }
         }
+    }
+    let hosts_of = |edge: &Shape| -> Vec<ogeom_topo::TShapeId> {
+        let mut out: Vec<_> = host_faces
+            .get(&edge.node())
+            .map(|faces| faces.iter().map(Shape::node).collect())
+            .unwrap_or_default();
         out.sort_unstable();
-        Ok(out)
+        out
     };
+    // The edges of the solid a round's blends are built on, by occurrence:
+    // until a round is applied that solid is unchanged, and an edge of it
+    // is found there by name rather than re-found by its geometry.
+    let mut occurrences: Option<(Shape, std::collections::HashMap<ogeom_topo::SameKey, Shape>)> =
+        None;
+    let mut refind =
+        |model: &Model, on: &Shape, edge: &Shape, hosts: &[Shape]| -> OgeomResult<Vec<Shape>> {
+            if !occurrences
+                .as_ref()
+                .is_some_and(|(held, _)| held.is_same(on))
+            {
+                let mut by_name = std::collections::HashMap::new();
+                for e in explore_unique(model, on, ShapeType::Edge)? {
+                    by_name.entry(ogeom_topo::SameKey(e.clone())).or_insert(e);
+                }
+                occurrences = Some((on.clone(), by_name));
+            }
+            let named = occurrences
+                .as_ref()
+                .and_then(|(_, by_name)| by_name.get(&ogeom_topo::SameKey(edge.clone())));
+            match named {
+                Some(own) => Ok(vec![own.clone()]),
+                None => refind_edges(model, on, edge, hosts, tol),
+            }
+        };
     let mut blended_creases: Vec<Vec<ogeom_topo::TShapeId>> = Vec::new();
     // Edges that share no vertex round without meeting: each blend is built
     // from the faces as they stand, and theirs can be applied together.
@@ -391,15 +421,7 @@ pub fn fillet_edges(
         }
         // The faces the edge lies between on the solid as given: what a
         // piece of it re-found later still lies between.
-        let mut hosts: Vec<Shape> = Vec::new();
-        for face in explore_unique(model, solid, ShapeType::Face)? {
-            if explore_unique(model, &face, ShapeType::Edge)?
-                .iter()
-                .any(|e| e.node() == edge.node())
-            {
-                hosts.push(face);
-            }
-        }
+        let hosts: Vec<Shape> = host_faces.get(&edge.node()).cloned().unwrap_or_default();
         // The edge as it stands on the current solid: itself on the first
         // step, and afterwards whatever the earlier blends left of it: one
         // re-found stand-in, or the pieces a blend running out across it
@@ -412,7 +434,7 @@ pub fn fillet_edges(
                 // An edge both of whose ends this chain's corners rounded,
                 // and which they left nothing of, ran its whole length
                 // inside their balls: the corners are its blend.
-                let on_blended_crease = blended_creases.contains(&hosts_of(model, edge)?)
+                let on_blended_crease = blended_creases.contains(&hosts_of(edge))
                     || mates[index].settled == [true, true];
                 if traced.is_empty() && on_blended_crease {
                     continue;
@@ -426,7 +448,7 @@ pub fn fillet_edges(
                 }
                 let mut found = Vec::with_capacity(traced.len());
                 for one in traced {
-                    match refind_edges(model, &b.shape, one, &hosts, tol) {
+                    match refind(model, &b.shape, one, &hosts) {
                         Ok(live) => found.extend(live),
                         Err(_) if on_blended_crease || on_round_rim(model, one, &round_rims) => {}
                         Err(e) => return Err(e),
@@ -447,7 +469,7 @@ pub fn fillet_edges(
         for target in &targets {
             // Each piece's blend replaces the solid; the next piece is
             // re-found on what that blend left.
-            let live = match refind_edges(model, &current, target, &hosts, tol) {
+            let live = match refind(model, &current, target, &hosts) {
                 Ok(live) => live,
                 Err(_) if on_round_rim(model, target, &round_rims) => continue,
                 Err(e) => return Err(e),
@@ -473,7 +495,7 @@ pub fn fillet_edges(
             if let Some(rim) = whole_rim {
                 round_rims.push(rim);
             }
-            let hosts = hosts_of(model, edge)?;
+            let hosts = hosts_of(edge);
             if hosts.len() == 2 && !blended_creases.contains(&hosts) {
                 blended_creases.push(hosts);
             }
@@ -496,10 +518,11 @@ pub fn fillet_edges(
     apply_set_aside(model, built, set_aside, tol)
 }
 
-/// Apply the wedges a chain set aside: every cut one together and every
-/// fused one together, each blend's faces credited to its edge through the
-/// boolean's history. Wedges whose boxes meet are applied one by one, as a
-/// compound of lumps that overlap would count their overlap twice.
+/// Apply the wedges a chain set aside: the cut ones together and the
+/// fused ones together, each blend's faces credited to its edge through
+/// the boolean's history. Wedges whose boxes meet go in different
+/// booleans, as a compound of lumps that overlap would count their overlap
+/// twice.
 fn apply_set_aside(
     model: &mut Model,
     mut built: Built,
@@ -513,16 +536,37 @@ fn apply_set_aside(
     for (_, wedge) in &set_aside {
         boxes.push(ogeom_algo::shape_bounds(model, &wedge.solid, tol)?);
     }
-    let apart =
-        (0..boxes.len()).all(|i| (i + 1..boxes.len()).all(|j| !boxes[i].intersects(&boxes[j])));
-    let groups: Vec<Vec<usize>> = if apart {
-        let (fused, cut): (Vec<usize>, Vec<usize>) =
-            (0..set_aside.len()).partition(|&i| set_aside[i].1.additive);
-        [cut, fused].into_iter().filter(|g| !g.is_empty()).collect()
-    } else {
+    let (fused, cut): (Vec<usize>, Vec<usize>) =
+        (0..set_aside.len()).partition(|&i| set_aside[i].1.additive);
+    // A cut and a fill whose boxes meet are applied in the order they were
+    // built, one by one: which goes first decides what the corner keeps.
+    let crossed = cut
+        .iter()
+        .any(|&i| fused.iter().any(|&j| boxes[i].intersects(&boxes[j])));
+    let groups: Vec<Vec<usize>> = if crossed {
         (0..set_aside.len()).map(|i| vec![i]).collect()
+    } else {
+        // Each side's wedges in as few groups as keep every group's boxes
+        // apart, each group one boolean: blends close side by side (rims on
+        // a tight grid) take a handful of booleans, not one each.
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for side in [cut, fused] {
+            let first = groups.len();
+            for i in side {
+                let slot = groups[first..]
+                    .iter()
+                    .position(|g| g.iter().all(|&j| !boxes[i].intersects(&boxes[j])));
+                match slot {
+                    Some(k) => groups[first + k].push(i),
+                    None => groups.push(vec![i]),
+                }
+            }
+        }
+        groups
     };
-    for group in groups {
+    let given = built.clone();
+    let mut groups: std::collections::VecDeque<Vec<usize>> = groups.into();
+    while let Some(group) = groups.pop_front() {
         let additive = set_aside[group[0]].1.additive;
         let lumps: Vec<Shape> = group
             .iter()
@@ -538,6 +582,14 @@ fn apply_set_aside(
         } else {
             ogeom_bool::cut(model, &built.shape, &tool, tol)
         };
+        // A group the boolean does not resolve at once is no refusal: the
+        // wedges are then applied one at a time, in the order they were
+        // built, to the solid as it was given.
+        if matches!(applied, Err(OgeomError::NotDone(_))) && group.len() > 1 {
+            built = given.clone();
+            groups = (0..set_aside.len()).map(|i| vec![i]).collect();
+            continue;
+        }
         let refusal = group.iter().find_map(|&i| set_aside[i].1.melt_refusal);
         let step = match (applied, refusal) {
             (Err(OgeomError::NotDone(cause)), Some(refusal)) => {
@@ -900,16 +952,12 @@ fn planar_fillet(
             continue;
         }
         let centre_at = |s: f64| at + outward * s + bisector * (radius / depth);
-        let deflection = ogeom_mesh::Deflection {
-            chord: (radius * 1e-2).max(tol.confusion() * 1e3),
-            ..ogeom_mesh::Deflection::default()
-        };
         let step = radius / 8.0;
         let mut reach: Option<f64> = None;
-        let probe = ogeom_algo::SolidMesh::of(model, solid, deflection, tol)?;
+        let probe = crate::support::material_probe(model, solid, tol)?;
         for k in 1..=32 {
             let s = step * f64::from(k);
-            let inside = probe.holds(centre_at(s), tol)? == ogeom_algo::Containment::In;
+            let inside = probe.holds(model, centre_at(s), tol)? == ogeom_algo::Containment::In;
             if inside != seat.convex {
                 reach = Some(s + radius * 0.25);
                 break;

@@ -105,30 +105,11 @@ pub fn classify_on_face(
         return Ok(Containment::Out);
     }
 
-    let rings = face_boundary(model, face, deflection, tol)?;
-    Ok(against_rings(
-        surface,
-        &rings,
-        projection.parameters,
-        reach,
-        deflection.chord,
-        tol,
-    ))
-}
-
-/// Where a point already found on a face's surface, at chart parameters
-/// `(u, v)`, sits against the face's trimming rings: on them within `reach`
-/// plus the rings' own sag `chord`, inside, or out.
-fn against_rings(
-    surface: &ogeom_geom::SurfaceGeometry,
-    rings: &[Vec<Point2>],
-    (u, v): (f64, f64),
-    reach: f64,
-    chord: f64,
-    tol: Tolerances,
-) -> Containment {
-    let at = place_on_rings(surface, rings, Point2::new(u, v), tol);
-
+    // A plane's holes are drawn only near the point: a face with hundreds
+    // of holes is asked about beside a few of them.
+    let rings = Rings::of(model, face, surface, deflection, tol)?;
+    let (u, v) = projection.parameters;
+    let at = rings.place(surface, Point2::new(u, v), tol);
     // The uncertain band, converted from a distance in space into one in
     // parameter units through the surface's own scale. A fixed parameter
     // tolerance would be metres wide at a sphere's equator and nothing at its
@@ -136,15 +117,15 @@ fn against_rings(
     // band carries that sag too: without it, a point between a tangent chord
     // and its arc (inside the true trim, outside the sampled one) would
     // read as Out when the honest answer at this resolution is On.
-    let band = parametric_band(surface, (u, v), reach + chord, tol);
-    if band.meets_rings(rings, at) {
-        return Containment::On;
+    let band = parametric_band(surface, (u, v), reach + deflection.chord, tol);
+    if rings.within(model, face, deflection, at, band, tol)? {
+        return Ok(Containment::On);
     }
-    if inside_boundary(rings, at) {
+    Ok(if rings.inside(model, face, deflection, at, tol)? {
         Containment::In
     } else {
         Containment::Out
-    }
+    })
 }
 
 /// Where a point sits relative to a closed shell or solid.
@@ -594,7 +575,7 @@ impl PreparedFace {
         if projection.distance > self.reach {
             return Ok(Containment::Out);
         }
-        // `against_rings`, asked of the rings drawn so far.
+        // Against the rings drawn so far.
         let rings = self.rings(model, deflection, tol)?;
         let (u, v) = projection.parameters;
         let at = rings.place(&self.surface, Point2::new(u, v), tol);

@@ -728,6 +728,21 @@ pub(crate) fn credit_new_faces(
     Ok(())
 }
 
+/// The solid's boundary, prepared to say whether a rolling ball's centre
+/// still stands in the material, as a seat running out past its edge's end
+/// asks at a few points near that end.
+///
+/// The boundary answers against the true surfaces, and a face's trimming
+/// rings are drawn only when a probe or its ray comes near the face, so
+/// the cost follows the faces near the probe rather than the whole solid.
+pub(crate) fn material_probe(
+    model: &Model,
+    solid: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_algo::SolidBoundary> {
+    ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)
+}
+
 /// A blend's wedge set aside to be applied with others in one boolean.
 pub(crate) struct Wedge {
     /// The wedge as a solid.

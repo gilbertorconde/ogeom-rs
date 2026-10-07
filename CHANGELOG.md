@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Each face's bounding box is kept in the model (#136).** It is found
+  once (`ogeom::algo::face_bounds`, `tight_bounds`, the booleans' face-pair
+  filter), read in constant time with `Model::face_bounds`, and forgotten
+  when the face, anything it is made of, or its surface changes in place.
+  A second `tight_bounds` of a 582-face part is about 25 times faster.
+
+### Changed
+
+- **A fillet reads only what is near each edge (#135).** Run-out probes ask
+  the solid's exact boundary instead of a fine mesh of the whole solid, a
+  point on a plane face with many holes is classified against the holes
+  near it, and a round's wedges whose boxes meet go in a few booleans
+  rather than one each. The outer edges of a plate with 256 holes fillet in
+  about 0.22 s (1.85 s before). Results are unchanged.
+
 ### Fixed
 
 - **Booleans take imported parts with spline fillets over small rings

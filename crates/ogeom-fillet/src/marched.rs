@@ -1231,15 +1231,9 @@ fn open_runout_wedge(
                         // where a cap in the section's own plane meets it.
                         // Only a ball that has left the material altogether
                         // (a convex seat's, past a wall) runs out.
-                        let deflection = ogeom_mesh::Deflection {
-                            chord: (radius * 1e-2).max(tol.confusion() * 1e3),
-                            ..ogeom_mesh::Deflection::default()
-                        };
-                        let inside = ogeom_algo::classify_in_solid(
+                        let inside = crate::support::material_probe(model, solid, tol)?.holds(
                             model,
-                            solid,
                             blend.spine[i],
-                            deflection,
                             tol,
                         )? == ogeom_algo::Containment::In;
                         if inside == convex && !corner_mate {

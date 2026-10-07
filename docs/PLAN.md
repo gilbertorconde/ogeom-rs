@@ -274,8 +274,18 @@ leave a shared face's derivation alone, and every operation that edits its
 result in place (heal, fillet, offset, sew) to copy on write first.
 
 **Fillets in fewer passes.** A chain is taken in rounds, no two edges of a
-round sharing a vertex, each round in one boolean each way. Each edge still
-builds its blend against what the earlier rounds left.
+round sharing a vertex, each round in one boolean each way (wedges whose
+boxes meet in as few booleans as keep each one's boxes apart). Everything
+else in a call reads only what is near each edge, so a call costs its
+booleans plus a few milliseconds per edge: the four outer edges of a plate
+with 256 holes take about 2.5 times the plain plate's time, every rim of
+it about 25 ms a hole. What is left is the boolean's own cost over the
+whole solid, and a polygon's outline still takes two rounds. Building the
+later round against the solid as given, as though the earlier cuts were
+made, and cutting every wedge at once (fused first, or as disjoint pieces)
+gives a tool the boolean cannot close against even a plain box ("the kept
+pieces did not close into a shell"): its legs lie on the box's faces all
+round the outline.
 
 ## How this project works
 
