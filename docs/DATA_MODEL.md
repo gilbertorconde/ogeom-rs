@@ -373,8 +373,12 @@ the right trade, and the API makes it explicit instead of hiding it.
 
 ### Append-only arenas, and what relies on it
 
-In practice the arenas are append-only: nothing in the kernel removes entries.
-Two non-builder paths rely on this.
+The arenas hand out slots in order and never refill one. The one removal,
+`Model::retain_reachable`, drops whatever a set of roots does not reach and
+leaves those slots empty for good: every kept handle resolves as before, a
+dropped one fails to resolve, and the arena stores only what it keeps, so a
+clone costs what is kept. Two non-builder paths rely on slots coming in
+order.
 
 - **`Model::from_parts`** assembles a restored document by replaying the file's
   insertion order, which reproduces every handle.

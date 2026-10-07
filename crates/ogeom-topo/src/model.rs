@@ -17,12 +17,17 @@
 use std::collections::HashMap;
 
 use ogeom_core::{
-    Arena, EntityId, OgeomResult, OpId, Provenance, ProvenanceTable, Role, Tolerance, Tolerances,
-    ogeom_bail,
+    Arena, EntityId, Key, OgeomResult, OpId, Provenance, ProvenanceTable, Role, Tolerance,
+    Tolerances, ogeom_bail,
 };
 use ogeom_math::{Aabb, Point, Transform, TransformKind};
 
-use crate::entity::{EdgeData, EdgeRepr, FaceData, NodeData, VertexData};
+use smallvec::SmallVec;
+
+use crate::entity::{
+    CurveId, EdgeData, EdgeRepr, FaceData, NodeData, PCurveId, SurfaceId, TriangulationId,
+    VertexData,
+};
 use crate::kept::FaceBoxes;
 use crate::location::{DatumId, DatumStore, Location};
 use crate::shape::{Orientation, Shape, ShapeType, TShape, TShapeId};
@@ -33,77 +38,121 @@ pub use crate::entity::GeometryStore;
 /// from.
 #[derive(Debug, Clone, Default)]
 pub struct Model {
-    nodes: Arena<TShape>,
+    nodes: Nodes,
     datums: DatumStore,
     geometry: GeometryStore,
     provenance: ProvenanceTable,
-    identity: Identities,
     current_op: OpId,
     tolerances: Tolerances,
     face_boxes: FaceBoxes,
-    held: Held,
+    /// Whether any node is marked held ([`Model::note_held`]).
+    any_held: bool,
     /// While a journal is open, each node [`Model::widen`] grew or
     /// [`Model::node_mut`] handed out, and its tolerance before: what
     /// [`Model::undo_widened`] puts back.
     widened: Option<Vec<(TShapeId, Tolerance)>>,
 }
 
-/// The nodes an operation passed through into its result from the shapes
-/// it was given, which those shapes still hold: a bit per node index. What
-/// lies below a marked node is held with it.
+/// A topology node and what the model keeps beside it.
+#[derive(Debug, Clone)]
+struct Node {
+    shape: TShape,
+    /// The identity the node carries.
+    identity: Option<EntityId>,
+    /// The node's slot among the kept face boxes, if it is a face.
+    face_box: Option<u32>,
+    /// The node indices of the edges, wires and faces that hold it: the way
+    /// up from a vertex, an edge or a wire to the faces it bounds.
+    held_by: SmallVec<[u32; 2]>,
+    /// Whether an operation passed the node through into its result from
+    /// the shapes it was given, which those shapes still hold. What lies
+    /// below a held node is held with it.
+    held: bool,
+}
+
+/// The topology nodes, looked up by the handles shapes carry.
 #[derive(Debug, Clone, Default)]
-struct Held {
-    bits: Vec<u64>,
+struct Nodes {
+    arena: Arena<Node>,
 }
 
-impl Held {
-    fn mark(&mut self, index: u32) {
-        let (word, bit) = (index as usize / 64, index % 64);
-        if self.bits.len() <= word {
-            self.bits.resize(word + 1, 0);
-        }
-        self.bits[word] |= 1 << bit;
+/// A node's key in the arena, from its handle.
+#[inline]
+const fn arena_key(id: TShapeId) -> Key<Node> {
+    Key::from_parts(id.index(), id.generation()).with_scope(id.scope())
+}
+
+/// A node's handle, from its key in the arena.
+#[inline]
+const fn handle(key: Key<Node>) -> TShapeId {
+    Key::from_parts(key.index(), key.generation()).with_scope(key.scope())
+}
+
+impl Nodes {
+    #[inline]
+    fn entry(&self, id: TShapeId) -> Option<&Node> {
+        self.arena.get(arena_key(id))
     }
 
-    fn get(&self, index: u32) -> bool {
-        self.bits
-            .get(index as usize / 64)
-            .is_some_and(|word| word & (1 << (index % 64)) != 0)
+    #[inline]
+    fn entry_mut(&mut self, id: TShapeId) -> Option<&mut Node> {
+        self.arena.get_mut(arena_key(id))
     }
 
-    fn is_empty(&self) -> bool {
-        self.bits.is_empty()
+    #[inline]
+    fn get(&self, id: TShapeId) -> Option<&TShape> {
+        self.entry(id).map(|node| &node.shape)
+    }
+
+    #[inline]
+    fn get_mut(&mut self, id: TShapeId) -> Option<&mut TShape> {
+        self.entry_mut(id).map(|node| &mut node.shape)
+    }
+
+    fn insert(&mut self, node: Node) -> TShapeId {
+        handle(self.arena.insert(node))
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (TShapeId, &Node)> {
+        self.arena.iter().map(|(key, node)| (handle(key), node))
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (TShapeId, &mut Node)> {
+        self.arena.iter_mut().map(|(key, node)| (handle(key), node))
+    }
+
+    /// The live handle at node index `index`.
+    fn at(&self, index: u32) -> Option<TShapeId> {
+        self.arena.key_at(index).map(handle)
+    }
+
+    const fn scope(&self) -> u32 {
+        self.arena.scope()
+    }
+
+    const fn issued(&self, id: TShapeId) -> bool {
+        id.scope() == self.arena.scope()
+    }
+
+    const fn len(&self) -> usize {
+        self.arena.len()
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.arena.is_empty()
     }
 }
 
-/// Which identity each node carries, in a slot per node index. Nodes are
-/// never removed, so a slot holds at most one node's key; the key is kept
-/// to answer only the handle it was recorded for.
-#[derive(Debug, Clone, Default)]
-struct Identities {
-    slots: Vec<Option<(TShapeId, EntityId)>>,
-}
-
-impl Identities {
-    fn get(&self, node: TShapeId) -> Option<EntityId> {
-        match self.slots.get(node.index() as usize) {
-            Some(Some((key, entity))) if *key == node => Some(*entity),
-            _ => None,
-        }
-    }
-
-    fn insert(&mut self, node: TShapeId, entity: EntityId) {
-        let at = node.index() as usize;
-        if self.slots.len() <= at {
-            self.slots.resize(at + 1, None);
-        }
-        self.slots[at] = Some((node, entity));
-    }
-
-    /// Every recorded identity, in node order.
-    fn iter(&self) -> impl Iterator<Item = (TShapeId, EntityId)> + '_ {
-        self.slots.iter().filter_map(|slot| *slot)
-    }
+/// What the roots of [`Model::retain_reachable`] reach.
+#[derive(Default)]
+struct Reach {
+    /// Node indices.
+    nodes: hashbrown::HashSet<u32>,
+    curves: hashbrown::HashSet<CurveId>,
+    pcurves: hashbrown::HashSet<PCurveId>,
+    surfaces: hashbrown::HashSet<SurfaceId>,
+    meshes: hashbrown::HashSet<TriangulationId>,
+    entities: hashbrown::HashSet<EntityId>,
 }
 
 impl Model {
@@ -125,15 +174,14 @@ impl Model {
     #[must_use]
     pub fn with_tolerances(tolerances: Tolerances) -> Self {
         Self {
-            nodes: Arena::new(),
+            nodes: Nodes::default(),
             datums: DatumStore::new(),
             geometry: GeometryStore::new(),
             provenance: ProvenanceTable::new(),
-            identity: Identities::default(),
             current_op: OpId(0),
             tolerances,
             face_boxes: FaceBoxes::default(),
-            held: Held::default(),
+            any_held: false,
             widened: None,
         }
     }
@@ -203,10 +251,12 @@ impl Model {
     /// - **Bound handles.** Parts whose handles already name an arena did not
     ///   come from a reader; absorbing them would alias whatever those
     ///   handles meant elsewhere. Serialization is the one road in.
-    /// - **A model with holes.** Absorbing appends by offset, which is only
-    ///   sound while the target's arenas have only ever been appended to.
-    ///   Nothing in this crate removes entries, and the check is what keeps
-    ///   a removal from becoming aliasing.
+    /// - **A model that reuses slots.** Absorbing appends by offset, which
+    ///   is only sound while each of the target's arenas hands out fresh
+    ///   slots in order. [`Model::retain_reachable`] leaves slots empty and
+    ///   never hands them out again, so a retained model absorbs; an arena
+    ///   waiting to refill a freed slot is refused, and the check is what
+    ///   keeps that refill from becoming aliasing.
     ///
     /// The current operation is left alone: absorb mints no identities, it
     /// transplants a table, and the absorbed provenance keeps its source
@@ -240,11 +290,14 @@ impl Model {
                 self.tolerances.scale()
             );
         }
-        if !self.nodes.is_dense() || !self.datums.is_dense() || !self.geometry.is_dense() {
+        if self.nodes.arena.next_index().is_none()
+            || !self.datums.is_dense()
+            || !self.geometry.appends()
+        {
             ogeom_bail!(
                 Construction,
-                "absorb appends by offset, and this model's arenas have holes; \
-                 something removed entries, which nothing in this crate does"
+                "absorb appends by offset, and this model's arenas are set to \
+                 refill freed slots, which nothing in this crate does"
             );
         }
         Self::check_parts_unbound(&parts, roots)?;
@@ -299,7 +352,7 @@ impl Model {
             }
         }
 
-        let node_offset = crate::entity::arena_len(&self.nodes);
+        let node_offset = crate::entity::arena_len(&self.nodes.arena);
         let datum_offset = u32::try_from(self.datums.len()).unwrap_or(u32::MAX);
         let entity_offset = self.provenance.len() as u64;
         let geometry_offsets = self.geometry.append(geometry);
@@ -340,15 +393,21 @@ impl Model {
             }
             self.provenance.record(entry);
         }
-        for node in nodes {
-            self.insert_node(node);
-        }
+        self.sync_face_boxes();
+        let appended: Vec<TShapeId> = nodes
+            .into_iter()
+            .map(|node| self.insert_unlinked(node))
+            .collect();
 
         // Every handle in `parts` was rebuilt by a reader that had no arenas
         // to bind them to, so they name no arena at all and resolve nowhere.
         // Bind the appended subrange now that the arenas exist; what was here
-        // before is already bound.
+        // before is already bound. A child may come after its parent in the
+        // parts, so the links up from children are made once all are bound.
         self.bind_handles(node_offset);
+        for id in appended {
+            self.link_children(id);
+        }
         let identity: Vec<(TShapeId, EntityId)> = identity
             .into_iter()
             .map(|(node, entity)| {
@@ -364,7 +423,9 @@ impl Model {
 
         self.check_restored(&identity, node_offset)?;
         for (node, entity) in identity {
-            self.identity.insert(node, entity);
+            if let Some(node) = self.nodes.entry_mut(node) {
+                node.identity = Some(entity);
+            }
         }
         Ok((node_offset, datum_offset, entity_offset))
     }
@@ -477,6 +538,7 @@ impl Model {
         let geometry = self.geometry.scopes();
 
         for (_, node) in self.nodes.iter_mut().filter(|(id, _)| id.index() >= from) {
+            let node = &mut node.shape;
             for child in node.children_mut() {
                 *child = child.rebound(nodes, datums);
             }
@@ -506,6 +568,7 @@ impl Model {
     /// absorbed subgraph is self-contained and can only point at itself.
     fn check_restored(&self, identity: &[(TShapeId, EntityId)], from: u32) -> OgeomResult<()> {
         for (id, node) in self.nodes.iter().filter(|(id, _)| id.index() >= from) {
+            let node = &node.shape;
             let kind = node.kind();
             match (kind, node.data()) {
                 (ShapeType::Vertex, NodeData::Vertex(_))
@@ -630,7 +693,7 @@ impl Model {
     /// survives.
     #[must_use]
     pub fn identity_of(&self, shape: &Shape) -> Option<EntityId> {
-        self.identity.get(shape.node())
+        self.nodes.entry(shape.node())?.identity
     }
 
     /// Where a shape's node came from.
@@ -658,6 +721,139 @@ impl Model {
         }
     }
 
+    /// Drop everything `roots` do not reach, in place.
+    ///
+    /// Kept: every node below a root, the curves, pcurves, surfaces and
+    /// triangulations those nodes name, and the provenance entries of the
+    /// identities they carry with every entry those derive from. Every
+    /// handle into what is kept resolves as before and means the same
+    /// thing, and a lineage query on a kept shape answers as before. A
+    /// handle into what is dropped fails to resolve, and no later entity
+    /// takes its slot or its id, so it never answers about something else.
+    /// Datums are kept whole: a placement a caller holds keeps resolving.
+    ///
+    /// What is dropped stops costing memory, and a clone costs what is
+    /// kept. For a model that runs many operations and keeps one result:
+    /// call it with that result once the model has grown well past what
+    /// the result reaches.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if a root
+    /// does not resolve in this model; nothing is dropped then.
+    pub fn retain_reachable(&mut self, roots: &[Shape]) -> OgeomResult<()> {
+        if roots.iter().any(|root| self.node(root).is_none()) {
+            ogeom_bail!(Dangling, "a root to retain is not in this model");
+        }
+        if self.widened.is_some() {
+            ogeom_bail!(
+                Construction,
+                "an operation is noting the tolerances it widens; a model is \
+                 retained between operations"
+            );
+        }
+        let reach = self.reach(roots);
+
+        self.nodes
+            .arena
+            .retain(|key, _| reach.nodes.contains(&key.index()));
+        let mut kept_boxes: Vec<u32> = Vec::new();
+        self.any_held = false;
+        for (_, node) in self.nodes.iter_mut() {
+            self.any_held |= node.held;
+            node.held_by.retain(|above| reach.nodes.contains(above));
+            if let Some(slot) = node.face_box.as_mut() {
+                kept_boxes.push(*slot);
+                *slot = u32::try_from(kept_boxes.len() - 1).unwrap_or(u32::MAX);
+            }
+        }
+        self.face_boxes.keep_slots(&kept_boxes);
+        self.geometry.retain(
+            |id| reach.curves.contains(&id),
+            |id| reach.pcurves.contains(&id),
+            |id| reach.surfaces.contains(&id),
+            |id| reach.meshes.contains(&id),
+        );
+        self.provenance.retain(|id, _| reach.entities.contains(&id));
+        Ok(())
+    }
+
+    /// Everything `roots` reach: their nodes, the geometry those name, and
+    /// the identities those carry with their ancestry.
+    fn reach(&self, roots: &[Shape]) -> Reach {
+        let mut reach = Reach::default();
+        let mut queue: Vec<TShapeId> = Vec::new();
+        for root in roots {
+            if reach.nodes.insert(root.node().index()) {
+                queue.push(root.node());
+            }
+        }
+        let mut ancestry: Vec<EntityId> = Vec::new();
+        while let Some(id) = queue.pop() {
+            let Some(node) = self.nodes.entry(id) else {
+                continue;
+            };
+            if let Some(entity) = node.identity
+                && reach.entities.insert(entity)
+            {
+                ancestry.push(entity);
+            }
+            for child in node.shape.children() {
+                if self.nodes.entry(child.node()).is_some()
+                    && reach.nodes.insert(child.node().index())
+                {
+                    queue.push(child.node());
+                }
+            }
+            match node.shape.data() {
+                NodeData::Edge(edge) => {
+                    for repr in &edge.representations {
+                        match repr {
+                            EdgeRepr::Curve3d { curve, .. } => {
+                                reach.curves.insert(*curve);
+                            }
+                            EdgeRepr::PCurve { curve, surface, .. } => {
+                                reach.pcurves.insert(*curve);
+                                reach.surfaces.insert(*surface);
+                            }
+                            EdgeRepr::Seam {
+                                forward,
+                                reversed,
+                                surface,
+                                ..
+                            } => {
+                                reach.pcurves.insert(*forward);
+                                reach.pcurves.insert(*reversed);
+                                reach.surfaces.insert(*surface);
+                            }
+                            EdgeRepr::Polyline { .. } => {}
+                            EdgeRepr::PolygonOnTriangulation { triangulation, .. } => {
+                                reach.meshes.insert(*triangulation);
+                            }
+                        }
+                    }
+                }
+                NodeData::Face(face) => {
+                    reach.surfaces.insert(face.surface);
+                    if let Some(mesh) = face.triangulation {
+                        reach.meshes.insert(mesh);
+                    }
+                }
+                NodeData::Vertex(_) | NodeData::Container => {}
+            }
+        }
+        while let Some(entity) = ancestry.pop() {
+            if let Some(entry) = self.provenance.get(entity) {
+                for &from in entry.inputs() {
+                    if reach.entities.insert(from) {
+                        ancestry.push(from);
+                    }
+                }
+            }
+        }
+        reach
+    }
+
     /// Trace a shape back to the entities it ultimately came from.
     ///
     /// How a reference into a rebuilt model is resolved: find what the user
@@ -683,9 +879,9 @@ impl Model {
     /// that wants a particular occurrence explores from here.
     #[must_use]
     pub fn shape_of(&self, id: EntityId) -> Option<Shape> {
-        self.identity
+        self.nodes
             .iter()
-            .find(|(_, entity)| *entity == id)
+            .find(|(_, node)| node.identity == Some(id))
             .map(|(node, _)| Shape::of(node))
     }
 
@@ -710,14 +906,18 @@ impl Model {
         }
         let sources: Vec<EntityId> = from.iter().filter_map(|s| self.identity_of(s)).collect();
         let id = self.provenance.derived(self.current_op, sources, role);
-        self.identity.insert(shape.node(), id);
+        if let Some(node) = self.nodes.entry_mut(shape.node()) {
+            node.identity = Some(id);
+        }
         Ok(id)
     }
 
     /// Record a node's identity as it is created.
     fn record_primitive(&mut self, node: TShapeId, role: Role) {
         let id = self.provenance.primitive(self.current_op, role);
-        self.identity.insert(node, id);
+        if let Some(node) = self.nodes.entry_mut(node) {
+            node.identity = Some(id);
+        }
     }
 
     /// The placement datums.
@@ -773,7 +973,6 @@ impl Model {
     pub fn node_mut(&mut self, shape: &Shape) -> Option<&mut TShape> {
         self.sync_face_boxes();
         if let Some(node) = self.nodes.get(shape.node()) {
-            self.face_boxes.forget_above(shape.node().index());
             // The tolerance as it stands, which an edit through the node
             // may grow: what an attempt that fails puts back.
             if let Some(journal) = &mut self.widened
@@ -782,17 +981,69 @@ impl Model {
                 journal.push((shape.node(), was));
             }
         }
+        self.forget_boxes_above(shape.node());
         self.nodes.get_mut(shape.node())
     }
 
-    /// Insert a node and record it with the kept face boxes.
+    /// Insert a node, with a slot for its box if it is a face and its links
+    /// up from the children it holds.
     fn insert_node(&mut self, node: TShape) -> TShapeId {
         self.sync_face_boxes();
-        let id = self.nodes.insert(node);
-        if let Some(node) = self.nodes.get(id) {
-            self.face_boxes.note(id, node);
-        }
+        let id = self.insert_unlinked(node);
+        self.link_children(id);
         id
+    }
+
+    /// Insert a node, with a slot for its box if it is a face.
+    fn insert_unlinked(&mut self, shape: TShape) -> TShapeId {
+        let face_box = (shape.kind() == ShapeType::Face).then(|| self.face_boxes.add());
+        self.nodes.insert(Node {
+            shape,
+            identity: None,
+            face_box,
+            held_by: SmallVec::new(),
+            held: false,
+        })
+    }
+
+    /// Record node `id` with each child it holds, where it is part of a
+    /// face: the link [`Model::forget_boxes_above`] climbs.
+    fn link_children(&mut self, id: TShapeId) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if !matches!(
+            node.kind(),
+            ShapeType::Edge | ShapeType::Wire | ShapeType::Face
+        ) {
+            return;
+        }
+        let children: SmallVec<[TShapeId; 8]> = node.children().iter().map(Shape::node).collect();
+        for child in children {
+            if let Some(below) = self.nodes.entry_mut(child)
+                && !below.held_by.contains(&id.index())
+            {
+                below.held_by.push(id.index());
+            }
+        }
+    }
+
+    /// Forget the box of every face that holds node `id`, the node itself
+    /// included where it is a face.
+    fn forget_boxes_above(&mut self, id: TShapeId) {
+        if self.nodes.get(id).is_none() {
+            return;
+        }
+        let mut stack: SmallVec<[u32; 8]> = smallvec::smallvec![id.index()];
+        while let Some(at) = stack.pop() {
+            let Some(node) = self.nodes.at(at).and_then(|id| self.nodes.entry(id)) else {
+                continue;
+            };
+            if let Some(slot) = node.face_box {
+                self.face_boxes.forget(slot);
+            }
+            stack.extend(node.held_by.iter().copied());
+        }
     }
 
     /// Forget every kept face box once the geometry has been rewritten in
@@ -811,9 +1062,10 @@ impl Model {
         if self.face_boxes.revision != self.geometry.revision() {
             return None;
         }
-        self.node(face)
-            .filter(|node| node.kind() == ShapeType::Face)
-            .and_then(|_| self.face_boxes.slot(face.node().index()))
+        self.nodes
+            .entry(face.node())
+            .and_then(|node| node.face_box)
+            .and_then(|slot| self.face_boxes.slot(slot))
     }
 
     /// The box kept for a face: every point of the face, its tolerance
@@ -908,14 +1160,14 @@ impl Model {
     /// For writing a document out. Traversal from a root shape reaches only
     /// what that root bounds; a document is everything in it.
     pub fn nodes(&self) -> impl Iterator<Item = (TShapeId, &TShape)> {
-        self.nodes.iter()
+        self.nodes.iter().map(|(id, node)| (id, &node.shape))
     }
 
     /// Every node that has been given an identity, with it.
     pub fn identities(&self) -> impl Iterator<Item = (TShapeId, EntityId)> {
         self.nodes
             .iter()
-            .filter_map(|(id, _)| self.identity.get(id).map(|entity| (id, entity)))
+            .filter_map(|(id, node)| Some((id, node.identity?)))
     }
 
     /// Add a vertex.
@@ -1282,6 +1534,11 @@ impl Model {
         }
     }
 
+    /// Whether node `id` is marked held ([`Model::note_held`]).
+    fn is_held(&self, id: TShapeId) -> bool {
+        self.nodes.entry(id).is_some_and(|node| node.held)
+    }
+
     /// Record that `result` holds nodes made before the model held `since`
     /// nodes: what an operation passed through into its result from the
     /// shapes it was given, which those shapes still hold.
@@ -1296,8 +1553,11 @@ impl Model {
     /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the
     /// shape, or anything below it, does not resolve in this model.
     pub fn note_held(&mut self, result: &Shape, since: usize) -> OgeomResult<()> {
-        let since = u32::try_from(since).unwrap_or(u32::MAX);
-        let made = self.nodes.len().saturating_sub(since as usize);
+        // Nodes are only appended between counting `since` and here, so the
+        // ones made since are the last `made` slots handed out.
+        let made = self.nodes.len().saturating_sub(since);
+        let next = self.nodes.arena.next_index().unwrap_or(u32::MAX);
+        let since = next.saturating_sub(u32::try_from(made).unwrap_or(u32::MAX));
         let mut seen = vec![false; made];
         let mut stack: smallvec::SmallVec<[TShapeId; 16]> = smallvec::smallvec![result.node()];
         while let Some(id) = stack.pop() {
@@ -1305,7 +1565,10 @@ impl Model {
                 ogeom_bail!(Dangling, "shape refers to a node not in this model");
             };
             let Some(at) = id.index().checked_sub(since) else {
-                self.held.mark(id.index());
+                if let Some(node) = self.nodes.entry_mut(id) {
+                    node.held = true;
+                    self.any_held = true;
+                }
                 continue;
             };
             let Some(slot) = seen.get_mut(at as usize) else {
@@ -1337,7 +1600,7 @@ impl Model {
     /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the
     /// shape, or anything below it, does not resolve in this model.
     pub fn unshare(&mut self, root: &Shape) -> OgeomResult<Vec<(TShapeId, TShapeId)>> {
-        if self.held.is_empty() || self.held.get(root.node().index()) {
+        if !self.any_held || self.is_held(root.node()) {
             return Ok(Vec::new());
         }
         let mut pairs = Vec::new();
@@ -1359,7 +1622,7 @@ impl Model {
     ///
     /// As [`Model::unshare`].
     pub fn unshare_each(&mut self, shapes: &[Shape]) -> OgeomResult<Unshared> {
-        if self.held.is_empty() {
+        if !self.any_held {
             return Ok(Unshared {
                 shapes: shapes.to_vec(),
                 copies: Vec::new(),
@@ -1403,7 +1666,7 @@ impl Model {
             roots.iter().rev().map(|r| (r.node(), false)).collect();
         let mut any = false;
         while let Some((id, above)) = stack.pop() {
-            let is_held = above || self.held.get(id.index());
+            let is_held = above || self.is_held(id);
             match held.get(&id) {
                 Some(&was) if was || !is_held => continue,
                 Some(_) => {}
@@ -1482,9 +1745,7 @@ impl Model {
             }
             if changed && let Some(node) = self.nodes.get_mut(parent) {
                 *node.children_mut() = repointed;
-                if let Some(node) = self.nodes.get(parent) {
-                    self.face_boxes.link(parent, node);
-                }
+                self.link_children(parent);
             }
         }
         Ok(copies)
@@ -1533,8 +1794,9 @@ impl Model {
                 .face_box_slot(&Shape::of(at))
                 .and_then(|slot| slot.get().copied());
             let made = self.insert_node(copy);
-            if let Some(entity) = self.identity.get(at) {
-                self.identity.insert(made, entity);
+            let identity = self.nodes.entry(at).and_then(|node| node.identity);
+            if let Some(node) = self.nodes.entry_mut(made) {
+                node.identity = identity;
             }
             if let (Some(kept), Some(slot)) = (kept, self.face_box_slot(&Shape::of(made))) {
                 self.face_boxes.keep(slot, kept);
@@ -2386,14 +2648,14 @@ mod tests {
         // a file. The check has to stand on its own, or imported geometry sails
         // past it.
         let mut model = Model::new();
-        let vertex = Shape::of(model.nodes.insert(TShape::leaf(
+        let vertex = Shape::of(model.insert_node(TShape::leaf(
             ShapeType::Vertex,
             NodeData::Vertex(VertexData::new(Point::ORIGIN)),
         )));
 
         let mut edge_data = EdgeData::new();
         edge_data.widen(Tolerance::new(1e-1).unwrap());
-        let edge = Shape::of(model.nodes.insert(TShape::new(
+        let edge = Shape::of(model.insert_node(TShape::new(
             ShapeType::Edge,
             NodeData::Edge(Box::new(edge_data)),
             vec![vertex.clone()],
@@ -2419,26 +2681,23 @@ mod tests {
     #[test]
     fn check_tolerances_holds_a_face_to_its_edges_across_the_wire() {
         let mut model = Model::new();
-        let vertex = Shape::of(model.nodes.insert(TShape::leaf(
+        let vertex = Shape::of(model.insert_node(TShape::leaf(
             ShapeType::Vertex,
             NodeData::Vertex(VertexData::new(Point::ORIGIN)),
         )));
-        let edge = Shape::of(model.nodes.insert(TShape::new(
+        let edge = Shape::of(model.insert_node(TShape::new(
             ShapeType::Edge,
             NodeData::Edge(Box::default()),
             vec![vertex],
         )));
-        let wire = Shape::of(
-            model
-                .nodes
-                .insert(TShape::container(ShapeType::Wire, vec![edge.clone()])),
-        );
+        let wire =
+            Shape::of(model.insert_node(TShape::container(ShapeType::Wire, vec![edge.clone()])));
         let surface = model
             .geometry_mut()
             .add_surface(PlaneSurface::new(Plane::new(Frame::WORLD)).into());
         let mut face_data = FaceData::new(surface, Location::identity());
         face_data.widen(Tolerance::new(1e-2).unwrap());
-        let face = Shape::of(model.nodes.insert(TShape::new(
+        let face = Shape::of(model.insert_node(TShape::new(
             ShapeType::Face,
             NodeData::Face(Box::new(face_data)),
             vec![wire],

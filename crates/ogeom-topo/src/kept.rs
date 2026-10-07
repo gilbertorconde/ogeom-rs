@@ -11,23 +11,12 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ogeom_math::Aabb;
-use smallvec::SmallVec;
 
-use crate::shape::{ShapeType, TShape, TShapeId};
-
-/// No face slot: the node is not a face.
-const NONE: u32 = u32::MAX;
-
-/// The kept face boxes, and the links that say which faces a node bounds.
+/// The kept face boxes, one slot per face; each face node names its slot.
 #[derive(Default)]
 pub(crate) struct FaceBoxes {
-    /// Per node index, the node's slot in `boxes`, or [`NONE`].
-    slot_of: Vec<u32>,
     /// Per face, its box in its node's own frame, once found.
     boxes: Vec<OnceLock<Aabb>>,
-    /// Per node index, the edges, wires and faces that hold it: the way up
-    /// from a vertex, an edge or a wire to the faces it bounds.
-    held_by: Vec<SmallVec<[u32; 2]>>,
     /// The geometry store's revision the boxes were found against.
     pub(crate) revision: u64,
     /// Whether any box has been kept since every box was last forgotten.
@@ -37,9 +26,7 @@ pub(crate) struct FaceBoxes {
 impl Clone for FaceBoxes {
     fn clone(&self) -> Self {
         Self {
-            slot_of: self.slot_of.clone(),
             boxes: self.boxes.clone(),
-            held_by: self.held_by.clone(),
             revision: self.revision,
             any: AtomicBool::new(self.any.load(Ordering::Relaxed)),
         }
@@ -57,63 +44,38 @@ impl core::fmt::Debug for FaceBoxes {
 }
 
 impl FaceBoxes {
-    /// Record a node just added: a slot if it is a face, and its links to
-    /// the children it holds if it is part of a face.
-    pub(crate) fn note(&mut self, id: TShapeId, node: &TShape) {
-        let at = id.index() as usize;
-        if self.slot_of.len() <= at {
-            self.slot_of.resize(at + 1, NONE);
-            self.held_by.resize(at + 1, SmallVec::new());
-        }
-        if node.kind() == ShapeType::Face {
-            self.slot_of[at] = u32::try_from(self.boxes.len()).unwrap_or(NONE);
-            self.boxes.push(OnceLock::new());
-        }
-        self.link(id, node);
+    /// A slot for a face just added.
+    pub(crate) fn add(&mut self) -> u32 {
+        let slot = u32::try_from(self.boxes.len()).unwrap_or(u32::MAX);
+        self.boxes.push(OnceLock::new());
+        slot
     }
 
-    /// Record the links from the children `node` holds up to it, if it is
-    /// part of a face.
-    pub(crate) fn link(&mut self, id: TShapeId, node: &TShape) {
-        if !matches!(
-            node.kind(),
-            ShapeType::Edge | ShapeType::Wire | ShapeType::Face
-        ) {
-            return;
-        }
-        for child in node.children() {
-            let below = child.node().index() as usize;
-            if self.held_by.len() <= below {
-                self.slot_of.resize(below + 1, NONE);
-                self.held_by.resize(below + 1, SmallVec::new());
-            }
-            if !self.held_by[below].contains(&id.index()) {
-                self.held_by[below].push(id.index());
-            }
-        }
-    }
-
-    /// The slot of the face at node index `node`.
-    pub(crate) fn slot(&self, node: u32) -> Option<&OnceLock<Aabb>> {
-        let slot = *self.slot_of.get(node as usize)?;
+    /// The box kept in `slot`, or the place to keep one.
+    pub(crate) fn slot(&self, slot: u32) -> Option<&OnceLock<Aabb>> {
         self.boxes.get(slot as usize)
     }
 
-    /// Forget the box of every face that holds node index `node`, the node
-    /// itself included where it is a face.
-    pub(crate) fn forget_above(&mut self, node: u32) {
-        let mut stack: SmallVec<[u32; 8]> = smallvec::smallvec![node];
-        while let Some(at) = stack.pop() {
-            let Some(&slot) = self.slot_of.get(at as usize) else {
-                continue;
-            };
-            if let Some(kept) = self.boxes.get_mut(slot as usize) {
-                kept.take();
-            }
-            if let Some(up) = self.held_by.get(at as usize) {
-                stack.extend(up.iter().copied());
-            }
+    /// Forget the box kept in `slot`.
+    pub(crate) fn forget(&mut self, slot: u32) {
+        if let Some(kept) = self.boxes.get_mut(slot as usize) {
+            kept.take();
         }
+    }
+
+    /// Keep only the slots `kept` names, in that order: the `k`-th becomes
+    /// slot `k`, with its box.
+    pub(crate) fn keep_slots(&mut self, kept: &[u32]) {
+        let boxes = kept
+            .iter()
+            .map(|&slot| {
+                self.boxes
+                    .get_mut(slot as usize)
+                    .map(core::mem::take)
+                    .unwrap_or_default()
+            })
+            .collect();
+        self.boxes = boxes;
     }
 
     /// Keep `found` in `slot` unless a box is kept there already, and

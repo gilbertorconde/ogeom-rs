@@ -176,12 +176,21 @@ pub struct SourceId(pub u32);
 /// One per document. Cloning it clones the whole history, which is what a
 /// rebuild-with-rollback needs.
 ///
-/// An entry can be forgotten ([`ProvenanceTable::forget`]): its id stays
-/// issued, so no later entity takes it, and asking for it answers `None`
-/// as for an id from another document.
+/// An entry can be forgotten ([`ProvenanceTable::forget`],
+/// [`ProvenanceTable::retain`]): its id stays issued, so no later entity
+/// takes it, and asking for it answers `None` as for an id from another
+/// document.
 #[derive(Debug, Clone, Default)]
 pub struct ProvenanceTable {
-    entries: Vec<Option<Provenance>>,
+    /// The entries, ascending by id. From `tail_at` on the ids run without
+    /// a gap up to the last one issued, so they are found by arithmetic;
+    /// the ones before are found by search. An entry forgotten one at a
+    /// time stays as `None` until [`ProvenanceTable::retain`] packs it out.
+    entries: Vec<(EntityId, Option<Provenance>)>,
+    /// Where the gapless run of ids starts in `entries`.
+    tail_at: usize,
+    /// How many ids have been issued.
+    issued: u64,
 }
 
 impl ProvenanceTable {
@@ -190,20 +199,26 @@ impl ProvenanceTable {
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
+            tail_at: 0,
+            issued: 0,
         }
     }
 
     /// Number of identities issued, forgotten ones included: the next
     /// recorded entity is this plus one.
     #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "every issued id has had an entry in memory"
+    )]
     pub const fn len(&self) -> usize {
-        self.entries.len()
+        self.issued as usize
     }
 
     /// Whether no identity has been issued.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.issued == 0
     }
 
     /// Record an entity's provenance and return its identity.
@@ -213,11 +228,15 @@ impl ProvenanceTable {
     /// If more than `u64::MAX - 1` entities are recorded. Not reachable.
     #[allow(clippy::expect_used, reason = "documented panic; see # Panics")]
     pub fn record(&mut self, provenance: Provenance) -> EntityId {
-        self.entries.push(Some(provenance));
         // Ids start at 1 so that EntityId can be NonZeroU64 and Option<EntityId>
         // costs nothing.
-        let raw = u64::try_from(self.entries.len()).expect("entity count exceeded u64");
-        EntityId(NonZeroU64::new(raw).expect("length is at least 1 after push"))
+        self.issued = self
+            .issued
+            .checked_add(1)
+            .expect("entity count exceeded u64");
+        let id = EntityId(NonZeroU64::new(self.issued).expect("at least 1 after an increment"));
+        self.entries.push((id, Some(provenance)));
+        id
     }
 
     /// Convenience for [`Provenance::Primitive`].
@@ -239,12 +258,24 @@ impl ProvenanceTable {
         })
     }
 
+    /// Where `id`'s entry sits in `entries`, if it has one.
+    fn position(&self, id: EntityId) -> Option<usize> {
+        let tail_len = (self.entries.len() - self.tail_at) as u64;
+        let tail_first = self.issued - tail_len + 1;
+        if id.get() >= tail_first {
+            let at = self.tail_at + usize::try_from(id.get() - tail_first).ok()?;
+            return (at < self.entries.len()).then_some(at);
+        }
+        self.entries[..self.tail_at]
+            .binary_search_by_key(&id, |(id, _)| *id)
+            .ok()
+    }
+
     /// The provenance of `id`, or `None` if it belongs to another document
     /// or its entry was forgotten.
     #[must_use]
     pub fn get(&self, id: EntityId) -> Option<&Provenance> {
-        let index = usize::try_from(id.get()).ok()?.checked_sub(1)?;
-        self.entries.get(index)?.as_ref()
+        self.entries.get(self.position(id)?)?.1.as_ref()
     }
 
     /// Drop `id`'s entry and keep its id issued.
@@ -254,13 +285,31 @@ impl ProvenanceTable {
     /// nothing a reference could ask. Returns whether there was an entry
     /// to drop.
     pub fn forget(&mut self, id: EntityId) -> bool {
-        let Some(index) = usize::try_from(id.get())
-            .ok()
-            .and_then(|i| i.checked_sub(1))
-        else {
+        let Some(at) = self.position(id) else {
             return false;
         };
-        self.entries.get_mut(index).and_then(Option::take).is_some()
+        self.entries
+            .get_mut(at)
+            .and_then(|(_, entry)| entry.take())
+            .is_some()
+    }
+
+    /// Keep the entries `keep` answers `true` for and forget the rest, as
+    /// [`ProvenanceTable::forget`] does each one. What is forgotten stops
+    /// costing memory.
+    pub fn retain(&mut self, mut keep: impl FnMut(EntityId, &Provenance) -> bool) {
+        self.entries
+            .retain(|(id, entry)| entry.as_ref().is_some_and(|entry| keep(*id, entry)));
+        let mut tail_len = 0_usize;
+        while tail_len < self.entries.len() {
+            let (id, _) = self.entries[self.entries.len() - 1 - tail_len];
+            if id.get() + tail_len as u64 != self.issued {
+                break;
+            }
+            tail_len += 1;
+        }
+        self.tail_at = self.entries.len() - tail_len;
+        self.entries.shrink_to_fit();
     }
 
     /// Walk `id`'s derivation back to the entities it ultimately came from.
@@ -300,11 +349,9 @@ impl ProvenanceTable {
     /// entity is, and a file that dropped it would come back as a model whose
     /// every reference had to be rebuilt from scratch.
     pub fn iter(&self) -> impl Iterator<Item = (EntityId, &Provenance)> {
-        self.entries.iter().enumerate().filter_map(|(i, p)| {
-            // Ids start at 1, and the table cannot have grown past u64.
-            let id = EntityId::from_raw(u64::try_from(i).ok()?.checked_add(1)?)?;
-            Some((id, p.as_ref()?))
-        })
+        self.entries
+            .iter()
+            .filter_map(|(id, entry)| Some((*id, entry.as_ref()?)))
     }
 }
 
@@ -389,6 +436,26 @@ mod tests {
         assert_eq!(t.iter().map(|(id, _)| id).collect::<Vec<_>>(), vec![b]);
         let c = t.primitive(OpId(3), Role::SOLE);
         assert_eq!(c.get(), 3, "the next id follows every id issued");
+    }
+
+    #[test]
+    fn retained_entries_answer_under_their_ids_and_new_ones_follow() {
+        let mut t = ProvenanceTable::new();
+        let ids: Vec<_> = (0..8).map(|i| t.primitive(OpId(i), Role::SOLE)).collect();
+        let kept = [ids[1], ids[4], ids[6], ids[7]];
+        t.retain(|id, _| kept.contains(&id));
+        for (i, id) in ids.iter().enumerate() {
+            let want = kept.contains(id).then_some(OpId(u32::try_from(i).unwrap()));
+            assert_eq!(t.get(*id).and_then(Provenance::op), want);
+        }
+        assert_eq!(t.len(), 8);
+        let next = t.derived(OpId(9), [ids[4]], Role::SOLE);
+        assert_eq!(next.get(), 9);
+        assert_eq!(t.roots(next), vec![ids[4]]);
+        assert_eq!(
+            t.iter().map(|(id, _)| id.get()).collect::<Vec<_>>(),
+            vec![2, 5, 7, 8, 9]
+        );
     }
 
     #[test]

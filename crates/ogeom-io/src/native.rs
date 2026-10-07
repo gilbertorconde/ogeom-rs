@@ -97,14 +97,17 @@ impl Default for WriteOptions {
 
 /// A fresh model holding only what `roots` reach, with the roots in it.
 ///
-/// A model only grows: every operation adds its results, and one that fails
-/// or is retried leaves what it built along the way, unreachable. A long
-/// session that has run many operations carries all of that. The native
+/// Every operation adds its results to a model, and one that fails or is
+/// retried leaves what it built along the way, unreachable. A long session
+/// that has run many operations carries all of that. The native
 /// format writes exactly the reachable closure of its roots, so writing and
 /// reading back is a compaction: the same shapes, same geometry, same
 /// identities for what survives, in a model with nothing else in it. Of the
 /// provenance it keeps the entries those identities name and their
 /// ancestry; the ids of the rest stay issued and resolve to nothing.
+///
+/// The handles come back renumbered. To compact a model and keep the
+/// handles into it, use [`Model::retain_reachable`].
 ///
 /// # Errors
 ///
@@ -131,6 +134,15 @@ pub fn compacted(model: &Model, roots: &[Shape]) -> OgeomResult<(Model, Vec<Shap
 /// something this does not know how to write, which is refused rather than
 /// dropped, or if a root does not resolve in the model.
 pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResult<String> {
+    write_renumbered(model, roots, options).map(|(text, _)| text)
+}
+
+/// [`write()`], and where the model's nodes landed in the file.
+fn write_renumbered(
+    model: &Model,
+    roots: &[Shape],
+    options: WriteOptions,
+) -> OgeomResult<(String, Renumbered)> {
     for root in roots {
         if model.node(root).is_none() {
             ogeom_bail!(Construction, "a root shape is not in this model");
@@ -153,16 +165,31 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResu
     //
     // The closure is walked from the roots and looked up by handle, so the
     // cost follows what is written, not what the model has accumulated.
-    if roots.is_empty() {
-        let entries: Vec<(EntityId, &Provenance)> = model.provenance().iter().collect();
-        return write_model(model, roots, options, &entries);
-    }
-    let closure = closure_of(model, roots);
+    //
+    // A file numbers its records 0, 1, 2, ...; a model that has dropped
+    // entries (`Model::retain_reachable`) has gaps between its handles, so
+    // it is written as a subset of itself, renumbered, even when the
+    // subset is all of it.
+    let closure = if roots.is_empty() {
+        if gapless(model) {
+            let entries: Vec<(EntityId, &Provenance)> = model.provenance().iter().collect();
+            return Ok((
+                write_model(model, roots, options, &entries)?,
+                Renumbered(None),
+            ));
+        }
+        Closure::everything(model)
+    } else {
+        closure_of(model, roots)
+    };
     let entries = closure.entries(model);
-    if closure.covers(model) {
-        return write_model(model, roots, options, &entries);
+    if !roots.is_empty() && closure.covers(model) && gapless(model) {
+        return Ok((
+            write_model(model, roots, options, &entries)?,
+            Renumbered(None),
+        ));
     }
-    let (parts, roots) = subset_parts(model, roots, &closure)?;
+    let (parts, roots, node_map) = subset_parts(model, roots, &closure)?;
     let records = Records {
         scale: parts.tolerances.scale(),
         datums: parts
@@ -180,7 +207,58 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResu
         identities: parts.identity.iter().copied(),
         current_op: parts.current_op,
     };
-    emit_records(records, &roots, options)
+    Ok((
+        emit_records(records, &roots, options)?,
+        Renumbered(Some(node_map)),
+    ))
+}
+
+/// Where a written model's nodes landed in the file: under their own
+/// handles, or renumbered by node index where the model was written as a
+/// subset of itself.
+struct Renumbered(Option<std::collections::HashMap<u32, u32>>);
+
+impl Renumbered {
+    /// The handle a node is written under.
+    fn node(&self, id: TShapeId) -> OgeomResult<TShapeId> {
+        match &self.0 {
+            None => Ok(id),
+            Some(map) => map
+                .get(&id.index())
+                .map(|&new| Key::from_parts(new, 0))
+                .ok_or_else(|| {
+                    ogeom_core::ogeom_err!(
+                        Dangling,
+                        "a document record names a node its model no longer holds"
+                    )
+                }),
+        }
+    }
+
+    /// The shape a shape is written as.
+    fn shape(&self, shape: &Shape) -> OgeomResult<Shape> {
+        Ok(Shape::new(
+            self.node(shape.node())?,
+            shape.location().clone(),
+            shape.orientation(),
+        ))
+    }
+}
+
+/// Whether the model's nodes and geometry sit at indices 0, 1, 2, ... at
+/// generation zero, as a file's records are numbered.
+fn gapless(model: &Model) -> bool {
+    fn run<T>(mut keys: impl Iterator<Item = Key<T>>) -> bool {
+        keys.by_ref()
+            .enumerate()
+            .all(|(i, key)| key.index() as usize == i && key.generation() == 0)
+    }
+    let geometry = model.geometry();
+    run(model.nodes().map(|(id, _)| id))
+        && run(geometry.curves().map(|(id, _)| id))
+        && run(geometry.pcurves().map(|(id, _)| id))
+        && run(geometry.surfaces().map(|(id, _)| id))
+        && run(geometry.triangulations().map(|(id, _)| id))
 }
 
 /// A dense index for an entry of a subset. The source arena held it as
@@ -205,6 +283,20 @@ struct Closure {
 }
 
 impl Closure {
+    /// Every live entry of the model.
+    fn everything(model: &Model) -> Self {
+        let geometry = model.geometry();
+        Self {
+            nodes: model.nodes().map(|(id, _)| id).collect(),
+            datums: model.datums().iter().map(|(id, _)| id).collect(),
+            curves: geometry.curves().map(|(id, _)| id).collect(),
+            pcurves: geometry.pcurves().map(|(id, _)| id).collect(),
+            surfaces: geometry.surfaces().map(|(id, _)| id).collect(),
+            meshes: geometry.triangulations().map(|(id, _)| id).collect(),
+            entities: model.provenance().iter().map(|(id, _)| id).collect(),
+        }
+    }
+
     /// Whether the closure keeps every node and every piece of geometry.
     fn covers(&self, model: &Model) -> bool {
         let (curves, pcurves, surfaces) = model.geometry().counts();
@@ -347,14 +439,14 @@ fn renumbered<T>(
 }
 
 /// The closure rebuilt as its own parts, every handle re-densified in the
-/// model's own order, plus the roots respelled in the new numbering. The
-/// provenance is not among the parts: the writer takes the kept entries
-/// from the model as they are.
+/// model's own order, plus the roots respelled in the new numbering and
+/// each node's new index by its old one. The provenance is not among the
+/// parts: the writer takes the kept entries from the model as they are.
 fn subset_parts(
     model: &Model,
     roots: &[Shape],
     closure: &Closure,
-) -> OgeomResult<(ModelParts, Vec<Shape>)> {
+) -> OgeomResult<(ModelParts, Vec<Shape>, std::collections::HashMap<u32, u32>)> {
     let missing = || ogeom_core::ogeom_err!(Dangling, "the closure misses a referenced handle");
     // Old index -> new dense index, in arena order, so the same model and
     // roots write the same bytes every time.
@@ -545,7 +637,7 @@ fn subset_parts(
         .iter()
         .map(&reshape)
         .collect::<OgeomResult<Vec<_>>>()?;
-    Ok((parts, respelled))
+    Ok((parts, respelled, node_map))
 }
 
 /// Write `model` whole, with `entries` for its provenance.
@@ -955,7 +1047,7 @@ pub fn write_document(
     document: &ogeom_doc::Document,
     options: WriteOptions,
 ) -> OgeomResult<String> {
-    let mut out = write(document.model(), &[], options)?;
+    let (mut out, renumbered) = write_renumbered(document.model(), &[], options)?;
 
     for (_, product) in document.products() {
         let mut t = Tokens::default();
@@ -973,7 +1065,7 @@ pub fn write_document(
         match &product.kind {
             ogeom_doc::ProductKind::Part { shape: part } => {
                 w(&mut t, "part");
-                shape(&mut t, part);
+                shape(&mut t, &renumbered.shape(part)?);
             }
             ogeom_doc::ProductKind::Assembly { children } => {
                 w(&mut t, "assembly");
@@ -996,7 +1088,7 @@ pub fn write_document(
     for (node, colour) in colours {
         let mut t = Tokens::default();
         w(&mut t, "doc-colour");
-        key(&mut t, node);
+        key(&mut t, renumbered.node(node)?);
         for channel in [colour.r, colour.g, colour.b, colour.a] {
             n(&mut t, channel);
         }
@@ -1007,7 +1099,7 @@ pub fn write_document(
     for (node, name) in names {
         let mut t = Tokens::default();
         w(&mut t, "doc-name");
-        key(&mut t, node);
+        key(&mut t, renumbered.node(node)?);
         text(&mut t, name);
         emit(&mut out, &t);
     }
@@ -1035,7 +1127,7 @@ pub fn write_document(
         for feature in &dimension.features {
             u(&mut t, feature.len() as u64);
             for node in feature {
-                key(&mut t, *node);
+                key(&mut t, renumbered.node(*node)?);
             }
         }
         emit(&mut out, &t);
@@ -1056,7 +1148,7 @@ pub fn write_document(
         }
         u(&mut t, tolerance.items.len() as u64);
         for node in &tolerance.items {
-            key(&mut t, *node);
+            key(&mut t, renumbered.node(*node)?);
         }
         emit(&mut out, &t);
     }
@@ -1066,7 +1158,7 @@ pub fn write_document(
         text(&mut t, &datum.label);
         u(&mut t, datum.items.len() as u64);
         for node in &datum.items {
-            key(&mut t, *node);
+            key(&mut t, renumbered.node(*node)?);
         }
         emit(&mut out, &t);
     }
@@ -1148,7 +1240,7 @@ pub fn write_document(
         for property in properties {
             let mut t = Tokens::default();
             w(&mut t, "doc-prop");
-            key(&mut t, node);
+            key(&mut t, renumbered.node(node)?);
             text(&mut t, &property.name);
             match &property.value {
                 ogeom_doc::PropertyValue::Text(value) => {
@@ -1188,7 +1280,7 @@ pub fn write_document(
     for (node, material) in assigned {
         let mut t = Tokens::default();
         w(&mut t, "doc-material-of");
-        key(&mut t, node);
+        key(&mut t, renumbered.node(node)?);
         u(&mut t, material.index() as u64);
         emit(&mut out, &t);
     }
@@ -1204,7 +1296,7 @@ pub fn write_document(
     for (node, layers) in memberships {
         let mut t = Tokens::default();
         w(&mut t, "doc-on-layer");
-        key(&mut t, node);
+        key(&mut t, renumbered.node(node)?);
         u(&mut t, layers.len() as u64);
         for layer in layers {
             u(&mut t, layer.index() as u64);
@@ -1216,7 +1308,7 @@ pub fn write_document(
     for (node, values) in checks {
         let mut t = Tokens::default();
         w(&mut t, "doc-check");
-        key(&mut t, node);
+        key(&mut t, renumbered.node(node)?);
         n(&mut t, values.volume);
         n(&mut t, values.area);
         for v in [values.centroid.x, values.centroid.y, values.centroid.z] {

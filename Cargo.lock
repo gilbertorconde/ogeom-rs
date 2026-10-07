@@ -343,6 +343,7 @@ name = "ogeom-core"
 version = "0.9.9"
 dependencies = [
  "approx",
+ "hashbrown 0.16.1",
  "proptest",
  "robust",
  "smallvec",

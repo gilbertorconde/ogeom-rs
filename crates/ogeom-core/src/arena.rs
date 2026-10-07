@@ -7,7 +7,8 @@
 //! Slots are generational: freeing a slot bumps its generation, so a stale key
 //! fails to resolve instead of silently aliasing whatever was allocated there
 //! next. That failure mode is worth eight bytes per key in a kernel where the
-//! alternative is a wrong answer rather than a crash.
+//! alternative is a wrong answer rather than a crash. A slot dropped by
+//! [`Arena::retain`] is never handed out again at all.
 //!
 //! # Keys are scoped to the arena that issued them
 //!
@@ -32,6 +33,8 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
+
+use hashbrown::HashMap;
 
 /// Hands out arena identifiers.
 ///
@@ -159,24 +162,43 @@ impl<T> fmt::Debug for Key<T> {
     }
 }
 
+/// A live value, with the slot it sits in and the generation it was stored
+/// at.
 #[derive(Debug, Clone)]
-enum Slot<T> {
-    Occupied {
-        generation: u32,
-        value: T,
-    },
-    Vacant {
-        generation: u32,
-        next_free: Option<u32>,
-    },
+struct Entry<T> {
+    slot: u32,
+    generation: u32,
+    value: T,
 }
 
 /// A generational arena of `T`.
+///
+/// Live values are stored packed, in two runs. The *tail* holds every slot
+/// from some index on, each one occupied, so its values are found by
+/// arithmetic; an arena that has only been appended to is all tail. The
+/// values before it are *scattered*: slots whose neighbours were dropped,
+/// found through a map from slot to position. An arena holds what is live
+/// and nothing for the slots it no longer uses, so cloning one costs what
+/// it holds, however many slots it has handed out.
 #[derive(Debug, Clone)]
 pub struct Arena<T> {
-    slots: Vec<Slot<T>>,
-    free_head: Option<u32>,
-    len: usize,
+    /// The scattered values, then the tail's, in slot order unless
+    /// `ordered` says otherwise.
+    entries: Vec<Entry<T>>,
+    /// The first slot of the tail.
+    tail: u32,
+    /// Where the tail starts in `entries`: the number of scattered values.
+    tail_at: u32,
+    /// Slot to position in `entries`, for the scattered values.
+    scattered: Option<HashMap<u32, u32>>,
+    /// Whether `entries` runs in slot order. Removing a value and refilling
+    /// a freed slot can break the order; iterating mutably restores it.
+    ordered: bool,
+    /// Freed slots for `insert` to reuse, each with the generation it takes
+    /// next. A slot dropped by [`Arena::retain`] is never reused.
+    free: Vec<(u32, u32)>,
+    /// How many slots have been handed out: the slot a fresh insert takes.
+    next_slot: u32,
     /// Which arena this is. [`UNSCOPED`] until the first insert, because
     /// `new` is `const` and a counter cannot be read from one, and an arena
     /// with nothing in it has issued no keys to disagree with.
@@ -194,9 +216,13 @@ impl<T> Arena<T> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            slots: Vec::new(),
-            free_head: None,
-            len: 0,
+            entries: Vec::new(),
+            tail: 0,
+            tail_at: 0,
+            scattered: None,
+            ordered: true,
+            free: Vec::new(),
+            next_slot: 0,
             scope: UNSCOPED,
         }
     }
@@ -205,23 +231,21 @@ impl<T> Arena<T> {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            slots: Vec::with_capacity(capacity),
-            free_head: None,
-            len: 0,
-            scope: UNSCOPED,
+            entries: Vec::with_capacity(capacity),
+            ..Self::new()
         }
     }
 
     /// Number of live entries.
     #[must_use]
     pub const fn len(&self) -> usize {
-        self.len
+        self.entries.len()
     }
 
     /// Whether there are no live entries.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.len == 0
+        self.entries.is_empty()
     }
 
     /// Which arena this is, for stamping keys that were rebuilt elsewhere.
@@ -242,6 +266,24 @@ impl<T> Arena<T> {
         key.scope == self.scope
     }
 
+    /// The slot the next [`Arena::insert`] takes, at generation zero, when
+    /// it takes a fresh one; `None` while a freed slot waits to be reused.
+    ///
+    /// The precondition for extending the arena by offset, where a caller
+    /// predicts the keys of entries it is about to append: the `k`-th
+    /// insert from here lands at this index plus `k`.
+    #[must_use]
+    pub fn next_index(&self) -> Option<u32> {
+        self.free.is_empty().then_some(self.next_slot)
+    }
+
+    /// The live key at slot `index`, if the slot holds a value.
+    #[must_use]
+    pub fn key_at(&self, index: u32) -> Option<Key<T>> {
+        let entry = self.entries.get(self.position(index)?)?;
+        (entry.slot == index).then(|| Key::new(index, entry.generation, self.scope))
+    }
+
     /// Insert a value, returning its key.
     ///
     /// The first insert is what fixes the arena's identity, since [`Arena::new`]
@@ -257,125 +299,210 @@ impl<T> Arena<T> {
         if self.scope == UNSCOPED {
             self.scope = next_scope();
         }
-        self.len += 1;
-        match self.free_head {
-            Some(index) => {
-                let idx = index as usize;
-                let (generation, next_free) = match &self.slots[idx] {
-                    Slot::Vacant {
-                        generation,
-                        next_free,
-                    } => (*generation, *next_free),
-                    Slot::Occupied { .. } => unreachable!("free list pointed at an occupied slot"),
-                };
-                self.free_head = next_free;
-                self.slots[idx] = Slot::Occupied { generation, value };
-                Key::new(index, generation, self.scope)
-            }
-            None => {
-                let index = u32::try_from(self.slots.len()).expect("arena exceeded u32::MAX slots");
-                self.slots.push(Slot::Occupied {
-                    generation: 0,
-                    value,
-                });
-                Key::new(index, 0, self.scope)
-            }
+        if let Some((slot, generation)) = self.free.pop() {
+            self.scatter_tail();
+            let at = u32::try_from(self.entries.len()).expect("arena exceeded u32::MAX slots");
+            self.ordered &= self.entries.last().is_none_or(|last| last.slot < slot);
+            self.entries.push(Entry {
+                slot,
+                generation,
+                value,
+            });
+            self.scattered
+                .get_or_insert_with(HashMap::new)
+                .insert(slot, at);
+            self.tail_at = at + 1;
+            return Key::new(slot, generation, self.scope);
         }
+        let slot = self.next_slot;
+        self.next_slot = slot.checked_add(1).expect("arena exceeded u32::MAX slots");
+        self.entries.push(Entry {
+            slot,
+            generation: 0,
+            value,
+        });
+        Key::new(slot, 0, self.scope)
+    }
+
+    /// Where slot `index`'s value would sit in `entries`: past the end for
+    /// a slot never handed out, `None` for a scattered slot with no value.
+    #[inline]
+    fn position(&self, index: u32) -> Option<usize> {
+        if index >= self.tail {
+            Some((index - self.tail) as usize + self.tail_at as usize)
+        } else {
+            self.scattered.as_ref()?.get(&index).map(|&at| at as usize)
+        }
+    }
+
+    /// The position of `key`'s value, if the key is live here.
+    #[inline]
+    fn live(&self, key: Key<T>) -> Option<usize> {
+        if key.scope != self.scope {
+            return None;
+        }
+        let at = self.position(key.index)?;
+        let entry = self.entries.get(at)?;
+        (entry.slot == key.index && entry.generation == key.generation).then_some(at)
     }
 
     /// Borrow the value behind `key`, or `None` if the key is stale.
     #[must_use]
+    #[inline]
     pub fn get(&self, key: Key<T>) -> Option<&T> {
-        if key.scope != self.scope {
-            return None;
-        }
-        match self.slots.get(key.index as usize)? {
-            Slot::Occupied { generation, value } if *generation == key.generation => Some(value),
-            _ => None,
-        }
+        let at = self.live(key)?;
+        self.entries.get(at).map(|entry| &entry.value)
     }
 
     /// Mutably borrow the value behind `key`, or `None` if the key is stale.
+    #[inline]
     pub fn get_mut(&mut self, key: Key<T>) -> Option<&mut T> {
-        if key.scope != self.scope {
-            return None;
-        }
-        match self.slots.get_mut(key.index as usize)? {
-            Slot::Occupied { generation, value } if *generation == key.generation => Some(value),
-            _ => None,
-        }
+        let at = self.live(key)?;
+        self.entries.get_mut(at).map(|entry| &mut entry.value)
     }
 
     /// Whether `key` resolves to a live entry.
     #[must_use]
     pub fn contains(&self, key: Key<T>) -> bool {
-        self.get(key).is_some()
+        self.live(key).is_some()
+    }
+
+    /// Move the tail's values into the scattered ones, leaving the tail
+    /// empty and starting at the next fresh slot.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`insert` keeps positions within u32"
+    )]
+    fn scatter_tail(&mut self) {
+        let from = self.tail_at as usize;
+        if from < self.entries.len() {
+            let map = self.scattered.get_or_insert_with(HashMap::new);
+            for (at, entry) in self.entries.iter().enumerate().skip(from) {
+                map.insert(entry.slot, at as u32);
+            }
+        }
+        self.tail = self.next_slot;
+        self.tail_at = self.entries.len() as u32;
     }
 
     /// Remove and return the value behind `key`, if it is live.
     ///
     /// The slot's generation is bumped, invalidating every outstanding copy of
-    /// `key`.
+    /// `key`, and a later insert reuses the slot.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`insert` keeps positions within u32"
+    )]
     pub fn remove(&mut self, key: Key<T>) -> Option<T> {
-        if key.scope != self.scope {
-            return None;
+        self.live(key)?;
+        self.scatter_tail();
+        let map = self.scattered.as_mut()?;
+        let at = map.remove(&key.index)? as usize;
+        let entry = self.entries.swap_remove(at);
+        if let Some(moved) = self.entries.get(at) {
+            map.insert(moved.slot, at as u32);
+            self.ordered = false;
         }
-        let slot = self.slots.get_mut(key.index as usize)?;
-        let generation = match slot {
-            Slot::Occupied { generation, .. } if *generation == key.generation => *generation,
-            _ => return None,
-        };
+        self.tail_at -= 1;
         // Saturating rather than wrapping: a slot recycled 4 billion times stops
         // being reusable, which is strictly better than handing out a generation
         // that collides with a key someone still holds.
-        let next = generation.saturating_add(1);
-        let replaced = core::mem::replace(
-            slot,
-            Slot::Vacant {
-                generation: next,
-                next_free: self.free_head,
-            },
-        );
+        let next = entry.generation.saturating_add(1);
         if next != u32::MAX {
-            self.free_head = Some(key.index);
+            self.free.push((key.index, next));
         }
-        self.len -= 1;
-        match replaced {
-            Slot::Occupied { value, .. } => Some(value),
-            Slot::Vacant { .. } => None,
+        Some(entry.value)
+    }
+
+    /// Keep the entries `keep` answers `true` for and drop the rest.
+    ///
+    /// Every kept key still resolves to its value. A dropped key fails to
+    /// resolve, and its slot is never handed out again, so no later entry
+    /// answers to it. What is dropped stops costing memory: the arena holds
+    /// the kept values, packed.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`insert` keeps positions within u32"
+    )]
+    pub fn retain(&mut self, mut keep: impl FnMut(Key<T>, &T) -> bool) {
+        let scope = self.scope;
+        self.entries
+            .retain(|entry| keep(Key::new(entry.slot, entry.generation, scope), &entry.value));
+        if !self.ordered {
+            self.entries.sort_unstable_by_key(|entry| entry.slot);
+            self.ordered = true;
         }
+        // The longest run of entries ending at the last slot handed out,
+        // every slot in it occupied, stays the tail; the rest are scattered.
+        let mut tail_len = 0_usize;
+        while tail_len < self.entries.len() {
+            let entry = &self.entries[self.entries.len() - 1 - tail_len];
+            if u64::from(entry.slot) + 1 + tail_len as u64 != u64::from(self.next_slot) {
+                break;
+            }
+            tail_len += 1;
+        }
+        let tail_at = self.entries.len() - tail_len;
+        self.tail = self.next_slot - tail_len as u32;
+        self.tail_at = tail_at as u32;
+        self.scattered = (tail_at > 0).then(|| {
+            self.entries[..tail_at]
+                .iter()
+                .enumerate()
+                .map(|(at, entry)| (entry.slot, at as u32))
+                .collect()
+        });
+        self.entries.shrink_to_fit();
+    }
+
+    /// The positions of `entries`, in slot order.
+    fn slot_order(&self) -> impl Iterator<Item = usize> + '_ {
+        let sorted = (!self.ordered).then(|| {
+            let mut order: Vec<usize> = (0..self.entries.len()).collect();
+            order.sort_unstable_by_key(|&at| self.entries[at].slot);
+            order
+        });
+        (0..self.entries.len()).map(move |k| sorted.as_ref().map_or(k, |order| order[k]))
+    }
+
+    /// Put `entries` in slot order, where removals have disturbed it.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`insert` keeps positions within u32"
+    )]
+    fn sort(&mut self) {
+        if self.ordered {
+            return;
+        }
+        self.scatter_tail();
+        self.entries.sort_unstable_by_key(|entry| entry.slot);
+        if let Some(map) = &mut self.scattered {
+            for (at, entry) in self.entries.iter().enumerate() {
+                map.insert(entry.slot, at as u32);
+            }
+        }
+        self.ordered = true;
     }
 
     /// Iterate over live `(key, &value)` pairs, in slot order.
     pub fn iter(&self) -> impl Iterator<Item = (Key<T>, &T)> {
         let scope = self.scope;
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(move |(i, slot)| match slot {
-                Slot::Occupied { generation, value } => {
-                    // `insert` refuses to grow past u32::MAX, so this cannot truncate.
-                    #[allow(clippy::cast_possible_truncation)]
-                    Some((Key::new(i as u32, *generation, scope), value))
-                }
-                Slot::Vacant { .. } => None,
-            })
+        self.slot_order().map(move |at| {
+            let entry = &self.entries[at];
+            (Key::new(entry.slot, entry.generation, scope), &entry.value)
+        })
     }
 
     /// Iterate over live `(key, &mut value)` pairs, in slot order.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Key<T>, &mut T)> {
+        self.sort();
         let scope = self.scope;
-        self.slots
-            .iter_mut()
-            .enumerate()
-            .filter_map(move |(i, slot)| match slot {
-                Slot::Occupied { generation, value } =>
-                {
-                    #[allow(clippy::cast_possible_truncation)]
-                    Some((Key::new(i as u32, *generation, scope), value))
-                }
-                Slot::Vacant { .. } => None,
-            })
+        self.entries.iter_mut().map(move |entry| {
+            (
+                Key::new(entry.slot, entry.generation, scope),
+                &mut entry.value,
+            )
+        })
     }
 
     /// Iterate over live values.
@@ -387,34 +514,26 @@ impl<T> Arena<T> {
     ///
     /// For appending one arena's contents onto another: the receiving arena
     /// hands out its own keys, so the values travel bare.
-    pub fn into_values(self) -> impl Iterator<Item = T> {
-        self.slots.into_iter().filter_map(|slot| match slot {
-            Slot::Occupied { value, .. } => Some(value),
-            Slot::Vacant { .. } => None,
-        })
+    pub fn into_values(mut self) -> impl Iterator<Item = T> {
+        self.sort();
+        self.entries.into_iter().map(|entry| entry.value)
     }
 
     /// Whether the arena has only ever been appended to: every slot occupied,
     /// every generation zero.
     ///
     /// When this holds, [`Arena::len`] is also the next index [`Arena::insert`]
-    /// will hand out: the precondition for extending the arena by offset,
-    /// where a caller predicts the keys of entries it is about to append.
+    /// will hand out.
     #[must_use]
     pub fn is_dense(&self) -> bool {
-        self.len == self.slots.len()
-            && self
-                .slots
-                .iter()
-                .all(|slot| matches!(slot, Slot::Occupied { generation: 0, .. }))
+        self.entries.len() == self.next_slot as usize
+            && self.entries.iter().all(|entry| entry.generation == 0)
     }
 
-    /// Remove every entry, bumping all generations so existing keys go stale.
+    /// Remove every entry. Existing keys go stale, and their slots are not
+    /// handed out again.
     pub fn clear(&mut self) {
-        let keys: Vec<_> = self.iter().map(|(k, _)| k).collect();
-        for key in keys {
-            self.remove(key);
-        }
+        self.retain(|_, _| false);
     }
 }
 
@@ -536,6 +655,42 @@ mod tests {
         a.clear();
         assert!(a.is_empty());
         assert!(keys.iter().all(|&k| a.get(k).is_none()));
+    }
+
+    #[test]
+    fn retained_keys_resolve_and_dropped_slots_are_never_handed_out_again() {
+        let mut a = Arena::new();
+        let keys: Vec<_> = (0..10_u32).map(|i| a.insert(i)).collect();
+        a.retain(|_, v| v % 3 == 0);
+        assert_eq!(a.len(), 4);
+        for (i, key) in keys.iter().enumerate() {
+            let want = (i % 3 == 0).then_some(u32::try_from(i).unwrap());
+            assert_eq!(a.get(*key).copied(), want, "slot {i}");
+        }
+        assert_eq!(a.next_index(), Some(10), "a fresh insert appends");
+        let fresh = a.insert(10);
+        assert_eq!(fresh.index(), 10);
+        assert!(keys.iter().all(|&k| k != fresh));
+        assert_eq!(
+            a.values().copied().collect::<Vec<_>>(),
+            vec![0, 3, 6, 9, 10]
+        );
+        assert_eq!(a.key_at(3), Some(keys[3]));
+        assert_eq!(a.key_at(4), None);
+
+        // A clone answers to the same keys, and a removal from the retained
+        // arena still refills its slot under a new generation.
+        let copy = a.clone();
+        assert!(keys.iter().all(|&k| copy.get(k) == a.get(k)));
+        assert_eq!(a.remove(keys[6]), Some(6));
+        assert_eq!(a.next_index(), None, "the freed slot is refilled first");
+        let refill = a.insert(60);
+        assert_eq!(refill.index(), 6);
+        assert_eq!(a.get(keys[6]), None);
+        assert_eq!(
+            a.iter().map(|(k, v)| (k.index(), *v)).collect::<Vec<_>>(),
+            vec![(0, 0), (3, 3), (6, 60), (9, 9), (10, 10)]
+        );
     }
 
     #[test]

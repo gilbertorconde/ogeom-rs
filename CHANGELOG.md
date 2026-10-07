@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **A model compacts in place, keeping the handles of what survives
+  (#141).** `Model::retain_reachable(roots)` drops every node, curve,
+  pcurve, surface, triangulation and provenance entry the roots do not
+  reach; handles into what is kept resolve as before, dropped ones no
+  longer resolve, and a clone afterwards costs what is kept (a 582-face
+  plate built hole by hole: 7,522 nodes from 25,952, cloned in about 1 ms).
+  Adds `Arena::retain`, `Arena::next_index`, `Arena::key_at` and
+  `ProvenanceTable::retain`. A native file is written renumbered when the
+  model has gaps.
+
 ### Fixed
 
 - **A boolean between nearly coplanar planar faces that only touch

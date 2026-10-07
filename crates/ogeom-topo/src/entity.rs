@@ -152,15 +152,30 @@ impl GeometryStore {
         }
     }
 
-    /// Whether every arena has only ever been appended to.
+    /// Whether every arena hands out fresh slots in order.
     ///
     /// The precondition for extending the store by offset; see
-    /// [`Arena::is_dense`](ogeom_core::Arena::is_dense).
-    pub(crate) fn is_dense(&self) -> bool {
-        self.curves.is_dense()
-            && self.pcurves.is_dense()
-            && self.surfaces.is_dense()
-            && self.triangulations.is_dense()
+    /// [`Arena::next_index`](ogeom_core::Arena::next_index).
+    pub(crate) fn appends(&self) -> bool {
+        self.curves.next_index().is_some()
+            && self.pcurves.next_index().is_some()
+            && self.surfaces.next_index().is_some()
+            && self.triangulations.next_index().is_some()
+    }
+
+    /// Keep the geometry the predicates answer `true` for and drop the rest;
+    /// every kept handle still resolves to what it did.
+    pub(crate) fn retain(
+        &mut self,
+        curves: impl Fn(CurveId) -> bool,
+        pcurves: impl Fn(PCurveId) -> bool,
+        surfaces: impl Fn(SurfaceId) -> bool,
+        triangulations: impl Fn(TriangulationId) -> bool,
+    ) {
+        self.curves.retain(|id, _| curves(id));
+        self.pcurves.retain(|id, _| pcurves(id));
+        self.surfaces.retain(|id, _| surfaces(id));
+        self.triangulations.retain(|id, _| triangulations(id));
     }
 
     /// Append another store's contents, returning where each kind landed.
@@ -265,15 +280,17 @@ pub(crate) struct GeometryOffsets {
     pub triangulations: u32,
 }
 
-/// An arena's length as the index its next append will land at.
+/// The index an arena's next append will land at.
 ///
 /// # Panics
 ///
-/// If the arena exceeds `u32::MAX` slots, which [`Arena::insert`] already
-/// refuses to reach.
+/// If the arena is set to refill a freed slot, which an absorb refuses
+/// before it appends.
 #[allow(clippy::expect_used, reason = "documented panic; see # Panics")]
 pub(crate) fn arena_len<T>(arena: &ogeom_core::Arena<T>) -> u32 {
-    u32::try_from(arena.len()).expect("arena exceeded u32::MAX slots")
+    arena
+        .next_index()
+        .expect("an append onto an arena that refills freed slots")
 }
 
 /// Whether a key is unscoped and at generation zero: the state a reader
