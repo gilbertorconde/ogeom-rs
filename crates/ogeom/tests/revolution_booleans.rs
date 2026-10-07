@@ -70,3 +70,53 @@ fn whole_revolutions_with_seams_together_fuse_and_cut() {
         }
     }
 }
+
+/// A whole turn of a profile placed about the axis: each seam occurrence
+/// finds, at its own placement, pcurves that lift onto where it stands, so
+/// the solid checks clean whichever way the seam stands.
+#[test]
+fn whole_revolution_of_a_placed_profile_keys_its_seams_where_they_stand() {
+    use ogeom::geom::{Curve2d as _, Curve3d as _, Surface as _};
+    use ogeom::topo::{EdgeRepr, Filter, ShapeType, explore};
+    for seam in [0.0, 1.0, 2.5] {
+        let mut model = Model::new();
+        let solid = revolved(&mut model, (4.0, 10.0), (0.0, 5.0), seam);
+        let diagnosis = ogeom::algo::check(&model, &solid, T).unwrap();
+        assert!(diagnosis.is_valid(), "seam {seam}: {diagnosis}");
+        let mut seams = 0;
+        for face in explore(&model, &solid, Filter::OfType(ShapeType::Face)).unwrap() {
+            let surface_id = model.node(&face).unwrap().data().as_face().unwrap().surface;
+            let surface = model.geometry().surface(surface_id).unwrap();
+            for edge in explore(&model, &face, Filter::OfType(ShapeType::Edge)).unwrap() {
+                let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                let Some(EdgeRepr::Seam { forward, range, .. }) =
+                    data.pcurve_for(surface_id, edge.location())
+                else {
+                    continue;
+                };
+                seams += 1;
+                let Some(EdgeRepr::Curve3d {
+                    curve, range: span, ..
+                }) = data.curve3d()
+                else {
+                    panic!("seam {seam}: a seam edge with no curve");
+                };
+                let placement = edge.transform(model.datums()).unwrap();
+                let curve = model.geometry().curve(*curve).unwrap();
+                let pcurve = model.geometry().pcurve(*forward).unwrap();
+                for (t, s) in [(span.0, range.0), (span.1, range.1)] {
+                    let stands = placement.apply(curve.point_at(t, T).unwrap());
+                    let uv = pcurve.point_at(s, T).unwrap();
+                    let lifted = surface.point_at(uv.x, uv.y, T).unwrap();
+                    assert!(
+                        stands.distance(lifted) < 1e-9,
+                        "seam {seam}: the seam's pcurve lifts {} from where it stands",
+                        stands.distance(lifted)
+                    );
+                }
+            }
+        }
+        // The outer and inner walls each meet their seam edge twice.
+        assert_eq!(seams, 4, "seam {seam}");
+    }
+}

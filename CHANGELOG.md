@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A full revolution of a placed profile stores its seams where they are
+  used.** A profile turned about the axis before a full revolve (to keep
+  the seam off the sketch plane) got seam pcurves recorded as if it had not
+  been turned, and `check` reported each as leaving its curve by the turn's
+  chord. The seam records the profile's placement, as a partial turn
+  already did.
+
 - **Check reports a seam stored as plain pcurves, and healing repairs
   it.** An edge along a closed surface's seam, used once each way by the
   faces on that surface but holding its sides as plain pcurves, gave both

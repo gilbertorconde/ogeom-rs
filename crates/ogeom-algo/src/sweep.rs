@@ -1924,7 +1924,9 @@ fn rail(
 type Rails = HashMap<TShapeId, Shape>;
 
 /// Attach a seam edge's two pcurves, one for each side of the rectangle it
-/// bounds twice.
+/// bounds twice, keyed by the occurrence's own placement as [`pcurve`]
+/// keys its one: a placed profile edge runs along the seam where it stands,
+/// not where its node's curve does.
 fn seam_pcurves(
     model: &mut Model,
     edge: &Shape,
@@ -1952,7 +1954,7 @@ fn seam_pcurves(
         forward: first,
         reversed: second,
         surface,
-        location: Location::identity(),
+        location: edge.location().clone(),
         range: (0.0, length),
     });
     Ok(())
