@@ -1509,7 +1509,9 @@ fn surface_axis_origin(surface: &ogeom_geom::SurfaceGeometry) -> Option<Point> {
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a ring is
 /// neither a circle nor degenerate, both rings are degenerate, the rings are
-/// not rings of this surface, or the surface's iso-curve has no closed form.
+/// not rings of this surface, their vertices stand on different columns of
+/// it, or the surface's iso-curve has no closed form. A refused band leaves
+/// the rings' edges as they were.
 pub fn make_revolution_band(
     model: &mut Model,
     surface: &ogeom_geom::SurfaceGeometry,
@@ -1519,7 +1521,6 @@ pub fn make_revolution_band(
 ) -> OgeomResult<Shape> {
     use ogeom_geom::Surface as _;
 
-    let surface_id = model.geometry_mut().add_surface(surface.clone());
     let ((ua_dom, ub_dom), _) = surface.domain();
     let span = ub_dom - ua_dom;
     let axis_z = surface_iso_axis(surface).ok_or_else(|| {
@@ -1671,31 +1672,6 @@ pub fn make_revolution_band(
         }
     };
 
-    // Window-coherent ring pcurves: u(t) spans [ua, ua + span] whichever way
-    // each ring winds.
-    for ring in &rings {
-        let u_start = if ring.winding > 0.0 { ua } else { ua + span };
-        let origin =
-            ogeom_math::Point2::new(ring.winding.mul_add(-ring.crange.0, u_start), ring.row);
-        let pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
-            ogeom_math::Axis2::new(
-                origin,
-                ogeom_math::Direction2::new(ogeom_math::Vector2::new(ring.winding, 0.0), tol)?,
-            ),
-            ring.crange.0,
-            ring.crange.1,
-        )?
-        .into();
-        attach_pcurve(
-            model,
-            &ring.edge,
-            pcurve,
-            surface_id,
-            Location::identity(),
-            ring.crange,
-        )?;
-    }
-
     // The seam runs along the surface's own iso-curve at the anchor angle,
     // parameterized by `v`, built along increasing `v`.
     let (va, vb) = (rings[0].row, rings[1].row);
@@ -1727,6 +1703,36 @@ pub fn make_revolution_band(
         iso_curve_parameter_at(surface, range.1),
     );
     let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
+
+    // Nothing above touches the rings, so a refusal (ring vertices on
+    // different columns, which no seam joins) leaves them as they came,
+    // with no pcurve on a surface no face uses.
+    let surface_id = model.geometry_mut().add_surface(surface.clone());
+
+    // Window-coherent ring pcurves: u(t) spans [ua, ua + span] whichever way
+    // each ring winds.
+    for ring in &rings {
+        let u_start = if ring.winding > 0.0 { ua } else { ua + span };
+        let origin =
+            ogeom_math::Point2::new(ring.winding.mul_add(-ring.crange.0, u_start), ring.row);
+        let pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(
+                origin,
+                ogeom_math::Direction2::new(ogeom_math::Vector2::new(ring.winding, 0.0), tol)?,
+            ),
+            ring.crange.0,
+            ring.crange.1,
+        )?
+        .into();
+        attach_pcurve(
+            model,
+            &ring.edge,
+            pcurve,
+            surface_id,
+            Location::identity(),
+            ring.crange,
+        )?;
+    }
 
     // The walk closes only if the top ring's traversal starts where the
     // bottom's ends, and the seam sides sit at the columns the walk visits.
@@ -3866,6 +3872,35 @@ mod band_tests {
                 let area = chart_area(&model, &face);
                 assert_relative_eq!(area, TAU * 2.0, max_relative = 1e-9);
             }
+        }
+    }
+
+    /// Two rims of a drum whose vertices stand half a turn apart: no seam
+    /// along one column joins them, so the band is refused, and the rims
+    /// come back with no pcurve on the surface. A pcurve left behind would
+    /// start at the wrong vertex column, half a turn off its circle at
+    /// every matched parameter, on a surface no face uses.
+    #[test]
+    fn a_refused_band_leaves_its_rings_without_pcurves() {
+        let mut model = Model::new();
+        let cylinder = ogeom_math::Cylinder::new(Frame::WORLD, 2.0, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(cylinder, (-1.0, 3.0))
+            .unwrap()
+            .into();
+        let at = |z: f64, x: ogeom_math::Direction| {
+            Frame::new(Point::new(0.0, 0.0, z), ogeom_math::Direction::Z, x, T).unwrap()
+        };
+        let low = ring(&mut model, at(0.0, ogeom_math::Direction::X), 2.0);
+        let high = ring(&mut model, at(2.0, -ogeom_math::Direction::X), 2.0);
+        assert!(make_revolution_band(&mut model, &surface, &low, &high, T).is_err());
+        for rim in [&low, &high] {
+            let data = model.node(rim).unwrap().data().as_edge().unwrap();
+            assert!(
+                data.representations
+                    .iter()
+                    .all(|r| !matches!(r, EdgeRepr::PCurve { .. } | EdgeRepr::Seam { .. })),
+                "a refused band left a pcurve on a rim"
+            );
         }
     }
 

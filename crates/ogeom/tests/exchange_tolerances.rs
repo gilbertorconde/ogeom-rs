@@ -487,6 +487,49 @@ fn a_parallel_read_past_one_turn_checks_clean() {
     assert!(diagnosis.of(Severity::Broken).is_empty(), "{diagnosis}");
 }
 
+/// The widest tolerance of any edge of `shape`.
+fn widest_edge_tolerance(model: &Model, shape: &Shape) -> f64 {
+    explore_unique(model, shape, ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .filter_map(|edge| model.node(edge)?.data().as_edge())
+        .map(|data| data.tolerance.get())
+        .fold(0.0, f64::max)
+}
+
+/// Bands between two circles whose vertices stand on different columns
+/// of their cylinder or torus (a hole's two rims started half or a quarter
+/// turn apart) get no synthesised seam, and their rims carry pcurves only
+/// for the faces that use them. Measured against matched parameters, as
+/// the same-parameter repair measures, every pcurve then agrees with its
+/// curve, and no edge of these parts grows past 10 µm: the files' own
+/// worst edge sits 6.5 µm off its surface, while a pcurve started on the
+/// wrong column stands a chord of the rim, up to the hole's diameter, off.
+#[test]
+fn rims_starting_on_different_columns_keep_tight_tolerances() {
+    const WIDEST: f64 = 0.01;
+    for name in [
+        "nist_ftc_11_asme1_rb.stp",
+        "nist_ctc_01_asme1_rd.stp",
+        "nist_ctc_03_asme1_rc.stp",
+        "nist_ftc_06_asme1_rd.stp",
+        "nist_ftc_07_asme1_rd.stp",
+    ] {
+        let mut import = ogeom::io::read_step(&corpus(name), T).unwrap();
+        let model = import.document.model_mut();
+        for solid in &import.solids {
+            let read = widest_edge_tolerance(model, solid);
+            assert!(read <= WIDEST, "{name}: an edge reads {read} wide");
+            ogeom::heal::repair_same_parameter(model, solid, T).unwrap();
+            let repaired = widest_edge_tolerance(model, solid);
+            assert!(
+                repaired <= WIDEST,
+                "{name}: an edge is {repaired} wide after the same-parameter repair"
+            );
+        }
+    }
+}
+
 /// The healer restores containment. A real part whose edges genuinely
 /// need their width (pcurves sitting microns off their curves) has its
 /// vertices reset to the confusion tolerance, which is the state a reader

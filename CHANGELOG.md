@@ -110,6 +110,12 @@ it passes behind a contour. The benches cover mass properties, `check`,
 
 ### Fixed
 
+- **A refused revolution band leaves its rims untouched.** A band whose
+  rims' vertices sit on different columns is refused, but its rims kept a
+  pcurve on an unused copy of the surface; `repair_same_parameter` then
+  widened them to a chord of the circle (up to 40 mm on the NIST test
+  parts). They now stay at the file's own slop.
+
 - **A prism far from the origin keeps its rails and its facing (#144).**
   `make_prism` of a face 1e6 to 2e7 from the origin no longer fails with a
   domain error on its rails or returns a solid wound inward; the facing of
