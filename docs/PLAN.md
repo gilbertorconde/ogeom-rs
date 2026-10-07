@@ -286,6 +286,128 @@ gives a tool the boolean cannot close against even a plain box ("the kept
 pieces did not close into a shell"): its legs lie on the box's faces all
 round the outline.
 
+### Quality and performance
+
+From a read-only audit of every crate (2026-10-07). Nothing below is
+measured yet: each item starts with a bench, and lands only where paired
+runs beat the threshold it declares (the performance-optimizer skill).
+Kernel threading already runs through `ogeom_core::parallel::map_ordered`
+(scoped threads, results in item order, bit-identical at any thread count).
+
+**Correctness first.**
+- HLR draws a straight edge wholly visible or wholly hidden: one ray at the
+  segment's middle (`ogeom-hlr/src/project.rs`), samples only on the exact
+  path. Split each projected edge where it crosses a projected contour and
+  test each interval (Appel's quantitative invisibility).
+- `unify_same_domain` adds its merged faces in hash order
+  (`ogeom-heal/src/upgrade.rs`), so node ids differ between runs.
+- The 2D wire offset can drop a valid piece beside a large concave arc: its
+  survivor test measures against a 33-point polyline
+  (`ogeom-offset/src/wire2d.rs`). Measure to the exact arc.
+
+**Benches to add before the rest.** Mass properties, `check`, sew, mesh
+conversion (`solid_from_mesh`), STEP write, IGES read, STL weld at 1M
+triangles, a STEP file of 10 MB or more, HLR (`project_exact`), offsets
+(`make_thick_sheet` on a spline face, pipe sections of circles, a guided
+pipe), `fix_shape`, a marched fillet. The bench reports min, median and
+spread, loops short benches to 50 ms, takes `--threads N`, and the baseline
+is renewed (it dates from 0.3.1). An instruction-count gate in CI would be
+deterministic on a loaded runner.
+
+**Cheap and certain.**
+- `hashbrown` behind `ogeom_core` aliases everywhere (about 200 std maps:
+  the STEP entity table, mesh welding, mesh conversion), std maps banned by
+  clippy `disallowed-types`. STEP ids are dense: index a `Vec` by id.
+- `map_ordered` starts fresh threads for every stage, two items included:
+  a minimum batch per worker first, then measure a persistent pool against
+  `set_threads(1)` on the small booleans.
+- Closed-form feet: cone and torus on surfaces (the inversions already
+  exist in `ogeom-math/src/elementary.rs`), extrusions and revolutions
+  through their profile, line and circle on curves; Newton on
+  `(C - P) . C'` after the bracket instead of Brent.
+- Newton solves still on the heap solver: the intersection walker, the
+  fillet march, the marched intersections. Move them to
+  `newton_system_fixed`; seed the walker with a tangent predictor.
+- One jet call where separate point, first and second derivative calls
+  are made (curve on surface, the fillet march, mass integration, the
+  mesh lift); allocation-free curve derivatives (a curve jet).
+- Grid corners in `sample_by` are evaluated four times each.
+- Box rejection before curve-curve crossings, the section's own box in
+  paving, local-support boxes for a spline curve's sub-range.
+- `check` per edge and per face through `map_ordered`; self-intersection
+  through a box tree instead of every face pair.
+- IGES derives its pcurves serially; STEP prepares them in parallel.
+- `repair_same_parameter` dedupes in O(E^2) and measures more weakly than
+  `reduce_tolerances`; `fix_shape` transforms every face's surface before
+  knowing an edge needs it.
+- `matched_loop` in pipe sections copies the loop for every candidate
+  start (about 14k copies of a 7000-point loop per circular section).
+- The guided sweep law resamples its guide at every station and bisects
+  60 times.
+- The mesh draws each edge five to seven times and rebuilds a whole-face
+  index per edge (`ogeom-mesh/src/attach.rs`); its sealing passes rebuild
+  the edge-use map four times and scan border vertices against border
+  edges.
+- Mesh conversion meshes every face again after the whole-shape mesh in
+  each build iteration; primitive refinement allocates in its Jacobian
+  loop; piece nesting has no box rejection.
+- Exact volume runs a discarded first pass and a second to compare, even
+  where the first is exact (planes bounded by lines).
+- The quartic (line and torus) goes through a heap companion matrix; a
+  bracketing solver between the derivative's roots (Yuksel 2022) is
+  allocation-free and finds tangencies directly.
+
+**Algorithms worth the work.**
+- Classify a boolean's pieces once per connected region, not per piece
+  (Requicha and Voelcker 1985): pieces meeting across an unpaved sub-edge
+  share a state.
+- Surface feet on splines by per-span branch and bound on control-net
+  boxes (Ma and Hewitt 2003; Selimovic 2006) instead of a grid up to 4096
+  on a side.
+- Curve-surface intersection prepares its sample grid once per face and
+  clips the ray to the face's box; point-in-solid rays pay it on every
+  call now.
+- March sections at the cubic's own interpolation error and check the fit
+  between stations (Bajaj et al. 1988; Barnhill and Kersey 1990), instead
+  of a straight-chord step about ten times finer than the fit needs. The
+  fillet march takes stations eight times denser than its fit for the
+  same reason.
+- March general pairs over the faces' parameter boxes, and cache a pair of
+  surfaces marched once within one fill.
+- Seeds from the surfaces' extrema find loops thinner than the grid
+  (Sederberg and Meyers 1988).
+- Where every ray meets a tangency, a generalized winding number answers
+  instead of a refusal (Jacobson et al. 2013; Spainhour et al. 2024).
+- Arrangement darts ordered by exact orientation, ties walked apart.
+- Adaptive Gauss-Kronrod per panel in exact volume, instead of doubling
+  every panel when one misses.
+- Primitive fits with analytic gradients and Levenberg-Marquardt (Lukacs,
+  Marshall and Martin 1998).
+- Fitting a band or a pcurve: factor the normal matrix once per round for
+  all rows, a cyclic system as band plus border; warm-start knots from
+  the last round.
+- Exact offsets of extrusions and revolutions through their profile's
+  offset; spline offsets through the local-refinement fit.
+- Mesh `simplify` by quadric error metrics with a heap and the link
+  condition (Garland and Heckbert 1997); the triangulation keeps triangles
+  by the exact flood rather than a centroid parity.
+- Fillet corners cut together where their tools stand apart, not one at a
+  time against the whole solid; the ruled fillet through the round's
+  batching; the curved corner probes the exact boundary instead of meshing
+  the whole solid.
+
+**Structure.** `fill` (2,300 lines) and `general_fuse_as` (1,500) in the
+boolean, `mesh_solid.rs` (12,900 lines), and the largest builders in the
+fillet and offset crates split into named phases with typed outputs, which
+the region classification and the parallel read-only phases need. Mesh
+conversion moved to its own crate would stop it rebuilding the whole
+graph.
+
+**Consumers' builds.** Workspace profiles do not reach a dependent crate,
+and without a target CPU every `mul_add` (515 of them) is a call into libm.
+Measure `--release` against the default profile and `x86-64-v3` against
+the baseline target, and document what a consumer should set.
+
 ## How this project works
 
 These rules are enforced. Every one of them has caused a patch to be rejected.
