@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-10-07
+
+A patch release: no breaking API changes. A boolean costs what the other
+solid reaches: faces it cannot reach pass through as the same nodes, so a
+small cut into a 582-face plate costs about what it costs on a 22-face one,
+and a fillet's cost no longer depends on faces far from its edges.
+Operations that edit in place copy shared nodes first so earlier solids
+never change, and a boolean whose faster path fails starts again from the
+solids as given. A planar face walks its rings about its plane, a general
+draft of a closed wall closes its hinge, and a converted round between two
+surfaces on its axis meets them exactly.
+
 ### Changed
 
 - **A fillet's cost no longer depends on faces far from its edges
@@ -4206,7 +4218,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.8...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.9...HEAD
+[0.9.9]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.5...v0.9.6
