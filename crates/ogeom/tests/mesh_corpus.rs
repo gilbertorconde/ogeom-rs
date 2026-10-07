@@ -8,7 +8,7 @@ mod walks;
 
 use ogeom::algo::{
     Canonical, FallbackReason, MeshRegion, MeshRegions, MeshSolidOptions, MeshSolidReport, check,
-    shape_bounds, solid_from_mesh, volume_properties,
+    make_shell, make_solid, shape_bounds, solid_from_mesh, volume_properties,
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
@@ -282,7 +282,10 @@ fn nist_ctc_03() {
 /// between its two seams, and both curved faces stay curved. One with both
 /// curved sides on one torus is split at the corner they share. Two facets
 /// of a blend between two single facets are no round tangent to them, and
-/// stay facets.
+/// stay facets. Its tori are bounded by fitted edges stating 2e-2 to 5e-2,
+/// whose pcurves stand off them within that: its volume closes over the
+/// strips between, and does not move with the face its moments are taken
+/// from.
 #[test]
 #[ignore = "heavy"]
 fn nist_ctc_02() {
@@ -334,6 +337,27 @@ fn nist_ctc_02() {
         worst <= out.coplanar_distance * 20.0,
         "an edge between two tori stands {worst} off them"
     );
+    // The same faces listed from another first face measure from another
+    // point; a boundary left open would move the volume by the open flux
+    // times the step.
+    let faces = explore_unique(&back, &out.shape, ShapeType::Face).unwrap();
+    let fine = Deflection::with_chord(diagonal * 1e-5).unwrap();
+    let mut volumes = Vec::new();
+    for first in [0, faces.len() / 3, 2 * faces.len() / 3] {
+        let mut listed = faces.clone();
+        listed.rotate_left(first);
+        let shell = make_shell(&mut back, &listed).unwrap().shape;
+        let solid = make_solid(&mut back, &[shell]).unwrap().shape;
+        let measured = volume_properties(&back, &solid, fine, T).unwrap();
+        assert_eq!(measured.deflection, 0.0, "integrated, not meshed");
+        volumes.push(measured.mass);
+    }
+    for volume in &volumes[1..] {
+        assert!(
+            (volume - volumes[0]).abs() <= volumes[0] * 1e-9,
+            "the volume moves with the first face: {volumes:?}"
+        );
+    }
 }
 
 /// A fitted face here ran past a facet it should have ended on, and the

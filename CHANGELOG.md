@@ -30,6 +30,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Exact volumes close the slits beside fitted edges.** Where a pcurve
+  stands off its edge's curve by more than a confusion distance, fitted
+  edges within their stated tolerance included, the strip between them is
+  measured and closed onto the curves' ends at every corner. A converted
+  part's volume no longer depends on the point its moments are taken from
+  (5e-5 relative before, now 5e-10), and the torus drill commons measure
+  within 1e-13 of the exact core (1.5e-9 before).
+
 - **Booleans take imported parts with spline fillets over small rings
   (#133).** A projection onto a surface stopped when its residual times the
   chart's speed fell under the confusion, which on a ring of a sixth of a

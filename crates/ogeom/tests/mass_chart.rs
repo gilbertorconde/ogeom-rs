@@ -301,9 +301,11 @@ fn torus_core(x: f64, y: f64, r: f64) -> f64 {
 /// equator there. Near the vertex the section hugs the seam's meridian
 /// circle, and the boolean bounds the drill's wall there by the meridian:
 /// the wall's pcurve, fitted to the true section, stands up to 2e-5 off
-/// the edge's circle. The strip between them is integrated with the wall,
-/// and the common measures the torus's core within the drill to a few
-/// parts in a billion, where leaving the strip out misses by 2.6e-8.
+/// the edge's circle, and the fitted sections' own pcurves stand off their
+/// edges by up to their stated 1e-5. The strips between them are integrated
+/// with the faces, and the common measures the torus's core within the
+/// drill to a part in a trillion, where leaving out the strips beside the
+/// circle misses by 2.6e-8 and those beside the fitted sections by 1.5e-9.
 #[test]
 fn a_torus_drilled_through_its_seams_vertex_measures_its_core() {
     use ogeom::algo::{make_cylinder, make_torus};
@@ -341,13 +343,13 @@ fn a_torus_drilled_through_its_seams_vertex_measures_its_core() {
         assert_eq!(v_common.deflection, 0.0, "r {r}: integrated, not meshed");
         let core = torus_core(13.0, r, r.abs());
         assert!(
-            (v_common.mass - core).abs() < 5e-9 * core,
+            (v_common.mass - core).abs() < 1e-12 * core,
             "r {r}: common {} against {core} integrated",
             v_common.mass
         );
         let torus = 2.0 * PI * PI * 10.0 * 9.0;
         assert!(
-            (v_cut.mass + v_common.mass - torus).abs() < 1e-9 * torus,
+            (v_cut.mass + v_common.mass - torus).abs() < 1e-12 * torus,
             "r {r}: cut {} + common {} against {torus}",
             v_cut.mass,
             v_common.mass

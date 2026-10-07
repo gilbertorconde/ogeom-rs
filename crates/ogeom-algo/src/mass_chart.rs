@@ -29,16 +29,17 @@
 //! `|n dA|` there quickly: an area's inner panel across such a dip is
 //! graded towards its bottom instead.
 //!
-//! A pcurve that lifts off its edge's own curve by more than a fitted curve
-//! states (on a curve with a closed form, by more than a hundred confusion
-//! distances), while its neighbour across the edge runs along the curve, would
-//! leave a slit in the boundary the divergence theorem closes over. The
-//! strip between the lifted pcurve and the curve is integrated with the
-//! face as a ruled surface, so the faces still close; an area counts it
-//! as surface the face lacks, or takes it away where it lies back over the
-//! face.
+//! A pcurve that lifts off its edge's own curve by more than a confusion
+//! distance, while its neighbour across the edge runs along the curve,
+//! would leave a slit in the boundary the divergence theorem closes over.
+//! The strip between the lifted pcurve and the curve is integrated with
+//! the face as a ruled surface, and a volume closes the strips' ends onto
+//! the curves' ends at each corner, so the faces still close; an area
+//! counts a strip as surface the face lacks, or takes it away where it
+//! lies back over the face.
 
 use core::f64::consts::FRAC_1_SQRT_2;
+use std::sync::OnceLock;
 
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{
@@ -75,20 +76,176 @@ struct Ribbon {
     /// The curve's parameter at the piece's start and end, the guesses the
     /// nearest points are sought from.
     ends: (f64, f64),
-    /// How far the piece was found to stand off the curve at most; a
-    /// nearest point further than twice this is a wrong one.
+    /// How far the piece was found to stand off the curve at most.
     reach: f64,
+    /// How far a nearest point may lie before it is taken for a wrong one.
+    limit: f64,
+    /// Whether an area counts the strip: where the neighbour across the
+    /// edge is bounded by another curve than the piece, a curve with a
+    /// closed form it stands off by more than a hundred confusion
+    /// distances or any curve past what the edge states. A fitted curve's
+    /// own pieces within its tolerance bound the face as they lie, and the
+    /// strip, standing up from the surface as much as lying in it, is
+    /// counted by the volume alone, which needs it closed.
+    area: bool,
+    /// The curve's parameter nearest the lifted piece at [`FEET`] even
+    /// shares of the piece and its ends, each sought from the last, so a
+    /// nearest point is sought from where the strip's feet run and does
+    /// not jump to another stretch of the curve passing as near.
+    feet: Vec<f64>,
+    /// The piece's parameters where the feet cross one of the curve's
+    /// knots or come to rest at one of its ends: there the strip's
+    /// integrand changes piece, and the panels break.
+    breaks: Vec<f64>,
     /// The strip's lobes in walking order, each as the piece's parameter
     /// where it ends and whether it lies back over the face, which then
     /// counts its area already: an area takes such a lobe away, and adds
     /// one lying out past the face's edge or standing up from it. A lobe
     /// ends where the piece crosses the curve and the rulings turn round,
     /// or where their feet come to rest at an end of the curve; the last
-    /// ends with the piece.
-    lobes: Vec<(f64, bool)>,
+    /// ends with the piece. Read for an area only, the first time one is
+    /// asked; a volume takes the strip's `n dA` the same way either side.
+    lobes: OnceLock<Vec<(f64, bool)>>,
 }
 
+/// How many even steps along a piece its strip's feet are traced at.
+const FEET: u32 = 64;
+
 impl Ribbon {
+    /// Where to seek the nearest point from at `share` of the piece: read
+    /// off the traced feet.
+    fn guess(&self, share: f64) -> f64 {
+        let last = self.feet.len().saturating_sub(1);
+        if last == 0 {
+            return self.ends.0 + (self.ends.1 - self.ends.0) * share;
+        }
+        let x = share.clamp(0.0, 1.0) * f64::from(FEET);
+        // `x` lies in `[0, FEET]`, so its floor is a valid index.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let k = (x.floor() as usize).min(last - 1);
+        #[allow(clippy::cast_precision_loss)]
+        let f = x - k as f64;
+        self.feet[k] + (self.feet[k + 1] - self.feet[k]) * f
+    }
+
+    /// The curve's parameter nearest `at`, by Newton's method from `guess`,
+    /// held to the curve's range.
+    fn foot(&self, at: Point, guess: f64, tol: Tolerances) -> OgeomResult<f64> {
+        foot_on(&self.curve, self.range, at, guess, tol)
+    }
+
+    /// Traces [`Ribbon::feet`] along a piece, each foot sought from the
+    /// last ones carried on, or from the curve's nearest sample where that
+    /// lands further than twice `seen`, the widest gap sampled so far; and
+    /// finds [`Ribbon::breaks`]. Returns how far the piece stands off the
+    /// curve at most, or `None` where it stands further than `widest`.
+    fn trace(
+        &mut self,
+        placed: &SurfaceGeometry,
+        segment: &Segment,
+        seen: f64,
+        widest: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<f64>> {
+        let lifted = |share: f64| -> OgeomResult<Point> {
+            let t = segment.t0 + (segment.t1 - segment.t0) * share;
+            let (at, _) = segment.at(t, tol)?;
+            let at = into_domain(placed, at);
+            placed.point_at(at.x, at.y, tol)
+        };
+        let off = |tau: f64, point: Point| -> OgeomResult<f64> {
+            Ok(self.curve.point_at(tau, tol)?.distance(point))
+        };
+        let mut feet: Vec<f64> = Vec::with_capacity(FEET as usize + 1);
+        let mut points = Vec::with_capacity(FEET as usize + 1);
+        let mut reach: f64 = 0.0;
+        for k in 0..=FEET {
+            let point = lifted(f64::from(k) / f64::from(FEET))?;
+            let guess = match feet.as_slice() {
+                [] => self.ends.0,
+                [one] => *one,
+                [.., a, b] => 2.0 * b - a,
+            };
+            let mut tau = self.foot(point, guess, tol)?;
+            let mut gap = off(tau, point)?;
+            if gap > 2.0 * seen.max(reach) {
+                let (from, _) = nearest_on(&self.curve, self.range, point, tol)?;
+                tau = self.foot(point, from, tol)?;
+                gap = off(tau, point)?;
+            }
+            if gap > widest {
+                return Ok(None);
+            }
+            reach = reach.max(gap);
+            feet.push(tau);
+            points.push(point);
+        }
+        // Where the feet pass a knot `kappa` of the curve, or leave or come
+        // to rest at an end of its range: the piece's point there lies on
+        // the plane through the curve's point at `kappa` square to it.
+        let (lo, hi) = (
+            self.range.0.min(self.range.1),
+            self.range.0.max(self.range.1),
+        );
+        let mut marks = spline_knots(&self.curve).unwrap_or_default();
+        marks.retain(|k| *k > lo && *k < hi);
+        marks.extend([lo, hi]);
+        let mut breaks = Vec::new();
+        for kappa in marks {
+            let d = self.curve.derivatives_at(kappa, 1, tol)?;
+            let (base, tangent) = (Point::ORIGIN + d[0], d[1]);
+            let side = |tau: f64| {
+                if tau == kappa {
+                    0.0
+                } else {
+                    (tau - kappa).signum()
+                }
+            };
+            for k in 0..FEET as usize {
+                if side(feet[k]) == side(feet[k + 1]) {
+                    continue;
+                }
+                let plane = |point: Point| (point - base).dot(tangent);
+                #[allow(clippy::cast_precision_loss)]
+                let (mut a, mut b) = (k as f64 / f64::from(FEET), (k + 1) as f64 / f64::from(FEET));
+                let (mut fa, mut fb) = (plane(points[k]), plane(points[k + 1]));
+                if fa * fb > 0.0 {
+                    continue;
+                }
+                // Regula falsi, the end held twice in a row halved.
+                let mut held = 0i8;
+                for _ in 0..60 {
+                    if fa == fb || b - a <= 1e-15 {
+                        break;
+                    }
+                    let c = (a * fb - b * fa) / (fb - fa);
+                    let fc = plane(lifted(c)?);
+                    if fc == 0.0 {
+                        (a, b) = (c, c);
+                        break;
+                    }
+                    if fc * fa < 0.0 {
+                        (b, fb) = (c, fc);
+                        if held == -1 {
+                            fa *= 0.5;
+                        }
+                        held = -1;
+                    } else {
+                        (a, fa) = (c, fc);
+                        if held == 1 {
+                            fb *= 0.5;
+                        }
+                        held = 1;
+                    }
+                }
+                breaks.push(segment.t0 + (segment.t1 - segment.t0) * f64::midpoint(a, b));
+            }
+        }
+        self.feet = feet;
+        self.breaks = breaks;
+        Ok(Some(reach))
+    }
+
     /// The point of the curve nearest `at`, the curve's tangent there, how
     /// fast that point moves along the curve as `at` moves by `moving`, and
     /// whether it is held at an end of the edge's range, where it stands
@@ -104,24 +261,10 @@ impl Ribbon {
             self.range.0.min(self.range.1),
             self.range.0.max(self.range.1),
         );
-        let mut tau = guess.clamp(lo, hi);
-        for _ in 0..30 {
-            let d = self.curve.derivatives_at(tau, 2, tol)?;
-            let off = (Point::ORIGIN + d[0]) - at;
-            let slope = d[1].dot(d[1]) + off.dot(d[2]);
-            if slope <= 0.0 {
-                break;
-            }
-            let next = (tau - off.dot(d[1]) / slope).clamp(lo, hi);
-            let moved = (next - tau).abs();
-            tau = next;
-            if moved <= 1e-15 * (1.0 + tau.abs()) {
-                break;
-            }
-        }
+        let tau = self.foot(at, guess, tol)?;
         let d = self.curve.derivatives_at(tau, 2, tol)?;
         let point = Point::ORIGIN + d[0];
-        if point.distance(at) > 2.0 * self.reach {
+        if point.distance(at) > self.limit {
             ogeom_core::ogeom_bail!(
                 NotDone,
                 "a boundary point found no nearest point on its edge's curve"
@@ -137,6 +280,34 @@ impl Ribbon {
         };
         Ok((point, d[1], rate, held))
     }
+}
+
+/// The parameter of `curve` over `range` nearest `at`, by Newton's method
+/// from `guess`, held to the range.
+fn foot_on(
+    curve: &Curve,
+    range: (f64, f64),
+    at: Point,
+    guess: f64,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let mut tau = guess.clamp(lo, hi);
+    for _ in 0..30 {
+        let d = curve.derivatives_at(tau, 2, tol)?;
+        let off = (Point::ORIGIN + d[0]) - at;
+        let slope = d[1].dot(d[1]) + off.dot(d[2]);
+        if slope <= 0.0 {
+            break;
+        }
+        let next = (tau - off.dot(d[1]) / slope).clamp(lo, hi);
+        let moved = (next - tau).abs();
+        tau = next;
+        if moved <= 1e-15 * (1.0 + tau.abs()) {
+            break;
+        }
+    }
+    Ok(tau)
 }
 
 impl Segment {
@@ -170,6 +341,10 @@ pub(crate) struct ChartFace {
     /// axis. Closed by these steps, every loop measures the region it
     /// bounds whatever `u_ref` is.
     bridges: Vec<(Point2, Vector2, f64)>,
+    /// Where a piece with a strip meets the next, the polygon closing the
+    /// strips' ends onto the curves' ends (see [`corner`]), and the sign
+    /// its loop counts with.
+    corners: Vec<(Vec<Point>, f64)>,
 }
 
 /// A face's chart loops, or `None` where they cannot be had exactly: a
@@ -271,18 +446,10 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
     let Walked {
         placed,
         handedness,
-        mut loops,
+        loops,
         scale,
         ..
     } = walked;
-    for (segments, region) in &mut loops {
-        for segment in segments.iter_mut() {
-            if let Some(mut ribbon) = segment.ribbon.take() {
-                ribbon.lobes = lobes(&placed, segment, &ribbon, *region, tol);
-                segment.ribbon = Some(ribbon);
-            }
-        }
-    }
     let mut bridges = Vec::new();
     for (segments, region) in &loops {
         for (k, segment) in segments.iter().enumerate() {
@@ -298,20 +465,95 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
             }
         }
     }
+    let sign = handedness
+        * if face.orientation() == Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        };
+    let mut corners = Vec::new();
+    for (segments, region) in &loops {
+        for (k, segment) in segments.iter().enumerate() {
+            let next = &segments[(k + 1) % segments.len()];
+            if let Some(polygon) = corner(&placed, segment, next, period, tol) {
+                corners.push((polygon, sign * region));
+            }
+        }
+    }
     Ok(Some(ChartFace {
         knot_lines,
         bridges,
+        corners,
         surface: placed,
         loops,
-        sign: handedness
-            * if face.orientation() == Orientation::Reversed {
-                -1.0
-            } else {
-                1.0
-            },
+        sign,
         u_ref,
         scale,
     }))
+}
+
+/// The polygon closing a face's boundary where `segment` meets `next`
+/// and either has a strip, or `None` where neither has one.
+///
+/// Walked as the face's boundary runs, the strips end in rulings from the
+/// lifted pieces' ends to their feet on the curves, and the face's own
+/// boundary steps from one lifted end to the other; the neighbours across
+/// the two edges end on the curves' own ends instead. The polygon runs
+/// from the first strip's last foot along its curve to the curve's end, on
+/// to the next curve's start and along it to the next strip's first foot,
+/// then back up that ruling, across the step and down the first ruling.
+/// Integrated with the face it leaves the face ending on the curves' ends,
+/// as its neighbours do. A piece without a strip lies along its curve and
+/// stands for it, its lifted end for the curve's end.
+fn corner(
+    placed: &SurfaceGeometry,
+    segment: &Segment,
+    next: &Segment,
+    period: Vector2,
+    tol: Tolerances,
+) -> Option<Vec<Point>> {
+    const PIECES: u32 = 4;
+    if segment.ribbon.is_none() && next.ribbon.is_none() {
+        return None;
+    }
+    let lift = |at: Point2| -> Option<Point> {
+        let at = into_domain(placed, at);
+        placed.point_at(at.x, at.y, tol).ok()
+    };
+    let (end, _) = segment.at(segment.t1, tol).ok()?;
+    let (start, _) = next.at(next.t0, tol).ok()?;
+    let (last, first) = (lift(end)?, lift(start)?);
+    let along = |ribbon: &Ribbon, from: f64, to: f64| -> Option<Vec<Point>> {
+        (0..=PIECES)
+            .map(|j| {
+                let tau = from + (to - from) * f64::from(j) / f64::from(PIECES);
+                ribbon.curve.point_at(tau, tol).ok()
+            })
+            .collect()
+    };
+    let mut polygon = Vec::new();
+    match &segment.ribbon {
+        Some(ribbon) => {
+            let foot = ribbon.foot(last, ribbon.guess(1.0), tol).ok()?;
+            polygon.extend(along(ribbon, foot, ribbon.ends.1)?);
+        }
+        None => polygon.push(last),
+    }
+    if let Some(ribbon) = &next.ribbon {
+        let foot = ribbon.foot(first, ribbon.guess(0.0), tol).ok()?;
+        polygon.extend(along(ribbon, ribbon.ends.0, foot)?);
+    }
+    polygon.push(first);
+    // Back across the step from the next piece's start to this one's end.
+    let gap = start - end;
+    let step = gap - fold(gap, period);
+    for j in 1..PIECES {
+        polygon.push(lift(end + step * (1.0 - f64::from(j) / f64::from(PIECES)))?);
+    }
+    if segment.ribbon.is_some() {
+        polygon.push(last);
+    }
+    Some(polygon)
 }
 
 /// A piece's strip split into lobes where the piece crosses its edge's
@@ -342,7 +584,7 @@ fn lobes(
         } else {
             (t - segment.t0) / (segment.t1 - segment.t0)
         };
-        let guess = ribbon.ends.0 + (ribbon.ends.1 - ribbon.ends.0) * share;
+        let guess = ribbon.guess(share);
         let (target, _, _, held) = ribbon
             .nearest(point, du * d.x + dv * d.y, guess, tol)
             .ok()?;
@@ -426,10 +668,10 @@ pub(crate) fn rigid_handedness(placement: &ogeom_math::Transform) -> Option<f64>
 }
 
 /// Whether a pcurve of the face runs beside its edge's curve (see
-/// [`Fit::Beside`]) further than [`BESIDE`] confusion distances: the
-/// region its pcurves bound then leaves a strip open against the neighbour
-/// across that edge, wide enough to weigh, which only the chart loops
-/// close. Only edges stating that much are read.
+/// [`Fit::Beside`]) further than a confusion distance: the region its
+/// pcurves bound then leaves a strip open against the neighbour across
+/// that edge, which only the chart loops close. Only edges stating that
+/// much are read.
 pub(crate) fn runs_wide_of_an_edge(
     model: &Model,
     face: &Shape,
@@ -447,7 +689,7 @@ pub(crate) fn runs_wide_of_an_edge(
             let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
                 continue;
             };
-            if edge_data.tolerance.get() <= tol.confusion() * BESIDE {
+            if edge_data.tolerance.get() <= tol.confusion() {
                 continue;
             }
             let (ids, range) = match edge_data.pcurve_for(data.surface, edge.location()) {
@@ -483,7 +725,7 @@ pub(crate) fn runs_wide_of_an_edge(
                     ribbon: None,
                 };
                 if let Fit::Beside(ribbon) = fit_to_edge(model, &edge, placed, &segment, tol)?
-                    && ribbon.reach > tol.confusion() * BESIDE
+                    && ribbon.reach > tol.confusion()
                 {
                     return Ok(true);
                 }
@@ -795,26 +1037,27 @@ fn walk(
     Ok(Some(segments))
 }
 
-/// How far, in confusion distances, a piece's lifted pcurve may run beside
-/// its edge's curve and still be integrated, with the strip between them:
-/// a thousandth of a millimetre at millimetre tolerances, or on a curve
-/// with a closed form as far as the edge states. The strip's rulings are
-/// straight, and a ruled strip of width `w` departs from any smooth
-/// surface through both its sides by about `w^2` times the curvature, so
-/// what it leaves out of a volume goes as `w^3`.
+/// How far, in confusion distances, a piece's lifted pcurve on a curve
+/// with a closed form may run beside the curve past what the edge states,
+/// and still be integrated with the strip between them: a thousandth of a
+/// millimetre at millimetre tolerances. The strip's rulings are straight,
+/// and a ruled strip of width `w` departs from any smooth surface through
+/// both its sides by about `w^2` times the curvature, so what it leaves
+/// out of a volume goes as `w^3`.
 const BESIDE: f64 = 1e4;
 
 /// How a piece's lifted pcurve lies against its edge's own curve.
 enum Fit {
-    /// Along it, to a hundred times the confusion distance or, on a fitted
-    /// curve, to the edge's own stated tolerance where that is looser; or
-    /// the edge has no curve of its own (a pole) to stray from.
+    /// Along it, to a confusion distance; or the edge has no curve of its
+    /// own (a pole) to stray from; or further than [`BESIDE`] confusion
+    /// distances but within the edge's stated tolerance, which then owns
+    /// the gap.
     Along,
-    /// Beside it, further than that but within [`BESIDE`] confusion
-    /// distances, or on a curve with a closed form within the edge's
-    /// stated tolerance: a fitted section whose edge took a curve close by
-    /// for its own, or a chord standing for an arc. The strip between is
-    /// integrated with the face.
+    /// Beside it, further than a confusion distance but within the edge's
+    /// stated tolerance, or on a curve with a closed form within [`BESIDE`]
+    /// confusion distances: a fitted section, or a curve whose edge took a
+    /// curve close by for its own, or a chord standing for an arc. The
+    /// strip between is integrated with the face.
     Beside(Box<Ribbon>),
     /// Further: the region the pcurve bounds is not the face's, and the
     /// face is left to the mesh, which takes its boundary from the edge.
@@ -849,14 +1092,34 @@ fn fit_to_edge(
         .node(edge)
         .and_then(|n| n.data().as_edge())
         .map_or(0.0, |d| d.tolerance.get());
-    let close = tol.confusion() * 100.0;
-    let reach = close.max(stated);
+    let reach = (tol.confusion() * 100.0).max(stated);
+    let lifted = |t: f64| -> OgeomResult<Point> {
+        let (at, _) = segment.at(t, tol)?;
+        let at = into_domain(placed, at);
+        placed.point_at(at.x, at.y, tol)
+    };
+    let mut seen: f64 = 0.0;
+    let mut within_stated = true;
+    for k in 1..=5 {
+        let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / 6.0;
+        let off = nearest(&curve, *range, lifted(t)?, tol)?;
+        seen = seen.max(off);
+        if off > reach {
+            within_stated = false;
+            break;
+        }
+    }
+    if seen <= tol.confusion() && within_stated {
+        return Ok(Fit::Along);
+    }
     // A curve with a closed form carries no fit error of its own, so a
-    // pcurve standing off it further than `close` is another curve's
-    // description beside it: two edges a little apart taken for one,
-    // which states the gap as its tolerance. The strip is integrated
-    // there all the same. A fitted curve's own pcurves stand off it within
-    // the fit's error, which its tolerance states.
+    // pcurve standing off it past what the edge states is another curve's
+    // description beside it: two edges a little apart taken for one. The
+    // strip is integrated there all the same, to [`BESIDE`]. Within the
+    // stated tolerance the strip is the face's to close however wide it
+    // is: an edge taking a straight chord or an arc for a curved section
+    // states the chord's sag, its neighbour across the edge is bounded by
+    // the chord, and so is a fitted curve's neighbour by the fit.
     let exact = matches!(
         curve,
         Curve::Line(_)
@@ -865,48 +1128,14 @@ fn fit_to_edge(
             | Curve::Hyperbola(_)
             | Curve::Parabola(_)
     );
-    let lifted = |t: f64| -> OgeomResult<Point> {
-        let (at, _) = segment.at(t, tol)?;
-        let at = into_domain(placed, at);
-        placed.point_at(at.x, at.y, tol)
-    };
-    let mut along = true;
-    let mut within_stated = true;
-    for k in 1..=5 {
-        let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / 6.0;
-        let off = nearest(&curve, *range, lifted(t)?, tol)?;
-        if off > close && exact {
-            along = false;
-        }
-        if off > reach {
-            along = false;
-            within_stated = false;
-            break;
-        }
+    if !within_stated && !exact {
+        return Ok(Fit::Off);
     }
-    if along {
-        return Ok(Fit::Along);
-    }
-    // Beside the curve all the way, ends included. On a curve with a
-    // closed form the edge's stated tolerance bounds the strip too: an edge
-    // taking a straight chord or an arc for a curved section states the
-    // chord's sag, its neighbour across the edge is bounded by the chord,
-    // and the sliver between the chord and the pcurve is the face's to
-    // close however wide it is.
-    const SAMPLES: u32 = 16;
-    let widest_strip = if exact && within_stated {
+    let widest_strip = if within_stated {
         (tol.confusion() * BESIDE).max(stated)
     } else {
         tol.confusion() * BESIDE
     };
-    let mut widest: f64 = close;
-    for k in 0..=SAMPLES {
-        let t = segment.t0 + (segment.t1 - segment.t0) * f64::from(k) / f64::from(SAMPLES);
-        widest = widest.max(nearest(&curve, *range, lifted(t)?, tol)?);
-        if widest > widest_strip {
-            return Ok(if within_stated { Fit::Along } else { Fit::Off });
-        }
-    }
     // Which way the curve runs along the piece: the reading that keeps
     // the piece's points nearer the curve's at the same share of the way,
     // the quarter points included so a closed curve is told apart too.
@@ -923,13 +1152,24 @@ fn fit_to_edge(
     } else {
         (range.1, range.0)
     };
-    Ok(Fit::Beside(Box::new(Ribbon {
+    let mut ribbon = Ribbon {
+        area: !within_stated || (exact && seen > tol.confusion() * 100.0),
         curve,
         range: *range,
         ends,
-        reach: widest,
-        lobes: Vec::new(),
-    })))
+        reach: 0.0,
+        limit: widest_strip,
+        feet: Vec::new(),
+        breaks: Vec::new(),
+        lobes: OnceLock::new(),
+    };
+    // Beside the curve all the way, ends included.
+    let Some(widest) = ribbon.trace(placed, segment, seen, widest_strip, tol)? else {
+        return Ok(if within_stated { Fit::Along } else { Fit::Off });
+    };
+    ribbon.reach = widest;
+    ribbon.limit = (4.0 * widest).max(widest_strip);
+    Ok(Fit::Beside(Box::new(ribbon)))
 }
 
 /// A chart point brought into the surface's domain where a pcurve fitted
@@ -954,6 +1194,17 @@ pub(crate) fn into_domain(surface: &SurfaceGeometry, at: Point2) -> Point2 {
 /// The distance from `target` to `curve` over `range`: the best of a
 /// sampling, narrowed by golden sections about it.
 fn nearest(curve: &Curve, range: (f64, f64), target: Point, tol: Tolerances) -> OgeomResult<f64> {
+    Ok(nearest_on(curve, range, target, tol)?.1)
+}
+
+/// The parameter of `curve` over `range` nearest `target`, and how far it
+/// lies: the nearest of a sampling, settled by golden section.
+fn nearest_on(
+    curve: &Curve,
+    range: (f64, f64),
+    target: Point,
+    tol: Tolerances,
+) -> OgeomResult<(f64, f64)> {
     const SAMPLES: u32 = 32;
     let at = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(target)) };
     let step = (range.1 - range.0) / f64::from(SAMPLES);
@@ -978,7 +1229,13 @@ fn nearest(curve: &Curve, range: (f64, f64), target: Point, tol: Tolerances) -> 
             a = c;
         }
     }
-    Ok(best.1.min(at(f64::midpoint(a, b))?))
+    let middle = f64::midpoint(a, b);
+    let settled = at(middle)?;
+    Ok(if settled < best.1 {
+        (middle, settled)
+    } else {
+        best
+    })
 }
 
 /// The whole number of periods nearest to `gap`, along each periodic
@@ -1275,21 +1532,35 @@ impl ChartFace {
         };
         for (segments, region) in &self.loops {
             for segment in segments {
-                if let Some(ribbon) = &segment.ribbon {
+                if let Some(ribbon) = segment
+                    .ribbon
+                    .as_ref()
+                    .filter(|r| measure == Measure::Volume || r.area)
+                {
+                    let lobes: &[(f64, bool)] = match measure {
+                        Measure::Area => ribbon
+                            .lobes
+                            .get_or_init(|| lobes(&self.surface, segment, ribbon, *region, tol)),
+                        Measure::Volume => &[],
+                    };
                     let mut breaks = self.outer_breaks(segment, tol)?;
-                    breaks.extend(ribbon.lobes.iter().map(|(end, _)| *end));
+                    breaks.extend(ribbon.breaks.iter().copied());
+                    breaks.extend(lobes.iter().map(|(end, _)| *end));
                     breaks.sort_by(f64::total_cmp);
                     if segment.t1 < segment.t0 {
                         breaks.reverse();
                     }
                     breaks.dedup();
+                    // A strip is as wide as the piece stands off its curve,
+                    // a sliver of the face's own integral, and five points
+                    // a panel take it far closer than the runs agree.
                     for pair in breaks.windows(2) {
                         for k in 0..fine {
                             let a = pair[0] + (pair[1] - pair[0]) * f64::from(k) / f64::from(fine);
                             let b =
                                 pair[0] + (pair[1] - pair[0]) * f64::from(k + 1) / f64::from(fine);
-                            for (t, wt) in gauss_legendre_rule(a, b) {
-                                self.strip(segment, ribbon, t, region * wt, tol, &mut take)?;
+                            for (t, wt) in rule(5, a, b) {
+                                self.strip(segment, ribbon, lobes, t, region * wt, tol, &mut take)?;
                             }
                         }
                     }
@@ -1317,6 +1588,23 @@ impl ChartFace {
                 }
             }
         }
+        // The corners close a volume; an area has nothing to close.
+        if measure == Measure::Volume {
+            for (polygon, turn) in &self.corners {
+                // A fan of triangles from the first corner, each
+                // integrated on its unit square collapsed onto it.
+                let hub = polygon[0];
+                for k in 1..polygon.len() {
+                    let (a, b) = (polygon[k], polygon[(k + 1) % polygon.len()]);
+                    let n = (a - hub).cross(b - a) * *turn;
+                    for (x, wx) in rule(3, 0.0, 1.0) {
+                        for (y, wy) in rule(3, 0.0, 1.0) {
+                            take((hub + (a - hub) * x + (b - a) * (x * y), n * x, wx * wy));
+                        }
+                    }
+                }
+            }
+        }
         for &(start, step, region) in &self.bridges {
             for (t, wt) in gauss_legendre_rule(0.0, 1.0) {
                 dipped |= self.inner(
@@ -1337,10 +1625,12 @@ impl ChartFace {
     /// face's boundary runs the lifted pcurve one way; the strip, to close
     /// on it, runs it the other, so its `n dA` is `-sign` times the
     /// ruling's sweep along the walk crossed with the ruling.
+    #[allow(clippy::too_many_arguments)]
     fn strip(
         &self,
         segment: &Segment,
         ribbon: &Ribbon,
+        lobes: &[(f64, bool)],
         t: f64,
         outer: f64,
         tol: Tolerances,
@@ -1355,12 +1645,11 @@ impl ChartFace {
         } else {
             (t - segment.t0) / (segment.t1 - segment.t0)
         };
-        let guess = ribbon.ends.0 + (ribbon.ends.1 - ribbon.ends.0) * share;
+        let guess = ribbon.guess(share);
         let (target, tangent, rate, _) = ribbon.nearest(point, moving, guess, tol)?;
         let across = target - point;
         let ahead = (segment.t1 - segment.t0).signum();
-        let over = ribbon
-            .lobes
+        let over = lobes
             .iter()
             .find(|(end, _)| (end - t) * ahead >= 0.0)
             .is_some_and(|(_, over)| *over);
