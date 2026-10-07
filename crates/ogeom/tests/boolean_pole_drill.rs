@@ -1,12 +1,13 @@
 //! Drills along a ball's axis whose wall passes through both poles of its
 //! chart, or a hair beside them, and drills through the pole of a dome: a
 //! ball cut below its pole, alone or standing on a drum. A half ball
-//! charted about a tilted axis stands on a drum or is drilled.
+//! charted about a tilted axis stands on a drum or is drilled. A placed
+//! half ball or ball is drilled through its pole.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{check, make_box, make_cylinder, make_sphere, volume_properties};
 use ogeom::core::Tolerances;
-use ogeom::math::{Direction, Frame, Point, Vector};
+use ogeom::math::{Axis, Direction, Frame, Point, Transform, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape};
 
@@ -444,6 +445,147 @@ fn a_half_ball_seamed_in_its_flat_face_on_a_drum() {
         drilled,
     ) {
         failures.push(format!("through: {e}"));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// How a half ball or a ball is placed before it is drilled through its
+/// pole.
+#[derive(Clone, Copy, Debug)]
+enum Placed {
+    Moved,
+    Turned,
+    Mirrored,
+    Halved,
+    /// Restated on a left-handed sphere through the same points.
+    LeftHanded,
+}
+
+impl Placed {
+    /// The placement, `None` for the left-handed restatement.
+    fn transform(self) -> Option<Transform> {
+        match self {
+            Self::Moved => Some(Transform::translation(Vector::new(5.0, -3.0, 7.0))),
+            Self::Turned => Some(Transform::rotation(
+                Axis::new(Point::ORIGIN, Direction::X),
+                core::f64::consts::FRAC_PI_2,
+            )),
+            Self::Mirrored => Some(Transform::plane_mirror(Point::ORIGIN, Direction::Y)),
+            Self::Halved => Some(Transform::scaling(Point::ORIGIN, 0.5, T).unwrap()),
+            Self::LeftHanded => None,
+        }
+    }
+
+    fn apply(self, model: &mut Model, shape: &Shape) -> Shape {
+        match self.transform() {
+            Some(t) => ogeom::algo::transformed(model, shape, t).unwrap().shape,
+            None => left_handed(model, shape),
+        }
+    }
+}
+
+/// `shape` with each sphere restated on the left-handed frame through the
+/// same points.
+fn left_handed(model: &mut Model, shape: &Shape) -> Shape {
+    use ogeom::core::OgeomResult;
+    use ogeom::geom::{Curve, SphereSurface, SurfaceGeometry};
+    let surface = |s: &SurfaceGeometry| -> OgeomResult<Option<(SurfaceGeometry, bool)>> {
+        let SurfaceGeometry::Sphere(sphere) = s else {
+            return Ok(None);
+        };
+        let f = sphere.sphere().frame();
+        let left = Frame::from_axes(f.origin(), f.y(), f.x(), f.z(), T)?;
+        let new: SurfaceGeometry =
+            SphereSurface::new(ogeom::math::Sphere::new(left, sphere.sphere().radius(), T)?).into();
+        let flip = ogeom::algo::normals_oppose(s, &new, T)?;
+        Ok(Some((new, flip)))
+    };
+    let curve = |_: &Curve, _: (f64, f64)| -> OgeomResult<Option<(Curve, (f64, f64))>> { Ok(None) };
+    ogeom::algo::restate_geometry(model, shape, &surface, &curve, T)
+        .unwrap()
+        .shape
+}
+
+/// Cut and common of a placed half ball or ball with a drill whose wall
+/// runs through the pole of its chart, placed with it, against the closed
+/// forms of the body's volume and the drilled volume.
+fn placed_drilled(placed: Placed, whole_ball: bool) -> Result<(), String> {
+    let r = 2.664_527_471_227_642;
+    let mut model = Model::new();
+    let body = if whole_ball {
+        make_sphere(&mut model, Frame::WORLD, BALL, T)
+            .unwrap()
+            .shape
+    } else {
+        Dome::Half.build(&mut model)?
+    };
+    let body = placed.apply(&mut model, &body);
+    let at = Frame::new(Point::new(0.0, -r, -20.0), Direction::Z, Direction::Y, T).unwrap();
+    let drill = make_cylinder(&mut model, at, r, 40.0, T).unwrap().shape;
+    let drill = match placed.transform() {
+        Some(t) => {
+            ogeom::algo::transformed(&mut model, &drill, t)
+                .unwrap()
+                .shape
+        }
+        None => drill,
+    };
+    let mut volumes = Vec::new();
+    for (name, made) in [
+        ("cut", ogeom::boolean::cut(&mut model, &body, &drill, T)),
+        (
+            "common",
+            ogeom::boolean::common(&mut model, &body, &drill, T),
+        ),
+    ] {
+        let made = made.map_err(|e| format!("{name}: {e}"))?;
+        let diagnosis = check(&model, &made.shape, T).unwrap();
+        if !diagnosis.is_valid() {
+            return Err(format!("{name}: {diagnosis}"));
+        }
+        volumes.push(volume(&model, &made.shape));
+    }
+    let cube = placed
+        .transform()
+        .map_or(1.0, |t| t.scale_factor().abs().powi(3));
+    let (whole, inside) = if whole_ball {
+        let whole = 4.0 / 3.0 * core::f64::consts::PI * BALL.powi(3);
+        (whole, drilled_volume(0.0, -r, r))
+    } else {
+        (Dome::Half.whole(), Dome::Half.inside(0.0, -r, r))
+    };
+    let (whole, inside) = (whole * cube, inside * cube);
+    let (cut, common) = (volumes[0], volumes[1]);
+    if ((cut + common) - whole).abs() > whole * 1e-6 {
+        return Err(format!("cut {cut} + common {common} against {whole}"));
+    }
+    if (common - inside).abs() > inside * 1e-6 {
+        return Err(format!("common {common} against {inside}"));
+    }
+    Ok(())
+}
+
+/// A half ball moved, turned, mirrored or halved by its placement, or on a
+/// left-handed sphere, drilled through its pole, and a whole ball mirrored
+/// or halved: each is recharted about a clear axis as an unplaced one is.
+#[test]
+fn a_placed_dome_or_ball_drilled_through_its_pole() {
+    let mut failures = Vec::new();
+    for placed in [
+        Placed::Moved,
+        Placed::Turned,
+        Placed::Mirrored,
+        Placed::Halved,
+        Placed::LeftHanded,
+    ] {
+        if let Err(e) = placed_drilled(placed, false) {
+            failures.push(format!("half ball {placed:?}: {e}"));
+        }
+    }
+    for placed in [Placed::Mirrored, Placed::Halved] {
+        if let Err(e) = placed_drilled(placed, true) {
+            failures.push(format!("ball {placed:?}: {e}"));
+        }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

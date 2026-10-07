@@ -71,13 +71,8 @@ fn turned(
     let (mut ta, mut tb) = (a.clone(), b.clone());
     for (operand, other) in [(&mut ta, b), (&mut tb, a)] {
         let Some(ball) = whole_ball(model, operand, tol)? else {
-            if let Some((made, records)) = faces_turned(model, operand, other, tol)? {
-                for (old, new) in records {
-                    match new {
-                        Some(new) => before.modify(&old, new),
-                        None => before.delete(&old),
-                    }
-                }
+            if let Some((made, history)) = faces_turned(model, operand, other, tol)? {
+                before = before.then(&history);
                 *operand = made;
                 any = true;
             }
@@ -171,8 +166,9 @@ fn turned(
 }
 
 /// The ball `shape` is, where it is a solid of one face on a sphere with no
-/// trim (a seam and its two poles), its material inside, its placement
-/// neither scaled nor mirrored.
+/// trim (a seam and its two poles), its material inside, placed as its
+/// placement puts it: a ball made in its stead stands in world space, so
+/// a scale or a reflection is taken whole.
 fn whole_ball(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Option<Ball>> {
     if model.kind_of(shape)? != ShapeType::Solid {
         return Ok(None);
@@ -184,17 +180,11 @@ fn whole_ball(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Opti
     let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
         return Ok(None);
     };
-    let placement = face.transform(model.datums())?;
-    if (placement.scale_factor().abs() - 1.0).abs() > 1e-9 || !placement.preserves_handedness() {
+    if !data.location.is_identity() {
         return Ok(None);
     }
-    let Some(stored) = model.geometry().surface(data.surface) else {
-        return Ok(None);
-    };
-    let SurfaceGeometry::Sphere(_) = stored else {
-        return Ok(None);
-    };
-    let SurfaceGeometry::Sphere(placed) = stored.transformed(&placement, tol)? else {
+    let placement = face.transform(model.datums())?;
+    let Some(SurfaceGeometry::Sphere(stored)) = model.geometry().surface(data.surface) else {
         return Ok(None);
     };
     // The boundary: one edge with extent, used twice (the seam), and
@@ -213,13 +203,15 @@ fn whole_ball(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Opti
     if seams.len() != 2 || seams[0] != seams[1] {
         return Ok(None);
     }
-    let sphere = placed.sphere();
+    let sphere = stored.sphere();
     let frame = sphere.frame();
     // Material inside: the face's outward side, its natural normal or the
-    // reverse, points away from the centre.
+    // reverse, points away from the centre. Read on the sphere as stored,
+    // where the face's flag states it; a placement moves the material with
+    // the sphere, whichever way it turns the chart.
     let (u, v) = (0.5, 0.25);
-    let at = placed.point_at(u, v, tol)?;
-    let normal = placed.normal_at(u, v, tol)?.vector();
+    let at = stored.point_at(u, v, tol)?;
+    let normal = stored.normal_at(u, v, tol)?.vector();
     let reversed = face.orientation() == ogeom_topo::Orientation::Reversed;
     let outward = (at - sphere.centre()).dot(normal) > 0.0;
     if outward == reversed {
@@ -228,10 +220,10 @@ fn whole_ball(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Opti
     Ok(Some(Ball {
         solid: shape.clone(),
         face: face.clone(),
-        centre: sphere.centre(),
-        radius: sphere.radius(),
-        axis: frame.z().vector(),
-        x: frame.x().vector(),
+        centre: placement.apply(sphere.centre()),
+        radius: sphere.radius() * placement.scale_factor().abs(),
+        axis: placement.apply_vector(frame.z().vector()).normalized(tol)?,
+        x: placement.apply_vector(frame.x().vector()).normalized(tol)?,
     }))
 }
 
@@ -310,29 +302,97 @@ type Record = (Shape, Option<Shape>);
 /// edge, two poles inside take a seam between them, and a seam the face
 /// does not reach takes no edge at all. A face whose trim the new chart
 /// would have to split elsewhere is left as it is.
+///
+/// A solid at a rigid placement is restated in its own frame and placed
+/// as it was. One placed with a scale or a reflection, or with a pinned
+/// face on a left-handed sphere, is baked into world space first, which
+/// states each sphere on a right-handed frame, and the baked solid is
+/// restated: baking a face already restated would re-derive images that
+/// end on its seam.
 fn faces_turned(
     model: &mut Model,
     solid: &Shape,
     other: &Shape,
     tol: Tolerances,
-) -> OgeomResult<Option<(Shape, Vec<Record>)>> {
-    if model.kind_of(solid)? != ShapeType::Solid || !solid.location().is_identity() {
+) -> OgeomResult<Option<(Shape, History)>> {
+    if model.kind_of(solid)? != ShapeType::Solid {
         return Ok(None);
     }
+    let bare = solid
+        .located(ogeom_topo::Location::identity())
+        .oriented(Orientation::Forward);
+    let mut pinned_any = false;
+    let mut left_handed = false;
+    for face in explore_unique(model, &bare, ShapeType::Face)? {
+        if let Some(pinned) = pinned_sphere(model, &face)? {
+            pinned_any = true;
+            left_handed |= pinned.sphere.frame().handedness() != ogeom_math::Handedness::Right;
+        }
+    }
+    if !pinned_any {
+        return Ok(None);
+    }
+    let placement = solid.transform(model.datums())?;
+    let rigid =
+        (placement.scale_factor().abs() - 1.0).abs() <= 1e-9 && placement.preserves_handedness();
+    let (target, baked) = if rigid && !left_handed {
+        (solid.clone(), None)
+    } else {
+        let baked = ogeom_algo::baked_shape(model, solid, tol)?;
+        (baked.shape, Some(baked.history))
+    };
+    let Some((made, records)) = rigid_faces_turned(model, &target, other, tol)? else {
+        return Ok(None);
+    };
+    let mut history = History::new();
+    for (old, new) in records {
+        match new {
+            Some(new) => history.modify(&old, new),
+            None => history.delete(&old),
+        }
+    }
+    Ok(Some(match baked {
+        Some(baked) => (made, baked.then(&history)),
+        None => (made, history),
+    }))
+}
+
+/// [`faces_turned`] on a solid at a rigid placement, with what became of
+/// each shape it replaced.
+fn rigid_faces_turned(
+    model: &mut Model,
+    solid: &Shape,
+    other: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Vec<Record>)>> {
+    // The solid's own node is restated in its own frame, `other`'s walls
+    // brought into that frame, and the result placed as the solid is.
+    let placement = solid.location().clone();
+    let bare = solid
+        .located(ogeom_topo::Location::identity())
+        .oriented(Orientation::Forward);
+    let to_local = solid.transform(model.datums())?.inverse()?;
     let mut walls: Option<Vec<SurfaceGeometry>> = None;
     let mut records = Vec::new();
     let mut shells = Vec::new();
     let mut changed = false;
-    for shell in model.children_of(solid)? {
+    for shell in model.children_of(&bare)? {
         let faces = model.children_of(&shell)?;
         let mut kept = Vec::with_capacity(faces.len());
         let mut touched = false;
         for face in faces {
             let mut turned = None;
-            if let Some(pinned) = pinned_sphere(model, &face)? {
+            if let Some(pinned) = pinned_sphere(model, &face)?
+                && pinned.sphere.frame().handedness() == ogeom_math::Handedness::Right
+            {
                 let walls = match &walls {
                     Some(w) => w,
-                    None => walls.insert(curved_surfaces_of(model, other, tol)?),
+                    None => walls.insert(
+                        curved_surfaces_of(model, other, tol)?
+                            .iter()
+                            .map(|w| w.transformed(&to_local, tol))
+                            .collect::<OgeomResult<_>>()?,
+                    ),
                 };
                 turned = face_turned(model, &face, &pinned, walls, tol)?;
                 if let Some(new) = &turned {
@@ -366,8 +426,13 @@ fn faces_turned(
     if !ogeom_algo::check(model, &made, tol)?.is_valid() {
         return Ok(None);
     }
-    records.push((solid.clone(), Some(made.clone())));
-    Ok(Some((made, records)))
+    let placed = made.moved(&placement).composed(solid.orientation());
+    let mut records: Vec<Record> = records
+        .into_iter()
+        .map(|(old, new)| (old.moved(&placement), new.map(|n| n.moved(&placement))))
+        .collect();
+    records.push((solid.clone(), Some(placed.clone())));
+    Ok(Some((placed, records)))
 }
 
 /// A sphere face with a pole in its chart, its trim chained into loops.
@@ -382,8 +447,8 @@ struct Pinned {
     dropped: Vec<Shape>,
 }
 
-/// The face as a [`Pinned`] sphere face, where it lies on a right-handed
-/// sphere at no placement, has a pole, and its other edges chain head to
+/// The face as a [`Pinned`] sphere face, where it lies on a sphere at no
+/// placement, has a pole, and its other edges chain head to
 /// tail into closed loops one way only.
 fn pinned_sphere(model: &Model, face: &Shape) -> OgeomResult<Option<Pinned>> {
     let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
@@ -396,9 +461,6 @@ fn pinned_sphere(model: &Model, face: &Shape) -> OgeomResult<Option<Pinned>> {
         return Ok(None);
     };
     let sphere = stored.sphere();
-    if sphere.frame().handedness() != ogeom_math::Handedness::Right {
-        return Ok(None);
-    }
     // The wires as the face stores them, whichever way the shell uses it.
     let forward = face.oriented(Orientation::Forward);
     let mut uses: std::collections::HashMap<ogeom_topo::TShapeId, usize> =

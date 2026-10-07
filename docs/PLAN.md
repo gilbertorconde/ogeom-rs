@@ -67,11 +67,15 @@ What remains:
 through a pole of a sphere face, the marched section stalls and doubles back
 at the pole, and the arrangement can read one piece round both loops. Before
 the boolean, `ball_chart.rs` restates a whole ball or a trimmed sphere face on
-a chart whose poles stand clear. It leaves as it is (and the pole stays): a
-face whose trim the new chart would have to split (two loops round the axis,
-as a band between two planes has, or a loop the seam meridian crosses at no
-vertex), a face at a placement or on a left-handed sphere, and a face with an
-edge that has no curve in space.
+a chart whose poles stand clear; a solid at a rigid placement is restated in
+its own frame, and one scaled, mirrored or on a left-handed sphere is baked
+first. It leaves as it is (and the pole stays): a face whose trim the new
+chart would have to split (two loops round the axis, or a loop the seam
+meridian crosses at no vertex), a face placed inside its solid, and a face
+with an edge that has no curve in space. A ball cut to the slab |x| < 0.8 or
+0.5 (radius 10) and drilled along z through its pole fails so: every clear
+axis either lies within a tenth of the radius of the trim or has both loops
+round it.
 
 **A section whose fit misses widens its junctions as far.** A marched section
 keeps its fit's measured error as its tolerance, and the paving's reach and
