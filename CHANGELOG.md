@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A sampled fit states no less than its widest miss.** Surface and curve
+  fits made at the true geometry's own parameters (spline conversion,
+  degree restriction, sweeps, lofts, fillings, pipe sections) read their
+  error at samples and fixed fractions of each span, which could sit under
+  the true miss (an offset drum stated 7.83e-5 against 8.45e-5); the
+  highest readings are followed to the top of their peak, so the stated
+  error holds.
+
 ## [0.9.7] - 2026-10-07
 
 A patch release: no breaking API changes. A reversed face's holes are no

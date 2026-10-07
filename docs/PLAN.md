@@ -34,15 +34,9 @@ of the stress run carry up to 1.5e-9 relative for the same reason. Taking a
 strip on every edge that stands off at all closes both (the commons within
 1e-13), but makes the stress run 5.6 times slower, so it is not taken.
 
-**Fits measured only at their samples.** A surface fit (`to_nurbs_within`, a
-patch's degree restriction) states the worst miss at its samples and span
-quarter points, which can sit a little under the true miss; a fit whose
-surface cannot be evaluated somewhere (an offset sphere's poles) refuses. In
-the boolean, `projected_into_shared_chart` ignores the owner fit's `met` (the
-contact piece states the dense gap after). In `ogeom-heal`, the joint fit in
-`split.rs` and the iso fit in `divide.rs` are measured at their samples only.
-A blended pipe section fitted to a tenth of the sweep's tolerance stands 0.8%
-past that tenth between the eighths it is checked at.
+**A surface fit refuses where its surface cannot be evaluated.** A surface
+fit (`to_nurbs_within`, a patch's degree restriction) over a surface that
+cannot be evaluated somewhere (an offset sphere's poles) refuses.
 
 **The mesher tells a slit from a hole by width alone.** An inner ring whose
 mean width (twice its area over its perimeter) is under a micron is a slit
