@@ -240,3 +240,60 @@ fn a_collapsing_inward_offset_resolves_into_its_islands() {
         "island area sum {total} within the plausible band"
     );
 }
+
+/// A wide arc closed by two chords meeting below it, off to one side. The
+/// inward offset trims the arc's offset at its two ends by different
+/// angles, so the middle of what is left falls between any fixed sampling
+/// of the source arc, where a chord of that sampling lies closer to it
+/// than the offset; it is still a full offset from the arc and survives.
+#[test]
+fn an_inward_offset_keeps_the_offset_of_a_wide_arc() {
+    use ogeom_geom::{CircleCurve, Curve, LineCurve};
+    use ogeom_math::{Circle, Frame};
+    let mut model = ogeom_topo::Model::new();
+    let (r, a0, a1) = (100.0_f64, 0.05_f64, 3.0_f64);
+    let on_arc = |a: f64| Point::new(r * a.cos(), r * a.sin(), 0.0);
+    let (p, q, below) = (on_arc(a0), on_arc(a1), Point::new(90.0, -20.0, 0.0));
+    let [vp, vq, vb] = [p, q, below].map(|x| ogeom_algo::make_vertex(&mut model, x).shape);
+    let arc = Curve::Circle(CircleCurve::new(Circle::new(Frame::WORLD, r, T).unwrap()));
+    let arc = ogeom_algo::make_edge_between(&mut model, arc, (a0, a1), &vp, &vq, T)
+        .unwrap()
+        .shape;
+    let mut chord = |from: Point, to: Point, va: &ogeom_topo::Shape, vb: &ogeom_topo::Shape| {
+        let line = Curve::Line(LineCurve::segment(from, to, T).unwrap());
+        let domain = line.domain();
+        ogeom_algo::make_edge_between(&mut model, line, domain, va, vb, T)
+            .unwrap()
+            .shape
+    };
+    let down = chord(q, below, &vq, &vb);
+    let up = chord(below, p, &vb, &vp);
+    let wire = ogeom_algo::make_wire(&mut model, &[arc, down, up], T)
+        .unwrap()
+        .shape;
+
+    let d = 1.0;
+    let result = ogeom_offset::offset_wire(&mut model, &wire, -d, Join::Arc, T).unwrap();
+    assert_eq!(model.kind_of(&result.shape).unwrap(), ShapeType::Wire);
+    let edges = explore(&model, &result.shape, Filter::OfType(ShapeType::Edge)).unwrap();
+    assert_eq!(
+        edges.len(),
+        3,
+        "the arc's offset and the two chords' offsets"
+    );
+    let radii: Vec<f64> = edges
+        .iter()
+        .filter_map(|e| {
+            let data = model.node(e)?.data().as_edge()?;
+            let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+                return None;
+            };
+            match model.geometry().curve(*curve)? {
+                Curve::Circle(c) => Some(c.circle().radius()),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(radii.len(), 1, "one arc: {radii:?}");
+    assert!((radii[0] - (r - d)).abs() < 1e-9, "{radii:?}");
+}

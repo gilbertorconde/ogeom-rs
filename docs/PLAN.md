@@ -294,11 +294,6 @@ runs beat the threshold it declares (the performance-optimizer skill).
 Kernel threading already runs through `ogeom_core::parallel::map_ordered`
 (scoped threads, results in item order, bit-identical at any thread count).
 
-**Correctness first.**
-- The 2D wire offset can drop a valid piece beside a large concave arc: its
-  survivor test measures against a 33-point polyline
-  (`ogeom-offset/src/wire2d.rs`). Measure to the exact arc.
-
 **Benches to add before the rest.** Mass properties, `check`, sew, mesh
 conversion (`solid_from_mesh`), STEP write, IGES read, STL weld at 1M
 triangles, a STEP file of 10 MB or more, HLR (`project_exact`), offsets

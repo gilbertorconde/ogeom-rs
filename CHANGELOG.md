@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Hidden line removal splits an edge where it passes behind a
+  contour.** An edge partly behind a face is drawn part visible and part
+  hidden, where a straight one was drawn wholly one or the other; the exact
+  path places the change on the outline, not at a sample.
+
+- **`unify_same_domain` adds its merged faces in a fixed order,** so equal
+  inputs give equal node ids from run to run.
+
+- **The 2D wire offset measures its surviving pieces to the exact source
+  arcs,** so an inward offset beside a wide arc keeps that arc's offset and
+  no longer fails with "survivors close no loop".
+
 - **A full revolution of a placed profile stores its seams where they are
   used.** A profile turned about the axis before a full revolve (to keep
   the seam off the sketch plane) got seam pcurves recorded as if it had not

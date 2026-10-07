@@ -512,43 +512,14 @@ pub fn offset_wire(
         }
     }
 
-    // The source, densely enough to measure against.
-    let source: Vec<Point2> = {
-        let mut out = Vec::new();
-        for piece in pieces.iter().take(source_count) {
-            match piece {
-                Piece::Seg { from, to } => {
-                    out.push(*from);
-                    out.push(*to);
-                }
-                Piece::Arc {
-                    centre,
-                    radius,
-                    start,
-                    end,
-                } => {
-                    for i in 0..=32 {
-                        let a = start + (end - start) * f64::from(i) / 32.0;
-                        out.push(at_angle(*centre, *radius, a));
-                    }
-                }
-            }
-        }
-        out
-    };
+    // Measured to the source pieces themselves: a sampled arc lies inside
+    // its circle by its chords' sag, which can exceed the margin below.
     let source_distance = |p: Point2| -> f64 {
-        let mut best = f64::INFINITY;
-        for w in source.windows(2) {
-            let d = w[1] - w[0];
-            let len2 = d.dot(d);
-            let t = if len2 > 0.0 {
-                ((p - w[0]).dot(d) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            best = best.min(p.distance(w[0] + d * t));
-        }
-        best
+        pieces
+            .iter()
+            .take(source_count)
+            .map(|piece| distance_to_piece(piece, p))
+            .fold(f64::INFINITY, f64::min)
     };
     let keep_beyond = offset.abs() - (tol.confusion() * 1e3).max(offset.abs() * 1e-3);
     let had_cuts = cuts.iter().any(|c| !c.is_empty());
@@ -819,6 +790,44 @@ fn crossings(a: &Piece, b: &Piece, tol: Tolerances) -> OgeomResult<Vec<Point2>> 
         tol,
     )?;
     Ok(found.crossings.into_iter().map(|c| c.point).collect())
+}
+
+/// How far `p` stands from a piece: from a segment, to its nearest point;
+/// from an arc, radially when `p`'s angle falls within the arc's span, else
+/// to the nearer end.
+fn distance_to_piece(piece: &Piece, p: Point2) -> f64 {
+    match piece {
+        Piece::Seg { from, to } => {
+            let d = *to - *from;
+            let len2 = d.dot(d);
+            let t = if len2 > 0.0 {
+                ((p - *from).dot(d) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            p.distance(*from + d * t)
+        }
+        Piece::Arc {
+            centre,
+            radius,
+            start,
+            end,
+        } => {
+            let (lo, hi) = if end > start {
+                (*start, *end)
+            } else {
+                (*end, *start)
+            };
+            let r = p - *centre;
+            let folded = lo + (r.y.atan2(r.x) - lo).rem_euclid(core::f64::consts::TAU);
+            if folded <= hi {
+                (r.magnitude() - radius).abs()
+            } else {
+                p.distance(at_angle(*centre, *radius, lo))
+                    .min(p.distance(at_angle(*centre, *radius, hi)))
+            }
+        }
+    }
 }
 
 /// Whether a support crossing lands within the piece's own span, endpoints
