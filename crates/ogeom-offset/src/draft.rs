@@ -1087,7 +1087,11 @@ fn general_draft(
     // on one ruling there, the mean of the two sides, and turns smoothly
     // from it to each side's own over a thirty-second of the way round
     // either side: a turn within one station would ask the fit for a knot
-    // at every sample there.
+    // at every sample there. Each side continued past the seam on its
+    // tangent plane meets the other near the mean ruling (on it, to first
+    // order, where the hinge's tangent is square to the pull), so the
+    // blend keeps the wall on the drafted surface; it is each side's last
+    // ruling the wall leaves, by up to half the turn times the reach.
     const SEAM_BLEND: f64 = 1.0 / 32.0;
     let seam = if closed {
         let leave = exact_at(params[1] * 1e-9)?.1;

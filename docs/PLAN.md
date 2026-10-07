@@ -133,14 +133,14 @@ edge's own vertex and can cross the hole. No measured part builds one.
 
 ### Sweeps and drafts
 
-**A draft across a seam closed only to position.** `general_draft` on a closed
-face whose seam is closed to position but not to tangent (a skinned loft's
-wall): the normal turns across the seam and the exact rulings with it, so the
-drafted wall closes on the mean ruling and blends to each side's within a
-thirty-second of the hinge. There it stands off the exact draft by half the
-turn times the reach (6.5e-4 on a loft of circles of radius 10 skinned at
-1e-3, reach 9); elsewhere within 1e-4. Such a draft rebuilds in about 1.3 s,
-the time in the exact volume over the wall.
+**A general draft about a level plane above a loft's middle section.**
+`general_draft` on the wall of a skinned loft of three circles of radius 10
+at heights 0, 5 and 10, about a level neutral plane at height 5 or above,
+fails. Above 5 the crossing's segments chain one short, beside the wall's
+`u = 0.5` column, so the hinge is taken as open and the rebuild refuses the
+wall ("curve at 0 is 6.2 from the vertex it should meet"). At 5, where the
+plane runs along a row of the face's mesh, the wall's border rows fit to
+0.83 against 1e-4. A plane that stays below 5 drafts, tilted or level.
 
 ### Construction and exchange
 

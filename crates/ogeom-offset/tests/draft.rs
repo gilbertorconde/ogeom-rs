@@ -801,3 +801,214 @@ fn an_oblique_drafted_drum_holds_its_rulings_between_stations() {
     eprintln!("oblique drafted drum off its rulings by {worst} out to {reach}");
     assert!(worst <= 1e-4, "the wall strays {worst} from its rulings");
 }
+
+/// The fitted surface of `solid`'s one B-spline face, with the face.
+fn bspline_surface_of(
+    model: &ogeom_topo::Model,
+    solid: &ogeom_topo::Shape,
+) -> (ogeom_topo::Shape, ogeom_geom::SurfaceGeometry) {
+    explore(model, solid, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find_map(|f| {
+            let d = model.node(&f)?.data().as_face()?.clone();
+            match model.geometry().surface(d.surface)? {
+                s @ ogeom_geom::SurfaceGeometry::BSpline(_) => Some((f, s.clone())),
+                _ => None,
+            }
+        })
+        .expect("a fitted face")
+}
+
+/// A skinned loft's wall closes on its seam to position only: its normal
+/// turns across the seam, and the exact rulings of its draft with it, one
+/// set for each side. The exact drafted wall there is the two sides' ruled
+/// surfaces, each continued past the seam on its own tangent plane until
+/// they meet. With the seam twisted up the wall and the neutral plane
+/// tilted across it, the drafted wall near the seam lies on one side or
+/// the other within the draft's fit target, though at the seam it stands
+/// half the turn times the reach (7e-4) off either side's last ruling.
+#[test]
+fn a_draft_across_a_seam_closed_only_to_position_meets_both_sides() {
+    use ogeom_geom::Surface as _;
+    use ogeom_math::Vector;
+    let mut model = ogeom_topo::Model::new();
+    let ring = |model: &mut ogeom_topo::Model, z: f64| {
+        let frame = Frame::new(
+            Point::new(0.0, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = ogeom_math::Circle::new(frame, 10.0, T).unwrap();
+        let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+        let domain = {
+            use ogeom_geom::Curve3d as _;
+            curve.domain()
+        };
+        let edge = ogeom_algo::make_edge(model, curve, domain, T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let sections = [
+        ring(&mut model, 0.0),
+        ring(&mut model, 5.0),
+        ring(&mut model, 10.0),
+    ];
+    // The seam turns 0.02 about the axis per unit of height.
+    let hints: Vec<Point> = [0.0_f64, 5.0, 10.0]
+        .iter()
+        .map(|z| Point::new(10.0 * (z * 0.02).cos(), 10.0 * (z * 0.02).sin(), *z))
+        .collect();
+    // A cubic through the skin's samples of a circle kinks where it
+    // closes: the normal turns by 1.4e-3 across the seam.
+    let solid = ogeom_offset::make_loft_skinned_aligned(&mut model, &sections, &hints, 1e-3, T)
+        .unwrap()
+        .shape;
+    let (wall, skin) = bspline_surface_of(&model, &solid);
+    // Tilted about the x axis, so the hinge crosses the seam climbing and
+    // its tangent there is not square to the pull.
+    let tilt = 0.15_f64;
+    let up = Vector::new(0.0, -tilt.sin(), tilt.cos());
+    let neutral = Plane::through(
+        Point::new(0.0, 0.0, 3.0),
+        ogeom_math::Direction::new(up, T).unwrap(),
+    );
+    let angle = 0.1_f64;
+    let drafted = ogeom_offset::apply_draft(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&wall),
+        neutral,
+        ogeom_math::Direction::Z,
+        angle,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let diagnosis = ogeom_algo::check(&model, &drafted, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let (_, wall) = bspline_surface_of(&model, &drafted);
+
+    // The exact hinge, ruling and hinge tangent (the way `u` runs) at the
+    // skin's `u`: where its `u` column crosses the plane, the pull turned
+    // about the crossing's tangent by the draft, in the sense that leans
+    // the outward normal towards the pull.
+    let ((su0, su1), (sv0, sv1)) = skin.domain();
+    let exact = |u: f64| -> (Point, Vector, Vector) {
+        let mut v = f64::midpoint(sv0, sv1);
+        for _ in 0..12 {
+            let p = skin.point_at(u, v, T).unwrap();
+            let (_, dv) = skin.d1_at(u, v, T).unwrap();
+            v -= neutral.signed_distance_to(p) / up.dot(dv);
+        }
+        let hinge = skin.point_at(u, v, T).unwrap();
+        let (du, _) = skin.d1_at(u, v, T).unwrap();
+        let mut normal = skin.normal_at(u, v, T).unwrap().vector();
+        if normal.dot(Vector::new(hinge.x, hinge.y, 0.0)) < 0.0 {
+            normal = -normal;
+        }
+        let mut tangent = normal.cross(up);
+        tangent = tangent / tangent.magnitude();
+        if tangent.dot(du) < 0.0 {
+            tangent = -tangent;
+        }
+        let axis = ogeom_math::Axis::new(hinge, ogeom_math::Direction::new(tangent, T).unwrap());
+        let turn = [angle, -angle]
+            .into_iter()
+            .map(|a| ogeom_math::Transform::rotation(axis, a))
+            .max_by(|a, b| {
+                let lean = |t: &ogeom_math::Transform| t.apply_vector(normal).z;
+                lean(a).total_cmp(&lean(b))
+            })
+            .unwrap();
+        (hinge, turn.apply_vector(Vector::Z), tangent)
+    };
+    let off_line = |p: Point, h: Point, r: Vector| (p - h).cross(r).magnitude();
+    // Rulings sampled over a sixteenth of the skin either side of its
+    // seam, alternately from each end.
+    let near = (su1 - su0) / 16.0;
+    let samples = 512;
+    let step = near / f64::from(samples);
+    let lines: Vec<(Point, Vector)> = (0..=samples)
+        .flat_map(|k| [su0 + step * f64::from(k), su1 - step * f64::from(k)])
+        .map(|u| {
+            let (h, r, _) = exact(u);
+            (h, r)
+        })
+        .collect();
+    // Each side's continuation: its last ruling and hinge tangent, the
+    // tangent pointing out past the seam.
+    let ends = [(su0, -1.0), (su1, 1.0)].map(|(u, out)| {
+        let (h, r, t) = exact(u);
+        (h, r, t * out)
+    });
+    // The wedge the turn opens between the two last rulings, at the
+    // window's furthest row.
+    let ((u0, u1), (v0, v1)) = wall.domain();
+    let reach = v0.abs().max(v1.abs());
+    let gap = ends[0].1.cross(ends[1].1).magnitude() * reach;
+    let off_exact = |p: Point| -> f64 {
+        let (mut best, mut at) = (f64::INFINITY, 0usize);
+        for (k, (h, r)) in lines.iter().enumerate() {
+            let d = off_line(p, *h, *r);
+            if d < best {
+                (best, at) = (d, k);
+            }
+        }
+        // Refined about the nearest sample, on its side.
+        #[allow(clippy::cast_precision_loss)]
+        let (u, out) = if at % 2 == 0 {
+            (su0 + step * (at / 2) as f64, 1.0)
+        } else {
+            (su1 - step * (at / 2) as f64, -1.0)
+        };
+        let (mut lo, mut hi) = (u - step * out, u + step * out);
+        let clamp = |x: f64| x.clamp(su0, su1);
+        for _ in 0..30 {
+            let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+            let (ea, eb) = (exact(clamp(a)), exact(clamp(b)));
+            if off_line(p, ea.0, ea.1) < off_line(p, eb.0, eb.1) {
+                hi = b;
+            } else {
+                lo = a;
+            }
+        }
+        let e = exact(clamp(f64::midpoint(lo, hi)));
+        best = best.min(off_line(p, e.0, e.1));
+        // Past either end, on that side's continuation: within its tangent
+        // plane, out to twice the gap the turn opens at the window's rows.
+        for (h, r, t) in ends {
+            let normal = t.cross(r);
+            let normal = normal / normal.magnitude();
+            let out = r.cross(normal);
+            if (0.0..=gap * 2.0).contains(&(p - h).dot(out)) {
+                best = best.min((p - h).dot(normal).abs());
+            }
+        }
+        best
+    };
+    let band = (u1 - u0) / 24.0;
+    let (mut worst, mut own) = (0.0_f64, 0.0_f64);
+    for k in 0..=100 {
+        let f = band * f64::from(k) / 100.0;
+        for u in [u0 + f, u1 - f] {
+            for frac in [0.0, 0.5, 1.0] {
+                let p = wall.point_at(u, v0 + (v1 - v0) * frac, T).unwrap();
+                worst = worst.max(off_exact(p));
+                if k == 0 {
+                    own = own.max(off_line(p, ends[0].0, ends[0].1));
+                }
+            }
+        }
+    }
+    eprintln!(
+        "drafted skin off its sides by {worst} near the seam, {own} off one side's last ruling, \
+         out to {reach}, gap {gap}"
+    );
+    assert!(worst <= 1e-4, "the wall strays {worst} from both sides");
+}
