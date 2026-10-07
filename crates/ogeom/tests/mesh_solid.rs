@@ -1191,6 +1191,216 @@ fn fillets_and_corner_balls_meet_their_neighbours_tangentially() {
     assert_eq!(tubes, 2, "the rim's torus, on the top face and the bore");
 }
 
+/// A leg of a profile in the half-plane `(rho, h)`: a line to a point, or
+/// an arc about a centre to a point, turning left or not.
+#[derive(Clone, Copy)]
+enum Leg {
+    To(f64, f64),
+    Arc((f64, f64), bool, (f64, f64)),
+}
+
+/// A closed profile from `start` along `legs`, drawn in the `xz` plane
+/// (`x` the distance from the axis) and turned all the way round `z`.
+fn turned_profile(model: &mut Model, start: (f64, f64), legs: &[Leg]) -> Shape {
+    use ogeom::geom::{CircleCurve, Curve, Curve3d as _, LineCurve};
+    let at = |p: (f64, f64)| Point::new(p.0, 0.0, p.1);
+    let first = ogeom::algo::build::make_vertex(model, at(start)).shape;
+    let (mut from, mut vertex) = (start, first.clone());
+    let mut edges = Vec::new();
+    for (k, leg) in legs.iter().enumerate() {
+        let (Leg::To(x, y) | Leg::Arc(_, _, (x, y))) = *leg;
+        let next = if k + 1 == legs.len() {
+            first.clone()
+        } else {
+            ogeom::algo::build::make_vertex(model, at((x, y))).shape
+        };
+        let (curve, range): (Curve, (f64, f64)) = match *leg {
+            Leg::To(..) => {
+                let line: Curve = LineCurve::segment(at(from), at((x, y)), T).unwrap().into();
+                let range = line.domain();
+                (line, range)
+            }
+            Leg::Arc(c, left, _) => {
+                // About -y the angle runs from x towards z.
+                let normal = if left { -Direction::Y } else { Direction::Y };
+                let frame = Frame::new(at(c), normal, Direction::X, T).unwrap();
+                let angle = |p: (f64, f64)| {
+                    let a = (p.1 - c.1).atan2(p.0 - c.0);
+                    (if left { a } else { -a }).rem_euclid(core::f64::consts::TAU)
+                };
+                let (a0, mut a1) = (angle(from), angle((x, y)));
+                if a1 <= a0 {
+                    a1 += core::f64::consts::TAU;
+                }
+                let radius = (from.0 - c.0).hypot(from.1 - c.1);
+                let circle = ogeom::math::Circle::new(frame, radius, T).unwrap();
+                (CircleCurve::new(circle).into(), (a0, a1))
+            }
+        };
+        edges.push(
+            ogeom::algo::build::make_edge_between(model, curve, range, &vertex, &next, T)
+                .unwrap()
+                .shape,
+        );
+        (from, vertex) = ((x, y), next);
+    }
+    let wire = ogeom::algo::make_wire(model, &edges, T).unwrap().shape;
+    let plane =
+        ogeom::math::Plane::new(Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap());
+    let face = ogeom::algo::make_face(
+        model,
+        ogeom::geom::PlaneSurface::new(plane).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom::algo::make_revolution(
+        model,
+        &face,
+        ogeom::math::Axis::new(Point::ORIGIN, Direction::Z),
+        core::f64::consts::TAU,
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+/// How far a torus's tube stands from tangency with a surface on its axis
+/// (a plane square to it, or a cylinder, cone or sphere about it): the
+/// distance from the tube's centre circle to the surface less the tube's
+/// radius, in the half-plane through the axis. `None` off the axis.
+fn tube_gap(torus: ogeom::math::Torus, other: &ogeom::geom::SurfaceGeometry) -> Option<f64> {
+    use ogeom::geom::SurfaceGeometry as S;
+    let (o, z) = (torus.frame().origin(), torus.frame().z().vector());
+    let (major, minor) = (torus.major_radius(), torus.minor_radius());
+    let half = |p: Point| {
+        let w = p - o;
+        let h = w.dot(z);
+        ((w - z * h).magnitude(), h)
+    };
+    let along = |d: Direction| d.vector().cross(z).magnitude() <= 1e-9;
+    let distance = match other {
+        S::Plane(p) if along(p.plane().normal()) => half(p.plane().frame().origin()).1.abs(),
+        S::Cylinder(c) if along(c.cylinder().frame().z()) => {
+            let c = c.cylinder();
+            (half(c.frame().origin()).0 <= 1e-9).then_some((major - c.radius()).abs())?
+        }
+        S::Cone(c) if along(c.cone().frame().z()) => {
+            let c = c.cone();
+            let (rho, h) = half(c.frame().origin());
+            if rho > 1e-9 {
+                return None;
+            }
+            // The cone's trace through (radius_at(0), h) and one unit on.
+            let s = c.frame().z().vector().dot(z);
+            let (dx, dy) = (c.radius_at(1.0) - c.radius_at(0.0), s);
+            ((major - c.radius_at(0.0)) * dy + h * dx).abs() / dx.hypot(dy)
+        }
+        S::Sphere(s) => {
+            let (rho, h) = half(s.sphere().centre());
+            (rho <= 1e-9).then_some((major.hypot(h) - s.sphere().radius()).abs())?
+        }
+        _ => return None,
+    };
+    Some((distance - minor).abs())
+}
+
+/// Rounds between two surfaces of revolution about one axis come back on
+/// the torus those surfaces fix, not on a free fit, so they meet them
+/// tangentially to rounding: a round between a shaft and a taper (two
+/// lines crossing in the half-plane through the axis), a tube's lip
+/// rounded right across (two parallel lines) and a round under a dome
+/// wider than its shaft (a line and a circle), each from a
+/// single-precision mesh.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the rounding to single precision is the point"
+)]
+#[test]
+fn rounds_between_surfaces_of_revolution_meet_them_tangentially() {
+    use ogeom::geom::SurfaceGeometry as S;
+    let mut model = Model::new();
+    // A shaft of radius 6 into a taper to radius 3, rounded 2 between them
+    // and 1 at the foot: the tangent points worked out on the profile.
+    let (cos, sin) = (8.0 / 73.0_f64.sqrt(), 3.0 / 73.0_f64.sqrt());
+    let corner = 2.0 * (1.0 - cos) / sin;
+    let taper = turned_profile(
+        &mut model,
+        (0.0, 0.0),
+        &[
+            Leg::To(5.0, 0.0),
+            Leg::Arc((5.0, 1.0), true, (6.0, 1.0)),
+            Leg::To(6.0, 10.0 - corner),
+            Leg::Arc(
+                (4.0, 10.0 - corner),
+                true,
+                (6.0 - 2.0 * (1.0 - cos), 10.0 - corner + 2.0 * sin),
+            ),
+            Leg::To(3.0, 18.0),
+            Leg::To(0.0, 18.0),
+            Leg::To(0.0, 0.0),
+        ],
+    );
+    let lip = turned_profile(
+        &mut model,
+        (4.0, 0.0),
+        &[
+            Leg::To(6.0, 0.0),
+            Leg::To(6.0, 10.0),
+            Leg::Arc((5.0, 10.0), true, (4.0, 10.0)),
+            Leg::To(4.0, 0.0),
+        ],
+    );
+    // A dome of radius 8 on a shaft of radius 6, rounded 1.5 between them.
+    let (dome, shaft, round) = (8.0_f64, 6.0_f64, 1.5_f64);
+    let low = 10.0 - (dome * dome - shaft * shaft).sqrt();
+    let centre = (
+        shaft - round,
+        low + ((dome - round).powi(2) - (shaft - round).powi(2)).sqrt(),
+    );
+    let out = dome / (dome - round);
+    let domed = turned_profile(
+        &mut model,
+        (0.0, 0.0),
+        &[
+            Leg::To(shaft, 0.0),
+            Leg::To(shaft, centre.1),
+            Leg::Arc(centre, true, (centre.0 * out, low + (centre.1 - low) * out)),
+            Leg::Arc((0.0, low), true, (0.0, low + dome)),
+            Leg::To(0.0, 0.0),
+        ],
+    );
+    for (name, part, tubes) in [("taper", &taper, 4), ("lip", &lip, 2), ("dome", &domed, 2)] {
+        assert!(check(&model, part, T).unwrap().is_valid(), "{name}");
+        let mut mesh = meshed(&model, part);
+        for p in &mut mesh.positions {
+            *p = Point::new(
+                f64::from(p.x as f32),
+                f64::from(p.y as f32),
+                f64::from(p.z as f32),
+            );
+        }
+        let mut back = Model::new();
+        let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+        assert!(check(&back, &out.shape, T).unwrap().is_valid(), "{name}");
+        let (surfaces, pairs) = surfaces_and_neighbours(&back, &out.shape);
+        let mut met = 0;
+        for (i, j) in pairs {
+            for (a, b) in [(&surfaces[i], &surfaces[j]), (&surfaces[j], &surfaces[i])] {
+                let S::Torus(t) = a else {
+                    continue;
+                };
+                let gap = tube_gap(t.torus(), b)
+                    .unwrap_or_else(|| panic!("{name}: a neighbour off the torus's axis"));
+                assert!(gap < 1e-9, "{name}: a torus {gap:e} off tangency");
+                met += 1;
+            }
+        }
+        assert_eq!(met, tubes, "{name}: each round meets both its supports");
+    }
+}
+
 /// A plate with rounded corners whose bottom rim is filleted, meshed
 /// coarsely: where the rim's fillets turn the corners the mesh leaves
 /// facets of a triangle or two that no surface claims, each bounded by

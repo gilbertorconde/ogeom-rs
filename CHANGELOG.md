@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A converted round between two surfaces on its axis meets them
+  exactly.** Mesh conversion rebuilds a round between cylinders, cones,
+  planes square to the axis, or one of them and a sphere centred on it, as
+  the torus tangent to both (a tube lip or a round-floored groove
+  included), rather than a fit at a near tangency.
+
 - **A boolean costs what the other solid reaches (#134).** Faces whose
   box misses the other solid's pass through as the same nodes
   (`History::copy_of` reports each), a plane's untouched holes are left out

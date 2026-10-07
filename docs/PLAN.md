@@ -170,13 +170,15 @@ junction rules (Benière et al. 2012: a junction stays only if its faces are
 pairwise adjacent, dangling edges dropped).
 
 **Fillets fitted apart from their supports.** Derived from their supports:
-rounds between two planes, a torus between a plane and a coaxial cylinder or
-cone, corner balls, and a sphere put on the torus a round turns on beside a
-plane. Not derived: a torus between two cylinders or a cylinder and a sphere,
-variable radius, and fillets between curved faces off a common axis, which
-keep their fitted surfaces and meet their supports at a near tangency. A
-torus corner a few facets round between two fillet cylinders and a floor fits
-nothing (every sample reaches into the cylinders) and stays facets.
+rounds between two planes, a torus between any two supports on its axis
+(cylinders, cones and planes square to it, or one of them and a sphere
+centred on it), corner balls, and a sphere put on the torus a round turns on
+beside a plane. Not derived: a torus between two spheres, a piece of a torus
+between curved supports met as a sphere, variable radius, and fillets between
+curved faces off a common axis, which keep their fitted surfaces and meet
+their supports at a near tangency. A torus corner a few facets round between
+two fillet cylinders and a floor fits nothing (every sample reaches into the
+cylinders) and stays facets.
 
 **Sweeps.** A whole turn is recognized, its axis settled on the samples. Not
 done: the band layout for a sweep between two circles (its seam the profile

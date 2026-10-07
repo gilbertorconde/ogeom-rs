@@ -4374,6 +4374,9 @@ fn round_between(
 ///   through;
 /// - a torus between a plane and a cylinder or a cone whose axis is square
 ///   to the plane sits on that axis, its tube's centre a radius off both;
+///   so does a torus between any other two supports on its axis: two of
+///   cylinders, cones and planes square to it, or one of them and a
+///   sphere centred on it ([`torus_between`]);
 /// - a sphere where cylinders of its own radius meet otherwise is centred
 ///   nearest their axes; a sphere beside one plane and a cylinder or cone
 ///   whose axis is square to it is a piece of the torus between them, met
@@ -4566,10 +4569,17 @@ fn tangent_blends(
                         })
                     })
                     .collect();
+                let around: Vec<Canonical> = supports[i]
+                    .iter()
+                    .filter_map(|&j| shape_of(groups, j))
+                    .collect();
                 match (&flanks[i][..], &coaxial[..]) {
                     ([plane], [support]) => tangent_torus(plane, support, &samples[i], tol),
                     _ => None,
                 }
+                .or_else(|| {
+                    torus_between(&torus, &flanks[i], &around, &samples[i], flat * 10.0, tol)
+                })
             }
             Some(Canonical::Sphere(sphere)) => {
                 let around: Vec<Canonical> = supports[i]
@@ -4740,6 +4750,28 @@ fn tangent_torus(
     let s2 = (local.iter().map(|q| q.0 - a - b * q.1).sum::<f64>() / count).signum();
     let base = (a + b * h, h);
     let step = (s2 * b.hypot(1.0) + s1 * b, s1);
+    let (centre, radius) = rolled_between_lines(&local, base, step)?;
+    if centre.0 <= radius {
+        return None;
+    }
+    let on = Frame::new(o + z * centre.1, frame.z(), frame.x(), tol).ok()?;
+    Some(Canonical::Torus(
+        Torus::new(on, centre.0, radius, tol).ok()?,
+    ))
+}
+
+/// The tube circle tangent to two crossing lines of the axial half-plane,
+/// its centre at `base + step r`, through `local` at their median radius:
+/// a point `q` lies on it where
+/// `(|step|² - 1) r² - 2 (q - base)·step r + |q - base|² = 0`, the larger
+/// root (the arc between the tangent points faces the lines' crossing).
+/// The centre and the radius; `None` where fewer than half the points
+/// have a root.
+fn rolled_between_lines(
+    local: &[(f64, f64)],
+    base: (f64, f64),
+    step: (f64, f64),
+) -> Option<((f64, f64), f64)> {
     let k = step.0.mul_add(step.0, step.1 * step.1) - 1.0;
     if k <= 0.0 {
         return None;
@@ -4763,13 +4795,304 @@ fn tangent_torus(
         step.0.mul_add(radius, base.0),
         step.1.mul_add(radius, base.1),
     );
-    if centre.0 <= radius {
+    Some((centre, radius))
+}
+
+/// A support's trace in the half-plane through an axis, a point there
+/// being `(rho, h)`, its distance from the axis and its height along it:
+/// the line `n · p = d` (`n` a unit vector), or a circle.
+#[derive(Clone, Copy)]
+enum Trace {
+    Line((f64, f64), f64),
+    Circle((f64, f64), f64),
+}
+
+impl Trace {
+    /// How far `q` stands off the trace, signed: positive off the side
+    /// `n` points to, or outside the circle.
+    fn side(self, q: (f64, f64)) -> f64 {
+        match self {
+            Self::Line(n, d) => n.0.mul_add(q.0, n.1 * q.1) - d,
+            Self::Circle(c, radius) => (q.0 - c.0).hypot(q.1 - c.1) - radius,
+        }
+    }
+}
+
+/// `support`'s trace about the axis through `o` along `z`: a plane square
+/// to the axis, or a cylinder, cone or sphere on it. `None` for any other
+/// surface or placing.
+fn trace_about(support: &Canonical, o: Point, z: Direction, tol: Tolerances) -> Option<Trace> {
+    let z = z.vector();
+    let square = |d: Direction| d.vector().cross(z).magnitude() <= 1e-9;
+    let on_axis = |p: Point| {
+        let w = p - o;
+        (w - z * w.dot(z)).magnitude() <= tol.confusion()
+    };
+    match support {
+        Canonical::Plane(plane) if square(plane.frame().z()) => {
+            Some(Trace::Line((0.0, 1.0), (plane.frame().origin() - o).dot(z)))
+        }
+        Canonical::Cylinder(c) if square(c.frame().z()) && on_axis(c.frame().origin()) => {
+            Some(Trace::Line((1.0, 0.0), c.radius()))
+        }
+        Canonical::Cone(c) if square(c.frame().z()) && on_axis(c.frame().origin()) => {
+            // `rho = a + slope h` along this axis.
+            let slope =
+                (c.radius_at(1.0) - c.radius_at(0.0)) * c.frame().z().vector().dot(z).signum();
+            let a = c.radius_at(0.0) - slope * (c.frame().origin() - o).dot(z);
+            let k = slope.hypot(1.0);
+            Some(Trace::Line((1.0 / k, -slope / k), a / k))
+        }
+        Canonical::Sphere(s) if on_axis(s.centre()) => {
+            Some(Trace::Circle((0.0, (s.centre() - o).dot(z)), s.radius()))
+        }
+        _ => None,
+    }
+}
+
+/// The torus tangent to the two supports on its axis where they are other
+/// than one plane and one cylinder or cone ([`tangent_torus`]): two of
+/// cylinders, cones and planes square to the axis, or one of them and a
+/// sphere centred on it. The axis is a cylinder's or cone's among them, or
+/// a sphere's centre, or the fitted torus's, turned square to a plane
+/// among them. `near` is how far off the fitted torus's axis a support's
+/// may stand and still be on it; supports off it are other fillets
+/// running into this one. `None` where there are not exactly two
+/// supports on the axis, or no such torus.
+///
+/// A tube circle of radius `r` tangent to two traces, on the side of each
+/// the points are on, has its centre `c` at `n · c = d + s r` for a line
+/// and `|c - centre| = radius + s r` for a circle, `s` the side. Across
+/// two crossing lines `c = A + B r` and the radius is found as by
+/// [`rolled_between_lines`]. Between two parallel lines the radius is half
+/// their distance and the centre slides along them, placed where the
+/// points put it on one side of the tube (the arc is a half circle). For a
+/// line and a circle the centre at each `r` is where the offset line and
+/// circle meet, the meeting nearer the fitted tube's centre taken, and the
+/// radius the one the points stand closest to in the least squares.
+fn torus_between(
+    torus: &Torus,
+    planes: &[Plane],
+    around: &[Canonical],
+    pts: &[Point],
+    near: f64,
+    tol: Tolerances,
+) -> Option<Canonical> {
+    let fitted = torus.frame();
+    let tz = fitted.z().vector();
+    let off_axis = |p: Point| {
+        let w = p - fitted.origin();
+        (w - tz * w.dot(tz)).magnitude()
+    };
+    let parallel = |d: Direction| d.vector().cross(tz).magnitude() <= 1e-3;
+    let mut supports: Vec<Canonical> = planes
+        .iter()
+        .filter(|p| parallel(p.frame().z()))
+        .map(|p| Canonical::Plane(*p))
+        .collect();
+    for shape in around {
+        let on = match shape {
+            Canonical::Sphere(s) => off_axis(s.centre()) <= near,
+            _ => axis_frame(shape).is_some_and(|f| parallel(f.z()) && off_axis(f.origin()) <= near),
+        };
+        if on {
+            supports.push(shape.clone());
+        }
+    }
+    let [first, second] = &supports[..] else {
+        return None;
+    };
+    let normal = supports.iter().find_map(|s| match s {
+        Canonical::Plane(p) => Some(p.frame().z()),
+        _ => None,
+    });
+    let (o, z) = if let Some(f) = supports.iter().find_map(|s| match s {
+        Canonical::Cylinder(_) | Canonical::Cone(_) => axis_frame(s),
+        _ => None,
+    }) {
+        (f.origin(), f.z())
+    } else {
+        let o = supports
+            .iter()
+            .find_map(|s| match s {
+                Canonical::Sphere(s) => Some(s.centre()),
+                _ => None,
+            })
+            .unwrap_or(fitted.origin());
+        (o, normal.unwrap_or(fitted.z()))
+    };
+    let traces = [
+        trace_about(first, o, z, tol)?,
+        trace_about(second, o, z, tol)?,
+    ];
+    let zv = z.vector();
+    let local: Vec<(f64, f64)> = pts
+        .iter()
+        .map(|p| {
+            let w = *p - o;
+            let along = w.dot(zv);
+            ((w - zv * along).magnitude(), along)
+        })
+        .collect();
+    #[allow(clippy::cast_precision_loss, reason = "vertex counts are small")]
+    let count = local.len().max(1) as f64;
+    let sides = traces.map(|t| (local.iter().map(|&q| t.side(q)).sum::<f64>() / count).signum());
+    let (centre, radius) = match traces {
+        [Trace::Line(n1, d1), Trace::Line(n2, d2)] => {
+            let det = n1.0.mul_add(n2.1, -(n1.1 * n2.0));
+            if det.abs() > 1e-9 {
+                let solve = |e1: f64, e2: f64| {
+                    (
+                        e1.mul_add(n2.1, -(n1.1 * e2)) / det,
+                        n1.0.mul_add(e2, -(e1 * n2.0)) / det,
+                    )
+                };
+                rolled_between_lines(&local, solve(d1, d2), solve(sides[0], sides[1]))?
+            } else {
+                rolled_between_parallels((n1, d1), (n2, d2), sides, &local)?
+            }
+        }
+        [Trace::Line(n, d), Trace::Circle(c, r)] => {
+            rolled_by_circle((n, d, sides[0]), (c, r, sides[1]), torus, o, zv, &local)?
+        }
+        [Trace::Circle(c, r), Trace::Line(n, d)] => {
+            rolled_by_circle((n, d, sides[1]), (c, r, sides[0]), torus, o, zv, &local)?
+        }
+        [Trace::Circle(..), Trace::Circle(..)] => return None,
+    };
+    if !radius.is_finite() || radius <= 0.0 || centre.0 <= radius {
         return None;
     }
-    let on = Frame::new(o + z * centre.1, frame.z(), frame.x(), tol).ok()?;
+    let sense = if fitted.z().vector().dot(zv) >= 0.0 {
+        z
+    } else {
+        -z
+    };
+    let x = fitted.x().vector() - zv * fitted.x().vector().dot(zv);
+    let mut on = Frame::new(o + zv * centre.1, sense, Direction::new(x, tol).ok()?, tol).ok()?;
+    if on.handedness() != fitted.handedness() {
+        on = on.mirrored();
+    }
     Some(Canonical::Torus(
         Torus::new(on, centre.0, radius, tol).ok()?,
     ))
+}
+
+/// The tube circle between two parallel lines of the axial half-plane,
+/// tangent to both: its radius half their distance, its centre on the line
+/// midway and placed along it by the points, which lie on one side of the
+/// tube. Each point puts the centre at two places, one per side; the side
+/// whose places agree the more closely is taken, at their median.
+fn rolled_between_parallels(
+    (n1, d1): ((f64, f64), f64),
+    (n2, d2): ((f64, f64), f64),
+    sides: [f64; 2],
+    local: &[(f64, f64)],
+) -> Option<((f64, f64), f64)> {
+    let flip = n1.0.mul_add(n2.0, n1.1 * n2.1).signum();
+    let across = sides[0] - flip * sides[1];
+    if across == 0.0 {
+        return None;
+    }
+    let radius = flip.mul_add(d2, -d1) / across;
+    if radius <= 0.0 {
+        return None;
+    }
+    let level = sides[0].mul_add(radius, d1);
+    let m = (-n1.1, n1.0);
+    let mut places = [Vec::new(), Vec::new()];
+    for q in local {
+        let off = n1.0.mul_add(q.0, n1.1 * q.1) - level;
+        let along = m.0.mul_add(q.0, m.1 * q.1);
+        let half = radius.mul_add(radius, -(off * off)).max(0.0).sqrt();
+        places[0].push(along - half);
+        places[1].push(along + half);
+    }
+    let settled = places.map(|mut t: Vec<f64>| {
+        if t.is_empty() {
+            return (f64::INFINITY, 0.0);
+        }
+        let at = t.len() / 2;
+        let median = *t.select_nth_unstable_by(at, f64::total_cmp).1;
+        let spread = t.iter().map(|v| (v - median).abs()).fold(0.0, f64::max);
+        (spread, median)
+    });
+    let (_, t) = if settled[0].0 <= settled[1].0 {
+        settled[0]
+    } else {
+        settled[1]
+    };
+    let centre = (n1.0.mul_add(level, m.0 * t), n1.1.mul_add(level, m.1 * t));
+    Some((centre, radius))
+}
+
+/// The tube circle tangent to a line `n · p = d` and a circle of the axial
+/// half-plane, on sides `s` of each, through `local` in the least squares.
+/// Its centre at radius `r` is where the line offset by `s r` meets the
+/// circle offset by `s r`, the meeting nearer the fitted torus's tube
+/// centre; `r` is searched over half to twice the fitted tube's.
+fn rolled_by_circle(
+    (n, d, s1): ((f64, f64), f64, f64),
+    (c, big, s2): ((f64, f64), f64, f64),
+    torus: &Torus,
+    o: Point,
+    z: Vector,
+    local: &[(f64, f64)],
+) -> Option<((f64, f64), f64)> {
+    let w = torus.frame().origin() - o;
+    let fitted = (torus.major_radius(), w.dot(z));
+    let m = (-n.1, n.0);
+    let (cn, cm) = (n.0.mul_add(c.0, n.1 * c.1), m.0.mul_add(c.0, m.1 * c.1));
+    let centre_at = |r: f64| -> Option<(f64, f64)> {
+        let level = s1.mul_add(r, d);
+        let reach = s2.mul_add(r, big);
+        let disc = reach.mul_add(reach, -((level - cn) * (level - cn)));
+        if reach <= 0.0 || disc < 0.0 {
+            return None;
+        }
+        let at = |t: f64| (n.0.mul_add(level, m.0 * t), n.1.mul_add(level, m.1 * t));
+        let (a, b) = (at(cm - disc.sqrt()), at(cm + disc.sqrt()));
+        let gap = |p: (f64, f64)| (p.0 - fitted.0).hypot(p.1 - fitted.1);
+        Some(if gap(a) <= gap(b) { a } else { b })
+    };
+    let cost = |r: f64| {
+        centre_at(r).map_or(f64::INFINITY, |p| {
+            local
+                .iter()
+                .map(|q| {
+                    let e = (q.0 - p.0).hypot(q.1 - p.1) - r;
+                    e * e
+                })
+                .sum::<f64>()
+        })
+    };
+    let r0 = torus.minor_radius();
+    let (lo, hi) = (r0 * 0.5, r0 * 2.0);
+    let steps = 64;
+    let width = (hi - lo) / f64::from(steps);
+    let mut best = (f64::INFINITY, r0);
+    for i in 0..=steps {
+        let r = width.mul_add(f64::from(i), lo);
+        let e = cost(r);
+        if e < best.0 {
+            best = (e, r);
+        }
+    }
+    if !best.0.is_finite() {
+        return None;
+    }
+    let (mut a, mut b) = ((best.1 - width).max(lo), (best.1 + width).min(hi));
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..80 {
+        let (p, q) = (b - ratio * (b - a), a + ratio * (b - a));
+        if cost(p) <= cost(q) {
+            b = q;
+        } else {
+            a = p;
+        }
+    }
+    let radius = (a + b) / 2.0;
+    Some((centre_at(radius)?, radius))
 }
 
 /// The torus a round along a plane turns on where the plane's edge it
