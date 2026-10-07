@@ -155,16 +155,16 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
     }
     let of = |kind: ShapeType| distinct.get(&kind).map_or(&[][..], Vec::as_slice);
 
-    for edge in of(ShapeType::Edge) {
-        check_edge(model, edge, tol, &mut found)?;
-    }
-    for wire in of(ShapeType::Wire) {
-        check_wire(model, wire, tol, &mut found)?;
-    }
-    for face in of(ShapeType::Face) {
-        check_face(model, face, tol, &mut found)?;
-        check_face_chart(model, face, tol, &mut found)?;
-    }
+    each(of(ShapeType::Edge), &mut found, |edge, out| {
+        check_edge(model, edge, tol, out)
+    })?;
+    each(of(ShapeType::Wire), &mut found, |wire, out| {
+        check_wire(model, wire, tol, out)
+    })?;
+    each(of(ShapeType::Face), &mut found, |face, out| {
+        check_face(model, face, tol, out)?;
+        check_face_chart(model, face, tol, out)
+    })?;
     for shell in of(ShapeType::Shell) {
         check_shell(model, shell, &mut found)?;
     }
@@ -173,13 +173,31 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
     }
     // Tolerance containment: a face is no looser than its edges, an edge no
     // looser than its vertices, checked through every level below each.
-    for face in of(ShapeType::Face) {
-        compare(model, face, ShapeType::Face, &mut found)?;
-    }
-    for edge in of(ShapeType::Edge) {
-        compare(model, edge, ShapeType::Edge, &mut found)?;
-    }
+    each(of(ShapeType::Face), &mut found, |face, out| {
+        compare(model, face, ShapeType::Face, out)
+    })?;
+    each(of(ShapeType::Edge), &mut found, |edge, out| {
+        compare(model, edge, ShapeType::Edge, out)
+    })?;
     Ok(found)
+}
+
+/// Run one check over every shape in parallel, each into its own findings,
+/// and append them to `found` in shape order: the diagnosis a serial walk
+/// gives. The first shape in order that fails fails the whole.
+fn each(
+    shapes: &[Shape],
+    found: &mut Diagnosis,
+    one: impl Fn(&Shape, &mut Diagnosis) -> OgeomResult<()> + Sync,
+) -> OgeomResult<()> {
+    let parts = ogeom_core::parallel::map_ordered(shapes, |_, shape| {
+        let mut part = Diagnosis::default();
+        one(shape, &mut part).map(|()| part)
+    });
+    for part in parts {
+        found.problems.extend(part?.problems);
+    }
+    Ok(())
 }
 
 /// Report every face of a solid that faces into its material.
@@ -1303,42 +1321,65 @@ fn crossings_among(
     use ogeom_topo::explore_unique;
     let faces = explore_unique(model, shape, ShapeType::Face)?;
     let asked = |i: usize| near.is_none_or(|n| n.contains(&faces[i].node()));
-    // The topology below each face, for the adjacency exclusion; each face
-    // gathered and bounded once, not once per pair it is in.
-    let mut below: Vec<ogeom_core::FastSet<TShapeId>> = Vec::with_capacity(faces.len());
-    let mut gathered = Vec::with_capacity(faces.len());
-    let mut bounds = Vec::with_capacity(faces.len());
-    for face in &faces {
-        let mut set = ogeom_core::FastSet::default();
+    // The topology below each face, for the adjacency exclusion, its
+    // elements and its box: each face gathered and bounded once, not once
+    // per pair it is in.
+    let prepared = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+        let mut below = ogeom_core::FastSet::default();
         for kind in [ShapeType::Edge, ShapeType::Vertex] {
             for sub in explore_unique(model, face, kind)? {
-                set.insert(sub.node());
+                below.insert(sub.node());
             }
         }
-        below.push(set);
-        gathered.push(crate::proximity::Elements::of(model, face, tol)?);
-        bounds.push(crate::measure::shape_bounds(model, face, tol)?.expanded(tol.confusion()));
-    }
+        let gathered = crate::proximity::Elements::of(model, face, tol)?;
+        let bounds = crate::measure::shape_bounds(model, face, tol)?.expanded(tol.confusion());
+        Ok((below, gathered, bounds))
+    });
+    let prepared = prepared
+        .into_iter()
+        .collect::<OgeomResult<Vec<(ogeom_core::FastSet<TShapeId>, _, ogeom_math::Aabb)>>>()?;
 
-    let mut crossings = Vec::new();
-    for i in 0..faces.len() {
-        for j in i + 1..faces.len() {
-            ogeom_core::progress::checkpoint()?;
-            if !(asked(i) || asked(j))
-                || !bounds[i].intersects(&bounds[j])
-                || !below[i].is_disjoint(&below[j])
+    // Candidate pairs by sweeping the boxes along x: a pair whose x
+    // intervals do not overlap cannot have boxes that meet. Sorted back
+    // into (i, j) order, so the answer lists pairs as a scan of every pair
+    // would.
+    let mut by_x: Vec<(f64, f64, usize)> = prepared
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, _, bounds))| Some((bounds.low()?.x, bounds.high()?.x, i)))
+        .collect();
+    by_x.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)));
+    let mut pairs = Vec::new();
+    for (k, &(_, high, i)) in by_x.iter().enumerate() {
+        for &(low, _, j) in &by_x[k + 1..] {
+            if low > high {
+                break;
+            }
+            let (i, j) = (i.min(j), i.max(j));
+            if (asked(i) || asked(j))
+                && prepared[i].2.intersects(&prepared[j].2)
+                && prepared[i].0.is_disjoint(&prepared[j].0)
             {
-                continue;
+                pairs.push((i, j));
             }
-            let reach = crate::proximity::distance_between_prepared(
-                &gathered[i],
-                &gathered[j],
-                ogeom_intersect::ExtremaOptions::default(),
-                tol,
-            )?;
-            if reach.distance <= tol.confusion() {
-                crossings.push((faces[i].clone(), faces[j].clone()));
-            }
+        }
+    }
+    pairs.sort_unstable();
+
+    let touching = ogeom_core::parallel::map_ordered(&pairs, |_, &(i, j)| {
+        ogeom_core::progress::checkpoint()?;
+        let reach = crate::proximity::distance_between_prepared(
+            &prepared[i].1,
+            &prepared[j].1,
+            ogeom_intersect::ExtremaOptions::default(),
+            tol,
+        )?;
+        Ok(reach.distance <= tol.confusion())
+    });
+    let mut crossings = Vec::new();
+    for (&(i, j), touching) in pairs.iter().zip(touching) {
+        if touching? {
+            crossings.push((faces[i].clone(), faces[j].clone()));
         }
     }
     Ok(crossings)
