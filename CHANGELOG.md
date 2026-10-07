@@ -22,6 +22,18 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Faster nearest points on cones, tori and swept surfaces.** Cones,
+  tori and trimmed elementary surfaces are projected in closed form, and
+  extrusions and revolutions through one scan of their profile instead of
+  a seed grid; exact hidden lines are about 15% faster.
+
+- **Marching solves on the stack.** The intersection walker, the marched
+  intersections' solves and the rolling-ball fillet march use the
+  fixed-size Newton solver and one jet per surface, and the walker reuses
+  its last Jacobian for the tangent (`ogeom_intersect::walk::null_tangent`,
+  `Condition::tangent_from`): marched fillets about 11% and marched
+  booleans about 9% faster.
+
 - **Kernel hash maps are hashbrown with a fixed seed.** `ogeom_core::FastMap`
   and `FastSet` (in `ogeom_core::collections`, with `FastHasher`) replace
   the std maps in every kernel crate, so a map's iteration order is the
