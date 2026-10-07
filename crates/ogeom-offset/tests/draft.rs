@@ -1012,3 +1012,92 @@ fn a_draft_across_a_seam_closed_only_to_position_meets_both_sides() {
     );
     assert!(worst <= 1e-4, "the wall strays {worst} from both sides");
 }
+
+/// A skinned loft of three equal circles at heights 0, 5 and 10 is a
+/// cylinder of radius 10 to the skin's tolerance. Drafted about a level
+/// plane at the middle section (where the plane runs along a row of the
+/// face's mesh) or above it, the hinge chains closed whatever order the
+/// mesh's segments come in, and starts on the chart's seam column, not half
+/// way round from it. The wall is then the cone about that circle: its
+/// radius at height `z` is `10 - (z - h) tan(angle)` all the way round, the
+/// same way on both halves of the hinge.
+#[test]
+fn a_skinned_wall_drafts_about_a_level_plane_at_or_above_its_middle_section() {
+    use ogeom_geom::Surface as _;
+    for h in [5.0_f64, 7.0] {
+        let mut model = ogeom_topo::Model::new();
+        let ring = |model: &mut ogeom_topo::Model, z: f64| {
+            let frame = Frame::new(
+                Point::new(0.0, 0.0, z),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap();
+            let circle = ogeom_math::Circle::new(frame, 10.0, T).unwrap();
+            let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+            let domain = {
+                use ogeom_geom::Curve3d as _;
+                curve.domain()
+            };
+            let edge = ogeom_algo::make_edge(model, curve, domain, T)
+                .unwrap()
+                .shape;
+            ogeom_algo::make_wire(model, std::slice::from_ref(&edge), T)
+                .unwrap()
+                .shape
+        };
+        let sections = [
+            ring(&mut model, 0.0),
+            ring(&mut model, 5.0),
+            ring(&mut model, 10.0),
+        ];
+        let hints: Vec<Point> = [0.0_f64, 5.0, 10.0]
+            .iter()
+            .map(|z| Point::new(10.0, 0.0, *z))
+            .collect();
+        let solid = ogeom_offset::make_loft_skinned_aligned(&mut model, &sections, &hints, 1e-3, T)
+            .unwrap()
+            .shape;
+        let (wall, _) = bspline_surface_of(&model, &solid);
+        let angle = 0.1_f64;
+        let drafted = ogeom_offset::apply_draft(
+            &mut model,
+            &solid,
+            std::slice::from_ref(&wall),
+            Plane::through(Point::new(0.0, 0.0, h), ogeom_math::Direction::Z),
+            ogeom_math::Direction::Z,
+            angle,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("about z = {h}: {e}"))
+        .shape;
+        let diagnosis = ogeom_algo::check(&model, &drafted, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "about z = {h}: {:?}",
+            diagnosis.problems
+        );
+        let (_, wall) = bspline_surface_of(&model, &drafted);
+        let ((u0, u1), (v0, v1)) = wall.domain();
+        let mut worst = 0.0_f64;
+        for i in 0..64 {
+            for j in 0..=8 {
+                let u = u0 + (u1 - u0) * f64::from(i) / 64.0;
+                let v = v0 + (v1 - v0) * f64::from(j) / 8.0;
+                let p = wall.point_at(u, v, T).unwrap();
+                if !(0.0..=10.0).contains(&p.z) {
+                    continue;
+                }
+                let radius = p.x.hypot(p.y);
+                let cone = (p.z - h).mul_add(-angle.tan(), 10.0);
+                worst = worst.max((radius - cone).abs());
+            }
+        }
+        eprintln!("drafted about z = {h}: off the cone by {worst}");
+        assert!(
+            worst <= 5e-4,
+            "about z = {h}, the wall strays {worst} from the cone"
+        );
+    }
+}

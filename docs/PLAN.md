@@ -131,17 +131,6 @@ winding loop is the rail, `pole_leg` in `marched.rs` splits it clear of the
 hole and starts the seam there. When it is the edge, the seam leaves from the
 edge's own vertex and can cross the hole. No measured part builds one.
 
-### Sweeps and drafts
-
-**A general draft about a level plane above a loft's middle section.**
-`general_draft` on the wall of a skinned loft of three circles of radius 10
-at heights 0, 5 and 10, about a level neutral plane at height 5 or above,
-fails. Above 5 the crossing's segments chain one short, beside the wall's
-`u = 0.5` column, so the hinge is taken as open and the rebuild refuses the
-wall ("curve at 0 is 6.2 from the vertex it should meet"). At 5, where the
-plane runs along a row of the face's mesh, the wall's border rows fit to
-0.83 against 1e-4. A plane that stays below 5 drafts, tilted or level.
-
 ### Construction and exchange
 
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's

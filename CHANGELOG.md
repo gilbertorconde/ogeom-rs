@@ -24,6 +24,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A general draft of a closed wall closes its hinge.** `general_draft`
+  dropped the segment that closes a hinge when it came up after the chain's
+  ends had grown to meet it, and could start a closed hinge half a turn from
+  the seam and double back; a skinned wall drafts about a level plane at
+  any height along it.
+
 - **A planar face walks its rings about its plane.** `make_face` on a
   plane keeps the plane's normal and walks the outer ring counter-clockwise
   about it and each hole clockwise, whichever way the wires were walked, so

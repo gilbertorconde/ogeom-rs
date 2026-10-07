@@ -670,13 +670,16 @@ fn general_draft(
     let mut used = vec![false; segments.len()];
     used[0] = true;
     loop {
-        let tail = chain[chain.len() - 1].1;
-        let head = chain[0].1;
         let mut grew = false;
         for (k, seg) in segments.iter().enumerate() {
             if used[k] {
                 continue;
             }
+            // The ends as they stand now: a pass grows the chain segment by
+            // segment, and the one closing it may come after the segments
+            // that brought its ends to the head and tail.
+            let tail = chain[chain.len() - 1].1;
+            let head = chain[0].1;
             // The segment that joins the tail back to the head closes the
             // run; it is kept, and the run is closed by it.
             if (same(seg[0].1, tail) && same(seg[1].1, head))
@@ -762,7 +765,11 @@ fn general_draft(
             let mut exact: Option<(usize, (f64, f64))> = None;
             for i in 0..n {
                 let (a, b) = (chain[i], chain[(i + 1) % n]);
-                let (da, db) = (short(ua, a.0, period.0), short(ua, b.0, period.0));
+                // `b` is read as a step on from `a`: read on its own, the
+                // short way from the column flips sign half a period round
+                // as well, where the chain does not cross the column.
+                let da = short(ua, a.0, period.0);
+                let db = da + short(a.0, b.0, period.0);
                 if da == 0.0 {
                     exact = Some((i, a));
                     break;
