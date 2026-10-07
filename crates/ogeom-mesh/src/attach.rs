@@ -25,7 +25,7 @@ use ogeom_topo::{
     EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, Triangulation, explore_unique,
 };
 
-use crate::discretize::{Deflection, discretize};
+use crate::discretize::{Deflection, Polyline, discretize};
 
 /// What a tessellation pass produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,12 +94,21 @@ pub fn tessellate(
     // doing them in the other order would store a face mesh whose boundary the
     // edge polylines then contradict.
     ogeom_core::progress::stage("tessellate: edges");
+    // Each edge's polyline is kept by node for the faces' paths below: the
+    // discretization is deterministic, so a face asking again would get
+    // these same points.
     let edges = explore_unique(model, shape, ShapeType::Edge)?;
     let edge_total = edges.len() as u64;
+    let mut lines: ogeom_core::FastMap<u32, Polyline> = ogeom_core::FastMap::default();
     for (at, edge) in edges.into_iter().enumerate() {
         ogeom_core::progress::checkpoint()?;
         ogeom_core::progress::stage_at("tessellate: edges", at as u64 + 1, edge_total);
-        if attach_polyline(model, &edge, along(&edge), tol)? {
+        let deflection = along(&edge);
+        if let Some(line) = edge_line(model, &edge, deflection, tol)? {
+            lines
+                .entry(edge.node().index())
+                .or_insert_with(|| line.clone());
+            store_polyline(model, &edge, line, deflection)?;
             done.edges += 1;
         }
     }
@@ -151,19 +160,28 @@ pub fn tessellate(
             // mesh is still owned, attached after it is stored.
             let mut paths: Vec<(Shape, Vec<u32>)> = Vec::new();
             let mut seen: Vec<(ogeom_topo::TShapeId, ogeom_topo::Location)> = Vec::new();
+            let index = MeshIndex::of(&mesh);
             for edge in ogeom_topo::explore(read_model, face, Filter::OfType(ShapeType::Edge))? {
                 let key = (edge.node(), edge.location().clone());
                 if seen.contains(&key) {
                     continue;
                 }
                 seen.push(key);
-                let points =
-                    crate::triangulate::polyline_of_edge(read_model, &edge, along(&edge), tol)?;
-                if points.len() < 2 {
+                // An edge with no 3D curve has no polyline and no path.
+                let Some(line) = lines.get(&edge.node().index()) else {
+                    continue;
+                };
+                if line.points.len() < 2 {
                     continue;
                 }
+                let placement = edge.transform(read_model.datums())?;
+                let mut points: Vec<ogeom_math::Point> =
+                    line.points.iter().map(|p| placement.apply(*p)).collect();
+                if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                    points.reverse();
+                }
                 if let Some(indices) =
-                    index_path(&mesh, &points, edge_reach(read_model, &edge, tol))
+                    index.path(&mesh, &points, edge_reach(read_model, &edge, tol))
                 {
                     paths.push((edge, indices));
                 }
@@ -214,60 +232,97 @@ fn edge_reach(model: &Model, edge: &Shape, tol: Tolerances) -> f64 {
     recorded.max(tol.confusion() * 1e3)
 }
 
-/// The polyline's node indices in the mesh, chosen so consecutive indices
-/// are triangle edges.
-///
-/// A position may name several nodes (a seam's two chart columns lift to
-/// the same points), so matching by position alone can jump between the
-/// copies. Candidates come from position (exact bits, else within `reach`),
-/// and the walk picks, at each step, a candidate adjacent in the mesh to the
-/// one before it; the first point tries each of its candidates as a start.
-/// `None` if no adjacency-respecting path exists.
-fn index_path(mesh: &Triangulation, points: &[ogeom_math::Point], reach: f64) -> Option<Vec<u32>> {
-    use ogeom_core::{FastMap, FastSet};
-    let mut by_bits: FastMap<[u64; 3], Vec<u32>> = FastMap::default();
-    for (i, p) in mesh.positions.iter().enumerate() {
-        #[allow(clippy::cast_possible_truncation)]
-        by_bits
-            .entry([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
-            .or_default()
-            .push(i as u32);
-    }
-    let mut adjacent: FastSet<(u32, u32)> = FastSet::default();
-    for t in &mesh.triangles {
-        for i in 0..3 {
-            let (a, b) = (t[i], t[(i + 1) % 3]);
-            adjacent.insert((a.min(b), a.max(b)));
+/// A face mesh's nodes by position and its triangle edges, for walking
+/// the face's edges through it.
+struct MeshIndex {
+    /// Every node at each position, by the bits of its coordinates, in
+    /// node order.
+    by_bits: ogeom_core::FastMap<[u64; 3], Vec<u32>>,
+    /// Every triangle edge, as (smaller, larger) node index.
+    adjacent: ogeom_core::FastSet<(u32, u32)>,
+}
+
+impl MeshIndex {
+    fn of(mesh: &Triangulation) -> Self {
+        let mut by_bits: ogeom_core::FastMap<[u64; 3], Vec<u32>> = ogeom_core::FastMap::default();
+        by_bits.reserve(mesh.positions.len());
+        for (i, p) in mesh.positions.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            by_bits.entry(bits(*p)).or_default().push(i as u32);
         }
+        let mut adjacent: ogeom_core::FastSet<(u32, u32)> = ogeom_core::FastSet::default();
+        adjacent.reserve(mesh.triangles.len() * 3 / 2);
+        for t in &mesh.triangles {
+            for i in 0..3 {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                adjacent.insert((a.min(b), a.max(b)));
+            }
+        }
+        Self { by_bits, adjacent }
     }
-    let candidates = |p: &ogeom_math::Point| -> Vec<u32> {
-        if let Some(exact) = by_bits.get(&[p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]) {
-            return exact.clone();
+
+    /// The nodes standing for `p`: those at exactly its position, else
+    /// every node within `reach`, nearest first.
+    fn candidates<'a>(
+        &'a self,
+        mesh: &Triangulation,
+        p: ogeom_math::Point,
+        reach: f64,
+    ) -> std::borrow::Cow<'a, [u32]> {
+        if let Some(exact) = self.by_bits.get(&bits(p)) {
+            return std::borrow::Cow::Borrowed(exact);
         }
         let mut near: Vec<(f64, u32)> = Vec::new();
         for (i, q) in mesh.positions.iter().enumerate() {
-            let d = q.distance(*p);
+            let d = q.distance(p);
             if d <= reach {
                 #[allow(clippy::cast_possible_truncation)]
                 near.push((d, i as u32));
             }
         }
         near.sort_by(|a, b| a.0.total_cmp(&b.0));
-        near.into_iter().map(|(_, i)| i).collect()
-    };
+        std::borrow::Cow::Owned(near.into_iter().map(|(_, i)| i).collect())
+    }
 
-    let walk = |start: u32| -> Option<Vec<u32>> {
-        let mut out = vec![start];
-        for p in &points[1..] {
-            let previous = *out.last()?;
-            let next = candidates(p)
-                .into_iter()
-                .find(|&c| adjacent.contains(&(previous.min(c), previous.max(c))))?;
-            out.push(next);
-        }
-        Some(out)
-    };
-    candidates(points.first()?).into_iter().find_map(walk)
+    /// The polyline's node indices in the mesh, chosen so consecutive
+    /// indices are triangle edges.
+    ///
+    /// A position may name several nodes (a seam's two chart columns lift
+    /// to the same points), so matching by position alone can jump between
+    /// the copies. Candidates come from position (exact bits, else within
+    /// `reach`), and the walk picks, at each step, a candidate adjacent in
+    /// the mesh to the one before it; the first point tries each of its
+    /// candidates as a start. `None` if no adjacency-respecting path exists.
+    fn path(
+        &self,
+        mesh: &Triangulation,
+        points: &[ogeom_math::Point],
+        reach: f64,
+    ) -> Option<Vec<u32>> {
+        let walk = |start: u32| -> Option<Vec<u32>> {
+            let mut out = Vec::with_capacity(points.len());
+            out.push(start);
+            for p in &points[1..] {
+                let previous = *out.last()?;
+                let next = self
+                    .candidates(mesh, *p, reach)
+                    .iter()
+                    .copied()
+                    .find(|&c| self.adjacent.contains(&(previous.min(c), previous.max(c))))?;
+                out.push(next);
+            }
+            Some(out)
+        };
+        self.candidates(mesh, *points.first()?, reach)
+            .iter()
+            .copied()
+            .find_map(walk)
+    }
+}
+
+/// A position's coordinates as bits, the key exact matching uses.
+fn bits(p: ogeom_math::Point) -> [u64; 3] {
+    [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
 }
 
 /// The triangulation stored on a face, if one has been built.
@@ -293,16 +348,14 @@ pub fn polyline_of(model: &Model, edge: &Shape) -> Option<(Vec<ogeom_math::Point
     })
 }
 
-/// Discretize an edge and store the polyline on it, replacing any earlier one.
-///
-/// Returns whether a polyline was stored; an edge with no 3D curve (a
-/// degenerate edge at a cone's apex) has nothing to discretize.
-fn attach_polyline(
-    model: &mut Model,
+/// An edge's polyline from its 3D curve, or `None` for an edge with no 3D
+/// curve (a degenerate edge at a cone's apex has nothing to discretize).
+fn edge_line(
+    model: &Model,
     edge: &Shape,
     deflection: Deflection,
     tol: Tolerances,
-) -> OgeomResult<bool> {
+) -> OgeomResult<Option<Polyline>> {
     let Some(node) = model.node(edge) else {
         ogeom_bail!(Dangling, "edge is not in this model");
     };
@@ -310,13 +363,22 @@ fn attach_polyline(
         ogeom_bail!(Construction, "edge node holds no edge data");
     };
     let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(geometry) = model.geometry().curve(*curve) else {
         ogeom_bail!(Dangling, "curve is not in this model");
     };
-    let line = discretize(geometry, *range, deflection, tol)?;
+    Ok(Some(discretize(geometry, *range, deflection, tol)?))
+}
 
+/// Store a polyline on an edge, replacing any earlier one and the paths
+/// through face meshes that came with it.
+fn store_polyline(
+    model: &mut Model,
+    edge: &Shape,
+    line: Polyline,
+    deflection: Deflection,
+) -> OgeomResult<()> {
     let Some(node) = model.node_mut(edge) else {
         ogeom_bail!(Dangling, "edge is not in this model");
     };
@@ -335,7 +397,7 @@ fn attach_polyline(
         location: ogeom_topo::Location::identity(),
         deflection: deflection.chord,
     });
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -575,5 +637,55 @@ mod polygon_on_tests {
             }
         }
         assert!(checked >= 6, "rings, seam sides and rims all walked");
+    }
+
+    #[test]
+    fn each_path_runs_through_the_points_the_edge_draws_on_its_own() {
+        // A face's path is matched from the polyline stored on the edge,
+        // carried into the face's placement and direction. It must name
+        // the same positions, bit for bit, the edge discretized alone in
+        // that occurrence gives, or the stored path and the stored
+        // polyline describe two different boundaries.
+        let mut model = Model::new();
+        let solid = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T).unwrap();
+        tessellate(&mut model, &solid.shape, fine(), T).unwrap();
+
+        let mut compared = 0;
+        for face in explore(&model, &solid.shape, Filter::OfType(ShapeType::Face)).unwrap() {
+            let mesh_id = model
+                .node(&face)
+                .unwrap()
+                .data()
+                .as_face()
+                .unwrap()
+                .triangulation;
+            let mesh = model.geometry().triangulation(mesh_id.unwrap()).unwrap();
+            for edge in explore(&model, &face, Filter::OfType(ShapeType::Edge)).unwrap() {
+                let alone = crate::triangulate::polyline_of_edge(&model, &edge, fine(), T).unwrap();
+                let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                for repr in &data.representations {
+                    let EdgeRepr::PolygonOnTriangulation {
+                        triangulation,
+                        indices,
+                        ..
+                    } = repr
+                    else {
+                        continue;
+                    };
+                    if Some(*triangulation) != mesh_id {
+                        continue;
+                    }
+                    let walked: Vec<_> = indices
+                        .iter()
+                        .map(|&i| mesh.positions[i as usize])
+                        .collect();
+                    let forward = walked == alone;
+                    let backward = walked.iter().rev().eq(alone.iter());
+                    assert!(forward || backward, "a stored path left its edge's points");
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared >= 6, "every face's edges compared");
     }
 }

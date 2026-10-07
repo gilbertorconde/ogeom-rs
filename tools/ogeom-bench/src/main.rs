@@ -148,6 +148,8 @@ fn benchmarks() -> Vec<Bench> {
         ("fillet_box_all", Box::new(fillet_box_all)),
         ("fillet_marched", Box::new(fillet_marched)),
         ("tessellate_part", Box::new(tessellate_part)),
+        ("tessellate_part_stored", Box::new(tessellate_part_stored)),
+        ("tessellate_open_sheet", Box::new(tessellate_open_sheet)),
         ("mass_part", Box::new(mass_part)),
         ("check_part", Box::new(check_part)),
         ("fix_shape_part", Box::new(fix_shape_part)),
@@ -408,6 +410,46 @@ fn tessellate_part() -> Option<Stats> {
             T,
         )
         .unwrap();
+        std::hint::black_box(mesh.triangles.len());
+    }))
+}
+
+/// The largest corpus part's tessellation stored on its model: each face's
+/// mesh, a polyline on each edge and each edge's path through its faces'
+/// meshes, on a fresh copy of the model each time.
+fn tessellate_part_stored() -> Option<Stats> {
+    let (document, solid) = corpus_part(LARGE_PART)?;
+    let model = document.model().clone();
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let done =
+                ogeom::mesh::tessellate(&mut model, &solid, Deflection::default(), T).unwrap();
+            std::hint::black_box(done.triangles);
+        },
+    ))
+}
+
+/// An open sheet with a long border: a cylinder's side alone, drawn fine
+/// enough that each rim is some thousands of segments. Every rim segment
+/// is a border edge for the whole-shape repair passes to look along.
+fn tessellate_open_sheet() -> Option<Stats> {
+    let mut model = Model::new();
+    let solid = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 100.0, 50.0, T)
+        .unwrap()
+        .shape;
+    let side = explore_unique(&model, &solid, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .max_by_key(|f| {
+            explore_unique(&model, f, ShapeType::Edge)
+                .map(|e| e.len())
+                .unwrap_or(0)
+        })?;
+    Some(time(|| {
+        let mesh =
+            ogeom::mesh::triangulate(&model, &side, Deflection::with_chord(1e-3).unwrap(), T)
+                .unwrap();
         std::hint::black_box(mesh.triangles.len());
     }))
 }
