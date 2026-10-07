@@ -153,6 +153,7 @@ fn benchmarks() -> Vec<Bench> {
         ("fix_shape_part", Box::new(fix_shape_part)),
         ("sew_shell", Box::new(sew_shell)),
         ("mesh_to_solid", Box::new(mesh_to_solid)),
+        ("mesh_to_solid_mid", Box::new(mesh_to_solid_mid)),
         ("hlr_exact", Box::new(hlr_exact)),
         ("hlr_exact_mid", Box::new(hlr_exact_mid)),
         ("hlr_mesh", Box::new(hlr_mesh)),
@@ -497,7 +498,24 @@ fn sew_shell() -> Option<Stats> {
 /// A b-rep from a mesh: an imported part tessellated, then rebuilt with
 /// its planes, cylinders and other surfaces recognized.
 fn mesh_to_solid() -> Option<Stats> {
-    let (document, solid) = corpus_part(PART)?;
+    converted(PART)
+}
+
+/// The mid-size corpus part the conversion from a mesh is timed on: some
+/// eleven thousand triangles rebuilt as a few hundred faces, over several
+/// builds. The largest part takes minutes at one thread.
+const MESH_MID_PART: &str = "nist_ftc_08_asme1_rc.stp";
+
+/// A b-rep from a mesh of a part with many faces, where the checks run
+/// over every built face on each build dominate.
+fn mesh_to_solid_mid() -> Option<Stats> {
+    converted(MESH_MID_PART)
+}
+
+/// A corpus part's first solid tessellated, and the time to convert the
+/// tessellation back.
+fn converted(part: &str) -> Option<Stats> {
+    let (document, solid) = corpus_part(part)?;
     let mesh = ogeom::mesh::triangulate(document.model(), &solid, Deflection::default(), T).ok()?;
     let options = ogeom::algo::MeshSolidOptions::default();
     Some(time(|| {

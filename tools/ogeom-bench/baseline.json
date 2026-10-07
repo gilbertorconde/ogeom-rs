@@ -16,6 +16,7 @@
   "fix_shape_part": 42.5172,
   "sew_shell": 0.1807,
   "mesh_to_solid": 0.8946,
+  "mesh_to_solid_mid": 15.1590,
   "hlr_exact": 1.5241,
   "hlr_exact_mid": 19.3250,
   "hlr_mesh": 0.1078,
