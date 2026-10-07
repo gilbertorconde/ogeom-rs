@@ -3087,10 +3087,28 @@ fn fill(
             Ok(out)
         },
     );
+    // An edge two faces of one solid hold, both lying on the other solid's
+    // face (a top split in two by a fuse), is carried onto that face once
+    // per holder; the second copy is the same strand, which the
+    // arrangement would walk as a sliver between two coincident lines.
+    let mut carried: hashbrown::HashSet<(EdgeKey, bool, usize, [u64; 4])> =
+        hashbrown::HashSet::new();
     for pair in found {
         let pair = pair?;
         sections.extend(pair.sections);
-        contacts.extend(pair.contacts);
+        contacts.extend(pair.contacts.into_iter().filter(|c| {
+            carried.insert((
+                c.node,
+                c.target_from_a,
+                c.target_face,
+                [
+                    c.crange.0.to_bits(),
+                    c.crange.1.to_bits(),
+                    c.prange.0.to_bits(),
+                    c.prange.1.to_bits(),
+                ],
+            ))
+        }));
         tangents.extend(pair.tangents);
         same_pairs.extend(pair.same_pairs);
     }
@@ -11558,6 +11576,45 @@ mod tests {
         same_as_with_every_face(&model, &plate, &corner, &local, &whole);
         let holed = 40.0 * 40.0 * 10.0 - 10.0 * PI * 1.5 * 1.5 * 10.0;
         assert!((volume(&model, &local.shape) - holed).abs() < 1e-6 * holed);
+    }
+
+    /// Four bars along a box's top edges, fused into a frame whose top
+    /// stays split where the bars met: each edge between two of its pieces
+    /// lies on the box's top and is laid there once, and the cut leaves the
+    /// box less the frame.
+    #[test]
+    fn a_frame_fused_from_bars_cuts_the_rim_off_a_box() {
+        let mut model = Model::new();
+        let block = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let bars = [
+            ((0.0, 0.0), (10.0, 1.0)),
+            ((0.0, 9.0), (10.0, 1.0)),
+            ((0.0, 0.0), (1.0, 10.0)),
+            ((9.0, 0.0), (1.0, 10.0)),
+        ];
+        let mut frame: Option<Shape> = None;
+        for ((x, y), (dx, dy)) in bars {
+            let bar = make_box(
+                &mut model,
+                frame_at(Point::new(x, y, 9.0)),
+                (dx, dy, 1.0),
+                T,
+            )
+            .unwrap()
+            .shape;
+            frame = Some(match frame {
+                None => bar,
+                Some(held) => fuse(&mut model, &held, &bar, T).unwrap().shape,
+            });
+        }
+        let frame = frame.unwrap();
+        let rimmed = cut(&mut model, &block, &frame, T).unwrap();
+        assert_valid(&model, &rimmed.shape);
+        let want = 1000.0 - (100.0 - 64.0);
+        let got = volume(&model, &rimmed.shape);
+        assert!((got - want).abs() < 1e-9 * want, "{got} against {want}");
     }
 
     #[test]
