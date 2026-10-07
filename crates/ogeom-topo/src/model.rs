@@ -610,6 +610,19 @@ impl Model {
         &self.provenance
     }
 
+    /// Drop the provenance entries of `ids`, keeping the ids issued.
+    ///
+    /// What a document reader does with the entities its file left out: no
+    /// shape the file carries names them and no kept entry derives from
+    /// them, so they answer `None` as an id from another document does, and
+    /// no later entity can take their numbers. Ids without an entry are
+    /// passed over.
+    pub fn forget_provenance(&mut self, ids: impl IntoIterator<Item = EntityId>) {
+        for id in ids {
+            self.provenance.forget(id);
+        }
+    }
+
     /// Trace a shape back to the entities it ultimately came from.
     ///
     /// How a reference into a rebuilt model is resolved: find what the user

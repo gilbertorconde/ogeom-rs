@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`ProvenanceTable::forget` and `Model::forget_provenance`.** An
+  entity's provenance entry can be dropped while its id stays issued; the
+  id then resolves to nothing, like an id from another document.
+
 - **Each face's bounding box is kept in the model (#136).** It is found
   once (`ogeom::algo::face_bounds`, `tight_bounds`, the booleans' face-pair
   filter), read in constant time with `Model::face_bounds`, and forgotten
@@ -29,6 +33,18 @@ bump may break the API and a patch bump may not.
   about 0.22 s (1.85 s before). Results are unchanged.
 
 ### Fixed
+
+- **A native snapshot carries only the provenance its shapes reach
+  (#137).** `native::write` and `compacted` wrote every provenance entry
+  the model ever made (39 MB for a 582-face plate cut hole by hole); they
+  keep the entries of the written identities and their ancestry: 1.6 MB,
+  written in about 17 ms. Entity ids are unchanged, and a file whose ids
+  have gaps is written as format version 3, which older readers refuse.
+
+- **A face under a mirroring placement is shaded the way it faces
+  (#139).** `triangulate_face` and the whole-shape mesh gave normals
+  against their triangles' winding under a reflection; they agree under
+  any placement.
 
 - **Exact volumes close the slits beside fitted edges.** Where a pcurve
   stands off its edge's curve by more than a confusion distance, fitted

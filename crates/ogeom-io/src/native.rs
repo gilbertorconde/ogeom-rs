@@ -34,6 +34,8 @@
 //! the format: `write` either produces a file that reads back as the same
 //! model, or it says it cannot.
 
+use std::fmt::Write as _;
+
 use ogeom_core::{
     EntityId, Key, OgeomResult, OpId, Provenance, Role, SourceId, Tolerance, Tolerances, ogeom_bail,
 };
@@ -55,14 +57,18 @@ use ogeom_topo::{
 
 pub use ogeom_topo::Absorbed;
 
-/// The format version this writes.
+/// The newest format version this writes.
 ///
 /// Bumped when the grammar changes in a way an older reader could not follow.
 /// A file naming a version this does not know is refused rather than guessed
-/// at; every version up to this one still reads, because version 2 only
-/// *added* records (the conical helix and the periodic B-spline), and a
-/// version 1 file contains neither.
-pub const VERSION: u32 = 2;
+/// at; every version up to this one still reads, because each version only
+/// *added* to the one before: version 2 the conical helix and the periodic
+/// B-spline, version 3 entity tables with gaps in their ids. A file is
+/// written at the oldest version that holds it.
+pub const VERSION: u32 = 3;
+
+/// The version a file whose entity ids run without gaps is written at.
+const GAPLESS_VERSION: u32 = 2;
 
 /// The word every file starts with.
 const MAGIC: &str = "ogeom";
@@ -96,7 +102,9 @@ impl Default for WriteOptions {
 /// session that has run many operations carries all of that. The native
 /// format writes exactly the reachable closure of its roots, so writing and
 /// reading back is a compaction: the same shapes, same geometry, same
-/// identities for what survives, in a model with nothing else in it.
+/// identities for what survives, in a model with nothing else in it. Of the
+/// provenance it keeps the entries those identities name and their
+/// ancestry; the ids of the rest stay issued and resolve to nothing.
 ///
 /// # Errors
 ///
@@ -110,6 +118,12 @@ pub fn compacted(model: &Model, roots: &[Shape]) -> OgeomResult<(Model, Vec<Shap
 /// `roots` are recorded so a reader gets back the same handles the writer had.
 /// A model with no roots is legal (it is a document of loose geometry), but a
 /// reader then has nothing to start a traversal from.
+///
+/// With roots, the file holds what they reach: their nodes, geometry and
+/// placements, and the provenance entries of the identities those nodes
+/// carry with every entity those entries derive from. Every lineage query
+/// on the written shapes answers as it did in `model`. With no roots, the
+/// whole model is written.
 ///
 /// # Errors
 ///
@@ -126,49 +140,87 @@ pub fn write(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResu
     // snapshot of one body from a large assembly is that body's records,
     // not everyone else's. Empty roots keep the whole
     // model; that is `write_document`'s contract, whose products name
-    // shapes the root list does not. When the closure covers everything, the
-    // subset would be a copy of the model spelled the long way, so the model
-    // itself is written and the handles keep their numbers.
-    if !roots.is_empty() {
-        let closure = closure_of(model, roots);
-        if !closure.covers(model) {
-            let (parts, unbound) = subset_parts(model, roots, &closure)?;
-            let subset = Model::from_parts(parts)?;
-            let bound = unbound
-                .iter()
-                .map(|root| subset.bind(root))
-                .collect::<OgeomResult<Vec<_>>>()?;
-            return write_full(&subset, &bound, options);
-        }
+    // shapes the root list does not. When the closure covers every node and
+    // every piece of geometry, the subset would be a copy of the model
+    // spelled the long way, so the model itself is written and the handles
+    // keep their numbers.
+    //
+    // Provenance is kept the same way: the entries of the identities the
+    // closure's nodes carry and the ancestry those entries name, which is
+    // what a lineage query on the written shapes walks. A model that ran
+    // many operations holds the entries of every intermediate result, and
+    // none of those are anyone's ancestry.
+    //
+    // The closure is walked from the roots and looked up by handle, so the
+    // cost follows what is written, not what the model has accumulated.
+    if roots.is_empty() {
+        let entries: Vec<(EntityId, &Provenance)> = model.provenance().iter().collect();
+        return write_model(model, roots, options, &entries);
     }
-    write_full(model, roots, options)
+    let closure = closure_of(model, roots);
+    let entries = closure.entries(model);
+    if closure.covers(model) {
+        return write_model(model, roots, options, &entries);
+    }
+    let (parts, roots) = subset_parts(model, roots, &closure)?;
+    let records = Records {
+        scale: parts.tolerances.scale(),
+        datums: parts
+            .datums
+            .iter()
+            .enumerate()
+            .map(|(i, datum)| (Key::from_parts(dense(i), 0), *datum)),
+        geometry: &parts.geometry,
+        entries: &entries,
+        nodes: parts
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (Key::from_parts(dense(i), 0), node)),
+        identities: parts.identity.iter().copied(),
+        current_op: parts.current_op,
+    };
+    emit_records(records, &roots, options)
 }
 
-/// Which of each arena's entries the roots reach.
+/// A dense index for an entry of a subset. The source arena held it as
+/// u32, and a subset is no larger, so the fit is by construction.
+fn dense(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// Which of each arena's entries the roots reach, by handle.
 struct Closure {
-    nodes: std::collections::HashSet<u32>,
-    datums: std::collections::HashSet<u32>,
-    curves: std::collections::HashSet<u32>,
-    pcurves: std::collections::HashSet<u32>,
-    surfaces: std::collections::HashSet<u32>,
-    meshes: std::collections::HashSet<u32>,
-    /// The highest entity id any retained node carries. Entities are kept as
-    /// the table's *prefix* up to here, ids untouched: a derivation only ever
-    /// names entities minted before it, so the prefix is transitively closed,
-    /// and a consumer's recorded `EntityId`s stay valid, which
-    /// `provenance_and_identity_survive` holds the writer to.
-    last_entity: u64,
+    nodes: std::collections::HashSet<TShapeId>,
+    datums: std::collections::HashSet<ogeom_topo::DatumId>,
+    curves: std::collections::HashSet<ogeom_topo::CurveId>,
+    pcurves: std::collections::HashSet<ogeom_topo::PCurveId>,
+    surfaces: std::collections::HashSet<ogeom_topo::SurfaceId>,
+    meshes: std::collections::HashSet<ogeom_topo::TriangulationId>,
+    /// The entities whose entries are written: every identity a retained
+    /// node carries and every entity those entries derive from, however far
+    /// back. Ids are untouched, so a consumer's recorded `EntityId`s stay
+    /// valid, which `provenance_and_identity_survive` holds the writer to.
+    entities: std::collections::HashSet<EntityId>,
 }
 
 impl Closure {
+    /// Whether the closure keeps every node and every piece of geometry.
     fn covers(&self, model: &Model) -> bool {
         let (curves, pcurves, surfaces) = model.geometry().counts();
-        self.nodes.len() == model.nodes().count()
-            && self.curves.len() == curves
+        self.curves.len() == curves
             && self.pcurves.len() == pcurves
             && self.surfaces.len() == surfaces
-            && usize::try_from(self.last_entity)
-                .is_ok_and(|n| n == model.provenance().iter().count())
+            && self.nodes.len() == model.nodes().count()
+    }
+
+    /// The kept entities' entries, in the order their ids were issued.
+    fn entries<'m>(&self, model: &'m Model) -> Vec<(EntityId, &'m Provenance)> {
+        let mut ids: Vec<EntityId> = self.entities.iter().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| Some((id, model.provenance().get(id)?)))
+            .collect()
     }
 }
 
@@ -181,27 +233,34 @@ fn closure_of(model: &Model, roots: &[Shape]) -> Closure {
         pcurves: std::collections::HashSet::new(),
         surfaces: std::collections::HashSet::new(),
         meshes: std::collections::HashSet::new(),
-        last_entity: 0,
+        entities: std::collections::HashSet::new(),
     };
-    let note_location = |datums: &mut std::collections::HashSet<u32>, l: &Location| {
+    let note_location = |datums: &mut std::collections::HashSet<ogeom_topo::DatumId>,
+                         l: &Location| {
         for (datum, _) in l.chain() {
-            datums.insert(datum.index());
+            datums.insert(*datum);
         }
     };
     let mut queue: Vec<TShapeId> = Vec::new();
     for root in roots {
         note_location(&mut c.datums, root.location());
-        if c.nodes.insert(root.node().index()) {
+        if c.nodes.insert(root.node()) {
             queue.push(root.node());
         }
     }
+    let mut ancestry: Vec<EntityId> = Vec::new();
     while let Some(id) = queue.pop() {
         let Some(node) = model.node_by_id(id) else {
             continue;
         };
+        if let Some(entity) = model.identity_of(&Shape::of(id))
+            && c.entities.insert(entity)
+        {
+            ancestry.push(entity);
+        }
         for child in node.children() {
             note_location(&mut c.datums, child.location());
-            if c.nodes.insert(child.node().index()) {
+            if c.nodes.insert(child.node()) {
                 queue.push(child.node());
             }
         }
@@ -212,7 +271,7 @@ fn closure_of(model: &Model, roots: &[Shape]) -> Closure {
                         EdgeRepr::Curve3d {
                             curve, location, ..
                         } => {
-                            c.curves.insert(curve.index());
+                            c.curves.insert(*curve);
                             note_location(&mut c.datums, location);
                         }
                         EdgeRepr::PCurve {
@@ -221,8 +280,8 @@ fn closure_of(model: &Model, roots: &[Shape]) -> Closure {
                             location,
                             ..
                         } => {
-                            c.pcurves.insert(curve.index());
-                            c.surfaces.insert(surface.index());
+                            c.pcurves.insert(*curve);
+                            c.surfaces.insert(*surface);
                             note_location(&mut c.datums, location);
                         }
                         EdgeRepr::Seam {
@@ -232,16 +291,16 @@ fn closure_of(model: &Model, roots: &[Shape]) -> Closure {
                             location,
                             ..
                         } => {
-                            c.pcurves.insert(forward.index());
-                            c.pcurves.insert(reversed.index());
-                            c.surfaces.insert(surface.index());
+                            c.pcurves.insert(*forward);
+                            c.pcurves.insert(*reversed);
+                            c.surfaces.insert(*surface);
                             note_location(&mut c.datums, location);
                         }
                         EdgeRepr::Polyline { location, .. } => {
                             note_location(&mut c.datums, location);
                         }
                         EdgeRepr::PolygonOnTriangulation { triangulation, .. } => {
-                            c.meshes.insert(triangulation.index());
+                            c.meshes.insert(*triangulation);
                         }
                         // The enum is non-exhaustive; a representation this
                         // walker does not know cannot name handles it should
@@ -251,90 +310,79 @@ fn closure_of(model: &Model, roots: &[Shape]) -> Closure {
                 }
             }
             NodeData::Face(f) => {
-                c.surfaces.insert(f.surface.index());
+                c.surfaces.insert(f.surface);
                 note_location(&mut c.datums, &f.location);
                 if let Some(mesh) = f.triangulation {
-                    c.meshes.insert(mesh.index());
+                    c.meshes.insert(mesh);
                 }
             }
             NodeData::Vertex(_) | NodeData::Container => {}
         }
     }
-    for (node, entity) in model.identities() {
-        if c.nodes.contains(&node.index()) {
-            c.last_entity = c.last_entity.max(entity.get());
+    while let Some(entity) = ancestry.pop() {
+        if let Some(entry) = model.provenance().get(entity) {
+            for &from in entry.inputs() {
+                if c.entities.insert(from) {
+                    ancestry.push(from);
+                }
+            }
         }
     }
     c
 }
 
+/// The handles of `set`, in arena order, and the map from each one's old
+/// index to its new dense one.
+fn renumbered<T>(
+    set: &std::collections::HashSet<Key<T>>,
+) -> (Vec<Key<T>>, std::collections::HashMap<u32, u32>) {
+    let mut ordered: Vec<Key<T>> = set.iter().copied().collect();
+    ordered.sort_unstable_by_key(|k| k.index());
+    let map = ordered
+        .iter()
+        .enumerate()
+        .map(|(i, k)| (k.index(), dense(i)))
+        .collect();
+    (ordered, map)
+}
+
 /// The closure rebuilt as its own parts, every handle re-densified in the
-/// model's own order, plus the roots respelled in the new numbering.
+/// model's own order, plus the roots respelled in the new numbering. The
+/// provenance is not among the parts: the writer takes the kept entries
+/// from the model as they are.
 fn subset_parts(
     model: &Model,
     roots: &[Shape],
     closure: &Closure,
 ) -> OgeomResult<(ModelParts, Vec<Shape>)> {
-    use std::collections::HashMap;
-    // A dense index for a retained entry. The source arena held it as u32,
-    // and a subset is no larger, so the fit is by construction.
-    let dense = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let missing = || ogeom_core::ogeom_err!(Dangling, "the closure misses a referenced handle");
     // Old index -> new dense index, in arena order, so the same model and
     // roots write the same bytes every time.
-    let mut node_map: HashMap<u32, u32> = HashMap::new();
-    let mut nodes_in_order: Vec<TShapeId> = Vec::new();
-    for (id, _) in model.nodes() {
-        if closure.nodes.contains(&id.index()) {
-            node_map.insert(id.index(), dense(nodes_in_order.len()));
-            nodes_in_order.push(id);
-        }
-    }
-    let mut datum_map: HashMap<u32, u32> = HashMap::new();
-    let mut datums = Vec::new();
-    for (id, datum) in model.datums().iter() {
-        if closure.datums.contains(&id.index()) {
-            datum_map.insert(id.index(), dense(datums.len()));
-            datums.push(datum);
-        }
-    }
+    let (nodes_in_order, node_map) = renumbered(&closure.nodes);
+    let (datum_ids, datum_map) = renumbered(&closure.datums);
+    let datums = datum_ids
+        .iter()
+        .map(|&id| model.datums().get(id).ok_or_else(missing))
+        .collect::<OgeomResult<Vec<_>>>()?;
     let geometry_in = model.geometry();
     let mut geometry = GeometryStore::new();
-    let mut curve_map: HashMap<u32, u32> = HashMap::new();
-    for (id, c) in geometry_in.curves() {
-        if closure.curves.contains(&id.index()) {
-            curve_map.insert(id.index(), dense(geometry.counts().0));
-            geometry.add_curve(c.clone());
-        }
+    let (curve_ids, curve_map) = renumbered(&closure.curves);
+    for id in curve_ids {
+        geometry.add_curve(geometry_in.curve(id).ok_or_else(missing)?.clone());
     }
-    let mut pcurve_map: HashMap<u32, u32> = HashMap::new();
-    for (id, c) in geometry_in.pcurves() {
-        if closure.pcurves.contains(&id.index()) {
-            pcurve_map.insert(id.index(), dense(geometry.counts().1));
-            geometry.add_pcurve(c.clone());
-        }
+    let (pcurve_ids, pcurve_map) = renumbered(&closure.pcurves);
+    for id in pcurve_ids {
+        geometry.add_pcurve(geometry_in.pcurve(id).ok_or_else(missing)?.clone());
     }
-    let mut surface_map: HashMap<u32, u32> = HashMap::new();
-    for (id, sf) in geometry_in.surfaces() {
-        if closure.surfaces.contains(&id.index()) {
-            surface_map.insert(id.index(), dense(geometry.counts().2));
-            geometry.add_surface(sf.clone());
-        }
+    let (surface_ids, surface_map) = renumbered(&closure.surfaces);
+    for id in surface_ids {
+        geometry.add_surface(geometry_in.surface(id).ok_or_else(missing)?.clone());
     }
-    let mut mesh_map: HashMap<u32, u32> = HashMap::new();
-    for (id, mesh) in geometry_in.triangulations() {
-        if closure.meshes.contains(&id.index()) {
-            mesh_map.insert(id.index(), dense(geometry.triangulation_count()));
-            geometry.add_triangulation(mesh.clone());
-        }
+    let (mesh_ids, mesh_map) = renumbered(&closure.meshes);
+    for id in mesh_ids {
+        geometry.add_triangulation(geometry_in.triangulation(id).ok_or_else(missing)?.clone());
     }
-    let provenance: Vec<Provenance> = model
-        .provenance()
-        .iter()
-        .take_while(|(id, _)| id.get() <= closure.last_entity)
-        .map(|(_, entry)| entry.clone())
-        .collect();
 
-    let missing = || ogeom_core::ogeom_err!(Dangling, "the closure misses a referenced handle");
     let relocate = |l: &Location| -> OgeomResult<Location> {
         let mut out = Location::identity();
         for (datum, power) in l.chain() {
@@ -478,67 +526,117 @@ fn subset_parts(
     }
 
     let mut identity = Vec::new();
-    for (node, entity) in model.identities() {
-        if let Some(&n) = node_map.get(&node.index()) {
-            identity.push((Key::from_parts(n, 0), entity));
+    for (new, id) in nodes_in_order.iter().enumerate() {
+        if let Some(entity) = model.identity_of(&Shape::of(*id)) {
+            identity.push((Key::from_parts(dense(new), 0), entity));
         }
     }
-    identity.sort_unstable_by_key(|(node, _)| node.index());
 
     let parts = ModelParts {
         nodes,
         datums,
         geometry,
-        provenance,
+        provenance: Vec::new(),
         identity,
         current_op: model.current_operation(),
         tolerances: model.tolerances(),
     };
-    let unbound = roots
+    let respelled = roots
         .iter()
         .map(&reshape)
         .collect::<OgeomResult<Vec<_>>>()?;
-    Ok((parts, unbound))
+    Ok((parts, respelled))
 }
 
-fn write_full(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomResult<String> {
+/// Write `model` whole, with `entries` for its provenance.
+fn write_model(
+    model: &Model,
+    roots: &[Shape],
+    options: WriteOptions,
+    entries: &[(EntityId, &Provenance)],
+) -> OgeomResult<String> {
+    let records = Records {
+        scale: model.tolerances().scale(),
+        datums: model.datums().iter(),
+        geometry: model.geometry(),
+        entries,
+        nodes: model.nodes(),
+        identities: model.identities(),
+        current_op: model.current_operation(),
+    };
+    emit_records(records, roots, options)
+}
+
+/// Everything a file holds, in the order it is written.
+struct Records<'a, D, N, I> {
+    scale: f64,
+    datums: D,
+    geometry: &'a GeometryStore,
+    /// Ascending by id.
+    entries: &'a [(EntityId, &'a Provenance)],
+    nodes: N,
+    identities: I,
+    current_op: OpId,
+}
+
+/// The text of `records` and `roots`, at the oldest version that holds it.
+fn emit_records<'a, D, N, I>(
+    records: Records<'a, D, N, I>,
+    roots: &[Shape],
+    options: WriteOptions,
+) -> OgeomResult<String>
+where
+    D: Iterator<Item = (ogeom_topo::DatumId, ogeom_topo::Datum)>,
+    N: Iterator<Item = (TShapeId, &'a TShape)>,
+    I: Iterator<Item = (TShapeId, EntityId)>,
+{
+    // A table with gaps in its ids is what version 3 added; a file without
+    // them is written as version 2, which every reader since then follows.
+    let gapped = records
+        .entries
+        .iter()
+        .enumerate()
+        .any(|(i, (id, _))| id.get() != i as u64 + 1);
     let mut out = String::new();
-    out.push_str(&format!("{MAGIC} {VERSION}\n"));
+    out.push_str(&format!(
+        "{MAGIC} {}\n",
+        if gapped { VERSION } else { GAPLESS_VERSION }
+    ));
 
     // The unit scale, first, because everything after it is measured in those
     // units. A document that did not record it would read back correctly and be
     // *validated* against whatever the reader assumed, so geometry legitimate
     // at one scale could be refused at another, and nothing would say why.
-    let mut t = Vec::new();
+    let mut t = Tokens::default();
     w(&mut t, "units");
-    n(&mut t, model.tolerances().scale());
+    n(&mut t, records.scale);
     emit(&mut out, &t);
 
-    for (id, datum) in model.datums().iter() {
-        let mut t = Vec::new();
+    for (id, datum) in records.datums {
+        let mut t = Tokens::default();
         w(&mut t, "datum");
         key(&mut t, id);
         transform(&mut t, &datum)?;
         emit(&mut out, &t);
     }
 
-    let geometry = model.geometry();
+    let geometry = records.geometry;
     for (id, c) in geometry.curves() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "curve");
         key(&mut t, id);
         curve(&mut t, c)?;
         emit(&mut out, &t);
     }
     for (id, c) in geometry.pcurves() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "pcurve");
         key(&mut t, id);
         pcurve(&mut t, c)?;
         emit(&mut out, &t);
     }
     for (id, s) in geometry.surfaces() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "surface");
         key(&mut t, id);
         surface(&mut t, s)?;
@@ -558,32 +656,32 @@ fn write_full(model: &Model, roots: &[Shape], options: WriteOptions) -> OgeomRes
         ));
     }
 
-    for (id, entry) in model.provenance().iter() {
-        let mut t = Vec::new();
+    for &(id, entry) in records.entries {
+        let mut t = Tokens::default();
         w(&mut t, "entity");
         u(&mut t, id.get());
         provenance(&mut t, entry);
         emit(&mut out, &t);
     }
 
-    for (id, node) in model.nodes() {
+    for (id, node) in records.nodes {
         write_node(&mut out, id, node, options)?;
     }
-    for (node, entity) in model.identities() {
-        let mut t = Vec::new();
+    for (node, entity) in records.identities {
+        let mut t = Tokens::default();
         w(&mut t, "identity");
         key(&mut t, node);
         u(&mut t, entity.get());
         emit(&mut out, &t);
     }
 
-    let mut t = Vec::new();
+    let mut t = Tokens::default();
     w(&mut t, "operation");
-    u(&mut t, u64::from(model.current_operation().0));
+    u(&mut t, u64::from(records.current_op.0));
     emit(&mut out, &t);
 
     for root in roots {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "root");
         shape(&mut t, root);
         emit(&mut out, &t);
@@ -623,11 +721,16 @@ pub fn read(text: &str) -> OgeomResult<(Model, Vec<Shape>)> {
 ///
 /// As [`read`], plus the refusals of [`Model::absorb`].
 pub fn read_into(model: &mut Model, text: &str) -> OgeomResult<Absorbed> {
-    let (parts, roots, leftover, _) = read_parts(text)?;
+    let (parts, roots, leftover, _, gaps) = read_parts(text)?;
     if let Some(keyword) = leftover {
         ogeom_bail!(Construction, "unknown record `{keyword}`");
     }
-    model.absorb(parts, &roots)
+    let absorbed = model.absorb(parts, &roots)?;
+    model.forget_provenance(
+        gaps.iter()
+            .filter_map(|id| absorbed.entities.get(id).copied()),
+    );
+    Ok(absorbed)
 }
 
 /// The model section, stopping at the first record it does not know.
@@ -636,8 +739,9 @@ pub fn read_into(model: &mut Model, text: &str) -> OgeomResult<Absorbed> {
 /// layered reader (the document's) can pick up where the model's ends.
 #[allow(clippy::type_complexity)]
 fn read_core(text: &str) -> OgeomResult<(Model, Vec<Shape>, Option<String>, Cursor<'_>)> {
-    let (parts, roots, leftover, cursor) = read_parts(text)?;
-    let model = Model::from_parts(parts)?;
+    let (parts, roots, leftover, cursor, gaps) = read_parts(text)?;
+    let mut model = Model::from_parts(parts)?;
+    model.forget_provenance(gaps);
     // The roots were rebuilt alongside the rest but travel outside `ModelParts`,
     // so they are still unbound: they name no arena and resolve nowhere. Binding
     // them checks them too, which is why a file naming a root that is not there
@@ -653,8 +757,20 @@ fn read_core(text: &str) -> OgeomResult<(Model, Vec<Shape>, Option<String>, Curs
 ///
 /// Everything [`read_core`] does short of assembling a model, split out so
 /// [`read_into`] can hand the same parts to [`Model::absorb`] instead.
+///
+/// The last element is the entity ids the file skipped. Their places in
+/// the parts' table hold bare primitives so the numbering holds, and the
+/// caller forgets them once the model is assembled.
 #[allow(clippy::type_complexity)]
-fn read_parts(text: &str) -> OgeomResult<(ModelParts, Vec<Shape>, Option<String>, Cursor<'_>)> {
+fn read_parts(
+    text: &str,
+) -> OgeomResult<(
+    ModelParts,
+    Vec<Shape>,
+    Option<String>,
+    Cursor<'_>,
+    Vec<EntityId>,
+)> {
     let mut cursor = Cursor::new(text);
     let mut leftover = None;
 
@@ -679,6 +795,7 @@ fn read_parts(text: &str) -> OgeomResult<(ModelParts, Vec<Shape>, Option<String>
     };
     let mut geometry = GeometryStore::new();
     let mut roots = Vec::new();
+    let mut gaps: Vec<EntityId> = Vec::new();
 
     while !cursor.done() {
         let tag = cursor.word()?.to_string();
@@ -710,15 +827,37 @@ fn read_parts(text: &str) -> OgeomResult<(ModelParts, Vec<Shape>, Option<String>
             }
             "entity" => {
                 let id = cursor.count()?;
-                if id != parts.provenance.len() + 1 {
+                let next = parts.provenance.len() + 1;
+                if id < next || (version < 3 && id != next) {
                     ogeom_bail!(
                         Construction,
                         "entities must be written in the order their identities \
-                         were issued; expected {}, got {id}",
-                        parts.provenance.len() + 1
+                         were issued; expected {next}, got {id}"
                     );
                 }
-                parts.provenance.push(cursor.provenance()?);
+                for skipped in next..id {
+                    let Some(gap) = EntityId::from_raw(skipped as u64) else {
+                        ogeom_bail!(Construction, "identity 0 was never issued");
+                    };
+                    gaps.push(gap);
+                    parts.provenance.push(Provenance::Primitive {
+                        op: OpId(0),
+                        role: Role::SOLE,
+                    });
+                }
+                let entry = cursor.provenance()?;
+                if let Some(from) = entry
+                    .inputs()
+                    .iter()
+                    .find(|from| gaps.binary_search(from).is_ok())
+                {
+                    ogeom_bail!(
+                        Construction,
+                        "entity {id} is derived from entity {}, which the file left out",
+                        from.get()
+                    );
+                }
+                parts.provenance.push(entry);
             }
             "node" => {
                 let (index, _) = cursor.key()?;
@@ -742,8 +881,20 @@ fn read_parts(text: &str) -> OgeomResult<(ModelParts, Vec<Shape>, Option<String>
         }
     }
 
+    if let Some((_, entity)) = parts
+        .identity
+        .iter()
+        .find(|(_, entity)| gaps.binary_search(entity).is_ok())
+    {
+        ogeom_bail!(
+            Construction,
+            "a node carries entity {}, which the file left out",
+            entity.get()
+        );
+    }
+
     parts.geometry = geometry;
-    Ok((parts, roots, leftover, cursor))
+    Ok((parts, roots, leftover, cursor, gaps))
 }
 
 /// Read the `units` record, which every document since version 1 carries.
@@ -807,7 +958,7 @@ pub fn write_document(
     let mut out = write(document.model(), &[], options)?;
 
     for (_, product) in document.products() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "product");
         text(&mut t, &product.name);
         match product.colour {
@@ -843,7 +994,7 @@ pub fn write_document(
     let mut colours: Vec<_> = document.colours().collect();
     colours.sort_by_key(|(node, _)| (node.index(), node.generation()));
     for (node, colour) in colours {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-colour");
         key(&mut t, node);
         for channel in [colour.r, colour.g, colour.b, colour.a] {
@@ -854,7 +1005,7 @@ pub fn write_document(
     let mut names: Vec<_> = document.names().collect();
     names.sort_by_key(|(node, _)| (node.index(), node.generation()));
     for (node, name) in names {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-name");
         key(&mut t, node);
         text(&mut t, name);
@@ -863,7 +1014,7 @@ pub fn write_document(
 
     let pmi = document.pmi();
     for dimension in &pmi.dimensions {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "pmi-dim");
         text(&mut t, &dimension.name);
         w(
@@ -890,7 +1041,7 @@ pub fn write_document(
         emit(&mut out, &t);
     }
     for tolerance in &pmi.tolerances {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "pmi-tol");
         text(&mut t, &tolerance.kind);
         text(&mut t, &tolerance.name);
@@ -910,7 +1061,7 @@ pub fn write_document(
         emit(&mut out, &t);
     }
     for datum in &pmi.datums {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "pmi-datum");
         text(&mut t, &datum.label);
         u(&mut t, datum.items.len() as u64);
@@ -921,7 +1072,7 @@ pub fn write_document(
     }
 
     for callout in &document.pmi().callouts {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "pmi-callout");
         text(&mut t, &callout.name);
         match &callout.plane {
@@ -956,7 +1107,7 @@ pub fn write_document(
         emit(&mut out, &t);
     }
     for view in document.views() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-view");
         text(&mut t, &view.name);
         frame(&mut t, &view.frame);
@@ -974,7 +1125,7 @@ pub fn write_document(
         emit(&mut out, &t);
     }
     for note in document.notes() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-note");
         text(&mut t, &note.author);
         text(&mut t, &note.text);
@@ -995,7 +1146,7 @@ pub fn write_document(
     with_properties.sort_by_key(|(node, _)| (node.index(), node.generation()));
     for (node, properties) in with_properties {
         for property in properties {
-            let mut t = Vec::new();
+            let mut t = Tokens::default();
             w(&mut t, "doc-prop");
             key(&mut t, node);
             text(&mut t, &property.name);
@@ -1017,7 +1168,7 @@ pub fn write_document(
         }
     }
     for material in document.materials() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-material");
         text(&mut t, &material.name);
         optional(&mut t, material.density);
@@ -1035,14 +1186,14 @@ pub fn write_document(
     let mut assigned: Vec<_> = document.material_assignments().collect();
     assigned.sort_by_key(|(node, _)| (node.index(), node.generation()));
     for (node, material) in assigned {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-material-of");
         key(&mut t, node);
         u(&mut t, material.index() as u64);
         emit(&mut out, &t);
     }
     for layer in document.layers() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-layer");
         text(&mut t, &layer.name);
         flag(&mut t, layer.visible);
@@ -1051,7 +1202,7 @@ pub fn write_document(
     let mut memberships: Vec<_> = document.layer_memberships().collect();
     memberships.sort_by_key(|(node, _)| (node.index(), node.generation()));
     for (node, layers) in memberships {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-on-layer");
         key(&mut t, node);
         u(&mut t, layers.len() as u64);
@@ -1063,7 +1214,7 @@ pub fn write_document(
     let mut checks: Vec<_> = document.validations().collect();
     checks.sort_by_key(|(node, _)| (node.index(), node.generation()));
     for (node, values) in checks {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "doc-check");
         key(&mut t, node);
         n(&mut t, values.volume);
@@ -1398,7 +1549,7 @@ fn bind_node(document: &ogeom_doc::Document, node: TShapeId) -> OgeomResult<TSha
 
 /// Append a text token: `'` then the percent-encoded body, so names survive
 /// whitespace tokenization and an empty name survives at all.
-fn text(t: &mut Vec<String>, s: &str) {
+fn text(t: &mut Tokens, s: &str) {
     let mut token = String::from("'");
     for byte in s.bytes() {
         if byte.is_ascii_graphic() && byte != b'%' {
@@ -1440,7 +1591,7 @@ fn read_text(cursor: &mut Cursor<'_>) -> OgeomResult<String> {
 }
 
 /// An optional number: a presence flag then the value.
-fn optional(t: &mut Vec<String>, v: Option<f64>) {
+fn optional(t: &mut Tokens, v: Option<f64>) {
     match v {
         Some(value) => {
             flag(t, true);
@@ -1460,58 +1611,79 @@ fn read_optional(cursor: &mut Cursor<'_>) -> OgeomResult<Option<f64>> {
 }
 
 /// Append a word.
-fn w(t: &mut Vec<String>, s: &str) {
-    t.push(s.to_string());
+fn w(t: &mut Tokens, s: &str) {
+    t.next().push_str(s);
 }
 
 /// Append a number, in the shortest form that parses back to it exactly.
-fn n(t: &mut Vec<String>, v: f64) {
-    t.push(format!("{v:?}"));
+fn n(t: &mut Tokens, v: f64) {
+    let _ = write!(t.next(), "{v:?}");
 }
 
 /// Append an unsigned integer.
-fn u(t: &mut Vec<String>, v: u64) {
-    t.push(v.to_string());
+fn u(t: &mut Tokens, v: u64) {
+    let _ = write!(t.next(), "{v}");
 }
 
 /// Append an arena handle, as `index:generation`.
-fn key<T>(t: &mut Vec<String>, id: Key<T>) {
-    t.push(format!("{}:{}", id.index(), id.generation()));
+fn key<T>(t: &mut Tokens, id: Key<T>) {
+    let _ = write!(t.next(), "{}:{}", id.index(), id.generation());
 }
 
 /// Append a flag.
-fn flag(t: &mut Vec<String>, v: bool) {
-    t.push(if v { "1" } else { "0" }.to_string());
+fn flag(t: &mut Tokens, v: bool) {
+    t.next().push(if v { '1' } else { '0' });
+}
+
+/// One record's tokens, joined by single spaces as they are appended.
+///
+/// Numbers are formatted straight into the line; writing into a `String`
+/// cannot fail, which is why the helpers discard `write!`'s result.
+#[derive(Default)]
+struct Tokens(String);
+
+impl Tokens {
+    /// The line, ready for the next token: a space after any token before.
+    fn next(&mut self) -> &mut String {
+        if !self.0.is_empty() {
+            self.0.push(' ');
+        }
+        &mut self.0
+    }
+
+    fn push(&mut self, token: String) {
+        self.next().push_str(&token);
+    }
 }
 
 /// Finish a record.
-fn emit(out: &mut String, t: &[String]) {
-    out.push_str(&t.join(" "));
+fn emit(out: &mut String, t: &Tokens) {
+    out.push_str(&t.0);
     out.push('\n');
 }
 
-fn point(t: &mut Vec<String>, p: Point) {
+fn point(t: &mut Tokens, p: Point) {
     n(t, p.x);
     n(t, p.y);
     n(t, p.z);
 }
 
-fn point2(t: &mut Vec<String>, p: Point2) {
+fn point2(t: &mut Tokens, p: Point2) {
     n(t, p.x);
     n(t, p.y);
 }
 
-fn vector(t: &mut Vec<String>, v: Vector) {
+fn vector(t: &mut Tokens, v: Vector) {
     n(t, v.x);
     n(t, v.y);
     n(t, v.z);
 }
 
-fn direction(t: &mut Vec<String>, d: Direction) {
+fn direction(t: &mut Tokens, d: Direction) {
     vector(t, d.vector());
 }
 
-fn direction2(t: &mut Vec<String>, d: Direction2) {
+fn direction2(t: &mut Tokens, d: Direction2) {
     n(t, d.vector().x);
     n(t, d.vector().y);
 }
@@ -1521,36 +1693,36 @@ fn direction2(t: &mut Vec<String>, d: Direction2) {
 /// `y` is written even though a right-handed frame derives it, because a
 /// mirrored frame does not: writing only `z` and `x` would quietly turn every
 /// left-handed frame right-handed on the way back.
-fn frame(t: &mut Vec<String>, f: &Frame) {
+fn frame(t: &mut Tokens, f: &Frame) {
     point(t, f.origin());
     direction(t, f.x());
     direction(t, f.y());
     direction(t, f.z());
 }
 
-fn frame2(t: &mut Vec<String>, f: &Frame2) {
+fn frame2(t: &mut Tokens, f: &Frame2) {
     point2(t, f.origin());
     direction2(t, f.x());
     direction2(t, f.y());
 }
 
-fn axis(t: &mut Vec<String>, a: Axis) {
+fn axis(t: &mut Tokens, a: Axis) {
     point(t, a.location);
     direction(t, a.direction);
 }
 
-fn axis2(t: &mut Vec<String>, a: Axis2) {
+fn axis2(t: &mut Tokens, a: Axis2) {
     point2(t, a.location);
     direction2(t, a.direction);
 }
 
-fn range(t: &mut Vec<String>, r: (f64, f64)) {
+fn range(t: &mut Tokens, r: (f64, f64)) {
     n(t, r.0);
     n(t, r.1);
 }
 
 /// A similarity transform: its unit linear part, its scale, its translation.
-fn transform(t: &mut Vec<String>, x: &Transform) -> OgeomResult<()> {
+fn transform(t: &mut Tokens, x: &Transform) -> OgeomResult<()> {
     let m = x.linear();
     for row in 0..3 {
         for column in 0..3 {
@@ -1563,7 +1735,7 @@ fn transform(t: &mut Vec<String>, x: &Transform) -> OgeomResult<()> {
 }
 
 /// A placement chain, or `-` for the identity.
-fn location(t: &mut Vec<String>, l: &Location) {
+fn location(t: &mut Tokens, l: &Location) {
     if l.is_identity() {
         w(t, "-");
         return;
@@ -1577,7 +1749,7 @@ fn location(t: &mut Vec<String>, l: &Location) {
 }
 
 /// A shape triple, as one token: node, orientation, placement.
-fn shape(t: &mut Vec<String>, s: &Shape) {
+fn shape(t: &mut Tokens, s: &Shape) {
     let orientation = match s.orientation() {
         Orientation::Forward => "F",
         Orientation::Reversed => "R",
@@ -1602,7 +1774,7 @@ fn shape(t: &mut Vec<String>, s: &Shape) {
     w(t, &token);
 }
 
-fn knots(t: &mut Vec<String>, k: &KnotVector) {
+fn knots(t: &mut Tokens, k: &KnotVector) {
     u(t, k.degree() as u64);
     u(t, k.knots().len() as u64);
     for value in k.knots() {
@@ -1610,19 +1782,19 @@ fn knots(t: &mut Vec<String>, k: &KnotVector) {
     }
 }
 
-fn weighted(t: &mut Vec<String>, c: Weighted<Point>) {
+fn weighted(t: &mut Tokens, c: Weighted<Point>) {
     // Written in the homogeneous form it is stored in, so no multiply and
     // divide stands between what was held and what comes back.
     point(t, c.scaled);
     n(t, c.weight);
 }
 
-fn weighted2(t: &mut Vec<String>, c: Weighted<Point2>) {
+fn weighted2(t: &mut Tokens, c: Weighted<Point2>) {
     point2(t, c.scaled);
     n(t, c.weight);
 }
 
-fn curve(t: &mut Vec<String>, c: &Curve) -> OgeomResult<()> {
+fn curve(t: &mut Tokens, c: &Curve) -> OgeomResult<()> {
     match c {
         Curve::Line(l) => {
             w(t, "line");
@@ -1711,7 +1883,7 @@ fn curve(t: &mut Vec<String>, c: &Curve) -> OgeomResult<()> {
     Ok(())
 }
 
-fn pcurve(t: &mut Vec<String>, c: &PlanarCurve) -> OgeomResult<()> {
+fn pcurve(t: &mut Tokens, c: &PlanarCurve) -> OgeomResult<()> {
     match c {
         PlanarCurve::Line(l) => {
             w(t, "line2");
@@ -1766,7 +1938,7 @@ fn pcurve(t: &mut Vec<String>, c: &PlanarCurve) -> OgeomResult<()> {
     Ok(())
 }
 
-fn surface(t: &mut Vec<String>, s: &SurfaceGeometry) -> OgeomResult<()> {
+fn surface(t: &mut Tokens, s: &SurfaceGeometry) -> OgeomResult<()> {
     let (u_domain, v_domain) = s.domain();
     match s {
         SurfaceGeometry::Plane(p) => {
@@ -1836,7 +2008,7 @@ fn surface(t: &mut Vec<String>, s: &SurfaceGeometry) -> OgeomResult<()> {
     Ok(())
 }
 
-fn provenance(t: &mut Vec<String>, p: &Provenance) {
+fn provenance(t: &mut Tokens, p: &Provenance) {
     match p {
         Provenance::Primitive { op, role } => {
             w(t, "primitive");
@@ -1866,7 +2038,7 @@ fn provenance(t: &mut Vec<String>, p: &Provenance) {
 /// thing in the file by far and a one-line-per-vertex diff is the difference
 /// between reading a disagreement and scrolling past it.
 fn write_mesh(out: &mut String, id: ogeom_topo::TriangulationId, mesh: &Triangulation) {
-    let mut t = Vec::new();
+    let mut t = Tokens::default();
     w(&mut t, "mesh");
     key(&mut t, id);
     u(&mut t, mesh.positions.len() as u64);
@@ -1875,7 +2047,7 @@ fn write_mesh(out: &mut String, id: ogeom_topo::TriangulationId, mesh: &Triangul
     emit(out, &t);
 
     for i in 0..mesh.positions.len() {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "v");
         point(&mut t, mesh.positions[i]);
         // A mesh may carry fewer normals or parameters than positions if it was
@@ -1888,7 +2060,7 @@ fn write_mesh(out: &mut String, id: ogeom_topo::TriangulationId, mesh: &Triangul
         emit(out, &t);
     }
     for triangle in &mesh.triangles {
-        let mut t = Vec::new();
+        let mut t = Tokens::default();
         w(&mut t, "f");
         for index in triangle {
             u(&mut t, u64::from(*index));
@@ -1903,7 +2075,7 @@ fn write_node(
     node: &TShape,
     options: WriteOptions,
 ) -> OgeomResult<()> {
-    let mut t = Vec::new();
+    let mut t = Tokens::default();
     w(&mut t, "node");
     key(&mut t, id);
     w(
@@ -1943,7 +2115,7 @@ fn write_node(
                 .collect();
             u(&mut t, kept.len() as u64);
             for repr in kept {
-                let mut line = Vec::new();
+                let mut line = Tokens::default();
                 w(&mut line, "r");
                 write_repr(&mut line, repr)?;
                 representations.push(line);
@@ -1973,7 +2145,7 @@ fn write_node(
     Ok(())
 }
 
-fn write_repr(t: &mut Vec<String>, repr: &EdgeRepr) -> OgeomResult<()> {
+fn write_repr(t: &mut Tokens, repr: &EdgeRepr) -> OgeomResult<()> {
     match repr {
         EdgeRepr::Curve3d {
             curve,

@@ -175,9 +175,13 @@ pub struct SourceId(pub u32);
 ///
 /// One per document. Cloning it clones the whole history, which is what a
 /// rebuild-with-rollback needs.
+///
+/// An entry can be forgotten ([`ProvenanceTable::forget`]): its id stays
+/// issued, so no later entity takes it, and asking for it answers `None`
+/// as for an id from another document.
 #[derive(Debug, Clone, Default)]
 pub struct ProvenanceTable {
-    entries: Vec<Provenance>,
+    entries: Vec<Option<Provenance>>,
 }
 
 impl ProvenanceTable {
@@ -189,13 +193,14 @@ impl ProvenanceTable {
         }
     }
 
-    /// Number of entities recorded.
+    /// Number of identities issued, forgotten ones included: the next
+    /// recorded entity is this plus one.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether nothing has been recorded.
+    /// Whether no identity has been issued.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -208,7 +213,7 @@ impl ProvenanceTable {
     /// If more than `u64::MAX - 1` entities are recorded. Not reachable.
     #[allow(clippy::expect_used, reason = "documented panic; see # Panics")]
     pub fn record(&mut self, provenance: Provenance) -> EntityId {
-        self.entries.push(provenance);
+        self.entries.push(Some(provenance));
         // Ids start at 1 so that EntityId can be NonZeroU64 and Option<EntityId>
         // costs nothing.
         let raw = u64::try_from(self.entries.len()).expect("entity count exceeded u64");
@@ -234,11 +239,28 @@ impl ProvenanceTable {
         })
     }
 
-    /// The provenance of `id`, or `None` if it belongs to another document.
+    /// The provenance of `id`, or `None` if it belongs to another document
+    /// or its entry was forgotten.
     #[must_use]
     pub fn get(&self, id: EntityId) -> Option<&Provenance> {
         let index = usize::try_from(id.get()).ok()?.checked_sub(1)?;
-        self.entries.get(index)
+        self.entries.get(index)?.as_ref()
+    }
+
+    /// Drop `id`'s entry and keep its id issued.
+    ///
+    /// For a document that keeps only what its shapes can still reach: an
+    /// entity no shape carries and no kept entry derives from answers
+    /// nothing a reference could ask. Returns whether there was an entry
+    /// to drop.
+    pub fn forget(&mut self, id: EntityId) -> bool {
+        let Some(index) = usize::try_from(id.get())
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+        else {
+            return false;
+        };
+        self.entries.get_mut(index).and_then(Option::take).is_some()
     }
 
     /// Walk `id`'s derivation back to the entities it ultimately came from.
@@ -271,7 +293,8 @@ impl ProvenanceTable {
         out
     }
 
-    /// Every entity, in the order its identity was issued.
+    /// Every entity with an entry, in the order its identity was issued;
+    /// forgotten entries are skipped.
     ///
     /// For writing a document out: the table *is* the record of what every
     /// entity is, and a file that dropped it would come back as a model whose
@@ -279,7 +302,8 @@ impl ProvenanceTable {
     pub fn iter(&self) -> impl Iterator<Item = (EntityId, &Provenance)> {
         self.entries.iter().enumerate().filter_map(|(i, p)| {
             // Ids start at 1, and the table cannot have grown past u64.
-            EntityId::from_raw(u64::try_from(i).ok()?.checked_add(1)?).map(|id| (id, p))
+            let id = EntityId::from_raw(u64::try_from(i).ok()?.checked_add(1)?)?;
+            Some((id, p.as_ref()?))
         })
     }
 }
@@ -351,6 +375,20 @@ mod tests {
 
         assert!(t.get(mine).is_some());
         assert!(t.get(theirs).is_none(), "foreign id must not resolve");
+    }
+
+    #[test]
+    fn a_forgotten_entry_keeps_its_id_issued() {
+        let mut t = ProvenanceTable::new();
+        let a = t.primitive(OpId(1), Role::SOLE);
+        let b = t.primitive(OpId(2), Role::SOLE);
+        assert!(t.forget(a));
+        assert!(!t.forget(a), "already forgotten");
+        assert!(t.get(a).is_none());
+        assert_eq!(t.len(), 2);
+        assert_eq!(t.iter().map(|(id, _)| id).collect::<Vec<_>>(), vec![b]);
+        let c = t.primitive(OpId(3), Role::SOLE);
+        assert_eq!(c.get(), 3, "the next id follows every id issued");
     }
 
     #[test]
