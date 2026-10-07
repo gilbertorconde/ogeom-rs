@@ -1140,25 +1140,34 @@ pub fn is_shell_closed(model: &Model, shell: &Shape) -> OgeomResult<bool> {
     // and down the other), so counting faces would call every cylinder, sphere
     // and torus open, which is precisely backwards.
     let mut uses: HashMap<ogeom_topo::TShapeId, usize> = HashMap::new();
+    // Read from the nodes as they are stored: what is counted is which edge
+    // node each use names, which no placement changes.
+    let children = |shape: &Shape| -> OgeomResult<&[Shape]> {
+        match model.node(shape) {
+            Some(node) => Ok(node.children()),
+            None => ogeom_bail!(Dangling, "shape refers to a node not in this model"),
+        }
+    };
     for face in ogeom_topo::explore(model, shell, ogeom_topo::Filter::OfType(ShapeType::Face))? {
-        for wire in model.children_of(&face)? {
-            for edge in model.children_of(&wire)? {
-                // A degenerate edge (a sphere's pole, a cone's apex) has no
-                // length, so there is no gap along it for a second face to
-                // close. Counting it would call every sphere and every true
-                // cone open, and the thing that is actually open, isn't.
-                if model
-                    .node(&edge)
-                    .and_then(|n| n.data().as_edge())
-                    .is_some_and(|d| d.degenerate)
-                {
-                    continue;
-                }
+        for wire in children(&face)? {
+            for edge in children(wire)? {
                 *uses.entry(edge.node()).or_default() += 1;
             }
         }
     }
-    Ok(!uses.is_empty() && uses.values().all(|n| n % 2 == 0))
+    // A degenerate edge (a sphere's pole, a cone's apex) has no length, so
+    // there is no gap along it for a second face to close. Counting it would
+    // call every sphere and every true cone open, and the thing that is
+    // actually open, isn't. Only an edge used an odd number of times is
+    // asked.
+    let degenerate = |id: ogeom_topo::TShapeId| {
+        model
+            .node_by_id(id)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|d| d.degenerate)
+    };
+    let counted = uses.keys().any(|id| !degenerate(*id));
+    Ok(counted && uses.iter().all(|(id, n)| n % 2 == 0 || degenerate(*id)))
 }
 
 /// Give every edge of `face` that has no trim on the face's surface its

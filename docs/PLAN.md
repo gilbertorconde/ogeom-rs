@@ -240,27 +240,24 @@ a surface whose curvature varies fast can read its inflections as scatter.
 **A per-face state cache.** The boolean's build phase could read a piece's
 classification instead of probing for it. No case needs it for correctness.
 
-**The rest of the local boolean.** A face the tool leaves alone is neither
-split nor arranged, and the sew compares only rebuilt pieces and the copies
-beside the other solid (`sew_around`); `boolean_local` in `tools/ogeom-bench`
-times it. Still whole-solid: gathering both solids (each edge sampled at 33
-points for its box), rebuilding every kept face as new nodes, the history
-over all of them, the seam join and closure passes, and the classifiers'
-face bounds; a crossed face's interior probes are sought over all its holes.
-The pair filter reads the boxes the model keeps for the faces, and still
-tries all pairs.
-Profiled on a 900-hole plate, no phase is above a fifth, so no one change
-wins much. A drill into a face of 900 holes spends 45% in that face's
-arrangement (the scanline probe search over 200,000 outline points, each hole
-walked on its own).
+**The rest of the local boolean.** Faces whose box misses the other solid's
+are set aside (`ogeom-bool/src/aside.rs`): not gathered, split, classified or
+rebuilt, and passed through as the same nodes; a plane's holes clear of the
+other solid are left out of its arrangement and put back into the piece
+holding them. A corner hole into a plate of 582 faces costs 1.5 to 2 times
+the same hole into one of 22 (heavy test `local_boolean`). Still linear in
+the solid: reading every face's edges once for tolerances and adjacency, the
+classifier's face boxes, and the history and shell of the faces passed
+through. Where the assembly around the faces set aside does not close (the
+sew welds a shared vertex, a seam join reaches a shared edge, a strand would
+widen a shared vertex), the boolean runs again over every face; converted
+slabs with tolerant vertices take that path.
 
-**Sharing unchanged faces' nodes.** `History::copy` records an exact copy on
-new nodes. Sharing the nodes would remove up to a third of the rebuild, and
-needs: the rebuilt neighbours to name the shared edges and vertices (pcurves
-on the input's own surface ids), no weld or tolerance widening on a shared
-vertex (`Rebuild::vertex` and `Model::add_face` widen in place), the sew to
-leave a shared face's derivation alone, and every operation that edits its
-result in place (heal, fillet, offset, sew) to copy on write first.
+**Operations that edit in place.** A boolean's result shares its untouched
+faces' nodes with its operands. An operation that edits its input's nodes in
+place (heal's same-parameter pass and tolerance upgrade, sew, the fillet's
+edge writes) reaches the operand through them; copy on write there keeps an
+operand untouched.
 
 **Fillets in fewer passes.** A chain is taken in rounds, no two edges of a
 round sharing a vertex, each round in one boolean each way (wedges whose

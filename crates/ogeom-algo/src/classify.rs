@@ -296,9 +296,10 @@ pub fn classify_in_solid_exact_banded(
 /// depend on the point being classified.
 #[derive(Debug)]
 struct PreparedFace {
-    surface: ogeom_geom::SurfaceGeometry,
-    /// The placement's inverse, for carrying a point into the surface's frame.
-    inverse: ogeom_math::Transform,
+    /// The surface, and the placement's inverse for carrying a point into
+    /// the surface's frame, read the first time a point or a ray comes near
+    /// the face.
+    placed: std::sync::OnceLock<OgeomResult<(ogeom_geom::SurfaceGeometry, ogeom_math::Transform)>>,
     /// The face itself, for drawing its rings when first asked.
     face: Shape,
     /// The trimming rings, polylined at the boundary's stated chord, drawn
@@ -549,11 +550,33 @@ fn chart_box(
 }
 
 impl PreparedFace {
+    /// The face's surface and its placement's inverse, read once.
+    fn placed(
+        &self,
+        model: &Model,
+    ) -> OgeomResult<&(ogeom_geom::SurfaceGeometry, ogeom_math::Transform)> {
+        let read = || -> OgeomResult<(ogeom_geom::SurfaceGeometry, ogeom_math::Transform)> {
+            let Some(NodeData::Face(data)) = model.node(&self.face).map(|n| n.data()) else {
+                ogeom_bail!(Dangling, "face is not in this model");
+            };
+            let Some(surface) = model.geometry().surface(data.surface) else {
+                ogeom_bail!(Dangling, "face refers to a surface not in this model");
+            };
+            let inverse = self.face.transform(model.datums())?.inverse()?;
+            Ok((surface.clone(), inverse))
+        };
+        match self.placed.get_or_init(read) {
+            Ok(placed) => Ok(placed),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     /// The face's trimming rings at `deflection`, drawn once.
     fn rings(&self, model: &Model, deflection: Deflection, tol: Tolerances) -> OgeomResult<&Rings> {
+        let (surface, _) = self.placed(model)?;
         match self
             .rings
-            .get_or_init(|| Rings::of(model, &self.face, &self.surface, deflection, tol))
+            .get_or_init(|| Rings::of(model, &self.face, surface, deflection, tol))
         {
             Ok(rings) => Ok(rings),
             Err(e) => Err(e.clone()),
@@ -570,16 +593,17 @@ impl PreparedFace {
         deflection: Deflection,
         tol: Tolerances,
     ) -> OgeomResult<Containment> {
-        let local = self.inverse.apply(point);
-        let projection = project_on_surface(&self.surface, local, 32, tol)?;
+        let (surface, inverse) = self.placed(model)?;
+        let local = inverse.apply(point);
+        let projection = project_on_surface(surface, local, 32, tol)?;
         if projection.distance > self.reach {
             return Ok(Containment::Out);
         }
         // Against the rings drawn so far.
         let rings = self.rings(model, deflection, tol)?;
         let (u, v) = projection.parameters;
-        let at = rings.place(&self.surface, Point2::new(u, v), tol);
-        let band = parametric_band(&self.surface, (u, v), self.reach + deflection.chord, tol);
+        let at = rings.place(surface, Point2::new(u, v), tol);
+        let band = parametric_band(surface, (u, v), self.reach + deflection.chord, tol);
         if rings.within(model, &self.face, deflection, at, band, tol)? {
             return Ok(Containment::On);
         }
@@ -615,13 +639,30 @@ impl SolidBoundary {
     ///
     /// As [`classify_in_solid_exact`].
     pub fn of(model: &Model, solid: &Shape, ring_chord: f64, tol: Tolerances) -> OgeomResult<Self> {
-        Self::prepare(model, solid, ring_chord, tol)
+        Self::prepare(model, solid, ring_chord, true, tol)
+    }
+
+    /// [`SolidBoundary::of`] for a solid whose shells the caller has
+    /// already found closed: their closure is not asked again, and a shell
+    /// that is open after all classifies as its faces fall.
+    ///
+    /// # Errors
+    ///
+    /// As [`SolidBoundary::of`], but for an open shell.
+    pub fn of_closed(
+        model: &Model,
+        solid: &Shape,
+        ring_chord: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        Self::prepare(model, solid, ring_chord, false, tol)
     }
 
     fn prepare(
         model: &Model,
         solid: &Shape,
         ring_chord: f64,
+        check_closed: bool,
         tol: Tolerances,
     ) -> OgeomResult<Self> {
         let kind = model.kind_of(solid)?;
@@ -643,7 +684,7 @@ impl SolidBoundary {
         if shells.is_empty() {
             ogeom_bail!(Construction, "the shape has no shell, so no boundary");
         }
-        for shell in &shells {
+        for shell in shells.iter().filter(|_| check_closed) {
             if !crate::build::is_shell_closed(model, shell)? {
                 ogeom_bail!(
                     Construction,
@@ -653,10 +694,9 @@ impl SolidBoundary {
         }
 
         let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
-        // One prepared face per face, in face order, computed in parallel:
-        // each preparation reads the model and writes nothing, and walking a
-        // face's trimming rings is the whole cost of building a boundary.
-        let prepared = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+        // One prepared face per face, in face order: its box, and what a
+        // point or a ray coming near it reads of it then.
+        let prepare = |face: &Shape| -> OgeomResult<(PreparedFace, Aabb)> {
             ogeom_core::progress::checkpoint()?;
             let Some(node) = model.node(face) else {
                 ogeom_bail!(Dangling, "face is not in this model");
@@ -667,15 +707,20 @@ impl SolidBoundary {
             let Some(surface) = model.geometry().surface(data.surface) else {
                 ogeom_bail!(Dangling, "face refers to a surface not in this model");
             };
-            let inverse = face.transform(model.datums())?.inverse()?;
-            let own = crate::measure::shape_bounds(model, face, tol)?;
+            // The box the model keeps for the face where it keeps one: found
+            // on a mesh for a surface without a closed form, it may fall
+            // short by the mesh's chord.
+            let own = match model.face_bounds(face) {
+                Some(kept) if closed_form(surface) => kept,
+                Some(kept) => kept.expanded(Deflection::default().chord),
+                None => crate::measure::shape_bounds(model, face, tol)?,
+            };
             let bound = own.expanded(
                 ring_chord + data.tolerance.get() + tol.confusion() * 1e2 + own.diagonal() * 0.02,
             );
             Ok((
                 PreparedFace {
-                    surface: surface.clone(),
-                    inverse,
+                    placed: std::sync::OnceLock::new(),
                     face: face.clone(),
                     rings: std::sync::OnceLock::new(),
                     bound,
@@ -683,9 +728,17 @@ impl SolidBoundary {
                 },
                 own,
             ))
-        })
-        .into_iter()
-        .collect::<OgeomResult<Vec<_>>>()?;
+        };
+        // Where every face keeps its box, preparing is a read per face. A
+        // face without one is bounded from its geometry, which is the cost
+        // worth spreading over threads.
+        let prepared = if faces.iter().all(|face| model.face_bounds(face).is_some()) {
+            faces.iter().map(prepare).collect::<OgeomResult<Vec<_>>>()?
+        } else {
+            ogeom_core::parallel::map_ordered(&faces, |_, face| prepare(face))
+                .into_iter()
+                .collect::<OgeomResult<Vec<_>>>()?
+        };
         // Anything outside the shape's bound is outside the shape, and the bound
         // also sets how long a ray must be to have left everything behind. A
         // solid holds shells and a shell faces, so the faces' bounds together
@@ -741,15 +794,10 @@ impl SolidBoundary {
             let mut crossings = 0_usize;
 
             for prepared in &self.faces {
-                let PreparedFace {
-                    surface,
-                    inverse,
-                    bound,
-                    ..
-                } = prepared;
-                if !segment_meets(bound, point, far) {
+                if !segment_meets(&prepared.bound, point, far) {
                     continue;
                 }
+                let (surface, inverse) = prepared.placed(model)?;
                 // Into the face's frame, as two points rather than a direction, so
                 // a placement that scales still carries the ray faithfully.
                 let from = inverse.apply(point);
@@ -1198,6 +1246,16 @@ pub(crate) fn parametric_band(
         su: scale(du),
         sv: scale(dv),
     }
+}
+
+/// Whether the box kept for a face on `surface` is found exactly, not
+/// from a mesh.
+fn closed_form(surface: &ogeom_geom::SurfaceGeometry) -> bool {
+    use ogeom_geom::SurfaceGeometry as S;
+    matches!(
+        surface,
+        S::Plane(_) | S::Cylinder(_) | S::Cone(_) | S::Sphere(_) | S::Torus(_)
+    )
 }
 
 /// Whether the segment from `a` to `b` passes through the box, by slabs.

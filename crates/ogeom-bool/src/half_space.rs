@@ -38,8 +38,20 @@ pub(crate) fn half_space_face(
         return Ok(None);
     }
     let shells = ogeom_topo::explore_unique(model, shape, ShapeType::Shell)?;
+    // One shell of one face: a shell of two faces or more is no half space,
+    // and is not explored through.
+    let [shell] = shells.as_slice() else {
+        return Ok(None);
+    };
+    if model.node(shell).is_none_or(|n| {
+        n.children()
+            .iter()
+            .any(|face| face.node() != n.children()[0].node())
+    }) {
+        return Ok(None);
+    }
     let faces = ogeom_topo::explore_unique(model, shape, ShapeType::Face)?;
-    if shells.len() != 1 || faces.len() != 1 {
+    if faces.len() != 1 {
         return Ok(None);
     }
     if !ogeom_algo::is_shell_closed(model, &shells[0])? {

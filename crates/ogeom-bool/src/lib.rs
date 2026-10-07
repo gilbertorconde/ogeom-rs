@@ -40,8 +40,10 @@
 //! pieces are sewn into shells with no closure asked of them.
 
 mod arrange;
+mod aside;
 mod ball_chart;
 mod bins;
+mod box_tree;
 mod defeature;
 mod half_space;
 mod seam_join;
@@ -158,6 +160,13 @@ struct EdgeKey {
 impl EdgeKey {
     fn of(edge: &Shape) -> Self {
         use core::hash::{Hash as _, Hasher as _};
+        // An edge where its node puts it, the usual case, needs no hash.
+        if edge.location().is_identity() {
+            return Self {
+                node: edge.node(),
+                placement: 0,
+            };
+        }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         edge.location().hash(&mut hasher);
         Self {
@@ -320,6 +329,13 @@ struct GFace {
     /// [`GFace::outline`] with its lines' boxes, for asking whether many
     /// points lie inside it.
     outline_trim: std::sync::OnceLock<Option<arrange::Trim>>,
+    /// The holes left out of the arrangement (see [`aside`]): each lies
+    /// inside one piece, which takes it back.
+    holes_aside: std::sync::Arc<[aside::Hole]>,
+    /// The surface the face's node stands on, where the face is rebuilt on
+    /// it: a face holding edges it shares with faces set aside, which keep
+    /// their pcurves on it.
+    own_surface: Option<ogeom_topo::SurfaceId>,
     /// The face's trim sampled coarsely for folding a chart image inside
     /// it: [`face_trim_lines`], kept for the face's every sub-edge.
     trim_lines: std::sync::OnceLock<Vec<Vec<Point2>>>,
@@ -426,6 +442,22 @@ fn trim_sheet_edges(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomR
 struct GSolid {
     solid: Shape,
     faces: Vec<GFace>,
+    /// The faces set aside, passed through untouched, each with its place
+    /// among the solid's faces.
+    aside: Vec<(Shape, usize)>,
+    /// The edges the gathered faces share with the faces set aside, each
+    /// as it stands: rebuilt as itself, so the faces set aside still meet
+    /// the rebuilt ones along it.
+    shared: hashbrown::HashMap<EdgeKey, Shape>,
+    /// The vertices of the shared edges, each where it stands: the strands
+    /// ending there end on it.
+    shared_vertices: Vec<(Point, Shape)>,
+    /// Each face's place in the solid, where faces are set aside.
+    order: hashbrown::HashMap<ogeom_topo::SameKey, usize>,
+    /// What joins the faces set aside to the rest.
+    beside: std::sync::Arc<aside::Beside>,
+    /// Whether the solid is one shell already found closed.
+    closed: bool,
 }
 
 /// What the general fuse makes of its two arguments.
@@ -442,7 +474,14 @@ enum Operands {
     SheetBySheet,
 }
 
-fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomResult<GSolid> {
+fn gather(
+    model: &Model,
+    solid: &Shape,
+    sheet: bool,
+    aside: Option<&aside::Aside>,
+    tol: Tolerances,
+) -> OgeomResult<GSolid> {
+    let mut read_closed = false;
     if sheet {
         if !is_sheet(model, solid)? {
             ogeom_bail!(
@@ -454,19 +493,33 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
         if !is_solid_or_lumps(model, solid)? {
             ogeom_bail!(Construction, "boolean arguments are solids");
         }
-        for shell in explore_unique(model, solid, ShapeType::Shell)? {
-            if !is_shell_closed(model, &shell)? {
+        let shells = explore_unique(model, solid, ShapeType::Shell)?;
+        // A solid of one shell whose every edge its faces walk an even
+        // number of times, as setting faces aside read it, is closed.
+        read_closed =
+            shells.len() == 1 && aside.is_some_and(|aside| !aside.is_empty() && aside.closed);
+        for shell in shells {
+            if !read_closed && !is_shell_closed(model, &shell)? {
                 ogeom_bail!(Construction, "an open shell bounds no volume to operate on");
             }
         }
     }
 
     let mut faces = Vec::new();
+    let mut shared = hashbrown::HashMap::new();
     // Each edge occurrence read once for the faces on either side of it:
     // its world curve, its ends, and its sampled extent.
     let mut occurrences: hashbrown::HashMap<(ogeom_topo::TShapeId, Location), Occurrence> =
         hashbrown::HashMap::new();
+    let aside = aside.filter(|aside| !aside.is_empty());
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if aside.is_some_and(|aside| {
+            !aside
+                .gathered
+                .contains_key(&ogeom_topo::SameKey(face.clone()))
+        }) {
+            continue;
+        }
         let Some(node) = model.node(&face) else {
             ogeom_bail!(Dangling, "face is not in this model");
         };
@@ -488,10 +541,46 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
         let surface_id = data.surface;
         let tolerance = data.tolerance.get();
 
+        // A plane's holes clear of the other solid are left out: nothing
+        // crosses them, and each goes back into the piece holding it.
+        let holes_aside = aside
+            .and_then(|aside| aside.holes.get(&ogeom_topo::SameKey(face.clone())))
+            .cloned()
+            .unwrap_or_else(|| std::sync::Arc::from(Vec::new()));
+        let face_edges = if holes_aside.is_empty() {
+            explore_unique(model, &face, ShapeType::Edge)?
+        } else {
+            let wires = model.children_of(&face)?;
+            let mut left = vec![false; wires.len()];
+            for hole in holes_aside.iter() {
+                left[hole.at] = true;
+            }
+            let mut seen = std::collections::HashSet::new();
+            let mut edges = Vec::new();
+            for (wire, _) in wires.iter().zip(&left).filter(|(_, left)| !**left) {
+                for edge in explore_unique(model, wire, ShapeType::Edge)? {
+                    if seen.insert(ogeom_topo::SameKey(edge.clone())) {
+                        edges.push(edge);
+                    }
+                }
+            }
+            edges
+        };
+        let mut shares = false;
+
         let mut edges = Vec::new();
         let mut samples: Vec<(ogeom_math::Aabb, ogeom_math::Aabb, f64)> = Vec::new();
         let mut poles = Vec::new();
-        for edge in explore_unique(model, &face, ShapeType::Edge)? {
+        for edge in face_edges {
+            if let Some(aside) = aside
+                && aside.edges.contains(&EdgeKey::of(&edge))
+            {
+                shared.insert(
+                    EdgeKey::of(&edge),
+                    edge.oriented(ogeom_topo::Orientation::Forward),
+                );
+                shares = true;
+            }
             let Some(edge_node) = model.node(&edge) else {
                 ogeom_bail!(Dangling, "edge is not in this model");
             };
@@ -652,7 +741,22 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
                 (false, false) => {}
             }
         }
-        bring_trim_home(&surface, &mut edges, &mut poles, tol)?;
+        let moved = bring_trim_home(&surface, &mut edges, &mut poles, tol)?;
+        // Rebuilt around edges it shares with faces set aside, the face
+        // stays on its own surface, where those edges' pcurves are, in the
+        // chart they are stated in.
+        let own_surface = if aside.is_some() && (shares || !holes_aside.is_empty()) {
+            if moved {
+                ogeom_bail!(
+                    NotDone,
+                    "a face sharing edges with faces set aside has its trim stated \
+                     a period off its chart"
+                );
+            }
+            Some(surface_id)
+        } else {
+            None
+        };
         let mut bound = ogeom_math::Aabb::EMPTY;
         // For a plane or a ruled surface the box is trusted to the
         // boundary's own hull, so the boundary's sampling slack must be
@@ -723,6 +827,8 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
             outline: std::sync::OnceLock::new(),
             outline_trim: std::sync::OnceLock::new(),
             trim_lines: std::sync::OnceLock::new(),
+            holes_aside,
+            own_surface,
         });
     }
     if faces.is_empty() {
@@ -731,9 +837,31 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
         }
         ogeom_bail!(Construction, "a solid with no faces bounds nothing");
     }
+    let mut shared_vertices = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for edge in shared.values() {
+        for vertex in model.children_of(edge)? {
+            if !seen.insert(ogeom_topo::SameKey(vertex.clone())) {
+                continue;
+            }
+            let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
+                ogeom_bail!(Dangling, "vertex is not in this model");
+            };
+            let at = vertex.transform(model.datums())?.apply(data.point);
+            shared_vertices.push((at, vertex.oriented(ogeom_topo::Orientation::Forward)));
+        }
+    }
     Ok(GSolid {
         solid: solid.clone(),
         faces,
+        aside: aside.map(|aside| aside.faces.clone()).unwrap_or_default(),
+        shared,
+        shared_vertices,
+        order: aside
+            .map(|aside| aside.gathered.clone())
+            .unwrap_or_default(),
+        beside: aside.map(|aside| aside.beside.clone()).unwrap_or_default(),
+        closed: read_closed,
     })
 }
 
@@ -778,15 +906,15 @@ fn kept_filter(
 /// most one period either side, and against a trim two turns off no try
 /// lands inside it. Moved home, the trim straddles the window's edge at
 /// most, which one period's try reaches. The face is the same face: every
-/// pcurve moves by the same whole period.
+/// pcurve moves by the same whole period. Whether they moved.
 fn bring_trim_home(
     surface: &SurfaceGeometry,
     edges: &mut [BoundaryEdge],
     poles: &mut [PoleEdge],
     tol: Tolerances,
-) -> OgeomResult<()> {
+) -> OgeomResult<bool> {
     if !(surface.is_periodic_u() || surface.is_periodic_v()) {
-        return Ok(());
+        return Ok(false);
     }
     let mut low = Point2::new(f64::INFINITY, f64::INFINITY);
     let mut high = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -828,7 +956,7 @@ fn bring_trim_home(
         turns(surface.is_periodic_v(), low.y, high.y, va, vb),
     );
     if shift.x == 0.0 && shift.y == 0.0 {
-        return Ok(());
+        return Ok(false);
     }
     let moved = ogeom_math::Transform2::translation(shift);
     for e in edges.iter_mut() {
@@ -840,7 +968,7 @@ fn bring_trim_home(
     for p in poles.iter_mut() {
         p.pcurve = p.pcurve.transformed(&moved, tol)?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// A parameter brought onto the turn its edge actually covers.
@@ -2321,10 +2449,24 @@ fn fill(
         tangents: Vec<TangentRec>,
         same_pairs: Vec<(usize, usize)>,
     }
-    let pairs: Vec<(usize, usize)> = (0..ga.faces.len())
-        .flat_map(|ia| (0..gb.faces.len()).map(move |ib| (ia, ib)))
-        .filter(|&(ia, ib)| admit_all || ga.faces[ia].filter.intersects(&gb.faces[ib].filter))
-        .collect();
+    let pairs: Vec<(usize, usize)> = if admit_all {
+        (0..ga.faces.len())
+            .flat_map(|ia| (0..gb.faces.len()).map(move |ib| (ia, ib)))
+            .collect()
+    } else {
+        // The second solid's face boxes in a tree, asked once per face of
+        // the first: the pairs whose boxes meet, in the order every pair
+        // tested in turn would find them.
+        let filters: Vec<ogeom_math::Aabb> = gb.faces.iter().map(|f| f.filter).collect();
+        let tree = box_tree::BoxTree::new(&filters);
+        let mut meeting = Vec::new();
+        let mut pairs = Vec::new();
+        for (ia, fa) in ga.faces.iter().enumerate() {
+            tree.meeting(&fa.filter, &mut meeting);
+            pairs.extend(meeting.iter().map(|&ib| (ia, ib)));
+        }
+        pairs
+    };
     let found = ogeom_core::parallel::map_ordered(
         &pairs,
         |_, &(ia, ib)| -> OgeomResult<PairFound> {
@@ -5387,8 +5529,16 @@ fn quiet_piece(
         }
         first
     });
+    let aside: hashbrown::HashSet<ogeom_topo::TShapeId> = face
+        .holes_aside
+        .iter()
+        .map(|hole| hole.wire.node())
+        .collect();
     let mut rings = Vec::new();
     for wire in model.ordered_children_of(&forward)? {
+        if aside.contains(&wire.node()) {
+            continue;
+        }
         let mut ring = Vec::new();
         for edge in model.ordered_children_of(&wire)? {
             let key = EdgeKey::of(&edge);
@@ -6361,8 +6511,14 @@ fn audit_fill_equivalence(
     }
 }
 
-fn general_fuse(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<GeneralFused> {
-    general_fuse_as(model, a, b, Operands::Solids, tol)
+fn general_fuse(
+    model: &Model,
+    a: &Shape,
+    b: &Shape,
+    aside: Option<&[aside::Aside; 2]>,
+    tol: Tolerances,
+) -> OgeomResult<GeneralFused> {
+    general_fuse_as(model, a, b, Operands::Solids, aside, tol)
 }
 
 /// [`general_fuse`] for an operation that keeps pieces by their state,
@@ -6382,9 +6538,10 @@ fn general_fuse_classified(
     model: &Model,
     a: &Shape,
     b: &Shape,
+    aside: Option<&[aside::Aside; 2]>,
     tol: Tolerances,
 ) -> OgeomResult<GeneralFused> {
-    let fused = general_fuse(model, a, b, tol)?;
+    let fused = general_fuse(model, a, b, aside, tol)?;
     if !fused.sections.is_empty()
         && fused.pieces.iter().all(|p| p.state == PieceState::Out)
         && !apart(model, a, b, tol)?
@@ -6400,20 +6557,34 @@ fn general_fuse_classified(
 }
 
 /// The general fuse of `a` and `b` taken as `operands` says. Where `a` is a
-/// sheet only its pieces are made, and the pieces of `b` are not.
+/// sheet only its pieces are made, and the pieces of `b` are not. The
+/// faces `aside` names are left out.
 fn general_fuse_as(
     model: &Model,
     a: &Shape,
     b: &Shape,
     operands: Operands,
+    aside: Option<&[aside::Aside; 2]>,
     tol: Tolerances,
 ) -> OgeomResult<GeneralFused> {
     // Read here, on the caller's thread: the pieces are classified on
     // worker threads, which do not share it.
     let settle = SETTLE_FROM_BOTH_SIDES.get();
     ogeom_core::progress::stage("boolean: gather");
-    let ga = gather(model, a, operands != Operands::Solids, tol)?;
-    let gb = gather(model, b, operands == Operands::SheetBySheet, tol)?;
+    let ga = gather(
+        model,
+        a,
+        operands != Operands::Solids,
+        aside.map(|aside| &aside[0]),
+        tol,
+    )?;
+    let gb = gather(
+        model,
+        b,
+        operands == Operands::SheetBySheet,
+        aside.map(|aside| &aside[1]),
+        tol,
+    )?;
     ogeom_core::progress::stage("boolean: intersect");
     let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b, hugs) =
         fill(&ga, &gb, false, tol)?;
@@ -6434,6 +6605,19 @@ fn general_fuse_as(
         }
     }
     junctions.extend(hugs);
+    // A vertex of an edge shared with a face set aside is that vertex in
+    // the rebuild, which every strand ending within its span names.
+    let mut kept_bins = bins::Bins::new(tol.confusion() * 1e2);
+    let kept_points: Vec<Point> = ga
+        .shared_vertices
+        .iter()
+        .chain(&gb.shared_vertices)
+        .map(|(at, _)| *at)
+        .collect();
+    for (index, at) in kept_points.iter().enumerate() {
+        kept_bins.insert(*at, index);
+    }
+    let mut near_kept = Vec::new();
     for face in ga.faces.iter().chain(gb.faces.iter()) {
         // An input vertex that owns a span (the corner an earlier boolean
         // welded three rims into, each ending a fraction of a micron from
@@ -6442,7 +6626,17 @@ fn general_fuse_as(
         // ends stand as three vertices with hairlines between them.
         for e in &face.edges {
             for (at, radius) in e.ends {
-                if radius > tol.confusion() * 10.0 {
+                let mut kept = || {
+                    !kept_points.is_empty()
+                        && if kept_bins.near_into(at, radius, &mut near_kept) {
+                            near_kept
+                                .iter()
+                                .any(|&i| kept_points[i].distance(at) <= radius)
+                        } else {
+                            kept_points.iter().any(|p| p.distance(at) <= radius)
+                        }
+                };
+                if radius > tol.confusion() * 10.0 && !kept() {
                     if *DEBUG_WIRE {
                         eprintln!("JUNCTION from vertex at {at:?} radius {radius:.3e}");
                     }
@@ -6874,11 +7068,20 @@ fn general_fuse_as(
                 }
             }
         }
-        let doubt_of = |edges: &[BoundaryEdge]| -> f64 {
-            edges.iter().fold(0.0_f64, |acc, e| {
-                acc.max(e.tolerance * 2.0)
-                    .max(e.ends_tolerance + e.tolerance)
-            })
+        // The holes left out of a face's arrangement are its edges still,
+        // and their doubt is the face's.
+        let doubt_of = |face: &GFace| -> f64 {
+            face.edges
+                .iter()
+                .fold(0.0_f64, |acc, e| {
+                    acc.max(e.tolerance * 2.0)
+                        .max(e.ends_tolerance + e.tolerance)
+                })
+                .max(
+                    face.holes_aside
+                        .iter()
+                        .fold(0.0_f64, |acc, hole| acc.max(hole.doubt)),
+                )
         };
         let near = contacts
             .iter()
@@ -6888,7 +7091,7 @@ fn general_fuse_as(
             // recorded doubt plus its own image's: a projected pcurve is
             // honest to the edge's tolerance, and the vertex it ends at
             // was welded to some earlier gap.
-            .max(doubt_of(&face.edges))
+            .max(doubt_of(face))
             .max(spread)
             .max(
                 if sections.iter().any(|s| {
@@ -6913,9 +7116,9 @@ fn general_fuse_as(
         let far = |section: usize| -> f64 {
             let s = &sections[section];
             doubt_of(if from_a {
-                &gb.faces[s.face_b].edges
+                &gb.faces[s.face_b]
             } else {
-                &ga.faces[s.face_a].edges
+                &ga.faces[s.face_a]
             })
         };
         let face_snap = near.max(
@@ -7211,6 +7414,13 @@ fn general_fuse_as(
     let boundaries = [
         if operands == Operands::SheetBySheet {
             None
+        } else if gb.closed {
+            Some(ogeom_algo::SolidBoundary::of_closed(
+                model,
+                &gb.solid,
+                tol.confusion() * 1e4,
+                tol,
+            )?)
         } else {
             Some(ogeom_algo::SolidBoundary::of(
                 model,
@@ -7220,12 +7430,13 @@ fn general_fuse_as(
             )?)
         },
         if operands == Operands::Solids {
-            Some(ogeom_algo::SolidBoundary::of(
-                model,
-                &ga.solid,
-                tol.confusion() * 1e4,
-                tol,
-            )?)
+            // A solid of one shell whose edges setting faces aside read
+            // closed is not asked again.
+            Some(if ga.closed {
+                ogeom_algo::SolidBoundary::of_closed(model, &ga.solid, tol.confusion() * 1e4, tol)?
+            } else {
+                ogeom_algo::SolidBoundary::of(model, &ga.solid, tol.confusion() * 1e4, tol)?
+            })
         } else {
             None
         },
@@ -7892,6 +8103,12 @@ struct Rebuild<'m> {
     /// other side of one finds it built and adds its own pcurve, where a
     /// second build would leave the sew a twin to find.
     whole_edges: std::collections::HashMap<EdgeKey, Shape>,
+    /// The vertices of edges shared with faces set aside, which the rebuild
+    /// names as they are and never changes, each where it stands.
+    kept: hashbrown::HashMap<ogeom_topo::TShapeId, Point>,
+    /// Whether a strand end asked a kept vertex to reach further than it
+    /// does.
+    strained: bool,
 }
 
 impl Rebuild<'_> {
@@ -7991,13 +8208,18 @@ impl Rebuild<'_> {
             // crossing's residual. The vertex's tolerance is where that
             // disagreement is recorded, so the sub-edges built against
             // either description still reach it honestly.
-            let at = self
+            let (at, own) = self
                 .model
                 .node(&shape)
                 .and_then(|n| n.data().as_vertex())
-                .map_or(p, |d| d.point);
+                .map_or((p, 0.0), |d| (d.point, d.tolerance.get()));
             let off = at.distance(p);
-            if off > tol.confusion()
+            if let Some(stands) = self.kept.get(&shape.node()) {
+                // A kept vertex is never widened: an end it does not reach
+                // as it stands strains the rebuild.
+                let off = stands.distance(p);
+                self.strained |= off > tol.confusion() && off + tol.confusion() > own;
+            } else if off > tol.confusion()
                 && let Some(node) = self.model.node_mut(&shape)
                 && let ogeom_topo::NodeData::Vertex(data) = node.data_mut()
             {
@@ -8028,8 +8250,18 @@ impl Rebuild<'_> {
         }
     }
 
-    /// Widen a vertex this rebuild handed out.
+    /// Widen a vertex this rebuild handed out. A kept vertex is not
+    /// widened: one that would need it strains the rebuild.
     fn widen(&mut self, vertex: &Shape, to: f64) -> OgeomResult<()> {
+        if self.kept.contains_key(&vertex.node()) {
+            let own = self
+                .model
+                .node(vertex)
+                .and_then(|n| n.data().as_vertex())
+                .map_or(0.0, |d| d.tolerance.get());
+            self.strained |= own < to;
+            return Ok(());
+        }
         self.model.widen(vertex, ogeom_core::Tolerance::new(to)?)?;
         self.note_tolerance(vertex);
         Ok(())
@@ -8048,6 +8280,15 @@ impl Rebuild<'_> {
         };
         if let Some(id) = slot {
             return *id;
+        }
+        let own = if from_a {
+            fused.a.faces[face].own_surface
+        } else {
+            fused.b.faces[face].own_surface
+        };
+        if let Some(id) = own {
+            *slot = Some(id);
+            return id;
         }
         let surface = if from_a {
             fused.a.faces[face].surface.clone()
@@ -8082,7 +8323,31 @@ fn build_piece(
     let mut wires = Vec::new();
     for ring in &piece.rings {
         let mut edges = Vec::with_capacity(ring.len());
+        // The edges shared with faces set aside this ring has taken, each
+        // the way it runs.
+        let mut taken: Vec<(EdgeKey, bool)> = Vec::new();
         for traversal in ring {
+            // An edge shared with a face set aside is itself, whole: nothing
+            // reaches it to split it, and it carries its pcurve on the
+            // face's own surface already. Its strands (a closed edge's two
+            // halves) stand for it once each way it is walked.
+            if let Tag::Boundary { edge, .. } = &traversal.tag
+                && let Some(kept) = own.shared.get(&face.edges[*edge].node)
+            {
+                if face.own_surface != Some(surface_id) {
+                    rebuild.strained = true;
+                }
+                let key = (face.edges[*edge].node, traversal.reversed);
+                if !taken.contains(&key) {
+                    taken.push(key);
+                    edges.push(if traversal.reversed {
+                        kept.reversed()
+                    } else {
+                        kept.clone()
+                    });
+                }
+                continue;
+            }
             let (key_edge, key_kind, range) = match &traversal.tag {
                 Tag::Boundary { edge, range } => (*edge, 0_u8, *range),
                 Tag::Section { section, range } => (*section, 1, *range),
@@ -8629,15 +8894,21 @@ fn pcurve_onto_ends(
 }
 
 /// Sew kept pieces, demand closure, and nest shells into solids and voids.
+///
+/// The faces each solid set aside come through as they are where
+/// `keep_aside` keeps that solid's outside, and are deleted where it does
+/// not.
 fn assemble_result(
     model: &mut Model,
     fused: &GeneralFused,
     kept: &[(usize, bool)],
+    keep_aside: [bool; 2],
     a: &Shape,
     b: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     ogeom_core::progress::stage("boolean: assemble");
+    let local = !fused.a.aside.is_empty() || !fused.b.aside.is_empty();
     let mut history = History::new();
     let source_face = |piece: &FacePiece| -> Shape {
         if piece.from_a {
@@ -8648,26 +8919,72 @@ fn assemble_result(
     };
 
     if kept.is_empty() {
+        if (keep_aside[0] && !fused.a.aside.is_empty())
+            || (keep_aside[1] && !fused.b.aside.is_empty())
+        {
+            ogeom_bail!(NotDone, "no piece is kept beside the faces set aside");
+        }
         // A legitimate answer: cutting a solid away entirely leaves nothing.
         let empty = model.add_compound(&[])?;
         for piece in &fused.pieces {
             history.delete(&source_face(piece));
+        }
+        for (face, _) in fused.a.aside.iter().chain(&fused.b.aside) {
+            history.delete(face);
         }
         history.modify(a, empty.clone());
         history.modify(b, empty.clone());
         return Ok(Built::new(empty, history));
     }
 
-    let (faces, settled, floor) = rebuilt_pieces(model, fused, kept, &mut history, tol)?;
+    let Rebuilt {
+        faces,
+        settled,
+        weld: floor,
+        holes,
+    } = rebuilt_pieces(model, fused, kept, &mut history, tol)?;
     let sewn = sew_around(model, &faces, &settled, tol)?;
     // Sewing rebuilds the pieces onto shared edges: the result's faces are
     // its faces, reached from the inputs through both steps.
     history = history.followed_by(&sewn.history);
+    // What the sew and the passes after it made of each rebuilt face, where
+    // faces set aside are put back beside them.
+    let mut after = if local {
+        sewn.history.clone()
+    } else {
+        History::new()
+    };
     let mut sewn = sewn;
     let dropped = without_membranes(model, &mut sewn.shells, floor, tol)?;
     history = history.followed_by(&dropped);
-    let joined = seam_join::join_across_seams(model, &mut sewn.shells, tol)?;
+    let held: hashbrown::HashSet<ogeom_topo::TShapeId> = fused
+        .a
+        .shared
+        .values()
+        .chain(fused.b.shared.values())
+        .map(Shape::node)
+        .collect();
+    let joined = seam_join::join_across_seams(model, &mut sewn.shells, &held, tol)?;
     history = history.followed_by(&joined).without_repeated_images();
+    let mut closed = None;
+    let mut made = None;
+    if local {
+        after = after.followed_by(&dropped).followed_by(&joined);
+        let (shells, shut, new) = with_aside(
+            model,
+            fused,
+            kept,
+            &faces,
+            &holes,
+            &after,
+            &sewn.shells,
+            keep_aside,
+            &mut history,
+        )?;
+        sewn.shells = shells;
+        closed = Some(shut);
+        made = Some(new);
+    }
     if sewn.shells.is_empty() {
         // Membranes all through: what was kept encloses nothing.
         let empty = model.add_compound(&[])?;
@@ -8675,8 +8992,12 @@ fn assemble_result(
         history.modify(b, empty.clone());
         return Ok(Built::new(empty, history));
     }
-    for shell in &sewn.shells {
-        if !is_shell_closed(model, shell)? {
+    for (i, shell) in sewn.shells.iter().enumerate() {
+        let shut = match &closed {
+            Some(closed) => closed[i],
+            None => is_shell_closed(model, shell)?,
+        };
+        if !shut {
             // Env-gated forensics: the open shell's unshared edges, the
             // question every failure here starts from.
             if *ARRANGE_DEBUG {
@@ -8835,9 +9156,42 @@ fn assemble_result(
     } else {
         model.add_compound(&solids)?
     };
+    // The faces set aside keep the boxes they had: only the faces made
+    // are looked at.
+    match &made {
+        Some(made) => keep_face_boxes(model, made)?,
+        None => keep_face_boxes(model, &explore_unique(model, &result, ShapeType::Face)?)?,
+    }
     history.modify(a, result.clone());
     history.modify(b, result.clone());
     Ok(Built::new(result, history))
+}
+
+/// Each of `faces` on a ruled surface (a plane, a drum, a cone) keeps its
+/// box, found from its edges alone: the next boolean on the result reads
+/// every face's box to find the faces it can set aside.
+fn keep_face_boxes(model: &Model, faces: &[Shape]) -> OgeomResult<()> {
+    for face in faces {
+        if model.face_bounds(face).is_some() {
+            continue;
+        }
+        let ruled = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| {
+                matches!(
+                    s,
+                    SurfaceGeometry::Plane(_)
+                        | SurfaceGeometry::Cylinder(_)
+                        | SurfaceGeometry::Cone(_)
+                )
+            });
+        if ruled {
+            ogeom_algo::face_bounds(model, face)?;
+        }
+    }
+    Ok(())
 }
 
 /// The kept pieces of a sheet sewn along the edges they share: one shell,
@@ -8865,10 +9219,11 @@ fn assemble_sheet(
         return Ok(Built::new(empty, history));
     }
     let kept: Vec<(usize, bool)> = kept.iter().map(|&i| (i, false)).collect();
-    let (faces, settled, _) = rebuilt_pieces(model, fused, &kept, &mut history, tol)?;
+    let Rebuilt { faces, settled, .. } = rebuilt_pieces(model, fused, &kept, &mut history, tol)?;
     let mut sewn = sew_around(model, &faces, &settled, tol)?;
     history = history.followed_by(&sewn.history);
-    let joined = seam_join::join_across_seams(model, &mut sewn.shells, tol)?;
+    let joined =
+        seam_join::join_across_seams(model, &mut sewn.shells, &hashbrown::HashSet::new(), tol)?;
     history = history.followed_by(&joined).without_repeated_images();
     let result = if sewn.shells.len() == 1 {
         sewn.shells.remove(0)
@@ -8891,7 +9246,7 @@ fn rebuilt_pieces(
     kept: &[(usize, bool)],
     history: &mut History,
     tol: Tolerances,
-) -> OgeomResult<(Vec<Shape>, Vec<bool>, f64)> {
+) -> OgeomResult<Rebuilt> {
     let source_face = |piece: &FacePiece| -> Shape {
         if piece.from_a {
             fused.a.faces[piece.face].face.clone()
@@ -8940,7 +9295,18 @@ fn rebuilt_pieces(
         junction_reach,
         onto_vertex: std::collections::HashSet::new(),
         whole_edges: std::collections::HashMap::new(),
+        kept: hashbrown::HashMap::new(),
+        strained: false,
     };
+    for (at, vertex) in fused
+        .a
+        .shared_vertices
+        .iter()
+        .chain(&fused.b.shared_vertices)
+    {
+        rebuild.remember(*at, vertex);
+        rebuild.kept.insert(vertex.node(), *at);
+    }
     // A face the operation never touched (nothing crosses it, no edge of it
     // is split, no junction lands at its corners) is rebuilt as an exact
     // copy of itself. Its neighbours across its unsplit edges build those
@@ -8988,6 +9354,14 @@ fn rebuilt_pieces(
         kept_sources.insert(source_face(piece));
         faces.push(built);
     }
+    if rebuild.strained {
+        ogeom_bail!(
+            NotDone,
+            "a strand ends further from a vertex shared with a face set aside \
+             than the vertex reaches"
+        );
+    }
+    let holes = holes_put_back(rebuild.model, fused, kept, tol)?;
     for piece in &fused.pieces {
         let source = source_face(piece);
         if !kept_sources.contains(&source) {
@@ -9034,7 +9408,315 @@ fn rebuilt_pieces(
         })
         .collect();
 
-    Ok((faces, settled, floor))
+    Ok(Rebuilt {
+        faces,
+        settled,
+        weld: floor,
+        holes,
+    })
+}
+
+/// The shells the result is bounded by, with the faces set aside put back:
+/// each face taking back holes left out of its arrangement is made again
+/// with them, the faces set aside join the faces sewn where `keep_aside`
+/// keeps them, and the shells are found again from the edges they all
+/// share. `history` records the faces set aside and the faces made again.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the assembly's own state, read once"
+)]
+fn with_aside(
+    model: &mut Model,
+    fused: &GeneralFused,
+    kept: &[(usize, bool)],
+    faces: &[Shape],
+    holes: &[Vec<usize>],
+    after: &History,
+    shells: &[Shape],
+    keep_aside: [bool; 2],
+    history: &mut History,
+) -> OgeomResult<(Vec<Shape>, Vec<bool>, Vec<Shape>)> {
+    // Each face made again with its holes, with the wires it walks itself
+    // and the faces set aside beside its holes.
+    let mut remade: hashbrown::HashMap<ogeom_topo::TShapeId, Remade> = hashbrown::HashMap::new();
+    let mut put_back = History::new();
+    // Each face's place: its solid, the place there of the face it came
+    // from, and its piece's.
+    let mut rank: hashbrown::HashMap<ogeom_topo::TShapeId, (bool, usize, usize)> =
+        hashbrown::HashMap::new();
+    for (slot, built) in faces.iter().enumerate() {
+        let piece = &fused.pieces[kept[slot].0];
+        let own = if piece.from_a { &fused.a } else { &fused.b };
+        let source = &own.faces[piece.face].face;
+        let place = (
+            !piece.from_a,
+            own.order
+                .get(&ogeom_topo::SameKey(source.clone()))
+                .copied()
+                .unwrap_or(usize::MAX),
+            slot,
+        );
+        rank.insert(built.node(), place);
+        for image in after.modified(built) {
+            rank.insert(image.node(), place);
+        }
+    }
+    for (slot, (built, holes)) in faces.iter().zip(holes).enumerate() {
+        if holes.is_empty() {
+            continue;
+        }
+        let image = match after.modified(built) {
+            [] if !after.is_deleted(built) => built.clone(),
+            [image] => image.clone(),
+            _ => ogeom_bail!(NotDone, "a face taking back its holes was split or dropped"),
+        };
+        let piece = &fused.pieces[kept[slot].0];
+        let own = if piece.from_a { &fused.a } else { &fused.b };
+        let source = &own.faces[piece.face];
+        let side = usize::from(!piece.from_a);
+        let wires: Vec<Shape> = holes
+            .iter()
+            .map(|&h| source.holes_aside[h].wire.clone())
+            .collect();
+        let joins: Vec<(usize, u32)> = holes
+            .iter()
+            .flat_map(|&h| source.holes_aside[h].beside.iter().map(move |&j| (side, j)))
+            .collect();
+        let walk = model.node(&image).map_or(0, |n| n.children().len());
+        let made = with_holes(model, &image, &wires)?;
+        // A plane's holes lie inside its outer boundary, which alone sets
+        // its box: the face with its holes back keeps the box of the face
+        // without them.
+        ogeom_algo::face_bounds(model, &image)?;
+        let found = model.kept_face_box(&image, |_| {
+            Err(ogeom_core::ogeom_err!(
+                NotDone,
+                "the face's box was not kept"
+            ))
+        });
+        if let Ok(found) = found {
+            model.kept_face_box(&made, |_| Ok(found))?;
+        }
+        let copied = after.copy_of(built).is_some() || after.modified(built).is_empty();
+        if copied {
+            put_back.copy(&image, made.clone());
+        } else {
+            put_back.modify(&image, made.clone());
+        }
+        remade.insert(image.node(), (made, walk, joins));
+    }
+    // Each face with its place: its solid, the place there of the face it
+    // came from, and its piece's.
+    let mut all = Vec::new();
+    for shell in shells {
+        for face in model.children_of(shell)? {
+            let place = rank
+                .get(&face.node())
+                .copied()
+                .unwrap_or((true, usize::MAX, usize::MAX));
+            all.push(match remade.remove(&face.node()) {
+                Some((made, walk, joins)) => (
+                    place,
+                    aside::Member {
+                        face: made,
+                        aside: None,
+                        walk,
+                        joins,
+                    },
+                ),
+                None => (
+                    place,
+                    aside::Member {
+                        face,
+                        aside: None,
+                        walk: usize::MAX,
+                        joins: Vec::new(),
+                    },
+                ),
+            });
+        }
+    }
+    *history = core::mem::take(history).followed_by(&put_back);
+    // The faces set aside are no image of anything the history holds so
+    // far, so they are recorded as they stand.
+    for (g, keep, from_b) in [
+        (&fused.a, keep_aside[0], false),
+        (&fused.b, keep_aside[1], true),
+    ] {
+        for (face, place) in &g.aside {
+            if keep {
+                history.copy(face, face.clone());
+                all.push((
+                    (from_b, *place, 0),
+                    aside::Member {
+                        face: face.clone(),
+                        aside: Some((usize::from(from_b), *place)),
+                        walk: 0,
+                        joins: Vec::new(),
+                    },
+                ));
+            } else {
+                history.delete(face);
+            }
+        }
+    }
+    // In the order the solids list the faces they came from, as the
+    // general fuse of every face lists them.
+    all.sort_by_key(|(place, _)| *place);
+    let all: Vec<aside::Member> = all.into_iter().map(|(_, member)| member).collect();
+    if all.is_empty() {
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
+    }
+    let made = all
+        .iter()
+        .filter(|member| member.aside.is_none())
+        .map(|member| member.face.clone())
+        .collect();
+    let (shells, closed) = aside::shells_of(model, &all, [&fused.a.beside, &fused.b.beside])?;
+    Ok((shells, closed, made))
+}
+
+/// A face made again with its holes, how many of its wires it walks
+/// itself, and the faces set aside beside its holes.
+type Remade = (Shape, usize, Vec<(usize, u32)>);
+
+/// What [`rebuilt_pieces`] makes of the kept pieces.
+struct Rebuilt {
+    /// One face per kept piece, in order.
+    faces: Vec<Shape>,
+    /// Whether each comes through the sew as it stands.
+    settled: Vec<bool>,
+    /// The distance the rebuild welds ends within.
+    weld: f64,
+    /// The holes left out of the arrangement each face takes back, by
+    /// their place among its source face's.
+    holes: Vec<Vec<usize>>,
+}
+
+/// The holes left out of each face's arrangement, given to the kept piece
+/// holding each.
+///
+/// A hole left out stands clear of the other solid, so the piece holding it
+/// lies outside the other solid. Where the operation keeps what lies
+/// outside, the face's one kept piece holds it, or of several the one whose
+/// outline it lies within. Where it keeps what lies inside, no kept piece
+/// holds one.
+fn holes_put_back(
+    model: &Model,
+    fused: &GeneralFused,
+    kept: &[(usize, bool)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vec<usize>>> {
+    let mut holes = vec![Vec::new(); kept.len()];
+    let mut by_face: std::collections::BTreeMap<(bool, usize), Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (slot, &(index, _)) in kept.iter().enumerate() {
+        let piece = &fused.pieces[index];
+        let own = if piece.from_a { &fused.a } else { &fused.b };
+        if !own.faces[piece.face].holes_aside.is_empty() {
+            by_face
+                .entry((piece.from_a, piece.face))
+                .or_default()
+                .push(slot);
+        }
+    }
+    for ((from_a, fi), slots) in by_face {
+        let face = if from_a {
+            &fused.a.faces[fi]
+        } else {
+            &fused.b.faces[fi]
+        };
+        let outside = slots
+            .iter()
+            .any(|&slot| fused.pieces[kept[slot].0].state == PieceState::Out);
+        if let [slot] = slots.as_slice()
+            && outside
+        {
+            holes[*slot] = (0..face.holes_aside.len()).collect();
+            continue;
+        }
+        for (h, hole) in face.holes_aside.iter().enumerate() {
+            let Some(at) = hole_point(model, face, &hole.wire, tol)? else {
+                ogeom_bail!(NotDone, "a hole set aside has no point in its face's chart");
+            };
+            let mut within = slots
+                .iter()
+                .filter(|&&slot| inside_rings(&fused.pieces[kept[slot].0].outlines, at));
+            match (within.next(), within.next()) {
+                (Some(&slot), None) if fused.pieces[kept[slot].0].state == PieceState::Out => {
+                    holes[slot].push(h);
+                }
+                (None, _) if !outside => {}
+                _ => ogeom_bail!(
+                    NotDone,
+                    "a hole set aside lies in no one piece standing outside the other solid"
+                ),
+            }
+        }
+    }
+    Ok(holes)
+}
+
+/// A point of a hole's first edge in its face's chart.
+fn hole_point(
+    model: &Model,
+    face: &GFace,
+    hole: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Point2>> {
+    let Some(surface) = face.own_surface else {
+        return Ok(None);
+    };
+    let Some(edge) = model.children_of(hole)?.into_iter().next() else {
+        return Ok(None);
+    };
+    let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+        return Ok(None);
+    };
+    let (pc, range) = match data.pcurve_for(surface, edge.location()) {
+        Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
+        Some(EdgeRepr::Seam { forward, range, .. }) => (*forward, *range),
+        _ => return Ok(None),
+    };
+    let Some(pcurve) = model.geometry().pcurve(pc) else {
+        return Ok(None);
+    };
+    Ok(Some(pcurve.point_at(f64::midpoint(range.0, range.1), tol)?))
+}
+
+/// `image` with the holes `holes` added: a new face on the same surface,
+/// facing the same way.
+fn with_holes(model: &mut Model, image: &Shape, holes: &[Shape]) -> OgeomResult<Shape> {
+    if !image.location().is_identity() {
+        ogeom_bail!(
+            NotDone,
+            "a face taking back its holes stands under a placement"
+        );
+    }
+    let Some(NodeData::Face(data)) = model.node(image).map(|n| n.data().clone()) else {
+        ogeom_bail!(Dangling, "face is not in this model");
+    };
+    let mut data = *data;
+    data.triangulation = None;
+    // The holes' edges are the solid's own and are not widened: a face
+    // looser than one of them takes none back. No edge is tighter than the
+    // least tolerance.
+    if data.tolerance.get() > ogeom_core::Tolerance::MIN.get() {
+        for hole in holes {
+            for edge in model.children_of(hole)? {
+                if model
+                    .node(&edge)
+                    .and_then(|n| n.data().as_edge())
+                    .is_none_or(|e| e.tolerance.get() < data.tolerance.get())
+                {
+                    ogeom_bail!(NotDone, "a face is looser than a hole it takes back");
+                }
+            }
+        }
+    }
+    let mut wires = model.children_of(&Shape::of(image.node()))?;
+    wires.extend(holes.iter().cloned());
+    Ok(model.add_face(data, &wires)?.oriented(image.orientation()))
 }
 
 /// Each shell without its membranes, and the history of their removal.
@@ -9304,7 +9986,7 @@ pub fn cells(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomR
     // One arrangement answers all three: each cell is a different choice
     // of the same classified pieces, the choices `cut` and `common` make,
     // and the cut the other way round with the arguments' roles swapped.
-    let fused = general_fuse_classified(model, a, b, tol)?;
+    let fused = general_fuse_classified(model, a, b, None, tol)?;
     let keep = |choose: &dyn Fn(&FacePiece) -> Option<bool>| -> Vec<(usize, bool)> {
         fused
             .pieces
@@ -9327,9 +10009,9 @@ pub fn cells(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomR
             .then_some(false)
     });
     Ok(Cells {
-        a_not_b: assemble_result(model, &fused, &a_only, a, b, tol)?,
-        b_not_a: assemble_result(model, &fused, &b_only, a, b, tol)?,
-        common: assemble_result(model, &fused, &both, a, b, tol)?,
+        a_not_b: assemble_result(model, &fused, &a_only, [true, false], a, b, tol)?,
+        b_not_a: assemble_result(model, &fused, &b_only, [false, true], a, b, tol)?,
+        common: assemble_result(model, &fused, &both, [false, false], a, b, tol)?,
     })
 }
 
@@ -9470,6 +10152,9 @@ pub fn make_periodic(
 fn baked_if_scaled(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
     let mut restate = false;
     for face in ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))? {
+        if face.location().is_identity() {
+            continue;
+        }
         let placement = face.transform(model.datums())?;
         // A scale changes lengths the melt compares. A reflection flips
         // every chart's natural normal against its face's flag. Either way
@@ -9606,22 +10291,13 @@ fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomR
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
     );
-    let built = (|| {
-        let fused = general_fuse_classified(model, a, b, tol)?;
-        // Outward pieces bound the union. A same-domain pair with aligned
-        // material keeps one copy, and one with opposed material is interior
-        // to the union and vanishes.
-        let kept: Vec<(usize, bool)> = fused
-            .pieces
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                p.state == PieceState::Out || (p.state == PieceState::OnAligned && !p.covered)
-            })
-            .map(|(i, _)| (i, false))
-            .collect();
-        assemble_result(model, &fused, &kept, a, b, tol)
-    })();
+    // Outward pieces bound the union. A same-domain pair with aligned
+    // material keeps one copy, and one with opposed material is interior to
+    // the union and vanishes.
+    let built = fused_and_assembled(model, a, b, [true, true], tol, |p| {
+        (p.state == PieceState::Out || (p.state == PieceState::OnAligned && !p.covered))
+            .then_some(false)
+    });
     // A union of two solids is never empty.
     let built = match built {
         Ok(built) if holds_nothing(model, &built.shape)? => {
@@ -9989,22 +10665,12 @@ fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
     );
-    let built = (|| {
-        let fused = general_fuse_classified(model, a, b, tol)?;
-        // Inward pieces bound the intersection. An aligned same-domain pair
-        // bounds it too, once. An opposed pair encloses no volume between
-        // them.
-        let kept: Vec<(usize, bool)> = fused
-            .pieces
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                p.state == PieceState::In || (p.state == PieceState::OnAligned && !p.covered)
-            })
-            .map(|(i, _)| (i, false))
-            .collect();
-        assemble_result(model, &fused, &kept, a, b, tol)
-    })();
+    // Inward pieces bound the intersection. An aligned same-domain pair
+    // bounds it too, once. An opposed pair encloses no volume between them.
+    let built = fused_and_assembled(model, a, b, [false, false], tol, |p| {
+        (p.state == PieceState::In || (p.state == PieceState::OnAligned && !p.covered))
+            .then_some(false)
+    });
     // Nothing in common is an answer only where the two share no volume.
     let built = match built {
         Ok(built) if holds_nothing(model, &built.shape)? && !apart(model, a, b, tol)? => {
@@ -10019,10 +10685,59 @@ fn common_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
     or_nested(model, built, a, b, false, tol)
 }
 
+/// Two solids fused generally and the pieces `keep` takes assembled, each
+/// with whether it is turned over; `keep_aside` says, per solid, whether
+/// its faces outside the other are kept.
+///
+/// The faces each solid has clear of the other are set aside first and
+/// come through untouched. Where that cannot be assembled (an edge the
+/// faces set aside share would have to move), every face is taken.
+fn fused_and_assembled(
+    model: &mut Model,
+    a: &Shape,
+    b: &Shape,
+    keep_aside: [bool; 2],
+    tol: Tolerances,
+    keep: impl Fn(&FacePiece) -> Option<bool>,
+) -> OgeomResult<Built> {
+    let attempt = |model: &mut Model, aside: Option<&[aside::Aside; 2]>| {
+        let fused = general_fuse_classified(model, a, b, aside, tol)?;
+        let kept: Vec<(usize, bool)> = fused
+            .pieces
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| keep(p).map(|flip| (i, flip)))
+            .collect();
+        assemble_result(model, &fused, &kept, keep_aside, a, b, tol)
+    };
+    if let Ok(Some(aside)) = aside::set_aside(model, a, b, tol) {
+        match attempt(model, Some(&aside)) {
+            Ok(built) => return Ok(built),
+            Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
+            Err(_) => {}
+        }
+    }
+    attempt(model, None)
+}
+
 /// Whether a boolean's result has no face: an empty compound, or one of
 /// empty shells.
 fn holds_nothing(model: &Model, shape: &Shape) -> OgeomResult<bool> {
-    Ok(explore_unique(model, shape, ShapeType::Face)?.is_empty())
+    // Down from the shape until the first face, which settles it.
+    let mut stack = vec![shape.clone()];
+    while let Some(at) = stack.pop() {
+        let Some(node) = model.node(&at) else {
+            ogeom_bail!(Dangling, "shape refers to a node not in this model");
+        };
+        match node.kind() {
+            ShapeType::Face => return Ok(false),
+            ShapeType::Compound | ShapeType::CompSolid | ShapeType::Solid | ShapeType::Shell => {
+                stack.extend(node.children().iter().cloned());
+            }
+            _ => {}
+        }
+    }
+    Ok(true)
 }
 
 /// The first solid with the second removed.
@@ -10077,7 +10792,7 @@ fn trimmed_sheet(
             &baked_if_scaled(model, sheet, tol)?,
             &baked_if_scaled(model, tool, tol)?,
         );
-        let fused = general_fuse_as(model, sheet, tool, Operands::SheetBySolid, tol)?;
+        let fused = general_fuse_as(model, sheet, tool, Operands::SheetBySolid, None, tol)?;
         let mut kept = Vec::new();
         for (index, piece) in fused.pieces.iter().enumerate() {
             match piece.state {
@@ -10141,7 +10856,7 @@ pub fn split_sheet(
             &baked_if_scaled(model, sheet, tol)?,
             &baked_if_scaled(model, by, tol)?,
         );
-        let fused = general_fuse_as(model, sheet, by, Operands::SheetBySheet, tol)?;
+        let fused = general_fuse_as(model, sheet, by, Operands::SheetBySheet, None, tol)?;
         let kept: Vec<usize> = (0..fused.pieces.len()).collect();
         assemble_sheet(model, &fused, &kept, sheet, tol)
     })
@@ -10156,27 +10871,19 @@ fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
     );
-    let built = (|| {
-        let fused = general_fuse_classified(model, a, b, tol)?;
-        // The first argument's outward pieces stay. The tool's inward pieces
-        // close the cut with their material side flipped. On the shared
-        // surface: an opposed pair means the tool's material is entirely on
-        // the other side, so the first argument's face survives untouched;
-        // an aligned pair means the tool's material backs the same wall,
-        // which the cut removes.
-        let kept: Vec<(usize, bool)> = fused
-            .pieces
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| match (p.from_a, p.state) {
-                (true, PieceState::Out) => Some((i, false)),
-                (true, PieceState::OnOpposed) => Some((i, false)),
-                (false, PieceState::In) => Some((i, true)),
-                _ => None,
-            })
-            .collect();
-        assemble_result(model, &fused, &kept, a, b, tol)
-    })();
+    // The first argument's outward pieces stay. The tool's inward pieces
+    // close the cut with their material side flipped. On the shared
+    // surface: an opposed pair means the tool's material is entirely on the
+    // other side, so the first argument's face survives untouched; an
+    // aligned pair means the tool's material backs the same wall, which the
+    // cut removes.
+    let built = fused_and_assembled(model, a, b, [true, false], tol, |p| {
+        match (p.from_a, p.state) {
+            (true, PieceState::Out | PieceState::OnOpposed) => Some(false),
+            (false, PieceState::In) => Some(true),
+            _ => None,
+        }
+    });
     let refusal = match built {
         // Nothing left is an answer only where no part of the solid's
         // boundary stands outside the tool.
@@ -10237,7 +10944,7 @@ pub fn section(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeo
         &baked_if_scaled(model, a, tol)?,
         &baked_if_scaled(model, b, tol)?,
     );
-    let fused = general_fuse(model, a, b, tol)?;
+    let fused = general_fuse(model, a, b, None, tol)?;
     // Every section sub-edge that survived into some piece's ring, built
     // once per distinct sub-range.
     let mut wanted: Vec<(usize, (f64, f64))> = Vec::new();
@@ -10718,5 +11425,209 @@ mod tests {
                 "a face of the first argument vanished from the history"
             );
         }
+    }
+
+    /// A plate 10 thick, `rows` by `rows` holes of radius 1.5 drilled
+    /// through it 10 apart and 10 from its sides.
+    fn drilled_plate(model: &mut Model, rows: u32) -> Shape {
+        let size = 10.0 * f64::from(rows) + 10.0;
+        let block = make_box(model, Frame::WORLD, (size, size, 10.0), T)
+            .unwrap()
+            .shape;
+        let mut pins = Vec::new();
+        for i in 0..rows {
+            for j in 0..rows {
+                let at = Point::new(10.0 + 10.0 * f64::from(i), 10.0 + 10.0 * f64::from(j), -5.0);
+                pins.push(
+                    make_cylinder(model, frame_at(at), 1.5, 20.0, T)
+                        .unwrap()
+                        .shape,
+                );
+            }
+        }
+        let pins = model.add_compound(&pins).unwrap();
+        cut(model, &block, &pins, T).unwrap().shape
+    }
+
+    /// The operation with every face of both solids taken into the fuse.
+    fn with_every_face(
+        model: &mut Model,
+        a: &Shape,
+        b: &Shape,
+        keep_aside: [bool; 2],
+        keep: impl Fn(&FacePiece) -> Option<bool>,
+    ) -> Built {
+        let fused = general_fuse_classified(model, a, b, None, T).unwrap();
+        let kept: Vec<(usize, bool)> = fused
+            .pieces
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| keep(p).map(|flip| (i, flip)))
+            .collect();
+        assemble_result(model, &fused, &kept, keep_aside, a, b, T).unwrap()
+    }
+
+    fn cut_keeps(p: &FacePiece) -> Option<bool> {
+        match (p.from_a, p.state) {
+            (true, PieceState::Out | PieceState::OnOpposed) => Some(false),
+            (false, PieceState::In) => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Whether `face`'s box stands clear of `tool`'s by a millimetre.
+    fn clear_of(model: &Model, face: &Shape, tool: &Shape) -> bool {
+        let tool = ogeom_algo::tight_bounds(model, tool, T).unwrap();
+        !ogeom_algo::face_bounds(model, face)
+            .unwrap()
+            .expanded(1.0)
+            .intersects(&tool)
+    }
+
+    /// The result with faces set aside against the one with every face
+    /// taken: the same volume and face count, valid, and every face of `a`
+    /// clear of `b` passed through as itself.
+    fn same_as_with_every_face(model: &Model, a: &Shape, b: &Shape, local: &Built, whole: &Built) {
+        assert_valid(model, &local.shape);
+        assert_valid(model, &whole.shape);
+        let (v_local, v_whole) = (volume(model, &local.shape), volume(model, &whole.shape));
+        assert!(
+            (v_local - v_whole).abs() <= 1e-9 * v_whole.abs(),
+            "{v_local} against {v_whole}"
+        );
+        let count = |shape: &Shape| explore_unique(model, shape, ShapeType::Face).unwrap().len();
+        assert_eq!(count(&local.shape), count(&whole.shape));
+        let mut passed = 0;
+        for face in explore_unique(model, a, ShapeType::Face).unwrap() {
+            if clear_of(model, &face, b) {
+                let copy = local.history.copy_of(&face);
+                assert!(
+                    copy.is_some_and(|c| c.is_same(&face)),
+                    "a face clear of the tool was not passed through"
+                );
+                passed += 1;
+            }
+        }
+        assert!(passed > 0);
+    }
+
+    #[test]
+    fn a_hole_drilled_at_a_plates_corner_leaves_the_rest_as_it_was() {
+        let mut model = Model::new();
+        let plate = drilled_plate(&mut model, 3);
+        let corner = make_cylinder(
+            &mut model,
+            frame_at(Point::new(5.0, 5.0, -5.0)),
+            1.5,
+            20.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        assert!(
+            aside::set_aside(&model, &plate, &corner, T)
+                .unwrap()
+                .is_some()
+        );
+        let local = cut(&mut model, &plate, &corner, T).unwrap();
+        let whole = with_every_face(&mut model, &plate, &corner, [true, false], cut_keeps);
+        same_as_with_every_face(&model, &plate, &corner, &local, &whole);
+        let holed = 40.0 * 40.0 * 10.0 - 10.0 * PI * 1.5 * 1.5 * 10.0;
+        assert!((volume(&model, &local.shape) - holed).abs() < 1e-6 * holed);
+    }
+
+    #[test]
+    fn a_notch_through_a_plates_edge_meets_the_faces_left_as_they_were() {
+        // A box notching the corner through two sides, the top and the
+        // bottom: the outer rings of all four are split, and the edges
+        // they share with the faces set aside stay as they were.
+        let mut model = Model::new();
+        let plate = drilled_plate(&mut model, 3);
+        let notch = make_box(
+            &mut model,
+            frame_at(Point::new(-1.0, -1.0, -1.0)),
+            (5.0, 4.0, 12.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let local = cut(&mut model, &plate, &notch, T).unwrap();
+        let whole = with_every_face(&mut model, &plate, &notch, [true, false], cut_keeps);
+        same_as_with_every_face(&model, &plate, &notch, &local, &whole);
+    }
+
+    #[test]
+    fn a_boss_fused_and_kept_in_common_beside_faces_set_aside() {
+        let mut model = Model::new();
+        let plate = drilled_plate(&mut model, 3);
+        let boss = make_cylinder(
+            &mut model,
+            frame_at(Point::new(5.0, 5.0, 5.0)),
+            3.0,
+            10.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let local = fuse(&mut model, &plate, &boss, T).unwrap();
+        let whole = with_every_face(&mut model, &plate, &boss, [true, true], |p| {
+            (p.state == PieceState::Out || (p.state == PieceState::OnAligned && !p.covered))
+                .then_some(false)
+        });
+        same_as_with_every_face(&model, &plate, &boss, &local, &whole);
+
+        let local = common(&mut model, &plate, &boss, T).unwrap();
+        let whole = with_every_face(&mut model, &plate, &boss, [false, false], |p| {
+            (p.state == PieceState::In || (p.state == PieceState::OnAligned && !p.covered))
+                .then_some(false)
+        });
+        assert_valid(&model, &local.shape);
+        let (v_local, v_whole) = (volume(&model, &local.shape), volume(&model, &whole.shape));
+        assert!(
+            (v_local - v_whole).abs() <= 1e-9 * v_whole,
+            "{v_local} against {v_whole}"
+        );
+        for face in explore_unique(&model, &plate, ShapeType::Face).unwrap() {
+            if clear_of(&model, &face, &boss) {
+                assert!(local.history.is_deleted(&face));
+            }
+        }
+    }
+
+    /// The corner hole into a plate of 582 faces, with every face but the
+    /// top, the bottom and the tool's set aside, comes out the solid the fuse
+    /// of every face makes, and passes every face it leaves alone through as
+    /// itself.
+    #[test]
+    #[ignore = "heavy"]
+    fn a_corner_hole_in_a_large_plate_is_the_solid_every_face_makes() {
+        let mut model = Model::new();
+        let plate = drilled_plate(&mut model, 24);
+        assert_eq!(
+            explore_unique(&model, &plate, ShapeType::Face)
+                .unwrap()
+                .len(),
+            582
+        );
+        let corner = make_cylinder(
+            &mut model,
+            frame_at(Point::new(5.0, 5.0, -5.0)),
+            1.5,
+            20.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let local = cut(&mut model, &plate, &corner, T).unwrap();
+        let whole = with_every_face(&mut model, &plate, &corner, [true, false], cut_keeps);
+        same_as_with_every_face(&model, &plate, &corner, &local, &whole);
+        // The top and the bottom take the new hole; every other face is
+        // untouched.
+        let copied = explore_unique(&model, &plate, ShapeType::Face)
+            .unwrap()
+            .iter()
+            .filter(|face| local.history.copy_of(face).is_some())
+            .count();
+        assert_eq!(copied, 580);
     }
 }

@@ -127,14 +127,18 @@ fn holds_its_faces(model: &Model, shape: &ogeom::topo::Shape) {
 fn each_face_keeps_a_box_that_holds_it_and_no_more() {
     let mut model = Model::new();
     let plate = drilled_plate(&mut model, 2, 10.0, 5.0);
-    let any = explore_unique(&model, &plate, ShapeType::Face).unwrap()[0].clone();
-    assert_eq!(model.face_bounds(&any), None);
+    // A boolean's faces on planes and drums come out with their boxes.
+    for face in explore_unique(&model, &plate, ShapeType::Face).unwrap() {
+        assert!(model.face_bounds(&face).is_some());
+    }
     let b = tight_bounds(&model, &plate, T).unwrap();
     near(b.low().unwrap(), Point::ORIGIN);
     near(b.high().unwrap(), Point::new(30.0, 30.0, 5.0));
     holds_its_faces(&model, &plate);
 
     let ball = make_sphere(&mut model, Frame::WORLD, 5.0, T).unwrap().shape;
+    let any = explore_unique(&model, &ball, ShapeType::Face).unwrap()[0].clone();
+    assert_eq!(model.face_bounds(&any), None);
     holds_its_faces(&model, &ball);
 }
 
@@ -219,9 +223,18 @@ fn a_second_tight_bounds_of_a_drilled_plate_costs_a_tenth_of_the_first() {
         near(b.high().unwrap(), Point::new(250.0, 250.0, 10.0));
         started.elapsed().as_secs_f64()
     };
-    // The least of a few runs each way, every first one on a fresh copy.
+    // The least of a few runs each way, every first one on a copy whose
+    // faces have forgotten their boxes: the boolean keeps them, and a face
+    // handed out for editing forgets its own.
+    let forgotten = || {
+        let mut copy = model.clone();
+        for face in explore_unique(&model, &plate, ShapeType::Face).unwrap() {
+            let _ = copy.node_mut(&face);
+        }
+        copy
+    };
     let first = (0..5)
-        .map(|_| time(&model.clone()))
+        .map(|_| time(&forgotten()))
         .fold(f64::INFINITY, f64::min);
     time(&model);
     let second = (0..5).map(|_| time(&model)).fold(f64::INFINITY, f64::min);

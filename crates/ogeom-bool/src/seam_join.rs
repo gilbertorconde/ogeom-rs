@@ -45,9 +45,13 @@ const LEAST_GAP: f64 = 1e-2;
 /// is left as it is: valid, only split. The returned history takes each
 /// joined face to the face it became and deletes the seam edges that
 /// dissolved; each shell holding a joined face is rebuilt in place.
+///
+/// A joined face's edges take pcurves on its turned surface, which no edge
+/// of `held` may: a group holding one is refused.
 pub(crate) fn join_across_seams(
     model: &mut Model,
     shells: &mut [Shape],
+    held: &hashbrown::HashSet<TShapeId>,
     tol: Tolerances,
 ) -> OgeomResult<History> {
     let mut history = History::new();
@@ -102,6 +106,19 @@ pub(crate) fn join_across_seams(
         let mut replaced: HashMap<usize, Option<Shape>> = HashMap::new();
         for members in &clusters {
             let chosen: Vec<Shape> = members.iter().map(|&i| faces[i].clone()).collect();
+            if !held.is_empty() {
+                for face in &chosen {
+                    if explore_unique(model, face, ShapeType::Edge)?
+                        .iter()
+                        .any(|e| held.contains(&e.node()))
+                    {
+                        ogeom_core::ogeom_bail!(
+                            NotDone,
+                            "faces to join across a seam hold an edge shared with a face set aside"
+                        );
+                    }
+                }
+            }
             let Some((joined, dissolved)) = join_group(model, &chosen, tol)? else {
                 continue;
             };

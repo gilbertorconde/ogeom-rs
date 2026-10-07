@@ -956,9 +956,15 @@ impl Model {
             data.natural_restriction = true;
         }
         // An edge borders a face, so it must be at least as uncertain as the
-        // face. Walk the wires' edges and widen them where they are not.
+        // face. Walk the wires' edges and widen them where they are not; no
+        // edge is tighter than the least tolerance.
         let face_tolerance = data.tolerance;
-        for wire in wires {
+        let walk = if face_tolerance.get() > Tolerance::MIN.get() {
+            wires
+        } else {
+            &[]
+        };
+        for wire in walk {
             let edges = self.children_of(wire)?;
             for edge in &edges {
                 self.widen(edge, face_tolerance)?;

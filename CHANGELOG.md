@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **A boolean costs what the other solid reaches (#134).** Faces whose
+  box misses the other solid's pass through as the same nodes
+  (`History::copy_of` reports each), a plane's untouched holes are left out
+  of its arrangement, and only the region near the tool is split,
+  classified and sewn again; a box tree replaces the all-pairs face filter.
+  A corner hole into a 582-face plate costs 1.5 to 2 times the same hole
+  into a 22-face one, down from 23 times. `SolidBoundary::of_closed` builds
+  a classifier without checking closure again.
+
 ## [0.9.8] - 2026-10-07
 
 A patch release: no breaking API changes. Booleans take imported parts with
