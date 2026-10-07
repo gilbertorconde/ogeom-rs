@@ -138,6 +138,22 @@ impl fmt::Display for Diagnosis {
 /// model do not belong together, and every other answer would be about
 /// something that is not there.
 pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagnosis> {
+    check_kept(model, shape, tol, &crate::ProbeCache::new())
+}
+
+/// [`check`], probing faces' orientation through `kept`: a caller that
+/// checks a model, mends it and checks it again pays once for what the
+/// mend left alone.
+///
+/// # Errors
+///
+/// As [`check`].
+pub fn check_kept(
+    model: &Model,
+    shape: &Shape,
+    tol: Tolerances,
+    kept: &crate::ProbeCache,
+) -> OgeomResult<Diagnosis> {
     if model.node(shape).is_none() {
         ogeom_bail!(Dangling, "shape refers to a node not in this model");
     }
@@ -169,7 +185,7 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
         check_shell(model, shell, &mut found)?;
     }
     for solid in of(ShapeType::Solid) {
-        check_orientation(model, solid, tol, &mut found)?;
+        check_orientation(model, solid, tol, kept, &mut found)?;
     }
     // Tolerance containment: a face is no looser than its edges, an edge no
     // looser than its vertices, checked through every level below each.
@@ -205,9 +221,10 @@ fn check_orientation(
     model: &Model,
     solid: &Shape,
     tol: Tolerances,
+    kept: &crate::ProbeCache,
     found: &mut Diagnosis,
 ) -> OgeomResult<()> {
-    for face in inside_out_faces(model, solid, tol)? {
+    for face in inside_out_faces_kept(model, solid, tol, kept)? {
         found.note(
             Severity::Broken,
             &face,
@@ -240,8 +257,22 @@ fn check_orientation(
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) only; a
 /// question the geometry cannot answer names no face.
 pub fn inside_out_faces(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<Vec<Shape>> {
+    inside_out_faces_kept(model, solid, tol, &crate::ProbeCache::new())
+}
+
+/// [`inside_out_faces`], through `kept`: see [`check_kept`].
+///
+/// # Errors
+///
+/// As [`inside_out_faces`].
+pub fn inside_out_faces_kept(
+    model: &Model,
+    solid: &Shape,
+    tol: Tolerances,
+    kept: &crate::ProbeCache,
+) -> OgeomResult<Vec<Shape>> {
     let boundary = match probe_boundary(model, solid, tol) {
-        Ok(boundary) => boundary,
+        Ok(boundary) => boundary.keeping(kept),
         // A question the geometry cannot answer (an open shell, a chart
         // walk off its domain) is no finding; only cancellation and a
         // broken model are errors.
@@ -302,7 +333,13 @@ pub(crate) fn faces_inward(
 ) -> OgeomResult<Option<bool>> {
     /// How many of the largest triangles are asked before giving up.
     const PROBES: usize = 3;
-    let Ok(mesh) = ogeom_mesh::triangulate_face(model, face, Deflection::default(), tol) else {
+    let Ok(mesh) = ogeom_mesh::triangulate_face_kept(
+        model,
+        face,
+        Deflection::default(),
+        boundary.kept().meshes(),
+        tol,
+    ) else {
         return Ok(None);
     };
     if mesh.parameters.len() != mesh.positions.len() {

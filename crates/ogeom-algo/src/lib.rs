@@ -49,11 +49,12 @@ pub use build::{
     make_solid, make_vertex, make_wire, rings_are_parallels, surface_iso_u_curve,
 };
 pub use check::{
-    Diagnosis, Problem, Severity, check, check_self_intersection, check_self_intersection_near,
-    check_tessellation, inside_out_faces, restore_containment,
+    Diagnosis, Problem, Severity, check, check_kept, check_self_intersection,
+    check_self_intersection_near, check_tessellation, inside_out_faces, inside_out_faces_kept,
+    restore_containment,
 };
 pub use classify::{
-    Containment, SolidBoundary, SolidMesh, classify_in_solid, classify_in_solid_exact,
+    Containment, ProbeCache, SolidBoundary, SolidMesh, classify_in_solid, classify_in_solid_exact,
     classify_in_solid_exact_banded, classify_on_face,
 };
 pub use convert::{

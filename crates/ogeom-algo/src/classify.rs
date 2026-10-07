@@ -307,6 +307,13 @@ struct PreparedFace {
     /// about a few faces of a large solid, and drawing every face's rings
     /// up front cost more than all its questions.
     rings: std::sync::OnceLock<OgeomResult<Rings>>,
+    /// The face's surface in the model's store, under which rays cast
+    /// against it are kept.
+    surface: ogeom_topo::SurfaceId,
+    /// The kept surface rays are cast against, looked up the first time a
+    /// ray comes near the face; `None` inside for a surface a line meets in
+    /// closed form.
+    rays: std::sync::OnceLock<Option<std::sync::Arc<KeptSurface>>>,
     /// Where the face can be, padded past anything its bound could miss: a
     /// point outside is not on it, and a ray missing it does not cross it.
     bound: Aabb,
@@ -626,6 +633,12 @@ impl PreparedFace {
 #[derive(Debug)]
 pub struct SolidBoundary {
     faces: Vec<PreparedFace>,
+    /// What the rays cast against spline faces found, shared with whoever
+    /// handed the cache over.
+    kept: ProbeCache,
+    /// The tolerances the boundary was prepared at, which its kept rays
+    /// are cast at.
+    tol: Tolerances,
     bound: ogeom_math::Aabb,
     centre: Point,
     diagonal: f64,
@@ -723,6 +736,8 @@ impl SolidBoundary {
                     placed: std::sync::OnceLock::new(),
                     face: face.clone(),
                     rings: std::sync::OnceLock::new(),
+                    surface: data.surface,
+                    rays: std::sync::OnceLock::new(),
                     bound,
                     reach: tol.confusion().max(data.tolerance.get()),
                 },
@@ -752,11 +767,24 @@ impl SolidBoundary {
         let prepared = prepared.into_iter().map(|(face, _)| face).collect();
         Ok(Self {
             faces: prepared,
+            kept: ProbeCache::default(),
+            tol,
             bound,
             centre,
             diagonal,
             ring_chord,
         })
+    }
+
+    /// The cache this boundary casts its rays through.
+    pub(crate) const fn kept(&self) -> &ProbeCache {
+        &self.kept
+    }
+
+    /// This boundary, casting its rays through `kept`.
+    pub(crate) fn keeping(mut self, kept: &ProbeCache) -> Self {
+        self.kept = kept.clone();
+        self
     }
 
     /// Where a point stands against this boundary.
@@ -802,13 +830,22 @@ impl SolidBoundary {
                 // a placement that scales still carries the ray faithfully.
                 let from = inverse.apply(point);
                 let to = inverse.apply(far);
-                let ray: ogeom_geom::Curve = ogeom_geom::LineCurve::segment(from, to, tol)?.into();
-                let found = ogeom_intersect::intersect_curve_surface(
-                    &ray,
-                    surface,
-                    ogeom_intersect::CurveSurfaceOptions::default(),
-                    tol,
-                )?;
+                let found = match prepared
+                    .rays
+                    .get_or_init(|| self.kept.surface(prepared.surface, surface, self.tol))
+                {
+                    Some(kept) if kept.tol == tol => kept.cross((from, to))?,
+                    _ => {
+                        let ray: ogeom_geom::Curve =
+                            ogeom_geom::LineCurve::segment(from, to, tol)?.into();
+                        ogeom_intersect::intersect_curve_surface(
+                            &ray,
+                            surface,
+                            ogeom_intersect::CurveSurfaceOptions::default(),
+                            tol,
+                        )?
+                    }
+                };
                 if !found.lying.is_empty() {
                     // The ray runs in this face's surface: it crosses nothing and
                     // touches everything, which no parity expresses.
@@ -876,6 +913,109 @@ impl SolidBoundary {
             "every ray tried met a tangency, a boundary, or a degenerate point, \
              where the crossing count is ambiguous"
         )
+    }
+}
+
+/// What probing a model's solids finds that probing them again would find
+/// the same: the faces' meshes, and where each ray cast meets a surface
+/// that has no closed form against a line.
+///
+/// Kept by what each answer reads: a mesh by the face's content (see
+/// [`ogeom_mesh::FaceMeshCache`]), a ray by its two ends to the bit and the
+/// surface it was cast against, compared whole. An answer read back is the
+/// one asking again gives, so one cache serves probes of a model before and
+/// after it is mended, and only what the mend left alone is read back.
+/// Clones share what is kept.
+#[derive(Debug, Clone, Default)]
+pub struct ProbeCache(std::sync::Arc<Kept>);
+
+#[derive(Debug, Default)]
+struct Kept {
+    meshes: ogeom_mesh::FaceMeshCache,
+    rays: std::sync::Mutex<ogeom_core::FastMap<ogeom_topo::SurfaceId, std::sync::Arc<KeptSurface>>>,
+}
+
+/// One surface readied for rays, and the rays cast against it.
+#[derive(Debug)]
+struct KeptSurface {
+    readied: ogeom_intersect::PreparedSurface,
+    tol: Tolerances,
+    answers:
+        std::sync::Mutex<ogeom_core::FastMap<[u64; 6], ogeom_intersect::CurveSurfaceIntersection>>,
+}
+
+impl ProbeCache {
+    /// An empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The face meshes kept.
+    pub(crate) fn meshes(&self) -> &ogeom_mesh::FaceMeshCache {
+        &self.0.meshes
+    }
+
+    /// The surface stored under `id`, readied for rays at `tol`: the one
+    /// kept where it is still the same surface, else a fresh one, kept
+    /// from then on. `None` for a surface a line meets in closed form,
+    /// where asking costs less than looking up.
+    fn surface(
+        &self,
+        id: ogeom_topo::SurfaceId,
+        surface: &ogeom_geom::SurfaceGeometry,
+        tol: Tolerances,
+    ) -> Option<std::sync::Arc<KeptSurface>> {
+        use ogeom_geom::SurfaceGeometry as S;
+        if matches!(
+            surface,
+            S::Plane(_) | S::Sphere(_) | S::Cylinder(_) | S::Cone(_) | S::Torus(_)
+        ) {
+            return None;
+        }
+        let mut rays = self
+            .0
+            .rays
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(kept) = rays.get(&id)
+            && kept.tol == tol
+            && kept.readied.surface() == surface
+        {
+            return Some(kept.clone());
+        }
+        let options = ogeom_intersect::CurveSurfaceOptions::default();
+        let kept = std::sync::Arc::new(KeptSurface {
+            readied: ogeom_intersect::PreparedSurface::new(surface.clone(), options, tol),
+            tol,
+            answers: std::sync::Mutex::default(),
+        });
+        rays.insert(id, kept.clone());
+        Some(kept)
+    }
+}
+
+impl KeptSurface {
+    /// Where the segment from `from` to `to` pierces the surface, as
+    /// [`ogeom_intersect::intersect_curve_surface`] at its default options
+    /// answers.
+    fn cross(
+        &self,
+        (from, to): (Point, Point),
+    ) -> OgeomResult<ogeom_intersect::CurveSurfaceIntersection> {
+        let key = [from.x, from.y, from.z, to.x, to.y, to.z].map(f64::to_bits);
+        let answers = || {
+            self.answers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if let Some(found) = answers().get(&key) {
+            return Ok(found.clone());
+        }
+        let ray: ogeom_geom::Curve = ogeom_geom::LineCurve::segment(from, to, self.tol)?.into();
+        let found = self.readied.intersect(&ray)?;
+        answers().insert(key, found.clone());
+        Ok(found)
     }
 }
 

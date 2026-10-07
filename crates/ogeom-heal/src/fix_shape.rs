@@ -33,7 +33,8 @@
 use ogeom_core::FastMap;
 
 use ogeom_algo::{
-    Diagnosis, History, check, edge_vertices, linear_properties, make_wire, order_edges, sew,
+    Diagnosis, History, ProbeCache, check_kept, edge_vertices, linear_properties, make_wire,
+    order_edges, sew,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_mesh::Deflection;
@@ -95,7 +96,10 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     // Every mend below edits in place what it reaches, so what other
     // shapes hold as well is copied first, and the copies recorded.
     let mut history = ogeom_algo::unshare(model, shape)?;
-    let before = check(model, shape, tol)?;
+    // The orientation probe is asked three times, before, while mending
+    // and after; each asks again only what the steps between changed.
+    let kept = ProbeCache::new();
+    let before = check_kept(model, shape, tol, &kept)?;
     let mut current = shape.clone();
 
     // Wires and small edges, in one rebuild.
@@ -155,7 +159,7 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     let mut faces_turned = 0;
     let mut turn = Reshape::new();
     for solid in explore_unique(model, &current, ShapeType::Solid)? {
-        for face in ogeom_algo::inside_out_faces(model, &solid, tol)? {
+        for face in ogeom_algo::inside_out_faces_kept(model, &solid, tol, &kept)? {
             turn.replace(&face, turned_face(model, &face)?.reversed());
             faces_turned += 1;
         }
@@ -172,7 +176,7 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     // what they bound, but a shape can arrive broken), and containment is
     // established only by widening what is bounded.
     let tolerances_widened = ogeom_algo::restore_containment(model, &current)?;
-    let after = check(model, &current, tol)?;
+    let after = check_kept(model, &current, tol, &kept)?;
     Ok(Fixed {
         shape: current,
         history,
