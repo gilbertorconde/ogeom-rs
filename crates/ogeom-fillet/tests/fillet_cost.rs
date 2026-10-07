@@ -168,10 +168,10 @@ fn the_outer_edges_of_a_holed_plate_meet_at_mitres() {
     assert_eq!(faces, 10 + 4);
 }
 
-/// The outer edges of a holed plate's top face fillet in about the time
-/// they take on the plain plate: the run-out probes at the corners read
-/// the faces near the corners, not the whole plate. The two passes'
-/// booleans still see the whole plate, so the bound is loose.
+/// The outer edges of a holed plate's top face fillet within twice the
+/// time they take on the plain plate: the run-out probes at the corners
+/// read the faces near the corners, and each pass's boolean sets aside
+/// every face clear of each of its wedges, the holes among them.
 #[test]
 #[ignore = "heavy"]
 fn a_plate_with_holes_fillets_its_outer_edges_at_about_the_plain_plates_cost() {
@@ -179,7 +179,7 @@ fn a_plate_with_holes_fillets_its_outer_edges_at_about_the_plain_plates_cost() {
     // Each blend runs to the mitres with its neighbours: its centroid's
     // line is the edge less the centroid's offset at either end.
     let want = 4.0 * area * 2.0f64.mul_add(-centroid, 100.0);
-    let mut times = Vec::new();
+    let mut plates = Vec::new();
     for n in [0, 4, 8, 16] {
         let mut model = Model::new();
         let solid = plate(&mut model, 100.0, n, 80.0 / f64::from(n.max(1)));
@@ -192,13 +192,31 @@ fn a_plate_with_holes_fillets_its_outer_edges_at_about_the_plain_plates_cost() {
             "{removed} against {want}"
         );
         assert_eq!(faces, 10 + (n * n) as usize);
-        times.push(took);
+        plates.push((model, solid, edges));
     }
-    let (plain, most) = (times[0], times[3]);
-    assert!(
-        most < plain * 8,
-        "{most:?} with 256 holes against {plain:?} plain"
-    );
+    // The least of several runs of each side, taken in turns, reads past
+    // a machine busy with other work; a round is measured again, up to
+    // four, while the bound is not met.
+    let least = |(model, solid, edges): &mut (Model, Shape, Vec<Shape>)| {
+        (0..3).fold(Duration::MAX, |least, _| {
+            let start = Instant::now();
+            ogeom_fillet::fillet_edges(model, solid, edges, 1.0, T).unwrap();
+            least.min(start.elapsed())
+        })
+    };
+    let mut rounds = Vec::new();
+    for _ in 0..4 {
+        let (mut plain, mut holed) = (Duration::MAX, Duration::MAX);
+        for _ in 0..4 {
+            plain = plain.min(least(&mut plates[0]));
+            holed = holed.min(least(&mut plates[3]));
+        }
+        rounds.push((holed, plain));
+        if holed <= plain * 2 {
+            return;
+        }
+    }
+    panic!("256 holes against the plain plate, (holed, plain) per round: {rounds:?}");
 }
 
 /// Every hole rim on a plate's top face fillets in time that grows about

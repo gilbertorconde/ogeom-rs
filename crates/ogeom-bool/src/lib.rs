@@ -11517,13 +11517,14 @@ mod tests {
         }
     }
 
-    /// Whether `face`'s box stands clear of `tool`'s by a millimetre.
+    /// Whether `face`'s box stands clear of each of `tool`'s lumps' by a
+    /// millimetre.
     fn clear_of(model: &Model, face: &Shape, tool: &Shape) -> bool {
-        let tool = ogeom_algo::tight_bounds(model, tool, T).unwrap();
-        !ogeom_algo::face_bounds(model, face)
+        let face = ogeom_algo::face_bounds(model, face).unwrap().expanded(1.0);
+        explore_unique(model, tool, ShapeType::Solid)
             .unwrap()
-            .expanded(1.0)
-            .intersects(&tool)
+            .iter()
+            .all(|lump| !face.intersects(&ogeom_algo::tight_bounds(model, lump, T).unwrap()))
     }
 
     /// The result with faces set aside against the one with every face
@@ -11575,6 +11576,28 @@ mod tests {
         let whole = with_every_face(&mut model, &plate, &corner, [true, false], cut_keeps);
         same_as_with_every_face(&model, &plate, &corner, &local, &whole);
         let holed = 40.0 * 40.0 * 10.0 - 10.0 * PI * 1.5 * 1.5 * 10.0;
+        assert!((volume(&model, &local.shape) - holed).abs() < 1e-6 * holed);
+    }
+
+    /// Two pins at opposite corners, cut as one compound whose box spans
+    /// the plate: the faces clear of both pins are set aside all the same.
+    #[test]
+    fn holes_at_opposite_corners_leave_the_faces_between_them_as_they_were() {
+        let mut model = Model::new();
+        let plate = drilled_plate(&mut model, 3);
+        let mut pins = Vec::new();
+        for at in [5.0, 35.0] {
+            pins.push(
+                make_cylinder(&mut model, frame_at(Point::new(at, at, -5.0)), 1.5, 20.0, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+        let pins = model.add_compound(&pins).unwrap();
+        let local = cut(&mut model, &plate, &pins, T).unwrap();
+        let whole = with_every_face(&mut model, &plate, &pins, [true, false], cut_keeps);
+        same_as_with_every_face(&model, &plate, &pins, &local, &whole);
+        let holed = 40.0 * 40.0 * 10.0 - 11.0 * PI * 1.5 * 1.5 * 10.0;
         assert!((volume(&model, &local.shape) - holed).abs() < 1e-6 * holed);
     }
 

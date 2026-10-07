@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A fillet's cost no longer depends on faces far from its edges
+  (#135).** A boolean whose operand is several separate solids sets aside
+  every face that misses all of them, so a fillet pass whose wedges sit on
+  opposite sides of a part leaves the rest alone. The four outer edges of a
+  plate with 256 holes round in under twice the plain plate's time.
+
 - **Operations on a boolean's result leave its operands alone.** Faces a
   boolean passes through stay shared with the operand; heal, sew, fillets
   and chamfers, `remove_faces`, `unify_same_domain` and `tessellate` copy
@@ -37,6 +43,12 @@ bump may break the API and a patch bump may not.
   a classifier without checking closure again.
 
 ### Fixed
+
+- **A boolean against a solid whose coplanar faces are still split no
+  longer refuses.** An edge held by two coplanar faces of one operand was
+  laid onto the other operand's face twice, which lost the hole it bounded
+  ("kept pieces did not close"); a box minus a frame fused from four bars
+  along its top edges is cut.
 
 - **A general draft of a closed wall closes its hinge.** `general_draft`
   dropped the segment that closes a hinge when it came up after the chain's

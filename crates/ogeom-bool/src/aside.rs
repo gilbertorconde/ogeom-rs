@@ -2,8 +2,8 @@
 //! general fuse and passed through it untouched.
 //!
 //! A face whose box, widened by every tolerance it states and by the
-//! margin the pair filters allow, misses the other solid's box lies
-//! outside the other solid, and no section, contact or junction can reach
+//! margin the pair filters allow, misses the box of each of the other
+//! solid's lumps lies outside the other solid, and no section, contact or junction can reach
 //! it. It is not gathered, split, classified or rebuilt. The faces the
 //! fuse does gather keep the edges they share with it as they are, and a
 //! hole of a gathered plane whose every edge is shared with such faces,
@@ -155,6 +155,10 @@ pub(crate) struct Solid {
     faces: Vec<Read>,
     holders: HashMap<EdgeKey, Holders>,
     pub(crate) bound: Aabb,
+    /// The box of each lump, where the shape holds more than one: a face
+    /// clear of every lump's box is clear of the shape, though the lumps
+    /// may stand on either side of it.
+    lumps: Vec<Aabb>,
 }
 
 impl Solid {
@@ -163,6 +167,19 @@ impl Solid {
         self.holders
             .values()
             .all(|h| h.uses == u32::MAX || h.uses % 2 == 0)
+    }
+
+    /// What a face of the other solid must miss to be clear of this one:
+    /// a compound of wedges along a plate's opposite edges spans the plate,
+    /// while each wedge's box reaches only the faces beside its edge.
+    fn reach(&self) -> Reach {
+        let boxes = if self.lumps.is_empty() {
+            vec![self.bound]
+        } else {
+            self.lumps.clone()
+        };
+        let tree = (boxes.len() > 8).then(|| crate::box_tree::BoxTree::new(&boxes));
+        Reach { boxes, tree }
     }
 }
 
@@ -183,10 +200,11 @@ pub(crate) fn set_aside(
 ) -> OgeomResult<Option<[Aside; 2]>> {
     let read_a = read_solid(model, a, tol)?;
     let read_b = read_solid(model, b, tol)?;
-    let (box_a, box_b) = (read_a.bound, read_b.bound);
+    let reach_a = read_a.reach();
+    let reach_b = read_b.reach();
     let sides = [
-        side(model, read_a, &box_b, tol)?,
-        side(model, read_b, &box_a, tol)?,
+        side(model, read_a, &reach_b, tol)?,
+        side(model, read_b, &reach_a, tol)?,
     ];
     if sides.iter().all(Aside::is_empty) {
         return Ok(None);
@@ -308,11 +326,58 @@ pub(crate) fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> Ogeom
             rings,
         });
     }
+    // Each lump's box, from its faces' boxes as read.
+    let mut lumps = Vec::new();
+    let solids = explore_unique(model, solid, ShapeType::Solid)?;
+    if solids.len() > 1 {
+        let at: HashMap<SameKey, usize> = faces
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (SameKey(r.face.clone()), i))
+            .collect();
+        let mut held = 0;
+        for lump in solids {
+            let mut bound = Aabb::EMPTY;
+            for face in explore_unique(model, &lump, ShapeType::Face)? {
+                if let Some(&i) = at.get(&SameKey(face)) {
+                    bound = bound.union(&faces[i].bound);
+                    held += 1;
+                }
+            }
+            lumps.push(bound);
+        }
+        // Faces outside any lump, or held by two, leave the whole box.
+        if held != faces.len() {
+            lumps.clear();
+        }
+    }
     Ok(Solid {
         faces,
         holders,
         bound: whole,
+        lumps,
     })
+}
+
+/// The boxes a face must miss to be clear of a solid: each lump's, or the
+/// whole box.
+pub(crate) struct Reach {
+    boxes: Vec<Aabb>,
+    tree: Option<crate::box_tree::BoxTree>,
+}
+
+impl Reach {
+    /// Whether `bound` meets any of the boxes.
+    fn meets(&self, bound: &Aabb) -> bool {
+        match &self.tree {
+            Some(tree) => {
+                let mut out = Vec::new();
+                tree.meeting(bound, &mut out);
+                !out.is_empty()
+            }
+            None => self.boxes.iter().any(|b| b.intersects(bound)),
+        }
+    }
 }
 
 /// A wire of a gathered face: its run of edges, its run of vertices, and
@@ -324,16 +389,16 @@ type Span = (
     Option<(SmallVec<[u32; 2]>, f64)>,
 );
 
-/// What one solid sets aside against the other's box `other`.
+/// What one solid sets aside against the other's boxes `other`.
 pub(crate) fn side(
     model: &Model,
     solid: Solid,
-    other: &Aabb,
+    other: &Reach,
     tol: Tolerances,
 ) -> OgeomResult<Aside> {
     let closed = solid.closed();
     let Solid { faces, holders, .. } = solid;
-    let mut clear: Vec<bool> = faces.iter().map(|r| !r.bound.intersects(other)).collect();
+    let mut clear: Vec<bool> = faces.iter().map(|r| !other.meets(&r.bound)).collect();
     if !clear.iter().any(|c| *c) || clear.iter().all(|c| *c) {
         return Ok(Aside::default());
     }
@@ -390,7 +455,7 @@ pub(crate) fn side(
             for (w, &((k0, k1), (v0, v1))) in runs.iter().enumerate() {
                 // A hole of a plane whose every edge a face set aside holds
                 // lies within those faces' boxes, which miss the other
-                // solid's together.
+                // solid's boxes together.
                 let mut beside: SmallVec<[u32; 2]> = SmallVec::new();
                 let mut bound = Aabb::EMPTY;
                 let mut doubt = 0.0_f64;
@@ -413,8 +478,7 @@ pub(crate) fn side(
                         }
                     }
                 }
-                let hole =
-                    (outer_first && hole && !bound.intersects(other)).then_some((beside, doubt));
+                let hole = (outer_first && hole && !other.meets(&bound)).then_some((beside, doubt));
                 spans.push(((k0, k1), (v0, v1), hole));
             }
             // A hole touching a ring the arrangement takes is taken with it.
