@@ -28,6 +28,14 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Tessellation repeats less work, with identical meshes.** The stored
+  tessellation indexes each face mesh once and draws each edge once (13%
+  faster on the largest corpus part); grid refinement samples each grid
+  value once (whole-part meshing about 10% faster, a torus 12 to 18%); the
+  repair passes find border T-junctions through a grid and walk cracks in
+  linear time, and welding chains its cells (a 1M-triangle weld 12%
+  faster).
+
 - **The orientation probe is about twice as fast, `fix_shape` 2.4 times.**
   A solid's boundary prepares each spline surface for rays once, and the
   curve-surface polish works out derivatives only at points it steps onto.
