@@ -452,8 +452,7 @@ pub fn read_dxf_entities(text: &str) -> ogeom_core::OgeomResult<DxfEntities> {
     }
 
     let mut out = DxfEntities::default();
-    let mut layer_linetype: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut layer_linetype: ogeom_core::FastMap<String, String> = ogeom_core::FastMap::default();
     for (name, records) in &sections {
         match *name {
             "HEADER" => {

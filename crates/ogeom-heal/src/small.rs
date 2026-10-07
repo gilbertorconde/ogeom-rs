@@ -17,7 +17,7 @@
 //!
 //! [`fix_shape`]: crate::fix_shape()
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_algo::{Built, History, edge_vertices, volume_properties};
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
@@ -104,8 +104,8 @@ fn one_pass(
 ) -> OgeomResult<SmallFaces> {
     let mut reshape = Reshape::new();
     // Vertex merges, resolved through earlier ones: a survivor's survivor.
-    let mut survivor: HashMap<TShapeId, Shape> = HashMap::new();
-    let root = |survivor: &HashMap<TShapeId, Shape>, v: &Shape| -> Shape {
+    let mut survivor: FastMap<TShapeId, Shape> = FastMap::default();
+    let root = |survivor: &FastMap<TShapeId, Shape>, v: &Shape| -> Shape {
         let mut current = v.clone();
         while let Some(next) = survivor.get(&current.node()) {
             if next.node() == current.node() {

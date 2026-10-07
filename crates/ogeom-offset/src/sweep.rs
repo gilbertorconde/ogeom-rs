@@ -731,7 +731,7 @@ impl<'a> Skin<'a> {
         }
         let row_vs = vs.clone();
         let (u0, u1) = (us[0], us[us.len() - 1]);
-        let held: std::cell::RefCell<std::collections::HashMap<u64, Vec<Point>>> =
+        let held: std::cell::RefCell<ogeom_core::FastMap<u64, Vec<Point>>> =
             std::cell::RefCell::default();
         let point = move |u: f64, v: f64| -> OgeomResult<Point> {
             let Some(j) = row_vs.iter().position(|w| w.to_bits() == v.to_bits()) else {
@@ -5270,7 +5270,7 @@ fn law_loft(
         stations: &kept,
         normals: &kept_normals,
     };
-    let held: std::cell::RefCell<std::collections::HashMap<u64, Transform>> =
+    let held: std::cell::RefCell<ogeom_core::FastMap<u64, Transform>> =
         std::cell::RefCell::default();
     let guide = guide_curves(model, law)?;
     let motion = |s: f64| -> OgeomResult<Transform> {
@@ -6292,7 +6292,7 @@ fn pipe_shell_law(
     // built once into `held`.
     #[allow(clippy::type_complexity)]
     let rerowed_point = |(rs, re): (usize, usize),
-                         held: &std::cell::RefCell<std::collections::HashMap<u64, RerowColumn>>,
+                         held: &std::cell::RefCell<ogeom_core::FastMap<u64, RerowColumn>>,
                          u: f64,
                          ab: (f64, f64),
                          s: f64|
@@ -7036,10 +7036,10 @@ fn realized_profile_wound(
         motion.apply(plane.origin()),
         Direction::new(motion.apply_vector(plane.normal().vector()), tol)?,
     );
-    let mut vertices: std::collections::HashMap<ogeom_topo::TShapeId, Shape> =
-        std::collections::HashMap::new();
-    let mut edge_copies: std::collections::HashMap<ogeom_topo::TShapeId, Shape> =
-        std::collections::HashMap::new();
+    let mut vertices: ogeom_core::FastMap<ogeom_topo::TShapeId, Shape> =
+        ogeom_core::FastMap::default();
+    let mut edge_copies: ogeom_core::FastMap<ogeom_topo::TShapeId, Shape> =
+        ogeom_core::FastMap::default();
     let mut wires: Vec<Vec<Shape>> = Vec::new();
     for wire in explore(model, profile, Filter::OfType(ShapeType::Wire))? {
         let mut ring = Vec::new();

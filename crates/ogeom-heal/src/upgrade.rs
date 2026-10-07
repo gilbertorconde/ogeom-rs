@@ -2,7 +2,7 @@
 //! merging, and tolerance reduction, undoing the splits an operation left
 //! behind without changing the shape they describe.
 
-use std::collections::{HashMap, HashSet};
+use ogeom_core::{FastMap, FastSet};
 
 use ogeom_algo::{Built, History};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -89,14 +89,14 @@ fn unify_own(
     let in_play: Vec<bool> = match around {
         None => vec![true; faces.len()],
         Some(seeds) => {
-            let mut edge_users: HashMap<TShapeId, Vec<usize>> = HashMap::new();
+            let mut edge_users: FastMap<TShapeId, Vec<usize>> = FastMap::default();
             for (i, face) in faces.iter().enumerate() {
                 for edge in explore_unique(model, face, ShapeType::Edge)? {
                     edge_users.entry(edge.node()).or_default().push(i);
                 }
             }
             let mut reached = vec![false; faces.len()];
-            let mut carriers: HashMap<usize, Option<Carrier>> = HashMap::new();
+            let mut carriers: FastMap<usize, Option<Carrier>> = FastMap::default();
             let mut queue: Vec<usize> = Vec::new();
             for (i, face) in faces.iter().enumerate() {
                 if seeds.iter().any(|s| s.node() == face.node()) {
@@ -105,7 +105,7 @@ fn unify_own(
                 }
             }
             while let Some(i) = queue.pop() {
-                if let std::collections::hash_map::Entry::Vacant(slot) = carriers.entry(i) {
+                if let ogeom_core::collections::hash_map::Entry::Vacant(slot) = carriers.entry(i) {
                     slot.insert(carrier_of(model, &faces[i], tol)?);
                 }
                 for edge in explore_unique(model, &faces[i], ShapeType::Edge)? {
@@ -113,7 +113,9 @@ fn unify_own(
                         if reached[j] {
                             continue;
                         }
-                        if let std::collections::hash_map::Entry::Vacant(slot) = carriers.entry(j) {
+                        if let ogeom_core::collections::hash_map::Entry::Vacant(slot) =
+                            carriers.entry(j)
+                        {
                             slot.insert(carrier_of(model, &faces[j], tol)?);
                         }
                         if let (Some(Some(ci)), Some(Some(cj))) =
@@ -151,7 +153,7 @@ fn unify_own(
         }
         i
     }
-    let mut edge_users: HashMap<TShapeId, Vec<usize>> = HashMap::new();
+    let mut edge_users: FastMap<TShapeId, Vec<usize>> = FastMap::default();
     for (i, face) in faces.iter().enumerate() {
         for edge in explore_unique(model, face, ShapeType::Edge)? {
             edge_users.entry(edge.node()).or_default().push(i);
@@ -173,7 +175,7 @@ fn unify_own(
 
     // Clusters in the order of their first face, so the merged faces enter
     // the arena in the same order on every run.
-    let mut cluster_of_root: HashMap<usize, usize> = HashMap::new();
+    let mut cluster_of_root: FastMap<usize, usize> = FastMap::default();
     let mut clusters: Vec<Vec<usize>> = Vec::new();
     for i in 0..faces.len() {
         let r = root(&mut group, i);
@@ -190,7 +192,7 @@ fn unify_own(
             continue;
         }
         // Interior edges (used by two members) dissolve; the rest chain.
-        let mut counts: HashMap<TShapeId, (usize, Shape)> = HashMap::new();
+        let mut counts: FastMap<TShapeId, (usize, Shape)> = FastMap::default();
         for &i in members {
             for edge in explore_unique(model, &faces[i], ShapeType::Edge)? {
                 counts
@@ -486,7 +488,7 @@ fn merge_pass(
     // earlier unification leaves pcurves on surfaces nothing carries any
     // more, and a join that tried to honour those would refuse work it can
     // do.
-    let mut needed: HashMap<TShapeId, Vec<(SurfaceId, Location)>> = HashMap::new();
+    let mut needed: FastMap<TShapeId, Vec<(SurfaceId, Location)>> = FastMap::default();
     for face in explore_unique(model, shape, ShapeType::Face)? {
         let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data().clone()) else {
             continue;
@@ -502,7 +504,7 @@ fn merge_pass(
 
     let wires = explore_unique(model, shape, ShapeType::Wire)?;
     let mut reshape = Reshape::new();
-    let mut merged_nodes: HashSet<TShapeId> = HashSet::new();
+    let mut merged_nodes: FastSet<TShapeId> = FastSet::default();
     for wire in &wires {
         let edges = model.ordered_children_of(wire)?;
         if edges.len() < 2 {

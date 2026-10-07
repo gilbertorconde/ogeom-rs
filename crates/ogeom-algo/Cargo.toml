@@ -25,7 +25,6 @@ ogeom-mesh.workspace = true
 ogeom-intersect.workspace = true
 nalgebra.workspace = true
 smallvec.workspace = true
-hashbrown.workspace = true
 spade.workspace = true
 
 [dev-dependencies]

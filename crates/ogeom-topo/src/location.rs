@@ -454,9 +454,9 @@ mod tests {
 
     #[test]
     fn locations_hash_consistently_with_equality() {
-        use std::collections::HashSet;
+        use ogeom_core::FastSet;
         let (_, a, b) = store();
-        let mut set = HashSet::new();
+        let mut set = FastSet::default();
         set.insert(Location::of(a));
         set.insert(Location::of(a));
         set.insert(Location::of(b));

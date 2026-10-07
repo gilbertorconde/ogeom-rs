@@ -28,7 +28,7 @@
 //! tolerances, representations and children that one shape can change without
 //! the other seeing it.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_core::{OgeomResult, ogeom_bail};
 use ogeom_math::Transform;
@@ -113,7 +113,7 @@ pub fn copied(model: &mut Model, shape: &Shape) -> OgeomResult<Built> {
     }
     model.begin_operation();
 
-    let mut done: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut done: FastMap<TShapeId, Shape> = FastMap::default();
     let mut history = History::new();
     let bare = duplicate(model, shape, &mut done, &mut history)?;
     // The root's own placement and orientation, applied here and nowhere else.
@@ -144,7 +144,7 @@ pub fn copied(model: &mut Model, shape: &Shape) -> OgeomResult<Built> {
 fn duplicate(
     model: &mut Model,
     shape: &Shape,
-    done: &mut HashMap<TShapeId, Shape>,
+    done: &mut FastMap<TShapeId, Shape>,
     history: &mut History,
 ) -> OgeomResult<Shape> {
     if let Some(existing) = done.get(&shape.node()) {

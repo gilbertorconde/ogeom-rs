@@ -500,8 +500,8 @@ fn straight(points: &[Point], tolerance: f64) -> bool {
 /// points remain to fit through.
 fn ordered_profile(points: &[(f64, f64)], merge: f64) -> Option<Vec<(f64, f64)>> {
     // Merged on a grid of the merging distance, each cell's mean.
-    let mut cells: std::collections::HashMap<(i64, i64), (f64, f64, f64)> =
-        std::collections::HashMap::new();
+    let mut cells: ogeom_core::FastMap<(i64, i64), (f64, f64, f64)> =
+        ogeom_core::FastMap::default();
     #[allow(clippy::cast_possible_truncation, reason = "a grid cell")]
     for &(x, y) in points {
         let key = ((x / merge).floor() as i64, (y / merge).floor() as i64);

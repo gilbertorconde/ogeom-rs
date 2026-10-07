@@ -15,7 +15,6 @@ categories.workspace = true
 ogeom-core.workspace = true
 ogeom-math.workspace = true
 ogeom-geom.workspace = true
-hashbrown.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true
 

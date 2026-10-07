@@ -489,8 +489,8 @@ mod tests {
     use super::*;
     use crate::entity::VertexData;
     use ogeom_core::Arena;
+    use ogeom_core::FastSet;
     use ogeom_math::{Point, Vector};
-    use std::collections::HashSet;
 
     fn setup() -> (Arena<TShape>, DatumStore, TShapeId, TShapeId, Location) {
         let mut arena = Arena::new();
@@ -600,18 +600,18 @@ mod tests {
         let reversed = base.reversed();
         let moved = base.located(loc);
 
-        let equal: HashSet<Shape> = [base.clone(), reversed.clone(), moved.clone()]
+        let equal: FastSet<Shape> = [base.clone(), reversed.clone(), moved.clone()]
             .into_iter()
             .collect();
         assert_eq!(equal.len(), 3, "all three differ under strict equality");
 
-        let same: HashSet<SameKey> = [base.clone(), reversed.clone(), moved.clone()]
+        let same: FastSet<SameKey> = [base.clone(), reversed.clone(), moved.clone()]
             .into_iter()
             .map(SameKey)
             .collect();
         assert_eq!(same.len(), 2, "orientation is ignored, placement is not");
 
-        let partner: HashSet<PartnerKey> = [base, reversed, moved]
+        let partner: FastSet<PartnerKey> = [base, reversed, moved]
             .into_iter()
             .map(PartnerKey)
             .collect();

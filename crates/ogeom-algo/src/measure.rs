@@ -360,7 +360,7 @@ impl Pipe for Vector {
 pub fn shape_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Aabb> {
     // Shared sub-shapes are bounded once per call: in a closed solid every
     // edge is reached from two faces and every vertex from several edges.
-    let mut seen = hashbrown::HashMap::new();
+    let mut seen = ogeom_core::FastMap::default();
     bounds_within(model, shape, tol, &mut seen)
 }
 
@@ -369,7 +369,7 @@ fn bounds_within(
     model: &Model,
     shape: &Shape,
     tol: Tolerances,
-    seen: &mut hashbrown::HashMap<(ogeom_topo::TShapeId, ogeom_topo::Location), Aabb>,
+    seen: &mut ogeom_core::FastMap<(ogeom_topo::TShapeId, ogeom_topo::Location), Aabb>,
 ) -> OgeomResult<Aabb> {
     let key = (shape.node(), shape.location().clone());
     if let Some(known) = seen.get(&key) {

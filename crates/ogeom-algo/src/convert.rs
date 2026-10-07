@@ -17,13 +17,13 @@
 
 use crate::build::{attach_pcurve, attach_seam, make_edge_between, make_face_on};
 use crate::{Built, History, make_compound, make_shell, make_solid, make_vertex, make_wire};
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{GeneralTransform, Point, Point2, Weighted};
 use ogeom_topo::{
     EdgeRepr, Filter, Location, Model, NodeData, Orientation, Shape, ShapeType, TShapeId, explore,
 };
-use std::collections::HashMap;
 
 /// One converted edge: the shape, its curve and the curve's own range.
 type ConvertedEdge = (Shape, Curve, (f64, f64));
@@ -286,7 +286,7 @@ fn rebuild(
         tol,
         history: History::new(),
         new_vertices: NewVertices::default(),
-        new_edges: HashMap::new(),
+        new_edges: FastMap::default(),
         rederived: Vec::new(),
     };
     let rebuilt = state.shape(model, shape)?;
@@ -306,7 +306,7 @@ struct Rebuild<'a> {
     /// Each vertex occurrence's twin, by node and position.
     new_vertices: NewVertices,
     /// Each edge occurrence's twin, by node and placement.
-    new_edges: HashMap<(TShapeId, [u64; 3]), ConvertedEdge>,
+    new_edges: FastMap<(TShapeId, [u64; 3]), ConvertedEdge>,
     /// The edges given a pcurve that is not a closed form of their curve
     /// on the new surface: an iso line or a fit.
     rederived: Vec<Shape>,
@@ -442,7 +442,7 @@ impl Rebuild<'_> {
         let walked_back = affine.is_none() && reflecting != reflected;
 
         let mut rings = Vec::new();
-        let mut corner_uv: HashMap<TShapeId, Point2> = HashMap::new();
+        let mut corner_uv: FastMap<TShapeId, Point2> = FastMap::default();
         // The wires are read as the face stores them, its own sense left
         // out: the rebuilt face takes that sense back below, and reading
         // them under it as well would turn every ring of a reversed face
@@ -625,7 +625,7 @@ impl Rebuild<'_> {
                         continue;
                     }
                     let uv_of = |model: &Model,
-                                 cache: &mut HashMap<TShapeId, Point2>,
+                                 cache: &mut FastMap<TShapeId, Point2>,
                                  vertex: &Shape|
                      -> OgeomResult<Point2> {
                         if let Some(&uv) = cache.get(&vertex.node()) {
@@ -1538,7 +1538,7 @@ fn transformed_patch(
 /// and under the turn's) is one new vertex, so every edge that meets it
 /// there ends on the same node.
 #[derive(Default)]
-struct NewVertices(HashMap<TShapeId, Vec<(Point, Shape)>>);
+struct NewVertices(FastMap<TShapeId, Vec<(Point, Shape)>>);
 
 impl NewVertices {
     /// The new vertex for the old `node` placed at `at`, made on first ask.

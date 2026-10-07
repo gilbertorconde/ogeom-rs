@@ -324,7 +324,7 @@ impl ProvenanceTable {
     #[must_use]
     pub fn roots(&self, id: EntityId) -> Vec<EntityId> {
         let mut out = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = crate::collections::FastSet::default();
         let mut stack = vec![id];
         while let Some(current) = stack.pop() {
             if !seen.insert(current) {

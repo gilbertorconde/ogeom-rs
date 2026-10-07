@@ -21,7 +21,7 @@
 //! meet within tolerance stay in separate shells, and the result says how many
 //! there are.
 
-use hashbrown::{HashMap, HashSet};
+use ogeom_core::{FastMap, FastSet};
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d;
@@ -206,8 +206,8 @@ impl Sewn {
     pub fn edges_walked_one_way(&self, model: &Model) -> OgeomResult<Vec<Shape>> {
         let mut out = Vec::new();
         for shell in &self.shells {
-            let mut walks: HashMap<(TShapeId, ogeom_topo::Location), (Shape, usize, usize)> =
-                HashMap::new();
+            let mut walks: FastMap<(TShapeId, ogeom_topo::Location), (Shape, usize, usize)> =
+                FastMap::default();
             let mut order = Vec::new();
             for face in explore(model, shell, Filter::OfType(ShapeType::Face))? {
                 for edge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
@@ -406,8 +406,8 @@ fn sew_faces(
         .collect();
     // What the settled faces hold, which the sewing of the others must
     // leave where it is.
-    let mut held_edges: HashSet<TShapeId> = HashSet::new();
-    let mut held_vertices: HashSet<TShapeId> = HashSet::new();
+    let mut held_edges: FastSet<TShapeId> = FastSet::default();
+    let mut held_vertices: FastSet<TShapeId> = FastSet::default();
     for (face, _) in all.iter().zip(settled).filter(|(_, settled)| **settled) {
         for edge in explore_unique(model, face, ShapeType::Edge)? {
             held_edges.insert(edge.node());
@@ -449,7 +449,7 @@ fn sew_faces(
         // Every distinct edge node used by the faces, with the geometry that
         // decides whether two of them are the same edge.
         let mut catalogue: Vec<(TShapeId, Fingerprint)> = Vec::new();
-        let mut catalogued: HashSet<TShapeId> = HashSet::new();
+        let mut catalogued: FastSet<TShapeId> = FastSet::default();
         for face in faces {
             for edge in explore_unique(model, face, ShapeType::Edge)? {
                 let id = rebuilt_edges
@@ -471,7 +471,7 @@ fn sew_faces(
 
         // Which node each edge is decided to *be*, and whether it runs the other
         // way from the one it replaced.
-        let mut merged: HashMap<TShapeId, (TShapeId, bool)> = HashMap::new();
+        let mut merged: FastMap<TShapeId, (TShapeId, bool)> = FastMap::default();
         let mut joined = 0;
         let starts = StartBins::new(&catalogue, tol);
         for i in 0..catalogue.len() {
@@ -637,7 +637,7 @@ fn sew_faces(
 
     // One map from every original edge to what it becomes: rebuilt onto merged
     // vertices, then possibly merged with a coincident twin.
-    let mut substitution: HashMap<TShapeId, (TShapeId, bool)> = HashMap::new();
+    let mut substitution: FastMap<TShapeId, (TShapeId, bool)> = FastMap::default();
     for (original, rebuilt) in &rebuilt_edges {
         let (final_id, flipped) = merged.get(rebuilt).copied().unwrap_or((*rebuilt, false));
         substitution.insert(*original, (final_id, flipped));
@@ -735,7 +735,8 @@ fn orient_group(
     let closed = uses.values().all(|(count, _)| *count >= 2);
     // Each edge's walks, by position in the group: which faces walk it and
     // whether forward.
-    let mut walkers: HashMap<(TShapeId, ogeom_topo::Location), Vec<(usize, bool)>> = HashMap::new();
+    let mut walkers: FastMap<(TShapeId, ogeom_topo::Location), Vec<(usize, bool)>> =
+        FastMap::default();
     for (k, &i) in group.iter().enumerate() {
         for edge in explore(model, &faces[i], Filter::OfType(ShapeType::Edge))? {
             if model
@@ -844,7 +845,7 @@ fn orient_group(
 /// sewn among themselves); where placements differ, a face holding a
 /// placed edge is baked too.
 fn unshared(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<Vec<Shape>> {
-    let mut placements: HashMap<TShapeId, Vec<ogeom_topo::Location>> = HashMap::new();
+    let mut placements: FastMap<TShapeId, Vec<ogeom_topo::Location>> = FastMap::default();
     let mut held: Vec<Vec<TShapeId>> = Vec::with_capacity(faces.len());
     let mut placed: Vec<bool> = Vec::with_capacity(faces.len());
     let mut seen: Vec<ogeom_topo::Location> = Vec::new();
@@ -913,7 +914,7 @@ fn split_at_vertices(
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
     let mut vertices: Vec<(TShapeId, Point)> = Vec::new();
-    let mut seen: HashSet<TShapeId> = HashSet::new();
+    let mut seen: FastSet<TShapeId> = FastSet::default();
     for face in faces {
         for vertex in explore_unique(model, face, ShapeType::Vertex)? {
             if vertex.location().is_identity() && seen.insert(vertex.node()) {
@@ -923,7 +924,7 @@ fn split_at_vertices(
     }
     // Each edge's cuts: the parameter, and the vertex the pieces meet at.
     let mut cuts: Vec<(TShapeId, Vec<(f64, TShapeId)>)> = Vec::new();
-    let mut walked: HashSet<TShapeId> = HashSet::new();
+    let mut walked: FastSet<TShapeId> = FastSet::default();
     for face in faces {
         for edge in explore_unique(model, face, ShapeType::Edge)? {
             if !edge.location().is_identity() || !walked.insert(edge.node()) {
@@ -986,7 +987,7 @@ fn split_at_vertices(
         return Ok(faces.to_vec());
     }
     // Each cut edge's pieces, in its own direction.
-    let mut pieces: HashMap<TShapeId, Vec<Shape>> = HashMap::new();
+    let mut pieces: FastMap<TShapeId, Vec<Shape>> = FastMap::default();
     for (node, at) in cuts {
         let edge = Shape::of(node);
         let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()).cloned() else {
@@ -1111,7 +1112,7 @@ fn merge_vertices(
     faces: &[Shape],
     reach: f64,
     tol: Tolerances,
-) -> OgeomResult<HashMap<TShapeId, TShapeId>> {
+) -> OgeomResult<FastMap<TShapeId, TShapeId>> {
     let tolerance_of = |model: &Model, vertex: &Shape| {
         model
             .node(vertex)
@@ -1129,9 +1130,9 @@ fn merge_vertices(
     }
     let mut bins = Bins::new(loosest);
     let mut seen: Vec<(TShapeId, Point, f64)> = Vec::new();
-    let mut index_of: HashMap<TShapeId, usize> = HashMap::new();
+    let mut index_of: FastMap<TShapeId, usize> = FastMap::default();
     let mut widest = reach;
-    let mut out = HashMap::new();
+    let mut out = FastMap::default();
     for face in faces {
         for vertex in explore_unique(model, face, ShapeType::Vertex)? {
             if index_of.contains_key(&vertex.node()) {
@@ -1185,7 +1186,7 @@ fn merge_vertices(
 /// dropped edge's end first, the survivor's second.
 fn twin_ends_apart(
     model: &Model,
-    merged: &HashMap<TShapeId, (TShapeId, bool)>,
+    merged: &FastMap<TShapeId, (TShapeId, bool)>,
 ) -> OgeomResult<Vec<(TShapeId, TShapeId)>> {
     let ends = |id: TShapeId| -> Option<(TShapeId, TShapeId)> {
         let children = model.node_by_id(id)?.children();
@@ -1216,12 +1217,12 @@ fn twin_ends_apart(
 /// maps to `keep`'s survivor, whose tolerance reaches `gone`'s span.
 fn join_vertex(
     model: &mut Model,
-    vertices: &mut HashMap<TShapeId, TShapeId>,
+    vertices: &mut FastMap<TShapeId, TShapeId>,
     gone: TShapeId,
     keep: TShapeId,
     tol: Tolerances,
 ) -> OgeomResult<()> {
-    let resolve = |vertices: &HashMap<TShapeId, TShapeId>, mut v: TShapeId| {
+    let resolve = |vertices: &FastMap<TShapeId, TShapeId>, mut v: TShapeId| {
         while let Some(&next) = vertices.get(&v) {
             if next == v {
                 break;
@@ -1567,13 +1568,13 @@ fn reversed_repr(repr: EdgeRepr) -> EdgeRepr {
 fn rebuild_edges(
     model: &mut Model,
     faces: &[Shape],
-    vertices: &HashMap<TShapeId, TShapeId>,
-) -> OgeomResult<HashMap<TShapeId, TShapeId>> {
-    let mut out = HashMap::new();
+    vertices: &FastMap<TShapeId, TShapeId>,
+) -> OgeomResult<FastMap<TShapeId, TShapeId>> {
+    let mut out = FastMap::default();
     if vertices.is_empty() {
         return Ok(out);
     }
-    let mut done: HashSet<TShapeId> = HashSet::new();
+    let mut done: FastSet<TShapeId> = FastSet::default();
     for face in faces {
         for edge in explore_unique(model, face, ShapeType::Edge)? {
             if !done.insert(edge.node()) {
@@ -1896,7 +1897,7 @@ fn placed(model: &Model, vertex: &Shape) -> OgeomResult<Point> {
 fn rebuild_face(
     model: &mut Model,
     face: &Shape,
-    merged: &HashMap<TShapeId, (TShapeId, bool)>,
+    merged: &FastMap<TShapeId, (TShapeId, bool)>,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, bool)>> {
     let mut whole = true;
@@ -2029,8 +2030,8 @@ fn rebuild_face(
 fn walks<'a>(
     model: &Model,
     faces: impl Iterator<Item = &'a Shape>,
-) -> OgeomResult<HashMap<(TShapeId, ogeom_topo::Location), (usize, usize)>> {
-    let mut uses: HashMap<(TShapeId, ogeom_topo::Location), (usize, usize)> = HashMap::new();
+) -> OgeomResult<FastMap<(TShapeId, ogeom_topo::Location), (usize, usize)>> {
+    let mut uses: FastMap<(TShapeId, ogeom_topo::Location), (usize, usize)> = FastMap::default();
     for face in faces {
         for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
             if model
@@ -2053,7 +2054,7 @@ fn walks<'a>(
 }
 
 /// Whether every edge used by two faces is walked once each way.
-fn walked_each_way(uses: &HashMap<(TShapeId, ogeom_topo::Location), (usize, usize)>) -> bool {
+fn walked_each_way(uses: &FastMap<(TShapeId, ogeom_topo::Location), (usize, usize)>) -> bool {
     uses.values()
         .all(|(count, forward)| *count != 2 || *forward == 1)
 }
@@ -2073,7 +2074,7 @@ fn connected_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<usize
 
     // Union-find: each face joins the first face seen with each of its
     // edges, which joins it to every face sharing that edge transitively.
-    let mut first_user: HashMap<TShapeId, usize> = HashMap::new();
+    let mut first_user: FastMap<TShapeId, usize> = FastMap::default();
     for (i, edges) in edges_of.iter().enumerate() {
         for edge in edges {
             let j = *first_user.entry(*edge).or_insert(i);
@@ -2084,7 +2085,7 @@ fn connected_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<usize
         }
     }
 
-    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut groups: FastMap<usize, Vec<usize>> = FastMap::default();
     for i in 0..faces.len() {
         groups.entry(find(&mut group_of, i)).or_default().push(i);
     }
@@ -2107,7 +2108,7 @@ fn find(parent: &mut [usize], mut i: usize) -> usize {
 
 /// Edges still used by exactly one face.
 fn free_edges(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Shape>> {
-    let mut uses: HashMap<TShapeId, (usize, Shape)> = HashMap::new();
+    let mut uses: FastMap<TShapeId, (usize, Shape)> = FastMap::default();
     for face in faces {
         for wire in model.children_of(face)? {
             for edge in model.children_of(&wire)? {
@@ -2622,7 +2623,7 @@ mod tests {
         .reversed();
         let sewn = sew(&mut model, &[left, right], T).unwrap();
         assert_eq!(sewn.joined, 1, "one shared edge");
-        let mut walks: HashMap<TShapeId, (usize, usize)> = HashMap::new();
+        let mut walks: FastMap<TShapeId, (usize, usize)> = FastMap::default();
         for face in ogeom_topo::explore(
             &model,
             &sewn.shells[0],

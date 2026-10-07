@@ -97,8 +97,8 @@ fn surface_of(model: &Model, face: &Shape) -> SurfaceGeometry {
 /// Every edge of every face carries a pcurve on that face's surface, and
 /// the edges two faces share are counted.
 fn shared_edges_with_pcurves(model: &Model, shape: &Shape) -> usize {
-    let mut users: std::collections::HashMap<ogeom::topo::TShapeId, usize> =
-        std::collections::HashMap::new();
+    let mut users: ogeom::core::FastMap<ogeom::topo::TShapeId, usize> =
+        ogeom::core::FastMap::default();
     for face in faces(model, shape) {
         let surface = model.node(&face).unwrap().data().as_face().unwrap().surface;
         for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
@@ -268,7 +268,7 @@ fn tube_halves(angle: f64) -> (usize, [f64; 2], usize) {
         assert!(above != below, "a piece on both sides of the plane");
         sides[usize::from(above)] += area(&model, face);
     }
-    let traced: std::collections::HashSet<Shape> =
+    let traced: ogeom::core::FastSet<Shape> =
         split.history.trace(&source).iter().cloned().collect();
     assert_eq!(traced, found.iter().cloned().collect());
     usable(&model, &split.shape);

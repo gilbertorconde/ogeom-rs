@@ -1204,7 +1204,7 @@ thread_local! {
     /// Face meshes kept while a caller checks many edges against one
     /// unchanging solid: a face with a hundred holes is otherwise meshed
     /// once per edge on it.
-    static FACE_MESHES: std::cell::RefCell<Option<std::collections::HashMap<ogeom_topo::SameKey, std::rc::Rc<ogeom_topo::Triangulation>>>> =
+    static FACE_MESHES: std::cell::RefCell<Option<ogeom_core::FastMap<ogeom_topo::SameKey, std::rc::Rc<ogeom_topo::Triangulation>>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1212,9 +1212,7 @@ thread_local! {
 /// next. The solid must not change while it runs.
 pub(crate) fn keeping_face_meshes<T>(f: impl FnOnce() -> T) -> T {
     struct Restore(
-        Option<
-            std::collections::HashMap<ogeom_topo::SameKey, std::rc::Rc<ogeom_topo::Triangulation>>,
-        >,
+        Option<ogeom_core::FastMap<ogeom_topo::SameKey, std::rc::Rc<ogeom_topo::Triangulation>>>,
     );
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -1222,8 +1220,7 @@ pub(crate) fn keeping_face_meshes<T>(f: impl FnOnce() -> T) -> T {
             FACE_MESHES.with(|held| *held.borrow_mut() = outer);
         }
     }
-    let outer =
-        FACE_MESHES.with(|held| held.borrow_mut().replace(std::collections::HashMap::new()));
+    let outer = FACE_MESHES.with(|held| held.borrow_mut().replace(ogeom_core::FastMap::default()));
     let _restore = Restore(outer);
     f()
 }
@@ -1315,7 +1312,7 @@ fn on_boundary(model: &Model, solid: &Shape, point: Point, tol: Tolerances) -> O
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
-    use std::collections::HashMap;
+    use ogeom_core::FastMap;
 
     use ogeom_core::Tolerances;
     use ogeom_math::{Frame, Point};
@@ -1325,7 +1322,7 @@ mod tests {
 
     /// How many edges two faces of `shape` walk the same way.
     fn walked_one_way(model: &Model, shape: &Shape) -> usize {
-        let mut walks: HashMap<_, Vec<Orientation>> = HashMap::new();
+        let mut walks: FastMap<_, Vec<Orientation>> = FastMap::default();
         for face in explore(model, shape, Filter::OfType(ShapeType::Face)).unwrap() {
             for wire in model.children_of(&face).unwrap() {
                 for edge in model.children_of(&wire).unwrap() {

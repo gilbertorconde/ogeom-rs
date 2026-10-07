@@ -9,7 +9,7 @@
 //! of the turn the face does not reach, and its boundary runs inside that
 //! chart without a seam.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_algo::{History, attach_pcurve, edge_vertices, make_wire};
 use ogeom_core::{OgeomResult, Tolerances};
@@ -51,13 +51,13 @@ const LEAST_GAP: f64 = 1e-2;
 pub(crate) fn join_across_seams(
     model: &mut Model,
     shells: &mut [Shape],
-    held: &hashbrown::HashSet<TShapeId>,
+    held: &ogeom_core::FastSet<TShapeId>,
     tol: Tolerances,
 ) -> OgeomResult<History> {
     let mut history = History::new();
     for shell in shells.iter_mut() {
         let faces = model.children_of(shell)?;
-        let mut users: HashMap<TShapeId, Vec<usize>> = HashMap::new();
+        let mut users: FastMap<TShapeId, Vec<usize>> = FastMap::default();
         for (i, face) in faces.iter().enumerate() {
             for edge in explore_unique(model, face, ShapeType::Edge)? {
                 users.entry(edge.node()).or_default().push(i);
@@ -92,7 +92,7 @@ pub(crate) fn join_across_seams(
             let (ra, rb) = (root(&mut group, *a), root(&mut group, *b));
             group[ra] = rb;
         }
-        let mut clusters: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut clusters: FastMap<usize, Vec<usize>> = FastMap::default();
         for i in 0..faces.len() {
             let r = root(&mut group, i);
             clusters.entry(r).or_default().push(i);
@@ -103,7 +103,7 @@ pub(crate) fn join_across_seams(
         if clusters.is_empty() {
             continue;
         }
-        let mut replaced: HashMap<usize, Option<Shape>> = HashMap::new();
+        let mut replaced: FastMap<usize, Option<Shape>> = FastMap::default();
         for members in &clusters {
             let chosen: Vec<Shape> = members.iter().map(|&i| faces[i].clone()).collect();
             if !held.is_empty() {
@@ -245,7 +245,7 @@ fn join_group(
             }
         }
     }
-    let mut count: HashMap<TShapeId, usize> = HashMap::new();
+    let mut count: FastMap<TShapeId, usize> = FastMap::default();
     for edge in &occurrences {
         *count.entry(edge.node()).or_default() += 1;
     }

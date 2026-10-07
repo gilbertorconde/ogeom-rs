@@ -6,6 +6,7 @@ use ogeom_algo::{
     check, edge_vertices, make_edge, make_edge_between, make_face_with_pcurves, make_polygon,
     make_vertex, tight_bounds,
 };
+use ogeom_core::FastMap;
 use ogeom_core::Tolerances;
 use ogeom_geom::{
     BSplineSurface, CircleCurve, Curve, Curve3d as _, CylinderSurface, LineCurve, PlanarCurve,
@@ -15,7 +16,6 @@ use ogeom_math::{Circle, Cylinder, Direction, Frame, Plane, Point, Point2, Trans
 use ogeom_mesh::Deflection;
 use ogeom_offset::{make_thick_sheet, offset_sheet};
 use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, explore};
-use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 
 const T: Tolerances = Tolerances::millimetres();
@@ -626,8 +626,8 @@ fn solids_closed_shells_and_empty_moves_are_refused() {
 }
 
 /// How many faces of a shape stand on each family of surface.
-fn families(model: &Model, shape: &Shape) -> HashMap<&'static str, usize> {
-    let mut out = HashMap::new();
+fn families(model: &Model, shape: &Shape) -> FastMap<&'static str, usize> {
+    let mut out = FastMap::default();
     for face in ogeom_topo::explore_unique(model, shape, ShapeType::Face).unwrap() {
         let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
             panic!("not a face");
@@ -651,7 +651,7 @@ fn side_faces_are_exact_where_the_rulings_allow() {
     let solid = make_thick_sheet(&mut model, &face, 2.0, false, T)
         .unwrap()
         .shape;
-    assert_eq!(families(&model, &solid), HashMap::from([("plane", 6)]));
+    assert_eq!(families(&model, &solid), FastMap::from_iter([("plane", 6)]));
 
     // Along the quarter cylinder's straight edges the sides are planes;
     // along its arcs the rulings run radially, an annular sector the
@@ -662,7 +662,7 @@ fn side_faces_are_exact_where_the_rulings_allow() {
         .shape;
     assert_eq!(
         families(&model, &solid),
-        HashMap::from([("cylinder", 2), ("plane", 2), ("bspline", 2)])
+        FastMap::from_iter([("cylinder", 2), ("plane", 2), ("bspline", 2)])
     );
 }
 
@@ -709,7 +709,10 @@ fn a_ball_offsets_through_its_poles() {
         .shape;
     let shell = explore(&model, &ball, Filter::OfType(ShapeType::Shell)).unwrap()[0].clone();
     let grown = offset_sheet(&mut model, &shell, 2.0, T).unwrap().shape;
-    assert_eq!(families(&model, &grown), HashMap::from([("sphere", 1)]));
+    assert_eq!(
+        families(&model, &grown),
+        FastMap::from_iter([("sphere", 1)])
+    );
     let area = ogeom_algo::surface_properties(&model, &grown, Deflection::default(), T)
         .unwrap()
         .mass;

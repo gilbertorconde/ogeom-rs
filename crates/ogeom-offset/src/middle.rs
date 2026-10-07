@@ -26,12 +26,12 @@
 //! has on the corner.
 
 use ogeom_algo::{Built, History, make_edge_between, make_vertex, make_wire};
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d as _, LineCurve};
 use ogeom_math::{Point, Vector};
 use ogeom_mesh::{Deflection, triangulate, triangulate_face};
 use ogeom_topo::{Filter, Model, Shape, ShapeType, Triangulation, explore};
-use std::collections::HashMap;
 
 /// A middle path and how closely it follows the solid's sections.
 #[derive(Debug, Clone)]
@@ -542,8 +542,8 @@ impl Slicer {
 
         // Each crossed triangle gives a segment from one crossed side to
         // the other, oriented so that loops run consistently.
-        let mut next: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
-        let mut points: HashMap<(u32, u32), Point> = HashMap::new();
+        let mut next: FastMap<(u32, u32), (u32, u32)> = FastMap::default();
+        let mut points: FastMap<(u32, u32), Point> = FastMap::default();
         for t in &self.mesh.triangles {
             let ups = t.iter().filter(|&&i| above(i)).count();
             if ups == 0 || ups == 3 {
@@ -575,7 +575,7 @@ impl Slicer {
 
         // Chain into loops.
         let mut loops: Vec<Vec<(f64, f64)>> = Vec::new();
-        let mut seen: HashMap<(u32, u32), ()> = HashMap::new();
+        let mut seen: FastMap<(u32, u32), ()> = FastMap::default();
         let mut starts: Vec<(u32, u32)> = next.keys().copied().collect();
         starts.sort_unstable();
         for s in starts {

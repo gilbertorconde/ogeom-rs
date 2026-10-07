@@ -13,6 +13,7 @@ use ogeom_algo::{
     Built, History, is_shell_closed, make_edge_between, make_face_on, make_shell, make_solid,
     make_vertex, make_wire,
 };
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
@@ -23,7 +24,6 @@ use ogeom_topo::{
     EdgeRepr, Filter, Location, Model, NodeData, Shape, ShapeType, TShapeId, explore,
     explore_unique,
 };
-use std::collections::HashMap;
 
 /// A face bounded by two closed rings on a periodic surface, and what the
 /// repair needs to know about it.
@@ -219,7 +219,7 @@ fn reanchor_rings(
         }
     }
 
-    let mut substitution: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut substitution: FastMap<TShapeId, Shape> = FastMap::default();
     let mut healable: Vec<usize> = Vec::new();
     for chain in &chains {
         let anchored = anchor_chain(model, &broken, chain, tol);
@@ -242,7 +242,7 @@ fn reanchor_rings(
     }
 
     // --- rebuild every face that touches a substituted edge ------------------
-    let mut face_map: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut face_map: FastMap<TShapeId, Shape> = FastMap::default();
     for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
         // Every revolution face is rebuilt, moved rings or not: an
         // already-aligned band may still carry import-time pcurves whose
@@ -440,7 +440,7 @@ fn rebuild_broken_face(
     _old_surface_id: ogeom_topo::SurfaceId,
     surface: &SurfaceGeometry,
     rings: &[(Shape, Shape, Curve, (f64, f64))],
-    substitution: &HashMap<TShapeId, Shape>,
+    substitution: &FastMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let resolved: Vec<Shape> = rings
@@ -454,7 +454,7 @@ fn rebuild_broken_face(
 pub(crate) fn rebuild_plain_face(
     model: &mut Model,
     face: &Shape,
-    substitution: &HashMap<TShapeId, Shape>,
+    substitution: &FastMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let (surface_id, surface) = {

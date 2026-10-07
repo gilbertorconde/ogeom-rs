@@ -23,13 +23,14 @@
 //! where the edge keeps it over a range of its own. Elsewhere the edge
 //! carries its curve alone and a reader derives the pcurves.
 
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_doc::{Document, ProductId, ProductKind};
 use ogeom_geom::Transformable as _;
 use ogeom_geom::{Curve, PlanarCurve, SurfaceGeometry};
 use ogeom_math::{Frame, Handedness, Point, Point2, Transform, Vector};
 use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, SurfaceId, explore};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 /// Write a document as a STEP exchange file.
@@ -55,10 +56,10 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     let mut writer = Writer {
         model: document.model(),
         entities: Vec::new(),
-        points: HashMap::new(),
-        directions: HashMap::new(),
-        vertices: HashMap::new(),
-        edges: HashMap::new(),
+        points: FastMap::default(),
+        directions: FastMap::default(),
+        vertices: FastMap::default(),
+        edges: FastMap::default(),
         written_nodes: Vec::new(),
         written_edges: Vec::new(),
         curve_font: None,
@@ -87,8 +88,8 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
 
     // Products, in document order; every product gets its definition and its
     // shape representation before the assembly edges tie them together.
-    let mut pd_of: HashMap<ProductId, u64> = HashMap::new();
-    let mut sr_of: HashMap<ProductId, u64> = HashMap::new();
+    let mut pd_of: FastMap<ProductId, u64> = FastMap::default();
+    let mut sr_of: FastMap<ProductId, u64> = FastMap::default();
     let mut anchor_pds: Option<(u64, u64)> = None;
     for (id, product) in document.products() {
         let name = escape(&product.name);
@@ -200,11 +201,11 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     // document colours, plus product colours carried by their solids. An
     // edge's colour is a curve style on each of its EDGE_CURVEs.
     let mut styled = Vec::new();
-    let node_colours: HashMap<_, _> = document.colours().collect();
+    let node_colours: FastMap<_, _> = document.colours().collect();
     // The written entities by node, each list in the order they were
     // written: a coloured product finds its own without walking them all.
     let written = std::mem::take(&mut writer.written_nodes);
-    let mut by_node: HashMap<ogeom_topo::TShapeId, Vec<u64>> = HashMap::new();
+    let mut by_node: FastMap<ogeom_topo::TShapeId, Vec<u64>> = FastMap::default();
     for &(node, step_id) in &written {
         by_node.entry(node).or_default().push(step_id);
     }
@@ -287,12 +288,12 @@ std::thread_local! {
 struct Writer<'a> {
     model: &'a Model,
     entities: Vec<String>,
-    points: HashMap<[u64; 3], u64>,
-    directions: HashMap<[u64; 3], u64>,
+    points: FastMap<[u64; 3], u64>,
+    directions: FastMap<[u64; 3], u64>,
     /// Vertex occurrences by node and world position bits.
-    vertices: HashMap<(ogeom_topo::TShapeId, [u64; 3]), u64>,
+    vertices: FastMap<(ogeom_topo::TShapeId, [u64; 3]), u64>,
     /// Edge occurrences by node and placement bits.
-    edges: HashMap<(ogeom_topo::TShapeId, [u64; 3]), u64>,
+    edges: FastMap<(ogeom_topo::TShapeId, [u64; 3]), u64>,
     /// Every solid and face written, with its entity id: the hooks colours
     /// attach to.
     written_nodes: Vec<(ogeom_topo::TShapeId, u64)>,
@@ -1081,7 +1082,7 @@ impl Writer<'_> {
         au: u64,
         gctx: u64,
     ) -> OgeomResult<()> {
-        let by_node: HashMap<ogeom_topo::TShapeId, u64> = self
+        let by_node: FastMap<ogeom_topo::TShapeId, u64> = self
             .written_nodes
             .iter()
             .chain(&self.written_edges)
@@ -1101,8 +1102,8 @@ impl Writer<'_> {
 
         // Which STEP id each annotation was written as, so the presentation
         // below can point a callout at the annotation it draws.
-        let mut annotation_ids: HashMap<ogeom_doc::Annotated, u64> = HashMap::new();
-        let mut datum_ids: HashMap<&str, u64> = HashMap::new();
+        let mut annotation_ids: FastMap<ogeom_doc::Annotated, u64> = FastMap::default();
+        let mut datum_ids: FastMap<&str, u64> = FastMap::default();
         for datum in &pmi.datums {
             let label = escape(&datum.label);
             let id = self.entity(format!("DATUM('','',#{pds},.F.,'{label}')"));

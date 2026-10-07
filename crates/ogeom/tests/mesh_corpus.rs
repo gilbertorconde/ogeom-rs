@@ -42,7 +42,7 @@ fn unmatched_face_edges(model: &Model, shape: &Shape) -> usize {
     let deflection = Deflection::default();
     let chords = ogeom::mesh::edge_chords_for(model, shape, deflection, T).unwrap();
     let key = |p: &ogeom::math::Point| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
-    let mut uses: std::collections::HashMap<_, usize> = std::collections::HashMap::new();
+    let mut uses: ogeom::core::FastMap<_, usize> = ogeom::core::FastMap::default();
     for face in explore_unique(model, shape, ShapeType::Face).unwrap() {
         let mesh =
             ogeom::mesh::triangulate_face_with(model, &face, deflection, &chords, T).unwrap();
@@ -313,7 +313,7 @@ fn nist_ctc_02() {
             Some(SurfaceGeometry::Torus(_))
         )
     };
-    let mut owners: std::collections::HashMap<_, Vec<bool>> = std::collections::HashMap::new();
+    let mut owners: ogeom::core::FastMap<_, Vec<bool>> = ogeom::core::FastMap::default();
     for face in explore_unique(&back, &out.shape, ShapeType::Face).unwrap() {
         for edge in explore_unique(&back, &face, ShapeType::Edge).unwrap() {
             owners.entry(edge.node()).or_default().push(is_torus(&face));

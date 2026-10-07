@@ -29,7 +29,7 @@
 //! which is far harder to diagnose than dying immediately. See
 //! [`History::then`].
 
-use hashbrown::{HashMap, HashSet};
+use ogeom_core::{FastMap, FastSet};
 
 use ogeom_topo::{SameKey, Shape};
 
@@ -40,11 +40,11 @@ use ogeom_topo::{SameKey, Shape};
 /// keying on orientation would silently split every record in two.
 #[derive(Debug, Clone, Default)]
 pub struct History {
-    generated: HashMap<SameKey, Vec<Shape>>,
-    modified: HashMap<SameKey, Vec<Shape>>,
-    deleted: HashSet<SameKey>,
+    generated: FastMap<SameKey, Vec<Shape>>,
+    modified: FastMap<SameKey, Vec<Shape>>,
+    deleted: FastSet<SameKey>,
     /// The modifications that are exact copies.
-    copied: HashSet<SameKey>,
+    copied: FastSet<SameKey>,
 }
 
 impl History {
@@ -180,7 +180,7 @@ impl History {
     #[must_use]
     pub fn inputs(&self) -> Vec<Shape> {
         let mut out: Vec<Shape> = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = FastSet::default();
         for key in self
             .generated
             .keys()
@@ -242,7 +242,7 @@ impl History {
             return self.clone();
         }
         let mut subjects: Vec<Shape> = self.inputs();
-        let mut known: HashSet<SameKey> = subjects.iter().cloned().map(SameKey).collect();
+        let mut known: FastSet<SameKey> = subjects.iter().cloned().map(SameKey).collect();
         for input in later.inputs() {
             if known.insert(SameKey(input.clone())) {
                 subjects.push(input);
@@ -348,7 +348,7 @@ impl History {
         // generated shapes `later` reaches, then `later`'s own inputs this
         // history does not know, in the order `then` meets them.
         let mut subjects: Vec<Shape> = Vec::new();
-        let mut known: HashSet<SameKey> = HashSet::new();
+        let mut known: FastSet<SameKey> = FastSet::default();
         for input in self.inputs() {
             let key = SameKey(input.clone());
             let images = match self.modified.get(&key) {
@@ -506,7 +506,7 @@ fn copies_below(
     if copies.is_empty() {
         return Ok(history);
     }
-    let original: HashMap<ogeom_topo::TShapeId, ogeom_topo::TShapeId> =
+    let original: FastMap<ogeom_topo::TShapeId, ogeom_topo::TShapeId> =
         copies.iter().map(|&(old, new)| (new, old)).collect();
     for want in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
         for shape in explore_unique(model, root, want)? {

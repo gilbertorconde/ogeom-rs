@@ -23,12 +23,12 @@
 //! two, and every sampled centre must lie on some branch. A result that
 //! fails is sampled again, finer.
 
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_math::{Direction, Frame, Point, Point2, Vector2};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape};
 use spade::{DelaunayTriangulation, Point2 as SpadePoint, Triangulation as _};
-use std::collections::HashMap;
 
 /// A boundary element a medial branch keeps its distance from.
 #[derive(Debug, Clone)]
@@ -997,7 +997,7 @@ fn build(
     // Sample every site, and triangulate the samples.
     let mut owner: Vec<usize> = Vec::new();
     let mut dt: DelaunayTriangulation<SpadePoint<f64>> = DelaunayTriangulation::new();
-    let mut index_of: HashMap<spade::handles::FixedVertexHandle, usize> = HashMap::new();
+    let mut index_of: FastMap<spade::handles::FixedVertexHandle, usize> = FastMap::default();
     for (s, site) in sites.iter().enumerate() {
         for p in site.samples(spacing, tol)? {
             let handle = dt.insert(SpadePoint::new(p.x, p.y)).map_err(|e| {
@@ -1009,7 +1009,7 @@ fn build(
     }
 
     // Circumcentres inside the region, labelled by the sites they touch.
-    let mut pair_samples: HashMap<(usize, usize), Vec<Point2>> = HashMap::new();
+    let mut pair_samples: FastMap<(usize, usize), Vec<Point2>> = FastMap::default();
     let mut triples: Vec<(Point2, Vec<usize>)> = Vec::new();
     for face in dt.inner_faces() {
         let corners = face.vertices();

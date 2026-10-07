@@ -41,7 +41,7 @@
 //! are read and dropped for the same reason: they describe the state of the
 //! writer's own session, not the shape.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 use std::fmt::Write as _;
 
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
@@ -210,11 +210,11 @@ struct Tables {
     surfaces: Vec<SurfaceId>,
     locations: Vec<Location>,
     order: Vec<TShapeId>,
-    index_of: HashMap<TShapeId, usize>,
-    curve_at: HashMap<CurveId, usize>,
-    pcurve_at: HashMap<PCurveId, usize>,
-    surface_at: HashMap<SurfaceId, usize>,
-    location_at: HashMap<Location, usize>,
+    index_of: FastMap<TShapeId, usize>,
+    curve_at: FastMap<CurveId, usize>,
+    pcurve_at: FastMap<PCurveId, usize>,
+    surface_at: FastMap<SurfaceId, usize>,
+    location_at: FastMap<Location, usize>,
 }
 
 impl Tables {

@@ -13,8 +13,8 @@
 //! whole number. And duplicate object keys keep the last, which is what a
 //! reader has to do with a document that says one thing twice.
 
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, ogeom_bail};
-use std::collections::HashMap;
 
 /// A parsed JSON value.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,7 +30,7 @@ pub enum Json {
     /// An array.
     Array(Vec<Json>),
     /// An object.
-    Object(HashMap<String, Json>),
+    Object(FastMap<String, Json>),
 }
 
 impl Json {
@@ -156,7 +156,7 @@ fn literal(bytes: &[u8], at: &mut usize, word: &str, value: Json) -> OgeomResult
 
 fn parse_object(bytes: &[u8], at: &mut usize, depth: usize) -> OgeomResult<Json> {
     *at += 1;
-    let mut map = HashMap::new();
+    let mut map = FastMap::default();
     skip_space(bytes, at);
     if bytes.get(*at) == Some(&b'}') {
         *at += 1;

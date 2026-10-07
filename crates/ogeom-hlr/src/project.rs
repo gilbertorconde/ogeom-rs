@@ -146,8 +146,7 @@ pub fn project(
     // contours that turn away from the eye and the borders of front faces.
     let welded = mesh.welded(tol);
     let toward_eye = view.toward_eye();
-    let mut uses: std::collections::HashMap<(u32, u32), Vec<usize>> =
-        std::collections::HashMap::new();
+    let mut uses: ogeom_core::FastMap<(u32, u32), Vec<usize>> = ogeom_core::FastMap::default();
     for (t, triangle) in welded.triangles.iter().enumerate() {
         for i in 0..3 {
             let (a, b) = (triangle[i], triangle[(i + 1) % 3]);
@@ -197,7 +196,7 @@ pub fn project(
 
     // The model's own edges, their segments kept so a silhouette along one
     // is not drawn over it.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = ogeom_core::FastSet::default();
     let mut drawn = DrawnSegments::new(tol);
     for edge in explore(model, shape, Filter::OfType(ShapeType::Edge))? {
         let key = (edge.node(), edge.location().clone());
@@ -229,7 +228,7 @@ struct DrawnSegments {
     tol: Tolerances,
     /// Each polyline point by its grid cell: which polyline, and where on
     /// it.
-    points: std::collections::HashMap<Cell, Vec<(usize, usize, Point)>>,
+    points: ogeom_core::FastMap<Cell, Vec<(usize, usize, Point)>>,
     lines: usize,
 }
 
@@ -238,7 +237,7 @@ impl DrawnSegments {
         Self {
             cell: tol.confusion().max(f64::MIN_POSITIVE) * 10.0,
             tol,
-            points: std::collections::HashMap::new(),
+            points: ogeom_core::FastMap::default(),
             lines: 0,
         }
     }

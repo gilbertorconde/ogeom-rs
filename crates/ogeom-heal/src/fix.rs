@@ -192,8 +192,7 @@ fn reanchor_boundaries_own(
     use ogeom_topo::{Filter, explore};
     let mut report = ReanchoredBoundaries::default();
     let mut reshape = crate::reshape::Reshape::new();
-    let mut done: std::collections::HashSet<ogeom_topo::TShapeId> =
-        std::collections::HashSet::new();
+    let mut done: ogeom_core::FastSet<ogeom_topo::TShapeId> = ogeom_core::FastSet::default();
 
     /// The fewest samples an edge is measured at.
     const SAMPLES: usize = 33;
@@ -255,8 +254,8 @@ fn reanchor_boundaries_own(
                 ))
             };
             let mut worst = 0.0_f64;
-            let mut shadow: std::collections::HashMap<u64, ogeom_math::Point> =
-                std::collections::HashMap::with_capacity(stations.len());
+            let mut shadow: ogeom_core::FastMap<u64, ogeom_math::Point> =
+                ogeom_core::FastMap::with_capacity_and_hasher(stations.len(), Default::default());
             for &t in &stations {
                 let (q, off) = project(t)?;
                 worst = worst.max(off);

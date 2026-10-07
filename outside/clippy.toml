@@ -1,0 +1,3 @@
+# Stops clippy from reading the kernel's `clippy.toml` one directory up: its
+# ban on the std hash tables is a kernel rule, and `outside/` is not the
+# kernel.

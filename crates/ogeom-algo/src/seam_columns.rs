@@ -8,7 +8,7 @@
 //! walks, and one of them reads its boundary a period away.
 //! [`join_seam_columns`] puts such an edge right.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve2d as _, Surface as _};
@@ -45,7 +45,7 @@ pub fn join_seam_columns(model: &mut Model, shape: &Shape, tol: Tolerances) -> O
     model.unshare(shape)?;
     // Each edge's uses by faces on their surface: the face's boundary ring
     // as it stores it, and where in the ring the edge stands.
-    let mut uses = HashMap::<(TShapeId, SurfaceId), Vec<(Vec<Shape>, usize)>>::new();
+    let mut uses = FastMap::<(TShapeId, SurfaceId), Vec<(Vec<Shape>, usize)>>::default();
     for face in explore_unique(model, shape, ShapeType::Face)? {
         let Some(surface) = model
             .node(&face)

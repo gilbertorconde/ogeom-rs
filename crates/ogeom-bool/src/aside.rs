@@ -15,7 +15,7 @@
 //! arrangement takes is gathered after all, and the edge is rebuilt in two
 //! as it would be with every face taken.
 
-use hashbrown::{HashMap, HashSet};
+use ogeom_core::{FastMap, FastSet};
 use smallvec::SmallVec;
 
 use ogeom_core::{OgeomResult, Tolerances};
@@ -34,12 +34,12 @@ pub(crate) struct Aside {
     pub(crate) faces: Vec<(Shape, usize)>,
     /// The faces the fuse gathers, by node and placement, each with its
     /// place among the solid's faces.
-    pub(crate) gathered: HashMap<SameKey, usize>,
+    pub(crate) gathered: FastMap<SameKey, usize>,
     /// The edges the gathered faces share with the faces set aside.
-    pub(crate) edges: HashSet<EdgeKey>,
+    pub(crate) edges: FastSet<EdgeKey>,
     /// The holes of each gathered plane left out of its arrangement, by
     /// the face's node and placement.
-    pub(crate) holes: HashMap<SameKey, std::sync::Arc<[Hole]>>,
+    pub(crate) holes: FastMap<SameKey, std::sync::Arc<[Hole]>>,
     /// Whether the solid's every edge is walked an even number of times,
     /// read once for its faces: for a solid of one shell, that it is closed.
     pub(crate) closed: bool,
@@ -66,7 +66,7 @@ pub(crate) struct Hole {
 /// rebuilt, read without walking the faces set aside again.
 #[derive(Default)]
 pub(crate) struct Beside {
-    holders: HashMap<EdgeKey, Holders>,
+    holders: FastMap<EdgeKey, Holders>,
     aside: Vec<bool>,
     /// The edges the gathered faces share with the faces set aside, which
     /// the faces made must walk; a hole's edges are left out, walked by the
@@ -153,7 +153,7 @@ impl Holders {
 /// each edge, and its box.
 pub(crate) struct Solid {
     faces: Vec<Read>,
-    holders: HashMap<EdgeKey, Holders>,
+    holders: FastMap<EdgeKey, Holders>,
     pub(crate) bound: Aabb,
     /// The box of each lump, where the shape holds more than one: a face
     /// clear of every lump's box is clear of the shape, though the lumps
@@ -217,7 +217,8 @@ pub(crate) fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> Ogeom
     let found = explore_unique(model, solid, ShapeType::Face)?;
     let mut faces = Vec::with_capacity(found.len());
     // A closed solid has about one and a half edges per face.
-    let mut holders: HashMap<EdgeKey, Holders> = HashMap::with_capacity(found.len() * 2);
+    let mut holders: FastMap<EdgeKey, Holders> =
+        FastMap::with_capacity_and_hasher(found.len() * 2, Default::default());
     let mut whole = Aabb::EMPTY;
     for (index, face) in found.into_iter().enumerate() {
         let Some(face_node) = model.node(&face) else {
@@ -330,7 +331,7 @@ pub(crate) fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> Ogeom
     let mut lumps = Vec::new();
     let solids = explore_unique(model, solid, ShapeType::Solid)?;
     if solids.len() > 1 {
-        let at: HashMap<SameKey, usize> = faces
+        let at: FastMap<SameKey, usize> = faces
             .iter()
             .enumerate()
             .map(|(i, r)| (SameKey(r.face.clone()), i))
@@ -408,8 +409,8 @@ pub(crate) fn side(
         return Ok(Aside::default());
     }
     let index = |j: &u32| *j as usize;
-    let mut holes: HashMap<usize, Vec<Hole>> = HashMap::new();
-    let mut shared: HashSet<EdgeKey> = HashSet::new();
+    let mut holes: FastMap<usize, Vec<Hole>> = FastMap::default();
+    let mut shared: FastSet<EdgeKey> = FastSet::default();
     loop {
         let mut gathered_again = Vec::new();
         shared.clear();
@@ -483,7 +484,7 @@ pub(crate) fn side(
             }
             // A hole touching a ring the arrangement takes is taken with it.
             if spans.iter().any(|(_, _, hole)| hole.is_some()) {
-                let kept: HashSet<TShapeId> = spans
+                let kept: FastSet<TShapeId> = spans
                     .iter()
                     .filter(|(_, _, hole)| hole.is_none())
                     .flat_map(|(_, (v0, v1), _)| ends[*v0..*v1].iter().copied())
@@ -740,7 +741,7 @@ pub(crate) fn shells_of(
         }
     }
     // The faces made, walked: each edge's first face and its walks.
-    let mut made: HashMap<EdgeKey, (usize, u32)> = HashMap::new();
+    let mut made: FastMap<EdgeKey, (usize, u32)> = FastMap::default();
     let mut edges = Vec::new();
     for (i, member) in faces.iter().enumerate() {
         if member.aside.is_some() {
@@ -829,7 +830,7 @@ pub(crate) fn shells_of(
         }
     }
     let mut members: Vec<Vec<Shape>> = Vec::new();
-    let mut slot_of: HashMap<usize, usize> = HashMap::new();
+    let mut slot_of: FastMap<usize, usize> = FastMap::default();
     for (i, Member { face, .. }) in faces.iter().enumerate() {
         let r = root(&mut group, i);
         let slot = *slot_of.entry(r).or_insert_with(|| {

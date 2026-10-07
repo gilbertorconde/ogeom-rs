@@ -22,7 +22,7 @@
 //! The boundary edges a stretch ends on are cut there in every face that
 //! holds them, so the rest of the shape stays joined to the pieces.
 
-use std::collections::HashSet;
+use ogeom_core::FastSet;
 
 use ogeom_algo::{Built, edge_vertices, project_on_surface, project_on_surface_from};
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail, ogeom_err};
@@ -300,7 +300,7 @@ struct Cutter {
     closed: bool,
     /// The edges already cut along it: its own stretches, never a boundary
     /// it crosses.
-    own: HashSet<TShapeId>,
+    own: FastSet<TShapeId>,
     /// The parameter spans already cut.
     consumed: Vec<(f64, f64)>,
 }
@@ -381,7 +381,7 @@ impl Cutter {
         Ok(Self {
             path,
             closed: false,
-            own: HashSet::new(),
+            own: FastSet::default(),
             consumed: Vec::new(),
         })
     }
@@ -640,7 +640,7 @@ fn chain(
         out.push(Cutter {
             path,
             closed,
-            own: HashSet::new(),
+            own: FastSet::default(),
             consumed: Vec::new(),
         });
     }

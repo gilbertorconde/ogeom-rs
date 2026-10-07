@@ -29,10 +29,10 @@
 //! reason: a fold is not a small error, it is a mesh that no longer bounds what
 //! it did.
 
+use ogeom_core::{FastMap, FastSet};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::Point;
 use ogeom_topo::Triangulation;
-use std::collections::{HashMap, HashSet};
 
 /// How far to decimate.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -188,9 +188,9 @@ struct State {
     live: Vec<bool>,
     quadrics: Vec<Quadric>,
     /// Vertices that must not move: the ones on a boundary.
-    pinned: HashSet<u32>,
+    pinned: FastSet<u32>,
     /// Which triangles touch each vertex.
-    around: HashMap<u32, Vec<usize>>,
+    around: FastMap<u32, Vec<usize>>,
     tol: Tolerances,
     remaining: usize,
 }
@@ -198,8 +198,8 @@ struct State {
 impl State {
     fn new(mesh: &Triangulation, tol: Tolerances) -> Self {
         let mut quadrics = vec![Quadric::default(); mesh.positions.len()];
-        let mut around: HashMap<u32, Vec<usize>> = HashMap::new();
-        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut around: FastMap<u32, Vec<usize>> = FastMap::default();
+        let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
 
         for (i, triangle) in mesh.triangles.iter().enumerate() {
             let [a, b, c] = triangle.map(|v| mesh.positions[v as usize]);
@@ -228,7 +228,7 @@ impl State {
         }
 
         // A boundary edge is used once. Both its ends are held.
-        let mut pinned = HashSet::new();
+        let mut pinned = FastSet::default();
         for ((a, b), count) in uses {
             if count != 2 {
                 pinned.insert(a);
@@ -260,7 +260,7 @@ impl State {
     /// its own source of wrong answers.
     fn cheapest(&self, budget: f64) -> Option<(f64, u32, u32, Point)> {
         let mut best: Option<(f64, u32, u32, Point)> = None;
-        let mut seen: HashSet<(u32, u32)> = HashSet::new();
+        let mut seen: FastSet<(u32, u32)> = FastSet::default();
         for (i, triangle) in self.triangles.iter().enumerate() {
             if !self.live[i] {
                 continue;
@@ -385,7 +385,7 @@ impl State {
     /// The surviving mesh, with unused vertices dropped.
     fn harvest(self) -> Triangulation {
         let mut out = Triangulation::new();
-        let mut moved: HashMap<u32, u32> = HashMap::new();
+        let mut moved: FastMap<u32, u32> = FastMap::default();
         for (index, triangle) in self.triangles.iter().enumerate() {
             if !self.live[index] {
                 continue;

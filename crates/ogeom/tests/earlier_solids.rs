@@ -3,7 +3,7 @@
 //! the operand's own nodes.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use std::collections::HashSet;
+use ogeom::core::FastSet;
 
 use ogeom::algo::{check, make_box, make_cylinder};
 use ogeom::core::{Tolerance, Tolerances};
@@ -37,7 +37,7 @@ fn drilled() -> (Model, Shape, Shape) {
     (model, block, drilled)
 }
 
-fn nodes_of(model: &Model, shape: &Shape, kind: ShapeType) -> HashSet<ogeom::topo::TShapeId> {
+fn nodes_of(model: &Model, shape: &Shape, kind: ShapeType) -> FastSet<ogeom::topo::TShapeId> {
     explore_unique(model, shape, kind)
         .unwrap()
         .iter()
@@ -82,7 +82,7 @@ fn face_where(model: &Model, shape: &Shape, keep: impl Fn(Point) -> bool) -> Sha
 /// curves, pcurves and surfaces it names.
 fn snapshot(model: &Model, root: &Shape) -> Vec<String> {
     let mut out = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = FastSet::default();
     let mut stack = vec![root.node()];
     while let Some(id) = stack.pop() {
         if !seen.insert(id) {

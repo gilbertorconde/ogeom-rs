@@ -2,7 +2,7 @@
 //! each face keeps its material on the left of its rings, so every edge
 //! between two faces is walked once each way.
 
-use std::collections::HashMap;
+use ogeom::core::FastMap;
 
 use ogeom::topo::{Filter, Location, Model, Orientation, Shape, ShapeType, TShapeId, explore};
 
@@ -10,7 +10,7 @@ use ogeom::topo::{Filter, Location, Model, Orientation, Shape, ShapeType, TShape
 /// way: none where every face keeps its material on the left of its rings.
 /// A degenerate edge (a pole, an apex) bounds nothing and is not counted.
 pub fn edges_walked_one_way(model: &Model, shape: &Shape) -> usize {
-    let mut walks: HashMap<(TShapeId, Location), (usize, usize)> = HashMap::new();
+    let mut walks: FastMap<(TShapeId, Location), (usize, usize)> = FastMap::default();
     for face in explore(model, shape, Filter::OfType(ShapeType::Face)).unwrap() {
         for edge in explore(model, &face, Filter::OfType(ShapeType::Edge)).unwrap() {
             if model

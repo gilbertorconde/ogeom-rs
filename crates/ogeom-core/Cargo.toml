@@ -15,6 +15,7 @@ categories.workspace = true
 thiserror.workspace = true
 smallvec.workspace = true
 hashbrown.workspace = true
+foldhash.workspace = true
 robust.workspace = true
 
 [dev-dependencies]

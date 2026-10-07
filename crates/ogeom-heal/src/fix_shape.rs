@@ -30,7 +30,7 @@
 //! the boolean crate has it for the features it knows), and a face across
 //! a grid of patches is not rebuilt as one.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_algo::{
     Diagnosis, History, check, edge_vertices, linear_properties, make_wire, order_edges, sew,
@@ -237,8 +237,8 @@ fn collapse_small_edges(
     reshape: &mut Reshape,
     tol: Tolerances,
 ) -> OgeomResult<usize> {
-    let mut survivor: HashMap<TShapeId, Shape> = HashMap::new();
-    fn root(survivor: &HashMap<TShapeId, Shape>, v: &Shape) -> Shape {
+    let mut survivor: FastMap<TShapeId, Shape> = FastMap::default();
+    fn root(survivor: &FastMap<TShapeId, Shape>, v: &Shape) -> Shape {
         let mut current = v.clone();
         while let Some(next) = survivor.get(&current.node()) {
             if next.node() == current.node() {

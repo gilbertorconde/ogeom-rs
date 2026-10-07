@@ -30,7 +30,7 @@
 //! share, a piece that cannot be oriented) does not fail: it comes back
 //! as open shells, with the report saying why.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, LineCurve, PlanarCurve, PlaneSurface};
@@ -277,8 +277,7 @@ fn split_across_slivers(points: &[Point], triangles: &mut Vec<[u32; 3]>, slivers
     // scanning the mesh, and the lowest index is the one a scan would meet
     // first.
     let key = |x: u32, y: u32| (x.min(y), x.max(y));
-    let mut on_edge: std::collections::HashMap<(u32, u32), Vec<usize>> =
-        std::collections::HashMap::new();
+    let mut on_edge: ogeom_core::FastMap<(u32, u32), Vec<usize>> = ogeom_core::FastMap::default();
     for (i, t) in triangles.iter().enumerate() {
         for k in 0..3 {
             on_edge
@@ -288,7 +287,7 @@ fn split_across_slivers(points: &[Point], triangles: &mut Vec<[u32; 3]>, slivers
         }
     }
     let unlink =
-        |on_edge: &mut std::collections::HashMap<(u32, u32), Vec<usize>>, t: [u32; 3], i: usize| {
+        |on_edge: &mut ogeom_core::FastMap<(u32, u32), Vec<usize>>, t: [u32; 3], i: usize| {
             for k in 0..3 {
                 if let Some(list) = on_edge.get_mut(&key(t[k], t[(k + 1) % 3]))
                     && let Ok(at) = list.binary_search(&i)
@@ -298,7 +297,7 @@ fn split_across_slivers(points: &[Point], triangles: &mut Vec<[u32; 3]>, slivers
             }
         };
     let link =
-        |on_edge: &mut std::collections::HashMap<(u32, u32), Vec<usize>>, t: [u32; 3], i: usize| {
+        |on_edge: &mut ogeom_core::FastMap<(u32, u32), Vec<usize>>, t: [u32; 3], i: usize| {
             for k in 0..3 {
                 let list = on_edge.entry(key(t[k], t[(k + 1) % 3])).or_default();
                 if let Err(at) = list.binary_search(&i) {
@@ -485,7 +484,8 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
     let (points, remap) = weld_points(&mesh.positions, weld);
     report.vertices_welded = count - points.len();
     let mut triangles = Vec::with_capacity(mesh.triangles.len());
-    let mut seen: HashMap<[u32; 3], ()> = HashMap::with_capacity(mesh.triangles.len());
+    let mut seen: FastMap<[u32; 3], ()> =
+        FastMap::with_capacity_and_hasher(mesh.triangles.len(), Default::default());
     let mut flat_slivers: Vec<[u32; 3]> = Vec::new();
     for t in &mesh.triangles {
         let [a, b, c] = t.map(|v| remap[v as usize]);
@@ -666,12 +666,12 @@ fn build(
     let mut absorbed = if options.recognize {
         absorb_facets(points, triangles, adjacency, &mut groups, protected, flat)
     } else {
-        HashMap::new()
+        FastMap::default()
     };
     let mut absorbing = !absorbed.is_empty();
     let mut regrouped = Regrouped::default();
-    let snaps = std::sync::Mutex::new(SnapCache::new());
-    let images = std::sync::Mutex::new(ImageCache::new());
+    let snaps = std::sync::Mutex::new(SnapCache::default());
+    let images = std::sync::Mutex::new(ImageCache::default());
     // Face meshes and areas kept across the builds: most faces recur
     // unchanged.
     let kept = crate::mass::VolumeKept::default();
@@ -681,8 +681,8 @@ fn build(
         // whose boundary is not; then build, and facet any recognized face that
         // reaches past the triangles it replaces (a boundary placed on the wrong
         // turn of its surface closes a face of the wrong extent) and build again.
-        let mut pinned: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let mut straight: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+        let mut pinned: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
+        let mut straight: ogeom_core::FastSet<(u32, u32)> = ogeom_core::FastSet::default();
         // What stood before any seam was threaded straight: a straightened
         // build with a face collapsed beside a threaded seam is set aside for
         // it. A face turned into the material beside one is an overlap like
@@ -1088,7 +1088,7 @@ fn planes_off_their_vertices(
 /// faceted.
 #[derive(Default)]
 struct Regrouped {
-    once: std::collections::HashSet<usize>,
+    once: ogeom_core::FastSet<usize>,
 }
 
 impl Regrouped {
@@ -1129,7 +1129,7 @@ fn unbuilt_culprits(
     unbuilt: &[usize],
     groups: &Groups,
     adjacency: &Adjacency,
-    fans: &HashMap<usize, Fan>,
+    fans: &FastMap<usize, Fan>,
 ) -> Vec<usize> {
     let mut out = std::collections::BTreeSet::new();
     for &g in unbuilt {
@@ -1221,7 +1221,7 @@ fn overlapping_faces(
         matches!(groups.carriers.get(g), Some(Carrier::Curved(_)))
             && built.get(g).is_some_and(Option::is_some)
     };
-    let mut beside: HashMap<usize, std::collections::BTreeSet<usize>> = HashMap::new();
+    let mut beside: FastMap<usize, std::collections::BTreeSet<usize>> = FastMap::default();
     for (h, twin) in adjacency.twin.iter().enumerate() {
         let Some(t) = *twin else {
             continue;
@@ -1233,7 +1233,7 @@ fn overlapping_faces(
     }
     // Each built face's box; a face a fitted face runs through need not
     // share an edge with it.
-    let mut boxes: HashMap<usize, ogeom_math::Aabb> = HashMap::new();
+    let mut boxes: FastMap<usize, ogeom_math::Aabb> = FastMap::default();
     for (g, face) in built.iter().enumerate() {
         if let Some(face) = face {
             boxes.insert(
@@ -1256,7 +1256,7 @@ fn overlapping_faces(
                 .collect()
         })
     };
-    let of_face: HashMap<ogeom_topo::TShapeId, usize> = built
+    let of_face: FastMap<ogeom_topo::TShapeId, usize> = built
         .iter()
         .enumerate()
         .filter_map(|(g, face)| Some((face.as_ref()?.node(), g)))
@@ -1309,7 +1309,7 @@ fn backwards_facets(
     adjacency: &Adjacency,
     groups: &Groups,
     built: &[Option<Shape>],
-    fans: &HashMap<usize, Fan>,
+    fans: &FastMap<usize, Fan>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<usize>> {
     use ogeom_geom::Curve3d as _;
@@ -1391,7 +1391,7 @@ fn any_turned_in(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<b
 /// again.
 #[derive(Default)]
 struct AreaCache {
-    held: std::sync::Mutex<HashMap<Vec<u8>, f64>>,
+    held: std::sync::Mutex<FastMap<Vec<u8>, f64>>,
 }
 
 impl AreaCache {
@@ -1434,7 +1434,7 @@ fn collapsed_beside(
     triangles: &[[u32; 3]],
     groups: &Groups,
     built: &[Option<Shape>],
-    straight: &std::collections::HashSet<(u32, u32)>,
+    straight: &ogeom_core::FastSet<(u32, u32)>,
     areas: &AreaCache,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
@@ -1482,12 +1482,12 @@ fn crossed_seams(
     let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
     // Only a facet or two left between curved faces: a larger planar face
     // holds its own shape, and straightening its seams can turn it over.
-    let mut size: HashMap<usize, usize> = HashMap::new();
+    let mut size: FastMap<usize, usize> = FastMap::default();
     for &g in &groups.of {
         *size.entry(g).or_insert(0) += 1;
     }
     // Each such face's mesh edges against a curved face.
-    let mut seams: HashMap<usize, Vec<(u32, u32)>> = HashMap::new();
+    let mut seams: FastMap<usize, Vec<(u32, u32)>> = FastMap::default();
     for (h, twin) in adjacency.twin.iter().enumerate() {
         let Some(g) = *twin else {
             continue;
@@ -1527,7 +1527,7 @@ fn crossed_seams(
             (p.z / cell).round() as i64,
         )
     };
-    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut grid: FastMap<(i64, i64, i64), Vec<usize>> = FastMap::default();
     let mut welded: Vec<Point> = Vec::new();
     let mut weld = |p: Point| -> usize {
         let (x, y, z) = cell_of(p);
@@ -1554,7 +1554,7 @@ fn crossed_seams(
         (meshes[i].is_some() && seams.contains_key(&g)).then(|| areas.area(model, face, fine, tol))
     });
     let mut flagged: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    let mut uses: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    let mut uses: FastMap<(usize, usize), Vec<usize>> = FastMap::default();
     for ((&(g, _), mesh), area) in faces.iter().zip(&meshes).zip(areas) {
         let Some(mesh) = mesh else {
             if seams.contains_key(&g) {
@@ -1642,15 +1642,16 @@ fn folded_seams(
     let deflection = ogeom_mesh::Deflection::default();
     let fine = ogeom_mesh::Deflection::with_chord(deflection.chord * 1e-2)?;
     // Each edge's faces and drawn points, by its node.
-    let mut owners: HashMap<ogeom_topo::TShapeId, Vec<usize>> = HashMap::new();
-    let mut drawn: HashMap<ogeom_topo::TShapeId, (Vec<Point>, f64)> = HashMap::new();
+    let mut owners: FastMap<ogeom_topo::TShapeId, Vec<usize>> = FastMap::default();
+    let mut drawn: FastMap<ogeom_topo::TShapeId, (Vec<Point>, f64)> = FastMap::default();
     for (g, face) in built.iter().enumerate() {
         let Some(face) = face else {
             continue;
         };
         for edge in ogeom_topo::explore_unique(model, face, ogeom_topo::ShapeType::Edge)? {
             owners.entry(edge.node()).or_default().push(g);
-            if let std::collections::hash_map::Entry::Vacant(slot) = drawn.entry(edge.node()) {
+            if let ogeom_core::collections::hash_map::Entry::Vacant(slot) = drawn.entry(edge.node())
+            {
                 let tolerance = model
                     .node(&edge)
                     .and_then(|n| n.data().as_edge())
@@ -1872,9 +1873,9 @@ fn absorb_facets(
     groups: &mut Groups,
     protected: &[bool],
     flat: f64,
-) -> HashMap<usize, Absorbed> {
+) -> FastMap<usize, Absorbed> {
     let reach = flat * REACH;
-    let mut members: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut members: FastMap<usize, Vec<usize>> = FastMap::default();
     for (t, &g) in groups.of.iter().enumerate() {
         if matches!(groups.carriers.get(g), Some(Carrier::Plane(_))) {
             members.entry(g).or_default().push(t);
@@ -1889,7 +1890,7 @@ fn absorb_facets(
         })
         .collect();
     facets.sort_unstable();
-    let mut absorbed: HashMap<usize, Absorbed> = HashMap::new();
+    let mut absorbed: FastMap<usize, Absorbed> = FastMap::default();
     for (g, ts) in facets {
         let mut beside: Vec<usize> = ts
             .iter()
@@ -1997,7 +1998,7 @@ fn unmatched_faces(
             (p.z / cell).round() as i64 as u64,
         )
     };
-    let mut grid: HashMap<Key, Vec<usize>> = HashMap::new();
+    let mut grid: FastMap<Key, Vec<usize>> = FastMap::default();
     let mut welded: Vec<Point> = Vec::new();
     let mut weld = |p: Point| -> Key {
         let c = cell_of(p);
@@ -2022,7 +2023,7 @@ fn unmatched_faces(
         grid.entry(c).or_default().push(welded.len() - 1);
         c
     };
-    let mut uses: HashMap<(Key, Key), (Vec<usize>, [Point; 2])> = HashMap::new();
+    let mut uses: FastMap<(Key, Key), (Vec<usize>, [Point; 2])> = FastMap::default();
     let mut out: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for (&(g, _), mesh) in faces.iter().zip(&meshes) {
         let Some(mesh) = mesh else {
@@ -2120,7 +2121,8 @@ fn own_meshes(
     tol: Tolerances,
 ) -> Vec<Option<Triangulation>> {
     let key = |face: &Shape| (face.node(), face.orientation(), face.location().clone());
-    let mut by_face: HashMap<_, Option<Triangulation>> = HashMap::with_capacity(drawn.len());
+    let mut by_face: FastMap<_, Option<Triangulation>> =
+        FastMap::with_capacity_and_hasher(drawn.len(), Default::default());
     for (face, mesh) in drawn {
         by_face.entry(key(&face)).or_insert_with(|| mesh.ok());
     }
@@ -2156,7 +2158,7 @@ fn free_edges(
     tol: Tolerances,
 ) -> OgeomResult<Vec<FreeEdge>> {
     use ogeom_geom::Curve3d as _;
-    let mut count: HashMap<ogeom_topo::SameKey, usize> = HashMap::new();
+    let mut count: FastMap<ogeom_topo::SameKey, usize> = FastMap::default();
     for &(_, face) in faces {
         for edge in ogeom_topo::explore(
             model,
@@ -2812,7 +2814,8 @@ fn weld_points(positions: &[Point], weld: f64) -> (Vec<Point>, Vec<u32>) {
             (p.z / weld).floor() as i64,
         )
     };
-    let mut grid: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::with_capacity(positions.len());
+    let mut grid: FastMap<(i64, i64, i64), Vec<u32>> =
+        FastMap::with_capacity_and_hasher(positions.len(), Default::default());
     let mut kept: Vec<Point> = Vec::with_capacity(positions.len());
     let mut remap = Vec::with_capacity(positions.len());
     for p in positions {
@@ -2903,7 +2906,7 @@ fn unfold(points: &[Point], triangles: &mut [[u32; 3]], adjacency: &Adjacency) -
         let m = v.magnitude();
         if m > 0.0 { v / m } else { v }
     };
-    let mut edges: std::collections::HashSet<(u32, u32)> = triangles
+    let mut edges: ogeom_core::FastSet<(u32, u32)> = triangles
         .iter()
         .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
         .map(|(a, b)| (a.min(b), a.max(b)))
@@ -3430,7 +3433,7 @@ impl Groups {
     }
 
     /// The fans standing, by group.
-    fn fans_by_group(&self, triangles: &[[u32; 3]], adjacency: &Adjacency) -> HashMap<usize, Fan> {
+    fn fans_by_group(&self, triangles: &[[u32; 3]], adjacency: &Adjacency) -> FastMap<usize, Fan> {
         self.fans
             .iter()
             .filter_map(|&t| Some((self.of[t], self.fan_at(t, triangles, adjacency)?)))
@@ -4595,7 +4598,7 @@ fn tangent_blends(
             }
         }
     }
-    let mut parts: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut parts: FastMap<usize, Vec<usize>> = FastMap::default();
     for i in 0..count {
         if is_round(groups, i) || is_ball(groups, i) {
             parts.entry(root(&mut chain, i)).or_default().push(i);
@@ -5763,8 +5766,9 @@ fn signed_turn(points: &[Point], triangles: &[[u32; 3]], h: Half, g: Half) -> f6
 
 /// Keep only the largest edge-connected piece of a set of triangles.
 fn keep_largest_piece(region: &mut Vec<usize>, adjacency: &Adjacency) {
-    let members: std::collections::HashSet<usize> = region.iter().copied().collect();
-    let mut piece: HashMap<usize, usize> = HashMap::with_capacity(region.len());
+    let members: ogeom_core::FastSet<usize> = region.iter().copied().collect();
+    let mut piece: FastMap<usize, usize> =
+        FastMap::with_capacity_and_hasher(region.len(), Default::default());
     let mut sizes: Vec<usize> = Vec::new();
     for &start in region.iter() {
         if piece.contains_key(&start) {
@@ -6020,7 +6024,8 @@ impl Surfaces<'_> {
 
     /// Sample points with normals averaged over the region's triangles.
     fn samples(&self, vertices: &[u32], region: &[usize]) -> (Vec<Point>, Vec<Vector>) {
-        let mut sum: HashMap<u32, Vector> = HashMap::with_capacity(vertices.len());
+        let mut sum: FastMap<u32, Vector> =
+            FastMap::with_capacity_and_hasher(vertices.len(), Default::default());
         for &t in region {
             for &v in &self.triangles[t] {
                 *sum.entry(v).or_insert(Vector::ZERO) += self.normals[t];
@@ -6066,18 +6071,17 @@ impl Surfaces<'_> {
     /// thick torus needs the hundred to show its tube.
     fn first_fit(&self, seed: usize, of: &[usize], tried: &[bool]) -> FirstFit {
         const STAGES: [usize; 4] = [12, 24, 60, 150];
-        let mut held: std::collections::HashSet<usize> = std::collections::HashSet::from([seed]);
-        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut held: ogeom_core::FastSet<usize> = ogeom_core::FastSet::from_iter([seed]);
+        let mut seen: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
         let mut region = vec![seed];
         let mut vertices: Vec<u32> = Vec::new();
-        let take =
-            |t: usize, vertices: &mut Vec<u32>, seen: &mut std::collections::HashSet<u32>| {
-                for &v in &self.triangles[t] {
-                    if seen.insert(v) {
-                        vertices.push(v);
-                    }
+        let take = |t: usize, vertices: &mut Vec<u32>, seen: &mut ogeom_core::FastSet<u32>| {
+            for &v in &self.triangles[t] {
+                if seen.insert(v) {
+                    vertices.push(v);
                 }
-            };
+            }
+        };
         take(seed, &mut vertices, &mut seen);
         let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::from([seed]);
         let mut found = None;
@@ -6122,7 +6126,8 @@ impl Surfaces<'_> {
             // touched by the one triangle that reached it, and a single
             // such corner far off the surface decides a least-squares axis.
             shared = {
-                let mut count: HashMap<u32, u32> = HashMap::with_capacity(vertices.len());
+                let mut count: FastMap<u32, u32> =
+                    FastMap::with_capacity_and_hasher(vertices.len(), Default::default());
                 for &t in &region {
                     for &v in &self.triangles[t] {
                         *count.entry(v).or_insert(0) += 1;
@@ -6319,8 +6324,8 @@ fn recognized_regions(
             };
             // What the fit dropped, and what it never saw but misses the
             // fit: those vertices go, and the triangles that brought them.
-            let kept: HashMap<u32, bool> = shared.iter().copied().zip(keep).collect();
-            let dropped: std::collections::HashSet<u32> = vertices
+            let kept: FastMap<u32, bool> = shared.iter().copied().zip(keep).collect();
+            let dropped: ogeom_core::FastSet<u32> = vertices
                 .iter()
                 .copied()
                 .filter(|v| {
@@ -6345,7 +6350,7 @@ fn recognized_regions(
                 // others stay free, to seed regions of their own or fall to
                 // the planes.
                 keep_largest_piece(&mut region, adjacency);
-                let mut seen = std::collections::HashSet::new();
+                let mut seen = ogeom_core::FastSet::default();
                 vertices.clear();
                 for &t in &region {
                     for &v in &triangles[t] {
@@ -6363,8 +6368,8 @@ fn recognized_regions(
                 areas.sort_by(f64::total_cmp);
                 areas.get(areas.len() / 2).copied().unwrap_or(0.0)
             };
-            let mut mine: std::collections::HashSet<usize> = region.iter().copied().collect();
-            let mut seen: std::collections::HashSet<u32> = vertices.iter().copied().collect();
+            let mut mine: ogeom_core::FastSet<usize> = region.iter().copied().collect();
+            let mut seen: ogeom_core::FastSet<u32> = vertices.iter().copied().collect();
 
             // Then across any smooth edge, while the surface holds. A fit
             // from a small patch extrapolates only so far; when the growth
@@ -6472,7 +6477,7 @@ fn recognized_regions(
             // a sliver's plane through three nearly collinear points on the
             // surface tilts far from the surface's normal, as in the fans
             // round a sphere's pole, where several such slivers touch.
-            let mut claimed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            let mut claimed: ogeom_core::FastSet<usize> = ogeom_core::FastSet::default();
             let rim: Vec<usize> = region
                 .iter()
                 .flat_map(|&t| (3 * t..3 * t + 3).filter_map(|h| adjacency.twin[h]))
@@ -6484,8 +6489,8 @@ fn recognized_regions(
                     continue;
                 }
                 let mut cluster = vec![start];
-                let mut inside: std::collections::HashSet<usize> =
-                    std::collections::HashSet::from([start]);
+                let mut inside: ogeom_core::FastSet<usize> =
+                    ogeom_core::FastSet::from_iter([start]);
                 let mut surrounded = true;
                 let mut i = 0;
                 while i < cluster.len() && surrounded {
@@ -6547,7 +6552,7 @@ fn recognized_regions(
             if !peel.is_empty() {
                 region.retain(|t| !peel.contains(t));
                 keep_largest_piece(&mut region, adjacency);
-                let mut seen = std::collections::HashSet::new();
+                let mut seen = ogeom_core::FastSet::default();
                 vertices.clear();
                 for &t in &region {
                     for &v in &triangles[t] {
@@ -6743,7 +6748,7 @@ fn swept_claim(
     flat: f64,
     tol: Tolerances,
 ) -> Option<Curved> {
-    let mut sums: HashMap<u32, Vector> = HashMap::new();
+    let mut sums: FastMap<u32, Vector> = FastMap::default();
     for &t in region {
         for &v in &triangles[t] {
             *sums.entry(v).or_insert(Vector::ZERO) += normals[t];
@@ -6966,7 +6971,7 @@ fn enclosed_unions(
     // triangles.
     let mut piece_of = vec![usize::MAX; n];
     let mut pieces: Vec<(Option<usize>, Vec<usize>)> = Vec::new();
-    let mut by_carrier: HashMap<usize, usize> = HashMap::new();
+    let mut by_carrier: FastMap<usize, usize> = FastMap::default();
     for (t, &g) in groups.of.iter().enumerate() {
         if matches!(groups.carriers.get(g), Some(Carrier::Curved(c)) if c.patch.is_none()) {
             let p = *by_carrier.entry(g).or_insert_with(|| {
@@ -7126,10 +7131,10 @@ fn region_patch(
     flat: f64,
     tol: Tolerances,
 ) -> Result<Curved, crate::recognize_patch::Refused> {
-    let inside: std::collections::HashSet<usize> = region.iter().copied().collect();
+    let inside: ogeom_core::FastSet<usize> = region.iter().copied().collect();
     // The faces across the boundary on either side of each boundary
     // vertex: a corner where they differ.
-    let mut sides: HashMap<u32, [Vec<usize>; 2]> = HashMap::new();
+    let mut sides: FastMap<u32, [Vec<usize>; 2]> = FastMap::default();
     for &t in region {
         for h in 3 * t..3 * t + 3 {
             let other = match adjacency.twin[h] {
@@ -7142,7 +7147,7 @@ fn region_patch(
             sides.entry(b).or_default()[1].push(other);
         }
     }
-    let corners: std::collections::HashSet<u32> = sides
+    let corners: ogeom_core::FastSet<u32> = sides
         .into_iter()
         .filter(|(_, [leaving, arriving])| {
             let mut faces = leaving.iter().chain(arriving);
@@ -7296,7 +7301,7 @@ fn border_loops(
     of: &[usize],
     g: usize,
 ) -> Option<Vec<Vec<u32>>> {
-    let mut leaving: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut leaving: FastMap<u32, Vec<u32>> = FastMap::default();
     for (t, tri) in triangles.iter().enumerate() {
         if of[t] != g {
             continue;
@@ -7312,7 +7317,7 @@ fn border_loops(
         return None;
     }
     let mut loops: Vec<Vec<u32>> = Vec::new();
-    let mut done: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut done: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
     let mut starts: Vec<u32> = leaving.keys().copied().collect();
     starts.sort_unstable();
     for start in starts {
@@ -7547,7 +7552,7 @@ fn hole_frame(
         if round_axis != round_tube {
             let across =
                 |p: Point| chart(&curved.shape, p, tol).map(|c| if round_axis { c.1 } else { c.0 });
-            let on_rims: std::collections::HashSet<u32> = loops.iter().flatten().copied().collect();
+            let on_rims: ogeom_core::FastSet<u32> = loops.iter().flatten().copied().collect();
             let mut rims: Vec<f64> = on_rims
                 .iter()
                 .filter_map(|&v| across(points[v as usize]))
@@ -7555,7 +7560,7 @@ fn hole_frame(
             let inside: Vec<f64> = curved
                 .vertices
                 .iter()
-                .filter(|v| !on_rims.contains(v))
+                .filter(|v| !on_rims.contains(*v))
                 .filter_map(|&v| across(points[v as usize]))
                 .collect();
             let Some(middle) = widest_gap_holding(&mut rims, &inside) else {
@@ -8055,7 +8060,7 @@ struct Plan {
     /// Each boundary mesh edge, by its lower vertex first: its planned
     /// edge, and whether walking it from the lower vertex runs the edge
     /// forward.
-    edge_of: HashMap<(u32, u32), (usize, bool)>,
+    edge_of: FastMap<(u32, u32), (usize, bool)>,
     /// Each face's loops as half-edges, walked with the face on the left.
     loops: Vec<Vec<Vec<Half>>>,
     placed: Vec<Point>,
@@ -8063,11 +8068,11 @@ struct Plan {
     surfaces: Vec<Option<ogeom_geom::SurfaceGeometry>>,
     /// Each edge's image on each curved face it bounds, by (edge, face),
     /// with how far the image strays from the edge.
-    pcurves: HashMap<(usize, usize), (PlanarCurve, f64)>,
+    pcurves: FastMap<(usize, usize), (PlanarCurve, f64)>,
     /// How each curved face's boundary lies in its chart.
     layouts: Vec<Layout>,
     /// The seam chain of each face laid out [`Layout::Threaded`].
-    threads: HashMap<usize, Thread>,
+    threads: FastMap<usize, Thread>,
     /// How many free edges of curved faces are fitted curves.
     free_fitted: usize,
 }
@@ -8080,11 +8085,11 @@ struct Planner<'a> {
     groups: &'a Groups,
     merge: bool,
     /// Vertices kept as edge ends whatever lies either side of them.
-    pinned: &'a std::collections::HashSet<u32>,
+    pinned: &'a ogeom_core::FastSet<u32>,
     /// Mesh edges whose seam is threaded straight through the chain's own
     /// vertices: the solved curve bent the trim of a face beside it back
     /// across itself.
-    straight: &'a std::collections::HashSet<(u32, u32)>,
+    straight: &'a ogeom_core::FastSet<(u32, u32)>,
     /// The turn, in radians, from which a free boundary of a curved face
     /// is cut into separate edges at a vertex.
     crease: f64,
@@ -8095,7 +8100,7 @@ struct Planner<'a> {
     /// Edge images found by earlier plans.
     images: &'a std::sync::Mutex<ImageCache>,
     /// The facets built as fans, by group.
-    fans: &'a HashMap<usize, Fan>,
+    fans: &'a FastMap<usize, Fan>,
 }
 
 /// A chain of boundary vertices between two kept ones, and its mesh edges.
@@ -8189,7 +8194,7 @@ impl Planner<'_> {
     #[allow(clippy::too_many_lines, reason = "one pass over the boundary")]
     fn plan(&self) -> OgeomResult<Result<Plan, Replan>> {
         let halves = self.triangles.len() * 3;
-        let mut edge_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        let mut edge_faces: FastMap<(u32, u32), Vec<usize>> = FastMap::default();
         for h in 0..halves {
             if self.border(h) {
                 let (a, b) = from_to(self.triangles, h);
@@ -8202,7 +8207,7 @@ impl Planner<'_> {
         for faces in edge_faces.values_mut() {
             faces.sort_unstable();
         }
-        let mut incident: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+        let mut incident: FastMap<u32, Vec<(u32, u32)>> = FastMap::default();
         for &(a, b) in edge_faces.keys() {
             incident.entry(a).or_default().push((a, b));
             incident.entry(b).or_default().push((a, b));
@@ -8244,17 +8249,17 @@ impl Planner<'_> {
             let at = self.points[v as usize];
             (at - p).dot(q - at) > 0.0 && distance_to_line(at, p, q) <= self.flat
         };
-        let is_kept: HashMap<u32, bool> = incident.keys().map(|&v| (v, !removable(v))).collect();
+        let is_kept: FastMap<u32, bool> = incident.keys().map(|&v| (v, !removable(v))).collect();
 
         let mut plan = Plan {
             edges: Vec::new(),
-            edge_of: HashMap::new(),
+            edge_of: FastMap::default(),
             loops: vec![Vec::new(); self.groups.carriers.len()],
             placed: Vec::new(),
             surfaces: vec![None; self.groups.carriers.len()],
-            pcurves: HashMap::new(),
+            pcurves: FastMap::default(),
             layouts: vec![Layout::Open; self.groups.carriers.len()],
-            threads: HashMap::new(),
+            threads: FastMap::default(),
             free_fitted: 0,
         };
         let mut failed: Vec<usize> = Vec::new();
@@ -8297,7 +8302,7 @@ impl Planner<'_> {
         // snapped are solved side by side before the edges are planned in
         // order.
         {
-            let mut taken: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+            let mut taken: ogeom_core::FastSet<(u32, u32)> = ogeom_core::FastSet::default();
             let mut wanted: Vec<(Vec<u32>, Vec<usize>)> = Vec::new();
             for pass in 0..2 {
                 for &key in &keys {
@@ -10231,11 +10236,11 @@ impl SnapFace {
 /// by chain and faces, each with what it read of the faces. The coplanar
 /// distance and the points are those of the whole conversion.
 type SnapCache =
-    HashMap<(Vec<u32>, Vec<usize>), Vec<(Vec<SnapFace>, Option<(Snapped, bool, Images)>)>>;
+    FastMap<(Vec<u32>, Vec<usize>), Vec<(Vec<SnapFace>, Option<(Snapped, bool, Images)>)>>;
 
 /// Edge images on curved faces, kept across the plans of one conversion:
 /// by every input of [`image_on`] written out, with what it answered.
-type ImageCache = HashMap<String, Option<(PlanarCurve, f64)>>;
+type ImageCache = FastMap<String, Option<(PlanarCurve, f64)>>;
 
 /// A point solved onto where two surfaces meet, from a start near both:
 /// Newton's step, the least one that zeroes both signed distances to first
@@ -10817,7 +10822,7 @@ struct Builder<'a> {
     triangles: &'a [[u32; 3]],
     groups: &'a Groups,
     plan: &'a Plan,
-    fans: &'a HashMap<usize, Fan>,
+    fans: &'a FastMap<usize, Fan>,
     tol: Tolerances,
 }
 
@@ -10866,8 +10871,8 @@ impl Builder<'_> {
 
     /// The planned edges and their corners, or the index of the first edge
     /// that cannot be made.
-    fn edges(&mut self) -> Result<(Vec<Shape>, HashMap<Corner, Shape>), usize> {
-        let mut corners: HashMap<Corner, Shape> = HashMap::new();
+    fn edges(&mut self) -> Result<(Vec<Shape>, FastMap<Corner, Shape>), usize> {
+        let mut corners: FastMap<Corner, Shape> = FastMap::default();
         let mut edges: Vec<Shape> = Vec::with_capacity(self.plan.edges.len());
         for (index, spec) in self.plan.edges.iter().enumerate() {
             for corner in spec.ends {
@@ -10906,7 +10911,7 @@ impl Builder<'_> {
         &mut self,
         g: usize,
         edges: &[Shape],
-        corners: &HashMap<Corner, Shape>,
+        corners: &FastMap<Corner, Shape>,
     ) -> OgeomResult<Option<Shape>> {
         let (groups, plan) = (self.groups, self.plan);
         let rings = &plan.loops[g];
@@ -10965,7 +10970,7 @@ impl Builder<'_> {
         fan: Fan,
         rings: &[Vec<Half>],
         edges: &[Shape],
-        corners: &HashMap<Corner, Shape>,
+        corners: &FastMap<Corner, Shape>,
     ) -> OgeomResult<Option<Shape>> {
         use ogeom_geom::Surface as _;
         if fan.across.is_some() {
@@ -11116,7 +11121,7 @@ impl Builder<'_> {
         fan: Fan,
         rings: &[Vec<Half>],
         edges: &[Shape],
-        corners: &HashMap<Corner, Shape>,
+        corners: &FastMap<Corner, Shape>,
     ) -> OgeomResult<Option<Shape>> {
         use ogeom_geom::Surface as _;
         let [ring] = rings else {

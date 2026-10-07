@@ -18,7 +18,7 @@
 //! is split at the poles into half meridians, each a straight line in the
 //! chart, with a degenerate edge along the pole's row between them.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_algo::{
     Built, History, is_shell_closed, make_band_of_rings, make_edge_between, make_face_on,
@@ -59,10 +59,10 @@ pub fn seam_periodic_faces(
     if model.kind_of(shape)? != ShapeType::Solid {
         ogeom_bail!(Construction, "seaming heals solids");
     }
-    let mut substitution: HashMap<TShapeId, Vec<Shape>> = HashMap::new();
-    let mut face_map: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut substitution: FastMap<TShapeId, Vec<Shape>> = FastMap::default();
+    let mut face_map: FastMap<TShapeId, Shape> = FastMap::default();
     // Edges a rebuilt face already holds, which no later repair may replace.
-    let mut settled: std::collections::HashSet<TShapeId> = std::collections::HashSet::new();
+    let mut settled: ogeom_core::FastSet<TShapeId> = ogeom_core::FastSet::default();
     for face in explore_unique(model, shape, ShapeType::Face)? {
         let Some((surface_id, surface)) = seamless_periodic(model, &face)? else {
             continue;
@@ -402,8 +402,8 @@ fn band(
     rings: [&[Shape]; 2],
     walks: [&Walk; 2],
     (substitution, settled): (
-        &mut HashMap<TShapeId, Vec<Shape>>,
-        &std::collections::HashSet<TShapeId>,
+        &mut FastMap<TShapeId, Vec<Shape>>,
+        &ogeom_core::FastSet<TShapeId>,
     ),
     tol: Tolerances,
 ) -> OgeomResult<Option<Shape>> {
@@ -816,7 +816,7 @@ fn meridian_poles(
     face: &Shape,
     (surface_id, surface): (ogeom_topo::SurfaceId, &SurfaceGeometry),
     ring: &[Shape],
-    settled: &std::collections::HashSet<TShapeId>,
+    settled: &ogeom_core::FastSet<TShapeId>,
     resolved: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Halved>> {
@@ -1131,7 +1131,7 @@ fn stored_end(
 fn rebuild_with(
     model: &mut Model,
     face: &Shape,
-    substitution: &HashMap<TShapeId, Vec<Shape>>,
+    substitution: &FastMap<TShapeId, Vec<Shape>>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {

@@ -349,8 +349,8 @@ fn fillet_edges_own(
     // closes on itself (a junction loop the march follows round), so a
     // later edge of the same crease that the blend consumed is rounded
     // already, not interfered with.
-    let mut host_faces: std::collections::HashMap<ogeom_topo::TShapeId, Vec<Shape>> =
-        std::collections::HashMap::new();
+    let mut host_faces: ogeom_core::FastMap<ogeom_topo::TShapeId, Vec<Shape>> =
+        ogeom_core::FastMap::default();
     for face in explore_unique(model, solid, ShapeType::Face)? {
         for e in explore_unique(model, &face, ShapeType::Edge)? {
             let held = host_faces.entry(e.node()).or_default();
@@ -370,15 +370,14 @@ fn fillet_edges_own(
     // The edges of the solid a round's blends are built on, by occurrence:
     // until a round is applied that solid is unchanged, and an edge of it
     // is found there by name rather than re-found by its geometry.
-    let mut occurrences: Option<(Shape, std::collections::HashMap<ogeom_topo::SameKey, Shape>)> =
-        None;
+    let mut occurrences: Option<(Shape, ogeom_core::FastMap<ogeom_topo::SameKey, Shape>)> = None;
     let mut refind =
         |model: &Model, on: &Shape, edge: &Shape, hosts: &[Shape]| -> OgeomResult<Vec<Shape>> {
             if !occurrences
                 .as_ref()
                 .is_some_and(|(held, _)| held.is_same(on))
             {
-                let mut by_name = std::collections::HashMap::new();
+                let mut by_name = ogeom_core::FastMap::default();
                 for e in explore_unique(model, on, ShapeType::Edge)? {
                     by_name.entry(ogeom_topo::SameKey(e.clone())).or_insert(e);
                 }

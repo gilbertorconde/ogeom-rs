@@ -522,7 +522,7 @@ impl MeshRegions {
             return Err(RegionRefusal::PathTooShort);
         }
         let triangles = &self.found.triangles;
-        let mut cut: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+        let mut cut: ogeom_core::FastSet<(u32, u32)> = ogeom_core::FastSet::default();
         for pair in path.windows(2) {
             let (u, v) = (pair[0], pair[1]);
             let on = members.iter().any(|&t| {
@@ -748,7 +748,7 @@ impl MeshRegions {
 
     /// The vertices with normals averaged over the region's triangles.
     fn samples(&self, vertices: &[u32], members: &[usize]) -> (Vec<Point>, Vec<Vector>) {
-        let mut sum: std::collections::HashMap<u32, Vector> = std::collections::HashMap::new();
+        let mut sum: ogeom_core::FastMap<u32, Vector> = ogeom_core::FastMap::default();
         for &t in members {
             let n = unit_normal(&self.found.points, self.found.triangles[t]);
             for &v in &self.found.triangles[t] {

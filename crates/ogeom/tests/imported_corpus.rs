@@ -220,7 +220,7 @@ fn a_body_is_bounded_by_what_it_is_trimmed_to() {
 /// pieces are not joined.
 #[test]
 fn a_sliver_face_is_drawn_fine_enough_to_triangulate_whole() {
-    use std::collections::HashMap;
+    use ogeom::core::FastMap;
     let text = corpus("sliver_face_falls_apart.step");
     let import = ogeom::io::read_step(&text, T).unwrap();
     let model = import.document.model();
@@ -231,7 +231,7 @@ fn a_sliver_face_is_drawn_fine_enough_to_triangulate_whole() {
     let mesh =
         ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
             .unwrap();
-    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
     for t in &mesh.triangles {
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -335,7 +335,7 @@ fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
 /// draws six pieces. Folded, the face is one piece.
 #[test]
 fn a_ring_folds_across_a_closed_chart_s_join() {
-    use std::collections::HashMap;
+    use ogeom::core::FastMap;
     let text = corpus("closed_tube_face_crosses_its_join.step");
     let import = ogeom::io::read_step(&text, T).unwrap();
     let model = import.document.model();
@@ -344,7 +344,7 @@ fn a_ring_folds_across_a_closed_chart_s_join() {
     let mesh =
         ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
             .unwrap();
-    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
     for t in &mesh.triangles {
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -389,7 +389,7 @@ fn a_ring_folds_across_a_closed_chart_s_join() {
 /// give −14.
 #[test]
 fn a_slit_loop_is_not_a_hole() {
-    use std::collections::HashMap;
+    use ogeom::core::FastMap;
     let text = corpus("slit_loops_are_not_holes.step");
     let import = ogeom::io::read_step(&text, T).unwrap();
     let model = import.document.model();
@@ -403,7 +403,7 @@ fn a_slit_loop_is_not_a_hole() {
     let mesh =
         ogeom::mesh::triangulate_face(model, &faces[0], ogeom::mesh::Deflection::default(), T)
             .unwrap();
-    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
     for t in &mesh.triangles {
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -560,8 +560,8 @@ fn half_a_radian() -> ogeom::mesh::Deflection {
 
 /// `V - E + F` of a face's mesh, counting each undirected edge once.
 fn euler_of(mesh: &ogeom::topo::Triangulation) -> i64 {
-    use std::collections::HashMap;
-    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    use ogeom::core::FastMap;
+    let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
     for t in &mesh.triangles {
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -954,7 +954,7 @@ fn every_edge_reads_walked_once_each_way() {
 /// of each face turned against its surface walked backward.
 fn bounds_walked_back(text: &str) -> String {
     let reference = |s: &str| s.trim().trim_start_matches('#').parse::<u64>().ok();
-    let mut bounds = std::collections::HashSet::new();
+    let mut bounds = ogeom::core::FastSet::default();
     for line in text.lines() {
         if line.contains("=ADVANCED_FACE(") && line.ends_with(",.F.);") {
             let list = line.split_once("',(").unwrap().1.split_once(')').unwrap().0;

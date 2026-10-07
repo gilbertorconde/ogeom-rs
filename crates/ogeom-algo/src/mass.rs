@@ -272,7 +272,7 @@ pub(crate) struct VolumeKept {
     /// By the face's content, the region's place among the face's regions
     /// and the reference's bits: the region's moments, or `None` where its
     /// integral did not settle.
-    integrals: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Option<Moments>>>,
+    integrals: std::sync::Mutex<ogeom_core::FastMap<Vec<u8>, Option<Moments>>>,
 }
 
 impl VolumeKept {
@@ -416,7 +416,7 @@ fn probed_mesh_volume(
     }
     // Every face with the solid it bounds, then any face under none.
     let mut faces: Vec<(Shape, Option<usize>)> = Vec::new();
-    let mut seen: std::collections::HashSet<Occurrence> = std::collections::HashSet::new();
+    let mut seen: ogeom_core::FastSet<Occurrence> = ogeom_core::FastSet::default();
     for (at, solid) in solids.iter().enumerate() {
         for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
             seen.insert((face.node(), face.location().clone()));
@@ -606,7 +606,7 @@ fn exact_volume_properties(
     // neighbours, or a whole shell turned inside out. A set no face of
     // which the probe can settle is left to the mesh, and so is any face
     // facing in that `turning` does not turn.
-    let mut turned: std::collections::HashSet<Occurrence> = std::collections::HashSet::new();
+    let mut turned: ogeom_core::FastSet<Occurrence> = ogeom_core::FastSet::default();
     if !flags.sets.is_empty() {
         if turning == Turning::WholeShells
             && flags.sets.iter().flatten().any(|(_, against)| *against)
@@ -621,7 +621,7 @@ fn exact_volume_properties(
             Turning::WholeShells => shells_of_several(model, shape)?,
         };
         for (set, inward) in flags.sets.iter().zip(inward) {
-            let facing_in: std::collections::HashSet<Occurrence> = set
+            let facing_in: ogeom_core::FastSet<Occurrence> = set
                 .iter()
                 .filter(|(_, against)| *against != inward)
                 .map(|(f, _)| (f.node(), f.location().clone()))
@@ -1142,7 +1142,7 @@ type Occurrence = (ogeom_topo::TShapeId, ogeom_topo::Location);
 
 /// Edge curves placed once for [`flags_agree`], with their ranges, by edge
 /// occurrence: each is read at several stations of each face it bounds.
-type PlacedCurves = std::collections::HashMap<Occurrence, (ogeom_geom::Curve, (f64, f64))>;
+type PlacedCurves = ogeom_core::FastMap<Occurrence, (ogeom_geom::Curve, (f64, f64))>;
 
 /// Whether the faces agree with each other about which way is out.
 ///
@@ -1185,9 +1185,9 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
     // about whether they agree.
     let unplaced = shape.located(ogeom_topo::Location::default());
     let faces = explore(model, &unplaced, Filter::OfType(ShapeType::Face))?;
-    let mut walks: std::collections::HashMap<Occurrence, Vec<(bool, usize, bool)>> =
-        std::collections::HashMap::new();
-    let mut curves: PlacedCurves = std::collections::HashMap::new();
+    let mut walks: ogeom_core::FastMap<Occurrence, Vec<(bool, usize, bool)>> =
+        ogeom_core::FastMap::default();
+    let mut curves: PlacedCurves = ogeom_core::FastMap::default();
     for (index, face) in faces.iter().enumerate() {
         match face_walks(model, face, &mut curves, tol)? {
             Some(found) => {
@@ -1271,8 +1271,7 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
     // caller's shape holds them, placement and all, each with whether it
     // is turned against the set's first face.
     let mut sets: Vec<Vec<(Shape, bool)>> = Vec::new();
-    let mut set_at: std::collections::HashMap<usize, (usize, bool)> =
-        std::collections::HashMap::new();
+    let mut set_at: ogeom_core::FastMap<usize, (usize, bool)> = ogeom_core::FastMap::default();
     let mut mixed = false;
     for (index, face) in faces.iter().enumerate() {
         let (root, turned) = set_of(&mut parent, index);
@@ -1395,8 +1394,7 @@ fn face_walks(
     let mut stations: Vec<Vec<(Shape, ogeom_math::Point2)>> = Vec::with_capacity(wires.len());
     // How often each edge bounds this face: a seam the face uses once
     // (a half band, cut along its seam) bounds it down one column only.
-    let mut uses: std::collections::HashMap<ogeom_topo::TShapeId, usize> =
-        std::collections::HashMap::new();
+    let mut uses: ogeom_core::FastMap<ogeom_topo::TShapeId, usize> = ogeom_core::FastMap::default();
     for wire in &wires {
         for edge in model.ordered_children_of(wire)? {
             *uses.entry(edge.node()).or_default() += 1;
@@ -1571,7 +1569,7 @@ fn sets_facing_in(
 ) -> OgeomResult<Option<Vec<bool>>> {
     let solids = explore(model, shape, Filter::OfType(ShapeType::Solid))?;
     // Which solid each face bounds, by occurrence.
-    let mut owner: std::collections::HashMap<Occurrence, usize> = std::collections::HashMap::new();
+    let mut owner: ogeom_core::FastMap<Occurrence, usize> = ogeom_core::FastMap::default();
     let solids = if solids.is_empty() {
         vec![shape.clone()]
     } else {
@@ -1664,7 +1662,7 @@ fn sets_facing_in(
 fn shells_of_several(
     model: &Model,
     shape: &Shape,
-) -> OgeomResult<Vec<std::collections::HashSet<Occurrence>>> {
+) -> OgeomResult<Vec<ogeom_core::FastSet<Occurrence>>> {
     let mut out = Vec::new();
     for solid in explore(model, shape, Filter::OfType(ShapeType::Solid))? {
         let shells = explore(model, &solid, Filter::OfType(ShapeType::Shell))?;

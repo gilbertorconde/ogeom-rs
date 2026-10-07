@@ -328,9 +328,6 @@ which hosted runners do not promise. The work: an `iai` bench crate, a
 recorded count per bench, and a gate at a few percent.
 
 **Cheap and certain.**
-- `hashbrown` behind `ogeom_core` aliases everywhere (about 200 std maps:
-  the STEP entity table, mesh welding, mesh conversion), std maps banned by
-  clippy `disallowed-types`. STEP ids are dense: index a `Vec` by id.
 - `map_ordered` starts fresh threads for every stage, two items included:
   a minimum batch per worker first, then measure a persistent pool against
   `set_threads(1)` on the small booleans.

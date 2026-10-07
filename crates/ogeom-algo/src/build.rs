@@ -14,7 +14,7 @@
 //! a face with a gap in its boundary, and the first thing to notice is usually
 //! a boolean, several operations later.
 
-use hashbrown::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d, SurfaceGeometry};
@@ -1101,7 +1101,7 @@ pub fn make_compsolid(model: &mut Model, solids: &[Shape]) -> OgeomResult<Built>
         );
     }
     // Which face nodes bound each solid.
-    let mut faces_of: Vec<std::collections::HashSet<ogeom_topo::TShapeId>> = Vec::new();
+    let mut faces_of: Vec<ogeom_core::FastSet<ogeom_topo::TShapeId>> = Vec::new();
     for solid in solids {
         if model.kind_of(solid)? != ShapeType::Solid {
             ogeom_bail!(Construction, "a compsolid's members are solids");
@@ -1249,7 +1249,7 @@ pub fn is_shell_closed(model: &Model, shell: &Shape) -> OgeomResult<bool> {
     // seam edge bounds one face twice (up one side of its parameter rectangle
     // and down the other), so counting faces would call every cylinder, sphere
     // and torus open, which is precisely backwards.
-    let mut uses: HashMap<ogeom_topo::TShapeId, usize> = HashMap::new();
+    let mut uses: FastMap<ogeom_topo::TShapeId, usize> = FastMap::default();
     // Read from the nodes as they are stored: what is counted is which edge
     // node each use names, which no placement changes.
     let children = |shape: &Shape| -> OgeomResult<&[Shape]> {

@@ -463,8 +463,7 @@ fn pinned_sphere(model: &Model, face: &Shape) -> OgeomResult<Option<Pinned>> {
     let sphere = stored.sphere();
     // The wires as the face stores them, whichever way the shell uses it.
     let forward = face.oriented(Orientation::Forward);
-    let mut uses: std::collections::HashMap<ogeom_topo::TShapeId, usize> =
-        std::collections::HashMap::new();
+    let mut uses: ogeom_core::FastMap<ogeom_topo::TShapeId, usize> = ogeom_core::FastMap::default();
     let mut edges = Vec::new();
     for wire in model.children_of(&forward)? {
         for edge in model.children_of(&wire)? {

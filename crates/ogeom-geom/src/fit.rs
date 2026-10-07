@@ -662,7 +662,7 @@ fn sampled<const D: usize, P>(
     let mut ts = ts.to_vec();
     // Every point evaluated, by parameter: a split span's new sample and
     // most of its new eighths were measured before.
-    let mut seen: std::collections::HashMap<u64, [f64; D]> = std::collections::HashMap::new();
+    let mut seen: ogeom_core::FastMap<u64, [f64; D]> = ogeom_core::FastMap::default();
     let mut at = |t: f64| -> OgeomResult<[f64; D]> {
         if let Some(p) = seen.get(&t.to_bits()) {
             return Ok(*p);
@@ -788,8 +788,7 @@ pub fn fit_trace_sampled(
         );
     }
     let mut ts = ts.to_vec();
-    let mut seen: std::collections::HashMap<u64, (Point, Point2)> =
-        std::collections::HashMap::new();
+    let mut seen: ogeom_core::FastMap<u64, (Point, Point2)> = ogeom_core::FastMap::default();
     let mut at = |t: f64| -> OgeomResult<(Point, Point2)> {
         if let Some(p) = seen.get(&t.to_bits()) {
             return Ok(*p);
@@ -2148,7 +2147,7 @@ pub fn fit_surface_sampled(
     let mut best: Option<Fitted<crate::BSplineSurface>> = None;
     // Every point evaluated, by parameters: a split span's new sample is
     // the midpoint already checked.
-    let mut seen: std::collections::HashMap<(u64, u64), Point> = std::collections::HashMap::new();
+    let mut seen: ogeom_core::FastMap<(u64, u64), Point> = ogeom_core::FastMap::default();
     let mut at = |u: f64, v: f64| -> OgeomResult<Point> {
         if let Some(p) = seen.get(&(u.to_bits(), v.to_bits())) {
             return Ok(*p);

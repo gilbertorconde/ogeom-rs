@@ -315,8 +315,7 @@ pub fn make_polyhedron(
     let centroid =
         Point::ORIGIN + centroid / f64::from(u32::try_from(points.len()).unwrap_or(u32::MAX));
     let mut wound: Vec<Vec<usize>> = Vec::with_capacity(rings.len());
-    let mut uses: std::collections::HashMap<(usize, usize), usize> =
-        std::collections::HashMap::new();
+    let mut uses: ogeom_core::FastMap<(usize, usize), usize> = ogeom_core::FastMap::default();
     for ring in rings {
         if ring.len() < 3 {
             ogeom_bail!(
@@ -525,8 +524,7 @@ fn faceted_solid(
         .iter()
         .map(|p| model.add_vertex(ogeom_topo::VertexData::new(*p)))
         .collect();
-    let mut edge_of: std::collections::HashMap<(usize, usize), Shape> =
-        std::collections::HashMap::new();
+    let mut edge_of: ogeom_core::FastMap<(usize, usize), Shape> = ogeom_core::FastMap::default();
     let mut faces = Vec::with_capacity(rings.len());
     for ring_corners in rings {
         let origin = points[ring_corners[0]];

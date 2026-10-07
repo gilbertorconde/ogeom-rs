@@ -40,7 +40,7 @@ fn ruled(surface: &ogeom_geom::SurfaceGeometry) -> bool {
 /// does not resolve; [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// if the shape holds nothing to bound, or as the face meshes report.
 pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Aabb> {
-    let mut edges = EdgeBoxes::new();
+    let mut edges = EdgeBoxes::default();
     let mut bound = Aabb::EMPTY;
     let keep = tol == model.tolerances();
     for face in explore_unique(model, shape, ShapeType::Face)? {
@@ -84,7 +84,7 @@ pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
 /// `face` is not a face of the model; as [`tight_bounds`].
 pub fn face_bounds(model: &Model, face: &Shape) -> OgeomResult<Aabb> {
     let tol = model.tolerances();
-    let mut edges = EdgeBoxes::new();
+    let mut edges = EdgeBoxes::default();
     model.kept_face_box(face, |bare| face_box(model, bare, tol, &mut edges))?;
     if let Some(kept) = model.face_bounds(face) {
         return Ok(kept);
@@ -103,7 +103,7 @@ fn keeps_axes(placement: &ogeom_math::Transform) -> bool {
 }
 
 /// Each edge's box, found once for every face it bounds.
-type EdgeBoxes = std::collections::HashMap<SameKey, Aabb>;
+type EdgeBoxes = ogeom_core::FastMap<SameKey, Aabb>;
 
 /// The box of a face: its edges' boxes and the extremes inside it.
 fn face_box(
@@ -159,7 +159,7 @@ fn vertex_point(model: &Model, vertex: &Shape) -> OgeomResult<Option<Point>> {
 fn outside_faces(model: &Model, shape: &Shape) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
     let mut edges = Vec::new();
     let mut vertices = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = ogeom_core::FastSet::default();
     let mut stack = vec![shape.clone()];
     while let Some(at) = stack.pop() {
         let Some(node) = model.node(&at) else {
@@ -327,7 +327,7 @@ fn face_extremes(
     // curves in the chart the chords stand outside it. A descent that
     // ends against the border was stopped by the chords, not by the
     // surface, and an extreme on the boundary is the edges' to find.
-    let mut sides: std::collections::HashMap<(u32, u32), usize> = std::collections::HashMap::new();
+    let mut sides: ogeom_core::FastMap<(u32, u32), usize> = ogeom_core::FastMap::default();
     for t in &mesh.triangles {
         for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
             *sides.entry((a.min(b), a.max(b))).or_default() += 1;

@@ -15,6 +15,7 @@
 //! the same decision the STEP writer made: a file carries positions, not this
 //! kernel's location chains.
 
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Reversible as _;
@@ -23,7 +24,6 @@ use ogeom_geom::Transformable as _;
 use ogeom_geom::{BSplineCurve, Curve, SurfaceGeometry};
 use ogeom_math::{Frame, Point, Transform};
 use ogeom_topo::{EdgeRepr, Filter, NodeData, Shape, ShapeType, explore};
-use std::collections::HashMap;
 
 /// Write a document's solids and sheets as an IGES file.
 ///
@@ -41,8 +41,8 @@ pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResul
     let mut writer = Writer {
         model: document.model(),
         entities: Vec::new(),
-        vertices: HashMap::new(),
-        edges: HashMap::new(),
+        vertices: FastMap::default(),
+        edges: FastMap::default(),
         vertex_coords: Vec::new(),
         edge_records: Vec::new(),
         tol,
@@ -93,10 +93,10 @@ struct Writer<'a> {
     /// Vertex index (1-based) in the current solid's 502, keyed by node
     /// *and position*: an instanced node placed twice is two vertices in the
     /// file, and keying by node alone would weld a prism's top to its bottom.
-    vertices: HashMap<(ogeom_topo::TShapeId, [u64; 3]), usize>,
+    vertices: FastMap<(ogeom_topo::TShapeId, [u64; 3]), usize>,
     /// Edge index (1-based) in the current solid's 504, keyed by node and
     /// placement for the same reason.
-    edges: HashMap<(ogeom_topo::TShapeId, [u64; 3]), usize>,
+    edges: FastMap<(ogeom_topo::TShapeId, [u64; 3]), usize>,
     /// The current solid's vertex coordinates, in 502 order.
     vertex_coords: Vec<Point>,
     /// The current solid's edge records: (curve entity, start index, end index).

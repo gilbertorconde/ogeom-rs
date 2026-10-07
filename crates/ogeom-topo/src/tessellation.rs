@@ -140,8 +140,8 @@ impl Triangulation {
     /// kernel should not mean different things by the same word.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        use std::collections::HashMap;
-        let mut balance: HashMap<(u32, u32), i64> = HashMap::new();
+        use ogeom_core::FastMap;
+        let mut balance: FastMap<(u32, u32), i64> = FastMap::default();
         for t in &self.triangles {
             for i in 0..3 {
                 let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -164,13 +164,13 @@ impl Triangulation {
     /// `reach`.
     #[must_use]
     pub fn border_welded(&self, reach: f64) -> Self {
-        use std::collections::HashMap;
+        use ogeom_core::FastMap;
         if !reach.is_finite() || reach <= 0.0 {
             return self.clone();
         }
         // Border vertices: endpoints of triangle edges used an odd number of
         // times.
-        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
         for t in &self.triangles {
             for i in 0..3 {
                 let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -199,7 +199,7 @@ impl Triangulation {
                 (p.z / cell).round() as i64,
             )
         };
-        let mut buckets: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        let mut buckets: FastMap<(i64, i64, i64), Vec<u32>> = FastMap::default();
         #[allow(clippy::cast_possible_truncation)]
         let mut remap: Vec<u32> = (0..self.positions.len() as u32).collect();
         for &v in &border {
@@ -257,11 +257,11 @@ impl Triangulation {
     /// what closure counts. No positions move and none are added.
     #[must_use]
     pub fn border_stitched(&self, reach: f64) -> Self {
-        use std::collections::HashMap;
+        use ogeom_core::FastMap;
         if !reach.is_finite() || reach <= 0.0 {
             return self.clone();
         }
-        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
         for t in &self.triangles {
             for i in 0..3 {
                 let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -283,7 +283,7 @@ impl Triangulation {
 
         // For every border segment, the border vertices sitting on its
         // interior, ordered along it.
-        let mut splits: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        let mut splits: FastMap<(u32, u32), Vec<u32>> = FastMap::default();
         for &(a, b) in &border_edges {
             let (pa, pb) = (self.positions[a as usize], self.positions[b as usize]);
             let d = pb - pa;
@@ -363,10 +363,10 @@ impl Triangulation {
     /// vertex with more than one way on, is a real opening and stays.
     #[must_use]
     pub fn sealed(&self, width: f64) -> Self {
-        use std::collections::HashMap;
+        use ogeom_core::FastMap;
         let mut out = self.clone();
         // Folds.
-        let mut seen: HashMap<[u32; 3], Vec<usize>> = HashMap::new();
+        let mut seen: FastMap<[u32; 3], Vec<usize>> = FastMap::default();
         for (i, t) in out.triangles.iter().enumerate() {
             let mut key = *t;
             key.sort_unstable();
@@ -400,14 +400,14 @@ impl Triangulation {
             return out;
         }
         // Cracks: each border edge walked the other way from its triangle.
-        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
         for t in &out.triangles {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
                 *uses.entry((a.min(b), a.max(b))).or_default() += 1;
             }
         }
-        let mut onward: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut onward: FastMap<u32, Vec<u32>> = FastMap::default();
         for t in &out.triangles {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
@@ -416,7 +416,7 @@ impl Triangulation {
                 }
             }
         }
-        let mut done: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut done: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
         let mut starts: Vec<u32> = onward.keys().copied().collect();
         starts.sort_unstable();
         for start in starts {
@@ -487,7 +487,7 @@ impl Triangulation {
     /// what lets [`Triangulation::is_closed`] answer truthfully.
     #[must_use]
     pub fn welded(&self, tol: Tolerances) -> Self {
-        use std::collections::HashMap;
+        use ogeom_core::FastMap;
 
         // Quantize to a grid a good deal finer than the tolerance, then check
         // the neighbourhood: hashing alone would separate two points that
@@ -502,7 +502,7 @@ impl Triangulation {
             )
         };
 
-        let mut buckets: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        let mut buckets: FastMap<(i64, i64, i64), Vec<u32>> = FastMap::default();
         let mut remap = vec![0_u32; self.positions.len()];
         let mut out = Self::new();
         out.deflection_met = self.deflection_met;

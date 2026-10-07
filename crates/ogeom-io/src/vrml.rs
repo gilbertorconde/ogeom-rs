@@ -11,7 +11,7 @@
 //! saves and restores the state, `Coordinate3`, `Material` and the
 //! transform nodes set it, and each `IndexedFaceSet` draws with it.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 use std::rc::Rc;
 
 use ogeom_core::{OgeomResult, ogeom_bail};
@@ -39,7 +39,7 @@ pub fn read_vrml(text: &str) -> OgeomResult<Vec<ImportedMesh>> {
     let mut parser = Parser {
         tokens,
         at: 0,
-        defined: HashMap::new(),
+        defined: FastMap::default(),
         depth: 0,
     };
     let mut roots = Vec::new();
@@ -204,7 +204,7 @@ impl Node {
 struct Parser {
     tokens: Vec<Token>,
     at: usize,
-    defined: HashMap<String, Rc<Node>>,
+    defined: FastMap<String, Rc<Node>>,
     /// How many nodes enclose the one being read.
     depth: usize,
 }
@@ -948,7 +948,7 @@ fn walk_one(node: &Rc<Node>, state: &mut State, out: &mut Vec<ImportedMesh>) -> 
             let index = node.numbers("coordIndex").unwrap_or(&[]);
             let (positions, triangles) = faces(&state.points, index, state.ccw)?;
             // Only the points the faces use.
-            let mut used: HashMap<u32, u32> = HashMap::new();
+            let mut used: FastMap<u32, u32> = FastMap::default();
             let mut kept = Vec::new();
             let triangles: Vec<[u32; 3]> = triangles
                 .iter()

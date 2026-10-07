@@ -19,7 +19,6 @@ ogeom-topo.workspace = true
 ogeom-algo.workspace = true
 ogeom-intersect.workspace = true
 ogeom-mesh.workspace = true
-hashbrown.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true
 

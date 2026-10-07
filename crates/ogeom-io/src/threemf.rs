@@ -15,10 +15,10 @@
 //! directory, where the sizes are, since a streamed entry leaves them out
 //! of its local header.
 
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Point, Vector};
 use ogeom_topo::Triangulation;
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use crate::xml;
@@ -537,7 +537,7 @@ pub fn read_3mf(bytes: &[u8], tol: Tolerances) -> OgeomResult<ThreeMfImport> {
     }
     .unwrap_or_else(|| "/3D/3dmodel.model".to_owned());
 
-    let mut parts: HashMap<String, Part> = HashMap::new();
+    let mut parts: FastMap<String, Part> = FastMap::default();
     let mut pending = vec![start.clone()];
     while let Some(path) = pending.pop() {
         let key = part_key(&path);
@@ -727,10 +727,10 @@ struct ObjectDef {
 /// One model part: its objects, property groups and build.
 struct Part {
     scale: f64,
-    objects: HashMap<u32, ObjectDef>,
+    objects: FastMap<u32, ObjectDef>,
     /// Colour groups and base materials by id; `None` for a property
     /// group this reader does not read.
-    groups: HashMap<u32, Option<Vec<[f64; 4]>>>,
+    groups: FastMap<u32, Option<Vec<[f64; 4]>>>,
     build: Vec<Reference>,
 }
 
@@ -773,8 +773,8 @@ fn parse_part(text: &str, path: &str, warnings: &mut Vec<String>) -> OgeomResult
     let mut reader = xml::Reader::new(text);
     let mut part = Part {
         scale: 1.0,
-        objects: HashMap::new(),
-        groups: HashMap::new(),
+        objects: FastMap::default(),
+        groups: FastMap::default(),
         build: Vec::new(),
     };
     // Where the reader is: the element names from the model down.
@@ -988,7 +988,7 @@ fn parse_colour(text: &str) -> OgeomResult<[f64; 4]> {
     }
 }
 
-fn object<'p>(parts: &'p HashMap<String, Part>, path: &str, id: u32) -> OgeomResult<&'p ObjectDef> {
+fn object<'p>(parts: &'p FastMap<String, Part>, path: &str, id: u32) -> OgeomResult<&'p ObjectDef> {
     match parts.get(&part_key(path)).and_then(|p| p.objects.get(&id)) {
         Some(def) => Ok(def),
         None => ogeom_bail!(Construction, "the model {path} has no object {id}"),
@@ -1018,7 +1018,7 @@ struct Flat {
 const DEPTH: usize = 64;
 
 fn flatten(
-    parts: &HashMap<String, Part>,
+    parts: &FastMap<String, Part>,
     path: &str,
     id: u32,
     placed: Affine,
@@ -1109,7 +1109,7 @@ impl Flat {
                 (p.z / weld).floor() as i64,
             )
         };
-        let mut grid: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        let mut grid: FastMap<(i64, i64, i64), Vec<u32>> = FastMap::default();
         let mut kept: Vec<Point> = Vec::with_capacity(positions.len());
         let mut remap = Vec::with_capacity(positions.len());
         for p in &positions {

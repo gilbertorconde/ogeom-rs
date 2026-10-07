@@ -1,7 +1,7 @@
 //! Points binned on a uniform grid, so the entries near a point are found
 //! among the cells around it rather than by walking every entry.
 
-use hashbrown::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_math::Point;
 
@@ -15,7 +15,7 @@ pub(crate) struct Bins {
     /// The cell's width. A width that is not finite and positive bins
     /// nothing, and every query answers `None`.
     cell: f64,
-    bins: HashMap<(i64, i64, i64), Vec<usize>>,
+    bins: FastMap<(i64, i64, i64), Vec<usize>>,
 }
 
 impl Bins {
@@ -24,7 +24,7 @@ impl Bins {
     pub(crate) fn new(reach: f64) -> Self {
         Self {
             cell: reach * 2.0,
-            bins: HashMap::new(),
+            bins: FastMap::default(),
         }
     }
 

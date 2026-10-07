@@ -101,8 +101,8 @@ pub fn canonical_simplify(
     // Edges whose free-form curves turned out to be lines or circles,
     // rebuilt once and shared: two faces meeting along one edge must keep
     // meeting along one edge.
-    let mut edge_map: std::collections::HashMap<ogeom_topo::TShapeId, Shape> =
-        std::collections::HashMap::new();
+    let mut edge_map: ogeom_core::FastMap<ogeom_topo::TShapeId, Shape> =
+        ogeom_core::FastMap::default();
 
     for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
         let Some(data) = model.node(&face).and_then(|n| match n.data() {
@@ -365,7 +365,7 @@ fn simplified_edge(
     model: &mut Model,
     edge: &Shape,
     tolerance: f64,
-    cache: &mut std::collections::HashMap<ogeom_topo::TShapeId, Shape>,
+    cache: &mut ogeom_core::FastMap<ogeom_topo::TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     if let Some(found) = cache.get(&edge.node()) {

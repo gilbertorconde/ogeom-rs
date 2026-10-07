@@ -506,8 +506,7 @@ fn plane_along_spline_lines(
             .iter()
             .any(|&x| (x - t).abs() <= span / f64::from(SAMPLES) * 0.25)
     };
-    let mut sides: std::collections::HashMap<(usize, usize), f64> =
-        std::collections::HashMap::new();
+    let mut sides: ogeom_core::FastMap<(usize, usize), f64> = ogeom_core::FastMap::default();
     let band = tol.confusion() * 10.0;
     for i in 0..=SAMPLES {
         let u = u0 + (u1 - u0) * (f64::from(i) + 0.5) / f64::from(SAMPLES + 1);

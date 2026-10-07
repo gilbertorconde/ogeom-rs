@@ -158,7 +158,7 @@ fn a_snapshot_keeps_only_the_provenance_its_shapes_reach() {
     .unwrap();
 
     // What a reader of the plate can reach, walked here from the model.
-    let mut reach = std::collections::HashSet::new();
+    let mut reach = ogeom::core::FastSet::default();
     let mut stack: Vec<_> = every_sub_shape(&model, &plate)
         .iter()
         .filter_map(|s| model.identity_of(s))

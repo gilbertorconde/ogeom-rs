@@ -12,10 +12,10 @@
 //! product or to a topology node (a whole part or one face of it), and
 //! resolution walks from the most specific to the least.
 
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, ogeom_bail};
 use ogeom_math::Transform;
 use ogeom_topo::{Location, Model, Shape, TShapeId};
-use std::collections::HashMap;
 
 /// A product in a document: a part or an assembly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -111,17 +111,17 @@ pub struct Occurrence {
 pub struct Document {
     model: Model,
     products: Vec<Product>,
-    colours: HashMap<TShapeId, Colour>,
-    names: HashMap<TShapeId, String>,
+    colours: FastMap<TShapeId, Colour>,
+    names: FastMap<TShapeId, String>,
     pmi: crate::pmi::Pmi,
-    properties: HashMap<TShapeId, Vec<crate::attributes::Property>>,
+    properties: FastMap<TShapeId, Vec<crate::attributes::Property>>,
     materials: Vec<crate::attributes::Material>,
-    material_of: HashMap<TShapeId, crate::attributes::MaterialId>,
+    material_of: FastMap<TShapeId, crate::attributes::MaterialId>,
     layers: Vec<crate::attributes::Layer>,
-    on_layer: HashMap<TShapeId, Vec<crate::attributes::LayerId>>,
-    validation: HashMap<TShapeId, crate::attributes::ValidationProperties>,
+    on_layer: FastMap<TShapeId, Vec<crate::attributes::LayerId>>,
+    validation: FastMap<TShapeId, crate::attributes::ValidationProperties>,
     textures: Vec<crate::attributes::Texture>,
-    texture_of: HashMap<TShapeId, crate::attributes::TextureId>,
+    texture_of: FastMap<TShapeId, crate::attributes::TextureId>,
     views: Vec<crate::view::View>,
     notes: Vec<crate::view::Note>,
     /// Document states an undo can return to, oldest first, and how far
@@ -146,17 +146,17 @@ pub struct Document {
 #[derive(Debug, Clone, Default)]
 struct State {
     products: Vec<Product>,
-    colours: HashMap<TShapeId, Colour>,
-    names: HashMap<TShapeId, String>,
+    colours: FastMap<TShapeId, Colour>,
+    names: FastMap<TShapeId, String>,
     pmi: crate::pmi::Pmi,
-    properties: HashMap<TShapeId, Vec<crate::attributes::Property>>,
+    properties: FastMap<TShapeId, Vec<crate::attributes::Property>>,
     materials: Vec<crate::attributes::Material>,
-    material_of: HashMap<TShapeId, crate::attributes::MaterialId>,
+    material_of: FastMap<TShapeId, crate::attributes::MaterialId>,
     layers: Vec<crate::attributes::Layer>,
-    on_layer: HashMap<TShapeId, Vec<crate::attributes::LayerId>>,
-    validation: HashMap<TShapeId, crate::attributes::ValidationProperties>,
+    on_layer: FastMap<TShapeId, Vec<crate::attributes::LayerId>>,
+    validation: FastMap<TShapeId, crate::attributes::ValidationProperties>,
     textures: Vec<crate::attributes::Texture>,
-    texture_of: HashMap<TShapeId, crate::attributes::TextureId>,
+    texture_of: FastMap<TShapeId, crate::attributes::TextureId>,
     views: Vec<crate::view::View>,
     notes: Vec<crate::view::Note>,
 }
@@ -307,7 +307,7 @@ impl Document {
     /// sub-assembly shared at every level would otherwise be walked once per
     /// path to it, and the paths double with every level.
     fn contains_product(&self, haystack: ProductId, needle: ProductId) -> bool {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = ogeom_core::FastSet::default();
         let mut stack = vec![haystack];
         while let Some(product) = stack.pop() {
             if product == needle {

@@ -292,7 +292,6 @@ name = "ogeom-algo"
 version = "0.9.11"
 dependencies = [
  "approx",
- "hashbrown 0.16.1",
  "nalgebra",
  "ogeom-core",
  "ogeom-geom",
@@ -317,7 +316,6 @@ name = "ogeom-bool"
 version = "0.9.11"
 dependencies = [
  "approx",
- "hashbrown 0.16.1",
  "indexmap",
  "ogeom-algo",
  "ogeom-core",
@@ -343,6 +341,7 @@ name = "ogeom-core"
 version = "0.9.11"
 dependencies = [
  "approx",
+ "foldhash",
  "hashbrown 0.16.1",
  "proptest",
  "robust",
@@ -509,7 +508,6 @@ name = "ogeom-topo"
 version = "0.9.11"
 dependencies = [
  "approx",
- "hashbrown 0.16.1",
  "indexmap",
  "ogeom-core",
  "ogeom-geom",

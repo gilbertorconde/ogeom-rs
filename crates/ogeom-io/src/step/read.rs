@@ -18,11 +18,12 @@
 //! three warnings is a different thing from one that succeeded, and the
 //! report is what keeps the difference visible.
 
-use super::parse::{Arg, Exchange, Instance};
+use super::parse::{Arg, Instance, Instances};
 use ogeom_algo::{
     make_edge_between, make_face_on, make_shell, make_solid, make_vertex, make_wire,
     project_on_curve,
 };
+use ogeom_core::{FastMap, FastSet};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
@@ -38,7 +39,7 @@ use ogeom_math::{
     Matrix3, Parabola, Plane, Point, Sphere, Torus, Transform, Vector, Weighted,
 };
 use ogeom_topo::{Location, Model, Shape};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 
 /// One use a bound makes of an edge: the edge as the loop walks it, the edge
 /// as it was built, the file's id for it, and the curve and range it carries.
@@ -136,26 +137,26 @@ pub struct StepImport {
 /// topology cannot represent. Faces the reader cannot complete become
 /// warnings, not errors; the report says exactly what was compromised.
 pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
-    let exchange = super::parse::parse(text)?;
+    let (_, instances) = super::parse::parse_instances(text)?;
     let mut reader = Reader {
-        exchange: &exchange,
+        instances: &instances,
         model: Model::new(),
         report: StepReport {
             scale_mm: 1.0,
             ..StepReport::default()
         },
         angle_scale: 1.0,
-        visited: Visited::for_ids(exchange.data.keys().copied()),
-        vertices: HashMap::new(),
-        edges: HashMap::new(),
-        faces: HashMap::new(),
-        callout_index: HashMap::new(),
-        pcurves: HashMap::new(),
-        pieces: HashMap::new(),
+        visited: Visited::for_instances(&instances),
+        vertices: FastMap::default(),
+        edges: FastMap::default(),
+        faces: FastMap::default(),
+        callout_index: FastMap::default(),
+        pcurves: FastMap::default(),
+        pieces: FastMap::default(),
         pole_vertices: Vec::new(),
         piece_key: u64::MAX,
         untrimmed_ids: Vec::new(),
-        tallies: HashMap::new(),
+        tallies: FastMap::default(),
         cdsr_of_nauo: None,
         properties_of_definition: None,
         sdrs_of_property: None,
@@ -167,18 +168,17 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
 
     let mut solids = Vec::new();
     let mut shells = Vec::new();
-    let mut by_item: HashMap<u64, Shape> = HashMap::new();
+    let mut by_item: FastMap<u64, Shape> = FastMap::default();
     // Solids and surface models, one walk in file order; a body is a body
     // to the progress bar whichever kind it is.
-    let mut ids: Vec<(u64, bool)> = exchange
-        .data
+    let mut ids: Vec<(u64, bool)> = instances
         .iter()
         .filter_map(|(id, inst)| {
             if inst.part("MANIFOLD_SOLID_BREP").is_some() || inst.part("BREP_WITH_VOIDS").is_some()
             {
-                Some((*id, true))
+                Some((id, true))
             } else if inst.part("SHELL_BASED_SURFACE_MODEL").is_some() {
-                Some((*id, false))
+                Some((id, false))
             } else {
                 None
             }
@@ -243,8 +243,8 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
     let document = reader.document(&by_item, &solids, &shells)?;
 
     // Everything never visited, counted by its leading keyword.
-    for (id, instance) in &exchange.data {
-        if !reader.visited.seen(*id) {
+    for (id, instance) in instances.iter() {
+        if !reader.visited.seen(id) {
             *reader
                 .report
                 .skipped
@@ -292,25 +292,25 @@ enum PreparedPcurve {
 }
 
 struct Reader<'a> {
-    exchange: &'a Exchange,
+    instances: &'a Instances,
     model: Model,
     report: StepReport,
     /// Radians per file angle unit; degrees are common.
     angle_scale: f64,
     /// Which instances the reader has looked at.
     visited: Visited,
-    vertices: HashMap<u64, Shape>,
-    edges: HashMap<u64, BuiltEdge>,
-    faces: HashMap<u64, Shape>,
+    vertices: FastMap<u64, Shape>,
+    edges: FastMap<u64, BuiltEdge>,
+    faces: FastMap<u64, Shape>,
     /// STEP id → index into the callouts just built, for the views pass.
-    callout_index: HashMap<u64, usize>,
+    callout_index: FastMap<u64, usize>,
     /// `(face, edge)` → the pcurve already derived for it, from the parallel
     /// pass at the head of each solid.
-    pcurves: HashMap<(u64, u64), PreparedPcurve>,
+    pcurves: FastMap<(u64, u64), PreparedPcurve>,
     /// Edge → the pieces it was cut into where its curve runs through a
     /// pole of a face it bounds, each under a key of its own that stands in
     /// for the edge's id wherever a face's bound names it.
-    pieces: HashMap<u64, Vec<(u64, BuiltEdge)>>,
+    pieces: FastMap<u64, Vec<(u64, BuiltEdge)>>,
     /// The vertices made at poles, shared by every piece that meets one.
     pole_vertices: Vec<Shape>,
     /// The last key handed to a piece; keys count down from the top of the
@@ -320,18 +320,18 @@ struct Reader<'a> {
     /// is far enough along for the shapes to exist.
     untrimmed_ids: Vec<u64>,
     /// kind → (count, worst, exemplar), folded into the report's summary.
-    tallies: HashMap<&'static str, (usize, f64, u64)>,
+    tallies: FastMap<&'static str, (usize, f64, u64)>,
     /// Usage → its `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION`, built once,
     /// so an assembly edge is a lookup rather than a scan of the whole
     /// exchange, which is O(usages × entities).
-    cdsr_of_nauo: Option<HashMap<u64, u64>>,
+    cdsr_of_nauo: Option<FastMap<u64, u64>>,
     /// Definition → its `PROPERTY_DEFINITION`s, and property → its
     /// `SHAPE_DEFINITION_REPRESENTATION`s, built together once, so a datum
     /// target's lookup is not a scan of the whole exchange per property
     /// *per target*. Each list ascends by id, so the first entry that
     /// answers is the lowest id, the one a scan in file order reaches first.
-    properties_of_definition: Option<HashMap<u64, Vec<u64>>>,
-    sdrs_of_property: Option<HashMap<u64, Vec<u64>>>,
+    properties_of_definition: Option<FastMap<u64, Vec<u64>>>,
+    sdrs_of_property: Option<FastMap<u64, Vec<u64>>>,
     /// How many geometry or shell builders are open on the stack. Entities
     /// refer to entities of their own kind (an offset surface to its basis,
     /// an oriented shell to its shell), so a file that refers in a circle
@@ -365,8 +365,8 @@ impl<'a> Reader<'a> {
     /// reader, so its arguments can be read while the reader builds.
     fn instance(&mut self, id: u64) -> OgeomResult<&'a Instance> {
         self.visited.mark(id);
-        let exchange = self.exchange;
-        exchange.data.get(&id).ok_or_else(|| {
+        let instances = self.instances;
+        instances.get(id).ok_or_else(|| {
             ogeom_core::ogeom_err!(
                 Construction,
                 "the file references #{id}, which does not exist"
@@ -418,8 +418,7 @@ impl<'a> Reader<'a> {
         // goes first; the rest follow in entity order, so the answer never
         // depends on how a map happens to iterate.
         let mut cited: Vec<u64> = self
-            .exchange
-            .data
+            .instances
             .values()
             .filter(|inst| {
                 inst.parts
@@ -438,18 +437,17 @@ impl<'a> Reader<'a> {
         cited.dedup();
 
         let mut contexts: Vec<u64> = self
-            .exchange
-            .data
+            .instances
             .iter()
             .filter(|(_, inst)| inst.part("GLOBAL_UNIT_ASSIGNED_CONTEXT").is_some())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         contexts.sort_unstable();
         contexts.sort_by_cached_key(|id| !cited.contains(id));
 
         let mut out = Vec::new();
         for id in contexts {
-            if let Some(instance) = self.exchange.data.get(&id)
+            if let Some(instance) = self.instances.get(id)
                 && let Some(args) = instance.part("GLOBAL_UNIT_ASSIGNED_CONTEXT")
             {
                 for arg in args.iter().filter_map(Arg::list).flatten() {
@@ -466,7 +464,7 @@ impl<'a> Reader<'a> {
     fn unit_scale(&mut self) -> f64 {
         let assigned = self.assigned_units();
         for id in assigned {
-            let Some(instance) = self.exchange.data.get(&id) else {
+            let Some(instance) = self.instances.get(id) else {
                 continue;
             };
             let instance = instance.clone();
@@ -493,7 +491,7 @@ impl<'a> Reader<'a> {
             }
             if let Some(args) = instance.part("CONVERSION_BASED_UNIT")
                 && let Some(measure) = args.get(1).and_then(Arg::reference)
-                && let Some(inner) = self.exchange.data.get(&measure)
+                && let Some(inner) = self.instances.get(measure)
             {
                 let factor = inner
                     .parts
@@ -510,7 +508,7 @@ impl<'a> Reader<'a> {
                     .iter()
                     .flat_map(|(_, a)| a.iter())
                     .find_map(Arg::reference)
-                    .and_then(|b| self.exchange.data.get(&b))
+                    .and_then(|b| self.instances.get(b))
                     .and_then(|u| u.part("SI_UNIT"))
                     .map_or(1000.0, |args| match args.first() {
                         Some(Arg::Enum(p)) if p == "MILLI" => 1.0,
@@ -533,7 +531,7 @@ impl<'a> Reader<'a> {
     fn angle_unit_scale(&mut self) -> f64 {
         let assigned = self.assigned_units();
         for id in assigned {
-            let Some(instance) = self.exchange.data.get(&id) else {
+            let Some(instance) = self.instances.get(id) else {
                 continue;
             };
             let instance = instance.clone();
@@ -545,7 +543,7 @@ impl<'a> Reader<'a> {
             }
             if let Some(args) = instance.part("CONVERSION_BASED_UNIT")
                 && let Some(measure) = args.get(1).and_then(Arg::reference)
-                && let Some(inner) = self.exchange.data.get(&measure)
+                && let Some(inner) = self.instances.get(measure)
             {
                 let factor = inner
                     .parts
@@ -1995,15 +1993,14 @@ impl<'a> Reader<'a> {
         // Outer bound first, so the face's first wire is its outer ring.
         let mut ordered = bounds.clone();
         ordered.sort_by_key(|b| {
-            self.exchange
-                .data
-                .get(b)
+            self.instances
+                .get(*b)
                 .map_or(1, |i| i32::from(i.part("FACE_OUTER_BOUND").is_none()))
         });
 
         // Which edges this face uses twice: those are seams, and get both
         // sides' pcurves.
-        let mut edge_uses: HashMap<u64, usize> = HashMap::new();
+        let mut edge_uses: FastMap<u64, usize> = FastMap::default();
         for &bound in &ordered {
             let bargs = self.bound_args(bound)?;
             if self.instance(bargs.0)?.part("VERTEX_LOOP").is_some() {
@@ -2023,7 +2020,7 @@ impl<'a> Reader<'a> {
         }
 
         let mut wires = Vec::new();
-        let mut annotated: HashSet<u64> = HashSet::new();
+        let mut annotated: FastSet<u64> = FastSet::default();
         for &bound in &ordered {
             let (loop_id, bound_forward) = self.bound_args(bound)?;
             if let Some(vertex_loop) = {
@@ -2391,12 +2388,13 @@ impl<'a> Reader<'a> {
         uses: &[BoundUse],
         surface: &SurfaceGeometry,
         surface_id: ogeom_topo::SurfaceId,
-        edge_uses: &HashMap<u64, usize>,
-        annotated: &mut HashSet<u64>,
+        edge_uses: &FastMap<u64, usize>,
+        annotated: &mut FastSet<u64>,
     ) -> OgeomResult<()> {
         use ogeom_geom::Curve2d as _;
-        let mut images: HashMap<u64, PlanarCurve> = HashMap::new();
-        let mut sides: HashMap<u64, (Option<PlanarCurve>, Option<PlanarCurve>)> = HashMap::new();
+        let mut images: FastMap<u64, PlanarCurve> = FastMap::default();
+        let mut sides: FastMap<u64, (Option<PlanarCurve>, Option<PlanarCurve>)> =
+            FastMap::default();
         let mut order: Vec<u64> = Vec::new();
         let mut previous: Option<ogeom_math::Point2> = None;
         for (placed, shape, edge_id, curve, range) in uses {
@@ -2543,7 +2541,7 @@ impl<'a> Reader<'a> {
     /// standing for a piece of an edge cut at a pole names no edge in the
     /// file, and the file's pcurves run over the whole edge in any case.
     fn stated_pcurves(&mut self, face_id: u64, edge_id: u64) -> Vec<PlanarCurve> {
-        if self.pieces.contains_key(&edge_id) || !self.exchange.data.contains_key(&edge_id) {
+        if self.pieces.contains_key(&edge_id) || !self.instances.contains(edge_id) {
             return Vec::new();
         }
         let Some(surface_id) = self
@@ -2687,7 +2685,7 @@ impl<'a> Reader<'a> {
         }
         let mut surfaces: Vec<SurfaceGeometry> = Vec::new();
         let mut jobs: Vec<Job> = Vec::new();
-        let mut seen: HashSet<(u64, u64)> = HashSet::new();
+        let mut seen: FastSet<(u64, u64)> = FastSet::default();
         for &fid in face_ids {
             let Ok(args) = self.face_args(fid) else {
                 continue;
@@ -2941,8 +2939,8 @@ impl<'a> Reader<'a> {
     /// A shell whose walks pick out no such set is left as read.
     fn turn_backward_loops(&mut self, shell_id: u64, read: &mut [(u64, Shape)]) -> OgeomResult<()> {
         // Each edge's uses: the face, and whether it walks the edge forward.
-        let mut uses: HashMap<(ogeom_topo::TShapeId, Location), Vec<(usize, bool)>> =
-            HashMap::new();
+        let mut uses: FastMap<(ogeom_topo::TShapeId, Location), Vec<(usize, bool)>> =
+            FastMap::default();
         for (i, (_, face)) in read.iter().enumerate() {
             for wire in self.model.children_of(face)? {
                 for edge in self.model.children_of(&wire)? {
@@ -3061,7 +3059,7 @@ impl<'a> Reader<'a> {
     /// mangled product tree should not take it down.
     fn document(
         &mut self,
-        by_item: &HashMap<u64, Shape>,
+        by_item: &FastMap<u64, Shape>,
         solids: &[Shape],
         shells: &[Shape],
     ) -> OgeomResult<ogeom_doc::Document> {
@@ -3094,15 +3092,14 @@ impl<'a> Reader<'a> {
     }
 
     /// The file's product graph, or `None` when it has none worth the name.
-    fn product_structure(&mut self, by_item: &HashMap<u64, Shape>) -> Option<Vec<PdEntry>> {
+    fn product_structure(&mut self, by_item: &FastMap<u64, Shape>) -> Option<Vec<PdEntry>> {
         // PRODUCT_DEFINITION -> name, via formation and product.
         let mut pds: Vec<u64> = self
-            .exchange
-            .data
+            .instances
             .iter()
             .filter(|(_, inst)| inst.part("PRODUCT_DEFINITION").is_some())
             .filter(|(_, inst)| inst.part("PRODUCT_DEFINITION_RELATIONSHIP").is_none())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         pds.sort_unstable();
         if pds.is_empty() {
@@ -3111,14 +3108,13 @@ impl<'a> Reader<'a> {
 
         // SHAPE_DEFINITION_REPRESENTATION: definition (a PRODUCT_DEFINITION_SHAPE
         // over a PD or a usage) -> shape representation.
-        let mut sr_of_pd: HashMap<u64, u64> = HashMap::new();
+        let mut sr_of_pd: FastMap<u64, u64> = FastMap::default();
         let sdrs: Vec<(u64, u64)> = self
-            .exchange
-            .data
+            .instances
             .iter()
             .filter(|(_, inst)| inst.part("SHAPE_DEFINITION_REPRESENTATION").is_some())
             .filter_map(|(id, _)| {
-                let args = self.args(*id, "SHAPE_DEFINITION_REPRESENTATION").ok()?;
+                let args = self.args(id, "SHAPE_DEFINITION_REPRESENTATION").ok()?;
                 Some((args.first()?.reference()?, args.get(1)?.reference()?))
             })
             .collect();
@@ -3134,10 +3130,9 @@ impl<'a> Reader<'a> {
         // Only the plain ones are followed; the transformation-carrying kind
         // is an assembly edge, and following it would leak one product's
         // geometry into another.
-        let mut linked: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut linked: FastMap<u64, Vec<u64>> = FastMap::default();
         let mut srrs: Vec<u64> = self
-            .exchange
-            .data
+            .instances
             .iter()
             .filter(|(_, inst)| {
                 inst.part("SHAPE_REPRESENTATION_RELATIONSHIP").is_some()
@@ -3145,7 +3140,7 @@ impl<'a> Reader<'a> {
                         .part("REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION")
                         .is_none()
             })
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         srrs.sort_unstable();
         for srr in srrs {
@@ -3194,14 +3189,13 @@ impl<'a> Reader<'a> {
         // NEXT_ASSEMBLY_USAGE_OCCURRENCE: parent -> child, with the placement
         // recovered from the CONTEXT_DEPENDENT_SHAPE_REPRESENTATION over it.
         let mut nauos: Vec<u64> = self
-            .exchange
-            .data
+            .instances
             .iter()
             .filter(|(_, inst)| inst.part("NEXT_ASSEMBLY_USAGE_OCCURRENCE").is_some())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         nauos.sort_unstable();
-        let entry_of_pd: HashMap<u64, usize> =
+        let entry_of_pd: FastMap<u64, usize> =
             entries.iter().enumerate().map(|(i, e)| (e.pd, i)).collect();
         for nauo in nauos {
             let Ok(args) = self.args(nauo, "NEXT_ASSEMBLY_USAGE_OCCURRENCE") else {
@@ -3319,17 +3313,16 @@ impl<'a> Reader<'a> {
             // describes, in ascending id order, so a usage described twice
             // keeps the lowest-id one.
             let mut cdsrs: Vec<u64> = self
-                .exchange
-                .data
+                .instances
                 .iter()
                 .filter(|(_, inst)| {
                     inst.part("CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
                         .is_some()
                 })
-                .map(|(id, _)| *id)
+                .map(|(id, _)| id)
                 .collect();
             cdsrs.sort_unstable();
-            let mut index: HashMap<u64, u64> = HashMap::new();
+            let mut index: FastMap<u64, u64> = FastMap::default();
             for id in cdsrs {
                 let Some(owner) = self
                     .args(id, "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
@@ -3386,7 +3379,7 @@ impl<'a> Reader<'a> {
     /// Products into the document: assemblies for the parents, parts for the
     /// shaped, instances for the usage edges.
     fn build_products(&mut self, document: &mut ogeom_doc::Document, entries: Vec<PdEntry>) {
-        let mut ids: HashMap<u64, ogeom_doc::ProductId> = HashMap::new();
+        let mut ids: FastMap<u64, ogeom_doc::ProductId> = FastMap::default();
         for entry in &entries {
             let shape = match entry.shapes.len() {
                 0 => None,
@@ -3434,15 +3427,14 @@ impl<'a> Reader<'a> {
     }
 
     /// Colours from styled items, keyed to the shapes they style.
-    fn colours(&mut self, by_item: &HashMap<u64, Shape>) -> Vec<(Shape, ogeom_doc::Colour)> {
+    fn colours(&mut self, by_item: &FastMap<u64, Shape>) -> Vec<(Shape, ogeom_doc::Colour)> {
         let mut styled: Vec<u64> = self
-            .exchange
-            .data
+            .instances
             .iter()
             .filter(|(_, inst)| {
                 inst.part("STYLED_ITEM").is_some() || inst.part("OVER_RIDING_STYLED_ITEM").is_some()
             })
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         // Sorted so an item styled twice resolves the same way every run;
         // overriding styles carry higher instance numbers in practice, and a
@@ -3525,12 +3517,12 @@ impl<'a> Reader<'a> {
         // Which STEP instance each annotation came from, so the presentation
         // pass can name the annotation a callout draws exactly rather than by
         // matching a string two annotations may share.
-        let mut annotation_ids: HashMap<u64, ogeom_doc::Annotated> = HashMap::new();
+        let mut annotation_ids: FastMap<u64, ogeom_doc::Annotated> = FastMap::default();
 
         // Which topology each shape aspect describes: directly through
         // GEOMETRIC_ITEM_SPECIFIC_USAGE, and one relationship step outward,
         // because composite aspects hold their pieces through relationships.
-        let mut aspect_items: HashMap<u64, Vec<ogeom_topo::TShapeId>> = HashMap::new();
+        let mut aspect_items: FastMap<u64, Vec<ogeom_topo::TShapeId>> = FastMap::default();
         let mut gisus = self.ids_with("GEOMETRIC_ITEM_SPECIFIC_USAGE");
         gisus.sort_unstable();
         for id in gisus {
@@ -3551,7 +3543,7 @@ impl<'a> Reader<'a> {
                 aspect_items.entry(aspect).or_default().extend(nodes);
             }
         }
-        let mut adjacency: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut adjacency: FastMap<u64, Vec<u64>> = FastMap::default();
         for id in self.ids_with("SHAPE_ASPECT_RELATIONSHIP") {
             let Ok(args) = self.args(id, "SHAPE_ASPECT_RELATIONSHIP") else {
                 continue;
@@ -3590,7 +3582,7 @@ impl<'a> Reader<'a> {
         // Dimensions: characteristic -> representation, values from the
         // measure items, bounds from any plus/minus tolerance over the same
         // characteristic.
-        let mut plus_minus: HashMap<u64, (Option<f64>, Option<f64>)> = HashMap::new();
+        let mut plus_minus: FastMap<u64, (Option<f64>, Option<f64>)> = FastMap::default();
         for id in self.ids_with("PLUS_MINUS_TOLERANCE") {
             let Ok(args) = self.args(id, "PLUS_MINUS_TOLERANCE") else {
                 continue;
@@ -3673,11 +3665,10 @@ impl<'a> Reader<'a> {
                 )
         };
         let mut gts: Vec<u64> = self
-            .exchange
-            .data
+            .instances
             .iter()
             .filter(|(_, inst)| inst.parts().any(|(k, _)| is_subtype(k)))
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         gts.sort_unstable();
         for id in gts {
@@ -3957,10 +3948,10 @@ impl<'a> Reader<'a> {
     /// which semantic annotation each one draws.
     fn callouts(
         &mut self,
-        annotation_ids: &HashMap<u64, ogeom_doc::Annotated>,
-    ) -> (Vec<ogeom_doc::Callout>, HashMap<u64, usize>) {
+        annotation_ids: &FastMap<u64, ogeom_doc::Annotated>,
+    ) -> (Vec<ogeom_doc::Callout>, FastMap<u64, usize>) {
         // Which callout each annotation plane holds, and the plane's frame.
-        let mut plane_of: HashMap<u64, Frame> = HashMap::new();
+        let mut plane_of: FastMap<u64, Frame> = FastMap::default();
         for id in self.ids_with("ANNOTATION_PLANE") {
             let Ok(args) = self.args(id, "ANNOTATION_PLANE") else {
                 continue;
@@ -3988,7 +3979,7 @@ impl<'a> Reader<'a> {
         // aspect the annotation is *about*, once with the annotation itself),
         // so every association is kept and the first that resolves to a
         // semantic annotation is the answer.
-        let mut draws: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut draws: FastMap<u64, Vec<u64>> = FastMap::default();
         let mut associations = self.ids_with("DRAUGHTING_MODEL_ITEM_ASSOCIATION");
         associations.sort_unstable();
         for id in associations {
@@ -4004,7 +3995,7 @@ impl<'a> Reader<'a> {
         }
 
         let mut out = Vec::new();
-        let mut index_of: HashMap<u64, usize> = HashMap::new();
+        let mut index_of: FastMap<u64, usize> = FastMap::default();
         let mut callouts = self.ids_with("DRAUGHTING_CALLOUT");
         callouts.sort_unstable();
         for id in callouts {
@@ -4152,11 +4143,10 @@ impl<'a> Reader<'a> {
 
     /// Every instance id carrying a part with this keyword.
     fn ids_with(&self, keyword: &str) -> Vec<u64> {
-        self.exchange
-            .data
+        self.instances
             .iter()
             .filter(|(_, inst)| inst.part(keyword).is_some())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect()
     }
 
@@ -4169,22 +4159,22 @@ impl<'a> Reader<'a> {
         if self.properties_of_definition.is_some() {
             return;
         }
-        let mut properties: HashMap<u64, Vec<u64>> = HashMap::new();
-        let mut sdrs: HashMap<u64, Vec<u64>> = HashMap::new();
-        let exchange = self.exchange;
-        for (id, instance) in &exchange.data {
+        let mut properties: FastMap<u64, Vec<u64>> = FastMap::default();
+        let mut sdrs: FastMap<u64, Vec<u64>> = FastMap::default();
+        let instances = self.instances;
+        for (id, instance) in instances.iter() {
             if let Some(args) = instance.part("PROPERTY_DEFINITION") {
                 // Read for the index is read: the skipped table should not
                 // claim the reader never looked.
-                self.visited.mark(*id);
+                self.visited.mark(id);
                 if let Some(definition) = args.get(2).and_then(Arg::reference) {
-                    properties.entry(definition).or_default().push(*id);
+                    properties.entry(definition).or_default().push(id);
                 }
             }
             if let Some(args) = instance.part("SHAPE_DEFINITION_REPRESENTATION") {
-                self.visited.mark(*id);
+                self.visited.mark(id);
                 if let Some(property) = args.first().and_then(Arg::reference) {
-                    sdrs.entry(property).or_default().push(*id);
+                    sdrs.entry(property).or_default().push(id);
                 }
             }
         }
@@ -4892,24 +4882,21 @@ fn expanded_knots(mults: &[Arg], knots: &[Arg]) -> OgeomResult<Vec<f64>> {
 
 /// Which instances the reader has looked at.
 ///
-/// One slot per possible id where the ids are dense, as exporters write
-/// them: the reader touches instances millions of times, and a direct index
-/// beats hashing every touch. A file whose ids are sparse (one instance
-/// numbered in the billions) gets a set instead of a table that size.
+/// One slot per possible id where the instance table has one, as it does
+/// for the dense ids exporters write: the reader touches instances millions
+/// of times, and a direct index beats hashing every touch. A file whose ids
+/// are sparse (one instance numbered in the billions) gets a set instead of
+/// a table that size.
 enum Visited {
     Dense(Vec<bool>),
-    Sparse(std::collections::HashSet<u64>),
+    Sparse(ogeom_core::FastSet<u64>),
 }
 
 impl Visited {
-    fn for_ids(ids: impl Iterator<Item = u64> + Clone) -> Self {
-        let count = ids.clone().count();
-        let top = ids.max().unwrap_or(0);
-        match usize::try_from(top) {
-            Ok(top) if top <= count.saturating_mul(4).saturating_add(1024) => {
-                Self::Dense(vec![false; top + 1])
-            }
-            _ => Self::Sparse(std::collections::HashSet::new()),
+    fn for_instances(instances: &Instances) -> Self {
+        match instances {
+            Instances::Dense(slots) => Self::Dense(vec![false; slots.len()]),
+            Instances::Sparse(_) => Self::Sparse(ogeom_core::FastSet::default()),
         }
     }
 

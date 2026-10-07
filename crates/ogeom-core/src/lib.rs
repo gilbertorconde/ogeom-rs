@@ -24,6 +24,7 @@
 //! crate's documentation refer to it.
 
 pub mod arena;
+pub mod collections;
 pub mod error;
 pub mod id;
 pub mod parallel;
@@ -32,6 +33,7 @@ pub mod progress;
 pub mod tolerance;
 
 pub use arena::{Arena, Key, UNSCOPED};
+pub use collections::{FastHasher, FastMap, FastSet};
 pub use error::{Cause, OgeomError, OgeomResult};
 pub use id::{EntityId, OpId, Provenance, ProvenanceTable, Role, SourceId};
 pub use predicates::{Exact, Fast, P2, P3, Predicates, Sign};

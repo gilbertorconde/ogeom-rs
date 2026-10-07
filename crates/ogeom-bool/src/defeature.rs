@@ -56,6 +56,7 @@
 use crate::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_algo::{Built, History, make_edge_between, make_solid, make_vertex, sew};
 use ogeom_core::ogeom_err;
+use ogeom_core::{FastMap, FastSet};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Transformable as _;
 use ogeom_geom::{Curve, SurfaceGeometry};
@@ -65,7 +66,6 @@ use ogeom_intersect::{
 };
 use ogeom_math::Point;
 use ogeom_topo::{Filter, Model, NodeData, Shape, ShapeType, TShapeId, explore};
-use std::collections::{HashMap, HashSet};
 
 /// Remove `faces` from `solid` and close the openings from the neighbours'
 /// own geometry.
@@ -123,7 +123,7 @@ fn remove_faces_own(
         return Ok(current);
     }
     let all_faces = explore(model, solid, Filter::OfType(ShapeType::Face))?;
-    let removed: HashSet<TShapeId> = faces.iter().map(Shape::node).collect();
+    let removed: FastSet<TShapeId> = faces.iter().map(Shape::node).collect();
     for face in faces {
         if !all_faces.iter().any(|f| f.node() == face.node()) {
             ogeom_bail!(
@@ -146,7 +146,7 @@ fn remove_faces_own(
 
     // Which edges the removed set shares with the world: an edge is a ring
     // edge when a removed face and a surviving face both use it.
-    let mut users: HashMap<TShapeId, Vec<Shape>> = HashMap::new();
+    let mut users: FastMap<TShapeId, Vec<Shape>> = FastMap::default();
     for face in &all_faces {
         for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
             users.entry(edge.node()).or_default().push(face.clone());
@@ -397,8 +397,8 @@ fn close_wound(
     model: &mut Model,
     removed_faces: &[Shape],
     interrupted: &[Shape],
-    removed: &HashSet<TShapeId>,
-    users: &HashMap<TShapeId, Vec<Shape>>,
+    removed: &FastSet<TShapeId>,
+    users: &FastMap<TShapeId, Vec<Shape>>,
     is_ring: &dyn Fn(&Shape) -> bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(Shape, Shape)>> {
@@ -413,7 +413,7 @@ fn close_wound(
         }
         Ok(out)
     };
-    let interrupted_by_node: HashMap<TShapeId, Shape> =
+    let interrupted_by_node: FastMap<TShapeId, Shape> =
         interrupted.iter().map(|f| (f.node(), f.clone())).collect();
 
     // Each removed face's sides: the two interrupted survivors it shares
@@ -423,10 +423,10 @@ fn close_wound(
     // removed faces) joins the crease of a removed neighbour it shares an
     // edge with, once that neighbour has one.
     let mut creases: Vec<(TShapeId, TShapeId, [Shape; 2], Vec<Point>)> = Vec::new();
-    let mut crease_of: HashMap<TShapeId, usize> = HashMap::new();
+    let mut crease_of: FastMap<TShapeId, usize> = FastMap::default();
     let mut leftovers: Vec<Shape> = Vec::new();
     for face in removed_faces {
-        let mut shared: HashMap<TShapeId, f64> = HashMap::new();
+        let mut shared: FastMap<TShapeId, f64> = FastMap::default();
         for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
             if !is_ring(&edge) {
                 continue;
@@ -645,7 +645,7 @@ fn close_wound(
                 let period = hi - lo;
                 let mut stops: Vec<f64> = Vec::new();
                 for side in &crease.sides {
-                    let mut rim_vertices: HashSet<TShapeId> = HashSet::new();
+                    let mut rim_vertices: FastSet<TShapeId> = FastSet::default();
                     for edge in explore(model, side, Filter::OfType(ShapeType::Edge))? {
                         if is_ring(&edge) {
                             for v in model.ordered_children_of(&edge)? {
@@ -801,7 +801,7 @@ fn close_wound(
     }
 
     let mut out = Vec::new();
-    let mut extended: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut extended: FastMap<TShapeId, Shape> = FastMap::default();
     for face in interrupted {
         let rims: Vec<Shape> = explore(model, face, Filter::OfType(ShapeType::Edge))?
             .into_iter()
@@ -822,7 +822,7 @@ fn close_wound(
 /// The connected components of the removal set: faces joined by shared
 /// edges belong to one feature and close as one wound.
 fn feature_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape>>> {
-    let mut edge_sets: Vec<HashSet<TShapeId>> = Vec::with_capacity(faces.len());
+    let mut edge_sets: Vec<FastSet<TShapeId>> = Vec::with_capacity(faces.len());
     for face in faces {
         edge_sets.push(
             explore(model, face, Filter::OfType(ShapeType::Edge))?
@@ -848,7 +848,7 @@ fn feature_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape>>
             }
         }
     }
-    let mut groups: HashMap<usize, Vec<Shape>> = HashMap::new();
+    let mut groups: FastMap<usize, Vec<Shape>> = FastMap::default();
     for (i, face) in faces.iter().enumerate() {
         groups
             .entry(root(&mut group_of, i))
@@ -870,7 +870,7 @@ fn rebuild_interrupted(
     rims: &[Shape],
     borders: &[Shape],
     corners: &[Shape],
-    extended: &mut HashMap<TShapeId, Shape>,
+    extended: &mut FastMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let placement = face.transform(model.datums())?;
@@ -884,7 +884,7 @@ fn rebuild_interrupted(
         );
     };
     let surface = surface.transformed(&placement, tol)?;
-    let rim_nodes: HashSet<TShapeId> = rims.iter().map(Shape::node).collect();
+    let rim_nodes: FastSet<TShapeId> = rims.iter().map(Shape::node).collect();
 
     // The wires as the face stores them: the rebuilt face takes the old
     // one's sense on top of them.
@@ -898,7 +898,7 @@ fn rebuild_interrupted(
         }
         // Which vertices the dropped rim owned: an edge that shared one now
         // dangles there and must reach a corner instead.
-        let mut rim_vertices: HashSet<TShapeId> = HashSet::new();
+        let mut rim_vertices: FastSet<TShapeId> = FastSet::default();
         for edge in &edges {
             if rim_nodes.contains(&edge.node()) {
                 for v in model.ordered_children_of(edge)? {
@@ -1286,7 +1286,7 @@ fn extend_to_corner(
     model: &mut Model,
     edge: &Shape,
     corner: &Shape,
-    extended: &mut HashMap<TShapeId, Shape>,
+    extended: &mut FastMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     if let Some(found) = extended.get(&edge.node()) {

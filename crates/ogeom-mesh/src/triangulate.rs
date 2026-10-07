@@ -104,7 +104,7 @@ pub fn triangulate_face_kept(
 /// whose content cannot be read is drawn and not kept.
 #[derive(Debug, Default)]
 pub struct FaceMeshCache {
-    held: std::sync::Mutex<std::collections::HashMap<Vec<u8>, (Triangulation, Verdict)>>,
+    held: std::sync::Mutex<ogeom_core::FastMap<Vec<u8>, (Triangulation, Verdict)>>,
 }
 
 impl FaceMeshCache {
@@ -398,8 +398,7 @@ fn triangulate_reporting_from(
 
     // Boundary vertices take their positions from their edges' own curves
     // (the shared authority), keyed by their exact parameter-space bits.
-    let mut anchored: std::collections::HashMap<(u64, u64), Point> =
-        std::collections::HashMap::new();
+    let mut anchored: ogeom_core::FastMap<(u64, u64), Point> = ogeom_core::FastMap::default();
     for (ring, ring_anchor) in uv.iter().zip(&anchors) {
         for (p, a) in ring.iter().zip(ring_anchor) {
             if let Some(point) = a {
@@ -717,7 +716,7 @@ pub(crate) fn face_meshes(
 struct FirstPass {
     finer: EdgeChords,
     computed: Vec<OgeomResult<Triangulation>>,
-    changed: std::collections::HashSet<u32>,
+    changed: ogeom_core::FastSet<u32>,
 }
 
 /// Every face drawn once at the caller's deflection, each saying whether
@@ -796,7 +795,7 @@ fn first_pass(
     // must still draw the edges the walk held finer at that chord, or the
     // two sides of one of them disagree. Only an edge whose chord
     // *changed* sends its faces back.
-    let mut changed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut changed: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
     for &index in &crossed {
         let face = &faces[index];
         let Some(node) = read_model.node(face) else {
@@ -960,15 +959,15 @@ pub fn triangulate_face_with(
 /// normals. Conflicts are left standing: this repairs orientation, not
 /// topology.
 fn orient_pieces(mesh: &mut Triangulation, pieces: &[(usize, usize)]) {
-    use std::collections::HashMap;
+    use ogeom_core::FastMap;
     type Key = (u64, u64, u64);
     let key = |p: &Point| -> Key { (p.x.to_bits(), p.y.to_bits(), p.z.to_bits()) };
 
     // Directed boundary edges per piece, keyed by position: only each
     // piece's *border* edges (used once within the piece) face other pieces.
-    let mut owners: HashMap<(Key, Key), Vec<(usize, bool)>> = HashMap::new();
+    let mut owners: FastMap<(Key, Key), Vec<(usize, bool)>> = FastMap::default();
     for (i, &(t0, t1)) in pieces.iter().enumerate() {
-        let mut inside: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut inside: FastMap<(u32, u32), u32> = FastMap::default();
         for t in &mesh.triangles[t0..t1] {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
@@ -1143,6 +1142,10 @@ pub fn face_boundary(
 ///
 /// Keyed by the edge's node, so both faces bounding it look the same value
 /// up and sample it identically. Absent means the caller's own chord.
+#[allow(
+    clippy::disallowed_types,
+    reason = "public type; a std map keeps the API"
+)]
 pub type EdgeChords = std::collections::HashMap<u32, f64>;
 
 /// How many times a face's boundary may be redrawn finer before its
@@ -2142,8 +2145,8 @@ fn boundary_ring(
     // folding), and whether its two sides differ in u or in v. A seam bounds
     // its face twice, and the two traversals must bracket the ring exactly
     // one period apart; the walk checks the second against this record.
-    let mut seam_walked: std::collections::HashMap<ogeom_topo::TShapeId, Point2> =
-        std::collections::HashMap::new();
+    let mut seam_walked: ogeom_core::FastMap<ogeom_topo::TShapeId, Point2> =
+        ogeom_core::FastMap::default();
 
     for edge in children {
         let Some(node) = model.node(&edge) else {
@@ -2973,8 +2976,7 @@ fn triangulate_region_inner(
                 .collect()
         })
         .collect();
-    let mut exact: std::collections::HashMap<(u64, u64), (f64, f64)> =
-        std::collections::HashMap::new();
+    let mut exact: ogeom_core::FastMap<(u64, u64), (f64, f64)> = ogeom_core::FastMap::default();
 
     // The boundary edges are constraints, so the triangulation respects the
     // trimming rather than spanning across a hole.
@@ -3090,8 +3092,8 @@ fn triangulate_region_inner(
         // Whether a chart edge sags past the repair's threshold depends on
         // its two ends alone: measured once, however many triangles share
         // it and however many rounds it survives.
-        let mut sags: std::collections::HashMap<([u64; 2], [u64; 2]), bool> =
-            std::collections::HashMap::new();
+        let mut sags: ogeom_core::FastMap<([u64; 2], [u64; 2]), bool> =
+            ogeom_core::FastMap::default();
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
             let before = cdt.num_vertices();
@@ -3186,7 +3188,7 @@ fn triangulate_region_inner(
         );
     }
     let mut parameters = Vec::new();
-    let mut index_of = std::collections::HashMap::new();
+    let mut index_of = ogeom_core::FastMap::default();
     for (i, vertex) in cdt.vertices().enumerate() {
         let p = vertex.position();
         index_of.insert(vertex.fix(), i);
@@ -3480,9 +3482,9 @@ fn segments_cross(a: Point2, b: Point2, c: Point2, d: Point2) -> bool {
 /// face both ways with different answers: the constraints do not enclose
 /// consistently, which is a crossing by another name.
 fn inside_by_parity(cdt: &ConstrainedDelaunayTriangulation<SpadePoint<f64>>) -> Option<usize> {
-    use std::collections::HashMap;
-    let mut parity: HashMap<spade::handles::FixedFaceHandle<spade::handles::InnerTag>, bool> =
-        HashMap::with_capacity(cdt.num_inner_faces());
+    use ogeom_core::FastMap;
+    let mut parity: FastMap<spade::handles::FixedFaceHandle<spade::handles::InnerTag>, bool> =
+        FastMap::with_capacity_and_hasher(cdt.num_inner_faces(), Default::default());
     let mut queue = Vec::new();
     for hull in cdt.convex_hull() {
         // The hull edge's far side is the outer face; its near side is a
@@ -4541,7 +4543,7 @@ mod tests {
             .shape;
         ogeom_algo::build::trimmed_where_bare(&mut model, &face, T).unwrap();
         let mesh = triangulate_face(&model, &face, Deflection::default(), T).unwrap();
-        let mut edges = std::collections::HashSet::new();
+        let mut edges = ogeom_core::FastSet::default();
         let mut area = 0.0;
         for t in &mesh.triangles {
             for i in 0..3 {

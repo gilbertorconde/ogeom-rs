@@ -8,7 +8,6 @@
 //! and which it deliberately walked past.
 
 use ogeom_core::{OgeomResult, ogeom_bail};
-use std::collections::HashMap;
 
 /// One argument of an entity instance.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,7 +107,11 @@ pub struct Exchange {
     /// Header entries, in order.
     pub header: Vec<(String, Vec<Arg>)>,
     /// The data section, by instance number.
-    pub data: HashMap<u64, Instance>,
+    #[allow(
+        clippy::disallowed_types,
+        reason = "public field; a std map keeps the API"
+    )]
+    pub data: std::collections::HashMap<u64, Instance>,
 }
 
 /// Parse a Part 21 exchange file.
@@ -118,6 +121,107 @@ pub struct Exchange {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) on malformed
 /// syntax, with the byte offset where reading stopped making sense.
 pub fn parse(text: &str) -> OgeomResult<Exchange> {
+    let (header, instances) = parse_instances(text)?;
+    Ok(Exchange {
+        header,
+        data: instances.into_iter().collect(),
+    })
+}
+
+/// The data section by instance number, as the reader looks it up.
+///
+/// Instance numbers are nearly always dense, numbered from one in file
+/// order, so a slot per number answers a lookup with an index. A file whose
+/// numbers run far past its count (more than four per instance, plus a
+/// margin) gets a map instead.
+#[derive(Debug)]
+pub(crate) enum Instances {
+    /// A slot per instance number up to the largest.
+    Dense(Vec<Option<Instance>>),
+    /// The instances of a file whose numbers are sparse.
+    Sparse(ogeom_core::FastMap<u64, Instance>),
+}
+
+impl Instances {
+    /// The table for these instances, a later number winning over an
+    /// earlier one, as a repeated definition in the file does.
+    fn new(list: Vec<(u64, Instance)>) -> Self {
+        let top = list.iter().map(|(id, _)| *id).max().unwrap_or(0);
+        match usize::try_from(top) {
+            Ok(top) if top <= list.len().saturating_mul(4).saturating_add(1024) => {
+                let mut slots: Vec<Option<Instance>> = Vec::new();
+                slots.resize_with(top + 1, || None);
+                for (id, instance) in list {
+                    // In range: no number exceeds `top`.
+                    if let Some(slot) = usize::try_from(id).ok().and_then(|i| slots.get_mut(i)) {
+                        *slot = Some(instance);
+                    }
+                }
+                Self::Dense(slots)
+            }
+            _ => Self::Sparse(list.into_iter().collect()),
+        }
+    }
+
+    /// The instance numbered `id`.
+    pub(crate) fn get(&self, id: u64) -> Option<&Instance> {
+        match self {
+            Self::Dense(slots) => usize::try_from(id)
+                .ok()
+                .and_then(|i| slots.get(i))
+                .and_then(Option::as_ref),
+            Self::Sparse(map) => map.get(&id),
+        }
+    }
+
+    /// Whether an instance is numbered `id`.
+    pub(crate) fn contains(&self, id: u64) -> bool {
+        self.get(id).is_some()
+    }
+
+    /// Every instance with its number: in number order when dense.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (u64, &Instance)> {
+        let (dense, sparse) = match self {
+            Self::Dense(slots) => (Some(slots), None),
+            Self::Sparse(map) => (None, Some(map)),
+        };
+        let dense = dense.into_iter().flat_map(|slots| {
+            (0_u64..)
+                .zip(slots)
+                .filter_map(|(id, slot)| Some((id, slot.as_ref()?)))
+        });
+        let sparse = sparse
+            .into_iter()
+            .flat_map(|map| map.iter().map(|(id, instance)| (*id, instance)));
+        dense.chain(sparse)
+    }
+
+    /// Every instance.
+    pub(crate) fn values(&self) -> impl Iterator<Item = &Instance> {
+        self.iter().map(|(_, instance)| instance)
+    }
+
+    fn into_iter(self) -> Box<dyn Iterator<Item = (u64, Instance)>> {
+        match self {
+            Self::Dense(slots) => Box::new(
+                (0_u64..)
+                    .zip(slots)
+                    .filter_map(|(id, slot)| Some((id, slot?))),
+            ),
+            Self::Sparse(map) => Box::new(map.into_iter()),
+        }
+    }
+}
+
+/// Header entries, each a keyword and its arguments, in order.
+pub(crate) type Header = Vec<(String, Vec<Arg>)>;
+
+/// The header entries and the data section of a Part 21 exchange file.
+///
+/// # Errors
+///
+/// As [`parse`].
+pub(crate) fn parse_instances(text: &str) -> OgeomResult<(Header, Instances)> {
     let mut p = Parser {
         bytes: text.as_bytes(),
         at: 0,
@@ -146,9 +250,9 @@ pub fn parse(text: &str) -> OgeomResult<Exchange> {
     p.expect_keyword("DATA")?;
     p.expect(b';')?;
     // Sized up front: an instance averages well under a hundred bytes, so
-    // this over-reserves a little rather than rehashing a half-million-entry
-    // map several times on the way up.
-    let mut data = HashMap::with_capacity(text.len() / 96);
+    // this over-reserves a little rather than growing a half-million-entry
+    // list several times on the way up.
+    let mut data = Vec::with_capacity(text.len() / 96);
     loop {
         p.skip_noise();
         if p.peek_keyword("ENDSEC") {
@@ -181,11 +285,11 @@ pub fn parse(text: &str) -> OgeomResult<Exchange> {
             vec![(keyword, args)]
         };
         p.expect(b';')?;
-        data.insert(id, Instance { parts });
+        data.push((id, Instance { parts }));
     }
 
     p.expect_keyword("END-ISO-10303-21")?;
-    Ok(Exchange { header, data })
+    Ok((header, Instances::new(data)))
 }
 
 struct Parser<'a> {

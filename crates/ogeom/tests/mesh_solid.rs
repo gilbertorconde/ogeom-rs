@@ -4923,8 +4923,7 @@ fn mesh_boundary(mesh: &Triangulation) -> Vec<[Point; 2]> {
             (p.z * 1e6).round() as i64,
         )
     };
-    let mut uses: std::collections::HashMap<_, (usize, [Point; 2])> =
-        std::collections::HashMap::new();
+    let mut uses: ogeom::core::FastMap<_, (usize, [Point; 2])> = ogeom::core::FastMap::default();
     for t in &mesh.triangles {
         for k in 0..3 {
             let (p, q) = (
@@ -4947,8 +4946,8 @@ fn mesh_boundary(mesh: &Triangulation) -> Vec<[Point; 2]> {
 /// The free edges of a converted shell (bounding one face, and no seam
 /// of it): each one's curve trimmed to its range, and its tolerance.
 fn free_edges(model: &Model, shape: &Shape) -> Vec<(ogeom::geom::Curve, f64)> {
-    let mut count: std::collections::HashMap<ogeom::topo::SameKey, usize> =
-        std::collections::HashMap::new();
+    let mut count: ogeom::core::FastMap<ogeom::topo::SameKey, usize> =
+        ogeom::core::FastMap::default();
     for face in explore_unique(model, shape, ShapeType::Face).unwrap() {
         for edge in ogeom::topo::explore(model, &face, ogeom::topo::Filter::OfType(ShapeType::Edge))
             .unwrap()

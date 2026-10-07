@@ -1,0 +1,8 @@
+# The std hash tables seed their hashers randomly, so a stage that walks one
+# can answer differently from run to run. `ogeom_core::{FastMap, FastSet}`
+# hash with a fixed seed. The std types remain only in public signatures that
+# already promised them, each with an `allow` saying so.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use ogeom_core::FastMap: its iteration order is the same in every run" },
+    { path = "std::collections::HashSet", reason = "use ogeom_core::FastSet: its iteration order is the same in every run" },
+]

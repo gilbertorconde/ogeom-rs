@@ -34,7 +34,7 @@ use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hashbrown::HashMap;
+use crate::collections::FastMap;
 
 /// Hands out arena identifiers.
 ///
@@ -190,7 +190,7 @@ pub struct Arena<T> {
     /// Where the tail starts in `entries`: the number of scattered values.
     tail_at: u32,
     /// Slot to position in `entries`, for the scattered values.
-    scattered: Option<HashMap<u32, u32>>,
+    scattered: Option<FastMap<u32, u32>>,
     /// Whether `entries` runs in slot order. Removing a value and refilling
     /// a freed slot can break the order; iterating mutably restores it.
     ordered: bool,
@@ -309,7 +309,7 @@ impl<T> Arena<T> {
                 value,
             });
             self.scattered
-                .get_or_insert_with(HashMap::new)
+                .get_or_insert_with(FastMap::default)
                 .insert(slot, at);
             self.tail_at = at + 1;
             return Key::new(slot, generation, self.scope);
@@ -376,7 +376,7 @@ impl<T> Arena<T> {
     fn scatter_tail(&mut self) {
         let from = self.tail_at as usize;
         if from < self.entries.len() {
-            let map = self.scattered.get_or_insert_with(HashMap::new);
+            let map = self.scattered.get_or_insert_with(FastMap::default);
             for (at, entry) in self.entries.iter().enumerate().skip(from) {
                 map.insert(entry.slot, at as u32);
             }
@@ -695,9 +695,9 @@ mod tests {
 
     #[test]
     fn keys_are_hashable_and_distinct() {
-        use std::collections::HashSet;
+        use crate::collections::FastSet;
         let mut a = Arena::new();
-        let set: HashSet<_> = (0..64_u32).map(|i| a.insert(i)).collect();
+        let set: FastSet<_> = (0..64_u32).map(|i| a.insert(i)).collect();
         assert_eq!(set.len(), 64);
     }
 }
@@ -743,14 +743,14 @@ mod scope_tests {
     fn keys_from_different_arenas_are_not_equal_and_do_not_collide() {
         // Equality and hashing have to agree with resolution, or a map keyed on
         // handles merges entries from two documents.
-        use std::collections::HashSet;
+        use crate::collections::FastSet;
         let mut a: Arena<u32> = Arena::new();
         let mut b: Arena<u32> = Arena::new();
         let here = a.insert(1);
         let there = b.insert(2);
 
         assert_ne!(here, there);
-        let mut set = HashSet::new();
+        let mut set = FastSet::default();
         set.insert(here);
         set.insert(there);
         assert_eq!(set.len(), 2, "two documents' handles collided in a map");

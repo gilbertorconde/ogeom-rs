@@ -40,7 +40,7 @@ use ogeom_topo::{
     explore_unique,
 };
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 /// The displacement constraint one face puts on a point of itself.
 type Displacement<'a> = dyn Fn(&Model, usize, Point) -> OgeomResult<Option<(Vector, f64)>> + 'a;
@@ -63,7 +63,7 @@ pub(crate) fn canonical_input(
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Vec<Shape>, Option<ogeom_algo::History>)> {
     let probe = Point::new(0.123_456_789, 9.87, -3.21);
-    let mut seen: HashMap<TShapeId, Point> = HashMap::new();
+    let mut seen: FastMap<TShapeId, Point> = FastMap::default();
     let mut instanced = false;
     'outer: for kind in [ShapeType::Vertex, ShapeType::Edge, ShapeType::Face] {
         for occurrence in explore(model, solid, Filter::OfType(kind))? {
@@ -73,13 +73,13 @@ pub(crate) fn canonical_input(
                 break 'outer;
             }
             match seen.entry(occurrence.node()) {
-                std::collections::hash_map::Entry::Occupied(held) => {
+                ogeom_core::collections::hash_map::Entry::Occupied(held) => {
                     if held.get().distance(at) > tol.confusion() {
                         instanced = true;
                         break 'outer;
                     }
                 }
-                std::collections::hash_map::Entry::Vacant(slot) => {
+                ogeom_core::collections::hash_map::Entry::Vacant(slot) => {
                     slot.insert(at);
                 }
             }
@@ -234,7 +234,7 @@ pub fn move_faces(
     let chosen = chosen_faces(model, solid, faces)?;
     // Each surface is stated in its face's own frame: the motion is taken
     // into that frame, so the placed surface moves as the world one would.
-    let mut moved: HashMap<TShapeId, SurfaceGeometry> = HashMap::new();
+    let mut moved: FastMap<TShapeId, SurfaceGeometry> = FastMap::default();
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         if !chosen.contains(&face.node()) || moved.contains_key(&face.node()) {
             continue;
@@ -268,12 +268,12 @@ pub fn move_faces(
 fn still_sound(
     model: &Model,
     solid: &Shape,
-    chosen: &std::collections::HashSet<TShapeId>,
+    chosen: &ogeom_core::FastSet<TShapeId>,
     built: Built,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let faces = explore_unique(model, solid, ShapeType::Face)?;
-    let mut corners: std::collections::HashSet<TShapeId> = std::collections::HashSet::new();
+    let mut corners: ogeom_core::FastSet<TShapeId> = ogeom_core::FastSet::default();
     for face in faces.iter().filter(|f| chosen.contains(&f.node())) {
         for v in explore_unique(model, face, ShapeType::Vertex)? {
             corners.insert(v.node());
@@ -311,11 +311,11 @@ fn chosen_faces(
     model: &Model,
     solid: &Shape,
     faces: &[Shape],
-) -> OgeomResult<std::collections::HashSet<TShapeId>> {
+) -> OgeomResult<ogeom_core::FastSet<TShapeId>> {
     if faces.is_empty() {
         ogeom_bail!(Construction, "no face was named to move");
     }
-    let own: std::collections::HashSet<TShapeId> =
+    let own: ogeom_core::FastSet<TShapeId> =
         explore(model, solid, Filter::OfType(ShapeType::Face))?
             .iter()
             .map(Shape::node)
@@ -653,7 +653,7 @@ pub(crate) fn rebuilt(
             1.0
         };
         let edges = explore(model, face, Filter::OfType(ShapeType::Edge))?;
-        let mut counts: HashMap<TShapeId, usize> = HashMap::new();
+        let mut counts: FastMap<TShapeId, usize> = FastMap::default();
         for e in &edges {
             *counts.entry(e.node()).or_insert(0) += 1;
         }
@@ -809,7 +809,7 @@ pub(crate) fn rebuilt(
     }
 
     // Which faces meet each edge, seams excluded by their double use.
-    let mut edge_faces: HashMap<TShapeId, Vec<usize>> = HashMap::new();
+    let mut edge_faces: FastMap<TShapeId, Vec<usize>> = FastMap::default();
     for (fi, face) in faces.iter().enumerate() {
         for e in explore(model, face, Filter::OfType(ShapeType::Edge))? {
             let entry = edge_faces.entry(e.node()).or_default();
@@ -851,7 +851,7 @@ pub(crate) fn rebuilt(
     // New vertices: the linear constraint solve seeds a Newton polish onto
     // the moved surfaces themselves; the tangent-plane answer is exact for
     // planes and off by the surfaces' own curvature otherwise.
-    let mut new_vertices: HashMap<TShapeId, (Shape, Point)> = HashMap::new();
+    let mut new_vertices: FastMap<TShapeId, (Shape, Point)> = FastMap::default();
     for vertex in explore_unique(model, solid, ShapeType::Vertex)? {
         let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
             continue;
@@ -1016,7 +1016,7 @@ pub(crate) fn rebuilt(
 
     // How many times each edge occurs across all faces; a seam is one face
     // using an edge twice, which face-deduplicated sides cannot see.
-    let mut edge_uses: HashMap<TShapeId, usize> = HashMap::new();
+    let mut edge_uses: FastMap<TShapeId, usize> = FastMap::default();
     for face in &faces {
         for e in explore(model, face, Filter::OfType(ShapeType::Edge))? {
             *edge_uses.entry(e.node()).or_insert(0) += 1;
@@ -1024,7 +1024,7 @@ pub(crate) fn rebuilt(
     }
 
     // New edges on the moved supports.
-    let mut new_edges: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut new_edges: FastMap<TShapeId, Shape> = FastMap::default();
     let mut history = History::new();
     for edge in explore_unique(model, solid, ShapeType::Edge)? {
         let sides = edge_faces.get(&edge.node()).cloned().unwrap_or_default();
@@ -1429,7 +1429,7 @@ pub(crate) fn rebuilt(
             }
         } else {
             let mut wires: Vec<Vec<Shape>> = Vec::new();
-            let mut face_uses: HashMap<TShapeId, usize> = HashMap::new();
+            let mut face_uses: FastMap<TShapeId, usize> = FastMap::default();
             // The wires as the face stores them: the rebuilt face takes the
             // old one's sense below.
             let stored = prep.shape.oriented(Orientation::Forward);
@@ -1553,7 +1553,7 @@ fn rebuilt_seam_edge(
     model: &mut Model,
     edge: &Shape,
     prep: &Prepared,
-    new_vertices: &HashMap<TShapeId, (Shape, Point)>,
+    new_vertices: &FastMap<TShapeId, (Shape, Point)>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Shape>> {
     use ogeom_geom::Curve2d as _;
@@ -1687,7 +1687,7 @@ fn assembled_with_seam(
     model: &mut Model,
     prep: &Prepared,
     wires: &[Vec<Shape>],
-    new_edges: &HashMap<TShapeId, Shape>,
+    new_edges: &FastMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let mut rings: Vec<Shape> = Vec::with_capacity(wires.len());
@@ -1883,7 +1883,7 @@ fn seam_end(
             continue;
         };
         let old_surface = data.surface;
-        let mut uses: HashMap<TShapeId, usize> = HashMap::new();
+        let mut uses: FastMap<TShapeId, usize> = FastMap::default();
         for e in explore(model, face, Filter::OfType(ShapeType::Edge))? {
             *uses.entry(e.node()).or_insert(0) += 1;
         }
@@ -1952,7 +1952,7 @@ fn rebuilt_lone_edge(
     edge: &Shape,
     sides: &[usize],
     constraint: &Displacement<'_>,
-    new_vertices: &HashMap<TShapeId, (Shape, Point)>,
+    new_vertices: &FastMap<TShapeId, (Shape, Point)>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Shape>> {
     use ogeom_geom::Curve3d as _;
@@ -2120,8 +2120,8 @@ fn growing_edges(
     use ogeom_geom::{Curve3d as _, Surface as _};
     // Which faces hold each edge, gathered in one walk over the faces, in
     // the faces' order: asking per edge walked every face each time.
-    let mut holders: std::collections::HashMap<TShapeId, Vec<(Shape, Shape)>> =
-        std::collections::HashMap::new();
+    let mut holders: ogeom_core::FastMap<TShapeId, Vec<(Shape, Shape)>> =
+        ogeom_core::FastMap::default();
     for face in ogeom_topo::explore(model, body, ogeom_topo::Filter::OfType(ShapeType::Face))? {
         for e in ogeom_topo::explore(model, &face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
             holders.entry(e.node()).or_default().push((e, face.clone()));

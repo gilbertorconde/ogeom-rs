@@ -33,7 +33,7 @@
 //! continued a little past the square on every side, for the seams solved
 //! onto it.
 
-use std::collections::{HashMap, HashSet};
+use ogeom_core::{FastMap, FastSet};
 
 use ogeom_core::Tolerances;
 use ogeom_geom::{Surface as _, SurfaceGeometry};
@@ -75,7 +75,7 @@ pub(crate) struct Region<'a> {
     pub(crate) members: &'a [usize],
     /// The region's boundary vertices at which the face across its boundary
     /// changes: where the square's corners go first.
-    pub(crate) corners: &'a HashSet<u32>,
+    pub(crate) corners: &'a FastSet<u32>,
 }
 
 /// The fewest vertices a region must hold inside its boundary: a few dozen
@@ -155,7 +155,7 @@ struct Local {
 /// The region's local mesh, and its one boundary loop with the region on
 /// its left; `None` where the region is not one disk bounded by one loop.
 fn disk(region: &Region) -> Option<(Local, Vec<usize>)> {
-    let mut index: HashMap<u32, usize> = HashMap::new();
+    let mut index: FastMap<u32, usize> = FastMap::default();
     let mut vertices = Vec::new();
     let mut triangles = Vec::with_capacity(region.members.len());
     for &t in region.members {
@@ -169,7 +169,7 @@ fn disk(region: &Region) -> Option<(Local, Vec<usize>)> {
     }
     // Each directed edge at most once: a second use is a fold or a seam
     // three triangles share.
-    let mut directed: HashSet<(usize, usize)> = HashSet::new();
+    let mut directed: FastSet<(usize, usize)> = FastSet::default();
     for t in &triangles {
         for k in 0..3 {
             if !directed.insert((t[k], t[(k + 1) % 3])) {
@@ -184,7 +184,7 @@ fn disk(region: &Region) -> Option<(Local, Vec<usize>)> {
     // The boundary runs along the directed edges with no twin, the region
     // on their left; at each vertex one leaves, or the boundary touches
     // itself there.
-    let mut next: HashMap<usize, usize> = HashMap::new();
+    let mut next: FastMap<usize, usize> = FastMap::default();
     for &(a, b) in &directed {
         if !directed.contains(&(b, a)) && next.insert(a, b).is_some() {
             return None;
@@ -262,7 +262,7 @@ pub(crate) fn fit_patch(region: &Region, flat: f64, tol: Tolerances) -> Result<P
             mapped: false,
         });
     }
-    let corners: HashSet<usize> = (0..local.vertices.len())
+    let corners: FastSet<usize> = (0..local.vertices.len())
         .filter(|&i| region.corners.contains(&local.vertices[i]))
         .collect();
     if let Some(chart) = mean_value_map(&local, &ring, &corners)
@@ -431,7 +431,7 @@ fn winding(triangles: &[[usize; 3]], chart: &[(f64, f64)]) -> Option<bool> {
 fn mean_value_map(
     local: &Local,
     ring: &[usize],
-    corners: &HashSet<usize>,
+    corners: &FastSet<usize>,
 ) -> Option<Vec<(f64, f64)>> {
     let n = local.points.len();
     let angle_at = |t: &[usize; 3], k: usize| {
@@ -544,7 +544,7 @@ fn mean_value_map(
         }
     }
     // The interior: Σ w_ij (x_i - x_j) = 0 at each interior vertex.
-    let on_ring: HashSet<usize> = ring.iter().copied().collect();
+    let on_ring: FastSet<usize> = ring.iter().copied().collect();
     let interior: Vec<usize> = (0..n).filter(|i| !on_ring.contains(i)).collect();
     if !interior.is_empty() {
         let order = narrow_order(&interior, &weights);
@@ -592,7 +592,7 @@ fn mean_value_map(
 /// rising degree, the whole reversed. Neighbours then sit close in the
 /// order, and the system's band is narrow.
 fn narrow_order(interior: &[usize], weights: &[Vec<(usize, f64)>]) -> Vec<usize> {
-    let member: HashSet<usize> = interior.iter().copied().collect();
+    let member: FastSet<usize> = interior.iter().copied().collect();
     let neighbours = |i: usize| -> Vec<usize> {
         let mut out: Vec<usize> = weights[i]
             .iter()
@@ -603,11 +603,11 @@ fn narrow_order(interior: &[usize], weights: &[Vec<(usize, f64)>]) -> Vec<usize>
         out.dedup();
         out
     };
-    let degree: HashMap<usize, usize> =
+    let degree: FastMap<usize, usize> =
         interior.iter().map(|&i| (i, neighbours(i).len())).collect();
     let mut by_degree: Vec<usize> = interior.to_vec();
     by_degree.sort_by_key(|i| (degree[i], *i));
-    let mut seen: HashSet<usize> = HashSet::new();
+    let mut seen: FastSet<usize> = FastSet::default();
     let mut order = Vec::with_capacity(interior.len());
     for &start in &by_degree {
         if !seen.insert(start) {
@@ -1001,7 +1001,7 @@ mod tests {
             Point::new(x * 10.0, y * 10.0, 2.0 * hill * (1.0 + 0.3 * x))
         });
         let members: Vec<usize> = (0..triangles.len()).collect();
-        let corners: HashSet<u32> = [0, 40, 1680, 1640].into_iter().collect();
+        let corners: FastSet<u32> = [0, 40, 1680, 1640].into_iter().collect();
         let region = Region {
             points: &points,
             triangles: &triangles,
@@ -1025,7 +1025,7 @@ mod tests {
             Point::new(r * angle.cos(), r * angle.sin(), z)
         });
         let members: Vec<usize> = (0..triangles.len()).collect();
-        let corners = HashSet::new();
+        let corners = FastSet::default();
         let region = Region {
             points: &points,
             triangles: &triangles,
@@ -1043,7 +1043,7 @@ mod tests {
     fn a_ring_is_refused_as_no_disk() {
         let (points, mut triangles) = sheet(6, |x, y| Point::new(x, y, (x * y).sin()));
         // The middle cells taken out leave a hole.
-        let hole: HashSet<usize> = [28, 29, 30, 31, 40, 41, 42, 43].into_iter().collect();
+        let hole: FastSet<usize> = [28, 29, 30, 31, 40, 41, 42, 43].into_iter().collect();
         triangles = triangles
             .into_iter()
             .enumerate()
@@ -1051,7 +1051,7 @@ mod tests {
             .map(|(_, t)| t)
             .collect();
         let members: Vec<usize> = (0..triangles.len()).collect();
-        let corners = HashSet::new();
+        let corners = FastSet::default();
         let region = Region {
             points: &points,
             triangles: &triangles,

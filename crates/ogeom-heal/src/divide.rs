@@ -14,7 +14,7 @@
 //! an area ([`divide_by_area`]), and at every knot, each piece's geometry
 //! then restated as the single Bézier span it covers ([`to_bezier`]).
 
-use std::collections::{HashMap, HashSet};
+use ogeom_core::{FastMap, FastSet};
 
 use ogeom_algo::{Built, History, edge_vertices, surface_properties};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -355,7 +355,7 @@ fn divide_faces(
     mut lines: impl FnMut(&Model, &Shape, &SurfaceGeometry, Bounds) -> OgeomResult<Vec<IsoLine>>,
 ) -> OgeomResult<Built> {
     let mut current = Built::new(shape.clone(), History::identity());
-    let mut settled: HashSet<TShapeId> = HashSet::new();
+    let mut settled: FastSet<TShapeId> = FastSet::default();
     'rounds: for _ in 0..100_000 {
         for face in explore_unique(model, &current.shape, ShapeType::Face)? {
             if settled.contains(&face.node()) {
@@ -903,7 +903,7 @@ fn cut_face(
 
     // Where the line crosses each edge, as fractions of the edge's forward
     // range; and every point where it meets the boundary, along the line.
-    let mut cuts: HashMap<TShapeId, Vec<f64>> = HashMap::new();
+    let mut cuts: FastMap<TShapeId, Vec<f64>> = FastMap::default();
     let mut meetings: Vec<(f64, Meeting)> = Vec::new();
     for occurrence in rings.iter().flatten() {
         let f = |s: f64| -> OgeomResult<f64> { Ok(line.fixed(occurrence.at(s, tol)?) - c) };
@@ -1004,9 +1004,9 @@ fn cut_face(
 
     // Cut the edges, and every meeting inside one becomes its new vertex.
     let mut reshape = Reshape::new();
-    let mut pieces_of: HashMap<TShapeId, Vec<(Shape, f64, f64)>> = HashMap::new();
-    let mut vertex_at: HashMap<(TShapeId, u64), Shape> = HashMap::new();
-    let mut vertex_of_node: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut pieces_of: FastMap<TShapeId, Vec<(Shape, f64, f64)>> = FastMap::default();
+    let mut vertex_at: FastMap<(TShapeId, u64), Shape> = FastMap::default();
+    let mut vertex_of_node: FastMap<TShapeId, Shape> = FastMap::default();
     for v in explore_unique(model, &face_fwd, ShapeType::Vertex)? {
         vertex_of_node.insert(v.node(), v);
     }
@@ -1222,7 +1222,7 @@ fn record(
     occurrence: &Occurrence,
     s: f64,
     line: IsoLine,
-    cuts: &mut HashMap<TShapeId, Vec<f64>>,
+    cuts: &mut FastMap<TShapeId, Vec<f64>>,
     meetings: &mut Vec<(f64, Meeting)>,
     tol: Tolerances,
 ) -> OgeomResult<()> {

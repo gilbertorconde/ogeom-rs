@@ -14,8 +14,6 @@
 //! `&mut TShape` would scatter them across every caller, and the failures they
 //! guard against are silent ones.
 
-use std::collections::HashMap;
-
 use ogeom_core::{
     Arena, EntityId, Key, OgeomResult, OpId, Provenance, ProvenanceTable, Role, Tolerance,
     Tolerances, ogeom_bail,
@@ -147,12 +145,12 @@ impl Nodes {
 #[derive(Default)]
 struct Reach {
     /// Node indices.
-    nodes: hashbrown::HashSet<u32>,
-    curves: hashbrown::HashSet<CurveId>,
-    pcurves: hashbrown::HashSet<PCurveId>,
-    surfaces: hashbrown::HashSet<SurfaceId>,
-    meshes: hashbrown::HashSet<TriangulationId>,
-    entities: hashbrown::HashSet<EntityId>,
+    nodes: ogeom_core::FastSet<u32>,
+    curves: ogeom_core::FastSet<CurveId>,
+    pcurves: ogeom_core::FastSet<PCurveId>,
+    surfaces: ogeom_core::FastSet<SurfaceId>,
+    meshes: ogeom_core::FastSet<TriangulationId>,
+    entities: ogeom_core::FastSet<EntityId>,
 }
 
 impl Model {
@@ -1454,7 +1452,7 @@ impl Model {
         const SHORT: usize = 32;
         self.sync_face_boxes();
         let mut affected: smallvec::SmallVec<[TShapeId; 8]> = smallvec::SmallVec::new();
-        let mut seen: Option<hashbrown::HashSet<TShapeId>> = None;
+        let mut seen: Option<ogeom_core::FastSet<TShapeId>> = None;
         let mut stack: smallvec::SmallVec<[TShapeId; 8]> = smallvec::smallvec![shape.node()];
         while let Some(id) = stack.pop() {
             let fresh = match &mut seen {
@@ -1657,10 +1655,10 @@ impl Model {
         roots: &[Shape],
         repoint: bool,
         pairs: &mut Vec<(TShapeId, TShapeId)>,
-    ) -> OgeomResult<hashbrown::HashMap<TShapeId, TShapeId>> {
+    ) -> OgeomResult<ogeom_core::FastMap<TShapeId, TShapeId>> {
         // Every node reached, in the order first reached, and whether it is
         // held: marked, or below a held node on some path.
-        let mut held: hashbrown::HashMap<TShapeId, bool> = hashbrown::HashMap::new();
+        let mut held: ogeom_core::FastMap<TShapeId, bool> = ogeom_core::FastMap::default();
         let mut order: Vec<TShapeId> = Vec::new();
         let mut stack: Vec<(TShapeId, bool)> =
             roots.iter().rev().map(|r| (r.node(), false)).collect();
@@ -1679,13 +1677,13 @@ impl Model {
             };
             stack.extend(node.children().iter().rev().map(|c| (c.node(), is_held)));
         }
-        let mut copies: hashbrown::HashMap<TShapeId, TShapeId> = hashbrown::HashMap::new();
+        let mut copies: ogeom_core::FastMap<TShapeId, TShapeId> = ogeom_core::FastMap::default();
         if !any {
             return Ok(copies);
         }
         // The nodes to copy: the held ones, and where nothing is pointed
         // anew, every node with one of them below it.
-        let mut copied: hashbrown::HashSet<TShapeId> = held
+        let mut copied: ogeom_core::FastSet<TShapeId> = held
             .iter()
             .filter(|(_, h)| **h)
             .map(|(id, _)| *id)
@@ -1756,8 +1754,8 @@ impl Model {
     fn copy_below(
         &mut self,
         id: TShapeId,
-        copied: &hashbrown::HashSet<TShapeId>,
-        copies: &mut hashbrown::HashMap<TShapeId, TShapeId>,
+        copied: &ogeom_core::FastSet<TShapeId>,
+        copies: &mut ogeom_core::FastMap<TShapeId, TShapeId>,
         pairs: &mut Vec<(TShapeId, TShapeId)>,
     ) -> OgeomResult<TShapeId> {
         // Children before parents: a node is copied once every child to
@@ -1842,7 +1840,7 @@ impl Model {
         // node is visited once per bound it is reached under.
         let mut stack: Vec<(Shape, Option<(ogeom_core::Tolerance, ShapeType)>)> =
             vec![(root.clone(), None)];
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = ogeom_core::FastSet::default();
         while let Some((shape, bound)) = stack.pop() {
             let Some(node) = self.node(&shape) else {
                 ogeom_bail!(Dangling, "shape refers to a node not in this model");
@@ -1936,7 +1934,11 @@ pub struct Absorbed {
     /// Source-document identity → identity in the absorbing model, for every
     /// entity the parts carried. A caller holding references recorded against
     /// the source document resolves them through this.
-    pub entities: HashMap<EntityId, EntityId>,
+    #[allow(
+        clippy::disallowed_types,
+        reason = "public field since 0.1; a std map keeps the API"
+    )]
+    pub entities: std::collections::HashMap<EntityId, EntityId>,
 }
 
 /// A model's contents, laid out the way a file holds them.
@@ -2037,7 +2039,7 @@ pub fn explore_unique(model: &Model, root: &Shape, want: ShapeType) -> OgeomResu
     use crate::shape::SameKey;
 
     let found = explore(model, root, Filter::OfType(want))?;
-    let mut seen = hashbrown::HashSet::with_capacity(found.len());
+    let mut seen = ogeom_core::FastSet::with_capacity_and_hasher(found.len(), Default::default());
     let mut out = Vec::with_capacity(found.len());
     for shape in found {
         if seen.insert(SameKey(shape.clone())) {

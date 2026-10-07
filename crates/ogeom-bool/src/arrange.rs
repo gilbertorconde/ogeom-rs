@@ -320,8 +320,7 @@ fn walk<T>(strands: &[Strand<T>], snap: f64) -> OgeomResult<Walk<'_, T>> {
         };
         (at(p.x), at(p.y))
     };
-    let mut bins: std::collections::HashMap<(i64, i64), Vec<usize>> =
-        std::collections::HashMap::new();
+    let mut bins: ogeom_core::FastMap<(i64, i64), Vec<usize>> = ogeom_core::FastMap::default();
     let mut canon = |p: Point2, nodes: &mut Vec<Point2>| -> usize {
         let (cx, cy) = cell(p);
         let mut first: Option<usize> = None;

@@ -3,7 +3,7 @@
 //! does.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use std::collections::HashSet;
+use ogeom::core::FastSet;
 
 use ogeom::algo::{make_box, make_cylinder};
 use ogeom::core::Tolerances;
@@ -67,7 +67,7 @@ fn reached_nodes(model: &Model, shape: &Shape) -> usize {
         .unwrap()
         .iter()
         .map(Shape::node)
-        .collect::<HashSet<_>>()
+        .collect::<FastSet<_>>()
         .len()
 }
 

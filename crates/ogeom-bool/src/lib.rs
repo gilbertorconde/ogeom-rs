@@ -453,12 +453,12 @@ struct GSolid {
     /// The edges the gathered faces share with the faces set aside, each
     /// as it stands: rebuilt as itself, so the faces set aside still meet
     /// the rebuilt ones along it.
-    shared: hashbrown::HashMap<EdgeKey, Shape>,
+    shared: ogeom_core::FastMap<EdgeKey, Shape>,
     /// The vertices of the shared edges, each where it stands: the strands
     /// ending there end on it.
     shared_vertices: Vec<(Point, Shape)>,
     /// Each face's place in the solid, where faces are set aside.
-    order: hashbrown::HashMap<ogeom_topo::SameKey, usize>,
+    order: ogeom_core::FastMap<ogeom_topo::SameKey, usize>,
     /// What joins the faces set aside to the rest.
     beside: std::sync::Arc<aside::Beside>,
     /// Whether the solid is one shell already found closed.
@@ -511,11 +511,11 @@ fn gather(
     }
 
     let mut faces = Vec::new();
-    let mut shared = hashbrown::HashMap::new();
+    let mut shared = ogeom_core::FastMap::default();
     // Each edge occurrence read once for the faces on either side of it:
     // its world curve, its ends, and its sampled extent.
-    let mut occurrences: hashbrown::HashMap<(ogeom_topo::TShapeId, Location), Occurrence> =
-        hashbrown::HashMap::new();
+    let mut occurrences: ogeom_core::FastMap<(ogeom_topo::TShapeId, Location), Occurrence> =
+        ogeom_core::FastMap::default();
     let aside = aside.filter(|aside| !aside.is_empty());
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         if aside.is_some_and(|aside| {
@@ -560,7 +560,7 @@ fn gather(
             for hole in holes_aside.iter() {
                 left[hole.at] = true;
             }
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = ogeom_core::FastSet::default();
             let mut edges = Vec::new();
             for (wire, _) in wires.iter().zip(&left).filter(|(_, left)| !**left) {
                 for edge in explore_unique(model, wire, ShapeType::Edge)? {
@@ -621,8 +621,8 @@ fn gather(
                 continue;
             };
             let occurrence = match occurrences.entry((edge.node(), edge.location().clone())) {
-                hashbrown::hash_map::Entry::Occupied(known) => known.into_mut(),
-                hashbrown::hash_map::Entry::Vacant(slot) => {
+                ogeom_core::collections::hash_map::Entry::Occupied(known) => known.into_mut(),
+                ogeom_core::collections::hash_map::Entry::Vacant(slot) => {
                     let Some(geometry) = model.geometry().curve(*curve) else {
                         ogeom_bail!(Dangling, "curve is not in this model");
                     };
@@ -849,7 +849,7 @@ fn gather(
         ogeom_bail!(Construction, "a solid with no faces bounds nothing");
     }
     let mut shared_vertices = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = ogeom_core::FastSet::default();
     for edge in shared.values() {
         for vertex in model.children_of(edge)? {
             if !seen.insert(ogeom_topo::SameKey(vertex.clone())) {
@@ -2471,7 +2471,7 @@ fn fill(
     Vec<ContactRec>,
     Vec<TangentRec>,
     Vec<Vec<(f64, f64)>>,
-    std::collections::HashMap<EdgeKey, Vec<Pave>>,
+    ogeom_core::FastMap<EdgeKey, Vec<Pave>>,
     Vec<Vec<usize>>,
     Vec<Vec<usize>>,
     Vec<Junction>,
@@ -3174,8 +3174,8 @@ fn fill(
     // face (a top split in two by a fuse), is carried onto that face once
     // per holder; the second copy is the same strand, which the
     // arrangement would walk as a sliver between two coincident lines.
-    let mut carried: hashbrown::HashSet<(EdgeKey, bool, usize, [u64; 4])> =
-        hashbrown::HashSet::new();
+    let mut carried: ogeom_core::FastSet<(EdgeKey, bool, usize, [u64; 4])> =
+        ogeom_core::FastSet::default();
     for pair in found {
         let pair = pair?;
         sections.extend(pair.sections);
@@ -3228,8 +3228,8 @@ fn fill(
     // Only the faces a section crosses are asked about: on a large solid
     // and a small tool that is a handful, and drawing every face's outline
     // was most of the paving's cost.
-    let crossed_a: std::collections::HashSet<usize> = sections.iter().map(|s| s.face_a).collect();
-    let crossed_b: std::collections::HashSet<usize> = sections.iter().map(|s| s.face_b).collect();
+    let crossed_a: ogeom_core::FastSet<usize> = sections.iter().map(|s| s.face_a).collect();
+    let crossed_b: ogeom_core::FastSet<usize> = sections.iter().map(|s| s.face_b).collect();
     // The face's own outline is drawn once and kept for the later trim
     // tests; where it cannot be drawn, drawing it again says why.
     let mut outlines_a: Vec<std::borrow::Cow<'_, [Vec<Point2>]>> =
@@ -3253,7 +3253,7 @@ fn fill(
 
     // Crossings of each section with the boundary edges of both its faces,
     // and with every other section sharing a face.
-    let mut paves: std::collections::HashMap<EdgeKey, Vec<Pave>> = std::collections::HashMap::new();
+    let mut paves: ogeom_core::FastMap<EdgeKey, Vec<Pave>> = ogeom_core::FastMap::default();
     let mut pieces: Vec<SectionPiece> = Vec::new();
     // Each section's paving depends only on the sections and the two
     // gathered solids, all read-only here, and writes nothing the next
@@ -5564,10 +5564,10 @@ fn merge_junctions(junctions: Vec<Junction>) -> Vec<Junction> {
 fn pave_junctions(
     ga: &GSolid,
     gb: &GSolid,
-    paves: &std::collections::HashMap<EdgeKey, Vec<Pave>>,
+    paves: &ogeom_core::FastMap<EdgeKey, Vec<Pave>>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Junction>> {
-    let mut seen: std::collections::HashSet<EdgeKey> = std::collections::HashSet::new();
+    let mut seen: ogeom_core::FastSet<EdgeKey> = ogeom_core::FastSet::default();
     let mut junctions = Vec::new();
     for e in ga
         .faces
@@ -5627,14 +5627,15 @@ fn quiet_piece(
 ) -> OgeomResult<Option<FacePiece>> {
     let forward = face.face.oriented(ogeom_topo::Orientation::Forward);
     // A face with many holes is looked up by key, not walked once per edge.
-    let indexed: Option<hashbrown::HashMap<EdgeKey, usize>> = (face.edges.len() > 16).then(|| {
-        let mut first = hashbrown::HashMap::with_capacity(face.edges.len());
+    let indexed: Option<ogeom_core::FastMap<EdgeKey, usize>> = (face.edges.len() > 16).then(|| {
+        let mut first =
+            ogeom_core::FastMap::with_capacity_and_hasher(face.edges.len(), Default::default());
         for (index, e) in face.edges.iter().enumerate() {
             first.entry(e.node).or_insert(index);
         }
         first
     });
-    let aside: hashbrown::HashSet<ogeom_topo::TShapeId> = face
+    let aside: ogeom_core::FastSet<ogeom_topo::TShapeId> = face
         .holes_aside
         .iter()
         .map(|hole| hole.wire.node())
@@ -5727,7 +5728,7 @@ fn lone_holes(
         return Ok(None);
     }
     // Each edge's wire, `None` for an edge in no wire or in two.
-    let index: hashbrown::HashMap<EdgeKey, usize> = face
+    let index: ogeom_core::FastMap<EdgeKey, usize> = face
         .edges
         .iter()
         .enumerate()
@@ -6585,8 +6586,7 @@ fn audit_fill_equivalence(
         (section.face_a, section.face_b, [q(p.x), q(p.y), q(p.z)])
     };
     let merged = |sections: &[SectionRec], pieces: &[SectionPiece], tol: Tolerances| {
-        let mut kept: std::collections::HashMap<Key, Vec<(f64, f64)>> =
-            std::collections::HashMap::new();
+        let mut kept: ogeom_core::FastMap<Key, Vec<(f64, f64)>> = ogeom_core::FastMap::default();
         for piece in pieces {
             kept.entry(key_of(&sections[piece.section], tol))
                 .or_default()
@@ -8221,14 +8221,14 @@ struct Rebuild<'m> {
     junction_reach: f64,
     /// Vertices minted from junctions at an edge's own end vertex, which a
     /// tangent section's chart image is bent onto.
-    onto_vertex: std::collections::HashSet<ogeom_topo::TShapeId>,
+    onto_vertex: ogeom_core::FastSet<ogeom_topo::TShapeId>,
     /// Boundary edges rebuilt whole, by the edge they were: the face on the
     /// other side of one finds it built and adds its own pcurve, where a
     /// second build would leave the sew a twin to find.
-    whole_edges: std::collections::HashMap<EdgeKey, Shape>,
+    whole_edges: ogeom_core::FastMap<EdgeKey, Shape>,
     /// The vertices of edges shared with faces set aside, which the rebuild
     /// names as they are and never changes, each where it stands.
-    kept: hashbrown::HashMap<ogeom_topo::TShapeId, Point>,
+    kept: ogeom_core::FastMap<ogeom_topo::TShapeId, Point>,
     /// Whether a strand end asked a kept vertex to reach further than it
     /// does.
     strained: bool,
@@ -8426,7 +8426,7 @@ impl Rebuild<'_> {
 
 /// The sub-edges built of each strand of a piece, keyed by strand, each
 /// with the parameter range it covers, in the order they were built.
-type StrandEdges = hashbrown::HashMap<(usize, u8), Vec<((f64, f64), Shape)>>;
+type StrandEdges = ogeom_core::FastMap<(usize, u8), Vec<((f64, f64), Shape)>>;
 
 /// Build one piece as a face, orientation matching its source face's side.
 fn build_piece(
@@ -8442,7 +8442,7 @@ fn build_piece(
     // Sub-edges cached within the piece, so a seam used from both sides is
     // one edge appearing twice. Keyed by strand, each with the ranges built
     // of it in order.
-    let mut cache: StrandEdges = hashbrown::HashMap::new();
+    let mut cache: StrandEdges = ogeom_core::FastMap::default();
     let mut wires = Vec::new();
     for ring in &piece.rings {
         let mut edges = Vec::with_capacity(ring.len());
@@ -9118,7 +9118,7 @@ fn assemble_result(
     let mut sewn = sewn;
     let dropped = without_membranes(model, &mut sewn.shells, floor, tol)?;
     history = history.followed_by(&dropped);
-    let held: hashbrown::HashSet<ogeom_topo::TShapeId> = fused
+    let held: ogeom_core::FastSet<ogeom_topo::TShapeId> = fused
         .a
         .shared
         .values()
@@ -9383,8 +9383,12 @@ fn assemble_sheet(
     let Rebuilt { faces, settled, .. } = rebuilt_pieces(model, fused, &kept, &mut history, tol)?;
     let mut sewn = sew_around(model, &faces, &settled, tol)?;
     history = history.followed_by(&sewn.history);
-    let joined =
-        seam_join::join_across_seams(model, &mut sewn.shells, &hashbrown::HashSet::new(), tol)?;
+    let joined = seam_join::join_across_seams(
+        model,
+        &mut sewn.shells,
+        &ogeom_core::FastSet::default(),
+        tol,
+    )?;
     history = history.followed_by(&joined).without_repeated_images();
     let result = if sewn.shells.len() == 1 {
         sewn.shells.remove(0)
@@ -9454,9 +9458,9 @@ fn rebuilt_pieces(
         junctions: fused.junctions.iter().map(|j| (*j, None)).collect(),
         junction_bins,
         junction_reach,
-        onto_vertex: std::collections::HashSet::new(),
-        whole_edges: std::collections::HashMap::new(),
-        kept: hashbrown::HashMap::new(),
+        onto_vertex: ogeom_core::FastSet::default(),
+        whole_edges: ogeom_core::FastMap::default(),
+        kept: ogeom_core::FastMap::default(),
         strained: false,
     };
     for (at, vertex) in fused
@@ -9500,8 +9504,8 @@ fn rebuilt_pieces(
         copies.push(!flip && clean(&fused.pieces[index], rebuild.model)?);
     }
     let mut faces = Vec::new();
-    let mut kept_sources: std::collections::HashSet<Shape> = std::collections::HashSet::new();
-    let mut built_of: hashbrown::HashMap<usize, usize> = hashbrown::HashMap::new();
+    let mut kept_sources: ogeom_core::FastSet<Shape> = ogeom_core::FastSet::default();
+    let mut built_of: ogeom_core::FastMap<usize, usize> = ogeom_core::FastMap::default();
     for (slot, &(index, flip)) in kept.iter().enumerate() {
         built_of.insert(index, slot);
         let piece = &fused.pieces[index];
@@ -9527,7 +9531,7 @@ fn rebuilt_pieces(
     let holes = holes_put_back(rebuild.model, fused, kept, tol)?;
     // A piece dropped because the other argument's coincident piece is
     // kept for the same patch: its face became that piece's face.
-    let mut stood_for: std::collections::HashSet<Shape> = std::collections::HashSet::new();
+    let mut stood_for: ogeom_core::FastSet<Shape> = ogeom_core::FastSet::default();
     for &(index_a, index_b) in &fused.coincident {
         let (dropped, standing) = match (built_of.get(&index_a), built_of.get(&index_b)) {
             (Some(&slot), None) => (index_b, slot),
@@ -9565,7 +9569,7 @@ fn rebuilt_pieces(
             (false, false) => 8,
         }
     };
-    let mut held: hashbrown::HashMap<ogeom_topo::TShapeId, u8> = hashbrown::HashMap::new();
+    let mut held: ogeom_core::FastMap<ogeom_topo::TShapeId, u8> = ogeom_core::FastMap::default();
     let mut corners = Vec::with_capacity(faces.len());
     for (slot, face) in faces.iter().enumerate() {
         let vertices = explore_unique(rebuild.model, face, ShapeType::Vertex)?;
@@ -9620,12 +9624,13 @@ fn with_aside(
 ) -> OgeomResult<(Vec<Shape>, Vec<bool>, Vec<Shape>)> {
     // Each face made again with its holes, with the wires it walks itself
     // and the faces set aside beside its holes.
-    let mut remade: hashbrown::HashMap<ogeom_topo::TShapeId, Remade> = hashbrown::HashMap::new();
+    let mut remade: ogeom_core::FastMap<ogeom_topo::TShapeId, Remade> =
+        ogeom_core::FastMap::default();
     let mut put_back = History::new();
     // Each face's place: its solid, the place there of the face it came
     // from, and its piece's.
-    let mut rank: hashbrown::HashMap<ogeom_topo::TShapeId, (bool, usize, usize)> =
-        hashbrown::HashMap::new();
+    let mut rank: ogeom_core::FastMap<ogeom_topo::TShapeId, (bool, usize, usize)> =
+        ogeom_core::FastMap::default();
     for (slot, built) in faces.iter().enumerate() {
         let piece = &fused.pieces[kept[slot].0];
         let own = if piece.from_a { &fused.a } else { &fused.b };
@@ -9973,8 +9978,8 @@ fn without_membranes(
             .collect::<OgeomResult<Vec<_>>>()?;
         // Only faces bounded by the same edges can be a membrane's pair, so
         // the pairs are taken within each such group, in face order.
-        let mut alike: hashbrown::HashMap<&[ogeom_topo::TShapeId], Vec<usize>> =
-            hashbrown::HashMap::new();
+        let mut alike: ogeom_core::FastMap<&[ogeom_topo::TShapeId], Vec<usize>> =
+            ogeom_core::FastMap::default();
         for (i, bounded_by) in edges.iter().enumerate() {
             if !bounded_by.is_empty() {
                 alike.entry(bounded_by.as_slice()).or_default().push(i);

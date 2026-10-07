@@ -9,7 +9,7 @@
 //! along translated copies of the spine, which the side faces share, and
 //! the section and its copy at the spine's end cap the ends.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_algo::{Built, make_edge_between, make_face_on, make_shell, make_solid, make_vertex};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -286,7 +286,7 @@ fn leg_solid(
         end: Shape,
         edge: Shape,
     }
-    let mut rails: HashMap<TShapeId, Rail> = HashMap::new();
+    let mut rails: FastMap<TShapeId, Rail> = FastMap::default();
     for edge in section.iter().flatten() {
         for vertex in [&edge.ends.0, &edge.ends.1] {
             if rails.contains_key(&vertex.node()) {

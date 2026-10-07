@@ -11,7 +11,7 @@
 //! answer. One that prints the answer *and* what is wrong with the shape it
 //! came from teaches you when not to.
 
-use std::collections::HashMap;
+use ogeom::core::FastMap;
 use std::process::ExitCode;
 
 use ogeom::{
@@ -131,7 +131,7 @@ fn census(args: &[String]) -> Result<(), String> {
     let model = import.document.model();
 
     // Each solid by the name the file gives its product, where it has one.
-    let mut names: HashMap<usize, String> = HashMap::new();
+    let mut names: FastMap<usize, String> = FastMap::default();
     for (id, product) in import.document.products() {
         for occurrence in import
             .document
@@ -179,7 +179,7 @@ fn census(args: &[String]) -> Result<(), String> {
 /// How many of a mesh's edges are crossed more often one way than the
 /// other: zero exactly when the mesh is closed.
 fn unbalanced_edges(mesh: &Triangulation) -> usize {
-    let mut balance: HashMap<(u32, u32), i64> = HashMap::new();
+    let mut balance: FastMap<(u32, u32), i64> = FastMap::default();
     for t in &mesh.triangles {
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);

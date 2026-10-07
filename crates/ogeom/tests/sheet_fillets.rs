@@ -107,8 +107,8 @@ fn area(model: &Model, shape: &Shape) -> f64 {
 
 /// How many faces use each edge: (shared by two, used by one).
 fn edge_use(model: &Model, shape: &Shape) -> (usize, usize) {
-    let mut users: std::collections::HashMap<ogeom::topo::TShapeId, usize> =
-        std::collections::HashMap::new();
+    let mut users: ogeom::core::FastMap<ogeom::topo::TShapeId, usize> =
+        ogeom::core::FastMap::default();
     for face in faces(model, shape) {
         for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
             *users.entry(edge.node()).or_default() += 1;

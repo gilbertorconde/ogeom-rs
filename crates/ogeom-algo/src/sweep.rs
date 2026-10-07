@@ -24,7 +24,7 @@
 //! the classic way to break downstream naming: a reference to "that edge"
 //! resolves to nothing, or a reference to "the face from that edge" does.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use core::f64::consts::TAU;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -86,7 +86,7 @@ pub fn make_prism(
     let datum = model.add_datum(Transform::translation(vector));
     let displacement = Location::of(datum);
 
-    let rails = &mut Rails::new();
+    let rails = &mut Rails::default();
     match model.kind_of(profile)? {
         ShapeType::Face => {
             crate::build::trimmed_where_bare(model, profile, tol)?;
@@ -1012,7 +1012,7 @@ pub fn make_revolution(
         },
     };
 
-    let rails = &mut Rails::new();
+    let rails = &mut Rails::default();
     match model.kind_of(profile)? {
         ShapeType::Face => revolution_over_face(model, rails, profile, &turn, tol),
         ShapeType::Wire => {
@@ -1920,7 +1920,7 @@ fn rail(
 /// Threaded through rather than looked up in the model, because "is there
 /// already an edge between these two vertices" is a question the model cannot
 /// answer without a search, and the answer is only ever about *this* sweep.
-type Rails = HashMap<TShapeId, Shape>;
+type Rails = FastMap<TShapeId, Shape>;
 
 /// Attach a seam edge's two pcurves, one for each side of the rectangle it
 /// bounds twice, keyed by the occurrence's own placement as [`pcurve`]

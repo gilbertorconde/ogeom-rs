@@ -9,7 +9,7 @@
 //! so a substituted edge is one new node however many faces reach it, and
 //! reports what became of every input through the ordinary history.
 
-use std::collections::HashMap;
+use ogeom_core::FastMap;
 
 use ogeom_algo::{Built, History};
 use ogeom_core::{OgeomResult, ogeom_bail};
@@ -19,9 +19,9 @@ use ogeom_topo::{Model, NodeData, Orientation, Shape, ShapeType, TShapeId};
 #[derive(Debug, Default)]
 pub struct Reshape {
     /// `None` removes the node; `Some` replaces it.
-    requests: HashMap<TShapeId, Option<Shape>>,
+    requests: FastMap<TShapeId, Option<Shape>>,
     /// Nodes cut into pieces, in their forward order.
-    splits: HashMap<TShapeId, Vec<Shape>>,
+    splits: FastMap<TShapeId, Vec<Shape>>,
 }
 
 impl Reshape {
@@ -69,7 +69,7 @@ impl Reshape {
     /// a rebuilt container ends up empty where the model forbids it, or a
     /// substitution's kind does not fit its slot.
     pub fn apply(&self, model: &mut Model, shape: &Shape) -> OgeomResult<Built> {
-        let mut memo: HashMap<TShapeId, Option<Shape>> = HashMap::new();
+        let mut memo: FastMap<TShapeId, Option<Shape>> = FastMap::default();
         let mut history = History::new();
         let Some(result) = self.rebuilt(model, shape, &mut memo, &mut history)? else {
             ogeom_bail!(Construction, "the reshape removed the shape itself");
@@ -95,7 +95,7 @@ impl Reshape {
         &self,
         model: &mut Model,
         shape: &Shape,
-        memo: &mut HashMap<TShapeId, Option<Shape>>,
+        memo: &mut FastMap<TShapeId, Option<Shape>>,
         history: &mut History,
     ) -> OgeomResult<Option<Shape>> {
         // A direct request wins, orientation carried from the occurrence.

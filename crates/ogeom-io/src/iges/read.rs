@@ -19,6 +19,7 @@
 
 use super::parse::{Entity, File};
 use ogeom_algo::{make_edge_between, make_solid, make_vertex, sew};
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Transformable as _;
@@ -32,7 +33,7 @@ use ogeom_math::{
     Parabola, Plane, Point, Sphere, Torus, Transform, Vector, Weighted,
 };
 use ogeom_topo::{Model, Shape};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// How far an unbounded plane or quadric extends past anything the file uses
 /// (the same convention the STEP reader states: a face's trim is its wires,
@@ -99,9 +100,9 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
             ..IgesReport::default()
         },
         visited: BTreeMap::new(),
-        vertices: HashMap::new(),
-        edges: HashMap::new(),
-        pieces: HashMap::new(),
+        vertices: FastMap::default(),
+        edges: FastMap::default(),
+        pieces: FastMap::default(),
         pole_vertices: Vec::new(),
         trim_poles: Vec::new(),
         vertex_misses: (0, 0.0),
@@ -288,12 +289,12 @@ struct Reader<'a> {
     visited: BTreeMap<i64, ()>,
     /// Vertices by (vertex-list DE, 1-based index), shared, which is what
     /// lets a closed shell close.
-    vertices: HashMap<(i64, i64), Shape>,
+    vertices: FastMap<(i64, i64), Shape>,
     /// Edges by (edge-list DE, 1-based index), for the same reason.
-    edges: HashMap<(i64, i64), BuiltEdge>,
+    edges: FastMap<(i64, i64), BuiltEdge>,
     /// Edges cut where their curve runs through a pole of a face they
     /// bound: the pieces, in order along the curve.
-    pieces: HashMap<(i64, i64), Vec<Shape>>,
+    pieces: FastMap<(i64, i64), Vec<Shape>>,
     /// The vertices made at poles, shared by every piece that meets one.
     pole_vertices: Vec<Shape>,
     /// The chart poles of every surface among the trimmed surfaces being
@@ -1899,21 +1900,21 @@ impl<'a> Reader<'a> {
         surface_id: ogeom_topo::SurfaceId,
     ) -> OgeomResult<()> {
         use ogeom_geom::Curve2d as _;
-        let mut counts: HashMap<ogeom_topo::TShapeId, usize> = HashMap::new();
+        let mut counts: FastMap<ogeom_topo::TShapeId, usize> = FastMap::default();
         for edge in edges {
             *counts.entry(edge.node()).or_default() += 1;
         }
         // One image per edge, however many times the wire walks it.
-        let mut images: HashMap<ogeom_topo::TShapeId, (ogeom_geom::PlanarCurve, (f64, f64))> =
-            HashMap::new();
+        let mut images: FastMap<ogeom_topo::TShapeId, (ogeom_geom::PlanarCurve, (f64, f64))> =
+            FastMap::default();
         // The sides each walk of it left, by the direction that walk ran.
-        let mut sides: HashMap<
+        let mut sides: FastMap<
             ogeom_topo::TShapeId,
             (
                 Option<ogeom_geom::PlanarCurve>,
                 Option<ogeom_geom::PlanarCurve>,
             ),
-        > = HashMap::new();
+        > = FastMap::default();
         let mut order: Vec<ogeom_topo::TShapeId> = Vec::new();
         let mut previous: Option<ogeom_math::Point2> = None;
         for edge in edges {
@@ -1930,7 +1931,9 @@ impl<'a> Reader<'a> {
                 };
                 (geometry.clone(), *range)
             };
-            if let std::collections::hash_map::Entry::Vacant(slot) = images.entry(edge.node()) {
+            if let ogeom_core::collections::hash_map::Entry::Vacant(slot) =
+                images.entry(edge.node())
+            {
                 let Some(image) = self.image_of(edge, &curve, range, surface)? else {
                     continue;
                 };
@@ -2675,7 +2678,7 @@ impl<'a> Reader<'a> {
             .filter(|(_, e)| e.kind == 408 && (e.status / 10_000) % 100 == 0)
             .map(|(de, _)| *de)
             .collect();
-        let mut built: HashMap<i64, (Vec<Shape>, Vec<Shape>)> = HashMap::new();
+        let mut built: FastMap<i64, (Vec<Shape>, Vec<Shape>)> = FastMap::default();
         let (mut solids, mut sheets, mut from) = (Vec::new(), Vec::new(), Vec::new());
         for de in instances {
             let (placed_solids, faces) = match self.instance(de, &mut built, 0) {
@@ -2711,7 +2714,7 @@ impl<'a> Reader<'a> {
     fn instance(
         &mut self,
         de: i64,
-        built: &mut HashMap<i64, (Vec<Shape>, Vec<Shape>)>,
+        built: &mut FastMap<i64, (Vec<Shape>, Vec<Shape>)>,
         depth: usize,
     ) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
         if depth > 32 {
@@ -2748,7 +2751,7 @@ impl<'a> Reader<'a> {
     fn subfigure(
         &mut self,
         de: i64,
-        built: &mut HashMap<i64, (Vec<Shape>, Vec<Shape>)>,
+        built: &mut FastMap<i64, (Vec<Shape>, Vec<Shape>)>,
         depth: usize,
     ) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
         if let Some(found) = built.get(&de) {
@@ -3112,7 +3115,7 @@ fn layers(
     built_from: &[(i64, Shape)],
     report: &mut IgesReport,
 ) {
-    let mut by_name: HashMap<String, ogeom_doc::LayerId> = HashMap::new();
+    let mut by_name: FastMap<String, ogeom_doc::LayerId> = FastMap::default();
     let mut layer = |document: &mut ogeom_doc::Document, name: String| {
         *by_name
             .entry(name.clone())
@@ -3259,9 +3262,9 @@ mod tests {
                 ..IgesReport::default()
             },
             visited: BTreeMap::new(),
-            vertices: HashMap::new(),
-            edges: HashMap::new(),
-            pieces: HashMap::new(),
+            vertices: FastMap::default(),
+            edges: FastMap::default(),
+            pieces: FastMap::default(),
             pole_vertices: Vec::new(),
             trim_poles: Vec::new(),
             vertex_misses: (0, 0.0),

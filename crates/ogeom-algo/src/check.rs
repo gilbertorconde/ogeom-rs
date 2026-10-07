@@ -26,7 +26,7 @@
 //! input because they would produce nonsense from it; they proceed on
 //! `Suspect` because refusing would reject most real imported geometry.
 
-use std::collections::{HashMap, HashSet};
+use ogeom_core::{FastMap, FastSet};
 use std::fmt;
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -146,8 +146,8 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
     // Every distinct sub-shape from one walk, by type. The walk is
     // pre-order, so each type's shapes come in the order a walk for that
     // type alone would give.
-    let mut distinct: HashMap<ShapeType, Vec<Shape>> = HashMap::new();
-    let mut seen = HashSet::new();
+    let mut distinct: FastMap<ShapeType, Vec<Shape>> = FastMap::default();
+    let mut seen = FastSet::default();
     for sub in explore(model, shape, Filter::All)? {
         if seen.insert(ogeom_topo::SameKey(sub.clone())) {
             distinct.entry(model.kind_of(&sub)?).or_default().push(sub);
@@ -401,7 +401,7 @@ pub fn check_tessellation(
 
 /// Describe a mesh's unshared edges, or `None` if every edge is shared twice.
 fn open_edges(mesh: &ogeom_topo::Triangulation) -> Option<String> {
-    let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
     for triangle in &mesh.triangles {
         for i in 0..3 {
             let (a, b) = (triangle[i], triangle[(i + 1) % 3]);
@@ -1092,7 +1092,7 @@ fn along_surface(
 /// `Broken` only when something asks it to bound a volume, which is a question
 /// this function is not being asked.
 fn check_shell(model: &Model, shell: &Shape, found: &mut Diagnosis) -> OgeomResult<()> {
-    let mut uses: HashMap<TShapeId, usize> = HashMap::new();
+    let mut uses: FastMap<TShapeId, usize> = FastMap::default();
     for face in explore(model, shell, Filter::OfType(ShapeType::Face))? {
         for wire in model.children_of(&face)? {
             for edge in model.children_of(&wire)? {
@@ -1143,7 +1143,7 @@ fn check_shell(model: &Model, shell: &Shape, found: &mut Diagnosis) -> OgeomResu
 /// both ways by its one face, passes.
 pub(crate) fn walked_one_way(model: &Model, shape: &Shape) -> OgeomResult<Vec<Shape>> {
     type Walks = (Shape, usize, usize);
-    let mut walks: HashMap<(TShapeId, ogeom_topo::Location), Walks> = HashMap::new();
+    let mut walks: FastMap<(TShapeId, ogeom_topo::Location), Walks> = FastMap::default();
     let mut order = Vec::new();
     for face in explore(model, shape, Filter::OfType(ShapeType::Face))? {
         for edge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
@@ -1231,7 +1231,7 @@ fn compare(
     };
     // Each occurrence once: a vertex reached through both its edges is one
     // containment claim, not two.
-    let mut seen = HashSet::new();
+    let mut seen = FastSet::default();
     for below in explore(model, shape, Filter::All)? {
         if below.is_same(shape) || !seen.insert(ogeom_topo::SameKey(below.clone())) {
             continue;
@@ -1290,14 +1290,14 @@ pub fn check_self_intersection_near(
     near: &[Shape],
     tol: Tolerances,
 ) -> OgeomResult<Vec<(Shape, Shape)>> {
-    let near: std::collections::HashSet<TShapeId> = near.iter().map(Shape::node).collect();
+    let near: ogeom_core::FastSet<TShapeId> = near.iter().map(Shape::node).collect();
     crossings_among(model, shape, Some(&near), tol)
 }
 
 fn crossings_among(
     model: &Model,
     shape: &Shape,
-    near: Option<&std::collections::HashSet<TShapeId>>,
+    near: Option<&ogeom_core::FastSet<TShapeId>>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(Shape, Shape)>> {
     use ogeom_topo::explore_unique;
@@ -1305,11 +1305,11 @@ fn crossings_among(
     let asked = |i: usize| near.is_none_or(|n| n.contains(&faces[i].node()));
     // The topology below each face, for the adjacency exclusion; each face
     // gathered and bounded once, not once per pair it is in.
-    let mut below: Vec<std::collections::HashSet<TShapeId>> = Vec::with_capacity(faces.len());
+    let mut below: Vec<ogeom_core::FastSet<TShapeId>> = Vec::with_capacity(faces.len());
     let mut gathered = Vec::with_capacity(faces.len());
     let mut bounds = Vec::with_capacity(faces.len());
     for face in &faces {
-        let mut set = std::collections::HashSet::new();
+        let mut set = ogeom_core::FastSet::default();
         for kind in [ShapeType::Edge, ShapeType::Vertex] {
             for sub in explore_unique(model, face, kind)? {
                 set.insert(sub.node());

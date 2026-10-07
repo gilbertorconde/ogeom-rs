@@ -224,8 +224,8 @@ fn edge_reach(model: &Model, edge: &Shape, tol: Tolerances) -> f64 {
 /// one before it; the first point tries each of its candidates as a start.
 /// `None` if no adjacency-respecting path exists.
 fn index_path(mesh: &Triangulation, points: &[ogeom_math::Point], reach: f64) -> Option<Vec<u32>> {
-    use std::collections::{HashMap, HashSet};
-    let mut by_bits: HashMap<[u64; 3], Vec<u32>> = HashMap::new();
+    use ogeom_core::{FastMap, FastSet};
+    let mut by_bits: FastMap<[u64; 3], Vec<u32>> = FastMap::default();
     for (i, p) in mesh.positions.iter().enumerate() {
         #[allow(clippy::cast_possible_truncation)]
         by_bits
@@ -233,7 +233,7 @@ fn index_path(mesh: &Triangulation, points: &[ogeom_math::Point], reach: f64) ->
             .or_default()
             .push(i as u32);
     }
-    let mut adjacent: HashSet<(u32, u32)> = HashSet::new();
+    let mut adjacent: FastSet<(u32, u32)> = FastSet::default();
     for t in &mesh.triangles {
         for i in 0..3 {
             let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -529,7 +529,7 @@ mod polygon_on_tests {
             };
             let mesh = model.geometry().triangulation(mesh_id).unwrap();
             // Triangle edge set for the adjacency check.
-            let mut edges_of = std::collections::HashSet::new();
+            let mut edges_of = ogeom_core::FastSet::default();
             for t in &mesh.triangles {
                 for i in 0..3 {
                     let (a, b) = (t[i], t[(i + 1) % 3]);

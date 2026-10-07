@@ -58,6 +58,7 @@ use ogeom_algo::{
     Built, History, attach_pcurve, attach_seam, edge_vertices, make_edge_between, make_face_on,
     make_face_with_pcurves, make_shell, make_solid, make_vertex, make_wire,
 };
+use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
 use ogeom_geom::{
     Curve, Curve2d as _, Curve3d as _, CylinderSurface, Line2d, LineCurve, OffsetSurface,
@@ -71,7 +72,6 @@ use ogeom_topo::{
     EdgeData, EdgeRepr, FaceData, Filter, Location, Model, NodeData, Orientation, Shape, ShapeType,
     SurfaceId, TShapeId, explore,
 };
-use std::collections::HashMap;
 
 /// Offset a sheet (a face or a shell, open or closed) by `distance` along
 /// its normals: each face's surface moves on its own chart, its trim and
@@ -202,7 +202,7 @@ pub fn make_thick_sheet(
         history.generate(&face.occurrence, upper.faces[fi].clone());
         history.generate(&face.occurrence, lower.faces[fi].reversed());
     }
-    let mut risers: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut risers: FastMap<TShapeId, Shape> = FastMap::default();
     for ei in free {
         let side = if creases.touches(&read.edges[ei]) {
             flat_side_face(model, &read, ei, (&lower, &upper), &mut risers, tol)?
@@ -382,7 +382,7 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
     }
 
     let mut edges: Vec<SheetEdge> = Vec::new();
-    let mut edge_index: HashMap<TShapeId, usize> = HashMap::new();
+    let mut edge_index: FastMap<TShapeId, usize> = FastMap::default();
     for (fi, face) in faces.iter().enumerate() {
         for (wire_sense, list) in &face.wires {
             for (edge_node, edge_sense) in list {
@@ -452,8 +452,7 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
         }
     }
     for edge in &edges {
-        let faces_met: std::collections::HashSet<usize> =
-            edge.uses.iter().map(|u| u.face).collect();
+        let faces_met: ogeom_core::FastSet<usize> = edge.uses.iter().map(|u| u.face).collect();
         if edge.uses.len() > 2 {
             ogeom_bail!(
                 Construction,
@@ -469,7 +468,7 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
 
     // Each face's window, and each vertex's seat in every chart it is on.
     let mut vertices: Vec<SheetVertex> = Vec::new();
-    let mut vertex_index: HashMap<TShapeId, usize> = HashMap::new();
+    let mut vertex_index: FastMap<TShapeId, usize> = FastMap::default();
     let mut seat = |model: &Model,
                     vertex: TShapeId,
                     face: usize,
@@ -669,9 +668,9 @@ struct Layer {
     /// Faces as the sheet holds them, index for index.
     faces: Vec<Shape>,
     /// Each sheet edge's image, bare and forward.
-    edges: HashMap<TShapeId, Shape>,
+    edges: FastMap<TShapeId, Shape>,
     /// Each sheet vertex's image.
-    vertices: HashMap<TShapeId, (Shape, Point)>,
+    vertices: FastMap<TShapeId, (Shape, Point)>,
     history: History,
 }
 
@@ -712,8 +711,8 @@ fn moved_layer(
     }
 
     // Vertices: every face a vertex bounds must move it to one place.
-    let mut vertices: HashMap<TShapeId, (Shape, Point)> = HashMap::new();
-    let mut vertex_slop: HashMap<TShapeId, f64> = HashMap::new();
+    let mut vertices: FastMap<TShapeId, (Shape, Point)> = FastMap::default();
+    let mut vertex_slop: FastMap<TShapeId, f64> = FastMap::default();
     for (node, point, seats) in &sheet.vertices {
         if let Some(&(ci, at_end)) = creases.and_then(|c| c.ends.get(node)) {
             let edge = &sheet.edges[ci];
@@ -742,7 +741,7 @@ fn moved_layer(
     }
 
     // Edges.
-    let mut edges: HashMap<TShapeId, Shape> = HashMap::new();
+    let mut edges: FastMap<TShapeId, Shape> = FastMap::default();
     for (ei, edge) in sheet.edges.iter().enumerate() {
         let is_crease = creases.is_some_and(|c| c.edges.contains(&ei));
         let cut = creases.map_or([false, false], |c| {
@@ -1477,7 +1476,7 @@ struct Creases {
     edges: Vec<usize>,
     /// Each vertex a crease ends at: the crease, and whether the vertex is
     /// its end rather than its start.
-    ends: HashMap<TShapeId, (usize, bool)>,
+    ends: FastMap<TShapeId, (usize, bool)>,
 }
 
 impl Creases {
@@ -1822,7 +1821,7 @@ fn riser(
     model: &mut Model,
     vertex: TShapeId,
     (lower, upper): (&Layer, &Layer),
-    risers: &mut HashMap<TShapeId, Shape>,
+    risers: &mut FastMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     if let Some(found) = risers.get(&vertex) {
@@ -1898,7 +1897,7 @@ fn flat_side_face(
     sheet: &Sheet,
     ei: usize,
     (lower, upper): (&Layer, &Layer),
-    risers: &mut HashMap<TShapeId, Shape>,
+    risers: &mut FastMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let edge = &sheet.edges[ei];
@@ -1977,7 +1976,7 @@ fn side_face(
     ei: usize,
     (lo, hi): (f64, f64),
     (lower, upper): (&Layer, &Layer),
-    risers: &mut HashMap<TShapeId, Shape>,
+    risers: &mut FastMap<TShapeId, Shape>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let target = tol.approximation();

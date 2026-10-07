@@ -216,7 +216,7 @@ fn write_renumbered(
 /// Where a written model's nodes landed in the file: under their own
 /// handles, or renumbered by node index where the model was written as a
 /// subset of itself.
-struct Renumbered(Option<std::collections::HashMap<u32, u32>>);
+struct Renumbered(Option<ogeom_core::FastMap<u32, u32>>);
 
 impl Renumbered {
     /// The handle a node is written under.
@@ -269,17 +269,17 @@ fn dense(n: usize) -> u32 {
 
 /// Which of each arena's entries the roots reach, by handle.
 struct Closure {
-    nodes: std::collections::HashSet<TShapeId>,
-    datums: std::collections::HashSet<ogeom_topo::DatumId>,
-    curves: std::collections::HashSet<ogeom_topo::CurveId>,
-    pcurves: std::collections::HashSet<ogeom_topo::PCurveId>,
-    surfaces: std::collections::HashSet<ogeom_topo::SurfaceId>,
-    meshes: std::collections::HashSet<ogeom_topo::TriangulationId>,
+    nodes: ogeom_core::FastSet<TShapeId>,
+    datums: ogeom_core::FastSet<ogeom_topo::DatumId>,
+    curves: ogeom_core::FastSet<ogeom_topo::CurveId>,
+    pcurves: ogeom_core::FastSet<ogeom_topo::PCurveId>,
+    surfaces: ogeom_core::FastSet<ogeom_topo::SurfaceId>,
+    meshes: ogeom_core::FastSet<ogeom_topo::TriangulationId>,
     /// The entities whose entries are written: every identity a retained
     /// node carries and every entity those entries derive from, however far
     /// back. Ids are untouched, so a consumer's recorded `EntityId`s stay
     /// valid, which `provenance_and_identity_survive` holds the writer to.
-    entities: std::collections::HashSet<EntityId>,
+    entities: ogeom_core::FastSet<EntityId>,
 }
 
 impl Closure {
@@ -319,16 +319,15 @@ impl Closure {
 /// Walk the roots' sub-shape graphs and note everything they touch.
 fn closure_of(model: &Model, roots: &[Shape]) -> Closure {
     let mut c = Closure {
-        nodes: std::collections::HashSet::new(),
-        datums: std::collections::HashSet::new(),
-        curves: std::collections::HashSet::new(),
-        pcurves: std::collections::HashSet::new(),
-        surfaces: std::collections::HashSet::new(),
-        meshes: std::collections::HashSet::new(),
-        entities: std::collections::HashSet::new(),
+        nodes: ogeom_core::FastSet::default(),
+        datums: ogeom_core::FastSet::default(),
+        curves: ogeom_core::FastSet::default(),
+        pcurves: ogeom_core::FastSet::default(),
+        surfaces: ogeom_core::FastSet::default(),
+        meshes: ogeom_core::FastSet::default(),
+        entities: ogeom_core::FastSet::default(),
     };
-    let note_location = |datums: &mut std::collections::HashSet<ogeom_topo::DatumId>,
-                         l: &Location| {
+    let note_location = |datums: &mut ogeom_core::FastSet<ogeom_topo::DatumId>, l: &Location| {
         for (datum, _) in l.chain() {
             datums.insert(*datum);
         }
@@ -426,8 +425,8 @@ fn closure_of(model: &Model, roots: &[Shape]) -> Closure {
 /// The handles of `set`, in arena order, and the map from each one's old
 /// index to its new dense one.
 fn renumbered<T>(
-    set: &std::collections::HashSet<Key<T>>,
-) -> (Vec<Key<T>>, std::collections::HashMap<u32, u32>) {
+    set: &ogeom_core::FastSet<Key<T>>,
+) -> (Vec<Key<T>>, ogeom_core::FastMap<u32, u32>) {
     let mut ordered: Vec<Key<T>> = set.iter().copied().collect();
     ordered.sort_unstable_by_key(|k| k.index());
     let map = ordered
@@ -446,7 +445,7 @@ fn subset_parts(
     model: &Model,
     roots: &[Shape],
     closure: &Closure,
-) -> OgeomResult<(ModelParts, Vec<Shape>, std::collections::HashMap<u32, u32>)> {
+) -> OgeomResult<(ModelParts, Vec<Shape>, ogeom_core::FastMap<u32, u32>)> {
     let missing = || ogeom_core::ogeom_err!(Dangling, "the closure misses a referenced handle");
     // Old index -> new dense index, in arena order, so the same model and
     // roots write the same bytes every time.
