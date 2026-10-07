@@ -550,28 +550,20 @@ fn grid_point_on_a_diagonal_boundary() {
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
-/// A degenerate spline sliver meshed and converted: facets beside its
-/// curved regions are built as fans whose ruled surface has no normal
-/// along the seam. Each such fan's build fails, and the curved face its
-/// seam lies on is faceted (named with why); the conversion comes back.
+/// A degenerate spline sliver's mesh converted: facets beside its curved
+/// regions are built as fans whose ruled surface has no normal along the
+/// seam. Each such fan's build fails, and the curved face its seam lies on
+/// is faceted (named with why); the conversion comes back. The mesh is the
+/// sliver part's drawn at a thousandth of its diagonal, kept as a file so
+/// the converter sees the same triangles whatever the mesher draws.
 #[test]
 #[ignore = "heavy"]
 fn a_face_that_cannot_be_built_is_faceted() {
     let path = format!(
-        "{}/../../tests/corpus/spline_face_fit_runs_away.step",
+        "{}/../../tests/corpus/spline_face_fit_runs_away.obj",
         env!("CARGO_MANIFEST_DIR")
     );
-    let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
-    let model = import.document.model();
-    let part = &import.solids[0];
-    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
-    let mesh = ogeom::mesh::triangulate(
-        model,
-        part,
-        Deflection::with_chord(diagonal * 1e-3).unwrap(),
-        T,
-    )
-    .unwrap();
+    let mesh = ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap();
     let mut back = Model::new();
     let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
     assert!(

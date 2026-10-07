@@ -3396,9 +3396,19 @@ fn spread_to_aspect(
     }
     // One cell's width, not the whole range's: across a closed direction
     // the whole range comes back to its own start and measures nothing.
+    // Read at the middle line, and never narrower than the mean of the
+    // widths a quarter, half and three quarters of the way along: the
+    // triangulation is Delaunay in a chart scaled by the mean tangent
+    // lengths, so the mean is what it bridges against. The middle line
+    // alone can be a parallel shrinking to a point, such as the inner
+    // equator of a torus whose hole nearly closes, and would spread every
+    // line to that parallel's width.
     #[allow(clippy::cast_precision_loss)]
     let step = (hi - lo) / (crossings - 1) as f64;
-    let cell = width(lo, lo + step, mid);
+    let (first, last) = (lines[0], lines[lines.len() - 1]);
+    let quarter = (last - first) * 0.25;
+    let widths = [first + quarter, mid, last - quarter].map(|t| width(lo, lo + step, t));
+    let cell = widths[1].max(widths.iter().sum::<f64>() / 3.0);
     if cell.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return lines;
     }

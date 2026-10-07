@@ -44,6 +44,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A prism far from the origin keeps its rails and its facing (#144).**
+  `make_prism` of a face 1e6 to 2e7 from the origin no longer fails with a
+  domain error on its rails or returns a solid wound inward; the facing of
+  a closed mesh is measured from a point of the mesh rather than the
+  origin.
+
+- **A torus whose hole nearly closes meshes like an open one (#146).** The
+  face grid no longer spreads every row to the width of the inner equator,
+  so such a torus meshes into about as many triangles as an open one, and
+  `check` and `make_revolution` of it take milliseconds instead of
+  minutes.
+
 - **A coincident piece dropped for the other argument's traces to it
   (#143).** `common`, `fuse` and `cut` record a face whose piece is dropped
   for the other argument's coincident piece as modified into that piece,

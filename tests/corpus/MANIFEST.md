@@ -89,6 +89,13 @@ way across (a sliver four microns wide and a tenth of a millimetre long)
 and the three spline trims that bound it. The reproducer for a fit with no
 sound sample to lean on (issue #41).
 
+## spline_face_fit_runs_away.obj
+
+Derived from `spline_face_fit_runs_away.step` above, under the same terms:
+its solid triangulated at a chord of a thousandth of its bounding diagonal
+and written as OBJ, 420 triangles. The converter's input for a face whose
+fan cannot be built, kept as a file so it does not follow the mesher.
+
 ## box_with_a_cavity.step
 
 Authored for this project (generated, then committed): a 10 mm cube with a
