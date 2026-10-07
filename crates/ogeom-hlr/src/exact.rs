@@ -427,6 +427,14 @@ struct Blocker {
     /// The depth of the box corner nearest the eye: a face wholly behind a
     /// point cannot hide it either.
     front: f64,
+    /// For a surface with no closed-form piercing, the face's box widened
+    /// by the chord its trim rings are drawn at. The seeded intersector
+    /// samples the curve it is given and polishes from every cell of the
+    /// surface near each sampled segment, so the ray is handed over as the
+    /// stretch of it inside this box. Over a line's whole domain the
+    /// segments are millions of units long, and the one through the face
+    /// is near every cell.
+    sampled: Option<(Point, Point)>,
 }
 
 /// The faces of a shape seen from one view, binned by their projected
@@ -543,8 +551,20 @@ fn blocker(
     };
     let placement = face.transform(model.datums())?;
     let surface = ogeom_geom::Transformable::transformed(surface, &placement, tol)?;
-    let rings = ogeom_mesh::face_boundary(model, face, Deflection::default(), tol)?;
+    let deflection = Deflection::default();
+    let rings = ogeom_mesh::face_boundary(model, face, deflection, tol)?;
     let bound = ogeom_algo::shape_bounds(model, face, tol)?.expanded(tol.confusion() * 1e3);
+    let sampled = match surface {
+        SurfaceGeometry::Plane(_)
+        | SurfaceGeometry::Sphere(_)
+        | SurfaceGeometry::Cylinder(_)
+        | SurfaceGeometry::Cone(_)
+        | SurfaceGeometry::Torus(_) => None,
+        _ => {
+            let wide = bound.expanded(deflection.chord);
+            wide.low().zip(wide.high())
+        }
+    };
     let corners = bound.corners();
     if corners.is_empty() {
         return Ok(None);
@@ -570,6 +590,7 @@ fn blocker(
         low,
         high,
         front,
+        sampled,
     }))
 }
 
@@ -698,12 +719,23 @@ fn occluded(
     // enough along not to strike the surface the point is on.
     let reach = 1e6;
     let clearance = tol.confusion() * 1e3;
-    let ray = Curve::Line(LineCurve::new(Axis::new(
-        at,
-        Direction::new(direction, tol)?,
-    )));
+    let axis = Axis::new(at, Direction::new(direction, tol)?);
+    let ray = Curve::Line(LineCurve::new(axis));
     let hides = |face: &Blocker| -> OgeomResult<bool> {
-        let found = face.surface.intersect(&ray)?;
+        let found = match face.sampled {
+            None => face.surface.intersect(&ray)?,
+            Some((low, high)) => {
+                let Some((enter, leave)) = through_box(at, direction, low, high) else {
+                    return Ok(false);
+                };
+                let enter = enter.max(0.0);
+                if leave <= enter.max(clearance) {
+                    return Ok(false);
+                }
+                face.surface
+                    .intersect(&Curve::Line(LineCurve::over(axis, enter, leave)?))?
+            }
+        };
         Ok(found.crossings.iter().any(|piercing| {
             piercing.on_curve > clearance
                 && piercing.on_curve < reach
@@ -727,6 +759,28 @@ fn occluded(
         }
     }
     Ok(false)
+}
+
+/// Where the line `from + t * direction` is inside the box `low`-`high`,
+/// as the interval of `t`; `None` when it misses.
+fn through_box(from: Point, direction: Vector, low: Point, high: Point) -> Option<(f64, f64)> {
+    let (mut enter, mut leave) = (f64::NEG_INFINITY, f64::INFINITY);
+    for (o, d, lo, hi) in [
+        (from.x, direction.x, low.x, high.x),
+        (from.y, direction.y, low.y, high.y),
+        (from.z, direction.z, low.z, high.z),
+    ] {
+        if d == 0.0 {
+            if o < lo || o > hi {
+                return None;
+            }
+            continue;
+        }
+        let (a, b) = ((lo - o) / d, (hi - o) / d);
+        enter = enter.max(a.min(b));
+        leave = leave.min(a.max(b));
+    }
+    (enter <= leave).then_some((enter, leave))
 }
 
 /// The stretches of a curve that lie within a face's trim.

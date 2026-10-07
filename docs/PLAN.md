@@ -305,9 +305,11 @@ kernel's own IGES of a corpus part: the corpus has no IGES file), weld and
 STL read at 1M triangles, `project_exact` and the polygonal HLR, a
 thickened spline face, a pipe through circular sections, a guided pipe, a
 marched fillet and a box with all 12 edges filleted. Still missing: a STEP
-file of 10 MB or more (the largest corpus file is 1.2 MB). On that part
-`project_exact` and `solid_from_mesh` do not finish a warm-up and three
-samples in two minutes, so their benches run on the small part.
+file of 10 MB or more (the largest corpus file is 1.2 MB). On the
+largest part `solid_from_mesh` does not finish a warm-up and three samples
+in two minutes, so its bench runs on the small part. `project_exact` takes
+about 30 s at one thread there (7 s at 20), nearly all of it Newton on its
+spline faces, so its heavier bench runs on a 520-face part.
 
 An instruction-count gate in CI would be deterministic on a loaded runner
 and looks feasible: `iai-callgrind` needs valgrind on the runner (an apt

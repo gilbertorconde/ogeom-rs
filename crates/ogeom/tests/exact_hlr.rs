@@ -321,3 +321,125 @@ fn a_straight_edge_half_under_a_block_changes_at_the_blocks_side() {
         "{hidden:?}"
     );
 }
+
+/// A bar under a spline sheet that covers its middle, seen from above. The
+/// sheet has no closed-form piercing, so each ray is asked of it through the
+/// seeded intersector over the stretch of the ray inside the sheet's box.
+/// The bar's top edge is hidden where the sheet stands over it and visible
+/// past the sheet's sides on either end.
+#[test]
+fn a_straight_edge_under_a_spline_sheet_is_hidden_across_the_sheet() {
+    use ogeom::geom::{Curve3d as _, Surface as _};
+    let mut model = Model::new();
+    let at = Frame::new(
+        Point::new(-10.0, 0.0, 0.0),
+        ogeom::math::Direction::Z,
+        ogeom::math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let bar = ogeom::algo::make_box(&mut model, at, (20.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+
+    // A saddle five units over the bar, spanning x and y in [-5, 5].
+    let n = 11;
+    let rows: Vec<Vec<Point>> = (0..n)
+        .map(|j| {
+            let y = -5.0 + 10.0 * f64::from(j) / f64::from(n - 1);
+            (0..n)
+                .map(|i| {
+                    let x = -5.0 + 10.0 * f64::from(i) / f64::from(n - 1);
+                    Point::new(x, y, 5.0 + (x * x - y * y) / 20.0)
+                })
+                .collect()
+        })
+        .collect();
+    let surface = ogeom::geom::fit::fit_surface_grid(&rows, 3, 1e-6, T)
+        .unwrap()
+        .curve;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let corners: Vec<_> = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+        .iter()
+        .map(|(u, v)| {
+            let p = surface.point_at(*u, *v, T).unwrap();
+            ogeom::algo::make_vertex(&mut model, p).shape
+        })
+        .collect();
+    let mut iso = |curve: ogeom::geom::BSplineCurve, from: usize, to: usize| {
+        let range = curve.domain();
+        ogeom::algo::make_edge_between(
+            &mut model,
+            curve.into(),
+            range,
+            &corners[from],
+            &corners[to],
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let south = iso(surface.iso_v_curve(v0, T).unwrap(), 0, 1);
+    let east = iso(surface.iso_u_curve(u1, T).unwrap(), 1, 2);
+    let north = iso(surface.iso_v_curve(v1, T).unwrap(), 3, 2);
+    let west = iso(surface.iso_u_curve(u0, T).unwrap(), 0, 3);
+    let wires = [vec![south, east, north.reversed(), west.reversed()]];
+    let sheet = ogeom::algo::make_face_with_pcurves(&mut model, surface.into(), &wires, T)
+        .unwrap()
+        .shape;
+    let both = ogeom::algo::make_compound(&mut model, &[bar.clone(), sheet])
+        .unwrap()
+        .shape;
+    let view = ogeom::hlr::View::looking(-Vector::Z, Vector::Y, T).unwrap();
+    let drawing =
+        ogeom::hlr::exact::project_exact(&model, &both, &view, Deflection::default(), T).unwrap();
+
+    let top = explore_unique(&model, &bar, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let points =
+                ogeom::mesh::polyline_of_edge(&model, e, Deflection::default(), T).unwrap();
+            points.len() == 2
+                && points
+                    .iter()
+                    .all(|p| p.y.abs() < 1e-9 && (p.z - 1.0).abs() < 1e-9)
+        })
+        .unwrap();
+    let spans = |curves: &[ogeom::hlr::DrawnCurve]| -> Vec<(f64, f64)> {
+        let mut out: Vec<(f64, f64)> = curves
+            .iter()
+            .filter(|c| matches!(&c.source, ogeom::hlr::Source::Edge(e) if e.node() == top.node()))
+            .map(|c| {
+                let xs = c.points.iter().map(|p| p.x);
+                (
+                    xs.clone().fold(f64::INFINITY, f64::min),
+                    xs.fold(f64::NEG_INFINITY, f64::max),
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out
+    };
+    let (visible, hidden) = (spans(&drawing.visible), spans(&drawing.hidden));
+    assert_eq!(
+        (visible.len(), hidden.len()),
+        (2, 1),
+        "{visible:?} {hidden:?}"
+    );
+    // The sheet's edge over the bar is the fitted border at x = -5 and
+    // x = 5, to the fit's tolerance.
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-4;
+    assert!(
+        near(visible[0].0, -10.0) && near(visible[0].1, -5.0),
+        "{visible:?}"
+    );
+    assert!(
+        near(visible[1].0, 5.0) && near(visible[1].1, 10.0),
+        "{visible:?}"
+    );
+    assert!(
+        near(hidden[0].0, -5.0) && near(hidden[0].1, 5.0),
+        "{hidden:?}"
+    );
+}

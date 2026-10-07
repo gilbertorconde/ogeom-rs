@@ -34,6 +34,14 @@ bump may break the API and a patch bump may not.
   per point. The drawing is unchanged; a corpus part of 520 faces draws
   about twice as fast on one thread.
 
+- **Exact hidden lines ask a spline face about the stretch of the ray
+  inside the face's box,** not the whole ray. The seeded search no longer
+  polishes from every cell of the face, and a 664-face part draws in about
+  30 s on one thread instead of 20 minutes. Edges keep their visibility.
+  Where a silhouette point's ray grazes its own spline face, or crosses it
+  again a fraction of a micron away, a short piece of the silhouette can
+  now come out the other way.
+
 ### Fixed
 
 - **Hidden line removal splits an edge where it passes behind a
