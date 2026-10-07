@@ -169,7 +169,10 @@ pub fn make_loft_surface(
     // One degree and one knot vector per edge the sections pair up.
     for e in 0..count {
         let curves: Vec<BSplineCurve> = read.iter().map(|s| s.edges[e].curve.clone()).collect();
-        let matched = made_compatible(&curves, tol)?;
+        let mut matched = made_compatible(&curves, tol)?;
+        if !ruled {
+            matched = matched.iter().map(smooth_joint).collect();
+        }
         for (s, c) in read.iter_mut().zip(matched) {
             s.edges[e].curve = c;
         }
@@ -724,6 +727,70 @@ fn made_compatible(curves: &[BSplineCurve], tol: Tolerances) -> OgeomResult<Vec<
         .iter()
         .map(|c| BSplineCurve::rational(knots.clone(), c.control_points().to_vec()))
         .collect()
+}
+
+/// A section of two rational pieces that meet tangent at their joint knot,
+/// reweighted so its weighted control points run smoothly through the
+/// joint: the joint's weighted point is the knot spans' blend of its two
+/// neighbours'. Each piece is reparameterized by the rational change of
+/// parameter that keeps its ends, so the curve is the same curve.
+///
+/// A loft blends its sections' weighted control points, and the blend
+/// keeps any linear relation all of them share. Sections whose joints are
+/// all such blends with the same spans make a surface tangent across the
+/// joint line between them; a section tangent at its joint with its
+/// weights left as they come (a circular arc at its middle knot) is not
+/// such a blend, and the skin between two arcs of different sweeps creases
+/// along the joint. Any other section is returned as it is.
+fn smooth_joint(curve: &BSplineCurve) -> BSplineCurve {
+    let degree = curve.degree();
+    let knots = curve.knots();
+    let interior: Vec<(f64, usize)> = knots
+        .distinct()
+        .into_iter()
+        .filter(|(v, _)| *v > KNOT_SAME && *v < 1.0 - KNOT_SAME)
+        .collect();
+    let control = curve.control_points();
+    let ([(at, multiplicity)], true) = (interior.as_slice(), control.len() == 2 * degree + 1)
+    else {
+        return curve.clone();
+    };
+    if *multiplicity != degree || degree == 0 {
+        return curve.clone();
+    }
+    let (start, end) = (knots.knots()[0], knots.knots()[knots.knots().len() - 1]);
+    let (left, right) = (at - start, end - at);
+    let joint = degree;
+    let (before, here, after) = (
+        control[joint - 1].point(),
+        control[joint].point(),
+        control[joint + 1].point(),
+    );
+    // Where the joint stands along the chord of its two neighbours, and
+    // how far off it.
+    let chord = after - before;
+    let length = chord.magnitude();
+    if length <= 0.0 || left <= 0.0 || right <= 0.0 {
+        return curve.clone();
+    }
+    let s = (here - before).dot(chord) / (length * length);
+    let off = (here - before - chord * s).magnitude();
+    if !(s > 0.0 && s < 1.0) || off > 1e-9 * length {
+        return curve.clone();
+    }
+    // The joint's weighted point as right/(left+right) of the one before
+    // and left/(left+right) of the one after.
+    let (lambda, mu) = (right / (left + right), left / (left + right));
+    let w = control[joint].weight;
+    let c_before = w * (1.0 - s) / lambda / control[joint - 1].weight;
+    let c_after = w * s / mu / control[joint + 1].weight;
+    let mut out = control.to_vec();
+    for i in 0..=degree {
+        let k = i32::try_from(i).unwrap_or(i32::MAX);
+        out[joint - i] = control[joint - i].scale(c_before.powi(k));
+        out[joint + i] = control[joint + i].scale(c_after.powi(k));
+    }
+    BSplineCurve::rational(knots.clone(), out).unwrap_or_else(|_| curve.clone())
 }
 
 /// The mean distance between two compatible sections' control points.

@@ -34,6 +34,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Two half domes sew into an open sheet (#138).** Sewing two half
+  domes, about opposite axes or mirrored, joined their half rims as one
+  edge and closed the sheet when the arc's centre sat a little off the
+  axis. A face holding one edge at two placements keeps its meridians on
+  their own columns and its pole as one vertex when sewing rebuilds it, so
+  only the meridian seams join.
+
+- **A loft through three arcs and a revolved dome thicken (#140).** A
+  smooth loft whose sections are two-piece curves is built without a crease
+  along their middle knot, so `make_thick_sheet` and `offset_sheet` fit
+  its offset; lofts through such sections get a slightly different surface
+  between the sections. A revolved circle in a plane through its axis
+  offsets exactly, and offsets no longer go wrong at a pole.
+
 - **A native snapshot carries only the provenance its shapes reach
   (#137).** `native::write` and `compacted` wrote every provenance entry
   the model ever made (39 MB for a 582-face plate cut hole by hole); they

@@ -549,7 +549,18 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
                 // the surface is not periodic.
                 let mu = (hi.x - lo.x).max(tol.parametric()) * 0.02;
                 let mv = (hi.y - lo.y).max(tol.parametric()) * 0.02;
-                let (mut u0, mut u1, mut v0, mut v1) = (lo.x - mu, hi.x + mu, lo.y - mv, hi.y + mv);
+                // Not past a pole, a side of the box that is one point: a
+                // chart carried on through the axis of a revolution turns
+                // its normal over there, and no offset follows it.
+                let pole =
+                    |u: Option<f64>, v: Option<f64>| collapsed(&face.surface, u, v, (lo, hi), tol);
+                let margin = |m: f64, side: bool| if side { 0.0 } else { m };
+                let (mut u0, mut u1, mut v0, mut v1) = (
+                    lo.x - margin(mu, pole(Some(lo.x), None)?),
+                    hi.x + margin(mu, pole(Some(hi.x), None)?),
+                    lo.y - margin(mv, pole(None, Some(lo.y))?),
+                    hi.y + margin(mv, pole(None, Some(hi.y))?),
+                );
                 if !face.surface.is_periodic_u() {
                     u0 = u0.max(ua);
                     u1 = u1.min(ub);
@@ -959,7 +970,18 @@ fn moved_point(
         return Ok(at);
     }
     if let Some(n) = sheet_normal(&sheet.faces[face], uv, tol) {
-        return Ok(at + n * distance);
+        let moved = at + n * distance;
+        // On a parallel collapsed to a point the chart's normal is any
+        // direction, and may point the moved point away from the exact
+        // moved surface by as much as twice the distance; that surface
+        // answers there instead.
+        if surfaces[face].exact {
+            let exact = surfaces[face].geometry.point_at(uv.x, uv.y, tol)?;
+            if exact.distance(moved) > distance.abs() {
+                return Ok(exact);
+            }
+        }
+        return Ok(moved);
     }
     if surfaces[face].exact {
         return surfaces[face].geometry.point_at(uv.x, uv.y, tol);
@@ -1007,6 +1029,33 @@ fn agreed(candidates: &[Point], target: f64, what: &str) -> OgeomResult<(Point, 
         );
     }
     Ok((mean, spread))
+}
+
+/// Whether the line of `surface`'s chart at `u` (or at `v`) across the box
+/// from `lo` to `hi` is one point within the confusion distance: a pole,
+/// or a parallel so near the axis of a revolution that it is one.
+fn collapsed(
+    surface: &SurfaceGeometry,
+    u: Option<f64>,
+    v: Option<f64>,
+    (lo, hi): (Point2, Point2),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let mut points = Vec::with_capacity(9);
+    for k in 0..=8 {
+        let t = f64::from(k) / 8.0;
+        points.push(surface.point_at(
+            u.unwrap_or(lo.x + (hi.x - lo.x) * t),
+            v.unwrap_or(lo.y + (hi.y - lo.y) * t),
+            tol,
+        )?);
+    }
+    let first = points[0];
+    let sum = points
+        .iter()
+        .fold(Vector::ZERO, |acc, p| acc + (*p - first));
+    let centre = first + sum / 9.0;
+    Ok(points.iter().all(|p| p.distance(centre) <= tol.confusion()))
 }
 
 /// The sample count along a window or a range when measuring.
@@ -1083,10 +1132,24 @@ fn moved_surface(
 
     // The exact parallel, measured against the moved points before use.
     if let Some(parallel) = OffsetSurface::new(base.clone(), total)?.analytic(tol)? {
+        // On a pole the basis normal is any direction the chart happens to
+        // give, and says nothing of the offset: the window's rows and
+        // columns that are one point are not measured.
+        let window = (Point2::new(u0, v0), Point2::new(u1, v1));
+        let mut pole_columns = Vec::new();
+        let mut pole_rows = Vec::new();
+        for k in 0..=PROBES {
+            let (u, v) = probe(k, k);
+            pole_columns.push(collapsed(base, Some(u), None, window, tol)?);
+            pole_rows.push(collapsed(base, None, Some(v), window, tol)?);
+        }
         let mut worst = 0.0_f64;
         for i in 0..=PROBES {
             for j in 0..=PROBES {
                 let (u, v) = probe(i, j);
+                if pole_columns[i as usize] || pole_rows[j as usize] {
+                    continue;
+                }
                 if let Some(want) = moved_at(u, v)? {
                     worst = worst.max(parallel.point_at(u, v, tol)?.distance(want));
                 }

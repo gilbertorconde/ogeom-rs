@@ -287,3 +287,114 @@ fn sheets_between_arcs_of_two_radii_thicken_at_every_distance() {
         }
     }
 }
+
+/// The arc through `a`, `b` and `c`, from `a` to `c`.
+fn arc_through(model: &mut Model, a: Point, b: Point, c: Point) -> Shape {
+    use ogeom::geom::CircleCurve;
+    use ogeom::math::Circle;
+    let circle = Circle::through(a, b, c, T).unwrap();
+    let frame = circle.frame();
+    let to = c - frame.origin();
+    let end = to
+        .dot(frame.y().vector())
+        .atan2(to.dot(frame.x().vector()))
+        .rem_euclid(core::f64::consts::TAU);
+    ogeom::algo::make_edge(model, CircleCurve::new(circle).into(), (0.0, end), T)
+        .unwrap()
+        .shape
+}
+
+/// Thickened by one to one side and to both, one solid valid under check;
+/// and offset by one, a face valid under check.
+fn thickens_at_one(model: &mut Model, sheet: &Shape, what: &str) {
+    for both in [false, true] {
+        let thick = make_thick_sheet(model, sheet, 1.0, both, T)
+            .unwrap_or_else(|e| panic!("{what}, both sides {both}: {e}"))
+            .shape;
+        let solids = explore(model, &thick, Filter::OfType(ShapeType::Solid)).unwrap();
+        assert_eq!(solids.len(), 1, "{what}, both sides {both}");
+        let diagnosis = check(model, &thick, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "{what}, both sides {both}: {diagnosis}"
+        );
+    }
+    let face = explore(model, sheet, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .remove(0);
+    let moved = offset_sheet(model, &face, 1.0, T)
+        .unwrap_or_else(|e| panic!("{what}, offset: {e}"))
+        .shape;
+    assert!(
+        check(model, &moved, T).unwrap().is_valid(),
+        "{what}, offset"
+    );
+}
+
+/// A loft through three arcs from (0, 0) to (20, 0), bowed one way, the
+/// other way and back again along its length.
+#[test]
+fn a_loft_through_three_arcs_bowed_both_ways_thickens() {
+    use ogeom::offset::make_loft_surface;
+    let mut model = Model::new();
+    let arcs: Vec<Shape> = [(0.0, 3.0), (10.0, -3.0), (20.0, 5.0)]
+        .into_iter()
+        .map(|(z, bow)| {
+            arc_through(
+                &mut model,
+                Point::new(0.0, 0.0, z),
+                Point::new(10.0, bow, z),
+                Point::new(20.0, 0.0, z),
+            )
+        })
+        .collect();
+    let sheet = make_loft_surface(&mut model, &arcs, false, &[], false, T)
+        .unwrap()
+        .shape;
+    thickens_at_one(&mut model, &sheet, "loft");
+}
+
+/// A quarter circle from (10, 0, 0) up to (0, 0, 10) turned a full turn
+/// about the Z axis through its centre: a dome on a sphere, its centre on
+/// the axis exactly, as three points place it, and 4e-8 off it along -X
+/// and -Z with the radius grown to reach both ends.
+#[test]
+fn a_revolved_dome_thickens() {
+    use ogeom::algo::make_revolution;
+    use ogeom::math::{Axis, Direction};
+    let s = core::f64::consts::FRAC_1_SQRT_2 * 10.0;
+    for off in [Some(0.0), None, Some(4.051_126_4e-8)] {
+        let mut model = Model::new();
+        let (a, c) = (Point::new(10.0, 0.0, 0.0), Point::new(0.0, 0.0, 10.0));
+        let quarter = if let Some(off) = off {
+            use ogeom::geom::CircleCurve;
+            use ogeom::math::{Circle, Frame, Vector};
+            let frame = Frame::new(
+                Point::new(-off, 0.0, -off),
+                Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(),
+                Direction::X,
+                T,
+            )
+            .unwrap();
+            let circle = CircleCurve::new(Circle::new(frame, 10.0 + off, T).unwrap());
+            ogeom::algo::make_edge(
+                &mut model,
+                circle.into(),
+                (0.0, core::f64::consts::FRAC_PI_2),
+                T,
+            )
+            .unwrap()
+            .shape
+        } else {
+            arc_through(&mut model, a, Point::new(s, 0.0, s), c)
+        };
+        let axis = Axis {
+            location: Point::ORIGIN,
+            direction: Direction::Z,
+        };
+        let sheet = make_revolution(&mut model, &quarter, axis, core::f64::consts::TAU, T)
+            .unwrap()
+            .shape;
+        thickens_at_one(&mut model, &sheet, &format!("dome, centre off {off:?}"));
+    }
+}

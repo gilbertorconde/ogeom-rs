@@ -20,7 +20,7 @@ use ogeom_math::{
     Transform, Vector, Weighted, bspline, elementary,
 };
 
-use crate::curve::{BSplineCurve, Curve};
+use crate::curve::{BSplineCurve, CircleCurve, Curve};
 use crate::traits::{Continuity, Curve3d, Surface, SurfaceKind, Transformable};
 
 /// How far an unbounded surface's default domain reaches.
@@ -709,7 +709,9 @@ impl OffsetSurface {
     /// The offset as the analytic surface it is, where the basis is one: a
     /// plane moved along its normal, a drum, ball or ring's tube grown or
     /// shrunk, a cone's reference radius changed by `d / cos α` over the
-    /// same half-angle. Which way the offset grows is read off the basis's
+    /// same half-angle, a revolved circle in a plane through its axis
+    /// revolved again with its radius grown or shrunk. Which way the offset
+    /// grows is read off the basis's
     /// own normal at a point, not assumed from its parameterization. `None`
     /// for any other basis, or for an offset that would turn the surface
     /// inside out (a radius through zero).
@@ -831,8 +833,68 @@ impl OffsetSurface {
                     .into(),
                 )
             }
+            SurfaceGeometry::Revolution(r) => self.revolved_circle_offset(r, tol)?,
             _ => None,
         })
+    }
+
+    /// The offset of a revolution whose profile is a circle in a plane
+    /// through the axis: each meridian's normal is its circle's radius, so
+    /// the offset is the concentric circle revolved over the same angle,
+    /// and each `(u, v)` names the offset of the point it names on the
+    /// basis. A circle centred on the axis makes a sphere, any other a
+    /// stretch of a torus. `None` for any other profile, or where the
+    /// radius would pass through zero.
+    fn revolved_circle_offset(
+        &self,
+        r: &RevolutionSurface,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<SurfaceGeometry>> {
+        let Curve::Circle(profile) = r.curve() else {
+            return Ok(None);
+        };
+        // Running forward, the same point at every parameter.
+        let circle = profile.forward(tol)?.circle();
+        let frame = circle.frame();
+        let axis = r.axis();
+        let normal = frame.z().vector();
+        // The profile's plane holds the axis: its normal is square to the
+        // axis and the axis's point lies in it.
+        if normal.dot(axis.direction.vector()).abs() > tol.angular()
+            || (axis.location - frame.origin()).dot(normal).abs() > tol.confusion()
+        {
+            return Ok(None);
+        }
+        // Which way the basis normal points against the circle's radius,
+        // read where the meridian stands clear of the axis.
+        let ((u0, u1), (v0, v1)) = r.domain();
+        let u = f64::midpoint(u0, u1);
+        let mut grow = None;
+        for k in 1..8 {
+            let v = v0 + (v1 - v0) * f64::from(k) / 8.0;
+            let Ok(n) = r.normal_at(u, v, tol) else {
+                continue;
+            };
+            let at = r.point_at(u, v, tol)?;
+            let centre = Transform::rotation(axis, u).apply(frame.origin());
+            let along = n.vector().dot(at - centre);
+            if along.abs() > 0.5 * circle.radius() {
+                grow = Some(if along > 0.0 { 1.0 } else { -1.0 });
+                break;
+            }
+        }
+        let Some(grow) = grow else {
+            return Ok(None);
+        };
+        let radius = circle.radius() + grow * self.distance;
+        if radius <= tol.confusion() {
+            return Ok(None);
+        }
+        let curve = CircleCurve::new(ogeom_math::Circle::new(frame, radius, tol)?);
+        let angle = r.domain().0;
+        Ok(Some(
+            RevolutionSurface::new(curve.into(), axis, angle.1 - angle.0)?.into(),
+        ))
     }
 }
 
