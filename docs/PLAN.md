@@ -23,13 +23,6 @@ first, then refusals, then cost.
 
 ### Checking and measurement
 
-**Two orientation errors in one face cancel in the exact volume.**
-`volume_properties` takes the closed form only where the faces' flags agree:
-the edge walks tie faces into sets, and each set is probed as `check` probes
-a face. A face whose boundary's middle lies outside the face can read its
-walk backwards. If that face is also turned over, the two errors cancel and
-the closed form is taken on a wrong orientation, unseen.
-
 **Slits between a fitted edge and its pcurves.** The exact integral takes the
 strip between a lifted pcurve and its edge's curve as a ruled surface where
 the curve has a closed form and the pcurve stands off it by more than a

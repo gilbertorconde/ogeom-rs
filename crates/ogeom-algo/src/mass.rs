@@ -1296,7 +1296,11 @@ fn face_walks(
     // Otherwise each wire's middle in the chart stands in for the side
     // the face lies on, and which wire is the boundary:
     // the one covering the most of it, since a hole is inside what it
-    // is a hole in.
+    // is a hole in. The middle lies inside its wire's region only where
+    // that region is convex. It is here: the closed form integrates any
+    // other face round chart loops that close, which the windings above
+    // read, so a face reaching this point is one it takes as a chart
+    // rectangle or a disc, less rectangles and discs inside.
     let wires = model.ordered_children_of(face)?;
     let mut middles: Vec<(ogeom_math::Point2, f64)> = Vec::with_capacity(wires.len());
     let mut stations: Vec<Vec<(Shape, ogeom_math::Point2)>> = Vec::with_capacity(wires.len());

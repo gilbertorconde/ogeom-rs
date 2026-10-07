@@ -522,3 +522,99 @@ fn a_box_sewn_from_six_sheets_measures_exactly() {
         assert!((a.mass - 400.0).abs() < 1e-12, "{case}: {}", a.mass);
     }
 }
+
+/// Each face of `solid` turned over in turn: the volume is `want` in
+/// closed form, or read off the mesh, never a wrong exact value.
+fn each_face_turned_weighs(model: &mut Model, solid: &Shape, want: f64) {
+    use ogeom::topo::{ShapeType, explore_unique};
+    let honest = ogeom::algo::volume_properties(model, solid, Deflection::default(), T).unwrap();
+    assert_eq!(
+        honest.deflection, 0.0,
+        "the honest solid is weighed exactly"
+    );
+    assert!(
+        (honest.mass - want).abs() < want * 1e-12,
+        "{} against {want}",
+        honest.mass
+    );
+    let faces = explore_unique(model, solid, ShapeType::Face).unwrap();
+    for which in 0..faces.len() {
+        let mut held = faces.clone();
+        held[which] = held[which].reversed();
+        let shell = ogeom::algo::make_shell(model, &held).unwrap().shape;
+        let turned = ogeom::algo::make_solid(model, &[shell]).unwrap().shape;
+        let measured = ogeom::algo::volume_properties(
+            model,
+            &turned,
+            Deflection::with_chord(1e-3).unwrap(),
+            T,
+        )
+        .unwrap();
+        let slack = if measured.deflection == 0.0 {
+            1e-12
+        } else {
+            1e-3
+        };
+        assert!(
+            (measured.mass - want).abs() < want * slack,
+            "face {which} turned over: {} against {want} (deflection {})",
+            measured.mass,
+            measured.deflection
+        );
+    }
+}
+
+/// A face whose boundary's middle lies outside it reads which side of its
+/// edges it lies on from its own chart loops, so turned over it is turned
+/// back like any other face: a C-shaped plate, whose boundary's middle
+/// falls in its notch, and an annulus sector of five sixths of a turn,
+/// whose boundary's middle falls in its bore.
+#[test]
+fn a_face_whose_boundary_middle_lies_outside_it_is_turned_back() {
+    let mut model = Model::new();
+    let c = [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 3.0),
+        (3.0, 3.0),
+        (3.0, 7.0),
+        (10.0, 7.0),
+        (10.0, 10.0),
+        (0.0, 10.0),
+    ]
+    .map(|(x, y)| Point::new(x, y, 0.0));
+    let wire = ogeom::algo::make_polygon(&mut model, &c, true, T)
+        .unwrap()
+        .shape;
+    let plane = ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(Frame::WORLD)).into();
+    let face = ogeom::algo::make_face(&mut model, plane, &[wire], T)
+        .unwrap()
+        .shape;
+    let lift = ogeom::math::Vector::new(0.0, 0.0, 4.0);
+    let plate = ogeom::algo::make_prism(&mut model, &face, lift, T)
+        .unwrap()
+        .shape;
+    each_face_turned_weighs(&mut model, &plate, 72.0 * 4.0);
+
+    let (inner, outer, height) = (6.0, 10.0, 3.0);
+    let pts = [(inner, 0.0), (outer, 0.0), (outer, height), (inner, height)]
+        .map(|(x, z)| Point::new(x, 0.0, z));
+    let wire = ogeom::algo::make_polygon(&mut model, &pts, true, T)
+        .unwrap()
+        .shape;
+    let xz = Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap();
+    let plane = ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(xz)).into();
+    let profile = ogeom::algo::make_face(&mut model, plane, &[wire], T)
+        .unwrap()
+        .shape;
+    let axis = ogeom::math::Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Z,
+    };
+    let angle = std::f64::consts::TAU * 5.0 / 6.0;
+    let sector = ogeom::algo::make_revolution(&mut model, &profile, axis, angle, T)
+        .unwrap()
+        .shape;
+    let want = angle / 2.0 * (outer * outer - inner * inner) * height;
+    each_face_turned_weighs(&mut model, &sector, want);
+}
