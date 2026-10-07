@@ -1901,15 +1901,15 @@ fn rail(
     // walls they sweep by as much, all along the rail.
     let doubt = data.tolerance;
 
-    let line = ogeom_geom::LineCurve::segment(from, from + vector, tol)?;
-    let built = crate::build::make_edge_between(
-        model,
-        line.into(),
-        (0.0, vector.magnitude()),
-        &base,
-        &raised,
-        tol,
-    )?;
+    // The rail's parameter is the distance travelled, so its range is the
+    // travel itself. A segment between `from` and `from + vector` would take
+    // its range from the distance between two rounded points instead, and far
+    // from the origin that falls short of the travel by their rounding.
+    let travel = vector.magnitude();
+    let axis = ogeom_math::Axis::new(from, ogeom_math::Direction::new(vector, tol)?);
+    let line = ogeom_geom::LineCurve::over(axis, 0.0, travel)?;
+    let built =
+        crate::build::make_edge_between(model, line.into(), (0.0, travel), &base, &raised, tol)?;
     model.widen(&built.shape, doubt)?;
     model.set_derived(&built.shape, std::slice::from_ref(&base), roles::SWEEP_RAIL)?;
     rails.insert(base.node(), built.shape.clone());
@@ -2061,6 +2061,53 @@ mod tests {
         crate::build::make_face_with_pcurves(model, surface, &[outer_edges, vec![ring]], T)
             .unwrap()
             .shape
+    }
+
+    /// A prism is the same solid wherever its profile stands. The profile is a
+    /// 40 × 20 rectangle with a round hole r 5, on a plane tilted to normal
+    /// (1, 1, 1) through (o, −o, o), swept 30 along that normal; its volume is
+    /// 30 × (800 − 25π) at every offset. Far out, the side the solid takes is
+    /// read off a mesh whose coordinates are all of order o, and the rails run
+    /// between points rounded to o's spacing.
+    #[test]
+    fn a_holed_prism_on_a_tilted_plane_far_from_the_origin_is_the_same_solid() {
+        let n = ogeom_math::Direction::new(Vector::new(1.0, 1.0, 1.0), T).unwrap();
+        let exact = 30.0 * (800.0 - 25.0 * core::f64::consts::PI);
+        for o in [0.0, 7.0e6, 2.0e7] {
+            let mut model = Model::new();
+            let frame = Frame::new(Point::new(o, -o, o), n, ogeom_math::Direction::X, T).unwrap();
+            let at =
+                |x: f64, y: f64| frame.origin() + frame.x().vector() * x + frame.y().vector() * y;
+            let corners =
+                [(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)].map(|(x, y)| at(x, y));
+            let outer = crate::build::make_polygon(&mut model, &corners, true, T)
+                .unwrap()
+                .shape;
+            let centre = Frame::new(at(20.0, 15.0), n, frame.x(), T).unwrap();
+            let curve: ogeom_geom::Curve =
+                ogeom_geom::CircleCurve::new(Circle::new(centre, 5.0, T).unwrap()).into();
+            let domain = curve.domain();
+            let ring = crate::build::make_edge(&mut model, curve, domain, T)
+                .unwrap()
+                .shape;
+            let hole = make_wire(&mut model, &[ring], T).unwrap().shape.reversed();
+            let surface = ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(frame)).into();
+            let face = crate::build::make_face(&mut model, surface, &[outer, hole], T)
+                .unwrap()
+                .shape;
+
+            let built = make_prism(&mut model, &face, n.vector() * 30.0, T)
+                .unwrap_or_else(|e| panic!("the prism at {o:e} was refused: {e}"));
+            let diagnosis = crate::check(&model, &built.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "at {o:e}: {diagnosis}");
+            let volume = volume_properties(&model, &built.shape, Deflection::default(), T)
+                .unwrap_or_else(|e| panic!("at {o:e}: {e}"))
+                .mass;
+            // The walls and caps are exact surfaces, and the volume is
+            // integrated on them, so only coordinates rounded at o's spacing
+            // (4e-9 at 2e7) separate it from the closed form.
+            assert_relative_eq!(volume, exact, max_relative = 1e-6);
+        }
     }
 
     /// Every edge between two faces of a swept solid is walked once each

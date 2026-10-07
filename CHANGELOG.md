@@ -21,6 +21,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A prism far from the origin comes out the right way round.** A
+  closed mesh's volume is summed about one of its own vertices and a
+  ring's turn about one of its own points, not about the origin, so their
+  rounding no longer grows with the distance from it. `make_solid` read
+  its side from that volume and turned a correct shell inside out (a
+  holed profile 7e6 from the origin), and a small ring far out could be
+  wound the wrong way. A prism's rails run over the travel itself, so a
+  profile 2e7 out no longer fails with a parameter outside the rail's
+  domain.
+
 - **Hidden line removal splits an edge where it passes behind a
   contour.** An edge partly behind a face is drawn part visible and part
   hidden, where a straight one was drawn wholly one or the other; the exact

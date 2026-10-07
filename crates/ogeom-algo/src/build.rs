@@ -511,10 +511,17 @@ pub(crate) fn edges_turn(
             points.push(placement.apply(geometry.point_at(t, tol)?));
         }
     }
+    // Taken about the walk's own first point rather than the origin: a closed
+    // walk's sum does not depend on the point, but each term's rounding grows
+    // with the distance to it, and a small ring far from the origin would
+    // otherwise turn by its rounding rather than by its area.
+    let Some(&reference) = points.first() else {
+        return Ok(0.0);
+    };
     let mut newell = ogeom_math::Vector::ZERO;
     for i in 0..points.len() {
         let (a, b) = (points[i], points[(i + 1) % points.len()]);
-        newell += (a - ogeom_math::Point::ORIGIN).cross(b - ogeom_math::Point::ORIGIN);
+        newell += (a - reference).cross(b - reference);
     }
     Ok(newell.dot(axis))
 }
@@ -2609,6 +2616,31 @@ fn iso_curve_parameter_at(surface: &SurfaceGeometry, v: f64) -> f64 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A ring's turn is twice its area wherever it stands: a square 0.125 on
+    /// a side turns by 2 × 0.125² about its normal at the origin and 1e8 away
+    /// alike, the side kept small against the offset so the area is
+    /// outweighed by any rounding that grows with distance from the origin.
+    #[test]
+    fn a_small_ring_far_from_the_origin_turns_by_its_area() {
+        let tol = ogeom_core::Tolerances::millimetres();
+        let side = 0.125;
+        for offset in [0.0, 1.0e6, 1.0e7, 1.0e8] {
+            let mut model = Model::new();
+            let corners = [(0.0, 0.0), (side, 0.0), (side, side), (0.0, side)]
+                .map(|(x, y)| Point::new(offset + x, -offset + y, 0.0));
+            let ring = make_polygon(&mut model, &corners, true, tol).unwrap().shape;
+            let z = ogeom_math::Vector::new(0.0, 0.0, 1.0);
+            // Corners 1e8 out are exact (0.125 is a power of two), but the
+            // points sampled between them are rounded to 1.5e-8 there, a
+            // relative 1e-7 of the side.
+            approx::assert_relative_eq!(
+                wire_turn(&model, &ring, z, tol).unwrap(),
+                2.0 * side * side,
+                max_relative = 1e-6
+            );
+        }
+    }
 
     /// A plane keeps its normal and the face walks its rings about it:
     /// an outline wound clockwise and a hole wound counter-clockwise are

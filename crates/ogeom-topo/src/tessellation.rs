@@ -87,16 +87,26 @@ impl Triangulation {
     ///
     /// Meaningful only for a mesh that is closed and consistently wound
     /// outward: each triangle contributes the signed volume of the tetrahedron
-    /// it forms with the origin, and the contributions cancel except over the
-    /// enclosed region. An open mesh gives a number with no meaning, and a mesh
-    /// wound inward gives the negative, which is why
+    /// it forms with a reference point, and the contributions cancel except
+    /// over the enclosed region. An open mesh gives a number with no meaning,
+    /// and a mesh wound inward gives the negative, which is why
     /// [`Triangulation::is_closed`] exists to be asked first.
+    ///
+    /// The reference point is one of the mesh's own vertices, not the origin.
+    /// For a closed mesh the sum does not depend on it, but its rounding does:
+    /// each term is a triple product of vectors from the reference point, and
+    /// a mesh standing far from it pays for that distance cubed. A part 30
+    /// long standing 1e7 from the origin gives terms near 1e15 whose rounding
+    /// outweighs the part's whole volume, sign included.
     #[must_use]
     pub fn volume(&self) -> f64 {
+        let Some(&reference) = self.positions.first() else {
+            return 0.0;
+        };
         self.triangles
             .iter()
             .map(|t| {
-                let [a, b, c] = t.map(|i| self.positions[i as usize].to_vector());
+                let [a, b, c] = t.map(|i| self.positions[i as usize] - reference);
                 a.dot(b.cross(c)) / 6.0
             })
             .sum()
@@ -592,6 +602,42 @@ mod tests {
         assert_relative_eq!(mesh.volume(), 0.0);
         assert!(!mesh.is_closed(), "nothing is not closed");
         assert!(mesh.bounds().is_empty());
+    }
+
+    /// A closed mesh encloses the same volume wherever it stands. A unit
+    /// cube 1e7 from the origin has vertices exact in `f64` (spacing there
+    /// is 2e-9), so any error is the sum's own rounding.
+    #[test]
+    fn a_closed_mesh_far_from_the_origin_encloses_its_own_volume() {
+        for offset in [0.0, 1.0e6, 1.0e7, 1.0e8] {
+            let o = Vector::new(offset, -offset, offset);
+            let mut mesh = Triangulation::new();
+            for k in 0..8 {
+                let corner =
+                    Point::new(f64::from(k & 1), f64::from((k >> 1) & 1), f64::from(k >> 2));
+                mesh.positions.push(corner + o);
+            }
+            // Corner k sits at (k & 1, k >> 1 & 1, k >> 2); two triangles a
+            // side, each wound counter-clockwise seen from outside.
+            mesh.triangles = vec![
+                [0, 2, 1],
+                [1, 2, 3], // z = 0
+                [4, 5, 6],
+                [5, 7, 6], // z = 1
+                [0, 1, 4],
+                [1, 5, 4], // y = 0
+                [2, 6, 3],
+                [3, 6, 7], // y = 1
+                [0, 4, 2],
+                [2, 4, 6], // x = 0
+                [1, 3, 5],
+                [3, 7, 5], // x = 1
+            ];
+            assert!(mesh.is_closed(), "the cube closes at {offset:e}");
+            // The cube's own rounding is nil, so 1e-9 leaves room only for
+            // summing twelve terms of order one.
+            assert_relative_eq!(mesh.volume(), 1.0, epsilon = 1e-9);
+        }
     }
 
     /// A mesh of four corner positions, with whatever triangles are given.
