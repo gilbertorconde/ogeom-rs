@@ -861,6 +861,16 @@ impl NodeData {
         }
     }
 
+    /// Set this node's tolerance, if it has one: how a widening is undone.
+    pub(crate) fn set_tolerance(&mut self, to: Tolerance) {
+        match self {
+            Self::Vertex(v) => v.tolerance = to,
+            Self::Edge(e) => e.tolerance = to,
+            Self::Face(f) => f.tolerance = to,
+            Self::Container => {}
+        }
+    }
+
     /// The vertex data, if this is a vertex.
     #[must_use]
     pub const fn as_vertex(&self) -> Option<&VertexData> {

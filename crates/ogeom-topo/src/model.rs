@@ -42,6 +42,10 @@ pub struct Model {
     tolerances: Tolerances,
     face_boxes: FaceBoxes,
     held: Held,
+    /// While a journal is open, each node [`Model::widen`] grew or
+    /// [`Model::node_mut`] handed out, and its tolerance before: what
+    /// [`Model::undo_widened`] puts back.
+    widened: Option<Vec<(TShapeId, Tolerance)>>,
 }
 
 /// The nodes an operation passed through into its result from the shapes
@@ -130,6 +134,7 @@ impl Model {
             tolerances,
             face_boxes: FaceBoxes::default(),
             held: Held::default(),
+            widened: None,
         }
     }
 
@@ -767,8 +772,15 @@ impl Model {
     #[must_use]
     pub fn node_mut(&mut self, shape: &Shape) -> Option<&mut TShape> {
         self.sync_face_boxes();
-        if self.nodes.get(shape.node()).is_some() {
+        if let Some(node) = self.nodes.get(shape.node()) {
             self.face_boxes.forget_above(shape.node().index());
+            // The tolerance as it stands, which an edit through the node
+            // may grow: what an attempt that fails puts back.
+            if let Some(journal) = &mut self.widened
+                && let Some(was) = node.data().tolerance()
+            {
+                journal.push((shape.node(), was));
+            }
         }
         self.nodes.get_mut(shape.node())
     }
@@ -1211,10 +1223,63 @@ impl Model {
         }
         for id in affected {
             if let Some(node) = self.nodes.get_mut(id) {
+                if let Some(journal) = &mut self.widened
+                    && let Some(was) = node.data().tolerance()
+                    && was.get() < to.get()
+                {
+                    journal.push((id, was));
+                }
                 node.data_mut().widen(to);
             }
         }
         Ok(())
+    }
+
+    /// Start noting the tolerances [`Model::widen`] grows and edits through
+    /// [`Model::node_mut`] may grow, so an attempt that fails can put them
+    /// back with [`Model::undo_widened`]. Where a journal is
+    /// open already, it goes on and the mark is where this attempt began.
+    pub fn note_widened(&mut self) -> WidenMark {
+        match &self.widened {
+            Some(journal) => WidenMark {
+                from: journal.len(),
+                opened: false,
+            },
+            None => {
+                self.widened = Some(Vec::new());
+                WidenMark {
+                    from: 0,
+                    opened: true,
+                }
+            }
+        }
+    }
+
+    /// Put back every tolerance noted since `mark`, and
+    /// close the journal where `mark` opened it.
+    pub fn undo_widened(&mut self, mark: WidenMark) {
+        let Some(journal) = &mut self.widened else {
+            return;
+        };
+        let undone: Vec<(TShapeId, Tolerance)> =
+            journal.drain(mark.from.min(journal.len())..).collect();
+        // Latest first, so a node grown twice ends at what it was first.
+        for (id, was) in undone.into_iter().rev() {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.data_mut().set_tolerance(was);
+            }
+        }
+        if mark.opened {
+            self.widened = None;
+        }
+    }
+
+    /// Keep the tolerances noted since `mark` as they now stand, and close
+    /// the journal where `mark` opened it.
+    pub fn keep_widened(&mut self, mark: WidenMark) {
+        if mark.opened {
+            self.widened = None;
+        }
     }
 
     /// Record that `result` holds nodes made before the model held `since`
@@ -1580,6 +1645,14 @@ fn placed_box(kept: &Aabb, placement: &Transform) -> Aabb {
         },
         _ => kept.transformed(placement),
     }
+}
+
+/// Where an attempt began in the journal [`Model::note_widened`] opens.
+#[derive(Debug, Clone, Copy)]
+#[must_use]
+pub struct WidenMark {
+    from: usize,
+    opened: bool,
 }
 
 /// What [`Model::unshare_each`] made of the shapes it was given.
@@ -2501,6 +2574,43 @@ mod tests {
         let a = instances[0].transform(model.datums()).unwrap();
         let b = instances[99].transform(model.datums()).unwrap();
         assert!(!a.is_equal(&b, T));
+    }
+
+    #[test]
+    fn what_a_failed_attempt_widened_is_put_back() {
+        let mut model = Model::new();
+        let tolerance =
+            |model: &Model, v: &Shape| model.node(v).unwrap().data().tolerance().unwrap().get();
+        let v = model.add_point(Point::new(0.0, 0.0, 0.0));
+        let w = model.add_point(Point::new(1.0, 0.0, 0.0));
+        let was = tolerance(&model, &v);
+        let outer = model.note_widened();
+        model.widen(&v, Tolerance::new(0.5).unwrap()).unwrap();
+        // An attempt within another puts back only its own.
+        let inner = model.note_widened();
+        model.widen(&v, Tolerance::new(2.0).unwrap()).unwrap();
+        model.widen(&w, Tolerance::new(3.0).unwrap()).unwrap();
+        model.undo_widened(inner);
+        assert_eq!(tolerance(&model, &v), 0.5);
+        assert_eq!(tolerance(&model, &w), was);
+        model.undo_widened(outer);
+        assert_eq!(tolerance(&model, &v), was);
+        // An edit through the node itself is put back as well.
+        let edit = model.note_widened();
+        if let Some(node) = model.node_mut(&w)
+            && let NodeData::Vertex(data) = node.data_mut()
+        {
+            data.tolerance = Tolerance::new(4.0).unwrap();
+        }
+        model.undo_widened(edit);
+        assert_eq!(tolerance(&model, &w), was);
+        // What an attempt that holds keeps stays, and nothing is noted after.
+        let kept = model.note_widened();
+        model.widen(&v, Tolerance::new(0.25).unwrap()).unwrap();
+        model.keep_widened(kept);
+        let after = model.note_widened();
+        model.undo_widened(after);
+        assert_eq!(tolerance(&model, &v), 0.25);
     }
 
     #[test]

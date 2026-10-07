@@ -44,6 +44,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean that falls back to every face starts from the solids as
+  given.** Where setting faces aside could not be assembled, what the
+  attempt had widened of the solids' own edges and vertices stayed widened
+  (sewing a failed attempt grew some by centimetres), and the boolean over
+  every face then failed too. `Model::note_widened`, `undo_widened` and
+  `keep_widened` journal the tolerances `Model::widen` grows and
+  `Model::node_mut` hands out; the boolean puts them back before taking
+  every face.
+
 - **A boolean against a solid whose coplanar faces are still split no
   longer refuses.** An edge held by two coplanar faces of one operand was
   laid onto the other operand's face twice, which lost the hole it bounded

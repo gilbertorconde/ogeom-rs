@@ -10747,10 +10747,22 @@ fn fused_and_assembled(
         assemble_result(model, &fused, &kept, keep_aside, a, b, tol)
     };
     if let Ok(Some(aside)) = aside::set_aside(model, a, b, tol) {
+        // The faces set aside keep the solids' own edges and vertices, and
+        // what the attempt widens of those is put back where it fails: the
+        // solids are given back as they came, and taking every face starts
+        // from them.
+        let mark = model.note_widened();
         match attempt(model, Some(&aside)) {
-            Ok(built) => return Ok(built),
-            Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
-            Err(_) => {}
+            Ok(built) => {
+                model.keep_widened(mark);
+                return Ok(built);
+            }
+            Err(e) => {
+                model.undo_widened(mark);
+                if matches!(e, ogeom_core::OgeomError::Cancelled) {
+                    return Err(e);
+                }
+            }
         }
     }
     attempt(model, None)
