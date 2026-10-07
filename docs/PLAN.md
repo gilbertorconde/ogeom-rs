@@ -41,13 +41,27 @@ face, is refused by the boolean's piece classification ("a contact over a
 region of faces not recognised as coincident is refused"). The case is a
 faceted wall leaning off a pad's wall by under a ten-thousandth of a radian:
 the band where the two stand within the weld distance covers most of the
-facet. A slab drafted 0.00001 under a pad refuses about a third of its
-row-count sets; where a corner facet meets the wall only at a vertex, the
-planes' solved line crosses it diagonally a tenth of a millimetre off and the
-kept pieces do not close. The design: pair the band as same-domain and split
-it where the planes part by the weld distance. At drafts of 0.00005 and
-0.00002 the remaining refusals are a lower corner row's facets crossing the
-pad's walls, or a ray meeting a tangency.
+facet. Two planar faces where one lies on one side of the other's plane, its
+corners past it by rounding at most, no longer give their planes' line as a
+section (`one_side_of` in `ogeom-bool/src/lib.rs`): a corner facet meeting
+the wall only at a vertex, and a facet's side edge beside the next wall. Of
+the 15 committed row-count sets at depths 3 and 10 drafted 0.00001, 24 of 30
+pass with each row a face of its own and 21 of 30 at the converter's own
+distance (20 and 14 before); at 0.00002, 28 and 28; at 0.00005, 30 and 27.
+What remains:
+
+- Drafted 0.00001 and 0.00002, depth 3 with falling or mixed counts
+  ([8,8,8,7,7,6,5], [10..4], [12..6], [6,6,6,4,8,7,5], at 0.00002 only
+  [10..4] and the last): every ray from a probe meets a tangency. At 0.00001, [8,9,9,5,4,5,5] with rows kept and
+  [7,7,7,6,6,6,5] and [8,5,9,9,5,8,7] at the converter's distance: the kept
+  pieces do not close. Neither is diagnosed.
+- At the converter's distance with depth 10 (the pad through the whole
+  slab), the fuse comes out 4e-5 to 6e-5 cubic millimetres under the mesh's
+  measure: 0.00001 [8;7] and three sets at 0.00005. Within the weld distance
+  times the top band's area, past the test's 2e-5.
+- The design for a band the two stand within the weld distance of each
+  other over a region: pair it as same-domain and split it where the planes
+  part by the weld distance.
 
 **Section loops pinned at a sphere's pole.** Where a curved wall passes
 through a pole of a sphere face, the marched section stalls and doubles back

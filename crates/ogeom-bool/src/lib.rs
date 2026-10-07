@@ -1418,6 +1418,41 @@ fn shared_line(ends: &[Point], target: &GFace, weld: f64, tol: Tolerances) -> Og
     Ok(false)
 }
 
+/// Whether a face bounded by straight edges lies on one side of `plane`, its
+/// corners past it by rounding at most: `None` where it crosses, has no
+/// edges, or has an edge of another kind or a pole, whose extent off the
+/// plane its corners do not bound; otherwise whether an edge of it lies in
+/// the plane, both ends within the confusion distance.
+fn one_side_of(
+    face: &GFace,
+    plane: ogeom_math::quadric::Plane,
+    tol: Tolerances,
+) -> OgeomResult<Option<bool>> {
+    if face.edges.is_empty() || !face.poles.is_empty() {
+        return Ok(None);
+    }
+    let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut edge_in = false;
+    for e in &face.edges {
+        if !matches!(&*e.curve, Curve::Line(_)) {
+            return Ok(None);
+        }
+        let mut ends_in = true;
+        for t in [e.crange.0, e.crange.1] {
+            let d = plane.signed_distance_to(e.curve.point_at(t, tol)?);
+            (low, high) = (low.min(d), high.max(d));
+            ends_in &= d.abs() <= tol.confusion();
+        }
+        edge_in |= ends_in;
+    }
+    // A corner the face shares with the plane's own face stands off it by
+    // rounding alone. A corner past it by more, however little, is a
+    // crossing: two blocks hinged a hair apart cross a few nanometres inside
+    // a side face, and that line bounds the sliver between them.
+    let past = tol.confusion() * 1e-3;
+    Ok((low >= -past || high <= past).then_some(edge_in))
+}
+
 /// A strand's tolerance as a junction may trust it: a fitted section whose
 /// trace failed reports a budget of metres, and a weld that believed it
 /// would join every vertex of the model. Nothing this pipeline fits is
@@ -2884,6 +2919,39 @@ fn fill(
                                         bound: e.bound,
                                     });
                                 }
+                            }
+                        }
+                    }
+                    // A face whose outline lies on one side of the other's
+                    // plane, to rounding, does not cross it, and their
+                    // planes' line splits neither face. Where the two stand
+                    // all but parallel (a corner facet meeting a wall only at
+                    // a vertex and leaning off it by less than its points'
+                    // rounding over its height) the solve places that line by
+                    // the rounding over the angle's sine, across the facet a
+                    // tenth of a millimetre from the vertex. At a wider angle
+                    // a face touching the plane only at corners gives a line
+                    // along its own edge to within the rounding (a facet's
+                    // side edge beside the next wall), a stub the arrangement
+                    // cannot tell from the edge. An edge lying in the plane is
+                    // where the faces meet: all but parallel the edge is a
+                    // contact already (above), and at a wider angle the line
+                    // stays.
+                    if !replaced
+                        && let (SurfaceGeometry::Plane(pa), SurfaceGeometry::Plane(pb)) =
+                            (&fa.surface, &fb.surface)
+                    {
+                        let sine = pa
+                            .plane()
+                            .normal()
+                            .vector()
+                            .cross(pb.plane().normal().vector())
+                            .magnitude();
+                        for (face, plane) in [(fa, pb.plane()), (fb, pa.plane())] {
+                            if let Some(edge_in) = one_side_of(face, plane, tol)?
+                                && (sine <= 1e-3 || !edge_in)
+                            {
+                                replaced = true;
                             }
                         }
                     }

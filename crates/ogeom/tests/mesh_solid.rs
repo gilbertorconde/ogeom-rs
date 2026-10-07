@@ -3617,6 +3617,47 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_differing_rows_cut_and_fuse()
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
+/// The slab drafted a hundred-thousandth, each row a face of its own: a top
+/// facet leans off the pad's wall by about a hundred-thousandth of a radian.
+/// With eight facets to a corner row, the lower triangle of each top quad
+/// meets its wall only at a vertex, and its plane, fitted with the rows
+/// below, crosses the wall's on a line the rounding places a tenth of a
+/// millimetre down the facet; rising counts leave a facet's side edge beside
+/// the next wall to within the rounding. Each face lies on one side of the
+/// other's plane, and neither line splits anything.
+#[test]
+fn pads_into_a_slab_drafted_a_hundred_thousandth_with_rows_kept_cut_and_fuse() {
+    let mut failed = Vec::new();
+    for counts in [[8; 7], [5, 6, 7, 7, 8, 8, 8]] {
+        for depth in [3.0, 10.0] {
+            if let Err(e) = pad_on_a_drafted_slab(depth, 0.00001, counts, true) {
+                failed.push(format!("{counts:?}: {e}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
+/// The same slab at the converter's own coplanar distance, where rows merge
+/// into faces on fitted planes: the top facets touch their walls only at
+/// corners shared to rounding, and are cut and fused alike.
+#[test]
+fn pads_into_a_slab_drafted_a_hundred_thousandth_cut_and_fuse() {
+    let mut failed = Vec::new();
+    for (counts, depth) in [
+        ([6; 7], 3.0),
+        ([6; 7], 10.0),
+        ([4; 7], 3.0),
+        ([8; 7], 3.0),
+        ([5, 6, 7, 7, 8, 8, 8], 10.0),
+    ] {
+        if let Err(e) = pad_on_a_drafted_slab(depth, 0.00001, counts, false) {
+            failed.push(format!("{counts:?}: {e}"));
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
 /// Pads from the large top faces of the part `OGEOM_TEST_77777` names,
 /// converted face for facet in single precision, fused back into it. Where
 /// a pad's wall crosses a facet row's edge that runs all but in the wall's
