@@ -328,9 +328,17 @@ which hosted runners do not promise. The work: an `iai` bench crate, a
 recorded count per bench, and a gate at a few percent.
 
 **Cheap and certain.**
-- `map_ordered` starts fresh threads for every stage, two items included:
-  a minimum batch per worker first, then measure a persistent pool against
-  `set_threads(1)` on the small booleans.
+- `map_ordered` starts fresh threads for every stage, two items included.
+  Measured, and left alone: the items are heavy (faces, edges, face pairs)
+  and few (a drill hands over 2, 2 and 5), so the default count already
+  beats `--threads 1` on the small benches (boolean_drill 1.0 against
+  1.45 ms, fillet_block 20 against 37 ms). A minimum batch per worker
+  serialises those stages: 2 items per worker cost fillet_box_all 3%,
+  4 cost it 10%, 16 nearly doubled fillet_block. A scoped spawn costs
+  8 to 16 us per thread here, about 8% of boolean_drill and under 1% of
+  the fillets. Letting the caller take items as one of the workers gained
+  3% on boolean_drill and 7% on boolean_local, under the 10% bar; a
+  persistent pool could win at most that 8% on the smallest booleans.
 - Closed-form feet: cone and torus on surfaces (the inversions already
   exist in `ogeom-math/src/elementary.rs`), extrusions and revolutions
   through their profile, line and circle on curves; Newton on
