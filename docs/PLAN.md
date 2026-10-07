@@ -23,10 +23,6 @@ first, then refusals, then cost.
 
 ### Checking and measurement
 
-**A surface fit refuses where its surface cannot be evaluated.** A surface
-fit (`to_nurbs_within`, a patch's degree restriction) over a surface that
-cannot be evaluated somewhere (an offset sphere's poles) refuses.
-
 **A two-edge hole thinner than a micron is read as a slit.** The mesher
 drops an inner ring as a slit (`is_slit` in
 `ogeom-mesh/src/triangulate.rs`) only where its wire walks out and back

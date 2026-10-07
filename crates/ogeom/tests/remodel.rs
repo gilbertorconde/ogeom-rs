@@ -274,6 +274,15 @@ fn as_offset(s: &SurfaceGeometry) -> OgeomResult<Option<(SurfaceGeometry, bool)>
             )?
             .into()
         }
+        SurfaceGeometry::Sphere(s) => {
+            let sphere = s.sphere();
+            ogeom::geom::SphereSurface::new(ogeom::math::Sphere::new(
+                sphere.frame(),
+                sphere.radius() - back,
+                T,
+            )?)
+            .into()
+        }
         _ => return Ok(None),
     };
     Ok(Some((
@@ -325,6 +334,26 @@ fn offset_faces_convert_to_nurbs_within_a_tolerance() {
             assert!(stated <= 1e-4, "an edge states {stated}");
         }
     }
+}
+
+/// A ball spelt as the offset of a smaller one has no normal at its
+/// basis's poles; converted within a tolerance it is a valid solid of the
+/// same volume, its fitted face through the poles.
+#[test]
+fn an_offset_ball_converts_to_nurbs_within_a_tolerance() {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 3.0, T)
+        .unwrap()
+        .shape;
+    let offset = ogeom::algo::restate_geometry(&mut model, &ball, &as_offset, &keep_curves, T)
+        .unwrap()
+        .shape;
+    assert_eq!(kinds(&model, &offset), ["other"]);
+    let nurbs = ogeom::algo::to_nurbs_within(&mut model, &offset, 1e-4, T)
+        .unwrap()
+        .shape;
+    assert_eq!(kinds(&model, &nurbs), ["spline"]);
+    holds(&model, &nurbs, 4.0 / 3.0 * core::f64::consts::PI * 27.0);
 }
 
 /// The distance from `p` to the nearest point of `curve` over `range`: a

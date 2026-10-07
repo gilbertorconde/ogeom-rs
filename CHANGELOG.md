@@ -11,6 +11,20 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sub-micron holes stay holes.** An inner ring is dropped as a slit only
+  where its edges walk out and back through the same vertices and it is
+  thinner than a micron; a ring that goes round (a wall poked through by
+  less than a micron) is meshed open however thin.
+
+- **A surface fit goes through points its surface cannot evaluate.** A
+  surface fit (`to_nurbs_within`, a patch's degree restriction) takes the
+  limit of nearby points where its surface cannot be evaluated, such as an
+  offset sphere's poles, and counts how closely they agree in the error it
+  states; it still refuses, saying so, where no limit exists, such as an
+  offset cone's apex.
+
 ## [0.9.9] - 2026-10-07
 
 A patch release: no breaking API changes. A boolean costs what the other

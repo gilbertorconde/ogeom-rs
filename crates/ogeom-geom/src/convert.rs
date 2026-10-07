@@ -497,6 +497,12 @@ impl crate::surface::BSplineSurface {
 /// [`fit::fit_surface_sampled`]: at the surface's own parameters, from
 /// sixteen spans a side, measured between the samples as well as at them
 /// and refined where it misses, to at most 512 spans a side.
+///
+/// Where `point` refuses (an offset's basis has no normal at a pole), the
+/// fit takes the limit of the points around it, as [`limit_at`] reads it,
+/// and refuses only where they close on no one point. The limit's own
+/// slack is added to the error stated; the fit aims a thousandth under
+/// `tolerance` so that slack still leaves it met.
 fn grid_fitted(
     point: impl Fn(f64, f64) -> OgeomResult<Point>,
     domain: ((f64, f64), (f64, f64)),
@@ -504,6 +510,7 @@ fn grid_fitted(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<crate::surface::BSplineSurface>> {
+    const LIMIT_SHARE: f64 = 1e-3;
     let ((ua, ub), (va, vb)) = domain;
     if ![ua, ub, va, vb].iter().all(|x| x.is_finite()) || ub <= ua || vb <= va {
         ogeom_bail!(
@@ -511,13 +518,72 @@ fn grid_fitted(
             "an unbounded or empty surface cannot be fitted"
         );
     }
-    fit::fit_surface_sampled(
-        point,
+    let slack = core::cell::Cell::new(0.0_f64);
+    let limited = |u: f64, v: f64| -> OgeomResult<Point> {
+        point(u, v).or_else(|refused| {
+            let (at, spread) = limit_at(&point, domain, (u, v), tolerance * LIMIT_SHARE)
+                .ok_or_else(|| {
+                    ogeom_err!(
+                        Construction,
+                        "the surface cannot be evaluated at ({u}, {v}) and has no limit there: \
+                         {refused}"
+                    )
+                })?;
+            slack.set(slack.get().max(spread));
+            Ok(at)
+        })
+    };
+    let mut fitted = fit::fit_surface_sampled(
+        limited,
         &fit::Sampling::even(domain, 16),
         degree,
-        tolerance,
+        tolerance * (1.0 - LIMIT_SHARE),
         tol,
-    )
+    )?;
+    fitted.error += slack.get();
+    fitted.met = fitted.error <= tolerance;
+    Ok(fitted)
+}
+
+/// The limit of `point` at `(u, v)`, where it cannot be evaluated: the
+/// mean of the points read on a ring of parameters around it, the ring
+/// shrunk from a hundred-thousandth of the domain until every point on it
+/// lies within `spread` of their mean, with the widest of them from it. A
+/// ring point outside the domain is pulled back onto its edge; one `point`
+/// refuses too is passed over. `None` where no ring closes that tight: the
+/// points around do not close on one point, as an offset cone's around
+/// its apex do not.
+fn limit_at(
+    point: &impl Fn(f64, f64) -> OgeomResult<Point>,
+    ((ua, ub), (va, vb)): ((f64, f64), (f64, f64)),
+    (u, v): (f64, f64),
+    spread: f64,
+) -> Option<(Point, f64)> {
+    const AROUND: u32 = 16;
+    let mut h = 1e-5;
+    for _ in 0..6 {
+        let ring: Vec<Point> = (0..AROUND)
+            .filter_map(|i| {
+                let a = TAU * f64::from(i) / f64::from(AROUND);
+                let pu = (u + h * (ub - ua) * a.cos()).clamp(ua, ub);
+                let pv = (v + h * (vb - va) * a.sin()).clamp(va, vb);
+                point(pu, pv).ok()
+            })
+            .collect();
+        h *= 0.1;
+        if ring.len() < 2 {
+            continue;
+        }
+        let sum = ring
+            .iter()
+            .fold(ogeom_math::Vector::ZERO, |s, p| s + p.to_vector());
+        let centre = Point::from_vector(sum / f64::from(u32::try_from(ring.len()).ok()?));
+        let widest = ring.iter().map(|p| p.distance(centre)).fold(0.0, f64::max);
+        if widest <= spread {
+            return Some((centre, widest));
+        }
+    }
+    None
 }
 
 impl crate::surface::SurfaceGeometry {
@@ -531,13 +597,17 @@ impl crate::surface::SurfaceGeometry {
     /// holds or the budget runs out; `error` is the worst measured, not
     /// what was asked. The fit spans the surface's own domain, but its
     /// knots are its own, so a pcurve spoken against the surface is
-    /// re-derived against the result.
+    /// re-derived against the result. Where the surface cannot be evaluated
+    /// (an offset sphere's poles, where the basis has no normal) the fit
+    /// takes the limit of the points around, and the error stated counts
+    /// how closely they close on it.
     ///
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-    /// the domain is unbounded or the tolerance is not a distance; as
-    /// [`fit::fit_surface_grid`].
+    /// the domain is unbounded, the tolerance is not a distance, or the
+    /// surface cannot be evaluated somewhere and the points around do not
+    /// close on one (an offset cone's apex); as [`fit::fit_surface_grid`].
     pub fn fitted_bspline(
         &self,
         tolerance: f64,
@@ -1531,6 +1601,58 @@ mod surface_tests {
                 fitted.error
             );
         }
+    }
+
+    /// An offset sphere has no normal at its basis's poles, but its points
+    /// there are the poles of the grown sphere: the fit takes that limit,
+    /// meets its tolerance, and states no less than its widest miss from
+    /// the grown sphere, poles included.
+    #[test]
+    fn an_offset_sphere_fits_through_its_poles() {
+        let sphere: SurfaceGeometry =
+            SphereSurface::new(Sphere::new(Frame::WORLD, 2.0, T).unwrap()).into();
+        let offset = SurfaceGeometry::Offset(Box::new(
+            crate::surface::OffsetSurface::new(sphere, 0.5).unwrap(),
+        ));
+        let ((u0, u1), (v0, v1)) = offset.domain();
+        assert!(offset.point_at(u0, v1, T).is_err(), "no normal at a pole");
+        let fitted = offset.fitted_bspline(1e-4, T).unwrap();
+        assert!(fitted.met, "stays {}", fitted.error);
+        let n = 200;
+        let mut worst = 0.0_f64;
+        for j in 0..=n {
+            let v = v0 + (v1 - v0) * f64::from(j) / f64::from(n);
+            for i in 0..=n {
+                let u = u0 + (u1 - u0) * f64::from(i) / f64::from(n);
+                let p = fitted.curve.point_at(u, v, T).unwrap();
+                worst = worst.max((p.to_vector().magnitude() - 2.5).abs());
+            }
+        }
+        assert!(
+            worst <= fitted.error,
+            "the fit misses by {worst:.4e} and states {:.4e}",
+            fitted.error
+        );
+        for v in [v0, v1] {
+            let pole = Point::new(0.0, 0.0, 2.5 * v.signum());
+            let p = fitted.curve.point_at(f64::midpoint(u0, u1), v, T).unwrap();
+            assert!(p.distance(pole) <= fitted.error, "{p:?}");
+        }
+    }
+
+    /// An offset cone's apex has no limit: the offset points around it lie
+    /// on a circle the offset's width across, whichever way they close in.
+    /// The fit refuses there rather than invent a point.
+    #[test]
+    fn an_offset_cone_through_its_apex_is_refused() {
+        let cone = Cone::new(Frame::WORLD, 1.0, 0.5, T).unwrap();
+        let apex = -1.0 / 0.5_f64.tan();
+        let basis: SurfaceGeometry = ConeSurface::new(cone, (apex, 1.0)).unwrap().into();
+        let offset = SurfaceGeometry::Offset(Box::new(
+            crate::surface::OffsetSurface::new(basis, 0.25).unwrap(),
+        ));
+        let refused = offset.fitted_bspline(1e-4, T).unwrap_err();
+        assert!(refused.to_string().contains("no limit"), "{refused}");
     }
 
     #[test]
