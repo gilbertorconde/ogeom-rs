@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "ogeom-algo",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-algo"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "hashbrown 0.16.1",
@@ -307,14 +307,14 @@ dependencies = [
 
 [[package]]
 name = "ogeom-bench"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "ogeom",
 ]
 
 [[package]]
 name = "ogeom-bool"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "hashbrown 0.16.1",
@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-cli"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "ogeom",
  "ogeom-view",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-core"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "hashbrown 0.16.1",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-doc"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "ogeom-algo",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-fillet"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "ogeom-algo",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-geom"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "nalgebra",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-heal"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "nalgebra",
@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-hlr"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "ogeom-algo",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-intersect"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "nalgebra",
@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-io"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "ogeom-algo",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-math"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "nalgebra",
@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-mesh"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "ogeom-algo",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-offset"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "ogeom-algo",
@@ -499,14 +499,14 @@ dependencies = [
 
 [[package]]
 name = "ogeom-stress"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "ogeom",
 ]
 
 [[package]]
 name = "ogeom-topo"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "hashbrown 0.16.1",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "ogeom-view"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "approx",
  "ogeom-algo",

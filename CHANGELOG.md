@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-10-07
+
+A patch release: no breaking API changes. A boolean leaves a seam between
+two faces rebuilt on one surface as a seam, so a solid cut that way goes
+through the next boolean (a regression in 0.9.9). A model compacts in place
+with `Model::retain_reachable`, keeping the handles of what survives. A
+placed dome or ball drilled through its pole closes, IGES trimmed surfaces
+bounded through a pole read in exact pieces, sub-micron holes stay holes, a
+surface fit goes through points its surface cannot evaluate, and nearly
+coplanar planar faces that only touch refuse less.
+
 ### Added
 
 - **A model compacts in place, keeping the handles of what survives
@@ -4273,7 +4284,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.9...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.10...HEAD
+[0.9.10]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.6...v0.9.7
