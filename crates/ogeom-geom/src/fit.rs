@@ -571,7 +571,8 @@ pub const SAMPLED_LOOP_SPANS: usize = 1024;
 /// The fit is same-parameter with `point`, fitted at `ts` to start with:
 /// the least-squares fit first, and where it misses, the spline through
 /// every sample. Every span's eighth points are compared with `point`
-/// there, a miss splits the span at its middle, and this repeats until
+/// there, and the widest misses climbed to the tops of their peaks between
+/// them; a miss splits the span at its middle, and this repeats until
 /// `tolerance` holds at every point measured or the samples would pass
 /// [`SAMPLED_SPANS`] spans. Where `closed`, the last of `ts` is the first
 /// again, the fit crosses its join C1 and refines to at most
@@ -697,13 +698,25 @@ fn sampled<const D: usize, P>(
                 .iter()
                 .fold(0.0_f64, |acc, e| acc.max(e.1));
             split = vec![false; ts.len() - 1];
+            let mut worst = Vec::with_capacity(ts.len() - 1);
             for (i, pair) in ts.windows(2).enumerate() {
-                let mut off = 0.0_f64;
-                for t in eighths(pair[0], pair[1]) {
-                    off = off.max(distance::<D>(&at(t)?, &position::<D>(&knots, &control, t)));
+                let mut off = (0.0_f64, 0);
+                for (k, t) in eighths(pair[0], pair[1]).into_iter().enumerate() {
+                    let here = distance::<D>(&at(t)?, &position::<D>(&knots, &control, t));
+                    if here > off.0 {
+                        off = (here, k);
+                    }
                 }
-                error = error.max(off);
-                split[i] = off > tolerance;
+                error = error.max(off.0);
+                split[i] = off.0 > tolerance;
+                worst.push(off);
+            }
+            let climbed = climbed_peaks(&ts, &worst, error, |t| {
+                Ok(distance::<D>(&at(t)?, &position::<D>(&knots, &control, t)))
+            });
+            for (i, peak) in climbed {
+                error = error.max(peak);
+                split[i] |= peak > tolerance;
             }
             if error <= tolerance {
                 return Ok((knots, control, error, true));
@@ -739,9 +752,9 @@ fn sampled<const D: usize, P>(
 /// start with, so the two are same-parameter with the trace and with each
 /// other. Every sample and every span's eighth points are measured in
 /// space: the curve and the surface at the image's chart position, each
-/// against the trace's point and against each other. A miss splits the
-/// span, and this repeats
-/// until `tolerance` holds at every point measured or the samples would
+/// against the trace's point and against each other, and the widest
+/// misses climbed to the tops of their peaks between them. A miss splits
+/// the span, and this repeats until `tolerance` holds at every point measured or the samples would
 /// pass 1024 spans; the error is the worst measured either way. The chart
 /// coordinates are weighed in the fit by the surface's own speed along
 /// them, so a residual in either space counts as the distance it is.
@@ -844,13 +857,22 @@ pub fn fit_trace_sampled(
                 error = error.max(off_at(*t)?);
             }
             split = vec![false; ts.len() - 1];
+            let mut worst = Vec::with_capacity(ts.len() - 1);
             for (i, pair) in ts.windows(2).enumerate() {
-                let mut off = 0.0_f64;
-                for t in eighths(pair[0], pair[1]) {
-                    off = off.max(off_at(t)?);
+                let mut off = (0.0_f64, 0);
+                for (k, t) in eighths(pair[0], pair[1]).into_iter().enumerate() {
+                    let here = off_at(t)?;
+                    if here > off.0 {
+                        off = (here, k);
+                    }
                 }
-                error = error.max(off);
-                split[i] = off > tolerance;
+                error = error.max(off.0);
+                split[i] = off.0 > tolerance;
+                worst.push(off);
+            }
+            for (i, peak) in climbed_peaks(&ts, &worst, error, &mut off_at) {
+                error = error.max(peak);
+                split[i] |= peak > tolerance;
             }
             let met = error <= tolerance;
             let candidate = (Fitted { curve, error, met }, image);
@@ -875,6 +897,52 @@ pub fn fit_trace_sampled(
         ts = next;
     }
     best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the trace could not be sampled"))
+}
+
+/// The tops of the peaks of a curve fit's miss beside its widest eighth
+/// point readings: for each span whose widest reading `worst` (the miss and
+/// which eighth) stands near the widest of all, `error`, the miss `off`
+/// climbed by golden sections between the eighths either side of it, at
+/// most `PEAKS` spans, widest first. An eighth point stands up to a tenth
+/// below the peak beside it where the miss swells between them. A point
+/// `off` cannot read is passed over.
+fn climbed_peaks(
+    ts: &[f64],
+    worst: &[(f64, usize)],
+    error: f64,
+    mut off: impl FnMut(f64) -> OgeomResult<f64>,
+) -> Vec<(usize, f64)> {
+    const NEAR_PEAK: f64 = 0.8;
+    const PEAKS: usize = 16;
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut spans: Vec<usize> = (0..worst.len())
+        .filter(|&i| worst[i].0 >= error * NEAR_PEAK && worst[i].0 > 0.0)
+        .collect();
+    spans.sort_by(|&a, &b| worst[b].0.total_cmp(&worst[a].0));
+    let mut read = |t: f64| off(t).unwrap_or(0.0);
+    spans
+        .into_iter()
+        .take(PEAKS)
+        .map(|i| {
+            let (lo, hi) = (ts[i], ts[i + 1]);
+            let eighth = (hi - lo) / 8.0;
+            // The k-th eighth point stands k + 1 eighths in.
+            let at = lo + eighth * precise(worst[i].1 + 1);
+            let (mut a, mut b) = (at - eighth, at + eighth);
+            let mut top = worst[i].0;
+            for _ in 0..30 {
+                let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+                let (rc, rd) = (read(c), read(d));
+                top = top.max(rc).max(rd);
+                if rc > rd {
+                    b = d;
+                } else {
+                    a = c;
+                }
+            }
+            (i, top)
+        })
+        .collect()
 }
 
 /// The eighth points of a span, its middle among them: where a curve fit
@@ -3031,6 +3099,46 @@ mod grid_tests {
     use ogeom_core::Tolerances;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A loop blended nine tenths of the way from a circle to a square,
+    /// both run by length from their own starts, has a kink at each of the
+    /// square's corners, and the fit's miss peaks between the eighth points
+    /// it is read at. The error a sampled fit states is no less than its
+    /// miss read two hundred thousand times round the loop.
+    #[test]
+    fn a_sampled_loop_fit_states_no_less_than_its_widest_miss() {
+        use crate::traits::Curve3d as _;
+        let square = |g: f64| -> Point {
+            let s = g.rem_euclid(1.0) * 4.0;
+            let r = s - s.floor();
+            let (x, y) = match s.floor() {
+                0.0 => (1.0, 2.0f64.mul_add(r, -1.0)),
+                1.0 => (2.0f64.mul_add(-r, 1.0), 1.0),
+                2.0 => (-1.0, 2.0f64.mul_add(-r, 1.0)),
+                _ => (2.0f64.mul_add(r, -1.0), -1.0),
+            };
+            Point::new(x, y, 0.0)
+        };
+        let blend = |g: f64| {
+            let (sin, cos) = g.mul_add(core::f64::consts::TAU, 0.3).sin_cos();
+            let (c, q) = (Point::new(1.2 * cos, 1.2 * sin, 0.0), square(g));
+            c + (q - c) * 0.9
+        };
+        let ts: Vec<f64> = (0..=64).map(|i| f64::from(i) / 64.0).collect();
+        let fitted = fit_curve_sampled(|g| Ok(blend(g)), &ts, true, 3, 1e-4, T).unwrap();
+        assert!(fitted.met);
+        let n = 200_000;
+        let mut worst = 0.0_f64;
+        for i in 0..=n {
+            let g = f64::from(i) / f64::from(n);
+            worst = worst.max(blend(g).distance(fitted.curve.point_at(g, T).unwrap()));
+        }
+        assert!(
+            worst <= fitted.error,
+            "the fit misses by {worst:.4e} and states {:.4e}",
+            fitted.error
+        );
+    }
 
     #[test]
     fn a_torus_patch_grid_fits_to_tolerance_on_and_off_the_grid() {
