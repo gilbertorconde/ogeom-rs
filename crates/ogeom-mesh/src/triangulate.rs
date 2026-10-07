@@ -1079,6 +1079,7 @@ fn trimming_rings(
     let mut ring_anchors = Vec::new();
     let mut ring_folds: Vec<Vec<(usize, f64)>> = Vec::new();
     let mut ring_ties: Vec<Vec<usize>> = Vec::new();
+    let mut ring_wires: Vec<Shape> = Vec::new();
     let mut met = true;
     let wires = model.ordered_children_of(face)?;
     let bounded = !wires.is_empty();
@@ -1101,6 +1102,7 @@ fn trimming_rings(
             ring_anchors.push(anchors);
             ring_folds.push(folds);
             ring_ties.push(ties);
+            ring_wires.push(wire);
         }
     }
 
@@ -1248,6 +1250,7 @@ fn trimming_rings(
             let b_anchors = ring_anchors.remove(j);
             ring_folds.remove(j);
             ring_ties.remove(j);
+            ring_wires.remove(j);
             let a = &mut rings[i];
             let a_anchors = &mut ring_anchors[i];
             let a_last = a.last().copied().unwrap_or(a[0]);
@@ -1466,18 +1469,19 @@ fn trimming_rings(
         merge_near_duplicates(ring, anchors, reach);
         remove_spikes(ring, anchors, reach);
     }
+    let long_enough: Vec<bool> = rings.iter().map(|r| r.len() >= 3).collect();
+    let mut it = long_enough.iter();
+    ring_wires.retain(|_| *it.next().unwrap_or(&true));
     rings.retain(|r| r.len() >= 3);
     ring_anchors.retain(|a| a.len() >= 3);
 
-    // An inner ring thinner than a micron is a slit, not a hole: a loop run
-    // out along two arcs and back along two splines fitted to the same
+    // An inner ring that walks out and back again along edges through the
+    // same vertices, thinner than a micron, is a slit, not a hole: a loop
+    // run out along two arcs and back along two splines fitted to the same
     // arcs encloses nothing, and the triangulator can only read it as a
-    // tangle, drawing holes the face does not have. Measured in space
-    // through the ring's own anchors, so a chart's units do not enter into
-    // it: a thin ring's area is its mean width times half its perimeter.
-    // A ring not anchored end to end is left alone, and so is the outer
-    // ring, whatever its width, since a face that is itself a slit is a
-    // different question.
+    // tangle, drawing holes the face does not have (see [`is_slit`]). The
+    // outer ring is left alone, whatever it is, since a face that is
+    // itself a slit is a different question.
     if rings.len() > 1 {
         let chart_area = |ring: &[Point2]| -> f64 {
             let mut a = 0.0;
@@ -1490,9 +1494,10 @@ fn trimming_rings(
         let outer = (0..rings.len())
             .max_by(|&i, &j| chart_area(&rings[i]).total_cmp(&chart_area(&rings[j])))
             .unwrap_or(0);
-        let keep: Vec<bool> = (0..rings.len())
-            .map(|i| i == outer || !is_slit(&ring_anchors[i], tol))
-            .collect();
+        let mut keep = Vec::with_capacity(rings.len());
+        for i in 0..rings.len() {
+            keep.push(i == outer || !is_slit(model, &ring_wires[i], &ring_anchors[i], tol)?);
+        }
         let mut it = keep.iter();
         rings.retain(|_| *it.next().unwrap_or(&true));
         let mut it = keep.iter();
@@ -1552,11 +1557,32 @@ fn collapse_close_points(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>
     *anchors = kept_anchors;
 }
 
-/// Whether a ring anchored in space end to end is thinner than a micron:
-/// its mean width, twice its enclosed area over its perimeter, measured
-/// through its anchors. A ring with a point not anchored is not called a
+/// Whether an inner ring is a slit rather than a hole: its wire walks back
+/// the way it came, and it is thinner than a micron.
+///
+/// A slit's wire runs out along a chain of edges and home along a second
+/// chain through the same vertices in the opposite order, every edge from
+/// one vertex to the next answered by another from the next back to it,
+/// so the two chains bound nothing between them but the rounding of two
+/// fits to one curve. A hole's wire goes round: a ring of facets, or a
+/// rim of edges, meets each vertex once, and is a hole however thin. A
+/// wire of two edges between the same two vertices walks back by its
+/// vertices whether it is a slit or a round hole cut in two halves, and
+/// only its width tells them apart: twice its enclosed area over its
+/// perimeter, measured in space through its anchors, so a chart's units do
+/// not enter into it. A ring with a point not anchored is not called a
 /// slit.
-fn is_slit(anchors: &[Option<Point>], tol: Tolerances) -> bool {
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) where an edge
+/// of the wire is not in the model.
+fn is_slit(
+    model: &Model,
+    wire: &Shape,
+    anchors: &[Option<Point>],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
     let width = || -> Option<f64> {
         let pts: Option<Vec<Point>> = anchors.iter().copied().collect();
         let pts = pts?;
@@ -1569,7 +1595,50 @@ fn is_slit(anchors: &[Option<Point>], tol: Tolerances) -> bool {
         }
         (perimeter > 0.0).then(|| normal.magnitude() / perimeter)
     };
-    width().is_some_and(|w| w < tol.confusion() * 1e4)
+    if !width().is_some_and(|w| w < tol.confusion() * 1e4) {
+        return Ok(false);
+    }
+    walks_back(model, wire)
+}
+
+/// Whether a wire's edges pair off, each running from one vertex to
+/// another answered by a second running from that one back: the walk out
+/// and the walk home of a ring that goes nowhere. An edge without
+/// vertices, or one starting where it ends, has no answer.
+fn walks_back(model: &Model, wire: &Shape) -> OgeomResult<bool> {
+    let mut ends: Vec<(Shape, Shape)> = Vec::new();
+    for edge in model.ordered_children_of(wire)? {
+        let bounds = model.children_of(&edge)?;
+        let (Some(first), Some(last)) = (bounds.first(), bounds.last()) else {
+            return Ok(false);
+        };
+        if first.is_same(last) {
+            return Ok(false);
+        }
+        ends.push(if edge.orientation() == Orientation::Reversed {
+            (last.clone(), first.clone())
+        } else {
+            (first.clone(), last.clone())
+        });
+    }
+    if ends.len() < 2 || !ends.len().is_multiple_of(2) {
+        return Ok(false);
+    }
+    let mut answered = vec![false; ends.len()];
+    for i in 0..ends.len() {
+        if answered[i] {
+            continue;
+        }
+        let (from, to) = &ends[i];
+        let Some(j) = (i + 1..ends.len())
+            .find(|&j| !answered[j] && ends[j].0.is_same(to) && ends[j].1.is_same(from))
+        else {
+            return Ok(false);
+        };
+        answered[i] = true;
+        answered[j] = true;
+    }
+    Ok(true)
 }
 
 /// One wire's trimming ring on a face whose chart neither repeats nor
@@ -1578,8 +1647,9 @@ fn is_slit(anchors: &[Option<Point>], tol: Tolerances) -> bool {
 ///
 /// On such a chart each ring is drawn from its own wire alone, so a caller
 /// asking about a few holes of a face with hundreds draws only those. The
-/// one ring drawn differently is a hole thinner than a micron, which
-/// [`face_boundary`] drops as a slit unless it is the face's largest ring:
+/// one ring drawn differently is a slit (a wire walking out and back along
+/// the same vertices, thinner than a micron), which [`face_boundary`] drops
+/// unless it is the face's largest ring:
 /// `largest` says whether this wire's ring is that one.
 ///
 /// # Errors
@@ -1629,7 +1699,7 @@ pub fn open_chart_ring(
     let reach = chart_reach(&ring);
     merge_near_duplicates(&mut ring, &mut anchors, reach);
     remove_spikes(&mut ring, &mut anchors, reach);
-    if ring.len() < 3 || anchors.len() < 3 || (!largest && is_slit(&anchors, tol)) {
+    if ring.len() < 3 || anchors.len() < 3 || (!largest && is_slit(model, wire, &anchors, tol)?) {
         return Ok(None);
     }
     Ok(Some(ring))
@@ -4211,6 +4281,113 @@ mod tests {
         assert!(triangle_normal(a, b, Point::new(0.0, 1.0, 0.0), T).is_some());
         assert!(triangle_normal(a, b, Point::new(2.0, 0.0, 0.0), T).is_none());
         assert!(triangle_normal(a, a, a, T).is_none());
+    }
+
+    /// A ten millimetre square plate at `z = 0` with the inner wire `hole`
+    /// builds into its model, and its mesh's Euler characteristic and
+    /// area.
+    fn plate_with(hole: impl Fn(&mut Model) -> Shape) -> (i64, f64) {
+        use ogeom_algo::{make_face, make_polygon};
+        let mut model = Model::new();
+        let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+        let outer = make_polygon(
+            &mut model,
+            &[p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0)],
+            true,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let inner = hole(&mut model);
+        let plane: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::new(ogeom_math::Plane::through(Point::ORIGIN, Direction::Z))
+                .into();
+        let face = make_face(&mut model, plane, &[outer, inner], T)
+            .unwrap()
+            .shape;
+        ogeom_algo::build::trimmed_where_bare(&mut model, &face, T).unwrap();
+        let mesh = triangulate_face(&model, &face, Deflection::default(), T).unwrap();
+        let mut edges = std::collections::HashSet::new();
+        let mut area = 0.0;
+        for t in &mesh.triangles {
+            for i in 0..3 {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                edges.insert((a.min(b), a.max(b)));
+            }
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            area += 0.5 * (b - a).cross(c - a).magnitude();
+        }
+        #[allow(clippy::cast_possible_wrap)]
+        let euler = mesh.positions.len() as i64 - edges.len() as i64 + mesh.triangles.len() as i64;
+        (euler, area)
+    }
+
+    #[test]
+    fn a_hole_thinner_than_a_micron_stays_a_hole() {
+        // A slot two millimetres long and six tenths of a micron across: a
+        // ring of four distinct vertices, which goes round rather than out
+        // and back, so it is a hole however thin, and the plate meshes
+        // with one hole in it.
+        let (euler, area) = plate_with(|model| {
+            let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+            ogeom_algo::make_polygon(
+                model,
+                &[p(4.0, 5.0), p(4.0, 5.0006), p(6.0, 5.0006), p(6.0, 5.0)],
+                true,
+                T,
+            )
+            .unwrap()
+            .shape
+        });
+        assert_eq!(euler, 0, "one hole: V - E + F is 1 - 1");
+        assert_relative_eq!(area, 100.0 - 2.0 * 0.0006, epsilon = 1e-7);
+    }
+
+    #[test]
+    fn a_ring_walked_out_and_back_thinner_than_a_micron_is_a_slit() {
+        // Out from one vertex to a second and a third along two lines, and
+        // home through the same three along two arcs bulging six tenths of
+        // a micron off them: every edge is answered by one walking it back,
+        // and the ring is a few tenths of a micron wide on average. It is a
+        // slit, and the plate meshes whole.
+        let (euler, area) = plate_with(|model| {
+            use ogeom_algo::{Spacing, interpolate, make_edge_between, make_wire};
+            use ogeom_geom::Curve3d as _;
+            let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+            let at = [p(3.0, 5.0), p(5.0, 5.0), p(7.0, 5.0)];
+            let v: Vec<Shape> = at
+                .iter()
+                .map(|q| model.add_vertex(ogeom_topo::VertexData::new(*q)))
+                .collect();
+            let mut edges = Vec::new();
+            for i in 0..2 {
+                let line: ogeom_geom::Curve = ogeom_geom::LineCurve::segment(at[i], at[i + 1], T)
+                    .unwrap()
+                    .into();
+                let range = (0.0, at[i].distance(at[i + 1]));
+                edges.push(
+                    make_edge_between(model, line, range, &v[i], &v[i + 1], T)
+                        .unwrap()
+                        .shape,
+                );
+            }
+            for i in (0..2).rev() {
+                let mid = p(f64::midpoint(at[i].x, at[i + 1].x), 5.0006);
+                let arc: ogeom_geom::Curve =
+                    interpolate(&[at[i + 1], mid, at[i]], 2, Spacing::Centripetal, T)
+                        .unwrap()
+                        .into();
+                let range = arc.domain();
+                edges.push(
+                    make_edge_between(model, arc, range, &v[i + 1], &v[i], T)
+                        .unwrap()
+                        .shape,
+                );
+            }
+            make_wire(model, &edges, T).unwrap().shape
+        });
+        assert_eq!(euler, 1, "no hole: V - E + F is 1");
+        assert_relative_eq!(area, 100.0, epsilon = 1e-9);
     }
 }
 

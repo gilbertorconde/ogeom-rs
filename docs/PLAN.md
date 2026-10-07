@@ -27,12 +27,15 @@ first, then refusals, then cost.
 fit (`to_nurbs_within`, a patch's degree restriction) over a surface that
 cannot be evaluated somewhere (an offset sphere's poles) refuses.
 
-**The mesher tells a slit from a hole by width alone.** An inner ring whose
-mean width (twice its area over its perimeter) is under a micron is a slit
-(`is_slit` in `ogeom-mesh/src/triangulate.rs`). Boolean slits measure about
-six tenths of a micron, real holes from a micron and a third, so a wall poked
-through more thinly loses its hole. Telling them apart by what fills the ring
-would hold at any width.
+**A two-edge hole thinner than a micron is read as a slit.** The mesher
+drops an inner ring as a slit (`is_slit` in
+`ogeom-mesh/src/triangulate.rs`) only where its wire walks out and back
+through the same vertices and it is thinner than a micron. A wire of two
+edges between the same two vertices (a round hole cut in two halves) walks
+back by its vertices alone, so width decides it: such a hole under a micron
+is lost. Its two halves and a slit's two sides are then the same shape, so
+telling them apart needs something besides the ring itself, such as the
+faces its edges are shared with.
 
 ### Booleans
 
