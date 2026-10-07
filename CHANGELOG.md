@@ -22,6 +22,13 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Kernel hash maps are hashbrown with a fixed seed.** `ogeom_core::FastMap`
+  and `FastSet` (in `ogeom_core::collections`, with `FastHasher`) replace
+  the std maps in every kernel crate, so a map's iteration order is the
+  same in every run. Welding a 1M-triangle mesh and reading a
+  1M-triangle STL take less than half the time; STEP import is 5 to 30%
+  faster, and looks instances up in a table indexed by instance number.
+
 - **Converting a mesh to a solid repeats less work.** Edge fits, face
   meshes, face areas and exact face integrals are kept across the
   conversion's builds. The result is unchanged; the largest corpus part
