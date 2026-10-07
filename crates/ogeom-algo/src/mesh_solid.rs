@@ -2175,6 +2175,17 @@ fn astray_faces(
             around[v as usize].push(t);
         }
     }
+    // Each planar region's triangles, and its face's drawn triangles'
+    // middles, drawn once for every curved face beside it to ask.
+    let mut plane_members: Vec<Vec<usize>> = vec![Vec::new(); groups.carriers.len()];
+    for (t, &g) in groups.of.iter().enumerate() {
+        if matches!(groups.carriers.get(g), Some(Carrier::Plane(_))) {
+            plane_members[g].push(t);
+        }
+    }
+    let plane_middles: Vec<std::sync::OnceLock<Option<Vec<Point>>>> = (0..groups.carriers.len())
+        .map(|_| std::sync::OnceLock::new())
+        .collect();
     // Each face is judged on its own, and the answers taken in face order.
     let judged: Vec<(usize, &Shape, (Point, Point))> = built
         .iter()
@@ -2313,34 +2324,39 @@ fn astray_faces(
                 let Some(beside) = built.get(plane).and_then(Option::as_ref) else {
                     continue;
                 };
-                let Ok(drawn) = ogeom_mesh::triangulate_face(
-                    model,
-                    beside,
-                    ogeom_mesh::Deflection::default(),
-                    tol,
-                ) else {
+                let Some(drawn) = plane_middles[plane].get_or_init(|| {
+                    let drawn = ogeom_mesh::triangulate_face(
+                        model,
+                        beside,
+                        ogeom_mesh::Deflection::default(),
+                        tol,
+                    )
+                    .ok()?;
+                    Some(
+                        drawn
+                            .triangles
+                            .iter()
+                            .map(|t| {
+                                let [a, b, c] = t.map(|i| drawn.positions[i as usize]);
+                                Point::from_vector(
+                                    (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0,
+                                )
+                            })
+                            .collect(),
+                    )
+                }) else {
                     continue;
                 };
-                let middles: Vec<Point> = drawn
-                    .triangles
-                    .iter()
-                    .map(|t| {
-                        let [a, b, c] = t.map(|i| drawn.positions[i as usize]);
-                        Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0)
-                    })
-                    .filter(|&m| reaches(m))
-                    .collect();
+                let middles: Vec<Point> = drawn.iter().copied().filter(|&m| reaches(m)).collect();
                 if middles.is_empty() {
                     continue;
                 }
-                let own: Vec<usize> = (0..triangles.len())
-                    .filter(|&t| groups.of[t] == plane)
-                    .collect();
+                let own = &plane_members[plane];
                 let samples = middles.len().min(32);
                 let off = (0..samples)
                     .filter(|&k| {
                         let m = middles[k * middles.len() / samples];
-                        near.iter().chain(&own).all(|&t| {
+                        near.iter().chain(own).all(|&t| {
                             let [p, q, r] = triangles[t].map(|v| points[v as usize]);
                             distance_to_triangle(m, p, q, r) > allowance
                         })
