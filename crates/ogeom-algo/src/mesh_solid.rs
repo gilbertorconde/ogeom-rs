@@ -671,6 +671,7 @@ fn build(
     let mut absorbing = !absorbed.is_empty();
     let mut regrouped = Regrouped::default();
     let snaps = std::sync::Mutex::new(SnapCache::new());
+    let images = std::sync::Mutex::new(ImageCache::new());
     let shape = 'attempt: loop {
         // Plan until every curved face's boundary is exact, faceting the ones
         // whose boundary is not; then build, and facet any recognized face that
@@ -698,6 +699,7 @@ fn build(
                 flat,
                 tol,
                 snaps: &snaps,
+                images: &images,
                 fans: &fans,
             };
             // A step that fails on the built faces withdraws the faces that
@@ -7976,6 +7978,8 @@ struct Planner<'a> {
     tol: Tolerances,
     /// Curves snapped by earlier plans with the same points and distance.
     snaps: &'a std::sync::Mutex<SnapCache>,
+    /// Edge images found by earlier plans.
+    images: &'a std::sync::Mutex<ImageCache>,
     /// The facets built as fans, by group.
     fans: &'a HashMap<usize, Fan>,
 }
@@ -8650,8 +8654,7 @@ impl Planner<'_> {
                         // A chord taken for an edge is imaged as loosely as
                         // it stands off the face.
                         let reach = reach.max(spec.tolerance * 2.0);
-                        let image =
-                            image_on(curved, &surface, &spec.curve, spec.range, reach, self.tol);
+                        let image = self.image(curved, &surface, spec, reach);
                         match image {
                             Some(found) => {
                                 plan.pcurves.insert((edge, g), found);
@@ -9199,6 +9202,47 @@ impl Planner<'_> {
             .iter()
             .map(|&g| SnapFace::of(&self.groups.carriers[g]))
             .collect()
+    }
+
+    /// [`image_on`] for an edge on a curved face, asked once per distinct
+    /// question across the plans of one conversion.
+    fn image(
+        &self,
+        curved: &Curved,
+        surface: &ogeom_geom::SurfaceGeometry,
+        spec: &EdgeSpec,
+        reach: f64,
+    ) -> Option<(PlanarCurve, f64)> {
+        // Everything the answer reads, written out: a float's debug form
+        // reads back to the same bits, so two keys match only where every
+        // input does.
+        let key = format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:x}|{:x}|{:x}",
+            curved.shape,
+            curved.centre,
+            curved.patch,
+            surface,
+            spec.curve,
+            spec.range.0.to_bits(),
+            spec.range.1.to_bits(),
+            reach.to_bits(),
+        );
+        let held = |images: &std::sync::Mutex<ImageCache>| {
+            images
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&key)
+                .cloned()
+        };
+        if let Some(found) = held(self.images) {
+            return found;
+        }
+        let found = image_on(curved, surface, &spec.curve, spec.range, reach, self.tol);
+        self.images
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, found.clone());
+        found
     }
 
     /// The curves snapped so far.
@@ -10074,6 +10118,10 @@ impl SnapFace {
 /// distance and the points are those of the whole conversion.
 type SnapCache =
     HashMap<(Vec<u32>, Vec<usize>), Vec<(Vec<SnapFace>, Option<(Snapped, bool, Images)>)>>;
+
+/// Edge images on curved faces, kept across the plans of one conversion:
+/// by every input of [`image_on`] written out, with what it answered.
+type ImageCache = HashMap<String, Option<(PlanarCurve, f64)>>;
 
 /// A point solved onto where two surfaces meet, from a start near both:
 /// Newton's step, the least one that zeroes both signed distances to first
