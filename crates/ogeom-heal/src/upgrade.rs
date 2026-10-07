@@ -57,7 +57,25 @@ pub fn unify_same_domain_around(
     unify(model, shape, Some(around), tol)
 }
 
+/// The merged faces describe the edges they keep on their surfaces, so
+/// what `shape` shares with other shapes is copied first and `around`
+/// carried to the copies.
 fn unify(
+    model: &mut Model,
+    shape: &Shape,
+    around: Option<&[Shape]>,
+    tol: Tolerances,
+) -> OgeomResult<(Built, usize)> {
+    ogeom_algo::on_own_nodes_with(
+        model,
+        shape,
+        around.unwrap_or_default(),
+        |model, shape, parts| unify_own(model, shape, around.map(|_| parts), tol),
+        |(built, _)| &mut built.history,
+    )
+}
+
+fn unify_own(
     model: &mut Model,
     shape: &Shape,
     around: Option<&[Shape]>,
@@ -776,10 +794,14 @@ fn agrees(
 ///
 /// Returns how many claims shrank.
 ///
+/// Nodes below `shape` that other shapes hold as well are copied first
+/// ([`Model::unshare`]), so no other shape's claims shrink.
+///
 /// # Errors
 ///
 /// As evaluation.
 pub fn reduce_tolerances(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<usize> {
+    model.unshare(shape)?;
     let edges = explore_unique(model, shape, ShapeType::Edge)?;
     // Each edge is measured on its own and the model is only read, so the
     // measures run side by side.

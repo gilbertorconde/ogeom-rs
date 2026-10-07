@@ -70,6 +70,9 @@ use std::collections::{HashMap, HashSet};
 /// Remove `faces` from `solid` and close the openings from the neighbours'
 /// own geometry.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), by
@@ -78,6 +81,18 @@ use std::collections::{HashMap, HashSet};
 /// whose side surfaces do not meet in a single curve, more than one band, or
 /// geometry whose pcurves have no closed form to rebuild with.
 pub fn remove_faces(
+    model: &mut Model,
+    solid: &Shape,
+    faces: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(model, solid, faces, |model, solid, parts| {
+        remove_faces_own(model, solid, parts, tol)
+    })
+}
+
+/// [`remove_faces`] on a shape every node below which is its own.
+fn remove_faces_own(
     model: &mut Model,
     solid: &Shape,
     faces: &[Shape],
@@ -99,7 +114,7 @@ pub fn remove_faces(
         for group in &groups {
             // A later group's faces survive the earlier surgeries untouched
             // (different regions), but the solid they belong to is new.
-            let step = remove_faces(model, &current.shape, group, tol)?;
+            let step = remove_faces_own(model, &current.shape, group, tol)?;
             current = Built {
                 shape: step.shape,
                 history: current.history.then(&step.history),

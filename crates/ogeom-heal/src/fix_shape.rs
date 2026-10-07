@@ -89,8 +89,10 @@ const TRIM_CAP: f64 = 1e7;
 /// fails to resolve; [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// if a rebuilt container comes out empty.
 pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Fixed> {
+    // Every mend below edits in place what it reaches, so what other
+    // shapes hold as well is copied first, and the copies recorded.
+    let mut history = ogeom_algo::unshare(model, shape)?;
     let before = check(model, shape, tol)?;
-    let mut history = History::identity();
     let mut current = shape.clone();
 
     // Wires and small edges, in one rebuild.

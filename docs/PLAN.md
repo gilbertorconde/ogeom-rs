@@ -237,11 +237,21 @@ sew welds a shared vertex, a seam join reaches a shared edge, a strand would
 widen a shared vertex), the boolean runs again over every face; converted
 slabs with tolerant vertices take that path.
 
-**Operations that edit in place.** A boolean's result shares its untouched
-faces' nodes with its operands. An operation that edits its input's nodes in
-place (heal's same-parameter pass and tolerance upgrade, sew, the fillet's
-edge writes) reaches the operand through them; copy on write there keeps an
-operand untouched.
+**Operations that edit in place.** A boolean notes the nodes it passes
+through as held by its operands too (`Model::note_held`). Heal, sew, the
+fillets and chamfers, `remove_faces`, `unify_same_domain` and `tessellate`
+copy what is held below the shape they are given before editing
+(`Model::unshare`, `ogeom_algo::on_own_nodes`). Still edited where they
+stand: a node held whole and handed in itself (a face set aside, given to
+`fix_face_pcurves`); a profile's edges, which a sweep (`make_prism`,
+`make_revolution`, the pipes and lofts) and `split_face` describe on the
+surfaces they build; a boolean's own vertex widening and re-charting of a
+ball. Each grows a tolerance, or adds a pcurve on a surface none of the
+operand's faces lie on (clearing the edge's same-parameter flag). Copying
+there instead parts the profile from the solid it came from: a decision
+for those operations, not taken here. Sharing made by
+anything but the boolean (`Reshape`, compounds, placed instances) is not
+noted, and the notes are not saved with a document.
 
 **Fillets in fewer passes.** A chain is taken in rounds, no two edges of a
 round sharing a vertex, each round in one boolean each way (wedges whose

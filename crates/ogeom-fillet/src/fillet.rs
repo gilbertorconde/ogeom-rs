@@ -34,12 +34,31 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// reads as a cut: the faces are modified into their trimmed pieces, and the
 /// edge's neighbourhood gains the blend face.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`] if the edge is
 /// neither of the seats above, is concave, or `radius` is not a usable
 /// length, or the ball sets back past the far side of a face.
 pub fn fillet_edge(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(
+        model,
+        solid,
+        std::slice::from_ref(edge),
+        |model, solid, parts| fillet_edge_own(model, solid, &parts[0], radius, tol),
+    )
+}
+
+/// [`fillet_edge`] on a shape every node below which is its own.
+fn fillet_edge_own(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
@@ -198,12 +217,28 @@ fn fillet_edge_seat(
 /// different solids, each exact, because the corner is genuinely one
 /// rounding or the other and no ball rolls round both.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// As [`fillet_edge`] per edge, and additionally if an earlier blend
 /// consumed or split a later edge: a chain whose members interfere is
 /// refused rather than guessed at.
 pub fn fillet_edges(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
+        fillet_edges_own(model, solid, parts, radius, tol)
+    })
+}
+
+/// [`fillet_edges`] on a shape every node below which is its own.
+fn fillet_edges_own(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
@@ -246,7 +281,7 @@ pub fn fillet_edges(
     // A corner the tool rounds, or the solid unchanged where it does not
     // speak the corner, which keeps the bands' caps.
     let round = |model: &mut Model, built: Built, vertex: &Shape| -> OgeomResult<Built> {
-        match crate::corner::round_vertex(model, &built.shape, vertex, radius, tol) {
+        match crate::corner::round_vertex_with(model, &built.shape, vertex, radius, None, tol) {
             Ok(rounded) => Ok(Built {
                 shape: rounded.shape,
                 history: built.history.then(&rounded.history),
@@ -634,10 +669,32 @@ fn apply_set_aside(
 /// legs stay planar, and the wedge subtracts through the boolean like its
 /// constant-radius siblings.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// As [`fillet_edge`], for the straight planar seat only.
 pub fn fillet_edge_variable(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    start_radius: f64,
+    end_radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(
+        model,
+        solid,
+        std::slice::from_ref(edge),
+        |model, solid, parts| {
+            fillet_edge_variable_own(model, solid, &parts[0], start_radius, end_radius, tol)
+        },
+    )
+}
+
+/// [`fillet_edge_variable`] on a shape every node below which is its own.
+fn fillet_edge_variable_own(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
@@ -651,7 +708,7 @@ pub fn fillet_edge_variable(
         }
     }
     if (start_radius - end_radius).abs() <= tol.confusion() {
-        return fillet_edge(model, solid, edge, start_radius, tol);
+        return fillet_edge_own(model, solid, edge, start_radius, tol);
     }
     let seat = planar_seat(model, solid, edge, tol)?;
     let (first, second) = if seat

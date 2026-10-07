@@ -220,10 +220,20 @@ pub fn divide_by_area(
 /// splines, cut at every knot, and each piece's geometry restated as the
 /// span it covers, parameters kept.
 ///
+/// What `shape` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// As [`ogeom_algo::to_nurbs`] and [`divide_by_continuity`].
 pub fn to_bezier(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(model, shape, &[], |model, shape, _| {
+        to_bezier_own(model, shape, tol)
+    })
+}
+
+/// [`to_bezier`] on a shape every node below which is its own.
+fn to_bezier_own(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Built> {
     let nurbs = ogeom_algo::to_nurbs(model, shape, tol)?;
     let divided = divide_by_continuity(model, &nurbs.shape, Continuity::CInfinity, tol)?;
 

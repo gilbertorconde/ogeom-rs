@@ -61,7 +61,7 @@ pub use convert::{
 };
 pub use extend::{Extension, extend_face};
 pub use fit::{Spacing, approximate, approximate_within, interpolate};
-pub use history::{Built, History};
+pub use history::{Built, History, on_own_nodes, on_own_nodes_with, unshare};
 pub use length::{curve_length, parameter_at_length, points_by_count, points_by_spacing};
 pub use mass::{MassProperties, linear_properties, surface_properties, volume_properties};
 pub use measure::{

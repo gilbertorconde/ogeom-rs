@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Operations on a boolean's result leave its operands alone.** Faces a
+  boolean passes through stay shared with the operand; heal, sew, fillets
+  and chamfers, `remove_faces`, `unify_same_domain` and `tessellate` copy
+  those shared nodes before editing and record the copies as exact copies
+  in their history (`Model::unshare`, `Model::unshare_each`,
+  `ogeom::algo::on_own_nodes`). `Model::widen` still grows a shared
+  tolerance in place.
+
 - **A converted round between two surfaces on its axis meets them
   exactly.** Mesh conversion rebuilds a round between cylinders, cones,
   planes square to the axis, or one of them and a sphere centred on it, as

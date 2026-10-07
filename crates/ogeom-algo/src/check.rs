@@ -857,13 +857,16 @@ pub(crate) fn walked_one_way(model: &Model, shape: &Shape) -> OgeomResult<Vec<Sh
 ///
 /// An operation that widens an edge's tolerance by writing it directly (a
 /// reader recording how far a pcurve sits from its curve) leaves the
-/// edge's vertices behind; this is the pass that brings them along.
+/// edge's vertices behind; this is the pass that brings them along. What
+/// `shape` shares with other shapes is copied first ([`Model::unshare`]),
+/// so their tolerances stay as they are.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the shape,
 /// or anything below it, does not resolve in this model.
 pub fn restore_containment(model: &mut Model, shape: &Shape) -> OgeomResult<usize> {
+    model.unshare(shape)?;
     let bounded: Vec<Shape> = explore_unique(model, shape, ShapeType::Edge)?
         .into_iter()
         .chain(explore_unique(model, shape, ShapeType::Vertex)?)

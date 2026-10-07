@@ -420,6 +420,105 @@ impl Built {
     }
 }
 
+/// Make every node below `root` the root's alone, as
+/// [`Model::unshare`](ogeom_topo::Model::unshare) does, and say so: each
+/// face, edge and vertex copied, as it stands below `root`, is recorded as
+/// an exact copy of the one it stands in for.
+///
+/// What an operation that edits below a shape it was given calls first, so
+/// the edit reaches no other shape holding the same nodes.
+///
+/// # Errors
+///
+/// As [`Model::unshare`](ogeom_topo::Model::unshare).
+pub fn unshare(model: &mut ogeom_topo::Model, root: &Shape) -> ogeom_core::OgeomResult<History> {
+    let copies = model.unshare(root)?;
+    copies_below(model, root, &copies)
+}
+
+/// `run` on `root` and the shapes `parts` below it, once every node below
+/// `root` is the root's alone: what other shapes hold as well is copied
+/// first, `root` itself included where it is held whole
+/// ([`Model::unshare_each`](ogeom_topo::Model::unshare_each)), and each
+/// part is carried to its copy. The history runs from the shapes as
+/// given.
+///
+/// What an operation that returns what it makes of a shape, and edits
+/// below it on the way, runs inside.
+///
+/// # Errors
+///
+/// As [`Model::unshare`](ogeom_topo::Model::unshare), and as `run`.
+pub fn on_own_nodes(
+    model: &mut ogeom_topo::Model,
+    root: &Shape,
+    parts: &[Shape],
+    run: impl FnOnce(&mut ogeom_topo::Model, &Shape, &[Shape]) -> ogeom_core::OgeomResult<Built>,
+) -> ogeom_core::OgeomResult<Built> {
+    on_own_nodes_with(model, root, parts, run, |built| &mut built.history)
+}
+
+/// As [`on_own_nodes`], for an operation whose answer holds its history
+/// beside other things: `history` finds it in the answer.
+///
+/// # Errors
+///
+/// As [`on_own_nodes`].
+pub fn on_own_nodes_with<R>(
+    model: &mut ogeom_topo::Model,
+    root: &Shape,
+    parts: &[Shape],
+    run: impl FnOnce(&mut ogeom_topo::Model, &Shape, &[Shape]) -> ogeom_core::OgeomResult<R>,
+    history: impl FnOnce(&mut R) -> &mut History,
+) -> ogeom_core::OgeomResult<R> {
+    let unshared = model.unshare_each(std::slice::from_ref(root))?;
+    if unshared.copies.is_empty() {
+        return run(model, root, parts);
+    }
+    let own = unshared.shapes[0].clone();
+    let mut copied = copies_below(model, &own, &unshared.copies)?;
+    if own.node() != root.node() {
+        copied.copy(root, own.clone());
+    }
+    let parts: Vec<Shape> = parts
+        .iter()
+        .map(|part| match copied.copy_of(part) {
+            Some(copy) => Shape::new(copy.node(), part.location().clone(), part.orientation()),
+            None => part.clone(),
+        })
+        .collect();
+    let mut answer = run(model, &own, &parts)?;
+    let made = history(&mut answer);
+    *made = copied.then(made);
+    Ok(answer)
+}
+
+/// Each face, edge and vertex below `root` that is one of `copies`, as an
+/// exact copy of the one it stands in for.
+fn copies_below(
+    model: &ogeom_topo::Model,
+    root: &Shape,
+    copies: &[(ogeom_topo::TShapeId, ogeom_topo::TShapeId)],
+) -> ogeom_core::OgeomResult<History> {
+    use ogeom_topo::{ShapeType, explore_unique};
+
+    let mut history = History::new();
+    if copies.is_empty() {
+        return Ok(history);
+    }
+    let original: HashMap<ogeom_topo::TShapeId, ogeom_topo::TShapeId> =
+        copies.iter().map(|&(old, new)| (new, old)).collect();
+    for want in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
+        for shape in explore_unique(model, root, want)? {
+            if let Some(&old) = original.get(&shape.node()) {
+                let was = Shape::new(old, shape.location().clone(), shape.orientation());
+                history.copy(&was, shape);
+            }
+        }
+    }
+    Ok(history)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

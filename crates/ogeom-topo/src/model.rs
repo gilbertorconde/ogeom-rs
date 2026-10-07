@@ -41,6 +41,35 @@ pub struct Model {
     current_op: OpId,
     tolerances: Tolerances,
     face_boxes: FaceBoxes,
+    held: Held,
+}
+
+/// The nodes an operation passed through into its result from the shapes
+/// it was given, which those shapes still hold: a bit per node index. What
+/// lies below a marked node is held with it.
+#[derive(Debug, Clone, Default)]
+struct Held {
+    bits: Vec<u64>,
+}
+
+impl Held {
+    fn mark(&mut self, index: u32) {
+        let (word, bit) = (index as usize / 64, index % 64);
+        if self.bits.len() <= word {
+            self.bits.resize(word + 1, 0);
+        }
+        self.bits[word] |= 1 << bit;
+    }
+
+    fn get(&self, index: u32) -> bool {
+        self.bits
+            .get(index as usize / 64)
+            .is_some_and(|word| word & (1 << (index % 64)) != 0)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bits.is_empty()
+    }
 }
 
 /// Which identity each node carries, in a slot per node index. Nodes are
@@ -100,6 +129,7 @@ impl Model {
             current_op: OpId(0),
             tolerances,
             face_boxes: FaceBoxes::default(),
+            held: Held::default(),
         }
     }
 
@@ -731,7 +761,9 @@ impl Model {
     /// no invariant here constrains on its own.
     ///
     /// The node may be changed in any way, so the box kept for every face
-    /// it is part of ([`Model::face_bounds`]) is forgotten.
+    /// it is part of ([`Model::face_bounds`]) is forgotten. Every shape
+    /// holding the node sees the change; an editor starting from a shape it
+    /// was given copies what other shapes hold first ([`Model::unshare`]).
     #[must_use]
     pub fn node_mut(&mut self, shape: &Shape) -> Option<&mut TShape> {
         self.sync_face_boxes();
@@ -1139,6 +1171,15 @@ impl Model {
     /// Tolerances only ever grow, so this is the sanctioned repair: raise what
     /// bounds, never lower what is bounded.
     ///
+    /// The nodes are widened where they stand, held by other shapes as well
+    /// or not ([`Model::note_held`]): a boolean widens a vertex its rebuilt
+    /// edges end on though a face it set aside, and so the operand, holds
+    /// it too. Only a tolerance grows: every shape holding the node keeps
+    /// its geometry and its pcurves, and a looser bound still bounds what
+    /// it bounded, so each stays valid. An editor starting from a shape it
+    /// was given copies what is held first ([`Model::unshare`]), and widens
+    /// no other shape.
+    ///
     /// # Errors
     ///
     /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the shape, or
@@ -1174,6 +1215,271 @@ impl Model {
             }
         }
         Ok(())
+    }
+
+    /// Record that `result` holds nodes made before the model held `since`
+    /// nodes: what an operation passed through into its result from the
+    /// shapes it was given, which those shapes still hold.
+    ///
+    /// The walk goes down from `result` through the nodes made since, and
+    /// marks each older node where it first meets one; what lies below a
+    /// marked node is held with it. It costs what the operation made.
+    /// [`Model::unshare`] reads the marks.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the
+    /// shape, or anything below it, does not resolve in this model.
+    pub fn note_held(&mut self, result: &Shape, since: usize) -> OgeomResult<()> {
+        let since = u32::try_from(since).unwrap_or(u32::MAX);
+        let made = self.nodes.len().saturating_sub(since as usize);
+        let mut seen = vec![false; made];
+        let mut stack: smallvec::SmallVec<[TShapeId; 16]> = smallvec::smallvec![result.node()];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                ogeom_bail!(Dangling, "shape refers to a node not in this model");
+            };
+            let Some(at) = id.index().checked_sub(since) else {
+                self.held.mark(id.index());
+                continue;
+            };
+            let Some(slot) = seen.get_mut(at as usize) else {
+                continue;
+            };
+            if core::mem::replace(slot, true) {
+                continue;
+            }
+            stack.extend(node.children().iter().map(Shape::node));
+        }
+        Ok(())
+    }
+
+    /// Make every node below `root` the root's alone, so that an edit in
+    /// place below it changes no other shape.
+    ///
+    /// Each node an operation passed through into `root` from the shapes
+    /// it was given ([`Model::note_held`]), and everything below it, is
+    /// copied: the same kind, data and identity, and the same kept face
+    /// box. The nodes `root` holds alone that held one now hold its copy,
+    /// at the same placement and orientation. What is held is found from
+    /// `root` down; a `root` that is itself held is left as it stands,
+    /// with everything below it.
+    ///
+    /// Returns each node copied, with its copy, in the order copied.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the
+    /// shape, or anything below it, does not resolve in this model.
+    pub fn unshare(&mut self, root: &Shape) -> OgeomResult<Vec<(TShapeId, TShapeId)>> {
+        if self.held.is_empty() || self.held.get(root.node().index()) {
+            return Ok(Vec::new());
+        }
+        let mut pairs = Vec::new();
+        self.unshare_below(std::slice::from_ref(root), true, &mut pairs)?;
+        Ok(pairs)
+    }
+
+    /// As [`Model::unshare`] for several shapes at once, for an operation
+    /// that takes shapes and returns what it makes of them, and leaves the
+    /// shapes it was given as they are.
+    ///
+    /// Nothing given is edited: each node held below a shape, and each
+    /// node on the way down to one, the shape itself included, is copied
+    /// once for them all, so a shape with anything held below it comes
+    /// back as a copy. What a copy shares with the shape it was copied
+    /// from is noted as held by both ([`Model::note_held`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Model::unshare`].
+    pub fn unshare_each(&mut self, shapes: &[Shape]) -> OgeomResult<Unshared> {
+        if self.held.is_empty() {
+            return Ok(Unshared {
+                shapes: shapes.to_vec(),
+                copies: Vec::new(),
+            });
+        }
+        let since = self.nodes.len();
+        let mut pairs = Vec::new();
+        let copies = self.unshare_below(shapes, false, &mut pairs)?;
+        let mut out = Vec::with_capacity(shapes.len());
+        for shape in shapes {
+            match copies.get(&shape.node()) {
+                Some(&copy) => {
+                    let copy = Shape::new(copy, shape.location().clone(), shape.orientation());
+                    self.note_held(&copy, since)?;
+                    out.push(copy);
+                }
+                None => out.push(shape.clone()),
+            }
+        }
+        Ok(Unshared {
+            shapes: out,
+            copies: pairs,
+        })
+    }
+
+    /// Copy every node held below `roots`; where `repoint`, point the nodes
+    /// the roots hold alone at the copies, and otherwise copy those on the
+    /// way down to a held node too, the roots included. The copies by
+    /// original.
+    fn unshare_below(
+        &mut self,
+        roots: &[Shape],
+        repoint: bool,
+        pairs: &mut Vec<(TShapeId, TShapeId)>,
+    ) -> OgeomResult<hashbrown::HashMap<TShapeId, TShapeId>> {
+        // Every node reached, in the order first reached, and whether it is
+        // held: marked, or below a held node on some path.
+        let mut held: hashbrown::HashMap<TShapeId, bool> = hashbrown::HashMap::new();
+        let mut order: Vec<TShapeId> = Vec::new();
+        let mut stack: Vec<(TShapeId, bool)> =
+            roots.iter().rev().map(|r| (r.node(), false)).collect();
+        let mut any = false;
+        while let Some((id, above)) = stack.pop() {
+            let is_held = above || self.held.get(id.index());
+            match held.get(&id) {
+                Some(&was) if was || !is_held => continue,
+                Some(_) => {}
+                None => order.push(id),
+            }
+            held.insert(id, is_held);
+            any |= is_held;
+            let Some(node) = self.nodes.get(id) else {
+                ogeom_bail!(Dangling, "shape refers to a node not in this model");
+            };
+            stack.extend(node.children().iter().rev().map(|c| (c.node(), is_held)));
+        }
+        let mut copies: hashbrown::HashMap<TShapeId, TShapeId> = hashbrown::HashMap::new();
+        if !any {
+            return Ok(copies);
+        }
+        // The nodes to copy: the held ones, and where nothing is pointed
+        // anew, every node with one of them below it.
+        let mut copied: hashbrown::HashSet<TShapeId> = held
+            .iter()
+            .filter(|(_, h)| **h)
+            .map(|(id, _)| *id)
+            .collect();
+        if !repoint {
+            loop {
+                let mut grew = false;
+                for &id in order.iter().rev() {
+                    if copied.contains(&id) {
+                        continue;
+                    }
+                    let below = self
+                        .nodes
+                        .get(id)
+                        .is_some_and(|n| n.children().iter().any(|c| copied.contains(&c.node())));
+                    if below {
+                        copied.insert(id);
+                        grew = true;
+                    }
+                }
+                if !grew {
+                    break;
+                }
+            }
+        }
+        self.sync_face_boxes();
+        for root in roots {
+            if copied.contains(&root.node()) {
+                self.copy_below(root.node(), &copied, &mut copies, pairs)?;
+            }
+        }
+        if !repoint {
+            return Ok(copies);
+        }
+        for parent in order {
+            if copied.contains(&parent) {
+                continue;
+            }
+            let Some(node) = self.nodes.get(parent) else {
+                continue;
+            };
+            let children = node.children().to_vec();
+            let mut changed = false;
+            let mut repointed = Vec::with_capacity(children.len());
+            for child in children {
+                if copied.contains(&child.node()) {
+                    let copy = self.copy_below(child.node(), &copied, &mut copies, pairs)?;
+                    repointed.push(Shape::new(
+                        copy,
+                        child.location().clone(),
+                        child.orientation(),
+                    ));
+                    changed = true;
+                } else {
+                    repointed.push(child);
+                }
+            }
+            if changed && let Some(node) = self.nodes.get_mut(parent) {
+                *node.children_mut() = repointed;
+                if let Some(node) = self.nodes.get(parent) {
+                    self.face_boxes.link(parent, node);
+                }
+            }
+        }
+        Ok(copies)
+    }
+
+    /// The copy of `id`, with every node below it that `copied` names
+    /// copied too, each once.
+    fn copy_below(
+        &mut self,
+        id: TShapeId,
+        copied: &hashbrown::HashSet<TShapeId>,
+        copies: &mut hashbrown::HashMap<TShapeId, TShapeId>,
+        pairs: &mut Vec<(TShapeId, TShapeId)>,
+    ) -> OgeomResult<TShapeId> {
+        // Children before parents: a node is copied once every child to
+        // copy has its copy.
+        let mut stack: Vec<(TShapeId, bool)> = vec![(id, false)];
+        while let Some((at, ready)) = stack.pop() {
+            if copies.contains_key(&at) {
+                continue;
+            }
+            let Some(node) = self.nodes.get(at) else {
+                ogeom_bail!(Dangling, "shape refers to a node not in this model");
+            };
+            if !ready {
+                stack.push((at, true));
+                stack.extend(
+                    node.children()
+                        .iter()
+                        .rev()
+                        .filter(|c| copied.contains(&c.node()) && !copies.contains_key(&c.node()))
+                        .map(|c| (c.node(), false)),
+                );
+                continue;
+            }
+            let children = node
+                .children()
+                .iter()
+                .map(|c| {
+                    let copy = copies.get(&c.node()).copied().unwrap_or(c.node());
+                    Shape::new(copy, c.location().clone(), c.orientation())
+                })
+                .collect();
+            let copy = TShape::new(node.kind(), node.data().clone(), children);
+            let kept = self
+                .face_box_slot(&Shape::of(at))
+                .and_then(|slot| slot.get().copied());
+            let made = self.insert_node(copy);
+            if let Some(entity) = self.identity.get(at) {
+                self.identity.insert(made, entity);
+            }
+            if let (Some(kept), Some(slot)) = (kept, self.face_box_slot(&Shape::of(made))) {
+                self.face_boxes.keep(slot, kept);
+            }
+            copies.insert(at, made);
+            pairs.push((at, made));
+        }
+        copies.get(&id).copied().ok_or_else(|| {
+            ogeom_core::ogeom_err!(Dangling, "shape refers to a node not in this model")
+        })
     }
 
     /// Check that every child resolves and is of the expected type.
@@ -1274,6 +1580,16 @@ fn placed_box(kept: &Aabb, placement: &Transform) -> Aabb {
         },
         _ => kept.transformed(placement),
     }
+}
+
+/// What [`Model::unshare_each`] made of the shapes it was given.
+#[derive(Debug, Clone)]
+pub struct Unshared {
+    /// The shapes to work on, in the order given: each as given, or its
+    /// copy at the same placement and orientation.
+    pub shapes: Vec<Shape>,
+    /// Each node copied, with its copy, in the order copied.
+    pub copies: Vec<(TShapeId, TShapeId)>,
 }
 
 /// What an absorb produced: the transplanted roots, bound to the model that

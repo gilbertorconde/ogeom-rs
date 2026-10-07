@@ -69,19 +69,26 @@ impl FaceBoxes {
             self.slot_of[at] = u32::try_from(self.boxes.len()).unwrap_or(NONE);
             self.boxes.push(OnceLock::new());
         }
-        if matches!(
+        self.link(id, node);
+    }
+
+    /// Record the links from the children `node` holds up to it, if it is
+    /// part of a face.
+    pub(crate) fn link(&mut self, id: TShapeId, node: &TShape) {
+        if !matches!(
             node.kind(),
             ShapeType::Edge | ShapeType::Wire | ShapeType::Face
         ) {
-            for child in node.children() {
-                let below = child.node().index() as usize;
-                if self.held_by.len() <= below {
-                    self.slot_of.resize(below + 1, NONE);
-                    self.held_by.resize(below + 1, SmallVec::new());
-                }
-                if !self.held_by[below].contains(&id.index()) {
-                    self.held_by[below].push(id.index());
-                }
+            return;
+        }
+        for child in node.children() {
+            let below = child.node().index() as usize;
+            if self.held_by.len() <= below {
+                self.slot_of.resize(below + 1, NONE);
+                self.held_by.resize(below + 1, SmallVec::new());
+            }
+            if !self.held_by[below].contains(&id.index()) {
+                self.held_by[below].push(id.index());
             }
         }
     }

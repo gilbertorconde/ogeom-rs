@@ -259,7 +259,9 @@ impl Sewn {
 /// orientation (a band with a half twist) keeps its faces as given, and
 /// [`Sewn::edges_walked_one_way`] names the edges that show it.
 ///
-/// Nothing is moved. See the module documentation.
+/// Nothing is moved. See the module documentation. What the faces share
+/// with other shapes is copied before the sewing edits it
+/// ([`Model::unshare_each`]); the history runs from the faces given.
 ///
 /// # Errors
 ///
@@ -310,7 +312,8 @@ pub fn sew_within(
 /// asked only of the other faces, so a large shell with a few faces to sew
 /// costs what those few cost. Where sewing the others would move an edge or
 /// a vertex a settled face holds, the faces are sewn as [`sew`] sews them,
-/// all alike.
+/// all alike. Unlike [`sew`], nothing the faces share with other shapes is
+/// copied first: the edges and vertices kept are edited where they stand.
 ///
 /// # Errors
 ///
@@ -360,14 +363,28 @@ fn check_faces(model: &Model, faces: &[Shape]) -> OgeomResult<()> {
 fn sew_with(model: &mut Model, faces: &[Shape], gap: f64, tol: Tolerances) -> OgeomResult<Sewn> {
     check_faces(model, faces)?;
     model.begin_operation();
+    // Sewing widens and describes the edges and vertices it keeps where
+    // they stand, so what other shapes hold as well is copied first, a
+    // face held whole included; the history runs from the faces given.
+    let given = faces;
+    let faces = model.unshare_each(given)?.shapes;
     let none = vec![false; faces.len()];
-    match sew_faces(model, faces, &none, gap, tol)? {
-        Some(sewn) => Ok(sewn),
-        None => ogeom_bail!(
+    let Some(mut sewn) = sew_faces(model, &faces, &none, gap, tol)? else {
+        ogeom_bail!(
             Construction,
             "sewing with no face settled moved a settled face"
-        ),
+        );
+    };
+    let mut copied = History::new();
+    for (given, face) in given.iter().zip(&faces) {
+        if given.node() != face.node() {
+            copied.copy(given, face.clone());
+        }
     }
+    if !copied.is_empty() {
+        sewn.history = copied.then(&sewn.history);
+    }
+    Ok(sewn)
 }
 
 /// The sewing itself, the faces flagged `settled` passed through as they

@@ -68,13 +68,20 @@ fn a_corner_hole_costs_what_it_touches_not_what_the_plate_holds() {
             least.min(elapsed)
         })
     };
-    let (mut least_small, mut least_large) = (f64::INFINITY, f64::INFINITY);
-    for _ in 0..12 {
-        least_small = least_small.min(least(&mut small));
-        least_large = least_large.min(least(&mut large));
+    // A machine busy with other work slows some runs of either side; the
+    // least of each side over a round reads past that, and a round is
+    // measured again, up to four, while the bound is not met.
+    let mut ratios = Vec::new();
+    for _ in 0..4 {
+        let (mut least_small, mut least_large) = (f64::INFINITY, f64::INFINITY);
+        for _ in 0..12 {
+            least_small = least_small.min(least(&mut small));
+            least_large = least_large.min(least(&mut large));
+        }
+        ratios.push((least_large, least_small));
+        if least_large <= 2.0 * least_small {
+            return;
+        }
     }
-    assert!(
-        least_large <= 2.0 * least_small,
-        "582 faces {least_large:.5} s, 22 faces {least_small:.5} s"
-    );
+    panic!("582 faces against 22, (large s, small s) per round: {ratios:?}");
 }

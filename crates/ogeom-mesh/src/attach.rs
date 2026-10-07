@@ -47,7 +47,9 @@ pub struct Tessellated {
 /// model.
 ///
 /// Replaces any tessellation already stored: a cache built to a different
-/// deflection is not the one that was asked for.
+/// deflection is not the one that was asked for. Faces, edges and vertices
+/// below `shape` that other shapes hold as well are copied first
+/// ([`Model::unshare`]), so their stored tessellations stay as they are.
 ///
 /// # Errors
 ///
@@ -61,6 +63,7 @@ pub fn tessellate(
     tol: Tolerances,
 ) -> OgeomResult<Tessellated> {
     deflection.validate()?;
+    model.unshare(shape)?;
     let mut done = Tessellated {
         faces: 0,
         edges: 0,

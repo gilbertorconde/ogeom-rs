@@ -30,6 +30,8 @@ pub struct FixedTrims {
 /// fitted edge's tolerance widens to the offset actually measured and to
 /// how far the fitted trim, lifted, stands from the curve anywhere along
 /// it, so the model says what it knows. An edge past the cap is reported, not touched.
+/// What the face shares with other shapes is copied first
+/// ([`Model::unshare`]), so their edges keep the trims they have.
 ///
 /// # Errors
 ///
@@ -45,6 +47,7 @@ pub fn fix_face_pcurves(
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "fix_face_pcurves fixes a face");
     }
+    model.unshare(face)?;
     let (surface_id, surface) = {
         let Some(node) = model.node(face) else {
             ogeom_bail!(Dangling, "face is not in this model");
@@ -156,6 +159,8 @@ pub struct ReanchoredBoundaries {
 ///
 /// An edge shared by several faces moves once, onto the first face that
 /// claims it in face order; the recorded tolerance covers the rest.
+/// What `shape` shares with other shapes is copied first
+/// ([`ogeom_algo::on_own_nodes`]), so their vertices keep their tolerances.
 ///
 /// # Errors
 ///
@@ -163,6 +168,22 @@ pub struct ReanchoredBoundaries {
 /// shape's structure resists rebuilding; refusals past the cap are reported,
 /// not thrown.
 pub fn reanchor_boundaries(
+    model: &mut Model,
+    shape: &Shape,
+    cap: f64,
+    tol: Tolerances,
+) -> OgeomResult<(ogeom_algo::Built, ReanchoredBoundaries)> {
+    ogeom_algo::on_own_nodes_with(
+        model,
+        shape,
+        &[],
+        |model, shape, _| reanchor_boundaries_own(model, shape, cap, tol),
+        |(built, _)| &mut built.history,
+    )
+}
+
+/// [`reanchor_boundaries`] on a shape every node below which is its own.
+fn reanchor_boundaries_own(
     model: &mut Model,
     shape: &Shape,
     cap: f64,

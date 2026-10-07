@@ -43,6 +43,9 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// the compartment bounded by the three planes through the centre and two
 /// touch points, clipped to the solid, less the ball.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
@@ -56,6 +59,22 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// by the host planes and the three planes through the ball's centre
 /// square to the edges.
 pub fn round_vertex(
+    model: &mut Model,
+    solid: &Shape,
+    vertex: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(
+        model,
+        solid,
+        std::slice::from_ref(vertex),
+        |model, solid, parts| round_vertex_own(model, solid, &parts[0], radius, tol),
+    )
+}
+
+/// [`round_vertex`] on a shape every node below which is its own.
+fn round_vertex_own(
     model: &mut Model,
     solid: &Shape,
     vertex: &Shape,

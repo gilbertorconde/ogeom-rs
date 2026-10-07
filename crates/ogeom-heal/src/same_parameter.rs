@@ -36,6 +36,9 @@ pub struct SameParameterReport {
 /// true by making the tolerance honest. Degenerate edges and edges with no
 /// pcurves are trivially true.
 ///
+/// Nodes below `shape` that other shapes hold as well are copied first
+/// ([`Model::unshare`]), so the repair reaches no other shape.
+///
 /// # Errors
 ///
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the shape
@@ -46,6 +49,7 @@ pub fn repair_same_parameter(
     tol: Tolerances,
 ) -> OgeomResult<SameParameterReport> {
     const SAMPLES: usize = 24;
+    model.unshare(shape)?;
     let mut report = SameParameterReport::default();
     let mut done: Vec<TShapeId> = Vec::new();
     for edge in explore(model, shape, Filter::OfType(ShapeType::Edge))? {

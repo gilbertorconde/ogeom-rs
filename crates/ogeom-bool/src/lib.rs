@@ -10274,9 +10274,25 @@ pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
              splits one"
         );
     }
-    ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
-        settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
+    noting_held(model, |model| {
+        ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+            settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
+        })
     })
+}
+
+/// What `run` makes, with the nodes it passed through from the shapes it
+/// was given noted as held by those shapes as well
+/// ([`Model::note_held`]): an operation editing the result in place
+/// copies them first ([`Model::unshare`]).
+fn noting_held(
+    model: &mut Model,
+    run: impl FnOnce(&mut Model) -> OgeomResult<Built>,
+) -> OgeomResult<Built> {
+    let since = model.node_count();
+    let built = run(model)?;
+    model.note_held(&built.shape, since)?;
+    Ok(built)
 }
 
 fn fuse_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
@@ -10650,8 +10666,10 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeom
         ),
         (true, false) => trimmed_sheet(model, a, b, true, tol),
         (false, true) => trimmed_sheet(model, b, a, true, tol),
-        (false, false) => ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
-            settled(model, tol, |model, tol| common_once(model, a, b, tol))
+        (false, false) => noting_held(model, |model| {
+            ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+                settled(model, tol, |model, tol| common_once(model, a, b, tol))
+            })
         }),
     }
 }
@@ -10765,8 +10783,10 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
     if is_sheet(model, a)? {
         return trimmed_sheet(model, a, b, false, tol);
     }
-    ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
-        settled(model, tol, |model, tol| cut_once(model, a, b, tol))
+    noting_held(model, |model| {
+        ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+            settled(model, tol, |model, tol| cut_once(model, a, b, tol))
+        })
     })
 }
 
@@ -10786,31 +10806,33 @@ fn trimmed_sheet(
         );
     }
     trim_sheet_edges(model, sheet, tol)?;
-    settled(model, tol, |model, tol| {
-        let tool = &resolved_half_space(model, tool, sheet, tol)?;
-        let (sheet, tool) = (
-            &baked_if_scaled(model, sheet, tol)?,
-            &baked_if_scaled(model, tool, tol)?,
-        );
-        let fused = general_fuse_as(model, sheet, tool, Operands::SheetBySolid, None, tol)?;
-        let mut kept = Vec::new();
-        for (index, piece) in fused.pieces.iter().enumerate() {
-            match piece.state {
-                PieceState::In if inside => kept.push(index),
-                PieceState::Out if !inside => kept.push(index),
-                PieceState::In | PieceState::Out => {}
-                PieceState::OnAligned | PieceState::OnOpposed => ogeom_bail!(
-                    NotDone,
-                    "a piece of the sheet lies on the tool's boundary, which \
+    noting_held(model, |model| {
+        settled(model, tol, |model, tol| {
+            let tool = &resolved_half_space(model, tool, sheet, tol)?;
+            let (sheet, tool) = (
+                &baked_if_scaled(model, sheet, tol)?,
+                &baked_if_scaled(model, tool, tol)?,
+            );
+            let fused = general_fuse_as(model, sheet, tool, Operands::SheetBySolid, None, tol)?;
+            let mut kept = Vec::new();
+            for (index, piece) in fused.pieces.iter().enumerate() {
+                match piece.state {
+                    PieceState::In if inside => kept.push(index),
+                    PieceState::Out if !inside => kept.push(index),
+                    PieceState::In | PieceState::Out => {}
+                    PieceState::OnAligned | PieceState::OnOpposed => ogeom_bail!(
+                        NotDone,
+                        "a piece of the sheet lies on the tool's boundary, which \
                      keeps it on neither side"
-                ),
-                PieceState::Unread => ogeom_bail!(
-                    Construction,
-                    "a piece of the sheet was not classified against the tool"
-                ),
+                    ),
+                    PieceState::Unread => ogeom_bail!(
+                        Construction,
+                        "a piece of the sheet was not classified against the tool"
+                    ),
+                }
             }
-        }
-        assemble_sheet(model, &fused, &kept, sheet, tol)
+            assemble_sheet(model, &fused, &kept, sheet, tol)
+        })
     })
 }
 
@@ -10851,14 +10873,16 @@ pub fn split_sheet(
         }
         trim_sheet_edges(model, shape, tol)?;
     }
-    settled(model, tol, |model, tol| {
-        let (sheet, by) = (
-            &baked_if_scaled(model, sheet, tol)?,
-            &baked_if_scaled(model, by, tol)?,
-        );
-        let fused = general_fuse_as(model, sheet, by, Operands::SheetBySheet, None, tol)?;
-        let kept: Vec<usize> = (0..fused.pieces.len()).collect();
-        assemble_sheet(model, &fused, &kept, sheet, tol)
+    noting_held(model, |model| {
+        settled(model, tol, |model, tol| {
+            let (sheet, by) = (
+                &baked_if_scaled(model, sheet, tol)?,
+                &baked_if_scaled(model, by, tol)?,
+            );
+            let fused = general_fuse_as(model, sheet, by, Operands::SheetBySheet, None, tol)?;
+            let kept: Vec<usize> = (0..fused.pieces.len()).collect();
+            assemble_sheet(model, &fused, &kept, sheet, tol)
+        })
     })
 }
 

@@ -36,12 +36,31 @@ use ogeom_topo::{Model, Shape};
 /// history reads as a cut: the two faces are modified into their trimmed
 /// pieces, the edge's neighbourhood gains the bevel face.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the edge is
 /// not straight, not convex, not shared by exactly two planar faces of
 /// `solid`, or `distance` is not a usable length.
 pub fn chamfer_edge(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    distance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(
+        model,
+        solid,
+        std::slice::from_ref(edge),
+        |model, solid, parts| chamfer_edge_own(model, solid, &parts[0], distance, tol),
+    )
+}
+
+/// [`chamfer_edge`] on a shape every node below which is its own.
+fn chamfer_edge_own(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
@@ -58,11 +77,34 @@ pub fn chamfer_edge(
 /// The asymmetric chamfer: `face` names which side the first distance applies
 /// to, and must be one of the two faces meeting at the edge.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// As [`chamfer_edge`], and additionally if `face` is not one of the edge's
 /// two faces.
 pub fn chamfer_edge_distances(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: f64,
+    on_other: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(
+        model,
+        solid,
+        &[edge.clone(), face.clone()],
+        |model, solid, parts| {
+            chamfer_edge_distances_own(model, solid, &parts[0], &parts[1], on_face, on_other, tol)
+        },
+    )
+}
+
+/// [`chamfer_edge_distances`] on a shape every node below which is its own.
+fn chamfer_edge_distances_own(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
@@ -86,11 +128,34 @@ pub fn chamfer_edge_distances(
 /// departing the named face at the given angle, meets the other face. An
 /// angle of `π/4` on a square edge reproduces the symmetric chamfer.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// As [`chamfer_edge_distances`], and additionally if the bevel at that angle
 /// never reaches the other face.
 pub fn chamfer_edge_angle(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    distance: f64,
+    angle: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(
+        model,
+        solid,
+        &[edge.clone(), face.clone()],
+        |model, solid, parts| {
+            chamfer_edge_angle_own(model, solid, &parts[0], &parts[1], distance, angle, tol)
+        },
+    )
+}
+
+/// [`chamfer_edge_angle`] on a shape every node below which is its own.
+fn chamfer_edge_angle_own(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
@@ -105,6 +170,57 @@ pub fn chamfer_edge_angle(
         angle,
     };
     wedge_for(model, solid, edge, &spec, tol)?.apply(model, solid, edge, tol)
+}
+
+/// The shapes chamfer specs name: each edge, then the face its chamfer
+/// runs along where it names one.
+fn chamfer_parts(specs: &[(Shape, Chamfer)]) -> Vec<Shape> {
+    let mut parts = Vec::with_capacity(specs.len() * 2);
+    for (edge, spec) in specs {
+        parts.push(edge.clone());
+        match spec {
+            Chamfer::Symmetric(_) => {}
+            Chamfer::Distances { face, .. } | Chamfer::Angle { face, .. } => {
+                parts.push(face.clone());
+            }
+        }
+    }
+    parts
+}
+
+/// The specs again, naming `parts` in the order [`chamfer_parts`] lists
+/// them.
+fn chamfer_specs(specs: &[(Shape, Chamfer)], parts: &[Shape]) -> Vec<(Shape, Chamfer)> {
+    let mut parts = parts.iter().cloned();
+    let mut next = |was: &Shape| parts.next().unwrap_or_else(|| was.clone());
+    specs
+        .iter()
+        .map(|(edge, spec)| {
+            let edge = next(edge);
+            let spec = match spec {
+                Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
+                Chamfer::Distances {
+                    face,
+                    on_face,
+                    on_other,
+                } => Chamfer::Distances {
+                    face: next(face),
+                    on_face: *on_face,
+                    on_other: *on_other,
+                },
+                Chamfer::Angle {
+                    face,
+                    distance,
+                    angle,
+                } => Chamfer::Angle {
+                    face: next(face),
+                    distance: *distance,
+                    angle: *angle,
+                },
+            };
+            (edge, spec)
+        })
+        .collect()
 }
 
 /// One edge's chamfer, in any of the three spellings.
@@ -168,6 +284,9 @@ pub fn chamfer_edges(
 /// tetrahedron and two extra faces. Where three bevels meet at a convex
 /// vertex the three planes meet at one point, the mitre of three planes.
 ///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
 /// # Errors
 ///
 /// As [`chamfer_edge`], [`chamfer_edge_distances`] and
@@ -175,6 +294,23 @@ pub fn chamfer_edges(
 /// the call; and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// if no edges are given.
 pub fn chamfer_edges_with(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    ogeom_algo::on_own_nodes(
+        model,
+        solid,
+        &chamfer_parts(specs),
+        |model, solid, parts| {
+            chamfer_edges_with_own(model, solid, &chamfer_specs(specs, parts), tol)
+        },
+    )
+}
+
+/// [`chamfer_edges_with`] on a shape every node below which is its own.
+fn chamfer_edges_with_own(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
