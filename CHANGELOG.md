@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-10-07
+
+A patch release: no breaking API changes. Booleans take imported parts with
+spline fillets over small rings, each face's bounding box is kept in the
+model, and a fillet reads only what is near each edge. A native snapshot
+carries only the provenance its shapes reach (1.6 MB instead of 39 MB for a
+582-face plate) and is written as format version 3 when its ids have gaps.
+A mirrored face is shaded the way it faces, two half domes sew into an open
+sheet, and a three-arc loft and a revolved dome thicken. Exact volumes
+close the slits beside fitted and straying pcurves, so a converted or read
+part's volume no longer depends on the face listed first.
+
 ### Added
 
 - **`ProvenanceTable::forget` and `Model::forget_provenance`.** An
@@ -4134,7 +4146,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.7...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.4...v0.9.5
