@@ -490,7 +490,26 @@ fn refine_foot(
             (false, true) => r[0].abs(),
             (false, false) => r[0].hypot(r[1]),
         };
-        if free_norm <= tol.confusion() {
+        // The residual is the gap times a derivative, so it shrinks with the
+        // chart's own speed: round a ring a sixth of a millimetre in radius,
+        // a residual under the confusion still leaves the foot several times
+        // the confusion along the surface. The gap's own tangential part, a
+        // length, must be under it as well.
+        let along = |r: f64, d: ogeom_math::Vector| -> f64 {
+            let speed = d.magnitude();
+            if speed > f64::MIN_POSITIVE {
+                (r / speed).abs()
+            } else {
+                0.0
+            }
+        };
+        let free_gap = match (pin_u, pin_v) {
+            (true, true) => 0.0,
+            (true, false) => along(r[1], dv),
+            (false, true) => along(r[0], du),
+            (false, false) => along(r[0], du).hypot(along(r[1], dv)),
+        };
+        if free_norm <= tol.confusion() && free_gap <= tol.confusion() {
             break;
         }
 
@@ -605,6 +624,31 @@ mod tests {
                 found.parameters
             );
             assert!((found.distance - 0.3).abs() < 1e-9, "{}", found.distance);
+        }
+    }
+
+    /// A foot seeded beside a point on a thin drum lands on the point.
+    ///
+    /// Round a drum a sixth of a millimetre in radius, a radian of the chart
+    /// is a sixth of a millimetre of the surface, and the residual (the gap
+    /// times the chart's speed) is under the confusion while the foot still
+    /// stands three confusions off along the surface. The seed is that
+    /// close; the foot must not stay there.
+    #[test]
+    fn a_foot_on_a_thin_drum_converges_along_the_surface() {
+        let drum: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 0.16, T).unwrap(), (-1.0, 1.0))
+                .unwrap()
+                .into();
+        for (u, v) in [(0.5, 0.0), (3.0, 0.4), (6.0, -0.7)] {
+            let target = drum.point_at(u, v, T).unwrap();
+            let found = project_on_surface_from(&drum, target, (u + 2e-6, v), T).unwrap();
+            assert!(
+                found.distance <= T.confusion(),
+                "({u}, {v}) stopped {:.2e} off at {:?}",
+                found.distance,
+                found.parameters
+            );
         }
     }
 }

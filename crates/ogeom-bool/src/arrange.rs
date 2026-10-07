@@ -783,6 +783,20 @@ impl Trim {
         self.lines.is_empty()
     }
 
+    /// The middle of the box round every line.
+    pub(crate) fn middle(&self) -> Point2 {
+        let (lx, hx, ly, hy) = self.boxes.iter().fold(
+            (
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(lx, hx, ly, hy), b| (lx.min(b.0), hx.max(b.1), ly.min(b.2), hy.max(b.3)),
+        );
+        Point2::new(f64::midpoint(lx, hx), f64::midpoint(ly, hy))
+    }
+
     /// [`inside_many`]: a line wholly above or below the point, or wholly
     /// left of it, is not crossed.
     pub(crate) fn inside(&self, p: Point2) -> bool {

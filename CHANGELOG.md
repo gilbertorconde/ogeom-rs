@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Booleans take imported parts with spline fillets over small rings
+  (#133).** A projection onto a surface stopped when its residual times the
+  chart's speed fell under the confusion, which on a ring of a sixth of a
+  millimetre left a pcurve microns short of the seam, so the face's
+  boundary read open ("a face boundary strand dangles") and every boolean
+  against the part failed; it converges along the surface itself. Torus
+  faces whose trim sits a period off in both directions are cut, a piece of
+  an edge whose pcurve lags its curve states the lag as its tolerance, and
+  a tool standing in a gap of a part with microns of edge slop leaves it
+  whole instead of refusing.
+
 - **A sampled fit states no less than its widest miss.** Surface and curve
   fits made at the true geometry's own parameters (spline conversion,
   degree restriction, sweeps, lofts, fillings, pipe sections) read their

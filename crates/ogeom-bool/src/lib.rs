@@ -2044,6 +2044,49 @@ fn period_shifts(surface: &SurfaceGeometry) -> Vec<(f64, f64)> {
     out
 }
 
+/// [`period_shifts`], then the shift by whole periods along both directions
+/// at once that carries `from` nearest `centre`, the middle of the face's
+/// trim, where it moves the point along both.
+///
+/// A torus face's trim can sit a period off the window in both directions
+/// (its rims' circles run past a turn, its tube angle below zero), and a
+/// point folded into the window reaches it only by that diagonal shift. It
+/// is the one diagonal tried: asked of every diagonal, a trim still open
+/// where a pole is yet to close it reads a point a period off both ways as
+/// inside.
+fn shifts_toward(surface: &SurfaceGeometry, from: Point2, centre: Point2) -> Vec<(f64, f64)> {
+    let mut out = period_shifts(surface);
+    let ((ua, ub), (va, vb)) = surface.domain();
+    if surface.is_periodic_u() && ub > ua && surface.is_periodic_v() && vb > va {
+        let (du, dv) = (ub - ua, vb - va);
+        let toward = (
+            ((centre.x - from.x) / du).round() * du,
+            ((centre.y - from.y) / dv).round() * dv,
+        );
+        if toward.0 != 0.0 && toward.1 != 0.0 {
+            out.push(toward);
+        }
+    }
+    out
+}
+
+/// The middle of the box round chart lines.
+fn middle_of<'a>(lines: impl IntoIterator<Item = &'a [Point2]>) -> Point2 {
+    let (low, high) = lines.into_iter().flatten().fold(
+        (
+            Point2::new(f64::INFINITY, f64::INFINITY),
+            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(low, high), p| {
+            (
+                Point2::new(low.x.min(p.x), low.y.min(p.y)),
+                Point2::new(high.x.max(p.x), high.y.max(p.y)),
+            )
+        },
+    );
+    Point2::new(f64::midpoint(low.x, high.x), f64::midpoint(low.y, high.y))
+}
+
 /// A chart point folded to the side of the face's seam its trim is on.
 ///
 /// The surface's fold puts a point in the period starting at the surface's
@@ -2058,7 +2101,7 @@ fn fold_inside(p: Point2, surface: &SurfaceGeometry, trim: &[&[Point2]]) -> Poin
     if trim.is_empty() || !(surface.is_periodic_u() || surface.is_periodic_v()) {
         return folded;
     }
-    period_shifts(surface)
+    shifts_toward(surface, folded, middle_of(trim.iter().copied()))
         .into_iter()
         .map(|(du, dv)| Point2::new(folded.x + du, folded.y + dv))
         .find(|q| inside_many(trim, *q))
@@ -2077,7 +2120,7 @@ fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &arran
     // (a contact running across the chart ends where it paved the trim),
     // where the level ray passes through them. The leaning ray cannot.
     let mid = interior_of(line);
-    if let Some((du, dv)) = period_shifts(surface)
+    if let Some((du, dv)) = shifts_toward(surface, mid, trim.middle())
         .into_iter()
         .find(|(du, dv)| trim.inside_slanted(Point2::new(mid.x + du, mid.y + dv)))
     {
@@ -8283,6 +8326,26 @@ fn build_sub_edge(
                     )?;
                 }
             }
+            // An edge's pcurve need only lie on its curve within the
+            // tolerance, not keep pace with it: lifted, it may run a little
+            // ahead or behind. Cut short, the piece's end is read at one
+            // parameter on both, and that lag stands between the piece's
+            // vertex and its image in the chart. The piece states it.
+            if !whole
+                && let Some(gap) = ogeom_algo::edge_pcurve_gap(model, &built, tol)?
+                && let Some(data) = model.node(&built).and_then(|n| n.data().as_edge())
+                && gap > data.tolerance.get()
+            {
+                let widened = ogeom_core::Tolerance::new(gap * (1.0 + 1e-6))?;
+                if let Some(node) = model.node_mut(&built)
+                    && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
+                {
+                    data.tolerance = data.tolerance.widen(widened);
+                }
+                for v in [&v0, &v1] {
+                    rebuild.widen(v, widened.get())?;
+                }
+            }
             if whole {
                 rebuild.whole_edges.insert(e.node, built.clone());
             }
@@ -9643,12 +9706,17 @@ fn sampled_relation(
             }
         }
     }
+    // The rings are polylined at the band the caller's tolerance sets, or
+    // at the solids' own looseness where that is coarser. Taken from the
+    // loosened tolerance instead, a few microns of slop would polyline the
+    // rings at tens of millimetres, and every ray would land within that of
+    // some trim and read nothing.
+    let band = (tol.confusion() * 1e4).max(loosest);
     let tol = if loosest > tol.confusion() {
         fuzzed(loosest, tol)?
     } else {
         tol
     };
-    let band = tol.confusion() * 1e4;
     let (of_a, of_b) = (
         ogeom_algo::SolidBoundary::of(model, a, band, tol)?,
         ogeom_algo::SolidBoundary::of(model, b, band, tol)?,
