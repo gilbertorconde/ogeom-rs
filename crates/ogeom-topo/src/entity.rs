@@ -47,6 +47,9 @@ pub struct GeometryStore {
     pcurves: Arena<PlanarCurve>,
     surfaces: Arena<SurfaceGeometry>,
     triangulations: Arena<Triangulation>,
+    /// Counts the surfaces handed out for rewriting in place: a face box
+    /// found against the store holds while this is unchanged.
+    revision: u64,
 }
 
 impl GeometryStore {
@@ -58,7 +61,13 @@ impl GeometryStore {
             pcurves: Arena::new(),
             surfaces: Arena::new(),
             triangulations: Arena::new(),
+            revision: 0,
         }
+    }
+
+    /// How many surfaces the store has handed out for rewriting in place.
+    pub(crate) const fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Add a space curve.
@@ -95,6 +104,9 @@ impl GeometryStore {
 
     /// A pcurve, for rewriting in place: an image shifted by whole periods
     /// onto its neighbour's branch is the same curve on the same edge.
+    ///
+    /// The image must stay the edge's curve on the surface, which leaves
+    /// every face where it was: no kept face box is forgotten.
     pub fn pcurve_mut(&mut self, id: PCurveId) -> Option<&mut PlanarCurve> {
         self.pcurves.get_mut(id)
     }
@@ -108,7 +120,10 @@ impl GeometryStore {
     /// A surface, for rewriting in place: a plane or a cylinder widened to
     /// hold the trims a file puts on it is the same surface, asked over a
     /// wider window.
+    ///
+    /// Every kept face box is forgotten, as any face on the surface may move.
     pub fn surface_mut(&mut self, id: SurfaceId) -> Option<&mut SurfaceGeometry> {
+        self.revision += 1;
         self.surfaces.get_mut(id)
     }
 

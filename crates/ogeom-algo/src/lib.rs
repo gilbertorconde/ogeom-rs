@@ -88,4 +88,4 @@ pub use recognize::{Canonical, Recognized, recognize_points};
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew, sew_around, sew_within};
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
-pub use tight::tight_bounds;
+pub use tight::{face_bounds, tight_bounds};

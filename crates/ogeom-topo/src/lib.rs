@@ -26,6 +26,7 @@
 //!   repair routine.
 
 pub mod entity;
+mod kept;
 pub mod location;
 pub mod model;
 pub mod shape;

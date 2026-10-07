@@ -258,6 +258,8 @@ times it. Still whole-solid: gathering both solids (each edge sampled at 33
 points for its box), rebuilding every kept face as new nodes, the history
 over all of them, the seam join and closure passes, and the classifiers'
 face bounds; a crossed face's interior probes are sought over all its holes.
+The pair filter reads the boxes the model keeps for the faces, and still
+tries all pairs.
 Profiled on a 900-hole plate, no phase is above a fifth, so no one change
 wins much. A drill into a face of 900 holes spends 45% in that face's
 arrangement (the scanline probe search over 200,000 outline points, each hole
@@ -340,9 +342,14 @@ These are settled, and listed so nobody reopens them by accident.
   runs off a face, the cap stands in the ball's section through the crease's
   end, which leans with the faces; a cap in a side's plane would end the band
   off a section.
-- **Face bounds are not cached in the model.** `shape_bounds` and
-  `tight_bounds` take about a millisecond on a four-hundred-face part, which a
-  cache and its invalidation would not improve on.
+- **Each face's box is kept in the model.** The model keeps a face's tight
+  box in the face's own frame, found the first time it is asked for
+  (`ogeom_algo::face_bounds`, `tight_bounds`, the boolean's pair filter) and
+  read in constant time after (`Model::face_bounds`). It is forgotten when a
+  node of the face is handed out by `node_mut` or a surface by
+  `surface_mut`. `tight_bounds` of a 582-face plate a second time costs a
+  twentieth of the first. Faces a boolean rebuilds are new nodes, so a
+  result's boxes are found again (see "Sharing unchanged faces' nodes").
 - **The converter uses no learned model.** Published learned reconstruction
   (2024 to 2026) gives a valid solid for 70 to 76% of parts under a hundred
   faces, every face a B-spline, and places its own bottleneck in rebuilding

@@ -297,6 +297,11 @@ struct GFace {
     /// dome past its equator. The poles join after. Gates the pair filter
     /// and refusals. `OGEOM_BOOL_AUDIT_BOUNDS` audits its conservatism.
     bound: ogeom_math::Aabb,
+    /// What the pair tests read: [`GFace::bound`] cut down to the box the
+    /// model keeps for the face, which stands off a dome by its tolerance
+    /// where `bound` keeps most of its diagonal as allowance. The scales
+    /// taken from a face's size still read `bound`.
+    filter: ogeom_math::Aabb,
     /// The scale the marching chord derives from: deliberately *not* the
     /// filter box's diagonal, so the filter can tighten without silently
     /// tightening the marcher.
@@ -705,11 +710,13 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
             bound = bound.with_point(pole.point);
         }
         let bound = bound.expanded(tol.confusion() * 1e2);
+        let filter = kept_filter(model, &face, &surface, bound, tol);
         faces.push(GFace {
             poles,
             face,
             surface,
             bound,
+            filter,
             chord_scale,
             tolerance,
             edges,
@@ -728,6 +735,37 @@ fn gather(model: &Model, solid: &Shape, sheet: bool, tol: Tolerances) -> OgeomRe
         solid: solid.clone(),
         faces,
     })
+}
+
+/// `bound` cut down to the box the model keeps for `face`, widened by the
+/// margin the box tests allow. The kept box is found exactly on the
+/// elementary surfaces; on any other its interior extremes start from a
+/// mesh, which may fall short of the surface by the mesh's chord, and that
+/// chord is allowed for. A face whose box cannot be found keeps `bound`.
+fn kept_filter(
+    model: &Model,
+    face: &Shape,
+    surface: &SurfaceGeometry,
+    bound: ogeom_math::Aabb,
+    tol: Tolerances,
+) -> ogeom_math::Aabb {
+    let Ok(kept) = ogeom_algo::face_bounds(model, face) else {
+        return bound;
+    };
+    let exact = matches!(
+        surface,
+        SurfaceGeometry::Plane(_)
+            | SurfaceGeometry::Cylinder(_)
+            | SurfaceGeometry::Cone(_)
+            | SurfaceGeometry::Sphere(_)
+            | SurfaceGeometry::Torus(_)
+    );
+    let mut margin = tol.confusion() * 1e2;
+    if !exact {
+        margin += ogeom_mesh::Deflection::default().chord;
+    }
+    let filter = bound.intersection(&kept.expanded(margin));
+    if filter.is_empty() { bound } else { filter }
 }
 
 /// A face's pcurves moved by whole periods, all alike, so the middle of
@@ -2285,14 +2323,14 @@ fn fill(
     }
     let pairs: Vec<(usize, usize)> = (0..ga.faces.len())
         .flat_map(|ia| (0..gb.faces.len()).map(move |ib| (ia, ib)))
-        .filter(|&(ia, ib)| admit_all || ga.faces[ia].bound.intersects(&gb.faces[ib].bound))
+        .filter(|&(ia, ib)| admit_all || ga.faces[ia].filter.intersects(&gb.faces[ib].filter))
         .collect();
     let found = ogeom_core::parallel::map_ordered(
         &pairs,
         |_, &(ia, ib)| -> OgeomResult<PairFound> {
             ogeom_core::progress::checkpoint()?;
             let (fa, fb) = (&ga.faces[ia], &gb.faces[ib]);
-            let admitted = fa.bound.intersects(&fb.bound);
+            let admitted = fa.filter.intersects(&fb.filter);
             let mut out = PairFound::default();
             let scale = fa.chord_scale.min(fb.chord_scale);
             let chord = (scale * 1e-7).max(tol.confusion() * 0.5);
@@ -3379,13 +3417,13 @@ fn fill(
                     };
                     let unshared_a = other.face_a != section.face_a
                         && apart(
-                            &ga.faces[section.face_a].bound,
-                            &ga.faces[other.face_a].bound,
+                            &ga.faces[section.face_a].filter,
+                            &ga.faces[other.face_a].filter,
                         );
                     let unshared_b = other.face_b != section.face_b
                         && apart(
-                            &gb.faces[section.face_b].bound,
-                            &gb.faces[other.face_b].bound,
+                            &gb.faces[section.face_b].filter,
+                            &gb.faces[other.face_b].filter,
                         );
                     if unshared_a || unshared_b {
                         continue;
@@ -4247,7 +4285,7 @@ fn fill(
             let section = &sections[piece.section];
             let (fa, fb) = (&ga.faces[section.face_a], &gb.faces[section.face_b]);
             assert!(
-                fa.bound.intersects(&fb.bound),
+                fa.filter.intersects(&fb.filter),
                 "bound filter audit: faces {}/{} were dropped by the bound \
                  filter, yet their section paved a surviving piece over \
                  {:?}; the filter under-approximates",

@@ -20,9 +20,10 @@ use ogeom_core::{
     Arena, EntityId, OgeomResult, OpId, Provenance, ProvenanceTable, Role, Tolerance, Tolerances,
     ogeom_bail,
 };
-use ogeom_math::{Point, Transform};
+use ogeom_math::{Aabb, Point, Transform, TransformKind};
 
 use crate::entity::{EdgeData, EdgeRepr, FaceData, NodeData, VertexData};
+use crate::kept::FaceBoxes;
 use crate::location::{DatumId, DatumStore, Location};
 use crate::shape::{Orientation, Shape, ShapeType, TShape, TShapeId};
 
@@ -39,6 +40,7 @@ pub struct Model {
     identity: Identities,
     current_op: OpId,
     tolerances: Tolerances,
+    face_boxes: FaceBoxes,
 }
 
 /// Which identity each node carries, in a slot per node index. Nodes are
@@ -97,6 +99,7 @@ impl Model {
             identity: Identities::default(),
             current_op: OpId(0),
             tolerances,
+            face_boxes: FaceBoxes::default(),
         }
     }
 
@@ -303,7 +306,7 @@ impl Model {
             self.provenance.record(entry);
         }
         for node in nodes {
-            self.nodes.insert(node);
+            self.insert_node(node);
         }
 
         // Every handle in `parts` was rebuilt by a reader that had no arenas
@@ -682,6 +685,9 @@ impl Model {
     }
 
     /// Mutable access to the geometry, for adding curves and surfaces.
+    ///
+    /// A surface rewritten in place through it forgets every face's kept
+    /// box ([`Model::face_bounds`]).
     #[must_use]
     pub const fn geometry_mut(&mut self) -> &mut GeometryStore {
         &mut self.geometry
@@ -710,9 +716,97 @@ impl Model {
     /// joining an edge to a face it has just come to bound. Structural change
     /// still goes through the builders; this reaches the node's *data*, which
     /// no invariant here constrains on its own.
+    ///
+    /// The node may be changed in any way, so the box kept for every face
+    /// it is part of ([`Model::face_bounds`]) is forgotten.
     #[must_use]
     pub fn node_mut(&mut self, shape: &Shape) -> Option<&mut TShape> {
+        self.sync_face_boxes();
+        if self.nodes.get(shape.node()).is_some() {
+            self.face_boxes.forget_above(shape.node().index());
+        }
         self.nodes.get_mut(shape.node())
+    }
+
+    /// Insert a node and record it with the kept face boxes.
+    fn insert_node(&mut self, node: TShape) -> TShapeId {
+        self.sync_face_boxes();
+        let id = self.nodes.insert(node);
+        if let Some(node) = self.nodes.get(id) {
+            self.face_boxes.note(id, node);
+        }
+        id
+    }
+
+    /// Forget every kept face box once the geometry has been rewritten in
+    /// place since they were found.
+    fn sync_face_boxes(&mut self) {
+        let revision = self.geometry.revision();
+        if self.face_boxes.revision != revision {
+            self.face_boxes.forget_all();
+            self.face_boxes.revision = revision;
+        }
+    }
+
+    /// The slot holding a face's box, while the geometry is as it was found
+    /// against; `None` for anything else.
+    fn face_box_slot(&self, face: &Shape) -> Option<&std::sync::OnceLock<Aabb>> {
+        if self.face_boxes.revision != self.geometry.revision() {
+            return None;
+        }
+        self.node(face)
+            .filter(|node| node.kind() == ShapeType::Face)
+            .and_then(|_| self.face_boxes.slot(face.node().index()))
+    }
+
+    /// The box kept for a face: every point of the face, its tolerance
+    /// included, in the face's placement. `None` where `face` is not a face
+    /// of this model or no box has been kept for it yet; a kept box is
+    /// found by `ogeom_algo::face_bounds`, and by the operations that read
+    /// face boxes, and is kept until the face, its wires, edges or vertices,
+    /// or the geometry in place change.
+    ///
+    /// The box is kept in the face's own frame. Under a placement that
+    /// turns the face off the axes it is the box of the turned box, which
+    /// holds the face but stands clear of it.
+    #[must_use]
+    pub fn face_bounds(&self, face: &Shape) -> Option<Aabb> {
+        let kept = *self.face_box_slot(face)?.get()?;
+        let tolerance = self.node(face)?.data().tolerance()?.get();
+        let placement = face.transform(&self.datums).ok()?;
+        Some(placed_box(&kept, &placement).expanded(tolerance))
+    }
+
+    /// The box kept for a face in its own frame, without its placement or
+    /// its tolerance; where none is kept, `find` is asked for it with the
+    /// face unplaced, and its answer is kept.
+    ///
+    /// `find` must hold every point of the face it is given, and is what
+    /// [`Model::face_bounds`] reports from then on. Where the face cannot
+    /// keep a box (the geometry is being rewritten), `find`'s answer is
+    /// returned and not kept.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+    /// if `face` is not a face of this model; as `find` reports.
+    pub fn kept_face_box(
+        &self,
+        face: &Shape,
+        find: impl FnOnce(&Shape) -> OgeomResult<Aabb>,
+    ) -> OgeomResult<Aabb> {
+        if self.node(face).map(TShape::kind) != Some(ShapeType::Face) {
+            ogeom_bail!(Construction, "only a face of this model keeps a box");
+        }
+        let bare = Shape::of(face.node());
+        let Some(slot) = self.face_box_slot(face) else {
+            return find(&bare);
+        };
+        if let Some(kept) = slot.get() {
+            return Ok(*kept);
+        }
+        let found = find(&bare)?;
+        Ok(self.face_boxes.keep(slot, found))
     }
 
     /// What kind of shape this is.
@@ -769,10 +863,7 @@ impl Model {
 
     /// Add a vertex.
     pub fn add_vertex(&mut self, data: VertexData) -> Shape {
-        Shape::of(
-            self.nodes
-                .insert(TShape::leaf(ShapeType::Vertex, NodeData::Vertex(data))),
-        )
+        Shape::of(self.insert_node(TShape::leaf(ShapeType::Vertex, NodeData::Vertex(data))))
     }
 
     /// Add a vertex at `point` with the minimum tolerance.
@@ -806,7 +897,7 @@ impl Model {
         for bound in bounds {
             self.widen(bound, data.tolerance)?;
         }
-        let node = self.nodes.insert(TShape::new(
+        let node = self.insert_node(TShape::new(
             ShapeType::Edge,
             NodeData::Edge(Box::new(data)),
             bounds.to_vec(),
@@ -826,7 +917,7 @@ impl Model {
             ogeom_bail!(Construction, "a wire needs at least one edge");
         }
         self.check_children(ShapeType::Edge, edges)?;
-        Ok(Shape::of(self.nodes.insert(TShape::container(
+        Ok(Shape::of(self.insert_node(TShape::container(
             ShapeType::Wire,
             edges.to_vec(),
         ))))
@@ -860,7 +951,7 @@ impl Model {
                 self.widen(edge, face_tolerance)?;
             }
         }
-        let node = self.nodes.insert(TShape::new(
+        let node = self.insert_node(TShape::new(
             ShapeType::Face,
             NodeData::Face(Box::new(data)),
             wires.to_vec(),
@@ -880,7 +971,7 @@ impl Model {
             ogeom_bail!(Construction, "a shell needs at least one face");
         }
         self.check_children(ShapeType::Face, faces)?;
-        Ok(Shape::of(self.nodes.insert(TShape::container(
+        Ok(Shape::of(self.insert_node(TShape::container(
             ShapeType::Shell,
             faces.to_vec(),
         ))))
@@ -897,7 +988,7 @@ impl Model {
             ogeom_bail!(Construction, "a solid needs at least one shell");
         }
         self.check_children(ShapeType::Shell, shells)?;
-        Ok(Shape::of(self.nodes.insert(TShape::container(
+        Ok(Shape::of(self.insert_node(TShape::container(
             ShapeType::Solid,
             shells.to_vec(),
         ))))
@@ -914,7 +1005,7 @@ impl Model {
             ogeom_bail!(Construction, "a compsolid needs at least one solid");
         }
         self.check_children(ShapeType::Solid, solids)?;
-        Ok(Shape::of(self.nodes.insert(TShape::container(
+        Ok(Shape::of(self.insert_node(TShape::container(
             ShapeType::CompSolid,
             solids.to_vec(),
         ))))
@@ -936,7 +1027,7 @@ impl Model {
                 ogeom_bail!(Dangling, "compound member is not in this model");
             }
         }
-        Ok(Shape::of(self.nodes.insert(TShape::container(
+        Ok(Shape::of(self.insert_node(TShape::container(
             ShapeType::Compound,
             shapes.to_vec(),
         ))))
@@ -1037,6 +1128,7 @@ impl Model {
         // An edge and its vertices, the usual call, are searched in a short
         // list; a larger shape's nodes are hashed.
         const SHORT: usize = 32;
+        self.sync_face_boxes();
         let mut affected: smallvec::SmallVec<[TShapeId; 8]> = smallvec::SmallVec::new();
         let mut seen: Option<hashbrown::HashSet<TShapeId>> = None;
         let mut stack: smallvec::SmallVec<[TShapeId; 8]> = smallvec::smallvec![shape.node()];
@@ -1147,6 +1239,21 @@ impl Model {
     pub fn placed(&mut self, shape: &Shape, transform: Transform) -> Shape {
         let datum = self.add_datum(transform);
         shape.moved(&Location::of(datum))
+    }
+}
+
+/// A box carried by a placement: exactly, where the placement keeps the
+/// axes; as the box of the carried box otherwise.
+fn placed_box(kept: &Aabb, placement: &Transform) -> Aabb {
+    match placement.kind() {
+        TransformKind::Identity => *kept,
+        TransformKind::Translation => match (kept.low(), kept.high()) {
+            (Some(low), Some(high)) => {
+                Aabb::of_corners(placement.apply(low), placement.apply(high))
+            }
+            _ => *kept,
+        },
+        _ => kept.transformed(placement),
     }
 }
 
@@ -1785,6 +1892,54 @@ mod tests {
             "the vertex was widened to contain its edge"
         );
         assert!(model.check_tolerances(&edge).is_ok());
+    }
+
+    #[test]
+    fn a_kept_face_box_is_forgotten_when_what_the_face_is_made_of_changes() {
+        let unit = Aabb::of_corners(Point::ORIGIN, Point::new(1.0, 1.0, 0.0));
+        let keep = |model: &Model, face: &Shape| {
+            model.kept_face_box(face, |_| Ok(unit)).unwrap();
+        };
+        let mut model = Model::new();
+        let face = square(&mut model);
+        assert_eq!(model.face_bounds(&face), None);
+        keep(&model, &face);
+        let kept = model.face_bounds(&face).unwrap();
+        assert!(kept.contains_box(&unit));
+
+        // A placement carries the box; a tolerance widens it.
+        let lift = model.placed(&face, Transform::translation(ogeom_math::Vector::Z));
+        let lifted = model.face_bounds(&lift).unwrap();
+        assert!((lifted.low().unwrap().z - 1.0).abs() < 1e-6);
+        model.widen(&face, Tolerance::new(0.25).unwrap()).unwrap();
+        let wide = model.face_bounds(&face).unwrap();
+        assert!((wide.low().unwrap().x + 0.25).abs() < 1e-12);
+
+        // A vertex handed out for editing forgets the box of the face above.
+        let vertex = explore_unique(&model, &face, ShapeType::Vertex).unwrap()[0].clone();
+        let _ = model.node_mut(&vertex);
+        assert_eq!(model.face_bounds(&face), None);
+
+        // So does a face handed out itself, and a surface rewritten in place,
+        // which reaches every face.
+        keep(&model, &face);
+        let _ = model.node_mut(&face);
+        assert_eq!(model.face_bounds(&face), None);
+        keep(&model, &face);
+        let Some(NodeData::Face(data)) = model.node(&face).map(TShape::data) else {
+            panic!("a face holds face data");
+        };
+        let surface = data.surface;
+        let _ = model.geometry_mut().surface_mut(surface);
+        assert_eq!(model.face_bounds(&face), None);
+        let _ = model.add_point(Point::ORIGIN);
+        keep(&model, &face);
+        assert!(model.face_bounds(&face).is_some());
+
+        // A node no face holds forgets nothing.
+        let alone = model.add_point(Point::ORIGIN);
+        let _ = model.node_mut(&alone);
+        assert!(model.face_bounds(&face).is_some());
     }
 
     #[test]
