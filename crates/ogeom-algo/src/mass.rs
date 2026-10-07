@@ -239,7 +239,7 @@ pub fn volume_properties(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<MassProperties> {
-    volume_with(model, shape, deflection, Turning::Probed, tol)
+    volume_with(model, shape, deflection, Turning::Probed, None, tol)
 }
 
 /// The volume a shape encloses with no face turned against its neighbours
@@ -255,9 +255,46 @@ pub(crate) fn volume_as_flagged(
     model: &Model,
     shape: &Shape,
     deflection: Deflection,
+    kept: Option<&VolumeKept>,
     tol: Tolerances,
 ) -> OgeomResult<MassProperties> {
-    volume_with(model, shape, deflection, Turning::WholeShells, tol)
+    volume_with(model, shape, deflection, Turning::WholeShells, kept, tol)
+}
+
+/// What measuring volumes keeps for the next shape asked about, for a
+/// caller measuring a run of shapes in which most faces recur unchanged:
+/// each face's mesh, and each face's closed-form integrals about a
+/// reference point. A face is known by its content (see
+/// [`ogeom_topo::face_content`]), which is everything either reads.
+#[derive(Default)]
+pub(crate) struct VolumeKept {
+    meshes: ogeom_mesh::FaceMeshCache,
+    /// By the face's content, the region's place among the face's regions
+    /// and the reference's bits: the region's moments, or `None` where its
+    /// integral did not settle.
+    integrals: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Option<Moments>>>,
+}
+
+impl VolumeKept {
+    /// The face meshes kept, for a caller meshing the same faces.
+    pub(crate) const fn meshes(&self) -> &ogeom_mesh::FaceMeshCache {
+        &self.meshes
+    }
+
+    fn integral(&self, key: &[u8]) -> Option<Option<Moments>> {
+        self.integrals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    fn keep_integral(&self, key: Vec<u8>, found: Option<Moments>) {
+        self.integrals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, found);
+    }
 }
 
 /// Which faces the closed form turns over where the probe finds them
@@ -277,16 +314,23 @@ fn volume_with(
     shape: &Shape,
     deflection: Deflection,
     turning: Turning,
+    kept: Option<&VolumeKept>,
     tol: Tolerances,
 ) -> OgeomResult<MassProperties> {
     deflection.validate()?;
-    if let Some(exact) = exact_volume_properties(model, shape, turning, tol)? {
+    if let Some(exact) = exact_volume_properties(model, shape, turning, kept, tol)? {
         return Ok(exact);
     }
     if let Some(probed) = probed_mesh_volume(model, shape, deflection, tol)? {
         return Ok(probed);
     }
-    let (mut mesh, chords) = ogeom_mesh::triangulate_with_chords(model, shape, deflection, tol)?;
+    let (mut mesh, _, faces) = ogeom_mesh::triangulate_with_face_meshes(
+        model,
+        shape,
+        deflection,
+        kept.map(VolumeKept::meshes),
+        tol,
+    )?;
     if mesh.is_empty() {
         return Ok(MassProperties::none(deflection.chord));
     }
@@ -309,11 +353,7 @@ fn volume_with(
             );
         }
         mesh = ogeom_topo::Triangulation::new();
-        let faces = explore(model, shape, Filter::OfType(ShapeType::Face))?;
-        let meshes = ogeom_core::parallel::map_ordered(&faces, |_, face| {
-            ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol)
-        });
-        for face_mesh in meshes {
+        for (_, face_mesh) in faces {
             mesh.append(&face_mesh?);
         }
     }
@@ -506,6 +546,7 @@ fn exact_volume_properties(
     model: &Model,
     shape: &Shape,
     turning: Turning,
+    kept: Option<&VolumeKept>,
     tol: Tolerances,
 ) -> OgeomResult<Option<MassProperties>> {
     let faces = explore(model, shape, Filter::OfType(ShapeType::Face))?;
@@ -607,10 +648,53 @@ fn exact_volume_properties(
         .collect();
 
     let reference = reference_point(&exact, tol)?;
+    // Where integrals are kept, each region is known by its face's content,
+    // its place among the face's regions, and the reference.
+    let keys: Vec<Option<Vec<u8>>> = match kept {
+        Some(_) => {
+            let contents: Vec<Option<Vec<u8>>> = faces
+                .iter()
+                .map(|face| ogeom_topo::face_content(model, face))
+                .collect();
+            let mut place = 0_u64;
+            region_of
+                .iter()
+                .enumerate()
+                .map(|(i, &at)| {
+                    place = if i > 0 && region_of[i - 1] == at {
+                        place + 1
+                    } else {
+                        0
+                    };
+                    contents[at].as_ref().map(|content| {
+                        let mut key = content.clone();
+                        key.extend_from_slice(&place.to_le_bytes());
+                        for x in [reference.x, reference.y, reference.z] {
+                            key.extend_from_slice(&x.to_bits().to_le_bytes());
+                        }
+                        key
+                    })
+                })
+                .collect()
+        }
+        None => vec![None; exact.len()],
+    };
+    let held = |i: usize| {
+        let key = keys[i].as_ref()?;
+        kept?.integral(key)
+    };
+    // A region kept as one whose integral did not settle leaves the shape
+    // to the mesh, as it would after integrating every region again.
+    if (0..exact.len()).any(|i| matches!(held(i), Some(None))) {
+        return Ok(None);
+    }
     // Each face's moments are summed on their own, and added in the faces'
     // order.
-    let summed = ogeom_core::parallel::map_ordered(&exact, |_, face| {
-        integrate_face(
+    let summed = ogeom_core::parallel::map_ordered(&exact, |i, face| {
+        if let Some(found) = held(i) {
+            return Ok(found);
+        }
+        let found = integrate_face(
             face,
             crate::mass_chart::Measure::Volume,
             reference,
@@ -638,7 +722,11 @@ fn exact_volume_properties(
                     }
                 }
             },
-        )
+        );
+        if let (Ok(found), Some(kept), Some(key)) = (&found, kept, &keys[i]) {
+            kept.keep_integral(key.clone(), found.clone());
+        }
+        found
     });
     let mut total = Moments::zero();
     for (face, sign) in summed.into_iter().zip(sign) {
@@ -735,6 +823,7 @@ fn exact_surface_properties(
 
 /// A measure and its first and second moments about the reference, summed
 /// over one face's samples or over the faces.
+#[derive(Clone)]
 struct Moments {
     mass: f64,
     first: Vector,

@@ -672,6 +672,10 @@ fn build(
     let mut regrouped = Regrouped::default();
     let snaps = std::sync::Mutex::new(SnapCache::new());
     let images = std::sync::Mutex::new(ImageCache::new());
+    // Face meshes and areas kept across the builds: most faces recur
+    // unchanged.
+    let kept = crate::mass::VolumeKept::default();
+    let areas = AreaCache::default();
     let shape = 'attempt: loop {
         // Plan until every curved face's boundary is exact, faceting the ones
         // whose boundary is not; then build, and facet any recognized face that
@@ -759,7 +763,7 @@ fn build(
                     let astray = or_withdraw!(
                         'checks,
                         &built,
-                        astray_faces(model, points, triangles, &groups, &built, flat, tol)
+                        astray_faces(model, points, triangles, &groups, &built, flat, kept.meshes(), tol)
                     );
                     if astray.is_empty() {
                         let (shape, bodies) = or_withdraw!(
@@ -782,6 +786,7 @@ fn build(
                                     &built,
                                     &bodies,
                                     flat,
+                                    &kept,
                                     tol,
                                     &mut report,
                                 )
@@ -794,7 +799,8 @@ fn build(
                                 'checks,
                                 &built,
                                 crossed_seams(
-                                    model, &shape, triangles, adjacency, &groups, &built, tol,
+                                    model, &shape, triangles, adjacency, &groups, &built,
+                                    (kept.meshes(), &areas), tol,
                                 )
                             );
                             let before = straight.len();
@@ -810,7 +816,8 @@ fn build(
                                     'checks,
                                     &built,
                                     collapsed_beside(
-                                        model, triangles, &groups, &built, &straight, tol,
+                                        model, triangles, &groups, &built, &straight, &areas,
+                                        tol,
                                     )
                                 )
                             {
@@ -904,7 +911,7 @@ fn build(
                             culprits = or_withdraw!(
                                 'checks,
                                 &built,
-                                unmatched_faces(model, &shape, &groups, &built, flat, tol)
+                                unmatched_faces(model, &shape, &groups, &built, flat, kept.meshes(), tol)
                             );
                             reason = FallbackReason::MeshesOpen;
                         }
@@ -1378,6 +1385,48 @@ fn any_turned_in(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<b
     Ok(false)
 }
 
+/// Faces' areas kept across the builds of one conversion, by the face's
+/// content and the deflection (see [`ogeom_topo::face_content`]): a face's
+/// area reads nothing else. A face whose area cannot be measured is asked
+/// again.
+#[derive(Default)]
+struct AreaCache {
+    held: std::sync::Mutex<HashMap<Vec<u8>, f64>>,
+}
+
+impl AreaCache {
+    /// The area of `face` as [`crate::surface_properties`] measures it at
+    /// `deflection`.
+    fn area(
+        &self,
+        model: &Model,
+        face: &Shape,
+        deflection: ogeom_mesh::Deflection,
+        tol: Tolerances,
+    ) -> OgeomResult<f64> {
+        let measure = || crate::surface_properties(model, face, deflection, tol).map(|m| m.mass);
+        let Some(mut key) = ogeom_topo::face_content(model, face) else {
+            return measure();
+        };
+        key.extend_from_slice(format!("{deflection:?}{tol:?}").as_bytes());
+        let held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        if let Some(found) = held {
+            return Ok(found);
+        }
+        let found = measure()?;
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, found);
+        Ok(found)
+    }
+}
+
 /// Whether a face beside a seam threaded straight has collapsed: thinner
 /// than the confusion distance, its seams threaded onto one line.
 fn collapsed_beside(
@@ -1386,6 +1435,7 @@ fn collapsed_beside(
     groups: &Groups,
     built: &[Option<Shape>],
     straight: &std::collections::HashSet<(u32, u32)>,
+    areas: &AreaCache,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let mut beside: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
@@ -1400,7 +1450,7 @@ fn collapsed_beside(
         .iter()
         .filter_map(|&g| built.get(g).and_then(Option::as_ref))
     {
-        let area = crate::surface_properties(model, face, fine, tol)?.mass;
+        let area = areas.area(model, face, fine, tol)?;
         let reach = crate::shape_bounds(model, face, tol)?.diagonal();
         if area <= reach * tol.confusion() {
             return Ok(true);
@@ -1418,6 +1468,7 @@ fn collapsed_beside(
 /// more than its exact area, or which draws a mesh edge no other face
 /// draws (or that two others draw too), has its seams with curved faces
 /// returned, to be threaded straight.
+#[allow(clippy::too_many_arguments, reason = "the build's state, read")]
 fn crossed_seams(
     model: &Model,
     shape: &Shape,
@@ -1425,6 +1476,7 @@ fn crossed_seams(
     adjacency: &Adjacency,
     groups: &Groups,
     built: &[Option<Shape>],
+    (kept, areas): (&ogeom_mesh::FaceMeshCache, &AreaCache),
     tol: Tolerances,
 ) -> OgeomResult<Vec<(u32, u32)>> {
     let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
@@ -1456,15 +1508,13 @@ fn crossed_seams(
     }
     let deflection = ogeom_mesh::Deflection::default();
     let fine = ogeom_mesh::Deflection::with_chord(deflection.chord * 1e-2)?;
-    let chords = ogeom_mesh::edge_chords_for(model, shape, deflection, tol)?;
+    let (drawn, chords) = ogeom_mesh::face_meshes_for(model, shape, deflection, Some(kept), tol)?;
     let faces: Vec<(usize, &Shape)> = built
         .iter()
         .enumerate()
         .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
         .collect();
-    let meshes = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
-        ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol).ok()
-    });
+    let meshes = own_meshes(model, &faces, drawn, &chords, deflection, tol);
     // The faces' points welded within the confusion distance: a shared
     // edge's points come from the same chords, and a seam's two columns
     // land a rounding apart.
@@ -1501,8 +1551,7 @@ fn crossed_seams(
     // The exact area of each meshed face with seams, which its drawn mesh
     // may overrun.
     let areas = ogeom_core::parallel::map_ordered(&faces, |i, &(g, face)| {
-        (meshes[i].is_some() && seams.contains_key(&g))
-            .then(|| crate::surface_properties(model, face, fine, tol))
+        (meshes[i].is_some() && seams.contains_key(&g)).then(|| areas.area(model, face, fine, tol))
     });
     let mut flagged: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut uses: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
@@ -1528,7 +1577,7 @@ fn crossed_seams(
             }
         }
         if let Some(area) = area
-            && drawn > area?.mass * OVERRUN + tol.confusion()
+            && drawn > area? * OVERRUN + tol.confusion()
         {
             flagged.insert(g);
         }
@@ -1917,6 +1966,7 @@ fn unmatched_faces(
     groups: &Groups,
     built: &[Option<Shape>],
     flat: f64,
+    kept: &ogeom_mesh::FaceMeshCache,
     tol: Tolerances,
 ) -> OgeomResult<Vec<usize>> {
     type Key = (u64, u64, u64);
@@ -1924,7 +1974,8 @@ fn unmatched_faces(
     let deflection = ogeom_mesh::Deflection::default();
     // What the solid is drawn as decides: a crack between two faces' own
     // meshes that the drawing welds shut costs nothing.
-    let (drawn, chords) = ogeom_mesh::triangulate_with_chords(model, shape, deflection, tol)?;
+    let (drawn, chords, each) =
+        ogeom_mesh::triangulate_with_face_meshes(model, shape, deflection, Some(kept), tol)?;
     if drawn.is_closed() {
         return Ok(Vec::new());
     }
@@ -1933,9 +1984,7 @@ fn unmatched_faces(
         .enumerate()
         .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
         .collect();
-    let meshes = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
-        ogeom_mesh::triangulate_face_with(model, face, deflection, &chords, tol).ok()
-    });
+    let meshes = own_meshes(model, &faces, each, &chords, deflection, tol);
     // The faces' points welded within the confusion distance: a shared
     // edge's points come from the same chords, but a seam drawn from either
     // side of a closed chart lands a rounding apart.
@@ -2059,6 +2108,38 @@ fn unmatched_faces(
     Ok(out.into_iter().collect())
 }
 
+/// Each built face's mesh drawn to the shape's agreed `chords`, taken from
+/// the shape-wide pass's meshes (`drawn`) where it holds the face, and drawn
+/// on its own where it does not; `None` for a face that does not draw.
+fn own_meshes(
+    model: &Model,
+    faces: &[(usize, &Shape)],
+    drawn: Vec<ogeom_mesh::FaceMesh>,
+    chords: &ogeom_mesh::EdgeChords,
+    deflection: ogeom_mesh::Deflection,
+    tol: Tolerances,
+) -> Vec<Option<Triangulation>> {
+    let key = |face: &Shape| (face.node(), face.orientation(), face.location().clone());
+    let mut by_face: HashMap<_, Option<Triangulation>> = HashMap::with_capacity(drawn.len());
+    for (face, mesh) in drawn {
+        by_face.entry(key(&face)).or_insert_with(|| mesh.ok());
+    }
+    let missing: Vec<usize> = (0..faces.len())
+        .filter(|&i| !by_face.contains_key(&key(faces[i].1)))
+        .collect();
+    let mut own = ogeom_core::parallel::map_ordered(&missing, |_, &i| {
+        ogeom_mesh::triangulate_face_with(model, faces[i].1, deflection, chords, tol).ok()
+    })
+    .into_iter();
+    faces
+        .iter()
+        .map(|&(_, face)| match by_face.get_mut(&key(face)) {
+            Some(mesh) => mesh.take(),
+            None => own.next().flatten(),
+        })
+        .collect()
+}
+
 /// A free edge as [`unmatched_faces`] reads it: its trimmed curve, how
 /// far from it a point counts as on it, and the box holding every such
 /// point.
@@ -2138,6 +2219,7 @@ const OVERRUN: f64 = 1.2;
 /// replaces: its bounds stand beyond theirs by more than the surface bulges
 /// past its facets and its boundary can run on to meet its neighbours, or
 /// some point of it lies away from all of them.
+#[allow(clippy::too_many_arguments, reason = "the build's state, read")]
 fn astray_faces(
     model: &Model,
     points: &[Point],
@@ -2145,6 +2227,7 @@ fn astray_faces(
     groups: &Groups,
     built: &[Option<Shape>],
     flat: f64,
+    kept: &ogeom_mesh::FaceMeshCache,
     tol: Tolerances,
 ) -> OgeomResult<Vec<usize>> {
     let mut reach: Vec<Option<(Point, Point)>> = vec![None; groups.carriers.len()];
@@ -2217,14 +2300,21 @@ fn astray_faces(
             // over them and the chord it is sampled at.
             let chord = (bulge[g] * 2.0).max(flat * 10.0);
             // A face that cannot be drawn cannot be vouched for either.
-            let drawn = ogeom_mesh::triangulate_face(
+            let drawn = ogeom_mesh::triangulate_face_kept(
                 model,
                 face,
                 ogeom_mesh::Deflection::with_chord(chord)?,
+                kept,
                 tol,
             )
             .or_else(|_| {
-                ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)
+                ogeom_mesh::triangulate_face_kept(
+                    model,
+                    face,
+                    ogeom_mesh::Deflection::default(),
+                    kept,
+                    tol,
+                )
             });
             let Ok(mesh) = drawn else {
                 return Ok(true);
@@ -2325,10 +2415,11 @@ fn astray_faces(
                     continue;
                 };
                 let Some(drawn) = plane_middles[plane].get_or_init(|| {
-                    let drawn = ogeom_mesh::triangulate_face(
+                    let drawn = ogeom_mesh::triangulate_face_kept(
                         model,
                         beside,
                         ogeom_mesh::Deflection::default(),
+                        kept,
                         tol,
                     )
                     .ok()?;
@@ -2498,6 +2589,7 @@ fn body_culprits(
     built: &[Option<Shape>],
     bodies: &[Body],
     flat: f64,
+    kept: &crate::mass::VolumeKept,
     tol: Tolerances,
     report: &mut MeshSolidReport,
 ) -> OgeomResult<(Vec<usize>, FallbackReason)> {
@@ -2541,7 +2633,13 @@ fn body_culprits(
             .iter()
             .any(|&g| matches!(&groups.carriers[g], Carrier::Curved(c) if matches!(c.shape, Canonical::Swept(_))));
         let measured = if swept {
-            let mesh = ogeom_mesh::triangulate(model, &body.solid, deflection, tol)?;
+            let (mesh, _, _) = ogeom_mesh::triangulate_with_face_meshes(
+                model,
+                &body.solid,
+                deflection,
+                Some(kept.meshes()),
+                tol,
+            )?;
             mesh.triangles
                 .iter()
                 .map(|t| {
@@ -2550,7 +2648,7 @@ fn body_culprits(
                 })
                 .sum::<f64>()
         } else {
-            crate::mass::volume_as_flagged(model, &body.solid, deflection, tol)?.mass
+            crate::mass::volume_as_flagged(model, &body.solid, deflection, Some(kept), tol)?.mass
         };
         // Measured at the facets' corners and edge middles, the allowance
         // misses the surface's rise inside a facet and a fitted boundary's

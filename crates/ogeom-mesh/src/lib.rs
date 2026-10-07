@@ -22,7 +22,8 @@ pub use discretize::{
 pub use hatch::hatch_face;
 pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
-    EdgeChords, edge_chords_for, face_boundary, inside_boundary, inside_boundary_with,
-    open_chart_ring, polyline_of_edge, triangulate, triangulate_face, triangulate_face_with,
-    triangulate_with_chords,
+    EdgeChords, FaceMesh, FaceMeshCache, edge_chords_for, face_boundary, face_meshes_for,
+    inside_boundary, inside_boundary_with, open_chart_ring, polyline_of_edge, triangulate,
+    triangulate_face, triangulate_face_kept, triangulate_face_with, triangulate_with_chords,
+    triangulate_with_face_meshes,
 };

@@ -25,6 +25,7 @@
 //!   polygon and triangulation representations, with a `same_parameter` flag and a
 //!   repair routine.
 
+mod content;
 pub mod entity;
 mod kept;
 pub mod location;
@@ -32,6 +33,7 @@ pub mod model;
 pub mod shape;
 pub mod tessellation;
 
+pub use content::face_content;
 pub use entity::{
     CurveId, EdgeData, EdgeRepr, FaceData, GeometryStore, NodeData, PCurveId, SurfaceId,
     TriangulationId, VertexData, check_containment, enforce_containment,

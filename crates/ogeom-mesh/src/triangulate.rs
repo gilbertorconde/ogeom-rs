@@ -60,7 +60,132 @@ pub fn triangulate_face(
     if verdict != Verdict::Short {
         return Ok(mesh);
     }
-    triangulate_with(model, face, deflection, None, tol)
+    triangulate_with(model, face, deflection, None, None, tol)
+}
+
+/// As [`triangulate_face`], taking the face from `kept` where it drew this
+/// face at this deflection before, and keeping what it draws there.
+///
+/// # Errors
+///
+/// As [`triangulate_face`].
+pub fn triangulate_face_kept(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    kept: &FaceMeshCache,
+    tol: Tolerances,
+) -> OgeomResult<Triangulation> {
+    let nothing = EdgeChords::new();
+    let (mesh, verdict) = reporting_kept(
+        model,
+        face,
+        deflection,
+        Some(&nothing),
+        None,
+        Some(kept),
+        tol,
+    )?;
+    if verdict != Verdict::Short {
+        return Ok(mesh);
+    }
+    triangulate_with(model, face, deflection, None, Some(kept), tol)
+}
+
+/// Face meshes kept by what each face is, for a caller that meshes a run of
+/// models in which most faces recur unchanged, as a construction retried
+/// after a few of its faces changed does.
+///
+/// A face is known by everything its mesh reads: its content as
+/// [`ogeom_topo::face_content`] writes it out, then the deflection, the
+/// tolerances, and the chord each of its edges was asked to be drawn to.
+/// A face matches a kept one only where every one of these is the same to
+/// the bit, and the kept mesh is the one drawing it again gives. A face
+/// whose content cannot be read is drawn and not kept.
+#[derive(Debug, Default)]
+pub struct FaceMeshCache {
+    held: std::sync::Mutex<std::collections::HashMap<Vec<u8>, (Triangulation, Verdict)>>,
+}
+
+impl FaceMeshCache {
+    /// An empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, key: &[u8]) -> Option<(Triangulation, Verdict)> {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    fn put(&self, key: Vec<u8>, found: (Triangulation, Verdict)) {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, found);
+    }
+}
+
+/// The key a face's mesh is kept under: see [`FaceMeshCache`]. `finer` is
+/// the shared chord map the face is drawn to, or `None` where it works out
+/// its own from its content alone.
+fn mesh_key(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    finer: Option<&EdgeChords>,
+    tol: Tolerances,
+) -> Option<Vec<u8>> {
+    let mut key = ogeom_topo::face_content(model, face)?;
+    key.extend_from_slice(format!("{deflection:?}{tol:?}").as_bytes());
+    match finer {
+        None => key.push(b'o'),
+        Some(finer) => {
+            key.push(b's');
+            for wire in model.ordered_children_of(face).ok()? {
+                for edge in model.ordered_children_of(&wire).ok()? {
+                    match finer.get(&edge.node().index()) {
+                        Some(chord) => {
+                            key.push(1);
+                            key.extend_from_slice(&chord.to_bits().to_le_bytes());
+                        }
+                        None => key.push(0),
+                    }
+                }
+            }
+        }
+    }
+    Some(key)
+}
+
+/// [`triangulate_reporting_from`], through `kept` where there is one.
+fn reporting_kept(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    finer: Option<&EdgeChords>,
+    prepared: Option<Trimming>,
+    kept: Option<&FaceMeshCache>,
+    tol: Tolerances,
+) -> OgeomResult<(Triangulation, Verdict)> {
+    let Some(kept) = kept else {
+        return triangulate_reporting_from(model, face, deflection, finer, prepared, tol);
+    };
+    let key = mesh_key(model, face, deflection, finer, tol);
+    if let Some(key) = &key
+        && let Some(found) = kept.get(key)
+    {
+        return Ok(found);
+    }
+    let found = triangulate_reporting_from(model, face, deflection, finer, prepared, tol)?;
+    if let Some(key) = key {
+        kept.put(key, found.clone());
+    }
+    Ok(found)
 }
 
 /// What one pass over a face found.
@@ -82,9 +207,10 @@ fn triangulate_with(
     face: &Shape,
     deflection: Deflection,
     finer: Option<&EdgeChords>,
+    kept: Option<&FaceMeshCache>,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
-    let (mesh, verdict) = triangulate_reporting(model, face, deflection, finer, tol)?;
+    let (mesh, verdict) = reporting_kept(model, face, deflection, finer, None, kept, tol)?;
     if verdict == Verdict::Short && mesh.triangles.is_empty() {
         ogeom_bail!(
             NotDone,
@@ -391,23 +517,39 @@ pub fn triangulate_with_chords(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<(Triangulation, EdgeChords)> {
+    let (mesh, chords, _) = triangulate_with_face_meshes(model, shape, deflection, None, tol)?;
+    Ok((mesh, chords))
+}
+
+/// As [`triangulate_with_chords`], with every face's own mesh beside the
+/// welded whole: each face below `shape` in exploration order, and what
+/// [`triangulate_face_with`] answers for it with the returned chords. The
+/// whole is welded from those same meshes, so they are drawn once. A face
+/// `kept` has drawn before to the same chords is taken from it.
+///
+/// # Errors
+///
+/// As [`triangulate_face`].
+pub fn triangulate_with_face_meshes(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    kept: Option<&FaceMeshCache>,
+    tol: Tolerances,
+) -> OgeomResult<(Triangulation, EdgeChords, Vec<FaceMesh>)> {
     // Faces in two phases, as `tessellate` does: each face is meshed from a
     // model nothing is writing to, in parallel; the pieces are then appended
     // sequentially in face order. The split is what keeps the answer
     // bit-identical at any thread count: scheduling decides only who does
     // which face, never where its triangles land.
-    let faces: Vec<Shape> =
-        ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
-    let read_model: &Model = model;
-
-    let (computed, chords) = face_meshes(read_model, &faces, deflection, tol)?;
+    let (faces, chords) = face_meshes_with_chords(model, shape, deflection, kept, tol)?;
 
     let mut mesh = Triangulation::new();
     let mut pieces: Vec<(usize, usize)> = Vec::with_capacity(faces.len());
-    for piece in computed {
-        let piece = piece?;
+    for (_, piece) in &faces {
+        let piece = piece.as_ref().map_err(Clone::clone)?;
         let t0 = mesh.triangles.len();
-        mesh.append(&piece);
+        mesh.append(piece);
         pieces.push((t0, mesh.triangles.len()));
     }
     orient_pieces(&mut mesh, &pieces);
@@ -441,7 +583,80 @@ pub fn triangulate_with_chords(
     // What is left open narrower than the chord asked for is two faces
     // sampling a shared corner differently, below the mesh's own
     // resolution, and is sealed; a wider opening is the shape's.
-    Ok((mesh.sealed(deflection.chord), chords))
+    let faces = faces
+        .into_iter()
+        .map(|(face, piece)| {
+            let piece =
+                piece.and_then(|piece| own_answer(model, &face, piece, deflection, &chords, tol));
+            (face, piece)
+        })
+        .collect();
+    Ok((mesh.sealed(deflection.chord), chords, faces))
+}
+
+/// A face and its mesh, or why it would not draw.
+pub type FaceMesh = (Shape, OgeomResult<Triangulation>);
+
+/// Every face below `shape` in exploration order, each with what
+/// [`triangulate_face_with`] answers for it with the chords the faces agree
+/// on (what [`edge_chords_for`] answers), and those chords: the agreement
+/// and the meshes drawn in one pass. A face `kept` has drawn before to the
+/// same chords is taken from it.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// deflection is unusable; a face that will not draw carries its own error.
+pub fn face_meshes_for(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    kept: Option<&FaceMeshCache>,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<FaceMesh>, EdgeChords)> {
+    deflection.validate()?;
+    let (faces, chords) = face_meshes_with_chords(model, shape, deflection, kept, tol)?;
+    let faces = faces
+        .into_iter()
+        .map(|(face, piece)| {
+            let piece =
+                piece.and_then(|piece| own_answer(model, &face, piece, deflection, &chords, tol));
+            (face, piece)
+        })
+        .collect();
+    Ok((faces, chords))
+}
+
+/// The faces below `shape` paired with [`face_meshes`]' answers for them.
+fn face_meshes_with_chords(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    kept: Option<&FaceMeshCache>,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<FaceMesh>, EdgeChords)> {
+    let faces: Vec<Shape> =
+        ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
+    let (computed, chords) = face_meshes(model, &faces, deflection, kept, tol)?;
+    Ok((faces.into_iter().zip(computed).collect(), chords))
+}
+
+/// A face's mesh from the shape-wide pass as [`triangulate_face_with`]
+/// answers it: the pass keeps a face that drew nothing, where the face
+/// asked alone is refused, so such a face is asked again.
+fn own_answer(
+    model: &Model,
+    face: &Shape,
+    piece: Triangulation,
+    deflection: Deflection,
+    chords: &EdgeChords,
+    tol: Tolerances,
+) -> OgeomResult<Triangulation> {
+    if piece.triangles.is_empty() {
+        triangulate_face_with(model, face, deflection, chords, tol)
+    } else {
+        Ok(piece)
+    }
 }
 
 /// Every face below a shape drawn to the chords the faces agree on, in face
@@ -457,13 +672,14 @@ pub(crate) fn face_meshes(
     read_model: &Model,
     faces: &[Shape],
     deflection: Deflection,
+    kept: Option<&FaceMeshCache>,
     tol: Tolerances,
 ) -> OgeomResult<(Vec<OgeomResult<Triangulation>>, EdgeChords)> {
     let FirstPass {
         finer,
         mut computed,
         changed,
-    } = first_pass(read_model, faces, deflection, tol)?;
+    } = first_pass(read_model, faces, deflection, kept, tol)?;
     if !changed.is_empty() {
         let again: Vec<usize> = (0..faces.len())
             .filter(|&i| {
@@ -478,7 +694,14 @@ pub(crate) fn face_meshes(
         let redone: Vec<OgeomResult<Triangulation>> =
             ogeom_core::parallel::map_ordered(&again, |_, &index| {
                 ogeom_core::progress::checkpoint()?;
-                triangulate_with(read_model, &faces[index], deflection, Some(&finer), tol)
+                triangulate_with(
+                    read_model,
+                    &faces[index],
+                    deflection,
+                    Some(&finer),
+                    kept,
+                    tol,
+                )
             });
         for (index, one) in again.into_iter().zip(redone) {
             computed[index] = one;
@@ -509,6 +732,7 @@ fn first_pass(
     read_model: &Model,
     faces: &[Shape],
     deflection: Deflection,
+    cache: Option<&FaceMeshCache>,
     tol: Tolerances,
 ) -> OgeomResult<FirstPass> {
     // `Some(&finer)`, never `None`: a face left to itself refines its own
@@ -547,7 +771,7 @@ fn first_pass(
         ogeom_core::parallel::map_ordered(&jobs, |_, (face, slot)| {
             ogeom_core::progress::checkpoint()?;
             let trim = slot.lock().ok().and_then(|mut held| held.take());
-            triangulate_reporting_from(read_model, face, deflection, Some(&finer), trim, tol)
+            reporting_kept(read_model, face, deflection, Some(&finer), trim, cache, tol)
         });
     let mut computed: Vec<OgeomResult<Triangulation>> = Vec::with_capacity(faces.len());
     let mut crossed: Vec<usize> = Vec::new();
@@ -692,7 +916,7 @@ pub fn edge_chords_for(
     deflection.validate()?;
     let faces: Vec<Shape> =
         ogeom_topo::explore(model, shape, ogeom_topo::Filter::OfType(ShapeType::Face))?;
-    Ok(first_pass(model, &faces, deflection, tol)?.finer)
+    Ok(first_pass(model, &faces, deflection, None, tol)?.finer)
 }
 
 /// As [`triangulate_face`], with the edge chords the shape agreed on (the
@@ -715,7 +939,7 @@ pub fn triangulate_face_with(
     chords: &EdgeChords,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
-    triangulate_with(model, face, deflection, Some(chords), tol)
+    triangulate_with(model, face, deflection, Some(chords), None, tol)
 }
 
 /// Make the appended face meshes traverse their shared boundaries in

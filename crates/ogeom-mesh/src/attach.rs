@@ -79,7 +79,7 @@ pub fn tessellate(
     let faces: Vec<Shape> = ogeom_topo::explore(model, shape, Filter::OfType(ShapeType::Face))?
         .into_iter()
         .collect();
-    let (meshes, chords) = crate::triangulate::face_meshes(model, &faces, deflection, tol)?;
+    let (meshes, chords) = crate::triangulate::face_meshes(model, &faces, deflection, None, tol)?;
     let along = |edge: &Shape| -> Deflection {
         match chords.get(&edge.node().index()) {
             Some(chord) => Deflection {
