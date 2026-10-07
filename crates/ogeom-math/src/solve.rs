@@ -814,9 +814,50 @@ pub fn newton_system_fixed<const N: usize, F>(
 where
     F: FnMut(&[f64; N]) -> ([f64; N], [[f64; N]; N]),
 {
+    // The Jacobian of the point last measured: the lazy iteration asks for
+    // it only right after measuring the same point.
+    let last = std::cell::Cell::new([[0.0; N]; N]);
+    newton_system_fixed_lazy(
+        |x| {
+            let (residual, jacobian) = f(x);
+            last.set(jacobian);
+            residual
+        },
+        |_| Some(last.get()),
+        start,
+        criteria,
+    )
+}
+
+/// [`newton_system_fixed`] with the residual and the Jacobian measured
+/// apart, the Jacobian only where a step is taken.
+///
+/// The damped search measures every trial point and keeps few, and where
+/// the Jacobian costs more than the residual (a spline surface's
+/// derivatives against its point) most of that goes on Jacobians never
+/// used. The iteration is the one [`newton_system_fixed`] runs on
+/// `|x| (residual(x), jacobian(x))`, a `None` Jacobian standing for a
+/// point that cannot be measured: an infinite residual and a zero
+/// Jacobian. So it answers the same to the bit.
+///
+/// # Errors
+///
+/// As [`newton_system_fixed`].
+pub fn newton_system_fixed_lazy<const N: usize, R, J>(
+    mut residual_at: R,
+    mut jacobian_at: J,
+    start: [f64; N],
+    criteria: Criteria,
+) -> OgeomResult<([f64; N], f64, Convergence, usize)>
+where
+    R: FnMut(&[f64; N]) -> [f64; N],
+    J: FnMut(&[f64; N]) -> Option<[[f64; N]; N]>,
+{
     let norm_of = |r: &[f64; N]| r.iter().map(|v| v * v).sum::<f64>().sqrt();
     let mut x = start;
-    let (mut residual, mut jacobian) = f(&x);
+    let first = residual_at(&x);
+    let (mut residual, mut jacobian) =
+        jacobian_at(&x).map_or(([f64::INFINITY; N], [[0.0; N]; N]), |j| (first, j));
     let mut norm = norm_of(&residual);
     for iteration in 1..=criteria.max_iterations {
         if norm <= criteria.residual {
@@ -832,9 +873,13 @@ where
             for (value, d) in candidate.iter_mut().zip(delta.iter()) {
                 *value -= d * scale;
             }
-            let (r, jj) = f(&candidate);
+            let r = residual_at(&candidate);
             let candidate_norm = norm_of(&r);
-            if candidate_norm < norm || candidate_norm <= criteria.residual {
+            // A point whose Jacobian cannot be measured is unmeasured, and
+            // no step is accepted onto it.
+            if (candidate_norm < norm || candidate_norm <= criteria.residual)
+                && let Some(jj) = jacobian_at(&candidate)
+            {
                 accepted = Some((candidate, r, jj, candidate_norm));
                 break;
             }
