@@ -1019,3 +1019,37 @@ fn faces_walking_their_loops_backward_are_walked_back() {
         );
     }
 }
+
+/// A part as read, its faces listed from three different first faces: the
+/// moments are taken from a point of the first, and a boundary left open
+/// would move the volume by the open flux times the step. Its fitted
+/// edges' pcurves meet their curves at every inner sample and stray up to
+/// 1.5e-4 off them towards their ends; the strips there close it, and the
+/// volume agrees to a part in a hundred billion.
+#[test]
+#[ignore = "heavy"]
+fn a_read_part_s_volume_does_not_move_with_its_first_face() {
+    use ogeom::algo::{make_shell, make_solid, shape_bounds, volume_properties};
+    let mut import = ogeom::io::read_step(&corpus("nist_ctc_02_asme1_rc.stp"), T).unwrap();
+    let part = import.solids[0].clone();
+    let model = import.document.model_mut();
+    let diagonal = shape_bounds(model, &part, T).unwrap().diagonal();
+    let fine = ogeom::mesh::Deflection::with_chord(diagonal * 1e-5).unwrap();
+    let faces = explore_unique(model, &part, ShapeType::Face).unwrap();
+    let mut volumes = Vec::new();
+    for first in [0, faces.len() / 3, 2 * faces.len() / 3] {
+        let mut listed = faces.clone();
+        listed.rotate_left(first);
+        let shell = make_shell(model, &listed).unwrap().shape;
+        let solid = make_solid(model, &[shell]).unwrap().shape;
+        let measured = volume_properties(model, &solid, fine, T).unwrap();
+        assert_eq!(measured.deflection, 0.0, "integrated, not meshed");
+        volumes.push(measured.mass);
+    }
+    for volume in &volumes[1..] {
+        assert!(
+            (volume - volumes[0]).abs() <= volumes[0] * 1e-11,
+            "the volume moves with the first face: {volumes:?}"
+        );
+    }
+}

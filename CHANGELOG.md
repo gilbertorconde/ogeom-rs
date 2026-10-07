@@ -34,6 +34,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pcurve that strays off its curve only near its ends gets its
+  strip.** The exact volume checked a pcurve against its edge's curve
+  inside the span only; one on the curve there but off it towards its ends
+  left its slit open. A STEP part with such edges no longer changes volume
+  with the face listed first (3.8e-9 relative before, now 2.7e-13).
+
 - **Two half domes sew into an open sheet (#138).** Sewing two half
   domes, about opposite axes or mirrored, joined their half rims as one
   edge and closed the sheet when the arc's centre sat a little off the

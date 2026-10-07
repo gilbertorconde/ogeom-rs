@@ -1109,6 +1109,14 @@ fn fit_to_edge(
             break;
         }
     }
+    // A fitted pcurve can meet the curve at every inner sample and stray
+    // towards its ends, where it answers to its vertices' tolerance rather
+    // than the edge's: the ends ask for a strip but do not refuse one.
+    if within_stated {
+        for t in [segment.t0, segment.t1] {
+            seen = seen.max(nearest(&curve, *range, lifted(t)?, tol)?);
+        }
+    }
     if seen <= tol.confusion() && within_stated {
         return Ok(Fit::Along);
     }

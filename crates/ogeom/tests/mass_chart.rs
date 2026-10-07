@@ -568,3 +568,100 @@ fn a_chord_standing_off_its_arc_by_its_sag_closes_with_the_strips() {
         }
     }
 }
+
+/// A cube of side 10 whose top face's pcurve along one edge runs on the
+/// edge's line from a twelfth of the way to eleven twelfths, and bends off
+/// it towards each end to stand 1e-4 aside at the vertices, which state
+/// that much. Every inner point the strip test samples lies on the line;
+/// the ends do not, and the slit between pcurve and line is closed by the
+/// strip at whichever face the moments are taken from: the volume is the
+/// cube's to rounding with each face listed first, where leaving the slit
+/// open moves it by a few parts in ten million.
+#[test]
+fn a_pcurve_straying_off_its_line_only_towards_its_ends_closes() {
+    use ogeom::algo::{make_box, make_shell, make_solid};
+    use ogeom::core::Tolerance;
+    use ogeom::geom::{BSpline2d, Curve2d as _, PlanarCurve, SurfaceGeometry};
+    use ogeom::math::KnotVector;
+    use ogeom::topo::{EdgeRepr, NodeData, ShapeType, explore_unique};
+    let (side, aside) = (10.0, 1e-4);
+    let mut model = Model::new();
+    let cube = make_box(&mut model, Frame::WORLD, (side, side, side), T)
+        .unwrap()
+        .shape;
+    let faces = explore_unique(&model, &cube, ShapeType::Face).unwrap();
+    let top = faces
+        .iter()
+        .find(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Plane(p)) if p.plane().origin().z > side / 2.0
+            )
+        })
+        .expect("the cube has a top")
+        .clone();
+    let surface = model.node(&top).unwrap().data().as_face().unwrap().surface;
+    let edge = explore_unique(&model, &top, ShapeType::Edge).unwrap()[0].clone();
+    let mut data = model.node(&edge).unwrap().data().as_edge().unwrap().clone();
+    for repr in &mut data.representations {
+        if let EdgeRepr::PCurve {
+            curve,
+            range,
+            surface: on,
+            ..
+        } = repr
+            && *on == surface
+        {
+            let old = model.geometry().pcurve(*curve).unwrap().clone();
+            let (a, b) = (
+                old.point_at(range.0, T).unwrap(),
+                old.point_at(range.1, T).unwrap(),
+            );
+            let along = b - a;
+            let off = along.perpendicular() * (aside / along.magnitude());
+            let (r0, r1) = *range;
+            let knots = KnotVector::new(
+                vec![
+                    r0,
+                    r0,
+                    r0 + (r1 - r0) / 12.0,
+                    r0 + (r1 - r0) * 11.0 / 12.0,
+                    r1,
+                    r1,
+                ],
+                1,
+            )
+            .unwrap();
+            let control = vec![
+                a + off,
+                a + along / 12.0,
+                a + along * (11.0 / 12.0),
+                b + off,
+            ];
+            let bent = BSpline2d::new(knots, control, T).unwrap();
+            *curve = model.geometry_mut().add_pcurve(PlanarCurve::BSpline(bent));
+        }
+    }
+    let NodeData::Edge(slot) = model.node_mut(&edge).unwrap().data_mut() else {
+        unreachable!()
+    };
+    **slot = data;
+    model
+        .widen(&edge, Tolerance::new(aside * 1.001).unwrap())
+        .unwrap();
+    let cube_volume = side * side * side;
+    for first in 0..faces.len() {
+        let mut listed = faces.clone();
+        listed.rotate_left(first);
+        let shell = make_shell(&mut model, &listed).unwrap().shape;
+        let solid = make_solid(&mut model, &[shell]).unwrap().shape;
+        let v = volume_properties(&model, &solid, Deflection::default(), T).unwrap();
+        assert_eq!(v.deflection, 0.0, "first {first}: integrated, not meshed");
+        assert!(
+            (v.mass - cube_volume).abs() < 1e-12 * cube_volume,
+            "first {first}: volume {} against {cube_volume}",
+            v.mass
+        );
+    }
+}

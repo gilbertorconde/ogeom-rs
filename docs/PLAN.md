@@ -23,15 +23,6 @@ first, then refusals, then cost.
 
 ### Checking and measurement
 
-**Curve ends that miss their vertex.** The exact volume closes each strip's
-ends onto its curve's end and the next curve's start at every corner of a
-face. Where the curves meeting at a vertex end apart from one another, within
-the vertex's tolerance, the small polygon of their ends is left open. The
-STEP part `nist_ctc_02` as read (not converted) still moves with the
-reference point by 2.2e-9 relative, likely for this reason (not yet
-confirmed). Routing every corner through the vertex's own point would close
-it, if every face around the vertex did so, those without strips included.
-
 **A surface fit refuses where its surface cannot be evaluated.** A surface
 fit (`to_nurbs_within`, a patch's degree restriction) over a surface that
 cannot be evaluated somewhere (an offset sphere's poles) refuses.
