@@ -12556,6 +12556,7 @@ mod tests {
             } else {
                 1e6 + PI * 50.0 * 50.0 * 100.0 * 3.0 / 4.0
             };
+            assert_valid(&model, &built.shape);
             let v = volume(&model, &built.shape);
             assert!(
                 (v - expected).abs() <= 1e-3 * expected,
@@ -12569,6 +12570,12 @@ mod tests {
                 assert!(!built.history.is_deleted(&cap));
                 let from_cap = traced_into(&model, &built.shape, &built.history, &cap);
                 let from_side = traced_into(&model, &built.shape, &built.history, &side);
+                if keep_in {
+                    // The common keeps one face per cap plane, the one both
+                    // sources trace to and nothing else.
+                    assert_eq!(from_cap.len(), 1, "{role:?}: the cap");
+                    assert_eq!(from_side.len(), 1, "{role:?}: the cube's face");
+                }
                 let shared = from_cap
                     .iter()
                     .filter(|f| from_side.iter().any(|g| g.is_same(f)))
@@ -12612,6 +12619,7 @@ mod tests {
         );
         let stepped = cut(&mut model, &block, &step, T).unwrap();
         let slotted = cut(&mut model, &stepped.shape, &slot, T).unwrap();
+        assert_valid(&model, &slotted.shape);
         let history = stepped.history.then(&slotted.history);
         let v = volume(&model, &slotted.shape);
         assert!((v - 380_000.0).abs() <= 1e-6 * 380_000.0, "{v}");
