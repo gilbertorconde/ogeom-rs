@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`ProbeCache`, `check_kept` and `inside_out_faces_kept`.** The
+  face-orientation probe keeps its face meshes and ray answers by what they
+  read, so a check after a mend recomputes only what the mend changed.
+  `newton_system_fixed_lazy` takes the residual and the Jacobian
+  separately.
+
 - **Face meshes kept by what a face is made of.** `FaceMeshCache`,
   `triangulate_face_kept`, `triangulate_with_face_meshes`,
   `face_meshes_for` and `ogeom_topo::face_content`: each face's mesh comes
@@ -21,6 +27,12 @@ bump may break the API and a patch bump may not.
   gives.
 
 ### Changed
+
+- **The orientation probe is about twice as fast, `fix_shape` 2.4 times.**
+  A solid's boundary prepares each spline surface for rays once, and the
+  curve-surface polish works out derivatives only at points it steps onto.
+  `check` on the largest corpus part goes from 176 to 80 ms and
+  `fix_shape` from 474 to 196 ms at 20 threads, with the same diagnoses.
 
 - **`check` runs in parallel.** Its per-edge, per-wire, per-face and
   containment checks give the same diagnosis in the same order;
