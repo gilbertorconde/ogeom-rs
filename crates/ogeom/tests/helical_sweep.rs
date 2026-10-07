@@ -791,3 +791,147 @@ fn a_grooved_shaft_and_a_stepped_ring_on_one_plane_add_up() {
         "{fuse} + {common} against {a} + {b}"
     );
 }
+
+/// A chamfered shaft `h` tall, turned from a section a radian off the XZ
+/// plane, with a trapezoid groove run down it from the top at a pitch of
+/// one turn per 2 pi, then a D-shaped bore of radius 2.5 cut through it
+/// along its axis. The groove leaves its land on the outer cylinder as one
+/// face per turn, all on one surface, each joined to the next along the
+/// surface's seam; the bore reaches only the shaft's two ends.
+fn grooved_shaft_with_a_flatted_bore(model: &mut Model, h: f64) -> Shape {
+    let section = axial_face(
+        model,
+        &[
+            (0.0, 0.0),
+            (7.0, 0.0),
+            (8.0, 1.0),
+            (8.0, h - 1.0),
+            (7.0, h),
+            (0.0, h),
+        ],
+        1.0,
+    );
+    let shaft = ogeom::algo::make_revolution(model, &section, z_axis(), core::f64::consts::TAU, T)
+        .unwrap()
+        .shape;
+    let pi = core::f64::consts::PI;
+    let profile = axial_face(
+        model,
+        &[
+            (8.0 + pi, h - 0.728_511_236_852_886_3),
+            (8.314_159_265_358_98, h - 0.728_511_236_852_886_3),
+            (3.5, h - 2.480_721_912_460_402),
+            (3.5, h - 3.802_463_394_719_184),
+            (8.314_159_265_358_98, h - 5.554_674_070_326_7),
+            (8.0 + pi, h - 5.554_674_070_326_7),
+        ],
+        0.0,
+    );
+    let pitch = core::f64::consts::TAU;
+    let axis = Axis::new(Point::new(0.0, 0.0, h), -Direction::Z);
+    let groove = ogeom::offset::make_helical_sweep(
+        model,
+        &profile,
+        axis,
+        pitch,
+        (h + pi) / pitch,
+        false,
+        0.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let grooved = ogeom::boolean::cut(model, &shaft, &groove, T)
+        .unwrap()
+        .shape;
+    // A circle of radius 2.5 in forty chords, cut flat by the line y = -2.
+    let (from, to) = (
+        (-2.0_f64).atan2(1.5),
+        (-2.0_f64).atan2(-1.5) + core::f64::consts::TAU,
+    );
+    let rim: Vec<Point> = (0..=40)
+        .map(|k| {
+            let a = from + (to - from) * f64::from(k) / 40.0;
+            Point::new(2.5 * a.cos(), 2.5 * a.sin(), -1.0)
+        })
+        .collect();
+    let wire = make_polygon(model, &rim, true, T).unwrap().shape;
+    let plane =
+        Plane::new(Frame::new(Point::new(0.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap());
+    let flat = make_face(model, PlaneSurface::new(plane).into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let bore =
+        ogeom::algo::make_prism(model, &flat, ogeom::math::Vector::new(0.0, 0.0, h + 2.0), T)
+            .unwrap()
+            .shape;
+    ogeom::boolean::cut(model, &grooved, &bore, T)
+        .unwrap()
+        .shape
+}
+
+/// A ring from radius 4 to 11, 7 tall, chamfered, with a shallow recess
+/// from radius 6.66 to 8.34 in either face, standing `z` up.
+fn stepped_ring(model: &mut Model, z: f64) -> Shape {
+    let pts = [
+        (4.0, 0.3),
+        (4.3, 0.0),
+        (6.66, 0.0),
+        (6.66, 0.3),
+        (8.34, 0.3),
+        (8.34, 0.0),
+        (10.7, 0.0),
+        (11.0, 0.3),
+        (11.0, 6.7),
+        (10.7, 7.0),
+        (8.34, 7.0),
+        (8.34, 6.7),
+        (6.66, 6.7),
+        (6.66, 7.0),
+        (4.3, 7.0),
+        (4.0, 6.7),
+    ]
+    .map(|(r, y)| (r, y + z));
+    let section = axial_face(model, &pts, 1.0);
+    ogeom::algo::make_revolution(model, &section, z_axis(), core::f64::consts::TAU, T)
+        .unwrap()
+        .shape
+}
+
+/// The faces a cut leaves standing on one shared surface, joined along its
+/// seam, keep the seam's two columns apart: a later boolean through them
+/// closes. The ring the shaft passes through shares with it at most the
+/// annulus between the ring's bore and the shaft's outside.
+fn a_bored_shaft_shares_material_with_a_ring_round_it(h: f64, heights: &[f64]) {
+    let mut model = Model::new();
+    let shaft = grooved_shaft_with_a_flatted_bore(&mut model, h);
+    let diagnosis = check(&model, &shaft, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let ring_inside = core::f64::consts::PI * (64.0 - 16.0) * 7.0;
+    for &z in heights {
+        let ring = stepped_ring(&mut model, z);
+        let common = ogeom::boolean::common(&mut model, &shaft, &ring, T)
+            .unwrap_or_else(|e| panic!("at z = {z}: {e}"))
+            .shape;
+        let diagnosis = check(&model, &common, T).unwrap();
+        assert!(diagnosis.is_valid(), "at z = {z}: {diagnosis}");
+        let v = volume_properties(&model, &common, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!(v > 0.0 && v < ring_inside, "at z = {z}: {v}");
+    }
+}
+
+/// Two turns of land, the ring round the middle.
+#[test]
+fn a_short_bored_shaft_shares_material_with_a_ring_round_it() {
+    a_bored_shaft_shares_material_with_a_ring_round_it(14.0, &[4.0]);
+}
+
+/// Ten turns of land, the ring at the shaft's foot and a third of the way
+/// up.
+#[test]
+#[ignore = "heavy"]
+fn a_long_bored_shaft_shares_material_with_a_ring_round_it() {
+    a_bored_shaft_shares_material_with_a_ring_round_it(60.0, &[0.0, 20.0]);
+}

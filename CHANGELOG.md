@@ -25,6 +25,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean leaves a seam between two faces on one surface as a seam
+  (#142).** A face rebuilt on its own surface beside faces set aside took
+  one side's position for an edge both its neighbours stood on across the
+  surface's seam, so a solid cut that way (a turned, grooved shaft bored
+  along its axis) failed the next boolean ("a face boundary strand
+  dangles"). Both positions are kept as the seam they are. A solid saved
+  from the faulty build still carries the bad edge; building it again
+  fixes it.
+
 - **A placed dome or ball drilled through its pole closes.** A sphere
   face whose pole a curved wall passes through is re-charted when its solid
   is moved, rotated, mirrored or scaled, or lies on a left-handed sphere,

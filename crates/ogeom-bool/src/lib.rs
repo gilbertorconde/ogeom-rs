@@ -263,6 +263,11 @@ struct BoundaryEdge {
     prange: (f64, f64),
     /// The other side of a seam, where this edge is one.
     other_side: Option<(PlanarCurve, (f64, f64))>,
+    /// The edge's two seam columns as its node states them, forward then
+    /// reversed, kept where this face uses only one: on a surface several
+    /// faces stand on, the edge between two of them is a seam of that
+    /// surface, each face walking its own column.
+    seam: Option<(PlanarCurve, PlanarCurve)>,
     /// The radius within which the edge honestly lies: a fitted rail can
     /// carry a few dozen microns of construction slop, and every filter that
     /// compares this edge's curve against exact geometry widens by it.
@@ -627,7 +632,7 @@ fn gather(
             };
             let world = occurrence.curve.clone();
             samples.push(occurrence.sampled);
-            let (pcurve, prange, other_side) =
+            let (pcurve, prange, other_side, seam) =
                 match edge_data.pcurve_for(surface_id, edge.location()) {
                     Some(EdgeRepr::PCurve {
                         curve: pc, range, ..
@@ -635,7 +640,7 @@ fn gather(
                         let Some(planar) = model.geometry().pcurve(*pc) else {
                             ogeom_bail!(Dangling, "pcurve is not in this model");
                         };
-                        (planar.clone(), *range, None)
+                        (planar.clone(), *range, None, None)
                     }
                     Some(EdgeRepr::Seam {
                         forward,
@@ -649,7 +654,12 @@ fn gather(
                         ) else {
                             ogeom_bail!(Dangling, "seam pcurve is not in this model");
                         };
-                        (f.clone(), *range, Some((r.clone(), *range)))
+                        (
+                            f.clone(),
+                            *range,
+                            Some((r.clone(), *range)),
+                            Some((f.clone(), r.clone())),
+                        )
                     }
                     _ => ogeom_bail!(
                         Construction,
@@ -664,6 +674,7 @@ fn gather(
                 pcurve,
                 prange,
                 other_side,
+                seam,
                 tolerance: edge_data.tolerance.get(),
                 ends_tolerance: occurrence.ends_tolerance,
                 ends: occurrence.ends,
@@ -963,6 +974,10 @@ fn bring_trim_home(
         e.pcurve = e.pcurve.transformed(&moved, tol)?;
         if let Some((other, _)) = &mut e.other_side {
             *other = other.transformed(&moved, tol)?;
+        }
+        if let Some((forward, reversed)) = &mut e.seam {
+            *forward = forward.transformed(&moved, tol)?;
+            *reversed = reversed.transformed(&moved, tol)?;
         }
     }
     for p in poles.iter_mut() {
@@ -8650,15 +8665,44 @@ fn build_sub_edge(
             let whole = e.other_side.is_none()
                 && (range.0 - e.crange.0).abs() <= tol.parametric()
                 && (range.1 - e.crange.1).abs() <= tol.parametric();
+            // On the face's own surface, which other faces may stand on
+            // too, an edge its node states as a seam stays one: the faces
+            // either side each walk their own column of it, which two
+            // plain pcurves on the one surface could not tell apart.
+            let seam = match &e.seam {
+                Some(pair) if e.other_side.is_none() && face.own_surface == Some(surface_id) => {
+                    Some(pair)
+                }
+                _ => None,
+            };
             if whole && let Some(built) = rebuild.whole_edges.get(&e.node).cloned() {
-                ogeom_algo::attach_pcurve(
-                    rebuild.model,
-                    &built,
-                    e.pcurve.clone(),
-                    surface_id,
-                    Location::identity(),
-                    e.prange,
-                )?;
+                let attached = rebuild
+                    .model
+                    .node(&built)
+                    .and_then(|n| n.data().as_edge())
+                    .is_some_and(|d| d.pcurve_on(surface_id).is_some());
+                match seam {
+                    // The face on the other side, on the same surface,
+                    // attached the seam with the edge's first build.
+                    Some(_) if attached => {}
+                    Some((forward, reversed)) => ogeom_algo::attach_seam(
+                        rebuild.model,
+                        &built,
+                        forward.clone(),
+                        reversed.clone(),
+                        surface_id,
+                        Location::identity(),
+                        e.prange,
+                    )?,
+                    None => ogeom_algo::attach_pcurve(
+                        rebuild.model,
+                        &built,
+                        e.pcurve.clone(),
+                        surface_id,
+                        Location::identity(),
+                        e.prange,
+                    )?,
+                }
                 return Ok(built);
             }
             let from = e.curve.point_at(range.0, tol)?;
@@ -8691,8 +8735,17 @@ fn build_sub_edge(
                 rescale(range.0, e.crange, e.prange),
                 rescale(range.1, e.crange, e.prange),
             );
-            match &e.other_side {
-                None => ogeom_algo::attach_pcurve(
+            match (&e.other_side, seam) {
+                (None, Some((forward, reversed))) => ogeom_algo::attach_seam(
+                    model,
+                    &built,
+                    forward.clone(),
+                    reversed.clone(),
+                    surface_id,
+                    Location::identity(),
+                    sub_p,
+                )?,
+                (None, None) => ogeom_algo::attach_pcurve(
                     model,
                     &built,
                     e.pcurve.clone(),
@@ -8700,7 +8753,7 @@ fn build_sub_edge(
                     Location::identity(),
                     sub_p,
                 )?,
-                Some((other, _)) => {
+                (Some((other, _)), _) => {
                     // A seam: both sides attach over the one range a seam
                     // carries, and an occurrence picks its side by its
                     // orientation.
