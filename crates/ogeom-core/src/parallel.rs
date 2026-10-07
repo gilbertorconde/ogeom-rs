@@ -8,8 +8,10 @@
 //! can reach the output. A stage that cannot meet that bar stays sequential.
 //!
 //! The thread count comes from [`threads`]: the machine's parallelism by
-//! default, overridable process-wide with [`set_threads`], including down
-//! to one, which is also what tiny workloads collapse to on their own.
+//! default, or the `OGEOM_THREADS` environment variable when it holds a
+//! positive count, and overridable process-wide with [`set_threads`],
+//! including down to one, which is also what tiny workloads collapse to on
+//! their own.
 //! Worker threads re-install the caller's progress watch, so cancellation
 //! reaches into the workers.
 
@@ -21,6 +23,11 @@ use crate::progress;
 static THREADS: AtomicUsize = AtomicUsize::new(0);
 
 /// The thread count parallel stages will use.
+///
+/// The count given to [`set_threads`] when there is one; otherwise
+/// `OGEOM_THREADS` from the environment when it parses as a positive
+/// count; otherwise the machine's available parallelism. The environment
+/// is read once, on the first call that needs it.
 #[must_use]
 pub fn threads() -> usize {
     let configured = THREADS.load(Ordering::Relaxed);
@@ -30,7 +37,17 @@ pub fn threads() -> usize {
     // Asked once: the query reads the scheduler's affinity and quota, and
     // every parallel stage asks.
     static MACHINE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *MACHINE.get_or_init(|| std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
+    *MACHINE.get_or_init(|| {
+        from_environment(std::env::var("OGEOM_THREADS").ok().as_deref()).unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+        })
+    })
+}
+
+/// The thread count an `OGEOM_THREADS` value asks for: a positive integer,
+/// surrounding blanks allowed. Anything else asks for nothing.
+fn from_environment(value: Option<&str>) -> Option<usize> {
+    value?.trim().parse::<usize>().ok().filter(|&n| n > 0)
 }
 
 std::thread_local! {
@@ -124,6 +141,21 @@ mod tests {
             assert_eq!(parallel, serial);
         }
         set_threads(0);
+    }
+
+    #[test]
+    fn the_environment_count_must_be_a_positive_integer() {
+        assert_eq!(from_environment(Some(" 3 ")), Some(3));
+        for refused in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("-2"),
+            Some("four"),
+            Some("2.5"),
+        ] {
+            assert_eq!(from_environment(refused), None, "{refused:?}");
+        }
     }
 
     #[test]

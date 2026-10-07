@@ -294,14 +294,28 @@ runs beat the threshold it declares (the performance-optimizer skill).
 Kernel threading already runs through `ogeom_core::parallel::map_ordered`
 (scoped threads, results in item order, bit-identical at any thread count).
 
-**Benches to add before the rest.** Mass properties, `check`, sew, mesh
-conversion (`solid_from_mesh`), STEP write, IGES read, STL weld at 1M
-triangles, a STEP file of 10 MB or more, HLR (`project_exact`), offsets
-(`make_thick_sheet` on a spline face, pipe sections of circles, a guided
-pipe), `fix_shape`, a marched fillet. The bench reports min, median and
-spread, loops short benches to 50 ms, takes `--threads N`, and the baseline
-is renewed (it dates from 0.3.1). An instruction-count gate in CI would be
-deterministic on a loaded runner.
+**Benches.** `tools/ogeom-bench` (see its README) reports min, median
+and MAD per bench after a warm-up, loops short benches to 50 ms of
+samples, takes `--threads N` and `--filter`, and `threads()` honours
+`OGEOM_THREADS`. The baseline is recorded at one thread so its ratios
+compare across core counts. Benches now cover mass properties, `check`
+and `fix_shape` on the largest corpus part, sew of a 1536-face shell,
+`solid_from_mesh` on a tessellated part, STEP write, IGES read (of the
+kernel's own IGES of a corpus part: the corpus has no IGES file), weld and
+STL read at 1M triangles, `project_exact` and the polygonal HLR, a
+thickened spline face, a pipe through circular sections, a guided pipe, a
+marched fillet and a box with all 12 edges filleted. Still missing: a STEP
+file of 10 MB or more (the largest corpus file is 1.2 MB). On that part
+`project_exact` and `solid_from_mesh` do not finish a warm-up and three
+samples in two minutes, so their benches run on the small part.
+
+An instruction-count gate in CI would be deterministic on a loaded runner
+and looks feasible: `iai-callgrind` needs valgrind on the runner (an apt
+install on ubuntu-latest) and a bench target with a few of the benches
+above at reduced size, since callgrind runs them 20 to 50 times slower;
+`perf stat -e instructions` needs `perf_event_paranoid` at 1 or below,
+which hosted runners do not promise. The work: an `iai` bench crate, a
+recorded count per bench, and a gate at a few percent.
 
 **Cheap and certain.**
 - `hashbrown` behind `ogeom_core` aliases everywhere (about 200 std maps:

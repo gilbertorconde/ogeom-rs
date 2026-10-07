@@ -1,42 +1,108 @@
 //! Benchmarks over the kernel's hot paths.
 //!
-//! The harness is deliberately its own: medians over repeated runs, wall
-//! clock, no dependency. Absolute times move with the machine, so every run
-//! also times a fixed arithmetic spin (the *calibration*) and the
-//! comparison mode reports each benchmark as a multiple of it. Ratios
-//! travel between machines. Milliseconds do not.
+//! The harness is its own, with no dependency: wall clock, one warm-up run,
+//! then samples until at least [`TARGET`] of them is timed (never fewer
+//! than [`LEAST`], and bounded by [`WALL`] of wall clock), reported as the
+//! minimum, the median and the median absolute deviation (MAD). Absolute
+//! times move with the machine, so every run also times a fixed
+//! single-threaded arithmetic spin (the *calibration*) and reports each
+//! benchmark's minimum as a multiple of the spin's minimum. Ratios travel
+//! between machines; milliseconds do not. The minimum is what is compared
+//! because load on a shared machine only ever adds time.
 //!
-//! `ogeom-bench` prints this machine's numbers. `ogeom-bench --check
-//! <baseline.json>` compares calibrated ratios against a recorded baseline
-//! and reports the drift, informationally: performance is watched here, not
-//! gated, because a loaded CI box would turn a real gate into a coin flip.
+//! Usage: `ogeom-bench [--threads N] [--filter TEXT] [--check BASELINE]`.
+//!
+//! - `--threads N` sets the thread count of the kernel's parallel stages
+//!   (`ogeom_core::parallel::set_threads`). Without it, the
+//!   `OGEOM_THREADS` environment variable or the machine's parallelism
+//!   decides, except under `--check`, which runs at the thread count the
+//!   baseline was recorded at.
+//! - `--filter TEXT` runs only the benchmarks whose name contains `TEXT`.
+//! - `--check BASELINE` compares the calibrated ratios against a recorded
+//!   baseline and reports the drift, informationally: performance is
+//!   watched here, not gated, because a loaded CI box would turn a real
+//!   gate into a coin flip.
+//!
+//! Without `--check` the run prints a table to stderr and the baseline JSON
+//! to stdout. See `README.md` beside this crate for what the ratios mean
+//! across core counts.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "a reporting tool")]
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ogeom::core::Tolerances;
-use ogeom::math::{Direction, Frame, Point};
+use ogeom::geom::{CircleCurve, Curve3d as _, PlaneSurface, Surface as _};
+use ogeom::math::{Circle, Direction, Frame, Plane, Point, Vector};
 use ogeom::mesh::Deflection;
-use ogeom::topo::{Model, ShapeType, explore_unique};
+use ogeom::topo::{Model, Shape, ShapeType, Triangulation, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// Median wall time of `runs` executions, in seconds.
-fn median(runs: usize, mut f: impl FnMut()) -> f64 {
-    let mut times: Vec<f64> = (0..runs)
-        .map(|_| {
-            let start = Instant::now();
-            f();
-            start.elapsed().as_secs_f64()
-        })
-        .collect();
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    times[times.len() / 2]
+/// Samples are taken until at least this much of them is timed.
+const TARGET: Duration = Duration::from_millis(50);
+/// Never fewer samples than this.
+const LEAST: usize = 3;
+/// Past this much wall clock, setup included, sampling stops once
+/// [`LEAST`] samples are in.
+const WALL: Duration = Duration::from_secs(3);
+/// Never more samples than this, however short the benchmark.
+const MOST: usize = 5000;
+
+/// What one benchmark measured, in seconds.
+struct Stats {
+    min: f64,
+    median: f64,
+    mad: f64,
+    samples: usize,
 }
 
-/// A fixed arithmetic spin whose time stands for this machine's speed.
-fn calibration() -> f64 {
-    median(5, || {
+/// Time `run` on a fresh `setup()` each sample, the setup untimed: one
+/// warm-up, then samples as the constants above bound them.
+fn sample<S>(mut setup: impl FnMut() -> S, mut run: impl FnMut(S)) -> Stats {
+    run(setup());
+    let began = Instant::now();
+    let mut times = Vec::new();
+    let mut timed = 0.0;
+    while times.len() < MOST
+        && (times.len() < LEAST || (timed < TARGET.as_secs_f64() && began.elapsed() < WALL))
+    {
+        let state = setup();
+        let start = Instant::now();
+        run(state);
+        let seconds = start.elapsed().as_secs_f64();
+        timed += seconds;
+        times.push(seconds);
+    }
+    times.sort_by(f64::total_cmp);
+    let median = middle(&times);
+    let mut deviations: Vec<f64> = times.iter().map(|t| (t - median).abs()).collect();
+    deviations.sort_by(f64::total_cmp);
+    Stats {
+        min: times[0],
+        median,
+        mad: middle(&deviations),
+        samples: times.len(),
+    }
+}
+
+/// Time `run` with nothing to set up per sample.
+fn time(mut run: impl FnMut()) -> Stats {
+    sample(|| (), |()| run())
+}
+
+fn middle(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        0.5 * (sorted[n / 2 - 1] + sorted[n / 2])
+    }
+}
+
+/// A fixed single-threaded arithmetic spin whose time stands for this
+/// machine's speed.
+fn calibration() -> Stats {
+    time(|| {
         let mut acc = 0.0f64;
         for i in 0..4_000_000u64 {
             #[allow(clippy::cast_precision_loss)]
@@ -47,285 +113,742 @@ fn calibration() -> f64 {
     })
 }
 
-fn benchmarks() -> Vec<(&'static str, f64)> {
-    let mut out = Vec::new();
+fn corpus(name: &str) -> Option<String> {
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(path).ok()
+}
 
-    // Construction: a thousand boxes into one model.
-    out.push((
-        "construct_boxes",
-        median(5, || {
-            let mut model = Model::new();
-            for i in 0..1000 {
-                #[allow(clippy::cast_precision_loss)]
-                let dx = i as f64;
-                let frame =
-                    Frame::new(Point::new(dx, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
-                ogeom::algo::make_box(&mut model, frame, (1.0, 1.0, 1.0), T).unwrap();
-            }
-            std::hint::black_box(&model);
-        }),
-    ));
+/// The first solid of a corpus STEP part, with its document.
+fn corpus_part(name: &str) -> Option<(ogeom::doc::Document, Shape)> {
+    let import = ogeom::io::read_step(&corpus(name)?, T).ok()?;
+    let solid = import.solids.first().cloned()?;
+    Some((import.document, solid))
+}
 
-    // Traversal: exploring a box's sub-shapes, ten thousand times.
-    {
+/// The small corpus part the slower whole-part benchmarks run on: an
+/// imported b-rep with spline faces, holes and blends.
+const PART: &str = "nist_ftc_11_asme1_rb.stp";
+
+/// The largest corpus part, for the whole-part benchmarks fast enough to
+/// run on it, where the smallest part takes a few milliseconds.
+const LARGE_PART: &str = "nist_ctc_02_asme1_rc.stp";
+
+type Bench = (&'static str, Box<dyn Fn() -> Option<Stats>>);
+
+fn benchmarks() -> Vec<Bench> {
+    vec![
+        ("construct_boxes", Box::new(construct_boxes)),
+        ("traverse_box", Box::new(traverse_box)),
+        ("tessellate_torus", Box::new(tessellate_torus)),
+        ("boolean_drill", Box::new(boolean_drill)),
+        ("boolean_many_faces", Box::new(boolean_many_faces)),
+        ("boolean_local", Box::new(boolean_local)),
+        ("boolean_marched", Box::new(boolean_marched)),
+        ("fillet_block", Box::new(fillet_block)),
+        ("fillet_box_all", Box::new(fillet_box_all)),
+        ("fillet_marched", Box::new(fillet_marched)),
+        ("tessellate_part", Box::new(tessellate_part)),
+        ("mass_part", Box::new(mass_part)),
+        ("check_part", Box::new(check_part)),
+        ("fix_shape_part", Box::new(fix_shape_part)),
+        ("sew_shell", Box::new(sew_shell)),
+        ("mesh_to_solid", Box::new(mesh_to_solid)),
+        ("hlr_exact", Box::new(hlr_exact)),
+        ("hlr_mesh", Box::new(hlr_mesh)),
+        ("thick_spline", Box::new(thick_spline)),
+        ("pipe_circles", Box::new(pipe_circles)),
+        ("pipe_guided", Box::new(pipe_guided)),
+        ("import_ftc11", Box::new(import_ftc11)),
+        ("import_ctc02", Box::new(import_ctc02)),
+        ("step_write", Box::new(step_write)),
+        ("iges_read", Box::new(iges_read)),
+        ("weld_1m", Box::new(weld_1m)),
+        ("stl_read_1m", Box::new(stl_read_1m)),
+    ]
+}
+
+/// Construction: a thousand boxes into one model.
+fn construct_boxes() -> Option<Stats> {
+    Some(time(|| {
         let mut model = Model::new();
-        let solid = ogeom::algo::make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T)
-            .unwrap()
-            .shape;
-        out.push((
-            "traverse_box",
-            median(5, || {
-                for _ in 0..10_000 {
-                    let faces = explore_unique(&model, &solid, ShapeType::Face).unwrap();
-                    std::hint::black_box(faces.len());
-                }
-            }),
-        ));
-    }
-
-    // Tessellation: a torus at the default deflection.
-    out.push((
-        "tessellate_torus",
-        median(5, || {
-            let mut model = Model::new();
-            let solid = ogeom::algo::make_torus(&mut model, Frame::WORLD, 20.0, 5.0, T)
-                .unwrap()
-                .shape;
-            let done =
-                ogeom::mesh::tessellate(&mut model, &solid, Deflection::default(), T).unwrap();
-            std::hint::black_box(done.triangles);
-        }),
-    ));
-
-    // The boolean: the drilled box.
-    out.push((
-        "boolean_drill",
-        median(5, || {
-            let mut model = Model::new();
-            let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
-                .unwrap()
-                .shape;
+        for i in 0..1000 {
+            #[allow(clippy::cast_precision_loss)]
+            let dx = i as f64;
             let frame =
-                Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
-            let drill = ogeom::algo::make_cylinder(&mut model, frame, 3.0, 12.0, T)
-                .unwrap()
-                .shape;
-            let cut = ogeom::boolean::cut(&mut model, &block, &drill, T).unwrap();
-            std::hint::black_box(&cut.shape);
-        }),
-    ));
+                Frame::new(Point::new(dx, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+            ogeom::algo::make_box(&mut model, frame, (1.0, 1.0, 1.0), T).unwrap();
+        }
+        std::hint::black_box(&model);
+    }))
+}
 
-    // The boolean with many faces in play: a block drilled four times, then
-    // cut by a torus. The classifier is asked once per face piece and asks
-    // the *other* solid's every face, so this is where that product shows.
-    out.push((
-        "boolean_many_faces",
-        median(5, || {
-            let mut model = Model::new();
-            let mut block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
-                .unwrap()
-                .shape;
-            for (x, y) in [(5.0, 5.0), (15.0, 5.0), (5.0, 15.0), (15.0, 15.0)] {
-                let frame =
-                    Frame::new(Point::new(x, y, -1.0), Direction::Z, Direction::X, T).unwrap();
-                let drill = ogeom::algo::make_cylinder(&mut model, frame, 2.0, 12.0, T)
-                    .unwrap()
-                    .shape;
-                block = ogeom::boolean::cut(&mut model, &block, &drill, T)
-                    .unwrap()
-                    .shape;
-            }
-            std::hint::black_box(&block);
-        }),
-    ));
+/// Traversal: exploring a box's sub-shapes, ten thousand times.
+fn traverse_box() -> Option<Stats> {
+    let mut model = Model::new();
+    let solid = ogeom::algo::make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T)
+        .unwrap()
+        .shape;
+    Some(time(|| {
+        for _ in 0..10_000 {
+            let faces = explore_unique(&model, &solid, ShapeType::Face).unwrap();
+            std::hint::black_box(faces.len());
+        }
+    }))
+}
 
-    // A local edit to a large solid: a short drill into one side of a plate
-    // with a few hundred holes, and a slot across its top between two rows
-    // of them. The tool touches a face or two; what the boolean costs past
-    // that is what it spends on the faces the tool never reaches.
-    {
+/// Tessellation: a torus at the default deflection.
+fn tessellate_torus() -> Option<Stats> {
+    Some(time(|| {
         let mut model = Model::new();
-        let (rows, pitch) = (15_u32, 6.0);
-        let size = 8.0 + pitch * f64::from(rows);
-        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (size, size, 5.0), T)
+        let solid = ogeom::algo::make_torus(&mut model, Frame::WORLD, 20.0, 5.0, T)
             .unwrap()
             .shape;
-        let mut pins = Vec::new();
-        for i in 0..rows {
-            for j in 0..rows {
-                let at = Point::new(8.0 + pitch * f64::from(i), 8.0 + pitch * f64::from(j), -1.0);
-                let frame = Frame::new(at, Direction::Z, Direction::X, T).unwrap();
-                pins.push(
-                    ogeom::algo::make_cylinder(&mut model, frame, 1.0, 7.0, T)
+        let done = ogeom::mesh::tessellate(&mut model, &solid, Deflection::default(), T).unwrap();
+        std::hint::black_box(done.triangles);
+    }))
+}
+
+/// The boolean: the drilled box.
+fn boolean_drill() -> Option<Stats> {
+    Some(time(|| {
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let frame =
+            Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+        let drill = ogeom::algo::make_cylinder(&mut model, frame, 3.0, 12.0, T)
+            .unwrap()
+            .shape;
+        let cut = ogeom::boolean::cut(&mut model, &block, &drill, T).unwrap();
+        std::hint::black_box(&cut.shape);
+    }))
+}
+
+/// The boolean with many faces in play: a block drilled four times. The
+/// classifier is asked once per face piece and asks the *other* solid's
+/// every face, so this is where that product shows.
+fn boolean_many_faces() -> Option<Stats> {
+    Some(time(|| {
+        let mut model = Model::new();
+        let mut block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        for (x, y) in [(5.0, 5.0), (15.0, 5.0), (5.0, 15.0), (15.0, 15.0)] {
+            let frame = Frame::new(Point::new(x, y, -1.0), Direction::Z, Direction::X, T).unwrap();
+            let drill = ogeom::algo::make_cylinder(&mut model, frame, 2.0, 12.0, T)
+                .unwrap()
+                .shape;
+            block = ogeom::boolean::cut(&mut model, &block, &drill, T)
+                .unwrap()
+                .shape;
+        }
+        std::hint::black_box(&block);
+    }))
+}
+
+/// A local edit to a large solid: a short drill into one side of a plate
+/// with a few hundred holes, and a slot across its top between two rows of
+/// them. The tool touches a face or two; what the boolean costs past that
+/// is what it spends on the faces the tool never reaches.
+fn boolean_local() -> Option<Stats> {
+    let mut model = Model::new();
+    let (rows, pitch) = (15_u32, 6.0);
+    let size = 8.0 + pitch * f64::from(rows);
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (size, size, 5.0), T)
+        .unwrap()
+        .shape;
+    let mut pins = Vec::new();
+    for i in 0..rows {
+        for j in 0..rows {
+            let at = Point::new(8.0 + pitch * f64::from(i), 8.0 + pitch * f64::from(j), -1.0);
+            let frame = Frame::new(at, Direction::Z, Direction::X, T).unwrap();
+            pins.push(
+                ogeom::algo::make_cylinder(&mut model, frame, 1.0, 7.0, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+    }
+    let pins = model.add_compound(&pins).unwrap();
+    let plate = ogeom::boolean::cut(&mut model, &block, &pins, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(-1.0, 5.0, 2.5), Direction::X, Direction::Y, T).unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, frame, 1.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(-1.0, 10.5, 2.5), Direction::Z, Direction::X, T).unwrap();
+    let slot = ogeom::algo::make_box(&mut model, frame, (size + 2.0, 2.0, 3.5), T)
+        .unwrap()
+        .shape;
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            for tool in [&drill, &slot] {
+                let cut = ogeom::boolean::cut(&mut model, &plate, tool, T).unwrap();
+                std::hint::black_box(&cut.shape);
+            }
+        },
+    ))
+}
+
+/// The boolean with no closed form: crossed cylinders, whose sections only
+/// the marcher can trace. `boolean_drill` is analytic end to end and never
+/// reaches that machinery.
+fn boolean_marched() -> Option<Stats> {
+    Some(time(|| {
+        let mut model = Model::new();
+        let upright = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 1.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(Point::new(-2.0, 0.0, 2.0), Direction::X, Direction::Y, T).unwrap();
+        let across = ogeom::algo::make_cylinder(&mut model, frame, 0.6, 4.0, T)
+            .unwrap()
+            .shape;
+        let both = ogeom::boolean::fuse(&mut model, &upright, &across, T).unwrap();
+        std::hint::black_box(&both.shape);
+    }))
+}
+
+/// A constant-radius fillet on one edge of a box: the blend machinery.
+fn fillet_block() -> Option<Stats> {
+    Some(time(|| {
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+        let rolled = ogeom::fillet::fillet_edges(&mut model, &block, &edges[..1], 1.0, T).unwrap();
+        std::hint::black_box(&rolled.shape);
+    }))
+}
+
+/// All twelve edges of a box filleted at once: the corners where three
+/// blends meet.
+fn fillet_box_all() -> Option<Stats> {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let rolled = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 1.0, T).unwrap();
+            std::hint::black_box(&rolled.shape);
+        },
+    ))
+}
+
+/// A fillet no closed form speaks: the elliptical seat of a post leaning
+/// twenty degrees out of a slab, rolled by the marched blend.
+fn fillet_marched() -> Option<Stats> {
+    let mut model = Model::new();
+    let slab = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let lean = 20.0_f64.to_radians();
+    let axis = Vector::new(lean.sin(), 0.0, lean.cos());
+    let frame = Frame::new(
+        Point::new(10.0, 10.0, -1.0),
+        Direction::new(axis, T).unwrap(),
+        Direction::from_cross(axis, Vector::Y, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let post = ogeom::algo::make_cylinder(&mut model, frame, 3.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let joined = ogeom::boolean::fuse(&mut model, &slab, &post, T)
+        .unwrap()
+        .shape;
+    // The seat is the elliptical edge on the slab's top; the post pierces
+    // the slab, so its bottom carries a second ellipse.
+    let seat = explore_unique(&model, &joined, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let elliptical = model
+                .node(e)
+                .and_then(|n| n.data().as_edge())
+                .and_then(|d| d.curve3d())
+                .and_then(|r| match r {
+                    ogeom::topo::EdgeRepr::Curve3d { curve, .. } => model.geometry().curve(*curve),
+                    _ => None,
+                })
+                .is_some_and(|c| matches!(c, ogeom::geom::Curve::Ellipse(_)));
+            elliptical
+                && ogeom::algo::edge_vertices(&model, e)
+                    .unwrap()
+                    .and_then(|(a, _)| model.node(&a)?.data().as_vertex().map(|d| d.point))
+                    .is_some_and(|p| (p.z - 2.0).abs() < 1e-6)
+        })?;
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let rolled = ogeom::fillet::fillet_edge(&mut model, &joined, &seat, 1.0, T).unwrap();
+            std::hint::black_box(&rolled.shape);
+        },
+    ))
+}
+
+/// Whole-shape tessellation of a real imported part, whose faces are not
+/// all analytic. A primitive will not do: a torus answers from its closed
+/// form.
+fn tessellate_part() -> Option<Stats> {
+    let (document, solid) = corpus_part(PART)?;
+    Some(time(|| {
+        let mesh = ogeom::mesh::triangulate(
+            document.model(),
+            &solid,
+            Deflection::with_chord(1e-2).unwrap(),
+            T,
+        )
+        .unwrap();
+        std::hint::black_box(mesh.triangles.len());
+    }))
+}
+
+/// Mass properties of the largest corpus part on the exact path: each face
+/// integrated on its own surface, at the default deflection.
+fn mass_part() -> Option<Stats> {
+    let (document, solid) = corpus_part(LARGE_PART)?;
+    Some(time(|| {
+        let props =
+            ogeom::algo::volume_properties(document.model(), &solid, Deflection::default(), T)
+                .unwrap();
+        std::hint::black_box(props.mass);
+    }))
+}
+
+/// The validity check over the largest corpus part.
+fn check_part() -> Option<Stats> {
+    let (document, solid) = corpus_part(LARGE_PART)?;
+    Some(time(|| {
+        let diagnosis = ogeom::algo::check(document.model(), &solid, T).unwrap();
+        std::hint::black_box(diagnosis.is_valid());
+    }))
+}
+
+/// Shape healing over the largest corpus part, on a fresh copy of its model each
+/// time.
+fn fix_shape_part() -> Option<Stats> {
+    let (document, solid) = corpus_part(LARGE_PART)?;
+    let model = document.model().clone();
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let fixed = ogeom::heal::fix_shape(&mut model, &solid, T).unwrap();
+            std::hint::black_box(&fixed.shape);
+        },
+    ))
+}
+
+/// Sewing the faces of a closed shell: a cube of side 16 whose every side
+/// is a 16 by 16 grid of unit squares, each built as its own face with its
+/// own edges and vertices, so 1536 faces with 3072 edge pairs to find.
+fn sew_shell() -> Option<Stats> {
+    const N: i32 = 16;
+    let mut model = Model::new();
+    let mut faces = Vec::new();
+    let half = f64::from(N) / 2.0;
+    // Each side's outward normal, and an in-plane axis along the grid.
+    for (normal, a) in [
+        (Vector::X, Vector::Y),
+        (-Vector::X, Vector::Y),
+        (Vector::Y, Vector::Z),
+        (-Vector::Y, Vector::Z),
+        (Vector::Z, Vector::X),
+        (-Vector::Z, Vector::X),
+    ] {
+        let n = Direction::new(normal, T).unwrap();
+        let b = normal.cross(a);
+        let centre = Point::ORIGIN + normal * half;
+        let plane = Plane::through(centre, n);
+        for i in 0..N {
+            for j in 0..N {
+                let corner = |di: i32, dj: i32| {
+                    centre + a * (f64::from(i + di) - half) + b * (f64::from(j + dj) - half)
+                };
+                let ring = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+                let wire = ogeom::algo::make_polygon(&mut model, &ring, true, T)
+                    .unwrap()
+                    .shape;
+                faces.push(
+                    ogeom::algo::make_face(&mut model, PlaneSurface::new(plane).into(), &[wire], T)
                         .unwrap()
                         .shape,
                 );
             }
         }
-        let pins = model.add_compound(&pins).unwrap();
-        let plate = ogeom::boolean::cut(&mut model, &block, &pins, T)
-            .unwrap()
-            .shape;
-        let frame = Frame::new(Point::new(-1.0, 5.0, 2.5), Direction::X, Direction::Y, T).unwrap();
-        let drill = ogeom::algo::make_cylinder(&mut model, frame, 1.0, 4.0, T)
-            .unwrap()
-            .shape;
-        let frame = Frame::new(Point::new(-1.0, 10.5, 2.5), Direction::Z, Direction::X, T).unwrap();
-        let slot = ogeom::algo::make_box(&mut model, frame, (size + 2.0, 2.0, 3.5), T)
-            .unwrap()
-            .shape;
-        out.push((
-            "boolean_local",
-            median(5, || {
-                for tool in [&drill, &slot] {
-                    let cut = ogeom::boolean::cut(&mut model, &plate, tool, T).unwrap();
-                    std::hint::black_box(&cut.shape);
-                }
-            }),
-        ));
     }
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let sewn = ogeom::algo::sew(&mut model, &faces, T).unwrap();
+            assert!(sewn.free_edges.is_empty());
+            std::hint::black_box(&sewn.shells);
+        },
+    ))
+}
 
-    // The boolean with no closed form: crossed cylinders, whose sections only
-    // the marcher can trace. `boolean_drill` is analytic end to end and never
-    // reaches that machinery.
-    out.push((
-        "boolean_marched",
-        median(5, || {
-            let mut model = Model::new();
-            let upright = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 1.0, 4.0, T)
-                .unwrap()
-                .shape;
-            let frame =
-                Frame::new(Point::new(-2.0, 0.0, 2.0), Direction::X, Direction::Y, T).unwrap();
-            let across = ogeom::algo::make_cylinder(&mut model, frame, 0.6, 4.0, T)
-                .unwrap()
-                .shape;
-            let both = ogeom::boolean::fuse(&mut model, &upright, &across, T).unwrap();
-            std::hint::black_box(&both.shape);
-        }),
-    ));
+/// A b-rep from a mesh: an imported part tessellated, then rebuilt with
+/// its planes, cylinders and other surfaces recognized.
+fn mesh_to_solid() -> Option<Stats> {
+    let (document, solid) = corpus_part(PART)?;
+    let mesh = ogeom::mesh::triangulate(document.model(), &solid, Deflection::default(), T).ok()?;
+    let options = ogeom::algo::MeshSolidOptions::default();
+    Some(time(|| {
+        let mut model = Model::new();
+        let built = ogeom::algo::solid_from_mesh(&mut model, &mesh, &options, T).unwrap();
+        std::hint::black_box(&built);
+    }))
+}
 
-    // A constant-radius fillet: the blend machinery.
-    out.push((
-        "fillet_block",
-        median(5, || {
-            let mut model = Model::new();
-            let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
-                .unwrap()
-                .shape;
-            let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
-            let rolled =
-                ogeom::fillet::fillet_edges(&mut model, &block, &edges[..1], 1.0, T).unwrap();
-            std::hint::black_box(&rolled.shape);
-        }),
-    ));
+/// The view both hidden-line benchmarks draw from: down a body diagonal.
+fn diagonal_view() -> ogeom::hlr::View {
+    ogeom::hlr::View::looking(Vector::new(-1.0, -1.0, -1.0), Vector::Z, T).unwrap()
+}
 
-    // Whole-shape tessellation of a real imported part: the sequential face
-    // loop that mass properties falls into whenever a face is not analytic,
-    // which is guaranteed on an imported b-rep. A primitive will not do:
-    // a torus answers from its closed form and never meshes at all.
-    {
-        let path = format!(
-            "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        if let Ok(text) = std::fs::read_to_string(&path)
-            && let Ok(import) = ogeom::io::read_step(&text, T)
-            && let Some(solid) = import.solids.first().cloned()
-        {
-            let model = import.document;
-            out.push((
-                "tessellate_part",
-                median(5, || {
-                    let mesh = ogeom::mesh::triangulate(
-                        model.model(),
-                        &solid,
-                        Deflection::with_chord(1e-2).unwrap(),
-                        T,
-                    )
+/// Hidden lines on an imported part with exact silhouettes and visibility.
+fn hlr_exact() -> Option<Stats> {
+    let (document, solid) = corpus_part(PART)?;
+    let view = diagonal_view();
+    Some(time(|| {
+        let drawing = ogeom::hlr::exact::project_exact(
+            document.model(),
+            &solid,
+            &view,
+            Deflection::default(),
+            T,
+        )
+        .unwrap();
+        std::hint::black_box(&drawing);
+    }))
+}
+
+/// Hidden lines on the same part against its tessellation.
+fn hlr_mesh() -> Option<Stats> {
+    let (document, solid) = corpus_part(PART)?;
+    let view = diagonal_view();
+    Some(time(|| {
+        let drawing =
+            ogeom::hlr::project(document.model(), &solid, &view, Deflection::default(), T).unwrap();
+        std::hint::black_box(&drawing);
+    }))
+}
+
+/// A B-spline face thickened both ways: the saddle z = (x^2 - y^2) / 20
+/// over [-5, 5]^2, fitted as a cubic and bounded by its border iso-curves.
+fn thick_spline() -> Option<Stats> {
+    let mut model = Model::new();
+    let n = 21;
+    let rows: Vec<Vec<Point>> = (0..n)
+        .map(|j| {
+            let y = -5.0 + 10.0 * f64::from(j) / f64::from(n - 1);
+            (0..n)
+                .map(|i| {
+                    let x = -5.0 + 10.0 * f64::from(i) / f64::from(n - 1);
+                    Point::new(x, y, (x * x - y * y) / 20.0)
+                })
+                .collect()
+        })
+        .collect();
+    let surface = ogeom::geom::fit::fit_surface_grid(&rows, 3, 1e-6, T)
+        .ok()?
+        .curve;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let v: Vec<Shape> = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+        .iter()
+        .map(|(u, w)| {
+            let at = surface.point_at(*u, *w, T).unwrap();
+            ogeom::algo::make_vertex(&mut model, at).shape
+        })
+        .collect();
+    let mut iso = |curve: ogeom::geom::BSplineCurve, from: &Shape, to: &Shape| {
+        let range = curve.domain();
+        ogeom::algo::make_edge_between(&mut model, curve.into(), range, from, to, T)
+            .unwrap()
+            .shape
+    };
+    let south = iso(surface.iso_v_curve(v0, T).unwrap(), &v[0], &v[1]);
+    let east = iso(surface.iso_u_curve(u1, T).unwrap(), &v[1], &v[2]);
+    let north = iso(surface.iso_v_curve(v1, T).unwrap(), &v[3], &v[2]);
+    let west = iso(surface.iso_u_curve(u0, T).unwrap(), &v[0], &v[3]);
+    let wires = [vec![south, east, north.reversed(), west.reversed()]];
+    let face = ogeom::algo::make_face_with_pcurves(&mut model, surface.into(), &wires, T)
+        .unwrap()
+        .shape;
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let solid = ogeom::offset::make_thick_sheet(&mut model, &face, 0.8, true, T).unwrap();
+            std::hint::black_box(&solid.shape);
+        },
+    ))
+}
+
+fn circle_wire(model: &mut Model, frame: Frame, radius: f64) -> Shape {
+    let circle = Circle::new(frame, radius, T).unwrap();
+    let edge = ogeom::algo::make_edge(
+        model,
+        CircleCurve::new(circle).into(),
+        (0.0, std::f64::consts::TAU),
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom::algo::make_wire(model, &[edge], T).unwrap().shape
+}
+
+/// A pipe through two circular sections, radius 2 then 3, down a line.
+fn pipe_circles() -> Option<Stats> {
+    let mut model = Model::new();
+    let along = Point::new(0.0, 20.0, 0.0);
+    let small = circle_wire(
+        &mut model,
+        Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap(),
+        2.0,
+    );
+    let large = circle_wire(
+        &mut model,
+        Frame::new(along, Direction::Y, Direction::X, T).unwrap(),
+        3.0,
+    );
+    let spine = ogeom::algo::make_polygon(&mut model, &[Point::ORIGIN, along], false, T)
+        .unwrap()
+        .shape;
+    let sections = [small, large];
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let pipe =
+                ogeom::offset::make_pipe_sections(&mut model, &sections, &spine, false, 1e-3, T)
                     .unwrap();
-                    std::hint::black_box(mesh.triangles.len());
-                }),
-            ));
+            std::hint::black_box(&pipe.shape);
+        },
+    ))
+}
+
+/// A square swept down a line, turned by a guide beside it: the section's
+/// axis points where the guide crosses each station's plane.
+fn pipe_guided() -> Option<Stats> {
+    let mut model = Model::new();
+    let square =
+        [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(x, z)| Point::new(x, 0.0, z));
+    let wire = ogeom::algo::make_polygon(&mut model, &square, true, T)
+        .unwrap()
+        .shape;
+    let plane = Plane::new(Frame::new(Point::ORIGIN, -Direction::Y, Direction::X, T).unwrap());
+    let profile = ogeom::algo::make_face(&mut model, PlaneSurface::new(plane).into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let spine = ogeom::algo::make_polygon(
+        &mut model,
+        &[Point::ORIGIN, Point::new(0.0, 20.0, 0.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let guide = ogeom::algo::make_polygon(
+        &mut model,
+        &[Point::new(5.0, 0.0, 0.0), Point::new(0.0, 20.0, 5.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let pipe = ogeom::offset::make_pipe_shell_with(
+                &mut model,
+                &profile,
+                &spine,
+                &ogeom::offset::PipeLaw::Auxiliary { guide: &guide },
+                ogeom::offset::PipeCorners::Mitre,
+                1e-3,
+                T,
+            )
+            .unwrap();
+            std::hint::black_box(&pipe.shape);
+        },
+    ))
+}
+
+/// Import: the smallest NIST corpus part, read and healed.
+fn import_ftc11() -> Option<Stats> {
+    let text = corpus(PART)?;
+    Some(time(|| {
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        std::hint::black_box(import.solids.len());
+    }))
+}
+
+/// Import: the largest corpus part, so the reader is measured at a size the
+/// smallest file cannot show.
+fn import_ctc02() -> Option<Stats> {
+    let text = corpus(LARGE_PART)?;
+    Some(time(|| {
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        std::hint::black_box(import.solids.len());
+    }))
+}
+
+/// STEP export of the largest corpus part.
+fn step_write() -> Option<Stats> {
+    let import = ogeom::io::read_step(&corpus(LARGE_PART)?, T).ok()?;
+    Some(time(|| {
+        let text = ogeom::io::write_step(&import.document, T).unwrap();
+        std::hint::black_box(text.len());
+    }))
+}
+
+/// IGES import of the largest corpus part, written as IGES by the kernel first: the
+/// corpus has no IGES file of its own.
+fn iges_read() -> Option<Stats> {
+    let (document, _) = corpus_part(LARGE_PART)?;
+    let text = ogeom::io::write_iges(&document, T).ok()?;
+    Some(time(|| {
+        let import = ogeom::io::read_iges(&text, T).unwrap();
+        std::hint::black_box(import.solids.len());
+    }))
+}
+
+/// A closed torus mesh of a million triangles, 1000 by 500 quads, each
+/// triangle with its own three vertices as an STL file holds them.
+fn torus_soup() -> Triangulation {
+    let (around, across) = (1000_u32, 500_u32);
+    let at = |i: u32, j: u32| {
+        let u = std::f64::consts::TAU * f64::from(i % around) / f64::from(around);
+        let v = std::f64::consts::TAU * f64::from(j % across) / f64::from(across);
+        let r = 40.0 + 10.0 * v.cos();
+        Point::new(r * u.cos(), r * u.sin(), 10.0 * v.sin())
+    };
+    let mut mesh = Triangulation::new();
+    for i in 0..around {
+        for j in 0..across {
+            let quad = [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)];
+            for corners in [[0, 1, 2], [0, 2, 3]] {
+                #[allow(clippy::cast_possible_truncation)]
+                let first = mesh.positions.len() as u32;
+                mesh.positions.extend(corners.map(|c| quad[c]));
+                mesh.triangles.push([first, first + 1, first + 2]);
+            }
         }
     }
+    mesh
+}
 
-    // Import: the smallest corpus part, read and healed.
-    {
-        let path = format!(
-            "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            out.push((
-                "import_ftc11",
-                median(3, || {
-                    let import = ogeom::io::read_step(&text, T).unwrap();
-                    std::hint::black_box(import.solids.len());
-                }),
-            ));
-        }
-    }
+/// Welding a million-triangle soup into a closed mesh.
+fn weld_1m() -> Option<Stats> {
+    let soup = torus_soup();
+    Some(time(|| {
+        let welded = soup.welded(T);
+        std::hint::black_box(welded.positions.len());
+    }))
+}
 
-    // Import: the largest corpus part, so the reader is measured at a size
-    // the smallest file cannot show.
-    {
-        let path = format!(
-            "{}/../../tests/corpus/nist_ctc_02_asme1_rc.stp",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            out.push((
-                "import_ctc02",
-                median(3, || {
-                    let import = ogeom::io::read_step(&text, T).unwrap();
-                    std::hint::black_box(import.solids.len());
-                }),
-            ));
-        }
-    }
+/// Reading a million-triangle binary STL: parse and weld.
+fn stl_read_1m() -> Option<Stats> {
+    let bytes = ogeom::io::write(&torus_soup(), ogeom::io::Encoding::Binary).ok()?;
+    Some(time(|| {
+        let mesh = ogeom::io::read(&bytes, T).unwrap();
+        std::hint::black_box(mesh.triangles.len());
+    }))
+}
 
-    out
+/// The value recorded for `key` in a baseline: a `"key": number` line.
+fn recorded(baseline: &str, key: &str) -> Option<f64> {
+    baseline.lines().find_map(|line| {
+        let line = line.trim().trim_end_matches(',');
+        let (name, value) = line.split_once(':')?;
+        (name.trim().trim_matches('"') == key).then(|| value.trim().parse::<f64>().ok())?
+    })
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let spin = calibration();
-    let results = benchmarks();
+    let mut threads = None;
+    let mut filter = String::new();
+    let mut check = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--threads" => {
+                threads = Some(
+                    args.next()
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .filter(|&n| n > 0)
+                        .expect("--threads takes a positive count"),
+                );
+            }
+            "--filter" => filter = args.next().expect("--filter takes a name fragment"),
+            "--check" => check = Some(args.next().expect("--check takes a baseline file")),
+            other => panic!("unknown argument {other}; see the crate documentation"),
+        }
+    }
+    let baseline = check
+        .as_ref()
+        .map(|path| std::fs::read_to_string(path).expect("baseline file"));
+    let baseline_threads = baseline.as_deref().and_then(|b| recorded(b, "threads"));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    if let Some(count) = threads.or(baseline_threads.map(|t| t as usize)) {
+        ogeom::core::parallel::set_threads(count);
+    }
+    let running = ogeom::core::parallel::threads();
 
-    if args.len() >= 3 && args[1] == "--check" {
-        let baseline = std::fs::read_to_string(&args[2]).expect("baseline file");
-        println!("name              now(ms)   ratio    baseline  drift");
-        for (name, seconds) in &results {
-            let ratio = seconds / spin;
-            let recorded = baseline.lines().find_map(|line| {
-                let line = line.trim().trim_end_matches(',');
-                let (key, value) = line.split_once(':')?;
-                (key.trim().trim_matches('"') == *name).then(|| value.trim().parse::<f64>().ok())?
-            });
-            match recorded {
-                Some(base) => println!(
-                    "{name:<18}{:>8.2}{ratio:>8.2}{base:>10.2}  {:>+6.1}%",
-                    seconds * 1e3,
-                    (ratio / base - 1.0) * 100.0
-                ),
-                None => println!("{name:<18}{:>8.2}{ratio:>8.2}       new", seconds * 1e3),
+    // The spin before and after, the faster kept: a burst of load during
+    // one of them does not skew every ratio.
+    let before = calibration();
+    let mut results = Vec::new();
+    for (name, bench) in benchmarks() {
+        if name.contains(filter.as_str())
+            && let Some(stats) = bench()
+        {
+            results.push((name, stats));
+        }
+    }
+    let spin = before.min.min(calibration().min);
+
+    eprintln!("{running} threads; calibration spin {:.2} ms", spin * 1e3);
+    if baseline.is_some() {
+        #[allow(clippy::cast_precision_loss)]
+        if baseline_threads.is_some_and(|t| t != running as f64) {
+            eprintln!("the baseline was recorded at another thread count: ratios do not compare");
+        }
+        println!("name                min(ms)  med(ms)  mad(ms)   n   ratio  baseline   drift");
+    } else {
+        println!("{{");
+        let comma = if results.is_empty() { "" } else { "," };
+        println!("  \"threads\": {running}{comma}");
+        eprintln!("name                min(ms)  med(ms)  mad(ms)   n   ratio");
+    }
+    for (i, (name, s)) in results.iter().enumerate() {
+        let ratio = s.min / spin;
+        let row = format!(
+            "{name:<18}{:>9.2}{:>9.2}{:>9.2}{:>5}{ratio:>8.3}",
+            s.min * 1e3,
+            s.median * 1e3,
+            s.mad * 1e3,
+            s.samples
+        );
+        match &baseline {
+            Some(baseline) => match recorded(baseline, name) {
+                Some(base) => {
+                    println!("{row}{base:>10.3}  {:>+6.1}%", (ratio / base - 1.0) * 100.0)
+                }
+                None => println!("{row}       new"),
+            },
+            None => {
+                let comma = if i + 1 == results.len() { "" } else { "," };
+                println!("  \"{name}\": {ratio:.4}{comma}");
+                eprintln!("{row}");
             }
         }
-        return;
     }
-
-    // Plain run: print, and emit the baseline JSON to stdout on request.
-    eprintln!("calibration spin: {:.2} ms", spin * 1e3);
-    println!("{{");
-    for (i, (name, seconds)) in results.iter().enumerate() {
-        let comma = if i + 1 == results.len() { "" } else { "," };
-        println!("  \"{name}\": {:.4}{comma}", seconds / spin);
-        eprintln!(
-            "{name:<18}{:>8.2} ms  (x{:.2} spin)",
-            seconds * 1e3,
-            seconds / spin
-        );
+    if baseline.is_none() {
+        println!("}}");
     }
-    println!("}}");
 }
