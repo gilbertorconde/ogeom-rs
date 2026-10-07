@@ -106,6 +106,8 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         pole_vertices: Vec::new(),
         trim_poles: Vec::new(),
         vertex_misses: (0, 0.0),
+        images: FastMap::default(),
+        face_de: None,
         depth: 0,
         tol,
     };
@@ -304,6 +306,13 @@ struct Reader<'a> {
     /// Vertices a curve end missed by more than the confusion tolerance
     /// and that widened to cover it: how many, and the widest miss.
     vertex_misses: (usize, f64),
+    /// Edge images derived ahead of the face walk, by the face (510) that
+    /// wants them and the bits of the edge's range, each with the curve
+    /// it was derived for: [`Reader::image_of`] takes one whose curve is
+    /// the edge's, and derives any other itself.
+    images: FastMap<(i64, u64, u64), Vec<(Curve, DerivedImage)>>,
+    /// The face (510) being built, whose prepared images apply.
+    face_de: Option<i64>,
     /// How many curve, surface or shell builders are open on the stack.
     /// Entities refer to entities of their own kind (a composite curve to
     /// its pieces, an offset surface to its basis), so a file that refers
@@ -2032,58 +2041,111 @@ impl<'a> Reader<'a> {
         range: (f64, f64),
         surface: &SurfaceGeometry,
     ) -> OgeomResult<Option<ogeom_geom::PlanarCurve>> {
-        use ogeom_geom::PlanarCurve;
-        let widen = |p: PlanarCurve| -> PlanarCurve {
-            if let PlanarCurve::Line(l) = &p {
-                use ogeom_geom::Curve2d as _;
-                let (lo, hi) = (l.domain().0.min(range.0), l.domain().1.max(range.1));
-                if let Ok(wider) = ogeom_geom::Line2d::over(l.axis(), lo, hi) {
-                    return wider.into();
+        let prepared = self.face_de.and_then(|face| {
+            let key = (face, range.0.to_bits(), range.1.to_bits());
+            let slot = self.images.get_mut(&key)?;
+            let at = slot.iter().position(|(c, _)| c == curve)?;
+            Some(slot.swap_remove(at).1)
+        });
+        let (found, effects) =
+            prepared.unwrap_or_else(|| derive_image(curve, range, surface, self.tol));
+        for effect in effects {
+            match effect {
+                Effect::Warn(warning) => self.report.warnings.push(warning),
+                Effect::Gap(off) => self.state_gap(edge, off)?,
+            }
+        }
+        Ok(found)
+    }
+
+    /// Derive, in parallel, the image of every edge of these faces (510)
+    /// on its face's surface, for [`Self::image_of`] to take as the walk
+    /// reaches it.
+    ///
+    /// Deriving one is a pure function of a curve, its range and a
+    /// surface, and it is most of the time spent building faces. What is
+    /// read to find the jobs leaves no trace: an edge not yet built is
+    /// resolved from the file without building it, and the warnings and
+    /// visits that reading makes are dropped, to be made again by the walk
+    /// in its own order. Best-effort: what this cannot resolve, or
+    /// resolves to another curve than the walk finds, the walk derives.
+    fn prepare_images(&mut self, face_des: &[i64]) {
+        let warned = self.report.warnings.len();
+        let visited = self.visited.clone();
+        let mut surfaces: Vec<SurfaceGeometry> = Vec::new();
+        let mut jobs: Vec<(i64, usize, Curve, (f64, f64))> = Vec::new();
+        let mut seen: ogeom_core::FastSet<(i64, i64, i64)> = ogeom_core::FastSet::default();
+        for &face_de in face_des {
+            let Ok(entity) = self.entity(face_de) else {
+                continue;
+            };
+            if entity.kind != 510 {
+                continue;
+            }
+            let Ok(surface) = self.surface(entity.at(0).int()) else {
+                continue;
+            };
+            surfaces.push(surface);
+            let at = surfaces.len() - 1;
+            for i in 0..entity.count(1) {
+                let Ok(entries) = self.loop_entries(entity.at(3 + i).int()) else {
+                    continue;
+                };
+                for (list_de, index, _) in entries.into_iter().flatten() {
+                    if !seen.insert((face_de, list_de, index)) {
+                        continue;
+                    }
+                    for (curve, range) in self.edge_geometry(list_de, index) {
+                        jobs.push((face_de, at, curve, range));
+                    }
                 }
             }
-            p
+        }
+        self.report.warnings.truncate(warned);
+        self.visited = visited;
+        // Below a handful of edges the threads cost more than the work.
+        if jobs.len() < 16 {
+            return;
+        }
+        let tol = self.tol;
+        let derived = ogeom_core::parallel::map_ordered(&jobs, |_, (_, at, curve, range)| {
+            derive_image(curve, *range, &surfaces[*at], tol)
+        });
+        for ((face, _, curve, range), image) in jobs.into_iter().zip(derived) {
+            self.images
+                .entry((face, range.0.to_bits(), range.1.to_bits()))
+                .or_default()
+                .push((curve, image));
+        }
+    }
+
+    /// The curves and ranges edge `index` of an edge list (504) is built
+    /// on: its pieces' where it was cut at poles, its own where it is
+    /// built, and otherwise as [`Self::list_edge`] would build it. Empty
+    /// where the file cannot say.
+    fn edge_geometry(&mut self, list_de: i64, index: i64) -> Vec<(Curve, (f64, f64))> {
+        let key = (list_de, index);
+        let built: Vec<Shape> = match (self.pieces.get(&key), self.edges.get(&key)) {
+            (Some(pieces), _) => pieces.clone(),
+            (None, Some((edge, ..))) => vec![edge.clone()],
+            (None, None) => {
+                return self
+                    .edge_on_file(list_de, index)
+                    .map(|(curve, range, ..)| vec![(curve, range)])
+                    .unwrap_or_default();
+            }
         };
-        let found = match ogeom_intersect::exact_pcurve_over(curve, range, surface, self.tol)
-            .map(widen)
-        {
-            Some(exact) => exact,
-            None => match crate::pcurves::fit_projected_pcurve(curve, range, surface, self.tol) {
-                Ok((fitted, error, met, worst_off, slop)) => {
-                    if let Some(w) = slop {
-                        self.report.warnings.push(w);
-                    }
-                    if !met {
-                        self.report.warnings.push(format!(
-                            "a projected pcurve fit stopped at {error:.2e}; \
-                             the face's mesh may sit that far off along this edge"
-                        ));
-                    }
-                    self.state_gap(edge, worst_off)?;
-                    fitted
-                }
-                Err(e) => {
-                    self.report.warnings.push(format!(
-                        "no pcurve for an edge on this surface ({e}); the \
-                         face may not triangulate"
-                    ));
-                    return Ok(None);
-                }
-            },
-        };
-        // The edge provably stands this far from the face it bounds, whether
-        // the curve lies off the surface or a fit strays between its
-        // samples. A pcurve that does not evaluate over the edge's range
-        // states no gap here; the face that uses it fails on it there.
-        let off = ogeom_algo::pcurve_fit::lifted_gap(
-            (curve, range),
-            (&found, range),
-            surface,
-            false,
-            self.tol,
-        )
-        .unwrap_or(0.0);
-        self.state_gap(edge, off)?;
-        Ok(Some(found))
+        built
+            .iter()
+            .filter_map(|edge| {
+                let data = self.model.node(edge)?.data().as_edge()?;
+                let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d()
+                else {
+                    return None;
+                };
+                Some((self.model.geometry().curve(*curve)?.clone(), *range))
+            })
+            .collect()
     }
 
     /// Widen `edge` and its vertices to cover a gap it was measured to
@@ -2148,6 +2210,7 @@ impl<'a> Reader<'a> {
         let n = entity.count(0);
         let face_des: Vec<i64> = (0..n).map(|i| entity.at(1 + 2 * i).int()).collect();
         self.cut_at_poles(&face_des);
+        self.prepare_images(&face_des);
         let mut faces = Vec::with_capacity(n);
         for i in 0..n {
             let face_de = entity.at(1 + 2 * i).int();
@@ -2155,6 +2218,7 @@ impl<'a> Reader<'a> {
             let face = self.brep_face(face_de)?;
             faces.push(if same_sense { face } else { face.reversed() });
         }
+        self.images.clear();
         Ok(ogeom_algo::make_shell(&mut self.model, &faces)?.shape)
     }
 
@@ -2174,7 +2238,10 @@ impl<'a> Reader<'a> {
         for i in 0..n_loops {
             wires.push(self.loop_edges(entity.at(3 + i).int())?);
         }
-        self.assemble_face(surface, wires)
+        let outer = self.face_de.replace(de);
+        let face = self.assemble_face(surface, wires);
+        self.face_de = outer;
+        face
     }
 
     /// A loop's (508) entries in order: for an edge, its list, its index
@@ -2301,53 +2368,9 @@ impl<'a> Reader<'a> {
         if let Some(found) = self.edges.get(&key) {
             return Ok(found.clone());
         }
-        let entity = self.entity(list_de)?;
-        if entity.kind != 504 {
-            ogeom_bail!(
-                Construction,
-                "D{list_de}: expected an edge list, found type {}",
-                entity.kind
-            );
-        }
-        let i = index
-            .checked_sub(1)
-            .and_then(|i| usize::try_from(i).ok())
-            .ok_or_else(|| {
-                ogeom_core::ogeom_err!(Construction, "D{list_de}: edge index {index} out of range")
-            })?;
-        let base = 1 + 5 * i;
-        let curve_de = entity.at(base).int();
-        let (sv_list, sv_index) = (entity.at(base + 1).int(), entity.at(base + 2).int());
-        let (tv_list, tv_index) = (entity.at(base + 3).int(), entity.at(base + 4).int());
-        let (curve, mut range) = self.curve(curve_de)?;
-        let vs = self.list_vertex(sv_list, sv_index)?;
-        let ve = self.list_vertex(tv_list, tv_index)?;
-        let (ps, pe) = (self.point_of(&vs), self.point_of(&ve));
-        // Re-derive the range from the vertices on this kernel's own
-        // parameterization, exactly as the STEP reader does and for the same
-        // reason: the file's parameterization is its own business.
-        if let (Some(a), Some(b)) = (parameter_on(&curve, ps), parameter_on(&curve, pe)) {
-            let period = if curve.is_periodic() {
-                let (lo, hi) = curve.domain();
-                hi - lo
-            } else {
-                0.0
-            };
-            range = if ps.distance(pe) < self.tol.confusion() && period > 0.0 {
-                (a, a + period)
-            } else if period > 0.0 && b <= a + self.tol.parametric() {
-                (a, b + period)
-            } else {
-                (a, b)
-            };
-            // A vertex a few nanometres past a bounded curve's end projects
-            // past it: the range is held to the curve's own domain, and the
-            // vertex widens below to cover the rest of the miss.
-            if period == 0.0 {
-                let (lo, hi) = curve.domain();
-                range = (range.0.clamp(lo, hi), range.1.clamp(lo, hi));
-            }
-        }
+        let (curve, range, start, end) = self.edge_on_file(list_de, index)?;
+        let vs = self.list_vertex(start.0, start.1)?;
+        let ve = self.list_vertex(end.0, end.1)?;
         // IGES states no tolerances, so a vertex is built at the confusion
         // tolerance and a curve end that misses it by rounding (a writer's
         // last digit, a few tenths of a nanometre) would refuse the whole
@@ -2382,12 +2405,68 @@ impl<'a> Reader<'a> {
         Ok(built)
     }
 
-    /// Vertex `index` (1-based) of a vertex list (502), built once and
-    /// shared; sharing is what lets a closed shell close.
-    fn list_vertex(&mut self, list_de: i64, index: i64) -> OgeomResult<Shape> {
-        let key = (list_de, index);
-        if let Some(found) = self.vertices.get(&key) {
-            return Ok(found.clone());
+    /// Edge `index` (1-based) of an edge list (504) as the file gives it,
+    /// built into nothing: its curve, its range and the vertex list
+    /// entries it starts and ends at.
+    #[allow(clippy::type_complexity, reason = "one edge entry's parts")]
+    fn edge_on_file(
+        &mut self,
+        list_de: i64,
+        index: i64,
+    ) -> OgeomResult<(Curve, (f64, f64), (i64, i64), (i64, i64))> {
+        let entity = self.entity(list_de)?;
+        if entity.kind != 504 {
+            ogeom_bail!(
+                Construction,
+                "D{list_de}: expected an edge list, found type {}",
+                entity.kind
+            );
+        }
+        let i = index
+            .checked_sub(1)
+            .and_then(|i| usize::try_from(i).ok())
+            .ok_or_else(|| {
+                ogeom_core::ogeom_err!(Construction, "D{list_de}: edge index {index} out of range")
+            })?;
+        let base = 1 + 5 * i;
+        let curve_de = entity.at(base).int();
+        let start = (entity.at(base + 1).int(), entity.at(base + 2).int());
+        let end = (entity.at(base + 3).int(), entity.at(base + 4).int());
+        let (curve, mut range) = self.curve(curve_de)?;
+        let ps = self.vertex_point(start.0, start.1)?;
+        let pe = self.vertex_point(end.0, end.1)?;
+        // Re-derive the range from the vertices on this kernel's own
+        // parameterization, exactly as the STEP reader does and for the same
+        // reason: the file's parameterization is its own business.
+        if let (Some(a), Some(b)) = (parameter_on(&curve, ps), parameter_on(&curve, pe)) {
+            let period = if curve.is_periodic() {
+                let (lo, hi) = curve.domain();
+                hi - lo
+            } else {
+                0.0
+            };
+            range = if ps.distance(pe) < self.tol.confusion() && period > 0.0 {
+                (a, a + period)
+            } else if period > 0.0 && b <= a + self.tol.parametric() {
+                (a, b + period)
+            } else {
+                (a, b)
+            };
+            // A vertex a few nanometres past a bounded curve's end projects
+            // past it: the range is held to the curve's own domain, and the
+            // vertex widens below to cover the rest of the miss.
+            if period == 0.0 {
+                let (lo, hi) = curve.domain();
+                range = (range.0.clamp(lo, hi), range.1.clamp(lo, hi));
+            }
+        }
+        Ok((curve, range, start, end))
+    }
+
+    /// Where vertex `index` (1-based) of a vertex list (502) stands.
+    fn vertex_point(&mut self, list_de: i64, index: i64) -> OgeomResult<Point> {
+        if let Some(found) = self.vertices.get(&(list_de, index)) {
+            return Ok(self.point_of(found));
         }
         let entity = self.entity(list_de)?;
         if entity.kind != 502 {
@@ -2406,7 +2485,17 @@ impl<'a> Reader<'a> {
                     "D{list_de}: vertex index {index} out of range"
                 )
             })?;
-        let point = self.point3(entity, 1 + 3 * i);
+        Ok(self.point3(entity, 1 + 3 * i))
+    }
+
+    /// Vertex `index` (1-based) of a vertex list (502), built once and
+    /// shared; sharing is what lets a closed shell close.
+    fn list_vertex(&mut self, list_de: i64, index: i64) -> OgeomResult<Shape> {
+        let key = (list_de, index);
+        if let Some(found) = self.vertices.get(&key) {
+            return Ok(found.clone());
+        }
+        let point = self.vertex_point(list_de, index)?;
         let vertex = make_vertex(&mut self.model, point).shape;
         self.vertices.insert(key, vertex.clone());
         Ok(vertex)
@@ -3200,6 +3289,74 @@ fn first_number(text: &str) -> Option<f64> {
 
 /// A trimmed carrier where the range is a strict part of the domain: a
 /// generatrix used by a sweep is exactly its stated span.
+/// What deriving an edge's image asks of the reader besides the image: a
+/// warning to add, or a gap the edge must state, in the order they arise.
+enum Effect {
+    Warn(String),
+    Gap(f64),
+}
+
+/// An edge's image on a surface, `None` where none could be derived, and
+/// what deriving it asks of the reader.
+type DerivedImage = (Option<ogeom_geom::PlanarCurve>, Vec<Effect>);
+
+/// One edge's image on one surface, exact where the pair has a closed form
+/// and fitted where it does not: the same policy the STEP reader applies,
+/// through the shared machinery.
+fn derive_image(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> DerivedImage {
+    use ogeom_geom::PlanarCurve;
+    let widen = |p: PlanarCurve| -> PlanarCurve {
+        if let PlanarCurve::Line(l) = &p {
+            use ogeom_geom::Curve2d as _;
+            let (lo, hi) = (l.domain().0.min(range.0), l.domain().1.max(range.1));
+            if let Ok(wider) = ogeom_geom::Line2d::over(l.axis(), lo, hi) {
+                return wider.into();
+            }
+        }
+        p
+    };
+    let mut effects = Vec::new();
+    let found = match ogeom_intersect::exact_pcurve_over(curve, range, surface, tol).map(widen) {
+        Some(exact) => exact,
+        None => match crate::pcurves::fit_projected_pcurve(curve, range, surface, tol) {
+            Ok((fitted, error, met, worst_off, slop)) => {
+                if let Some(w) = slop {
+                    effects.push(Effect::Warn(w));
+                }
+                if !met {
+                    effects.push(Effect::Warn(format!(
+                        "a projected pcurve fit stopped at {error:.2e}; \
+                         the face's mesh may sit that far off along this edge"
+                    )));
+                }
+                effects.push(Effect::Gap(worst_off));
+                fitted
+            }
+            Err(e) => {
+                effects.push(Effect::Warn(format!(
+                    "no pcurve for an edge on this surface ({e}); the \
+                     face may not triangulate"
+                )));
+                return (None, effects);
+            }
+        },
+    };
+    // The edge provably stands this far from the face it bounds, whether
+    // the curve lies off the surface or a fit strays between its
+    // samples. A pcurve that does not evaluate over the edge's range
+    // states no gap here; the face that uses it fails on it there.
+    let off =
+        ogeom_algo::pcurve_fit::lifted_gap((curve, range), (&found, range), surface, false, tol)
+            .unwrap_or(0.0);
+    effects.push(Effect::Gap(off));
+    (Some(found), effects)
+}
+
 fn trimmed_to(curve: Curve, range: (f64, f64), tol: Tolerances) -> OgeomResult<Curve> {
     let (lo, hi) = curve.domain();
     if (range.0 - lo).abs() < tol.parametric() && (range.1 - hi).abs() < tol.parametric() {
@@ -3268,6 +3425,8 @@ mod tests {
             pole_vertices: Vec::new(),
             trim_poles: Vec::new(),
             vertex_misses: (0, 0.0),
+            images: FastMap::default(),
+            face_de: None,
             depth: 0,
             tol: T,
         }
