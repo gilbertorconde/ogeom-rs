@@ -150,6 +150,13 @@ edge's own vertex and can cross the hole. No measured part builds one.
 
 ### Construction and exchange
 
+**A band whose rims start on different columns gets no seam.** A cylinder
+or torus face bounded by two whole circles whose vertices stand a quarter
+or half turn apart is refused by `make_revolution_band` ("no seam could be
+synthesised") and kept on its own bounds; the STEP reader warns, and the
+face meshes through the fallback. Splitting one rim at the other's column
+would let the band take a seam.
+
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's
 pcurve where its lifted gap is within twice the projection's. A pcurve the
 file cannot state in the curve's parameter (a reversed or left-handed conic,
