@@ -2168,12 +2168,21 @@ pub fn fit_surface_sampled(
     best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the surface could not be sampled"))
 }
 
-/// The worst distance between `surface` and `point` at the quarter points
-/// of the spans of `params` (in the directions `between` says are known
-/// there), and which spans miss `tolerance`. A miss inside a cell is put
-/// down to whichever direction already misses along its sample lines
-/// through that cell's spans, and to both only where neither does: a skin
-/// that strays across its rows has no use for more samples along them.
+/// The worst distance between `surface` and `point` between the samples of
+/// `params` (in the directions `between` says are known there), and which
+/// spans miss `tolerance`.
+///
+/// Each span is read at its quarter points, along the sample lines and
+/// across them. The widest of those readings that stand above their
+/// neighbours are then each climbed to the top of their peak, within a
+/// quarter span of the reading either way, and counted a hundredth over
+/// the height climbed: a quarter point stands up to a tenth below the peak
+/// beside it where the error swells between them, and the climb a few
+/// thousandths below it at most.
+/// A miss inside a cell is put down to whichever direction already misses
+/// along its sample lines through that cell's spans, and to both only where
+/// neither does: a skin that strays across its rows has no use for more
+/// samples along them.
 #[allow(clippy::type_complexity, reason = "the error and the spans to split")]
 fn measured_between(
     point: &mut impl FnMut(f64, f64) -> OgeomResult<Point>,
@@ -2184,6 +2193,11 @@ fn measured_between(
     tol: Tolerances,
 ) -> OgeomResult<(f64, Vec<bool>, Vec<bool>)> {
     use crate::traits::Surface as _;
+    // A reading this close to the widest may stand beside a peak wider
+    // than every reading: at most `PEAKS` of them are climbed.
+    const NEAR_PEAK: f64 = 0.8;
+    const PEAKS: usize = 16;
+    const CLIMB_MARGIN: f64 = 0.01;
     let checks = |knots: &[f64], between: bool| -> Vec<(f64, Option<usize>)> {
         let mut out = Vec::with_capacity(knots.len() * 2);
         for (i, pair) in knots.windows(2).enumerate() {
@@ -2204,12 +2218,16 @@ fn measured_between(
     let mut split_v = vec![false; vs.len() - 1];
     let mut centres: Vec<(usize, usize)> = Vec::new();
     let mut error = 0.0_f64;
-    for &(v, v_span) in &v_checks {
-        for &(u, u_span) in &u_checks {
+    // Every reading, row by row of `v_checks`; a sample's own is not read
+    // here (the fit reports it), and stands as `None`.
+    let mut readings: Vec<Vec<Option<f64>>> = vec![vec![None; u_checks.len()]; v_checks.len()];
+    for (row, &(v, v_span)) in v_checks.iter().enumerate() {
+        for (column, &(u, u_span)) in u_checks.iter().enumerate() {
             if u_span.is_none() && v_span.is_none() {
                 continue;
             }
             let off = point(u, v)?.distance(surface.point_at(u, v, tol)?);
+            readings[row][column] = Some(off);
             error = error.max(off);
             if off > tolerance {
                 match (u_span, v_span) {
@@ -2218,6 +2236,109 @@ fn measured_between(
                     (None, Some(j)) => split_v[j] = true,
                     (None, None) => {}
                 }
+            }
+        }
+    }
+    // The readings standing at least as high as their eight neighbours and
+    // near the widest, widest first.
+    let read = |row: usize, column: usize| readings[row][column].unwrap_or(0.0);
+    let mut peaks: Vec<(f64, usize, usize)> = Vec::new();
+    for (row, line) in readings.iter().enumerate() {
+        for (column, reading) in line.iter().enumerate() {
+            let Some(here) = *reading else {
+                continue;
+            };
+            if here < error * NEAR_PEAK {
+                continue;
+            }
+            let mut top = true;
+            for (dr, dc) in [
+                (-1, -1),
+                (-1, 0),
+                (-1, 1),
+                (0, -1),
+                (0, 1),
+                (1, -1),
+                (1, 0),
+                (1, 1),
+            ] {
+                let (Some(r), Some(c)) =
+                    (row.checked_add_signed(dr), column.checked_add_signed(dc))
+                else {
+                    continue;
+                };
+                if r < v_checks.len() && c < u_checks.len() && read(r, c) > here {
+                    top = false;
+                }
+            }
+            if top {
+                peaks.push((here, row, column));
+            }
+        }
+    }
+    peaks.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // Climbed by golden sections along each known direction in turn, over
+    // the reading's neighbourhood. A point the geometry will not give is
+    // passed over: it is no reading.
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut off_at = |u: f64, v: f64| -> f64 {
+        match (point(u, v), surface.point_at(u, v, tol)) {
+            (Ok(p), Ok(q)) => p.distance(q),
+            _ => 0.0,
+        }
+    };
+    let reach = |checks: &[(f64, Option<usize>)], k: usize| -> (f64, f64) {
+        (
+            checks[k.saturating_sub(1)].0,
+            checks[(k + 1).min(checks.len() - 1)].0,
+        )
+    };
+    for &(_, row, column) in peaks.iter().take(PEAKS) {
+        let (mut u, mut v) = (u_checks[column].0, v_checks[row].0);
+        let mut widest = read(row, column);
+        let (u_reach, v_reach) = (reach(&u_checks, column), reach(&v_checks, row));
+        for _ in 0..3 {
+            for along_u in [true, false] {
+                if (along_u && !between.0) || (!along_u && !between.1) {
+                    continue;
+                }
+                let (mut a, mut b) = if along_u { u_reach } else { v_reach };
+                let mut at = |x: f64| if along_u { off_at(x, v) } else { off_at(u, x) };
+                for _ in 0..24 {
+                    let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+                    if at(c) > at(d) {
+                        b = d;
+                    } else {
+                        a = c;
+                    }
+                }
+                let x = f64::midpoint(a, b);
+                let found = at(x);
+                if found > widest {
+                    widest = found;
+                    if along_u {
+                        u = x;
+                    } else {
+                        v = x;
+                    }
+                }
+            }
+        }
+        // Climbed one direction at a time, a peak on a ridge running
+        // across both is left up to a few thousandths under its top; a
+        // hundredth over what was climbed covers it.
+        let widest = widest * (1.0 + CLIMB_MARGIN);
+        error = error.max(widest);
+        if widest > tolerance {
+            let span = |knots: &[f64], x: f64| {
+                knots.partition_point(|k| *k <= x).clamp(1, knots.len() - 1) - 1
+            };
+            let (i, j) = (span(us, u), span(vs, v));
+            match between {
+                (true, true) => centres.push((i, j)),
+                (true, false) => split_u[i] = true,
+                (false, true) => split_v[j] = true,
+                (false, false) => {}
             }
         }
     }

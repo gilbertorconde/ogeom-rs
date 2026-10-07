@@ -1479,6 +1479,60 @@ mod surface_tests {
         );
     }
 
+    /// The error a surface fit states is no less than its widest miss read
+    /// on a grid far finer than the fit's checks: the miss peaks between
+    /// the quarter points the fit is checked at, on a drum spelt as an
+    /// offset as on the offset of a wavy patch.
+    #[test]
+    fn a_fitted_surface_states_no_less_than_its_widest_miss() {
+        let drum: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 1.5, T).unwrap(), (0.0, 5.0))
+                .unwrap()
+                .into();
+        let n = 8_u32;
+        let mut points = Vec::new();
+        for i in 0..n {
+            for j in 0..n {
+                let (x, y) = (
+                    10.0 * f64::from(i) / f64::from(n - 1),
+                    10.0 * f64::from(j) / f64::from(n - 1),
+                );
+                points.push(Point::new(x, y, (0.8 * x).sin() * (0.56 * y).cos()));
+            }
+        }
+        let mut knots = vec![0.0; 4];
+        knots.extend((1..=4).map(|i| f64::from(i) / 5.0));
+        knots.extend([1.0; 4]);
+        let knots = ogeom_math::KnotVector::new(knots, 3).unwrap();
+        let grid = ogeom_math::ControlGrid::new(points, 8, 8).unwrap();
+        let wavy: SurfaceGeometry =
+            crate::surface::BSplineSurface::new(knots.clone(), knots, &grid, T)
+                .unwrap()
+                .into();
+        for basis in [drum, wavy] {
+            let offset = SurfaceGeometry::Offset(Box::new(
+                crate::surface::OffsetSurface::new(basis, 0.5).unwrap(),
+            ));
+            let fitted = offset.fitted_bspline(1e-4, T).unwrap();
+            let ((u0, u1), (v0, v1)) = offset.domain();
+            let n = 400;
+            let mut worst = 0.0_f64;
+            for j in 0..=n {
+                let v = v0 + (v1 - v0) * f64::from(j) / f64::from(n);
+                for i in 0..=n {
+                    let u = u0 + (u1 - u0) * f64::from(i) / f64::from(n);
+                    let p = fitted.curve.point_at(u, v, T).unwrap();
+                    worst = worst.max(p.distance(offset.point_at(u, v, T).unwrap()));
+                }
+            }
+            assert!(
+                worst <= fitted.error,
+                "the fit misses by {worst:.4e} and states {:.4e}",
+                fitted.error
+            );
+        }
+    }
+
     #[test]
     fn a_sphere_becomes_an_exact_rational_patch() {
         let sphere = Sphere::new(Frame::WORLD, 2.5, T).unwrap();
