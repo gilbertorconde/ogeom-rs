@@ -17,6 +17,7 @@
   "sew_shell": 0.1807,
   "mesh_to_solid": 0.8946,
   "hlr_exact": 1.5241,
+  "hlr_exact_mid": 19.3250,
   "hlr_mesh": 0.1078,
   "thick_spline": 9.0372,
   "pipe_circles": 2.5033,

@@ -53,7 +53,8 @@ pub mod walk;
 pub use approx::{IntersectionCurve, approximate_branch};
 pub use contact::trace_tangential;
 pub use curve_surface::{
-    CurveSurfaceIntersection, CurveSurfaceOptions, Piercing, intersect_curve_surface,
+    CurveSurfaceIntersection, CurveSurfaceOptions, Piercing, PreparedSurface,
+    intersect_curve_surface,
 };
 pub use curves::{
     Crossing, CurveCurveOptions, CurveIntersection, Overlap, intersect_curves, intersect_curves_2d,

@@ -154,6 +154,7 @@ fn benchmarks() -> Vec<Bench> {
         ("sew_shell", Box::new(sew_shell)),
         ("mesh_to_solid", Box::new(mesh_to_solid)),
         ("hlr_exact", Box::new(hlr_exact)),
+        ("hlr_exact_mid", Box::new(hlr_exact_mid)),
         ("hlr_mesh", Box::new(hlr_mesh)),
         ("thick_spline", Box::new(thick_spline)),
         ("pipe_circles", Box::new(pipe_circles)),
@@ -535,6 +536,29 @@ fn hlr_mesh() -> Option<Stats> {
     Some(time(|| {
         let drawing =
             ogeom::hlr::project(document.model(), &solid, &view, Deflection::default(), T).unwrap();
+        std::hint::black_box(&drawing);
+    }))
+}
+
+/// The mid-size corpus part exact hidden lines are timed on: about 1600
+/// drawn curves over a few hundred faces. The largest part takes tens of
+/// seconds at one thread, too long to sample here.
+const MID_PART: &str = "nist_ctc_04_asme1_rd.stp";
+
+/// Exact hidden lines on a part with many faces and curves, where the
+/// faces asked about each point dominate.
+fn hlr_exact_mid() -> Option<Stats> {
+    let (document, solid) = corpus_part(MID_PART)?;
+    let view = diagonal_view();
+    Some(time(|| {
+        let drawing = ogeom::hlr::exact::project_exact(
+            document.model(),
+            &solid,
+            &view,
+            Deflection::default(),
+            T,
+        )
+        .unwrap();
         std::hint::black_box(&drawing);
     }))
 }

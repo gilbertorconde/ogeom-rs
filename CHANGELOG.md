@@ -11,6 +11,13 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`PreparedSurface` keeps a surface's seeding for many curve
+  queries.** `intersect_curve_surface` samples the surface into cells on
+  every call; a `PreparedSurface` samples it once and gives every curve
+  the same answer.
+
 ### Changed
 
 - **Primitives are built without meshing them to check their facing.**
@@ -18,6 +25,14 @@ bump may break the API and a patch bump may not.
   faces outward by construction, and skip the probe `make_solid` runs on a
   closed shell to turn one facing inward; building a box is about five
   times faster again. `make_solid` still turns imported and sewn shells.
+
+- **Exact hidden lines run in parallel and ask fewer faces.** Edges,
+  silhouettes and their visibility are worked out a curve at a time across
+  threads, in the same order at any thread count. Each point asks only the
+  faces whose projected box covers it, starting with the face that hid the
+  previous point, and each spline face is sampled once rather than once
+  per point. The drawing is unchanged; a corpus part of 520 faces draws
+  about twice as fast on one thread.
 
 ### Fixed
 

@@ -69,102 +69,125 @@ pub fn silhouettes(
     let along = direction / magnitude;
     let deflection = Deflection::default();
 
+    let faces = explore_unique(model, shape, ShapeType::Face)?;
+    let per_face = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+        face_silhouettes(model, face, along, deflection, tol)
+    });
     let mut out = Vec::new();
-    for face in explore_unique(model, shape, ShapeType::Face)? {
-        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data().clone()) else {
-            continue;
-        };
-        let Some(surface) = model.geometry().surface(data.surface).cloned() else {
-            continue;
-        };
-        let placement = face.transform(model.datums())?;
-        let world = ogeom_geom::Transformable::transformed(&surface, &placement, tol)?;
-        let candidates = match &world {
-            SurfaceGeometry::Plane(_) => Vec::new(),
-            SurfaceGeometry::Sphere(s) => {
-                // The great circle whose plane has the view as its normal:
-                // every normal on it is radial, so every one is
-                // perpendicular to the view.
-                let sphere = s.sphere();
-                let axis = Direction::new(along, tol)?;
-                let frame = Frame::new(sphere.centre(), axis, perpendicular(along, tol)?, tol)?;
-                vec![Curve::Circle(CircleCurve::new(Circle::new(
-                    frame,
-                    sphere.radius(),
-                    tol,
-                )?))]
-            }
-            SurfaceGeometry::Cylinder(c) => {
-                // The two rulings where the radial direction is
-                // perpendicular to the view: the axis stepped sideways by
-                // the radius, either way.
-                let cylinder = c.cylinder();
-                let axis = cylinder.frame().z().vector();
-                let sideways = axis.cross(along);
-                let m = sideways.magnitude();
-                if m <= tol.angular() {
-                    // Looking down the axis: the whole rim is the outline,
-                    // and the face's own boundary already draws it.
-                    Vec::new()
-                } else {
-                    let sideways = sideways / m;
-                    [1.0, -1.0]
-                        .iter()
-                        .map(|sign| {
-                            let at =
-                                cylinder.frame().origin() + sideways * (cylinder.radius() * sign);
-                            Curve::Line(LineCurve::new(Axis::new(at, cylinder.frame().z())))
-                        })
-                        .collect()
-                }
-            }
-            SurfaceGeometry::Cone(c) => {
-                // The same question on a cone: the rulings whose own normal
-                // is perpendicular to the view. The normal of a ruling at
-                // angle u is radial tilted by the half-angle, so the
-                // condition is a linear one in (cos u, sin u) and has two
-                // roots, or none, when the eye is inside the cone's own
-                // angle and nothing turns away.
-                let cone = c.cone();
-                let frame = cone.frame();
-                let (x, y, z) = (frame.x().vector(), frame.y().vector(), frame.z().vector());
-                let (sin, cos) = cone.half_angle().sin_cos();
-                // n(u) = cos(half) * (x cos u + y sin u) - sin(half) * z
-                let (a, b) = (cos * along.dot(x), cos * along.dot(y));
-                let c0 = -sin * along.dot(z);
-                let r = a.hypot(b);
-                if r <= tol.angular() || c0.abs() > r {
-                    Vec::new()
-                } else {
-                    let phase = b.atan2(a);
-                    let spread = (-c0 / r).acos();
-                    [phase + spread, phase - spread]
-                        .iter()
-                        .map(|u| {
-                            let radial = x * u.cos() + y * u.sin();
-                            let apex = cone.apex();
-                            let direction =
-                                radial * cone.half_angle().sin() + z * cone.half_angle().cos();
-                            Direction::new(direction, tol)
-                                .map(|d| Curve::Line(LineCurve::new(Axis::new(apex, d))))
-                        })
-                        .collect::<OgeomResult<Vec<Curve>>>()?
-                }
-            }
-            // No closed form: a torus, a spline. The silhouette is still
-            // one equation on the surface's own chart, and one equation in
-            // two unknowns is a curve, so it is *walked* rather than refused.
-            other => marched_silhouettes(other, along, tol)?,
-        };
+    for found in per_face {
+        out.extend(found?);
+    }
+    Ok(out)
+}
 
-        for curve in candidates {
-            for range in within_trim(model, &face, &world, &curve, deflection, tol)? {
-                out.push(Silhouette {
-                    face: face.clone(),
-                    curve: curve.clone(),
-                    range,
-                });
+/// The silhouettes of one face, trimmed to it.
+fn face_silhouettes(
+    model: &Model,
+    face: &Shape,
+    along: Vector,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Silhouette>> {
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        return Ok(Vec::new());
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        return Ok(Vec::new());
+    };
+    let placement = face.transform(model.datums())?;
+    let world = ogeom_geom::Transformable::transformed(surface, &placement, tol)?;
+    let candidates = match &world {
+        SurfaceGeometry::Plane(_) => Vec::new(),
+        SurfaceGeometry::Sphere(s) => {
+            // The great circle whose plane has the view as its normal:
+            // every normal on it is radial, so every one is
+            // perpendicular to the view.
+            let sphere = s.sphere();
+            let axis = Direction::new(along, tol)?;
+            let frame = Frame::new(sphere.centre(), axis, perpendicular(along, tol)?, tol)?;
+            vec![Curve::Circle(CircleCurve::new(Circle::new(
+                frame,
+                sphere.radius(),
+                tol,
+            )?))]
+        }
+        SurfaceGeometry::Cylinder(c) => {
+            // The two rulings where the radial direction is
+            // perpendicular to the view: the axis stepped sideways by
+            // the radius, either way.
+            let cylinder = c.cylinder();
+            let axis = cylinder.frame().z().vector();
+            let sideways = axis.cross(along);
+            let m = sideways.magnitude();
+            if m <= tol.angular() {
+                // Looking down the axis: the whole rim is the outline,
+                // and the face's own boundary already draws it.
+                Vec::new()
+            } else {
+                let sideways = sideways / m;
+                [1.0, -1.0]
+                    .iter()
+                    .map(|sign| {
+                        let at = cylinder.frame().origin() + sideways * (cylinder.radius() * sign);
+                        Curve::Line(LineCurve::new(Axis::new(at, cylinder.frame().z())))
+                    })
+                    .collect()
             }
+        }
+        SurfaceGeometry::Cone(c) => {
+            // The same question on a cone: the rulings whose own normal
+            // is perpendicular to the view. The normal of a ruling at
+            // angle u is radial tilted by the half-angle, so the
+            // condition is a linear one in (cos u, sin u) and has two
+            // roots, or none, when the eye is inside the cone's own
+            // angle and nothing turns away.
+            let cone = c.cone();
+            let frame = cone.frame();
+            let (x, y, z) = (frame.x().vector(), frame.y().vector(), frame.z().vector());
+            let (sin, cos) = cone.half_angle().sin_cos();
+            // n(u) = cos(half) * (x cos u + y sin u) - sin(half) * z
+            let (a, b) = (cos * along.dot(x), cos * along.dot(y));
+            let c0 = -sin * along.dot(z);
+            let r = a.hypot(b);
+            if r <= tol.angular() || c0.abs() > r {
+                Vec::new()
+            } else {
+                let phase = b.atan2(a);
+                let spread = (-c0 / r).acos();
+                [phase + spread, phase - spread]
+                    .iter()
+                    .map(|u| {
+                        let radial = x * u.cos() + y * u.sin();
+                        let apex = cone.apex();
+                        let direction =
+                            radial * cone.half_angle().sin() + z * cone.half_angle().cos();
+                        Direction::new(direction, tol)
+                            .map(|d| Curve::Line(LineCurve::new(Axis::new(apex, d))))
+                    })
+                    .collect::<OgeomResult<Vec<Curve>>>()?
+            }
+        }
+        // No closed form: a torus, a spline. The silhouette is still
+        // one equation on the surface's own chart, and one equation in
+        // two unknowns is a curve, so it is *walked* rather than refused.
+        other => marched_silhouettes(other, along, tol)?,
+    };
+
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rings = ogeom_mesh::face_boundary(model, face, deflection, tol)?;
+    // Every trim station projects onto the same surface, so its seeding
+    // grid is evaluated once for the face.
+    let seeds = ogeom_algo::SurfaceSeeds::over(&world, 24, tol)?;
+    let mut out = Vec::new();
+    for curve in candidates {
+        for range in within_trim(model, face, &world, &seeds, &rings, &curve, tol)? {
+            out.push(Silhouette {
+                face: face.clone(),
+                curve: curve.clone(),
+                range,
+            });
         }
     }
     Ok(out)
@@ -277,17 +300,20 @@ pub fn project_exact(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Drawing> {
-    let faces = blockers(model, shape, tol)?;
-    if faces.is_empty() {
+    let faces = Blockers::new(model, shape, view, tol)?;
+    if faces.list.is_empty() {
         ogeom_bail!(Construction, "a shape with no faces draws nothing");
     }
 
     // Every curve is sampled before any is classified: the projection of
     // each is a contour the others may pass behind.
-    let mut traced: Vec<Traced> = Vec::new();
-    for edge in explore_unique(model, shape, ShapeType::Edge)? {
-        traced.extend(traced_edge(model, &edge, deflection, tol));
-    }
+    let edges = explore_unique(model, shape, ShapeType::Edge)?;
+    let mut traced: Vec<Traced> = ogeom_core::parallel::map_ordered(&edges, |_, edge| {
+        traced_edge(model, edge, deflection, tol)
+    })
+    .into_iter()
+    .flatten()
+    .collect();
     for silhouette in silhouettes(model, shape, view.toward_eye(), tol)? {
         let line = ogeom_mesh::discretize(&silhouette.curve, silhouette.range, deflection, tol)?;
         traced.push(Traced {
@@ -309,9 +335,26 @@ pub fn project_exact(
             .collect(),
     );
 
+    // Each curve is classified on its own, and the runs are gathered in
+    // curve order.
+    let classified = ogeom_core::parallel::map_ordered(&traced, |i, curve| {
+        let mut drawing = Drawing::default();
+        classify(
+            &mut drawing,
+            curve,
+            &projected[i],
+            view,
+            &faces,
+            &contours,
+            tol,
+        )
+        .map(|()| drawing)
+    });
     let mut drawing = Drawing::default();
-    for (curve, line) in traced.iter().zip(&projected) {
-        classify(&mut drawing, curve, line, view, &faces, &contours, tol)?;
+    for one in classified {
+        let one = one?;
+        drawing.visible.extend(one.visible);
+        drawing.hidden.extend(one.hidden);
     }
     Ok(drawing)
 }
@@ -374,31 +417,160 @@ fn traced_edge(
 /// A face that can stand between a point and the eye: its surface in world
 /// space and its trim as chart rings.
 struct Blocker {
-    surface: SurfaceGeometry,
+    surface: ogeom_intersect::PreparedSurface,
     rings: Vec<Vec<Point2>>,
-    /// The face's box: a face whose projected box misses a point's
-    /// projection, or that lies wholly behind the point, cannot hide it,
-    /// and is not intersected.
-    bound: ogeom_math::Aabb,
+    /// The projection of the corners of the face's box: a face whose
+    /// projected box misses a point's projection cannot hide it, and is not
+    /// intersected.
+    low: Point2,
+    high: Point2,
+    /// The depth of the box corner nearest the eye: a face wholly behind a
+    /// point cannot hide it either.
+    front: f64,
 }
 
-fn blockers(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<Blocker>> {
-    let mut out = Vec::new();
-    for face in explore_unique(model, shape, ShapeType::Face)? {
-        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data().clone()) else {
-            continue;
+/// The faces of a shape seen from one view, binned by their projected
+/// boxes so a point is tested only against the faces whose boxes cover it.
+struct Blockers {
+    list: Vec<Blocker>,
+    /// For each cell of a square grid over the drawing, the faces whose
+    /// projected box meets it, ascending.
+    cells: Vec<Vec<u32>>,
+    low: Point2,
+    size: f64,
+    side: usize,
+}
+
+impl Blockers {
+    fn new(model: &Model, shape: &Shape, view: &View, tol: Tolerances) -> OgeomResult<Self> {
+        let faces = explore_unique(model, shape, ShapeType::Face)?;
+        let built =
+            ogeom_core::parallel::map_ordered(&faces, |_, face| blocker(model, face, view, tol));
+        let mut list = Vec::with_capacity(built.len());
+        for one in built {
+            list.extend(one?);
+        }
+
+        let (mut low, mut high) = (
+            Point2::new(f64::INFINITY, f64::INFINITY),
+            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        );
+        for b in &list {
+            low = Point2::new(low.x.min(b.low.x), low.y.min(b.low.y));
+            high = Point2::new(high.x.max(b.high.x), high.y.max(b.high.y));
+        }
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let side = ((list.len() as f64).sqrt().ceil() as usize * 2).clamp(1, 256);
+        let span = (high.x - low.x).max(high.y - low.y);
+        #[allow(clippy::cast_precision_loss)]
+        let size = if span.is_finite() && span > 0.0 {
+            span / side as f64
+        } else {
+            1.0
         };
-        let Some(surface) = model.geometry().surface(data.surface).cloned() else {
-            continue;
+        if !low.x.is_finite() || !low.y.is_finite() {
+            low = Point2::new(0.0, 0.0);
+        }
+        let mut out = Self {
+            list: Vec::new(),
+            cells: vec![Vec::new(); side * side],
+            low,
+            size,
+            side,
         };
-        let placement = face.transform(model.datums())?;
-        out.push(Blocker {
-            surface: ogeom_geom::Transformable::transformed(&surface, &placement, tol)?,
-            rings: ogeom_mesh::face_boundary(model, &face, Deflection::default(), tol)?,
-            bound: ogeom_algo::shape_bounds(model, &face, tol)?.expanded(tol.confusion() * 1e3),
-        });
+        for (index, b) in list.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            let index = index as u32;
+            let (c0, c1) = (out.cell(b.low.x, low.x), out.cell(b.high.x, low.x));
+            let (r0, r1) = (out.cell(b.low.y, low.y), out.cell(b.high.y, low.y));
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    out.cells[r * side + c].push(index);
+                }
+            }
+        }
+        out.list = list;
+        Ok(out)
     }
-    Ok(out)
+
+    /// The grid column (or row) of a coordinate, clamped to the grid; a
+    /// box's ends land in the cells bracketing every point it covers.
+    fn cell(&self, x: f64, lo: f64) -> usize {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let k = ((x - lo) / self.size).floor().max(0.0) as usize;
+        k.min(self.side - 1)
+    }
+
+    /// The faces whose projected box covers `seen` and that stand at least
+    /// partly in front of `depth`, by index, in face order.
+    fn covering(&self, seen: Point2, depth: f64) -> impl Iterator<Item = usize> + '_ {
+        let cell = self.cell(seen.y, self.low.y) * self.side + self.cell(seen.x, self.low.x);
+        self.cells[cell]
+            .iter()
+            .map(|&i| i as usize)
+            .filter(move |&i| self.list[i].covers(seen, depth))
+    }
+}
+
+impl Blocker {
+    /// Whether the face's projected box covers `seen` with some of the box
+    /// in front of `depth`.
+    fn covers(&self, seen: Point2, depth: f64) -> bool {
+        self.low.x <= seen.x
+            && seen.x <= self.high.x
+            && self.low.y <= seen.y
+            && seen.y <= self.high.y
+            && self.front > depth
+    }
+}
+
+/// One face as a blocker; `None` for a face with no surface or an empty box.
+fn blocker(
+    model: &Model,
+    face: &Shape,
+    view: &View,
+    tol: Tolerances,
+) -> OgeomResult<Option<Blocker>> {
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        return Ok(None);
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        return Ok(None);
+    };
+    let placement = face.transform(model.datums())?;
+    let surface = ogeom_geom::Transformable::transformed(surface, &placement, tol)?;
+    let rings = ogeom_mesh::face_boundary(model, face, Deflection::default(), tol)?;
+    let bound = ogeom_algo::shape_bounds(model, face, tol)?.expanded(tol.confusion() * 1e3);
+    let corners = bound.corners();
+    if corners.is_empty() {
+        return Ok(None);
+    }
+    let (mut low, mut high) = (
+        Point2::new(f64::INFINITY, f64::INFINITY),
+        Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    let mut front = f64::NEG_INFINITY;
+    for c in &corners {
+        let q = view.project(*c);
+        low = Point2::new(low.x.min(q.x), low.y.min(q.y));
+        high = Point2::new(high.x.max(q.x), high.y.max(q.y));
+        front = front.max(view.depth(*c));
+    }
+    Ok(Some(Blocker {
+        surface: ogeom_intersect::PreparedSurface::new(
+            surface,
+            ogeom_intersect::CurveSurfaceOptions::default(),
+            tol,
+        ),
+        rings,
+        low,
+        high,
+        front,
+    }))
 }
 
 /// Split a curve into visible and hidden runs, asking the faces.
@@ -413,19 +585,24 @@ fn classify(
     traced: &Traced,
     projected: &[Point2],
     view: &View,
-    faces: &[Blocker],
+    faces: &Blockers,
     contours: &Contours,
     tol: Tolerances,
 ) -> OgeomResult<()> {
     if traced.points.len() < 2 {
         return Ok(());
     }
+    // Neighbouring points along a curve are mostly hidden by the same face,
+    // so the face that hid the last one is asked first.
+    let last = std::cell::Cell::new(None);
     let seen = |position: f64| -> OgeomResult<Visibility> {
-        Ok(if occluded(traced.at(position, tol)?, view, faces, tol)? {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
-        })
+        Ok(
+            if occluded(traced.at(position, tol)?, view, faces, &last, tol)? {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            },
+        )
     };
     let change_between = |mut lo: f64, mut hi: f64, was: Visibility| -> OgeomResult<f64> {
         for _ in 0..64 {
@@ -500,7 +677,17 @@ fn classify(
 }
 
 /// Whether anything stands between `at` and the eye.
-fn occluded(at: Point, view: &View, faces: &[Blocker], tol: Tolerances) -> OgeomResult<bool> {
+///
+/// The answer is whether any face hides the point, so the order the faces
+/// are asked in changes only the time: the face in `last` is asked first,
+/// and the face that hides the point is left there.
+fn occluded(
+    at: Point,
+    view: &View,
+    faces: &Blockers,
+    last: &std::cell::Cell<Option<usize>>,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
     let toward = view.toward_eye();
     let magnitude = toward.magnitude();
     if magnitude <= tol.confusion() {
@@ -515,31 +702,28 @@ fn occluded(at: Point, view: &View, faces: &[Blocker], tol: Tolerances) -> Ogeom
         at,
         Direction::new(direction, tol)?,
     )));
-    let options = ogeom_intersect::CurveSurfaceOptions::default();
+    let hides = |face: &Blocker| -> OgeomResult<bool> {
+        let found = face.surface.intersect(&ray)?;
+        Ok(found.crossings.iter().any(|piercing| {
+            piercing.on_curve > clearance
+                && piercing.on_curve < reach
+                && inside_rings(
+                    &face.rings,
+                    Point2::new(piercing.on_surface.0, piercing.on_surface.1),
+                )
+        }))
+    };
     let (seen, depth) = (view.project(at), view.depth(at));
-    for face in faces {
-        let corners = face.bound.corners();
-        if corners.is_empty() {
-            continue;
-        }
-        let projected: Vec<Point2> = corners.iter().map(|c| view.project(*c)).collect();
-        let covers = projected.iter().any(|q| q.x <= seen.x)
-            && projected.iter().any(|q| q.x >= seen.x)
-            && projected.iter().any(|q| q.y <= seen.y)
-            && projected.iter().any(|q| q.y >= seen.y);
-        let in_front = corners.iter().any(|c| view.depth(*c) > depth);
-        if !covers || !in_front {
-            continue;
-        }
-        let found = ogeom_intersect::intersect_curve_surface(&ray, &face.surface, options, tol)?;
-        for piercing in &found.crossings {
-            if piercing.on_curve <= clearance || piercing.on_curve >= reach {
-                continue;
-            }
-            let (u, v) = piercing.on_surface;
-            if inside_rings(&face.rings, Point2::new(u, v)) {
-                return Ok(true);
-            }
+    let first = last.get().filter(|&i| faces.list[i].covers(seen, depth));
+    if let Some(i) = first
+        && hides(&faces.list[i])?
+    {
+        return Ok(true);
+    }
+    for i in faces.covering(seen, depth) {
+        if Some(i) != first && hides(&faces.list[i])? {
+            last.set(Some(i));
+            return Ok(true);
         }
     }
     Ok(false)
@@ -550,11 +734,11 @@ fn within_trim(
     model: &Model,
     face: &Shape,
     surface: &SurfaceGeometry,
+    seeds: &ogeom_algo::SurfaceSeeds,
+    rings: &[Vec<Point2>],
     curve: &Curve,
-    deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(f64, f64)>> {
-    let rings = ogeom_mesh::face_boundary(model, face, deflection, tol)?;
     let (t0, t1) = curve.domain();
     // A line's domain is the whole real line as far as the type is
     // concerned. A silhouette on one is only interesting where the face is,
@@ -579,13 +763,13 @@ fn within_trim(
         let Ok(point) = curve.point_at(t, tol) else {
             return Ok(false);
         };
-        let projection = ogeom_algo::project_on_surface(surface, point, 24, tol)?;
+        let projection = seeds.project(surface, point, tol)?;
         let (u, v) = projection.parameters;
         // The projection clamps to the surface's own window, so a point
         // just past the end of a face comes back with a foot *at* the end
         // and the overshoot as its distance. Holding that to the confusion
         // tolerance is what stops a silhouette running off its own face.
-        Ok(projection.distance <= tol.confusion() && inside_rings(&rings, Point2::new(u, v)))
+        Ok(projection.distance <= tol.confusion() && inside_rings(rings, Point2::new(u, v)))
     };
     // Where the answer changes between two stations, the edge of the face
     // is between them. Bisecting says where to a part in a million of a
@@ -838,16 +1022,25 @@ fn marched_silhouettes(
     let steps = options.grid;
     #[expect(clippy::cast_precision_loss, reason = "a grid index")]
     let at = |i: usize, n: usize, lo: f64, hi: f64| lo + (hi - lo) * (i as f64) / (n as f64);
+    // Each grid point is evaluated once and read by up to three cell edges.
+    let grid: Vec<Option<f64>> = (0..=steps)
+        .flat_map(|i| (0..=steps).map(move |j| (i, j)))
+        .map(|(i, j)| value(at(i, steps, ua, ub), at(j, steps, va, vb)))
+        .collect();
     for i in 0..=steps {
         for j in 0..=steps {
             let (u, v) = (at(i, steps, ua, ub), at(j, steps, va, vb));
-            let Some(here) = value(u, v) else { continue };
+            let Some(here) = grid[i * (steps + 1) + j] else {
+                continue;
+            };
             for (du, dv) in [(1_usize, 0_usize), (0, 1)] {
                 if i + du > steps || j + dv > steps {
                     continue;
                 }
                 let (u2, v2) = (at(i + du, steps, ua, ub), at(j + dv, steps, va, vb));
-                let Some(there) = value(u2, v2) else { continue };
+                let Some(there) = grid[(i + du) * (steps + 1) + j + dv] else {
+                    continue;
+                };
                 if here.signum() == there.signum() || here == 0.0 {
                     continue;
                 }

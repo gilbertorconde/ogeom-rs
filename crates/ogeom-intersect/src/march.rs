@@ -955,6 +955,7 @@ pub(crate) fn span(surface: &SurfaceGeometry) -> f64 {
 }
 
 /// One sampled triangle of a surface, with the parameters it came from.
+#[derive(Debug, Clone)]
 pub(crate) struct Cell {
     pub(crate) corners: [Point; 3],
     pub(crate) at: (f64, f64),

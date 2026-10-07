@@ -106,6 +106,73 @@ pub fn intersect_curve_surface(
     options: CurveSurfaceOptions,
     tol: Tolerances,
 ) -> OgeomResult<CurveSurfaceIntersection> {
+    intersect_with(curve, surface, options, tol, || {
+        std::borrow::Cow::Owned(sample_by(surface, seeding(surface, options.grid), tol))
+    })
+}
+
+/// A surface made ready for many curve queries.
+///
+/// The general path seeds from a sampling of the surface into flat cells,
+/// and that sampling depends only on the surface and the options. Taken
+/// once, on the first query that needs it, and shared by every later one,
+/// so a caller asking the same face about many curves (a ray per drawn
+/// point, a ray per classified point) pays for it once. Every answer is the
+/// one [`intersect_curve_surface`] gives for the same curve.
+#[derive(Debug)]
+pub struct PreparedSurface {
+    surface: SurfaceGeometry,
+    options: CurveSurfaceOptions,
+    tol: Tolerances,
+    cells: std::sync::OnceLock<Vec<Cell>>,
+}
+
+impl PreparedSurface {
+    /// Ready `surface` for queries at `options` and `tol`.
+    #[must_use]
+    pub const fn new(
+        surface: SurfaceGeometry,
+        options: CurveSurfaceOptions,
+        tol: Tolerances,
+    ) -> Self {
+        Self {
+            surface,
+            options,
+            tol,
+            cells: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The surface queried.
+    #[must_use]
+    pub const fn surface(&self) -> &SurfaceGeometry {
+        &self.surface
+    }
+
+    /// Where `curve` pierces the surface, as [`intersect_curve_surface`].
+    ///
+    /// # Errors
+    ///
+    /// As [`intersect_curve_surface`].
+    pub fn intersect(&self, curve: &Curve) -> OgeomResult<CurveSurfaceIntersection> {
+        let (surface, options, tol) = (&self.surface, self.options, self.tol);
+        intersect_with(curve, surface, options, tol, || {
+            std::borrow::Cow::Borrowed(
+                self.cells
+                    .get_or_init(|| sample_by(surface, seeding(surface, options.grid), tol))
+                    .as_slice(),
+            )
+        })
+    }
+}
+
+fn intersect_with<'c>(
+    curve: &Curve,
+    surface: &SurfaceGeometry,
+    options: CurveSurfaceOptions,
+    tol: Tolerances,
+    cells: impl FnOnce() -> std::borrow::Cow<'c, [Cell]>,
+) -> OgeomResult<CurveSurfaceIntersection> {
     if options.samples < 2 || options.grid < 2 {
         ogeom_bail!(Construction, "seeding needs at least two steps each way");
     }
@@ -149,7 +216,7 @@ pub fn intersect_curve_surface(
             options,
             tol,
         )),
-        _ => general(curve, surface, options, tol),
+        _ => general(curve, surface, &cells(), options, tol),
     }
 }
 
@@ -482,10 +549,10 @@ fn invert(
 fn general(
     curve: &Curve,
     surface: &SurfaceGeometry,
+    cells: &[Cell],
     options: CurveSurfaceOptions,
     tol: Tolerances,
 ) -> OgeomResult<CurveSurfaceIntersection> {
-    let cells = sample_by(surface, seeding(surface, options.grid), tol);
     let (lo, hi) = curve.domain();
 
     let mut points = Vec::with_capacity(options.samples + 1);
@@ -497,11 +564,25 @@ fn general(
         }
     }
 
+    // Every segment's box lies within the samples' box, so a cell that
+    // misses that box at its own margin meets no segment, and only the
+    // cells near the curve are carried into the segment loop, in order.
+    let first = points.first().map_or(Point::ORIGIN, |p| p.1);
+    let (mut low, mut high) = (first, first);
+    for &(_, p) in &points {
+        low = Point::new(low.x.min(p.x), low.y.min(p.y), low.z.min(p.z));
+        high = Point::new(high.x.max(p.x), high.y.max(p.y), high.z.max(p.z));
+    }
+    let near: Vec<&Cell> = cells
+        .iter()
+        .filter(|cell| segment_near_cell(low, high, cell, options.gap.max(cell.sag)))
+        .collect();
+
     let mut crossings: Vec<Piercing> = Vec::new();
     for pair in points.windows(2) {
         let (t0, p0) = pair[0];
         let (t1, p1) = pair[1];
-        for cell in &cells {
+        for &cell in &near {
             // Near the cell within the surface's own bow from it: a curve
             // crossing the surface in the gap between the flat cell and
             // the curved patch it stands for (a ray starting a few microns
@@ -910,6 +991,50 @@ mod tests {
     }
 
     #[test]
+    fn a_prepared_surface_answers_as_the_one_shot_query() {
+        // A half-pipe spline strip, which only the seeded path can answer,
+        // asked about many lines in turn: the stored sampling must give
+        // every one the answer a fresh sampling gives, piercings and all.
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::ControlGrid;
+        let mut points = Vec::new();
+        for i in 0..7 {
+            let a = core::f64::consts::PI * f64::from(i) / 6.0;
+            for j in 0..2 {
+                points.push(Point::new(2.0 * a.cos(), 3.0 * f64::from(j), 2.0 * a.sin()));
+            }
+        }
+        let strip: SurfaceGeometry = BSplineSurface::new(
+            KnotVector::clamped_uniform(3, 7).unwrap(),
+            KnotVector::clamped_uniform(1, 2).unwrap(),
+            &ControlGrid::new(points, 7, 2).unwrap(),
+            T,
+        )
+        .unwrap()
+        .into();
+        let options = CurveSurfaceOptions::default();
+        let prepared = PreparedSurface::new(strip.clone(), options, T);
+        let mut pierced = 0;
+        for k in 0..12 {
+            let x = -2.5 + 5.0 * f64::from(k) / 11.0;
+            let lines: [Curve; 2] = [
+                LineCurve::new(ogeom_math::Axis::new(
+                    Point::new(x, 1.5, 0.0),
+                    Direction::new(Vector::new(0.1, 0.2, 1.0), T).unwrap(),
+                ))
+                .into(),
+                segment(Point::new(x, -1.0, -1.0), Point::new(-x, 4.0, 3.0)),
+            ];
+            for line in &lines {
+                let once = intersect_curve_surface(line, &strip, options, T).unwrap();
+                pierced += once.crossings.len();
+                assert_eq!(prepared.intersect(line).unwrap(), once, "line {k}");
+            }
+        }
+        assert!(pierced > 0, "some lines pass through the strip");
+    }
+
+    #[test]
     fn a_spline_through_a_sphere_is_found_and_polished() {
         // A spline wandering through the ball: piercings with no closed form
         // anywhere, verified implicitly: each reported point is on the
@@ -985,7 +1110,8 @@ mod tests {
         let from = Point::new(-160.0, 531.0, -320.0);
         let line = segment(from, from + w * 800.0);
         let found = intersect_curve_surface(&line, &torus, options, T).unwrap();
-        let general = general(&line, &torus, options, T).unwrap();
+        let cells = sample_by(&torus, seeding(&torus, options.grid), T);
+        let general = general(&line, &torus, &cells, options, T).unwrap();
         assert!(!general.crossings.is_empty());
         assert_eq!(found.crossings.len(), general.crossings.len());
         for (a, b) in found.crossings.iter().zip(&general.crossings) {

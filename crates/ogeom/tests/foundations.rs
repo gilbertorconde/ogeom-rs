@@ -89,6 +89,42 @@ fn parallel_mesh_conversion_is_bit_identical() {
     );
 }
 
+/// An exact hidden-line drawing is the same at one thread and at four, to
+/// the bit and in the same order: edges, silhouettes and their visibility
+/// are worked out a curve at a time on separate threads, and gathered back
+/// in curve order. The torus has its silhouette marched, the drum's is a
+/// pair of rulings, and each part hides some of the others.
+#[test]
+fn parallel_exact_hidden_lines_are_bit_identical() {
+    let mut model = Model::new();
+    let shapes = build(&mut model);
+    let all = ogeom::algo::make_compound(&mut model, &shapes)
+        .unwrap()
+        .shape;
+    let view = ogeom::hlr::View::looking(
+        ogeom::math::Vector::new(-1.0, -0.5, -1.0),
+        ogeom::math::Vector::Z,
+        T,
+    )
+    .unwrap();
+    let draw = |threads: usize| {
+        parallel::set_threads(threads);
+        let drawing =
+            ogeom::hlr::exact::project_exact(&model, &all, &view, Deflection::default(), T)
+                .unwrap();
+        parallel::set_threads(0);
+        // Debug prints every coordinate in its shortest exact form.
+        format!("{drawing:?}")
+    };
+    let serial = draw(1);
+    assert!(serial.contains("Hidden") && serial.contains("Silhouette"));
+    assert_eq!(
+        serial,
+        draw(4),
+        "the drawing must not depend on the thread count"
+    );
+}
+
 /// A pre-cancelled watch stops the tessellation at its first checkpoint,
 /// and the error says cancelled, not a partial result, not a stall.
 #[test]
