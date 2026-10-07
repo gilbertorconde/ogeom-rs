@@ -167,6 +167,9 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
     if !faces.is_empty() {
         let sewn = sew(&mut reader.model, &faces, tol)?;
         for shell in &sewn.shells {
+            // A face's seam sewn from two edges is one edge holding its
+            // column as plain pcurves; it is made the seam it is.
+            ogeom_algo::join_seam_columns(&mut reader.model, shell, tol)?;
             if ogeom_algo::is_shell_closed(&reader.model, shell)? {
                 let solid = make_solid(&mut reader.model, std::slice::from_ref(shell))?.shape;
                 solids.push((0, solid));
@@ -2692,6 +2695,7 @@ impl<'a> Reader<'a> {
             }
             let sewn = sew(&mut self.model, &faces, tol)?;
             for shell in &sewn.shells {
+                ogeom_algo::join_seam_columns(&mut self.model, shell, tol)?;
                 if ogeom_algo::is_shell_closed(&self.model, shell)? {
                     solids.push(make_solid(&mut self.model, std::slice::from_ref(shell))?.shape);
                 } else {

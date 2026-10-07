@@ -27,6 +27,7 @@ pub use divide::{
 };
 pub use fix::{FixedTrims, ReanchoredBoundaries, fix_face_pcurves, reanchor_boundaries};
 pub use fix_shape::{FixReport, Fixed, fix_shape};
+pub use ogeom_algo::join_seam_columns;
 pub use reanchor::reanchor_periodic_rings;
 pub use remodel::{restrict_degree, swept_to_elementary};
 pub use reshape::Reshape;

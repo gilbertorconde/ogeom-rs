@@ -15,6 +15,9 @@
 //! - an edge shorter than its own vertices' tolerances (the two ends
 //!   the same point by the model's own admission) is collapsed, its two
 //!   vertices made one;
+//! - an edge holding its column on a closed surface as plain pcurves,
+//!   walked once each way on two columns a period apart, is made a seam
+//!   of the surface ([`join_seam_columns`](ogeom_algo::join_seam_columns));
 //! - an edge with no pcurve on a face it bounds is given the trim
 //!   projection can honestly fit, as the readers do;
 //! - loose faces (a compound of them, or an open shell) are sewn where
@@ -104,6 +107,9 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         history = history.then(&built.history);
         current = built.shape;
     }
+
+    // Seams stored as plain pcurves, joined.
+    ogeom_algo::join_seam_columns(model, &current, tol)?;
 
     // Trims for edges that have none on a face they bound.
     let mut edges_trimmed = 0;

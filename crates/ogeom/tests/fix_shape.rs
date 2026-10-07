@@ -486,3 +486,209 @@ fn a_located_void_turned_right_way_out_stays_in_place() {
     let diagnosis = check(&model, &fixed.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
 }
+
+const DRUM_RADIUS: f64 = 5.0;
+const DRUM_HEIGHT: f64 = 6.0;
+
+/// A drum of radius 5 and height 6 on the XY plane whose round side is two
+/// faces on one cylinder: `u` from 0 to pi and from pi to 2 pi, joined at
+/// `u = pi` by a ruling with one pcurve and at the cylinder's seam by a
+/// ruling `seam` holding two plain pcurves, the face on `u` from 0 to pi's
+/// column at `u = 0` first and the other's at `u = 2 pi` after it.
+fn drum_with_a_seam_as_two_pcurves(model: &mut Model) -> (Shape, Shape) {
+    use ogeom::geom::{CircleCurve, CylinderSurface, Line2d, LineCurve};
+    use ogeom::math::{Circle, Cylinder, Point2};
+    let pi = core::f64::consts::PI;
+    let (r, h) = (DRUM_RADIUS, DRUM_HEIGHT);
+    let cylinder = model.geometry_mut().add_surface(
+        CylinderSurface::new(Cylinder::new(Frame::WORLD, r, T).unwrap(), (0.0, h))
+            .unwrap()
+            .into(),
+    );
+    let at = |x: f64, z: f64| Point::new(x, 0.0, z);
+    let [p0, p1, q0, q1] = [at(r, 0.0), at(-r, 0.0), at(r, h), at(-r, h)];
+    let [v_p0, v_p1, v_q0, v_q1] = [p0, p1, q0, q1].map(|p| make_vertex(model, p).shape);
+    let level = |z: f64| {
+        let frame = Frame::new(Point::new(0.0, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+        CircleCurve::new(Circle::new(frame, r, T).unwrap())
+    };
+    let arc = |model: &mut Model, z: f64, range: (f64, f64), from: &Shape, to: &Shape| {
+        ogeom::algo::make_edge_between(model, level(z).into(), range, from, to, T)
+            .unwrap()
+            .shape
+    };
+    let b1 = arc(model, 0.0, (0.0, pi), &v_p0, &v_p1);
+    let b2 = arc(model, 0.0, (pi, 2.0 * pi), &v_p1, &v_p0);
+    let t1 = arc(model, h, (0.0, pi), &v_q0, &v_q1);
+    let t2 = arc(model, h, (pi, 2.0 * pi), &v_q1, &v_q0);
+    let rule = |model: &mut Model, a: Point, b: Point, from: &Shape, to: &Shape| {
+        let line = LineCurve::segment(a, b, T).unwrap();
+        ogeom::algo::make_edge_between(model, line.into(), (0.0, h), from, to, T)
+            .unwrap()
+            .shape
+    };
+    let seam = rule(model, p0, q0, &v_p0, &v_q0);
+    let middle = rule(model, p1, q1, &v_p1, &v_q1);
+    let chart = |model: &mut Model, edge: &Shape, from: (f64, f64), to: (f64, f64)| {
+        let (a, b) = (Point2::new(from.0, from.1), Point2::new(to.0, to.1));
+        let line = Line2d::segment(a, b, T).unwrap();
+        ogeom::algo::attach_pcurve(
+            model,
+            edge,
+            line.into(),
+            cylinder,
+            Location::identity(),
+            (0.0, a.distance(b)),
+        )
+        .unwrap();
+    };
+    chart(model, &b1, (0.0, 0.0), (pi, 0.0));
+    chart(model, &b2, (pi, 0.0), (2.0 * pi, 0.0));
+    chart(model, &t1, (0.0, h), (pi, h));
+    chart(model, &t2, (pi, h), (2.0 * pi, h));
+    chart(model, &middle, (pi, 0.0), (pi, h));
+    chart(model, &seam, (0.0, 0.0), (0.0, h));
+    chart(model, &seam, (2.0 * pi, 0.0), (2.0 * pi, h));
+    let side = |model: &mut Model, ring: &[Shape]| {
+        let wire = ogeom::algo::make_wire(model, ring, T).unwrap().shape;
+        ogeom::algo::make_face_on(model, cylinder, &[wire], T)
+            .unwrap()
+            .shape
+    };
+    let front = side(
+        model,
+        &[b1.clone(), middle.clone(), t1.reversed(), seam.reversed()],
+    );
+    let back = side(
+        model,
+        &[b2.clone(), seam.clone(), t2.reversed(), middle.reversed()],
+    );
+    let cap = |model: &mut Model, z: f64, normal: Direction, ring: Vec<Shape>| {
+        let frame = Frame::new(Point::new(0.0, 0.0, z), normal, Direction::X, T).unwrap();
+        ogeom::algo::make_face_with_pcurves(
+            model,
+            SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(frame))),
+            &[ring],
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let bottom = cap(
+        model,
+        0.0,
+        -Direction::Z,
+        vec![b2.reversed(), b1.reversed()],
+    );
+    let top = cap(model, h, Direction::Z, vec![t1, t2]);
+    let shell = ogeom::algo::make_shell(model, &[front, back, bottom, top])
+        .unwrap()
+        .shape;
+    let solid = ogeom::algo::make_solid(model, &[shell]).unwrap().shape;
+    (solid, seam)
+}
+
+/// A seam between two faces on one surface stored as two plain pcurves a
+/// period apart is found by `check`: the lookup by surface hands both faces
+/// the first column, and the face on the other reads its boundary a period
+/// off. Made a seam, each face walks its own column, `check` finds nothing,
+/// and a boolean through the seam gives half the drum.
+#[test]
+fn a_seam_stored_as_two_plain_pcurves_is_made_a_seam() {
+    use ogeom::topo::EdgeRepr;
+    let mut model = Model::new();
+    let (drum, seam) = drum_with_a_seam_as_two_pcurves(&mut model);
+    let found = check(&model, &drum, T).unwrap();
+    let broken = found.of(ogeom::algo::Severity::Broken);
+    assert!(
+        broken
+            .iter()
+            .any(|p| p.kind == ShapeType::Edge && p.at.is_same(&seam)),
+        "the edge holding both columns: {found}"
+    );
+    assert!(
+        broken.iter().any(|p| p.kind == ShapeType::Face),
+        "the face reading the other's column: {found}"
+    );
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &drum, T).unwrap();
+    assert!(!fixed.report.before.is_valid());
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let mut seams = Vec::new();
+    for edge in explore_unique(&model, &fixed.shape, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        for r in &data.representations {
+            if let EdgeRepr::Seam {
+                forward, reversed, ..
+            } = r
+            {
+                assert_eq!(data.representations.len(), 2, "the curve and the seam");
+                seams.push((*forward, *reversed));
+            }
+        }
+    }
+    assert_eq!(seams.len(), 1, "one edge made a seam: {seams:?}");
+    // The face walking the edge up its length stands on `u = 2 pi`.
+    let column = |id| {
+        ogeom::geom::Curve2d::point_at(model.geometry().pcurve(id).unwrap(), 0.0, T)
+            .unwrap()
+            .x
+    };
+    let tau = core::f64::consts::TAU;
+    assert!((column(seams[0].0) - tau).abs() < 1e-9);
+    assert!(column(seams[0].1).abs() < 1e-9);
+
+    let whole = core::f64::consts::PI * DRUM_RADIUS * DRUM_RADIUS * DRUM_HEIGHT;
+    assert!((volume_of(&model, &fixed.shape) - whole).abs() < whole * 1e-3);
+    let half = make_box(
+        &mut model,
+        Frame::new(Point::new(0.0, -10.0, -1.0), Direction::Z, Direction::X, T).unwrap(),
+        (10.0, 20.0, DRUM_HEIGHT + 2.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let common = ogeom::boolean::common(&mut model, &fixed.shape, &half, T)
+        .unwrap()
+        .shape;
+    let found = check(&model, &common, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let v = volume_of(&model, &common);
+    assert!(
+        (v - whole / 2.0).abs() < whole * 1e-3,
+        "{v} against {whole}"
+    );
+}
+
+/// The repair reaches only the shape it is given: in a compound noted as
+/// holding the drum's nodes, as an operation's result holds what it passed
+/// through from its operands, joining the seam's columns leaves the drum,
+/// which still holds them, as it was.
+#[test]
+fn joining_seam_columns_leaves_an_operand_as_it_was() {
+    let mut model = Model::new();
+    let (drum, seam) = drum_with_a_seam_as_two_pcurves(&mut model);
+    let since = model.node_count();
+    let holder = make_compound(&mut model, std::slice::from_ref(&drum))
+        .unwrap()
+        .shape;
+    model.note_held(&holder, since).unwrap();
+    assert_eq!(
+        ogeom::heal::join_seam_columns(&mut model, &holder, T).unwrap(),
+        1
+    );
+    let found = check(&model, &holder, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let plain = model
+        .node(&seam)
+        .unwrap()
+        .data()
+        .as_edge()
+        .unwrap()
+        .representations
+        .iter()
+        .filter(|r| matches!(r, ogeom::topo::EdgeRepr::PCurve { .. }))
+        .count();
+    assert_eq!(plain, 2, "the drum's own edge keeps both pcurves");
+    assert!(!check(&model, &drum, T).unwrap().is_valid());
+}

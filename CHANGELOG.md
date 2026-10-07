@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Check reports a seam stored as plain pcurves, and healing repairs
+  it.** An edge along a closed surface's seam, used once each way by the
+  faces on that surface but holding its sides as plain pcurves, gave both
+  uses the same side, and the next boolean failed ("a face boundary strand
+  dangles"). `check` reports such an edge, and any face whose boundary does
+  not close in its surface's parameter space, as broken. `fix_shape` (and
+  the new `ogeom::algo::join_seam_columns`) makes the edge a seam, so a
+  solid saved from 0.9.9 is repaired without rebuilding. Fixed pipes of a
+  section with a closed edge, and IGES faces whose seam is sewn from two
+  edges, come out with a proper seam.
+
 ## [0.9.10] - 2026-10-07
 
 A patch release: no breaking API changes. A boolean leaves a seam between

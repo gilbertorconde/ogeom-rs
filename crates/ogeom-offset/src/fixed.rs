@@ -365,20 +365,37 @@ fn leg_solid(
                 identity.clone(),
                 range,
             )?;
-            for (rail, u) in [(rail_a, range.0), (rail_b, range.1)] {
-                ogeom_algo::attach_pcurve(
+            let rail_at = |u: f64| {
+                chart_line(
+                    Point2::new(u, 0.0),
+                    Vector2::new(0.0, 1.0),
+                    spine_range,
+                    tol,
+                )
+            };
+            if rail_a.edge.node() == rail_b.edge.node() {
+                // A closed section edge: one rail up both sides of the
+                // chart, walked up the far side and down the near one.
+                ogeom_algo::attach_seam(
                     model,
-                    &rail.edge,
-                    chart_line(
-                        Point2::new(u, 0.0),
-                        Vector2::new(0.0, 1.0),
-                        spine_range,
-                        tol,
-                    )?,
+                    &rail_b.edge,
+                    rail_at(range.1)?,
+                    rail_at(range.0)?,
                     surface_id,
                     identity.clone(),
                     spine_range,
                 )?;
+            } else {
+                for (rail, u) in [(rail_a, range.0), (rail_b, range.1)] {
+                    ogeom_algo::attach_pcurve(
+                        model,
+                        &rail.edge,
+                        rail_at(u)?,
+                        surface_id,
+                        identity.clone(),
+                        spine_range,
+                    )?;
+                }
             }
             // Round the side: along the edge at the start, up the far rail,
             // back along the edge at the end, down the near rail; run so it

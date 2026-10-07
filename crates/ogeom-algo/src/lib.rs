@@ -34,6 +34,7 @@ pub mod proximity;
 pub mod recognize;
 mod recognize_patch;
 mod recognize_swept;
+mod seam_columns;
 pub mod sew;
 pub mod sweep;
 pub mod text;
@@ -85,6 +86,7 @@ pub use primitive::{
 pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
 pub use recognize::{Canonical, Recognized, recognize_points};
+pub use seam_columns::join_seam_columns;
 pub use sew::{Sewn, make_wire_unordered, order_edges, sew, sew_around, sew_within};
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;

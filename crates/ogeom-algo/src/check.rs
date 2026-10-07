@@ -31,6 +31,7 @@ use std::fmt;
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve2d, Curve3d, Surface};
+use ogeom_math::Point2;
 use ogeom_mesh::Deflection;
 use ogeom_topo::{EdgeRepr, Filter, Model, Shape, ShapeType, TShapeId, explore, explore_unique};
 
@@ -162,6 +163,7 @@ pub fn check(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Diagn
     }
     for face in of(ShapeType::Face) {
         check_face(model, face, tol, &mut found)?;
+        check_face_chart(model, face, tol, &mut found)?;
     }
     for shell in of(ShapeType::Shell) {
         check_shell(model, shell, &mut found)?;
@@ -557,6 +559,7 @@ fn check_pcurves(
     tol: Tolerances,
     found: &mut Diagnosis,
 ) -> OgeomResult<()> {
+    check_plain_pcurves_apart(model, edge, data, tol, found)?;
     let claimed = data.same_parameter();
     for repr in &data.representations {
         let (sides, pcurve_range, surface_id, at) = match repr {
@@ -755,6 +758,331 @@ fn check_face(
         }
     }
     Ok(())
+}
+
+/// An edge's plain pcurves on one surface, at one placement, must agree.
+///
+/// A face finds its edge's pcurve by surface and placement, and the lookup
+/// answers with the first that matches. Where two plain pcurves stand on
+/// one surface and part (the two columns of a closed surface's seam,
+/// attached as two plain pcurves for two faces on that surface), every face
+/// reads the first, and a face that walks the other column reads its
+/// boundary a period away. Apart is measured along the surface between
+/// them: two fits of one edge stay within its tolerance of each other,
+/// two columns of a seam stand the surface's girth apart.
+fn check_plain_pcurves_apart(
+    model: &Model,
+    edge: &Shape,
+    data: &ogeom_topo::EdgeData,
+    tol: Tolerances,
+    found: &mut Diagnosis,
+) -> OgeomResult<()> {
+    let reach = CHART_GAP_SLACK * data.tolerance.get().max(tol.approximation());
+    let plain: Vec<_> = data
+        .representations
+        .iter()
+        .filter_map(|r| match r {
+            EdgeRepr::PCurve {
+                curve,
+                surface,
+                location,
+                range,
+            } => Some((*curve, *surface, location, *range)),
+            _ => None,
+        })
+        .collect();
+    for (i, a) in plain.iter().enumerate() {
+        for b in &plain[i + 1..] {
+            if a.1 != b.1 || a.2 != b.2 {
+                continue;
+            }
+            let (Some(surface), Some(pa), Some(pb)) = (
+                model.geometry().surface(a.1),
+                model.geometry().pcurve(a.0),
+                model.geometry().pcurve(b.0),
+            ) else {
+                ogeom_bail!(Dangling, "an edge names geometry not in this model");
+            };
+            let apart = pcurves_apart(surface, (pa, a.3), (pb, b.3), tol)?;
+            if apart > reach {
+                found.note(
+                    Severity::Broken,
+                    edge,
+                    ShapeType::Edge,
+                    format!(
+                        "holds two plain pcurves on one surface that stand {apart} \
+                         apart along it; a lookup by surface finds the first for \
+                         every face, so a face walking the other reads its boundary \
+                         in the wrong place"
+                    ),
+                );
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The widest distance between two pcurves, each sampled evenly over its
+/// own range, measured along the surface between them.
+fn pcurves_apart(
+    surface: &ogeom_geom::SurfaceGeometry,
+    (a, ra): (&ogeom_geom::PlanarCurve, (f64, f64)),
+    (b, rb): (&ogeom_geom::PlanarCurve, (f64, f64)),
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    const SAMPLES: u32 = 4;
+    let mut widest = 0.0_f64;
+    for i in 0..=SAMPLES {
+        let t = f64::from(i) / f64::from(SAMPLES);
+        let pa = a.point_at(ra.0 + (ra.1 - ra.0) * t, tol)?;
+        let pb = b.point_at(rb.0 + (rb.1 - rb.0) * t, tol)?;
+        if let Some(apart) = along_surface(surface, pa, pb, tol) {
+            widest = widest.max(apart);
+        }
+    }
+    Ok(widest)
+}
+
+/// A face's boundary, read edge by edge through the pcurve lookup the
+/// boolean and the mesher use, must close in its surface's chart.
+///
+/// Each edge is read as its face walks it: a plain pcurve from its start to
+/// its end, or reversed; a seam on the side whose start continues the point
+/// walked to, as the mesher picks it. At each joint, one edge's end and the
+/// next edge's start stand within the joint's tolerance of each other,
+/// measured along the surface between them, or a whole period apart along
+/// a direction the surface closes in. Otherwise the boundary does not close
+/// there.
+///
+/// A ring that goes once round the surface with no seam (a band's rim, one
+/// circle) closes by a single period's jump, and each such jump counts
+/// toward the ring's turns round the surface. Jumps that cancel (a period
+/// one way at one joint, back at another) at an edge that holds another
+/// plain pcurve on the surface close nothing: the lookup found the first,
+/// and the face walks the other, on the far column of the surface's seam.
+/// Cancelling jumps at edges with one pcurve each are a ring folding across
+/// the chart's join, which the mesher folds back, and are not reported.
+///
+/// Either way a boolean through the face finds a strand that dangles. A
+/// wire with an edge that has no pcurve on the face is reported by
+/// [`check_face`] and not walked.
+fn check_face_chart(
+    model: &Model,
+    face: &Shape,
+    tol: Tolerances,
+    found: &mut Diagnosis,
+) -> OgeomResult<()> {
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+        return Ok(());
+    };
+    let surface_id = data.surface;
+    let Some(surface) = model.geometry().surface(surface_id) else {
+        ogeom_bail!(Dangling, "face names a surface not in this model");
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let periods = [
+        (surface.is_periodic_u() || surface.is_closed_u(tol)).then_some(u1 - u0),
+        (surface.is_periodic_v() || surface.is_closed_v(tol)).then_some(v1 - v0),
+    ];
+    let stored = face.oriented(ogeom_topo::Orientation::Forward);
+    'wires: for wire in model.ordered_children_of(&stored)? {
+        let edges = model.ordered_children_of(&wire)?;
+        let Some(ends) = chart_ends(model, surface_id, &edges, tol)? else {
+            continue;
+        };
+        // The walk starts off a seam: a seam's side is picked by the point
+        // already walked to.
+        let Some(start) = ends.iter().position(|(e, _)| e.len() == 1) else {
+            continue;
+        };
+        let n = edges.len();
+        let mut walked: Vec<(Point2, Point2)> = Vec::with_capacity(n);
+        for k in 0..n {
+            let sides = &ends[(start + k) % n].0;
+            let picked = match walked.last() {
+                Some(&(_, last)) => sides
+                    .iter()
+                    .min_by(|a, b| last.distance(a.0).total_cmp(&last.distance(b.0))),
+                None => sides.first(),
+            };
+            let Some(&picked) = picked else { break };
+            walked.push(picked);
+        }
+        // Whole periods jumped at the joints, signed and in all, per
+        // direction.
+        let mut turns = [0_i64; 2];
+        let mut jumps = [0_i64; 2];
+        let mut misread = false;
+        for k in 0..walked.len() {
+            let (i, j) = ((start + k) % n, (start + k + 1) % n);
+            let (end, next) = (walked[k].1, walked[(k + 1) % walked.len()].0);
+            let joint = crate::build::edge_vertices(model, &edges[i])?
+                .and_then(|(_, v)| model.tolerance_of(&v).ok().flatten())
+                .map_or(0.0, |t| t.get());
+            let reach = CHART_GAP_SLACK
+                * [&edges[i], &edges[j]]
+                    .iter()
+                    .filter_map(|e| model.tolerance_of(e).ok().flatten())
+                    .map(|t| t.get())
+                    .fold(joint.max(tol.approximation()), f64::max);
+            let Some(apart) = along_surface(surface, end, next, tol) else {
+                continue;
+            };
+            if apart <= reach {
+                continue;
+            }
+            // The next edge's start brought to the end's copy of the chart.
+            let mut whole = [0_i64; 2];
+            let mut moved = next;
+            for (axis, period) in periods.iter().enumerate() {
+                let Some(period) = period.filter(|p| *p > 0.0 && p.is_finite()) else {
+                    continue;
+                };
+                let (from, to) = if axis == 0 {
+                    (end.x, &mut moved.x)
+                } else {
+                    (end.y, &mut moved.y)
+                };
+                #[allow(clippy::cast_possible_truncation, reason = "a few periods")]
+                let shift = ((from - *to) / period).round() as i64;
+                #[allow(clippy::cast_precision_loss, reason = "a few periods")]
+                {
+                    *to += shift as f64 * period;
+                }
+                whole[axis] = -shift;
+            }
+            let closes = whole != [0, 0]
+                && along_surface(surface, end, moved, tol).is_some_and(|gap| gap <= reach);
+            if !closes {
+                found.note(
+                    Severity::Broken,
+                    face,
+                    ShapeType::Face,
+                    format!(
+                        "its boundary does not close in its surface's chart: edge \
+                         {i} ends {apart} along the surface from where edge {j} \
+                         begins, outside the joint's tolerance of {reach}; a \
+                         boolean through the face finds a strand that dangles"
+                    ),
+                );
+                continue 'wires;
+            }
+            for axis in 0..2 {
+                turns[axis] += whole[axis];
+                jumps[axis] += whole[axis].abs();
+            }
+            misread |= ends[i].1 || ends[j].1;
+        }
+        if misread && (0..2).any(|axis| jumps[axis] > turns[axis].abs()) {
+            found.note(
+                Severity::Broken,
+                face,
+                ShapeType::Face,
+                "its boundary does not close in its surface's chart: it jumps a \
+                 whole period at joints whose jumps cancel, so an edge between \
+                 them is read on the far column of the surface's seam; a boolean \
+                 through the face finds a strand that dangles"
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// How many times its joint's tolerance a gap in a face's chart may span
+/// before the boundary is open there. A fitted trim's ends wander from its
+/// vertex by about the tolerance its edge states, and never less than the
+/// fitting accuracy, which is where the tolerance taken starts.
+const CHART_GAP_SLACK: f64 = 10.0;
+
+/// An edge's ends in a face's chart as the face walks it (one pair for a
+/// pcurve, one per side for a seam), and whether the edge holds another
+/// plain pcurve on the surface at the same placement.
+type ChartEnds = (Vec<(Point2, Point2)>, bool);
+
+/// Each edge's [`ChartEnds`]; `None` where an edge has no pcurve on the
+/// surface.
+fn chart_ends(
+    model: &Model,
+    surface: ogeom_topo::SurfaceId,
+    edges: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<ChartEnds>>> {
+    let mut ends = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+            return Ok(None);
+        };
+        let (ids, range, another) = match data.pcurve_for(surface, edge.location()) {
+            Some(EdgeRepr::PCurve {
+                curve,
+                range,
+                location,
+                ..
+            }) => {
+                let plain = data
+                    .representations
+                    .iter()
+                    .filter(|r| {
+                        matches!(r, EdgeRepr::PCurve { .. })
+                            && r.surface() == Some(surface)
+                            && r.location() == Some(location)
+                    })
+                    .count();
+                (vec![*curve], *range, plain > 1)
+            }
+            Some(EdgeRepr::Seam {
+                forward,
+                reversed,
+                range,
+                ..
+            }) => (vec![*forward, *reversed], *range, false),
+            _ => return Ok(None),
+        };
+        let mut sides = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(pcurve) = model.geometry().pcurve(id) else {
+                ogeom_bail!(Dangling, "an edge names geometry not in this model");
+            };
+            let (a, b) = (
+                pcurve.point_at(range.0, tol)?,
+                pcurve.point_at(range.1, tol)?,
+            );
+            sides.push(if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                (b, a)
+            } else {
+                (a, b)
+            });
+        }
+        ends.push((sides, another));
+    }
+    Ok(Some(ends))
+}
+
+/// The length of the straight chart segment from `a` to `b`, lifted onto
+/// the surface: nothing where the two meet at a pole, a period's worth of
+/// surface where they stand on two columns of a seam. `None` where the
+/// surface cannot be evaluated along it.
+fn along_surface(
+    surface: &ogeom_geom::SurfaceGeometry,
+    a: Point2,
+    b: Point2,
+    tol: Tolerances,
+) -> Option<f64> {
+    const PIECES: u32 = 8;
+    if a.distance(b) <= tol.parametric() {
+        return Some(0.0);
+    }
+    let at = |t: f64| surface.point_at(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, tol);
+    let mut last = at(0.0).ok()?;
+    let mut length = 0.0;
+    for i in 1..=PIECES {
+        let next = at(f64::from(i) / f64::from(PIECES)).ok()?;
+        length += last.distance(next);
+        last = next;
+    }
+    Some(length)
 }
 
 /// A shell is closed when every edge is used an even number of times.
