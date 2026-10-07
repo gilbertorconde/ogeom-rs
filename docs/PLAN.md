@@ -299,8 +299,6 @@ Kernel threading already runs through `ogeom_core::parallel::map_ordered`
   segment's middle (`ogeom-hlr/src/project.rs`), samples only on the exact
   path. Split each projected edge where it crosses a projected contour and
   test each interval (Appel's quantitative invisibility).
-- `unify_same_domain` adds its merged faces in hash order
-  (`ogeom-heal/src/upgrade.rs`), so node ids differ between runs.
 - The 2D wire offset can drop a valid piece beside a large concave arc: its
   survivor test measures against a 33-point polyline
   (`ogeom-offset/src/wire2d.rs`). Measure to the exact arc.

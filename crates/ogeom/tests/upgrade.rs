@@ -151,3 +151,42 @@ fn unifying_around_a_face_merges_its_carrier_and_nothing_else() {
     let (whole, _) = ogeom::heal::unify_same_domain(&mut model, &row, T).unwrap();
     assert_eq!(face_count(&model, &whole.shape), 6);
 }
+
+/// Equal inputs in fresh models unify to equal results: the merged faces
+/// enter the arena in one order, so node ids and face order repeat from
+/// run to run.
+#[test]
+fn unify_same_domain_is_deterministic() {
+    let run = || {
+        let mut model = Model::new();
+        let mut row = ogeom::algo::make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        for k in 1..4 {
+            let at = Frame::new(
+                Point::new(f64::from(k), 0.0, 0.0),
+                Direction::Z,
+                Direction::X,
+                T,
+            )
+            .unwrap();
+            let next = ogeom::algo::make_box(&mut model, at, (1.0, 1.0, 1.0), T)
+                .unwrap()
+                .shape;
+            row = ogeom::boolean::fuse(&mut model, &row, &next, T)
+                .unwrap()
+                .shape;
+        }
+        let (whole, _) = ogeom::heal::unify_same_domain(&mut model, &row, T).unwrap();
+        explore_unique(&model, &whole.shape, ShapeType::Face)
+            .unwrap()
+            .iter()
+            .map(|f| f.node().index())
+            .collect::<Vec<_>>()
+    };
+    let first = run();
+    assert_eq!(first.len(), 6);
+    for _ in 0..4 {
+        assert_eq!(run(), first, "the merged faces keep their node ids");
+    }
+}

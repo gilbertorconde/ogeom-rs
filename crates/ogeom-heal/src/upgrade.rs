@@ -171,14 +171,21 @@ fn unify_own(
         }
     }
 
-    let mut clusters: HashMap<usize, Vec<usize>> = HashMap::new();
+    // Clusters in the order of their first face, so the merged faces enter
+    // the arena in the same order on every run.
+    let mut cluster_of_root: HashMap<usize, usize> = HashMap::new();
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
     for i in 0..faces.len() {
         let r = root(&mut group, i);
-        clusters.entry(r).or_default().push(i);
+        let c = *cluster_of_root.entry(r).or_insert_with(|| {
+            clusters.push(Vec::new());
+            clusters.len() - 1
+        });
+        clusters[c].push(i);
     }
 
     let mut reshape = Reshape::new();
-    for members in clusters.values() {
+    for members in &clusters {
         if members.len() < 2 {
             continue;
         }
