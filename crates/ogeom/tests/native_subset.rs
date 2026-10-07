@@ -231,10 +231,10 @@ fn a_582_face_plate_snapshot_is_small_and_quick() {
     let (model, plate) = holed_plate(24);
     assert_eq!(faces(&model, &plate), 582);
     let options = WriteOptions::default();
-    // The fastest of three, so a busy machine does not decide it.
+    // The fastest of ten, so a busy machine does not decide it.
     let mut fastest = std::time::Duration::MAX;
     let mut text = String::new();
-    for _ in 0..3 {
+    for _ in 0..10 {
         let started = std::time::Instant::now();
         text = write(&model, std::slice::from_ref(&plate), options).unwrap();
         fastest = fastest.min(started.elapsed());
