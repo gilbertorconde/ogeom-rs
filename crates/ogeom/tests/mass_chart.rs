@@ -106,6 +106,93 @@ fn half_an_elliptic_prism_measures_half() {
     );
 }
 
+/// Half the elliptic prism and the three-quarter drum below, each placed
+/// by similarities that scale, turn, mirror and move: their faces are
+/// still integrated round their chart boundaries, and volume, area and
+/// centre follow the placement to rounding.
+#[test]
+fn chart_faces_under_a_scaling_placement_measure_exactly() {
+    use ogeom::math::{Axis, Direction, Transform};
+    let mut model = Model::new();
+    let (east, west) = (Point::new(10.0, 0.0, 0.0), Point::new(-10.0, 0.0, 0.0));
+    let (e, w) = (
+        model.add_vertex(VertexData::new(east)),
+        model.add_vertex(VertexData::new(west)),
+    );
+    let arc = make_edge_between(&mut model, ellipse(10.0, 5.0), (0.0, PI), &e, &w, T)
+        .unwrap()
+        .shape;
+    let chord = LineCurve::segment(west, east, T).unwrap();
+    let range = chord.domain();
+    let base = make_edge_between(&mut model, Curve::Line(chord), range, &w, &e, T)
+        .unwrap()
+        .shape;
+    let half = prism_of(&mut model, vec![arc, base], 4.0);
+
+    let below = Frame::new(Point::new(0.0, 0.0, -3.0), Direction::Z, Direction::X, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(&mut model, below, 5.0, 6.0, T)
+        .unwrap()
+        .shape;
+    let corner = Frame::new(Point::new(0.0, 0.0, -20.0), Direction::Z, Direction::X, T).unwrap();
+    let quarter = ogeom::algo::make_box(&mut model, corner, (20.0, 20.0, 40.0), T)
+        .unwrap()
+        .shape;
+    let rest = ogeom::boolean::cut(&mut model, &drum, &quarter, T)
+        .unwrap()
+        .shape;
+
+    // Volume, area and centre of each as it stands unplaced.
+    let lean = 4.0 * 5.0 / (3.0 * PI);
+    let off = -4.0 * 5.0 / (9.0 * PI);
+    let shapes = [
+        (
+            &half,
+            PI * 10.0 * 5.0 * 4.0 / 2.0,
+            PI * 10.0 * 5.0 + perimeter(10.0, 5.0) * 2.0 + 20.0 * 4.0,
+            Point::new(0.0, lean, 2.0),
+        ),
+        (
+            &rest,
+            0.75 * PI * 25.0 * 6.0,
+            1.5 * PI * 25.0 + 0.75 * 2.0 * PI * 5.0 * 6.0 + 2.0 * 5.0 * 6.0,
+            Point::new(off, off, 0.0),
+        ),
+    ];
+    let placements = [
+        Transform::scaling(Point::ORIGIN, 0.5, T).unwrap(),
+        Transform::translation(Vector::new(7.0, -3.0, 11.0))
+            * Transform::rotation(Axis::new(Point::ORIGIN, Direction::X), 0.7)
+            * Transform::scaling(Point::new(1.0, 2.0, 3.0), 2.0, T).unwrap(),
+        Transform::plane_mirror(Point::new(0.0, 4.0, 0.0), Direction::Y)
+            * Transform::scaling(Point::new(-2.0, 0.0, 1.0), 0.25, T).unwrap(),
+        Transform::scaling(Point::new(2.0, 0.0, 0.0), -3.0, T).unwrap(),
+    ];
+    for (shape, volume, area, centre) in shapes {
+        for placement in placements {
+            let placed = ogeom::algo::transformed(&mut model, shape, placement)
+                .unwrap()
+                .shape;
+            let s = placement.scale_factor().abs();
+            let at = placement.apply(centre);
+            let v = volume_properties(&model, &placed, Deflection::default(), T).unwrap();
+            let a = surface_properties(&model, &placed, Deflection::default(), T).unwrap();
+            for (found, exact) in [(v, volume * s.powi(3)), (a, area * s * s)] {
+                assert_eq!(found.deflection, 0.0, "integrated, not meshed");
+                assert!(
+                    (found.mass - exact).abs() < 1e-9 * exact,
+                    "{} against {exact}",
+                    found.mass
+                );
+            }
+            assert!(
+                v.centre.distance(at) < 1e-9 * (1.0 + at.to_vector().magnitude()),
+                "{:?} against {at:?}",
+                v.centre
+            );
+        }
+    }
+}
+
 /// A drum with a quarter cut away, along its seam and across its axis:
 /// its caps are concave, three quarters of a disc, and its wall keeps the
 /// seam down one column only. It measures exactly, which needs every face

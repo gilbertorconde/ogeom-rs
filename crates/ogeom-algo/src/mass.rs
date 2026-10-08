@@ -13,13 +13,15 @@
 //! round its chart boundary by Green's theorem. Either way the result
 //! reports a deflection of zero.
 //!
-//! A shape with a face neither can take (no pcurves, a scaling placement,
-//! a boundary that does not close in the chart) is measured on its
-//! tessellation instead, and the result carries the deflection it was
-//! computed at. Halving the deflection and seeing the answer move tells a
-//! caller how much to trust it; [`MassProperties::deflection`] is what
-//! makes that check possible. Lengths are always measured on a
-//! discretization.
+//! A face's placement may scale: it is integrated on its surface placed
+//! rigidly, and each sample is carried out by the scale.
+//!
+//! A shape with a face neither can take (no pcurves, a boundary that does
+//! not close in the chart) is measured on its tessellation instead, and
+//! the result carries the deflection it was computed at. Halving the
+//! deflection and seeing the answer move tells a caller how much to trust
+//! it; [`MassProperties::deflection`] is what makes that check possible.
+//! Lengths are always measured on a discretization.
 //!
 //! # The one formula
 //!
@@ -479,6 +481,9 @@ fn probed_mesh_volume(
 
 /// A face whose trim the exact integrator can walk: an analytic surface
 /// trimmed to a chart rectangle, or a plane trimmed to a full disc.
+///
+/// A rectangle or a disc stands on its surface placed as the face is less
+/// the placement's scale, which `split` applies to every sample.
 enum ExactFace {
     /// `[u0, u1] x [v0, v1]` on the (placed) surface.
     ChartRectangle {
@@ -486,6 +491,7 @@ enum ExactFace {
         rect: (f64, f64, f64, f64),
         sign: f64,
         share: f64,
+        split: crate::mass_chart::Split,
     },
     /// A full circular disc on a plane.
     Disc {
@@ -496,6 +502,7 @@ enum ExactFace {
         radius: f64,
         sign: f64,
         share: f64,
+        split: crate::mass_chart::Split,
     },
     /// Any other face, integrated round its chart loops.
     Chart(Box<crate::mass_chart::ChartFace>),
@@ -880,8 +887,13 @@ static DEBUG_MASS: std::sync::LazyLock<bool> =
 fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
     use ogeom_geom::Surface as _;
     match &faces[0] {
-        ExactFace::ChartRectangle { surface, rect, .. } => surface.point_at(rect.0, rect.2, tol),
-        ExactFace::Disc { centre, .. } => Ok(*centre),
+        ExactFace::ChartRectangle {
+            surface,
+            rect,
+            split,
+            ..
+        } => Ok(split.point(surface.point_at(rect.0, rect.2, tol)?)),
+        ExactFace::Disc { centre, split, .. } => Ok(split.point(*centre)),
         ExactFace::Chart(chart) => chart.anchor(tol),
     }
 }
@@ -913,6 +925,7 @@ fn integrate_face<A: Clone>(
             surface,
             rect,
             sign,
+            split,
             ..
         } => {
             let (u0, u1, v0, v1) = *rect;
@@ -986,7 +999,8 @@ fn integrate_face<A: Clone>(
                         }
                         let sample = (|| -> OgeomResult<()> {
                             let (p, du, dv) = surface.point_d1_at(u, v, tol)?;
-                            contribute(&mut sums, p, du.cross(dv) * (sign * weight), share);
+                            let n_da = du.cross(dv) * (sign * weight);
+                            contribute(&mut sums, split.point(p), split.area(n_da), share);
                             Ok(())
                         })();
                         if let Err(e) = sample {
@@ -1007,6 +1021,7 @@ fn integrate_face<A: Clone>(
             normal,
             radius,
             sign,
+            split,
             ..
         } => {
             let failure: Option<ogeom_core::OgeomError> = None;
@@ -1022,7 +1037,8 @@ fn integrate_face<A: Clone>(
                         return;
                     }
                     let p = *centre + (*e1 * theta.cos() + *e2 * theta.sin()) * rho;
-                    contribute(&mut sums, p, *normal * (sign * rho * weight), share);
+                    let n_da = *normal * (sign * rho * weight);
+                    contribute(&mut sums, split.point(p), split.area(n_da), share);
                 });
             }
             match failure {
@@ -1100,16 +1116,15 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     if !analytic {
         return Ok(None);
     }
-    let placement = face.transform(model.datums())?;
     // The chart rectangle comes from the pcurves, whose windows are the
-    // *unscaled* surface's; a scaling placement changes the chart's metric
-    // and the windows with it, so only rigid placements take the exact path.
-    // A reflecting one turns the placed chart's normal against the face's.
-    let Some(handedness) = crate::mass_chart::rigid_handedness(&placement) else {
+    // unplaced surface's: a rigid placement keeps them, and the scale is
+    // applied to the samples. A reflecting placement turns the placed
+    // chart's normal against the face's.
+    let Some(split) = crate::mass_chart::Split::of(&face.transform(model.datums())?) else {
         return Ok(None);
     };
-    let placed = surface.clone().transformed(&placement, tol)?;
-    let sign = handedness
+    let placed = surface.clone().transformed(split.rigid(), tol)?;
+    let sign = split.handedness()
         * if face.orientation() == ogeom_topo::Orientation::Reversed {
             -1.0
         } else {
@@ -1126,7 +1141,7 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     // so it covers less.
     let mut regions = Vec::with_capacity(wires.len());
     for wire in &wires {
-        let Some(region) = exact_wire(model, data, &placed, wire, sign, 1.0, tol)? else {
+        let Some(region) = exact_wire(model, data, &placed, split, wire, sign, 1.0, tol)? else {
             return Ok(None);
         };
         regions.push(region);
@@ -1763,10 +1778,12 @@ fn edge_heading(
 }
 
 /// The region one of a face's wires bounds, read off its pcurves.
+#[allow(clippy::too_many_arguments)]
 fn exact_wire(
     model: &Model,
     data: &ogeom_topo::FaceData,
     placed: &ogeom_geom::SurfaceGeometry,
+    split: crate::mass_chart::Split,
     wire: &Shape,
     sign: f64,
     share: f64,
@@ -1941,6 +1958,7 @@ fn exact_wire(
             radius,
             sign,
             share,
+            split,
         }));
     }
 
@@ -2016,6 +2034,7 @@ fn exact_wire(
         rect: (u0, u1, v0, v1),
         sign,
         share,
+        split,
     }))
 }
 
@@ -2185,7 +2204,7 @@ mod tests {
     use super::*;
     use crate::make_box;
     use approx::assert_relative_eq;
-    use ogeom_math::Frame;
+    use ogeom_math::{Frame, Transform};
 
     const T: Tolerances = Tolerances::millimetres();
 
@@ -2340,6 +2359,87 @@ mod tests {
         for i in 0..3 {
             for j in 0..3 {
                 assert_relative_eq!(a.inertia.rows[i][j], b.inertia.rows[i][j], epsilon = 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn a_scaling_placement_scales_the_exact_measures_by_their_powers() {
+        // A similarity `p -> s L p + t` carries a volume by `|s|^3` and an
+        // area by `s^2`, the centre by the placement itself, and the inertia
+        // about it to `|s|^5 L I L^T` (`s^4` for an area). Each shape is
+        // still measured on its exact surfaces, so all of it holds to
+        // rounding against the closed forms.
+        let mut model = Model::new();
+        let pi = core::f64::consts::PI;
+        let ball = crate::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+            .unwrap()
+            .shape;
+        let block = make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), T)
+            .unwrap()
+            .shape;
+        let drum = crate::make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+            .unwrap()
+            .shape;
+        // Volume, area and centre of each, as a textbook states them.
+        let shapes = [
+            (
+                &ball,
+                4.0 / 3.0 * pi * 1000.0,
+                4.0 * pi * 100.0,
+                Point::ORIGIN,
+            ),
+            (&block, 6.0, 22.0, Point::new(0.5, 1.0, 1.5)),
+            (&drum, 20.0 * pi, 28.0 * pi, Point::new(0.0, 0.0, 2.5)),
+        ];
+        let half = Transform::scaling(Point::ORIGIN, 0.5, T).unwrap();
+        let double = Transform::scaling(Point::new(1.0, -2.0, 3.0), 2.0, T).unwrap();
+        let turned = Transform::translation(Vector::new(7.0, -3.0, 11.0))
+            * Transform::rotation(ogeom_math::Axis::X, 0.7)
+            * half;
+        let mirrored = Transform::plane_mirror(Point::new(0.0, 4.0, 0.0), Direction::Y) * double;
+        let inverted = Transform::scaling(Point::new(2.0, 0.0, 0.0), -0.5, T).unwrap();
+
+        for (shape, volume, area, centre) in shapes {
+            let unplaced = [
+                volume_properties(&model, shape, fine(), T).unwrap(),
+                surface_properties(&model, shape, fine(), T).unwrap(),
+            ];
+            for placement in [half, double, turned, mirrored, inverted] {
+                let placed = crate::place::transformed(&mut model, shape, placement)
+                    .unwrap()
+                    .shape;
+                let s = placement.scale_factor().abs();
+                let l = placement.linear();
+                let measured = [
+                    volume_properties(&model, &placed, fine(), T).unwrap(),
+                    surface_properties(&model, &placed, fine(), T).unwrap(),
+                ];
+                for ((found, before), (power, exact)) in
+                    measured.iter().zip(&unplaced).zip([(3, volume), (2, area)])
+                {
+                    assert_eq!(found.deflection, 0.0, "the exact path was taken");
+                    assert_relative_eq!(found.mass, exact * s.powi(power), max_relative = 1e-11);
+                    let at = placement.apply(centre);
+                    assert!(
+                        found.centre.distance(at) <= 1e-10 * (1.0 + at.to_vector().magnitude()),
+                        "centre {:?} against {at:?}",
+                        found.centre
+                    );
+                    let expected = l * before.inertia * l.transposed() * s.powi(power + 2);
+                    let size = (0..3).map(|i| expected.rows[i][i]).fold(0.0, f64::max);
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            assert!(
+                                (found.inertia.rows[i][j] - expected.rows[i][j]).abs()
+                                    <= 1e-10 * size,
+                                "inertia [{i}][{j}] {} against {}",
+                                found.inertia.rows[i][j],
+                                expected.rows[i][j]
+                            );
+                        }
+                    }
+                }
             }
         }
     }

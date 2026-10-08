@@ -324,7 +324,10 @@ impl Segment {
 /// with the sign that makes its enclosed region count positive for the
 /// face's outer boundary and negative for a hole.
 pub(crate) struct ChartFace {
+    /// The surface placed as the face is less the placement's scale, which
+    /// `split` applies to every sample.
     surface: SurfaceGeometry,
+    split: Split,
     loops: Vec<(Vec<Segment>, f64)>,
     /// The face's orientation: `-1` where it uses its surface reversed.
     sign: f64,
@@ -353,8 +356,7 @@ pub(crate) struct ChartFace {
 /// A face's chart loops, or `None` where they cannot be had exactly: a
 /// surface whose integrand is not a trigonometric polynomial, an edge
 /// without a pcurve on the face or whose pcurve strays from it further than
-/// [`BESIDE`] allows, a placement that scales, or a loop whose pieces do
-/// not meet.
+/// [`BESIDE`] allows, or a loop whose pieces do not meet.
 pub(crate) fn chart_face(model: &Model, face: &Shape, tol: Tolerances) -> Option<ChartFace> {
     loops_of(model, face, tol).ok().flatten()
 }
@@ -448,7 +450,7 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
     );
     let Walked {
         placed,
-        handedness,
+        split,
         loops,
         scale,
         ..
@@ -468,7 +470,7 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
             }
         }
     }
-    let sign = handedness
+    let sign = split.handedness()
         * if face.orientation() == Orientation::Reversed {
             -1.0
         } else {
@@ -492,6 +494,7 @@ fn loops_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
         sign,
         u_ref,
         scale,
+        split,
     }))
 }
 
@@ -654,19 +657,99 @@ fn lobes(
     out
 }
 
-/// `1` for a placement that keeps a chart's metric and handedness, `-1` for
-/// one that keeps its metric and reflects it, `None` for one that scales:
-/// the pcurves are the unplaced surface's, and a scale changes the metric
-/// under them.
-pub(crate) fn rigid_handedness(placement: &ogeom_math::Transform) -> Option<f64> {
-    match placement.kind() {
-        ogeom_math::TransformKind::Identity
-        | ogeom_math::TransformKind::Translation
-        | ogeom_math::TransformKind::Rotation => Some(1.0),
-        ogeom_math::TransformKind::PlaneMirror | ogeom_math::TransformKind::PointMirror => {
-            Some(-1.0)
+/// A face's placement taken apart as `p -> magnify * rigid(p)`: a rigid
+/// motion, possibly reflecting, then a uniform scale about the origin.
+///
+/// The pcurves are the unplaced surface's, and a placed surface keeps its
+/// chart under a rigid motion but not under a scale, which stretches a
+/// length parameter (a plane's, a cylinder's height) under them. So a face
+/// is walked and integrated on its surface placed by `rigid`, and each
+/// sample is carried into the world by `magnify`: a point by the factor, an
+/// `n dA` by its square.
+#[derive(Clone, Copy)]
+pub(crate) struct Split {
+    rigid: ogeom_math::Transform,
+    magnify: f64,
+    /// `-1` where the placement reflects: the placed chart's own normal
+    /// then points against the face's.
+    handedness: f64,
+}
+
+impl Split {
+    /// `placement` taken apart, or `None` for one with no usable scale.
+    pub(crate) fn of(placement: &ogeom_math::Transform) -> Option<Self> {
+        let scale = placement.scale_factor();
+        let magnify = scale.abs();
+        if !magnify.is_finite() || magnify == 0.0 {
+            return None;
         }
-        _ => None,
+        let handedness = if placement.preserves_handedness() {
+            1.0
+        } else {
+            -1.0
+        };
+        let rigid = if scale == 1.0 {
+            *placement
+        } else {
+            ogeom_math::Transform::from_parts(
+                placement.linear() * scale.signum(),
+                1.0,
+                placement.translation_vector() * (1.0 / magnify),
+                1e-9,
+            )
+            .ok()?
+        };
+        Some(Self {
+            rigid,
+            magnify,
+            handedness,
+        })
+    }
+
+    /// The face's placement less its scale.
+    pub(crate) const fn rigid(&self) -> &ogeom_math::Transform {
+        &self.rigid
+    }
+
+    /// `1`, or `-1` where the placement reflects.
+    pub(crate) const fn handedness(&self) -> f64 {
+        self.handedness
+    }
+
+    /// Another placement under the same scale with it taken out: where a
+    /// curve of the face's own boundary stands against the surface placed
+    /// by [`Split::rigid`].
+    fn unscaled(&self, placement: &ogeom_math::Transform) -> OgeomResult<ogeom_math::Transform> {
+        if self.magnify == 1.0 {
+            return Ok(*placement);
+        }
+        ogeom_math::Transform::from_parts(
+            placement.linear(),
+            placement.scale_factor() / self.magnify,
+            placement.translation_vector() * (1.0 / self.magnify),
+            1e-9,
+        )
+    }
+
+    /// A point of the rigidly placed face carried into the world.
+    pub(crate) fn point(&self, p: Point) -> Point {
+        if self.magnify == 1.0 {
+            return p;
+        }
+        Point::from_vector(p.to_vector() * self.magnify)
+    }
+
+    /// A world point carried back beside the rigidly placed face.
+    pub(crate) fn unpoint(&self, p: Point) -> Point {
+        if self.magnify == 1.0 {
+            return p;
+        }
+        Point::from_vector(p.to_vector() * (1.0 / self.magnify))
+    }
+
+    /// An `n dA` of the rigidly placed face carried into the world.
+    pub(crate) fn area(&self, n_da: Vector) -> Vector {
+        n_da * (self.magnify * self.magnify)
     }
 }
 
@@ -706,13 +789,12 @@ pub(crate) fn runs_wide_of_an_edge(
                 _ => continue,
             };
             if placed.is_none() {
-                let placement = face.transform(model.datums())?;
-                if rigid_handedness(&placement).is_none() {
+                let Some(split) = Split::of(&face.transform(model.datums())?) else {
                     return Ok(false);
-                }
-                placed = Some(surface.clone().transformed(&placement, tol)?);
+                };
+                placed = Some((surface.clone().transformed(split.rigid(), tol)?, split));
             }
-            let Some(placed) = placed.as_ref() else {
+            let Some((placed, split)) = placed.as_ref() else {
                 continue;
             };
             for id in ids {
@@ -727,7 +809,8 @@ pub(crate) fn runs_wide_of_an_edge(
                     shift: Vector2::new(0.0, 0.0),
                     ribbon: None,
                 };
-                if let Fit::Beside(ribbon) = fit_to_edge(model, &edge, placed, &segment, tol)?
+                if let Fit::Beside(ribbon) =
+                    fit_to_edge(model, &edge, placed, split, &segment, tol)?
                     && ribbon.reach > tol.confusion()
                 {
                     return Ok(true);
@@ -740,11 +823,10 @@ pub(crate) fn runs_wide_of_an_edge(
 
 /// A face's boundary walked into closed chart loops.
 struct Walked {
-    /// The surface, placed as the face is.
+    /// The surface, placed as the face is less the placement's scale.
     placed: SurfaceGeometry,
-    /// `-1` where the placement reflects: the placed chart's own normal
-    /// then points against the face's.
-    handedness: f64,
+    /// The face's placement taken apart.
+    split: Split,
     /// Each loop, with the sign that turns it round its region: `1` where
     /// the face lies to the left of the walk, `-1` where to the right.
     loops: Vec<(Vec<Segment>, f64)>,
@@ -777,9 +859,8 @@ pub(crate) fn material_sides(
 }
 
 /// A face's loops in its chart, or `None` where they cannot be had: an
-/// edge without a pcurve on the face, a placement that scales, or a loop
-/// whose pieces do not meet; and where `strict`, a pcurve straying from
-/// its edge.
+/// edge without a pcurve on the face, or a loop whose pieces do not meet;
+/// and where `strict`, a pcurve straying from its edge.
 fn walked(
     model: &Model,
     face: &Shape,
@@ -792,13 +873,12 @@ fn walked(
     let Some(surface) = model.geometry().surface(data.surface) else {
         return Ok(None);
     };
-    // The pcurves are the unplaced surface's; a rigid placement keeps its
-    // chart, a scaling one would change the metric under them.
-    let placement = face.transform(model.datums())?;
-    let Some(handedness) = rigid_handedness(&placement) else {
+    // The pcurves are the unplaced surface's, which a rigid placement
+    // keeps the chart of; the scale is applied to the samples.
+    let Some(split) = Split::of(&face.transform(model.datums())?) else {
         return Ok(None);
     };
-    let placed = surface.clone().transformed(&placement, tol)?;
+    let placed = surface.clone().transformed(split.rigid(), tol)?;
     let ((u0, u1), (v0, v1)) = surface.domain();
     let period = Vector2::new(
         if surface.is_periodic_u() {
@@ -815,7 +895,17 @@ fn walked(
 
     let mut loops = Vec::new();
     for wire in model.ordered_children_of(face)? {
-        let Some(segments) = walk(model, data.surface, &placed, &wire, period, strict, tol)? else {
+        let Some(segments) = walk(
+            model,
+            data.surface,
+            &placed,
+            &split,
+            &wire,
+            period,
+            strict,
+            tol,
+        )?
+        else {
             return Ok(None);
         };
         loops.push(segments);
@@ -932,7 +1022,7 @@ fn walked(
         .collect();
     Ok(Some(Walked {
         placed,
-        handedness,
+        split,
         loops,
         lo,
         scale,
@@ -945,10 +1035,12 @@ fn walked(
 /// side an occurrence takes is the one continuing the point already walked
 /// to, so the walk starts off a seam where it can. A piece that starts a
 /// whole period from where the last one ended is moved by that period.
+#[allow(clippy::too_many_arguments)]
 fn walk(
     model: &Model,
     surface: ogeom_topo::SurfaceId,
     placed: &SurfaceGeometry,
+    split: &Split,
     wire: &Shape,
     period: Vector2,
     strict: bool,
@@ -1025,7 +1117,7 @@ fn walk(
             return Ok(None);
         };
         if strict {
-            match fit_to_edge(model, edge, placed, &segment, tol)? {
+            match fit_to_edge(model, edge, placed, split, &segment, tol)? {
                 Fit::Along => {}
                 Fit::Beside(ribbon) => segment.ribbon = Some(*ribbon),
                 Fit::Off => return Ok(None),
@@ -1075,6 +1167,7 @@ fn fit_to_edge(
     model: &Model,
     edge: &Shape,
     placed: &SurfaceGeometry,
+    split: &Split,
     segment: &Segment,
     tol: Tolerances,
 ) -> OgeomResult<Fit> {
@@ -1090,7 +1183,7 @@ fn fit_to_edge(
     };
     let curve = curve
         .clone()
-        .transformed(&edge.transform(model.datums())?, tol)?;
+        .transformed(&split.unscaled(&edge.transform(model.datums())?)?, tol)?;
     let stated = model
         .node(edge)
         .and_then(|n| n.data().as_edge())
@@ -1542,7 +1635,7 @@ impl ChartFace {
         let segment = &self.loops[0].0[0];
         let (at, _) = segment.at(segment.t0, tol)?;
         let at = into_domain(&self.surface, at);
-        self.surface.point_at(at.x, at.y, tol)
+        Ok(self.split.point(self.surface.point_at(at.x, at.y, tol)?))
     }
 
     /// The face's integral summed into an accumulator from `fresh`: every
@@ -1577,6 +1670,12 @@ impl ChartFace {
         contribute: impl Fn(&mut A, Point, Vector, f64),
         merge: impl Fn(&mut A, &A),
     ) -> OgeomResult<Option<A>> {
+        // The face is integrated where its surface stands less the
+        // placement's scale, and each sample carried into the world.
+        let reference = self.split.unpoint(reference);
+        let contribute = |sum: &mut A, p: Point, n_da: Vector, sign: f64| {
+            contribute(sum, self.split.point(p), self.split.area(n_da), sign);
+        };
         let analytic = self.analytic();
         let exact_inner = self.exact_inner(measure);
         // An area's inner panel across which `|n|` dips is graded towards

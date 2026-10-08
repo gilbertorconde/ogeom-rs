@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mass properties are exact under a scaling placement.**
+  `volume_properties` and `surface_properties` integrate faces under a
+  placement that scales on their exact surfaces, rigidly placed and scaled
+  back, instead of falling back to the tessellation (a ball scaled by 0.5
+  measured about 3e-4 low).
+
 ## [0.9.14] - 2026-10-08
 
 A patch release: no breaking API changes. The kernel runs in the browser:
