@@ -2,12 +2,16 @@
 //!
 //! A foot point is where the displacement from the surface to a target is
 //! perpendicular to both tangents. It is found by Newton from a seed, and
-//! the seed is what decides which foot: a grid over the surface's spans,
-//! a stored copy of that grid for many targets, or a caller's own guess.
+//! the seed is what decides which foot: a closed form, a branch and bound
+//! over a B-spline patch's spans, a grid over any other surface, a stored
+//! copy of either for many targets, or a caller's own guess.
+
+mod spans;
 
 use crate::{Surface, SurfaceGeometry, SurfaceJet};
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_math::Point;
+use spans::SpanBoxes;
 
 /// Where a point projects onto a surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -22,11 +26,19 @@ pub struct SurfaceProjection {
 
 /// The nearest point on a surface to `target`.
 ///
-/// A coarse grid to bracket, then Newton on the two conditions that define a
-/// foot point: the displacement from the surface to the target is perpendicular
-/// to both tangents. Grid resolution is `samples` per direction: the distance
-/// to a surface is generally multi-modal, and the grid sets how fine a basin
-/// it can tell apart.
+/// A seed, then Newton on the two conditions that define a foot point: the
+/// displacement from the surface to the target is perpendicular to both
+/// tangents. An elementary or swept surface seeds in closed form or along
+/// its profile. A B-spline patch seeds by branch and bound over its knot
+/// spans, to within a hundredth of the confusion of the nearest point of
+/// the whole patch, and ignores `samples`. Any other surface seeds from a grid of `samples`
+/// per direction: the distance to a surface is generally multi-modal, and
+/// the grid sets how fine a basin it can tell apart.
+///
+/// Where two feet of a B-spline patch are equally near to within a
+/// hundredth of the confusion, either is a right answer, and the one
+/// returned is fixed by the patch and the target: the one at the smaller
+/// `u`, then `v`, among the points the search seeds Newton from.
 ///
 /// # Errors
 ///
@@ -50,7 +62,19 @@ pub fn project_on_surface(
     ) {
         return Ok(found);
     }
+    if let Some(boxes) = span_boxes(surface) {
+        return boxes.project(surface, target, tol);
+    }
     grid_projection(surface, target, samples, tol)
+}
+
+/// The span boxes of a B-spline patch whose hull bounds it; `None` for any
+/// other surface.
+fn span_boxes(surface: &SurfaceGeometry) -> Option<SpanBoxes> {
+    match surface {
+        SurfaceGeometry::BSpline(spline) => SpanBoxes::of(spline),
+        _ => None,
+    }
 }
 
 /// The nearest point from the seed grid alone.
@@ -505,31 +529,41 @@ fn per_span(knots: &[f64], budget: usize, cap: usize) -> Vec<f64> {
     out
 }
 
-/// A surface's seeding grid, built once and asked many times.
+/// A surface's seeding structure, built once and asked many times.
 ///
-/// [`project_on_surface`] evaluates the same grid of surface points for
-/// every call: hundreds of evaluations per projection, identical each
-/// time. A caller projecting *many* targets onto *one* surface builds the
-/// grid once and each projection reduces to a nearest-seed scan plus the
-/// Newton polish: the same seeds, the same refinement, the same answer to
-/// the bit, at a fraction of the evaluations.
+/// [`project_on_surface`] builds the same seeding structure for every
+/// call: a B-spline patch's span boxes, or a grid of surface points
+/// for a surface with no closed form. A caller projecting *many* targets
+/// onto *one* surface builds it once, and each projection reduces to the
+/// search plus the Newton polish: the same seeds, the same refinement, the
+/// same answer to the bit.
 #[derive(Debug, Clone)]
 pub struct SurfaceSeeds {
     /// `(parameters, point)` per cell, row by row; a gap where the surface
-    /// would not evaluate.
+    /// would not evaluate. Empty where span boxes answer.
     rows: Vec<Vec<(f64, f64, Option<Point>)>>,
+    /// A B-spline patch's span boxes, which answer in place of the grid.
+    spans: Option<SpanBoxes>,
     /// A swept surface's profile scan, which answers in place of the grid.
     profile: Option<Profile>,
 }
 
 impl SurfaceSeeds {
-    /// Evaluate the grid `project_on_surface` would use, once.
+    /// Build the seeding structure `project_on_surface` would use, once.
     ///
     /// # Errors
     ///
     /// Never for a well-formed surface; evaluation failures leave gaps in
     /// the grid exactly as the per-call version tolerates them.
     pub fn over(surface: &SurfaceGeometry, samples: usize, tol: Tolerances) -> OgeomResult<Self> {
+        let profile = Profile::of(surface, samples, tol);
+        if let Some(spans) = span_boxes(surface) {
+            return Ok(Self {
+                rows: Vec::new(),
+                spans: Some(spans),
+                profile,
+            });
+        }
         let (us, vs) = seed_lines(surface, samples);
         let mut rows = Vec::with_capacity(us.len());
         for &u in &us {
@@ -541,11 +575,12 @@ impl SurfaceSeeds {
         }
         Ok(Self {
             rows,
-            profile: Profile::of(surface, samples, tol),
+            spans: None,
+            profile,
         })
     }
 
-    /// Project `target`, seeded from the stored grid, bit-identical to
+    /// Project `target`, seeded from the stored structure, bit-identical to
     /// [`project_on_surface`] at the same sample count.
     ///
     /// # Errors
@@ -561,6 +596,9 @@ impl SurfaceSeeds {
         // two answer alike to the bit.
         if let Some(found) = closed_form(surface, target, self.profile.as_ref(), tol) {
             return Ok(found);
+        }
+        if let Some(spans) = &self.spans {
+            return spans.project(surface, target, tol);
         }
         let mut scan = Scan::default();
         for row in &self.rows {
@@ -927,6 +965,227 @@ mod tests {
                 }
             }
             assert!(closed > 0, "{:?} never took a closed form", surface.kind());
+        }
+    }
+
+    /// A B-spline patch from a net of `nu` by `nv` points, each with a
+    /// weight; uniform clamped knots unless `knots` gives its own.
+    fn patch(
+        degree: (usize, usize),
+        knots: Option<(Vec<f64>, Vec<f64>)>,
+        (nu, nv): (usize, usize),
+        at: impl Fn(f64, f64) -> (Point, f64),
+    ) -> SurfaceGeometry {
+        use ogeom_math::{ControlGrid, KnotVector, Weighted};
+        let (ku, kv) = match knots {
+            Some((u, v)) => (
+                KnotVector::new(u, degree.0).unwrap(),
+                KnotVector::new(v, degree.1).unwrap(),
+            ),
+            None => (
+                KnotVector::clamped_uniform(degree.0, nu).unwrap(),
+                KnotVector::clamped_uniform(degree.1, nv).unwrap(),
+            ),
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let net = (0..nu)
+            .flat_map(|i| {
+                (0..nv).map(move |j| (i as f64 / (nu - 1) as f64, j as f64 / (nv - 1) as f64))
+            })
+            .map(|(s, t)| {
+                let (p, w) = at(s, t);
+                Weighted::new(p, w, T).unwrap()
+            })
+            .collect();
+        crate::BSplineSurface::rational(ku, kv, ControlGrid::new(net, nu, nv).unwrap())
+            .unwrap()
+            .into()
+    }
+
+    /// The nearest point by brute force: the nearest of a dense grid of
+    /// surface points, `per` per span and direction, polished by Newton.
+    fn brute_force(surface: &SurfaceGeometry, target: Point, per: usize) -> SurfaceProjection {
+        let SurfaceGeometry::BSpline(spline) = surface else {
+            unreachable!()
+        };
+        let lines = |k: &ogeom_math::KnotVector| -> Vec<f64> {
+            let (a, b) = k.domain();
+            let breaks: Vec<f64> = breaks(k)
+                .into_iter()
+                .filter(|x| *x >= a && *x <= b)
+                .collect();
+            let mut out: Vec<f64> = breaks
+                .windows(2)
+                .flat_map(|w| spread(w[0], w[1], per).into_iter().take(per))
+                .collect();
+            out.push(breaks[breaks.len() - 1]);
+            out
+        };
+        let (us, vs) = (lines(spline.u_knots()), lines(spline.v_knots()));
+        let mut best = (f64::INFINITY, (0.0, 0.0));
+        for &u in &us {
+            for &v in &vs {
+                let d = surface.point_at(u, v, T).unwrap().distance(target);
+                if d < best.0 {
+                    best = (d, (u, v));
+                }
+            }
+        }
+        let polished = refine_foot(surface, target, best.1, T).unwrap();
+        assert!(polished.distance <= best.0);
+        polished
+    }
+
+    /// The branch and bound over a B-spline patch's spans finds the
+    /// nearest point of the whole patch: never farther than a dense grid
+    /// polished by Newton, on a finely knotted wavy patch, one with its
+    /// knots crowded into a sliver of the domain, a rational patch with
+    /// unclamped knots, a patch with an edge collapsed to a pole, a closed
+    /// patch with targets beside its seam and beyond its open edges, and a
+    /// patch whose two bumps stand equally near a target between them.
+    /// Every foot is a point on the surface at its own parameters, and a
+    /// stored set of span boxes answers as the per-call projection does, to the
+    /// bit.
+    #[test]
+    fn a_spline_foot_is_the_nearest_point_of_the_whole_patch() {
+        let wavy = patch((3, 3), None, (43, 43), |s, t| {
+            let (x, y) = (20.0 * s, 20.0 * t);
+            (
+                Point::new(x, y, 0.8 * (0.7 * x).sin() * (0.45 * y).cos()),
+                1.0,
+            )
+        });
+        // Every knot but the ends inside the last thirtieth of `u`.
+        let mut crowded_u = vec![0.0; 4];
+        crowded_u.extend((1..20).map(|k| 0.97 + 0.03 * f64::from(k) / 20.0));
+        crowded_u.extend([1.0; 4]);
+        let crowded = patch(
+            (3, 3),
+            Some((crowded_u, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0])),
+            (23, 4),
+            |s, t| {
+                let (x, y) = (10.0 * s, 4.0 * t);
+                (Point::new(x, y, (1.3 * x).sin() + 0.2 * y * y), 1.0)
+            },
+        );
+        let unclamped = patch(
+            (2, 3),
+            Some((
+                (0..12).map(f64::from).collect(),
+                (0..13).map(|k| 0.5 * f64::from(k)).collect(),
+            )),
+            (9, 9),
+            |s, t| {
+                let (x, y) = (6.0 * s, 6.0 * t);
+                let w = 0.6 + 1.2 * (s * t + 0.3 * (5.0 * s).sin().abs());
+                (Point::new(x, y, (x - 3.0) * (y - 3.0) / 4.0), w)
+            },
+        );
+        let pole = patch((3, 2), None, (8, 9), |s, t| {
+            let (angle, r) = (std::f64::consts::PI * 1.5 * t, 3.0 * s);
+            (
+                Point::new(r * angle.cos(), r * angle.sin(), 2.0 - 2.0 * s),
+                1.0,
+            )
+        });
+        let seam = patch((3, 3), None, (13, 6), |s, t| {
+            let angle = std::f64::consts::TAU * s;
+            let r = 2.0 + 0.3 * (3.0 * angle).sin();
+            (Point::new(r * angle.cos(), r * angle.sin(), 4.0 * t), 1.0)
+        });
+        let bumps = patch((3, 3), None, (21, 9), |s, t| {
+            let bump = |c: f64| (-((s - c) * (s - c)) / 0.004).exp();
+            (Point::new(s, 0.4 * t, 0.3 * (bump(0.3) + bump(0.7))), 1.0)
+        });
+        let targets = |lo: Point, hi: Point| -> Vec<Point> {
+            (0..27)
+                .map(|k| {
+                    let f = |n: i32| f64::from((k / n) % 3) / 2.0;
+                    Point::new(
+                        lo.x + (hi.x - lo.x) * f(1),
+                        lo.y + (hi.y - lo.y) * f(3),
+                        lo.z + (hi.z - lo.z) * f(9),
+                    )
+                })
+                .collect()
+        };
+        let cases: Vec<(&str, SurfaceGeometry, Vec<Point>)> = vec![
+            (
+                "wavy",
+                wavy,
+                targets(Point::new(-3.0, -2.0, -4.0), Point::new(23.0, 22.0, 4.0)),
+            ),
+            (
+                "crowded",
+                crowded,
+                targets(Point::new(-1.0, -1.0, -2.0), Point::new(11.0, 5.0, 3.0)),
+            ),
+            (
+                "unclamped",
+                unclamped,
+                targets(Point::new(-1.0, -1.0, -3.0), Point::new(7.0, 7.0, 3.0)),
+            ),
+            (
+                "pole",
+                pole,
+                targets(Point::new(-3.5, -3.5, -1.0), Point::new(3.5, 3.5, 3.0)),
+            ),
+            (
+                "seam",
+                seam,
+                [
+                    targets(Point::new(1.0, -0.4, -1.0), Point::new(3.0, 0.4, 5.0)),
+                    targets(Point::new(-3.0, -3.0, 1.0), Point::new(3.0, 3.0, 3.0)),
+                ]
+                .concat(),
+            ),
+            (
+                "bumps",
+                bumps,
+                targets(Point::new(0.4, -0.2, 0.5), Point::new(0.6, 0.6, 1.5)),
+            ),
+        ];
+        for (name, surface, targets) in &cases {
+            let seeds = SurfaceSeeds::over(surface, 16, T).unwrap();
+            for &target in targets {
+                let found = project_on_surface(surface, target, 16, T).unwrap();
+                let reference = brute_force(surface, target, 8);
+                assert!(
+                    found.distance <= reference.distance + T.confusion(),
+                    "{name} at {target:?}: {} at {:?}, the brute force {} at {:?}",
+                    found.distance,
+                    found.parameters,
+                    reference.distance,
+                    reference.parameters
+                );
+                let (u, v) = found.parameters;
+                let on = surface.point_at(u, v, T).unwrap();
+                assert!(on.distance(found.point) < 1e-12, "{name} at {target:?}");
+                assert_eq!(seeds.project(surface, target, T).unwrap(), found, "{name}");
+            }
+        }
+    }
+
+    /// Two feet equally near: the target stands over the middle of a patch
+    /// symmetric about `u = 1/2`, between two equal bumps. Either foot is
+    /// right; the one returned is the same on every call and from a stored
+    /// set of span boxes, and it is on one bump or the other.
+    #[test]
+    fn a_tie_between_two_feet_resolves_the_same_way_every_time() {
+        let bumps = patch((3, 3), None, (21, 9), |s, t| {
+            let bump = |c: f64| (-((s - c) * (s - c)) / 0.004).exp();
+            (Point::new(s, 0.4 * t, 0.3 * (bump(0.3) + bump(0.7))), 1.0)
+        });
+        let target = Point::new(0.5, 0.2, 0.9);
+        let first = project_on_surface(&bumps, target, 16, T).unwrap();
+        let reference = brute_force(&bumps, target, 8);
+        assert!(first.distance <= reference.distance + T.confusion());
+        let u = first.parameters.0;
+        assert!((u - 0.5).abs() > 0.1, "landed between the bumps at {u}");
+        let seeds = SurfaceSeeds::over(&bumps, 16, T).unwrap();
+        for _ in 0..3 {
+            assert_eq!(project_on_surface(&bumps, target, 16, T).unwrap(), first);
+            assert_eq!(seeds.project(&bumps, target, T).unwrap(), first);
         }
     }
 

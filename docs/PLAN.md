@@ -440,9 +440,9 @@ recorded count per bench, and a gate at a few percent.
   pieces are many; it needs the split and classify of `general_fuse_as`
   apart first. The boolean's time is the arrangement (about 2.9 ms of the
   four drills) and assembly (about 2.1 ms).
-- Surface feet on splines by per-span branch and bound on control-net
-  boxes (Ma and Hewitt 2003; Selimovic 2006) instead of a grid up to 4096
-  on a side.
+- Surface feet on a trimmed or offset spline still seed from a grid; the
+  span search on a plain patch could clip its spans to a trim window, and
+  bound an offset by its basis's boxes grown by the offset distance.
 - Curve-surface intersection prepares its sample grid once per face and
   clips the ray to the face's box; point-in-solid rays pay it on every
   call now.
