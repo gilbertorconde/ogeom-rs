@@ -131,7 +131,10 @@ pub fn classify_on_face(
 /// Where a point sits relative to a closed shell or solid.
 ///
 /// Ray casting against the tessellation: a ray from the point crosses the
-/// boundary an odd number of times if and only if it started inside.
+/// boundary an odd number of times if and only if it started inside. Where
+/// every ray meets an edge or a vertex, the point's winding number against
+/// the tessellation answers instead, where it is within a hundredth of zero
+/// or one.
 ///
 /// # Errors
 ///
@@ -139,7 +142,8 @@ pub fn classify_on_face(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the boundary is
 /// not closed (an open shell has no inside), and
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if every ray tried hit an
-/// edge or a vertex, where the crossing count is ambiguous.
+/// edge or a vertex, where the crossing count is ambiguous, and the winding
+/// number reads neither zero nor one.
 pub fn classify_in_solid(
     model: &Model,
     solid: &Shape,
@@ -201,7 +205,8 @@ impl SolidMesh {
     /// # Errors
     ///
     /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if every ray
-    /// tried hit an edge or a vertex, where the crossing count is ambiguous.
+    /// tried hit an edge or a vertex, where the crossing count is ambiguous,
+    /// and the winding number reads neither zero nor one.
     pub fn holds(&self, point: Point, tol: Tolerances) -> OgeomResult<Containment> {
         // Outside the mesh's box by more than the boundary band, nothing is
         // near enough to be on it and no ray can cross it.
@@ -230,10 +235,18 @@ impl SolidMesh {
                 });
             }
         }
+        // No ray counts, but the point stands off every triangle, and its
+        // winding number against the closed mesh is an integer whatever the
+        // rays met.
+        if let Some(read) =
+            crate::winding::reading(crate::winding::winding_number(point, self.triangles.iter()))
+        {
+            return Ok(read);
+        }
         ogeom_bail!(
             NotDone,
             "every ray tried met an edge or a vertex, where the crossing count is \
-             ambiguous"
+             ambiguous, and the winding number is not near zero or one"
         )
     }
 }
@@ -253,14 +266,19 @@ impl SolidMesh {
 /// the trim it crossed, lies *in* a face's surface, or passes through a
 /// pole or an apex, is not patched into a count; the ray is abandoned and
 /// the next direction tried. Six directions, deterministic, none axis-aligned.
+/// Where all six are abandoned, the point's winding number against the
+/// faces' meshes answers, where the point stands clear of the band between
+/// each face and its mesh and the number is within a hundredth of zero or
+/// one.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the shape is
 /// not a solid or a shell, or its boundary is not closed;
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if every ray met a
-/// degeneracy, which a handful of deliberately skew directions makes an
-/// engineered case rather than an encountered one.
+/// degeneracy and the winding number could not be read: the point stands
+/// within a curved face's mesh band at the finest chord tried, or the
+/// boundary does not wind zero or one times about it.
 pub fn classify_in_solid_exact(
     model: &Model,
     solid: &Shape,
@@ -654,6 +672,12 @@ struct Prepared {
     ring_chord: f64,
     /// Whether the solid's shells were found closed here.
     checked: bool,
+    /// The solid, meshed for winding numbers when a point no ray reads
+    /// first asks.
+    solid: Shape,
+    /// Its faces meshed at [`Prepared::winding_chord`], or `None` where
+    /// they would not mesh.
+    winding: std::sync::OnceLock<Option<std::sync::Arc<crate::winding::WindingMesh>>>,
 }
 
 /// The fewest faces a solid has for its prepared boundary to be kept in
@@ -854,6 +878,8 @@ impl SolidBoundary {
                 diagonal,
                 ring_chord,
                 checked: check_closed,
+                solid: solid.clone(),
+                winding: std::sync::OnceLock::new(),
             },
             boxed,
         ))
@@ -879,22 +905,17 @@ impl SolidBoundary {
         let Prepared {
             faces,
             bound,
-            centre,
-            diagonal,
             ring_chord,
             ..
         } = &*self.prepared;
-        let ring_chord = *ring_chord;
         let ring_deflection = Deflection {
-            chord: ring_chord,
+            chord: *ring_chord,
             angular: 0.05,
             ..Deflection::default()
         };
-        let reach = tol.confusion();
-        if !bound.expanded(reach).contains(point) {
+        if !bound.expanded(tol.confusion()).contains(point) {
             return Ok(Containment::Out);
         }
-        let length = point.distance(*centre) + diagonal + 1.0;
 
         // On the boundary beats either side, and each face answers exactly:
         // projection distance against the true surface, trimming in parameter
@@ -907,6 +928,44 @@ impl SolidBoundary {
                 return Ok(Containment::On);
             }
         }
+        if let Some(read) = self.cast(model, point, tol)? {
+            return Ok(read);
+        }
+        if let Some(read) = self.wound(model, point, tol) {
+            return Ok(read);
+        }
+        ogeom_bail!(
+            NotDone,
+            "every ray tried met a tangency, a boundary, or a degenerate point, \
+             where the crossing count is ambiguous, and the winding number is \
+             not near zero or one"
+        )
+    }
+
+    /// Where `point`, off every face, stands by the parity of a ray's
+    /// crossings, or `None` where every ray met a tangency, a face's
+    /// boundary or a degenerate point.
+    fn cast(
+        &self,
+        model: &Model,
+        point: Point,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<Containment>> {
+        let Prepared {
+            faces,
+            centre,
+            diagonal,
+            ring_chord,
+            ..
+        } = &*self.prepared;
+        let ring_chord = *ring_chord;
+        let ring_deflection = Deflection {
+            chord: ring_chord,
+            angular: 0.05,
+            ..Deflection::default()
+        };
+        let reach = tol.confusion();
+        let length = point.distance(*centre) + diagonal + 1.0;
         'directions: for direction in RAY_DIRECTIONS {
             let along = Vector::new(direction[0], direction[1], direction[2]);
             let far = point + along * length;
@@ -993,17 +1052,62 @@ impl SolidBoundary {
                     }
                 }
             }
-            return Ok(if crossings % 2 == 1 {
+            return Ok(Some(if crossings % 2 == 1 {
                 Containment::In
             } else {
                 Containment::Out
-            });
+            }));
         }
-        ogeom_bail!(
-            NotDone,
-            "every ray tried met a tangency, a boundary, or a degenerate point, \
-             where the crossing count is ambiguous"
-        )
+        Ok(None)
+    }
+
+    /// Where `point`, off every face, stands by its winding number against
+    /// the faces' meshes, or `None` where that reads neither in nor out.
+    ///
+    /// The mesh's number is the solid's where the point stands clear of the
+    /// band between each face and its mesh (see [`crate::winding`]). A
+    /// point within a curved face's band asks again at a chord a quarter of
+    /// its distance from the mesh, twice at most, and no finer than
+    /// [`WINDING_FINEST`] of the solid's size.
+    fn wound(&self, model: &Model, point: Point, tol: Tolerances) -> Option<Containment> {
+        use crate::winding::{WindingMesh, Wound};
+        let prepared = &*self.prepared;
+        let finest = (prepared.diagonal * WINDING_FINEST).max(tol.confusion() * 1e3);
+        let mesh = |chord: f64| {
+            WindingMesh::of(model, &prepared.solid, chord, Some(self.kept.meshes()), tol)
+                .ok()
+                .map(std::sync::Arc::new)
+        };
+        let mut meshed = prepared
+            .winding
+            .get_or_init(|| mesh(prepared.winding_chord(tol)))
+            .clone()?;
+        for _ in 0..3 {
+            match meshed.wind(point) {
+                Wound::Reads(read) => return Some(read),
+                Wound::Unread => return None,
+                Wound::Near(distance) => {
+                    let chord = distance * 0.25;
+                    if chord < finest || chord >= meshed.chord() {
+                        return None;
+                    }
+                    meshed = mesh(chord)?;
+                }
+            }
+        }
+        None
+    }
+}
+
+/// The finest chord, over the solid's diagonal, a winding number meshes
+/// its faces at.
+const WINDING_FINEST: f64 = 1e-5;
+
+impl Prepared {
+    /// The chord the faces are first meshed at for winding numbers: a
+    /// thousandth of the solid's size.
+    fn winding_chord(&self, tol: Tolerances) -> f64 {
+        (self.diagonal * 1e-3).max(tol.confusion() * 1e3)
     }
 }
 
@@ -1225,7 +1329,7 @@ fn ray_hits_triangle(from: Point, along: Direction, t: [Point; 3], tol: Toleranc
 }
 
 /// The distance from a point to a triangle.
-fn distance_to_triangle(p: Point, t: [Point; 3]) -> f64 {
+pub(crate) fn distance_to_triangle(p: Point, t: [Point; 3]) -> f64 {
     // Clamp the projection onto the triangle's plane into the triangle, by
     // checking the three edge regions and the interior. Solving the 2×2 normal
     // equations directly and clamping is shorter than a region case analysis
@@ -1933,6 +2037,116 @@ mod tests {
         assert!((distance_to_triangle(Point::new(-3.0, 0.0, 0.0), t) - 3.0).abs() < 1e-12);
         // On it: nothing.
         assert!(distance_to_triangle(Point::new(0.25, 0.25, 0.0), t) < 1e-12);
+    }
+
+    /// A solid whose vertices stand one along each of the six ray
+    /// directions from `apex`, about which it is convex: every ray from
+    /// `apex` leaves through a vertex.
+    fn every_ray_through_a_vertex(model: &mut Model, apex: Point) -> Shape {
+        let positions: Vec<Point> = RAY_DIRECTIONS
+            .iter()
+            .map(|d| apex + Vector::new(d[0], d[1], d[2]))
+            .collect();
+        // The convex hull of the six directions, its facets each wound
+        // outward, away from the apex inside it.
+        let hull: [[u32; 3]; 8] = [
+            [3, 1, 4],
+            [5, 2, 4],
+            [5, 3, 4],
+            [5, 3, 2],
+            [0, 2, 4],
+            [0, 1, 4],
+            [0, 3, 2],
+            [0, 3, 1],
+        ];
+        let triangles = hull
+            .iter()
+            .map(|&[a, b, c]| {
+                let [pa, pb, pc] = [a, b, c].map(|i| positions[i as usize]);
+                if (pb - pa).cross(pc - pa).dot(pa - apex) > 0.0 {
+                    [a, b, c]
+                } else {
+                    [a, c, b]
+                }
+            })
+            .collect();
+        let mesh = ogeom_topo::Triangulation {
+            positions,
+            triangles,
+            ..ogeom_topo::Triangulation::default()
+        };
+        let options = crate::mesh_solid::MeshSolidOptions {
+            recognize: false,
+            ..crate::mesh_solid::MeshSolidOptions::default()
+        };
+        crate::mesh_solid::solid_from_mesh(model, &mesh, &options, T)
+            .unwrap()
+            .shape
+    }
+
+    /// No ray from a point inside a solid counts, each meeting a vertex;
+    /// the winding number answers instead. The point is inside by
+    /// construction, a third of a unit from every facet of the convex
+    /// solid.
+    #[test]
+    fn a_point_every_ray_from_which_meets_a_vertex_is_read_by_its_winding_number() {
+        let mut model = Model::new();
+        let apex = Point::new(0.3, 0.2, 0.1);
+        let solid = every_ray_through_a_vertex(&mut model, apex);
+
+        let boundary = SolidBoundary::of(&model, &solid, T.confusion() * 1e4, T).unwrap();
+        assert_eq!(boundary.cast(&model, apex, T).unwrap(), None);
+        assert_eq!(boundary.holds(&model, apex, T).unwrap(), Containment::In);
+
+        let meshed = SolidMesh::of(&model, &solid, fine(), T).unwrap();
+        for d in RAY_DIRECTIONS {
+            let ray = Direction::new(Vector::new(d[0], d[1], d[2]), T).unwrap();
+            assert_eq!(count_crossings(&meshed.triangles, apex, ray, T), None);
+        }
+        assert_eq!(meshed.holds(apex, T).unwrap(), Containment::In);
+
+        // A facet's centroid is on the boundary, whatever its rays meet.
+        let [a, b, c] = [0, 1, 3].map(|i| {
+            let d = RAY_DIRECTIONS[i];
+            apex + Vector::new(d[0], d[1], d[2])
+        });
+        let on = Point::new(
+            (a.x + b.x + c.x) / 3.0,
+            (a.y + b.y + c.y) / 3.0,
+            (a.z + b.z + c.z) / 3.0,
+        );
+        assert_eq!(boundary.holds(&model, on, T).unwrap(), Containment::On);
+        assert_eq!(meshed.holds(on, T).unwrap(), Containment::On);
+    }
+
+    /// A boundary with a face missing winds a fraction of a turn about a
+    /// point it half encloses, and two solids overlapping wind twice about
+    /// their common part: neither is read as a side.
+    #[test]
+    fn an_open_or_doubled_boundary_is_not_read_by_its_winding_number() {
+        let mut model = Model::new();
+        let built = make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+        let faces = explore_unique(&model, &built.shape, ShapeType::Face).unwrap();
+        let open = crate::make_shell(&mut model, &faces[1..]).unwrap().shape;
+        let boundary = SolidBoundary::of_closed(&model, &open, T.confusion() * 1e4, T).unwrap();
+        assert_eq!(boundary.wound(&model, Point::new(1.0, 1.0, 1.0), T), None);
+
+        let moved = Frame::WORLD.with_origin(Point::new(1.0, 1.0, 1.0));
+        let other = make_box(&mut model, moved, (2.0, 2.0, 2.0), T).unwrap();
+        let both = crate::make_compound(&mut model, &[built.shape.clone(), other.shape])
+            .unwrap()
+            .shape;
+        let boundary = SolidBoundary::of(&model, &both, T.confusion() * 1e4, T).unwrap();
+        assert_eq!(boundary.wound(&model, Point::new(1.5, 1.5, 1.5), T), None);
+        // Inside one of the two only, it winds once.
+        assert_eq!(
+            boundary.wound(&model, Point::new(0.5, 0.5, 0.5), T),
+            Some(Containment::In)
+        );
+        assert_eq!(
+            boundary.wound(&model, Point::new(3.5, 0.5, 0.5), T),
+            Some(Containment::Out)
+        );
     }
 
     #[test]

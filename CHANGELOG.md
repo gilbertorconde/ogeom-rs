@@ -11,6 +11,15 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Point-in-solid classification answers where every ray meets a
+  tangency.** After all six rays are refused, the point's generalized
+  winding number against the faces' meshes answers when the point stands
+  clear of each face's mesh band and the number is within a hundredth of 0
+  or 1; otherwise it still refuses. Drafted slabs whose pad probes were
+  refused at depth 3 now cut and fuse.
+
 ## [0.9.13] - 2026-10-08
 
 A patch release: no breaking API changes. A boolean's shell closure no

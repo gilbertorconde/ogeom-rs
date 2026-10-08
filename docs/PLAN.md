@@ -94,11 +94,11 @@ pass with each row a face of its own and 21 of 30 at the converter's own
 distance (20 and 14 before); at 0.00002, 28 and 28; at 0.00005, 30 and 27.
 What remains:
 
-- Drafted 0.00001 and 0.00002, depth 3 with falling or mixed counts
-  ([8,8,8,7,7,6,5], [10..4], [12..6], [6,6,6,4,8,7,5], at 0.00002 only
-  [10..4] and the last): every ray from a probe meets a tangency. At 0.00001, [8,9,9,5,4,5,5] with rows kept and
-  [7,7,7,6,6,6,5] and [8,5,9,9,5,8,7] at the converter's distance: the kept
-  pieces do not close. Neither is diagnosed.
+- At 0.00001, [8,9,9,5,4,5,5] with rows kept and [7,7,7,6,6,6,5] and
+  [8,5,9,9,5,8,7] at the converter's distance, depth 3: the kept pieces do
+  not close. Not diagnosed. (The depth 3 sets with falling or mixed counts
+  whose probes every ray refused, twelve at 0.00001 and 0.00002, now pass:
+  the winding number answers them.)
 - At the converter's distance with depth 10 (the pad through the whole
   slab), the fuse comes out 4e-5 to 6e-5 cubic millimetres under the mesh's
   measure: 0.00001 [8;7] and three sets at 0.00005. Within the weld distance
@@ -462,8 +462,12 @@ recorded count per bench, and a gate at a few percent.
   surfaces marched once within one fill.
 - Seeds from the surfaces' extrema find loops thinner than the grid
   (Sederberg and Meyers 1988).
-- Where every ray meets a tangency, a generalized winding number answers
-  instead of a refusal (Jacobson et al. 2013; Spainhour et al. 2024).
+- The winding number fallback of the exact classifier (where every ray
+  meets a tangency) sums the faces' meshes triangle by triangle; a
+  hierarchical far field (Barill et al. 2018) once a solid of many faces
+  asks it often. Exact solid angles of trimmed planes would spare meshing
+  them. A probe within a curved face's mesh band at the finest chord still
+  refuses.
 - Arrangement darts ordered by exact orientation, ties walked apart.
 - Primitive fits with analytic gradients and Levenberg-Marquardt (Lukacs,
   Marshall and Martin 1998).

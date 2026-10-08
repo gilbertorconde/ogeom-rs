@@ -3658,6 +3658,32 @@ fn pads_into_a_slab_drafted_a_hundred_thousandth_cut_and_fuse() {
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
+/// The slab drafted one and two hundred-thousandths with corner rows
+/// falling or mixed in count, the pad three millimetres deep, at both
+/// coplanar distances. A probe of a pad's wall stands tens of microns off
+/// the slab's facets that lean along it, and every ray from it meets a
+/// facet's edge or runs along a facet: its winding number against the
+/// slab's faces says which side it is on.
+#[test]
+fn pads_into_slabs_drafted_hundred_thousandths_with_falling_rows_cut_and_fuse() {
+    let mut failed = Vec::new();
+    for (draft, counts) in [
+        (0.00001, [8, 8, 8, 7, 7, 6, 5]),
+        (0.00001, [10, 9, 8, 7, 6, 5, 4]),
+        (0.00001, [12, 11, 10, 9, 8, 7, 6]),
+        (0.00001, [6, 6, 6, 4, 8, 7, 5]),
+        (0.00002, [10, 9, 8, 7, 6, 5, 4]),
+        (0.00002, [6, 6, 6, 4, 8, 7, 5]),
+    ] {
+        for rows_kept in [true, false] {
+            if let Err(e) = pad_on_a_drafted_slab(3.0, draft, counts, rows_kept) {
+                failed.push(format!("{draft} {counts:?} {rows_kept}: {e}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
 /// Pads from the large top faces of the part `OGEOM_TEST_77777` names,
 /// converted face for facet in single precision, fused back into it. Where
 /// a pad's wall crosses a facet row's edge that runs all but in the wall's
