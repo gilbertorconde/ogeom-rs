@@ -141,6 +141,12 @@ it passes behind a contour. The benches cover mass properties, `check`,
 
 ### Fixed
 
+- **A spline fitted through every point stays on the shape between
+  them.** Curve and grid fits that refine all the way to interpolation take
+  averaged knots, so they no longer swing off between their points (an
+  11 x 11 saddle grid from 1.7 off to 1.3e-3). The fit docs state that the
+  error of a fit through bare points is measured at those points only.
+
 - **A solid with rounded edges and corner balls offsets and shells.**
   `offset_shape` and `make_thick_solid` on a box with all edges filleted
   refused the result as collapsed: a blend arc whose end fell on its

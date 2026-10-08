@@ -19,6 +19,18 @@
 //! the spans that exceed the target, so the knot density ends up tracking the
 //! curvature, which is where it belongs.
 //!
+//! # What the error measures
+//!
+//! A fit through bare points ([`fit_points`], [`fit_points_at`],
+//! [`fit_surface_grid`], [`fit_surface_scattered`] and their siblings) has
+//! nothing to measure against but the points, and its error is the distance
+//! at the points only. Between them the fit runs as close to the sampled
+//! shape as a smooth spline through those samples does, which for smooth
+//! data shrinks with the sample spacing, but no number here bounds it. A
+//! caller holding the true geometry measures there, or fits with
+//! [`fit_curve_sampled`] or [`fit_surface_sampled`], whose error covers the
+//! points between the samples too and is no less than the widest miss.
+//!
 //! # Who this is for
 //!
 //! The marching intersector, first: a traced branch is a polyline with a stated
@@ -47,7 +59,9 @@ pub struct Fitted<C> {
     /// The curve.
     pub curve: C,
     /// The largest distance from any input point to the curve at its
-    /// parameter.
+    /// parameter. A fit through bare points measures at those points only;
+    /// a sampled fit measures between its samples as well (see the module
+    /// documentation).
     pub error: f64,
     /// Whether the error target was met.
     ///
@@ -459,7 +473,8 @@ fn fit_points_joint_inner(
 /// and drifting them is how a pcurve ends up evaluating away from the curve
 /// it annotates. Here the parameters stay put, refinement adds knots where
 /// the error says, and the reported error is the true same-parameter
-/// deviation in the chart.
+/// deviation in the chart at the given points. Between them it is not
+/// measured; [`fit_curve_2d_sampled`] measures there.
 ///
 /// # Errors
 ///
@@ -477,7 +492,8 @@ pub fn fit_points_2d_at(
 
 /// Fit space points at *fixed* parameters: the caller's `t` values are the
 /// curve's own, which is what keeps a replacement curve same-parameter with
-/// every chart already speaking the old one.
+/// every chart already speaking the old one. The error is measured at the
+/// given points only; [`fit_curve_sampled`] measures between them too.
 ///
 /// # Errors
 ///
@@ -541,7 +557,7 @@ pub fn fit_points_at(
         let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
             break;
         };
-        knots = refined;
+        knots = refined_or_interpolating(refined, parameters, false)?;
     }
     let Some((knots, control, worst)) = best else {
         ogeom_bail!(Construction, "the fit found no usable rounds");
@@ -1226,7 +1242,7 @@ fn fit_spaced<const D: usize>(
         let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
             break;
         };
-        knots = refined;
+        knots = refined_or_interpolating(refined, &parameters, closed)?;
     }
 
     #[allow(clippy::unwrap_used, reason = "at least one round always runs")]
@@ -1724,6 +1740,12 @@ pub fn fill_boundary(
 /// basis, which is what makes the second pass a fit over control points
 /// rather than a guess. The reported error is measured at the end, surface
 /// against every input point, and `met` does not round up.
+///
+/// The error is measured at the grid points only. Between them the surface
+/// follows the spline through the grid, which for a smooth grid differs
+/// from the sampled shape by an amount that shrinks with the spacing (the
+/// parameters are assigned from the chords, so even a quadratic surface is
+/// followed closely rather than reproduced), but it is not bounded here.
 ///
 /// `rows[j][i]` runs `i` along `u` and `j` along `v`.
 ///
@@ -2558,22 +2580,40 @@ fn fit_family<const D: usize>(
             break;
         };
         // A refinement past one control point per datum leaves spans with
-        // no data and cannot be solved. The last step there is the
-        // interpolating spline, which meets every datum exactly, unless
-        // knots are kept, which it would drop.
-        if kept && refined.control_point_count() > parameters.len() {
-            break;
-        }
-        knots = if refined.control_point_count() > parameters.len() && !closed {
-            interpolating_knots(degree, parameters)?
+        // no data and cannot be solved. Kept knots stay, which the averaged
+        // vector of the interpolating spline would drop.
+        if kept {
+            if refined.control_point_count() > parameters.len() {
+                break;
+            }
+            knots = refined;
         } else {
-            refined
-        };
+            knots = refined_or_interpolating(refined, parameters, closed)?;
+        }
     }
     let Some((knots, controls, _)) = best else {
         ogeom_bail!(NotDone, "the family fit solved no round at all");
     };
     Ok((knots, controls))
+}
+
+/// The knots an open fit's next round stands on, given its refinement.
+///
+/// A refinement reaching one control point per datum is the interpolating
+/// spline. On knots split at the residuals' medians that spline meets every
+/// datum and can swing far from the data between them, a spline through a
+/// smooth curve's samples straying by a sizeable fraction of their spacing;
+/// on knots averaged from the parameters it follows the data. A closed fit
+/// spends a control point on its join and keeps its refinement.
+fn refined_or_interpolating(
+    refined: KnotVector,
+    parameters: &[f64],
+    closed: bool,
+) -> OgeomResult<KnotVector> {
+    if closed || refined.control_point_count() < parameters.len() {
+        return Ok(refined);
+    }
+    interpolating_knots(refined.degree(), parameters)
 }
 
 /// The knot vector a spline through every one of `parameters` stands on:
@@ -3231,6 +3271,82 @@ mod grid_tests {
         assert!(fitted.met, "error {} above rounding", fitted.error);
     }
 
+    /// The largest height gap between `surface` and the graph of `height`,
+    /// read on a 101 by 101 grid over the surface's domain: the samples and
+    /// the points between them.
+    fn height_gap(surface: &crate::BSplineSurface, height: impl Fn(f64, f64) -> f64) -> f64 {
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let mut worst = 0.0_f64;
+        for i in 0..=100 {
+            for j in 0..=100 {
+                let u = (u1 - u0).mul_add(f64::from(i) / 100.0, u0);
+                let v = (v1 - v0).mul_add(f64::from(j) / 100.0, v0);
+                let p = surface.point_at(u, v, T).unwrap();
+                worst = worst.max((p.z - height(p.x, p.y)).abs());
+            }
+        }
+        worst
+    }
+
+    /// A grid sampled from a graph over `xs` by `ys`.
+    fn graph_rows(xs: &[f64], ys: &[f64], height: impl Fn(f64, f64) -> f64) -> Vec<Vec<Point>> {
+        ys.iter()
+            .map(|&y| xs.iter().map(|&x| Point::new(x, y, height(x, y))).collect())
+            .collect()
+    }
+
+    /// A saddle's 11 by 11 grid needs the spline through every point. Its
+    /// rows curve, so their chord parameters are not even in `x`, and the
+    /// fit follows the saddle between the points to the spacing's fourth
+    /// power rather than reproducing it. The same spline on knots split at
+    /// the residuals' medians meets every point and swings over a tenth of
+    /// the spacing off the saddle near the corners.
+    #[test]
+    fn a_saddle_grid_fit_follows_the_saddle_between_its_points() {
+        let saddle = |x: f64, y: f64| x.mul_add(x, -y * y) / 20.0;
+        let side: Vec<f64> = (0..=10).map(|i| f64::from(2 * i - 10)).collect();
+        let rows = graph_rows(&side, &side, saddle);
+        for fit in [fit_surface_grid, fit_surface_grid_chordal] {
+            let fitted = fit(&rows, 3, 1e-6, T).unwrap();
+            assert!(fitted.met, "error {} at the points", fitted.error);
+            let gap = height_gap(&fitted.curve, saddle);
+            assert!(gap < 2e-3, "the fit leaves the saddle by {gap:.3e}");
+        }
+    }
+
+    /// A polynomial of degree at most the fit's in each direction, sampled
+    /// at its own parameters, is reproduced everywhere, on an even grid
+    /// and an uneven one alike. A grid of straight rows evenly spaced gets
+    /// even parameters from its chords, and the free grid fit reproduces
+    /// its degree (1, 1) saddle too.
+    #[test]
+    fn a_polynomial_the_degree_holds_is_reproduced_between_the_samples() {
+        let even: Vec<f64> = (0..=10).map(|i| f64::from(i) / 5.0 - 1.0).collect();
+        let uneven: Vec<f64> = (0..=10)
+            .map(|i| 2.0 * (f64::from(i) / 10.0).powf(1.6) - 1.0)
+            .collect();
+        let saddle = |x: f64, y: f64| x.mul_add(x, -y * y) / 20.0;
+        let cubic = |x: f64, y: f64| (x * x).mul_add(x, -2.0 * x * y * y) + 0.5 * y;
+        for (xs, ys) in [(&even, &even), (&uneven, &even), (&even, &uneven)] {
+            for (degree, height) in [
+                (2, &saddle as &dyn Fn(f64, f64) -> f64),
+                (3, &saddle),
+                (3, &cubic),
+            ] {
+                let rows = graph_rows(xs, ys, height);
+                let fitted = fit_surface_grid_at(xs, ys, &rows, degree, 1e-9, T).unwrap();
+                assert!(fitted.met, "error {} at the points", fitted.error);
+                let gap = height_gap(&fitted.curve, height);
+                assert!(gap < 1e-9, "degree {degree} misses by {gap:.3e}");
+            }
+        }
+        let ruled = |x: f64, y: f64| x * y / 5.0;
+        let rows = graph_rows(&even, &even, ruled);
+        let fitted = fit_surface_grid(&rows, 3, 1e-9, T).unwrap();
+        let gap = height_gap(&fitted.curve, ruled);
+        assert!(gap < 1e-9, "the ruled saddle misses by {gap:.3e}");
+    }
+
     #[test]
     fn a_ragged_grid_is_refused() {
         let rows = vec![
@@ -3323,6 +3439,45 @@ mod tests {
         for e in &errors {
             assert!((e.1 - 7.0).abs() < 1e-12, "{e:?}");
         }
+    }
+
+    /// Eleven points of a parabola, or of a sine at its own parameters,
+    /// need the spline through every point at these tolerances. The same
+    /// spline on knots split at the residuals' medians meets the points and
+    /// swings a fifth of the spacing (the sine: a quarter of its amplitude)
+    /// away between them.
+    #[test]
+    fn a_spline_through_every_point_follows_the_curve_between_them() {
+        let parabola: Vec<Point> = (0..=10)
+            .map(|i| {
+                let x = f64::from(i) - 5.0;
+                Point::new(x, x * x / 20.0, 0.0)
+            })
+            .collect();
+        let fitted = fit_points(&parabola, 3, 1e-9, T).unwrap();
+        assert!(fitted.met, "error {}", fitted.error);
+        let (a, b) = fitted.curve.domain();
+        let mut worst = 0.0_f64;
+        for i in 0..=2000 {
+            let p = fitted
+                .curve
+                .point_at((b - a).mul_add(f64::from(i) / 2000.0, a), T)
+                .unwrap();
+            worst = worst.max((p.y - p.x * p.x / 20.0).abs());
+        }
+        assert!(worst < 5e-4, "the fit leaves the parabola by {worst:.3e}");
+
+        let ts: Vec<f64> = (0..=10).map(|i| f64::from(i) / 10.0).collect();
+        let sine = |t: f64| Point::new(t, (2.0 * t).sin(), 0.0);
+        let points: Vec<Point> = ts.iter().map(|t| sine(*t)).collect();
+        let fitted = fit_points_at(&ts, &points, 3, 1e-12, T).unwrap();
+        assert!(fitted.met, "error {}", fitted.error);
+        let mut worst = 0.0_f64;
+        for i in 0..=2000 {
+            let t = f64::from(i) / 2000.0;
+            worst = worst.max(fitted.curve.point_at(t, T).unwrap().distance(sine(t)));
+        }
+        assert!(worst < 5e-4, "the fit leaves the sine by {worst:.3e}");
     }
 
     #[test]
