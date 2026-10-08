@@ -19,5 +19,13 @@ ogeom = { path = "../../crates/ogeom", version = "0.9.13" }
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
+# A shared-memory build (`+atomics`) lends the kernel a pool of web workers
+# in `tests/threads.rs`. Nothing here reaches the kernel crates.
+[target.'cfg(all(target_arch = "wasm32", target_feature = "atomics"))'.dev-dependencies]
+rayon = "1.10"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
+
 [lints]
 workspace = true

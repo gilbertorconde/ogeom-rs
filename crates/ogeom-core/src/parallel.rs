@@ -14,15 +14,23 @@
 //! their own.
 //! Worker threads re-install the caller's progress watch, so cancellation
 //! reaches into the workers.
+//!
+//! Workers are started with `std::thread::scope`. On a target whose
+//! standard library cannot start a thread, a host that has threads there (a
+//! browser's web workers sharing the module's memory) lends them with
+//! [`set_pool`]; once set, every stage runs its workers on that [`Pool`].
 
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::progress;
 
 /// Whether the standard library can start a thread on this target. On
 /// `wasm32-unknown-unknown`, and on WebAssembly without shared memory, a
-/// spawn panics, so every stage runs on the calling thread there whatever
-/// [`set_threads`] asked for.
+/// spawn panics, so without a [`Pool`] every stage runs on the calling
+/// thread there whatever [`set_threads`] asked for.
 const CAN_SPAWN: bool = !cfg!(any(
     all(target_arch = "wasm32", target_os = "unknown"),
     all(target_family = "wasm", not(target_feature = "atomics")),
@@ -31,30 +39,94 @@ const CAN_SPAWN: bool = !cfg!(any(
 /// 0 means "ask the machine".
 static THREADS: AtomicUsize = AtomicUsize::new(0);
 
+/// Threads a host lends the kernel, where `std::thread` cannot start one.
+///
+/// Once set with [`set_pool`], every parallel stage runs its workers through
+/// [`Pool::broadcast`] instead of starting threads of its own.
+///
+/// The pool's workers must not need the thread that calls into the kernel
+/// to make progress: that thread blocks inside [`Pool::broadcast`] until
+/// every copy has returned. A browser's main thread cannot block, so a
+/// browser host calls the kernel from a worker of its own.
+///
+/// A rayon-backed host:
+///
+/// ```text
+/// struct Rayon;
+/// impl ogeom_core::parallel::Pool for Rayon {
+///     fn workers(&self) -> usize {
+///         rayon::current_num_threads()
+///     }
+///     fn broadcast(&self, copies: usize, job: &(dyn Fn() + Sync)) {
+///         rayon::scope(|s| {
+///             for _ in 0..copies {
+///                 s.spawn(|_| job());
+///             }
+///         });
+///     }
+/// }
+/// ```
+pub trait Pool: Sync {
+    /// How many workers the pool runs at once.
+    fn workers(&self) -> usize;
+
+    /// Run `job` on `copies` workers at once and return when every copy has
+    /// returned.
+    ///
+    /// Each copy takes items until none are left, so a copy that starts late
+    /// or never costs time, not results: whatever the copies leave, the
+    /// caller computes after `broadcast` returns. A copy does not unwind
+    /// into the pool: a panic in a stage is caught in the copy and resumed
+    /// on the caller once `broadcast` returns.
+    fn broadcast(&self, copies: usize, job: &(dyn Fn() + Sync));
+}
+
+static POOL: OnceLock<&'static dyn Pool> = OnceLock::new();
+
+/// Run parallel stages on `pool` from now on. The first call wins; later
+/// calls change nothing.
+///
+/// With a pool set, [`threads`] honours [`set_threads`] and `OGEOM_THREADS`
+/// on every target, and a stage takes at most [`Pool::workers`] workers.
+pub fn set_pool(pool: &'static dyn Pool) {
+    let _first_wins = POOL.set(pool);
+}
+
 /// The thread count parallel stages will use.
 ///
 /// The count given to [`set_threads`] when there is one; otherwise
 /// `OGEOM_THREADS` from the environment when it parses as a positive
-/// count; otherwise the machine's available parallelism. The environment
-/// is read once, on the first call that needs it. One on a target that
-/// cannot start a thread.
+/// count; otherwise the machine's available parallelism, or the lent
+/// [`Pool`]'s worker count on a target that cannot start a thread. The
+/// environment is read once, on the first call that needs it. One on a
+/// target that cannot start a thread and has no pool.
 #[must_use]
 pub fn threads() -> usize {
-    if !CAN_SPAWN {
+    let pool = POOL.get();
+    if !CAN_SPAWN && pool.is_none() {
         return 1;
     }
     let configured = THREADS.load(Ordering::Relaxed);
     if configured != 0 {
         return configured;
     }
-    // Asked once: the query reads the scheduler's affinity and quota, and
-    // every parallel stage asks.
-    static MACHINE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *MACHINE.get_or_init(|| {
-        from_environment(std::env::var("OGEOM_THREADS").ok().as_deref()).unwrap_or_else(|| {
-            std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
-        })
-    })
+    static ENVIRONMENT: OnceLock<Option<usize>> = OnceLock::new();
+    let environment = *ENVIRONMENT
+        .get_or_init(|| from_environment(std::env::var("OGEOM_THREADS").ok().as_deref()));
+    if let Some(count) = environment {
+        return count;
+    }
+    match pool {
+        Some(pool) if !CAN_SPAWN => pool.workers().max(1),
+        _ => {
+            // Asked once: the query reads the scheduler's affinity and
+            // quota, and every parallel stage asks.
+            static MACHINE: OnceLock<usize> = OnceLock::new();
+            *MACHINE.get_or_init(|| {
+                std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+            })
+        }
+    }
 }
 
 /// The thread count an `OGEOM_THREADS` value asks for: a positive integer,
@@ -64,10 +136,10 @@ fn from_environment(value: Option<&str>) -> Option<usize> {
 }
 
 std::thread_local! {
-    /// Set on a worker thread for the life of its stage: a parallel stage
-    /// inside another (a boolean's face pairs each classifying points in
-    /// parallel) runs on the worker it lands on, rather than spawning a
-    /// machine's worth of threads per outer item.
+    /// Set on a worker for the life of its stage: a parallel stage inside
+    /// another (a boolean's face pairs each classifying points in parallel)
+    /// runs on the worker it lands on, rather than starting a machine's
+    /// worth of workers per outer item.
     static INSIDE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
@@ -78,20 +150,48 @@ pub fn set_threads(count: usize) {
     THREADS.store(count, Ordering::Relaxed);
 }
 
-/// Map `f` over `items` on up to [`threads`] scoped threads, returning
-/// results in item order. `f` receives the item index and the item.
+/// The workers `std::thread::scope` starts where no [`Pool`] is lent.
+struct Scoped;
+
+impl Pool for Scoped {
+    fn workers(&self) -> usize {
+        usize::MAX
+    }
+
+    fn broadcast(&self, copies: usize, job: &(dyn Fn() + Sync)) {
+        std::thread::scope(|scope| {
+            for _ in 0..copies {
+                scope.spawn(job);
+            }
+        });
+    }
+}
+
+/// Map `f` over `items` on up to [`threads`] workers, returning results in
+/// item order. `f` receives the item index and the item.
+///
+/// The workers are scoped threads, or the lent [`Pool`]'s when one is set,
+/// capped at its [`Pool::workers`]. A call made from a worker of another
+/// stage runs on that worker.
 ///
 /// Determinism holds by construction: items are computed independently and
-/// results placed by index, so the output is identical at any thread count.
-/// The caller's progress watch is re-installed in every worker; `f` may
-/// checkpoint through it.
+/// results placed by index, so the output is identical at any thread count,
+/// pool or not. The caller's progress watch is re-installed in every
+/// worker; `f` may checkpoint through it. A panic in `f` resumes on the
+/// caller.
 pub fn map_ordered<T, R>(items: &[T], f: impl Fn(usize, &T) -> R + Sync) -> Vec<R>
 where
     T: Sync,
     R: Send,
 {
-    let workers = threads().clamp(1, items.len().max(1));
-    if !CAN_SPAWN || workers <= 1 || items.len() <= 1 || INSIDE.with(core::cell::Cell::get) {
+    let lent = POOL.get().copied();
+    let pool: &dyn Pool = lent.unwrap_or(&Scoped);
+    let workers = threads().min(pool.workers()).clamp(1, items.len().max(1));
+    if (!CAN_SPAWN && lent.is_none())
+        || workers <= 1
+        || items.len() <= 1
+        || INSIDE.with(core::cell::Cell::get)
+    {
         return items.iter().enumerate().map(|(i, t)| f(i, t)).collect();
     }
 
@@ -104,35 +204,60 @@ where
     // tell the difference: every index is computed by the same call exactly
     // once, and the merge reassembles by index, so the output is the item
     // order however the indices were claimed.
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let mut parts: Vec<Vec<(usize, R)>> = Vec::with_capacity(workers);
-    std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(workers);
-        for _ in 0..workers {
-            let f = &f;
-            let next = &next;
-            let snapshot = snapshot.clone();
-            handles.push(scope.spawn(move || {
-                INSIDE.with(|inside| inside.set(true));
-                progress::with_snapshot(snapshot.as_ref(), || {
-                    let mut mine = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(item) = items.get(i) else { break };
-                        mine.push((i, f(i, item)));
-                    }
-                    mine
-                })
-            }));
+    let next = AtomicUsize::new(0);
+    let take = || {
+        let mut mine = Vec::new();
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(item) = items.get(i) else { break };
+            mine.push((i, f(i, item)));
         }
-        for handle in handles {
-            match handle.join() {
-                Ok(part) => parts.push(part),
-                Err(panic) => std::panic::resume_unwind(panic),
+        mine
+    };
+    let parts: Mutex<Vec<Vec<(usize, R)>>> = Mutex::new(Vec::with_capacity(workers));
+    let panicked: Mutex<Option<Box<dyn Any + Send>>> = Mutex::new(None);
+    let job = || {
+        let outer = INSIDE.with(|inside| inside.replace(true));
+        let run = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            progress::with_snapshot(snapshot.as_ref(), take)
+        }));
+        INSIDE.with(|inside| inside.set(outer));
+        match run {
+            Ok(part) => parts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(part),
+            Err(panic) => {
+                // The other copies stop at their next claim.
+                next.store(items.len(), Ordering::Relaxed);
+                panicked
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get_or_insert(panic);
             }
         }
-    });
-    let mut indexed: Vec<(usize, R)> = parts.into_iter().flatten().collect();
+    };
+    pool.broadcast(workers, &job);
+    if let Some(panic) = panicked
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        std::panic::resume_unwind(panic);
+    }
+    let mut indexed: Vec<(usize, R)> = parts
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+        .into_iter()
+        .flatten()
+        .collect();
+    // Items no copy claimed (a pool that ran fewer copies than asked) are
+    // taken here, under the caller's own watch.
+    indexed.extend(take());
+    assert_eq!(
+        indexed.len(),
+        items.len(),
+        "a pool returned from broadcast while a copy was still running"
+    );
     indexed.sort_unstable_by_key(|(i, _)| *i);
     indexed.into_iter().map(|(_, r)| r).collect()
 }
@@ -154,6 +279,16 @@ mod tests {
             assert_eq!(parallel, serial);
         }
         set_threads(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "item 50")]
+    fn a_panic_on_a_worker_resumes_on_the_caller() {
+        let items: Vec<usize> = (0..137).collect();
+        let _ = map_ordered(&items, |i, _| {
+            assert!(i != 50, "item 50");
+            i
+        });
     }
 
     #[test]

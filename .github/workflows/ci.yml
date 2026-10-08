@@ -101,6 +101,52 @@ jobs:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
         run: cargo test -p ogeom-wasm --target wasm32-unknown-unknown
 
+  # The browser target built with shared memory, where a host lends the
+  # kernel web workers through `parallel::set_pool`. The test runs in a
+  # dedicated worker in headless Chrome and asserts the mesh made on the
+  # lent workers is the one made on a single thread.
+  wasm-threads:
+    name: wasm32-unknown-unknown, shared memory
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: >-
+        -C target-feature=+atomics,+bulk-memory
+        -C link-arg=--shared-memory -C link-arg=--import-memory
+        -C link-arg=--max-memory=1073741824
+        -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size
+        -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base
+    steps:
+      - uses: actions/checkout@v7
+
+      # `-Z build-std` rebuilds the standard library with atomics. The date
+      # is pinned so a nightly regression cannot turn the job red.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-07
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read the locked wasm-bindgen version
+        id: bindgen
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')
+          test -n "$version" || { echo "no wasm-bindgen in Cargo.lock"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+
+      - name: Mesh on lent web workers in Chrome
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        # The runner image keeps the chromedriver that matches its Chrome in
+        # `$CHROMEWEBDRIVER`.
+        run: |
+          CHROMEDRIVER="$CHROMEWEBDRIVER/chromedriver" cargo test -p ogeom-wasm --test threads \
+            --target wasm32-unknown-unknown -Z build-std=panic_abort,std
+
   deny:
     name: licenses / advisories
     runs-on: ubuntu-latest

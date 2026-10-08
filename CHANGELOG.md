@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A host can lend parallel stages its threads (#150).**
+  `parallel::Pool` and `parallel::set_pool` run `map_ordered`'s workers on
+  a pool the host provides (web workers sharing memory on
+  `wasm32-unknown-unknown`, through `wasm-bindgen-rayon`); output stays
+  bit-identical at any worker count, a panic on a worker resumes on the
+  caller, and items a pool leaves unclaimed are run by the caller.
+
 - **The kernel runs on `wasm32-unknown-unknown` (#149).**
   `ogeom_core::clock::Instant` is `std::time::Instant` where there is a
   clock; there, timings read zero, or `performance.now()` with the new
