@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-10-08
+
+A patch release: no breaking API changes. Fixes: a solid with rounded edges
+and corner balls offsets and shells; a spline fitted through every point
+stays on the shape between them; projected pcurves state their widest miss
+between samples; a refused revolution band leaves its rims untouched. Speed:
+exact mass properties about twice as fast, `check` about twice and
+`fix_shape` 2.4 times, booleans on drilled parts about 35 to 40%, marched
+fillets and booleans about 10%, thick spline sheets about three times,
+pipes through circles about thirteen times, IGES reading about 2.7 times,
+tessellation and mesh welding faster with identical meshes, and kernel
+hash maps with a fixed seed so iteration order is the same in every run.
+
 ### Added
 
 - **`ProbeCache`, `check_kept` and `inside_out_faces_kept`.** The
@@ -4514,7 +4527,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.11...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.12...HEAD
+[0.9.12]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.8...v0.9.9
