@@ -33,7 +33,7 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, SurfaceGeometry, Transformable, TrimmedCurve};
-use ogeom_math::{Point, Point2, Transform};
+use ogeom_math::{Point, Point2, Transform, Vector};
 use ogeom_mesh::{Deflection, face_boundary, inside_boundary};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Shape, ShapeType, explore_unique};
 
@@ -81,6 +81,10 @@ struct Prepared {
     local: SurfaceGeometry,
     to_local: Transform,
     rings: Vec<Vec<Point2>>,
+    /// The face's placement, carrying `local` into world space.
+    placement: Transform,
+    /// The parameter rectangle `world` is restricted to, when it is.
+    span: Option<((f64, f64), (f64, f64))>,
 }
 
 /// The minimum distance between two shapes' boundaries.
@@ -110,6 +114,399 @@ pub(crate) struct Elements(Vec<Element>);
 impl Elements {
     pub(crate) fn of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Self> {
         Ok(Self(elements(model, shape, tol)?))
+    }
+
+    /// Whether every point of these elements is proven farther than `gap`
+    /// from every point of `other`.
+    ///
+    /// Each element is held by the convex hull of a few points: a vertex by
+    /// itself, a B-spline curve or patch by its control net, a line by its
+    /// ends, a plane by its corners, any other curve by the corners of its
+    /// bound. Two hulls are apart where their boxes are, or where their
+    /// shadows on one axis are (a patch's normal, or the line between the
+    /// pieces with a curve's chord taken out). Pairs not yet apart are
+    /// refined by halving the larger piece, until every pair is apart or a
+    /// pair cannot be refined within a fixed budget. `false` proves
+    /// nothing: the pair is then measured.
+    ///
+    /// A face counts as its whole surface over the rectangle its rings
+    /// enclose, the same restricted surface the distance is measured on,
+    /// so the hulls hold every candidate the measurement could find.
+    pub(crate) fn apart_by_more_than(&self, other: &Self, gap: f64, tol: Tolerances) -> bool {
+        // Without a vertex on each side a measurement may find no candidate
+        // at all and refuse; that refusal is the measurement's to make.
+        let has_vertex = |e: &Self| e.0.iter().any(|e| matches!(e, Element::Vertex(..)));
+        if !has_vertex(self) || !has_vertex(other) {
+            return false;
+        }
+        let mut arena = Arena::default();
+        let (Some(mine), Some(theirs)) = (arena.roots(&self.0, tol), arena.roots(&other.0, tol))
+        else {
+            return false;
+        };
+        let mut stack: Vec<(usize, usize)> = mine
+            .iter()
+            .flat_map(|&i| theirs.iter().map(move |&j| (i, j)))
+            .collect();
+        let mut visits = 0_usize;
+        while let Some((i, j)) = stack.pop() {
+            visits += 1;
+            if visits > COVER_VISITS {
+                return false;
+            }
+            if arena.nodes[i].apart_from(&arena.nodes[j], gap) {
+                continue;
+            }
+            let (big, small) = if arena.nodes[i].size >= arena.nodes[j].size {
+                (i, j)
+            } else {
+                (j, i)
+            };
+            let halves = match arena.halves(big, gap, tol) {
+                Some(h) => Some((h, small)),
+                None => arena.halves(small, gap, tol).map(|h| (h, big)),
+            };
+            let Some(([a, b], with)) = halves else {
+                return false;
+            };
+            stack.push((a, with));
+            stack.push((b, with));
+        }
+        true
+    }
+}
+
+/// How many pairs of pieces [`Elements::apart_by_more_than`] looks at before
+/// it leaves the pair to be measured.
+const COVER_VISITS: usize = 20_000;
+
+/// A piece of one element's geometry that can be held and halved.
+enum Piece<'a> {
+    /// Points whose hull holds the piece, with nothing finer to offer.
+    Fixed(Vec<Point>),
+    /// A non-periodic B-spline curve, held by its control polygon.
+    Spline(Box<ogeom_geom::BSplineCurve>),
+    /// A line or conic over a range.
+    Arc(&'a Curve, (f64, f64)),
+    /// A B-spline patch in its face's frame, held by its control net.
+    Patch(Box<ogeom_geom::BSplineSurface>, &'a Transform),
+    /// A plane over a parameter rectangle, held by its corners.
+    Flat(
+        &'a ogeom_geom::PlaneSurface,
+        (f64, f64),
+        (f64, f64),
+        &'a Transform,
+    ),
+}
+
+struct Node<'a> {
+    piece: Piece<'a>,
+    /// World points whose convex hull holds the piece.
+    hull: Vec<Point>,
+    bound: ogeom_math::Aabb,
+    /// The bound's diagonal.
+    size: f64,
+    /// Across a patch or a plane: the normal of its corners.
+    normal: Option<Vector>,
+    /// Along a curve: from its start to its end.
+    chord: Option<Vector>,
+    /// The two halves once asked for; `Some(None)` where there are none.
+    halves: Option<Option<[usize; 2]>>,
+}
+
+impl Node<'_> {
+    /// Whether the two hulls are proven farther than `gap` apart.
+    fn apart_from(&self, other: &Self, gap: f64) -> bool {
+        if self.bound.distance_to_box(&other.bound) > gap {
+            return true;
+        }
+        let (Some(here), Some(there)) = (self.bound.centre(), other.bound.centre()) else {
+            return false;
+        };
+        let between = there - here;
+        let square = |v: Vector| {
+            let length = v.magnitude();
+            (length > 0.0 && length.is_finite()).then(|| v / length)
+        };
+        // The line between the pieces with a curve's own direction taken
+        // out, so two runs side by side are told apart across their gap.
+        let across = |chord: Option<Vector>| {
+            let chord = square(chord?)?;
+            square(between - chord * between.dot(chord))
+        };
+        [
+            self.normal.and_then(square),
+            other.normal.and_then(square),
+            square(between),
+            across(self.chord),
+            across(other.chord),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|axis| {
+            let shadow = |hull: &[Point]| {
+                hull.iter()
+                    .map(|p| (*p - Point::ORIGIN).dot(axis))
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
+                        (lo.min(d), hi.max(d))
+                    })
+            };
+            let (a, b) = (shadow(&self.hull), shadow(&other.hull));
+            b.0 - a.1 > gap || a.0 - b.1 > gap
+        })
+    }
+}
+
+#[derive(Default)]
+struct Arena<'a> {
+    nodes: Vec<Node<'a>>,
+}
+
+impl<'a> Arena<'a> {
+    /// One node per element, or `None` if an element has no hull to start
+    /// from.
+    fn roots(&mut self, elements: &'a [Element], tol: Tolerances) -> Option<Vec<usize>> {
+        let mut out = Vec::with_capacity(elements.len());
+        for element in elements {
+            let piece = match element {
+                Element::Vertex(_, p) => Piece::Fixed(vec![*p]),
+                Element::Edge(_, curve) => curve_piece(curve, tol)?,
+                Element::Face(_, face) => face_piece(face, tol)?,
+            };
+            out.push(self.add(piece, tol)?);
+        }
+        Some(out)
+    }
+
+    fn add(&mut self, piece: Piece<'a>, tol: Tolerances) -> Option<usize> {
+        let (hull, normal, chord) = hull_of(&piece, tol)?;
+        // An empty or unmeasurable hull would prove a distance it does not
+        // hold.
+        if hull.is_empty()
+            || !hull
+                .iter()
+                .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        {
+            return None;
+        }
+        let bound = ogeom_math::Aabb::of_points(&hull);
+        self.nodes.push(Node {
+            piece,
+            size: bound.diagonal(),
+            hull,
+            bound,
+            normal,
+            chord,
+            halves: None,
+        });
+        Some(self.nodes.len() - 1)
+    }
+
+    /// The node's two halves, made once; `None` where it cannot be halved
+    /// or is no larger than `gap` already.
+    fn halves(&mut self, i: usize, gap: f64, tol: Tolerances) -> Option<[usize; 2]> {
+        if let Some(known) = self.nodes[i].halves {
+            return known;
+        }
+        let found = if self.nodes[i].size <= gap {
+            None
+        } else {
+            split(&self.nodes[i].piece, tol).and_then(|(a, b)| {
+                let a = self.add(a, tol)?;
+                let b = self.add(b, tol)?;
+                Some([a, b])
+            })
+        };
+        self.nodes[i].halves = Some(found);
+        found
+    }
+}
+
+/// An edge's curve as a piece; `None` where it has no bound.
+fn curve_piece(curve: &Curve, tol: Tolerances) -> Option<Piece<'_>> {
+    use ogeom_geom::Curve3d as _;
+    let range = curve.domain();
+    let whole = || {
+        crate::measure::curve_bounds(curve, tol)
+            .ok()
+            .map(|bound| Piece::Fixed(bound.corners()))
+    };
+    match curve {
+        Curve::BSpline(spline) if !spline.is_periodic() => {
+            Some(Piece::Spline(Box::new(spline.clone())))
+        }
+        Curve::Line(_) | Curve::Circle(_) | Curve::Ellipse(_) => Some(Piece::Arc(curve, range)),
+        Curve::Trimmed(trimmed) if !trimmed.is_reversed() => match trimmed.basis() {
+            Curve::BSpline(spline) => spline
+                .segment(range, tol)
+                .map_or_else(|_| whole(), |piece| Some(Piece::Spline(Box::new(piece)))),
+            basis @ (Curve::Line(_) | Curve::Circle(_) | Curve::Ellipse(_)) => {
+                Some(Piece::Arc(basis, range))
+            }
+            _ => whole(),
+        },
+        _ => whole(),
+    }
+}
+
+/// A face's restricted surface as a piece; `None` for a surface this does
+/// not hold.
+fn face_piece(face: &Prepared, tol: Tolerances) -> Option<Piece<'_>> {
+    match &face.local {
+        SurfaceGeometry::BSpline(spline) => {
+            let patch = match face.span {
+                Some((u, v)) => spline.segment(u, v, tol).ok()?,
+                None => spline.clone(),
+            };
+            Some(Piece::Patch(Box::new(patch), &face.placement))
+        }
+        SurfaceGeometry::Plane(plane) => {
+            let (u, v) = face.span?;
+            Some(Piece::Flat(plane, u, v, &face.placement))
+        }
+        _ => None,
+    }
+}
+
+/// The points whose hull holds a piece, its normal where it is a surface,
+/// and its chord where it is a curve.
+type Hull = (Vec<Point>, Option<Vector>, Option<Vector>);
+
+fn hull_of(piece: &Piece<'_>, tol: Tolerances) -> Option<Hull> {
+    use ogeom_geom::{Curve3d as _, Surface as _};
+    // The normal of four corners, as the cross of the diagonals.
+    let normal = |[a, b, c, d]: [Point; 4]| (d - a).cross(c - b);
+    Some(match piece {
+        Piece::Fixed(points) => (points.clone(), None, None),
+        Piece::Spline(spline) => {
+            let hull: Vec<Point> = spline.control_points().iter().map(|w| w.point()).collect();
+            let chord = *hull.last()? - *hull.first()?;
+            (hull, None, Some(chord))
+        }
+        Piece::Arc(curve, range) => {
+            let (start, end) = (
+                curve.point_at(range.0, tol).ok()?,
+                curve.point_at(range.1, tol).ok()?,
+            );
+            let hull = match curve {
+                Curve::Line(_) => vec![start, end],
+                _ => crate::measure::curve_bounds_over(curve, *range, tol)
+                    .ok()?
+                    .corners(),
+            };
+            (hull, None, Some(end - start))
+        }
+        Piece::Patch(patch, placement) => {
+            let grid = patch.grid();
+            let (nu, nv) = (grid.u_count(), grid.v_count());
+            let at = |i, j| grid.get(i, j).map(|w| placement.apply(w.point()));
+            let corners = [
+                at(0, 0)?,
+                at(nu - 1, 0)?,
+                at(0, nv - 1)?,
+                at(nu - 1, nv - 1)?,
+            ];
+            let hull = grid
+                .points()
+                .iter()
+                .map(|w| placement.apply(w.point()))
+                .collect();
+            (hull, Some(normal(corners)), None)
+        }
+        Piece::Flat(plane, u, v, placement) => {
+            let mut corners = [Point::ORIGIN; 4];
+            for (corner, (a, b)) in
+                corners
+                    .iter_mut()
+                    .zip([(u.0, v.0), (u.1, v.0), (u.0, v.1), (u.1, v.1)])
+            {
+                *corner = placement.apply(plane.point_at(a, b, tol).ok()?);
+            }
+            (corners.to_vec(), Some(normal(corners)), None)
+        }
+    })
+}
+
+/// A piece cut into two halves of its parameter range.
+fn split<'a>(piece: &Piece<'a>, tol: Tolerances) -> Option<(Piece<'a>, Piece<'a>)> {
+    use ogeom_geom::{Curve3d as _, Surface as _};
+    let mid = |(a, b): (f64, f64)| 0.5 * (a + b);
+    match piece {
+        Piece::Fixed(_) => None,
+        Piece::Spline(spline) => {
+            let (a, b) = spline.domain();
+            let m = mid((a, b));
+            Some((
+                Piece::Spline(Box::new(spline.segment((a, m), tol).ok()?)),
+                Piece::Spline(Box::new(spline.segment((m, b), tol).ok()?)),
+            ))
+        }
+        Piece::Arc(curve, (a, b)) => {
+            let m = mid((*a, *b));
+            Some((Piece::Arc(curve, (*a, m)), Piece::Arc(curve, (m, *b))))
+        }
+        Piece::Patch(patch, placement) => {
+            let (u, v) = patch.domain();
+            // Across the direction whose control polygons run longer.
+            let grid = patch.grid();
+            let length = |along_u: bool| {
+                let (across, along) = if along_u {
+                    (grid.v_count(), grid.u_count())
+                } else {
+                    (grid.u_count(), grid.v_count())
+                };
+                let at = |k: usize, o: usize| {
+                    if along_u {
+                        grid.get(k, o)
+                    } else {
+                        grid.get(o, k)
+                    }
+                };
+                let mut longest = 0.0_f64;
+                for o in 0..across {
+                    let mut run = 0.0;
+                    for k in 1..along {
+                        if let (Some(p), Some(q)) = (at(k - 1, o), at(k, o)) {
+                            run += p.point().distance(q.point());
+                        }
+                    }
+                    longest = longest.max(run);
+                }
+                longest
+            };
+            let pieces = if length(true) >= length(false) {
+                let m = mid(u);
+                (
+                    patch.segment((u.0, m), v, tol),
+                    patch.segment((m, u.1), v, tol),
+                )
+            } else {
+                let m = mid(v);
+                (
+                    patch.segment(u, (v.0, m), tol),
+                    patch.segment(u, (m, v.1), tol),
+                )
+            };
+            Some((
+                Piece::Patch(Box::new(pieces.0.ok()?), placement),
+                Piece::Patch(Box::new(pieces.1.ok()?), placement),
+            ))
+        }
+        Piece::Flat(plane, u, v, placement) => {
+            if u.1 - u.0 >= v.1 - v.0 {
+                let m = mid(*u);
+                Some((
+                    Piece::Flat(plane, (u.0, m), *v, placement),
+                    Piece::Flat(plane, (m, u.1), *v, placement),
+                ))
+            } else {
+                let m = mid(*v);
+                Some((
+                    Piece::Flat(plane, *u, (v.0, m), placement),
+                    Piece::Flat(plane, *u, (m, v.1), placement),
+                ))
+            }
+        }
     }
 }
 
@@ -335,7 +732,11 @@ fn elements(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<El
         // face only uses what its rings enclose, so the surface handed over
         // is trimmed to their parameter bound, with a margin for the rings'
         // own polylining, before being carried into world space.
-        let restricted = restrict_to_rings(surface, &rings, tol)?;
+        let span = ring_span(surface, &rings, tol);
+        let restricted = match span {
+            Some((u, v)) => ogeom_geom::TrimmedSurface::new(surface.clone(), u, v, tol)?.into(),
+            None => surface.clone(),
+        };
         out.push(Element::Face(
             face,
             Box::new(Prepared {
@@ -343,24 +744,28 @@ fn elements(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<El
                 local: surface.clone(),
                 to_local: placement.inverse()?,
                 rings,
+                placement,
+                span,
             }),
         ));
     }
     Ok(out)
 }
 
-/// The surface restricted to the parameter rectangle its rings enclose.
+/// The parameter rectangle a face's rings enclose, the surface restricted
+/// to it being all of the face there is to measure; `None` for a face with
+/// no rings, which uses its surface's whole domain.
 ///
 /// The margin is proportional to the used span: the exact boundary lies
 /// within the rings' polylining of it, and `inside_trim` already treats the
 /// near-boundary band as the edges' territory, so the margin only has to
 /// keep the whole face inside the restriction; it does not have to be
 /// tight.
-fn restrict_to_rings(
+fn ring_span(
     surface: &SurfaceGeometry,
     rings: &[Vec<Point2>],
     tol: Tolerances,
-) -> OgeomResult<SurfaceGeometry> {
+) -> Option<((f64, f64), (f64, f64))> {
     use ogeom_geom::Surface as _;
     let ((ua, ub), (va, vb)) = surface.domain();
     let mut u = (f64::INFINITY, f64::NEG_INFINITY);
@@ -372,8 +777,7 @@ fn restrict_to_rings(
         }
     }
     if u.0 > u.1 || v.0 > v.1 {
-        // No rings: a naturally closed face uses its whole domain.
-        return Ok(surface.clone());
+        return None;
     }
     let margin_u = (u.1 - u.0).mul_add(0.05, tol.parametric());
     let margin_v = (v.1 - v.0).mul_add(0.05, tol.parametric());
@@ -381,10 +785,7 @@ fn restrict_to_rings(
     let hi_u = (u.1 + margin_u).min(ub);
     let lo_v = (v.0 - margin_v).max(va);
     let hi_v = (v.1 + margin_v).min(vb);
-    if lo_u >= hi_u || lo_v >= hi_v {
-        return Ok(surface.clone());
-    }
-    Ok(ogeom_geom::TrimmedSurface::new(surface.clone(), (lo_u, hi_u), (lo_v, hi_v), tol)?.into())
+    (lo_u < hi_u && lo_v < hi_v).then_some(((lo_u, hi_u), (lo_v, hi_v)))
 }
 
 #[cfg(test)]

@@ -768,15 +768,14 @@ fn face_through(model: &mut Model, corners: [Point; 4]) -> Shape {
         .shape
 }
 
-#[test]
-fn layers_that_run_into_each_other_are_refused() {
-    // Three quarters of a drum of radius 5, with a flat flap running on
-    // tangentially from each end: the flaps converge, x = 5 and y = -5,
-    // and stop 4 along, short of each other.
-    let mut model = Model::new();
-    let drum = cylinder_arc(&mut model, 5.0, (0.0, 1.5 * PI), 3.0);
+/// Three quarters of a drum of radius 5 and height 3, with a flat flap
+/// running on tangentially from each end: the flaps converge, x = 5 and
+/// y = -5, and stop 4 along, short of each other. With `spline_flaps`
+/// the flaps are B-spline patches.
+fn drum_with_flaps(model: &mut Model, spline_flaps: bool) -> Shape {
+    let drum = cylinder_arc(model, 5.0, (0.0, 1.5 * PI), 3.0);
     let east = face_through(
-        &mut model,
+        model,
         [
             Point::new(5.0, -4.0, 0.0),
             Point::new(5.0, 0.0, 0.0),
@@ -785,7 +784,7 @@ fn layers_that_run_into_each_other_are_refused() {
         ],
     );
     let south = face_through(
-        &mut model,
+        model,
         [
             Point::new(0.0, -5.0, 0.0),
             Point::new(4.0, -5.0, 0.0),
@@ -793,10 +792,25 @@ fn layers_that_run_into_each_other_are_refused() {
             Point::new(0.0, -5.0, 3.0),
         ],
     );
-    let sewn = ogeom_algo::sew(&mut model, &[drum, east, south], T).unwrap();
+    let (east, south) = if spline_flaps {
+        (
+            ogeom_algo::to_nurbs(model, &east, T).unwrap().shape,
+            ogeom_algo::to_nurbs(model, &south, T).unwrap().shape,
+        )
+    } else {
+        (east, south)
+    };
+    let sewn = ogeom_algo::sew(model, &[drum, east, south], T).unwrap();
     let [sheet] = sewn.shells.as_slice() else {
         panic!("the pieces did not sew into one sheet");
     };
+    sheet.clone()
+}
+
+#[test]
+fn layers_that_run_into_each_other_are_refused() {
+    let mut model = Model::new();
+    let sheet = &drum_with_flaps(&mut model, false);
     // Half a unit toward the axis the walls stand apart: two slabs and a
     // sector of the annulus between radii 4.5 and 5.
     let thin = make_thick_sheet(&mut model, sheet, -0.5, false, T).unwrap();
@@ -805,6 +819,21 @@ fn layers_that_run_into_each_other_are_refused() {
     let got = volume(&model, &thin.shape);
     assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
     // Two units toward it the flaps' layers cross.
+    let refused = make_thick_sheet(&mut model, sheet, -2.0, false, T).unwrap_err();
+    assert!(
+        refused.to_string().contains("runs into itself"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn spline_layers_that_run_into_each_other_are_refused() {
+    // The same sheet with B-spline flaps: their layers are spline faces
+    // whose boxes meet, and where they cross the crossing is still found.
+    let mut model = Model::new();
+    let sheet = &drum_with_flaps(&mut model, true);
+    let thin = make_thick_sheet(&mut model, sheet, -0.5, false, T).unwrap();
+    assert_valid(&model, &thin.shape);
     let refused = make_thick_sheet(&mut model, sheet, -2.0, false, T).unwrap_err();
     assert!(
         refused.to_string().contains("runs into itself"),

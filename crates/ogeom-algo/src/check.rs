@@ -1315,8 +1315,9 @@ fn compare(
 /// self-intersection, detected as the interference it is.
 ///
 /// Every unordered pair of distinct faces that share no edge and no vertex
-/// node is put through the exact minimum-distance machinery; a pair within
-/// the confusion tolerance of touching is reported. Adjacent faces meet at
+/// node, and that hulls holding their geometry do not prove apart, is put
+/// through the exact minimum-distance machinery; a pair within the
+/// confusion tolerance of touching is reported. Adjacent faces meet at
 /// their shared boundary by construction and are not interference; a valid
 /// solid therefore reports nothing, and a sheet folded through itself names
 /// the faces that cross.
@@ -1405,6 +1406,14 @@ fn crossings_among(
 
     let touching = ogeom_core::parallel::map_ordered(&pairs, |_, &(i, j)| {
         ogeom_core::progress::checkpoint()?;
+        // Faces whose boxes meet are often proven apart by the hulls of
+        // their pieces, at a fraction of the cost of measuring them.
+        if prepared[i]
+            .1
+            .apart_by_more_than(&prepared[j].1, tol.confusion(), tol)
+        {
+            return Ok(false);
+        }
         let reach = crate::proximity::distance_between_prepared(
             &prepared[i].1,
             &prepared[j].1,
@@ -1786,6 +1795,78 @@ mod tests {
             1
         );
         assert!(walked_one_way_named(&check(&model, &block, T).unwrap()).is_empty());
+    }
+
+    /// A B-spline sheet over [-5, 5]^2 at height `lift + bend (x^2 - y^2) / 20`,
+    /// bounded by its border iso-curves.
+    fn spline_sheet(model: &mut Model, lift: f64, bend: f64) -> Shape {
+        use ogeom_geom::Surface as _;
+        let n = 11;
+        let at = |k: i32| -5.0 + 10.0 * f64::from(k) / f64::from(n - 1);
+        let rows: Vec<Vec<Point>> = (0..n)
+            .map(|j| {
+                (0..n)
+                    .map(|i| {
+                        let (x, y) = (at(i), at(j));
+                        Point::new(x, y, bend.mul_add((x * x - y * y) / 20.0, lift))
+                    })
+                    .collect()
+            })
+            .collect();
+        let surface = ogeom_geom::fit::fit_surface_grid(&rows, 3, 1e-6, T)
+            .unwrap()
+            .curve;
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let corners: Vec<Shape> = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+            .iter()
+            .map(|&(u, v)| crate::make_vertex(model, surface.point_at(u, v, T).unwrap()).shape)
+            .collect();
+        let mut iso = |curve: ogeom_geom::BSplineCurve, from: usize, to: usize| {
+            let range = curve.domain();
+            crate::make_edge_between(model, curve.into(), range, &corners[from], &corners[to], T)
+                .unwrap()
+                .shape
+        };
+        let south = iso(surface.iso_v_curve(v0, T).unwrap(), 0, 1);
+        let east = iso(surface.iso_u_curve(u1, T).unwrap(), 1, 2);
+        let north = iso(surface.iso_v_curve(v1, T).unwrap(), 3, 2);
+        let west = iso(surface.iso_u_curve(u0, T).unwrap(), 0, 3);
+        let wires = [vec![south, east, north.reversed(), west.reversed()]];
+        crate::make_face_with_pcurves(model, surface.into(), &wires, T)
+            .unwrap()
+            .shape
+    }
+
+    #[test]
+    fn spline_sheets_whose_boxes_overlap_are_told_apart_or_measured() {
+        let mut model = Model::new();
+        let saddle = spline_sheet(&mut model, 0.0, 1.0);
+        // The same saddle a twentieth above: every box of the two meets,
+        // and the finer boxes prove them apart.
+        let above = spline_sheet(&mut model, 0.05, 1.0);
+        // A flat sheet through the saddle's middle crosses it along both
+        // diagonals.
+        let flat = spline_sheet(&mut model, 0.0, 0.0);
+        let elements = |s: &Shape| crate::proximity::Elements::of(&model, s, T).unwrap();
+        let (saddle_e, above_e, flat_e) = (elements(&saddle), elements(&above), elements(&flat));
+        assert!(saddle_e.apart_by_more_than(&above_e, T.confusion(), T));
+        assert!(!saddle_e.apart_by_more_than(&flat_e, T.confusion(), T));
+
+        let nested = crate::make_compound(&mut model, &[saddle.clone(), above])
+            .unwrap()
+            .shape;
+        assert!(
+            check_self_intersection(&model, &nested, T)
+                .unwrap()
+                .is_empty()
+        );
+        let crossed = crate::make_compound(&mut model, &[saddle, flat])
+            .unwrap()
+            .shape;
+        assert_eq!(
+            check_self_intersection(&model, &crossed, T).unwrap().len(),
+            1
+        );
     }
 }
 
