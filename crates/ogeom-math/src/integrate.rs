@@ -88,6 +88,36 @@ const GAUSS7_WEIGHTS: [f64; 4] = [
     0.417_959_183_673_469_4,
 ];
 
+/// Nodes the twenty-one-point Kronrod rule adds to the ten-point Gauss rule
+/// on `[-1, 1]`, positive half, centre last.
+const KRONROD21_NODES: [f64; 6] = [
+    0.995_657_163_025_808_1,
+    0.930_157_491_355_708_2,
+    0.780_817_726_586_416_9,
+    0.562_757_134_668_604_7,
+    0.294_392_862_701_460_2,
+    0.0,
+];
+
+/// The twenty-one-point Kronrod weights at [`KRONROD21_NODES`].
+const KRONROD21_WEIGHTS: [f64; 6] = [
+    0.011_694_638_867_371_874,
+    0.054_755_896_574_352,
+    0.093_125_454_583_697_6,
+    0.123_491_976_262_065_85,
+    0.142_775_938_577_060_08,
+    0.149_445_554_002_916_9,
+];
+
+/// The twenty-one-point Kronrod weights at the Gauss [`NODES`].
+const KRONROD21_AT_GAUSS: [f64; 5] = [
+    0.147_739_104_901_338_5,
+    0.134_709_217_311_473_33,
+    0.109_387_158_802_297_64,
+    0.075_039_674_810_919_95,
+    0.032_558_162_307_964_73,
+];
+
 /// The most times [`integrate`] will subdivide one interval.
 ///
 /// An integrand that has not converged by here has a singularity rather than a
@@ -131,6 +161,40 @@ pub fn gauss_legendre_rule(a: f64, b: f64) -> [(f64, f64); 10] {
         let offset = half * node;
         rule[2 * i] = (middle - offset, weight * half);
         rule[2 * i + 1] = (middle + offset, weight * half);
+    }
+    rule
+}
+
+/// The ten-point Gauss and twenty-one-point Kronrod pair on `[a, b]`: each
+/// node with its Kronrod weight and its Gauss weight.
+///
+/// The first ten are the nodes of [`gauss_legendre_rule`], in its order and
+/// with its weights as their Gauss weights; the last eleven are the nodes
+/// the Kronrod rule adds, whose Gauss weight is zero. The Kronrod rule is
+/// exact for polynomials up to degree thirty-one, the Gauss rule up to
+/// nineteen, and the gap between the two sums is the usual estimate of
+/// what the Gauss sum still misses. The weights carry the sign of `b - a`.
+#[must_use]
+pub fn gauss_kronrod_21_rule(a: f64, b: f64) -> [(f64, f64, f64); 21] {
+    let half = (b - a) * 0.5;
+    let middle = f64::midpoint(a, b);
+    let mut rule = [(0.0, 0.0, 0.0); 21];
+    for (i, ((node, weight), kronrod)) in NODES
+        .iter()
+        .zip(&WEIGHTS)
+        .zip(&KRONROD21_AT_GAUSS)
+        .enumerate()
+    {
+        let offset = half * node;
+        rule[2 * i] = (middle - offset, kronrod * half, weight * half);
+        rule[2 * i + 1] = (middle + offset, kronrod * half, weight * half);
+    }
+    for (i, (node, weight)) in KRONROD21_NODES.iter().zip(&KRONROD21_WEIGHTS).enumerate() {
+        let offset = half * node;
+        rule[10 + 2 * i] = (middle - offset, weight * half, 0.0);
+        if *node != 0.0 {
+            rule[11 + 2 * i] = (middle + offset, weight * half, 0.0);
+        }
     }
     rule
 }
@@ -430,6 +494,28 @@ mod tests {
             error > 1e-6,
             "the Gauss rule is not exact here, and the gap says so: {error}"
         );
+    }
+
+    /// The ten- and twenty-one-point pair, checked by what it must do: its
+    /// Gauss half is the ten-point rule, the Kronrod sum is exact to degree
+    /// thirty-one and the Gauss sum to nineteen and no further, on a panel
+    /// with an end at the origin, about which no power is even or odd.
+    #[test]
+    fn the_twenty_one_point_pair_is_exact_to_its_degrees() {
+        let (a, b) = (0.0, 2.0);
+        let rule = gauss_kronrod_21_rule(a, b);
+        for (&(x, _, wg), (y, w)) in rule.iter().zip(gauss_legendre_rule(a, b)) {
+            assert_eq!((x, wg), (y, w));
+        }
+        assert!(rule[10..].iter().all(|&(_, _, wg)| wg == 0.0));
+        for degree in 0..=31 {
+            let exact = (b.powi(degree + 1) - a.powi(degree + 1)) / f64::from(degree + 1);
+            let kronrod: f64 = rule.iter().map(|&(x, wk, _)| wk * x.powi(degree)).sum();
+            let gauss: f64 = rule.iter().map(|&(x, _, wg)| wg * x.powi(degree)).sum();
+            let miss = |sum: f64| ((sum - exact) / exact).abs();
+            assert!(miss(kronrod) < 1e-14, "Kronrod, degree {degree}");
+            assert_eq!(miss(gauss) < 1e-14, degree <= 19, "Gauss, degree {degree}");
+        }
     }
 
     /// A rectangle of parameters: exact for a product of polynomials in one
