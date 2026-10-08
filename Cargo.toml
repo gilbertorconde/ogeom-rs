@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.13"
+version = "0.9.14"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
@@ -58,20 +58,20 @@ expect_used = "warn"
 
 [workspace.dependencies]
 # --- internal ---
-ogeom-core = { path = "crates/ogeom-core", version = "0.9.13" }
-ogeom-math = { path = "crates/ogeom-math", version = "0.9.13" }
-ogeom-geom = { path = "crates/ogeom-geom", version = "0.9.13" }
-ogeom-topo = { path = "crates/ogeom-topo", version = "0.9.13" }
-ogeom-algo = { path = "crates/ogeom-algo", version = "0.9.13" }
-ogeom-mesh = { path = "crates/ogeom-mesh", version = "0.9.13" }
-ogeom-intersect = { path = "crates/ogeom-intersect", version = "0.9.13" }
-ogeom-bool = { path = "crates/ogeom-bool", version = "0.9.13" }
-ogeom-heal = { path = "crates/ogeom-heal", version = "0.9.13" }
-ogeom-fillet = { path = "crates/ogeom-fillet", version = "0.9.13" }
-ogeom-offset = { path = "crates/ogeom-offset", version = "0.9.13" }
-ogeom-io = { path = "crates/ogeom-io", version = "0.9.13" }
-ogeom-hlr = { path = "crates/ogeom-hlr", version = "0.9.13" }
-ogeom-doc = { path = "crates/ogeom-doc", version = "0.9.13" }
+ogeom-core = { path = "crates/ogeom-core", version = "0.9.14" }
+ogeom-math = { path = "crates/ogeom-math", version = "0.9.14" }
+ogeom-geom = { path = "crates/ogeom-geom", version = "0.9.14" }
+ogeom-topo = { path = "crates/ogeom-topo", version = "0.9.14" }
+ogeom-algo = { path = "crates/ogeom-algo", version = "0.9.14" }
+ogeom-mesh = { path = "crates/ogeom-mesh", version = "0.9.14" }
+ogeom-intersect = { path = "crates/ogeom-intersect", version = "0.9.14" }
+ogeom-bool = { path = "crates/ogeom-bool", version = "0.9.14" }
+ogeom-heal = { path = "crates/ogeom-heal", version = "0.9.14" }
+ogeom-fillet = { path = "crates/ogeom-fillet", version = "0.9.14" }
+ogeom-offset = { path = "crates/ogeom-offset", version = "0.9.14" }
+ogeom-io = { path = "crates/ogeom-io", version = "0.9.14" }
+ogeom-hlr = { path = "crates/ogeom-hlr", version = "0.9.14" }
+ogeom-doc = { path = "crates/ogeom-doc", version = "0.9.14" }
 
 # --- arithmetic substrate ---
 # Generic over RealField so extended-precision / interval scalars can be swapped

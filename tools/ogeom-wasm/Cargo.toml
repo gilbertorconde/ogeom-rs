@@ -12,7 +12,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-ogeom = { path = "../../crates/ogeom", version = "0.9.13" }
+ogeom = { path = "../../crates/ogeom", version = "0.9.14" }
 
 # The tests run natively under the std harness and on wasm32 under
 # `wasm-bindgen-test`, so a native build never compiles the wasm tooling.

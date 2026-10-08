@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-10-08
+
+A patch release: no breaking API changes. The kernel runs in the browser:
+on `wasm32-unknown-unknown` it reads no clock it lacks (`ogeom_core::clock`,
+#149), and a host can lend parallel stages its threads, such as web
+workers sharing memory (`parallel::set_pool`, #150). A marched section's
+stated error bounds its miss against the real crossing, and point-in-solid
+classification answers by the winding number where every ray meets a
+tangency.
+
 ### Added
 
 - **A host can lend parallel stages its threads (#150).**
@@ -4619,7 +4629,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.13...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.14...HEAD
+[0.9.14]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.10...v0.9.11
