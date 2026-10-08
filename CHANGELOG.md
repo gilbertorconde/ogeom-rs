@@ -13,11 +13,22 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`gauss_kronrod_21_rule`** in `ogeom-math`: the ten-point Gauss and
+  twenty-one-point Kronrod pair with both weights per node.
+
 - **`Model::kept_read`** keeps what a reader finds of a shape and
   everything below it until any of it changes; `SolidBoundary::of_kept`
   prepares a solid's boundary through it.
 
 ### Changed
+
+- **Exact mass properties refine one panel at a time.** Each boundary
+  panel of a face integrated in its chart takes a ten-point Gauss and
+  twenty-one-point Kronrod pair, and only the panels whose estimates miss
+  are halved, instead of doubling every panel; values settle to a part in
+  a million million or to rounding. Exact volume of the largest corpus
+  part is about 20% faster on one thread, and two converted faces that
+  fell back to the mesh are integrated exactly.
 
 - **Marched sections fit from knots placed by the cubic's error
   estimate.** The joint fit of a marched intersection starts its knots
