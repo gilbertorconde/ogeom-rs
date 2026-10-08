@@ -174,7 +174,21 @@ or torus face bounded by two whole circles whose vertices stand a quarter
 or half turn apart is refused by `make_revolution_band` ("no seam could be
 synthesised") and kept on its own bounds; the STEP reader warns, and the
 face meshes through the fallback. Splitting one rim at the other's column
-would let the band take a seam.
+lets the band take a seam (patch `band-split-rims.patch` in the scratch
+crate: every corpus warning gone, shells closed), but two things then
+break: the boolean refuses drills into a torus band whose rim is two pieces
+("a face boundary strand dangles", five stress drills on two corpus parts),
+and the converter's heavy corner-order test on `nist_ftc_07` fails, because
+four small cylinders mesh with a seam and a fit elsewhere then presses the
+global coplanar distance up twice. Moving the whole rim to the other's
+column instead keeps the drills but breaks a chain of bands sharing one
+rim. Each of those is the item to settle first.
+
+**One fit can widen the converter's coplanar distance for every region.**
+In mesh conversion, a fit pressing against the coplanar distance doubles
+it for the whole part, and long rounds far from that fit then fail; a
+change in four small cylinders' meshes was enough to take
+`nist_ftc_07`'s corner-order seeds from 22 of 22 to 5 of 22.
 
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's
 pcurve where its lifted gap is within twice the projection's. A pcurve the
