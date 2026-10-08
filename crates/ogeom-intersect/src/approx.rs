@@ -48,8 +48,9 @@ pub struct IntersectionCurve {
     /// How far the *fits* may sit from the traced polyline, in millimetres.
     ///
     /// Measured: the curve against the trace's samples, each pcurve lifted
-    /// against the curve, and, where the surfaces meet at a shallow angle,
-    /// how far along them their crossing may sit from the curve. The
+    /// against the curve, the curve against the surfaces' crossing between
+    /// the samples, and, where the surfaces meet at a shallow angle, how far
+    /// along them their crossing may sit from the curve. The
     /// distance to the true intersection adds the trace's own chord
     /// tolerance on top; both are stated so an edge built on this knows
     /// what to carry.
@@ -242,18 +243,25 @@ pub fn approximate_branch(
     // Measured where it is promised, in millimetres. The joint fit's own
     // residual mixes space and chart coordinates and says little about
     // either alone, so it serves only as a bound on what is measured here.
-    let lifted = lift_error(a, b, &on_a, &on_b, &space.curve, tol);
+    let lifted = lift_error(a, b, &on_a, &on_b, &space.curve, points.len(), tol);
     // Where the surfaces meet at a shallow angle, a curve microns off both
     // can still sit far along them from where they cross. That distance is
     // the surfaces' gap over the sine of their angle, and it is no more than
-    // the fit's chart residual carried through each surface's stretch, which
-    // bounds how far the lifted pcurves stand from the trace whatever the
-    // angle. The smaller of the two stands.
-    let charted =
-        space_error(a, &on_a, space.error, tol).max(space_error(b, &on_b, space.error, tol));
+    // how far the lifted pcurves stand from the crossing itself, found at
+    // the same stations. Where a station's crossing could not be found, the
+    // fit's chart residual carried through each surface's stretch bounds it
+    // at the samples. The smaller of the two stands.
+    let crossing = if lifted.unsettled {
+        let charted =
+            space_error(a, &on_a, space.error, tol).max(space_error(b, &on_b, space.error, tol));
+        lifted.lifted_off.max(charted.max(space.error))
+    } else {
+        lifted.lifted_off
+    };
     let lifted = lifted
         .along
-        .max(lifted.across.min(charted.max(space.error)));
+        .max(lifted.curve_off)
+        .max(lifted.across.min(crossing));
     // Each sample's distance from the curve, which the fit's residual
     // already bounds: read only where that bound would decide the error.
     let fit_error = if space.error <= lifted {
@@ -352,28 +360,48 @@ struct Lifted {
     /// That gap over the sine of the surfaces' angle there: how far the
     /// surfaces' true crossing may sit from the curve.
     across: f64,
+    /// How far the curve stands from the surfaces' crossing in its normal
+    /// plane.
+    curve_off: f64,
+    /// How far either pcurve, lifted, stands from that crossing.
+    lifted_off: f64,
+    /// Whether the crossing went unfound at some station.
+    unsettled: bool,
 }
 
 /// Each pcurve lifted through its surface against the curve, at four
-/// stations in every span of the curve's knots and at least two hundred
-/// along it, between the trace's samples as well as at them. Near a cone's
-/// apex or a sphere's pole the chart turns fast, and a fit that holds at
-/// every sample can wander between them.
+/// stations in every span of the curve's knots, two for every one of the
+/// trace's `samples` and at least two hundred along it, between the
+/// samples as well as at them. Near a cone's apex or a sphere's pole the
+/// chart turns fast, and a fit that holds at every sample can wander
+/// between them.
+///
+/// At each station the surfaces' crossing in the curve's normal plane is
+/// found by Newton's method from the pcurves' points, and the curve and
+/// both lifted pcurves are measured against it: what the fit misses
+/// between the samples of the trace, read on the geometry the trace
+/// follows.
 fn lift_error(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     on_a: &BSpline2d,
     on_b: &BSpline2d,
     curve: &BSplineCurve,
+    samples: usize,
     tol: Tolerances,
 ) -> Lifted {
     use ogeom_geom::{Curve2d as _, Curve3d as _};
     let (lo, hi) = curve.knots().domain();
     let spans = curve.knots().distinct().len().saturating_sub(1).max(1);
-    let stations = (4 * spans).max(200);
+    let stations = (4 * spans).max(2 * samples).max(200);
+    #[allow(clippy::cast_precision_loss)]
+    let step = (hi - lo) / stations as f64;
     let mut out = Lifted {
         along: 0.0,
         across: 0.0,
+        curve_off: 0.0,
+        lifted_off: 0.0,
+        unsettled: false,
     };
     for k in 0..=stations {
         #[allow(clippy::cast_precision_loss)]
@@ -383,6 +411,8 @@ fn lift_error(
         };
         let mut gap = 0.0_f64;
         let mut normals = Vec::with_capacity(2);
+        let mut charts = Vec::with_capacity(2);
+        let mut lifts = Vec::with_capacity(2);
         for (surface, pcurve) in [(a, on_a), (b, on_b)] {
             let Ok(at) = pcurve.point_at(t, tol) else {
                 continue;
@@ -391,11 +421,36 @@ fn lift_error(
                 continue;
             };
             gap = gap.max(lifted.distance(on));
+            charts.push(at);
+            lifts.push(lifted);
             if let Ok(normal) = surface.normal_at(at.x, at.y, tol) {
                 normals.push(normal.vector());
             }
         }
         out.along = out.along.max(gap);
+        // A crossing farther off than a station's step along the curve is
+        // another stretch of the crossing met in this normal plane, not
+        // the one the curve follows.
+        let crossing = match (&charts[..], curve.d1_at(t, tol)) {
+            ([ca, cb], Ok(tangent)) => crate::march::correct(
+                a,
+                b,
+                [ca.x, ca.y, cb.x, cb.y],
+                on,
+                Some((on, tangent, 0.0)),
+                tol,
+            )
+            .filter(|found| found.point.distance(on) <= tangent.magnitude() * step),
+            _ => None,
+        };
+        if let Some(crossing) = crossing {
+            out.curve_off = out.curve_off.max(on.distance(crossing.point));
+            for lifted in &lifts {
+                out.lifted_off = out.lifted_off.max(lifted.distance(crossing.point));
+            }
+        } else {
+            out.unsettled = true;
+        }
         if let [na, nb] = normals[..] {
             let sine = na.cross(nb).magnitude().max(tol.angular());
             out.across = out.across.max(gap / sine);
@@ -655,6 +710,83 @@ mod tests {
             }
         }
         worst
+    }
+
+    /// The error stated covers the fit between the trace's samples where
+    /// the surfaces cross at a shallow angle. A bowl a hundred millimetres
+    /// round at its foot dips two hundredths below a plane, both charts
+    /// running evenly with `x` and `y`, and nine samples of half the circle
+    /// they cross in are fitted through every one. Between the samples the
+    /// fit and both pcurves leave the circle alike, within the plane, where
+    /// the bowl stands only a fiftieth of that above it; the miss is read
+    /// against the crossing itself.
+    #[test]
+    fn a_shallow_crossing_states_the_fits_miss_between_its_samples() {
+        use crate::march::Stopped;
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::{ControlGrid, KnotVector};
+        let (radius, dip, half) = (100.0, 0.02, 3.0);
+        let a = plane(Point::ORIGIN, Vector::Z);
+        // z = (x^2 + y^2) / (2 radius) - dip, exactly, as a quadratic patch
+        // over [-half, half] in both.
+        let square = [half * half, -half * half, half * half];
+        let side = [-half, 0.0, half];
+        let mut control = Vec::new();
+        for i in 0..3 {
+            for j in 0..3 {
+                let z = (square[i] + square[j]) / (2.0 * radius) - dip;
+                control.push(Point::new(side[i], side[j], z));
+            }
+        }
+        let knots = || KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).unwrap();
+        let b: SurfaceGeometry = BSplineSurface::new(
+            knots(),
+            knots(),
+            &ControlGrid::new(control, 3, 3).unwrap(),
+            T,
+        )
+        .unwrap()
+        .into();
+        let circle = (2.0 * radius * dip).sqrt();
+        let SurfaceGeometry::Plane(flat) = &a else {
+            unreachable!()
+        };
+        let mut branch = Traced {
+            points: Vec::new(),
+            on_a: Vec::new(),
+            on_b: Vec::new(),
+            stopped: Stopped::LeftTheDomain,
+        };
+        for k in 0..=8 {
+            let angle = core::f64::consts::PI * f64::from(k) / 8.0;
+            let p = Point::new(circle * angle.cos(), circle * angle.sin(), 0.0);
+            let local = flat.plane().frame().to_local(p);
+            let on_b = ((p.x + half) / (2.0 * half), (p.y + half) / (2.0 * half));
+            assert!(b.point_at(on_b.0, on_b.1, T).unwrap().distance(p) < 1e-9);
+            branch.points.push(p);
+            branch.on_a.push((local.x, local.y));
+            branch.on_b.push(on_b);
+        }
+        let fitted = approximate_branch(&a, &b, &branch, 1e-9, T).unwrap();
+        let (lo, hi) = fitted.curve.knots().domain();
+        let mut worst = 0.0_f64;
+        for i in 0..=4000 {
+            let p = fitted
+                .curve
+                .point_at(lo + (hi - lo) * f64::from(i) / 4000.0, T)
+                .unwrap();
+            let flat = Point::new(p.x, p.y, 0.0).to_vector().magnitude();
+            worst = worst.max((flat - circle).abs().max(p.z.abs()));
+        }
+        assert!(
+            worst > 1e-6,
+            "the fit misses the circle between samples: {worst:.3e}"
+        );
+        assert!(
+            fitted.fit_error >= 0.9 * worst,
+            "the miss is stated: {:.3e} for {worst:.3e}",
+            fitted.fit_error
+        );
     }
 
     #[test]
