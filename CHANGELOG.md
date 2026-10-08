@@ -28,6 +28,14 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Self-intersection checks prove most face pairs apart before measuring
+  them.** Each piece is held in a guaranteed hull (a spline's control net,
+  a plane's corners) and pairs are separated by box or by projection,
+  halving the closer one within a budget; only pairs it cannot separate
+  are measured exactly. Thickening a spline sheet takes about a third of
+  the time. Curve-surface intersection builds its seeding grid with each
+  corner evaluated once.
+
 - **Pipes through sections match each section's start without copying
   the loop.** A pipe through two circles is about 13 times faster.
 
