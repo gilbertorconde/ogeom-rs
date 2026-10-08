@@ -160,6 +160,7 @@ fn benchmarks() -> Vec<Bench> {
         ("hlr_exact_mid", Box::new(hlr_exact_mid)),
         ("hlr_mesh", Box::new(hlr_mesh)),
         ("thick_spline", Box::new(thick_spline)),
+        ("project_spline", Box::new(project_spline)),
         ("offset_part", Box::new(offset_part)),
         ("shell_part", Box::new(shell_part)),
         ("pipe_circles", Box::new(pipe_circles)),
@@ -673,6 +674,45 @@ fn thick_spline() -> Option<Stats> {
             std::hint::black_box(&solid.shape);
         },
     ))
+}
+
+/// Surface feet on a finely knotted patch: a wavy cubic of 100 by 100
+/// knot spans over 50 by 50 mm, thirty-two targets above, below and
+/// beside it projected one call at a time.
+fn project_spline() -> Option<Stats> {
+    use ogeom::geom::{BSplineSurface, SurfaceGeometry, project_on_surface};
+    use ogeom::math::{ControlGrid, KnotVector};
+    let n = 103;
+    let points: Vec<Point> = (0..n)
+        .flat_map(|i| {
+            (0..n).map(move |j| {
+                let x = 50.0 * f64::from(i) / f64::from(n - 1);
+                let y = 50.0 * f64::from(j) / f64::from(n - 1);
+                Point::new(x, y, 0.8 * (0.7 * x).sin() * (0.45 * y).cos())
+            })
+        })
+        .collect();
+    let knots = KnotVector::clamped_uniform(3, 103).ok()?;
+    let grid = ControlGrid::new(points, 103, 103).ok()?;
+    let surface: SurfaceGeometry = BSplineSurface::new(knots.clone(), knots, &grid, T)
+        .ok()?
+        .into();
+    let targets: Vec<Point> = (0..32)
+        .map(|k| {
+            let t = f64::from(k);
+            Point::new(
+                (t * 7.3).rem_euclid(60.0) - 5.0,
+                (t * 11.9).rem_euclid(60.0) - 5.0,
+                (t * 0.37).sin() * 6.0,
+            )
+        })
+        .collect();
+    Some(time(|| {
+        for &target in &targets {
+            let found = project_on_surface(&surface, target, 24, T).unwrap();
+            std::hint::black_box(found);
+        }
+    }))
 }
 
 /// A drum of radius 4 and height 6 with its top rim rolled to radius 1:
