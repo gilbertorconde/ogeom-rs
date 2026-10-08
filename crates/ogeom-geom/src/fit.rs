@@ -1082,7 +1082,7 @@ fn fit_points_2d_at_inner(
         let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
             break;
         };
-        knots = refined;
+        knots = refined_or_interpolating(refined, parameters, closed)?;
     }
     let (knots, control, error) = best.ok_or_else(|| {
         ogeom_core::ogeom_err!(Construction, "the fixed-parameter fit never solved")
@@ -3441,8 +3441,9 @@ mod tests {
         }
     }
 
-    /// Eleven points of a parabola, or of a sine at its own parameters,
-    /// need the spline through every point at these tolerances. The same
+    /// Eleven points of a parabola, or of a sine at its own parameters in
+    /// space or in a chart, need the spline through every point at these
+    /// tolerances. The same
     /// spline on knots split at the residuals' medians meets the points and
     /// swings a fifth of the spacing (the sine: a quarter of its amplitude)
     /// away between them.
@@ -3478,6 +3479,18 @@ mod tests {
             worst = worst.max(fitted.curve.point_at(t, T).unwrap().distance(sine(t)));
         }
         assert!(worst < 5e-4, "the fit leaves the sine by {worst:.3e}");
+
+        let chart: Vec<Point2> = points.iter().map(|p| Point2::new(p.x, p.y)).collect();
+        let fitted = fit_points_2d_at(&ts, &chart, 3, 1e-12, T).unwrap();
+        assert!(fitted.met, "error {}", fitted.error);
+        let mut worst = 0.0_f64;
+        for i in 0..=2000 {
+            let t = f64::from(i) / 2000.0;
+            let p = crate::Curve2d::point_at(&fitted.curve, t, T).unwrap();
+            let on = sine(t);
+            worst = worst.max(p.distance(Point2::new(on.x, on.y)));
+        }
+        assert!(worst < 5e-4, "the chart fit leaves the sine by {worst:.3e}");
     }
 
     #[test]

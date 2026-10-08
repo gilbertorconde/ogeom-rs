@@ -133,9 +133,10 @@ pub fn fit_projected_pcurve(
 /// The reader draws its line at a millimetre (below it is a file's own
 /// slop, above it a wrong pairing), but a *healer* acts on instruction, and
 /// the instruction carries the cap. Returns the fitted pcurve, the fit's
-/// reached error as a length, whether it met its target, the worst measured
-/// edge-to-surface offset, and the slop note when that offset is worth
-/// saying out loud.
+/// reached error as a length (the widest the lifted fit misses where the
+/// curve lands, between the samples as well as at them), whether it met its
+/// target, the worst measured edge-to-surface offset, and the slop note
+/// when that offset is worth saying out loud.
 ///
 /// # Errors
 ///
@@ -407,25 +408,16 @@ pub fn fit_projected_pcurve_within(
     let closed_form = points
         .first()
         .is_some_and(|p| chart_of(surface, *p).is_some());
-    let deviation = |fitted: &ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>,
-                     parameters: &[f64],
-                     trace: &[ogeom_math::Point2],
-                     offs: &[f64]|
-     -> (f64, f64, Vec<Landed>) {
-        let mut error = 0.0_f64;
-        let mut between_all = 0.0_f64;
-        let mut more = Vec::new();
-        let mut landed_middles = Vec::new();
-        let mut left = false;
-        // A landing is believed only where it belongs: on the surface as
-        // convincingly as its neighbours, and inside the chart interval
-        // they span, widened by the interval itself. A projection that
-        // settled in another basin, or on the far side of a seam, would
-        // otherwise be fitted as if the curve went there. Beside its
-        // neighbour on a periodic chart, as the trace was unwrapped; where
-        // the chart collapses its angle is noise, and the neighbours' is
-        // taken.
-        let landing = |index: usize, tm: f64| -> Option<Landed> {
+    // A landing is believed only where it belongs: on the surface as
+    // convincingly as its neighbours, and inside the chart interval
+    // they span, widened by the interval itself. A projection that
+    // settled in another basin, or on the far side of a seam, would
+    // otherwise be fitted as if the curve went there. Beside its
+    // neighbour on a periodic chart, as the trace was unwrapped; where
+    // the chart collapses its angle is noise, and the neighbours' is
+    // taken.
+    let landing =
+        |trace: &[ogeom_math::Point2], offs: &[f64], index: usize, tm: f64| -> Option<Landed> {
             let before = trace[index - 1];
             let after = trace[index];
             let p = curve.point_at(tm, tol).ok()?;
@@ -458,6 +450,17 @@ pub fn fit_projected_pcurve_within(
             let sound = offs[index - 1].max(offs[index]).max(tol.confusion() * 1e5);
             (off <= 2.0 * sound && mid.distance(uv) <= reach).then_some((tm, p, uv, off))
         };
+    let deviation = |fitted: &ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>,
+                     parameters: &[f64],
+                     trace: &[ogeom_math::Point2],
+                     offs: &[f64]|
+     -> (f64, f64, Vec<Landed>) {
+        let mut error = 0.0_f64;
+        let mut between_all = 0.0_f64;
+        let mut more = Vec::new();
+        let mut landed_middles = Vec::new();
+        let mut left = false;
+        let landing = |index: usize, tm: f64| landing(trace, offs, index, tm);
         for (index, t) in parameters.iter().enumerate() {
             let Ok(at) = ogeom_geom::Curve2d::point_at(&fitted.curve, *t, tol) else {
                 continue;
@@ -555,7 +558,16 @@ pub fn fit_projected_pcurve_within(
     const DENSIFY: usize = 6;
     const MOST: usize = 512;
     let mut fitted = fit_and_clamp(&parameters, &trace)?;
-    let mut best: Option<(ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>, f64, f64)> = None;
+    #[allow(
+        clippy::type_complexity,
+        reason = "a fit, its two misses and its sample count"
+    )]
+    let mut best: Option<(
+        ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>,
+        f64,
+        f64,
+        usize,
+    )> = None;
     let mut round = 0;
     loop {
         let (at_samples, between, more) = deviation(&fitted, &parameters, &trace, &offs);
@@ -563,9 +575,9 @@ pub fn fit_projected_pcurve_within(
         // to improve, and the fit handed on is the one measured closest.
         if best
             .as_ref()
-            .is_none_or(|(_, a, b)| at_samples.max(between) < a.max(*b))
+            .is_none_or(|(_, a, b, _)| at_samples.max(between) < a.max(*b))
         {
-            best = Some((fitted.clone(), at_samples, between));
+            best = Some((fitted.clone(), at_samples, between, parameters.len()));
         }
         if more.is_empty() || round == DENSIFY || parameters.len() >= MOST {
             break;
@@ -580,10 +592,23 @@ pub fn fit_projected_pcurve_within(
         fitted = fit_and_clamp(&parameters, &trace)?;
         round += 1;
     }
-    let (fitted, at_samples, between) = best.unwrap_or((fitted, f64::INFINITY, f64::INFINITY));
+    let (fitted, at_samples, between, own) =
+        best.unwrap_or((fitted, f64::INFINITY, f64::INFINITY, 0));
+    // The probes above decide where to refit; the fit handed on states the
+    // widest miss its quarter points and their peaks show.
+    let between = between.max(climbed_miss(
+        &fitted.curve,
+        (&parameters, own),
+        &trace,
+        &offs,
+        closed_form,
+        |t| curve.point_at(t, tol).ok(),
+        surface,
+        tol,
+    ));
     let worst_off = offs.iter().copied().fold(worst_off, f64::max);
     // Each miss against its own bar: the samples hold the fit to a hair,
-    // and the probes between them to the micron that sent them back.
+    // and the points between them to the micron that sent it back.
     let error = at_samples.max(between);
     let met = at_samples <= tol.confusion() * 1e2 && between <= tol.confusion() * 1e4;
     let slop = (worst_off > tol.confusion() * 1e3).then(|| {
@@ -599,6 +624,114 @@ pub fn fit_projected_pcurve_within(
         worst_off,
         slop,
     )))
+}
+
+/// The widest a fitted pcurve, lifted through `surface`, misses where the
+/// curve lands between the samples of `parameters` (`trace` where they
+/// landed, `offs` how far off the surface), and at those the fit was not
+/// fitted through: the samples past the first `own`, which a refit added.
+///
+/// Every interval's quarter points are read, and the widest few readings,
+/// those within a fifth of the widest, at most `PEAKS`, are climbed to the
+/// tops of their peaks by golden sections between the quarters either
+/// side. Where the chart inverts in closed form (`closed_form`) a reading
+/// is the miss itself. On a patch every landing is a projection, and a
+/// reading is the lifted fit's distance from the curve's own point
+/// instead, which differs from the miss by no more than the curve's offset
+/// from the surface there; a top is stated with the wider offset either
+/// side of it added.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fit's context, each piece read"
+)]
+fn climbed_miss(
+    pcurve: &ogeom_geom::BSpline2d,
+    (parameters, own): (&[f64], usize),
+    trace: &[ogeom_math::Point2],
+    offs: &[f64],
+    closed_form: bool,
+    curve_at: impl Fn(f64) -> Option<Point>,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> f64 {
+    const PEAKS: usize = 4;
+    const NEAR_PEAK: f64 = 0.8;
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let lifted = |t: f64| -> Option<Point> {
+        let at = ogeom_geom::Curve2d::point_at(pcurve, t, tol).ok()?;
+        surface.point_at(at.x, at.y, tol).ok()
+    };
+    let reading = |t: f64| -> f64 {
+        let on = if closed_form {
+            curve_at(t)
+                .and_then(|p| chart_of(surface, p))
+                .and_then(|uv| surface.point_at(uv.x, uv.y, tol).ok())
+        } else {
+            curve_at(t)
+        };
+        match (lifted(t), on) {
+            (Some(fit), Some(on)) => fit.distance(on),
+            _ => 0.0,
+        }
+    };
+    let mut widest = 0.0_f64;
+    // The samples a refit added after this fit's round stand between its
+    // own.
+    if parameters.len() != own {
+        for (&t, uv) in parameters.iter().zip(trace) {
+            if let (Some(fit), Ok(traced)) = (lifted(t), surface.point_at(uv.x, uv.y, tol)) {
+                widest = widest.max(fit.distance(traced));
+            }
+        }
+    }
+    // Each interval's widest quarter reading, where it stands, and the
+    // quarter's length.
+    let mut readings: Vec<(f64, usize, f64, f64)> = (1..parameters.len())
+        .map(|index| {
+            let (a, b) = (parameters[index - 1], parameters[index]);
+            let quarter = (b - a) / 4.0;
+            (1..=3)
+                .map(|k| {
+                    let t = quarter.mul_add(f64::from(k), a);
+                    (reading(t), index, t, quarter)
+                })
+                .fold((f64::NEG_INFINITY, index, a, quarter), |held, r| {
+                    if r.0 > held.0 { r } else { held }
+                })
+        })
+        .collect();
+    readings.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let tallest = readings.first().map_or(0.0, |r| r.0);
+    for &(height, index, at, quarter) in readings
+        .iter()
+        .take_while(|r| r.0 > 0.0 && r.0 >= tallest * NEAR_PEAK)
+        .take(PEAKS)
+    {
+        let (lo, hi) = (parameters[index - 1], parameters[index]);
+        let (mut a, mut b) = ((at - quarter).max(lo), (at + quarter).min(hi));
+        let (mut c, mut d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        let (mut rc, mut rd) = (reading(c), reading(d));
+        let mut top = height.max(rc).max(rd);
+        for _ in 0..20 {
+            if rc > rd {
+                (b, d, rd) = (d, c, rc);
+                c = b - (b - a) * ratio;
+                rc = reading(c);
+            } else {
+                (a, c, rc) = (c, d, rd);
+                d = a + (b - a) * ratio;
+                rd = reading(d);
+            }
+            top = top.max(rc).max(rd);
+        }
+        let slop = if closed_form {
+            0.0
+        } else {
+            offs[index - 1].max(offs[index])
+        };
+        widest = widest.max(top + slop);
+    }
+    widest
 }
 
 /// How far `pcurve`, lifted through `surface`, stands from `curve`, each
@@ -620,7 +753,11 @@ pub fn fit_projected_pcurve_within(
 /// length, and a stray that narrow falls between even samples. So the
 /// widest few local peaks of the samples, and the two ends where a fit's
 /// trace is seeded, are each searched for their summit between the samples
-/// either side.
+/// either side. Unless `paced`, the peaks are those of the lifted point's
+/// distance square off the curve's tangent, which is the nearest-point gap
+/// to first order: a pcurve paced a little differently strays along the
+/// curve most where it strays across it least, and the peaks of the paced
+/// distance stand away from those of the gap stated.
 ///
 /// # Errors
 ///
@@ -636,9 +773,12 @@ pub fn lifted_gap(
     // Eight times the samples `check` takes, so its samples are among them.
     const SAMPLES: u32 = 256;
     // The peaks searched besides the ends: the widest stray and its
-    // runners-up, since the widest sample need not stand under the widest
-    // summit.
-    const PEAKS: usize = 3;
+    // runners-up standing within `NEAR_PEAK` of it, at most `PEAKS`, since
+    // the widest sample need not stand under the widest summit. A fit's
+    // wiggle can be as narrow as these samples are apart, and a sample
+    // then reads its summit a fifth low.
+    const PEAKS: usize = 8;
+    const NEAR_PEAK: f64 = 0.7;
     let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
     let n = f64::from(SAMPLES);
     let step = (range.1 - range.0) / n;
@@ -655,6 +795,21 @@ pub fn lifted_gap(
         };
         let t = (range.1 - range.0).mul_add(f, range.0);
         Ok(Some((lifted, curve.point_at(t, tol)?.distance(lifted))))
+    };
+    // The part of the paced distance at fraction `f` square off the
+    // curve's tangent there: the height the peaks are picked by.
+    let across_at = |f: f64, (lifted, gap): (Point, f64)| -> OgeomResult<f64> {
+        if paced {
+            return Ok(gap);
+        }
+        let t = (range.1 - range.0).mul_add(f, range.0);
+        let tangent = curve.d1_at(t, tol)?;
+        let length = tangent.magnitude();
+        if length <= f64::MIN_POSITIVE {
+            return Ok(gap);
+        }
+        let along = (lifted - curve.point_at(t, tol)?).dot(tangent) / length;
+        Ok(along.mul_add(-along, gap * gap).max(0.0).sqrt())
     };
     // The gap the edge must state at fraction `f`, given the lifted point
     // and its paced distance there: never more than the paced distance.
@@ -687,6 +842,10 @@ pub fn lifted_gap(
         .map(|i| paced_at(f64::from(i) / n))
         .collect::<OgeomResult<Vec<_>>>()?;
     let read = |i: usize| samples[i].map_or(0.0, |(_, gap)| gap);
+    let across = (0..=SAMPLES)
+        .zip(&samples)
+        .map(|(i, sample)| sample.map_or(Ok(0.0), |sample| across_at(f64::from(i) / n, sample)))
+        .collect::<OgeomResult<Vec<_>>>()?;
 
     // The widest sample, each measured fully only while its paced distance,
     // which bounds it, could still beat the widest found.
@@ -704,15 +863,20 @@ pub fn lifted_gap(
     }
 
     // Each summit, found by a golden-section search on the gap itself.
-    let mut peaks: Vec<usize> = order
-        .iter()
-        .copied()
+    let mut by_height: Vec<usize> = (0..samples.len()).collect();
+    by_height.sort_by(|&a, &b| across[b].total_cmp(&across[a]));
+    let tallest = across[by_height[0]];
+    let mut peaks: Vec<usize> = by_height
+        .into_iter()
         .filter(|&i| {
-            read(i) > tol.confusion()
-                && (i == 0 || read(i) >= read(i - 1))
-                && (i + 1 == samples.len() || read(i) >= read(i + 1))
+            across[i] > tol.confusion()
+                && (i == 0 || across[i] >= across[i - 1])
+                && (i + 1 == samples.len() || across[i] >= across[i + 1])
         })
         .take(PEAKS)
+        .enumerate()
+        .take_while(|&(k, i)| k < 3 || across[i] >= tallest * NEAR_PEAK)
+        .map(|(_, i)| i)
         .collect();
     peaks.extend([0, samples.len() - 1]);
     for i in peaks {
@@ -721,8 +885,10 @@ pub fn lifted_gap(
             i.saturating_sub(1) as f64 / n,
             (i + 1).min(samples.len() - 1) as f64 / n,
         );
+        // Climbed on the height the peaks were picked by, which costs no
+        // search along the curve, and the gap stated read at the top.
         let height = |f: f64| -> OgeomResult<f64> {
-            paced_at(f)?.map_or(Ok(0.0), |sample| gap_at(f, sample))
+            paced_at(f)?.map_or(Ok(0.0), |sample| across_at(f, sample))
         };
         let (mut c, mut d) = (b - (b - a) * ratio, a + (b - a) * ratio);
         let (mut hc, mut hd) = (height(c)?, height(d)?);
@@ -737,7 +903,10 @@ pub fn lifted_gap(
                 hd = height(d)?;
             }
         }
-        widest = widest.max(hc).max(hd);
+        let top = if hc > hd { c } else { d };
+        if let Some(sample) = paced_at(top)? {
+            widest = widest.max(gap_at(top, sample)?);
+        }
     }
     Ok(widest)
 }
@@ -1036,6 +1205,115 @@ mod tests {
         assert!(error < 1e-6, "and fits: {error:.2e}");
     }
 
+    /// A flat patch over the unit square, a spline surface whose chart
+    /// inverts only by projection.
+    fn flat_patch() -> SurfaceGeometry {
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::{ControlGrid, KnotVector, Point};
+        let control = [(0.0, -1.0), (0.0, 1.0), (1.0, -1.0), (1.0, 1.0)]
+            .map(|(x, y)| Point::new(x, y, 0.0))
+            .to_vec();
+        BSplineSurface::new(
+            KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap(),
+            KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap(),
+            &ControlGrid::new(control, 2, 2).unwrap(),
+            T,
+        )
+        .unwrap()
+        .into()
+    }
+
+    /// A pcurve's error covers the points between its samples on a patch.
+    ///
+    /// The curve runs across the patch in a sine of a hundredth of a
+    /// millimetre whose period is the samples' spacing: every sample and
+    /// every middle between two stands on the sine's axis, and the fit
+    /// through them is the axis. The quarter points stand on its crests,
+    /// and the error stated is the crest's height.
+    #[test]
+    fn a_fit_on_a_patch_states_its_widest_miss_between_the_samples() {
+        use ogeom_geom::{Curve2d as _, Curve3d as _, Surface as _};
+        use ogeom_math::Point;
+        let amplitude = 0.01;
+        let sine = |t: f64| {
+            Point::new(
+                t,
+                amplitude * (core::f64::consts::TAU * 96.0 * t).sin(),
+                0.0,
+            )
+        };
+        let ts: Vec<f64> = (0..=3840).map(|i| f64::from(i) / 3840.0).collect();
+        let points: Vec<Point> = ts.iter().map(|t| sine(*t)).collect();
+        let fitted = ogeom_geom::fit::fit_points_at(&ts, &points, 3, 1e-8, T).unwrap();
+        let curve: Curve = fitted.curve.into();
+        let patch = flat_patch();
+        let (pcurve, error, met, _, _) =
+            fit_projected_pcurve(&curve, (0.0, 1.0), &patch, T).unwrap();
+        let mut worst = 0.0_f64;
+        for i in 0..=20_000 {
+            let t = f64::from(i) / 20_000.0;
+            let uv = pcurve.point_at(t, T).unwrap();
+            let lifted = patch.point_at(uv.x, uv.y, T).unwrap();
+            worst = worst.max(lifted.distance(curve.point_at(t, T).unwrap()));
+        }
+        assert!(
+            worst > 0.9 * amplitude,
+            "the fit misses the crests: {worst:.3e}"
+        );
+        assert!(
+            error >= worst,
+            "the widest miss is stated: {error:.3e} for {worst:.3e}"
+        );
+        assert!(!met, "and the target is not met");
+    }
+
+    /// The gap stated where a pcurve is paced differently from its curve
+    /// is found at its widest. The pcurve runs along a straight line of the
+    /// patch a little ahead of it, and strays across it in bumps about as
+    /// narrow as the measure's samples are apart, the tallest three
+    /// quarters along. The paced distance is the lead's, which peaks
+    /// halfway; the samples read the tallest bump a few percent low, and
+    /// only a climb from a peak of the distance across reaches its top.
+    #[test]
+    fn a_pcurve_paced_differently_is_measured_at_its_widest_bump() {
+        use ogeom_geom::{Curve2d as _, LineCurve};
+        use ogeom_math::{Point, Point2};
+        let edge: Curve =
+            LineCurve::segment(Point::new(0.0, 0.0, 0.0), Point::new(1.0, 0.0, 0.0), T)
+                .unwrap()
+                .into();
+        let patch = flat_patch();
+        // u = t plus a slow lead; v (half of y on this patch) carries the
+        // bumps, tallest three quarters along.
+        let lead = |t: f64| 0.002 * (core::f64::consts::PI * t).sin();
+        let across = |t: f64| {
+            let bump = (core::f64::consts::TAU * 37.3 * t).sin().max(0.0).powi(8);
+            1e-5 * (1.0 + 0.5 * (-((t - 0.75) / 0.05).powi(2)).exp()) * bump
+        };
+        let ts: Vec<f64> = (0..=4000).map(|i| f64::from(i) / 4000.0).collect();
+        let chart: Vec<Point2> = ts
+            .iter()
+            .map(|&t| Point2::new(t + lead(t), 0.5 + 0.5 * across(t)))
+            .collect();
+        let pcurve: PlanarCurve = ogeom_geom::fit::fit_points_2d_at(&ts, &chart, 3, 1e-10, T)
+            .unwrap()
+            .curve
+            .into();
+        let mut truth = 0.0_f64;
+        for i in 0..=40_000 {
+            let t = f64::from(i) / 40_000.0;
+            let uv = pcurve.point_at(t, T).unwrap();
+            let lifted = patch.point_at(uv.x, uv.y, T).unwrap();
+            // The edge is the line y = 0: the nearest-point gap is |y|.
+            truth = truth.max(lifted.y.abs());
+        }
+        let gap = lifted_gap((&edge, (0.0, 1.0)), (&pcurve, (0.0, 1.0)), &patch, false, T).unwrap();
+        assert!(
+            gap >= 0.99 * truth && gap <= truth * 1.001 + 1e-12,
+            "the widest bump, {truth:.4e}, is stated: {gap:.4e}"
+        );
+    }
+
     /// A boundary 0.3 mm off its surface fits, and says so.
     ///
     /// Exchange files carry boundary curves that far from the surfaces
@@ -1123,8 +1401,8 @@ mod tests {
              {error:.3e} reported"
         );
         assert!(
-            error >= 0.5 * worst,
-            "and the miss between the samples is reported: {error:.3e} for {worst:.3e}"
+            error >= worst,
+            "and the widest miss between the samples is reported: {error:.3e} for {worst:.3e}"
         );
     }
 }
