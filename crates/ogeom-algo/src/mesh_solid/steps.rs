@@ -7,11 +7,14 @@ use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_math::{Axis, Cylinder, Frame, Plane, Point, Sphere, Torus, Vector};
 use ogeom_topo::{Model, Triangulation};
 
-use super::{
-    Carrier, Curved, Found, MeshSolid, MeshSolidOptions, MeshSolidReport, align_one, axis_frame,
-    from_to, hole_frame, plane_normals, plane_through, region_patch, sags_as_the_surface,
-    slit_band, sphere_axis, swept_claim, tangent_blends, tangent_rounds, unit_normal,
-};
+use super::frames::{align_one, hole_frame, slit_band};
+use super::planner::sags_as_the_surface;
+use super::regions::{region_patch, sphere_axis, swept_claim};
+use super::rounds::{plane_normals, tangent_blends, tangent_rounds};
+use super::segment::{axis_frame, unit_normal};
+use super::snap::plane_through;
+use super::weld::from_to;
+use super::{Carrier, Curved, Found, MeshSolid, MeshSolidOptions, MeshSolidReport};
 use crate::recognize::{self, Canonical, recognize_curved, worst_deviation};
 use crate::recognize_patch::Refused;
 
