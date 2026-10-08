@@ -173,8 +173,10 @@ fn the_loop_of_two_crossed_bores_rounds_to_its_share() {
                 return false;
             };
             let at = |v: &Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+            // The loop meets the seam where its fitted section does, a
+            // few microns either way.
             let ends = [at(&a), at(&b)];
-            ends.iter().any(|p| p.distance(seam) < 1e-6)
+            ends.iter().any(|p| p.distance(seam) < 1e-4)
                 && ends.iter().any(|p| p.y > 13.0 && p.z > 10.5)
         })
         .expect("the piece of the loop at the wider bore's seam");

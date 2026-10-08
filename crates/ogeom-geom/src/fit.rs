@@ -392,6 +392,108 @@ pub fn fit_points_joint_winding(
     fit_points_joint_inner(points, on_a, on_b, degree, tolerance, Some(3), tol)
 }
 
+/// As [`fit_points_joint`], at chord-length parameters held fixed, its
+/// knots starting at the parameters of the samples `stations` names.
+///
+/// A trace sampled far more finely than a cubic needs (a marched section,
+/// stepped by its chord's sag) fits in one round where the caller knows
+/// where the spans go: the knots start there and are refined only where a
+/// sample misses. Every sample is fitted and measured. The error is the
+/// widest seven-coordinate distance of a sample from the fit at its own
+/// parameter, which bounds its distance from the fit anywhere. Where
+/// `closed`, the ends are pinned and the join is C1 in every coordinate,
+/// as [`fit_points_joint_winding`] makes it.
+///
+/// # Errors
+///
+/// As [`fit_points_joint`]; also where two consecutive samples coincide in
+/// all seven coordinates, which leaves no parameter between them.
+#[allow(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    reason = "one trace in three spaces, its stations and the fit's terms"
+)]
+pub fn fit_points_joint_from(
+    points: &[Point],
+    on_a: &[Point2],
+    on_b: &[Point2],
+    stations: &[usize],
+    closed: bool,
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
+    if points.len() != on_a.len() || points.len() != on_b.len() {
+        ogeom_bail!(
+            Construction,
+            "a joint fit needs the same trace seen in every space"
+        );
+    }
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+    }
+    if degree == 0 || points.len() < 2 {
+        ogeom_bail!(
+            Construction,
+            "a fit needs a degree of at least one and two points"
+        );
+    }
+    let joined: Vec<[f64; 7]> = points
+        .iter()
+        .zip(on_a)
+        .zip(on_b)
+        .map(|((p, a), b)| [p.x, p.y, p.z, a.x, a.y, b.x, b.y])
+        .collect();
+    let parameters = chordal::<7>(&joined);
+    if parameters.windows(2).any(|w| w[1] <= w[0]) {
+        ogeom_bail!(
+            Construction,
+            "two consecutive samples coincide and leave no parameter between them"
+        );
+    }
+    let kept: Vec<(f64, usize)> = stations
+        .iter()
+        .filter_map(|&i| parameters.get(i))
+        .filter(|&&u| u > 0.0 && u < 1.0)
+        .map(|&u| (u, 1))
+        .collect();
+    let (knots, mut controls) = fit_family::<7>(
+        std::slice::from_ref(&joined),
+        &parameters,
+        degree,
+        tolerance,
+        closed,
+        false,
+        &kept,
+    )?;
+    let Some(control) = controls.pop() else {
+        ogeom_bail!(NotDone, "the joint fit solved nothing");
+    };
+    let error = residuals::<7>(&knots, &control, &joined, &parameters)
+        .iter()
+        .fold(0.0_f64, |acc, e| acc.max(e.1));
+    let curve = BSplineCurve::new(
+        knots.clone(),
+        control
+            .iter()
+            .map(|c| Point::new(c[0], c[1], c[2]))
+            .collect(),
+        tol,
+    )?;
+    let pa = BSpline2d::new(
+        knots.clone(),
+        control.iter().map(|c| Point2::new(c[3], c[4])).collect(),
+        tol,
+    )?;
+    let pb = BSpline2d::new(
+        knots,
+        control.iter().map(|c| Point2::new(c[5], c[6])).collect(),
+        tol,
+    )?;
+    let met = error <= tolerance;
+    Ok((Fitted { curve, error, met }, pa, pb))
+}
+
 #[allow(clippy::type_complexity)]
 fn fit_points_joint_inner(
     points: &[Point],

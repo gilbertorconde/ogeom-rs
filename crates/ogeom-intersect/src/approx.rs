@@ -146,20 +146,9 @@ pub fn approximate_branch(
         ((last.x - first.x).abs() <= tol.parametric() || surface.is_periodic_u())
             && ((last.y - first.y).abs() <= tol.parametric() || surface.is_periodic_v())
     };
-    let (space, on_a, on_b) = if branch.closed() {
-        let closed = ogeom_geom::fit::fit_points_joint_closed(
-            &points,
-            &unwrapped_a,
-            &unwrapped_b,
-            3,
-            tolerance,
-            tol,
-        )?;
-        if !closed.0.met
-            && winds_periodically(a, &unwrapped_a)
-            && winds_periodically(b, &unwrapped_b)
-        {
-            let winding = ogeom_geom::fit::fit_points_joint_winding(
+    let free = || -> OgeomResult<Joint> {
+        if branch.closed() {
+            let closed = ogeom_geom::fit::fit_points_joint_closed(
                 &points,
                 &unwrapped_a,
                 &unwrapped_b,
@@ -167,23 +156,93 @@ pub fn approximate_branch(
                 tolerance,
                 tol,
             )?;
-            if winding.0.error < closed.0.error {
-                winding
-            } else {
-                closed
+            if !closed.0.met
+                && winds_periodically(a, &unwrapped_a)
+                && winds_periodically(b, &unwrapped_b)
+            {
+                let winding = ogeom_geom::fit::fit_points_joint_winding(
+                    &points,
+                    &unwrapped_a,
+                    &unwrapped_b,
+                    3,
+                    tolerance,
+                    tol,
+                )?;
+                if winding.0.error < closed.0.error {
+                    return Ok(winding);
+                }
             }
+            Ok(closed)
         } else {
-            closed
+            ogeom_geom::fit::fit_points_joint(
+                &points,
+                &unwrapped_a,
+                &unwrapped_b,
+                3,
+                tolerance,
+                tol,
+            )
         }
-    } else {
-        ogeom_geom::fit::fit_points_joint(&points, &unwrapped_a, &unwrapped_b, 3, tolerance, tol)?
+    };
+    // The walk steps by how far its chord sags, which for a cubic is far
+    // finer than the fit needs: between samples a step `h` apart on a curve
+    // turning at `k`, a cubic misses by about `h^4 k^3 / 384` where the
+    // chord sags by `h^2 k / 8`. So the knots start where that estimate
+    // places a cubic's spans, every sample measures the fit, and only a
+    // fit that misses one is made the free way as well, the closer of the
+    // two standing.
+    let stations = cubic_stations(&points, &unwrapped_a, &unwrapped_b, tolerance);
+    let seeded = |closed: bool| {
+        ogeom_geom::fit::fit_points_joint_from(
+            &points,
+            &unwrapped_a,
+            &unwrapped_b,
+            &stations,
+            closed,
+            3,
+            tolerance,
+            tol,
+        )
+    };
+    let meets_itself = {
+        let n = points.len();
+        let (pa, pb) = (
+            unwrapped_a[n - 1] - unwrapped_a[0],
+            unwrapped_b[n - 1] - unwrapped_b[0],
+        );
+        let gap = (points[n - 1] - points[0]).square_magnitude()
+            + pa.square_magnitude()
+            + pb.square_magnitude();
+        gap.sqrt() <= tol.confusion()
+    };
+    let mut fitted = seeded(branch.closed() && meets_itself).ok();
+    if branch.closed()
+        && !meets_itself
+        && fitted.as_ref().is_none_or(|f| f.0.error > tolerance)
+        && winds_periodically(a, &unwrapped_a)
+        && winds_periodically(b, &unwrapped_b)
+        && let Ok(winding) = seeded(true)
+        && fitted.as_ref().is_none_or(|f| winding.0.error < f.0.error)
+    {
+        fitted = Some(winding);
+    }
+    let (space, on_a, on_b) = match fitted {
+        Some(fitted) if fitted.0.error <= tolerance => fitted,
+        Some(fitted) => {
+            let other = free()?;
+            if other.0.error < fitted.0.error {
+                other
+            } else {
+                fitted
+            }
+        }
+        None => free()?,
     };
 
     // Measured where it is promised, in millimetres. The joint fit's own
     // residual mixes space and chart coordinates and says little about
     // either alone, so it serves only as a bound on what is measured here.
     let lifted = lift_error(a, b, &on_a, &on_b, &space.curve, tol);
-    let traced = trace_error(&space.curve, &points, space.error, tol);
     // Where the surfaces meet at a shallow angle, a curve microns off both
     // can still sit far along them from where they cross. That distance is
     // the surfaces' gap over the sine of their angle, and it is no more than
@@ -192,17 +251,97 @@ pub fn approximate_branch(
     // angle. The smaller of the two stands.
     let charted =
         space_error(a, &on_a, space.error, tol).max(space_error(b, &on_b, space.error, tol));
-    let fit_error = traced
-        .max(lifted.along)
+    let lifted = lifted
+        .along
         .max(lifted.across.min(charted.max(space.error)));
+    // Each sample's distance from the curve, which the fit's residual
+    // already bounds: read only where that bound would decide the error.
+    let fit_error = if space.error <= lifted {
+        lifted
+    } else {
+        lifted.max(trace_error(&space.curve, &points, space.error, tol))
+    };
     Ok(IntersectionCurve {
         fit_error,
-        met: space.met,
+        met: space.error <= tolerance,
         curve: space.curve,
         on_a,
         on_b,
         closed: branch.closed(),
     })
+}
+
+/// A joint fit: the curve, and its images on the two surfaces.
+type Joint = (ogeom_geom::fit::Fitted<BSplineCurve>, BSpline2d, BSpline2d);
+
+/// The samples a cubic fit's knots start at, by index, the first and last
+/// among them: each stretch between two holds a cubic's estimated miss,
+/// `L Θ³ / 384` for a stretch `L` long turning through `Θ`, to an eighth
+/// of `tolerance`, in space and in either chart, the turn read off the
+/// trace's own polylines.
+fn cubic_stations(
+    points: &[ogeom_math::Point],
+    image_a: &[Point2],
+    image_b: &[Point2],
+    tolerance: f64,
+) -> Vec<usize> {
+    let n = points.len();
+    let target = tolerance / 8.0;
+    let traces: [Vec<[f64; 3]>; 3] = [
+        points.iter().map(|p| [p.x, p.y, p.z]).collect(),
+        image_a.iter().map(|p| [p.x, p.y, 0.0]).collect(),
+        image_b.iter().map(|p| [p.x, p.y, 0.0]).collect(),
+    ];
+    // Per trace: each segment's length, and the turn at each sample
+    // between two segments.
+    let shape: Vec<(Vec<f64>, Vec<f64>)> = traces
+        .iter()
+        .map(|trace| {
+            let segment =
+                |k: usize| -> [f64; 3] { core::array::from_fn(|d| trace[k + 1][d] - trace[k][d]) };
+            let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+            let lengths: Vec<f64> = (0..n - 1)
+                .map(|k| dot(segment(k), segment(k)).sqrt())
+                .collect();
+            let mut turns = vec![0.0; n];
+            for k in 1..n - 1 {
+                let scale = lengths[k - 1] * lengths[k];
+                if scale > 0.0 {
+                    turns[k] = (dot(segment(k - 1), segment(k)) / scale)
+                        .clamp(-1.0, 1.0)
+                        .acos();
+                }
+            }
+            (lengths, turns)
+        })
+        .collect();
+    let mut out = vec![0];
+    let mut from = 0;
+    while from + 1 < n {
+        let mut sums: Vec<(f64, f64)> = shape
+            .iter()
+            .map(|(lengths, _)| (lengths[from], 0.0))
+            .collect();
+        let mut to = from + 1;
+        while to + 1 < n {
+            let grown: Vec<(f64, f64)> = sums
+                .iter()
+                .zip(&shape)
+                .map(|(&(length, turn), (lengths, turns))| (length + lengths[to], turn + turns[to]))
+                .collect();
+            if grown
+                .iter()
+                .any(|&(length, turn)| length * turn.powi(3) / 384.0 > target)
+            {
+                break;
+            }
+            sums = grown;
+            to += 1;
+        }
+        out.push(to);
+        from = to;
+    }
+    out
 }
 
 /// What lifting the pcurves onto their surfaces shows.

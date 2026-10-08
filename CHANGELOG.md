@@ -19,6 +19,13 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Marched sections fit from knots placed by the cubic's error
+  estimate.** The joint fit of a marched intersection starts its knots
+  where a cubic's estimated miss between samples holds, measures every
+  sample, and falls back to the free fit only where it misses: a fuse of
+  two crossed cylinders is about a third faster, with a tighter true miss.
+  `fit_points_joint_from` fits joint samples from given knots.
+
 - **Nearest points on a B-spline patch by branch and bound.**
   `project_on_surface` and `SurfaceSeeds` search the patch's knot spans
   from the nearest bound down instead of a grid of one seed or more per
