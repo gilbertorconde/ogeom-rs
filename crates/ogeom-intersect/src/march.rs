@@ -1020,18 +1020,28 @@ pub(crate) fn sample_by(
     let mut out = Vec::new();
     #[allow(clippy::cast_precision_loss)]
     let (nu, nv) = (counts.0 as f64, counts.1 as f64);
+    let at = |s: f64, t: f64| {
+        let (u, v) = (ua + (ub - ua) * s, va + (vb - va) * t);
+        surface.point_at(u, v, tol).ok().map(|p| ((u, v), p))
+    };
+    // Each grid corner is evaluated once and shared by the cells around it,
+    // a row of corners at a time.
+    #[allow(clippy::cast_precision_loss)]
+    let row = |i: usize| -> Vec<_> {
+        (0..=counts.1)
+            .map(|j| at(i as f64 / nu, j as f64 / nv))
+            .collect()
+    };
+    let mut below = row(0);
     for i in 0..counts.0 {
+        let above = row(i + 1);
         for j in 0..counts.1 {
             #[allow(clippy::cast_precision_loss)]
             let (s0, s1) = (i as f64 / nu, (i + 1) as f64 / nu);
             #[allow(clippy::cast_precision_loss)]
             let (t0, t1) = (j as f64 / nv, (j + 1) as f64 / nv);
-            let at = |s: f64, t: f64| {
-                let (u, v) = (ua + (ub - ua) * s, va + (vb - va) * t);
-                surface.point_at(u, v, tol).map(|p| ((u, v), p))
-            };
-            let (Ok((p00, a00)), Ok((p10, a10)), Ok((p01, a01)), Ok((p11, a11))) =
-                (at(s0, t0), at(s1, t0), at(s0, t1), at(s1, t1))
+            let (Some((p00, a00)), Some((p10, a10)), Some((p01, a01)), Some((p11, a11))) =
+                (below[j], above[j], below[j + 1], above[j + 1])
             else {
                 continue;
             };
@@ -1061,6 +1071,7 @@ pub(crate) fn sample_by(
                 });
             }
         }
+        below = above;
     }
     out
 }
