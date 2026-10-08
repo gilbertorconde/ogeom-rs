@@ -5212,70 +5212,243 @@ fn partner_reach(face: &GFace, partner: &GFace, tol: Tolerances) -> f64 {
     (face.tolerance + partner.tolerance).max(tol.confusion() * 10.0)
 }
 
+/// How many chords a curved strand of a planar piece is resampled into.
+const FINE: usize = 1024;
+
+/// How many of a resampled arc's chords are passed over together where a
+/// ray cannot reach them.
+const FINE_BLOCK: usize = 32;
+
 /// A planar piece's rings resampled finely off their exact curves. The
 /// piece's own polylines bow inside a curved strand by more than the width
 /// of a sliver beside it, so a probe picked inside them can stand outside
-/// the piece. These rings hold it to a few microns. `None` for a face that
-/// is not a plane, or a ring with a strand this cannot resample (a contact
-/// or a pole).
-fn fine_rings(
-    face: &GFace,
-    rings: &[Vec<Traversal<Tag>>],
-    sections: &[SectionRec],
-    from_a: bool,
-    only: Option<&[bool]>,
+/// the piece. These rings hold it to a few microns.
+///
+/// A circular strand's samples are drawn as a ray asks for them: a ray
+/// meets a circle in at most two places, and the samples far from its
+/// height cannot be crossed by it.
+struct FineRings<'a> {
+    rings: Vec<Vec<FinePart<'a>>>,
     tol: Tolerances,
-) -> Option<Vec<Vec<Point2>>> {
-    const FINE: usize = 1024;
-    if !matches!(face.surface, SurfaceGeometry::Plane(_)) {
-        return None;
+}
+
+/// One strand of a [`FineRings`] ring.
+enum FinePart<'a> {
+    /// Its samples, in the ring's direction.
+    Points(Vec<Point2>),
+    /// A circle's samples, drawn when first asked for.
+    Arc(FineArc<'a>),
+}
+
+/// A circular strand's [`FINE`] chords, each sample drawn once, when a ray
+/// first needs it.
+struct FineArc<'a> {
+    curve: &'a PlanarCurve,
+    /// The circle's radius and the magnitude of its centre's coordinates.
+    radius: f64,
+    centre: f64,
+    from: f64,
+    to: f64,
+    wrap: Option<(f64, f64)>,
+    reversed: bool,
+    drawn: core::cell::RefCell<Vec<Option<Point2>>>,
+}
+
+impl FineArc<'_> {
+    /// The parameter sample `i` is drawn at.
+    fn parameter(&self, i: usize) -> f64 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = self.from + (self.to - self.from) * (i as f64 / FINE as f64);
+        self.wrap.map_or(t, |domain| fold(t, domain))
     }
-    let mut lines: Vec<Vec<Point2>> = Vec::with_capacity(rings.len());
-    for (k, ring) in rings.iter().enumerate() {
-        let mut line: Vec<Point2> = Vec::new();
-        if only.is_some_and(|wanted| !wanted.get(k).copied().unwrap_or(true)) {
+
+    /// Sample `i`. A circle is drawn at any parameter.
+    fn point(&self, i: usize, tol: Tolerances) -> Point2 {
+        if let Some(p) = self.drawn.borrow()[i] {
+            return p;
+        }
+        let p = self
+            .curve
+            .point_at(self.parameter(i), tol)
+            .unwrap_or(Point2::new(f64::NAN, f64::NAN));
+        self.drawn.borrow_mut()[i] = Some(p);
+        p
+    }
+
+    /// Whether a horizontal ray from `p` may cross a chord between samples
+    /// `lo` and `hi`. Every sample between them lies within the arc's length
+    /// between their parameters of sample `lo`, so where that reach stays
+    /// wholly above or below `p`'s height no chord there straddles it. A
+    /// parameter folded across its domain's end inside the block, or a
+    /// sample that is not finite, leaves the block to be asked chord by
+    /// chord.
+    fn may_cross(&self, lo: usize, hi: usize, p: Point2, tol: Tolerances) -> bool {
+        let (t0, t1) = (self.parameter(lo), self.parameter(hi));
+        #[allow(clippy::cast_precision_loss)]
+        let step = (self.to - self.from) * ((hi - lo) as f64 / FINE as f64);
+        let unfolded = self
+            .wrap
+            .is_none_or(|(a, b)| ((t1 - t0) - step).abs() <= 0.5 * (b - a).abs());
+        let start = self.point(lo, tol);
+        let slack = 1e-9 * (1.0 + self.radius + self.centre);
+        let reach = self.radius * (t1 - t0).abs() + slack;
+        if !(unfolded && reach.is_finite() && start.y.is_finite() && p.y.is_finite()) {
+            return true;
+        }
+        start.y - reach <= p.y && start.y + reach >= p.y
+    }
+}
+
+impl<'a> FineRings<'a> {
+    /// `None` for a face that is not a plane, or a ring with a strand this
+    /// cannot resample (a contact or a pole). Where `only` is given, a ring
+    /// it marks false is left empty.
+    fn of(
+        face: &'a GFace,
+        rings: &[Vec<Traversal<Tag>>],
+        sections: &'a [SectionRec],
+        from_a: bool,
+        only: Option<&[bool]>,
+        tol: Tolerances,
+    ) -> Option<Self> {
+        if !matches!(face.surface, SurfaceGeometry::Plane(_)) {
+            return None;
+        }
+        let mut lines: Vec<Vec<FinePart<'a>>> = Vec::with_capacity(rings.len());
+        for (k, ring) in rings.iter().enumerate() {
+            let mut line: Vec<FinePart<'a>> = Vec::new();
+            if only.is_some_and(|wanted| !wanted.get(k).copied().unwrap_or(true)) {
+                lines.push(line);
+                continue;
+            }
+            for traversal in ring {
+                let (curve, a, b, wrap) = match traversal.tag {
+                    Tag::Boundary { edge, range } => {
+                        let e = face.edges.get(edge)?;
+                        (
+                            &e.pcurve,
+                            rescale(range.0, e.crange, e.prange),
+                            rescale(range.1, e.crange, e.prange),
+                            None,
+                        )
+                    }
+                    Tag::Section { section, range } => {
+                        let record = sections.get(section)?;
+                        let pcurve = if from_a { &record.pc_a } else { &record.pc_b };
+                        let wrap = record.closed.then(|| record.curve.domain());
+                        (pcurve, range.0, range.1, wrap)
+                    }
+                    Tag::Contact { .. } | Tag::Pole { .. } => return None,
+                };
+                if let PlanarCurve::Circle(circle) = curve {
+                    let circle = circle.circle();
+                    let centre = circle.centre();
+                    line.push(FinePart::Arc(FineArc {
+                        curve,
+                        radius: circle.radius(),
+                        centre: centre.x.abs() + centre.y.abs(),
+                        from: a,
+                        to: b,
+                        wrap,
+                        reversed: traversal.reversed,
+                        drawn: core::cell::RefCell::new(vec![None; FINE + 1]),
+                    }));
+                    continue;
+                }
+                let count = if matches!(curve, PlanarCurve::Line(_)) {
+                    1
+                } else {
+                    FINE
+                };
+                let mut points: Vec<Point2> = Vec::with_capacity(count + 1);
+                for i in 0..=count {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = a + (b - a) * (i as f64 / count as f64);
+                    let t = wrap.map_or(t, |domain| fold(t, domain));
+                    points.push(curve.point_at(t, tol).ok()?);
+                }
+                if traversal.reversed {
+                    points.reverse();
+                }
+                line.push(FinePart::Points(points));
+            }
             lines.push(line);
-            continue;
         }
-        for traversal in ring {
-            let (curve, a, b, wrap) = match traversal.tag {
-                Tag::Boundary { edge, range } => {
-                    let e = face.edges.get(edge)?;
-                    (
-                        &e.pcurve,
-                        rescale(range.0, e.crange, e.prange),
-                        rescale(range.1, e.crange, e.prange),
-                        None,
-                    )
-                }
-                Tag::Section { section, range } => {
-                    let record = sections.get(section)?;
-                    let pcurve = if from_a { &record.pc_a } else { &record.pc_b };
-                    let wrap = record.closed.then(|| record.curve.domain());
-                    (pcurve, range.0, range.1, wrap)
-                }
-                Tag::Contact { .. } | Tag::Pole { .. } => return None,
-            };
-            let count = if matches!(curve, PlanarCurve::Line(_)) {
-                1
-            } else {
-                FINE
-            };
-            let mut points: Vec<Point2> = Vec::with_capacity(count + 1);
-            for i in 0..=count {
-                #[allow(clippy::cast_precision_loss)]
-                let t = a + (b - a) * (i as f64 / count as f64);
-                let t = wrap.map_or(t, |domain| fold(t, domain));
-                points.push(curve.point_at(t, tol).ok()?);
-            }
-            if traversal.reversed {
-                points.reverse();
-            }
-            line.extend(points);
-        }
-        lines.push(line);
+        Some(Self { rings: lines, tol })
     }
-    Some(lines)
+
+    /// Even-odd containment of `p` in the rings, counted as
+    /// [`inside_rings`] counts it over the rings drawn in full: whether a
+    /// ray crosses a chord does not depend on the way the chord runs.
+    fn inside(&self, p: Point2) -> bool {
+        let tol = self.tol;
+        let mut inside = false;
+        let mut flip = |a: Point2, b: Point2| {
+            if arrange::ray_crosses(a, b, p) {
+                inside = !inside;
+            }
+        };
+        for ring in &self.rings {
+            let mut first: Option<Point2> = None;
+            let mut last: Option<Point2> = None;
+            for part in ring {
+                let (head, tail) = match part {
+                    FinePart::Points(points) => {
+                        for w in points.windows(2) {
+                            flip(w[0], w[1]);
+                        }
+                        (points[0], points[points.len() - 1])
+                    }
+                    FinePart::Arc(arc) => {
+                        let mut lo = 0;
+                        while lo < FINE {
+                            let hi = (lo + FINE_BLOCK).min(FINE);
+                            if arc.may_cross(lo, hi, p, tol) {
+                                for i in lo..hi {
+                                    flip(arc.point(i, tol), arc.point(i + 1, tol));
+                                }
+                            }
+                            lo = hi;
+                        }
+                        let ends = (arc.point(0, tol), arc.point(FINE, tol));
+                        if arc.reversed { (ends.1, ends.0) } else { ends }
+                    }
+                };
+                if let Some(at) = last {
+                    flip(at, head);
+                }
+                first.get_or_insert(head);
+                last = Some(tail);
+            }
+            if let (Some(first), Some(last)) = (first, last) {
+                flip(last, first);
+            }
+        }
+        inside
+    }
+
+    /// Every ring's samples, drawn in full, in the ring's direction.
+    fn points(&self) -> Vec<Vec<Point2>> {
+        self.rings
+            .iter()
+            .map(|ring| {
+                let mut line = Vec::new();
+                for part in ring {
+                    match part {
+                        FinePart::Points(points) => line.extend_from_slice(points),
+                        FinePart::Arc(arc) => {
+                            let start = line.len();
+                            line.extend((0..=FINE).map(|i| arc.point(i, self.tol)));
+                            if arc.reversed {
+                                line[start..].reverse();
+                            }
+                        }
+                    }
+                }
+                line
+            })
+            .collect()
+    }
 }
 
 /// Which of a piece's rings a horizontal ray from any of `probes` may
@@ -7850,15 +8023,16 @@ fn general_fuse_as(
                 // Only the rings a probe's ray can cross are drawn finely: on a
                 // face with hundreds of holes the rest are far from every probe.
                 let reached = rings_near(&piece.outlines, &piece.interiors);
-                let fine = fine_rings(face, &piece.rings, &sections, from_a, Some(&reached), tol);
+                let fine =
+                    FineRings::of(face, &piece.rings, &sections, from_a, Some(&reached), tol);
                 let mut interiors: Vec<Point2> = piece.interiors.clone();
                 if let Some(fine) = &fine {
-                    interiors.retain(|p| arrange::inside_rings(fine, *p));
+                    interiors.retain(|p| fine.inside(*p));
                     if interiors.is_empty()
                         && let Some(every) =
-                            fine_rings(face, &piece.rings, &sections, from_a, None, tol)
+                            FineRings::of(face, &piece.rings, &sections, from_a, None, tol)
                     {
-                        interiors = arrange::interior_points_of(&every, tol.parametric());
+                        interiors = arrange::interior_points_of(&every.points(), tol.parametric());
                     }
                 }
                 for candidate in &interiors {
@@ -7981,9 +8155,7 @@ fn general_fuse_as(
                                 arrange::off_contact_points(&piece.outlines, tol.parametric())
                             {
                                 if !arrange::inside_rings(&piece.outlines, candidate)
-                                    || fine
-                                        .as_ref()
-                                        .is_some_and(|f| !arrange::inside_rings(f, candidate))
+                                    || fine.as_ref().is_some_and(|f| !f.inside(candidate))
                                 {
                                     continue;
                                 }

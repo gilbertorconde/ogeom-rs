@@ -28,6 +28,11 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Booleans hold a piece's probes to its exact rings without resampling
+  every circle in full:** a circular strand's fine samples are drawn only
+  where a probe's ray can cross them (`boolean_many_faces` about 14%
+  faster).
+
 - **Exact mass properties are about twice as fast.** A chart face's exact
   samples are summed once rather than in every run, rational spline
   patches take the fast isoline evaluation, and faces are prepared and

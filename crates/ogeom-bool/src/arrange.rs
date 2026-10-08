@@ -724,6 +724,12 @@ fn slanted_ray_crosses_segment<P: Predicates>(a: Point2, b: Point2, p: Point2) -
     }
 }
 
+/// Whether the horizontal ray from `p` crosses the segment from `a` to `b`,
+/// as [`inside_rings`] counts a crossing.
+pub(crate) fn ray_crosses(a: Point2, b: Point2, p: Point2) -> bool {
+    ray_crosses_segment::<Exact>(a, b, p)
+}
+
 /// Even-odd containment of a point in one closed polyline.
 fn inside(ring: &[Point2], p: Point2) -> bool {
     let mut inside = false;
