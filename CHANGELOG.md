@@ -141,6 +141,18 @@ it passes behind a contour. The benches cover mass properties, `check`,
 
 ### Fixed
 
+- **Projected pcurves state their widest miss between samples.** Quarter
+  points and the peaks beside them are read, not only the samples and
+  their middles; an edge's measured pcurve gap finds its widest peak where
+  the pcurve is paced differently from its curve, so an edge read from a
+  file no longer states a tolerance below how far its fitted pcurve stands
+  off. A fixed-parameter pcurve fit that reaches interpolation stands on
+  averaged knots.
+
+- **Dividing a face along an iso line of a surface with no closed form**
+  (an offset of a spline) keeps the new edge within the confusion distance
+  of the surface between its samples.
+
 - **A spline fitted through every point stays on the shape between
   them.** Curve and grid fits that refine all the way to interpolation take
   averaged knots, so they no longer swing off between their points (an

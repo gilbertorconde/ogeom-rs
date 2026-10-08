@@ -33,6 +33,50 @@ is lost. Its two halves and a slit's two sides are then the same shape, so
 telling them apart needs something besides the ring itself, such as the
 faces its edges are shared with.
 
+**Some fits through bare points are trusted between their points.** A fit
+through points (`fit_points`, `fit_points_at`, the grid fits) states its
+error at the points only. These callers still read it, or nothing, where
+the shape between the points matters:
+
+- `ogeom-intersect/src/approx.rs` (`approximate_branch`): a section's
+  `fit_error` takes the lifted gap over the surfaces' sine (read densely)
+  or, where smaller, the fit's chart residual carried through the
+  surfaces' stretch (read at the samples only), and becomes the section
+  edge's tolerance with the chord. Measuring the curve and the lifted
+  pcurves against the crossing itself, found by Newton in the curve's
+  normal plane at every station, states the true miss: a shallow
+  crossing fitted through nine samples then reads 1.9e-3 where 3.9e-5 is
+  stated now. It moves the boolean both ways: the oblique drills' sections
+  fall from 8e-4 to 3e-5 (the charted bound was loose), a graze inside a
+  torus's equator rises from 8e-5 to 2.4e-4, and both booleans then fail
+  to close their shells (`oblique_drills`,
+  `boolean_grazing_drill`). A crossing found farther than a station's step
+  off is another stretch of it, and the oblique drafts need that filter.
+  Waiting on a decision: state the measured miss and make the boolean's
+  shell closure hold at those tolerances, or keep `fit_error` as it is and
+  carry the measured miss beside it.
+- `ogeom-offset/src/sweep.rs` (`Skin::fit`, `skinned_wall`): a grid skin's
+  error becomes the slack an adopted border is widened by, and
+  `adopt_border` reads that border against the surface at 33 points.
+  Between the sections the skin is the fit itself; along a section the
+  section curve is the truth and is not read between the grid's points.
+- `ogeom-offset/src/shape.rs` (the projected pcurve of a rebuilt edge):
+  the edge is widened by the samples' offset only, not by the fit's error
+  or the lifted gap that `ogeom-algo/src/build.rs` measures.
+- `ogeom-fillet/src/pair_marched.rs` (`contact_cut`): the ball's line of
+  contact is held to its target at the march's stations only; its pcurve
+  is measured densely against it, but the true contact line between
+  stations would take a march to read.
+- `ogeom-hlr/src/exact.rs`: a silhouette is fitted through the walk's
+  points and kept whether or not the fit met the chord. The fit's error
+  bounds nothing there; the line is drawn.
+
+Read and left: `ogeom-algo/src/convert.rs` (`fit_pcurve` stops refining
+at 384 samples and checks middles only, but every re-derived edge is then
+measured densely by `state_pcurve_gaps_of`), and
+`ogeom-algo/src/recognize_swept.rs` (a mesh's vertices are all the truth
+there is, and the profile is measured against every one).
+
 ### Booleans
 
 **Nearly coplanar faces are not paired as coincident.** A piece that reads on

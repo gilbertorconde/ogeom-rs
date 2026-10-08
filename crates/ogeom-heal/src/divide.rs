@@ -1450,9 +1450,11 @@ fn iso_curve(
             (r.curve().transformed(&turn, tol)?, 1.0, 0.0)
         }
         (SurfaceGeometry::Trimmed(t), _) => return iso_curve(t.basis(), line, probes, span, tol),
-        // No closed form (an offset of a spline): the iso-curve fitted
-        // through its own points at its own parameters, same-parameter
-        // with the straight chart line it runs along.
+        // No closed form (an offset of a spline): the iso-curve fitted to
+        // the surface along the line at the line's own parameters,
+        // same-parameter with the straight chart line it runs along, and
+        // held to the confusion distance between its samples as well as at
+        // them.
         _ => {
             const N: usize = 128;
             let (lo, hi) = span;
@@ -1463,14 +1465,17 @@ fn iso_curve(
             let params: Vec<f64> = (0..=N)
                 .map(|i| lo + (hi - lo) * i as f64 / N as f64)
                 .collect();
-            let points: Vec<Point> = params
-                .iter()
-                .map(|w| {
-                    let on = line.point(*w);
+            let fitted = ogeom_geom::fit::fit_curve_sampled(
+                |w| {
+                    let on = line.point(w);
                     surface.point_at(on.x, on.y, tol)
-                })
-                .collect::<OgeomResult<_>>()?;
-            let fitted = ogeom_geom::fit::fit_points_at(&params, &points, 3, tol.confusion(), tol)?;
+                },
+                &params,
+                false,
+                3,
+                tol.confusion(),
+                tol,
+            )?;
             if !fitted.met {
                 return Ok(None);
             }
@@ -1558,4 +1563,59 @@ pub(crate) fn inside(rings: &[Vec<Point2>], p: Point2) -> bool {
         }
     }
     odd
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use ogeom_geom::{BSplineSurface, OffsetSurface};
+    use ogeom_math::ControlGrid;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// An iso-curve with no closed form keeps to the surface between the
+    /// points it was fitted at. The surface is the offset of a patch
+    /// carrying a ridge about as wide as a hundred and twenty-eighth of the
+    /// line, so a spline through the line's even samples swings off the
+    /// ridge between them; the curve stands within the confusion distance
+    /// of the surface everywhere along the line.
+    #[test]
+    fn an_iso_curve_without_a_closed_form_keeps_to_the_surface_between_its_samples() {
+        const ROWS: u32 = 401;
+        let mut control = Vec::new();
+        for i in 0..ROWS {
+            let x = f64::from(i) / f64::from(ROWS - 1);
+            let ridge = 0.05 * (-((x - 0.503) / 0.006).powi(2)).exp();
+            control.extend([Point::new(x, 0.0, ridge), Point::new(x, 1.0, ridge)]);
+        }
+        let mut u_knots = vec![0.0; 4];
+        u_knots.extend((1..ROWS - 3).map(|k| f64::from(k) / f64::from(ROWS - 3)));
+        u_knots.extend([1.0; 4]);
+        let patch = BSplineSurface::new(
+            KnotVector::new(u_knots, 3).unwrap(),
+            KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap(),
+            &ControlGrid::new(control, ROWS as usize, 2).unwrap(),
+            T,
+        )
+        .unwrap();
+        let surface =
+            SurfaceGeometry::Offset(Box::new(OffsetSurface::new(patch.into(), 5e-4).unwrap()));
+        let line = IsoLine::V(0.5);
+        let (curve, scale, offset) = iso_curve(&surface, line, &[0.5], (0.0, 1.0), T)
+            .unwrap()
+            .expect("the ridge is followed within the confusion distance");
+        let mut worst = 0.0_f64;
+        for k in 0..=20_000 {
+            let w = f64::from(k) / 20_000.0;
+            let on = line.point(w);
+            let expected = surface.point_at(on.x, on.y, T).unwrap();
+            let got = curve.point_at(scale * w + offset, T).unwrap();
+            worst = worst.max(expected.distance(got));
+        }
+        assert!(
+            worst <= 2.0 * T.confusion(),
+            "the iso-curve leaves the surface by {worst:.3e}"
+        );
+    }
 }
