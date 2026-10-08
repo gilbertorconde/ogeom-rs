@@ -38,23 +38,6 @@ through points (`fit_points`, `fit_points_at`, the grid fits) states its
 error at the points only. These callers still read it, or nothing, where
 the shape between the points matters:
 
-- `ogeom-intersect/src/approx.rs` (`approximate_branch`): a section's
-  `fit_error` takes the lifted gap over the surfaces' sine (read densely)
-  or, where smaller, the fit's chart residual carried through the
-  surfaces' stretch (read at the samples only), and becomes the section
-  edge's tolerance with the chord. Measuring the curve and the lifted
-  pcurves against the crossing itself, found by Newton in the curve's
-  normal plane at every station, states the true miss: a shallow
-  crossing fitted through nine samples then reads 1.9e-3 where 3.9e-5 is
-  stated now. It moves the boolean both ways: the oblique drills' sections
-  fall from 8e-4 to 3e-5 (the charted bound was loose), a graze inside a
-  torus's equator rises from 8e-5 to 2.4e-4, and both booleans then fail
-  to close their shells (`oblique_drills`,
-  `boolean_grazing_drill`). A crossing found farther than a station's step
-  off is another stretch of it, and the oblique drafts need that filter.
-  Waiting on a decision: state the measured miss and make the boolean's
-  shell closure hold at those tolerances, or keep `fit_error` as it is and
-  carry the measured miss beside it.
 - `ogeom-offset/src/sweep.rs` (`Skin::fit`, `skinned_wall`): a grid skin's
   error becomes the slack an adopted border is widened by, and
   `adopt_border` reads that border against the surface at 33 points.

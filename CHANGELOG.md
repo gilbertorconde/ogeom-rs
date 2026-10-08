@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A marched section's stated error bounds its miss against the real
+  crossing.** Its curve and both pcurves are measured against the surface
+  crossing found at each station, so a shallow crossing no longer states
+  less than it stands off (3.9e-5 where the fit stood 1.9e-3 off), and the
+  section edge's tolerance holds.
+
 - **Point-in-solid classification answers where every ray meets a
   tangency.** After all six rays are refused, the point's generalized
   winding number against the faces' meshes answers when the point stands
