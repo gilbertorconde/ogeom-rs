@@ -1408,6 +1408,45 @@ enum Folds {
 const PROXIES: usize = 17;
 type Proxy = [f64; PROXIES];
 
+/// Which of a face's samples a run takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    /// Every sample.
+    All,
+    /// Only the samples a finer run changes (see [`Run`]).
+    Refined,
+}
+
+/// What one run over a face's panels found besides its samples.
+///
+/// A sample is *exact* where its rule takes the integrand to rounding
+/// whatever the run's fineness: a corner's, a bridge's on an analytic
+/// surface, whose inner panels are the same in every run, and a boundary
+/// panel's on such a surface whose order came from its error bound. Every
+/// other sample (a ribbon strip's, or one on a surface or boundary piece
+/// with no bound) is *refined*: a finer run moves it.
+struct Run {
+    /// The integrals of the [`PROXIES`] measures over the exact samples and
+    /// over the refined ones, to compare runs by.
+    exact: Proxy,
+    refined: Proxy,
+    /// Whether the run had any refined piece.
+    refines: bool,
+    /// The farthest sample's squared distance from the reference.
+    reach: f64,
+    /// Whether `|n|` dipped across an inner panel where the run watched.
+    dipped: bool,
+}
+
+/// Two proxies summed.
+fn add(a: Proxy, b: Proxy) -> Proxy {
+    let mut sum = a;
+    for (x, y) in sum.iter_mut().zip(b) {
+        *x += y;
+    }
+    sum
+}
+
 impl ChartFace {
     /// A point of the face's surface, to take moments from.
     pub(crate) fn anchor(&self, tol: Tolerances) -> OgeomResult<Point> {
@@ -1420,10 +1459,11 @@ impl ChartFace {
     /// The face's integral summed into an accumulator from `fresh`: every
     /// sample is handed to `contribute` as the surface point, its `n dA`
     /// with the weight's magnitude folded in, and the weight's sign (an area
-    /// takes `|n dA|` times that sign, a volume the product). Each run sums
-    /// into an accumulator of its own, and the one that settles is
-    /// returned; `None` where none did.
-    pub(crate) fn integrate<A>(
+    /// takes `|n dA|` times that sign, a volume the product). The first
+    /// run's exact samples (see [`Run`]) are summed once; each finer run
+    /// adds its refined samples to a copy of that sum, and the one that
+    /// settles is returned; `None` where none did.
+    pub(crate) fn integrate<A: Clone>(
         &self,
         measure: Measure,
         reference: Point,
@@ -1439,15 +1479,45 @@ impl ChartFace {
         } else {
             Folds::Ignore
         };
-        let (mut held, mut reach, dipped) = self
-            .run(1, measure, watch, reference, tol, &mut |_| {})
-            .ok()?;
-        let folds = if dipped { Folds::Grade } else { Folds::Ignore };
-        if dipped {
-            (held, reach, _) = self
-                .run(1, measure, folds, reference, tol, &mut |_| {})
+        let first = |folds: Folds| -> Option<(A, Run)> {
+            let mut base = fresh();
+            let run = self
+                .run(
+                    1,
+                    Part::All,
+                    measure,
+                    folds,
+                    reference,
+                    tol,
+                    &mut |(p, n, w), refined| {
+                        if !refined {
+                            contribute(&mut base, p, n * w.abs(), w.signum());
+                        }
+                    },
+                )
                 .ok()?;
+            Some((base, run))
+        };
+        let (mut base, mut run) = first(watch)?;
+        // With no refined sample a finer run only repeats this one.
+        if !run.refines && !run.dipped {
+            return Some(base);
         }
+        let folds = if run.dipped {
+            Folds::Grade
+        } else {
+            Folds::Ignore
+        };
+        if run.dipped {
+            (base, run) = first(folds)?;
+        }
+        let Run {
+            exact,
+            refined,
+            reach,
+            ..
+        } = run;
+        let mut held = add(exact, refined);
         // The moments are weighed against the volume by the face's reach
         // from the reference, the same for every run: once for the first,
         // twice for the second.
@@ -1471,20 +1541,21 @@ impl ChartFace {
             if ogeom_core::progress::checkpoint().is_err() {
                 return None;
             }
-            let mut sum = fresh();
-            let (proxy, _, _) = self
+            let mut sum = base.clone();
+            let Run { refined, .. } = self
                 .run(
                     1 << doubling,
+                    Part::Refined,
                     measure,
                     folds,
                     reference,
                     tol,
-                    &mut |(p, n, w)| {
+                    &mut |(p, n, w), _| {
                         contribute(&mut sum, p, n * w.abs(), w.signum());
                     },
                 )
                 .ok()?;
-            let proxy = weigh(proxy);
+            let proxy = weigh(add(exact, refined));
             if settled(held, proxy) {
                 return Some(sum);
             }
@@ -1493,25 +1564,45 @@ impl ChartFace {
         None
     }
 
-    /// The face's samples with every panel split `fine` ways, each handed to
-    /// `sink` in a fixed order, the integrals of a few measures over them to
-    /// compare runs by, the farthest sample's squared distance from
-    /// `reference`, and whether `|n|` dipped across an inner panel where
-    /// `folds` watches for it.
+    /// Whether the surface is one whose inner integrals a quarter-turn
+    /// panel takes to rounding.
+    fn analytic(&self) -> bool {
+        matches!(
+            self.surface,
+            SurfaceGeometry::Plane(_)
+                | SurfaceGeometry::Cylinder(_)
+                | SurfaceGeometry::Cone(_)
+                | SurfaceGeometry::Sphere(_)
+                | SurfaceGeometry::Torus(_)
+        )
+    }
+
+    /// The face's samples of `part` with every panel split `fine` ways,
+    /// each handed to `sink` in a fixed order with whether it is refined,
+    /// and what the run found (see [`Run`]).
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
         fine: u32,
+        part: Part,
         measure: Measure,
         folds: Folds,
         reference: Point,
         tol: Tolerances,
-        sink: &mut dyn FnMut(Sample),
-    ) -> OgeomResult<(Proxy, f64, bool)> {
-        let mut proxy = [0.0; PROXIES];
+        sink: &mut dyn FnMut(Sample, bool),
+    ) -> OgeomResult<Run> {
+        let mut proxies = [[0.0; PROXIES]; 2];
         let mut reach = 0.0_f64;
         let mut dipped = false;
+        let analytic = self.analytic();
         let size = self.scale.max(1.0);
+        // Whether the samples being taken are refined, set before each
+        // piece.
+        let refining = core::cell::Cell::new(false);
+        let mut refines = false;
         let mut take = |(p, n, w): Sample| {
+            let refined = refining.get();
+            let proxy = &mut proxies[usize::from(refined)];
             let e = p - reference;
             let flux = e.dot(n) / size;
             match measure {
@@ -1536,7 +1627,7 @@ impl ChartFace {
                     }
                 }
             }
-            sink((p, n, w));
+            sink((p, n, w), refined);
         };
         for (segments, region) in &self.loops {
             for segment in segments {
@@ -1545,6 +1636,8 @@ impl ChartFace {
                     .as_ref()
                     .filter(|r| measure == Measure::Volume || r.area)
                 {
+                    refining.set(true);
+                    refines = true;
                     let lobes: &[(f64, bool)] = match measure {
                         Measure::Area => ribbon
                             .lobes
@@ -1583,7 +1676,13 @@ impl ChartFace {
                 }
                 let breaks = self.outer_breaks(segment, tol)?;
                 for pair in breaks.windows(2) {
-                    let order = self.outer_order(segment, pair[0], pair[1], tol)?;
+                    let bound = self.outer_order(segment, pair[0], pair[1], tol)?;
+                    refining.set(!analytic || bound.is_none());
+                    refines |= refining.get();
+                    if part == Part::Refined && !refining.get() {
+                        continue;
+                    }
+                    let order = bound.unwrap_or(10);
                     for k in 0..fine {
                         let a = pair[0] + (pair[1] - pair[0]) * f64::from(k) / f64::from(fine);
                         let b = pair[0] + (pair[1] - pair[0]) * f64::from(k + 1) / f64::from(fine);
@@ -1597,7 +1696,8 @@ impl ChartFace {
             }
         }
         // The corners close a volume; an area has nothing to close.
-        if measure == Measure::Volume {
+        refining.set(false);
+        if measure == Measure::Volume && part == Part::All {
             for (polygon, turn) in &self.corners {
                 // A fan of triangles from the first corner, each
                 // integrated on its unit square collapsed onto it.
@@ -1613,7 +1713,14 @@ impl ChartFace {
                 }
             }
         }
-        for &(start, step, region) in &self.bridges {
+        refining.set(!analytic);
+        refines |= !analytic && !self.bridges.is_empty();
+        let bridges = if part == Part::All || !analytic {
+            &self.bridges[..]
+        } else {
+            &[]
+        };
+        for &(start, step, region) in bridges {
             for (t, wt) in gauss_legendre_rule(0.0, 1.0) {
                 dipped |= self.inner(
                     start + step * t,
@@ -1625,7 +1732,14 @@ impl ChartFace {
                 )?;
             }
         }
-        Ok((proxy, reach, dipped))
+        let [exact, refined] = proxies;
+        Ok(Run {
+            exact,
+            refined,
+            refines,
+            reach,
+            dipped,
+        })
     }
 
     /// The rulings of a piece's strip at `t`, its samples weighted by
@@ -1763,7 +1877,7 @@ impl ChartFace {
 
     /// How many Gauss points a boundary panel from `a` to `b` takes: the
     /// fewest whose error bound is below [`PANEL_MISS`] of the panel's own
-    /// size, or ten.
+    /// size, or `None` where no bound holds and the panel takes ten.
     ///
     /// The integrand along a panel is a trigonometric polynomial of the
     /// chart point, of frequency at most [`FREQUENCY`] in an angle (a
@@ -1774,14 +1888,14 @@ impl ChartFace {
     /// Bernstein ellipse of every `rho`, bounded there through the bounds
     /// of `|Im c|` and `|c'|`, and the `n`-point rule misses by at most
     /// `64/15 M rho^(2 - 2n) / (rho^2 - 1)`. Any other piece, or a surface
-    /// whose integrand is of another kind, takes ten.
+    /// whose integrand is of another kind, has no bound.
     fn outer_order(
         &self,
         segment: &Segment,
         a: f64,
         b: f64,
         tol: Tolerances,
-    ) -> OgeomResult<usize> {
+    ) -> OgeomResult<Option<usize>> {
         let cubic = match &segment.curve {
             PlanarCurve::Line(_) => true,
             PlanarCurve::BSpline(spline) => !spline.is_rational() && spline.knots().degree() <= 3,
@@ -1792,10 +1906,10 @@ impl ChartFace {
             SurfaceGeometry::Sphere(_) | SurfaceGeometry::Torus(_) => (1.0, 1.0),
             SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => (1.0, length),
             SurfaceGeometry::Plane(_) => (length, length),
-            _ => return Ok(10),
+            _ => return Ok(None),
         };
         if !cubic {
-            return Ok(10);
+            return Ok(None);
         }
         // The cubic's coefficients from its points at s = -1, -1/3, 1/3, 1.
         let (middle, half) = (f64::midpoint(a, b), (b - a) * 0.5);
@@ -1811,7 +1925,7 @@ impl ChartFace {
             * (9.0 / 16.0);
         let size = a1.y.abs() + a2.y.abs() + a3.y.abs();
         if size == 0.0 {
-            return Ok(ORDERS[0]);
+            return Ok(Some(ORDERS[0]));
         }
         let reach = |c: Vector2| c.x.abs() * wu + c.y.abs() * wv;
         let (r1, r2, r3) = (reach(a1), reach(a2), reach(a3));
@@ -1840,7 +1954,7 @@ impl ChartFace {
             .iter()
             .zip(best)
             .find(|&(_, miss)| miss <= PANEL_MISS)
-            .map_or(10, |(&n, _)| n))
+            .map(|(&n, _)| n))
     }
 
     /// The inner integral from `u_ref` to the boundary point `at`, along
@@ -1865,14 +1979,7 @@ impl ChartFace {
         // plane), which a quarter-turn panel takes to rounding: only the
         // boundary's own panels are refined between runs there, and none
         // is graded.
-        let analytic = matches!(
-            self.surface,
-            SurfaceGeometry::Plane(_)
-                | SurfaceGeometry::Cylinder(_)
-                | SurfaceGeometry::Cone(_)
-                | SurfaceGeometry::Sphere(_)
-                | SurfaceGeometry::Torus(_)
-        );
+        let analytic = self.analytic();
         let refined = if analytic { 1 } else { fine };
         let folds = if analytic { Folds::Ignore } else { folds };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -2118,14 +2225,21 @@ fn graded(a: f64, fold: f64, b: f64, levels: u32) -> Vec<(f64, f64)> {
     panels
 }
 
-/// A polynomial spline patch read along one `v`: its control net summed
-/// across `v` once, into the control points of the row at `v` and of its
-/// `v` derivative. Every sample of an inner integral shares that `v`, so a
-/// sample costs one row's worth of basis functions instead of the grid's.
+/// A spline patch read along one `v`: its control net summed across `v`
+/// once, into the control points of the row at `v` and of its `v`
+/// derivative, with their weights where the patch is rational. Every sample
+/// of an inner integral shares that `v`, so a sample costs one row's worth
+/// of basis functions instead of the grid's.
 struct Isoline<'a> {
     knots: &'a ogeom_math::KnotVector,
     row: Vec<Point>,
     across: Vec<Vector>,
+    /// The weights of `row` and of `across` on a rational patch, whose rows
+    /// then hold weighted points.
+    weights: Option<(Vec<f64>, Vec<f64>)>,
+    /// The least weight a point may have; below it the general evaluation
+    /// is left to refuse the point.
+    confusion: f64,
 }
 
 impl<'a> Isoline<'a> {
@@ -2133,9 +2247,7 @@ impl<'a> Isoline<'a> {
         let SurfaceGeometry::BSpline(patch) = surface else {
             return None;
         };
-        if patch.is_rational() {
-            return None;
-        }
+        let rational = patch.is_rational();
         let v_knots = patch.v_knots();
         let span = v_knots.span(v, tol).ok()?;
         let q = v_knots.degree();
@@ -2143,24 +2255,36 @@ impl<'a> Isoline<'a> {
         let grid = patch.grid();
         let mut row = Vec::with_capacity(grid.u_count());
         let mut across = Vec::with_capacity(grid.u_count());
+        let (mut row_w, mut across_w) = (Vec::new(), Vec::new());
         for i in 0..grid.u_count() {
             let (mut p, mut d) = (Vector::ZERO, Vector::ZERO);
+            let (mut pw, mut dw) = (0.0, 0.0);
             for k in 0..=q {
-                let c = grid.get(i, span - q + k)?.scaled.to_vector();
+                let control = grid.get(i, span - q + k)?;
+                let c = control.scaled.to_vector();
                 p += c * basis[0][k];
                 d += c * basis[1][k];
+                pw += control.weight * basis[0][k];
+                dw += control.weight * basis[1][k];
             }
             row.push(Point::ORIGIN + p);
             across.push(d);
+            if rational {
+                row_w.push(pw);
+                across_w.push(dw);
+            }
         }
         Some(Self {
             knots: patch.u_knots(),
             row,
             across,
+            weights: rational.then_some((row_w, across_w)),
+            confusion: tol.confusion(),
         })
     }
 
-    /// The point, `du` and `dv` at `u`; `None` off the knots' domain.
+    /// The point, `du` and `dv` at `u`; `None` off the knots' domain, or
+    /// where a rational patch's weight vanishes.
     #[inline(always)]
     fn at(&self, u: f64, tol: Tolerances) -> Option<(Point, Vector, Vector)> {
         let span = self.knots.span(u, tol).ok()?;
@@ -2173,7 +2297,26 @@ impl<'a> Isoline<'a> {
             du += c * basis[1][k];
             dv += self.across[span - p + k] * basis[0][k];
         }
-        Some((Point::ORIGIN + point, du, dv))
+        let Some((row_w, across_w)) = &self.weights else {
+            return Some((Point::ORIGIN + point, du, dv));
+        };
+        // The weighted point and its derivatives divided through by the
+        // weight: `S = A / w`, `S_u = (A_u - w_u S) / w`, and so in `v`.
+        let (mut w, mut wu, mut wv) = (0.0, 0.0, 0.0);
+        for k in 0..=p {
+            w += row_w[span - p + k] * basis[0][k];
+            wu += row_w[span - p + k] * basis[1][k];
+            wv += across_w[span - p + k] * basis[0][k];
+        }
+        if w.abs() <= self.confusion {
+            return None;
+        }
+        let point = point / w;
+        Some((
+            Point::ORIGIN + point,
+            (du - point * wu) / w,
+            (dv - point * wv) / w,
+        ))
     }
 }
 

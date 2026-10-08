@@ -28,6 +28,12 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Exact mass properties are about twice as fast.** A chart face's exact
+  samples are summed once rather than in every run, rational spline
+  patches take the fast isoline evaluation, and faces are prepared and
+  their orientations checked in parallel. Values agree with before to
+  5e-13.
+
 - **Self-intersection checks prove most face pairs apart before measuring
   them.** Each piece is held in a guaranteed hull (a spline's control net,
   a plane's corners) and pairs are separated by box or by projection,

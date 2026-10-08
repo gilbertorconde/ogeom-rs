@@ -420,8 +420,6 @@ recorded count per bench, and a gate at a few percent.
 - Mesh conversion meshes every face again after the whole-shape mesh in
   each build iteration; primitive refinement allocates in its Jacobian
   loop; piece nesting has no box rejection.
-- Exact volume runs a discarded first pass and a second to compare, even
-  where the first is exact (planes bounded by lines).
 - The quartic (line and torus) goes through a heap companion matrix; a
   bracketing solver between the derivative's roots (Yuksel 2022) is
   allocation-free and finds tangencies directly.
@@ -449,7 +447,13 @@ recorded count per bench, and a gate at a few percent.
   instead of a refusal (Jacobson et al. 2013; Spainhour et al. 2024).
 - Arrangement darts ordered by exact orientation, ties walked apart.
 - Adaptive Gauss-Kronrod per panel in exact volume, instead of doubling
-  every panel when one misses.
+  every panel when one misses. What is left after the bounded panels are
+  summed once is the refined part on spline surfaces and ribbon strips:
+  run 2 costs about four times run 1 there (inner and outer panels both
+  doubled). Per panel: a 10-point Gauss and 21-point Kronrod estimate on
+  each outer panel, split only the panels whose estimate misses against
+  the face's size; the fold grading must move into the per-panel rule
+  (grade a panel when its own nodes dip) and the lobes into its breaks.
 - Primitive fits with analytic gradients and Levenberg-Marquardt (Lukacs,
   Marshall and Martin 1998).
 - Fitting a band or a pcurve: factor the normal matrix once per round for

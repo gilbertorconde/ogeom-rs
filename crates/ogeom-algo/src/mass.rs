@@ -556,11 +556,14 @@ fn exact_volume_properties(
     let mut exact = Vec::with_capacity(faces.len());
     // The face each region of `exact` belongs to.
     let mut region_of: Vec<usize> = Vec::with_capacity(faces.len());
-    for (at, face) in faces.iter().enumerate() {
+    // Each face prepared on its own, and taken in the faces' order.
+    let prepared =
+        ogeom_core::parallel::map_ordered(&faces, |_, face| integrable_face(model, face, tol));
+    for (at, (face, found)) in faces.iter().zip(prepared).enumerate() {
         // A face the closed forms cannot evaluate (a chart point a hair off
         // its surface's domain) is left to the mesh, like one they do not
         // speak at all.
-        match or_mesh(integrable_face(model, face, tol), None)? {
+        match or_mesh(found, None)? {
             Some(found) => {
                 region_of.extend(std::iter::repeat_n(at, found.len()));
                 exact.extend(found);
@@ -775,8 +778,10 @@ fn exact_surface_properties(
         return Ok(None);
     }
     let mut exact = Vec::with_capacity(faces.len());
-    for face in &faces {
-        match or_mesh(integrable_face(model, face, tol), None)? {
+    let prepared =
+        ogeom_core::parallel::map_ordered(&faces, |_, face| integrable_face(model, face, tol));
+    for found in prepared {
+        match or_mesh(found, None)? {
             Some(found) => exact.extend(found),
             None => return Ok(None),
         }
@@ -885,7 +890,7 @@ fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
 /// `contribute` receives the world point, the outward-signed `n dA`
 /// already weighted, and the region's share; summing those contributions
 /// *is* the integral.
-fn integrate_face<A>(
+fn integrate_face<A: Clone>(
     face: &ExactFace,
     measure: crate::mass_chart::Measure,
     reference: Point,
@@ -975,8 +980,7 @@ fn integrate_face<A>(
                             return;
                         }
                         let sample = (|| -> OgeomResult<()> {
-                            let p = surface.point_at(u, v, tol)?;
-                            let (du, dv) = surface.d1_at(u, v, tol)?;
+                            let (p, du, dv) = surface.point_d1_at(u, v, tol)?;
                             contribute(&mut sums, p, du.cross(dv) * (sign * weight), share);
                             Ok(())
                         })();
@@ -1187,9 +1191,14 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
     let faces = explore(model, &unplaced, Filter::OfType(ShapeType::Face))?;
     let mut walks: ogeom_core::FastMap<Occurrence, Vec<(bool, usize, bool)>> =
         ogeom_core::FastMap::default();
-    let mut curves: PlacedCurves = ogeom_core::FastMap::default();
-    for (index, face) in faces.iter().enumerate() {
-        match face_walks(model, face, &mut curves, tol)? {
+    // Each face walked on its own, with the edge curves it places, and
+    // taken in the faces' order.
+    let walked = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+        let mut curves: PlacedCurves = ogeom_core::FastMap::default();
+        face_walks(model, face, &mut curves, tol)
+    });
+    for (index, (face, found)) in faces.iter().zip(walked).enumerate() {
+        match found? {
             Some(found) => {
                 for (edge, ahead, outer) in found {
                     walks.entry(edge).or_default().push((ahead, index, outer));
