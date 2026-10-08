@@ -257,6 +257,9 @@ proptest! {
         let (a, b) = k.domain();
         let u = a + (b - a) * position;
         let h = 1e-6;
+        // A difference straddling a knot of a degree-1 curve crosses its kink,
+        // where the derivative jumps and no difference agrees with either side.
+        prop_assume!(k.degree() > 1 || k.knots().iter().all(|&t| (t - u).abs() > 2.0 * h));
         let d = derivatives(&k, &c, u, 1, T).unwrap();
 
         prop_assert!(d[0].is_equal(evaluate(&k, &c, u, T).unwrap(), T));
