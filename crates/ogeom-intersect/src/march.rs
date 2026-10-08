@@ -852,7 +852,7 @@ fn unit_normal(du: Vector, dv: Vector, tol: Tolerances) -> Option<Vector> {
 /// `constraint` is `(anchor, direction, distance)`. Without one, the guess
 /// itself is used as the anchor and the direction is the intersection tangent,
 /// which is what seeding wants: land anywhere on the curve near here.
-pub(crate) fn correct(
+fn correct(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     start: [f64; 4],

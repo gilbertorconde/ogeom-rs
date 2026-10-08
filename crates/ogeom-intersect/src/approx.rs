@@ -243,7 +243,7 @@ pub fn approximate_branch(
     // Measured where it is promised, in millimetres. The joint fit's own
     // residual mixes space and chart coordinates and says little about
     // either alone, so it serves only as a bound on what is measured here.
-    let lifted = lift_error(a, b, &on_a, &on_b, &space.curve, points.len(), tol);
+    let lifted = lift_error(a, b, &on_a, &on_b, &space.curve, tol);
     // Where the surfaces meet at a shallow angle, a curve microns off both
     // can still sit far along them from where they cross. That distance is
     // the surfaces' gap over the sine of their angle, and it is no more than
@@ -370,30 +370,35 @@ struct Lifted {
 }
 
 /// Each pcurve lifted through its surface against the curve, at four
-/// stations in every span of the curve's knots, two for every one of the
-/// trace's `samples` and at least two hundred along it, between the
-/// samples as well as at them. Near a cone's apex or a sphere's pole the
-/// chart turns fast, and a fit that holds at every sample can wander
-/// between them.
+/// stations in every span of the curve's knots and at least two hundred
+/// along it, between the trace's samples as well as at them. Near a cone's
+/// apex or a sphere's pole the chart turns fast, and a fit that holds at
+/// every sample can wander between them.
 ///
 /// At each station the surfaces' crossing in the curve's normal plane is
 /// found by Newton's method from the pcurves' points, and the curve and
 /// both lifted pcurves are measured against it: what the fit misses
 /// between the samples of the trace, read on the geometry the trace
-/// follows.
+/// follows. That miss runs smoothly along each span of the fit, so the
+/// stations near its widest are climbed to the top of the peak beside
+/// them.
 fn lift_error(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     on_a: &BSpline2d,
     on_b: &BSpline2d,
     curve: &BSplineCurve,
-    samples: usize,
     tol: Tolerances,
 ) -> Lifted {
-    use ogeom_geom::{Curve2d as _, Curve3d as _};
+    // A station stands up to a fifth below the peak beside it where the
+    // miss swells between two of them; each such peak, widest first, is
+    // climbed by golden sections between its neighbours.
+    const NEAR_PEAK: f64 = 0.8;
+    const PEAKS: usize = 16;
+    const CLIMB: usize = 16;
     let (lo, hi) = curve.knots().domain();
     let spans = curve.knots().distinct().len().saturating_sub(1).max(1);
-    let stations = (4 * spans).max(2 * samples).max(200);
+    let stations = (4 * spans).max(200);
     #[allow(clippy::cast_precision_loss)]
     let step = (hi - lo) / stations as f64;
     let mut out = Lifted {
@@ -403,60 +408,264 @@ fn lift_error(
         lifted_off: 0.0,
         unsettled: false,
     };
+    #[allow(clippy::cast_precision_loss)]
+    let at = |k: usize| lo + (hi - lo) * k as f64 / stations as f64;
+    let read = |t: f64| station(a, b, on_a, on_b, curve, t, step, tol);
+    // Each station's miss against the crossing, zero where none was read.
+    let mut misses = Vec::with_capacity(stations + 1);
     for k in 0..=stations {
-        #[allow(clippy::cast_precision_loss)]
-        let t = lo + (hi - lo) * k as f64 / stations as f64;
-        let Ok(on) = curve.point_at(t, tol) else {
+        let Some(here) = read(at(k)) else {
+            misses.push(0.0);
             continue;
         };
-        let mut gap = 0.0_f64;
-        let mut normals = Vec::with_capacity(2);
-        let mut charts = Vec::with_capacity(2);
-        let mut lifts = Vec::with_capacity(2);
-        for (surface, pcurve) in [(a, on_a), (b, on_b)] {
-            let Ok(at) = pcurve.point_at(t, tol) else {
-                continue;
-            };
-            let Ok(lifted) = surface.point_at(at.x, at.y, tol) else {
-                continue;
-            };
-            gap = gap.max(lifted.distance(on));
-            charts.push(at);
-            lifts.push(lifted);
-            if let Ok(normal) = surface.normal_at(at.x, at.y, tol) {
-                normals.push(normal.vector());
-            }
-        }
-        out.along = out.along.max(gap);
-        // A crossing farther off than a station's step along the curve is
-        // another stretch of the crossing met in this normal plane, not
-        // the one the curve follows.
-        let crossing = match (&charts[..], curve.d1_at(t, tol)) {
-            ([ca, cb], Ok(tangent)) => crate::march::correct(
-                a,
-                b,
-                [ca.x, ca.y, cb.x, cb.y],
-                on,
-                Some((on, tangent, 0.0)),
-                tol,
-            )
-            .filter(|found| found.point.distance(on) <= tangent.magnitude() * step),
-            _ => None,
-        };
-        if let Some(crossing) = crossing {
-            out.curve_off = out.curve_off.max(on.distance(crossing.point));
-            for lifted in &lifts {
-                out.lifted_off = out.lifted_off.max(lifted.distance(crossing.point));
-            }
+        out.along = out.along.max(here.gap);
+        out.across = out.across.max(here.across);
+        if let Some((curve_off, lifted_off)) = here.off {
+            out.curve_off = out.curve_off.max(curve_off);
+            out.lifted_off = out.lifted_off.max(lifted_off);
+            misses.push(curve_off.max(lifted_off));
         } else {
             out.unsettled = true;
+            misses.push(0.0);
         }
-        if let [na, nb] = normals[..] {
-            let sine = na.cross(nb).magnitude().max(tol.angular());
-            out.across = out.across.max(gap / sine);
+    }
+    let widest = misses.iter().fold(0.0_f64, |m, &x| m.max(x));
+    let mut peaks: Vec<usize> = (0..=stations)
+        .filter(|&k| {
+            misses[k] > 0.0
+                && misses[k] >= widest * NEAR_PEAK
+                && (k == 0 || misses[k] >= misses[k - 1])
+                && (k == stations || misses[k] >= misses[k + 1])
+        })
+        .collect();
+    peaks.sort_by(|&i, &j| misses[j].total_cmp(&misses[i]));
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut climb = |t: f64| {
+        read(t)
+            .and_then(|s| s.off)
+            .map_or(0.0, |(curve_off, lifted_off)| {
+                out.curve_off = out.curve_off.max(curve_off);
+                out.lifted_off = out.lifted_off.max(lifted_off);
+                curve_off.max(lifted_off)
+            })
+    };
+    for k in peaks.into_iter().take(PEAKS) {
+        let (mut left, mut right) = (at(k.saturating_sub(1)), at((k + 1).min(stations)));
+        let mut c = right - (right - left) * ratio;
+        let mut d = left + (right - left) * ratio;
+        let (mut rc, mut rd) = (climb(c), climb(d));
+        for _ in 0..CLIMB {
+            if rc > rd {
+                right = d;
+                (d, rd) = (c, rc);
+                c = right - (right - left) * ratio;
+                rc = climb(c);
+            } else {
+                left = c;
+                (c, rc) = (d, rd);
+                d = left + (right - left) * ratio;
+                rd = climb(d);
+            }
         }
     }
     out
+}
+
+/// What the curve reads at one parameter.
+struct Station {
+    /// How far either pcurve, lifted, stands from the curve.
+    gap: f64,
+    /// That gap over the sine of the surfaces' angle, zero where either
+    /// normal is not determined.
+    across: f64,
+    /// How far the curve and either lifted pcurve stand from the surfaces'
+    /// crossing in the curve's normal plane, `None` where it is not found.
+    off: Option<(f64, f64)>,
+}
+
+/// A surface's chart point, its point there and first derivatives.
+type Jet = (
+    Point2,
+    ogeom_math::Point,
+    ogeom_math::Vector,
+    ogeom_math::Vector,
+);
+
+/// The curve and both pcurves at `t`, measured against each other and
+/// against the surfaces' crossing in the curve's normal plane there.
+/// `None` where the curve cannot be evaluated. A crossing farther off
+/// than `step` along the curve is another stretch of the crossing met in
+/// this normal plane, not the one the curve follows, and is not read.
+#[allow(clippy::too_many_arguments)]
+fn station(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    on_a: &BSpline2d,
+    on_b: &BSpline2d,
+    curve: &BSplineCurve,
+    t: f64,
+    step: f64,
+    tol: Tolerances,
+) -> Option<Station> {
+    use ogeom_geom::{Curve2d as _, Curve3d as _};
+    let on = curve.point_at(t, tol).ok()?;
+    let mut gap = 0.0_f64;
+    let mut normals = [None; 2];
+    let mut jets: [Option<Jet>; 2] = [None; 2];
+    for (k, (surface, pcurve)) in [(a, on_a), (b, on_b)].into_iter().enumerate() {
+        let Ok(chart) = pcurve.point_at(t, tol) else {
+            continue;
+        };
+        let Ok((lifted, du, dv)) = surface.point_d1_at(chart.x, chart.y, tol) else {
+            continue;
+        };
+        gap = gap.max(lifted.distance(on));
+        jets[k] = Some((chart, lifted, du, dv));
+        // The normal as the surface states it: none where the tangents
+        // collapse against their own length.
+        let scale = du.magnitude().max(dv.magnitude());
+        let cross = du.cross(dv);
+        let length = cross.magnitude();
+        if length > tol.angular() * scale * scale {
+            normals[k] = Some(cross * (1.0 / length));
+        }
+    }
+    let across = match normals {
+        [Some(na), Some(nb)] => gap / na.cross(nb).magnitude().max(tol.angular()),
+        _ => 0.0,
+    };
+    let off = match (jets, curve.d1_at(t, tol)) {
+        ([Some(ja), Some(jb)], Ok(tangent)) => {
+            let reach = tangent.magnitude() * step;
+            crossing(a, b, ja, jb, on, tangent, reach, tol)
+                .filter(|found| found.distance(on) <= reach)
+                .map(|found| {
+                    (
+                        on.distance(found),
+                        ja.1.distance(found).max(jb.1.distance(found)),
+                    )
+                })
+        }
+        _ => None,
+    };
+    Some(Station { gap, across, off })
+}
+
+/// Where the surfaces cross in the plane through `anchor` normal to
+/// `along`, by damped Newton steps from the two jets given, each step
+/// first cut to carry neither surface's point past `reach` and then
+/// halved until the surfaces draw closer. From the curve's own station
+/// the crossing is a few steps off where there is one; where a step finds
+/// no closer point within `HALVINGS`, or the steps do not settle within
+/// `MOST`, no crossing is near and the answer is `None`.
+#[allow(clippy::too_many_arguments)]
+fn crossing(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    on_a: Jet,
+    on_b: Jet,
+    anchor: ogeom_math::Point,
+    along: ogeom_math::Vector,
+    reach: f64,
+    tol: Tolerances,
+) -> Option<ogeom_math::Point> {
+    const MOST: usize = 8;
+    const HALVINGS: usize = 8;
+    let settled = tol.confusion() * 0.01;
+    let residual_of = |pa: ogeom_math::Point, pb: ogeom_math::Point| {
+        let gap = pa - pb;
+        [gap.x, gap.y, gap.z, (pa - anchor).dot(along)]
+    };
+    let jacobian_of = |(au, av): (ogeom_math::Vector, ogeom_math::Vector),
+                       (bu, bv): (ogeom_math::Vector, ogeom_math::Vector)| {
+        [
+            [au.x, av.x, -bu.x, -bv.x],
+            [au.y, av.y, -bu.y, -bv.y],
+            [au.z, av.z, -bu.z, -bv.z],
+            [au.dot(along), av.dot(along), 0.0, 0.0],
+        ]
+    };
+    let norm = |r: &[f64; 4]| r.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let mut x = [on_a.0.x, on_a.0.y, on_b.0.x, on_b.0.y];
+    let mut point = on_a.1;
+    let mut residual = residual_of(on_a.1, on_b.1);
+    let mut jacobian = jacobian_of((on_a.2, on_a.3), (on_b.2, on_b.3));
+    let mut size = norm(&residual);
+    for _ in 0..MOST {
+        if size <= settled {
+            break;
+        }
+        let delta = solve4(jacobian, residual)?;
+        // How far the step would carry each surface's point, to first
+        // order. A crossing past `reach` is not the one sought, so the
+        // halving starts at the first scale that stays within it.
+        let carried = (0..3)
+            .map(|row| {
+                let on_a = jacobian[row][0] * delta[0] + jacobian[row][1] * delta[1];
+                let on_b = jacobian[row][2] * delta[2] + jacobian[row][3] * delta[3];
+                (on_a * on_a, on_b * on_b)
+            })
+            .fold((0.0, 0.0), |(sa, sb), (a, b)| (sa + a, sb + b));
+        let carried = carried.0.max(carried.1).sqrt();
+        let mut scale = 1.0;
+        while scale * carried > reach {
+            scale *= 0.5;
+        }
+        let mut accepted = None;
+        for _ in 0..HALVINGS {
+            let trial: [f64; 4] = core::array::from_fn(|i| x[i] - delta[i] * scale);
+            let (ua, va) = crate::march::clamp(a, trial[0], trial[1]);
+            let (ub, vb) = crate::march::clamp(b, trial[2], trial[3]);
+            if let (Ok(pa), Ok(pb)) = (a.point_at(ua, va, tol), b.point_at(ub, vb, tol)) {
+                let r = residual_of(pa, pb);
+                let trial_size = norm(&r);
+                if (trial_size < size || trial_size <= settled)
+                    && let (Ok(da), Ok(db)) = (a.d1_at(ua, va, tol), b.d1_at(ub, vb, tol))
+                {
+                    accepted = Some((trial, pa, r, jacobian_of(da, db), trial_size));
+                    break;
+                }
+            }
+            scale *= 0.5;
+        }
+        let Some((next, at, r, j, next_size)) = accepted else {
+            break;
+        };
+        let step = norm(&core::array::from_fn(|i| next[i] - x[i]));
+        (x, point, residual, jacobian, size) = (next, at, r, j, next_size);
+        if step <= tol.parametric() {
+            break;
+        }
+    }
+    (size <= tol.confusion()).then_some(point)
+}
+
+/// `m x = r` for four unknowns, by elimination with partial pivoting;
+/// `None` at a zero pivot.
+fn solve4(mut m: [[f64; 4]; 4], mut r: [f64; 4]) -> Option<[f64; 4]> {
+    for col in 0..4 {
+        let pivot = (col..4).max_by(|&i, &j| m[i][col].abs().total_cmp(&m[j][col].abs()))?;
+        if m[pivot][col] == 0.0 {
+            return None;
+        }
+        m.swap(col, pivot);
+        r.swap(col, pivot);
+        let head = m[col];
+        for row in col + 1..4 {
+            let factor = m[row][col] / head[col];
+            for (entry, above) in m[row].iter_mut().zip(&head).skip(col) {
+                *entry -= factor * above;
+            }
+            r[row] -= factor * r[col];
+        }
+    }
+    for col in (0..4).rev() {
+        r[col] /= m[col][col];
+        for row in 0..col {
+            r[row] -= m[row][col] * r[col];
+        }
+    }
+    Some(r)
 }
 
 /// How far the curve stands from the trace it was fitted to: each sample's
