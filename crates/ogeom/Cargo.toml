@@ -45,6 +45,11 @@ ogeom-io.workspace = true
 ogeom-hlr.workspace = true
 ogeom-doc.workspace = true
 
+[features]
+# Timings read the browser's `performance.now()` on `wasm32-unknown-unknown`
+# instead of reading zero.
+web = ["ogeom-core/web"]
+
 [dev-dependencies]
 approx.workspace = true
 ogeom-algo = { workspace = true, features = ["test-hooks"] }

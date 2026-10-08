@@ -27,6 +27,10 @@
 //! to stdout. See `README.md` beside this crate for what the ratios mean
 //! across core counts.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "a reporting tool")]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a native benchmark: it times with the std clock"
+)]
 
 use std::time::{Duration, Instant};
 

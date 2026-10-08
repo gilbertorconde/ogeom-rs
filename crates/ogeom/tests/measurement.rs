@@ -361,7 +361,7 @@ fn a_metre_cube_and_a_long_drum_measure_exactly_and_at_once() {
     let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 3000.0, T)
         .unwrap()
         .shape;
-    let started = std::time::Instant::now();
+    let started = ogeom::core::clock::Instant::now();
     for (shape, volume, area) in [
         (&cube, 1e9, 6e6),
         (

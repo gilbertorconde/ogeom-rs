@@ -24,6 +24,7 @@
 //! crate's documentation refer to it.
 
 pub mod arena;
+pub mod clock;
 pub mod collections;
 pub mod error;
 pub mod id;

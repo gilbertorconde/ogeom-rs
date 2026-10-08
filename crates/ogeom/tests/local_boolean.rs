@@ -63,7 +63,7 @@ fn a_corner_hole_costs_what_it_touches_not_what_the_plate_holds() {
     let least = |(model, plate, corner): &mut (Model, Shape, Shape)| {
         let before = explore_unique(model, plate, ShapeType::Face).unwrap().len();
         (0..6).fold(f64::INFINITY, |least, _| {
-            let started = std::time::Instant::now();
+            let started = ogeom::core::clock::Instant::now();
             let cut = ogeom::boolean::cut(model, plate, corner, T).unwrap();
             let elapsed = started.elapsed().as_secs_f64();
             let after = explore_unique(model, &cut.shape, ShapeType::Face)

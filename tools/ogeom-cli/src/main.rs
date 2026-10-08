@@ -10,6 +10,10 @@
 //! what it found. A tool that only prints the answer teaches you to trust the
 //! answer. One that prints the answer *and* what is wrong with the shape it
 //! came from teaches you when not to.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a native program: it times with the std clock"
+)]
 
 use ogeom::core::FastMap;
 use std::process::ExitCode;

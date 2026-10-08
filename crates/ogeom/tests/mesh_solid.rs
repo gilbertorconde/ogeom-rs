@@ -7,7 +7,8 @@ mod pcurves;
 #[path = "support/walks.rs"]
 mod walks;
 
-use std::time::{Duration, Instant};
+use ogeom::core::clock::Instant;
+use std::time::Duration;
 
 use ogeom::algo::{
     MeshSolidOptions, Severity, check, solid_from_mesh, tight_bounds, volume_properties,

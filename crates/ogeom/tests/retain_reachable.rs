@@ -205,7 +205,7 @@ fn a_582_face_plate_compacts_to_what_it_reaches() {
     assert!(model.node_count() < 20_000, "{} nodes", model.node_count());
     let least = (0..5)
         .map(|_| {
-            let started = std::time::Instant::now();
+            let started = ogeom::core::clock::Instant::now();
             let copy = model.clone();
             let elapsed = started.elapsed().as_secs_f64();
             drop(copy);

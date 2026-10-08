@@ -18,6 +18,15 @@ hashbrown.workspace = true
 foldhash.workspace = true
 robust.workspace = true
 
+# The browser's clock, for timings on `wasm32-unknown-unknown`; without it
+# every duration there is zero. Nothing is added on other targets.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+web-time = { workspace = true, optional = true }
+
+[features]
+# Read `performance.now()` for timings on `wasm32-unknown-unknown`.
+web = ["dep:web-time"]
+
 [dev-dependencies]
 approx.workspace = true
 proptest.workspace = true

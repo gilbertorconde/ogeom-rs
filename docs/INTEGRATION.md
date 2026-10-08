@@ -71,7 +71,7 @@ None of these is scheduled. They are listed so their requirements stay visible.
 | **C ABI** (`og-capi`) | The base for everything else. Opaque handles, POD structs, explicit ownership. Straightforward once the native API is stable. |
 | **Python** | By far the most valuable binding: it is how most people would try the kernel. Built with PyO3 over the native API, not over the C ABI. |
 | **C++** | Real classes with virtual methods over the C ABI, for hosts that want to specialise behaviour. |
-| **WASM** | The kernel is pure Rust with no C dependencies, so this is nearly free. Keep it that way: weigh WASM before adding any dependency that could break it. |
+| **WASM** | The kernel is pure Rust with no C dependencies, so this is nearly free. Keep it that way: weigh WASM before adding any dependency that could break it. It already runs on `wasm32-unknown-unknown`, which CI meshes on in Node (`tools/ogeom-wasm`). That target has no clock and no threads: timings go through `ogeom_core::clock::Instant` and read zero there unless the `web` feature reads `performance.now()`, and parallel stages run on the calling thread. |
 
 **Drop-in replacement for another kernel's headers.** This is technically
 possible: a source-compatible façade that exposes another kernel's class names

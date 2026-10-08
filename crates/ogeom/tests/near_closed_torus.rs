@@ -5,7 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{PI, TAU};
-use std::time::Instant;
+use ogeom::core::clock::Instant;
 
 use ogeom::algo::{
     check, make_edge, make_face, make_revolution, make_torus, make_wire, volume_properties,

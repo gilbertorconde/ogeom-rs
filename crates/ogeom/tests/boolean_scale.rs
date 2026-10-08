@@ -3,7 +3,8 @@
 //! about the time its faces take to copy.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use std::time::{Duration, Instant};
+use ogeom::core::clock::Instant;
+use std::time::Duration;
 
 use ogeom::algo::{MeshSolidOptions, check, solid_from_mesh, volume_properties};
 use ogeom::core::Tolerances;

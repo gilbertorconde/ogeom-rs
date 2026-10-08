@@ -26,6 +26,7 @@
 //! the join has no gap. Discretizing each face's pcurve independently would
 //! give each face its own idea of where the edge runs, and the seams would show.
 
+use ogeom_core::clock::Instant;
 use ogeom_core::{Exact, OgeomResult, Predicates, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::{Curve2d, Surface, SurfaceGeometry};
@@ -330,7 +331,7 @@ fn triangulate_reporting_from(
             &own
         }
     };
-    let phase = std::time::Instant::now();
+    let phase = Instant::now();
     let Trimming {
         rings: uv,
         anchors,
@@ -352,10 +353,10 @@ fn triangulate_reporting_from(
             Verdict::Whole,
         ));
     }
-    let phase = std::time::Instant::now();
+    let phase = Instant::now();
     let planar = triangulate_region(&uv, surface, deflection, tol)?;
     let region_ms = phase.elapsed().as_secs_f64() * 1e3;
-    let phase = std::time::Instant::now();
+    let phase = Instant::now();
 
     // Whether the triangulator was handed a region at all, asked of what it
     // returned rather than of what it was given. A well-formed triangulation
@@ -2950,7 +2951,7 @@ fn triangulate_region_inner(
 ) -> OgeomResult<PlanarMesh> {
     let mut cdt: ConstrainedDelaunayTriangulation<SpadePoint<f64>> =
         ConstrainedDelaunayTriangulation::new();
-    let sub = std::time::Instant::now();
+    let sub = Instant::now();
     let mut refused_total = 0usize;
 
     // Everything the triangulation sees is in the scaled chart; the rings'
@@ -3048,11 +3049,11 @@ fn triangulate_region_inner(
     // planar face needs none, which is why this is driven by measured
     // deflection rather than by a fixed grid.
     let boundary_ms = sub.elapsed().as_secs_f64() * 1e3;
-    let sub = std::time::Instant::now();
+    let sub = Instant::now();
     add_interior_points(&mut cdt, rings, surface, deflection, scale, tol)?;
     let interior_ms = sub.elapsed().as_secs_f64() * 1e3;
     let interior_points = cdt.num_vertices();
-    let sub = std::time::Instant::now();
+    let sub = Instant::now();
     let mut rounds_run = 0usize;
 
     // The scale a degenerate chart triangle is measured against: the

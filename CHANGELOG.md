@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **The kernel runs on `wasm32-unknown-unknown` (#149).**
+  `ogeom_core::clock::Instant` is `std::time::Instant` where there is a
+  clock; there, timings read zero, or `performance.now()` with the new
+  `web` feature, and parallel stages stay on the calling thread. A CI job
+  meshes a box and a cylinder in Node.
+
 ### Fixed
 
 - **A marched section's stated error bounds its miss against the real

@@ -19,6 +19,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::progress;
 
+/// Whether the standard library can start a thread on this target. On
+/// `wasm32-unknown-unknown`, and on WebAssembly without shared memory, a
+/// spawn panics, so every stage runs on the calling thread there whatever
+/// [`set_threads`] asked for.
+const CAN_SPAWN: bool = !cfg!(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    all(target_family = "wasm", not(target_feature = "atomics")),
+));
+
 /// 0 means "ask the machine".
 static THREADS: AtomicUsize = AtomicUsize::new(0);
 
@@ -27,9 +36,13 @@ static THREADS: AtomicUsize = AtomicUsize::new(0);
 /// The count given to [`set_threads`] when there is one; otherwise
 /// `OGEOM_THREADS` from the environment when it parses as a positive
 /// count; otherwise the machine's available parallelism. The environment
-/// is read once, on the first call that needs it.
+/// is read once, on the first call that needs it. One on a target that
+/// cannot start a thread.
 #[must_use]
 pub fn threads() -> usize {
+    if !CAN_SPAWN {
+        return 1;
+    }
     let configured = THREADS.load(Ordering::Relaxed);
     if configured != 0 {
         return configured;
@@ -78,7 +91,7 @@ where
     R: Send,
 {
     let workers = threads().clamp(1, items.len().max(1));
-    if workers <= 1 || items.len() <= 1 || INSIDE.with(core::cell::Cell::get) {
+    if !CAN_SPAWN || workers <= 1 || items.len() <= 1 || INSIDE.with(core::cell::Cell::get) {
         return items.iter().enumerate().map(|(i, t)| f(i, t)).collect();
     }
 

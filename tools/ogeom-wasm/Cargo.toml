@@ -1,0 +1,23 @@
+[package]
+name = "ogeom-wasm"
+description = "Meshing checks for the ogeom kernel on wasm32-unknown-unknown"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Not published: a check that the kernel runs in a browser build, whose
+# audience is this repository.
+publish = false
+
+[dependencies]
+ogeom = { path = "../../crates/ogeom", version = "0.9.13" }
+
+# The tests run natively under the std harness and on wasm32 under
+# `wasm-bindgen-test`, so a native build never compiles the wasm tooling.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true

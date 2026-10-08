@@ -33,6 +33,10 @@
     clippy::cast_sign_loss,
     reason = "a reporting tool"
 )]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "a native harness: it times with the std clock"
+)]
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};

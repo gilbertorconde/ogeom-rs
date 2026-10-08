@@ -218,7 +218,7 @@ fn a_second_tight_bounds_of_a_drilled_plate_costs_a_tenth_of_the_first() {
         582
     );
     let time = |model: &Model| {
-        let started = std::time::Instant::now();
+        let started = ogeom::core::clock::Instant::now();
         let b = tight_bounds(model, &plate, T).unwrap();
         near(b.high().unwrap(), Point::new(250.0, 250.0, 10.0));
         started.elapsed().as_secs_f64()

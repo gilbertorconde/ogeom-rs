@@ -235,7 +235,7 @@ fn a_582_face_plate_snapshot_is_small_and_quick() {
     let mut fastest = std::time::Duration::MAX;
     let mut text = String::new();
     for _ in 0..10 {
-        let started = std::time::Instant::now();
+        let started = ogeom::core::clock::Instant::now();
         text = write(&model, std::slice::from_ref(&plate), options).unwrap();
         fastest = fastest.min(started.elapsed());
     }

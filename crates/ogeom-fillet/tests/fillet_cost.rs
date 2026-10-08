@@ -4,9 +4,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;
+use ogeom_core::clock::Instant;
 use ogeom_math::{Direction, Frame, Point};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const T: Tolerances = Tolerances::millimetres();
 const PI: f64 = core::f64::consts::PI;

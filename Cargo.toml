@@ -25,6 +25,7 @@ members = [
     "tools/ogeom-stress",
     "tools/ogeom-cli",
     "tools/ogeom-view",
+    "tools/ogeom-wasm",
 ]
 
 [workspace.package]
@@ -100,6 +101,9 @@ smallvec = { version = "1", features = ["union", "const_generics"] }
 
 # --- diagnostics ---
 thiserror = "2"
+# `performance.now()` behind `ogeom-core`'s `web` feature, for timings in a
+# browser build. Pure Rust over `js-sys`.
+web-time = "1.1"
 
 # --- dev ---
 approx = "0.5"

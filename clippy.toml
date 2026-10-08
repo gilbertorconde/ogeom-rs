@@ -6,3 +6,10 @@ disallowed-types = [
     { path = "std::collections::HashMap", reason = "use ogeom_core::FastMap: its iteration order is the same in every run" },
     { path = "std::collections::HashSet", reason = "use ogeom_core::FastSet: its iteration order is the same in every run" },
 ]
+
+# `std::time::Instant::now` panics on `wasm32-unknown-unknown`, which has no
+# clock. `ogeom_core::clock::Instant` is the std clock wherever there is one.
+# The tools are native programs and allow it crate-wide.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "use ogeom_core::clock::Instant: it does not panic where the platform has no clock" },
+]
