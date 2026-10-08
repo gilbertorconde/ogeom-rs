@@ -160,6 +160,8 @@ fn benchmarks() -> Vec<Bench> {
         ("hlr_exact_mid", Box::new(hlr_exact_mid)),
         ("hlr_mesh", Box::new(hlr_mesh)),
         ("thick_spline", Box::new(thick_spline)),
+        ("offset_part", Box::new(offset_part)),
+        ("shell_part", Box::new(shell_part)),
         ("pipe_circles", Box::new(pipe_circles)),
         ("pipe_guided", Box::new(pipe_guided)),
         ("import_ftc11", Box::new(import_ftc11)),
@@ -669,6 +671,65 @@ fn thick_spline() -> Option<Stats> {
         |mut model| {
             let solid = ogeom::offset::make_thick_sheet(&mut model, &face, 0.8, true, T).unwrap();
             std::hint::black_box(&solid.shape);
+        },
+    ))
+}
+
+/// A drum of radius 4 and height 6 with its top rim rolled to radius 1:
+/// two planes, a cylinder and a torus band.
+fn rimmed_drum(model: &mut Model) -> Option<Shape> {
+    let drum = ogeom::algo::make_cylinder(model, Frame::WORLD, 4.0, 6.0, T)
+        .ok()?
+        .shape;
+    let rim = explore_unique(model, &drum, ShapeType::Edge)
+        .ok()?
+        .into_iter()
+        .find(|edge| {
+            ogeom::algo::shape_bounds(model, edge, T)
+                .ok()
+                .and_then(|b| b.low())
+                .is_some_and(|low| low.z > 6.0 - 1e-6)
+        })?;
+    Some(
+        ogeom::fillet::fillet_edge(model, &drum, &rim, 1.0, T)
+            .ok()?
+            .shape,
+    )
+}
+
+/// The rim-rolled drum grown by a half along its normals.
+fn offset_part() -> Option<Stats> {
+    let mut model = Model::new();
+    let part = rimmed_drum(&mut model)?;
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let grown = ogeom::offset::offset_shape(&mut model, &part, 0.5, T).unwrap();
+            std::hint::black_box(&grown.shape);
+        },
+    ))
+}
+
+/// The rim-rolled drum hollowed to walls of a half, open at its bottom.
+fn shell_part() -> Option<Stats> {
+    let mut model = Model::new();
+    let part = rimmed_drum(&mut model)?;
+    let bottom = explore_unique(&model, &part, ShapeType::Face)
+        .ok()?
+        .into_iter()
+        .find(|face| {
+            ogeom::algo::shape_bounds(&model, face, T)
+                .ok()
+                .and_then(|b| b.high())
+                .is_some_and(|high| high.z < 1e-6)
+        })?;
+    let opening = [bottom];
+    Some(sample(
+        || model.clone(),
+        |mut model| {
+            let hollow =
+                ogeom::offset::make_thick_solid(&mut model, &part, &opening, 0.5, T).unwrap();
+            std::hint::black_box(&hollow.shape);
         },
     ))
 }
