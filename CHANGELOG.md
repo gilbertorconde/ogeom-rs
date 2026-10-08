@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`solid_from_mesh` keeps rounds whose distance widened elsewhere.**
+  When the default coplanar distance widens because a fit pressed against
+  it, a curved region found at the wider distance that cannot be built is
+  put back as the default distance found it, instead of being faceted; a
+  mesh whose triangle list starts elsewhere no longer facets long rounds
+  beside small fits the wider distance admits.
+
 - **A corner rounds to the same solid whichever edge is asked first.**
   Where a curved face takes over at the corner, a straight edge's blend no
   longer runs on past its own vertex into material the solid continues

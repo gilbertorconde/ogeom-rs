@@ -430,6 +430,26 @@ fn nist_ftc_07_whatever_corner_each_triangle_lists_first() {
     }
 }
 
+/// Listed from a triangle further on, a few of its regions grow over other
+/// orders until their fits press against the coplanar distance, and the
+/// distance widens: its long rounds of radius 0.43 run on into their
+/// neighbours, and at the wider distance small regions beside the rounds'
+/// ends fit spheres and cones the rounds then overlap. Each region the
+/// build cannot place at the wider distance is put back as the default
+/// distance found it, and nothing is faceted. Listed so, its faces meshed
+/// one by one leave edges unmatched at any distance, and that is not
+/// checked.
+#[test]
+#[ignore = "heavy"]
+fn nist_ftc_07_whatever_triangle_its_list_starts_at() {
+    for start in [997_usize, 1994] {
+        let report = comes_back_listed("nist_ftc_07_asme1_rd.stp", true, false, |mesh| {
+            mesh.triangles.rotate_left(start);
+        });
+        assert_eq!(report.curved_faceted, 0, "{start}: {:?}", report.fallbacks);
+    }
+}
+
 /// Its fillet tori are meshed a few facets round, and a piece of one can
 /// lie on a sphere as exactly as on the torus. Where the rest of the torus
 /// is a larger region beside it, the piece joins that region; where the
@@ -555,7 +575,9 @@ fn grid_point_on_a_diagonal_boundary() {
 /// seam. Each such fan's build fails, and the curved face its seam lies on
 /// is faceted (named with why); the conversion comes back. The mesh is the
 /// sliver part's drawn at a thousandth of its diagonal, kept as a file so
-/// the converter sees the same triangles whatever the mesher draws.
+/// the converter sees the same triangles whatever the mesher draws. The
+/// distance is given, the one the default widens to here: widened, the
+/// regions the default distance found are put back before any is faceted.
 #[test]
 #[ignore = "heavy"]
 fn a_face_that_cannot_be_built_is_faceted() {
@@ -565,7 +587,11 @@ fn a_face_that_cannot_be_built_is_faceted() {
     );
     let mesh = ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap();
     let mut back = Model::new();
-    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let options = MeshSolidOptions {
+        coplanar_distance: Some(4.35e-6),
+        ..MeshSolidOptions::default()
+    };
+    let out = solid_from_mesh(&mut back, &mesh, &options, T).unwrap();
     assert!(
         out.report
             .fallbacks

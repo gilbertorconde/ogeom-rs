@@ -17,7 +17,7 @@ use super::regions::{
 use super::rounds::{faceted_rounds, plane_normals, tangent_blends, tangent_rounds};
 use super::snap::plane_through;
 use super::weld::{Adjacency, Half};
-use super::{Carrier, Curved, Groups, MeshSolidOptions, PatchRefusals};
+use super::{Carrier, Curved, Groups, MeshSolidOptions, Narrower, PatchRefusals};
 use crate::recognize::Canonical;
 
 /// The plane of a triangle, its normal by the winding, its `x` axis along
@@ -499,6 +499,7 @@ pub(super) fn segment(
         carriers: Vec::new(),
         refused: PatchRefusals::default(),
         fans: std::collections::BTreeSet::new(),
+        narrower: ogeom_core::FastMap::default(),
     };
     if !options.merge_coplanar {
         one_each(points, triangles, &mut groups, tol)?;
@@ -611,4 +612,33 @@ pub(super) fn segment(
         tol,
     )?;
     Ok(groups)
+}
+
+/// Give each curved region of `groups`, found at the wider `distance`, the
+/// curved regions of `narrow`, found at the default, that hold any of its
+/// triangles (none where the default left them all planar), for the build
+/// to put back in its place.
+pub(super) fn found_within(groups: &mut Groups, narrow: &Groups, distance: f64) {
+    let mut within: ogeom_core::FastMap<usize, Vec<usize>> = ogeom_core::FastMap::default();
+    for (&w, &n) in groups.of.iter().zip(&narrow.of) {
+        if !matches!(groups.carriers.get(w), Some(Carrier::Curved(_))) {
+            continue;
+        }
+        let found = within.entry(w).or_default();
+        if matches!(narrow.carriers.get(n), Some(Carrier::Curved(_))) && !found.contains(&n) {
+            found.push(n);
+        }
+    }
+    for (w, found) in within {
+        let regions = found
+            .into_iter()
+            .map(|n| {
+                let held = (0..narrow.of.len())
+                    .filter(|&t| narrow.of[t] == n)
+                    .collect();
+                (narrow.carriers[n].clone(), held)
+            })
+            .collect();
+        groups.narrower.insert(w, Narrower { distance, regions });
+    }
 }

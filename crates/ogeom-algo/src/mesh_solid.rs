@@ -68,8 +68,8 @@ use checks::{
     unbuilt_culprits, unmatched_faces,
 };
 use planner::{NOISE_FLOOR, Planner, Replan};
-use regions::flat_noise;
-use segment::{coplanar_groups, one_each, plane_of, segment};
+use regions::{flat_noise, split_disconnected};
+use segment::{coplanar_groups, found_within, one_each, plane_of, segment};
 use weld::{Adjacency, Piece, diagonal, has_area, inside, orient, unfold, weld_points};
 
 /// How [`solid_from_mesh`] builds.
@@ -265,7 +265,8 @@ pub struct MeshSolid {
     /// The coplanar distance the faces were built to: the one asked for,
     /// or the default, as widened where the recognized surfaces pressed
     /// against it or raised to the mesh's scatter (see
-    /// [`MeshSolidReport::coplanar_distance_raised`]).
+    /// [`MeshSolidReport::coplanar_distance_raised`]). Where the build put
+    /// back every region the default found, it is the default.
     pub coplanar_distance: f64,
     /// What was built, and where the mesh does not close.
     pub report: MeshSolidReport,
@@ -449,6 +450,11 @@ struct Found {
     all_closed: bool,
     /// The coplanar distance the regions were found to.
     flat: f64,
+    /// The default distance, where the regions were found at a wider one.
+    tight: f64,
+    /// The regions found at the default, where they were found again at a
+    /// wider distance.
+    first: Option<Box<Groups>>,
     groups: Groups,
     report: MeshSolidReport,
 }
@@ -601,8 +607,15 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
     // surfaces than that. The recognized surfaces say so: where their fits
     // press against the distance, it is the distance that stops them, and
     // their rims' last triangles stay facets. Unless the caller chose the
-    // distance, it widens while that holds, twice at most.
+    // distance, it widens while that holds, twice at most. A wider distance
+    // also lets a fit spread over triangles of other surfaces, so each
+    // curved region found at it keeps the regions the default found among
+    // its triangles, which the build puts back where it cannot place the
+    // wider one.
+    let found_at = flat;
+    let mut first = None;
     if options.coplanar_distance.is_none() && options.recognize {
+        first = Some(Box::new(groups.clone()));
         for _ in 0..2 {
             let pressed = groups
                 .carriers
@@ -618,6 +631,10 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
             flat *= 2.0;
             groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
         }
+        match &first {
+            Some(narrow) if flat > found_at => found_within(&mut groups, narrow, flat),
+            _ => first = None,
+        }
     }
     Ok(Found {
         points,
@@ -628,6 +645,8 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
         depth,
         all_closed,
         flat,
+        tight: found_at,
+        first,
         groups,
         report,
     })
@@ -638,7 +657,10 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
 /// A region whose carrier is gone and still holds triangles gives them to
 /// planar faces first, as the planar pass gathers them. A facet holding a
 /// triangle marked in `protected` (one per triangle, or empty for none) is
-/// never given to a curved neighbour.
+/// never given to a curved neighbour. A region found at a wider distance
+/// than the default is tried again as the default found it before it is
+/// faceted: the build starts over from the regions found, with it put
+/// back.
 fn build(
     model: &mut Model,
     found: &Found,
@@ -646,10 +668,60 @@ fn build(
     protected: &[bool],
     tol: Tolerances,
 ) -> OgeomResult<MeshSolid> {
+    let (triangles, adjacency) = (&found.triangles, &found.adjacency);
+    let mut start = found.groups.clone();
+    let mut flat = found.flat;
+    let mut first = found.first.clone();
+    loop {
+        let narrowing = match build_from(model, found, &start, flat, options, protected, tol)? {
+            Ok(solid) => return Ok(solid),
+            Err(narrowing) => narrowing,
+        };
+        for g in narrowing {
+            narrow(&mut start, triangles, g);
+        }
+        // With every region put back, the regions are the ones the default
+        // found.
+        if start.narrower.is_empty()
+            && let Some(regions) = first.take()
+        {
+            start = *regions;
+        } else {
+            split_disconnected(triangles, adjacency, &mut start);
+            coplanar_groups(
+                &found.points,
+                triangles,
+                adjacency,
+                options,
+                found.tight,
+                &mut start,
+                tol,
+            )?;
+        }
+        flat = start
+            .narrower
+            .values()
+            .map(|n| n.distance)
+            .fold(found.tight, f64::max);
+    }
+}
+
+/// [`build`] from regions `start`, to the coplanar distance `flat`: the
+/// solid, or the regions found at a wider distance than the default that
+/// it would facet.
+#[allow(clippy::too_many_arguments, reason = "the build's inputs")]
+fn build_from(
+    model: &mut Model,
+    found: &Found,
+    start: &Groups,
+    flat: f64,
+    options: &MeshSolidOptions,
+    protected: &[bool],
+    tol: Tolerances,
+) -> OgeomResult<Result<MeshSolid, Vec<usize>>> {
     let (points, triangles, adjacency) = (&found.points, &found.triangles, &found.adjacency);
-    let (pieces, depth, all_closed, flat) =
-        (&found.pieces, &found.depth, found.all_closed, found.flat);
-    let mut groups = found.groups.clone();
+    let (pieces, depth, all_closed) = (&found.pieces, &found.depth, found.all_closed);
+    let mut groups = start.clone();
     let mut report = found.report.clone();
     // A plane that does not hold its region's vertices (one a caller put
     // there) can place none of its boundary; its triangles are gathered
@@ -1012,6 +1084,14 @@ fn build(
                 }
                 continue;
             }
+            let narrowing: Vec<usize> = failed
+                .iter()
+                .copied()
+                .filter(|g| groups.narrower.contains_key(g))
+                .collect();
+            if !narrowing.is_empty() {
+                return Ok(Err(narrowing));
+            }
             let mut alone = Vec::new();
             let mut withdrawn = false;
             for g in failed {
@@ -1055,12 +1135,12 @@ fn build(
         break shape;
     };
     crate::pcurve_gap::state_pcurve_gaps(model, &shape, tol)?;
-    Ok(MeshSolid {
+    Ok(Ok(MeshSolid {
         shape,
         closed: all_closed,
         coplanar_distance: flat,
         report,
-    })
+    }))
 }
 
 /// Facet region `g`: its face is not built on its surface, its triangles
@@ -1075,6 +1155,68 @@ fn withdraw(groups: &mut Groups, report: &mut MeshSolidReport, g: usize, reason:
     for of in &mut groups.of {
         if *of == g {
             *of = usize::MAX;
+        }
+    }
+}
+
+/// Put back in place of region `g`, found at a wider distance, the curved
+/// regions the default found within it: each takes back its triangles,
+/// from `g`, from a planar face (gathered again round it) or from another
+/// curved region found wider, and what `g` held beyond them is left for
+/// the planar faces. Nothing changes where `g` was not found wider.
+fn narrow(groups: &mut Groups, triangles: &[[u32; 3]], g: usize) {
+    let Some(record) = groups.narrower.remove(&g) else {
+        return;
+    };
+    groups.carriers[g] = Carrier::Gone;
+    let mut touched = vec![g];
+    for (_, held) in &record.regions {
+        for &t in held {
+            let p = groups.of[t];
+            if matches!(groups.carriers.get(p), Some(Carrier::Plane(_))) {
+                groups.carriers[p] = Carrier::Gone;
+            }
+        }
+    }
+    for of in &mut groups.of {
+        if *of == g || matches!(groups.carriers.get(*of), Some(Carrier::Gone)) {
+            *of = usize::MAX;
+        }
+    }
+    for (k, (carrier, held)) in record.regions.into_iter().enumerate() {
+        let at = if k == 0 {
+            groups.carriers[g] = carrier;
+            g
+        } else {
+            groups.carriers.push(carrier);
+            groups.carriers.len() - 1
+        };
+        touched.push(at);
+        for t in held {
+            let p = groups.of[t];
+            if p == usize::MAX || groups.narrower.contains_key(&p) {
+                touched.push(p);
+                groups.of[t] = at;
+            }
+        }
+    }
+    touched.sort_unstable();
+    touched.dedup();
+    for c in touched {
+        if c == usize::MAX {
+            continue;
+        }
+        let mut vertices: Vec<u32> = groups
+            .of
+            .iter()
+            .enumerate()
+            .filter(|&(_, &o)| o == c)
+            .flat_map(|(t, _)| triangles[t])
+            .collect();
+        vertices.sort_unstable();
+        vertices.dedup();
+        if let Carrier::Curved(curved) = &mut groups.carriers[c] {
+            curved.vertices = vertices;
         }
     }
 }
@@ -1190,6 +1332,20 @@ struct Groups {
     /// Triangles each built as a fan (see [`Fan`]) rather than flat, while
     /// they still stand alone in their group beside one curved face.
     fans: std::collections::BTreeSet<usize>,
+    /// The curved regions found at a wider distance than the default, each
+    /// with what the default found among its triangles.
+    narrower: FastMap<usize, Narrower>,
+}
+
+/// What the default distance found among the triangles of a region found
+/// at a wider one.
+#[derive(Clone)]
+struct Narrower {
+    /// The distance the region was found at.
+    distance: f64,
+    /// The curved regions found at the default holding any of its
+    /// triangles, each with all of its own.
+    regions: Vec<(Carrier, Vec<usize>)>,
 }
 
 /// A planar facet of one triangle beside one curved face, built as the

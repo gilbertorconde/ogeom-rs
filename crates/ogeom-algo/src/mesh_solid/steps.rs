@@ -488,6 +488,7 @@ impl MeshRegions {
                 carrier => self.kept(carrier, small, &union),
             }
         });
+        self.found.groups.narrower.clear();
         for &t in &union {
             self.found.groups.of[t] = a.0;
         }
@@ -572,6 +573,7 @@ impl MeshRegions {
         let carriers =
             [&kept, &other].map(|part| self.refitted(part, || self.kept(&parent, part, part)));
         let [first, second] = carriers;
+        self.found.groups.narrower.clear();
         let new = self.found.groups.carriers.len();
         self.found.groups.carriers.push(second);
         self.found.groups.carriers[id.0] = first;
@@ -630,6 +632,7 @@ impl MeshRegions {
                 Refused::Unverified => RegionRefusal::PatchDoesNotVerify,
             })?;
             let deviation = claim.deviation;
+            self.found.groups.narrower.clear();
             self.found.groups.carriers[id.0] = Carrier::Curved(claim);
             self.lay_out(id.0, false, false);
             return Ok(deviation);
@@ -655,6 +658,7 @@ impl MeshRegions {
             Canonical::Plane(plane) => Carrier::Plane(self.outward(plane, &members)),
             shape => Carrier::Curved(curved(shape, deviation, vertices)),
         };
+        self.found.groups.narrower.clear();
         self.found.groups.carriers[id.0] = carrier;
         let free = constraints.axis.is_none() && constraints.radius.is_none();
         self.lay_out(id.0, constraints.axis.is_some(), free);
@@ -684,6 +688,7 @@ impl MeshRegions {
         surface: Canonical,
     ) -> Result<(), RegionRefusal> {
         self.held(id)?;
+        self.found.groups.narrower.clear();
         let carrier = &mut self.found.groups.carriers[id.0];
         match (carrier, surface) {
             (Carrier::Plane(plane), Canonical::Plane(given)) => *plane = given,
