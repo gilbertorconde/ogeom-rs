@@ -19,6 +19,15 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Nearest points on a B-spline patch by branch and bound.**
+  `project_on_surface` and `SurfaceSeeds` search the patch's knot spans
+  from the nearest bound down instead of a grid of one seed or more per
+  span: about 11 times faster on a 100 by 100 span patch, STEP import of
+  the largest corpus part about 20% faster, thick spline sheets about 11%.
+  On a B-spline patch the projection is the nearest point of the whole
+  patch to within a hundredth of the confusion, `samples` is not read
+  there, and two equally near feet resolve to the smaller u, then v.
+
 - **A boolean on a large solid it has read before reads it back.** The
   solid's faces and prepared boundary are kept instead of walked again: a
   corner hole into a 582-face plate costs about 1.5 times the same hole
