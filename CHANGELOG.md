@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-10-08
+
+A patch release: no breaking API changes. A boolean's shell closure no
+longer rides on its sections' fit error, so tighter sections no longer flip
+a shell from closed to refused, and a merged junction stop splits every
+edge it stands on (every band order of a curved corner closes). Marched
+sections fit from knots the cubic's error estimate places (crossed
+cylinders about a third faster), a boolean on a large solid it has read
+before reads it back (`Model::kept_read`), nearest points on B-spline
+patches are found by branch and bound (about 11 times faster), and exact
+mass properties refine one panel at a time.
+
 ### Added
 
 - **`gauss_kronrod_21_rule`** in `ogeom-math`: the ten-point Gauss and
@@ -4577,7 +4589,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.12...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.13...HEAD
+[0.9.13]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.9...v0.9.10
