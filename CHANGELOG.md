@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A corner rounds to the same solid whichever edge is asked first.**
+  Where a curved face takes over at the corner, a straight edge's blend no
+  longer runs on past its own vertex into material the solid continues
+  with; it took off more than the union of the blends, or was refused.
+
 - **Mass properties are exact under a scaling placement.**
   `volume_properties` and `surface_properties` integrate faces under a
   placement that scales on their exact surfaces, rigidly placed and scaled

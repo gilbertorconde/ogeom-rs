@@ -1022,9 +1022,32 @@ fn planar_fillet(
         if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
             eprintln!("RUNOUT straight seat end {end}: reach {reach:?}");
         }
-        let Some(reach) = reach else {
+        let Some(mut reach) = reach else {
             continue;
         };
+        // The edge as asked for ends at its own vertex, where its blend
+        // alone caps flush. Where the ball's centre is still in the material
+        // a step past that vertex, the solid runs on there (a curved face
+        // leaving the vertex obliquely), and a seat carried further would
+        // round material no ball on this edge touches: it stops at the
+        // vertex, as rounding this edge before the neighbour does.
+        if let Some(mate) = mates.get(index) {
+            let own = mate
+                .ends
+                .iter()
+                .map(|(p, _)| *p)
+                .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)));
+            if let Some(own) = own {
+                let to_own = (own - at).dot(outward);
+                if to_own > tol.confusion()
+                    && to_own < reach
+                    && probe.holds(model, centre_at(to_own + step), tol)?
+                        == ogeom_algo::Containment::In
+                {
+                    reach = to_own;
+                }
+            }
+        }
         if end {
             seat.start -= seat.along * reach;
         } else {

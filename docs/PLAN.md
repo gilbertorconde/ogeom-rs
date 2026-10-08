@@ -147,14 +147,6 @@ much.
 
 ### Fillets and blends
 
-**One corner, two results by order.** A cube shaved by a drum: a bottom edge
-and the upright edge at its end, where the drum takes over from a side face,
-rounded bottom first, take off the union of the two blends, the bottom's flush
-cap leaving a sliver standing against the drum. Rounded upright first, the
-bottom blend runs on through the upright's band and trims that sliver too
-(0.8% more at radius 0.18, 4% at 1). Both are valid solids; one corner should
-give one result. `edge_chains.rs` pins the first order.
-
 **Curved face blends refused by name.** `blend_faces` and `fillet_faces`
 round curved faces that share no edge where their surfaces share a direction
 or an axis, and otherwise march the ball round where the surfaces cross. They

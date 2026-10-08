@@ -316,12 +316,16 @@ fn shaved_corner_removed(r: f64) -> f64 {
     bottom + 10.0 * sliver - overlap
 }
 
-/// The front bottom edge of the shaved cube rounded first and the upright
-/// edge it ends at second: the bottom blend's flush cap meets the drum
-/// along the upright's own line, a corner of the cap's that is no piece of
-/// the upright. The upright is found where it still lies between the
-/// front plane and the drum, rounds the full height through the bottom
-/// blend, and the two take off their union.
+/// The front bottom edge of the shaved cube and the upright edge it ends
+/// at, asked for in either order. Rounded first, the bottom blend caps
+/// flush at its vertex, and that cap meets the drum along the upright's own
+/// line, a corner of the cap's that is no piece of the upright: the upright
+/// is found where it still lies between the front plane and the drum and
+/// rounds the full height through the bottom blend. Rounded second, the
+/// bottom blend runs on through the upright's band only as far as its own
+/// vertex, since the drum leaves that vertex obliquely and the material
+/// past it is no part of this edge's rounding. Both orders take off the
+/// union of the two blends.
 #[test]
 fn an_edge_meeting_a_capped_blend_at_a_drum_is_not_its_cap() {
     let mut model = Model::new();
@@ -330,19 +334,27 @@ fn an_edge_meeting_a_capped_blend_at_a_drum_is_not_its_cap() {
     let end = 5.0 + 11.0_f64.sqrt();
     let bottom = edge_near(&model, &part, Point::new(5.0, 0.0, 0.0));
     let upright = edge_near(&model, &part, Point::new(end, 0.0, 5.0));
-    for r in [0.5, 1.0] {
-        let mut copy = model.clone();
-        let rounded =
-            ogeom::fillet::fillet_edges(&mut copy, &part, &[bottom.clone(), upright.clone()], r, T)
+    for r in [0.18, 0.5, 1.0] {
+        for (order, edges) in [
+            ("bottom first", [bottom.clone(), upright.clone()]),
+            ("upright first", [upright.clone(), bottom.clone()]),
+        ] {
+            let mut copy = model.clone();
+            let rounded = ogeom::fillet::fillet_edges(&mut copy, &part, &edges, r, T)
                 .unwrap()
                 .shape;
-        let diagnosis = ogeom::algo::check(&copy, &rounded, T).unwrap();
-        assert!(diagnosis.is_valid(), "r {r}: {:?}", diagnosis.problems);
-        let removed = before - volume(&copy, &rounded);
-        let want = shaved_corner_removed(r);
-        assert!(
-            (removed - want).abs() < want * 1e-7,
-            "r {r}: took off {removed}, the union is {want}"
-        );
+            let diagnosis = ogeom::algo::check(&copy, &rounded, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "r {r}, {order}: {:?}",
+                diagnosis.problems
+            );
+            let removed = before - volume(&copy, &rounded);
+            let want = shaved_corner_removed(r);
+            assert!(
+                (removed - want).abs() < want * 1e-7,
+                "r {r}, {order}: took off {removed}, the union is {want}"
+            );
+        }
     }
 }
