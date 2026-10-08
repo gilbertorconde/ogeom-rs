@@ -450,7 +450,14 @@ recorded count per bench, and a gate at a few percent.
   between stations (Bajaj et al. 1988; Barnhill and Kersey 1990), instead
   of a straight-chord step about ten times finer than the fit needs. The
   fillet march takes stations eight times denser than its fit for the
-  same reason.
+  same reason. Measured on two crossed cylinders: the joint fit is half
+  the fuse (5 to 7 ms a branch from one span through 1556 points); a fit
+  started from knots placed by the cubic's error estimate is a third
+  faster with a tighter true miss, but moves sections by sub-micron
+  amounts and the shells of a few stress drills and two tests close or
+  refuse the other way (patch kept as `hermite-stations-fit.patch` in the
+  scratch crate). Shell closure that flips on sub-micron section changes
+  is the item to settle first.
 - March general pairs over the faces' parameter boxes, and cache a pair of
   surfaces marched once within one fill.
 - Seeds from the surfaces' extrema find loops thinner than the grid
