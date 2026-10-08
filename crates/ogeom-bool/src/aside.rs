@@ -66,7 +66,7 @@ pub(crate) struct Hole {
 /// rebuilt, read without walking the faces set aside again.
 #[derive(Default)]
 pub(crate) struct Beside {
-    holders: FastMap<EdgeKey, Holders>,
+    holders: std::sync::Arc<FastMap<EdgeKey, Holders>>,
     aside: Vec<bool>,
     /// The edges the gathered faces share with the faces set aside, which
     /// the faces made must walk; a hole's edges are left out, walked by the
@@ -153,22 +153,19 @@ impl Holders {
 /// each edge, and its box.
 pub(crate) struct Solid {
     faces: Vec<Read>,
-    holders: FastMap<EdgeKey, Holders>,
+    holders: std::sync::Arc<FastMap<EdgeKey, Holders>>,
     pub(crate) bound: Aabb,
     /// The box of each lump, where the shape holds more than one: a face
     /// clear of every lump's box is clear of the shape, though the lumps
     /// may stand on either side of it.
     lumps: Vec<Aabb>,
+    /// Whether every edge but a pole is walked an even number of times.
+    closed: bool,
+    /// The tolerances it was read at.
+    tol: Tolerances,
 }
 
 impl Solid {
-    /// Whether every edge but a pole is walked an even number of times.
-    fn closed(&self) -> bool {
-        self.holders
-            .values()
-            .all(|h| h.uses == u32::MAX || h.uses % 2 == 0)
-    }
-
     /// What a face of the other solid must miss to be clear of this one:
     /// a compound of wedges along a plate's opposite edges spans the plate,
     /// while each wedge's box reaches only the faces beside its edge.
@@ -198,13 +195,13 @@ pub(crate) fn set_aside(
     b: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Option<[Aside; 2]>> {
-    let read_a = read_solid(model, a, tol)?;
-    let read_b = read_solid(model, b, tol)?;
+    let read_a = kept_solid(model, a, tol)?;
+    let read_b = kept_solid(model, b, tol)?;
     let reach_a = read_a.reach();
     let reach_b = read_b.reach();
     let sides = [
-        side(model, read_a, &reach_b, tol)?,
-        side(model, read_b, &reach_a, tol)?,
+        side(model, &read_a, &reach_b, tol)?,
+        side(model, &read_b, &reach_a, tol)?,
     ];
     if sides.iter().all(Aside::is_empty) {
         return Ok(None);
@@ -212,14 +209,35 @@ pub(crate) fn set_aside(
     Ok(Some(sides))
 }
 
-/// One solid read: its faces, the faces holding each edge, and its box.
-pub(crate) fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<Solid> {
+/// The fewest faces a solid has for its read to be kept in the model:
+/// below that, reading it again costs about what keeping it does.
+const KEPT_FACES: usize = 64;
+
+/// [`read_solid`], kept in the model for a solid of many faces whose every
+/// face keeps its box: the next boolean on the solid unchanged reads it
+/// back.
+fn kept_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<std::sync::Arc<Solid>> {
+    model.kept_read(
+        solid,
+        |read: &Solid| read.tol == tol,
+        || {
+            let (read, boxed) = read_solid(model, solid, tol)?;
+            let keep = boxed && read.faces.len() >= KEPT_FACES;
+            Ok((read, keep))
+        },
+    )
+}
+
+/// One solid read: its faces, the faces holding each edge, and its box;
+/// and whether every face's box was the one the model keeps for it.
+fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<(Solid, bool)> {
     let found = explore_unique(model, solid, ShapeType::Face)?;
     let mut faces = Vec::with_capacity(found.len());
     // A closed solid has about one and a half edges per face.
     let mut holders: FastMap<EdgeKey, Holders> =
         FastMap::with_capacity_and_hasher(found.len() * 2, Default::default());
     let mut whole = Aabb::EMPTY;
+    let mut boxed = true;
     for (index, face) in found.into_iter().enumerate() {
         let Some(face_node) = model.node(&face) else {
             ogeom_core::ogeom_bail!(Dangling, "face is not in this model");
@@ -313,7 +331,11 @@ pub(crate) fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> Ogeom
         }
         let bound = match model.face_bounds(&face) {
             Some(kept) => kept,
-            None => ogeom_algo::face_bounds(model, &face)?,
+            None => {
+                let found = ogeom_algo::face_bounds(model, &face)?;
+                boxed &= model.face_bounds(&face) == Some(found);
+                found
+            }
         }
         .expanded(margin * 2.0 + tol.confusion() * 1e3);
         whole = whole.union(&bound);
@@ -352,12 +374,20 @@ pub(crate) fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> Ogeom
             lumps.clear();
         }
     }
-    Ok(Solid {
-        faces,
-        holders,
-        bound: whole,
-        lumps,
-    })
+    let closed = holders
+        .values()
+        .all(|h| h.uses == u32::MAX || h.uses % 2 == 0);
+    Ok((
+        Solid {
+            faces,
+            holders: std::sync::Arc::new(holders),
+            bound: whole,
+            lumps,
+            closed,
+            tol,
+        },
+        boxed,
+    ))
 }
 
 /// The boxes a face must miss to be clear of a solid: each lump's, or the
@@ -393,12 +423,17 @@ type Span = (
 /// What one solid sets aside against the other's boxes `other`.
 pub(crate) fn side(
     model: &Model,
-    solid: Solid,
+    solid: &Solid,
     other: &Reach,
     tol: Tolerances,
 ) -> OgeomResult<Aside> {
-    let closed = solid.closed();
-    let Solid { faces, holders, .. } = solid;
+    let Solid {
+        faces,
+        holders,
+        closed,
+        ..
+    } = solid;
+    let closed = *closed;
     let mut clear: Vec<bool> = faces.iter().map(|r| !other.meets(&r.bound)).collect();
     if !clear.iter().any(|c| *c) || clear.iter().all(|c| *c) {
         return Ok(Aside::default());
@@ -549,20 +584,20 @@ pub(crate) fn side(
         ..Aside::default()
     };
     aside.beside = std::sync::Arc::new(Beside {
-        holders,
+        holders: std::sync::Arc::clone(holders),
         aside: clear.clone(),
         shared: shared.iter().copied().collect(),
     });
     aside.edges = shared;
-    for (i, r) in faces.into_iter().enumerate() {
+    for (i, r) in faces.iter().enumerate() {
         if clear[i] {
-            aside.faces.push((r.face, i));
+            aside.faces.push((r.face.clone(), i));
             continue;
         }
         if let Some(found) = holes.remove(&i) {
             aside.holes.insert(SameKey(r.face.clone()), found.into());
         }
-        aside.gathered.insert(SameKey(r.face), i);
+        aside.gathered.insert(SameKey(r.face.clone()), i);
     }
     Ok(aside)
 }

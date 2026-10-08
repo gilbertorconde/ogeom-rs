@@ -45,13 +45,14 @@ fn plate_and_corner(rows: u32, faces: usize) -> (Model, Shape, Shape) {
     (model, plate, corner)
 }
 
-/// The corner hole into a plate of 582 faces costs within two and a half
-/// times what the same hole costs in a plate of 22: the faces it does not
-/// reach are set aside, not split, classified or rebuilt. The bound covers
-/// the fixed read the large plate pays for every face it passes through
-/// (`read_solid`'s walk of edges and vertices, the classifier's
-/// preparation, `side`, the history copies), linear and memory-bound, on
-/// top of the work the cut reaches.
+/// The corner hole into a plate of 582 faces costs within twice what the
+/// same hole costs in a plate of 22: the faces it does not reach are set
+/// aside, not split, classified or rebuilt, and what a boolean reads of the
+/// whole plate (each face's edges and boxes, the classifier's preparation)
+/// is kept in the model and read back while the plate stands unchanged.
+/// The bound covers what the large plate still pays for every face it
+/// passes through (`side`, the history copies, the shells put back
+/// together), linear and memory-bound, on top of the work the cut reaches.
 #[test]
 #[ignore = "heavy"]
 fn a_corner_hole_costs_what_it_touches_not_what_the_plate_holds() {
@@ -83,9 +84,85 @@ fn a_corner_hole_costs_what_it_touches_not_what_the_plate_holds() {
             least_large = least_large.min(least(&mut large));
         }
         ratios.push((least_large, least_small));
-        if least_large <= 2.5 * least_small {
+        if least_large <= 2.0 * least_small {
             return;
         }
     }
     panic!("582 faces against 22, (large s, small s) per round: {ratios:?}");
+}
+
+/// How many faces of `result` are faces of `plate` passed through as they
+/// stand.
+fn passed_through(model: &Model, plate: &Shape, result: &Shape) -> usize {
+    let own: ogeom::core::FastSet<_> = explore_unique(model, plate, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .map(Shape::node)
+        .collect();
+    explore_unique(model, result, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter(|face| own.contains(&face.node()))
+        .count()
+}
+
+/// The vertices of the hole nearest the corner pin.
+fn nearest_hole_vertices(model: &Model, plate: &Shape) -> Vec<Shape> {
+    explore_unique(model, plate, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .filter(|v| {
+            let at = model.node(v).unwrap().data().as_vertex().unwrap().point;
+            at.x < 12.0 && at.y < 12.0 && at.x > 8.0 && at.y > 8.0
+        })
+        .collect()
+}
+
+/// Widen `vertex` through [`Model::widen`].
+fn widen_vertex(model: &mut Model, vertex: &Shape) {
+    model
+        .widen(vertex, ogeom::core::Tolerance::new(1.1).unwrap())
+        .unwrap();
+}
+
+/// Widen `vertex` through the node handed out for editing.
+fn widen_in_node(model: &mut Model, vertex: &Shape) {
+    if let Some(node) = model.node_mut(vertex)
+        && let ogeom::topo::NodeData::Vertex(data) = node.data_mut()
+    {
+        data.tolerance = ogeom::core::Tolerance::new(1.1).unwrap();
+    }
+}
+
+/// A boolean on a solid a boolean has read before reads it back as it was
+/// read, and reads it as it stands after an edit in place: a vertex of the hole beside the corner pin,
+/// widened until that hole's wall reaches the pin, takes the wall into the
+/// cut, as the same cut into the plate edited before any boolean does.
+#[test]
+fn a_solid_edited_in_place_is_read_as_it_stands_by_the_next_boolean() {
+    let editors: [fn(&mut Model, &Shape); 2] = [widen_vertex, widen_in_node];
+    let (model, plate, corner) = plate_and_corner(8, 70);
+    let mut unedited = model.clone();
+    let cut = ogeom::boolean::cut(&mut unedited, &plate, &corner, T).unwrap();
+    let untouched = passed_through(&unedited, &plate, &cut.shape);
+    for edit in editors {
+        // Read by a first cut and read back by a second, then edited.
+        let mut read = model.clone();
+        ogeom::boolean::cut(&mut read, &plate, &corner, T).unwrap();
+        let back = ogeom::boolean::cut(&mut read, &plate, &corner, T).unwrap();
+        assert_eq!(passed_through(&read, &plate, &back.shape), untouched);
+        for vertex in nearest_hole_vertices(&read, &plate) {
+            edit(&mut read, &vertex);
+        }
+        let again = ogeom::boolean::cut(&mut read, &plate, &corner, T).unwrap();
+        // Edited before any boolean read it.
+        let mut fresh = model.clone();
+        for vertex in nearest_hole_vertices(&fresh, &plate) {
+            edit(&mut fresh, &vertex);
+        }
+        let first = ogeom::boolean::cut(&mut fresh, &plate, &corner, T).unwrap();
+        let expected = passed_through(&fresh, &plate, &first.shape);
+        assert!(expected < untouched, "{expected} of {untouched}");
+        assert_eq!(passed_through(&read, &plate, &again.shape), expected);
+    }
 }

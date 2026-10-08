@@ -26,7 +26,7 @@ use crate::entity::{
     CurveId, EdgeData, EdgeRepr, FaceData, NodeData, PCurveId, SurfaceId, TriangulationId,
     VertexData,
 };
-use crate::kept::FaceBoxes;
+use crate::kept::{FaceBoxes, KeptReads, NodeSet};
 use crate::location::{DatumId, DatumStore, Location};
 use crate::shape::{Orientation, Shape, ShapeType, TShape, TShapeId};
 
@@ -68,10 +68,15 @@ struct Node {
     held: bool,
 }
 
-/// The topology nodes, looked up by the handles shapes carry.
+/// The topology nodes, looked up by the handles shapes carry, and what
+/// readers keep of the shapes they make up.
 #[derive(Debug, Clone, Default)]
 struct Nodes {
     arena: Arena<Node>,
+    /// Forgotten for every shape holding a node handed out by
+    /// [`Nodes::get_mut`]: once a node is bound on arrival, its data and
+    /// children change only there.
+    reads: KeptReads,
 }
 
 /// A node's key in the arena, from its handle.
@@ -92,6 +97,9 @@ impl Nodes {
         self.arena.get(arena_key(id))
     }
 
+    /// The node with what the model keeps beside it, for that bookkeeping:
+    /// its identity, its marks and its links up. Its data and children are
+    /// changed through [`Nodes::get_mut`].
     #[inline]
     fn entry_mut(&mut self, id: TShapeId) -> Option<&mut Node> {
         self.arena.get_mut(arena_key(id))
@@ -102,8 +110,11 @@ impl Nodes {
         self.entry(id).map(|node| &node.shape)
     }
 
+    /// The node, for changing its data or its children: what is kept of
+    /// every shape holding it is forgotten.
     #[inline]
     fn get_mut(&mut self, id: TShapeId) -> Option<&mut TShape> {
+        self.reads.forget(id.index());
         self.entry_mut(id).map(|node| &mut node.shape)
     }
 
@@ -755,6 +766,10 @@ impl Model {
         self.nodes
             .arena
             .retain(|key, _| reach.nodes.contains(&key.index()));
+        // A shape kept holds every node below it, which it reaches.
+        self.nodes
+            .reads
+            .retain(|shape| reach.nodes.contains(&shape.node().index()));
         let mut kept_boxes: Vec<u32> = Vec::new();
         self.any_held = false;
         for (_, node) in self.nodes.iter_mut() {
@@ -964,7 +979,8 @@ impl Model {
     /// no invariant here constrains on its own.
     ///
     /// The node may be changed in any way, so the box kept for every face
-    /// it is part of ([`Model::face_bounds`]) is forgotten. Every shape
+    /// it is part of ([`Model::face_bounds`]) is forgotten, and so is what
+    /// is kept of every shape holding it ([`Model::kept_read`]). Every shape
     /// holding the node sees the change; an editor starting from a shape it
     /// was given copies what other shapes hold first ([`Model::unshare`]).
     #[must_use]
@@ -1122,6 +1138,69 @@ impl Model {
         }
         let found = find(&bare)?;
         Ok(self.face_boxes.keep(slot, found))
+    }
+
+    /// What `read` finds of `shape`, kept beside the model and handed out
+    /// again until anything it was read from changes.
+    ///
+    /// A read of type `T` kept for `shape` that `same` accepts is returned
+    /// as it is; otherwise `read` is asked, and its answer kept where it
+    /// says to keep it. `read` must depend only on what lies below `shape`
+    /// (the nodes' data and children, the geometry and placements they
+    /// name, the face boxes kept), and `same` must accept only a read made
+    /// with the inputs the caller would give `read` now.
+    ///
+    /// What is kept for a shape is forgotten when a node below it is
+    /// changed ([`Model::node_mut`], [`Model::widen`] growing a tolerance,
+    /// [`Model::undo_widened`], [`Model::unshare`] repointing a child),
+    /// when a surface or a pcurve is rewritten in place, and when
+    /// [`Model::retain_reachable`] drops the shape. A few shapes keep their
+    /// reads at once, the oldest forgotten first. Keeping walks every node
+    /// below the shape once, so it pays for a read that costs more than
+    /// that walk.
+    ///
+    /// # Errors
+    ///
+    /// As `read` reports.
+    pub fn kept_read<T: std::any::Any + Send + Sync>(
+        &self,
+        shape: &Shape,
+        same: impl Fn(&T) -> bool,
+        read: impl FnOnce() -> OgeomResult<(T, bool)>,
+    ) -> OgeomResult<std::sync::Arc<T>> {
+        let edits = self.geometry.edits();
+        let reads = &self.nodes.reads;
+        if let Some(kept) = reads.find(shape, edits, &same) {
+            return Ok(kept);
+        }
+        let (found, keep) = read()?;
+        let found = std::sync::Arc::new(found);
+        if keep && self.node(shape).is_some() {
+            let below = match reads.below(shape, edits) {
+                Some(below) => below,
+                None => std::sync::Arc::new(self.indices_below(shape)),
+            };
+            reads.keep(shape, edits, below, std::sync::Arc::clone(&found), same);
+        }
+        Ok(found)
+    }
+
+    /// The node index of `shape` and of every node below it.
+    fn indices_below(&self, shape: &Shape) -> NodeSet {
+        let mut below = NodeSet::default();
+        let mut stack = vec![shape.node()];
+        below.insert(shape.node().index());
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            for child in node.children() {
+                if below.insert(child.node().index()) {
+                    stack.push(child.node());
+                }
+            }
+        }
+        below
     }
 
     /// What kind of shape this is.
@@ -1480,10 +1559,16 @@ impl Model {
             stack.extend(node.children().iter().map(Shape::node));
         }
         for id in affected {
-            if let Some(node) = self.nodes.get_mut(id) {
+            // A node already as wide is left as it stands, and what is kept
+            // of the shapes holding it with it.
+            let grows = self
+                .nodes
+                .get(id)
+                .and_then(|node| node.data().tolerance())
+                .is_some_and(|was| was.get() < to.get());
+            if grows && let Some(node) = self.nodes.get_mut(id) {
                 if let Some(journal) = &mut self.widened
                     && let Some(was) = node.data().tolerance()
-                    && was.get() < to.get()
                 {
                     journal.push((id, was));
                 }
@@ -2620,6 +2705,122 @@ mod tests {
         let alone = model.add_point(Point::ORIGIN);
         let _ = model.node_mut(&alone);
         assert!(model.face_bounds(&face).is_some());
+    }
+
+    /// The node indices below `shape` and the loosest tolerance among them,
+    /// read through [`Model::kept_read`]; and whether `read` was asked.
+    fn kept_walk(model: &Model, shape: &Shape) -> (Vec<u32>, f64, bool) {
+        let asked = std::cell::Cell::new(false);
+        let kept = model
+            .kept_read(
+                shape,
+                |_: &(Vec<u32>, f64)| true,
+                || {
+                    asked.set(true);
+                    let set = model.indices_below(shape);
+                    let mut below: Vec<u32> = model
+                        .nodes
+                        .iter()
+                        .map(|(id, _)| id.index())
+                        .filter(|&i| set.contains(i))
+                        .collect();
+                    below.sort_unstable();
+                    let loosest = below
+                        .iter()
+                        .filter_map(|&i| model.nodes.at(i))
+                        .filter_map(|id| model.node_by_id(id)?.data().tolerance())
+                        .fold(0.0, |m: f64, t| m.max(t.get()));
+                    Ok(((below, loosest), true))
+                },
+            )
+            .unwrap();
+        (kept.0.clone(), kept.1, asked.get())
+    }
+
+    #[test]
+    fn a_kept_read_is_read_again_after_any_edit_below_its_shape() {
+        let mut model = Model::new();
+        let face = square(&mut model);
+        let read = |model: &Model| kept_walk(model, &face);
+        let first = read(&model);
+        assert!(first.2);
+        // Read back while nothing below changes.
+        assert_eq!(read(&model), (first.0.clone(), first.1, false));
+        let alone = model.add_point(Point::ORIGIN);
+        let _ = model.node_mut(&alone);
+        model.widen(&alone, Tolerance::new(1.0).unwrap()).unwrap();
+        assert!(!read(&model).2);
+
+        // A node below handed out for editing.
+        let vertex = explore_unique(&model, &face, ShapeType::Vertex).unwrap()[0].clone();
+        if let Some(node) = model.node_mut(&vertex)
+            && let NodeData::Vertex(data) = node.data_mut()
+        {
+            data.tolerance = Tolerance::new(0.5).unwrap();
+        }
+        assert_eq!(read(&model).1, 0.5);
+        assert!(!read(&model).2);
+
+        // A tolerance grown, and one already as wide.
+        model.widen(&vertex, Tolerance::new(0.75).unwrap()).unwrap();
+        assert_eq!(read(&model).1, 0.75);
+        model.widen(&vertex, Tolerance::new(0.25).unwrap()).unwrap();
+        assert!(!read(&model).2);
+
+        // A widening put back.
+        let mark = model.note_widened();
+        model.widen(&face, Tolerance::new(0.9).unwrap()).unwrap();
+        assert_eq!(read(&model).1, 0.9);
+        model.undo_widened(mark);
+        assert_eq!(read(&model), (first.0.clone(), 0.75, true));
+
+        // A surface or a pcurve rewritten in place.
+        let Some(NodeData::Face(data)) = model.node(&face).map(TShape::data) else {
+            panic!("a face holds face data");
+        };
+        let surface = data.surface;
+        let _ = model.geometry_mut().surface_mut(surface);
+        assert!(read(&model).2);
+        assert!(!read(&model).2);
+        let line = ogeom_geom::PlanarCurve::Line(
+            ogeom_geom::Line2d::segment(
+                ogeom_math::Point2::new(0.0, 0.0),
+                ogeom_math::Point2::new(1.0, 0.0),
+                T,
+            )
+            .unwrap(),
+        );
+        let pcurve = model.geometry_mut().add_pcurve(line);
+        let _ = model.geometry_mut().pcurve_mut(pcurve);
+        assert!(read(&model).2);
+
+        // A clone reads back what was kept, and forgets it on its own.
+        let mut copy = model.clone();
+        assert!(!kept_walk(&copy, &face).2);
+        let _ = copy.node_mut(&vertex);
+        assert!(kept_walk(&copy, &face).2);
+        assert!(!read(&model).2);
+
+        // Dropping what nothing reaches keeps what the shape read.
+        model.retain_reachable(std::slice::from_ref(&face)).unwrap();
+        assert!(!read(&model).2);
+    }
+
+    #[test]
+    fn a_kept_read_is_read_again_where_a_child_is_pointed_at_a_copy() {
+        let mut model = Model::new();
+        let face = square(&mut model);
+        let since = model.node_count();
+        let shell = model.add_shell(std::slice::from_ref(&face)).unwrap();
+        model.note_held(&shell, since).unwrap();
+        let before = kept_walk(&model, &shell);
+        assert!(before.2);
+        assert!(!kept_walk(&model, &shell).2);
+        let copies = model.unshare(&shell).unwrap();
+        assert!(!copies.is_empty());
+        let after = kept_walk(&model, &shell);
+        assert!(after.2);
+        assert_ne!(after.0, before.0);
     }
 
     #[test]

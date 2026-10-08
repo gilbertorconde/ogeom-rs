@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`Model::kept_read`** keeps what a reader finds of a shape and
+  everything below it until any of it changes; `SolidBoundary::of_kept`
+  prepares a solid's boundary through it.
+
+### Changed
+
+- **A boolean on a large solid it has read before reads it back.** The
+  solid's faces and prepared boundary are kept instead of walked again: a
+  corner hole into a 582-face plate costs about 1.5 times the same hole
+  into a 22-face plate, down from 2.1 to 2.5 times.
+
 ## [0.9.12] - 2026-10-08
 
 A patch release: no breaking API changes. Fixes: a solid with rounded edges

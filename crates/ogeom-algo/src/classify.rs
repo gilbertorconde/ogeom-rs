@@ -310,10 +310,6 @@ struct PreparedFace {
     /// The face's surface in the model's store, under which rays cast
     /// against it are kept.
     surface: ogeom_topo::SurfaceId,
-    /// The kept surface rays are cast against, looked up the first time a
-    /// ray comes near the face; `None` inside for a surface a line meets in
-    /// closed form.
-    rays: std::sync::OnceLock<Option<std::sync::Arc<KeptSurface>>>,
     /// Where the face can be, padded past anything its bound could miss: a
     /// point outside is not on it, and a ray missing it does not cross it.
     bound: Aabb,
@@ -632,10 +628,23 @@ impl PreparedFace {
 /// is done once.
 #[derive(Debug)]
 pub struct SolidBoundary {
-    faces: Vec<PreparedFace>,
+    /// The faces prepared, which a boundary kept in the model shares with
+    /// every boundary of the same solid read back from it.
+    prepared: std::sync::Arc<Prepared>,
+    /// Per face, the kept surface rays are cast against, looked up the
+    /// first time a ray comes near the face; `None` inside for a surface a
+    /// line meets in closed form.
+    rays: Vec<std::sync::OnceLock<Option<std::sync::Arc<KeptSurface>>>>,
     /// What the rays cast against spline faces found, shared with whoever
     /// handed the cache over.
     kept: ProbeCache,
+}
+
+/// A solid's faces prepared, with what is drawn of them as points and
+/// rays come near.
+#[derive(Debug)]
+struct Prepared {
+    faces: Vec<PreparedFace>,
     /// The tolerances the boundary was prepared at, which its kept rays
     /// are cast at.
     tol: Tolerances,
@@ -643,7 +652,14 @@ pub struct SolidBoundary {
     centre: Point,
     diagonal: f64,
     ring_chord: f64,
+    /// Whether the solid's shells were found closed here.
+    checked: bool,
 }
+
+/// The fewest faces a solid has for its prepared boundary to be kept in
+/// the model: below that, preparing it again costs about what keeping it
+/// does.
+const KEPT_FACES: usize = 64;
 
 impl SolidBoundary {
     /// Prepare a solid's boundary for classification at a given ring chord.
@@ -671,6 +687,57 @@ impl SolidBoundary {
         Self::prepare(model, solid, ring_chord, false, tol)
     }
 
+    /// [`SolidBoundary::of`], or [`SolidBoundary::of_closed`] where
+    /// `closed` says the caller has found the shells closed, kept in the
+    /// model for a solid of many faces: a later boundary of the solid
+    /// unchanged, at the same chord and tolerances, shares the faces
+    /// prepared and the rings drawn of them.
+    ///
+    /// The rings are drawn at the tolerances a point is asked about at,
+    /// the first time one comes near: the boundary is to be asked at
+    /// `tol`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SolidBoundary::of`], or [`SolidBoundary::of_closed`] where
+    /// `closed`.
+    pub fn of_kept(
+        model: &Model,
+        solid: &Shape,
+        ring_chord: f64,
+        closed: bool,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        let check_closed = !closed;
+        let prepared = model.kept_read(
+            solid,
+            |p: &Prepared| {
+                p.ring_chord.to_bits() == ring_chord.to_bits()
+                    && p.tol == tol
+                    && (p.checked || !check_closed)
+            },
+            || {
+                let (prepared, boxed) =
+                    Self::prepared(model, solid, ring_chord, check_closed, tol)?;
+                let keep = boxed && prepared.faces.len() >= KEPT_FACES;
+                Ok((prepared, keep))
+            },
+        )?;
+        Ok(Self::sharing(prepared))
+    }
+
+    /// A boundary over faces prepared, with no ray cast yet.
+    fn sharing(prepared: std::sync::Arc<Prepared>) -> Self {
+        let rays = (0..prepared.faces.len())
+            .map(|_| std::sync::OnceLock::new())
+            .collect();
+        Self {
+            prepared,
+            rays,
+            kept: ProbeCache::default(),
+        }
+    }
+
     fn prepare(
         model: &Model,
         solid: &Shape,
@@ -678,6 +745,19 @@ impl SolidBoundary {
         check_closed: bool,
         tol: Tolerances,
     ) -> OgeomResult<Self> {
+        let (prepared, _) = Self::prepared(model, solid, ring_chord, check_closed, tol)?;
+        Ok(Self::sharing(std::sync::Arc::new(prepared)))
+    }
+
+    /// The faces of `solid` prepared, and whether every face's box was
+    /// the one the model keeps for it.
+    fn prepared(
+        model: &Model,
+        solid: &Shape,
+        ring_chord: f64,
+        check_closed: bool,
+        tol: Tolerances,
+    ) -> OgeomResult<(Prepared, bool)> {
         let kind = model.kind_of(solid)?;
         // A compound of solids bounds their union: each lump's shells are
         // boundary, and a ray counts the crossings of all of them.
@@ -737,7 +817,6 @@ impl SolidBoundary {
                     face: face.clone(),
                     rings: std::sync::OnceLock::new(),
                     surface: data.surface,
-                    rays: std::sync::OnceLock::new(),
                     bound,
                     reach: tol.confusion().max(data.tolerance.get()),
                 },
@@ -747,7 +826,8 @@ impl SolidBoundary {
         // Where every face keeps its box, preparing is a read per face. A
         // face without one is bounded from its geometry, which is the cost
         // worth spreading over threads.
-        let prepared = if faces.iter().all(|face| model.face_bounds(face).is_some()) {
+        let boxed = faces.iter().all(|face| model.face_bounds(face).is_some());
+        let prepared = if boxed {
             faces.iter().map(prepare).collect::<OgeomResult<Vec<_>>>()?
         } else {
             ogeom_core::parallel::map_ordered(&faces, |_, face| prepare(face))
@@ -765,15 +845,18 @@ impl SolidBoundary {
             ogeom_bail!(Construction, "the boundary bounds nothing");
         };
         let prepared = prepared.into_iter().map(|(face, _)| face).collect();
-        Ok(Self {
-            faces: prepared,
-            kept: ProbeCache::default(),
-            tol,
-            bound,
-            centre,
-            diagonal,
-            ring_chord,
-        })
+        Ok((
+            Prepared {
+                faces: prepared,
+                tol,
+                bound,
+                centre,
+                diagonal,
+                ring_chord,
+                checked: check_closed,
+            },
+            boxed,
+        ))
     }
 
     /// The cache this boundary casts its rays through.
@@ -793,22 +876,30 @@ impl SolidBoundary {
     ///
     /// As [`classify_in_solid_exact`].
     pub fn holds(&self, model: &Model, point: Point, tol: Tolerances) -> OgeomResult<Containment> {
-        let ring_chord = self.ring_chord;
+        let Prepared {
+            faces,
+            bound,
+            centre,
+            diagonal,
+            ring_chord,
+            ..
+        } = &*self.prepared;
+        let ring_chord = *ring_chord;
         let ring_deflection = Deflection {
             chord: ring_chord,
             angular: 0.05,
             ..Deflection::default()
         };
         let reach = tol.confusion();
-        if !self.bound.expanded(reach).contains(point) {
+        if !bound.expanded(reach).contains(point) {
             return Ok(Containment::Out);
         }
-        let length = point.distance(self.centre) + self.diagonal + 1.0;
+        let length = point.distance(*centre) + diagonal + 1.0;
 
         // On the boundary beats either side, and each face answers exactly:
         // projection distance against the true surface, trimming in parameter
         // space.
-        for prepared in &self.faces {
+        for prepared in faces {
             if !prepared.bound.contains(point) {
                 continue;
             }
@@ -821,7 +912,7 @@ impl SolidBoundary {
             let far = point + along * length;
             let mut crossings = 0_usize;
 
-            for prepared in &self.faces {
+            for (prepared, rays) in faces.iter().zip(&self.rays) {
                 if !segment_meets(&prepared.bound, point, far) {
                     continue;
                 }
@@ -830,10 +921,10 @@ impl SolidBoundary {
                 // a placement that scales still carries the ray faithfully.
                 let from = inverse.apply(point);
                 let to = inverse.apply(far);
-                let found = match prepared
-                    .rays
-                    .get_or_init(|| self.kept.surface(prepared.surface, surface, self.tol))
-                {
+                let found = match rays.get_or_init(|| {
+                    self.kept
+                        .surface(prepared.surface, surface, self.prepared.tol)
+                }) {
                     Some(kept) if kept.tol == tol => kept.cross((from, to))?,
                     _ => {
                         let ray: ogeom_geom::Curve =

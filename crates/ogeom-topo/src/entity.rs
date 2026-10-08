@@ -50,6 +50,9 @@ pub struct GeometryStore {
     /// Counts the surfaces handed out for rewriting in place: a face box
     /// found against the store holds while this is unchanged.
     revision: u64,
+    /// Counts the surfaces and pcurves handed out for rewriting in place:
+    /// what is kept of a shape's read holds while this is unchanged.
+    edits: u64,
 }
 
 impl GeometryStore {
@@ -62,12 +65,19 @@ impl GeometryStore {
             surfaces: Arena::new(),
             triangulations: Arena::new(),
             revision: 0,
+            edits: 0,
         }
     }
 
     /// How many surfaces the store has handed out for rewriting in place.
     pub(crate) const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// How many surfaces and pcurves the store has handed out for rewriting
+    /// in place.
+    pub(crate) const fn edits(&self) -> u64 {
+        self.edits
     }
 
     /// Add a space curve.
@@ -106,8 +116,10 @@ impl GeometryStore {
     /// onto its neighbour's branch is the same curve on the same edge.
     ///
     /// The image must stay the edge's curve on the surface, which leaves
-    /// every face where it was: no kept face box is forgotten.
+    /// every face where it was: no kept face box is forgotten. What is
+    /// kept of a shape's read ([`crate::Model::kept_read`]) is forgotten.
     pub fn pcurve_mut(&mut self, id: PCurveId) -> Option<&mut PlanarCurve> {
+        self.edits += 1;
         self.pcurves.get_mut(id)
     }
 
@@ -121,9 +133,11 @@ impl GeometryStore {
     /// hold the trims a file puts on it is the same surface, asked over a
     /// wider window.
     ///
-    /// Every kept face box is forgotten, as any face on the surface may move.
+    /// Every kept face box is forgotten, as any face on the surface may
+    /// move, and so is what is kept of every shape's read.
     pub fn surface_mut(&mut self, id: SurfaceId) -> Option<&mut SurfaceGeometry> {
         self.revision += 1;
+        self.edits += 1;
         self.surfaces.get_mut(id)
     }
 

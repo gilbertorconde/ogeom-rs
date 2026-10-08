@@ -7797,29 +7797,25 @@ fn general_fuse_as(
     let boundaries = [
         if operands == Operands::SheetBySheet {
             None
-        } else if gb.closed {
-            Some(ogeom_algo::SolidBoundary::of_closed(
-                model,
-                &gb.solid,
-                tol.confusion() * 1e4,
-                tol,
-            )?)
         } else {
-            Some(ogeom_algo::SolidBoundary::of(
+            Some(ogeom_algo::SolidBoundary::of_kept(
                 model,
                 &gb.solid,
                 tol.confusion() * 1e4,
+                gb.closed,
                 tol,
             )?)
         },
+        // A solid of one shell whose edges setting faces aside read closed
+        // is not asked again.
         if operands == Operands::Solids {
-            // A solid of one shell whose edges setting faces aside read
-            // closed is not asked again.
-            Some(if ga.closed {
-                ogeom_algo::SolidBoundary::of_closed(model, &ga.solid, tol.confusion() * 1e4, tol)?
-            } else {
-                ogeom_algo::SolidBoundary::of(model, &ga.solid, tol.confusion() * 1e4, tol)?
-            })
+            Some(ogeom_algo::SolidBoundary::of_kept(
+                model,
+                &ga.solid,
+                tol.confusion() * 1e4,
+                ga.closed,
+                tol,
+            )?)
         } else {
             None
         },
