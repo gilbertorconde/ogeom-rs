@@ -404,7 +404,7 @@ impl Model {
         // parts, so the links up from children are made once all are bound.
         self.bind_handles(node_offset);
         for id in appended {
-            self.link_children(id);
+            self.link_children(id, true);
         }
         let identity: Vec<(TShapeId, EntityId)> = identity
             .into_iter()
@@ -988,7 +988,7 @@ impl Model {
     fn insert_node(&mut self, node: TShape) -> TShapeId {
         self.sync_face_boxes();
         let id = self.insert_unlinked(node);
-        self.link_children(id);
+        self.link_children(id, true);
         id
     }
 
@@ -1005,8 +1005,9 @@ impl Model {
     }
 
     /// Record node `id` with each child it holds, where it is part of a
-    /// face: the link [`Model::forget_boxes_above`] climbs.
-    fn link_children(&mut self, id: TShapeId) {
+    /// face: the link [`Model::forget_boxes_above`] climbs. `fresh` where
+    /// `id` was linked to nothing before.
+    fn link_children(&mut self, id: TShapeId, fresh: bool) {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
@@ -1017,9 +1018,16 @@ impl Model {
             return;
         }
         let children: SmallVec<[TShapeId; 8]> = node.children().iter().map(Shape::node).collect();
+        // A child already linked to a fresh `id` was linked by this loop,
+        // as the last of its holders: a child held by many faces in turn is
+        // not searched through them all.
         for child in children {
             if let Some(below) = self.nodes.entry_mut(child)
-                && !below.held_by.contains(&id.index())
+                && if fresh {
+                    below.held_by.last() != Some(&id.index())
+                } else {
+                    !below.held_by.contains(&id.index())
+                }
             {
                 below.held_by.push(id.index());
             }
@@ -1743,7 +1751,7 @@ impl Model {
             }
             if changed && let Some(node) = self.nodes.get_mut(parent) {
                 *node.children_mut() = repointed;
-                self.link_children(parent);
+                self.link_children(parent, false);
             }
         }
         Ok(copies)
