@@ -3780,6 +3780,13 @@ fn fill(
             // Stops the section cannot tell apart are one stop: two
             // crossings a few nanometres apart along it would make an
             // interval of dust that one face keeps and the other drops.
+            // A stop standing on the kept one (within the confusion
+            // distance, a nanometre along the section and yet past the
+            // parametric tolerance) is the same point: its crossings split
+            // their edges at the kept stop too. One further off is dropped
+            // with its crossings, which would split their edges where no
+            // strand ends.
+            let mut speaks_for: Vec<(f64, f64)> = Vec::with_capacity(trim_ts.len());
             {
                 let floor = (honest(section.tolerance, tol) * 3.0).max(tol.confusion() * 10.0);
                 let mut kept: Vec<f64> = Vec::with_capacity(trim_ts.len());
@@ -3791,6 +3798,11 @@ fn fill(
                     if held.is_none_or(|h: Point| h.distance(at) > floor) {
                         kept.push(*t);
                         held = Some(at);
+                    }
+                    if let (Some(&first), Some(h)) = (kept.last(), held)
+                        && h.distance(at) <= tol.confusion()
+                    {
+                        speaks_for.push((*t, first));
                     }
                 }
                 trim_ts = kept;
@@ -4110,7 +4122,10 @@ fn fill(
                 // Keep the paves that end a kept interval: those are where edges
                 // genuinely split.
                 for (node, on_edge, on_section, honesty, across) in &edge_hits {
-                    let s = *on_section;
+                    let s = speaks_for
+                        .iter()
+                        .find(|(t, _)| (t - on_section).abs() <= tol.parametric())
+                        .map_or(*on_section, |&(_, first)| first);
                     let near = |x: f64| {
                         (s - x).abs() <= tol.parametric()
                             || (section.closed

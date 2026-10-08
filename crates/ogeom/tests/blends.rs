@@ -2253,17 +2253,20 @@ fn a_curved_corner_closes_with_the_rim_s_band_first() {
     }
 }
 
-/// The straight band, then the rim arc's, then the ruling's: the rim's
-/// section through the straight band crosses the point on top where the
-/// cap, the band and the torus all touch, and is fitted there as closely
-/// as elsewhere. Three of its faces are measured from a mesh, so the
-/// volume agrees with the other orders to the mesh's resolution.
+/// The straight band first, then the rim arc's and the ruling's in either
+/// order: the rim's section through the straight band crosses the point
+/// on top where the cap, the band and the torus all touch, and is fitted
+/// there as closely as elsewhere. There the corner's block meets the
+/// band's rail and the block's own vertical edge a nanometre apart along
+/// one section, and both crossings split their edges at the one stop. A
+/// few faces are measured from a mesh, so the volumes agree with another
+/// order's to the mesh's resolution.
 #[test]
 #[ignore = "heavy"]
 fn a_curved_corner_closes_with_the_straight_band_first() {
     let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
     let mut measured = Vec::new();
-    for order in [[2, 0, 1], [0, 1, 2]] {
+    for order in [[2, 0, 1], [0, 1, 2], [0, 2, 1]] {
         let mut model = Model::new();
         let (part, corner, mids) = shaved_cube(&mut model);
         let v = vertex_near(&model, &part, corner);
@@ -2285,10 +2288,9 @@ fn a_curved_corner_closes_with_the_straight_band_first() {
                 .mass,
         );
     }
-    assert!(
-        (measured[0] - measured[1]).abs() < 1e-4 * measured[0],
-        "{measured:?}"
-    );
+    for v in &measured {
+        assert!((v - measured[0]).abs() < 1e-4 * measured[0], "{measured:?}");
+    }
 }
 
 #[test]
