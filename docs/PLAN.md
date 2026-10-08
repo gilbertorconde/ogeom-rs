@@ -427,7 +427,12 @@ recorded count per bench, and a gate at a few percent.
 **Algorithms worth the work.**
 - Classify a boolean's pieces once per connected region, not per piece
   (Requicha and Voelcker 1985): pieces meeting across an unpaved sub-edge
-  share a state.
+  share a state. Measured: classification is about 5% of
+  `boolean_many_faces` (36 probes over four drills, faces the tool misses
+  already set aside) and 0.1% of the fillets, so it waits for a case where
+  pieces are many; it needs the split and classify of `general_fuse_as`
+  apart first. The boolean's time is the arrangement (about 2.9 ms of the
+  four drills) and assembly (about 2.1 ms).
 - Surface feet on splines by per-span branch and bound on control-net
   boxes (Ma and Hewitt 2003; Selimovic 2006) instead of a grid up to 4096
   on a side.
