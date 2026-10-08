@@ -18,16 +18,19 @@
 //! polynomials or polynomials in the chart: the analytic ones, and lines
 //! and conics swept or revolved. Panels break at a pcurve's knots and at
 //! every quarter turn, where the ten-point Gauss rule integrates such an
-//! integrand to rounding, and the whole is run again on panels twice as
-//! fine until two runs agree to a part in ten billion on what the caller
-//! sums: a volume's runs on the flux integrands of the volume and its
-//! moments, an area's also on `|n dA|`. A short boundary panel on an
-//! analytic surface takes as few points as its error bound allows, and the
-//! inner integrals there, exact on quarter turns, are not refined between
-//! runs. Near a fold of a spline surface `|n|` dips almost to nothing
-//! between two nodes of an inner panel, and no uniform split takes
-//! `|n dA|` there quickly: an area's inner panel across such a dip is
-//! graded towards its bottom instead.
+//! integrand to rounding. A short boundary panel on an analytic surface
+//! takes as few points as its error bound allows, and the inner integrals
+//! there, exact on quarter turns, are summed once. Every other boundary
+//! panel takes the ten-point Gauss and twenty-one-point Kronrod pair, along
+//! it and, where the inner rule is not exact, across, and only the panels
+//! whose two estimates miss are halved, along or across (Piessens et al.,
+//! QUADPACK, 1983), until what the panels miss in all is below a part in a
+//! million million of what the caller sums: a volume's flux integrands of
+//! the volume and its moments, an area's also `|n dA|`. Near a fold of a
+//! spline surface `|n|` dips almost to nothing between two nodes of an
+//! inner panel, and no uniform split takes `|n dA|` there quickly: an
+//! area's inner panel across such a dip is graded towards its bottom
+//! instead.
 //!
 //! A pcurve that lifts off its edge's own curve by more than a confusion
 //! distance, while its neighbour across the edge runs along the curve,
@@ -46,7 +49,7 @@ use ogeom_geom::{
     Curve, Curve2d as _, Curve3d as _, PlanarCurve, Surface as _, SurfaceGeometry,
     Transformable as _,
 };
-use ogeom_math::{Point, Point2, Vector, Vector2, gauss_legendre_rule};
+use ogeom_math::{Point, Point2, Vector, Vector2, gauss_kronrod_21_rule, gauss_legendre_rule};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape};
 
 /// One pcurve piece of a boundary loop, walked from `t0` to `t1` and moved
@@ -562,7 +565,7 @@ fn corner(
 /// rulings, read at a few points, run on the whole within half a right
 /// angle of straight into the face. Each lobe is one answer and its ends
 /// break the panels, so the strip's area is smooth across every panel and
-/// every run counts it the same way.
+/// every node of a panel counts it the same way.
 fn lobes(
     placed: &SurfaceGeometry,
     segment: &Segment,
@@ -1253,13 +1256,22 @@ fn fold(gap: Vector2, period: Vector2) -> Vector2 {
     Vector2::new(along(gap.x, period.x), along(gap.y, period.y))
 }
 
-/// The most times the panels are doubled before the face is left to the
-/// mesh.
+/// The most times a panel's inner panels are halved, and the panels a face
+/// may evaluate in all against those it starts from, as `2^DOUBLINGS`,
+/// before the face is left to the mesh.
 const DOUBLINGS: u32 = 5;
 
-/// Agreement asked of two runs, the second on panels twice as fine,
-/// relative to the size of what they integrate.
-const AGREE: f64 = 1e-10;
+/// The most times a panel is halved: down to where a kink inside it costs
+/// a rounding.
+const HALVINGS: u32 = 40;
+
+/// What the panels may miss in all, relative to the size of what they
+/// integrate.
+const AGREE: f64 = 1e-12;
+
+/// What the panels' estimates may miss by in all through rounding alone,
+/// relative to the sum of their samples' magnitudes.
+const ROUNDING: f64 = 64.0 * f64::EPSILON;
 
 /// A quarter turn: the widest panel on an angular parameter, over which a
 /// trigonometric polynomial integrates to rounding under the ten-point
@@ -1375,76 +1387,153 @@ fn rule(order: usize, a: f64, b: f64) -> Vec<(f64, f64)> {
 /// `Su x Sv`, and the quadrature weight.
 type Sample = (Point, Vector, f64);
 
-/// What a face is integrated for, which says which measures two runs must
-/// agree on before the finer one is taken.
+/// What a face is integrated for, which says which measures a panel's
+/// estimates must agree on before it is taken.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Measure {
-    /// The area and its moments: the runs agree on `|n dA|`, `n dA` and
-    /// the flux of the point.
+    /// The area and its moments: the estimates agree on `|n dA|`, `n dA`
+    /// and the flux of the point.
     Area,
     /// The volume and its moments, which integrate `n dA` times a
-    /// polynomial in the point: the runs agree on `n dA` and on the flux
-    /// integrands of the volume, its first moments and its second, never
-    /// on `|n dA|`. Near a fold of the surface `|n|` almost vanishes and
-    /// its square root converges slowly, which says nothing about a volume.
+    /// polynomial in the point: the estimates agree on `n dA` and on the
+    /// flux integrands of the volume, its first moments and its second,
+    /// never on `|n dA|`. Near a fold of the surface `|n|` almost vanishes
+    /// and its square root converges slowly, which says nothing about a
+    /// volume.
     Volume,
 }
 
-/// How an inner integral treats a panel across which `|n|` dips.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Folds {
-    /// Integrated as any other.
-    Ignore,
-    /// Integrated as any other, and reported.
-    Watch,
-    /// Graded towards the dip where there is one (see [`fold_in`]), and
-    /// reported.
-    Grade,
-}
-
-/// The measures two runs are compared by: `|n dA|` (an area's only),
-/// `n dA`, the flux of the point, and a volume's first and second moment
-/// integrands.
+/// The measures a panel's estimates are compared by: `|n dA|` (an area's
+/// only), `n dA`, the flux of the point, and a volume's first and second
+/// moment integrands.
 const PROXIES: usize = 17;
 type Proxy = [f64; PROXIES];
 
-/// Which of a face's samples a run takes.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Part {
-    /// Every sample.
-    All,
-    /// Only the samples a finer run changes (see [`Run`]).
-    Refined,
-}
-
-/// What one run over a face's panels found besides its samples.
-///
-/// A sample is *exact* where its rule takes the integrand to rounding
-/// whatever the run's fineness: a corner's, a bridge's on an analytic
-/// surface, whose inner panels are the same in every run, and a boundary
-/// panel's on such a surface whose order came from its error bound. Every
-/// other sample (a ribbon strip's, or one on a surface or boundary piece
-/// with no bound) is *refined*: a finer run moves it.
-struct Run {
-    /// The integrals of the [`PROXIES`] measures over the exact samples and
-    /// over the refined ones, to compare runs by.
-    exact: Proxy,
-    refined: Proxy,
-    /// Whether the run had any refined piece.
-    refines: bool,
-    /// The farthest sample's squared distance from the reference.
+/// The [`PROXIES`] measures at one sample, for `measure`, and the farthest
+/// a volume's sample has been from `reference` (squared).
+struct Proxies {
+    measure: Measure,
+    reference: Point,
+    /// The chart's size, which the flux is taken against.
+    size: f64,
     reach: f64,
-    /// Whether `|n|` dipped across an inner panel where the run watched.
-    dipped: bool,
 }
 
-/// Two proxies summed.
-fn add(a: Proxy, b: Proxy) -> Proxy {
-    let mut sum = a;
-    for (x, y) in sum.iter_mut().zip(b) {
-        *x += y;
+impl Proxies {
+    fn at(&mut self, p: Point, n: Vector) -> Proxy {
+        let mut row = [0.0; PROXIES];
+        let e = p - self.reference;
+        let flux = e.dot(n) / self.size;
+        match self.measure {
+            Measure::Area => {
+                row[..5].copy_from_slice(&[n.magnitude(), n.x, n.y, n.z, flux]);
+            }
+            Measure::Volume => {
+                self.reach = self.reach.max(e.dot(e));
+                row[1..5].copy_from_slice(&[n.x, n.y, n.z, flux]);
+                let (q, nq) = ([e.x, e.y, e.z], [n.x, n.y, n.z]);
+                for i in 0..3 {
+                    let lift = q[i] * q[i] * nq[i] / self.size;
+                    row[5 + i] = lift;
+                    for j in 0..3 {
+                        row[8 + 3 * i + j] = lift * q[j];
+                    }
+                }
+            }
+        }
+        row
     }
-    sum
+}
+
+/// `sum += row * w`, for each measure.
+fn add_scaled(sum: &mut Proxy, row: &Proxy, w: f64) {
+    for (s, x) in sum.iter_mut().zip(row) {
+        *s += x * w;
+    }
+}
+
+/// `sum += |row * w|`, for each measure: what a sum's rounding is in
+/// proportion to.
+fn add_magnitude(sum: &mut Proxy, row: &Proxy, w: f64) {
+    for (s, x) in sum.iter_mut().zip(row) {
+        *s += (x * w).abs();
+    }
+}
+
+/// A piece of a face's boundary integral whose panels are refined each on
+/// its own.
+enum Piece<'a> {
+    /// The strip beside a lifted piece (see [`Ribbon`]): the seven-point
+    /// Kronrod rule along the piece, against the three-point Gauss rule on
+    /// the same nodes.
+    Strip {
+        segment: &'a Segment,
+        ribbon: &'a Ribbon,
+        lobes: &'a [(f64, bool)],
+        region: f64,
+    },
+    /// A boundary piece with no error bound on its rule, or on a surface
+    /// whose inner integrals are not taken to rounding: the twenty-one-point
+    /// Kronrod rule along it, against the ten-point Gauss rule.
+    Boundary { segment: &'a Segment, region: f64 },
+    /// A bridge (see `ChartFace::bridges`) on a surface whose inner
+    /// integrals are not taken to rounding: the ten-point rule along it, as
+    /// straight a step as the chart has, and only its inner panels refined.
+    Bridge {
+        start: Point2,
+        step: Vector2,
+        region: f64,
+    },
+}
+
+/// One panel of a [`Piece`], as its estimates left it. Three sums are
+/// read on its nodes: `KG`, the Kronrod rule along the panel over the
+/// inner Gauss sums; `GG`, the Gauss rule along over the same; and `GK`,
+/// the Gauss rule along over the inner Kronrod sums. The panel takes
+/// `KG + GK - GG`, the Kronrod sum along it with the inner Kronrod rule's
+/// correction carried at the Gauss nodes. `|KG - GG|` measures what the
+/// rule along the panel misses, and `|GK - GG|` what the inner rule does
+/// (zero where that is exact).
+struct Panel {
+    piece: usize,
+    a: f64,
+    b: f64,
+    /// How many times the panel was halved from the piece's own panel.
+    depth: u32,
+    /// How many times its inner panels were halved.
+    level: u32,
+    value: Proxy,
+    along: Proxy,
+    across: Proxy,
+    /// The sum of its samples' magnitudes, which its rounding is in
+    /// proportion to.
+    magnitude: Proxy,
+}
+
+/// The seven-point Kronrod rule extending the three-point Gauss rule on
+/// `[-1, 1]`: the nodes it adds, and its weights at those and at the Gauss
+/// nodes, positive halves, centre first.
+const KRONROD7_NODES: [f64; 2] = [0.434_243_749_346_802_56, 0.960_491_268_708_020_3];
+const KRONROD7_WEIGHTS: [f64; 2] = [0.401_397_414_775_962_2, 0.104_656_226_026_467_27];
+const KRONROD7_AT_GAUSS: [f64; 2] = [0.450_916_538_658_474_14, 0.268_488_089_868_333_44];
+
+/// The three-point Gauss and seven-point Kronrod pair on `[a, b]`: each
+/// node with its Kronrod weight and its Gauss weight, zero at the nodes
+/// Kronrod adds. The Kronrod rule is exact to degree ten.
+fn kronrod_7(a: f64, b: f64) -> [(f64, f64, f64); 7] {
+    let (half, middle) = ((b - a) * 0.5, f64::midpoint(a, b));
+    let (gauss, gauss_weights) = RULES[0];
+    let mut rule = [(0.0, 0.0, 0.0); 7];
+    // The Gauss nodes run from -1 to 1, centre in the middle.
+    for (i, (x, w)) in gauss.iter().zip(gauss_weights).enumerate() {
+        let k = KRONROD7_AT_GAUSS[i.abs_diff(1)];
+        rule[i] = (middle + half * x, k * half, w * half);
+    }
+    for (i, (x, w)) in KRONROD7_NODES.iter().zip(KRONROD7_WEIGHTS).enumerate() {
+        rule[3 + 2 * i] = (middle - half * x, w * half, 0.0);
+        rule[4 + 2 * i] = (middle + half * x, w * half, 0.0);
+    }
+    rule
 }
 
 impl ChartFace {
@@ -1459,10 +1548,11 @@ impl ChartFace {
     /// The face's integral summed into an accumulator from `fresh`: every
     /// sample is handed to `contribute` as the surface point, its `n dA`
     /// with the weight's magnitude folded in, and the weight's sign (an area
-    /// takes `|n dA|` times that sign, a volume the product). The first
-    /// run's exact samples (see [`Run`]) are summed once; each finer run
-    /// adds its refined samples to a copy of that sum, and the one that
-    /// settles is returned; `None` where none did.
+    /// takes `|n dA|` times that sign, a volume the product). The samples
+    /// whose rule takes the integrand to rounding are summed once; every
+    /// other panel is refined on its own (see [`Panel`]) until what the
+    /// panels still miss is below [`AGREE`] of what they sum, and the
+    /// panels taken are summed then; `None` where they cannot get there.
     pub(crate) fn integrate<A: Clone>(
         &self,
         measure: Measure,
@@ -1470,58 +1560,172 @@ impl ChartFace {
         tol: Tolerances,
         fresh: impl Fn() -> A,
         contribute: impl Fn(&mut A, Point, Vector, f64),
+        merge: impl Fn(&mut A, &A),
     ) -> Option<A> {
-        // An area's first run watches for `|n|` dipping across an inner
-        // panel; where it does, that run and every finer one grade such
-        // panels towards the dip (see [`fold_in`]).
-        let watch = if measure == Measure::Area {
-            Folds::Watch
-        } else {
-            Folds::Ignore
+        self.adapt(measure, reference, tol, fresh, contribute, merge)
+            .ok()
+            .flatten()
+    }
+
+    /// [`ChartFace::integrate`], with a failed evaluation as an error.
+    fn adapt<A: Clone>(
+        &self,
+        measure: Measure,
+        reference: Point,
+        tol: Tolerances,
+        fresh: impl Fn() -> A,
+        contribute: impl Fn(&mut A, Point, Vector, f64),
+        merge: impl Fn(&mut A, &A),
+    ) -> OgeomResult<Option<A>> {
+        let analytic = self.analytic();
+        let exact_inner = self.exact_inner(measure);
+        // An area's inner panel across which `|n|` dips is graded towards
+        // the dip (see [`fold_in`]); an analytic surface's has none.
+        let grade = measure == Measure::Area && !analytic;
+        let mut proxies = Proxies {
+            measure,
+            reference,
+            size: self.scale.max(1.0),
+            reach: 0.0,
         };
-        let first = |folds: Folds| -> Option<(A, Run)> {
-            let mut base = fresh();
-            let run = self
-                .run(
-                    1,
-                    Part::All,
-                    measure,
-                    folds,
-                    reference,
-                    tol,
-                    &mut |(p, n, w), refined| {
-                        if !refined {
-                            contribute(&mut base, p, n * w.abs(), w.signum());
+        let mut sum = fresh();
+        let mut exact = [0.0; PROXIES];
+        let mut rounding = [0.0; PROXIES];
+        let mut keep = |proxies: &mut Proxies, (p, n, w): Sample| {
+            let row = proxies.at(p, n);
+            add_scaled(&mut exact, &row, w);
+            add_magnitude(&mut rounding, &row, w);
+            contribute(&mut sum, p, n * w.abs(), w.signum());
+        };
+        let mut pieces = Vec::new();
+        let mut panels: Vec<(usize, f64, f64)> = Vec::new();
+        for (segments, region) in &self.loops {
+            let region = *region;
+            for segment in segments {
+                if let Some(ribbon) = segment
+                    .ribbon
+                    .as_ref()
+                    .filter(|r| measure == Measure::Volume || r.area)
+                {
+                    let lobes: &[(f64, bool)] = match measure {
+                        Measure::Area => ribbon
+                            .lobes
+                            .get_or_init(|| lobes(&self.surface, segment, ribbon, region, tol)),
+                        Measure::Volume => &[],
+                    };
+                    let mut breaks = self.outer_breaks(segment, tol)?;
+                    breaks.extend(ribbon.breaks.iter().copied());
+                    breaks.extend(lobes.iter().map(|(end, _)| *end));
+                    breaks.sort_by(f64::total_cmp);
+                    if segment.t1 < segment.t0 {
+                        breaks.reverse();
+                    }
+                    breaks.dedup();
+                    pieces.push(Piece::Strip {
+                        segment,
+                        ribbon,
+                        lobes,
+                        region,
+                    });
+                    panels.extend(breaks.windows(2).map(|w| (pieces.len() - 1, w[0], w[1])));
+                }
+                // A straight piece along which `v` does not move adds
+                // nothing.
+                if let PlanarCurve::Line(_) = segment.curve {
+                    let (_, d) = segment.at(segment.t0, tol)?;
+                    if d.y.abs() <= 1e-14 * d.x.abs() {
+                        continue;
+                    }
+                }
+                let breaks = self.outer_breaks(segment, tol)?;
+                let mut boundary = None;
+                for pair in breaks.windows(2) {
+                    let bound = self.outer_order(segment, pair[0], pair[1], tol)?;
+                    if let Some(order) = bound.filter(|_| analytic) {
+                        for (t, wt) in rule(order, pair[0], pair[1]) {
+                            let (at, d) = segment.at(t, tol)?;
+                            let outer = region * wt * d.y;
+                            self.inner(at, 0, false, false, tol, &mut |p, n, wg, _| {
+                                keep(&mut proxies, (p, n, outer * wg));
+                            })?;
                         }
-                    },
-                )
-                .ok()?;
-            Some((base, run))
-        };
-        let (mut base, mut run) = first(watch)?;
-        // With no refined sample a finer run only repeats this one.
-        if !run.refines && !run.dipped {
-            return Some(base);
+                        continue;
+                    }
+                    let piece = *boundary.get_or_insert_with(|| {
+                        pieces.push(Piece::Boundary { segment, region });
+                        pieces.len() - 1
+                    });
+                    panels.push((piece, pair[0], pair[1]));
+                }
+            }
         }
-        let folds = if run.dipped {
-            Folds::Grade
-        } else {
-            Folds::Ignore
-        };
-        if run.dipped {
-            (base, run) = first(folds)?;
+        // The corners close a volume; an area has nothing to close.
+        if measure == Measure::Volume {
+            for (polygon, turn) in &self.corners {
+                // A fan of triangles from the first corner, each
+                // integrated on its unit square collapsed onto it.
+                let hub = polygon[0];
+                for k in 1..polygon.len() {
+                    let (a, b) = (polygon[k], polygon[(k + 1) % polygon.len()]);
+                    let n = (a - hub).cross(b - a) * *turn;
+                    for (x, wx) in rule(3, 0.0, 1.0) {
+                        for (y, wy) in rule(3, 0.0, 1.0) {
+                            let p = hub + (a - hub) * x + (b - a) * (x * y);
+                            keep(&mut proxies, (p, n * x, wx * wy));
+                        }
+                    }
+                }
+            }
         }
-        let Run {
-            exact,
-            refined,
-            reach,
-            ..
-        } = run;
-        let mut held = add(exact, refined);
+        for &(start, step, region) in &self.bridges {
+            if exact_inner {
+                for (t, wt) in gauss_legendre_rule(0.0, 1.0) {
+                    let outer = region * wt * step.y;
+                    self.inner(
+                        start + step * t,
+                        0,
+                        false,
+                        false,
+                        tol,
+                        &mut |p, n, wg, _| {
+                            keep(&mut proxies, (p, n, outer * wg));
+                        },
+                    )?;
+                }
+            } else {
+                pieces.push(Piece::Bridge {
+                    start,
+                    step,
+                    region,
+                });
+                panels.push((pieces.len() - 1, 0.0, 1.0));
+            }
+        }
+        // Each panel's samples are summed on their own, and the sums of the
+        // panels taken added to the face's at the end.
+        let evaluate = |proxies: &mut Proxies, key: (usize, f64, f64), fineness| {
+            let mut sums = fresh();
+            let panel = self.panel(
+                &pieces[key.0],
+                key,
+                fineness,
+                exact_inner,
+                grade,
+                proxies,
+                &mut |p, n, w| contribute(&mut sums, p, n * w.abs(), w.signum()),
+                tol,
+            )?;
+            OgeomResult::Ok((panel, sums))
+        };
+        let mut panels = panels
+            .into_iter()
+            .map(|key| evaluate(&mut proxies, key, (0, 0)))
+            .collect::<OgeomResult<Vec<_>>>()?;
         // The moments are weighed against the volume by the face's reach
-        // from the reference, the same for every run: once for the first,
-        // twice for the second.
-        let reach = reach.sqrt();
+        // from the reference, as the first panels found it: once for the
+        // first, twice for the second.
+        let mut budget = panels.len() << DOUBLINGS;
+        let reach = proxies.reach.sqrt();
         let weigh = |mut proxy: Proxy| {
             if reach > 0.0 {
                 for x in &mut proxy[5..8] {
@@ -1533,35 +1737,203 @@ impl ChartFace {
             }
             proxy
         };
-        held = weigh(held);
-        for doubling in 1..=DOUBLINGS {
-            // Each doubling costs twice the last: a cancelled watch is
+        loop {
+            let (mut total, mut magnitude) = (exact, rounding);
+            let mut miss = [0.0; PROXIES];
+            for (panel, _) in &panels {
+                add_scaled(&mut total, &panel.value, 1.0);
+                add_scaled(&mut magnitude, &panel.magnitude, 1.0);
+                add_scaled(&mut miss, &panel.along, 1.0);
+                add_scaled(&mut miss, &panel.across, 1.0);
+            }
+            let size: f64 = weigh(total).iter().map(|x| x.abs()).sum();
+            // Below what the sums' own rounding may leave, no estimate
+            // tells a miss from noise.
+            let noise = ROUNDING * weigh(magnitude).iter().sum::<f64>();
+            let (measure_at, worst) =
+                weigh(miss)
+                    .into_iter()
+                    .enumerate()
+                    .fold(
+                        (0, 0.0),
+                        |best, (k, x)| if x > best.1 { (k, x) } else { best },
+                    );
+            if worst <= (AGREE * size).max(noise) || size == 0.0 {
+                break;
+            }
+            // Each refinement costs a panel's worth: a cancelled watch is
             // honoured between them, and the caller's own checkpoint then
             // reports it.
-            if ogeom_core::progress::checkpoint().is_err() {
-                return None;
+            if ogeom_core::progress::checkpoint().is_err() || budget < 2 {
+                return Ok(None);
             }
-            let mut sum = base.clone();
-            let Run { refined, .. } = self
-                .run(
-                    1 << doubling,
-                    Part::Refined,
-                    measure,
-                    folds,
-                    reference,
-                    tol,
-                    &mut |(p, n, w), _| {
-                        contribute(&mut sum, p, n * w.abs(), w.signum());
-                    },
-                )
-                .ok()?;
-            let proxy = weigh(add(exact, refined));
-            if settled(held, proxy) {
-                return Some(sum);
+            budget -= 2;
+            // The panel that misses most on the measure missed most, refined
+            // along or across, whichever it misses more by.
+            let Some(at) = (0..panels.len()).max_by(|&i, &j| {
+                let miss =
+                    |k: usize| panels[k].0.along[measure_at] + panels[k].0.across[measure_at];
+                miss(i).total_cmp(&miss(j))
+            }) else {
+                return Ok(None);
+            };
+            let panel = &panels[at].0;
+            let key = (panel.piece, panel.a, panel.b);
+            let (depth, level) = (panel.depth, panel.level);
+            if panel.across[measure_at] > panel.along[measure_at] {
+                if level >= DOUBLINGS {
+                    return Ok(None);
+                }
+                panels[at] = evaluate(&mut proxies, key, (depth, level + 1))?;
+            } else {
+                if depth >= HALVINGS || matches!(pieces[key.0], Piece::Bridge { .. }) {
+                    return Ok(None);
+                }
+                let (piece, a, b) = key;
+                let middle = f64::midpoint(a, b);
+                let first = evaluate(&mut proxies, (piece, a, middle), (depth + 1, level))?;
+                let second = evaluate(&mut proxies, (piece, middle, b), (depth + 1, level))?;
+                panels[at] = first;
+                panels.insert(at + 1, second);
             }
-            held = proxy;
         }
-        None
+        for (_, sums) in &panels {
+            merge(&mut sum, sums);
+        }
+        Ok(Some(sum))
+    }
+
+    /// The panel of `piece` from `a` to `b`, halved `depth` times from the
+    /// piece's own panel and with its inner panels halved `level` times:
+    /// its samples handed to `sink` weighted as the panel takes them, and
+    /// its estimates (see [`Panel`]).
+    #[allow(clippy::too_many_arguments)]
+    fn panel(
+        &self,
+        piece: &Piece<'_>,
+        (at, a, b): (usize, f64, f64),
+        (depth, level): (u32, u32),
+        exact_inner: bool,
+        grade: bool,
+        proxies: &mut Proxies,
+        sink: &mut dyn FnMut(Point, Vector, f64),
+        tol: Tolerances,
+    ) -> OgeomResult<Panel> {
+        let [mut value, mut along, mut across, mut magnitude] = [[0.0; PROXIES]; 4];
+        // What one node along the panel adds, from its inner sums under the
+        // Gauss rule across and the Kronrod rule, weighted by the Kronrod
+        // and Gauss weights along.
+        let mut node = |gauss: &Proxy, kronrod: &Proxy, wk: f64, wg: f64| {
+            for k in 0..PROXIES {
+                let correction = wg * (kronrod[k] - gauss[k]);
+                value[k] += wk * gauss[k] + correction;
+                along[k] += (wk - wg) * gauss[k];
+                across[k] += correction;
+            }
+        };
+        match *piece {
+            Piece::Strip {
+                segment,
+                ribbon,
+                lobes,
+                region,
+            } => {
+                // A strip is as wide as the piece stands off its curve, a
+                // sliver of the face's own integral, and its Kronrod rule
+                // takes it far closer than the face is asked to agree.
+                for (t, wk, wg) in kronrod_7(a, b) {
+                    let mut gauss = [0.0; PROXIES];
+                    self.strip(
+                        segment,
+                        ribbon,
+                        lobes,
+                        t,
+                        region * wk,
+                        tol,
+                        &mut |(p, n, w)| {
+                            let row = proxies.at(p, n);
+                            add_scaled(&mut gauss, &row, w);
+                            add_magnitude(&mut magnitude, &row, w);
+                            sink(p, n, w);
+                        },
+                    )?;
+                    node(&gauss, &gauss, 1.0, wg / wk);
+                }
+            }
+            Piece::Boundary { segment, region } => {
+                for (t, wk, wg) in gauss_kronrod_21_rule(a, b) {
+                    let (at, d) = segment.at(t, tol)?;
+                    let outer = region * d.y;
+                    if outer == 0.0 {
+                        continue;
+                    }
+                    // The inner Kronrod rule is read at the Gauss nodes
+                    // along the panel only.
+                    let read = !exact_inner && wg != 0.0;
+                    let mut gauss = [0.0; PROXIES];
+                    let mut kronrod = [0.0; PROXIES];
+                    self.inner(at, level, grade, read, tol, &mut |p, n, ig, ik| {
+                        let row = proxies.at(p, n);
+                        add_scaled(&mut gauss, &row, ig);
+                        let mut taken = wk * ig;
+                        if read {
+                            add_scaled(&mut kronrod, &row, ik);
+                            taken += wg * (ik - ig);
+                        }
+                        if taken != 0.0 {
+                            add_magnitude(&mut magnitude, &row, outer * taken);
+                            sink(p, n, outer * taken);
+                        }
+                    })?;
+                    node(
+                        &gauss,
+                        if read { &kronrod } else { &gauss },
+                        outer * wk,
+                        outer * wg,
+                    );
+                }
+            }
+            Piece::Bridge {
+                start,
+                step,
+                region,
+            } => {
+                for (t, wt) in gauss_legendre_rule(0.0, 1.0) {
+                    let outer = region * wt * step.y;
+                    let mut gauss = [0.0; PROXIES];
+                    let mut kronrod = [0.0; PROXIES];
+                    self.inner(
+                        start + step * t,
+                        level,
+                        grade,
+                        true,
+                        tol,
+                        &mut |p, n, ig, ik| {
+                            let row = proxies.at(p, n);
+                            add_scaled(&mut gauss, &row, ig);
+                            add_scaled(&mut kronrod, &row, ik);
+                            add_magnitude(&mut magnitude, &row, outer * ik);
+                            sink(p, n, outer * ik);
+                        },
+                    )?;
+                    node(&gauss, &kronrod, outer, outer);
+                }
+            }
+        }
+        for x in along.iter_mut().chain(&mut across) {
+            *x = x.abs();
+        }
+        Ok(Panel {
+            piece: at,
+            a,
+            b,
+            depth,
+            level,
+            value,
+            along,
+            across,
+            magnitude,
+        })
     }
 
     /// Whether the surface is one whose inner integrals a quarter-turn
@@ -1577,169 +1949,21 @@ impl ChartFace {
         )
     }
 
-    /// The face's samples of `part` with every panel split `fine` ways,
-    /// each handed to `sink` in a fixed order with whether it is refined,
-    /// and what the run found (see [`Run`]).
-    #[allow(clippy::too_many_arguments)]
-    fn run(
-        &self,
-        fine: u32,
-        part: Part,
-        measure: Measure,
-        folds: Folds,
-        reference: Point,
-        tol: Tolerances,
-        sink: &mut dyn FnMut(Sample, bool),
-    ) -> OgeomResult<Run> {
-        let mut proxies = [[0.0; PROXIES]; 2];
-        let mut reach = 0.0_f64;
-        let mut dipped = false;
-        let analytic = self.analytic();
-        let size = self.scale.max(1.0);
-        // Whether the samples being taken are refined, set before each
-        // piece.
-        let refining = core::cell::Cell::new(false);
-        let mut refines = false;
-        let mut take = |(p, n, w): Sample| {
-            let refined = refining.get();
-            let proxy = &mut proxies[usize::from(refined)];
-            let e = p - reference;
-            let flux = e.dot(n) / size;
-            match measure {
-                Measure::Area => {
-                    let row = [n.magnitude(), n.x, n.y, n.z, flux];
-                    for (acc, x) in proxy.iter_mut().zip(row) {
-                        *acc += x * w;
-                    }
-                }
-                Measure::Volume => {
-                    reach = reach.max(e.dot(e));
-                    let (q, nq) = ([e.x, e.y, e.z], [n.x, n.y, n.z]);
-                    for (acc, x) in proxy[1..5].iter_mut().zip([n.x, n.y, n.z, flux]) {
-                        *acc += x * w;
-                    }
-                    for i in 0..3 {
-                        let lift = q[i] * q[i] * nq[i] / size * w;
-                        proxy[5 + i] += lift;
-                        for j in 0..3 {
-                            proxy[8 + 3 * i + j] += lift * q[j];
-                        }
-                    }
-                }
+    /// Whether the ten-point rule on the inner panels takes what `measure`
+    /// sums to rounding, so that only the boundary's panels are refined:
+    /// on an analytic surface, and for a volume on a polynomial patch of
+    /// degree four or less in `u`. Along `u` within a knot span such a
+    /// patch's point is a polynomial of degree `p` and its `n dA` one of
+    /// degree `2p - 1`, so a volume's integrands, the cube of the point
+    /// times `n dA` at most, are of degree `5p - 1`, at most nineteen. An
+    /// area's `|n dA|` is no polynomial.
+    fn exact_inner(&self, measure: Measure) -> bool {
+        match &self.surface {
+            SurfaceGeometry::BSpline(patch) => {
+                measure == Measure::Volume && !patch.is_rational() && patch.u_knots().degree() <= 4
             }
-            sink((p, n, w), refined);
-        };
-        for (segments, region) in &self.loops {
-            for segment in segments {
-                if let Some(ribbon) = segment
-                    .ribbon
-                    .as_ref()
-                    .filter(|r| measure == Measure::Volume || r.area)
-                {
-                    refining.set(true);
-                    refines = true;
-                    let lobes: &[(f64, bool)] = match measure {
-                        Measure::Area => ribbon
-                            .lobes
-                            .get_or_init(|| lobes(&self.surface, segment, ribbon, *region, tol)),
-                        Measure::Volume => &[],
-                    };
-                    let mut breaks = self.outer_breaks(segment, tol)?;
-                    breaks.extend(ribbon.breaks.iter().copied());
-                    breaks.extend(lobes.iter().map(|(end, _)| *end));
-                    breaks.sort_by(f64::total_cmp);
-                    if segment.t1 < segment.t0 {
-                        breaks.reverse();
-                    }
-                    breaks.dedup();
-                    // A strip is as wide as the piece stands off its curve,
-                    // a sliver of the face's own integral, and five points
-                    // a panel take it far closer than the runs agree.
-                    for pair in breaks.windows(2) {
-                        for k in 0..fine {
-                            let a = pair[0] + (pair[1] - pair[0]) * f64::from(k) / f64::from(fine);
-                            let b =
-                                pair[0] + (pair[1] - pair[0]) * f64::from(k + 1) / f64::from(fine);
-                            for (t, wt) in rule(5, a, b) {
-                                self.strip(segment, ribbon, lobes, t, region * wt, tol, &mut take)?;
-                            }
-                        }
-                    }
-                }
-                // A straight piece along which `v` does not move adds
-                // nothing.
-                if let PlanarCurve::Line(_) = segment.curve {
-                    let (_, d) = segment.at(segment.t0, tol)?;
-                    if d.y.abs() <= 1e-14 * d.x.abs() {
-                        continue;
-                    }
-                }
-                let breaks = self.outer_breaks(segment, tol)?;
-                for pair in breaks.windows(2) {
-                    let bound = self.outer_order(segment, pair[0], pair[1], tol)?;
-                    refining.set(!analytic || bound.is_none());
-                    refines |= refining.get();
-                    if part == Part::Refined && !refining.get() {
-                        continue;
-                    }
-                    let order = bound.unwrap_or(10);
-                    for k in 0..fine {
-                        let a = pair[0] + (pair[1] - pair[0]) * f64::from(k) / f64::from(fine);
-                        let b = pair[0] + (pair[1] - pair[0]) * f64::from(k + 1) / f64::from(fine);
-                        for (t, wt) in rule(order, a, b) {
-                            let (at, d) = segment.at(t, tol)?;
-                            dipped |=
-                                self.inner(at, region * wt * d.y, fine, folds, tol, &mut take)?;
-                        }
-                    }
-                }
-            }
+            _ => self.analytic(),
         }
-        // The corners close a volume; an area has nothing to close.
-        refining.set(false);
-        if measure == Measure::Volume && part == Part::All {
-            for (polygon, turn) in &self.corners {
-                // A fan of triangles from the first corner, each
-                // integrated on its unit square collapsed onto it.
-                let hub = polygon[0];
-                for k in 1..polygon.len() {
-                    let (a, b) = (polygon[k], polygon[(k + 1) % polygon.len()]);
-                    let n = (a - hub).cross(b - a) * *turn;
-                    for (x, wx) in rule(3, 0.0, 1.0) {
-                        for (y, wy) in rule(3, 0.0, 1.0) {
-                            take((hub + (a - hub) * x + (b - a) * (x * y), n * x, wx * wy));
-                        }
-                    }
-                }
-            }
-        }
-        refining.set(!analytic);
-        refines |= !analytic && !self.bridges.is_empty();
-        let bridges = if part == Part::All || !analytic {
-            &self.bridges[..]
-        } else {
-            &[]
-        };
-        for &(start, step, region) in bridges {
-            for (t, wt) in gauss_legendre_rule(0.0, 1.0) {
-                dipped |= self.inner(
-                    start + step * t,
-                    region * wt * step.y,
-                    fine,
-                    folds,
-                    tol,
-                    &mut take,
-                )?;
-            }
-        }
-        let [exact, refined] = proxies;
-        Ok(Run {
-            exact,
-            refined,
-            refines,
-            reach,
-            dipped,
-        })
     }
 
     /// The rulings of a piece's strip at `t`, its samples weighted by
@@ -1958,36 +2182,33 @@ impl ChartFace {
     }
 
     /// The inner integral from `u_ref` to the boundary point `at`, along
-    /// `u` at its `v`, its samples weighted by `outer`, and whether `|n|`
-    /// dipped across one of its panels where `folds` watches for it.
+    /// `u` at its `v`, on panels no wider than a quarter turn and cut at
+    /// the surface's knots, each halved `level` times. Each sample is handed
+    /// to `sink` with its weights under the ten-point Gauss rule (zero at
+    /// a node the Kronrod rule adds) and, where `kronrod` asks for them,
+    /// the twenty-one-point Kronrod rule. Where `grade` asks for it, a
+    /// panel across which `|n|` dips is graded towards the dip (see
+    /// [`fold_in`]), both rules then taken on the graded panels.
     fn inner(
         &self,
         at: Point2,
-        outer: f64,
-        fine: u32,
-        folds: Folds,
+        level: u32,
+        grade: bool,
+        kronrod: bool,
         tol: Tolerances,
-        sink: &mut dyn FnMut(Sample),
-    ) -> OgeomResult<bool> {
+        sink: &mut dyn FnMut(Point, Vector, f64, f64),
+    ) -> OgeomResult<()> {
         let at = into_domain(&self.surface, at);
         let (ua, ub) = (self.u_ref, at.x);
-        if ua == ub || outer == 0.0 {
-            return Ok(false);
+        if ua == ub {
+            return Ok(());
         }
-        // Along `u` at a fixed `v`, an analytic surface's point, `n dA` and
-        // its length are trigonometric polynomials in `u` (polynomials on a
-        // plane), which a quarter-turn panel takes to rounding: only the
-        // boundary's own panels are refined between runs there, and none
-        // is graded.
-        let analytic = self.analytic();
-        let refined = if analytic { 1 } else { fine };
-        let folds = if analytic { Folds::Ignore } else { folds };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let pieces = if matches!(self.surface, SurfaceGeometry::Plane(_)) {
             1
         } else {
             ((ub - ua).abs() / QUARTER).ceil().clamp(1.0, 64.0) as u32
-        } * refined;
+        } << level;
         let u_knots = &self.knot_lines.0;
         let (lo, hi) = (ua.min(ub), ua.max(ub));
         let mut cuts: Vec<f64> = (0..=pieces)
@@ -2000,82 +2221,69 @@ impl ChartFace {
         }
         cuts.dedup();
         let isoline = Isoline::of(&self.surface, at.y, tol);
-        let mut dipped = false;
-        let mut normals = [Vector::ZERO; 10];
+        let point = |u: f64| -> OgeomResult<(Point, Vector)> {
+            let (p, du, dv) = match isoline.as_ref().and_then(|line| line.at(u, tol)) {
+                Some(found) => found,
+                None => self.surface.point_d1_at(u, at.y, tol)?,
+            };
+            Ok((p, du.cross(dv) * self.sign))
+        };
+        // The Kronrod nodes of a panel whose Gauss nodes were taken.
+        let rest = |rule: &[(f64, f64, f64); 21],
+                    sink: &mut dyn FnMut(Point, Vector, f64, f64)|
+         -> OgeomResult<()> {
+            for &(u, wk, _) in &rule[10..] {
+                let (p, n) = point(u)?;
+                sink(p, n, 0.0, wk);
+            }
+            Ok(())
+        };
+        let mut found = [(Point::ORIGIN, Vector::ZERO); 10];
         for pair in cuts.windows(2) {
             let (a, b) = (pair[0], pair[1]);
-            if folds == Folds::Ignore {
-                for (u, wu) in gauss_legendre_rule(a, b) {
-                    let (p, du, dv) = match isoline.as_ref().and_then(|line| line.at(u, tol)) {
-                        Some(found) => found,
-                        None => self.surface.point_d1_at(u, at.y, tol)?,
-                    };
-                    sink((p, du.cross(dv) * self.sign, outer * wu));
-                }
-                continue;
-            }
-            let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
-            for ((u, wu), slot) in gauss_legendre_rule(a, b).into_iter().zip(&mut normals) {
-                let (p, du, dv) = match isoline.as_ref().and_then(|line| line.at(u, tol)) {
-                    Some(found) => found,
-                    None => self.surface.point_d1_at(u, at.y, tol)?,
-                };
-                let n = du.cross(dv) * self.sign;
-                let q = n.dot(n);
-                (least, most) = (least.min(q), most.max(q));
-                *slot = n;
-                sink((p, n, outer * wu));
+            let rule = gauss_kronrod_21_rule(a, b);
+            for (slot, &(u, _, _)) in found.iter_mut().zip(&rule[..10]) {
+                *slot = point(u)?;
             }
             // Near its bottom a dip of `|n|` runs up both sides in
             // proportion to the distance, so a dip anywhere on the panel,
             // or just past its end, brings some node below half the
             // largest; a panel whose nodes all stand above that has none.
-            if least < 0.25 * most {
-                dipped = true;
-                if folds == Folds::Grade {
-                    self.regrade(isoline.as_ref(), at.y, (a, b), &normals, outer, tol, sink)?;
+            let fold = if grade {
+                let (least, most) =
+                    found
+                        .iter()
+                        .fold((f64::INFINITY, 0.0_f64), |(l, m), (_, n)| {
+                            let q = n.dot(*n);
+                            (l.min(q), m.max(q))
+                        });
+                if least < 0.25 * most {
+                    fold_in(&found.map(|(_, n)| n))
+                } else {
+                    None
                 }
-            }
-        }
-        Ok(dipped)
-    }
-
-    /// An inner panel from `a` to `b` along `u` at `v`, whose samples
-    /// (with `n` at its nodes `normals`) were summed, graded towards where
-    /// `|n|` dips if it does (see [`fold_in`]): its samples are taken back,
-    /// each summed again with its weight negated, and the graded panels'
-    /// summed instead.
-    #[cold]
-    #[allow(clippy::too_many_arguments)]
-    fn regrade(
-        &self,
-        isoline: Option<&Isoline<'_>>,
-        v: f64,
-        (a, b): (f64, f64),
-        normals: &[Vector; 10],
-        outer: f64,
-        tol: Tolerances,
-        sink: &mut dyn FnMut(Sample),
-    ) -> OgeomResult<()> {
-        let Some((x, levels)) = fold_in(normals) else {
-            return Ok(());
-        };
-        let point = |u: f64| -> OgeomResult<(Point, Vector)> {
-            let (p, du, dv) = match isoline.and_then(|line| line.at(u, tol)) {
-                Some(found) => found,
-                None => self.surface.point_d1_at(u, v, tol)?,
+            } else {
+                None
             };
-            Ok((p, du.cross(dv) * self.sign))
-        };
-        for (u, wu) in gauss_legendre_rule(a, b) {
-            let (p, n) = point(u)?;
-            sink((p, n, -outer * wu));
-        }
-        let fold = f64::midpoint(a, b) + (b - a) * 0.5 * x;
-        for (from, to) in graded(a, fold, b, levels) {
-            for (u, wu) in gauss_legendre_rule(from, to) {
-                let (p, n) = point(u)?;
-                sink((p, n, outer * wu));
+            if let Some((x, levels)) = fold {
+                let fold = f64::midpoint(a, b) + (b - a) * 0.5 * x;
+                for (from, to) in graded(a, fold, b, levels) {
+                    let rule = gauss_kronrod_21_rule(from, to);
+                    for &(u, wk, wg) in &rule[..10] {
+                        let (p, n) = point(u)?;
+                        sink(p, n, wg, wk);
+                    }
+                    if kronrod {
+                        rest(&rule, sink)?;
+                    }
+                }
+                continue;
+            }
+            for (&(_, wk, wg), &(p, n)) in rule[..10].iter().zip(&found) {
+                sink(p, n, wg, wk);
+            }
+            if kronrod {
+                rest(&rule, sink)?;
             }
         }
         Ok(())
@@ -2320,17 +2528,6 @@ impl<'a> Isoline<'a> {
     }
 }
 
-/// Whether two runs agree, against the size of what they integrate.
-fn settled(a: Proxy, b: Proxy) -> bool {
-    let size: f64 = b.iter().map(|x| x.abs()).sum();
-    let miss = a
-        .iter()
-        .zip(&b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0, f64::max);
-    miss <= AGREE * size || size == 0.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2353,6 +2550,26 @@ mod tests {
                     "{n} points, degree {degree}: {sum} against {exact}"
                 );
             }
+        }
+    }
+
+    /// The strip's pair: its Gauss half is the three-point rule, the
+    /// Kronrod sum is exact to degree ten and the Gauss sum to five and no
+    /// further, on a panel with an end at the origin.
+    #[test]
+    fn the_strip_pair_is_exact_to_its_degrees() {
+        let (a, b) = (0.0, 2.0);
+        let pair = kronrod_7(a, b);
+        for (&(x, _, wg), (y, w)) in pair.iter().zip(rule(3, a, b)) {
+            assert_eq!((x, wg), (y, w));
+        }
+        for k in 0..=10 {
+            let exact = (b.powi(k + 1) - a.powi(k + 1)) / f64::from(k + 1);
+            let kronrod: f64 = pair.iter().map(|&(x, wk, _)| wk * x.powi(k)).sum();
+            let gauss: f64 = pair.iter().map(|&(x, _, wg)| wg * x.powi(k)).sum();
+            let miss = |sum: f64| ((sum - exact) / exact).abs();
+            assert!(miss(kronrod) < 1e-14, "Kronrod, degree {k}");
+            assert_eq!(miss(gauss) < 1e-14, k <= 5, "Gauss, degree {k}");
         }
     }
 

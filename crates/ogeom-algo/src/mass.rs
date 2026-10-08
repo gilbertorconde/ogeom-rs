@@ -725,6 +725,7 @@ fn exact_volume_properties(
                     }
                 }
             },
+            Moments::add,
         );
         if let (Ok(found), Some(kept), Some(key)) = (&found, kept, &keys[i]) {
             kept.keep_integral(key.clone(), found.clone());
@@ -806,6 +807,7 @@ fn exact_surface_properties(
                     }
                 }
             },
+            Moments::add,
         );
         match or_mesh(found, None)? {
             Some(sums) => total.add(&sums),
@@ -897,13 +899,16 @@ fn integrate_face<A: Clone>(
     tol: Tolerances,
     fresh: impl Fn() -> A,
     contribute: impl Fn(&mut A, Point, Vector, f64),
+    merge: impl Fn(&mut A, &A),
 ) -> OgeomResult<Option<A>> {
     let share = face.share();
     use ogeom_geom::Surface as _;
     const QUARTER: f64 = core::f64::consts::FRAC_PI_2;
     let mut sums = fresh();
     match face {
-        ExactFace::Chart(chart) => Ok(chart.integrate(measure, reference, tol, fresh, contribute)),
+        ExactFace::Chart(chart) => {
+            Ok(chart.integrate(measure, reference, tol, fresh, contribute, merge))
+        }
         ExactFace::ChartRectangle {
             surface,
             rect,
