@@ -141,6 +141,13 @@ it passes behind a contour. The benches cover mass properties, `check`,
 
 ### Fixed
 
+- **A solid with rounded edges and corner balls offsets and shells.**
+  `offset_shape` and `make_thick_solid` on a box with all edges filleted
+  refused the result as collapsed: a blend arc whose end fell on its
+  circle's start was rebuilt the long way round, and an offset corner
+  sphere lost its frame, putting its pole on a face corner. Blend arcs keep
+  their quarter turn and offset spheres keep their parameterisation.
+
 - **A refused revolution band leaves its rims untouched.** A band whose
   rims' vertices sit on different columns is refused, but its rims kept a
   pcurve on an unused copy of the surface; `repair_same_parameter` then

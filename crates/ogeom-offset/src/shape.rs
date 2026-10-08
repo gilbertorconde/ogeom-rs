@@ -744,8 +744,11 @@ pub(crate) fn rebuilt(
                     if grown <= tol.confusion() {
                         ogeom_bail!(Construction, "the offset consumes the sphere's radius");
                     }
-                    ogeom_geom::SphereSurface::new(ogeom_math::Sphere::centred(
-                        sphere.centre(),
+                    // Concentric in the same frame: the chart carries over,
+                    // so the face's seam and poles stay where its trim had
+                    // them rather than landing on its boundary.
+                    ogeom_geom::SphereSurface::new(ogeom_math::Sphere::new(
+                        sphere.frame(),
                         grown,
                         tol,
                     )?)
@@ -1390,8 +1393,27 @@ pub(crate) fn rebuilt(
                     }
                     // The ends run with the curve or against it; a run
                     // against builds on the reversed parameterization so
-                    // the edge still leaves `v_from` first.
-                    let (moved, ta, tb) = if ta <= tb {
+                    // the edge still leaves `v_from` first. On a periodic
+                    // section the order of the two parameters says nothing
+                    // (either arc joins them), so the old edge's direction
+                    // picks the run and the far end is taken one period on
+                    // where it falls behind the near one.
+                    let (moved, ta, tb) = if moved.is_periodic() {
+                        let along = moved.d1_at(ta, tol)?.dot(curve.d1_at(range.0, tol)?) >= 0.0;
+                        let (moved, ta, tb) = if along {
+                            (moved, ta, tb)
+                        } else {
+                            use ogeom_geom::Reversible as _;
+                            let (lo, hi) = moved.domain();
+                            (moved.reversed(), lo + hi - ta, lo + hi - tb)
+                        };
+                        let (lo, hi) = moved.domain();
+                        let tb = ta + (tb - ta).rem_euclid(hi - lo);
+                        if tb - ta <= tol.parametric() {
+                            ogeom_bail!(Construction, "the offset collapses an edge");
+                        }
+                        (moved, ta, tb)
+                    } else if ta <= tb {
                         (moved, ta, tb)
                     } else {
                         use ogeom_geom::Reversible as _;

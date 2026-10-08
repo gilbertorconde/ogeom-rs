@@ -520,3 +520,87 @@ fn an_offset_through_the_part_is_refused() {
         assert!(ogeom_offset::make_thick_solid(&mut model, &block, &[], depth, T).is_err());
     }
 }
+
+/// A 10 mm cube with all twelve edges rounded at radius 2: three quarter
+/// cylinders meet at each corner on a sphere octant, every blend edge an
+/// arc a quarter turn long.
+fn rounded_cube(model: &mut ogeom_topo::Model) -> ogeom_topo::Shape {
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = ogeom_topo::explore_unique(model, &block, ShapeType::Edge).unwrap();
+    ogeom_fillet::fillet_edges(model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape
+}
+
+/// The cube of side 6 swept by a ball of radius `r`: the 10 mm cube's
+/// rounded body moved by `r - 2`.
+fn rounded_cube_volume(r: f64) -> f64 {
+    let (s, pi) = (6.0, core::f64::consts::PI);
+    s * s * s + 6.0 * s * s * r + 3.0 * pi * s * r * r + 4.0 / 3.0 * pi * r * r * r
+}
+
+fn offset_rounded_cube(model: &mut ogeom_topo::Model, part: &ogeom_topo::Shape, d: f64) {
+    let result =
+        ogeom_offset::offset_shape(model, part, d, T).unwrap_or_else(|e| panic!("offset {d}: {e}"));
+    let diagnosis = ogeom_algo::check(model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "offset {d}: {:?}", diagnosis.problems);
+    let expected = rounded_cube_volume(2.0 + d);
+    let measured = volume(model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 1e-6 * expected,
+        "offset {d}: rounded cube volume {measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_rounded_cube_offsets_with_its_blend_arcs_a_quarter_turn() {
+    // Each blend arc's offset lies on a whole circle whose start falls on
+    // one of the arc's ends; the arc stays the quarter turn the old one
+    // ran, not the three quarters the other way round.
+    let mut model = ogeom_topo::Model::new();
+    let part = rounded_cube(&mut model);
+    for d in [-1.5, -1.0, -0.5, 0.2, 0.5, 1.0, 2.0] {
+        offset_rounded_cube(&mut model, &part, d);
+    }
+}
+
+fn shell_rounded_cube(model: &mut ogeom_topo::Model, part: &ogeom_topo::Shape, t: f64) {
+    // The top meets its four blends tangentially: the whole cube moves by
+    // the wall and the top's image is drilled back out, so the opening
+    // takes the 6 by 6 flat to the wall's depth.
+    let top = face_at(model, part, Point::new(5.0, 5.0, 10.0));
+    let result = ogeom_offset::make_thick_solid(model, part, std::slice::from_ref(&top), t, T)
+        .unwrap_or_else(|e| panic!("wall {t}: {e}"));
+    let diagnosis = ogeom_algo::check(model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "wall {t}: {:?}", diagnosis.problems);
+    let expected = (rounded_cube_volume(2.0) - rounded_cube_volume(2.0 - t)).abs() - 36.0 * t.abs();
+    let measured = volume(model, &result.shape);
+    assert!(
+        (measured - expected).abs() < 1e-6 * expected,
+        "wall {t}: shelled rounded cube volume {measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_rounded_cube_shells_open_at_its_top_either_way() {
+    // The moved corner balls keep their charts, so their poles stay off
+    // the corners and the drilling boolean reads them as the fillet built
+    // them.
+    let mut model = ogeom_topo::Model::new();
+    let part = rounded_cube(&mut model);
+    for t in [0.5, -0.5] {
+        shell_rounded_cube(&mut model, &part, t);
+    }
+}
+
+#[test]
+#[ignore = "heavy"]
+fn a_rounded_cube_shells_at_several_walls() {
+    let mut model = ogeom_topo::Model::new();
+    let part = rounded_cube(&mut model);
+    for t in [1.0, 1.5, -1.0, -2.0] {
+        shell_rounded_cube(&mut model, &part, t);
+    }
+}
