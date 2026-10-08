@@ -1811,9 +1811,13 @@ fn off_face(
 /// parameter and point, while the stretch stays short: a graze and not an
 /// edge running along the face. The honesty asked of the edge is held to
 /// the fit-slop bound [`honest`] keeps (a micron at millimetre
-/// tolerances), however loosely the sections state themselves, and the two
-/// crossings may stand at most a hundred times that apart. So the stub a
-/// junction takes in is at most 0.1 long at millimetre tolerances, and the
+/// tolerances), however loosely the sections state themselves. The two
+/// crossings may stand at most a hundred times that bound apart, whatever
+/// the sections state: how far apart a graze's crossings land is set by
+/// the gap and the curvature at the touch, not by how closely the
+/// sections were fitted, and a window read off their fit error would
+/// split a graze or not as a fit happens to land. So the stub a junction
+/// takes in is at most 0.1 long at millimetre tolerances, and the
 /// junction's reach never grows with a section's stated error.
 fn grazed(
     curve: &Curve,
@@ -1827,7 +1831,7 @@ fn grazed(
         return Ok(None);
     };
     let honesty = honest(first.honesty.max(second.honesty).max(floor), tol);
-    if face != other || from.distance(to) > honesty * 1e2 {
+    if face != other || from.distance(to) > honest(f64::INFINITY, tol) * 1e2 {
         return Ok(None);
     }
     let mut nearest: Option<(f64, f64, Point)> = None;
@@ -3933,10 +3937,29 @@ fn fill(
                     let mut all_near = true;
                     let mut votes: Vec<usize> = vec![0; own.edges.len()];
                     let mut contact_votes: Vec<usize> = vec![0; contacts.len()];
-                    for i in 0..=4 {
-                        let t = lo + (hi - lo) * f64::from(i) / 4.0;
-                        let tf = if section.closed { fold(t, domain) } else { t };
-                        let at = section.curve.point_at(tf, tol)?;
+                    let samples = (0..=4)
+                        .map(|i| {
+                            let t = lo + (hi - lo) * f64::from(i) / 4.0;
+                            let tf = if section.closed { fold(t, domain) } else { t };
+                            section.curve.point_at(tf, tol)
+                        })
+                        .collect::<OgeomResult<Vec<Point>>>()?;
+                    // A piece shorter than the width is within it of every
+                    // edge through either of its ends: a stub between two
+                    // crossings near a corner, leaving one edge along the
+                    // other, reads as running along both. Along an edge
+                    // such a piece keeps within a quarter of its own
+                    // length of it (it leans off it by less than fifteen
+                    // degrees), and the width is held to that.
+                    let stub: f64 = samples.windows(2).map(|w| w[0].distance(w[1])).sum();
+                    let held_to = |width: f64, own: f64| -> f64 {
+                        if stub < width {
+                            (stub * 0.25).max(own).max(tol.confusion() * 10.0)
+                        } else {
+                            width
+                        }
+                    };
+                    for (i, &at) in samples.iter().enumerate() {
                         // Wider than the crossing filters on purpose for a
                         // fitted section: a tangentially-traced curve wobbles
                         // about the boundary it hugs by far more than a fit
@@ -3954,7 +3977,8 @@ fn fill(
                         };
                         let mut near = false;
                         for (ei, e) in own.edges.iter().enumerate() {
-                            let width = reach.max(floor).max(e.tolerance * 2.0);
+                            let width =
+                                held_to(reach.max(floor).max(e.tolerance * 2.0), e.tolerance * 2.0);
                             // The edge's box holds its curve: a point outside
                             // the box grown by the width is not near it.
                             if !e.bound.expanded(width).contains(at) {
@@ -3991,7 +4015,7 @@ fn fill(
                                 continue;
                             }
                             if distance_to_edge_curve(&c.curve, c.crange, at, tol)?
-                                <= width.max(c.tolerance * 2.0)
+                                <= held_to(width.max(c.tolerance * 2.0), c.tolerance * 2.0)
                             {
                                 near = true;
                                 contact_votes[ci] += 1;
@@ -11525,6 +11549,44 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    /// An edge passing under a drill of radius 23.6 at right angles,
+    /// tangent to it a few microns off at the middle of the edge, is
+    /// crossed by the sections on the drill either side of the touch
+    /// 0.03 apart: the stretch between stays within five microns of the
+    /// drill. The two crossings are one junction at the touch, whether the
+    /// sections state a fit error of a micron's quarter or of a micron.
+    #[test]
+    fn a_graze_s_crossings_are_one_junction_however_tightly_fitted() {
+        let radius = 23.6;
+        let curve = Curve::Line(
+            ogeom_geom::LineCurve::segment(
+                Point::new(-10.0, 0.0, 0.0),
+                Point::new(10.0, 0.0, 0.0),
+                T,
+            )
+            .unwrap(),
+        );
+        let crange = ogeom_geom::Curve3d::domain(&curve);
+        let off_drill = |_: (bool, usize), p: Point| -> OgeomResult<f64> {
+            Ok(p.x.hypot(p.z - radius) - radius + 4.6e-6)
+        };
+        let half = 0.0148;
+        for honesty in [2.6e-4, 1e-3] {
+            let paves: Vec<Pave> = [-half, half]
+                .into_iter()
+                .map(|x| Pave {
+                    t: x + 10.0,
+                    honesty,
+                    across: Some((false, 0)),
+                })
+                .collect();
+            let clusters =
+                cluster_paves(&curve, crange, 1e-7, &paves, Some(&off_drill), T).unwrap();
+            assert_eq!(clusters.len(), 1, "honesty {honesty}: {clusters:?}");
+            assert!(clusters[0].at.x.abs() < half, "{clusters:?}");
+        }
+    }
 
     /// A circle's count from its sag in closed form stands its chords within
     /// the strand sag, short of the cap both counts share, and never above

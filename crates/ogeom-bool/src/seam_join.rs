@@ -34,6 +34,21 @@ const CHART_GAP: f64 = 1e-6;
 /// in. A face reaching nearer than this all the way round stays split.
 const LEAST_GAP: f64 = 1e-2;
 
+/// `v` held to the rows a surface has where they end.
+///
+/// A fitted image of an edge along a bounded surface's last row runs past
+/// it by the fit's own slop, a fraction of a micron, and is asked there
+/// at the row it ends on. The turn about the axis moves no row, so a
+/// surface and its turned copy are held alike.
+fn on_rows(surface: &SurfaceGeometry, v: f64) -> f64 {
+    let (_, (low, high)) = surface.domain();
+    if surface.is_periodic_v() || low > high {
+        v
+    } else {
+        v.clamp(low, high)
+    }
+}
+
 /// Join, in each shell, the faces that meet across their surface's seam.
 ///
 /// Two faces are joined when they lie on one surface of revolution (a
@@ -355,8 +370,8 @@ fn join_group(
             let (was, now) = (pcurve.point_at(t, tol)?, shifted.point_at(t, tol)?);
             if !(-1e-9..=period + 1e-9).contains(&now.x)
                 || surface
-                    .point_at(was.x, was.y, tol)?
-                    .distance(turned.point_at(now.x, now.y, tol)?)
+                    .point_at(was.x, on_rows(&surface, was.y), tol)?
+                    .distance(turned.point_at(now.x, on_rows(&turned, now.y), tol)?)
                     > tol.confusion()
             {
                 return Ok(None);

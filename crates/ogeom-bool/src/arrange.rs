@@ -110,7 +110,11 @@ pub(crate) fn assemble<'s, T: Clone>(
     snap: f64,
     lone: &'s [Lone<T>],
 ) -> OgeomResult<Vec<Piece<'s, T>>> {
-    let walk = walk(strands, snap)?;
+    let lone_lines: Vec<&[Point2]> = lone
+        .iter()
+        .flat_map(|ring| ring.lines.iter().map(Vec::as_slice))
+        .collect();
+    let walk = walk(strands, snap, &lone_lines)?;
     let Walk {
         live,
         from,
@@ -319,12 +323,17 @@ struct Walk<'s, T> {
     cycles: Vec<Vec<usize>>,
 }
 
-/// Walk `strands` into cycles.
+/// Walk `strands` into cycles, `holes` the polylines of the face's hole
+/// rings walked apart from them, which bound its material too.
 ///
 /// # Errors
 ///
 /// As [`assemble`].
-fn walk<T>(strands: &[Strand<T>], snap: f64) -> OgeomResult<Walk<'_, T>> {
+fn walk<'s, T>(
+    strands: &'s [Strand<T>],
+    snap: f64,
+    holes: &[&[Point2]],
+) -> OgeomResult<Walk<'s, T>> {
     let (mut from, mut live): (Vec<usize>, Vec<&Strand<T>>) = strands
         .iter()
         .enumerate()
@@ -567,9 +576,86 @@ fn walk<T>(strands: &[Strand<T>], snap: f64) -> OgeomResult<Walk<'_, T>> {
         point(d, count - 1)
     };
     // Each dart's angle once, not once per comparison.
-    let heading: Vec<f64> = (0..dart_count)
+    let mut heading: Vec<f64> = (0..dart_count)
         .map(|d| angle(nodes[tail(d)], leaving(d)))
         .collect();
+    // A section lies in its face, so round a node of the boundary it
+    // leaves into the face's material, between the boundary darts that
+    // bound it there. Where a section sets out along a boundary strand
+    // (it ran along that edge up to the node, and turns in from it), the
+    // two stand apart by less than either polyline's chords miss their
+    // curves, and read at the circle the section may stand a hair outside
+    // the face. It is put back inside, as far from that boundary dart as
+    // it read outside it.
+    let material: Vec<&[Point2]> = strands
+        .iter()
+        .filter(|s| s.boundary && s.polyline.len() >= 2)
+        .map(|s| s.polyline.as_slice())
+        .chain(holes.iter().copied())
+        .collect();
+    let material = Boxed::new(material);
+    for (n, ring) in around.iter().enumerate() {
+        let mut bounding: Vec<usize> = ring
+            .iter()
+            .copied()
+            .filter(|&d| live[d / 2].boundary)
+            .collect();
+        if bounding.len() < 2 || bounding.len() == ring.len() {
+            continue;
+        }
+        bounding.sort_by(|&x, &y| heading[x].total_cmp(&heading[y]));
+        let turn = |from: f64, to: f64| (to - from).rem_euclid(core::f64::consts::TAU);
+        // Each sector from one boundary dart counter-clockwise to the next,
+        // and whether the face's material fills it, asked on its bisector.
+        let sectors: Vec<(f64, f64, bool)> = (0..bounding.len())
+            .map(|i| {
+                let (from, to) = (
+                    heading[bounding[i]],
+                    heading[bounding[(i + 1) % bounding.len()]],
+                );
+                let width = turn(from, to);
+                let middle = width.mul_add(0.5, from);
+                let at = nodes[n];
+                let probe = Point2::new(
+                    radius[n].mul_add(middle.cos(), at.x),
+                    radius[n].mul_add(middle.sin(), at.y),
+                );
+                (from, width, material.inside(probe))
+            })
+            .collect();
+        for &d in ring {
+            if live[d / 2].boundary {
+                continue;
+            }
+            let Some(i) = sectors
+                .iter()
+                .position(|&(from, width, _)| turn(from, heading[d]) < width)
+            else {
+                continue;
+            };
+            let (from, width, filled) = sectors[i];
+            if filled {
+                continue;
+            }
+            let past = turn(from, heading[d]);
+            let short = width - past;
+            let (before, after) = (
+                sectors[(i + sectors.len() - 1) % sectors.len()],
+                sectors[(i + 1) % sectors.len()],
+            );
+            let put = if past <= short {
+                (past < before.1 * 0.5 && before.2).then_some(from - past)
+            } else {
+                (short < after.1 * 0.5 && after.2).then_some(after.0 + short)
+            };
+            // A hair, not a section leaving outright the wrong way.
+            if let Some(put) = put
+                && past.min(short) <= core::f64::consts::FRAC_PI_8
+            {
+                heading[d] = put.sin().atan2(put.cos());
+            }
+        }
+    }
     for ring in &mut around {
         ring.sort_by(|&x, &y| {
             heading[x]
@@ -657,7 +743,7 @@ pub(crate) fn lone_ring<T: Clone>(
     places: &[usize],
     snap: f64,
 ) -> Option<Lone<T>> {
-    let walk = walk(strands, snap).ok()?;
+    let walk = walk(strands, snap, &[]).ok()?;
     if walk.live.len() != strands.len() || walk.cycles.len() != 2 {
         return None;
     }
@@ -1540,6 +1626,41 @@ mod tests {
         ];
         let pieces = assemble(&strands, 1e-3).unwrap();
         assert_eq!(pieces.len(), 2);
+    }
+
+    /// A section running along the boundary out of a node, a tenth of a
+    /// micron outside it for a tenth of the side, as a curve that runs
+    /// along an edge up to the node and turns in from it reads against the
+    /// edge's coarser polyline. It stands outside wherever the circle about
+    /// the node is drawn, yet a section lies in its face: it is taken to
+    /// leave into the material, and the face splits in two, the pieces
+    /// making up the square.
+    #[test]
+    fn a_section_reading_outside_along_the_boundary_splits_the_face() {
+        let p = Point2::new;
+        let boundary = |a: Point2, b: Point2, tag: usize| Strand {
+            polyline: vec![a, b],
+            tag,
+            boundary: true,
+        };
+        let strands = vec![
+            boundary(p(0.0, 0.0), p(0.5, 0.0), 0),
+            boundary(p(0.5, 0.0), p(1.0, 0.0), 1),
+            boundary(p(1.0, 0.0), p(1.0, 1.0), 2),
+            boundary(p(1.0, 1.0), p(0.5, 1.0), 3),
+            boundary(p(0.5, 1.0), p(0.0, 1.0), 4),
+            boundary(p(0.0, 1.0), p(0.0, 0.0), 5),
+            Strand {
+                polyline: vec![p(0.5, 0.0), p(0.6, -1e-7), p(0.8, 0.5), p(0.5, 1.0)],
+                tag: 6,
+                boundary: false,
+            },
+        ];
+        let pieces = assemble(&strands, 1e-6).unwrap();
+        let areas: Vec<f64> = pieces.iter().map(|q| area(&q.outlines[0]).abs()).collect();
+        assert_eq!(pieces.len(), 2, "{areas:?}");
+        let whole: f64 = areas.iter().sum();
+        assert!((whole - 1.0).abs() < 1e-6, "{areas:?}");
     }
 
     /// A parallelogram whose left and right corners stand level at height

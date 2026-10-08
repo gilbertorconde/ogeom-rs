@@ -33,6 +33,16 @@ bump may break the API and a patch bump may not.
   corner hole into a 582-face plate costs about 1.5 times the same hole
   into a 22-face plate, down from 2.1 to 2.5 times.
 
+### Fixed
+
+- **A boolean's shell closure no longer rides on the sections' fit
+  error.** Two crossings either side of a graze count as one junction
+  within a fixed reach, a section reading just outside its face along the
+  boundary at a node is ordered inside it, a short stub runs along an edge
+  only if it stays close to it for its length, and a seam join clamps its
+  height to the surface's range. Sections fitted more tightly no longer
+  flip a drill's shell from closed to refused.
+
 ## [0.9.12] - 2026-10-08
 
 A patch release: no breaking API changes. Fixes: a solid with rounded edges
