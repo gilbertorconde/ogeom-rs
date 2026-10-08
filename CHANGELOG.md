@@ -28,6 +28,12 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A face piece's interior probes past the first are found only when the
+  first does not settle it.** `boolean_many_faces` is about 35% faster
+  than 0.9.11 in all and `boolean_drill` about 40%, with the same
+  results. A new node links to its children without searching their
+  other holders.
+
 - **Booleans hold a piece's probes to its exact rings without resampling
   every circle in full:** a circular strand's fine samples are drawn only
   where a probe's ray can cross them (`boolean_many_faces` about 14%

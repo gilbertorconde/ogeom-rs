@@ -39,8 +39,7 @@ pub(crate) struct Traversal<T> {
 }
 
 /// One piece of a split face.
-#[derive(Debug, Clone)]
-pub(crate) struct Piece<T> {
+pub(crate) struct Piece<'s, T> {
     /// The boundary as directed strand traversals: ring `[0]` is the outer
     /// contour, counter-clockwise in parameter space. Further rings are
     /// holes, clockwise.
@@ -52,13 +51,43 @@ pub(crate) struct Piece<T> {
     /// surface is a containment question, and containment is asked of an
     /// outline.
     pub outlines: Vec<Vec<Point2>>,
+    /// The roomiest point strictly inside the piece: the first of
+    /// [`Piece::interiors`].
+    pub first: Point2,
+    /// The scanlines the rest of the interior points are sought along, and
+    /// the material they are held to, until they are asked for.
+    probes: Probes<'s>,
+}
+
+/// What finds a piece's interior points, and the points once found.
+struct Probes<'s> {
+    scanlines: Scanlines,
+    material: std::rc::Rc<Boxed<'s>>,
+    snap: f64,
+    found: Option<Vec<Point2>>,
+}
+
+impl<T> Piece<'_, T> {
     /// Points strictly inside the piece, best first.
     ///
     /// More than one, because a single probe can be unlucky: a piece that
     /// merely *touches* the other solid has a probe on that contact reading
     /// neither in nor out, and the way past it is to ask somewhere else in
-    /// the same piece.
-    pub interiors: Vec<Point2>,
+    /// the same piece. Found when first asked for: most pieces are settled
+    /// by [`Piece::first`] alone.
+    pub(crate) fn interiors(&mut self) -> &[Point2] {
+        let probes = &mut self.probes;
+        probes.found.get_or_insert_with(|| {
+            // Only probes inside the material this arrangement bounds are
+            // of any use to a caller asking "where does this piece stand".
+            probes
+                .scanlines
+                .points(probes.snap)
+                .into_iter()
+                .filter(|p| probes.material.inside(*p))
+                .collect()
+        })
+    }
 }
 
 /// Assemble pre-split strands into the pieces they bound.
@@ -75,12 +104,12 @@ pub(crate) struct Piece<T> {
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a boundary
 /// strand dangles, or the graph yields no piece at all.
-pub(crate) fn assemble<T: Clone>(
-    strands: &[Strand<T>],
+pub(crate) fn assemble<'s, T: Clone>(
+    strands: &'s [Strand<T>],
     places: &[usize],
     snap: f64,
-    lone: &[Lone<T>],
-) -> OgeomResult<Vec<Piece<T>>> {
+    lone: &'s [Lone<T>],
+) -> OgeomResult<Vec<Piece<'s, T>>> {
     let walk = walk(strands, snap)?;
     let Walk {
         live,
@@ -118,7 +147,7 @@ pub(crate) fn assemble<T: Clone>(
 
     // The boundary strands' polylines, for the material test, each with
     // its box: a face with hundreds of holes asks it of every hole's disc.
-    let material: Vec<&[Point2]> = live
+    let material: Vec<&'s [Point2]> = live
         .iter()
         .filter(|s| s.boundary)
         .map(|s| s.polyline.as_slice())
@@ -127,7 +156,7 @@ pub(crate) fn assemble<T: Clone>(
                 .flat_map(|ring| ring.lines.iter().map(Vec::as_slice)),
         )
         .collect();
-    let material = Boxed::new(&material);
+    let material = std::rc::Rc::new(Boxed::new(material));
 
     // The nodes each cycle passes through: a hole that shares one with a
     // positive cycle is the same component, not a hole in it. Asked of the
@@ -252,17 +281,16 @@ pub(crate) fn assemble<T: Clone>(
         if !material.inside(interior) {
             continue;
         }
-        let interiors = scanlines.points(snap);
-        // Only probes inside the material this arrangement bounds are of
-        // any use to a caller asking "where does this piece stand".
-        let interiors: Vec<Point2> = interiors
-            .into_iter()
-            .filter(|p| material.inside(*p))
-            .collect();
         pieces.push(Piece {
             rings,
             outlines: rings_outline,
-            interiors,
+            first: interior,
+            probes: Probes {
+                scanlines,
+                material: std::rc::Rc::clone(&material),
+                snap,
+                found: None,
+            },
         });
     }
     if pieces.is_empty() {
@@ -941,13 +969,13 @@ impl BoxGrid {
 
 /// Polylines with their boxes, for asking [`inside_many`] of many points.
 struct Boxed<'a> {
-    lines: &'a [&'a [Point2]],
+    lines: Vec<&'a [Point2]>,
     /// `(low x, high x, low y, high y)` of each line.
     boxes: Vec<(f64, f64, f64, f64)>,
 }
 
 impl<'a> Boxed<'a> {
-    fn new(lines: &'a [&'a [Point2]]) -> Self {
+    fn new(lines: Vec<&'a [Point2]>) -> Self {
         let boxes = lines
             .iter()
             .map(|line| {
@@ -1390,7 +1418,7 @@ mod tests {
     use super::*;
 
     /// Every strand walked together, in its own place.
-    fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResult<Vec<Piece<T>>> {
+    fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResult<Vec<Piece<'_, T>>> {
         let places: Vec<usize> = (0..strands.len()).collect();
         super::assemble(strands, &places, snap, &[])
     }
@@ -1449,7 +1477,8 @@ mod tests {
 
     #[test]
     fn an_uncut_face_is_one_piece_with_its_tags_in_order() {
-        let pieces = assemble(&square(2.0), 1e-7).unwrap();
+        let square = square(2.0);
+        let pieces = assemble(&square, 1e-7).unwrap();
         assert_eq!(pieces.len(), 1);
         assert_eq!(pieces[0].rings.len(), 1);
         assert_eq!(pieces[0].rings[0].len(), 4);
@@ -1463,16 +1492,17 @@ mod tests {
         // meet every probe at once, and the classifier (which asks again
         // precisely because the first answer was "on the boundary") would
         // have nowhere else to ask.
-        let pieces = assemble(&square(2.0), 1e-7).unwrap();
+        let square = square(2.0);
+        let mut pieces = assemble(&square, 1e-7).unwrap();
         assert_eq!(pieces.len(), 1);
 
-        let columns = pieces[0].interiors.iter().map(|p| p.x);
+        let interiors = pieces[0].interiors().to_vec();
+        let columns = interiors.iter().map(|p| p.x);
         let spread = columns.clone().fold(f64::NEG_INFINITY, f64::max)
             - columns.fold(f64::INFINITY, f64::min);
         assert!(
             spread > 1e-6,
-            "every probe stands in the same column: {:?}",
-            pieces[0].interiors
+            "every probe stands in the same column: {interiors:?}"
         );
     }
 

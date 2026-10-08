@@ -306,11 +306,16 @@ classification instead of probing for it. No case needs it for correctness.
 are set aside (`ogeom-bool/src/aside.rs`): not gathered, split, classified or
 rebuilt, and passed through as the same nodes; a plane's holes clear of the
 other solid are left out of its arrangement and put back into the piece
-holding them. A corner hole into a plate of 582 faces costs 1.5 to 2 times
-the same hole into one of 22 (heavy test `local_boolean`). Still linear in
-the solid: reading every face's edges once for tolerances and adjacency, the
-classifier's face boxes, and the history and shell of the faces passed
-through. Where the assembly around the faces set aside does not close (the
+holding them. A corner hole into a plate of 582 faces costs 2 to 2.5 times
+the same hole into one of 22 (heavy test `local_boolean`, bound 2.5). Still
+linear in the solid: reading every face's edges once for tolerances and
+adjacency, the classifier's face boxes, and the history and shell of the
+faces passed through. Measured over the 22-face plate at one thread, the
+582-face plate pays 0.39 ms in `read_solid`, 0.13 ms preparing
+`SolidBoundary`, 0.12 ms in `side` and 0.09 ms copying history, each a
+memory-bound walk of nodes. The lever left for a large solid's fixed cost
+is keeping what `read_solid` and `SolidBoundary` read per solid, cleared
+when the solid changes, as the kept face boxes are. Where the assembly around the faces set aside does not close (the
 sew welds a shared vertex, a seam join reaches a shared edge, a strand would
 widen a shared vertex), the boolean runs again over every face; converted
 slabs with tolerant vertices take that path.

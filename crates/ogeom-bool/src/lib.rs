@@ -5244,13 +5244,12 @@ enum FinePart<'a> {
 /// first needs it.
 struct FineArc<'a> {
     curve: &'a PlanarCurve,
-    /// The circle's radius and the magnitude of its centre's coordinates.
-    radius: f64,
-    centre: f64,
+    circle: ogeom_math::Circle2,
     from: f64,
     to: f64,
     wrap: Option<(f64, f64)>,
     reversed: bool,
+    /// The samples drawn so far; empty until the first is.
     drawn: core::cell::RefCell<Vec<Option<Point2>>>,
 }
 
@@ -5264,15 +5263,26 @@ impl FineArc<'_> {
 
     /// Sample `i`. A circle is drawn at any parameter.
     fn point(&self, i: usize, tol: Tolerances) -> Point2 {
-        if let Some(p) = self.drawn.borrow()[i] {
-            return p;
+        if let Some(Some(p)) = self.drawn.borrow().get(i) {
+            return *p;
         }
         let p = self
             .curve
             .point_at(self.parameter(i), tol)
             .unwrap_or(Point2::new(f64::NAN, f64::NAN));
-        self.drawn.borrow_mut()[i] = Some(p);
+        let mut drawn = self.drawn.borrow_mut();
+        if drawn.is_empty() {
+            drawn.resize(FINE + 1, None);
+        }
+        drawn[i] = Some(p);
         p
+    }
+
+    /// How far the circle's coordinates stand from its centre's, over and
+    /// above its rounding.
+    fn slack(&self) -> f64 {
+        let centre = self.circle.centre();
+        1e-9 * (1.0 + self.circle.radius() + centre.x.abs() + centre.y.abs())
     }
 
     /// Whether a horizontal ray from `p` may cross a chord between samples
@@ -5290,12 +5300,24 @@ impl FineArc<'_> {
             .wrap
             .is_none_or(|(a, b)| ((t1 - t0) - step).abs() <= 0.5 * (b - a).abs());
         let start = self.point(lo, tol);
-        let slack = 1e-9 * (1.0 + self.radius + self.centre);
-        let reach = self.radius * (t1 - t0).abs() + slack;
+        let reach = self.circle.radius() * (t1 - t0).abs() + self.slack();
         if !(unfolded && reach.is_finite() && start.y.is_finite() && p.y.is_finite()) {
             return true;
         }
         start.y - reach <= p.y && start.y + reach >= p.y
+    }
+
+    /// The greatest x and the least and greatest y any sample may have,
+    /// none drawn: a sample is the centre moved along each axis by the
+    /// radius times a cosine or a sine.
+    fn extent(&self) -> (f64, f64, f64) {
+        let frame = self.circle.frame();
+        let (x, y) = (frame.x().vector(), frame.y().vector());
+        let r = self.circle.radius();
+        let centre = self.circle.centre();
+        let across = r * (x.x.abs() + y.x.abs()) + self.slack();
+        let up = r * (x.y.abs() + y.y.abs()) + self.slack();
+        (centre.x + across, centre.y - up, centre.y + up)
     }
 }
 
@@ -5322,36 +5344,16 @@ impl<'a> FineRings<'a> {
                 continue;
             }
             for traversal in ring {
-                let (curve, a, b, wrap) = match traversal.tag {
-                    Tag::Boundary { edge, range } => {
-                        let e = face.edges.get(edge)?;
-                        (
-                            &e.pcurve,
-                            rescale(range.0, e.crange, e.prange),
-                            rescale(range.1, e.crange, e.prange),
-                            None,
-                        )
-                    }
-                    Tag::Section { section, range } => {
-                        let record = sections.get(section)?;
-                        let pcurve = if from_a { &record.pc_a } else { &record.pc_b };
-                        let wrap = record.closed.then(|| record.curve.domain());
-                        (pcurve, range.0, range.1, wrap)
-                    }
-                    Tag::Contact { .. } | Tag::Pole { .. } => return None,
-                };
+                let (curve, a, b, wrap) = fine_strand(face, sections, from_a, &traversal.tag)?;
                 if let PlanarCurve::Circle(circle) = curve {
-                    let circle = circle.circle();
-                    let centre = circle.centre();
                     line.push(FinePart::Arc(FineArc {
                         curve,
-                        radius: circle.radius(),
-                        centre: centre.x.abs() + centre.y.abs(),
+                        circle: circle.circle(),
                         from: a,
                         to: b,
                         wrap,
                         reversed: traversal.reversed,
-                        drawn: core::cell::RefCell::new(vec![None; FINE + 1]),
+                        drawn: core::cell::RefCell::new(Vec::new()),
                     }));
                     continue;
                 }
@@ -5378,9 +5380,17 @@ impl<'a> FineRings<'a> {
     }
 
     /// Even-odd containment of `p` in the rings, counted as
-    /// [`inside_rings`] counts it over the rings drawn in full: whether a
-    /// ray crosses a chord does not depend on the way the chord runs.
+    /// [`inside_rings`] counts it over the rings drawn in full.
     fn inside(&self, p: Point2) -> bool {
+        self.rings
+            .iter()
+            .fold(false, |acc, ring| acc != self.ring_inside(ring, p))
+    }
+
+    /// Whether a ray from `p` crosses `ring` an odd number of times: each
+    /// strand's chords, the joins between strands, and the closing join,
+    /// whether a ray crosses a chord not depending on the way it runs.
+    fn ring_inside(&self, ring: &[FinePart<'_>], p: Point2) -> bool {
         let tol = self.tol;
         let mut inside = false;
         let mut flip = |a: Point2, b: Point2| {
@@ -5388,43 +5398,88 @@ impl<'a> FineRings<'a> {
                 inside = !inside;
             }
         };
-        for ring in &self.rings {
-            let mut first: Option<Point2> = None;
-            let mut last: Option<Point2> = None;
-            for part in ring {
-                let (head, tail) = match part {
-                    FinePart::Points(points) => {
-                        for w in points.windows(2) {
-                            flip(w[0], w[1]);
-                        }
-                        (points[0], points[points.len() - 1])
+        let mut first: Option<Point2> = None;
+        let mut last: Option<Point2> = None;
+        for part in ring {
+            let (head, tail) = match part {
+                FinePart::Points(points) => {
+                    for w in points.windows(2) {
+                        flip(w[0], w[1]);
                     }
-                    FinePart::Arc(arc) => {
-                        let mut lo = 0;
-                        while lo < FINE {
-                            let hi = (lo + FINE_BLOCK).min(FINE);
-                            if arc.may_cross(lo, hi, p, tol) {
-                                for i in lo..hi {
-                                    flip(arc.point(i, tol), arc.point(i + 1, tol));
-                                }
-                            }
-                            lo = hi;
-                        }
-                        let ends = (arc.point(0, tol), arc.point(FINE, tol));
-                        if arc.reversed { (ends.1, ends.0) } else { ends }
-                    }
-                };
-                if let Some(at) = last {
-                    flip(at, head);
+                    (points[0], points[points.len() - 1])
                 }
-                first.get_or_insert(head);
-                last = Some(tail);
+                FinePart::Arc(arc) => {
+                    let mut lo = 0;
+                    while lo < FINE {
+                        let hi = (lo + FINE_BLOCK).min(FINE);
+                        if arc.may_cross(lo, hi, p, tol) {
+                            for i in lo..hi {
+                                flip(arc.point(i, tol), arc.point(i + 1, tol));
+                            }
+                        }
+                        lo = hi;
+                    }
+                    let ends = (arc.point(0, tol), arc.point(FINE, tol));
+                    if arc.reversed { (ends.1, ends.0) } else { ends }
+                }
+            };
+            if let Some(at) = last {
+                flip(at, head);
             }
-            if let (Some(first), Some(last)) = (first, last) {
-                flip(last, first);
-            }
+            first.get_or_insert(head);
+            last = Some(tail);
+        }
+        if let (Some(first), Some(last)) = (first, last) {
+            flip(last, first);
         }
         inside
+    }
+
+    /// Whether a ray from `p` cannot reach `ring`: every sample of it lies
+    /// below or above `p`, or to its left, so no chord of it straddles the
+    /// ray where the ray runs.
+    fn out_of_reach(ring: &[FinePart<'_>], p: Point2) -> bool {
+        let (mut right, mut low, mut high) = (f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        let mut reach = |x: f64, y: f64| {
+            right = right.max(x);
+            low = low.min(y);
+            high = high.max(y);
+            x.is_finite() && y.is_finite()
+        };
+        for part in ring {
+            let finite = match part {
+                FinePart::Points(points) => points.iter().all(|q| reach(q.x, q.y)),
+                FinePart::Arc(arc) => {
+                    let (x, lo, hi) = arc.extent();
+                    arc.from.is_finite() && arc.to.is_finite() && reach(x, lo) && reach(x, hi)
+                }
+            };
+            if !finite {
+                return false;
+            }
+        }
+        ring.is_empty() || p.y < low || p.y > high || p.x > right
+    }
+
+    /// [`FineRings::inside`] for `p` over the rings `reached` marks and any
+    /// others it could be asked over, where those others cannot change the
+    /// answer: `None` where a ring `reached` leaves out is crossed by the
+    /// ray an odd number of times, so the answer depends on whether it is
+    /// counted.
+    fn inside_beside(&self, p: Point2, reached: &[bool]) -> Option<bool> {
+        let mut inside = false;
+        for (k, ring) in self.rings.iter().enumerate() {
+            let counted = reached.get(k).copied().unwrap_or(true);
+            if !counted && Self::out_of_reach(ring, p) {
+                continue;
+            }
+            let crossed = self.ring_inside(ring, p);
+            if !counted && crossed {
+                return None;
+            }
+            inside ^= crossed;
+        }
+        Some(inside)
     }
 
     /// Every ring's samples, drawn in full, in the ring's direction.
@@ -5449,6 +5504,39 @@ impl<'a> FineRings<'a> {
             })
             .collect()
     }
+}
+
+/// A pcurve, the range of it a strand covers, and the domain the range
+/// folds into where it does.
+type FineStrand<'a> = (&'a PlanarCurve, f64, f64, Option<(f64, f64)>);
+
+/// The pcurve a strand of a planar piece is resampled along, its range,
+/// and the domain a closed section's parameters fold into. `None` for a
+/// contact or a pole, or a tag naming nothing.
+fn fine_strand<'a>(
+    face: &'a GFace,
+    sections: &'a [SectionRec],
+    from_a: bool,
+    tag: &Tag,
+) -> Option<FineStrand<'a>> {
+    Some(match *tag {
+        Tag::Boundary { edge, range } => {
+            let e = face.edges.get(edge)?;
+            (
+                &e.pcurve,
+                rescale(range.0, e.crange, e.prange),
+                rescale(range.1, e.crange, e.prange),
+                None,
+            )
+        }
+        Tag::Section { section, range } => {
+            let record = sections.get(section)?;
+            let pcurve = if from_a { &record.pc_a } else { &record.pc_b };
+            let wrap = record.closed.then(|| record.curve.domain());
+            (pcurve, range.0, range.1, wrap)
+        }
+        Tag::Contact { .. } | Tag::Pole { .. } => return None,
+    })
 }
 
 /// Which of a piece's rings a horizontal ray from any of `probes` may
@@ -7973,15 +8061,9 @@ fn general_fuse_as(
                     return Err(err);
                 }
             };
-            for piece in split {
+            for mut piece in split {
                 let Some(boundary) = boundary else {
-                    let probe = match piece.interiors.first() {
-                        Some(at) => face.surface.point_at(at.x, at.y, tol)?,
-                        None => ogeom_bail!(
-                            Construction,
-                            "a piece of a face has no interior point to stand for it"
-                        ),
-                    };
+                    let probe = face.surface.point_at(piece.first.x, piece.first.y, tol)?;
                     pieces.push(FacePiece {
                         from_a,
                         face: fi,
@@ -8016,26 +8098,9 @@ fn general_fuse_as(
                 let partners = if from_a { &same_a[fi] } else { &same_b[fi] };
                 let mut chosen = None;
                 let mut unread = None;
-                // A planar piece's probes are held to its exact rings, and
-                // where none of them is inside those, the rings offer their
-                // own: a sliver narrower than the outline's chords bow has
-                // every coarse probe in a neighbour.
-                // Only the rings a probe's ray can cross are drawn finely: on a
-                // face with hundreds of holes the rest are far from every probe.
-                let reached = rings_near(&piece.outlines, &piece.interiors);
-                let fine =
-                    FineRings::of(face, &piece.rings, &sections, from_a, Some(&reached), tol);
-                let mut interiors: Vec<Point2> = piece.interiors.clone();
-                if let Some(fine) = &fine {
-                    interiors.retain(|p| fine.inside(*p));
-                    if interiors.is_empty()
-                        && let Some(every) =
-                            FineRings::of(face, &piece.rings, &sections, from_a, None, tol)
-                    {
-                        interiors = arrange::interior_points_of(&every.points(), tol.parametric());
-                    }
-                }
-                for candidate in &interiors {
+                // What a probe reads: on a coincident partner, or what the
+                // other solid's boundary says.
+                let ask = |candidate: Point2| -> OgeomResult<(Point, OgeomResult<Containment>)> {
                     let at = face.surface.point_at(candidate.x, candidate.y, tol)?;
                     let shared = !partners.is_empty()
                         && partners.iter().any(|&pi| {
@@ -8043,23 +8108,83 @@ fn general_fuse_as(
                             chart_point_within(partner, at, partner_reach(face, partner, tol), tol)
                                 .is_some()
                         });
-                    let says = if shared {
-                        Containment::On
-                    } else {
-                        match boundary.holds(model, at, tol) {
-                            Ok(says) => says,
-                            Err(e @ ogeom_core::OgeomError::NotDone(_)) => {
+                    if shared {
+                        return Ok((at, Ok(Containment::On)));
+                    }
+                    match boundary.holds(model, at, tol) {
+                        Err(e @ ogeom_core::OgeomError::NotDone(_)) => Ok((at, Err(e))),
+                        Err(e) => Err(e),
+                        says => Ok((at, says)),
+                    }
+                };
+                // The roomiest probe settles most pieces on its own, so it is
+                // asked before the rest are found, wherever the rest could not
+                // change whether it is asked first: on a face that is not a
+                // plane every probe is kept, and on a plane bounded by lines
+                // and circles its exact rings' count for it does not depend on
+                // the rings drawn for the rest. Where it reads neither in nor
+                // out, every probe is asked in turn below, as if it had not
+                // been.
+                let first_kept = match face.surface {
+                    SurfaceGeometry::Plane(_) => {
+                        let drawn = piece.rings.iter().flatten().all(|t| {
+                            fine_strand(face, &sections, from_a, &t.tag).is_some_and(|s| {
+                                matches!(s.0, PlanarCurve::Line(_) | PlanarCurve::Circle(_))
+                            })
+                        });
+                        drawn
+                            .then(|| {
+                                FineRings::of(face, &piece.rings, &sections, from_a, None, tol)
+                            })
+                            .flatten()
+                            .and_then(|every| {
+                                let reached = rings_near(&piece.outlines, &[piece.first]);
+                                every.inside_beside(piece.first, &reached)
+                            })
+                    }
+                    _ => Some(true),
+                };
+                if first_kept == Some(true)
+                    && let (at, Ok(says @ (Containment::In | Containment::Out))) = ask(piece.first)?
+                {
+                    chosen = Some((piece.first, at, says));
+                }
+                // A planar piece's probes are held to its exact rings, and
+                // where none of them is inside those, the rings offer their
+                // own: a sliver narrower than the outline's chords bow has
+                // every coarse probe in a neighbour.
+                // Only the rings a probe's ray can cross are drawn finely: on a
+                // face with hundreds of holes the rest are far from every probe.
+                let mut fine = None;
+                if chosen.is_none() {
+                    let mut interiors: Vec<Point2> = piece.interiors().to_vec();
+                    let reached = rings_near(&piece.outlines, &interiors);
+                    fine =
+                        FineRings::of(face, &piece.rings, &sections, from_a, Some(&reached), tol);
+                    if let Some(fine) = &fine {
+                        interiors.retain(|p| fine.inside(*p));
+                        if interiors.is_empty()
+                            && let Some(every) =
+                                FineRings::of(face, &piece.rings, &sections, from_a, None, tol)
+                        {
+                            interiors =
+                                arrange::interior_points_of(&every.points(), tol.parametric());
+                        }
+                    }
+                    for candidate in &interiors {
+                        let says = match ask(*candidate)? {
+                            (at, Ok(says)) => (at, says),
+                            (_, Err(e)) => {
                                 unread = Some(e);
                                 continue;
                             }
-                            Err(e) => return Err(e),
+                        };
+                        if chosen.is_none() || !matches!(says.1, Containment::On) {
+                            chosen = Some((*candidate, says.0, says.1));
                         }
-                    };
-                    if chosen.is_none() || !matches!(says, Containment::On) {
-                        chosen = Some((*candidate, at, says));
-                    }
-                    if !matches!(says, Containment::On) {
-                        break;
+                        if !matches!(says.1, Containment::On) {
+                            break;
+                        }
                     }
                 }
                 let Some((interior, probe, said)) = chosen else {
