@@ -138,13 +138,6 @@ operands, where other charts hold 5e-9. The rim and section are fitted on the
 tilted chart (held to 7e-6 and 2e-5), and the measured volumes move by that
 much.
 
-**Edge and vertex history of a boolean.** The boolean records every face of
-its arguments, but not every edge or vertex. Cutting a box by one
-overlapping its corner, the three edges the cut shortens, the corner vertex
-it removes, and the tool's twelve edges and eight vertices (some deleted,
-some carried into the result) have no record: each traces to itself, which
-is no sub-shape of the result.
-
 ### Fillets and blends
 
 **Curved face blends refused by name.** `blend_faces` and `fillet_faces`

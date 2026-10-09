@@ -48,6 +48,7 @@ mod defeature;
 mod half_space;
 mod seam_join;
 mod section_face;
+mod sub_shapes;
 
 pub use defeature::remove_faces;
 pub use section_face::section_face;
@@ -10934,11 +10935,12 @@ pub fn fuse(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
              splits one"
         );
     }
-    noting_held(model, |model| {
+    let built = noting_held(model, |model| {
         ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
             settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
         })
-    })
+    })?;
+    sub_shapes::with_sub_shapes(model, [a, b], built, tol)
 }
 
 /// What `run` makes, with the nodes it passed through from the shapes it
@@ -11326,11 +11328,14 @@ pub fn common(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> Ogeom
         ),
         (true, false) => trimmed_sheet(model, a, b, true, tol),
         (false, true) => trimmed_sheet(model, b, a, true, tol),
-        (false, false) => noting_held(model, |model| {
-            ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
-                settled(model, tol, |model, tol| common_once(model, a, b, tol))
-            })
-        }),
+        (false, false) => {
+            let built = noting_held(model, |model| {
+                ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+                    settled(model, tol, |model, tol| common_once(model, a, b, tol))
+                })
+            })?;
+            sub_shapes::with_sub_shapes(model, [a, b], built, tol)
+        }
     }
 }
 
@@ -11455,11 +11460,12 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
     if is_sheet(model, a)? {
         return trimmed_sheet(model, a, b, false, tol);
     }
-    noting_held(model, |model| {
+    let built = noting_held(model, |model| {
         ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
             settled(model, tol, |model, tol| cut_once(model, a, b, tol))
         })
-    })
+    })?;
+    sub_shapes::with_sub_shapes(model, [a, b], built, tol)
 }
 
 /// What of a sheet lies inside `tool` (`inside` true) or outside it, as a
@@ -11478,7 +11484,7 @@ fn trimmed_sheet(
         );
     }
     trim_sheet_edges(model, sheet, tol)?;
-    noting_held(model, |model| {
+    let built = noting_held(model, |model| {
         settled(model, tol, |model, tol| {
             let tool = &resolved_half_space(model, tool, sheet, tol)?;
             let (sheet, tool) = (
@@ -11505,7 +11511,8 @@ fn trimmed_sheet(
             }
             assemble_sheet(model, &fused, &kept, sheet, tol)
         })
-    })
+    })?;
+    sub_shapes::with_sub_shapes(model, [sheet, tool], built, tol)
 }
 
 /// A sheet split where another sheet crosses it: the pieces, with history.
@@ -11545,7 +11552,7 @@ pub fn split_sheet(
         }
         trim_sheet_edges(model, shape, tol)?;
     }
-    noting_held(model, |model| {
+    let built = noting_held(model, |model| {
         settled(model, tol, |model, tol| {
             let (sheet, by) = (
                 &baked_if_scaled(model, sheet, tol)?,
@@ -11555,7 +11562,8 @@ pub fn split_sheet(
             let kept: Vec<usize> = (0..fused.pieces.len()).collect();
             assemble_sheet(model, &fused, &kept, sheet, tol)
         })
-    })
+    })?;
+    sub_shapes::with_sub_shapes(model, [sheet, by], built, tol)
 }
 
 fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
@@ -12692,8 +12700,8 @@ mod tests {
         let history = cut_out.history.then(&sheared.history);
         for (kind, expected) in [
             (ShapeType::Face, 9),
-            (ShapeType::Edge, 9),
-            (ShapeType::Vertex, 7),
+            (ShapeType::Edge, 15),
+            (ShapeType::Vertex, 8),
         ] {
             let between = explore_unique(&model, &cut_out.shape, kind).unwrap();
             let result = explore_unique(&model, &sheared.shape, kind).unwrap();
@@ -12718,6 +12726,158 @@ mod tests {
                 traced += 1;
             }
             assert_eq!(traced, expected, "{kind:?}");
+        }
+    }
+
+    /// Each edge and vertex of `argument` traced through `history`: deleted,
+    /// or traced to shapes of its kind that `result` holds. The counts of
+    /// those deleted, unchanged (held by the result as they stand, or
+    /// copied) and modified, by kind.
+    fn sub_shapes_traced(
+        model: &Model,
+        argument: &Shape,
+        result: &Shape,
+        history: &History,
+    ) -> [(usize, usize, usize); 2] {
+        let mut counts = [(0, 0, 0); 2];
+        for (slot, kind) in [ShapeType::Edge, ShapeType::Vertex].into_iter().enumerate() {
+            let held = explore_unique(model, result, kind).unwrap();
+            for part in explore_unique(model, argument, kind).unwrap() {
+                if history.is_deleted(&part) {
+                    counts[slot].0 += 1;
+                    continue;
+                }
+                let images = history.trace(&part);
+                assert!(!images.is_empty(), "{kind:?}");
+                for image in images {
+                    assert!(
+                        held.iter().any(|h| h.is_same(image)),
+                        "a {kind:?} traces to a shape the result does not hold"
+                    );
+                }
+                if history.copy_of(&part).is_some() || !history.is_affected(&part) {
+                    counts[slot].1 += 1;
+                } else {
+                    counts[slot].2 += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    fn vertex_point(model: &Model, vertex: &Shape) -> Point {
+        let data = model.node(vertex).unwrap().data().as_vertex().unwrap();
+        vertex.transform(model.datums()).unwrap().apply(data.point)
+    }
+
+    /// A box cut by one overlapping its corner: the target's three edges
+    /// through the corner are shortened and the corner deleted; the tool's
+    /// three edges through its corner inside the target line the cavity,
+    /// cut short, and the rest of the tool is deleted.
+    #[test]
+    fn a_cut_records_every_edge_and_vertex_of_both_boxes() {
+        let mut model = Model::new();
+        let (a, b) = boxes(&mut model);
+        let out = cut(&mut model, &a, &b, T).unwrap();
+        let h = &out.history;
+        // Edges (deleted, copied, modified), then vertices.
+        assert_eq!(
+            sub_shapes_traced(&model, &a, &out.shape, h),
+            [(0, 9, 3), (1, 7, 0)]
+        );
+        assert_eq!(
+            sub_shapes_traced(&model, &b, &out.shape, h),
+            [(9, 0, 3), (7, 0, 1)]
+        );
+        for vertex in explore_unique(&model, &a, ShapeType::Vertex).unwrap() {
+            let at = vertex_point(&model, &vertex);
+            assert_eq!(
+                h.is_deleted(&vertex),
+                at.distance(Point::new(2.0, 2.0, 2.0)) < 1e-9
+            );
+        }
+        // Each shortened edge is one edge of length one.
+        for edge in explore_unique(&model, &a, ShapeType::Edge).unwrap() {
+            if h.copy_of(&edge).is_some() || !h.is_affected(&edge) {
+                continue;
+            }
+            let [image] = h.modified(&edge) else {
+                panic!("a shortened edge is one edge");
+            };
+            let ends: Vec<Point> = explore_unique(&model, image, ShapeType::Vertex)
+                .unwrap()
+                .iter()
+                .map(|v| vertex_point(&model, v))
+                .collect();
+            assert_eq!(ends.len(), 2);
+            assert!((ends[0].distance(ends[1]) - 1.0).abs() < 1e-9);
+        }
+    }
+
+    /// A plate drilled through: its edges and vertices come through as
+    /// copies, the drill's side seam is cut down to the plate's thickness,
+    /// and its rims and their vertices, outside the plate, are deleted.
+    #[test]
+    fn a_drill_records_every_edge_and_vertex_of_plate_and_drill() {
+        let mut model = Model::new();
+        let plate = make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let drill = make_cylinder(
+            &mut model,
+            frame_at(Point::new(10.0, 10.0, -1.0)),
+            3.0,
+            12.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let out = cut(&mut model, &plate, &drill, T).unwrap();
+        let h = &out.history;
+        assert_eq!(
+            sub_shapes_traced(&model, &plate, &out.shape, h),
+            [(0, 12, 0), (0, 8, 0)]
+        );
+        assert_eq!(
+            sub_shapes_traced(&model, &drill, &out.shape, h),
+            [(2, 0, 1), (2, 0, 0)]
+        );
+    }
+
+    /// A cut composed with a move: what the cut records of each edge and
+    /// vertex is carried to the moved result, and a deletion stays one.
+    #[test]
+    fn a_cut_then_a_move_traces_every_edge_and_vertex() {
+        let mut model = Model::new();
+        let (a, b) = boxes(&mut model);
+        let out = cut(&mut model, &a, &b, T).unwrap();
+        let moved = ogeom_algo::transformed(
+            &mut model,
+            &out.shape,
+            ogeom_math::Transform::translation(ogeom_math::Vector::new(5.0, 0.0, 0.0)),
+        )
+        .unwrap();
+        let composed = out.history.then(&moved.history);
+        // A move modifies what it moves: the cut's copies are modified
+        // in the composed history, and the cut's deletions stay deleted.
+        let carried = |counts: [(usize, usize, usize); 2]| counts.map(|(d, c, m)| (d, c + m));
+        for argument in [&a, &b] {
+            let composed_counts = sub_shapes_traced(&model, argument, &moved.shape, &composed);
+            assert!(composed_counts.iter().all(|&(_, copied, _)| copied == 0));
+            assert_eq!(
+                carried(composed_counts),
+                carried(sub_shapes_traced(
+                    &model,
+                    argument,
+                    &out.shape,
+                    &out.history
+                )),
+            );
+            for kind in [ShapeType::Edge, ShapeType::Vertex] {
+                for part in explore_unique(&model, argument, kind).unwrap() {
+                    assert_eq!(composed.trace(&part).len(), out.history.trace(&part).len());
+                }
+            }
         }
     }
 }
