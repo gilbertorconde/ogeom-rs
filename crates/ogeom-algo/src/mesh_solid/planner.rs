@@ -10,6 +10,7 @@ use ogeom_geom::{Curve, LineCurve, PlanarCurve};
 use ogeom_math::{Direction, Frame, Point, Point2, Vector};
 
 use super::caches::{ImageCache, SnapCache};
+use super::frames::goes_round;
 use super::seams::{
     cap_rings, cap_seam, centred_rings, choose_seam, distance_to_line, free_angle, hole_polygons,
     round_the_tube, segments_cross, swapped, swapped_rings, thread_pieces, torus_seam_v,
@@ -545,11 +546,9 @@ impl Planner<'_> {
             let Carrier::Curved(curved) = carrier else {
                 continue;
             };
-            if failed.contains(&g) || !(curved.wraps || curved.wraps_v) {
+            if failed.contains(&g) {
                 continue;
             }
-            let sphere = matches!(curved.shape, Canonical::Sphere(_));
-            let torus = matches!(curved.shape, Canonical::Torus(_));
             let rings = &plan.loops[g];
             let circles = rings.iter().all(|ring| {
                 let first = self.entry(&plan, ring[0]);
@@ -557,6 +556,18 @@ impl Planner<'_> {
                     && plan.edges[first.0].closed_circle
                     && ring.iter().all(|&h| self.entry(&plan, h).0 == first.0)
             });
+            if !(curved.wraps || curved.wraps_v) {
+                // A region found short of a turn round its axis and closed
+                // round since (facets it took between rows of a drill) is
+                // bounded by two whole circles, and is a band like any
+                // other: as a patch inside one branch it has no seam.
+                if rings.len() == 2 && circles && goes_round(self.points, curved, self.tol) {
+                    plan.layouts[g] = Layout::Band { round_tube: false };
+                }
+                continue;
+            }
+            let sphere = matches!(curved.shape, Canonical::Sphere(_));
+            let torus = matches!(curved.shape, Canonical::Torus(_));
             let wrapped = || {
                 let resolved = rings
                     .iter()

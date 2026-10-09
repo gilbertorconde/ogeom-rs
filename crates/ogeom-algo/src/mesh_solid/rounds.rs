@@ -3,12 +3,12 @@
 //! recognition grew it or left it as facets, and fillets and corner balls
 //! among rounds on the tori and spheres tangent to their supports.
 
-use ogeom_core::{FastMap, Tolerances};
+use ogeom_core::{FastMap, FastSet, Tolerances};
 use ogeom_math::{Cylinder, Direction, Frame, Plane, Point, Sphere, Torus, Vector};
 
-use super::planner::sags_as_the_surface;
+use super::planner::{ENCLOSED_CLUSTER, is_sliver, sags_as_the_surface};
 use super::seams::distance_to_line;
-use super::segment::{axis_frame, unit_normal};
+use super::segment::{axis_frame, leans_as_the_surface, unit_normal};
 use super::weld::{Adjacency, from_to};
 use super::{Carrier, Curved, Groups};
 use crate::recognize::{Canonical, worst_deviation};
@@ -44,11 +44,18 @@ pub(super) fn plane_normals(planes: &Groups) -> Vec<Direction> {
 /// lines that are not where the facets end. The two faces fix the round's
 /// axis (along their line of meeting) and leave only the radius, which each
 /// vertex gives: the circle through it tangent to both faces. A curved
-/// region meeting two non-parallel planes (of `planes`, the groups with the
-/// planes grown) across smooth edges, and no other plane so, takes the
-/// cylinder at the vertices' median radius where it holds every vertex
+/// region meeting non-parallel planes (of `planes`, the groups with the
+/// planes grown) across smooth edges takes the cylinder tangent to the two
+/// largest at the vertices' median radius where it holds every vertex
 /// within the distance. With `only`, that region alone is put on its
 /// round.
+///
+/// A long round meshed a few rows across is fitted leaning, and the fit
+/// misses pieces of a row by more than the distance: each row is flat, so
+/// the pieces are left to planes of a few triangles beside the round, or
+/// between it and its flank. Those planes are no flanks; their triangles,
+/// where they are free in `groups` and lie on the round put in place as
+/// its own facets would, join it. Returns whether any did.
 #[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
 pub(super) fn tangent_rounds(
     points: &[Point],
@@ -60,13 +67,28 @@ pub(super) fn tangent_rounds(
     flat: f64,
     only: Option<usize>,
     tol: Tolerances,
-) {
+) -> bool {
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); groups.carriers.len()];
     for (t, &g) in groups.of.iter().enumerate() {
         if let Some(list) = members.get_mut(g) {
             list.push(t);
         }
     }
+    let mut plane_members: Vec<Vec<usize>> = vec![Vec::new(); planes.carriers.len()];
+    for (t, &g) in planes.of.iter().enumerate() {
+        if let Some(list) = plane_members.get_mut(g) {
+            list.push(t);
+        }
+    }
+    let area = |tris: &[usize]| -> f64 {
+        tris.iter()
+            .map(|&t| {
+                let [a, b, c] = triangles[t].map(|v| points[v as usize]);
+                (b - a).cross(c - a).magnitude() / 2.0
+            })
+            .sum()
+    };
+    let mut joined = false;
     for (i, region) in members.iter().enumerate() {
         if only.is_some_and(|o| o != i) {
             continue;
@@ -77,51 +99,122 @@ pub(super) fn tangent_rounds(
         if matches!(curved.shape, Canonical::Sphere(_) | Canonical::Torus(_)) {
             continue;
         }
-        let mut beside: Vec<usize> = Vec::new();
-        for &t in region {
-            for h in 3 * t..3 * t + 3 {
-                let Some(g) = adjacency.twin[h] else {
-                    continue;
-                };
-                let other = g / 3;
-                if groups.of[other] == i
-                    || unit_normal(points, triangles[t]).dot(unit_normal(points, triangles[other]))
-                        < cos_crease
-                {
-                    continue;
-                }
-                beside.push(planes.of[other]);
-            }
-        }
-        beside.sort_unstable();
-        beside.dedup();
-        let flanks: Vec<&Plane> = beside
-            .iter()
-            .filter_map(|&j| match planes.carriers.get(j) {
-                Some(Carrier::Plane(plane)) => Some(plane),
-                _ => None,
-            })
-            .collect();
-        if flanks.len() != 2 {
-            continue;
-        }
         let pts: Vec<Point> = curved
             .vertices
             .iter()
             .map(|&v| points[v as usize])
             .collect();
-        let Some(shape) = tangent_cylinder(flanks[0], flanks[1], &pts, None, tol) else {
+        // The planes beside the region, the largest in area first: the two
+        // largest are its flanks, and any other smaller than both, of a few
+        // triangles, is a row of its own facets a leaning fit left out.
+        // Where the round on the two largest does not hold the region, the
+        // planes of a few triangles past the largest are taken as such rows,
+        // and the planes beyond them looked at: a row can stand between the
+        // region and its flank. A round found so must hold the region closer
+        // than its own fit does.
+        let mut reached: FastSet<usize> = region.iter().copied().collect();
+        let mut rows: Vec<usize> = Vec::new();
+        let mut found = None;
+        for _ in 0..3 {
+            let mut beside: Vec<usize> = Vec::new();
+            for &t in &reached {
+                for h in 3 * t..3 * t + 3 {
+                    let Some(g) = adjacency.twin[h] else {
+                        continue;
+                    };
+                    let other = g / 3;
+                    if reached.contains(&other)
+                        || unit_normal(points, triangles[t])
+                            .dot(unit_normal(points, triangles[other]))
+                            < cos_crease
+                    {
+                        continue;
+                    }
+                    beside.push(planes.of[other]);
+                }
+            }
+            beside.sort_unstable();
+            beside.dedup();
+            let mut flanking: Vec<(usize, &Plane, f64)> = beside
+                .iter()
+                .filter_map(|&j| match planes.carriers.get(j) {
+                    Some(Carrier::Plane(plane)) => Some((j, plane, area(&plane_members[j]))),
+                    _ => None,
+                })
+                .collect();
+            flanking.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+            if flanking.len() < 2 {
+                break;
+            }
+            let few = |j: usize| plane_members[j].len() <= ENCLOSED_CLUSTER;
+            let others = &flanking[2..];
+            if others.iter().all(|&(j, _, a)| few(j) && a < flanking[1].2)
+                && let Some(shape) = tangent_cylinder(flanking[0].1, flanking[1].1, &pts, None, tol)
+                && worst_deviation(&shape, &pts)
+                    <= if rows.is_empty() {
+                        flat
+                    } else {
+                        flat.min(curved.deviation)
+                    }
+            {
+                rows.extend(others.iter().map(|o| o.0));
+                found = Some(shape);
+                break;
+            }
+            let more: Vec<usize> = flanking[1..]
+                .iter()
+                .map(|f| f.0)
+                .filter(|&j| few(j))
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            for j in more {
+                rows.push(j);
+                reached.extend(plane_members[j].iter().copied());
+            }
+        }
+        let Some(shape) = found else {
             continue;
         };
         let deviation = worst_deviation(&shape, &pts);
-        if deviation > flat {
-            continue;
+        let mut taken: Vec<usize> = Vec::new();
+        for j in rows {
+            let tris = &plane_members[j];
+            let on = tris.iter().all(|&t| {
+                let corners = triangles[t].map(|v| points[v as usize]);
+                groups.of[t] == usize::MAX
+                    && corners.iter().all(|p| shape.distance_to(*p) <= flat)
+                    && sags_as_the_surface(&shape, corners, flat)
+                    && (is_sliver(corners)
+                        || leans_as_the_surface(&shape, corners, unit_normal(points, triangles[t])))
+            });
+            if on {
+                taken.extend(tris);
+            }
         }
-        if let Carrier::Curved(curved) = &mut groups.carriers[i] {
-            curved.shape = shape;
-            curved.deviation = deviation;
+        let Carrier::Curved(curved) = &mut groups.carriers[i] else {
+            continue;
+        };
+        curved.shape = shape;
+        curved.deviation = deviation;
+        if !taken.is_empty() {
+            joined = true;
+            for &t in &taken {
+                curved.vertices.extend(triangles[t]);
+                groups.of[t] = i;
+            }
+            curved.vertices.sort_unstable();
+            curved.vertices.dedup();
+            let pts: Vec<Point> = curved
+                .vertices
+                .iter()
+                .map(|&v| points[v as usize])
+                .collect();
+            curved.deviation = worst_deviation(&curved.shape, &pts);
         }
     }
+    joined
 }
 
 /// The cylinder tangent to two planes, on the side of them the points are

@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Converted faces meet edge to edge on far more listings of one mesh.**
+  A drill closed round by facets it took back is built as a band with a
+  seam, and a long round fitted leaning is put on the exact cylinder
+  between its two largest flanks with its stray rows; on `nist_ftc_07`,
+  faces meet in 29 of 30 rotations of the triangle list, up from 9.
+
 - **`solid_from_mesh` keeps rounds whose distance widened elsewhere.**
   When the default coplanar distance widens because a fit pressed against
   it, a curved region found at the wider distance that cannot be built is

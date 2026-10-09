@@ -571,7 +571,7 @@ pub(super) fn segment(
                 tol,
             )?;
         }
-        tangent_rounds(
+        if tangent_rounds(
             points,
             triangles,
             adjacency,
@@ -581,7 +581,18 @@ pub(super) fn segment(
             flat,
             None,
             tol,
-        );
+        ) {
+            planes = groups.clone();
+            coplanar_groups(
+                points,
+                triangles,
+                adjacency,
+                options,
+                flat,
+                &mut planes,
+                tol,
+            )?;
+        }
         let normals = plane_normals(&planes);
         align_axes(points, &mut groups, &normals, flat, tol);
         // Pieces of one torus met as spheres are put on it apart, and

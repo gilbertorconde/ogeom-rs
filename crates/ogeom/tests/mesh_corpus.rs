@@ -436,14 +436,24 @@ fn nist_ftc_07_whatever_corner_each_triangle_lists_first() {
 /// neighbours, and at the wider distance small regions beside the rounds'
 /// ends fit spheres and cones the rounds then overlap. Each region the
 /// build cannot place at the wider distance is put back as the default
-/// distance found it, and nothing is faceted. Listed so, its faces meshed
-/// one by one leave edges unmatched at any distance, and that is not
-/// checked.
+/// distance found it, and nothing is faceted. A drill found short of a
+/// turn takes the facets left between its rows and goes round, and is
+/// built as a band with its seam; a long round fitted leaning leaves pieces
+/// of its flat rows to planes, which join it once it is put between its
+/// flanks, and its faces meshed one by one meet edge to edge. Listed from
+/// the thousandth triangle, a single long facet of a round's row is left a
+/// face of its own, whose chords meet the round's mesh in a few places,
+/// and that is not checked.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_07_whatever_triangle_its_list_starts_at() {
-    for start in [997_usize, 1994] {
-        let report = comes_back_listed("nist_ftc_07_asme1_rd.stp", true, false, |mesh| {
+    for (start, meet) in [
+        (997_usize, false),
+        (1994, true),
+        (6757, true),
+        (13514, true),
+    ] {
+        let report = comes_back_listed("nist_ftc_07_asme1_rd.stp", true, meet, |mesh| {
             mesh.triangles.rotate_left(start);
         });
         assert_eq!(report.curved_faceted, 0, "{start}: {:?}", report.fallbacks);

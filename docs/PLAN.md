@@ -182,13 +182,28 @@ strand dangles", five stress drills on two corpus parts). Moving the whole
 rim to the other's column instead keeps the drills but breaks a chain of
 bands sharing one rim. That is the item to settle first.
 
-**The converter's result depends on where the mesh's triangle list
-starts.** Listed from another triangle, `nist_ftc_07` sometimes comes back
-with a long round of radius 0.43 faceted for a fold at its seam (2 of 30
-listings measured, the same with the distance never widened), and in each
-of four such listings measured its faces meshed one by one leave 8 to 19
-edges unmatched. Regions grow in list order, and the long rounds run on
-into their neighbours by a different amount each time.
+**The converter's result depends on how the mesh lists its triangles.**
+Recognized regions grow from seeds taken in list order (a stride through
+the triangle indices) and claim triangles first come, and the default
+distance widens when any one fit presses against it. So the same mesh
+listed otherwise finds other regions: on `nist_ftc_07` 378 to 666 faces
+over 30 rotations (the distance widened in about half), and on every
+corpus part some shuffled listing gives a different face count, a region
+faceted (`grid_point_on_a_diagonal_boundary`, `nist_ftc_10`) or a solid
+that tessellates open (`nist_ftc_10`). Two results that did not meet are
+fixed: 29 of 30 rotations of `nist_ftc_07` now meet, against 9; in the
+others a single long facet of a round's row is left a face of its own
+and meets the round's mesh 3 or 4 edges short. Putting
+the mesh in an order read off the geometry (points by position, triangles
+by their corners; patch `canonical-order.patch` in the scratch crate)
+makes every listing one result, but the one it picks facets two regions
+of `nist_ftc_08` (a small cone at a cylinder's end) and six of
+`nist_ftc_10` (one small cylinder's fit presses, the distance widens
+twice, 1272 faces): it is a listing like any other. Before it lands, the
+growth has to stop depending on who comes first: options are widening
+only where many fits press (noise is everywhere, a run-on is local),
+seeding from the most confident triangles first, or letting regions that
+meet compete for their shared triangles by residual.
 
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's
 pcurve where its lifted gap is within twice the projection's. A pcurve the

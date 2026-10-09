@@ -720,6 +720,20 @@ pub(super) fn align_one(
     curved.centre = (centre_u, mean_v);
 }
 
+/// Whether a cylinder or cone region's vertices leave no gap round its
+/// axis wider than [`align_one`] allows a region round its axis.
+pub(super) fn goes_round(points: &[Point], curved: &Curved, tol: Tolerances) -> bool {
+    if !matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_)) {
+        return false;
+    }
+    let mut us: Vec<f64> = curved
+        .vertices
+        .iter()
+        .filter_map(|&v| chart(&curved.shape, points[v as usize], tol).map(|c| c.0))
+        .collect();
+    !us.is_empty() && angular_spread(&mut us).1 < core::f64::consts::FRAC_PI_2
+}
+
 /// The surface on a frame that puts the region half a turn from its
 /// chart's cut (and a sphere's poles a quarter turn to either side of it),
 /// so every image of its boundary reads in one piece.
