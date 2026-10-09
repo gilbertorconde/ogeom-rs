@@ -3303,11 +3303,19 @@ fn chart_of(
     ))
 }
 
-/// The signed area a closed chart image encloses, by the shoelace.
+/// The signed area a closed chart image encloses, by the shoelace: its last
+/// point is its first again.
+///
+/// Summed about the first point: the same sum as about the chart's origin,
+/// which may stand far off, where it is a difference of huge products.
 fn chart_area(points: &[Point2]) -> f64 {
+    let Some(&anchor) = points.first() else {
+        return 0.0;
+    };
     let mut sum = 0.0;
     for pair in points.windows(2) {
-        sum += pair[0].x.mul_add(pair[1].y, -(pair[1].x * pair[0].y));
+        let (a, b) = (pair[0] - anchor, pair[1] - anchor);
+        sum += a.x.mul_add(b.y, -(b.x * a.y));
     }
     sum / 2.0
 }
@@ -3602,4 +3610,23 @@ pub(crate) fn touching_ball(spine: &[Point], p: Point) -> Point {
         .copied()
         .min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
         .unwrap_or(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A strip one long and a hundredth wide, closed on its first point,
+    /// encloses its own area wherever it stands in its chart, up to 2e7
+    /// from the chart's origin.
+    #[test]
+    fn a_ring_far_out_in_its_chart_encloses_its_own_area() {
+        for o in [0.0, 1e6, 1e7, 2e7] {
+            let (x, y) = (o, -0.7 * o);
+            let ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 0.01), (0.0, 0.01), (0.0, 0.0)]
+                .map(|(dx, dy)| Point2::new(x + dx, y + dy));
+            let area = chart_area(&ring);
+            assert!((area - 0.01).abs() < 1e-9, "o {o:e}: area {area}");
+        }
+    }
 }

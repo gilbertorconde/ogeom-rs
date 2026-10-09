@@ -856,10 +856,12 @@ pub(crate) fn planar_face(
     }
     let surface = PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?;
     // The ring keeps the face on its left about `outward`: corners given
-    // turning the other way about it are walked in reverse.
+    // turning the other way about it are walked in reverse. The turn is
+    // summed about the first corner: the same sum as about any point, but
+    // about a far one it is a difference of huge products.
     let turn = (0..corners.len()).fold(Vector::ZERO, |sum, i| {
         let (p, q) = (corners[i], corners[(i + 1) % corners.len()]);
-        sum + p.to_vector().cross(q.to_vector())
+        sum + (p - corners[0]).cross(q - corners[0])
     });
     let mut corners = corners.to_vec();
     if turn.dot(outward) < 0.0 {

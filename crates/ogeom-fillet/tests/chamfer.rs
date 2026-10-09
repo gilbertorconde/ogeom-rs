@@ -249,3 +249,55 @@ fn a_rim_chamfer_that_swallows_the_axis_is_refused() {
         "a cap leg past the axis has nothing to stand on"
     );
 }
+
+/// A box up to 2e7 from the origin on a tilted frame, chamfered along one
+/// edge by a tenth: the wedge's faces are wound by the turn of their own
+/// corners, so the box loses the wedge there as at the origin.
+#[test]
+fn a_chamfer_far_from_the_origin_loses_exactly_the_wedge() {
+    let n = ogeom_math::Direction::new(ogeom_math::Vector::new(1.0, 1.0, 1.0), T).unwrap();
+    for o in [0.0, 1e6, 1e7, 2e7] {
+        let mut model = ogeom_topo::Model::new();
+        let frame = Frame::new(Point::new(o, -o, o), n, ogeom_math::Direction::X, T).unwrap();
+        let block = ogeom_algo::make_box(&mut model, frame, (2.0, 2.0, 2.0), T).unwrap();
+        // The edge along the frame's y at local x = 2, z = 2.
+        let local = |v: &ogeom_topo::Shape| {
+            let p = model
+                .node(v)
+                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                .unwrap();
+            frame.to_local(p)
+        };
+        let edge = explore(&model, &block.shape, Filter::OfType(ShapeType::Edge))
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                ogeom_algo::edge_vertices(&model, e)
+                    .unwrap()
+                    .is_some_and(|(a, b)| {
+                        [local(&a), local(&b)]
+                            .iter()
+                            .all(|p| (p.x - 2.0).abs() < 1e-6 && (p.z - 2.0).abs() < 1e-6)
+                    })
+            })
+            .expect("the box has that edge");
+        let distance = 0.1;
+        let result = ogeom_fillet::chamfer_edge(&mut model, &block.shape, &edge, distance, T)
+            .unwrap_or_else(|e| panic!("o {o:e}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "o {o:e}: {:?}", diagnosis.problems);
+        let props = ogeom_algo::volume_properties(
+            &model,
+            &result.shape,
+            ogeom_mesh::Deflection::default(),
+            T,
+        )
+        .unwrap();
+        let exact = 8.0 - distance * distance / 2.0 * 2.0;
+        assert!(
+            (props.mass - exact).abs() < 1e-6,
+            "o {o:e}: chamfer volume {} against {exact}",
+            props.mass
+        );
+    }
+}
