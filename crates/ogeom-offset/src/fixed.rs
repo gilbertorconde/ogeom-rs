@@ -175,11 +175,16 @@ fn section_normal(section: &[Vec<SectionEdge>], tol: Tolerances) -> OgeomResult<
             points.push(edge.spline.point_at(t, tol)?);
         }
     }
-    // Newell's normal: twice the ring's vector area.
+    // Newell's normal: twice the ring's vector area, summed about the
+    // ring's first point. The sum is the same about any point, and about a
+    // far one it is a difference of huge products.
+    let Some(&anchor) = points.first() else {
+        ogeom_bail!(Construction, "the section's ring has no edge");
+    };
     let mut n = Vector::ZERO;
     for (k, p) in points.iter().enumerate() {
         let q = points[(k + 1) % points.len()];
-        n += (*p - Point::ORIGIN).cross(q - Point::ORIGIN);
+        n += (*p - anchor).cross(q - anchor);
     }
     if n.magnitude() <= tol.confusion() {
         ogeom_bail!(Construction, "the section encloses no area");

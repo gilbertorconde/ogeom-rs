@@ -7368,15 +7368,7 @@ fn closed_pipe_shell(
 /// The volume a closed shell encloses as it faces, from its mesh: negative
 /// where its faces point into what it bounds.
 fn shell_signed_volume(model: &Model, shell: &Shape, tol: Tolerances) -> OgeomResult<f64> {
-    let mesh = ogeom_mesh::triangulate(model, shell, ogeom_mesh::Deflection::default(), tol)?;
-    Ok(mesh
-        .triangles
-        .iter()
-        .map(|t| {
-            let [a, b, c] = t.map(|i| mesh.positions[i as usize].to_vector());
-            a.dot(b.cross(c)) / 6.0
-        })
-        .sum())
+    Ok(ogeom_mesh::triangulate(model, shell, ogeom_mesh::Deflection::default(), tol)?.volume())
 }
 
 /// Sample a spine (one edge or a wire of them) into stations, each edge

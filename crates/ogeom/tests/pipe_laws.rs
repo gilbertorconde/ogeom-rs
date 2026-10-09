@@ -491,3 +491,52 @@ fn a_fixed_section_is_carried_without_turning() {
         "{a} against {b}"
     );
 }
+
+/// A one by a quarter rectangle up to 2e7 from the origin on a tilted
+/// plane, carried without turning along a straight spine of ten square to
+/// it: the section's normal is its own ring's vector area, so the solid is
+/// the prism there as at the origin.
+#[test]
+fn a_fixed_section_far_from_the_origin_sweeps_its_prism() {
+    let n = Direction::new(Vector::new(1.0, 1.0, 1.0), T).unwrap();
+    for o in [0.0, 1e6, 1e7, 2e7] {
+        let mut model = Model::new();
+        let frame = Frame::new(Point::new(o, -o, o), n, Direction::X, T).unwrap();
+        let at = |x: f64, y: f64| frame.origin() + frame.x().vector() * x + frame.y().vector() * y;
+        let ring = [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 0.25), at(0.0, 0.25)];
+        let wire = make_polygon(&mut model, &ring, true, T).unwrap().shape;
+        let profile = make_face(
+            &mut model,
+            PlaneSurface::new(Plane::new(frame)).into(),
+            &[wire],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let spine = make_polygon(
+            &mut model,
+            &[at(0.5, 0.125), at(0.5, 0.125) + frame.z().vector() * 10.0],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let pipe = make_pipe_shell_with(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::Fixed,
+            PipeCorners::Mitre,
+            1e-3,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("o {o:e}: {e}"))
+        .shape;
+        let diagnosis = ogeom::algo::check(&model, &pipe, T).unwrap();
+        assert!(diagnosis.is_valid(), "o {o:e}: {diagnosis}");
+        let v = volume_properties(&model, &pipe, Deflection::default(), T)
+            .unwrap_or_else(|e| panic!("o {o:e}: {e}"))
+            .mass;
+        assert!((v - 2.5).abs() < 2.5 * 1e-6, "o {o:e}: volume {v}");
+    }
+}
