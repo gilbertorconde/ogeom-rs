@@ -11,6 +11,14 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mesh conversion reports no fallback for a region it never builds.**
+  Where the coplanar distance widens and one region the default distance
+  found is split between two regions found wider, putting both back gives
+  it back once; the second copy, holding no triangle, used to be counted
+  as a curved face left faceted.
+
 ## [0.9.15] - 2026-10-09
 
 A patch release: no breaking API changes. Shapes far from the origin keep
