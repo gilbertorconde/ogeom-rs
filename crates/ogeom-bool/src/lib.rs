@@ -12663,4 +12663,53 @@ mod tests {
         }
         assert_eq!(traced, 9);
     }
+
+    /// A cut followed by a shear: each face, edge and vertex of the cut's
+    /// inputs that the cut carries into its result traces through the
+    /// composed history to as many sub-shapes of its kind in the sheared
+    /// result, and to nothing else.
+    #[test]
+    fn a_cut_then_a_shear_traces_its_inputs_to_the_sheared_result() {
+        let mut model = Model::new();
+        let (a, b) = boxes(&mut model);
+        let cut_out = cut(&mut model, &a, &b, T).unwrap();
+        let shear = ogeom_math::GeneralTransform::new(
+            ogeom_math::Matrix3 {
+                rows: [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            },
+            ogeom_math::Vector::ZERO,
+        );
+        let sheared =
+            ogeom_algo::general_transformed_shape(&mut model, &cut_out.shape, &shear, T).unwrap();
+        let history = cut_out.history.then(&sheared.history);
+        for (kind, expected) in [
+            (ShapeType::Face, 9),
+            (ShapeType::Edge, 9),
+            (ShapeType::Vertex, 7),
+        ] {
+            let between = explore_unique(&model, &cut_out.shape, kind).unwrap();
+            let result = explore_unique(&model, &sheared.shape, kind).unwrap();
+            let mut traced = 0;
+            for part in explore_unique(&model, &a, kind)
+                .unwrap()
+                .into_iter()
+                .chain(explore_unique(&model, &b, kind).unwrap())
+            {
+                let carried = cut_out.history.trace(&part);
+                if carried.is_empty()
+                    || !carried.iter().all(|c| between.iter().any(|r| r.is_same(c)))
+                {
+                    continue;
+                }
+                let images = history.trace(&part);
+                assert_eq!(images.len(), carried.len(), "{kind:?}");
+                assert!(history.is_affected(&part), "{kind:?}");
+                for image in images {
+                    assert!(result.iter().any(|r| r.is_same(image)), "{kind:?}");
+                }
+                traced += 1;
+            }
+            assert_eq!(traced, expected, "{kind:?}");
+        }
+    }
 }

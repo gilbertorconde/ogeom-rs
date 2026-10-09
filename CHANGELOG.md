@@ -24,6 +24,14 @@ bump may break the API and a patch bump may not.
   few microns apart, both faces now keep the edge between the crossings
   when the tool's own face cannot hold the sliver between the curves. The
   cut was refused.
+- **A shear or an uneven scale traces every sub-shape.**
+  `general_transformed_shape` records each wire, vertex and degenerate edge
+  of the input as modified into its rebuilt twin, as it already did for
+  faces, other edges and containers, so `trace` and `is_affected` answer
+  for every sub-shape, alone or composed through `then`. `baked_where_placed` and `restate_geometry`
+  rebuild the same way and record the same. The docs of `Model::placed` and
+  `Document::occurrences_of` state that they record no history and how a
+  sub-shape is found in the placed shape.
 
 - **Mesh conversion reports no fallback for a region it never builds.**
   Where the coplanar distance widens and one region the default distance

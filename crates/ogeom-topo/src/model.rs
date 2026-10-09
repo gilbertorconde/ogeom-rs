@@ -1979,6 +1979,14 @@ impl Model {
     /// underlying node (and all its geometry) is shared rather than copied.
     /// Placing ten thousand instances of a part costs ten thousand short chains
     /// and one copy of the geometry.
+    ///
+    /// Records no history: nothing is built, and a sub-shape `s` of the
+    /// input stands in the result as `s.moved(by)`, where `by` is the
+    /// result's location with the input's own taken off,
+    /// `result.location().then(&shape.location().inverted())`. A caller that
+    /// traces names across the move, or composes it with an operation's
+    /// history, places with `ogeom_algo::transformed`, which makes the same
+    /// placement and records every sub-shape into its occurrence.
     pub fn placed(&mut self, shape: &Shape, transform: Transform) -> Shape {
         let datum = self.add_datum(transform);
         shape.moved(&Location::of(datum))

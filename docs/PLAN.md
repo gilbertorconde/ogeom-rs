@@ -148,6 +148,13 @@ operands, where other charts hold 5e-9. The rim and section are fitted on the
 tilted chart (held to 7e-6 and 2e-5), and the measured volumes move by that
 much.
 
+**Edge and vertex history of a boolean.** The boolean records every face of
+its arguments, but not every edge or vertex. Cutting a box by one
+overlapping its corner, the three edges the cut shortens, the corner vertex
+it removes, and the tool's twelve edges and eight vertices (some deleted,
+some carried into the result) have no record: each traces to itself, which
+is no sub-shape of the result.
+
 ### Fillets and blends
 
 **Curved face blends refused by name.** `blend_faces` and `fillet_faces`
@@ -210,14 +217,6 @@ to piece. Not cut: a trim placed by one subfigure instance against a pole of
 a surface placed by another, and pcurves other producers build through a
 pole. The cut edge stays in the model unused, and a STEP style or shape
 aspect naming its file id lands on every piece.
-
-**History of an affine rebuild.** `general_transformed_shape` with a shear
-or an uneven scale rebuilds the shape and records its faces, edges and
-containers, but not its vertices or wires: a vertex of the input traces to
-itself, which is no vertex of the result. A similarity goes through
-`transformed`, which records every sub-shape. `Model::placed` and document
-instances emit no history at all; a caller naming sub-shapes across them
-uses `transformed`.
 
 ### Mesh conversion
 
