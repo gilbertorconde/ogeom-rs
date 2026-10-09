@@ -410,10 +410,13 @@ impl Rings {
         let Some(outer) = open_chart_ring(model, face, &wires[0], true, deflection, tol)? else {
             return all();
         };
+        // About the ring's first point: the plane's origin may stand far
+        // off, where the sum is a difference of huge products.
         let mut area = 0.0;
-        for i in 0..outer.len() {
-            let (p, q) = (outer[i], outer[(i + 1) % outer.len()]);
-            area += p.x * q.y - q.x * p.y;
+        if let Some(&anchor) = outer.first() {
+            for i in 0..outer.len() {
+                area += (outer[i] - anchor).cross(outer[(i + 1) % outer.len()] - anchor);
+            }
         }
         let area = area.abs() * 0.5;
         let mut holes = Vec::with_capacity(wires.len() - 1);

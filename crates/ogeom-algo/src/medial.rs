@@ -258,12 +258,36 @@ fn ray_meet(p: Point2, d: Point2Dir, q: Point2, e: Point2Dir) -> Option<Point2> 
 
 type Point2Dir = Vector2;
 
-fn signed_area(ring: &[Point2]) -> f64 {
+/// The area a ring encloses in its plane, positive counter-clockwise.
+///
+/// Summed about the ring's first point: the same sum as about the plane's
+/// origin, which may stand far off, where it is a difference of huge
+/// products.
+pub(crate) fn signed_area(ring: &[Point2]) -> f64 {
+    let Some(&anchor) = ring.first() else {
+        return 0.0;
+    };
     let mut sum = 0.0;
     for i in 0..ring.len() {
-        let a = ring[i];
-        let b = ring[(i + 1) % ring.len()];
-        sum += a.x * b.y - b.x * a.y;
+        sum += (ring[i] - anchor).cross(ring[(i + 1) % ring.len()] - anchor);
     }
     sum / 2.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A strip one long and a hundredth wide encloses its own area wherever
+    /// it stands in its plane, up to 2e7 from the plane's origin.
+    #[test]
+    fn a_ring_far_out_in_its_plane_encloses_its_own_area() {
+        for o in [0.0, 1e6, 1e7, 2e7] {
+            let (x, y) = (o, -0.7 * o);
+            let ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 0.01), (0.0, 0.01)]
+                .map(|(dx, dy)| Point2::new(x + dx, y + dy));
+            let area = signed_area(&ring);
+            assert!((area - 0.01).abs() < 1e-9, "o {o:e}: area {area}");
+        }
+    }
 }

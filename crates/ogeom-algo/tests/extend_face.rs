@@ -297,6 +297,34 @@ fn refusal(result: ogeom_core::OgeomResult<ogeom_algo::Built>) -> String {
     }
 }
 
+/// A strip one long and a hundredth wide, on the `xy` plane up to 2e7 from
+/// the plane's own origin, grown across its long edge by a half: the side
+/// it grows to is read off the turn of its own boundary, so it grows away
+/// from itself to an area of 0.51 there as next to the origin.
+#[test]
+fn a_strip_far_out_in_its_planes_chart_grows_away_from_itself() {
+    for o in [0.0, 1e6, 1e7, 2e7] {
+        let (x, y) = (o, -0.7 * o);
+        let mut model = Model::new();
+        let strip = polygon_face(
+            &mut model,
+            &[(x, y), (x + 1.0, y), (x + 1.0, y + 0.01), (x, y + 0.01)],
+        );
+        let edge = edge_between(
+            &model,
+            &strip,
+            Point::new(x, y, 0.0),
+            Point::new(x + 1.0, y, 0.0),
+        );
+        let grown = extend_face(&mut model, &strip, &edge, 0.5, Extension::Natural, T)
+            .unwrap_or_else(|e| panic!("o {o:e}: {e}"))
+            .shape;
+        assert_valid(&model, &grown);
+        let a = area(&model, &grown);
+        assert!((a - 0.51).abs() < 1e-6, "o {o:e}: area {a}");
+    }
+}
+
 /// A 10 by 10 square grown across one edge by 5 is 10 by 15: its corners
 /// are where the closed form puts them, its area is 150, and the three
 /// edges it kept are the same nodes.

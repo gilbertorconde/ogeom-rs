@@ -814,19 +814,10 @@ fn orient_group(
         let candidate = model.add_shell(&turned)?;
         if let Ok(mesh) =
             ogeom_mesh::triangulate(model, &candidate, ogeom_mesh::Deflection::default(), tol)
+            && mesh.volume() < 0.0
         {
-            let volume: f64 = mesh
-                .triangles
-                .iter()
-                .map(|t| {
-                    let [a, b, c] = t.map(|k| mesh.positions[k as usize].to_vector());
-                    a.dot(b.cross(c)) / 6.0
-                })
-                .sum();
-            if volume < 0.0 {
-                for face in &mut turned {
-                    *face = face.reversed();
-                }
+            for face in &mut turned {
+                *face = face.reversed();
             }
         }
     }
@@ -2302,7 +2293,22 @@ mod tests {
     /// to face up into the box where `bottom_in` and down out of it
     /// otherwise; the top one faces up.
     fn box_faces(model: &mut Model, walls_in: bool, bottom_in: bool) -> Vec<Shape> {
-        let at = |x: f64, y: f64, z: f64| Point::new(x, y, z);
+        box_faces_in(model, walls_in, bottom_in, Frame::WORLD)
+    }
+
+    /// [`box_faces`] laid out in `frame`.
+    fn box_faces_in(
+        model: &mut Model,
+        walls_in: bool,
+        bottom_in: bool,
+        frame: Frame,
+    ) -> Vec<Shape> {
+        let at = |x: f64, y: f64, z: f64| {
+            frame.origin()
+                + frame.x().vector() * x
+                + frame.y().vector() * y
+                + frame.z().vector() * z
+        };
         let square = |z: f64| {
             [
                 at(0.0, 0.0, z),
@@ -2312,7 +2318,7 @@ mod tests {
             ]
         };
         let profile = make_polygon(model, &square(0.0), true, T).unwrap().shape;
-        let walls = crate::make_prism(model, &profile, Vector::new(0.0, 0.0, 5.0), T)
+        let walls = crate::make_prism(model, &profile, frame.z().vector() * 5.0, T)
             .unwrap()
             .shape;
         let mut faces: Vec<Shape> = explore_unique(model, &walls, ShapeType::Face)
@@ -2386,6 +2392,37 @@ mod tests {
         }
         let volume = solid_volume(&mut model, &sewn.shells[0]);
         assert!((volume - 500.0).abs() < 1e-9, "{volume}");
+    }
+
+    /// The box whose walls face in and whose lids face out, up to 2e7 from
+    /// the origin: which way the sewn shell faces is read off the volume it
+    /// encloses, a sum the box's own size, so the walls are turned there as
+    /// at the origin and the shell faces out.
+    #[test]
+    fn a_closed_shell_far_from_the_origin_whose_faces_disagree_is_turned_to_face_out() {
+        for o in [0.0, 1e6, 1e7, 2e7] {
+            let mut model = Model::new();
+            let n = ogeom_math::Direction::new(Vector::new(1.0, 1.0, 1.0), T).unwrap();
+            let frame = Frame::new(Point::new(o, -o, o), n, ogeom_math::Direction::X, T).unwrap();
+            let faces = box_faces_in(&mut model, true, false, frame);
+            let sewn = sew(&mut model, &faces, T).unwrap();
+            for face in &faces[..4] {
+                assert_ne!(
+                    sewn.history.modified(face)[0].orientation(),
+                    face.orientation(),
+                    "o {o:e}: a wall facing in is turned"
+                );
+            }
+            let mesh = ogeom_mesh::triangulate(
+                &model,
+                &sewn.shells[0],
+                ogeom_mesh::Deflection::default(),
+                T,
+            )
+            .unwrap();
+            let volume = mesh.volume();
+            assert!((volume - 500.0).abs() < 1e-6, "o {o:e}: {volume}");
+        }
     }
 
     /// A box whose six faces all face in, so every edge is already walked

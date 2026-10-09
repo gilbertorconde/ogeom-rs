@@ -341,10 +341,15 @@ fn plan_on_plane(
         samples.pop();
         polygon.extend(samples.into_iter().map(chart));
     }
+    // Summed about the polygon's first point: the same sum as about the
+    // chart's origin, which may stand far off, where it is a difference of
+    // huge products.
     let mut area = 0.0;
-    for (i, p) in polygon.iter().enumerate() {
-        let q = polygon[(i + 1) % polygon.len()];
-        area += p.to_vector().cross(q.to_vector());
+    if let Some(&anchor) = polygon.first() {
+        for (i, p) in polygon.iter().enumerate() {
+            let q = polygon[(i + 1) % polygon.len()];
+            area += (*p - anchor).cross(q - anchor);
+        }
     }
     let (pa, pb) = (chart(a), chart(b));
     let along = (pb - pa).normalized(tol)?;

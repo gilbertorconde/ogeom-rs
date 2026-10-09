@@ -23,6 +23,7 @@
 //! two, and every sampled centre must lie on some branch. A result that
 //! fails is sampled again, finer.
 
+use crate::medial::signed_area;
 use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
@@ -742,15 +743,6 @@ fn merge_continuations(l: &mut Vec<Travel>, tol: Tolerances) {
         }
         i += 1;
     }
-}
-
-fn signed_area(ring: &[Point2]) -> f64 {
-    let mut sum = 0.0;
-    for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-        sum += a.x * b.y - b.x * a.y;
-    }
-    sum / 2.0
 }
 
 // --- exact bisectors ------------------------------------------------------
