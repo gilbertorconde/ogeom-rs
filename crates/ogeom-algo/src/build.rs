@@ -1671,6 +1671,14 @@ pub fn make_revolution_band(
                 .0
         }
     };
+    if !rings[1].degenerate && circle_crossing_of(model, &rings[1].edge, anchor, tol)?.is_some() {
+        ogeom_bail!(
+            Construction,
+            "the band rings' vertices stand on different columns, which no \
+             seam joins; split_ring_on_column gives one rim a vertex on the \
+             other's column"
+        );
+    }
 
     // The seam runs along the surface's own iso-curve at the anchor angle,
     // parameterized by `v`, built along increasing `v`.
@@ -1804,6 +1812,124 @@ pub fn make_revolution_band(
     };
     let wire = make_wire(model, &ring, tol)?.shape;
     Ok(make_face_on(model, surface_id, &[wire], tol)?.shape)
+}
+
+/// A circle edge's curve and range, the parameter where it crosses a
+/// column, and the point there.
+type RingCrossing = (Curve, (f64, f64), f64, Point);
+
+/// Where a closed circle edge crosses the column of `anchor`: the circle's
+/// parameter there, inside the edge's range, and the point. `None` where
+/// the edge's own vertex already stands on that column.
+fn circle_crossing_of(
+    model: &Model,
+    ring: &Shape,
+    anchor: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<RingCrossing>> {
+    let Some(data) = model.node(ring).and_then(|n| n.data().as_edge()) else {
+        ogeom_bail!(Dangling, "edge is not in this model");
+    };
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        ogeom_bail!(Construction, "a band ring has no curve");
+    };
+    let range = *range;
+    let Some(geometry) = model.geometry().curve(*curve) else {
+        ogeom_bail!(Dangling, "curve is not in this model");
+    };
+    let Curve::Circle(c) = geometry else {
+        ogeom_bail!(Construction, "a band ring is not a circle");
+    };
+    let circle = c.circle();
+    let local = circle.frame().to_local(anchor);
+    if local.x.hypot(local.y) <= tol.confusion() {
+        ogeom_bail!(
+            Construction,
+            "the anchor stands on the ring's axis, where every column meets"
+        );
+    }
+    let angle = local.y.atan2(local.x);
+    let along = if c.is_reversed() { -angle } else { angle };
+    let period = core::f64::consts::TAU;
+    let t = range.0 + (along - range.0).rem_euclid(period);
+    let point = geometry.point_at(t, tol)?;
+    let start = geometry.point_at(range.0, tol)?;
+    let end = geometry.point_at(range.1, tol)?;
+    if point.distance(start) <= tol.confusion() || point.distance(end) <= tol.confusion() {
+        return Ok(None);
+    }
+    Ok(Some((geometry.clone(), range, t, point)))
+}
+
+/// Split a closed circle rim of a revolution band where it crosses the
+/// column of `anchor`, the vertex of the band's other rim, so both rims
+/// have a vertex on one column and a seam can join them.
+///
+/// The rim must be a parallel of `surface` (its axis the revolution axis,
+/// its centre on it), as [`make_revolution_band`] requires. It becomes two
+/// edges on its own curve: the first from its vertex to a new vertex on the
+/// anchor's column, the second back. The result is a closed wire of the two
+/// in the curve's direction starting on the anchor's column, the second
+/// piece first, ready to be a ring of [`make_band_of_rings`]. The history
+/// records the rim as modified into both pieces.
+///
+/// The pieces carry no pcurves, and every face holding the rim must take
+/// both pieces in its place, or the shell opens along the rim: a caller
+/// splitting a rim that bounds a face already built rebuilds that face.
+///
+/// Returns `None` when the rim's vertex already stands on the anchor's
+/// column.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// rim is not a closed circle that is a parallel of `surface`, or the
+/// anchor stands on its axis.
+pub fn split_ring_on_column(
+    model: &mut Model,
+    surface: &SurfaceGeometry,
+    ring: &Shape,
+    anchor: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let rim = ring.oriented(ogeom_topo::Orientation::Forward);
+    let Some((vertex, other)) = edge_vertices(model, &rim)? else {
+        ogeom_bail!(Construction, "a band ring has no vertex");
+    };
+    if !vertex.is_same(&other) {
+        ogeom_bail!(Construction, "a band ring is not closed");
+    }
+    if !rings_are_parallels(model, surface, &[&rim], tol)? {
+        ogeom_bail!(
+            Construction,
+            "a band ring is not a parallel of the surface it bounds"
+        );
+    }
+    let anchor_point = {
+        let Some(data) = model.node(anchor).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Construction, "the anchor is not a vertex of this model");
+        };
+        anchor.transform(model.datums())?.apply(data.point)
+    };
+    let Some((curve, range, t, point)) = circle_crossing_of(model, &rim, anchor_point, tol)? else {
+        return Ok(None);
+    };
+    let stated = model
+        .node(&rim)
+        .and_then(|n| n.data().as_edge())
+        .map(|d| d.tolerance);
+    let column = make_vertex(model, point).shape;
+    let head = make_edge_between(model, curve.clone(), (range.0, t), &vertex, &column, tol)?.shape;
+    let tail = make_edge_between(model, curve, (t, range.1), &column, &vertex, tol)?.shape;
+    if let Some(stated) = stated {
+        model.widen(&head, stated)?;
+        model.widen(&tail, stated)?;
+    }
+    let wire = make_wire(model, &[tail.clone(), head.clone()], tol)?.shape;
+    let mut history = History::new();
+    history.modify(&rim, head);
+    history.modify(&rim, tail);
+    Ok(Some(Built::new(wire, history)))
 }
 
 /// Build the face of a band between two closed rings of edges on a periodic
@@ -3917,7 +4043,11 @@ mod band_tests {
         };
         let low = ring(&mut model, at(0.0, ogeom_math::Direction::X), 2.0);
         let high = ring(&mut model, at(2.0, -ogeom_math::Direction::X), 2.0);
-        assert!(make_revolution_band(&mut model, &surface, &low, &high, T).is_err());
+        let refused = make_revolution_band(&mut model, &surface, &low, &high, T).unwrap_err();
+        assert!(
+            refused.to_string().contains("different columns"),
+            "the refusal names why: {refused}"
+        );
         for rim in [&low, &high] {
             let data = model.node(rim).unwrap().data().as_edge().unwrap();
             assert!(
@@ -3927,6 +4057,99 @@ mod band_tests {
                 "a refused band left a pcurve on a rim"
             );
         }
+    }
+
+    /// A drum whose rims' vertices stand half a turn apart: the top rim is
+    /// split on the bottom vertex's column, the band seams there, and the
+    /// top cap takes both pieces, so the solid closes, checks valid and
+    /// holds pi r^2 h. The history traces the top rim to its two pieces.
+    #[test]
+    fn a_rim_split_on_the_other_rims_column_closes_the_drum() {
+        let mut model = Model::new();
+        let (r, h) = (2.0, 3.0);
+        let cylinder = ogeom_math::Cylinder::new(Frame::WORLD, r, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(cylinder, (-1.0, 4.0))
+            .unwrap()
+            .into();
+        let at = |z: f64, x: ogeom_math::Direction| {
+            Frame::new(Point::new(0.0, 0.0, z), ogeom_math::Direction::Z, x, T).unwrap()
+        };
+        let low = ring(&mut model, at(0.0, ogeom_math::Direction::X), r);
+        let high = ring(&mut model, at(h, -ogeom_math::Direction::X), r);
+        let (anchor, _) = edge_vertices(&model, &low).unwrap().unwrap();
+
+        let split = split_ring_on_column(&mut model, &surface, &high, &anchor, T)
+            .unwrap()
+            .expect("the rims stand on different columns");
+        let pieces = model.ordered_children_of(&split.shape).unwrap();
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(split.history.modified(&high).len(), 2);
+        // The wire starts on the anchor's column: x = +r.
+        let (start, _) = edge_vertices(&model, &pieces[0]).unwrap().unwrap();
+        let start = model
+            .node(&start)
+            .unwrap()
+            .data()
+            .as_vertex()
+            .unwrap()
+            .point;
+        assert!(start.distance(Point::new(r, 0.0, h)) <= T.confusion());
+        // Aligned now: a second split has nothing to do.
+        assert!(
+            split_ring_on_column(&mut model, &surface, &low, &anchor, T)
+                .unwrap()
+                .is_none()
+        );
+
+        let band = make_band_of_rings(
+            &mut model,
+            &surface,
+            core::slice::from_ref(&low),
+            &pieces,
+            T,
+        )
+        .unwrap();
+        let down = Frame::new(
+            Point::ORIGIN,
+            -ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let bottom = make_face_with_pcurves(
+            &mut model,
+            ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(down)).into(),
+            &[vec![low.reversed()]],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let top = make_face_with_pcurves(
+            &mut model,
+            ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(at(h, ogeom_math::Direction::X)))
+                .into(),
+            core::slice::from_ref(&pieces),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let shell = make_shell(&mut model, &[bottom, band, top]).unwrap().shape;
+        assert!(is_shell_closed(&model, &shell).unwrap());
+        let solid = make_solid(&mut model, &[shell]).unwrap().shape;
+        let diagnosis = crate::check(&model, &solid, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let fine = ogeom_mesh::Deflection {
+            chord: 1e-3,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let volume = crate::volume_properties(&model, &solid, fine, T)
+            .unwrap()
+            .mass;
+        assert_relative_eq!(
+            volume,
+            core::f64::consts::PI * r * r * h,
+            max_relative = 1e-3
+        );
     }
 
     #[test]

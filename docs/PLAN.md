@@ -134,9 +134,18 @@ seam closes.
 **A section tangent to an edge at its end.** A drill whose circle on a rounded
 box's base touches the round's tangent line at the corner vertex, where the
 corner ball touches the base, is refused. At seeds 1 to 3 the stress drill
-scenario refuses one, six and one drills (on the rounded box, a converted
-plate, the frustum, two corpus parts and the shaved cube); the three items
-above cover the diagnosed ones.
+scenario refuses two, two and one drills (on the rounded box and
+`nist_ctc_01`); the three items above and the next cover the diagnosed ones.
+
+**A hug the two faces decide apart.** A drill whose section runs along a
+face's boundary edge within that edge's tolerance: one face takes the section
+as lying on its boundary, the other keeps it as its own curve, and the kept
+pieces do not close. The hug decision needs to be one per edge piece, shared
+by both faces. The stress drill `nist_ctc_01/3` at seed 1 (r 55.958 from
+(-330.234, -187.284, -538.825) along (0.3017, 0.0267, 0.9530)) is refused so,
+and refuses the same on the part read without its bands seamed. Seed 2's
+drills 2 and 4 on that part are refused too and not yet diagnosed; drill 2
+refuses the same on the part read without its bands seamed.
 
 **A tilted half ball drilled on the diagonal chart.** A half ball charted
 about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled
@@ -168,19 +177,6 @@ hole and starts the seam there. When it is the edge, the seam leaves from the
 edge's own vertex and can cross the hole. No measured part builds one.
 
 ### Construction and exchange
-
-**A band whose rims start on different columns gets no seam.** A cylinder
-or torus face bounded by two whole circles whose vertices stand a quarter
-or half turn apart is refused by `make_revolution_band` ("no seam could be
-synthesised") and kept on its own bounds; the STEP reader warns, and the
-face meshes through the fallback. Splitting one rim at the other's column
-lets the band take a seam (patch `band-split-rims.patch` in the scratch
-crate: every corpus warning gone, shells closed, and the converter's
-corner-order seeds on `nist_ftc_07` all come back), but the boolean then
-refuses drills into a torus band whose rim is two pieces ("a face boundary
-strand dangles", five stress drills on two corpus parts). Moving the whole
-rim to the other's column instead keeps the drills but breaks a chain of
-bands sharing one rim. That is the item to settle first.
 
 **The converter's result depends on how the mesh lists its triangles.**
 Recognized regions grow from seeds taken in list order (a stride through

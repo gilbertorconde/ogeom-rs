@@ -34,9 +34,9 @@ fn the_smallest_nist_part_reads_into_a_closed_solid() {
 
     // Every face triangulates: the planes, the cylinder bands through
     // synthesised seams, and the two torus fillets, whose two ring vertices
-    // sit at different angles, so no seam joins them without re-anchoring a
-    // shared edge and their rings are wound to close against their own
-    // translates instead. The warnings say exactly that.
+    // sit at different angles: one rim of each is split on the other's
+    // column, its neighbouring plane takes both pieces, and the fillet is
+    // seamed there with no warning.
     let fine = ogeom_mesh::Deflection {
         chord: 1e-2,
         ..ogeom_mesh::Deflection::default()
@@ -53,11 +53,10 @@ fn the_smallest_nist_part_reads_into_a_closed_solid() {
             meshed += 1;
         }
     }
-    assert_eq!(meshed, 6, "every face meshes, wound torus rings included");
-    assert_eq!(
-        import.report.warnings.len(),
-        2,
-        "the two torus fillets warn that no seam was synthesised, and mesh regardless: {:?}",
+    assert_eq!(meshed, 6, "every face meshes, the seamed fillets included");
+    assert!(
+        import.report.warnings.is_empty(),
+        "{:?}",
         import.report.warnings
     );
 }
