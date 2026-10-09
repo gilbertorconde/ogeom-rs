@@ -212,7 +212,7 @@ fn intersect_with<'c>(
             line,
             curve,
             surface,
-            torus_roots(line, t.torus(), tol),
+            torus_roots(line, t.torus()),
             options,
             tol,
         )),
@@ -333,17 +333,13 @@ fn cone_roots(
 /// The line parameters at which a line meets a torus: the real roots of
 /// `(|w|^2 + R^2 - r^2)^2 = 4 R^2 (w_x^2 + w_y^2)` along `w = m + t d` in
 /// the torus's frame.
-fn torus_roots(
-    line: &ogeom_geom::LineCurve,
-    torus: ogeom_math::Torus,
-    tol: ogeom_core::Tolerances,
-) -> Vec<f64> {
+fn torus_roots(line: &ogeom_geom::LineCurve, torus: ogeom_math::Torus) -> Vec<f64> {
     let (m, d) = in_frame(line, torus.frame());
     let (big, small) = (torus.major_radius(), torus.minor_radius());
     // Solved about the line's nearest approach to the centre, in units of
     // the torus's own size, so the roots stand near one: a torus hundreds
     // of millimetres down the line puts them there otherwise, and the
-    // eigenvalues lose them to the coefficients' spread.
+    // coefficients' spread costs them digits.
     let near = -m.dot(d) / d.dot(d);
     let size = big + small;
     let m = (m + d * near) / size;
@@ -362,62 +358,33 @@ fn torus_roots(
         2.0 * a * b,
         a * a,
     ];
-    quartic_roots(&coefficients, tol)
-        .into_iter()
+    let (found, count) = quartic_roots(&coefficients);
+    found[..count]
+        .iter()
         .map(|sigma| near + sigma * size)
         .collect()
 }
 
-/// A quartic's real roots, tangencies included: a double root comes back
-/// from the eigenvalues a rounding off the real line, and is found instead
-/// as a root of the derivative where the quartic itself all but vanishes.
-fn quartic_roots(c: &[f64; 5], tol: ogeom_core::Tolerances) -> Vec<f64> {
-    let mut found = ogeom_math::solve::roots(c, tol.parametric()).unwrap_or_default();
-    let value = |t: f64| {
-        c[4].mul_add(t, c[3])
-            .mul_add(t, c[2])
-            .mul_add(t, c[1])
-            .mul_add(t, c[0])
-    };
-    let slope = [c[1], 2.0 * c[2], 3.0 * c[3], 4.0 * c[4]];
-    // What a value of the quartic near its roots is next to: its terms'
-    // own size there.
-    let scale = |t: f64| {
-        c.iter()
-            .enumerate()
-            .map(|(k, a)| {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_possible_wrap,
-                    reason = "a degree"
-                )]
-                let power = t.abs().powi(k as i32);
-                (a * power).abs()
-            })
-            .fold(0.0_f64, f64::max)
-    };
-    for t in ogeom_math::solve::roots(&slope, tol.parametric()).unwrap_or_default() {
-        if value(t).abs() <= scale(t) * 1e-9
-            && !found
-                .iter()
-                .any(|r| (r - t).abs() <= 1e-6 * (1.0 + t.abs()))
-        {
-            found.push(t);
+/// The real roots of a quartic whose roots stand near one, tangencies
+/// included: a critical point where the quartic is within 1e-9 of its coefficients'
+/// size of zero is a tangency, the coefficients being differences of terms
+/// that size. Two roots a few roots of epsilon apart are merged into the
+/// one tangency rounding split them from.
+fn quartic_roots(c: &[f64; 5]) -> ([f64; 4], usize) {
+    let mut found = [0.0; 4];
+    let touch = 1e-9 * c.iter().map(|x| x.abs()).sum::<f64>();
+    let count = ogeom_math::solve::real_roots(c, touch, &mut found);
+    let mut merged = 0;
+    for i in 0..count {
+        let t = found[i];
+        if merged > 0 && (t - found[merged - 1]).abs() <= 1e-6 * (1.0 + t.abs()) {
+            found[merged - 1] = f64::midpoint(found[merged - 1], t);
+        } else {
+            found[merged] = t;
+            merged += 1;
         }
     }
-    // A double root split by rounding into two real ones a few roots of
-    // epsilon apart is one tangency.
-    found.sort_by(f64::total_cmp);
-    let mut merged: Vec<f64> = Vec::with_capacity(found.len());
-    for t in found {
-        match merged.last_mut() {
-            Some(last) if (t - *last).abs() <= 1e-6 * (1.0 + t.abs()) => {
-                *last = f64::midpoint(*last, t)
-            }
-            _ => merged.push(t),
-        }
-    }
-    merged
+    (found, merged)
 }
 
 fn cylinder_roots(line: &ogeom_geom::LineCurve, cylinder: ogeom_math::Cylinder) -> Vec<f64> {
@@ -1160,6 +1127,42 @@ mod tests {
         let xs: Vec<f64> = found.crossings.iter().map(|c| c.point.x).collect();
         assert_eq!(xs.len(), 2, "{xs:?}");
         for (got, want) in xs.iter().zip([-15.0, 15.0]) {
+            assert!((got - want).abs() < 1e-9, "{xs:?}");
+        }
+    }
+
+    /// Lines that miss a torus through its hole or along its axis meet
+    /// nothing; one grazing the outer equator touches it once, at the
+    /// tangent point; a segment ending on the tube keeps its end crossings.
+    #[test]
+    fn lines_through_the_hole_along_the_axis_and_grazing_a_torus() {
+        use ogeom_geom::TorusSurface;
+        use ogeom_math::Torus;
+        let options = CurveSurfaceOptions::default();
+        let tilted = Frame::new(
+            Point::new(3.0, -2.0, 1.0),
+            Direction::new(Vector::new(0.1, 0.2, 1.0), T).unwrap(),
+            Direction::new(Vector::new(1.0, 0.0, -0.1), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let torus: SurfaceGeometry =
+            TorusSurface::new(Torus::new(tilted, 60.0, 20.0, T).unwrap()).into();
+        let local = |x: f64, y: f64, z: f64| tilted.to_world(Point::new(x, y, z));
+        let meets = |from: Point, to: Point| {
+            intersect_curve_surface(&segment(from, to), &torus, options, T)
+                .unwrap()
+                .crossings
+        };
+        assert!(meets(local(0.0, 0.0, -100.0), local(0.0, 0.0, 100.0)).is_empty());
+        assert!(meets(local(5.0, 3.0, -100.0), local(-15.0, 3.0, 100.0)).is_empty());
+        let grazing = meets(local(-100.0, 80.0, 0.0), local(100.0, 80.0, 0.0));
+        assert_eq!(grazing.len(), 1, "{grazing:?}");
+        assert!(grazing[0].point.distance(local(0.0, 80.0, 0.0)) < 1e-6);
+        let ends = meets(local(-80.0, 0.0, 0.0), local(80.0, 0.0, 0.0));
+        let xs: Vec<f64> = ends.iter().map(|c| tilted.to_local(c.point).x).collect();
+        assert_eq!(xs.len(), 4, "{xs:?}");
+        for (got, want) in xs.iter().zip([-80.0, -40.0, 40.0, 80.0]) {
             assert!((got - want).abs() < 1e-9, "{xs:?}");
         }
     }

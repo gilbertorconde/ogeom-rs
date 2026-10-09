@@ -14,7 +14,8 @@
 //!   tangential intersection is exactly where the derivative vanishes.
 //! - Roots of a polynomial: [`roots`]. Closed form up to the cubic, the
 //!   quadratic written to avoid the cancellation the schoolbook formula
-//!   suffers. Companion-matrix eigenvalues above that.
+//!   suffers. Above that, or with no allocation, [`real_roots`]: each root
+//!   bracketed between its derivative's roots.
 //! - A system of equations: [`newton_system`]. Surface projection is two
 //!   equations in two unknowns. Intersection marching is much the same.
 //! - A minimum without derivatives: [`minimize`].
@@ -327,12 +328,12 @@ where
 /// The real roots of a polynomial, in increasing order.
 ///
 /// `coefficients` are in ascending power order: `c[0] + c[1] x + c[2] x^2 ...`.
-/// Degrees up to three are solved in closed form. Above that the roots are
-/// the companion matrix's real eigenvalues.
+/// Degrees up to three are solved in closed form. Above that each root is
+/// bracketed between the derivative's roots, as [`real_roots`] does.
 ///
 /// Repeated roots are returned once each, since a geometry caller wants the
 /// distinct parameter values, and a double root (a tangency) is found
-/// although rounding moves it off the real line by half the digits.
+/// although rounding leaves the polynomial a hair either side of zero there.
 ///
 /// # Errors
 ///
@@ -360,7 +361,12 @@ pub fn roots(coefficients: &[f64], tolerance: f64) -> OgeomResult<Vec<f64>> {
         2 => vec![-c[0] / c[1]],
         3 => quadratic_roots(c[2], c[1], c[0]),
         4 => cubic_roots(c[3], c[2], c[1], c[0]),
-        _ => companion_roots(c, tolerance),
+        n => {
+            let mut found = vec![0.0; n - 1];
+            let count = real_roots(c, 0.0, &mut found);
+            found.truncate(count);
+            found
+        }
     };
 
     out.retain(|r| r.is_finite());
@@ -457,98 +463,208 @@ pub fn cubic_roots(a: f64, b: f64, c: f64, d: f64) -> Vec<f64> {
     }
 }
 
-/// Real roots of a polynomial of any degree, via companion-matrix eigenvalues.
-fn companion_roots(c: &[f64], tolerance: f64) -> Vec<f64> {
-    let n = c.len() - 1;
-    let lead = c[n];
-    let mut m = DMatrix::<f64>::zeros(n, n);
-    for i in 0..n {
-        m[(i, n - 1)] = -c[i] / lead;
-        if i + 1 < n {
-            m[(i + 1, i)] = 1.0;
-        }
+/// Polynomials up to this degree are solved with their working on the stack.
+const STACK_DEGREE: usize = 16;
+
+/// The real roots of a polynomial, in increasing order, written to the front
+/// of `out`; returns how many there are.
+///
+/// `coefficients` are in ascending power order, as for [`roots`]; leading
+/// coefficients that are exactly zero are dropped. Nothing is allocated up
+/// to degree 16.
+///
+/// The derivative's real roots, found the same way down to a line, split
+/// the real line into intervals on which the polynomial is monotone. Each
+/// interval whose ends differ in sign holds one root, which safeguarded
+/// Newton finds with bisection to fall back on (Yuksel, "High-Performance
+/// Polynomial Root Finding for Graphics", HPG 2022). A root of even
+/// multiplicity, a tangency, has no sign change around it: it is a critical
+/// point where the polynomial's value is zero to rounding, or no larger
+/// than `touch` with no root on either side. `touch` is in the polynomial's
+/// own units, since only the caller knows what rounding its coefficients
+/// carry. Such a root comes back once.
+///
+/// A polynomial whose every coefficient is zero, or one that is not finite,
+/// has no roots returned.
+///
+/// # Panics
+///
+/// If `out` has room for fewer values than the polynomial's degree.
+pub fn real_roots(coefficients: &[f64], touch: f64, out: &mut [f64]) -> usize {
+    let mut c = coefficients;
+    while let Some((&0.0, rest)) = c.split_last() {
+        c = rest;
     }
-    // Only the real eigenvalues are roots. Complex conjugate pairs are not,
-    // save a double root, which rounding splits into a pair half the digits
-    // off the line. Such a pair is a root where the polynomial's
-    // value is zero to rounding at its real part.
-    let value = |x: f64| -> (f64, f64) {
-        let (mut p, mut size) = (0.0_f64, 0.0_f64);
-        for &coefficient in c.iter().rev() {
-            p = p.mul_add(x, coefficient);
-            size = size.mul_add(x.abs(), coefficient.abs());
-        }
-        (p, size)
-    };
-    // The Schur iteration is capped: some companion matrices (a quartic
-    // whose roots come in pairs of opposite sign, a ray through a torus's
-    // middle) defeat its shifts and it would run on for ever. Where it does
-    // not settle the roots are found by Durand-Kerner instead.
-    let eigenvalues: Vec<nalgebra::Complex<f64>> =
-        match nalgebra::linalg::Schur::try_new(m, f64::EPSILON, 1000) {
-            Some(schur) => schur.complex_eigenvalues().iter().copied().collect(),
-            None => durand_kerner(c),
+    if c.len() < 2 || c.iter().any(|v| !v.is_finite()) {
+        return 0;
+    }
+    let n = c.len() - 1;
+    assert!(out.len() >= n, "room for {} of {n} roots", out.len());
+    // Fujiwara's bound on the roots' moduli, doubled so that no root stands
+    // near an end where rounding could flip the value's sign. By Gauss-Lucas
+    // every derivative's roots lie within it too.
+    let lead = c[n];
+    let mut bound = 0.0_f64;
+    for k in 1..=n {
+        let ratio = (c[n - k] / lead).abs();
+        let ratio = if k == n { ratio / 2.0 } else { ratio };
+        #[allow(clippy::cast_precision_loss, reason = "a degree")]
+        let term = if k == 1 {
+            ratio
+        } else {
+            ratio.powf(1.0 / k as f64)
         };
-    eigenvalues
-        .iter()
-        .filter_map(|e| {
-            let scale = e.re.abs().max(1.0);
-            if e.im.abs() <= tolerance.max(1e-9) * scale {
-                return Some(e.re);
-            }
-            if e.im.abs() > 1e-7 * scale {
-                return None;
-            }
-            let (p, size) = value(e.re);
-            (p.abs() <= 1e-10 * size).then_some(e.re)
-        })
-        .collect()
+        bound = bound.max(term);
+    }
+    let bound = if bound > 0.0 { 4.0 * bound } else { 1.0 };
+    if !bound.is_finite() {
+        return 0;
+    }
+    monotone_roots(c, touch, bound, out)
 }
 
-/// A polynomial's complex roots by Durand-Kerner iteration, from points
-/// spread on a circle the roots lie within: each root moved by the
-/// polynomial's value over the product of its distances to the others,
-/// until no move is larger than rounding, or a few hundred rounds.
-fn durand_kerner(c: &[f64]) -> Vec<nalgebra::Complex<f64>> {
-    use nalgebra::Complex;
+/// The roots of `c` (degree at least one, nonzero lead) within `bound`.
+fn monotone_roots(c: &[f64], touch: f64, bound: f64, out: &mut [f64]) -> usize {
     let n = c.len() - 1;
-    let lead = c[n];
-    let monic: Vec<f64> = c.iter().map(|x| x / lead).collect();
-    // Every root lies within one plus the largest coefficient of the monic
-    // polynomial.
-    let radius = 1.0 + monic[..n].iter().fold(0.0_f64, |m, x| m.max(x.abs()));
-    #[allow(clippy::cast_precision_loss, reason = "a degree")]
-    let mut z: Vec<Complex<f64>> = (0..n)
-        .map(|k| Complex::from_polar(radius, 0.4 + core::f64::consts::TAU * k as f64 / n as f64))
-        .collect();
-    let value = |x: Complex<f64>| {
-        let mut p = Complex::new(1.0, 0.0);
-        for &coefficient in monic[..n].iter().rev() {
-            p = p * x + coefficient;
-        }
-        p
-    };
-    for _ in 0..500 {
-        let mut largest = 0.0_f64;
-        for i in 0..n {
-            let mut denominator = Complex::new(1.0, 0.0);
-            for j in 0..n {
-                if i != j {
-                    denominator *= z[i] - z[j];
-                }
-            }
-            if denominator.norm() == 0.0 {
-                continue;
-            }
-            let step = value(z[i]) / denominator;
-            z[i] -= step;
-            largest = largest.max(step.norm() / z[i].norm().max(1.0));
-        }
-        if largest <= f64::EPSILON * 4.0 {
-            break;
-        }
+    if n == 1 {
+        out[0] = -c[0] / c[1];
+        return 1;
     }
-    z
+    if n <= STACK_DEGREE {
+        let mut slope = [0.0; STACK_DEGREE];
+        let mut critical = [0.0; STACK_DEGREE];
+        split_roots(
+            c,
+            touch,
+            bound,
+            out,
+            &mut slope[..n],
+            &mut critical[..n - 1],
+        )
+    } else {
+        let (mut slope, mut critical) = (vec![0.0; n], vec![0.0; n - 1]);
+        split_roots(c, touch, bound, out, &mut slope, &mut critical)
+    }
+}
+
+/// The roots of `c`, from the roots of its derivative, with `slope` and
+/// `critical` as working space for the derivative and its roots.
+fn split_roots(
+    c: &[f64],
+    touch: f64,
+    bound: f64,
+    out: &mut [f64],
+    slope: &mut [f64],
+    critical: &mut [f64],
+) -> usize {
+    let n = c.len() - 1;
+    for (k, s) in slope.iter_mut().enumerate() {
+        #[allow(clippy::cast_precision_loss, reason = "a degree")]
+        let power = (k + 1) as f64;
+        *s = power * c[k + 1];
+    }
+    let found = monotone_roots(slope, 0.0, bound, critical);
+    // What Horner's rule and the coefficients' own rounding can leave in a
+    // value, relative to its terms' size, with room to spare: a value no
+    // larger is zero.
+    #[allow(clippy::cast_precision_loss, reason = "a degree")]
+    let rounding = 32.0 * n as f64 * f64::EPSILON;
+
+    let mut count = 0;
+    let mut push = |x: f64| {
+        if count < out.len() {
+            out[count] = x;
+            count += 1;
+        }
+    };
+    // Walk the monotone intervals left to right. A critical point within
+    // `touch` of zero is a root only once the intervals either side of it
+    // are known not to cross: if they do, its value is on the far side of
+    // zero and the crossings are the roots.
+    let mut a = -bound;
+    let (mut fa, _, _) = value_and_slope(c, a);
+    let mut a_touches = false;
+    let mut crossed_before = false;
+    let ends = critical[..found].iter().map(|&x| (x, true));
+    for (b, is_critical) in ends.chain(core::iter::once((bound, false))) {
+        if b <= a {
+            continue;
+        }
+        let (mut fb, _, size) = value_and_slope(c, b);
+        let b_touches = is_critical && fb.abs() <= touch;
+        if is_critical && fb.abs() <= rounding * size {
+            fb = 0.0;
+        }
+        let crosses = fa * fb < 0.0;
+        if fa == 0.0 || (a_touches && !crossed_before && !crosses) {
+            push(a);
+        }
+        if crosses {
+            push(monotone_root(c, a, b, fa, fb));
+        }
+        crossed_before = crosses;
+        a_touches = b_touches;
+        (a, fa) = (b, fb);
+    }
+    if fa == 0.0 {
+        push(a);
+    }
+    count
+}
+
+/// A polynomial's value and slope at `x`, and the size of its terms there,
+/// `sum |c_k| |x|^k`, which bounds the rounding in the value.
+fn value_and_slope(c: &[f64], x: f64) -> (f64, f64, f64) {
+    let (mut p, mut dp, mut size) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let magnitude = x.abs();
+    for &coefficient in c.iter().rev() {
+        dp = dp.mul_add(x, p);
+        p = p.mul_add(x, coefficient);
+        size = size.mul_add(magnitude, coefficient.abs());
+    }
+    (p, dp, size)
+}
+
+/// The one root of `c` in `[a, b]`, where `fa` and `fb` differ in sign:
+/// Newton from the secant's point, bisecting whenever a step would leave
+/// the bracket or does not halve the step before last. The bracket keeps
+/// the sign change, so the result is a root even where `c` is not monotone.
+fn monotone_root(c: &[f64], mut a: f64, mut b: f64, fa: f64, fb: f64) -> f64 {
+    let rising = fb > 0.0;
+    let mut x = a - fa * (b - a) / (fb - fa);
+    if !(x > a && x < b) {
+        x = f64::midpoint(a, b);
+    }
+    let (mut step, mut previous) = (b - a, b - a);
+    for _ in 0..128 {
+        let (f, df, _) = value_and_slope(c, x);
+        if f == 0.0 {
+            return x;
+        }
+        if (f > 0.0) == rising {
+            b = x;
+        } else {
+            a = x;
+        }
+        let delta = f / df;
+        let newton = x - delta;
+        let next = if newton > a && newton < b && delta.abs() * 2.0 <= previous.abs() {
+            previous = step;
+            step = delta;
+            newton
+        } else {
+            previous = step;
+            step = 0.5 * (b - a);
+            f64::midpoint(a, b)
+        };
+        // A step below rounding has converged; so has a bracket with no
+        // float left inside it.
+        if next == x || step.abs() <= 2.0 * f64::EPSILON * next.abs() || next == a || next == b {
+            return next;
+        }
+        x = next;
+    }
+    x
 }
 
 /// Minimize a scalar function on `[a, b]` without derivatives.
@@ -1436,5 +1552,417 @@ mod tests {
         check([0.5, 2.0, -1.0, 1.5]);
         check([1.0, -1.0, 1.0, -1.0, 2.0]);
         check([3.0, 0.2, 0.7, 1.1, 0.4]);
+    }
+
+    /// The bracketing solver against two oracles: roots built from known
+    /// factors, and the companion matrix's real eigenvalues.
+    mod bracketing {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// The real eigenvalues of the companion matrix, with near-real
+        /// pairs kept where the polynomial all but vanishes, and Durand-Kerner
+        /// where the Schur iteration does not settle.
+        fn companion(c: &[f64]) -> Vec<f64> {
+            let n = c.len() - 1;
+            let lead = c[n];
+            let mut m = DMatrix::<f64>::zeros(n, n);
+            for i in 0..n {
+                m[(i, n - 1)] = -c[i] / lead;
+                if i + 1 < n {
+                    m[(i + 1, i)] = 1.0;
+                }
+            }
+            let eigenvalues: Vec<nalgebra::Complex<f64>> =
+                match nalgebra::linalg::Schur::try_new(m, f64::EPSILON, 1000) {
+                    Some(schur) => schur.complex_eigenvalues().iter().copied().collect(),
+                    None => durand_kerner(c),
+                };
+            let mut out: Vec<f64> = eigenvalues
+                .iter()
+                .filter_map(|e| {
+                    let scale = e.re.abs().max(1.0);
+                    if e.im.abs() <= 1e-9 * scale {
+                        return Some(e.re);
+                    }
+                    if e.im.abs() > 1e-7 * scale {
+                        return None;
+                    }
+                    let (p, _, size) = value_and_slope(c, e.re);
+                    (p.abs() <= 1e-10 * size).then_some(e.re)
+                })
+                .collect();
+            out.sort_by(f64::total_cmp);
+            out
+        }
+
+        fn durand_kerner(c: &[f64]) -> Vec<nalgebra::Complex<f64>> {
+            use nalgebra::Complex;
+            let n = c.len() - 1;
+            let monic: Vec<f64> = c.iter().map(|x| x / c[n]).collect();
+            let radius = 1.0 + monic[..n].iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+            #[allow(clippy::cast_precision_loss)]
+            let mut z: Vec<Complex<f64>> = (0..n)
+                .map(|k| {
+                    Complex::from_polar(radius, 0.4 + core::f64::consts::TAU * k as f64 / n as f64)
+                })
+                .collect();
+            let value = |x: Complex<f64>| {
+                let mut p = Complex::new(1.0, 0.0);
+                for &coefficient in monic[..n].iter().rev() {
+                    p = p * x + coefficient;
+                }
+                p
+            };
+            for _ in 0..500 {
+                let mut largest = 0.0_f64;
+                for i in 0..n {
+                    let mut denominator = Complex::new(1.0, 0.0);
+                    for j in 0..n {
+                        if i != j {
+                            denominator *= z[i] - z[j];
+                        }
+                    }
+                    if denominator.norm() == 0.0 {
+                        continue;
+                    }
+                    let step = value(z[i]) / denominator;
+                    z[i] -= step;
+                    largest = largest.max(step.norm() / z[i].norm().max(1.0));
+                }
+                if largest <= f64::EPSILON * 4.0 {
+                    break;
+                }
+            }
+            z
+        }
+
+        /// The ascending coefficients of `lead * prod (x - r)`.
+        fn from_roots(lead: f64, roots: &[f64]) -> Vec<f64> {
+            let mut c = vec![lead];
+            for &r in roots {
+                let mut next = vec![0.0; c.len() + 1];
+                for (k, a) in c.iter().enumerate() {
+                    next[k + 1] += a;
+                    next[k] -= a * r;
+                }
+                c = next;
+            }
+            c
+        }
+
+        /// `from_roots` times `x^2 - 2 re x + re^2 + im^2`, a pair with no
+        /// real root.
+        fn with_pair(c: &[f64], re: f64, im: f64) -> Vec<f64> {
+            let quadratic = [re.mul_add(re, im * im), -2.0 * re, 1.0];
+            let mut out = vec![0.0; c.len() + 2];
+            for (i, a) in c.iter().enumerate() {
+                for (j, b) in quadratic.iter().enumerate() {
+                    out[i + j] += a * b;
+                }
+            }
+            out
+        }
+
+        /// The roots of a line-torus quartic, touching within the
+        /// intersection's threshold.
+        fn on_torus(c: &[f64; 5]) -> Vec<f64> {
+            solve(c, 1e-9 * c.iter().map(|x| x.abs()).sum::<f64>())
+        }
+
+        fn solve(c: &[f64], touch: f64) -> Vec<f64> {
+            let mut out = vec![0.0; c.len()];
+            let n = real_roots(c, touch, &mut out);
+            out.truncate(n);
+            out
+        }
+
+        /// `found` is `expected` one for one, in order, each within `relative`
+        /// of the root's magnitude (and of `scale` near zero).
+        fn matches(found: &[f64], expected: &[f64], relative: f64, scale: f64) -> bool {
+            found.len() == expected.len()
+                && found
+                    .iter()
+                    .zip(expected)
+                    .all(|(f, e)| (f - e).abs() <= relative * e.abs().max(scale))
+        }
+
+        fn sorted(mut v: Vec<f64>) -> Vec<f64> {
+            v.sort_by(f64::total_cmp);
+            v
+        }
+
+        /// The line-torus quartic, in the frame and units the intersection
+        /// solves it in: offset `m` from the centre at the line's nearest
+        /// approach, unit direction `d`, radii over their sum.
+        fn torus_quartic(m: [f64; 3], d: [f64; 3], big: f64) -> [f64; 5] {
+            let small = 1.0 - big;
+            let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+            let a = dot(d, d);
+            let b = 2.0 * dot(m, d);
+            let c = dot(m, m) + big * big - small * small;
+            let p = d[0] * d[0] + d[1] * d[1];
+            let q = 2.0 * (m[0] * d[0] + m[1] * d[1]);
+            let s = m[0] * m[0] + m[1] * m[1];
+            let four = 4.0 * big * big;
+            [
+                c * c - four * s,
+                2.0 * b * c - four * q,
+                b * b + 2.0 * a * c - four * p,
+                2.0 * a * b,
+                a * a,
+            ]
+        }
+
+        #[test]
+        fn simple_and_repeated_roots_come_back_once_each() {
+            // Four simple roots, both signs.
+            let c = from_roots(1.0, &[-3.0, -0.5, 1.0, 7.0]);
+            assert!(matches(
+                &solve(&c, 0.0),
+                &[-3.0, -0.5, 1.0, 7.0],
+                1e-12,
+                1.0
+            ));
+            // A double root between two simple ones, and at either end of
+            // the real roots.
+            for (roots, distinct) in [
+                ([-1.0, 2.0, 2.0, 5.0], [-1.0, 2.0, 5.0]),
+                ([-4.0, -4.0, 0.5, 3.0], [-4.0, 0.5, 3.0]),
+                ([-2.0, 1.5, 6.0, 6.0], [-2.0, 1.5, 6.0]),
+            ] {
+                let c = from_roots(2.0, &roots);
+                let found = solve(&c, 0.0);
+                assert!(
+                    matches(&found, &distinct, 1e-7, 1.0),
+                    "{roots:?}: {found:?}"
+                );
+            }
+            // Two double roots, and a triple and a quadruple root.
+            let found = solve(&from_roots(1.0, &[-1.0, -1.0, 3.0, 3.0]), 0.0);
+            assert!(matches(&found, &[-1.0, 3.0], 1e-7, 1.0), "{found:?}");
+            let found = solve(&from_roots(1.0, &[0.5, 2.0, 2.0, 2.0]), 0.0);
+            assert!(matches(&found, &[0.5, 2.0], 1e-5, 1.0), "{found:?}");
+            let found = solve(&from_roots(1.0, &[1.25; 4]), 0.0);
+            assert!(matches(&found, &[1.25], 1e-3, 1.0), "{found:?}");
+        }
+
+        #[test]
+        fn a_root_at_zero_or_at_a_critical_point_is_found_once() {
+            // x (x - 1)(x + 2)(x - 3): a root exactly at zero.
+            let found = solve(&from_roots(1.0, &[0.0, 1.0, -2.0, 3.0]), 0.0);
+            assert!(
+                matches(&found, &[-2.0, 0.0, 1.0, 3.0], 1e-12, 1.0),
+                "{found:?}"
+            );
+            // x^4 - 2 x^2 = x^2 (x^2 - 2): the double root at zero is a
+            // critical point whose value is exactly zero.
+            let found = solve(&[0.0, 0.0, -2.0, 0.0, 1.0], 0.0);
+            let r = 2.0_f64.sqrt();
+            assert!(matches(&found, &[-r, 0.0, r], 1e-12, 1.0), "{found:?}");
+            // x^4 alone, and x^4 - 1 with roots at the bound's scale.
+            assert_eq!(solve(&[0.0, 0.0, 0.0, 0.0, 1.0], 0.0), vec![0.0]);
+            let found = solve(&[-1.0, 0.0, 0.0, 0.0, 1.0], 0.0);
+            assert!(matches(&found, &[-1.0, 1.0], 1e-14, 1.0), "{found:?}");
+        }
+
+        #[test]
+        fn degenerate_input_has_no_roots_and_high_degree_works() {
+            assert_eq!(real_roots(&[0.0; 5], 0.0, &mut [0.0; 4]), 0);
+            assert_eq!(real_roots(&[1.0, f64::NAN, 1.0], 0.0, &mut [0.0; 2]), 0);
+            assert_eq!(real_roots(&[3.0, 0.0, 0.0], 0.0, &mut []), 0);
+            // Leading exact zeros drop the degree.
+            let found = solve(&[-4.0, 0.0, 1.0, 0.0, 0.0], 0.0);
+            assert!(matches(&found, &[-2.0, 2.0], 1e-14, 1.0), "{found:?}");
+            // Degree twenty, past the stack's working space.
+            let roots: Vec<f64> = (0..20).map(|k| f64::from(k) * 0.25 - 2.0).collect();
+            let found = solve(&from_roots(1.0, &roots), 0.0);
+            assert!(matches(&found, &roots, 1e-6, 1.0), "{found:?}");
+        }
+
+        #[test]
+        fn a_near_tangency_is_a_touch_only_within_the_threshold() {
+            // ((x - 1)^2 + e)((x + 3)^2 + 1): no real root, the minimum 17 e
+            // above zero at one. Within rounding it is a root whatever the
+            // threshold; past rounding, only within the threshold.
+            for (e, touch, touches) in [
+                (1e-14, 0.0, true),
+                (1e-11, 0.0, false),
+                (1e-11, 1e-9, true),
+                (1e-8, 1e-9, false),
+            ] {
+                let c = [1.0 + e, -2.0, 1.0];
+                let c = with_pair(&c, -3.0, 1.0);
+                let found = solve(&c, touch);
+                if touches {
+                    assert!(matches(&found, &[1.0], 1e-9, 1.0), "{e}: {found:?}");
+                } else {
+                    assert!(found.is_empty(), "{e}: {found:?}");
+                }
+            }
+            // ((x - 1)^2 - e)((x + 3)^2 + 1): two real roots, or one where
+            // rounding cannot tell them apart, never a third.
+            for e in [1e-8, 1e-11, 1e-14] {
+                let c = with_pair(&[1.0 - e, -2.0, 1.0], -3.0, 1.0);
+                let found = solve(&c, 1e-9);
+                let (low, high) = (1.0 - e.sqrt(), 1.0 + e.sqrt());
+                assert!(
+                    matches(&found, &[low, high], 1e-8, 1.0) || matches(&found, &[1.0], 1e-6, 1.0),
+                    "{e}: {found:?}"
+                );
+            }
+        }
+
+        fn real_root() -> impl Strategy<Value = f64> {
+            -1.0..1.0f64
+        }
+
+        proptest! {
+            /// Distinct real roots at any scale, with or without a complex
+            /// pair beside them, are all found to within rounding of their
+            /// conditioning.
+            #[test]
+            fn known_simple_roots_are_found_at_any_scale(
+                first in real_root(),
+                gaps in proptest::collection::vec(0.05..0.7f64, 1..=3),
+                exponent in -6i32..=6,
+                lead in prop_oneof![-1e3..-1e-3f64, 1e-3..1e3f64],
+                pair in proptest::option::of((real_root(), 0.1..1.0f64)),
+            ) {
+                let mut roots = vec![first];
+                for gap in gaps {
+                    roots.push(roots[roots.len() - 1] + gap);
+                }
+                let scale = 10f64.powi(exponent);
+                let roots: Vec<f64> = roots.iter().map(|r| r * scale).collect();
+                let mut c = from_roots(lead, &roots);
+                if roots.len() <= 2 && let Some((re, im)) = pair {
+                    c = with_pair(&c, re * scale, im * scale);
+                }
+                let found = solve(&c, 0.0);
+                prop_assert!(matches(&found, &roots, 1e-9, scale), "{roots:?}: {found:?}");
+            }
+
+            /// A double root among simple ones comes back once, to half the
+            /// digits; a pair a little apart comes back as two.
+            #[test]
+            fn double_and_near_double_roots(
+                double in real_root(),
+                apart in (0.1..1.0f64, 0.1..1.0f64),
+                sides in (any::<bool>(), any::<bool>()),
+                split in prop_oneof![Just(0.0), 1e-4..1e-2f64],
+                exponent in -4i32..=4,
+            ) {
+                let scale = 10f64.powi(exponent);
+                // One root either side, or both on one side a step apart.
+                let side = |left: bool, d: f64| if left { double - d } else { double + d };
+                let second = if sides.0 == sides.1 { apart.0 + apart.1 } else { apart.1 };
+                let others = [side(sides.0, apart.0), side(sides.1, second)];
+                let pair = [double - split, double + split];
+                let all = [pair[0], pair[1], others[0], others[1]].map(|r| r * scale);
+                let c = from_roots(1.0, &all);
+                let found = solve(&c, 0.0);
+                let expected = if split == 0.0 {
+                    sorted(vec![double, others[0], others[1]])
+                } else {
+                    sorted(vec![pair[0], pair[1], others[0], others[1]])
+                };
+                let expected: Vec<f64> = expected.iter().map(|r| r * scale).collect();
+                let precision = if split == 0.0 { 1e-6 } else { 1e-7 / split };
+                prop_assert!(
+                    matches(&found, &expected, precision, scale),
+                    "{expected:?}: {found:?}"
+                );
+            }
+
+            /// Any quartic: every root the companion matrix finds where the
+            /// quartic crosses cleanly is found here, and nothing else.
+            #[test]
+            fn agrees_with_the_companion_matrix(
+                mut c in proptest::collection::vec(-10.0..10.0f64, 4),
+                lead in prop_oneof![-10.0..-0.1f64, 0.1..10.0f64],
+            ) {
+                c.push(lead);
+                let new = solve(&c, 1e-10);
+                let old = companion(&c);
+                let clean = |r: &f64| {
+                    let (_, slope, size) = value_and_slope(&c, *r);
+                    slope.abs() * (1.0 + r.abs()) > 1e-3 * size
+                };
+                let near = |set: &[f64], r: f64| {
+                    set.iter().any(|s| (s - r).abs() <= 1e-8 * r.abs().max(1.0))
+                };
+                for r in old.iter().filter(|r| clean(r)) {
+                    prop_assert!(near(&new, *r), "{r} of {old:?} missing from {new:?}");
+                }
+                for r in new.iter().filter(|r| clean(r)) {
+                    prop_assert!(near(&old, *r), "{r} of {new:?} not in {old:?}");
+                }
+            }
+
+            /// Line-torus quartics: every crossing the companion matrix finds
+            /// is found here, every root found makes the quartic vanish, and a
+            /// tangency comes back once.
+            #[test]
+            fn torus_quartics_agree_with_the_companion_matrix(
+                offset in (-1.5..1.5f64, -1.5..1.5f64, -0.5..0.5f64),
+                direction in (-1.0..1.0f64, -1.0..1.0f64, -1.0..1.0f64),
+                big in 0.55..0.95f64,
+            ) {
+                let d = [direction.0, direction.1, direction.2];
+                let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                prop_assume!(length > 0.1);
+                let d = d.map(|x| x / length);
+                let m = [offset.0, offset.1, offset.2];
+                let along = m[0] * d[0] + m[1] * d[1] + m[2] * d[2];
+                let m = [0, 1, 2].map(|k| m[k] - along * d[k]);
+                let c = torus_quartic(m, d, big);
+                let new = on_torus(&c);
+                let old = companion(&c);
+                for r in &new {
+                    let (p, _, _) = value_and_slope(&c, *r);
+                    let size = c.iter().map(|x| x.abs()).sum::<f64>() * r.abs().max(1.0).powi(4);
+                    prop_assert!(p.abs() <= 1e-9 * size, "{r}: {p} of {size}");
+                }
+                prop_assert!(new.windows(2).all(|w| w[1] > w[0]), "{new:?}");
+                for r in &old {
+                    prop_assert!(
+                        new.iter().any(|s| (s - r).abs() <= 1e-6),
+                        "{r} of {old:?} missing from {new:?}"
+                    );
+                }
+            }
+        }
+
+        /// Lines against a torus: through the hole, along the axis, grazing
+        /// the tube's top and the outer equator, and across the middle.
+        #[test]
+        fn line_torus_quartics() {
+            let big = 0.75;
+            let small = 0.25;
+            // Across the middle in the torus's plane: four crossings.
+            let found = on_torus(&torus_quartic([0.0; 3], [1.0, 0.0, 0.0], big));
+            assert!(
+                matches(&found, &[-1.0, -0.5, 0.5, 1.0], 1e-12, 1.0),
+                "{found:?}"
+            );
+            // Along the axis, and steeply through the hole: no crossing.
+            assert!(on_torus(&torus_quartic([0.0; 3], [0.0, 0.0, 1.0], big)).is_empty());
+            let found = on_torus(&torus_quartic([0.1, 0.05, 0.0], [0.1, 0.0, 0.995], big));
+            assert!(found.is_empty(), "{found:?}");
+            // Along the tube's top: tangent twice.
+            let found = on_torus(&torus_quartic([0.0, 0.0, small], [1.0, 0.0, 0.0], big));
+            assert!(matches(&found, &[-big, big], 1e-7, 1.0), "{found:?}");
+            // Grazing the outer equator: one tangency.
+            let found = on_torus(&torus_quartic([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], big));
+            assert!(matches(&found, &[0.0], 1e-7, 1.0), "{found:?}");
+            // Grazing the inner equator: one tangency between two crossings.
+            let found = on_torus(&torus_quartic([0.0, 0.5, 0.0], [1.0, 0.0, 0.0], big));
+            let outer = 0.75_f64.sqrt();
+            assert!(
+                matches(&found, &[-outer, 0.0, outer], 1e-7, 1.0),
+                "{found:?}"
+            );
+        }
     }
 }

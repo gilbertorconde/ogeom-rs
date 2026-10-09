@@ -144,6 +144,8 @@ fn benchmarks() -> Vec<Bench> {
         ("construct_boxes", Box::new(construct_boxes)),
         ("traverse_box", Box::new(traverse_box)),
         ("tessellate_torus", Box::new(tessellate_torus)),
+        ("quartic_torus", Box::new(quartic_torus)),
+        ("intersect_line_torus", Box::new(intersect_line_torus)),
         ("boolean_drill", Box::new(boolean_drill)),
         ("boolean_many_faces", Box::new(boolean_many_faces)),
         ("boolean_local", Box::new(boolean_local)),
@@ -216,6 +218,114 @@ fn tessellate_torus() -> Option<Stats> {
             .shape;
         let done = ogeom::mesh::tessellate(&mut model, &solid, Deflection::default(), T).unwrap();
         std::hint::black_box(done.triangles);
+    }))
+}
+
+/// Lines against a torus of major radius 20 and minor radius 5 at the
+/// origin, in its own frame: a deterministic spread through the hole,
+/// across the tube, grazing its top and in any direction, a thousand in all.
+fn torus_lines() -> Vec<(Point, Vector)> {
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        #[allow(clippy::cast_precision_loss)]
+        let unit = (state >> 11) as f64 / (1_u64 << 53) as f64;
+        unit.mul_add(2.0, -1.0)
+    };
+    let mut lines = Vec::with_capacity(1000);
+    for i in 0..1000 {
+        let line = match i % 4 {
+            // Through the hole, steeply.
+            0 => (
+                Point::new(next() * 10.0, next() * 10.0, -40.0),
+                Vector::new(next() * 0.3, next() * 0.3, 1.0),
+            ),
+            // Across the whole torus, in its plane or near it.
+            1 => (
+                Point::new(-40.0, next() * 24.0, next() * 4.0),
+                Vector::new(1.0, next() * 0.1, next() * 0.1),
+            ),
+            // Along the tube's top, grazing it.
+            2 => (
+                Point::new(-40.0, next() * 20.0, 5.0),
+                Vector::new(1.0, 0.0, 0.0),
+            ),
+            // Anywhere.
+            _ => (
+                Point::new(next() * 40.0, next() * 40.0, next() * 40.0),
+                Vector::new(next(), next(), next()),
+            ),
+        };
+        lines.push(line);
+    }
+    lines
+}
+
+/// The line-torus quartic alone: the polynomial roots of a thousand lines
+/// against a torus, the coefficients formed as the intersection forms them.
+fn quartic_torus() -> Option<Stats> {
+    let (big, small) = (20.0 / 25.0, 5.0 / 25.0);
+    let quartics: Vec<[f64; 5]> = torus_lines()
+        .into_iter()
+        .map(|(from, along)| {
+            let d = along / along.magnitude();
+            let m = (from - Point::ORIGIN) / 25.0;
+            let m = m - d * m.dot(d);
+            let a = d.dot(d);
+            let b = 2.0 * m.dot(d);
+            let c = m.dot(m) + big * big - small * small;
+            let p = d.x.mul_add(d.x, d.y * d.y);
+            let q = 2.0 * m.x.mul_add(d.x, m.y * d.y);
+            let s = m.x.mul_add(m.x, m.y * m.y);
+            let four = 4.0 * big * big;
+            [
+                c.mul_add(c, -four * s),
+                2.0f64.mul_add(b * c, -four * q),
+                b.mul_add(b, 2.0 * a * c) - four * p,
+                2.0 * a * b,
+                a * a,
+            ]
+        })
+        .collect();
+    Some(time(|| {
+        for quartic in &quartics {
+            let found = ogeom::math::solve::roots(std::hint::black_box(quartic), 1e-9).unwrap();
+            std::hint::black_box(found);
+        }
+    }))
+}
+
+/// Line-torus intersection: a thousand lines against a torus in a tilted
+/// frame, roots and polish together.
+fn intersect_line_torus() -> Option<Stats> {
+    use ogeom::geom::{Curve, LineCurve, SurfaceGeometry, TorusSurface};
+    use ogeom::intersect::{CurveSurfaceOptions, intersect_curve_surface};
+    let frame = Frame::new(
+        Point::new(3.0, -2.0, 1.0),
+        Direction::new(Vector::new(0.1, 0.2, 1.0), T).unwrap(),
+        Direction::new(Vector::new(1.0, 0.0, -0.1), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let torus: SurfaceGeometry =
+        TorusSurface::new(ogeom::math::Torus::new(frame, 20.0, 5.0, T).unwrap()).into();
+    let lines: Vec<Curve> = torus_lines()
+        .into_iter()
+        .map(|(from, along)| {
+            let to = from + along * (80.0 / along.magnitude());
+            LineCurve::segment(frame.to_world(from), frame.to_world(to), T)
+                .unwrap()
+                .into()
+        })
+        .collect();
+    let options = CurveSurfaceOptions::default();
+    Some(time(|| {
+        for line in &lines {
+            let found = intersect_curve_surface(line, &torus, options, T).unwrap();
+            std::hint::black_box(found);
+        }
     }))
 }
 
