@@ -2461,6 +2461,161 @@ fn at_param(t: f64, domain: (f64, f64), closed: bool) -> f64 {
     if closed { fold(t, domain) } else { t }
 }
 
+/// How far apart a face's chart holds two of its edges' ends as one point:
+/// its loosest edge, the vertices that edge ends at, and the holes set
+/// aside from it.
+fn doubt_of(face: &GFace) -> f64 {
+    face.edges
+        .iter()
+        .fold(0.0_f64, |acc, e| {
+            acc.max(e.tolerance * 2.0)
+                .max(e.ends_tolerance + e.tolerance)
+        })
+        .max(
+            face.holes_aside
+                .iter()
+                .fold(0.0_f64, |acc, hole| acc.max(hole.doubt)),
+        )
+}
+
+/// One hug decision for each stretch of an edge, shared by every section
+/// running along it.
+///
+/// Where a face of one solid passes along an edge of the other, each face
+/// of the edge meets it in its own section, and the two sections run
+/// between the same crossings of the edge. Each section's hug is asked of
+/// its own face's edges at its own width (a fitted section's is wider than
+/// an exact one's), and the face both sections cross welds its chart at the
+/// loosest doubt of anything it meets. Decided apart, one face of the edge
+/// keeps the edge while the other keeps its section, or both keep their
+/// sections while the crossed face welds the sliver between them to
+/// nothing, and the kept pieces do not close.
+///
+/// Two such pieces are decided together. Where both stay along the edge
+/// and along each other within the widest of their hug widths and the
+/// crossed face's weld, the stretch is the edge's on both faces: both
+/// pieces hug it, admitted onto the crossed face as a hugging piece is.
+fn share_hugs(
+    pieces: &mut [SectionPiece],
+    sections: &[SectionRec],
+    solids: [&GSolid; 2],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let point_of = |section: &SectionRec, t: f64| -> OgeomResult<Point> {
+        let domain = section.curve.domain();
+        section
+            .curve
+            .point_at(at_param(t, domain, section.closed), tol)
+    };
+    let face_of = |s: &SectionRec, side: usize| if side == 0 { s.face_a } else { s.face_b };
+    // Each face's weld: its own doubt and that of every face its sections
+    // end on.
+    let mut weld: [Vec<f64>; 2] = [
+        solids[0].faces.iter().map(doubt_of).collect(),
+        solids[1].faces.iter().map(doubt_of).collect(),
+    ];
+    for s in sections {
+        let (a, b) = (
+            doubt_of(&solids[0].faces[s.face_a]),
+            doubt_of(&solids[1].faces[s.face_b]),
+        );
+        weld[0][s.face_a] = weld[0][s.face_a].max(b);
+        weld[1][s.face_b] = weld[1][s.face_b].max(a);
+    }
+    // The width a piece already hugs at, or none.
+    let hug_width = |p: &SectionPiece, side: usize| -> f64 {
+        if p.hugs[side] {
+            (tol.confusion() * 1e3).max(sections[p.section].tolerance * 3.0)
+        } else {
+            0.0
+        }
+    };
+    // Whether the piece stays within `near` of the edge along its length.
+    let along_edge = |p: &SectionPiece, e: &BoundaryEdge, near: f64| -> OgeomResult<bool> {
+        let s = &sections[p.section];
+        for i in 0..=4 {
+            let t = p.range.0 + (p.range.1 - p.range.0) * f64::from(i) / 4.0;
+            if distance_to_edge_curve(&e.curve, e.crange, point_of(s, t)?, tol)? > near {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    let stretch =
+        |s: &SectionRec, p: &SectionPiece| folded_range(p.range, s.curve.domain(), s.closed);
+    let middles: Vec<Point> = pieces
+        .iter()
+        .map(|p| point_of(&sections[p.section], f64::midpoint(p.range.0, p.range.1)))
+        .collect::<OgeomResult<_>>()?;
+    let mut adopted: Vec<(usize, usize, EdgeKey)> = Vec::new();
+    for side in 0..2 {
+        let own = solids[side];
+        for (x, px) in pieces.iter().enumerate() {
+            if px.hugs[1 - side] {
+                continue;
+            }
+            let sx = &sections[px.section];
+            let (fx, crossed) = (face_of(sx, side), face_of(sx, 1 - side));
+            for (y, py) in pieces.iter().enumerate().skip(x + 1) {
+                if py.hugs[1 - side] || py.section == px.section || (px.hugs[side] && py.hugs[side])
+                {
+                    continue;
+                }
+                let sy = &sections[py.section];
+                let fy = face_of(sy, side);
+                if fy == fx || face_of(sy, 1 - side) != crossed {
+                    continue;
+                }
+                let near = weld[1 - side][crossed]
+                    .max(hug_width(px, side))
+                    .max(hug_width(py, side));
+                let (mx, my) = (middles[x], middles[y]);
+                if mx.distance(my) > 2.0 * near
+                    || distance_to_edge_curve(&sx.curve, stretch(sx, px), my, tol)? > near
+                    || distance_to_edge_curve(&sy.curve, stretch(sy, py), mx, tol)? > near
+                {
+                    continue;
+                }
+                for ex in &own.faces[fx].edges {
+                    let Some(ey) = own.faces[fy].edges.iter().find(|e| e.node == ex.node) else {
+                        continue;
+                    };
+                    let near = near.max(ex.tolerance * 2.0);
+                    if along_edge(px, ex, near)? && along_edge(py, ey, near)? {
+                        if !px.hugs[side] {
+                            adopted.push((x, side, ex.node));
+                        }
+                        if !py.hugs[side] {
+                            adopted.push((y, side, ey.node));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    for (y, side, key) in adopted {
+        let piece = &mut pieces[y];
+        if piece.hugs[0] || piece.hugs[1] {
+            continue;
+        }
+        let section = &sections[piece.section];
+        if *DEBUG_WIRE {
+            eprintln!(
+                "PAVE s{}: ({:.6}, {:.6}) hugs the edge with the section beside it",
+                piece.section, piece.range.0, piece.range.1
+            );
+        }
+        piece.hugs[side] = true;
+        piece.hug_key = Some(if side == 0 {
+            (key, false, section.face_b)
+        } else {
+            (key, true, section.face_a)
+        });
+    }
+    Ok(())
+}
+
 /// The sections between two gathered solids, with the paves they put on
 /// boundary edges.
 #[allow(clippy::type_complexity)]
@@ -4337,6 +4492,7 @@ fn fill(
         }
         pieces.extend(made);
     }
+    share_hugs(&mut pieces, &sections, [ga, gb], tol)?;
     // A piece running along a face's own edge and that edge are one curve,
     // split twice: the piece where its section's cuts fell, the edge where
     // every section that met it paved it, each worked out apart. A loop
@@ -7490,21 +7646,6 @@ fn general_fuse_as(
                 }
             }
         }
-        // The holes left out of a face's arrangement are its edges still,
-        // and their doubt is the face's.
-        let doubt_of = |face: &GFace| -> f64 {
-            face.edges
-                .iter()
-                .fold(0.0_f64, |acc, e| {
-                    acc.max(e.tolerance * 2.0)
-                        .max(e.ends_tolerance + e.tolerance)
-                })
-                .max(
-                    face.holes_aside
-                        .iter()
-                        .fold(0.0_f64, |acc, hole| acc.max(hole.doubt)),
-                )
-        };
         let near = contacts
             .iter()
             .filter(|c| c.target_from_a == from_a && c.target_face == fi)

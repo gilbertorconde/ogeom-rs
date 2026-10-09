@@ -15,7 +15,7 @@
 )]
 
 use ogeom::algo::{check, make_box, make_cone, make_cylinder, volume_properties};
-use ogeom::core::Tolerances;
+use ogeom::core::{Tolerance, Tolerances};
 use ogeom::math::{Direction, Frame, Point, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape, ShapeType, explore_unique};
@@ -249,6 +249,80 @@ fn an_oblique_drill_seamed_through_a_shaved_cube_s_vertex_cuts() {
         (common - expected).abs() < expected * 1e-6,
         "common {common} against {expected} integrated"
     );
+}
+
+/// A block whose vertical edge is rounded, drilled obliquely with the
+/// drill's wall through the vertex where the round's arc on the base ends,
+/// crossing the arc again half a millimetre on, the arc a micron inside the
+/// drill between. The base and the round each meet the drill in a curve
+/// between the two crossings, three microns apart in the middle, and one
+/// edge of the top face, whose plane the drill also meets, states a
+/// tolerance of six and a half microns, so the drill's chart welds anything
+/// that narrow to one curve. The base and the round keep the arc there
+/// alike, and the common holds no more than the nick, within a micron of
+/// the arc along half a millimetre of it.
+#[test]
+fn a_drill_nicking_a_round_s_arc_where_its_chart_welds_coarsely_cuts() {
+    let mut model = Model::new();
+    let at = Frame::new(
+        Point::new(-150.0, -50.0, 0.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let block = make_box(&mut model, at, (150.0, 100.0, 100.0), T)
+        .unwrap()
+        .shape;
+    let on = |model: &Model, edge: &Shape, test: &dyn Fn(Point) -> bool| {
+        explore_unique(model, edge, ShapeType::Vertex)
+            .unwrap()
+            .iter()
+            .all(|v| test(model.node(v).unwrap().data().as_vertex().unwrap().point))
+    };
+    let corner: Vec<Shape> = explore_unique(&model, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            on(&model, e, &|p| {
+                p.x.abs() < 1e-9 && (p.y + 50.0).abs() < 1e-9
+            })
+        })
+        .collect();
+    let part = ogeom::fillet::fillet_edges(&mut model, &block, &corner, 50.0, T)
+        .unwrap()
+        .shape;
+    let loose: Vec<Shape> = explore_unique(&model, &part, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            on(&model, e, &|p| {
+                (p.x + 150.0).abs() < 1e-9 && (p.z - 100.0).abs() < 1e-9
+            })
+        })
+        .collect();
+    assert_eq!(loose.len(), 1);
+    model
+        .widen(&loose[0], Tolerance::new(6.55e-3).unwrap())
+        .unwrap();
+    let radius = 55.958_309_607_789_98;
+    let axis = Vector::new(
+        0.301_717_890_611_921_7,
+        0.026_677_567_892_109_028,
+        0.953_023_935_615_498_8,
+    )
+    .normalized(T)
+    .unwrap();
+    let side = axis.cross(
+        axis.cross(Vector::new(1.0, 0.0, 0.0))
+            .normalized(T)
+            .unwrap(),
+    );
+    let length = 400.0;
+    let start = Point::ORIGIN - side.normalized(T).unwrap() * radius - axis * (length / 2.0);
+    let across = axis.cross(Vector::new(1.0, 0.0, 0.0));
+    let common = drill(&mut model, &part, start, (axis, across), radius, length);
+    assert!(common < 1e-5, "the nick holds {common}");
 }
 
 /// A torus of radii 10 and 3 drilled along its axis by drills whose wall
