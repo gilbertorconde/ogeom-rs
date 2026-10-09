@@ -788,10 +788,17 @@ fn angle(from: Point2, to: Point2) -> f64 {
 }
 
 /// The signed area: positive for counter-clockwise.
+///
+/// Summed about the ring's first point: the same sum as about the chart's
+/// origin, which may stand far off, where it is a difference of huge
+/// products.
 fn area(ring: &[Point2]) -> f64 {
+    let Some(&anchor) = ring.first() else {
+        return 0.0;
+    };
     let mut doubled = 0.0;
     for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+        let (a, b) = (ring[i] - anchor, ring[(i + 1) % ring.len()] - anchor);
         doubled += a.x.mul_add(b.y, -(b.x * a.y));
     }
     doubled * 0.5
@@ -1507,6 +1514,19 @@ mod tests {
     fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResult<Vec<Piece<'_, T>>> {
         let places: Vec<usize> = (0..strands.len()).collect();
         super::assemble(strands, &places, snap, &[])
+    }
+
+    /// A strip one long and a hundredth wide encloses its own area wherever
+    /// it stands in its chart, up to 2e7 from the chart's origin.
+    #[test]
+    fn a_ring_far_out_in_its_chart_encloses_its_own_area() {
+        for o in [0.0, 1e6, 1e7, 2e7] {
+            let (x, y) = (o, -0.7 * o);
+            let ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 0.01), (0.0, 0.01)]
+                .map(|(dx, dy)| Point2::new(x + dx, y + dy));
+            let a = area(&ring);
+            assert!((a - 0.01).abs() < 1e-9, "o {o:e}: area {a}");
+        }
     }
 
     /// The even-odd containment is a sign decision, and it goes through the
