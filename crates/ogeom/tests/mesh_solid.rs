@@ -277,14 +277,14 @@ fn a_plate_far_from_the_origin_comes_back_facing_out_either_way_it_is_wound() {
     }
 }
 
-/// A cylinder's mesh up to 5e6 from the origin on a tilted axis comes back
-/// a cylinder: the volume its recognized faces enclose is checked against
-/// the mesh's own, both summed about the part's own points, wherever it
-/// stands.
+/// A cylinder's mesh up to 2e7 from the origin on a tilted axis comes back
+/// a cylinder: its axis is fitted about the part's own points, and the
+/// volume its recognized faces enclose is checked against the mesh's own,
+/// both summed about the part's own points, wherever it stands.
 #[test]
 fn a_cylinder_far_from_the_origin_comes_back_a_cylinder() {
     let n = Direction::new(Vector::new(1.0, 1.0, 1.0), T).unwrap();
-    for o in [0.0, 1e6, 5e6] {
+    for o in [0.0, 1e6, 5e6, 1e7, 2e7] {
         let frame = Frame::new(Point::new(o, -o, o), n, Direction::X, T).unwrap();
         let mut model = Model::new();
         let cylinder = ogeom::algo::make_cylinder(&mut model, frame, 4.0, 10.0, T)
@@ -309,6 +309,39 @@ fn a_cylinder_far_from_the_origin_comes_back_a_cylinder() {
         assert!(diagnosis.is_valid(), "o {o:e}: {diagnosis}");
         let v = meshed(&back, &out.shape).volume();
         let want = core::f64::consts::PI * 16.0 * 10.0;
+        assert!(
+            (v - want).abs() / want < 5e-3,
+            "o {o:e}: volume {v} not {want}"
+        );
+    }
+}
+
+/// A sphere's mesh up to 2e7 from the origin comes back one sphere: its
+/// centre is fitted about the part's own points, where about the origin
+/// the squares of its coordinates cancel to rounding.
+#[test]
+fn a_sphere_far_from_the_origin_comes_back_a_sphere() {
+    for o in [0.0, 1e6, 2e7] {
+        let frame = Frame::new(Point::new(o, -o, o), Direction::Z, Direction::X, T).unwrap();
+        let mut model = Model::new();
+        let ball = ogeom::algo::make_sphere(&mut model, frame, 5.0, T)
+            .unwrap()
+            .shape;
+        let mut back = Model::new();
+        let out = solid_from_mesh(
+            &mut back,
+            &meshed(&model, &ball),
+            &MeshSolidOptions::default(),
+            T,
+        )
+        .unwrap_or_else(|e| panic!("o {o:e}: {e}"));
+        assert!(out.closed, "o {o:e}: {:?}", out.report);
+        assert_eq!(out.report.curved_faceted, 0, "o {o:e}: {:?}", out.report);
+        assert_eq!(kinds(&back, &out.shape), [0, 0, 0, 1, 0], "o {o:e}");
+        let diagnosis = check(&back, &out.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "o {o:e}: {diagnosis}");
+        let v = meshed(&back, &out.shape).volume();
+        let want = 4.0 / 3.0 * core::f64::consts::PI * 125.0;
         assert!(
             (v - want).abs() / want < 5e-3,
             "o {o:e}: volume {v} not {want}"

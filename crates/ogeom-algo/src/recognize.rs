@@ -905,18 +905,23 @@ fn fit_plane(points: &[Point], tol: Tolerances) -> Option<Canonical> {
 }
 
 pub(crate) fn fit_sphere(points: &[Point], tol: Tolerances) -> Option<Canonical> {
-    // |p|² − 2p·c + Q = 0 with Q = |c|² − r²: linear in (c, Q).
+    // |p|² − 2p·c + Q = 0 with Q = |c|² − r²: linear in (c, Q). Taken
+    // about a point of the samples: the fit is the same about any point,
+    // and about a far one the squares are huge and cancel to rounding.
+    let reference = *points.first()?;
     let mut a = nalgebra::Matrix4::zeros();
     let mut b = nalgebra::Vector4::zeros();
     for p in points {
+        let p = *p - reference;
         let row = nalgebra::Vector4::new(-2.0 * p.x, -2.0 * p.y, -2.0 * p.z, 1.0);
-        let rhs = -(p.to_vector().dot(p.to_vector()));
+        let rhs = -p.dot(p);
         a += row * row.transpose();
         b += row * rhs;
     }
     let solved = a.lu().solve(&b)?;
-    let centre = Point::new(solved[0], solved[1], solved[2]);
-    let r2 = centre.to_vector().dot(centre.to_vector()) - solved[3];
+    let offset = Vector::new(solved[0], solved[1], solved[2]);
+    let centre = reference + offset;
+    let r2 = offset.dot(offset) - solved[3];
     if r2 <= tol.confusion() {
         return None;
     }
@@ -986,11 +991,15 @@ fn weighted_axis(
     // For a fixed direction the best moment is linear in it, so the
     // moment is eliminated and the direction is the Schur complement's
     // smallest eigenvector.
+    // Moments about a point of the samples: the fit is the same about any
+    // point, and about a far one every moment is huge and the elimination
+    // cancels them to rounding.
+    let reference = *points.first()?;
     let mut dd = nalgebra::Matrix3::<f64>::zeros();
     let mut dm = nalgebra::Matrix3::<f64>::zeros();
     let mut mm = nalgebra::Matrix3::<f64>::zeros();
     for ((p, n), w) in points.iter().zip(normals).zip(weights) {
-        let moment = p.to_vector().cross(*n);
+        let moment = (*p - reference).cross(*n);
         let a = nalgebra::Vector3::new(moment.x, moment.y, moment.z);
         let b = nalgebra::Vector3::new(n.x, n.y, n.z);
         dd += a * a.transpose() * *w;
@@ -1011,7 +1020,7 @@ fn weighted_axis(
     }
     let d = d / length;
     let moment = (moment - d * d.dot(moment)) / length;
-    let through = Point::from_vector(d.cross(moment));
+    let through = reference + d.cross(moment);
     Some((through, Direction::new(d, tol).ok()?))
 }
 
