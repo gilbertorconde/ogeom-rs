@@ -1163,7 +1163,8 @@ fn withdraw(groups: &mut Groups, report: &mut MeshSolidReport, g: usize, reason:
 /// regions the default found within it: each takes back its triangles,
 /// from `g`, from a planar face (gathered again round it) or from another
 /// curved region found wider, and what `g` held beyond them is left for
-/// the planar faces. Nothing changes where `g` was not found wider.
+/// the planar faces. A curved region left holding no triangle is gone.
+/// Nothing changes where `g` was not found wider.
 fn narrow(groups: &mut Groups, triangles: &[[u32; 3]], g: usize) {
     let Some(record) = groups.narrower.remove(&g) else {
         return;
@@ -1215,7 +1216,15 @@ fn narrow(groups: &mut Groups, triangles: &[[u32; 3]], g: usize) {
             .collect();
         vertices.sort_unstable();
         vertices.dedup();
-        if let Carrier::Curved(curved) = &mut groups.carriers[c] {
+        if vertices.is_empty() {
+            // A default region already taken back whole through another
+            // region found wider, or a region found wider whose triangles
+            // all went back so: no face is built on it.
+            if matches!(groups.carriers[c], Carrier::Curved(_)) {
+                groups.carriers[c] = Carrier::Gone;
+                groups.narrower.remove(&c);
+            }
+        } else if let Carrier::Curved(curved) = &mut groups.carriers[c] {
             curved.vertices = vertices;
         }
     }
@@ -1441,4 +1450,61 @@ struct PatchRefusals {
     not_disk: usize,
     narrow: usize,
     unverified: usize,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod narrow_tests {
+    use super::*;
+
+    fn cylinder(vertices: Vec<u32>) -> Carrier {
+        let tol = Tolerances::millimetres();
+        let shape = Canonical::Cylinder(
+            ogeom_math::Cylinder::new(ogeom_math::Frame::WORLD, 1.0, tol).unwrap(),
+        );
+        Carrier::Curved(Curved {
+            shape,
+            deviation: 0.0,
+            fitted: 0.0,
+            centre: (0.0, 0.0),
+            wraps: false,
+            wraps_v: false,
+            fixed: false,
+            vertices,
+            patch: None,
+        })
+    }
+
+    /// One region the default distance found, split between two regions
+    /// found wider: putting both back gives it back once, whole, and leaves
+    /// no curved region holding no triangle for the planner to facet.
+    #[test]
+    fn a_default_region_split_between_two_wider_ones_comes_back_once() {
+        let triangles = [[0, 1, 2], [1, 3, 2], [2, 3, 4], [3, 5, 4]];
+        let default = (cylinder(vec![0, 1, 2, 3, 4, 5]), vec![0, 1, 2, 3]);
+        let record = || Narrower {
+            distance: 2.0,
+            regions: vec![default.clone()],
+        };
+        let mut groups = Groups {
+            of: vec![0, 0, 1, 1],
+            carriers: vec![cylinder(vec![0, 1, 2, 3]), cylinder(vec![2, 3, 4, 5])],
+            refused: PatchRefusals::default(),
+            fans: std::collections::BTreeSet::new(),
+            narrower: [(0, record()), (1, record())].into_iter().collect(),
+        };
+        narrow(&mut groups, &triangles, 0);
+        narrow(&mut groups, &triangles, 1);
+        assert_eq!(groups.of, vec![0; 4]);
+        assert!(groups.narrower.is_empty());
+        for (c, carrier) in groups.carriers.iter().enumerate() {
+            if let Carrier::Curved(curved) = carrier {
+                assert!(
+                    groups.of.contains(&c),
+                    "curved region {c} holds no triangle"
+                );
+                assert!(!curved.vertices.is_empty());
+            }
+        }
+    }
 }
