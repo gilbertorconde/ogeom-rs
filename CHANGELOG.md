@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Shapes far from the origin keep their facing and features.** Ring and
+  volume sums are taken about a point of the shape instead of the world
+  origin in mesh conversion, sewing, face extension, chamfers and wedges,
+  fixed-section pipes, slit and crack detection in meshing, and ring areas
+  in booleans and healing; at 1e6 and beyond a converted plate no longer
+  comes back inside out, a chamfer no longer refuses, and a hole of a few
+  microns no longer reads as a slit.
+
 - **Converted faces meet edge to edge on far more listings of one mesh.**
   A drill closed round by facets it took back is built as a band with a
   seam, and a long round fitted leaning is put on the exact cylinder
