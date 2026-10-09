@@ -724,6 +724,42 @@ mod tests {
         assert!(mesh.bounds().is_empty());
     }
 
+    /// A closed mesh encloses the same volume wherever it stands. A unit
+    /// cube up to 1e8 from the origin has vertices exact in `f64` (spacing
+    /// there is 1.5e-8), so any error is the sum's own rounding.
+    #[test]
+    fn a_closed_mesh_far_from_the_origin_encloses_its_own_volume() {
+        for offset in [0.0, 1.0e6, 1.0e7, 1.0e8] {
+            let o = Vector::new(offset, -offset, offset);
+            let mut mesh = Triangulation::new();
+            for k in 0..8 {
+                let corner =
+                    Point::new(f64::from(k & 1), f64::from((k >> 1) & 1), f64::from(k >> 2));
+                mesh.positions.push(corner + o);
+            }
+            // Corner k sits at (k & 1, k >> 1 & 1, k >> 2); two triangles a
+            // side, each wound counter-clockwise seen from outside.
+            mesh.triangles = vec![
+                [0, 2, 1],
+                [1, 2, 3], // z = 0
+                [4, 5, 6],
+                [5, 7, 6], // z = 1
+                [0, 1, 4],
+                [1, 5, 4], // y = 0
+                [2, 6, 3],
+                [3, 6, 7], // y = 1
+                [0, 4, 2],
+                [2, 4, 6], // x = 0
+                [1, 3, 5],
+                [3, 7, 5], // x = 1
+            ];
+            assert!(mesh.is_closed(), "the cube closes at {offset:e}");
+            // The cube's own rounding is nil, so 1e-9 leaves room only for
+            // summing twelve terms of order one.
+            assert_relative_eq!(mesh.volume(), 1.0, epsilon = 1e-9);
+        }
+    }
+
     /// A mesh of four corner positions, with whatever triangles are given.
     fn over(points: &[Point], triangles: &[[u32; 3]]) -> Triangulation {
         let mut mesh = Triangulation::new();
