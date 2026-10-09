@@ -11964,6 +11964,84 @@ mod tests {
         );
     }
 
+    /// A long rod of radius 5 at right angles to a long drill of radius 56,
+    /// the axes 46 apart, runs in through the drill's wall and out again:
+    /// its side meets the drill in two loops 64 apart. Both cut the rod, and
+    /// what the drill holds of it is the integral of the rod's slices below
+    /// the drill's wall.
+    #[test]
+    fn a_rod_through_a_long_drill_s_wall_is_cut_on_both_sides() {
+        let (big, small, offset) = (56.0, 5.0, 46.0);
+        let mut model = Model::new();
+        let rod = make_cylinder(
+            &mut model,
+            Frame::new(
+                Point::new(5.0, -1000.0, offset),
+                Direction::Y,
+                Direction::X,
+                T,
+            )
+            .unwrap(),
+            small,
+            2000.0,
+            T,
+        )
+        .unwrap();
+        let drill = make_cylinder(
+            &mut model,
+            Frame::new(Point::new(-900.0, 0.0, 0.0), Direction::X, Direction::Z, T).unwrap(),
+            big,
+            1800.0,
+            T,
+        )
+        .unwrap();
+        // The slice of the rod at `y` lies in the drill below z = h(y): a
+        // disc's segment, integrated by Simpson's rule.
+        let segment = |y: f64| -> f64 {
+            let d = (big * big - y * y).max(0.0).sqrt() - offset;
+            if d <= -small {
+                0.0
+            } else if d >= small {
+                PI * small * small
+            } else {
+                small * small * (-d / small).acos() + d * (small * small - d * d).sqrt()
+            }
+        };
+        let reach = (big * big - (offset - small).powi(2)).sqrt();
+        let steps = 20_000_u32;
+        let h = 2.0 * reach / f64::from(steps);
+        let held = (0..=steps)
+            .map(|i| {
+                let w = if i == 0 || i == steps {
+                    1.0
+                } else if i % 2 == 1 {
+                    4.0
+                } else {
+                    2.0
+                };
+                w * segment(-reach + h * f64::from(i))
+            })
+            .sum::<f64>()
+            * h
+            / 3.0;
+        let whole = PI * small * small * 2000.0;
+        let kept = cut(&mut model, &rod.shape, &drill.shape, T).unwrap();
+        assert_valid(&model, &kept.shape);
+        let inside = common(&mut model, &rod.shape, &drill.shape, T).unwrap();
+        assert_valid(&model, &inside.shape);
+        let got = volume(&model, &inside.shape);
+        assert!(
+            (got - held).abs() / held < 2e-3,
+            "common {got} against {held}"
+        );
+        let got = volume(&model, &kept.shape);
+        let exact = whole - held;
+        assert!(
+            (got - exact).abs() / exact < 2e-3,
+            "cut {got} against {exact}"
+        );
+    }
+
     #[test]
     fn common_of_a_box_and_a_cylinder_is_the_post_inside_it() {
         let mut model = Model::new();

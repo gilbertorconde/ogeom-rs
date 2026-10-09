@@ -173,7 +173,7 @@ pub fn seeds(
     let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
     let near = CellBins::over(&mesh_b, options.chord);
 
-    let mut found: Vec<Contact> = Vec::new();
+    let mut found: Vec<Seed> = Vec::new();
     let mut candidates: Vec<usize> = Vec::new();
     for cell_a in &mesh_a {
         // Cheap rejection first: most pairs are nowhere near each other,
@@ -194,19 +194,13 @@ pub fn seeds(
                 continue;
             };
             // One seed per branch, not one per cell it passes through. The
-            // spacing is the *finer* surface's grid: two distinct branches
-            // closer than that were never going to be told apart by this
-            // sampling anyway, while the coarser surface's cells say nothing
-            // about how far apart branches can be: a plane's clamped domain
-            // spans a million units, and its cell would merge every branch
-            // through a blend into one.
-            if found
-                .iter()
-                .any(|c| c.point.distance(contact.point) <= apart)
-            {
+            // reach is the *finer* surface's grid: the coarser surface's
+            // cells say nothing about how far apart branches can be, and a
+            // plane's clamped domain spans a million units.
+            if merges(&found, contact, apart) {
                 continue;
             }
-            found.push(contact);
+            found.push(Seed::at(a, b, contact, tol));
         }
     }
     // A branch that runs in from a spline's border at a grazing angle can
@@ -244,17 +238,47 @@ pub fn seeds(
                 let Some(contact) = correct(a, b, start, piercing.point, None, tol) else {
                     continue;
                 };
-                if found
-                    .iter()
-                    .any(|c| c.point.distance(contact.point) <= apart)
-                {
+                if merges(&found, contact, apart) {
                     continue;
                 }
-                found.push(contact);
+                found.push(Seed::at(a, b, contact, tol));
             }
         }
     }
-    Ok(found)
+    Ok(found.into_iter().map(|s| s.contact).collect())
+}
+
+/// A seed kept, with the direction the intersection runs through it.
+struct Seed {
+    contact: Contact,
+    along: Option<Vector>,
+}
+
+impl Seed {
+    fn at(a: &SurfaceGeometry, b: &SurfaceGeometry, contact: Contact, tol: Tolerances) -> Self {
+        Self {
+            contact,
+            along: tangent_at(a, b, contact, tol),
+        }
+    }
+}
+
+/// Whether a contact is a seed already kept, met again further along its
+/// branch: within `apart` of it, and off the line the intersection runs
+/// through it by less than a quarter of the way there. Two branches side by
+/// side, or a loop beside another the same drum cuts, lie across that line
+/// rather than along it, and each keeps a seed of its own however close.
+/// Where the surfaces are all but tangent the intersection has no direction
+/// to ask, and nearness alone decides.
+fn merges(found: &[Seed], contact: Contact, apart: f64) -> bool {
+    found.iter().any(|seed| {
+        let offset = contact.point - seed.contact.point;
+        let gap = offset.magnitude();
+        gap <= apart
+            && seed
+                .along
+                .is_none_or(|along| offset.cross(along).magnitude() <= 0.25 * gap)
+    })
 }
 
 /// A border of a surface as a curve, and the map from the curve's
@@ -2335,6 +2359,47 @@ mod tests {
             heights[0] * heights[1] < 0.0,
             "both branches came back on the same side: {heights:?}"
         );
+    }
+
+    /// A thin drum at right angles to a long drill, its axis passing 46
+    /// from the drill's (radius 56), runs in through the drill's wall and
+    /// out again: two loops, about the two points where the drum's axis
+    /// pierces the wall, 64 apart. That is closer than a drill cell's long
+    /// side, and nearer than either surface's length over the grid.
+    #[test]
+    fn a_thin_drum_through_a_long_drill_s_wall_cuts_it_twice() {
+        let (radius, offset) = (56.0, 46.0);
+        let drill = cylinder(
+            Point::new(-900.0, 0.0, 0.0),
+            Vector::X,
+            radius,
+            (0.0, 1800.0),
+        );
+        let drum = cylinder(
+            Point::new(5.0, 0.0, offset),
+            Vector::Y,
+            5.0,
+            (-1000.0, 1000.0),
+        );
+        let found = branches(&drum, &drill, Marching::default(), T).unwrap();
+        assert_eq!(found.len(), 2, "the drum passes through the wall twice");
+        let pierce = (radius * radius - offset * offset).sqrt();
+        let mut sides: Vec<f64> = found
+            .iter()
+            .map(|branch| {
+                assert!(branch.closed(), "each is a loop round the drum");
+                let mean = branch.points.iter().map(|p| p.y).sum::<f64>();
+                #[allow(clippy::cast_precision_loss)]
+                let mean = mean / branch.points.len() as f64;
+                assert!(
+                    (mean.abs() - pierce).abs() < 5.0,
+                    "a loop about y = {mean}, the axis pierces at {pierce}"
+                );
+                mean
+            })
+            .collect();
+        sides.sort_by(f64::total_cmp);
+        assert!(sides[0] < 0.0 && sides[1] > 0.0, "{sides:?}");
     }
 
     #[test]
