@@ -137,6 +137,10 @@ const PART: &str = "nist_ftc_11_asme1_rb.stp";
 /// run on it, where the smallest part takes a few milliseconds.
 const LARGE_PART: &str = "nist_ctc_02_asme1_rc.stp";
 
+/// A corpus part with spline blends beside tori and cylinders, small
+/// enough that a drill through it costs tens of milliseconds.
+const SPLINE_PART: &str = "sliver_on_a_diagonal_of_the_grid.step";
+
 type Bench = (&'static str, Box<dyn Fn() -> Option<Stats>>);
 
 fn benchmarks() -> Vec<Bench> {
@@ -148,6 +152,7 @@ fn benchmarks() -> Vec<Bench> {
         ("boolean_many_faces", Box::new(boolean_many_faces)),
         ("boolean_local", Box::new(boolean_local)),
         ("boolean_marched", Box::new(boolean_marched)),
+        ("boolean_spline_part", Box::new(boolean_spline_part)),
         ("fillet_block", Box::new(fillet_block)),
         ("fillet_box_all", Box::new(fillet_box_all)),
         ("fillet_marched", Box::new(fillet_marched)),
@@ -320,6 +325,39 @@ fn boolean_marched() -> Option<Stats> {
         let both = ogeom::boolean::fuse(&mut model, &upright, &across, T).unwrap();
         std::hint::black_box(&both.shape);
     }))
+}
+
+/// The marched boolean on an imported part: a slanted drill through a
+/// corner of spline blends, tori, a ball and cylinders. Every section the
+/// drill makes there is marched, against faces trimmed from carriers the
+/// file states far larger than the faces.
+fn boolean_spline_part() -> Option<Stats> {
+    let (mut document, solid) = corpus_part(SPLINE_PART)?;
+    // Imported the way a caller imports: periodic faces' rings re-anchored
+    // on their seams before anything cuts them.
+    let (healed, _) = ogeom::heal::reanchor_periodic_rings(document.model_mut(), &solid, T).ok()?;
+    let model = document.model().clone();
+    let axis = Vector::new(0.3, 1.0, 0.2);
+    let frame = Frame::new(
+        Point::new(21.6, -2.0, 346.8),
+        Direction::new(axis, T).ok()?,
+        Direction::from_cross(axis, Vector::X, T).ok()?,
+        T,
+    )
+    .ok()?;
+    Some(sample(
+        || {
+            let mut model = model.clone();
+            let drill = ogeom::algo::make_cylinder(&mut model, frame, 2.0, 30.0, T)
+                .unwrap()
+                .shape;
+            (model, drill)
+        },
+        |(mut model, drill)| {
+            let cut = ogeom::boolean::cut(&mut model, &healed.shape, &drill, T).unwrap();
+            std::hint::black_box(&cut.shape);
+        },
+    ))
 }
 
 /// A constant-radius fillet on one edge of a box: the blend machinery.
