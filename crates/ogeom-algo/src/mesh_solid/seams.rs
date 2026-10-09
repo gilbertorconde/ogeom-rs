@@ -80,13 +80,29 @@ pub(super) fn choose_seam(
     tol: Tolerances,
 ) -> Option<SeamChoice> {
     let tau = core::f64::consts::TAU;
+    // A line through a hole's vertex counts as crossing the hole, though
+    // no side of it crosses the line strictly; so does one passing within
+    // a millionth of the holes' mean step of a vertex, a hair from it.
+    let steps: Vec<f64> = holes
+        .iter()
+        .flat_map(|ring| {
+            (0..ring.len()).map(move |i| {
+                let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+                (q.0 - p.0).hypot(q.1 - p.1)
+            })
+        })
+        .collect();
+    #[allow(clippy::cast_precision_loss, reason = "ring lengths are small")]
+    let margin = 1e-6 * steps.iter().sum::<f64>() / steps.len().max(1) as f64;
     let crosses = |a: (f64, f64), b: (f64, f64)| {
         holes.iter().any(|ring| {
             [-tau, 0.0, tau].iter().any(|shift| {
                 (0..ring.len()).any(|i| {
                     let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
                     segments_cross(a, b, (p.0 + shift, p.1), (q.0 + shift, q.1))
-                })
+                }) || ring
+                    .iter()
+                    .any(|h| chart_distance_to_segment((h.0 + shift, h.1), a, b) < margin)
             })
         })
     };
@@ -485,6 +501,19 @@ pub(super) fn ring_area(
         }
     }
     area
+}
+
+/// How far a chart point stands from a chart segment.
+fn chart_distance_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (x, y) = (p.0 - a.0, p.1 - a.1);
+    let length = dx.mul_add(dx, dy * dy);
+    let f = if length > 0.0 {
+        (x.mul_add(dx, y * dy) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    f.mul_add(-dx, x).hypot(f.mul_add(-dy, y))
 }
 
 /// The distance from `p` to the segment from `a` to `b`.

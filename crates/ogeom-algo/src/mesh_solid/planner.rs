@@ -550,6 +550,16 @@ impl Planner<'_> {
                 continue;
             }
             let rings = &plan.loops[g];
+            // A region with no boundary is a closed piece of the mesh on
+            // its own: all of a sphere or a torus, however its vertices
+            // spread round the axis. No other surface closes without one.
+            if rings.is_empty() {
+                match curved.shape {
+                    Canonical::Sphere(_) | Canonical::Torus(_) => plan.layouts[g] = Layout::Whole,
+                    _ => failed.push(g),
+                }
+                continue;
+            }
             let circles = rings.iter().all(|ring| {
                 let first = self.entry(&plan, ring[0]);
                 first.0 != usize::MAX
@@ -710,6 +720,31 @@ impl Planner<'_> {
                 None => failed.push(g),
             }
         }
+        // A band on a cylinder or a cone is seamed along the ruling through
+        // its rims' vertices, which must stand at one angle. A rim snapped
+        // from the face across it starts where that face's frame puts it;
+        // one bounding a plane on its other side is turned to start where
+        // the other rim does. A band whose rims still start at two angles
+        // is laid out wrapped, its seam seated between their vertices.
+        for g in 0..self.groups.carriers.len() {
+            if plan.layouts[g] != (Layout::Band { round_tube: false }) || failed.contains(&g) {
+                continue;
+            }
+            let Some(curved) = self.curved(g) else {
+                continue;
+            };
+            if !matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_))
+                || self.band_rims_aligned(&mut plan, curved, g)
+            {
+                continue;
+            }
+            let rings = plan.loops[g].clone();
+            if curved.wraps && !curved.wraps_v && self.seat_seam(&mut plan, curved, &rings) {
+                plan.layouts[g] = Layout::Wrapped;
+            } else {
+                failed.push(g);
+            }
+        }
         if !thread_pins.is_empty() && failed.is_empty() {
             return Ok(Err(Replan::Pin(thread_pins)));
         }
@@ -831,6 +866,86 @@ impl Planner<'_> {
             nearest = nearest.min(p.distance(apex));
         }
         nearest <= reach
+    }
+
+    /// Whether a band's two rim circles start at one angle round its axis,
+    /// turning a rim with a plane on its other side, and no other edge
+    /// ending at its vertex, to start where the other rim does.
+    fn band_rims_aligned(&self, plan: &mut Plan, curved: &Curved, g: usize) -> bool {
+        use ogeom_geom::Curve3d as _;
+        let Some(frame) = super::segment::axis_frame(&curved.shape) else {
+            return false;
+        };
+        let (o, z) = (frame.origin(), frame.z().vector());
+        let radial = |p: Point| {
+            let w = p - o;
+            w - z * w.dot(z)
+        };
+        // Each rim: its edge, its start, and its vertex where that may move.
+        let mut rims = Vec::with_capacity(2);
+        for ring in &plan.loops[g] {
+            let (edge, _) = self.entry(plan, ring[0]);
+            let Some(spec) = plan.edges.get(edge) else {
+                return false;
+            };
+            let Ok(start) = spec.curve.point_at(0.0, self.tol) else {
+                return false;
+            };
+            let beside_plane = self.adjacency.twin[ring[0]].is_some_and(|t| {
+                matches!(
+                    self.groups.carriers.get(self.groups.of[t / 3]),
+                    Some(Carrier::Plane(_))
+                )
+            });
+            let movable = match spec.ends {
+                [Corner::Placed(k), Corner::Placed(l)] if k == l && beside_plane => {
+                    let shared = plan
+                        .edges
+                        .iter()
+                        .enumerate()
+                        .any(|(e, other)| e != edge && other.ends.contains(&Corner::Placed(k)));
+                    (!shared).then_some(k)
+                }
+                _ => None,
+            };
+            rims.push((edge, start, movable));
+        }
+        let [(_, a, a_movable), (_, b, b_movable)] = rims[..] else {
+            return false;
+        };
+        let (ra, rb) = (radial(a), radial(b));
+        let apart = ra.cross(rb).dot(z).atan2(ra.dot(rb)).abs();
+        if apart * ra.magnitude().max(rb.magnitude()) <= self.tol.confusion() {
+            return true;
+        }
+        let (edge, k, towards) = match (a_movable, b_movable) {
+            (_, Some(k)) => (rims[1].0, k, ra),
+            (Some(k), None) => (rims[0].0, k, rb),
+            (None, None) => return false,
+        };
+        let Curve::Circle(c) = &plan.edges[edge].curve else {
+            return false;
+        };
+        let circle = c.circle();
+        let Ok(x) = Direction::new(towards, self.tol) else {
+            return false;
+        };
+        let Ok(mut frame) = Frame::new(circle.centre(), circle.frame().z(), x, self.tol) else {
+            return false;
+        };
+        if frame.handedness() != circle.frame().handedness() {
+            frame = frame.mirrored();
+        }
+        let Ok(turned) = ogeom_math::Circle::new(frame, circle.radius(), self.tol) else {
+            return false;
+        };
+        let curve: Curve = ogeom_geom::CircleCurve::new(turned).into();
+        let Ok(at) = curve.point_at(0.0, self.tol) else {
+            return false;
+        };
+        plan.edges[edge].curve = curve;
+        plan.placed[k] = at;
+        true
     }
 
     /// Whether a face round its axis has a seam clear of its holes, turning

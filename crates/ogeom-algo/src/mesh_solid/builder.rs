@@ -882,8 +882,31 @@ impl Builder<'_> {
         else {
             ogeom_bail!(Construction, "a band has two rims");
         };
+        // The angle the seam stands at: zero, where the rims were snapped
+        // on the surface's own frame; on a cylinder or a cone, wherever the
+        // rims start, which the plan has put at one angle.
+        let seam_u = match curved.shape {
+            Canonical::Cylinder(_) | Canonical::Cone(_) if !round_tube => {
+                let w = low_at - frame.origin();
+                let radius = (w - frame.z().vector() * w.dot(frame.z().vector())).magnitude();
+                let Some((u, _)) = chart(&curved.shape, low_at, self.tol) else {
+                    ogeom_bail!(Construction, "a band's rim has no chart position");
+                };
+                let angle = ogeom_math::elementary::wrap_signed_angle(u);
+                if angle.abs() * radius <= self.tol.confusion() {
+                    0.0
+                } else {
+                    angle
+                }
+            }
+            _ => 0.0,
+        };
         for (edge, at, with) in [(low, v_low, low_with), (high, v_high, high_with)] {
-            let (a, b) = if with { (0.0, tau) } else { (tau, 0.0) };
+            let (a, b) = if with {
+                (seam_u, seam_u + tau)
+            } else {
+                (seam_u + tau, seam_u)
+            };
             let (from, to) = if round_tube {
                 ((at, a), (at, b))
             } else {
@@ -966,8 +989,13 @@ impl Builder<'_> {
             )
         } else {
             (
-                linear((tau, v_low), (tau, v_high), seam_range, self.tol)?,
-                linear((0.0, v_low), (0.0, v_high), seam_range, self.tol)?,
+                linear(
+                    (seam_u + tau, v_low),
+                    (seam_u + tau, v_high),
+                    seam_range,
+                    self.tol,
+                )?,
+                linear((seam_u, v_low), (seam_u, v_high), seam_range, self.tol)?,
             )
         };
         crate::build::attach_seam(
