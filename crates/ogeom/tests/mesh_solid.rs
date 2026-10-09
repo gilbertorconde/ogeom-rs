@@ -226,6 +226,93 @@ fn inconsistent_windings_are_turned_outward() {
     assert!(check(&model, &out.shape, T).unwrap().is_valid());
 }
 
+/// A thin plate's mesh up to 2e7 from the origin on a tilted frame, wound
+/// outward or inside out, comes back a solid facing out: which way a closed
+/// piece faces is read off the volume it encloses, a sum the plate's own
+/// size, wherever it stands.
+#[test]
+fn a_plate_far_from_the_origin_comes_back_facing_out_either_way_it_is_wound() {
+    let n = Direction::new(Vector::new(1.0, 1.0, 1.0), T).unwrap();
+    for o in [0.0, 1e6, 1e7, 2e7] {
+        let frame = Frame::new(Point::new(o, -o, o), n, Direction::X, T).unwrap();
+        let (sx, sy, sz) = (4.0, 3.0, 0.25);
+        let corner = |i: u32| {
+            frame.origin()
+                + frame.x().vector() * (f64::from(i & 1) * sx)
+                + frame.y().vector() * (f64::from((i >> 1) & 1) * sy)
+                + frame.z().vector() * (f64::from((i >> 2) & 1) * sz)
+        };
+        let outward = cube_soup(1.0);
+        let corners: Vec<Point> = (0..8).map(corner).collect();
+        for inside_out in [false, true] {
+            let mut mesh = soup(outward.triangles.iter().map(|t| {
+                let at = |p: Point| {
+                    // The unit cube's corner index from its position.
+                    let i = u32::from(p.x > 0.5)
+                        | (u32::from(p.y > 0.5) << 1)
+                        | (u32::from(p.z > 0.5) << 2);
+                    corners[i as usize]
+                };
+                t.map(|i| at(outward.positions[i as usize]))
+            }));
+            if inside_out {
+                for t in &mut mesh.triangles {
+                    t.swap(1, 2);
+                }
+            }
+            let tag = format!("o {o:e}, inside out {inside_out}");
+            let mut model = Model::new();
+            let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+            assert!(out.closed, "{tag}: {:?}", out.report);
+            let v = volume(&model, &out.shape);
+            let want = sx * sy * sz;
+            assert!(
+                (v - want).abs() < want * 1e-6,
+                "{tag}: volume {v} not {want}"
+            );
+        }
+    }
+}
+
+/// A cylinder's mesh up to 5e6 from the origin on a tilted axis comes back
+/// a cylinder: the volume its recognized faces enclose is checked against
+/// the mesh's own, both summed about the part's own points, wherever it
+/// stands.
+#[test]
+fn a_cylinder_far_from_the_origin_comes_back_a_cylinder() {
+    let n = Direction::new(Vector::new(1.0, 1.0, 1.0), T).unwrap();
+    for o in [0.0, 1e6, 5e6] {
+        let frame = Frame::new(Point::new(o, -o, o), n, Direction::X, T).unwrap();
+        let mut model = Model::new();
+        let cylinder = ogeom::algo::make_cylinder(&mut model, frame, 4.0, 10.0, T)
+            .unwrap()
+            .shape;
+        let mut back = Model::new();
+        let out = solid_from_mesh(
+            &mut back,
+            &meshed(&model, &cylinder),
+            &MeshSolidOptions::default(),
+            T,
+        )
+        .unwrap_or_else(|e| panic!("o {o:e}: {e}"));
+        assert!(out.closed, "o {o:e}: {:?}", out.report);
+        assert_eq!(out.report.curved_faceted, 0, "o {o:e}: {:?}", out.report);
+        assert_eq!(
+            kinds_and_patches(&back, &out.shape).0,
+            [2, 1, 0, 0, 0],
+            "o {o:e}"
+        );
+        let diagnosis = check(&back, &out.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "o {o:e}: {diagnosis}");
+        let v = meshed(&back, &out.shape).volume();
+        let want = core::f64::consts::PI * 16.0 * 10.0;
+        assert!(
+            (v - want).abs() / want < 5e-3,
+            "o {o:e}: volume {v} not {want}"
+        );
+    }
+}
+
 /// A closed piece inside another is a void of the solid around it.
 #[test]
 fn a_piece_inside_another_is_a_void() {

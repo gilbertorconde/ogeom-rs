@@ -155,13 +155,7 @@ pub(super) fn body_culprits(
                 Some(kept.meshes()),
                 tol,
             )?;
-            mesh.triangles
-                .iter()
-                .map(|t| {
-                    let [a, b, c] = t.map(|i| mesh.positions[i as usize].to_vector());
-                    a.dot(b.cross(c)) / 6.0
-                })
-                .sum::<f64>()
+            mesh.volume()
         } else {
             crate::mass::volume_as_flagged(model, &body.solid, deflection, Some(kept), tol)?.mass
         };
@@ -283,11 +277,17 @@ fn volume_allowance(
     flat: f64,
 ) -> (f64, f64, f64) {
     let (mut volume, mut allowance, mut area) = (0.0, 0.0, 0.0);
+    // The volume is summed about a vertex of the body: the same sum as
+    // about any point for a closed body, and about a far one it is a
+    // difference of huge products.
+    let apex = mine.first().map_or(Point::ORIGIN, |&t| {
+        points[triangles[t as usize][0] as usize]
+    });
     for &t in mine {
         let t = t as usize;
         let tri = &triangles[t];
         let [a, b, c] = tri.map(|v| points[v as usize]);
-        let (va, vb, vc) = (a - Point::ORIGIN, b - Point::ORIGIN, c - Point::ORIGIN);
+        let (va, vb, vc) = (a - apex, b - apex, c - apex);
         volume += va.dot(vb.cross(vc)) / 6.0;
         let size = (b - a).cross(c - a).magnitude() / 2.0;
         area += size;

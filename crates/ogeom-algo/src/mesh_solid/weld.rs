@@ -341,6 +341,10 @@ pub(super) fn orient(
         let flipped = members.iter().filter(|&&t| flip[t] == Some(true)).count();
         let closed = !open && conflicts == 0;
         let turn_all = if closed {
+            // About a vertex of the piece: the sum is the same about any
+            // point, and about a far one it is a difference of huge
+            // products whose sign is rounding.
+            let apex = points[triangles[seed][0] as usize];
             let volume: f64 = members
                 .iter()
                 .map(|&t| {
@@ -348,7 +352,7 @@ pub(super) fn orient(
                     if flip[t] == Some(true) {
                         tri.swap(1, 2);
                     }
-                    signed_volume(points, tri)
+                    signed_volume(points, tri, apex)
                 })
                 .sum();
             volume < 0.0
@@ -374,8 +378,9 @@ pub(super) fn orient(
     pieces
 }
 
-fn signed_volume(points: &[Point], [a, b, c]: [u32; 3]) -> f64 {
-    let [a, b, c] = [a, b, c].map(|i| points[i as usize] - Point::ORIGIN);
+/// The signed volume of the tetrahedron a triangle forms with `apex`.
+fn signed_volume(points: &[Point], [a, b, c]: [u32; 3], apex: Point) -> f64 {
+    let [a, b, c] = [a, b, c].map(|i| points[i as usize] - apex);
     a.dot(b.cross(c)) / 6.0
 }
 
