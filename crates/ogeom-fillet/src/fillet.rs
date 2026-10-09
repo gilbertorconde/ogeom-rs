@@ -461,33 +461,34 @@ fn fillet_edges_own(
         // re-found stand-in, or the pieces a blend running out across it
         // split it into, each of which is a seat of its own ending against
         // that blend's band, which is exactly the corner it then meets.
+        // The pieces are re-found from the edge itself, between its hosts:
+        // the history also traces it to stubs along its line where an
+        // earlier blend's cap meets a host tangentially, no corner to round.
         let (current, targets): (Shape, Vec<Shape>) = match &built {
             None => (solid.clone(), vec![edge.clone()]),
             Some(b) => {
-                let traced = b.history.trace(edge);
+                let gone = b.history.trace(edge).is_empty();
                 // An edge both of whose ends this chain's corners rounded,
                 // and which they left nothing of, ran its whole length
                 // inside their balls: the corners are its blend.
                 let on_blended_crease = blended_creases.contains(&hosts_of(edge))
                     || mates[index].settled == [true, true];
-                if traced.is_empty() && on_blended_crease {
+                let rounded = on_blended_crease || on_round_rim(model, edge, &round_rims);
+                if gone && rounded {
                     continue;
                 }
-                if traced.is_empty() {
+                if gone {
                     ogeom_bail!(
                         Construction,
                         "an earlier blend in the chain consumed this edge; \
                          the chain's members interfere"
                     );
                 }
-                let mut found = Vec::with_capacity(traced.len());
-                for one in traced {
-                    match refind(model, &b.shape, one, &hosts) {
-                        Ok(live) => found.extend(live),
-                        Err(_) if on_blended_crease || on_round_rim(model, one, &round_rims) => {}
-                        Err(e) => return Err(e),
-                    }
-                }
+                let found = match refind(model, &b.shape, edge, &hosts) {
+                    Ok(live) => live,
+                    Err(_) if rounded => Vec::new(),
+                    Err(e) => return Err(e),
+                };
                 (b.shape.clone(), found)
             }
         };

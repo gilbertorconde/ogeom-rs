@@ -248,9 +248,12 @@ pub(crate) fn curved_corner(
     let block = ogeom_bool::common(model, solid, &compartment, tol)?;
     let spike = ogeom_bool::cut(model, &block.shape, &ball, tol)?;
     let rounded = ogeom_bool::cut(model, solid, &spike.shape, tol)?;
+    // The block and the spike are made from the solid but are no step of
+    // it: what they record of the solid's faces and edges is about them,
+    // and the solid's own history is the last cut's.
     let mut built = Built {
         shape: rounded.shape,
-        history: block.history.then(&spike.history).then(&rounded.history),
+        history: rounded.history,
     };
     built.history.modify(vertex, built.shape.clone());
     Ok(built)

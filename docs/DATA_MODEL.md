@@ -250,7 +250,13 @@ were to within their tolerances. A boolean's faces the tool never touched, and
 a face the sew only moves onto shared edges, are reported so. An application
 holding names or meshes for the input carries them across without comparing
 geometry. Composition keeps the mark only where every step copied the shape or
-left it alone. Results stay new nodes: an operation edits its own result in
+left it alone.
+
+A boolean records its arguments' edges and vertices the same way: one cut
+short, split or rebuilt is modified into its pieces in the result, one
+rebuilt whole is copied, and one with nothing left (a corner cut away, a
+tool's edge outside a cut) is deleted. One the result holds as it stands,
+an edge of a face set aside, has no record and traces to itself. Results stay new nodes: an operation edits its own result in
 place, and a node shared with an earlier solid would change it too.
 
 A placement (`transformed`) makes no node, but placement is part of a

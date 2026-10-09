@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A boolean traces every edge and vertex of its arguments.** `fuse`,
+  `cut`, `common` and `split_sheet` record each edge and vertex as modified
+  into its pieces in the result where it was cut short, split or rebuilt,
+  copied where it was rebuilt whole, and deleted where nothing of it is
+  left, as they already recorded faces. One the result holds as it stands
+  traces to itself. Before, a shortened edge, a removed corner and the
+  tool's edges and vertices traced to themselves, which the result does not
+  hold.
+
 ## [0.9.16] - 2026-10-09
 
 A patch release: no breaking API changes. STEP bands whose rims start on
