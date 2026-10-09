@@ -484,6 +484,38 @@ impl<'m> Scene<'m> {
         }
     }
 
+    /// The angle that names which side of a blend face an edge runs
+    /// along: about the axis for a cylinder's ruling, around the tube for
+    /// a torus's ring. Pieces of one ruling or one ring share it.
+    fn side_angle(&self, face: usize, edge: &Shape) -> Option<f64> {
+        let mid = self.edge_midpoint(edge)?;
+        match &self.faces[face].surface {
+            SurfaceGeometry::Cylinder(c) => {
+                let local = c.cylinder().frame().to_local(mid);
+                Some(local.y.atan2(local.x))
+            }
+            SurfaceGeometry::Torus(t) => {
+                let torus = t.torus();
+                let local = torus.frame().to_local(mid);
+                Some(local.z.atan2(local.x.hypot(local.y) - torus.major_radius()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether two [`Self::side_angle`]s name one side of a blend face:
+    /// they lie within the confusion distance of each other along the
+    /// circle the angle turns on.
+    fn same_side_angle(&self, face: usize, a: f64, b: f64) -> bool {
+        let radius = match &self.faces[face].surface {
+            SurfaceGeometry::Cylinder(c) => c.cylinder().radius(),
+            SurfaceGeometry::Torus(t) => t.torus().minor_radius(),
+            _ => return false,
+        };
+        let apart = (a - b).rem_euclid(core::f64::consts::TAU);
+        apart.min(core::f64::consts::TAU - apart) * radius <= self.tol.confusion()
+    }
+
     /// The other face across an edge from `face`, where the edge is
     /// manifold.
     fn other_face(&self, edge: &Shape, face: usize) -> Option<usize> {
@@ -820,20 +852,36 @@ fn fillets(
             }
             _ => continue,
         };
-        if tangent_edges.len() < 2 {
-            continue;
-        }
-        let mut smooth = 0;
+        // A side of the blend is one ruling or one ring, which may arrive
+        // as several edges: it is smooth where any of its edges is.
+        let mut sides: Vec<(f64, bool)> = Vec::new();
         let mut fold_probe: Option<Fold> = None;
         for edge in &tangent_edges {
-            let Some(other) = scene.other_face(edge, f) else {
+            let Some(angle) = scene.side_angle(f, edge) else {
                 continue;
             };
-            match scene.edge_fold(edge, f, other) {
-                Some(Fold::Smooth) => smooth += 1,
-                fold => fold_probe = fold.or(fold_probe),
+            let smooth = match scene.other_face(edge, f) {
+                Some(other) => match scene.edge_fold(edge, f, other) {
+                    Some(Fold::Smooth) => true,
+                    fold => {
+                        fold_probe = fold.or(fold_probe);
+                        false
+                    }
+                },
+                None => false,
+            };
+            match sides
+                .iter_mut()
+                .find(|(a, _)| scene.same_side_angle(f, *a, angle))
+            {
+                Some(side) => side.1 |= smooth,
+                None => sides.push((angle, smooth)),
             }
         }
+        if sides.len() < 2 {
+            continue;
+        }
+        let smooth = sides.iter().filter(|(_, s)| *s).count();
         if smooth == 1 {
             // Tangent on one side only: a bull-nose rim, a deliberate
             // partial round: its own feature, not a failed fillet.
