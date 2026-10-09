@@ -153,6 +153,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         callout_index: FastMap::default(),
         pcurves: FastMap::default(),
         pieces: FastMap::default(),
+        band_faces: FastSet::default(),
         pole_vertices: Vec::new(),
         piece_key: u64::MAX,
         untrimmed_ids: Vec::new(),
@@ -311,6 +312,10 @@ struct Reader<'a> {
     /// pole of a face it bounds, each under a key of its own that stands in
     /// for the edge's id wherever a face's bound names it.
     pieces: FastMap<u64, Vec<(u64, BuiltEdge)>>,
+    /// Faces bounded by two whole circles of their surface whose rims share
+    /// a vertex column only because one rim was split on the other's: each
+    /// builds as a band of rings through its common column.
+    band_faces: FastSet<u64>,
     /// The vertices made at poles, shared by every piece that meets one.
     pole_vertices: Vec<Shape>,
     /// The last key handed to a piece; keys count down from the top of the
@@ -1972,6 +1977,227 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Split one rim of every band whose two rims start on different
+    /// columns, before any face is built.
+    ///
+    /// A face on a periodic surface bounded by two whole circles that are
+    /// parallels of it needs a seam joining a vertex of one rim to a vertex
+    /// of the other along one column. Where the rims' vertices stand on
+    /// different columns, the second rim (or the first, where the second
+    /// is already in pieces) is split on the other's column. The cut is
+    /// made on the edge, so every face it bounds walks both pieces, and the
+    /// band is then built through the common column.
+    ///
+    /// A split rim changes every face that holds it, so the faces are
+    /// passed over again until a pass splits and marks nothing: a band on
+    /// the far side of the rim, seen whole before the split, is marked as a
+    /// band of rings then, or it would be built with a rim in pieces and no
+    /// seam.
+    ///
+    /// Best-effort: a face whose rims resist is left as it was, and the
+    /// face reports it as it would have.
+    fn split_band_rims(&mut self, face_ids: &[u64]) {
+        loop {
+            let before = (self.pieces.len(), self.band_faces.len());
+            for &fid in face_ids {
+                let _ = self.split_band_rim(fid);
+            }
+            if (self.pieces.len(), self.band_faces.len()) == before {
+                break;
+            }
+        }
+    }
+
+    /// [`Self::split_band_rims`] for one face.
+    fn split_band_rim(&mut self, fid: u64) -> OgeomResult<()> {
+        let args = self.face_args(fid)?.to_vec();
+        let Some(surface) = args
+            .get(2)
+            .and_then(Arg::reference)
+            .and_then(|sid| self.surface(sid).ok().flatten())
+        else {
+            return Ok(());
+        };
+        if !surface.is_periodic_u() {
+            return Ok(());
+        }
+        let bounds: Vec<u64> = args
+            .get(1)
+            .and_then(Arg::list)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Arg::reference)
+            .collect();
+        let [first, second] = bounds[..] else {
+            return Ok(());
+        };
+        // Each bound one oriented edge: the rim's file id.
+        let mut rims = Vec::with_capacity(2);
+        for bound in [first, second] {
+            let (loop_id, _) = self.bound_args(bound)?;
+            let Ok(loop_args) = self.args(loop_id, "EDGE_LOOP") else {
+                return Ok(());
+            };
+            let edge_ids: Vec<u64> = loop_args
+                .get(1)
+                .and_then(Arg::list)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Arg::reference)
+                .filter_map(|oe| {
+                    self.args(oe, "ORIENTED_EDGE")
+                        .ok()
+                        .and_then(|a| a.get(3).and_then(Arg::reference))
+                })
+                .collect();
+            let [edge_id] = edge_ids[..] else {
+                return Ok(());
+            };
+            rims.push(edge_id);
+        }
+        // Each rim's edges as the faces will walk them, and its circle.
+        let mut rings: Vec<(Vec<Shape>, ogeom_math::Circle)> = Vec::with_capacity(2);
+        for &edge_id in &rims {
+            let Some(pieces) = self.edge_pieces(edge_id)? else {
+                return Ok(());
+            };
+            let Curve::Circle(c) = &pieces[0].1.1 else {
+                return Ok(());
+            };
+            let circle = c.circle();
+            let shapes: Vec<Shape> = pieces.into_iter().map(|(_, (s, ..))| s).collect();
+            if shapes.len() == 1 {
+                let Some((a, b)) = ogeom_algo::edge_vertices(&self.model, &shapes[0])? else {
+                    return Ok(());
+                };
+                if !a.is_same(&b) {
+                    return Ok(());
+                }
+            }
+            rings.push((shapes, circle));
+        }
+        let all: Vec<&Shape> = rings.iter().flat_map(|(s, _)| s.iter()).collect();
+        if !ogeom_algo::rings_are_parallels(&self.model, &surface, &all, self.tol)? {
+            return Ok(());
+        }
+        let starts = |model: &Model, ring: &[Shape]| -> OgeomResult<Vec<(Shape, Point)>> {
+            let mut out = Vec::with_capacity(ring.len());
+            for edge in ring {
+                if let Some((v, _)) = ogeom_algo::edge_vertices(model, edge)?
+                    && let Some(data) = model.node(&v).and_then(|n| n.data().as_vertex())
+                {
+                    let at = data.point;
+                    out.push((v, at));
+                }
+            }
+            Ok(out)
+        };
+        let starts_a = starts(&self.model, &rings[0].0)?;
+        let starts_b = starts(&self.model, &rings[1].0)?;
+        let shared = starts_a.iter().any(|(_, p)| {
+            starts_b
+                .iter()
+                .any(|(_, q)| same_column(&rings[1].1, *p, *q, self.tol))
+        });
+        let split_any = rings.iter().any(|(s, _)| s.len() > 1);
+        if shared {
+            if split_any {
+                self.band_faces.insert(fid);
+            }
+            return Ok(());
+        }
+        // Split a rim still whole on the other's first vertex column.
+        let (target, anchor) = if rings[1].0.len() == 1 {
+            (1, &starts_a[0].0)
+        } else if rings[0].0.len() == 1 {
+            (0, &starts_b[0].0)
+        } else {
+            return Ok(());
+        };
+        let edge_id = rims[target];
+        let Some((shape, curve, _, flipped)) = self.edges.get(&edge_id).cloned() else {
+            return Ok(());
+        };
+        let Some(split) =
+            ogeom_algo::split_ring_on_column(&mut self.model, &surface, &shape, anchor, self.tol)?
+        else {
+            return Ok(());
+        };
+        let mut pieces = Vec::with_capacity(2);
+        for piece in split.history.modified(&shape) {
+            let Some(ogeom_topo::EdgeRepr::Curve3d { range, .. }) = self
+                .model
+                .node(piece)
+                .and_then(|n| n.data().as_edge())
+                .and_then(|d| d.curve3d())
+            else {
+                return Ok(());
+            };
+            self.piece_key -= 1;
+            pieces.push((
+                self.piece_key,
+                (piece.clone(), curve.clone(), *range, flipped),
+            ));
+        }
+        self.pieces.insert(edge_id, pieces);
+        self.band_faces.insert(fid);
+        Ok(())
+    }
+
+    /// A band face whose rim was split on the other rim's column: the band
+    /// of rings through a column both rims have a vertex on. Each ring's
+    /// occurrences are turned to start there and keep the direction the
+    /// file walks them, which says which side the face faces.
+    fn band_of_split_rims(
+        &mut self,
+        surface: &SurfaceGeometry,
+        wires: &[Shape],
+    ) -> OgeomResult<Shape> {
+        let [wire_a, wire_b] = wires else {
+            ogeom_bail!(Construction, "a band has two rims");
+        };
+        let ring_a = self.model.ordered_children_of(wire_a)?;
+        let ring_b = self.model.ordered_children_of(wire_b)?;
+        let circle = {
+            let Some(ogeom_topo::EdgeRepr::Curve3d { curve, .. }) = self
+                .model
+                .node(&ring_b[0])
+                .and_then(|n| n.data().as_edge())
+                .and_then(|d| d.curve3d())
+            else {
+                ogeom_bail!(Construction, "a band rim has no curve");
+            };
+            let Some(Curve::Circle(c)) = self.model.geometry().curve(*curve) else {
+                ogeom_bail!(Construction, "a band rim is not a circle");
+            };
+            c.circle()
+        };
+        let start = |model: &Model, edge: &Shape| -> OgeomResult<Point> {
+            let Some((v, _)) = ogeom_algo::edge_vertices(model, edge)? else {
+                ogeom_bail!(Construction, "a band rim has no vertex");
+            };
+            let Some(data) = model.node(&v).and_then(|n| n.data().as_vertex()) else {
+                ogeom_bail!(Construction, "a band rim's vertex holds no point");
+            };
+            Ok(data.point)
+        };
+        for i in 0..ring_a.len() {
+            let p = start(&self.model, &ring_a[i])?;
+            for j in 0..ring_b.len() {
+                let q = start(&self.model, &ring_b[j])?;
+                if !same_column(&circle, p, q, self.tol) {
+                    continue;
+                }
+                let mut a = ring_a.clone();
+                a.rotate_left(i);
+                let mut b = ring_b.clone();
+                b.rotate_left(j);
+                return ogeom_algo::make_band_of_rings(&mut self.model, surface, &a, &b, self.tol);
+            }
+        }
+        ogeom_bail!(Construction, "the band's rims share no vertex column")
+    }
+
     fn face(&mut self, id: u64) -> OgeomResult<Option<Shape>> {
         if let Some(shape) = self.faces.get(&id) {
             return Ok(Some(shape.clone()));
@@ -2138,6 +2364,24 @@ impl<'a> Reader<'a> {
             .surface(surface_id)
             .cloned()
             .unwrap_or(surface);
+
+        // A band whose rim was split on the other rim's column takes its
+        // seam there. The rings are walked as the file walks them about the
+        // face's own normal, which already says which side the face faces.
+        if wires.len() == 2 && self.band_faces.contains(&id) {
+            match self.band_of_split_rims(&surface, &wires) {
+                Ok(shape) => {
+                    self.faces.insert(id, shape.clone());
+                    return Ok(Some(shape));
+                }
+                Err(e) => {
+                    self.report.warnings.push(format!(
+                        "#{id}: no seam could be synthesised ({e}); the \
+                         face may not triangulate"
+                    ));
+                }
+            }
+        }
 
         // A periodic face bound only by closed rings (a cylinder band
         // between two circles) arrives without a seam edge, which is a
@@ -2910,6 +3154,7 @@ impl<'a> Reader<'a> {
             .filter_map(Arg::reference)
             .collect();
         self.cut_at_poles(&face_ids);
+        self.split_band_rims(&face_ids);
         self.prepare_pcurves(&face_ids);
         let mut read = Vec::new();
         for fid in face_ids {
@@ -4519,6 +4764,16 @@ fn collect_refs(args: &[Arg], out: &mut Vec<u64>) {
             _ => {}
         }
     }
+}
+
+/// Whether two points stand on one column about `circle`'s axis: the same
+/// angle about it, to within the confusion distance along the circle
+/// through `q`.
+fn same_column(circle: &ogeom_math::Circle, p: Point, q: Point, tol: Tolerances) -> bool {
+    let (lp, lq) = (circle.frame().to_local(p), circle.frame().to_local(q));
+    let apart = (lp.y.atan2(lp.x) - lq.y.atan2(lq.x)).rem_euclid(core::f64::consts::TAU);
+    let turn = apart.min(core::f64::consts::TAU - apart);
+    turn * lq.x.hypot(lq.y) <= tol.confusion()
 }
 
 /// For a two-wire periodic face: each wire's single closed edge with its

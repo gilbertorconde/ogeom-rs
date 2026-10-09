@@ -11,6 +11,12 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`ogeom_algo::split_ring_on_column`** splits a closed circle rim of a
+  revolution band where it crosses the column of the other rim's vertex,
+  so `make_band_of_rings` can seam the band there.
+
 ### Fixed
 
 - **Mesh conversion reports no fallback for a region it never builds.**
@@ -18,6 +24,13 @@ bump may break the API and a patch bump may not.
   found is split between two regions found wider, putting both back gives
   it back once; the second copy, holding no triangle, used to be counted
   as a curved face left faceted.
+
+- **A STEP band whose rims start on different columns reads seamed.** A
+  cylinder or torus face bounded by two whole circles whose vertices stand
+  apart has one rim split on the other's column and takes its seam there,
+  and the faces across the split rim walk both pieces. Such a face used to
+  warn that no seam could be synthesised and mesh through a fallback.
+  `make_revolution_band` now says why it refuses such rims.
 
 ## [0.9.15] - 2026-10-09
 

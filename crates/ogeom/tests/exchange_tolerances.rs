@@ -499,9 +499,10 @@ fn widest_edge_tolerance(model: &Model, shape: &Shape) -> f64 {
 
 /// Bands between two circles whose vertices stand on different columns
 /// of their cylinder or torus (a hole's two rims started half or a quarter
-/// turn apart) get no synthesised seam, and their rims carry pcurves only
-/// for the faces that use them. Measured against matched parameters, as
-/// the same-parameter repair measures, every pcurve then agrees with its
+/// turn apart) have one rim split on the other's column and take their
+/// seam there, with no warning, and the neighbour across the split rim
+/// walks both pieces. Measured against matched parameters, as the
+/// same-parameter repair measures, every pcurve then agrees with its
 /// curve, and no edge of these parts grows past 10 µm: the files' own
 /// worst edge sits 6.5 µm off its surface, while a pcurve started on the
 /// wrong column stands a chord of the rim, up to the hole's diameter, off.
@@ -516,8 +517,21 @@ fn rims_starting_on_different_columns_keep_tight_tolerances() {
         "nist_ftc_07_asme1_rd.stp",
     ] {
         let mut import = ogeom::io::read_step(&corpus(name), T).unwrap();
+        let unseamed: Vec<&String> = import
+            .report
+            .warnings
+            .iter()
+            .filter(|w| w.contains("no seam could be synthesised"))
+            .collect();
+        assert!(unseamed.is_empty(), "{name}: {unseamed:?}");
         let model = import.document.model_mut();
         for solid in &import.solids {
+            for shell in explore_unique(model, solid, ShapeType::Shell).unwrap() {
+                assert!(
+                    ogeom::algo::is_shell_closed(model, &shell).unwrap(),
+                    "{name}: a shell opens along a split rim"
+                );
+            }
             let read = widest_edge_tolerance(model, solid);
             assert!(read <= WIDEST, "{name}: an edge reads {read} wide");
             ogeom::heal::repair_same_parameter(model, solid, T).unwrap();
