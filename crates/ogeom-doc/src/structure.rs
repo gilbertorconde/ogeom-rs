@@ -362,6 +362,12 @@ impl Document {
     /// one part come back as two occurrences whose shapes share a topology
     /// node and differ only in their location chains.
     ///
+    /// An occurrence is a view of the part, not an operation on it, so there
+    /// is no history to record: its shape names the part's own nodes. A
+    /// sub-shape `s` of the part's shape stands in an occurrence as
+    /// `s.moved(&by)`, where `by` is the placement above the part,
+    /// `occurrence.shape.location().then(&part_shape.location().inverted())`.
+    ///
     /// # Errors
     ///
     /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if `product`
@@ -933,6 +939,57 @@ mod tests {
             .unwrap()
             .apply(Point::new(0.0, 0.0, 0.0));
         assert!(world.is_equal(Point::new(100.0, 5.0, 0.0), T));
+    }
+
+    /// A part whose shape carries its own placement, instanced twice under
+    /// nested assemblies: each face, edge and vertex of the part, moved by
+    /// the placement above it as `occurrences_of` states, is exactly one
+    /// sub-shape of its kind in each occurrence.
+    #[test]
+    fn a_part_sub_shape_moved_by_the_placement_above_is_in_each_occurrence() {
+        let mut document = Document::new();
+        let (_, shape) = box_part(&mut document, "washer", 1.0);
+        let shape = document
+            .model_mut()
+            .placed(&shape, Transform::translation(Vector::new(0.0, 0.0, 3.0)));
+        let part = document.add_part("lifted", shape.clone());
+        let sub = document.add_assembly("stack");
+        let top = document.add_assembly("machine");
+        for y in [0.0, 5.0] {
+            document
+                .add_instance(
+                    sub,
+                    part,
+                    Transform::translation(Vector::new(0.0, y, 0.0)),
+                    None,
+                )
+                .unwrap();
+        }
+        document
+            .add_instance(
+                top,
+                sub,
+                Transform::translation(Vector::new(100.0, 0.0, 0.0)),
+                None,
+            )
+            .unwrap();
+
+        let occurrences = document.occurrences_of(top).unwrap();
+        assert_eq!(occurrences.len(), 2);
+        let model = document.model();
+        for occurrence in &occurrences {
+            let by = occurrence
+                .shape
+                .location()
+                .then(&shape.location().inverted());
+            for kind in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
+                let there = ogeom_topo::explore_unique(model, &occurrence.shape, kind).unwrap();
+                for s in ogeom_topo::explore_unique(model, &shape, kind).unwrap() {
+                    let moved = s.moved(&by);
+                    assert_eq!(there.iter().filter(|t| t.is_same(&moved)).count(), 1);
+                }
+            }
+        }
     }
 
     #[test]

@@ -257,7 +257,15 @@ A placement (`transformed`) makes no node, but placement is part of a
 shape's identity, so it records the input and every sub-shape below it as
 modified into its occurrence in the moved shape: the same node under the
 new placement. These are modifications, not copies: the image stands
-elsewhere.
+elsewhere. A shear or an uneven scale (`general_transformed_shape`) rebuilds
+the shape and records the same set: every container, face, wire, edge and
+vertex as modified into its rebuilt twin.
+
+`Model::placed` and a document's occurrences are not operations: they name
+the input's own nodes under a further placement and record nothing. A
+sub-shape `s` stands in the placed shape as `s.moved(by)`, with `by` the
+placed shape's location with the input's own taken off. A caller composing a
+move with other operations' history uses `transformed`.
 
 > *Elsewhere:* `Generated` / `Modified` / `IsDeleted` on the operation base
 > class, plus a standalone history object.

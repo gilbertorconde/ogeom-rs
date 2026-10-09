@@ -214,6 +214,11 @@ pub fn baked_where_placed(model: &mut Model, shape: &Shape, tol: Tolerances) -> 
 /// answer `Same` for them, and the boolean would be handed a coincident pair
 /// with nothing to recognize it by.
 ///
+/// The history records the shape and every container, face, wire, edge and
+/// vertex below it as modified into its rebuilt twin, as
+/// [`transformed`](crate::transformed) records each into its moved
+/// occurrence, so `trace` answers for every sub-shape either way.
+///
 /// # Errors
 ///
 /// As [`to_nurbs`], or as [`transformed`](crate::transformed) for a similarity.
@@ -442,6 +447,7 @@ impl Rebuild<'_> {
         let walked_back = affine.is_none() && reflecting != reflected;
 
         let mut rings = Vec::new();
+        let mut old_wires = Vec::new();
         let mut corner_uv: FastMap<TShapeId, Point2> = FastMap::default();
         // The wires are read as the face stores them, its own sense left
         // out: the rebuilt face takes that sense back below, and reading
@@ -480,6 +486,8 @@ impl Rebuild<'_> {
                     let mut degenerate = ogeom_topo::EdgeData::new();
                     degenerate.degenerate = true;
                     let new_edge = model.add_edge(degenerate, &[new_vertex.clone(), new_vertex])?;
+                    record(history, &edge, &new_edge);
+                    record_vertices(model, &edge, &map, new_vertices, history, tol)?;
                     let row = degenerate_row(
                         model,
                         &data,
@@ -521,7 +529,6 @@ impl Rebuild<'_> {
                             .find(|(_, (_, curve, range))| lies_at(curve, *range, at, tol))
                             .map(|(_, found)| found.clone());
                         if let Some(same) = &same {
-                            history.modify(&edge, same.0.clone());
                             new_edges.insert(key, same.clone());
                         }
                         same
@@ -532,11 +539,12 @@ impl Rebuild<'_> {
                     None => {
                         let built =
                             convert_edge(model, &edge, &data, &map, restate, new_vertices, tol)?;
-                        history.modify(&edge, built.0.clone());
                         new_edges.insert(key, built.clone());
                         built
                     }
                 };
+                record(history, &edge, &new_edge);
+                record_vertices(model, &edge, &map, new_vertices, history, tol)?;
 
                 // The pcurve on this face: fitted at the new edge's own
                 // parameters, seam sides each fitted against their own
@@ -713,15 +721,18 @@ impl Rebuild<'_> {
                 });
             }
             rings.push(ring);
+            old_wires.push(wire);
         }
         let mut wires = Vec::with_capacity(rings.len());
-        for ring in rings {
+        for (ring, old) in rings.into_iter().zip(&old_wires) {
             let ring: Vec<Shape> = if walked_back {
                 ring.iter().rev().map(Shape::reversed).collect()
             } else {
                 ring
             };
-            wires.push(make_wire(model, &ring, tol)?.shape);
+            let wire = make_wire(model, &ring, tol)?.shape;
+            record(history, old, &wire);
+            wires.push(wire);
         }
         let built = make_face_on(model, surface_id, &wires, tol)?.shape;
         let built = if (face.orientation() == Orientation::Reversed) != reflected {
@@ -1550,15 +1561,53 @@ impl NewVertices {
         reach: f64,
         tol: Tolerances,
     ) -> Shape {
-        let reach = reach.max(tol.confusion());
-        let made = self.0.entry(node).or_default();
-        if let Some((_, found)) = made.iter().find(|(p, _)| p.distance(at) <= reach) {
-            return found.clone();
+        if let Some(found) = self.find(node, at, reach, tol) {
+            return found;
         }
         let fresh = make_vertex(model, at).shape;
-        made.push((at, fresh.clone()));
+        self.0.entry(node).or_default().push((at, fresh.clone()));
         fresh
     }
+
+    /// The new vertex already made for the old `node` placed at `at`.
+    fn find(&self, node: TShapeId, at: Point, reach: f64, tol: Tolerances) -> Option<Shape> {
+        let reach = reach.max(tol.confusion());
+        self.0
+            .get(&node)?
+            .iter()
+            .find(|(p, _)| p.distance(at) <= reach)
+            .map(|(_, found)| found.clone())
+    }
+}
+
+/// Record `input` as modified into `image`, once: a sub-shape reached along
+/// several paths in the walk has one image, not one per path.
+fn record(history: &mut History, input: &Shape, image: &Shape) {
+    if !history.modified(input).iter().any(|s| s.is_same(image)) {
+        history.modify(input, image.clone());
+    }
+}
+
+/// Record each vertex occurrence bounding the old `edge` as modified into
+/// the new vertex made for it.
+fn record_vertices(
+    model: &Model,
+    edge: &Shape,
+    map: &dyn Fn(Point) -> Point,
+    vertices: &NewVertices,
+    history: &mut History,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for vertex in model.children_of(edge)? {
+        let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Construction, "vertex node holds no vertex data");
+        };
+        let at = map(vertex.transform(model.datums())?.apply(data.point));
+        if let Some(twin) = vertices.find(vertex.node(), at, data.tolerance.get(), tol) {
+            record(history, &vertex, &twin);
+        }
+    }
+    Ok(())
 }
 
 /// A rigid placement quantized for deduplication keys.
@@ -1732,5 +1781,68 @@ mod tests {
             "sheared cylinder {} against {exact}",
             props.mass
         );
+    }
+
+    /// A box, a cylinder and a sphere (whose poles are degenerate edges)
+    /// under a shear and an uneven stretch: every face, wire, edge and
+    /// vertex of the input traces to exactly one sub-shape of its kind in
+    /// the result and reads as affected, and each vertex's image stands
+    /// where the map carries the old point.
+    #[test]
+    fn every_sub_shape_traces_to_its_twin_under_an_affine_map() {
+        let shear = GeneralTransform::new(
+            ogeom_math::Matrix3 {
+                rows: [[1.0, 0.0, 0.4], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            },
+            ogeom_math::Vector::new(1.0, 2.0, 3.0),
+        );
+        let stretch = GeneralTransform::new(
+            ogeom_math::Matrix3 {
+                rows: [[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.5]],
+            },
+            ogeom_math::Vector::ZERO,
+        );
+        let mut model = Model::new();
+        let block = make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let drum = make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let ball = crate::make_sphere(&mut model, Frame::WORLD, 2.0, T)
+            .unwrap()
+            .shape;
+        for solid in [&block, &drum, &ball] {
+            for transform in [&shear, &stretch] {
+                let built = general_transformed_shape(&mut model, solid, transform, T).unwrap();
+                assert!(built.history.trace(solid)[0].is_same(&built.shape));
+                for kind in [
+                    ShapeType::Face,
+                    ShapeType::Wire,
+                    ShapeType::Edge,
+                    ShapeType::Vertex,
+                ] {
+                    let parts = ogeom_topo::explore_unique(&model, solid, kind).unwrap();
+                    let result = ogeom_topo::explore_unique(&model, &built.shape, kind).unwrap();
+                    assert_eq!(parts.len(), result.len(), "{kind:?}");
+                    for part in &parts {
+                        assert!(built.history.is_affected(part), "{kind:?}");
+                        let images = built.history.trace(part);
+                        assert_eq!(images.len(), 1, "{kind:?}");
+                        let found: Vec<&Shape> =
+                            result.iter().filter(|r| r.is_same(&images[0])).collect();
+                        assert_eq!(found.len(), 1, "{kind:?}");
+                        if kind == ShapeType::Vertex {
+                            let point = |v: &Shape| {
+                                let data = model.node(v).unwrap().data().as_vertex().unwrap();
+                                v.transform(model.datums()).unwrap().apply(data.point)
+                            };
+                            let want = transform.apply(point(part));
+                            assert!(point(found[0]).distance(want) < 1e-9);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
