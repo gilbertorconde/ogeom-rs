@@ -1802,9 +1802,13 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
         let local = frame.to_local(p);
         Point2::new(local.x, local.y)
     };
+    // A direction is turned into the plane's axes alone: carried to a
+    // point off the frame's origin and back, it would pick up the
+    // rounding of the origin's coordinates, which far from the world's
+    // origin tips it past the angular tolerance.
     let flat_direction = |d: ogeom_math::Direction| {
-        let tip = flat(frame.origin() + d.vector());
-        ogeom_math::Direction2::new(tip - flat(frame.origin()), tol).ok()
+        let local = frame.vector_to_local(d.vector());
+        ogeom_math::Direction2::new(ogeom_math::Vector2::new(local.x, local.y), tol).ok()
     };
     match curve {
         Curve::Line(line) => {

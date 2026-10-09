@@ -988,10 +988,11 @@ fn circle_pcurve_on_plane(
         let local = frame.to_local(p);
         Point2::new(local.x, local.y)
     };
+    // Turned into the plane's axes alone, clear of the rounding of the
+    // origin's coordinates.
     let flat_direction = |d: Direction| -> OgeomResult<Direction2> {
-        let tip = flat(frame.origin() + d.vector());
-        let base = flat(frame.origin());
-        Direction2::new(tip - base, tol)
+        let local = frame.vector_to_local(d.vector());
+        Direction2::new(ogeom_math::Vector2::new(local.x, local.y), tol)
     };
 
     let frame2 = ogeom_math::Frame2::from_axes(
