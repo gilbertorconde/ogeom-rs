@@ -137,15 +137,9 @@ corner ball touches the base, is refused. At seeds 1 to 3 the stress drill
 scenario refuses two, two and one drills (on the rounded box and
 `nist_ctc_01`); the three items above and the next cover the diagnosed ones.
 
-**A hug the two faces decide apart.** A drill whose section runs along a
-face's boundary edge within that edge's tolerance: one face takes the section
-as lying on its boundary, the other keeps it as its own curve, and the kept
-pieces do not close. The hug decision needs to be one per edge piece, shared
-by both faces. The stress drill `nist_ctc_01/3` at seed 1 (r 55.958 from
-(-330.234, -187.284, -538.825) along (0.3017, 0.0267, 0.9530)) is refused so,
-and refuses the same on the part read without its bands seamed. Seed 2's
-drills 2 and 4 on that part are refused too and not yet diagnosed; drill 2
-refuses the same on the part read without its bands seamed.
+**Seed 2's drills on a corpus part.** Seed 2's drills 2 and 4 on
+`nist_ctc_01` are refused and not yet diagnosed; drill 2 refuses the same on
+the part read without its bands seamed.
 
 **A tilted half ball drilled on the diagonal chart.** A half ball charted
 about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled
