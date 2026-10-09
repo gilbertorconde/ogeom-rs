@@ -31,6 +31,13 @@ bump may break the API and a patch bump may not.
   and the faces across the split rim walk both pieces. Such a face used to
   warn that no seam could be synthesised and mesh through a fallback.
   `make_revolution_band` now says why it refuses such rims.
+### Fixed
+
+- **A drill nicking an edge a few microns deep closes.** Where a tool
+  crosses an edge twice and the two faces of the edge meet it in curves a
+  few microns apart, both faces now keep the edge between the crossings
+  when the tool's own face cannot hold the sliver between the curves. The
+  cut was refused.
 
 ## [0.9.15] - 2026-10-09
 
