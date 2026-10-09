@@ -1799,11 +1799,13 @@ fn collapse_close_points(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>
 /// fits to one curve. A hole's wire goes round: a ring of facets, or a
 /// rim of edges, meets each vertex once, and is a hole however thin. A
 /// wire of two edges between the same two vertices walks back by its
-/// vertices whether it is a slit or a round hole cut in two halves, and
-/// only its width tells them apart: twice its enclosed area over its
-/// perimeter, measured in space through its anchors, so a chart's units do
-/// not enter into it. A ring with a point not anchored is not called a
-/// slit.
+/// vertices whether it is a slit or a round hole cut in two halves; it is
+/// a slit only where its two sides lie along each other, the ring's width
+/// under a thousandth of its perimeter. Two halves of a hole bound a round
+/// region, as wide as a sixth of its perimeter for a circle. Width is
+/// twice the enclosed area over the perimeter, measured in space through
+/// the anchors, so a chart's units do not enter into it. A ring with a
+/// point not anchored is not called a slit.
 ///
 /// # Errors
 ///
@@ -1815,7 +1817,7 @@ fn is_slit(
     anchors: &[Option<Point>],
     tol: Tolerances,
 ) -> OgeomResult<bool> {
-    let width = || -> Option<f64> {
+    let measure = || -> Option<(f64, f64)> {
         let pts: Option<Vec<Point>> = anchors.iter().copied().collect();
         let pts = pts?;
         // About the ring's first point: the sum is the same about any
@@ -1828,12 +1830,15 @@ fn is_slit(
             normal += (a - anchor).cross(b - anchor);
             perimeter += a.distance(b);
         }
-        (perimeter > 0.0).then(|| normal.magnitude() / perimeter)
+        (perimeter > 0.0).then(|| (normal.magnitude() / perimeter, perimeter))
     };
-    if !width().is_some_and(|w| w < tol.confusion() * 1e4) {
+    let Some((width, perimeter)) = measure() else {
+        return Ok(false);
+    };
+    if width >= tol.confusion() * 1e4 || !walks_back(model, wire)? {
         return Ok(false);
     }
-    walks_back(model, wire)
+    Ok(model.ordered_children_of(wire)?.len() > 2 || width < perimeter * 1e-3)
 }
 
 /// Whether a wire's edges pair off, each running from one vertex to
@@ -4727,15 +4732,17 @@ mod tests {
 
     #[test]
     fn a_small_round_hole_in_two_halves_stays_a_hole_far_from_the_origin() {
-        // A hole five microns in radius, its circle cut into two halves
-        // between the same two vertices: its wire walks back by its
-        // vertices, and only its width, a few microns, says it is a hole.
-        // The width is the ring's own, so the plate meshes with one hole in
-        // it up to 2e7 from the origin.
-        for offset in [0.0, 1.0e6, 1.0e7, 2.0e7] {
-            let (euler, _) = plate_with(
-                Vector::new(offset, -0.7 * offset, 0.3 * offset),
-                |model, by| {
+        // A hole five microns in radius and one four tenths of a micron in
+        // radius, each circle cut into two halves between the same two
+        // vertices: the wire walks back by its vertices, and the smaller
+        // is under a micron wide. Both halves bound a round region whose
+        // width is a sixth of its perimeter, not two sides lying along
+        // each other, so the plate meshes with one hole in it up to 2e7
+        // from the origin.
+        for radius in [0.005, 0.0004] {
+            for offset in [0.0, 1.0e6, 1.0e7, 2.0e7] {
+                let at = Vector::new(offset, -0.7 * offset, 0.3 * offset);
+                let (euler, _) = plate_with(at, |model, by| {
                     use ogeom_algo::{make_edge_between, make_wire};
                     let frame = ogeom_math::Frame::new(
                         Point::new(5.0, 5.0, 0.0) + by,
@@ -4744,10 +4751,10 @@ mod tests {
                         T,
                     )
                     .unwrap();
-                    let circle = ogeom_math::Circle::new(frame, 0.005, T).unwrap();
+                    let circle = ogeom_math::Circle::new(frame, radius, T).unwrap();
                     let ends = [
-                        frame.origin() + frame.x().vector() * 0.005,
-                        frame.origin() - frame.x().vector() * 0.005,
+                        frame.origin() + frame.x().vector() * radius,
+                        frame.origin() - frame.x().vector() * radius,
                     ];
                     let v: Vec<Shape> = ends
                         .iter()
@@ -4765,10 +4772,51 @@ mod tests {
                         half(model, (pi, 2.0 * pi), &v[1], &v[0]),
                     ];
                     make_wire(model, &edges, T).unwrap().shape.reversed()
-                },
-            );
-            assert_eq!(euler, 0, "one hole at {offset:e}: V - E + F is 1 - 1");
+                });
+                assert_eq!(
+                    euler, 0,
+                    "radius {radius}, one hole at {offset:e}: V - E + F is 1 - 1"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn two_edges_lying_along_each_other_thinner_than_a_micron_are_a_slit() {
+        // Out from one vertex to a second along a line two millimetres
+        // long, home along an arc bulging six tenths of a micron off it:
+        // two edges between the same two vertices, like a round hole cut
+        // in two halves, but the ring is a ten-thousandth as wide as it is
+        // long. It is a slit, and the plate meshes whole.
+        let (euler, area) = plate_with(Vector::ZERO, |model, _| {
+            use ogeom_algo::{Spacing, interpolate, make_edge_between, make_wire};
+            use ogeom_geom::Curve3d as _;
+            let at = [Point::new(4.0, 5.0, 0.0), Point::new(6.0, 5.0, 0.0)];
+            let v: Vec<Shape> = at
+                .iter()
+                .map(|q| model.add_vertex(ogeom_topo::VertexData::new(*q)))
+                .collect();
+            let line: ogeom_geom::Curve = ogeom_geom::LineCurve::segment(at[0], at[1], T)
+                .unwrap()
+                .into();
+            let out = make_edge_between(model, line, (0.0, 2.0), &v[0], &v[1], T)
+                .unwrap()
+                .shape;
+            let mid = at[0].midpoint(at[1]) + Vector::new(0.0, 0.0006, 0.0);
+            let arc: ogeom_geom::Curve =
+                interpolate(&[at[1], mid, at[0]], 2, Spacing::Centripetal, T)
+                    .unwrap()
+                    .into();
+            let range = arc.domain();
+            let back = make_edge_between(model, arc, range, &v[1], &v[0], T)
+                .unwrap()
+                .shape;
+            make_wire(model, &[out, back], T).unwrap().shape
+        });
+        assert_eq!(euler, 1, "no hole: V - E + F is 1");
+        // The plate's own area, to the rounding of a hundred square
+        // millimetres summed over its triangles.
+        assert_relative_eq!(area, 100.0, epsilon = 1e-6);
     }
 
     /// The plate of the test above with its slit, moved by `at`.
