@@ -203,11 +203,12 @@ fn near_degenerate_crossings_still_trace_completely() {
             cylinder(Point::ORIGIN, Vector::X, 1.001),
             2,
         ),
+        // Two circles, a little above and below the equator.
         (
             "cylinder grazing a sphere from inside",
             sphere(Point::ORIGIN, 3.0),
             cylinder(Point::ORIGIN, Vector::Z, 2.997),
-            1,
+            2,
         ),
     ];
     for (name, a, b, count) in cases {
@@ -243,22 +244,31 @@ fn far_from_the_origin_the_answer_is_the_same() {
 }
 
 #[test]
-fn the_mutual_blindness_of_seeding_and_coverage_is_a_fact_not_a_surprise() {
+fn lines_thinner_than_a_cell_are_found_where_coverage_cannot_see_them() {
     // Two parallel cylinders overlapping by microns meet in two lines a few
     // thousandths apart, thinner than a seeding cell *and* thinner than a
-    // coverage cell at the same resolution. The seeder misses them and the
-    // instrument cannot see that it missed, because both look through the same
-    // grid. Pinned so the limitation stays documented behaviour rather than
-    // becoming a discovery.
+    // coverage cell at the same resolution. No pair of cells crosses, so the
+    // coverage instrument sees nothing to cover; the seeder finds both lines
+    // from where the cylinders come close.
     let a = cylinder(Point::ORIGIN, Vector::Z, 1.0);
     let b = cylinder(Point::new(1.99999, 0.0, 0.0), Vector::Z, 1.0);
     let found = branches(&a, &b, options(), T).unwrap();
+    assert_eq!(found.len(), 2, "one line each side of the plane y = 0");
+    assert!(worst_deviation(&a, &b, &found) < 1e-7);
+    let x = 1.99999 / 2.0;
+    let y = (1.0_f64 - x * x).sqrt();
+    let mut sides: Vec<f64> = found
+        .iter()
+        .map(|branch| {
+            for p in &branch.points {
+                assert!((p.x - x).abs() < 1e-6, "on the line: {p:?}");
+                assert!((p.y.abs() - y).abs() < 1e-6, "on the line: {p:?}");
+            }
+            branch.points[0].y
+        })
+        .collect();
+    sides.sort_by(f64::total_cmp);
+    assert!(sides[0] < 0.0 && sides[1] > 0.0, "{sides:?}");
     let score = coverage(&a, &b, &found, 60, T).unwrap();
-    assert!(
-        found.is_empty() && score.crossings == 0,
-        "if either side now resolves this, tighten this test to assert the \
-         curves are found: {} branches, {} crossings",
-        found.len(),
-        score.crossings
-    );
+    assert_eq!(score.crossings, 0, "the coverage grid sees no crossing");
 }

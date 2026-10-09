@@ -558,7 +558,7 @@ pub fn extrema_surface_surface(
 
     let mut approaches: Vec<Approach<(f64, f64), (f64, f64)>> = Vec::new();
     for (seed_a, seed_b) in seeds {
-        if let Some((ua, va, ub, vb)) = stationary_surface_surface(a, b, seed_a, seed_b, tol) {
+        if let Some((ua, va, ub, vb)) = stationary_surface_surface(a, b, seed_a, seed_b, 40, tol) {
             let (Ok(pa), Ok(pb)) = (a.point_at(ua, va, tol), b.point_at(ub, vb, tol)) else {
                 continue;
             };
@@ -577,13 +577,15 @@ pub fn extrema_surface_surface(
     }
     Ok(finish(approaches, tol))
 }
-
+/// Newton on the four stationarity conditions, taking at most `iterations`
+/// steps.
 /// Newton on the four stationarity conditions.
-fn stationary_surface_surface(
+pub(crate) fn stationary_surface_surface(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     seed_a: (f64, f64),
     seed_b: (f64, f64),
+    iterations: usize,
     tol: Tolerances,
 ) -> Option<(f64, f64, f64, f64)> {
     let system = |x: &[f64; 4]| {
@@ -627,7 +629,7 @@ fn stationary_surface_surface(
     let criteria = solve::Criteria {
         residual: tol.confusion() * tol.confusion(),
         step: tol.parametric(),
-        max_iterations: 40,
+        max_iterations: iterations,
     };
     let found =
         solve::newton_system_fixed(system, [seed_a.0, seed_a.1, seed_b.0, seed_b.1], criteria)
