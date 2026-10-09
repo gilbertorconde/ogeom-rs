@@ -341,6 +341,9 @@ struct GFace {
     /// it: a face holding edges it shares with faces set aside, which keep
     /// their pcurves on it.
     own_surface: Option<ogeom_topo::SurfaceId>,
+    /// The stored surface and the placement it stands at: faces with the
+    /// same carrier stand on one surface in space.
+    carrier: (ogeom_topo::SurfaceId, Location),
     /// The face's trim sampled coarsely for folding a chart image inside
     /// it: [`face_trim_lines`], kept for the face's every sub-edge.
     trim_lines: std::sync::OnceLock<Vec<Vec<Point2>>>,
@@ -826,6 +829,7 @@ fn gather(
         }
         let bound = bound.expanded(tol.confusion() * 1e2);
         let filter = kept_filter(model, &face, &surface, bound, tol);
+        let carrier = (surface_id, face.location().clone());
         faces.push(GFace {
             poles,
             face,
@@ -840,6 +844,7 @@ fn gather(
             trim_lines: std::sync::OnceLock::new(),
             holes_aside,
             own_surface,
+            carrier,
         });
     }
     if faces.is_empty() {
@@ -2637,7 +2642,7 @@ fn fill(
 )> {
     use ogeom_intersect::{
         CurveCurveOptions, IntersectOptions, SurfaceIntersection, intersect_curves,
-        intersect_surfaces,
+        intersect_surfaces_within,
     };
     let mut sections: Vec<SectionRec> = Vec::new();
     let mut contacts: Vec<ContactRec> = Vec::new();
@@ -2676,11 +2681,19 @@ fn fill(
         }
         pairs
     };
+    // Each surface is marched over its faces' parameter boxes, not over
+    // its whole stored domain, and a pair of surfaces is intersected once
+    // for every pair of faces standing on them at the same chord.
+    let (carriers_a, carriers_b) = (carrier_windows(ga, tol), carrier_windows(gb, tol));
+    type Met = std::sync::Arc<std::sync::OnceLock<OgeomResult<SurfaceIntersection>>>;
+    let met_once: std::sync::Mutex<ogeom_core::FastMap<(usize, usize, u64), Met>> =
+        std::sync::Mutex::default();
     let found = ogeom_core::parallel::map_ordered(
         &pairs,
         |_, &(ia, ib)| -> OgeomResult<PairFound> {
             ogeom_core::progress::checkpoint()?;
             let (fa, fb) = (&ga.faces[ia], &gb.faces[ib]);
+            let ((carrier_a, window_a), (carrier_b, window_b)) = (carriers_a[ia], carriers_b[ib]);
             let admitted = fa.filter.intersects(&fb.filter);
             let mut out = PairFound::default();
             let scale = fa.chord_scale.min(fb.chord_scale);
@@ -2702,13 +2715,35 @@ fn fill(
             let met = if coincide_as_stated(fa, fb, tol) {
                 SurfaceIntersection::Same
             } else {
-                let met = intersect_surfaces(&fa.surface, &fb.surface, options, tol)?;
+                let once = met_once
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry((carrier_a, carrier_b, chord.to_bits()))
+                    .or_default()
+                    .clone();
+                let met = once
+                    .get_or_init(|| {
+                        intersect_surfaces_within(
+                            &fa.surface,
+                            &fb.surface,
+                            (window_a, window_b),
+                            options,
+                            tol,
+                        )
+                    })
+                    .clone()?;
                 let wide_a = reaching(&fa.surface, &fb.surface, &met, tol)?;
                 let wide_b = reaching(&fb.surface, &fa.surface, &met, tol)?;
                 if wide_a.is_some() || wide_b.is_some() {
-                    intersect_surfaces(
+                    // A stretched cylinder is walked whole: its faces'
+                    // window would cut the stretch back off.
+                    intersect_surfaces_within(
                         wide_a.as_ref().unwrap_or(&fa.surface),
                         wide_b.as_ref().unwrap_or(&fb.surface),
+                        (
+                            window_a.filter(|_| wide_a.is_none()),
+                            window_b.filter(|_| wide_b.is_none()),
+                        ),
                         options,
                         tol,
                     )?
@@ -5098,6 +5133,67 @@ fn split_at_degeneracies(
         return Ok(None);
     }
     Ok(Some(out))
+}
+
+/// Each face's carrier, numbered within the solid, with the window of the
+/// carrier's parameters its faces' trims reach.
+///
+/// The window is the union of the parameter boxes of the faces on that
+/// surface, read from their sampled trims and poles, grown a quarter of
+/// its span on every side so a section crossing a trim is traced past it
+/// and cut there by the trim. A face whose trim does not sample leaves its
+/// carrier whole.
+fn carrier_windows(
+    g: &GSolid,
+    tol: Tolerances,
+) -> Vec<(usize, Option<ogeom_intersect::ParameterWindow>)> {
+    let mut numbered: ogeom_core::FastMap<&(ogeom_topo::SurfaceId, Location), usize> =
+        ogeom_core::FastMap::default();
+    // Per carrier the box reached so far, low corner then high, or `None`
+    // once a face on it fails to sample.
+    let empty = (
+        Point2::new(f64::INFINITY, f64::INFINITY),
+        Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    let mut reach: Vec<Option<(Point2, Point2)>> = Vec::new();
+    let mut of_face = Vec::with_capacity(g.faces.len());
+    for face in &g.faces {
+        let next = numbered.len();
+        let at = *numbered.entry(&face.carrier).or_insert(next);
+        if at == reach.len() {
+            reach.push(Some(empty));
+        }
+        of_face.push(at);
+        let Some((low, high)) = reach[at].as_mut() else {
+            continue;
+        };
+        let mut points: Vec<Point2> = face.trim_lines(tol).iter().flatten().copied().collect();
+        for pole in &face.poles {
+            for k in 0..=4 {
+                let t = pole.prange.0 + (pole.prange.1 - pole.prange.0) * f64::from(k) / 4.0;
+                if let Ok(p) = pole.pcurve.point_at(t, tol) {
+                    points.push(p);
+                }
+            }
+        }
+        if points.is_empty() || points.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+            reach[at] = None;
+            continue;
+        }
+        for p in points {
+            *low = Point2::new(low.x.min(p.x), low.y.min(p.y));
+            *high = Point2::new(high.x.max(p.x), high.y.max(p.y));
+        }
+    }
+    let grow = |lo: f64, hi: f64| {
+        let margin = (hi - lo) * 0.25;
+        (lo - margin, hi + margin)
+    };
+    let windows: Vec<Option<ogeom_intersect::ParameterWindow>> = reach
+        .into_iter()
+        .map(|bound| bound.map(|(low, high)| (grow(low.x, high.x), grow(low.y, high.y))))
+        .collect();
+    of_face.into_iter().map(|at| (at, windows[at])).collect()
 }
 
 /// A surface narrowed to the reach of a bound, for the marcher's benefit.

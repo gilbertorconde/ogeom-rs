@@ -285,24 +285,49 @@ fn merges(found: &[Seed], contact: Contact, apart: f64) -> bool {
 /// parameter to the surface's.
 type Border = (ogeom_geom::Curve, Box<dyn Fn(f64) -> (f64, f64)>);
 
-/// The open borders of a spline surface.
+/// The open borders of a spline surface, or of a window of one.
 fn spline_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
-    let SurfaceGeometry::BSpline(spline) = surface else {
-        return Vec::new();
+    let spline = match surface {
+        SurfaceGeometry::BSpline(spline) => spline,
+        SurfaceGeometry::Trimmed(trimmed) => match trimmed.basis() {
+            SurfaceGeometry::BSpline(spline) => spline,
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
     };
     let ((u0, u1), (v0, v1)) = surface.domain();
+    let whole = ogeom_geom::Surface::domain(spline);
+    // An iso curve runs the spline's whole other direction; on a window it
+    // is cut to the window's.
+    let cut = |c: ogeom_geom::BSplineCurve, (lo, hi): (f64, f64), (a, b): (f64, f64)| {
+        let c = ogeom_geom::Curve::BSpline(c);
+        if lo <= a && hi >= b {
+            return Some(c);
+        }
+        ogeom_geom::TrimmedCurve::new(c, lo, hi, tol)
+            .ok()
+            .map(Into::into)
+    };
     let mut out: Vec<Border> = Vec::new();
     if !surface.is_closed_u(tol) {
         for u in [u0, u1] {
-            if let Ok(c) = spline.iso_u_curve(u, tol) {
-                out.push((ogeom_geom::Curve::BSpline(c), Box::new(move |t| (u, t))));
+            if let Some(c) = spline
+                .iso_u_curve(u, tol)
+                .ok()
+                .and_then(|c| cut(c, (v0, v1), whole.1))
+            {
+                out.push((c, Box::new(move |t| (u, t))));
             }
         }
     }
     if !surface.is_closed_v(tol) {
         for v in [v0, v1] {
-            if let Ok(c) = spline.iso_v_curve(v, tol) {
-                out.push((ogeom_geom::Curve::BSpline(c), Box::new(move |t| (t, v))));
+            if let Some(c) = spline
+                .iso_v_curve(v, tol)
+                .ok()
+                .and_then(|c| cut(c, (u0, u1), whole.0))
+            {
+                out.push((c, Box::new(move |t| (t, v))));
             }
         }
     }

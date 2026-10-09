@@ -65,8 +65,8 @@ pub use extrema::{
 };
 pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace};
 pub use section::{
-    IntersectOptions, SectionCurve, SurfaceIntersection, exact_pcurve_of, exact_pcurve_over,
-    intersect_surfaces,
+    IntersectOptions, ParameterWindow, SectionCurve, SurfaceIntersection, exact_pcurve_of,
+    exact_pcurve_over, intersect_surfaces, intersect_surfaces_within,
 };
 pub use surface::{Meeting, surface_surface};
 pub use walk::{Condition, Walked, follow, walk_one_way};

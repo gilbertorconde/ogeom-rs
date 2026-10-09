@@ -130,6 +130,40 @@ pub fn intersect_surfaces(
     options: IntersectOptions,
     tol: Tolerances,
 ) -> OgeomResult<SurfaceIntersection> {
+    intersect_surfaces_within(a, b, (None, None), options, tol)
+}
+
+/// A rectangle of a surface's parameters, `((u0, u1), (v0, v1))`.
+pub type ParameterWindow = ((f64, f64), (f64, f64));
+
+/// [`intersect_surfaces`] with the marched path held to a window of each
+/// surface's parameters.
+///
+/// Where the pair has a closed form the windows change nothing. Where it
+/// is marched, seeding and tracing walk only each surface's window, so a
+/// face trimmed from a larger patch is not seeded and traced over the
+/// whole patch; a branch is followed to the window's edge and stops there.
+/// The chart is untouched, so every pcurve returned means on the surface
+/// what it would have meant without the window.
+///
+/// A window is clamped to its surface's domain in a direction that does
+/// not repeat. In a periodic direction it is kept as given, so it may
+/// straddle the seam and the walk reads it in the window's own period;
+/// one that covers a period leaves that direction whole. A drum keeps its
+/// turn whole that way and is narrowed along its axis alone; any other
+/// surface with a periodic direction left whole is walked whole, since a
+/// window does not wrap. `None` leaves that surface whole.
+///
+/// # Errors
+///
+/// As [`intersect_surfaces`].
+pub fn intersect_surfaces_within(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    windows: (Option<ParameterWindow>, Option<ParameterWindow>),
+    options: IntersectOptions,
+    tol: Tolerances,
+) -> OgeomResult<SurfaceIntersection> {
     if !options.tolerance.is_finite() || options.tolerance <= 0.0 {
         ogeom_bail!(
             Construction,
@@ -180,7 +214,7 @@ pub fn intersect_surfaces(
         {
             Some(sections) if sections.is_empty() => Ok(SurfaceIntersection::Apart),
             Some(sections) => Ok(SurfaceIntersection::Along(sections)),
-            None => marched(a, b, options, tol),
+            None => marched(a, b, windows, options, tol),
         },
     }
 }
@@ -1236,10 +1270,20 @@ fn intersect_intervals(a: (f64, f64), b: Option<(f64, f64)>) -> Option<(f64, f64
 fn marched(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
+    windows: (Option<ParameterWindow>, Option<ParameterWindow>),
     options: IntersectOptions,
     tol: Tolerances,
 ) -> OgeomResult<SurfaceIntersection> {
-    let traced = branches(a, b, options.marching, tol)?;
+    // Seeding and tracing walk the windowed views; everything after reads
+    // the surfaces as given, whose chart the views share.
+    let view_a = windows.0.and_then(|w| windowed(a, w, tol));
+    let view_b = windows.1.and_then(|w| windowed(b, w, tol));
+    let traced = branches(
+        view_a.as_ref().unwrap_or(a),
+        view_b.as_ref().unwrap_or(b),
+        options.marching,
+        tol,
+    )?;
     if traced.is_empty() {
         return Ok(SurfaceIntersection::Apart);
     }
@@ -1306,6 +1350,74 @@ fn marched(
         return Ok(SurfaceIntersection::Apart);
     }
     Ok(SurfaceIntersection::Along(out))
+}
+
+/// A surface narrowed to a window of its parameters, or `None` where the
+/// window leaves it whole: see [`intersect_surfaces_within`].
+fn windowed(
+    surface: &SurfaceGeometry,
+    window: ParameterWindow,
+    tol: Tolerances,
+) -> Option<SurfaceGeometry> {
+    let (du, dv) = surface.domain();
+    let eps = tol.parametric();
+    // The part of `want` inside `have`, or `None` where a periodic
+    // direction's window spans a period. A periodic window may straddle the
+    // seam: the trim holds the parameter inside the window and the basis
+    // wraps it, so the walk reads the window in the face's own terms.
+    let narrow = |want: (f64, f64), have: (f64, f64), periodic: bool| -> Option<(f64, f64)> {
+        if periodic {
+            return (want.1 - want.0 < have.1 - have.0 - eps).then_some(want);
+        }
+        Some((want.0.max(have.0), want.1.min(have.1)))
+    };
+    let finite = |w: (f64, f64)| w.0.is_finite() && w.1.is_finite() && w.1 > w.0;
+    if !finite(window.0) || !finite(window.1) {
+        return None;
+    }
+    let narrower = |got: (f64, f64), have: (f64, f64)| {
+        got.1 - got.0 < have.1 - have.0 - eps || got.0 > have.0 + eps || got.1 < have.1 - eps
+    };
+    let u = narrow(window.0, du, surface.is_periodic_u()).filter(|&u| narrower(u, du));
+    let v = narrow(window.1, dv, surface.is_periodic_v()).filter(|&v| narrower(v, dv));
+    if u.is_some_and(|u| u.1 - u.0 <= eps) || v.is_some_and(|v| v.1 - v.0 <= eps) {
+        return None;
+    }
+    // A drum's height narrows in its own terms, keeping the turn periodic
+    // where the window cannot cut it: a trim does not wrap.
+    let base: Option<SurfaceGeometry> = match (surface, v) {
+        (SurfaceGeometry::Cylinder(c), Some(v)) => {
+            ogeom_geom::CylinderSurface::new(c.cylinder(), v)
+                .ok()
+                .map(Into::into)
+        }
+        (SurfaceGeometry::Cone(c), Some(v)) => ogeom_geom::ConeSurface::new(c.cone(), v)
+            .ok()
+            .map(Into::into),
+        _ => None,
+    };
+    let trim = |basis: SurfaceGeometry, u: (f64, f64), v: (f64, f64)| {
+        ogeom_geom::TrimmedSurface::new(basis, u, v, tol)
+            .ok()
+            .map(Into::into)
+    };
+    match (base, u) {
+        (Some(base), Some(u)) => {
+            let v = base.domain().1;
+            trim(base, u, v)
+        }
+        (Some(base), None) => Some(base),
+        (None, _) => {
+            // A periodic direction the window leaves whole would stop
+            // wrapping under a trim.
+            let wraps_u = surface.is_periodic_u() && u.is_none();
+            let wraps_v = surface.is_periodic_v() && v.is_none();
+            if (u.is_none() && v.is_none()) || wraps_u || wraps_v {
+                return None;
+            }
+            trim(surface.clone(), u.unwrap_or(du), v.unwrap_or(dv))
+        }
+    }
 }
 
 /// A traced branch fitted, in pieces where whole it will not fit.
