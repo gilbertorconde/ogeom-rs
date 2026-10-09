@@ -3,8 +3,11 @@
 //! solid.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
+use cpu_time::cpu_time;
+
 use ogeom_core::Tolerances;
-use ogeom_core::clock::Instant;
 use ogeom_math::{Direction, Frame, Point};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 use std::time::Duration;
@@ -90,17 +93,17 @@ fn corner(r: f64) -> (f64, f64) {
     )
 }
 
-/// Fillet `edges` of `solid` at `radius`: the time it took, the volume it
-/// removed, and the result's face count. The result must be valid.
+/// Fillet `edges` of `solid` at `radius`: the processor time it took on
+/// this thread, the volume it removed, and the result's face count. The
+/// result must be valid.
 fn fillet(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
     radius: f64,
 ) -> (Duration, f64, usize) {
-    let start = Instant::now();
-    let rounded = ogeom_fillet::fillet_edges(model, solid, edges, radius, T).unwrap();
-    let took = start.elapsed();
+    let (rounded, took) = cpu_time(|| ogeom_fillet::fillet_edges(model, solid, edges, radius, T));
+    let rounded = rounded.unwrap();
     assert!(
         ogeom_algo::check(model, &rounded.shape, T)
             .unwrap()
@@ -195,14 +198,16 @@ fn a_plate_with_holes_fillets_its_outer_edges_at_about_the_plain_plates_cost() {
         assert_eq!(faces, 10 + (n * n) as usize);
         plates.push((model, solid, edges));
     }
-    // The least of several runs of each side, taken in turns, reads past
-    // a machine busy with other work; a round is measured again, up to
-    // four, while the bound is not met.
+    // The least processor time of several runs of each side, taken in
+    // turns, reads past what other work on the machine costs a thread
+    // through the caches and cores it shares; a round is measured again,
+    // up to four, while the bound is not met.
     let least = |(model, solid, edges): &mut (Model, Shape, Vec<Shape>)| {
         (0..3).fold(Duration::MAX, |least, _| {
-            let start = Instant::now();
-            ogeom_fillet::fillet_edges(model, solid, edges, 1.0, T).unwrap();
-            least.min(start.elapsed())
+            let (rounded, took) =
+                cpu_time(|| ogeom_fillet::fillet_edges(model, solid, edges, 1.0, T));
+            rounded.unwrap();
+            least.min(took)
         })
     };
     let mut rounds = Vec::new();
@@ -228,7 +233,7 @@ fn a_plate_with_holes_fillets_its_outer_edges_at_about_the_plain_plates_cost() {
 #[ignore = "heavy"]
 fn every_rim_of_a_holed_plate_fillets_in_about_linear_time() {
     let (area, centroid) = corner(0.5);
-    let mut per_hole = Vec::new();
+    let mut plates = Vec::new();
     for n in [4_u32, 8, 16] {
         let mut model = Model::new();
         let holed = plate(&mut model, 100.0, n, 80.0 / f64::from(n));
@@ -245,12 +250,29 @@ fn every_rim_of_a_holed_plate_fillets_in_about_linear_time() {
             "{removed} against {want}"
         );
         assert_eq!(faces, 6 + 2 * (n * n) as usize);
-        per_hole.push(took.as_secs_f64() / holes);
+        plates.push((model, holed, rims, holes, took.as_secs_f64() / holes));
     }
-    assert!(
-        per_hole[2] < per_hole[0] * 6.0,
-        "per hole {} s at 16 x 16 against {} s at 4 x 4",
-        per_hole[2],
-        per_hole[0]
-    );
+    // The least processor time per hole of each side; while the bound is
+    // not met the 4 x 4 and 16 x 16 plates are filleted again in turns, up
+    // to three more rounds, so other work on the machine does not decide it.
+    let (mut small, mut large) = (plates[0].4, plates[2].4);
+    let mut again = |at: usize| {
+        let (model, holed, rims, holes, least) = &mut plates[at];
+        let (rounded, took) = cpu_time(|| ogeom_fillet::fillet_edges(model, holed, rims, 0.5, T));
+        rounded.unwrap();
+        *least = least.min(took.as_secs_f64() / *holes);
+        *least
+    };
+    let mut rounds = Vec::new();
+    loop {
+        rounds.push((large, small));
+        if large < small * 6.0 {
+            return;
+        }
+        assert!(
+            rounds.len() < 4,
+            "per hole at 16 x 16 against 4 x 4, (large s, small s) per round: {rounds:?}"
+        );
+        (small, large) = (again(0), again(2));
+    }
 }

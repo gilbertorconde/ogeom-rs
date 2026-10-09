@@ -3,7 +3,9 @@
 //! about the time its faces take to copy.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use ogeom::core::clock::Instant;
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
+use cpu_time::cpu_time;
 use std::time::Duration;
 
 use ogeom::algo::{MeshSolidOptions, check, solid_from_mesh, volume_properties};
@@ -106,11 +108,9 @@ fn a_thin_drill_through_a_many_faced_solid_is_quick() {
     let drill = ogeom::algo::make_cylinder(&mut model, frame, radius, 1000.0, T)
         .unwrap()
         .shape;
-    let started = Instant::now();
-    let cut = ogeom::boolean::cut(&mut model, &out.shape, &drill, T)
-        .unwrap()
-        .shape;
-    let took = started.elapsed();
+    // Processor time on this thread, the boolean's stages run on it.
+    let (cut, took) = cpu_time(|| ogeom::boolean::cut(&mut model, &out.shape, &drill, T));
+    let cut = cut.unwrap().shape;
     let diagnosis = check(&model, &cut, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
     let after = volume_properties(&model, &cut, Deflection::with_chord(1e-3).unwrap(), T)

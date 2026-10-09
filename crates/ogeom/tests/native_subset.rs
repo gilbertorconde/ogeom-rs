@@ -2,6 +2,10 @@
 //! of `roots`, not the model.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
+use cpu_time::cpu_time;
+
 use ogeom::core::Tolerances;
 use ogeom::io::native::{WriteOptions, read, write};
 use ogeom::math::{Direction, Frame, Point};
@@ -231,15 +235,18 @@ fn a_582_face_plate_snapshot_is_small_and_quick() {
     let (model, plate) = holed_plate(24);
     assert_eq!(faces(&model, &plate), 582);
     let options = WriteOptions::default();
-    // The fastest of ten, so a busy machine does not decide it.
+    // The least processor time of ten writes, each on this thread.
     let mut fastest = std::time::Duration::MAX;
     let mut text = String::new();
     for _ in 0..10 {
-        let started = ogeom::core::clock::Instant::now();
-        text = write(&model, std::slice::from_ref(&plate), options).unwrap();
-        fastest = fastest.min(started.elapsed());
+        let (written, took) = cpu_time(|| write(&model, std::slice::from_ref(&plate), options));
+        text = written.unwrap();
+        fastest = fastest.min(took);
     }
     assert!(text.len() < 2_000_000, "{} bytes", text.len());
-    assert!(fastest.as_millis() < 50, "written in {fastest:?}");
+    assert!(
+        fastest.as_millis() < 50,
+        "written in {fastest:?} of processor time"
+    );
     assert_read_back_whole(&model, &plate, &text);
 }

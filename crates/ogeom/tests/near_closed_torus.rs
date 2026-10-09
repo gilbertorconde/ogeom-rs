@@ -4,8 +4,10 @@
 //! points of it as of an open torus.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
 use core::f64::consts::{PI, TAU};
-use ogeom::core::clock::Instant;
+use cpu_time::cpu_time;
 
 use ogeom::algo::{
     check, make_edge, make_face, make_revolution, make_torus, make_wire, volume_properties,
@@ -93,19 +95,23 @@ fn a_nearly_closed_torus_checks_and_revolves_in_good_time() {
     let axes = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
     for gap in [0.1, 0.01, 0.001] {
         let major = MINOR + gap;
-        let started = Instant::now();
-        let mut model = Model::new();
-        let torus = make_torus(&mut model, axes, major, MINOR, T).unwrap().shape;
-        assert_valid_with_volume(&model, &torus, major, &format!("torus, gap {gap}"));
+        // Processor time on this thread, every parallel stage run on it.
+        let ((), took) = cpu_time(|| {
+            let mut model = Model::new();
+            let torus = make_torus(&mut model, axes, major, MINOR, T).unwrap().shape;
+            assert_valid_with_volume(&model, &torus, major, &format!("torus, gap {gap}"));
 
-        let mut model = Model::new();
-        let face = disc(&mut model, major);
-        let axis = Axis::new(Point::ORIGIN, Direction::Z);
-        let solid = make_revolution(&mut model, &face, axis, TAU, T)
-            .unwrap()
-            .shape;
-        assert_valid_with_volume(&model, &solid, major, &format!("revolution, gap {gap}"));
-        let took = started.elapsed();
-        assert!(took.as_secs_f64() < 1.0, "gap {gap}: took {took:?}");
+            let mut model = Model::new();
+            let face = disc(&mut model, major);
+            let axis = Axis::new(Point::ORIGIN, Direction::Z);
+            let solid = make_revolution(&mut model, &face, axis, TAU, T)
+                .unwrap()
+                .shape;
+            assert_valid_with_volume(&model, &solid, major, &format!("revolution, gap {gap}"));
+        });
+        assert!(
+            took.as_secs_f64() < 1.0,
+            "gap {gap}: took {took:?} of processor time"
+        );
     }
 }

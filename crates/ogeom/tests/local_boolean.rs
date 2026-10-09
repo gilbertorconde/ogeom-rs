@@ -2,6 +2,10 @@
 //! solid holds.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
+use cpu_time::cpu_time;
+
 use ogeom::algo::{make_box, make_cylinder};
 use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Frame, Point};
@@ -58,24 +62,24 @@ fn plate_and_corner(rows: u32, faces: usize) -> (Model, Shape, Shape) {
 fn a_corner_hole_costs_what_it_touches_not_what_the_plate_holds() {
     let mut small = plate_and_corner(4, 22);
     let mut large = plate_and_corner(24, 582);
-    // The least of many runs each, taken in turns of a few runs, the cut
-    // made again each time in the model holding its plate.
+    // The least processor time of many runs each, taken in turns of a few
+    // runs, the cut made again each time in the model holding its plate
+    // and its stages run on this thread.
     let least = |(model, plate, corner): &mut (Model, Shape, Shape)| {
         let before = explore_unique(model, plate, ShapeType::Face).unwrap().len();
         (0..6).fold(f64::INFINITY, |least, _| {
-            let started = ogeom::core::clock::Instant::now();
-            let cut = ogeom::boolean::cut(model, plate, corner, T).unwrap();
-            let elapsed = started.elapsed().as_secs_f64();
-            let after = explore_unique(model, &cut.shape, ShapeType::Face)
+            let (cut, took) = cpu_time(|| ogeom::boolean::cut(model, plate, corner, T));
+            let after = explore_unique(model, &cut.unwrap().shape, ShapeType::Face)
                 .unwrap()
                 .len();
             assert_eq!(after, before + 1);
-            least.min(elapsed)
+            least.min(took.as_secs_f64())
         })
     };
-    // A machine busy with other work slows some runs of either side; the
-    // least of each side over a round reads past that, and a round is
-    // measured again, up to four, while the bound is not met.
+    // Other work on the machine still slows a thread through the caches
+    // and cores it shares; the least of each side over a round reads past
+    // that, and a round is measured again, up to four, while the bound is
+    // not met.
     let mut ratios = Vec::new();
     for _ in 0..4 {
         let (mut least_small, mut least_large) = (f64::INFINITY, f64::INFINITY);

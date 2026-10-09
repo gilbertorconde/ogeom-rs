@@ -437,6 +437,7 @@ dependencies = [
  "ogeom-offset",
  "ogeom-topo",
  "proptest",
+ "rustix",
 ]
 
 [[package]]
@@ -530,6 +531,7 @@ dependencies = [
  "ogeom-mesh",
  "ogeom-topo",
  "proptest",
+ "rustix",
 ]
 
 [[package]]

@@ -1,6 +1,10 @@
 //! How big a body is: the smallest box holding it, not the carriers'.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
+use cpu_time::cpu_time;
+
 use ogeom::algo::{
     face_bounds, make_box, make_cylinder, make_face, make_polygon, make_revolution, make_sphere,
     tight_bounds,
@@ -217,30 +221,28 @@ fn a_second_tight_bounds_of_a_drilled_plate_costs_a_tenth_of_the_first() {
             .len(),
         582
     );
+    // Processor time on this thread, every parallel stage run on it.
     let time = |model: &Model| {
-        let started = ogeom::core::clock::Instant::now();
-        let b = tight_bounds(model, &plate, T).unwrap();
-        near(b.high().unwrap(), Point::new(250.0, 250.0, 10.0));
-        started.elapsed().as_secs_f64()
+        let (b, took) = cpu_time(|| tight_bounds(model, &plate, T));
+        near(b.unwrap().high().unwrap(), Point::new(250.0, 250.0, 10.0));
+        took.as_secs_f64()
     };
-    // The least of a few runs each way, every first one on a copy whose
-    // faces have forgotten their boxes: the boolean keeps them, and a face
-    // handed out for editing forgets its own.
-    let forgotten = || {
-        let mut copy = model.clone();
-        for face in explore_unique(&model, &plate, ShapeType::Face).unwrap() {
-            let _ = copy.node_mut(&face);
-        }
-        copy
-    };
-    let first = (0..5)
-        .map(|_| time(&forgotten()))
-        .fold(f64::INFINITY, f64::min);
+    // The least of a few runs each way, taken in turns, every first one on
+    // a copy whose faces have forgotten their boxes: the boolean keeps
+    // them, and a face handed out for editing forgets its own.
+    let mut forgotten = model.clone();
+    for face in explore_unique(&model, &plate, ShapeType::Face).unwrap() {
+        let _ = forgotten.node_mut(&face);
+    }
     time(&model);
-    let second = (0..5).map(|_| time(&model)).fold(f64::INFINITY, f64::min);
+    let (mut first, mut second) = (f64::INFINITY, f64::INFINITY);
+    for _ in 0..5 {
+        first = first.min(time(&forgotten.clone()));
+        second = second.min(time(&model));
+    }
     assert!(
         second * 10.0 < first,
-        "first {first:.6} s, second {second:.6} s"
+        "first {first:.6} s, second {second:.6} s of processor time"
     );
     holds_its_faces(&model, &plate);
 }

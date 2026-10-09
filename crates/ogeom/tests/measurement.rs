@@ -8,6 +8,10 @@
 //! planes should not have to be meshed to be weighed.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
+use cpu_time::cpu_time;
+
 use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Frame, Point};
 use ogeom::mesh::Deflection;
@@ -361,17 +365,23 @@ fn a_metre_cube_and_a_long_drum_measure_exactly_and_at_once() {
     let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 3000.0, T)
         .unwrap()
         .shape;
-    let started = ogeom::core::clock::Instant::now();
-    for (shape, volume, area) in [
-        (&cube, 1e9, 6e6),
-        (
-            &drum,
-            core::f64::consts::PI * 25.0 * 3000.0,
-            core::f64::consts::TAU * 5.0 * (5.0 + 3000.0),
-        ),
-    ] {
-        let v = ogeom::algo::volume_properties(&model, shape, Deflection::default(), T).unwrap();
-        let a = ogeom::algo::surface_properties(&model, shape, Deflection::default(), T).unwrap();
+    // Processor time on this thread, every parallel stage run on it.
+    let (measured, took) = cpu_time(|| {
+        [
+            (&cube, 1e9, 6e6),
+            (
+                &drum,
+                core::f64::consts::PI * 25.0 * 3000.0,
+                core::f64::consts::TAU * 5.0 * (5.0 + 3000.0),
+            ),
+        ]
+        .map(|(shape, volume, area)| {
+            let v = ogeom::algo::volume_properties(&model, shape, Deflection::default(), T);
+            let a = ogeom::algo::surface_properties(&model, shape, Deflection::default(), T);
+            (v.unwrap(), a.unwrap(), volume, area)
+        })
+    });
+    for (v, a, volume, area) in measured {
         assert_eq!((v.deflection, a.deflection), (0.0, 0.0));
         assert!(
             (v.mass - volume).abs() <= volume * 1e-12,
@@ -385,11 +395,7 @@ fn a_metre_cube_and_a_long_drum_measure_exactly_and_at_once() {
         );
     }
     // A face a metre across is a handful of panels, not thousands.
-    assert!(
-        started.elapsed().as_secs_f64() < 2.0,
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(took.as_secs_f64() < 2.0, "{took:?} of processor time");
 }
 
 /// A void is a shell of its own, so turned inside out as a whole (every

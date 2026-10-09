@@ -3,6 +3,10 @@
 //! does.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
+use cpu_time::cpu_time;
+
 use ogeom::core::FastSet;
 
 use ogeom::algo::{make_box, make_cylinder};
@@ -203,16 +207,19 @@ fn a_582_face_plate_compacts_to_what_it_reaches() {
         .retain_reachable(std::slice::from_ref(&plate))
         .unwrap();
     assert!(model.node_count() < 20_000, "{} nodes", model.node_count());
+    // The least processor time of five clones, the drop not counted.
     let least = (0..5)
         .map(|_| {
-            let started = ogeom::core::clock::Instant::now();
-            let copy = model.clone();
-            let elapsed = started.elapsed().as_secs_f64();
+            let (copy, took) = cpu_time(|| model.clone());
             drop(copy);
-            elapsed
+            took.as_secs_f64()
         })
         .fold(f64::INFINITY, f64::min);
-    assert!(least < 0.020, "a clone takes {:.1} ms", least * 1e3);
+    assert!(
+        least < 0.020,
+        "a clone takes {:.1} ms of processor time",
+        least * 1e3
+    );
     assert_eq!(faces(&model, &plate), before);
 
     let after = corner_hole(&mut model, &plate);

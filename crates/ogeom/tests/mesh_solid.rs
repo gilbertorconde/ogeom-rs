@@ -2,10 +2,13 @@
 //! regions, topology from its own connectivity, windings made to agree.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/cpu_time.rs"]
+mod cpu_time;
 #[path = "support/pcurves.rs"]
 mod pcurves;
 #[path = "support/walks.rs"]
 mod walks;
+use cpu_time::cpu_time;
 
 use ogeom::core::clock::Instant;
 use std::time::Duration;
@@ -1805,9 +1808,8 @@ fn holes_sideways_past_a_rough_corner_cut_and_fill_valid() {
 }
 
 /// A torus tessellated into 200 000 triangles converts in seconds, to the
-/// one face of the torus it is. The bound allows for the rest of the suite
-/// sharing the machine; a conversion that grows faster than the mesh takes
-/// minutes.
+/// one face of the torus it is. The bound, on processor time, is loose: a
+/// conversion that grows faster than the mesh takes minutes.
 #[test]
 fn a_large_mesh_converts_in_seconds() {
     let (rings, sides) = (500_u32, 200_u32);
@@ -1832,13 +1834,14 @@ fn a_large_mesh_converts_in_seconds() {
     }
     assert_eq!(mesh.triangles.len(), 200_000);
     let mut model = Model::new();
-    let started = Instant::now();
-    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
-    let took = started.elapsed();
+    // Processor time on this thread, every parallel stage run on it.
+    let (out, took) =
+        cpu_time(|| solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T));
+    let out = out.unwrap();
     assert!(out.closed);
     assert_eq!(out.report.triangles, 200_000);
     assert_eq!(out.report.faces, 1);
-    assert!(took < Duration::from_secs(30), "{took:?}");
+    assert!(took < Duration::from_secs(30), "{took:?} of processor time");
 }
 
 /// A rounded rectangle `w` by `h`, corner radius `r` in `n` steps per
