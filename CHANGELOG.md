@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-10-09
+
+A patch release: no breaking API changes. Shapes far from the origin keep
+their facing and features across conversion, sewing, extension, chamfers,
+pipes, meshing, booleans and healing, with converted cylinders and spheres
+keeping their surfaces there. Mass properties are exact under a scaling
+placement, a corner rounds the same whichever edge comes first, and mesh
+conversion depends far less on how its triangle list is ordered or which
+way a fitted axis points. Timing tests measure thread processor time.
+
 ### Fixed
 
 - **Converted cylinders and spheres far from the origin keep their
@@ -4677,7 +4687,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.14...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.15...HEAD
+[0.9.15]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.11...v0.9.12
