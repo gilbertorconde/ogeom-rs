@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.9.16] - 2026-10-09
+
+A patch release: no breaking API changes. STEP bands whose rims start on
+different columns read seamed, a drill nicking an edge a few microns deep
+closes because the two faces of the edge decide a hug once, a thin drum
+through a long drill's wall is cut on both sides, an affine rebuild
+records every sub-shape in its history, and a round hole thinner than a
+micron cut in two halves stays a hole. Mesh conversion no longer reports
+a fallback for an empty region.
+
 ### Added
 
 - **`ogeom_algo::split_ring_on_column`** splits a closed circle rim of a
@@ -4722,7 +4732,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.15...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.16...HEAD
+[0.9.16]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.12...v0.9.13
