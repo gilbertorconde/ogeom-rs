@@ -13,6 +13,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Converted cylinders and spheres far from the origin keep their
+  surface.** Axes and sphere centres are fitted about the part's own
+  points; a cylinder at 1e7 and a sphere at 1e6 came back as facets.
+
+- **Mesh conversion no longer depends on which way a fitted axis points.**
+  A band's seam runs through wherever its rims start, a seam through a
+  hole's corner counts as crossing it, and a closed piece on a sphere or
+  torus is a whole face; such a piece used to leave an empty shell and an
+  error.
+
+- **A circle lying in a plane far from the origin keeps its exact image
+  there.** At 1e7 its axes were rounded off square, its edges became
+  fitted curves, and measuring the solid took seconds.
+
 - **Shapes far from the origin keep their facing and features.** Ring and
   volume sums are taken about a point of the shape instead of the world
   origin in mesh conversion, sewing, face extension, chamfers and wedges,
