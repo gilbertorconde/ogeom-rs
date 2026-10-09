@@ -410,9 +410,6 @@ recorded count per bench, and a gate at a few percent.
 - Mesh conversion meshes every face again after the whole-shape mesh in
   each build iteration; primitive refinement allocates in its Jacobian
   loop; piece nesting has no box rejection.
-- The quartic (line and torus) goes through a heap companion matrix; a
-  bracketing solver between the derivative's roots (Yuksel 2022) is
-  allocation-free and finds tangencies directly.
 
 **Algorithms worth the work.**
 - Classify a boolean's pieces once per connected region, not per piece
