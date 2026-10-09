@@ -1536,13 +1536,18 @@ pub(crate) fn vertex_point(model: &Model, vertex: &Shape) -> OgeomResult<Point> 
     Ok(data.point)
 }
 
+/// The area a ring encloses in its chart, positive counter-clockwise.
+///
+/// Summed about the ring's first point: the same sum as about the chart's
+/// origin, which may stand far off, where it is a difference of huge
+/// products.
 pub(crate) fn signed_area(ring: &[Point2]) -> f64 {
     let n = ring.len();
+    let Some(&anchor) = ring.first() else {
+        return 0.0;
+    };
     (0..n)
-        .map(|i| {
-            let (a, b) = (ring[i], ring[(i + 1) % n]);
-            a.x * b.y - b.x * a.y
-        })
+        .map(|i| (ring[i] - anchor).cross(ring[(i + 1) % n] - anchor))
         .sum::<f64>()
         * 0.5
 }
@@ -1573,6 +1578,19 @@ mod tests {
     use ogeom_math::ControlGrid;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A strip one long and a hundredth wide encloses its own area wherever
+    /// it stands in its chart, up to 2e7 from the chart's origin.
+    #[test]
+    fn a_ring_far_out_in_its_chart_encloses_its_own_area() {
+        for o in [0.0, 1e6, 1e7, 2e7] {
+            let (x, y) = (o, -0.7 * o);
+            let ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 0.01), (0.0, 0.01)]
+                .map(|(dx, dy)| Point2::new(x + dx, y + dy));
+            let area = signed_area(&ring);
+            assert!((area - 0.01).abs() < 1e-9, "o {o:e}: area {area}");
+        }
+    }
 
     /// An iso-curve with no closed form keeps to the surface between the
     /// points it was fitted at. The surface is the offset of a patch
