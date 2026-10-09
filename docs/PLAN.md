@@ -443,8 +443,13 @@ recorded count per bench, and a gate at a few percent.
   is the item to settle first.
 - March general pairs over the faces' parameter boxes, and cache a pair of
   surfaces marched once within one fill.
-- Seeds from the surfaces' extrema find loops thinner than the grid
-  (Sederberg and Meyers 1988).
+- Marched seeds search the cell pairs that come close without crossing
+  for a crossing or for the stationary approach a small loop runs round
+  (Sederberg and Meyers 1988). Where the surfaces lie close along a whole
+  curve (a blend against its support) the squares around a search that
+  found nothing are passed over, to keep the cost within the grid's, so a
+  small loop beside such a band can still be missed. Normal cones over the
+  spline patches' hulls would prove those squares empty instead.
 - The winding number fallback of the exact classifier (where every ray
   meets a tangency) sums the faces' meshes triangle by triangle; a
   hierarchical far field (Barill et al. 2018) once a solid of many faces

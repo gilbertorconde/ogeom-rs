@@ -16,9 +16,12 @@
 //!
 //! So [`seeds`] and [`trace`] are separate, separately testable, and separately
 //! measured. Seeding is polyhedral: both surfaces are sampled into triangles and
-//! the triangle pairs that cross give starting points. It finds a branch if the
-//! sampling resolves it, and *misses one thinner than the grid*, which is a
-//! real limitation with a knob attached rather than a mystery.
+//! the triangle pairs that cross give starting points. A branch thinner than
+//! the grid crosses no pair of triangles; where it meets a spline's border it
+//! is found as a piercing, and a closed loop inside both surfaces is found
+//! from the approach of the surfaces inside it. Where the surfaces lie close
+//! along a whole curve only part of that search is made, and there the grid
+//! is the knob.
 //!
 //! # Following the curve
 //!
@@ -52,9 +55,10 @@ pub struct Marching {
     pub chord: f64,
     /// How finely each surface is sampled when looking for branches.
     ///
-    /// The limitation with a knob on it: a branch narrower than one cell can be
-    /// stepped over entirely. Raising this costs time quadratically and is the
-    /// only thing that makes a thin branch findable.
+    /// A branch narrower than one cell crosses no pair of cells, and is found
+    /// only from a border it pierces or from the approach of the surfaces
+    /// near it. Raising this costs time quadratically and makes a thin branch
+    /// cross cells.
     pub grid: usize,
     /// A ceiling on the points in one branch, so a curve that will not close
     /// cannot run forever.
@@ -156,7 +160,9 @@ impl Traced {
 /// Polyhedral: both surfaces are sampled into triangles, the pairs that cross
 /// give approximate points, and each is corrected onto both surfaces exactly.
 /// Points that land on the same spot are merged, so a branch crossing many
-/// cells yields one seed rather than dozens.
+/// cells yields one seed rather than dozens. A spline's borders are pierced
+/// by the other surface, and the pairs that come close without crossing are
+/// searched for a crossing or for an approach a small loop runs round.
 ///
 /// # Errors
 ///
@@ -171,11 +177,25 @@ pub fn seeds(
     options.validate()?;
     let (mesh_a, mesh_b) = (sample(a, options.grid, tol), sample(b, options.grid, tol));
     let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
-    let near = CellBins::over(&mesh_b, options.chord);
+    // The bins reach as far as the surfaces can bow from their cells, so
+    // the pairs that come close without crossing are found as well.
+    let bow = |mesh: &[Cell]| mesh.iter().map(|c| c.sag).fold(0.0, f64::max);
+    let near = CellBins::over(
+        &mesh_b,
+        BOW.mul_add(bow(&mesh_a) + bow(&mesh_b), options.chord),
+    );
+    let (facing_a, facing_b): (Vec<Facing>, Vec<Facing>) = (
+        mesh_a.iter().map(Facing::of).collect(),
+        mesh_b.iter().map(Facing::of).collect(),
+    );
 
     let mut found: Vec<Seed> = Vec::new();
+    // The pairs of cells that come close without crossing, and the grid
+    // squares of the first surface some pair crosses in.
+    let mut close: Vec<(usize, usize)> = Vec::new();
+    let mut crossed = vec![false; mesh_a.len().div_ceil(2)];
     let mut candidates: Vec<usize> = Vec::new();
-    for cell_a in &mesh_a {
+    for (i, cell_a) in mesh_a.iter().enumerate() {
         // Cheap rejection first: most pairs are nowhere near each other,
         // and the segment test below is far from free. The bins hand over
         // only the cells whose boxes could meet this one's, in their own
@@ -183,12 +203,20 @@ pub fn seeds(
         near.candidates(cell_a, &mut candidates);
         for &j in &candidates {
             let cell_b = &mesh_b[j];
-            if !overlap(cell_a, cell_b, options.chord) {
-                continue;
-            }
-            let Some(guess) = triangles_cross(cell_a, cell_b) else {
+            let crossing = overlap(cell_a, cell_b, options.chord)
+                .then(|| triangles_cross(cell_a, cell_b))
+                .flatten();
+            let Some(guess) = crossing else {
+                if may_touch(
+                    (cell_a, &facing_a[i]),
+                    (cell_b, &facing_b[j]),
+                    options.chord,
+                ) {
+                    close.push((i, j));
+                }
                 continue;
             };
+            crossed[i / 2] = true;
             let start = [cell_a.at.0, cell_a.at.1, cell_b.at.0, cell_b.at.1];
             let Some(contact) = correct(a, b, start, guess, None, tol) else {
                 continue;
@@ -245,7 +273,432 @@ pub fn seeds(
             }
         }
     }
+    // A closed loop inside both surfaces, smaller than a cell and touching
+    // no border, crosses no pair of cells and pierces no border. Inside it
+    // the separation of the surfaces has an extremum, where the normals are
+    // collinear and the gap is small; the cells that come close without
+    // crossing seed a search for it (Sederberg and Meyers 1988), and the
+    // loop is found by stepping out from it until the separation changes
+    // sign.
+    let extra = extremum_seeds(a, b, (&mesh_a, &mesh_b), &close, &crossed, options, tol);
+    for contact in extra {
+        if !merges(&found, contact, apart) {
+            found.push(Seed::at(a, b, contact, tol));
+        }
+    }
     Ok(found.into_iter().map(|s| s.contact).collect())
+}
+
+/// How many times a cell's sag the surface is allowed to bow from the
+/// cell when deciding whether two cells could touch: the sag is measured
+/// at the cell's middle only.
+const BOW: f64 = 2.0;
+
+/// The sine of the angle between two cells' normals that always passes:
+/// a floor under the turning estimated from the sags.
+const FACING: f64 = 0.02;
+
+/// Whether two cells that do not cross could still hold a loop between
+/// them: their boxes, grown by how far each surface bows from its cell,
+/// meet; each cell's corners straddle or come within that bow of the
+/// other's plane; and their normals are near enough to collinear for a
+/// stationary approach, where the surfaces' normals agree, to lie between
+/// them.
+fn may_touch(a: (&Cell, &Facing), b: (&Cell, &Facing), chord: f64) -> bool {
+    let ((a, facing_a), (b, facing_b)) = (a, b);
+    let slack = BOW.mul_add(a.sag + b.sag, chord);
+    if !overlap(a, b, slack) {
+        return false;
+    }
+    let (Some(na), Some(nb)) = (facing_a.normal, facing_b.normal) else {
+        return false;
+    };
+    if na.cross(nb).magnitude() > FACING + facing_a.turn + facing_b.turn {
+        return false;
+    }
+    let within = |corners: &[Point; 3], origin: Point, n: Vector| {
+        let side = corners.map(|p| (p - origin).dot(n));
+        let low = side.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = side.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        low <= slack && high >= -slack
+    };
+    within(&a.corners, b.corners[0], nb) && within(&b.corners, a.corners[0], na)
+}
+
+/// Which way a cell faces, and how far the surface's normal strays from
+/// the cell's within it.
+struct Facing {
+    normal: Option<Vector>,
+    turn: f64,
+}
+
+impl Facing {
+    fn of(cell: &Cell) -> Self {
+        // An arc of chord `l` and sag `s` turns through about `8 s / l`.
+        Self {
+            normal: cell_normal(cell),
+            turn: 8.0 * BOW * cell.sag / cell_size(cell).max(f64::MIN_POSITIVE),
+        }
+    }
+}
+
+/// A cell's unit normal, `None` for a cell with no area.
+fn cell_normal(cell: &Cell) -> Option<Vector> {
+    let [p, q, r] = cell.corners;
+    let n = (q - p).cross(r - p);
+    let length = n.magnitude();
+    (length > f64::MIN_POSITIVE).then(|| n * (1.0 / length))
+}
+
+/// How near two cells come, for ranking: the nearer of each one's middle
+/// to the other's triangle.
+fn closeness(a: &Cell, b: &Cell) -> f64 {
+    point_to_triangle(centroid(a), b.corners).min(point_to_triangle(centroid(b), a.corners))
+}
+
+/// The distance from a point to a triangle.
+fn point_to_triangle(p: Point, t: [Point; 3]) -> f64 {
+    let edges = (0..3).map(|k| distance_to_segment(p, t[k], t[(k + 1) % 3]));
+    let rim = edges.fold(f64::INFINITY, f64::min);
+    let n = (t[1] - t[0]).cross(t[2] - t[0]);
+    let area = n.magnitude();
+    if area <= f64::MIN_POSITIVE {
+        return rim;
+    }
+    let n = n * (1.0 / area);
+    let foot = p - n * (p - t[0]).dot(n);
+    let inside = (0..3).all(|k| {
+        let (from, to) = (t[k], t[(k + 1) % 3]);
+        (to - from).cross(foot - from).dot(n) >= 0.0
+    });
+    if inside { p.distance(foot) } else { rim }
+}
+
+/// The middle of a cell.
+fn centroid(cell: &Cell) -> Point {
+    let [p, q, r] = cell.corners;
+    Point::new(
+        (p.x + q.x + r.x) / 3.0,
+        (p.y + q.y + r.y) / 3.0,
+        (p.z + q.z + r.z) / 3.0,
+    )
+}
+
+/// Whether a parameter lies in the grid square a cell was cut from (the
+/// box of its corners' parameters, which takes in the square's diagonal),
+/// or within `around` squares of it.
+fn in_square(cell: &Cell, at: (f64, f64), around: f64) -> bool {
+    let (u, v) = cell.params.iter().fold(
+        (
+            (f64::INFINITY, f64::NEG_INFINITY),
+            (f64::INFINITY, f64::NEG_INFINITY),
+        ),
+        |((u0, u1), (v0, v1)), &(u, v)| ((u0.min(u), u1.max(u)), (v0.min(v), v1.max(v))),
+    );
+    let (du, dv) = ((u.1 - u.0) * around, (v.1 - v.0) * around);
+    (u.0 - du..=u.1 + du).contains(&at.0) && (v.0 - dv..=v.1 + dv).contains(&at.1)
+}
+
+/// A cell's longest edge.
+fn cell_size(cell: &Cell) -> f64 {
+    let [p, q, r] = cell.corners;
+    p.distance(q).max(q.distance(r)).max(r.distance(p))
+}
+
+/// Contacts found near the cell pairs `close`, where the surfaces come
+/// close without their cells crossing: a point of a crossing the grid
+/// stepped over, or a point of a loop around a stationary approach where
+/// the surfaces pass through each other. `crossed` marks the first
+/// surface's grid squares some pair of cells crosses in.
+fn extremum_seeds(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    (mesh_a, mesh_b): (&[Cell], &[Cell]),
+    close: &[(usize, usize)],
+    crossed: &[bool],
+    options: Marching,
+    tol: Tolerances,
+) -> Vec<Contact> {
+    let middle = |c: &Cell| {
+        let [p, q, r] = c.params;
+        ((p.0 + q.0 + r.0) / 3.0, (p.1 + q.1 + r.1) / 3.0)
+    };
+    // One search per grid square of the first surface, from the cell of
+    // the second nearest it: the two triangles of a square share it, and
+    // a square holds one approach unless the second surface folds back
+    // within a cell.
+    let mut nearest: std::collections::BTreeMap<usize, (f64, usize, usize)> =
+        std::collections::BTreeMap::new();
+    for &(i, j) in close {
+        let d = closeness(&mesh_a[i], &mesh_b[j]);
+        let best = nearest.entry(i / 2).or_insert((d, i, j));
+        if d < best.0 {
+            *best = (d, i, j);
+        }
+    }
+    // The squares no found branch crosses in go first, then the nearest.
+    let mut order: Vec<(f64, usize, usize)> = nearest.into_values().collect();
+    order.sort_by(|x, y| {
+        crossed[x.1 / 2]
+            .cmp(&crossed[y.1 / 2])
+            .then(x.0.total_cmp(&y.0))
+            .then(x.1.cmp(&y.1))
+    });
+    let mut out: Vec<Contact> = Vec::new();
+    let mut stationary: Vec<Contact> = Vec::new();
+    // Where a search found nothing to follow. Where the surfaces lie close
+    // along a whole curve (a blend against the face it rolls on) every
+    // square is close, and a search in each would cost more than the grid
+    // did; the squares around such a search are passed over.
+    let mut settled: Vec<(f64, f64)> = Vec::new();
+    for (_, i, j) in order {
+        let (cell_a, cell_b) = (&mesh_a[i], &mesh_b[j]);
+        if settled.iter().any(|&at| in_square(cell_a, at, 1.0)) {
+            continue;
+        }
+        // A pair of squares an earlier search already landed in has its
+        // approach.
+        if stationary
+            .iter()
+            .any(|known| in_square(cell_a, known.on_a, 0.0) && in_square(cell_b, known.on_b, 0.0))
+        {
+            continue;
+        }
+        let (from_a, from_b) = (middle(cell_a), middle(cell_b));
+        // The surfaces meeting near the squares answer first, and cheaply:
+        // a point of a crossing the grid stepped over seeds, and a touch
+        // has nothing to follow. Only where they do not meet is the
+        // approach between them looked for.
+        let guess = centroid(cell_a).midpoint(centroid(cell_b));
+        if let Some(contact) = correct(
+            a,
+            b,
+            [from_a.0, from_a.1, from_b.0, from_b.1],
+            guess,
+            None,
+            tol,
+        ) {
+            if passes_through(a, b, contact, tol) {
+                out.push(contact);
+            } else {
+                settled.push(contact.on_a);
+            }
+            continue;
+        }
+        let Some((ua, va, ub, vb)) =
+            crate::extrema::stationary_surface_surface(a, b, from_a, from_b, STATIONARY_STEPS, tol)
+        else {
+            settled.push(from_a);
+            continue;
+        };
+        let (Ok(pa), Ok(pb)) = (a.point_at(ua, va, tol), b.point_at(ub, vb, tol)) else {
+            continue;
+        };
+        let reach = tol.confusion() * 100.0;
+        if stationary.iter().any(|known| {
+            known.point.distance(pa) <= reach
+                && b.point_at(known.on_b.0, known.on_b.1, tol)
+                    .is_ok_and(|q| q.distance(pb) <= reach)
+        }) {
+            continue;
+        }
+        stationary.push(Contact {
+            on_a: (ua, va),
+            on_b: (ub, vb),
+            point: pa,
+        });
+        // A loop thinner than the cells passes through the other surface
+        // by no more than the cells bow.
+        let gap = pa.distance(pb);
+        if gap > BOW.mul_add(cell_a.sag + cell_b.sag, options.chord) {
+            continue;
+        }
+        let at = Contact {
+            on_a: (ua, va),
+            on_b: (ub, vb),
+            point: pa.midpoint(pb),
+        };
+        if gap <= tol.confusion() {
+            // On both surfaces already: the least distance is nought on the
+            // intersection itself. A point of a crossing the grid stepped
+            // over seeds; a touch has nothing to follow.
+            if !passes_through(a, b, at, tol) {
+                settled.push(at.on_a);
+            } else if let Some(contact) = correct(a, b, [ua, va, ub, vb], at.point, None, tol) {
+                out.push(contact);
+            }
+            continue;
+        }
+        // Where the normals agree and the gap is within the chord, it is a
+        // touch at the accuracy the trace is held to: any loop about it is
+        // shallower than a traced polyline's own error.
+        if gap <= options.chord {
+            settled.push(at.on_a);
+            continue;
+        }
+        let size = cell_size(cell_a).max(cell_size(cell_b));
+        if let Some(contact) = loop_around(a, b, at, size, tol) {
+            out.push(contact);
+        }
+    }
+    out
+}
+
+/// How many Newton steps the search for a stationary approach takes from
+/// the middle of a square. From that near, a regular approach converges in
+/// a handful; one that has not by then lies where the surfaces are all but
+/// tangent along a curve, and has no isolated approach to find.
+const STATIONARY_STEPS: usize = 12;
+
+/// The signed separation of the first surface from the second at `on_a`:
+/// the gap to its nearest point on the second, along the second's normal
+/// there. `near` is where on the second to start looking, and is moved to
+/// what was found.
+fn separation(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    on_a: (f64, f64),
+    near: &mut (f64, f64),
+    tol: Tolerances,
+) -> Option<f64> {
+    let p = a.point_at(on_a.0, on_a.1, tol).ok()?;
+    let (on_b, q) = nearest_on(b, *near, p, tol)?;
+    let n = normal_at(b, on_b, tol)?;
+    *near = on_b;
+    Some((p - q).dot(n))
+}
+
+/// The parameter step that moves a unit along the tangent `t`, for a
+/// surface whose derivatives are `du` and `dv`: the first fundamental form
+/// inverted. `None` where the derivatives are parallel.
+fn params_along(du: Vector, dv: Vector, t: Vector) -> Option<(f64, f64)> {
+    let (g11, g12, g22) = (du.dot(du), du.dot(dv), dv.dot(dv));
+    let det = g11.mul_add(g22, -(g12 * g12));
+    if det <= f64::MIN_POSITIVE {
+        return None;
+    }
+    let (x, y) = (du.dot(t), dv.dot(t));
+    Some((
+        g22.mul_add(x, -(g12 * y)) / det,
+        g11.mul_add(y, -(g12 * x)) / det,
+    ))
+}
+
+/// Whether the surfaces pass through each other at a point on both: the
+/// separation has opposite signs, each beyond the confusion distance, a
+/// little to either side of the intersection on the first surface. At a
+/// crossing the separation grows with the sine of the angle between the
+/// normals; where the surfaces only touch, rounding leaves the normals a
+/// whisker apart, and the separation keeps one sign on both sides.
+fn passes_through(a: &SurfaceGeometry, b: &SurfaceGeometry, at: Contact, tol: Tolerances) -> bool {
+    let Some(along) = tangent_at(a, b, at, tol) else {
+        return false;
+    };
+    let (Some(na), Ok((du, dv))) = (
+        normal_at(a, at.on_a, tol),
+        a.d1_at(at.on_a.0, at.on_a.1, tol),
+    ) else {
+        return false;
+    };
+    let sine = crossing_sine(a, b, at.on_a, at.on_b, tol);
+    let Some(d) = (sine > f64::MIN_POSITIVE)
+        .then(|| params_along(du, dv, na.cross(along)))
+        .flatten()
+    else {
+        return false;
+    };
+    let h = 4.0 * tol.confusion() / sine;
+    let side = |s: f64| {
+        let (u, v) = clamp(a, d.0.mul_add(s, at.on_a.0), d.1.mul_add(s, at.on_a.1));
+        let mut near = at.on_b;
+        separation(a, b, (u, v), &mut near, tol)
+    };
+    match (side(h), side(-h)) {
+        (Some(p), Some(q)) => {
+            p.abs() > tol.confusion() && q.abs() > tol.confusion() && p.signum() != q.signum()
+        }
+        _ => false,
+    }
+}
+
+/// A point of the loop around a stationary approach `at` where the
+/// surfaces pass through each other, if there is one within twice `size`
+/// of it.
+///
+/// Steps out from the approach on the first surface along eight directions
+/// of its tangent plane, at distances doubling from a thousandth of `size`,
+/// until the separation changes sign; the sign change is halved down and
+/// corrected onto both surfaces.
+fn loop_around(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    at: Contact,
+    size: f64,
+    tol: Tolerances,
+) -> Option<Contact> {
+    const DIRECTIONS: u32 = 8;
+    const DOUBLINGS: i32 = 11;
+    const HALVINGS: usize = 40;
+    let mut near = at.on_b;
+    let here = separation(a, b, at.on_a, &mut near, tol)?;
+    if here == 0.0 {
+        return None;
+    }
+    let (du, dv) = a.d1_at(at.on_a.0, at.on_a.1, tol).ok()?;
+    let normal = unit_normal(du, dv, tol)?;
+    let e1 = du * (1.0 / du.magnitude());
+    let e2 = normal.cross(e1);
+    let step = |d: (f64, f64), r: f64| {
+        let (u, v) = (d.0.mul_add(r, at.on_a.0), d.1.mul_add(r, at.on_a.1));
+        let held = clamp(a, u, v);
+        let wrapped = |x: f64, y: f64, periodic: bool| periodic || x == y;
+        (wrapped(u, held.0, a.is_periodic_u()) && wrapped(v, held.1, a.is_periodic_v()))
+            .then_some(held)
+    };
+    for k in 0..DIRECTIONS {
+        let angle = core::f64::consts::TAU * f64::from(k) / f64::from(DIRECTIONS);
+        let d = params_along(du, dv, e1 * angle.cos() + e2 * angle.sin())?;
+        let mut near = at.on_b;
+        let (mut inside, mut r) = (0.0, size * 2f64.powi(-DOUBLINGS + 1));
+        let mut across = None;
+        while r <= 2.0 * size {
+            let Some(uv) = step(d, r) else { break };
+            let Some(there) = separation(a, b, uv, &mut near, tol) else {
+                break;
+            };
+            if there.signum() != here.signum() {
+                across = Some(r);
+                break;
+            }
+            inside = r;
+            r *= 2.0;
+        }
+        let Some(mut outside) = across else {
+            continue;
+        };
+        for _ in 0..HALVINGS {
+            let mid = f64::midpoint(inside, outside);
+            let Some(uv) = step(d, mid) else { break };
+            let Some(there) = separation(a, b, uv, &mut near, tol) else {
+                break;
+            };
+            if there.signum() == here.signum() {
+                inside = mid;
+            } else {
+                outside = mid;
+            }
+        }
+        let Some(uv) = step(d, outside) else {
+            continue;
+        };
+        let Ok(guess) = a.point_at(uv.0, uv.1, tol) else {
+            continue;
+        };
+        if let Some(contact) = correct(a, b, [uv.0, uv.1, near.0, near.1], guess, None, tol) {
+            return Some(contact);
+        }
+    }
+    None
 }
 
 /// A seed kept, with the direction the intersection runs through it.
@@ -2403,40 +2856,135 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_thinner_than_the_sampling_is_missed_and_the_knob_finds_it() {
-        // The stated limitation of polyhedral seeding, pinned so it is a known
-        // boundary rather than a surprise. Two spheres barely overlapping meet
-        // in a small circle; a coarse grid steps over it entirely.
+    fn a_branch_thinner_than_the_sampling_is_found_from_the_surfaces_extremum() {
+        // Two spheres barely overlapping meet in a circle far smaller than a
+        // coarse grid's cell: no pair of cells crosses on it, and a sphere
+        // has no border to pierce. The approach of the two surfaces inside
+        // the circle seeds it at any grid, and a finer grid still finds it
+        // by crossing cells.
         let a = sphere(Point::ORIGIN, 3.0);
         let b = sphere(Point::new(5.98, 0.0, 0.0), 3.0);
+        let radius = (9.0_f64 - 2.99 * 2.99).sqrt();
+        for grid in [6, 24, 120] {
+            let options = Marching {
+                grid,
+                ..Marching::default()
+            };
+            assert!(
+                !seeds(&a, &b, options, T).unwrap().is_empty(),
+                "grid {grid}"
+            );
+            let found = branches(&a, &b, options, T).unwrap();
+            assert_eq!(found.len(), 1, "one circle at grid {grid}");
+            assert!(found[0].closed());
+            assert!(deviation(&a, &b, &found[0]) < 1e-7);
+            for p in &found[0].points {
+                assert!((p.x - 2.99).abs() < 1e-6, "in the mid plane: {p:?}");
+                assert!(
+                    (p.y.hypot(p.z) - radius).abs() < 1e-6,
+                    "on the circle: {p:?}"
+                );
+            }
+        }
+    }
 
-        let coarse = seeds(
-            &a,
-            &b,
-            Marching {
-                grid: 6,
-                ..Marching::default()
-            },
+    /// A bicubic patch over the square `[0, 10]`, level at z = 0 but for a
+    /// bump raised by one control point near the middle, its top at
+    /// `peak`.
+    fn bumped(peak: f64) -> SurfaceGeometry {
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::{ControlGrid, KnotVector};
+        const N: usize = 41;
+        // A raised control point lifts its patch by four ninths of its own
+        // height: the cubic basis peaks at two thirds each way.
+        let lift = peak * 9.0 / 4.0;
+        let mut points = Vec::new();
+        for i in 0..N {
+            for j in 0..N {
+                #[allow(clippy::cast_precision_loss)]
+                let (x, y) = (10.0 * i as f64 / 40.0, 10.0 * j as f64 / 40.0);
+                let z = if (i, j) == (19, 22) { lift } else { 0.0 };
+                points.push(Point::new(x, y, z));
+            }
+        }
+        BSplineSurface::new(
+            KnotVector::clamped_uniform(3, N).unwrap(),
+            KnotVector::clamped_uniform(3, N).unwrap(),
+            &ControlGrid::new(points, N, N).unwrap(),
             T,
         )
-        .unwrap();
-        let fine = seeds(
-            &a,
-            &b,
-            Marching {
-                grid: 120,
-                ..Marching::default()
-            },
+        .unwrap()
+        .into()
+    }
+
+    /// A bilinear patch level at `height`, wider than the bumped patch.
+    fn level_patch(height: f64) -> SurfaceGeometry {
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::{ControlGrid, KnotVector};
+        let points = vec![
+            Point::new(-1.0, -1.0, height),
+            Point::new(-1.0, 11.0, height),
+            Point::new(11.0, -1.0, height),
+            Point::new(11.0, 11.0, height),
+        ];
+        BSplineSurface::new(
+            KnotVector::clamped_uniform(1, 2).unwrap(),
+            KnotVector::clamped_uniform(1, 2).unwrap(),
+            &ControlGrid::new(points, 2, 2).unwrap(),
             T,
         )
-        .unwrap();
+        .unwrap()
+        .into()
+    }
+
+    #[test]
+    fn a_small_bump_through_a_spline_patch_cuts_a_loop_inside_both() {
+        // The bump's top pokes a hundredth of its height through a level
+        // patch: a closed loop far smaller than a grid cell, touching no
+        // border of either patch.
+        let peak = 0.5;
+        let bump = bumped(peak);
+        let level = level_patch(peak * 0.99);
+        let found = branches(&bump, &level, Marching::default(), T).unwrap();
+        assert_eq!(found.len(), 1, "one loop round the bump's top");
+        let loop_ = &found[0];
+        assert!(loop_.closed());
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for (p, &(u, v)) in loop_.points.iter().zip(&loop_.on_a) {
+            assert!((p.z - peak * 0.99).abs() < 1e-7, "on the level: {p:?}");
+            assert!(bump.point_at(u, v, T).unwrap().distance(*p) < 1e-7);
+            low = low.min(p.x);
+            high = high.max(p.x);
+        }
         assert!(
-            coarse.len() < fine.len(),
-            "a finer grid should find what a coarse one steps over: {} against {}",
-            coarse.len(),
-            fine.len()
+            high - low < 10.0 / 24.0,
+            "thinner than a cell: {}",
+            high - low
         );
-        assert!(!fine.is_empty(), "the branch is there to be found");
+
+        // Just touching: the top meets the level within tolerance, and a
+        // touch has no curve to follow.
+        let touching = level_patch(peak);
+        assert!(
+            branches(&bump, &touching, Marching::default(), T)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_drill_grazing_a_ball_cuts_one_small_loop() {
+        // A drill along x passes a thousandth deeper than tangent to a ball:
+        // a loop a few hundredths across, inside one cell of either surface.
+        let ball = sphere(Point::ORIGIN, 3.0);
+        let drill = cylinder(Point::new(0.0, 0.0, 3.999), Vector::X, 1.0, (-4.0, 4.0));
+        let found = branches(&drill, &ball, Marching::default(), T).unwrap();
+        assert_eq!(found.len(), 1, "one loop where the drill dips in");
+        assert!(found[0].closed());
+        assert!(deviation(&drill, &ball, &found[0]) < 1e-7);
+        for p in &found[0].points {
+            assert!(p.x.abs() < 0.2 && p.y.abs() < 0.1, "near the graze: {p:?}");
+        }
     }
 
     #[test]

@@ -95,9 +95,10 @@ pub enum SurfaceIntersection {
     /// They do not meet.
     ///
     /// From the general path this means *no crossing was found at the seeding
-    /// resolution*: a branch thinner than the sampling grid is invisible to
-    /// it, and the completeness instrument in `tests/support/coverage.rs` is
-    /// what checks.
+    /// resolution*: a branch thinner than the sampling grid is found only from
+    /// a border it pierces or from the approach of the surfaces near it, and
+    /// the completeness instrument in `tests/support/coverage.rs` is what
+    /// checks.
     Apart,
     /// They touch at isolated points without crossing.
     Touching(Vec<Point>),
