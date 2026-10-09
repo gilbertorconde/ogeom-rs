@@ -467,11 +467,15 @@ impl Triangulation {
                 continue;
             }
             let points: Vec<Point> = ring.iter().map(|&v| out.positions[v as usize]).collect();
+            // About the ring's first point: the sum is the same about any
+            // point, and about a far one it is a difference of huge
+            // products.
+            let anchor = points[0];
             let mut normal = Vector::ZERO;
             let mut perimeter = 0.0;
             for (i, p) in points.iter().enumerate() {
                 let q = points[(i + 1) % points.len()];
-                normal += p.to_vector().cross(q.to_vector());
+                normal += (*p - anchor).cross(q - anchor);
                 perimeter += p.distance(q);
             }
             let area = normal.magnitude() / 2.0;
@@ -918,6 +922,31 @@ mod tests {
             "the fold is cancelled"
         );
         assert!(unfolded.is_closed());
+    }
+
+    /// The sliver crack of the tetrahedron above, moved up to 2e7 from the
+    /// origin along a tilted direction: a crack's width is its own, so the
+    /// same widths seal it and leave it open there as at the origin.
+    #[test]
+    fn sealing_far_from_the_origin_reads_a_crack_by_its_own_width() {
+        for offset in [0.0, 1.0e6, 5.0e6, 1.0e7, 2.0e7] {
+            let o = Vector::new(offset, -offset, offset);
+            let corners = [
+                Point::new(0.0, 0.0, 0.0) + o,
+                Point::new(1.0, 0.0, 0.0) + o,
+                Point::new(0.5, 0.01, 0.0) + o,
+                Point::new(0.5, 0.5, 1.0) + o,
+            ];
+            let cracked = over(&corners, &[[0, 1, 3], [1, 2, 3], [2, 0, 3]]);
+            assert!(
+                cracked.sealed(0.05).is_closed(),
+                "a crack under the width is sealed at {offset:e}"
+            );
+            assert!(
+                !cracked.sealed(1e-3).is_closed(),
+                "a crack wider than asked stays open at {offset:e}"
+            );
+        }
     }
 
     /// Two strips meeting along a line, one drawn to twice the other's

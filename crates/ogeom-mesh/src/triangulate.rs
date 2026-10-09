@@ -1711,11 +1711,15 @@ fn trimming_rings(
     // outer ring is left alone, whatever it is, since a face that is
     // itself a slit is a different question.
     if rings.len() > 1 {
+        // About each ring's first point: the chart's origin may stand far
+        // off, where the sum is a difference of huge products.
         let chart_area = |ring: &[Point2]| -> f64 {
+            let Some(&anchor) = ring.first() else {
+                return 0.0;
+            };
             let mut a = 0.0;
             for i in 0..ring.len() {
-                let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
-                a += p.x * q.y - q.x * p.y;
+                a += (ring[i] - anchor).cross(ring[(i + 1) % ring.len()] - anchor);
             }
             a.abs()
         };
@@ -1814,11 +1818,14 @@ fn is_slit(
     let width = || -> Option<f64> {
         let pts: Option<Vec<Point>> = anchors.iter().copied().collect();
         let pts = pts?;
+        // About the ring's first point: the sum is the same about any
+        // point, and about a far one it is a difference of huge products.
+        let anchor = *pts.first()?;
         let mut normal = Vector::ZERO;
         let mut perimeter = 0.0;
         for i in 0..pts.len() {
             let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-            normal += a.to_vector().cross(b.to_vector());
+            normal += (a - anchor).cross(b - anchor);
             perimeter += a.distance(b);
         }
         (perimeter > 0.0).then(|| normal.magnitude() / perimeter)
@@ -4642,13 +4649,13 @@ mod tests {
         assert!(triangle_normal(a, a, a, T).is_none());
     }
 
-    /// A ten millimetre square plate at `z = 0` with the inner wire `hole`
-    /// builds into its model, and its mesh's Euler characteristic and
-    /// area.
-    fn plate_with(hole: impl Fn(&mut Model) -> Shape) -> (i64, f64) {
+    /// A ten millimetre square plate at `z = 0` moved by `at`, with the
+    /// inner wire `hole` builds into its model given the same move, and its
+    /// mesh's Euler characteristic and area.
+    fn plate_with(at: Vector, hole: impl Fn(&mut Model, Vector) -> Shape) -> (i64, f64) {
         use ogeom_algo::{make_face, make_polygon};
         let mut model = Model::new();
-        let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+        let p = |x: f64, y: f64| Point::new(x, y, 0.0) + at;
         let outer = make_polygon(
             &mut model,
             &[p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0)],
@@ -4657,10 +4664,12 @@ mod tests {
         )
         .unwrap()
         .shape;
-        let inner = hole(&mut model);
-        let plane: SurfaceGeometry =
-            ogeom_geom::PlaneSurface::new(ogeom_math::Plane::through(Point::ORIGIN, Direction::Z))
-                .into();
+        let inner = hole(&mut model, at);
+        let plane: SurfaceGeometry = ogeom_geom::PlaneSurface::new(ogeom_math::Plane::through(
+            Point::ORIGIN + at,
+            Direction::Z,
+        ))
+        .into();
         let face = make_face(&mut model, plane, &[outer, inner], T)
             .unwrap()
             .shape;
@@ -4687,7 +4696,7 @@ mod tests {
         // ring of four distinct vertices, which goes round rather than out
         // and back, so it is a hole however thin, and the plate meshes
         // with one hole in it.
-        let (euler, area) = plate_with(|model| {
+        let (euler, area) = plate_with(Vector::ZERO, |model, _| {
             let p = |x: f64, y: f64| Point::new(x, y, 0.0);
             ogeom_algo::make_polygon(
                 model,
@@ -4708,11 +4717,66 @@ mod tests {
         // home through the same three along two arcs bulging six tenths of
         // a micron off them: every edge is answered by one walking it back,
         // and the ring is a few tenths of a micron wide on average. It is a
-        // slit, and the plate meshes whole.
-        let (euler, area) = plate_with(|model| {
+        // slit, and the plate meshes whole, up to 2e7 from the origin too.
+        for offset in [0.0, 1.0e6, 1.0e7, 2.0e7] {
+            let (euler, area) = slit_plate(Vector::new(offset, -0.7 * offset, 0.3 * offset));
+            assert_eq!(euler, 1, "no hole at {offset:e}: V - E + F is 1");
+            assert_relative_eq!(area, 100.0, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_small_round_hole_in_two_halves_stays_a_hole_far_from_the_origin() {
+        // A hole five microns in radius, its circle cut into two halves
+        // between the same two vertices: its wire walks back by its
+        // vertices, and only its width, a few microns, says it is a hole.
+        // The width is the ring's own, so the plate meshes with one hole in
+        // it up to 2e7 from the origin.
+        for offset in [0.0, 1.0e6, 1.0e7, 2.0e7] {
+            let (euler, _) = plate_with(
+                Vector::new(offset, -0.7 * offset, 0.3 * offset),
+                |model, by| {
+                    use ogeom_algo::{make_edge_between, make_wire};
+                    let frame = ogeom_math::Frame::new(
+                        Point::new(5.0, 5.0, 0.0) + by,
+                        Direction::Z,
+                        Direction::X,
+                        T,
+                    )
+                    .unwrap();
+                    let circle = ogeom_math::Circle::new(frame, 0.005, T).unwrap();
+                    let ends = [
+                        frame.origin() + frame.x().vector() * 0.005,
+                        frame.origin() - frame.x().vector() * 0.005,
+                    ];
+                    let v: Vec<Shape> = ends
+                        .iter()
+                        .map(|q| model.add_vertex(ogeom_topo::VertexData::new(*q)))
+                        .collect();
+                    let half = |model: &mut Model, range: (f64, f64), from: &Shape, to: &Shape| {
+                        let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+                        make_edge_between(model, curve, range, from, to, T)
+                            .unwrap()
+                            .shape
+                    };
+                    let pi = core::f64::consts::PI;
+                    let edges = [
+                        half(model, (0.0, pi), &v[0], &v[1]),
+                        half(model, (pi, 2.0 * pi), &v[1], &v[0]),
+                    ];
+                    make_wire(model, &edges, T).unwrap().shape.reversed()
+                },
+            );
+            assert_eq!(euler, 0, "one hole at {offset:e}: V - E + F is 1 - 1");
+        }
+    }
+
+    /// The plate of the test above with its slit, moved by `at`.
+    fn slit_plate(at: Vector) -> (i64, f64) {
+        plate_with(at, |model, by| {
             use ogeom_algo::{Spacing, interpolate, make_edge_between, make_wire};
             use ogeom_geom::Curve3d as _;
-            let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+            let p = |x: f64, y: f64| Point::new(x, y, 0.0) + by;
             let at = [p(3.0, 5.0), p(5.0, 5.0), p(7.0, 5.0)];
             let v: Vec<Shape> = at
                 .iter()
@@ -4731,7 +4795,7 @@ mod tests {
                 );
             }
             for i in (0..2).rev() {
-                let mid = p(f64::midpoint(at[i].x, at[i + 1].x), 5.0006);
+                let mid = at[i].midpoint(at[i + 1]) + Vector::new(0.0, 0.0006, 0.0);
                 let arc: ogeom_geom::Curve =
                     interpolate(&[at[i + 1], mid, at[i]], 2, Spacing::Centripetal, T)
                         .unwrap()
@@ -4744,9 +4808,7 @@ mod tests {
                 );
             }
             make_wire(model, &edges, T).unwrap().shape
-        });
-        assert_eq!(euler, 1, "no hole: V - E + F is 1");
-        assert_relative_eq!(area, 100.0, epsilon = 1e-9);
+        })
     }
 }
 
