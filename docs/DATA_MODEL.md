@@ -256,7 +256,9 @@ A boolean records its arguments' edges and vertices the same way: one cut
 short, split or rebuilt is modified into its pieces in the result, one
 rebuilt whole is copied, and one with nothing left (a corner cut away, a
 tool's edge outside a cut) is deleted. One the result holds as it stands,
-an edge of a face set aside, has no record and traces to itself. Results stay new nodes: an operation edits its own result in
+an edge of a face set aside, has no record and traces to itself.
+
+Results stay new nodes: an operation edits its own result in
 place, and a node shared with an earlier solid would change it too.
 
 A placement (`transformed`) makes no node, but placement is part of a
