@@ -334,6 +334,10 @@ where
 /// Repeated roots are returned once each, since a geometry caller wants the
 /// distinct parameter values, and a double root (a tangency) is found
 /// although rounding leaves the polynomial a hair either side of zero there.
+/// The same slack merges two simple roots that stand close: where the
+/// polynomial's value between them is within `32 n ε` of its terms' size,
+/// they come back as one root between them. For a quartic with roots near
+/// one that is a pair a few times `1e-7` apart.
 ///
 /// # Errors
 ///
@@ -482,7 +486,10 @@ const STACK_DEGREE: usize = 16;
 /// point where the polynomial's value is zero to rounding, or no larger
 /// than `touch` with no root on either side. `touch` is in the polynomial's
 /// own units, since only the caller knows what rounding its coefficients
-/// carry. Such a root comes back once.
+/// carry. Such a root comes back once. Two simple roots whose critical
+/// point between them has a value within that rounding (or within `touch`)
+/// come back as the one root there: for a quartic with roots near one, a
+/// pair a few times `1e-7` apart.
 ///
 /// A polynomial whose every coefficient is zero, or one that is not finite,
 /// has no roots returned.
@@ -1800,16 +1807,18 @@ mod tests {
                     assert!(found.is_empty(), "{e}: {found:?}");
                 }
             }
-            // ((x - 1)^2 - e)((x + 3)^2 + 1): two real roots, or one where
-            // rounding cannot tell them apart, never a third.
-            for e in [1e-8, 1e-11, 1e-14] {
+            // ((x - 1)^2 - e)((x + 3)^2 + 1): two real roots 2 sqrt(e) apart
+            // where the dip between them, 17 e, stands clear of the rounding
+            // slack; one root where it does not; never a third.
+            for (e, both) in [(1e-8, true), (1e-11, true), (1e-14, false)] {
                 let c = with_pair(&[1.0 - e, -2.0, 1.0], -3.0, 1.0);
-                let found = solve(&c, 1e-9);
+                let found = solve(&c, 0.0);
                 let (low, high) = (1.0 - e.sqrt(), 1.0 + e.sqrt());
-                assert!(
-                    matches(&found, &[low, high], 1e-8, 1.0) || matches(&found, &[1.0], 1e-6, 1.0),
-                    "{e}: {found:?}"
-                );
+                if both {
+                    assert!(matches(&found, &[low, high], 1e-8, 1.0), "{e}: {found:?}");
+                } else {
+                    assert!(matches(&found, &[1.0], 1e-6, 1.0), "{e}: {found:?}");
+                }
             }
         }
 
