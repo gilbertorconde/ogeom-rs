@@ -128,6 +128,24 @@ pub(crate) fn pole_crossings(
         return Vec::new();
     }
     let reach = tol.confusion() * 100.0;
+    // A pole farther than the reach from the curve's guaranteed box is
+    // passed by: the scan below would find no miss within the reach of
+    // it. A circle round a cone's axis stands at one distance from the
+    // apex all the way round, every sample a minimum of it, and scanning
+    // it costs a search per sample.
+    let near: Vec<ogeom_math::Point> =
+        match ogeom_algo::measure::curve_bounds_over(curve, range, tol) {
+            Ok(bound) => poles
+                .iter()
+                .copied()
+                .filter(|pole| bound.distance_to(*pole) <= reach)
+                .collect(),
+            Err(_) => poles.to_vec(),
+        };
+    if near.is_empty() {
+        return Vec::new();
+    }
+    let poles = near.as_slice();
     let samples: u32 = match curve {
         ogeom_geom::Curve::BSpline(spline) => u32::try_from(spline.control_points().len())
             .unwrap_or(u32::MAX / 8)
