@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`check` no longer calls a sliver face inside out.** The orientation
+  probe steps off a face's largest triangles to either side. Off a
+  sub-micron step folded back between two nearly coplanar faces, a step
+  longer than the sliver is wide passes under one neighbour or over the
+  other and reads their sides, and a correctly turned sliver was reported
+  reversed. A step now counts only where the segment off the face meets
+  no other face; otherwise a shorter step is tried, then another
+  triangle. Twenty solids of the DoomCube 350 assembly and one of the
+  Voron 2.4r2 assembly checked broken for this since 0.9.1.
 - **A face wrapping a closed chart once is trimmed in its chart.** A ring
   that comes out a whole period below a surface closed but not periodic
   (a B-spline band all the way round) is slid back into the chart, by

@@ -96,3 +96,51 @@ fn a_face_of_a_drum_with_a_nearly_flat_cap_turned_inside_out_is_named() {
         }
     }
 }
+
+/// A block whose top steps back over itself by under a micron: two long
+/// faces a hair apart in height, joined by a sliver that faces back under
+/// the lower one. Every face is turned the way its neighbours say, and the
+/// block is valid. A step off the sliver longer than it is wide passes
+/// under the lower face or over the upper one, and reads their sides: its
+/// outside lands in the material and its inside in the air. Such a step is
+/// no evidence about the sliver.
+#[test]
+fn a_sliver_face_narrower_than_the_probe_is_not_called_inside_out() {
+    let mut model = Model::new();
+    let (rise, back) = (0.0007, 0.0005);
+    let pts = [
+        (0.0, 0.0),
+        (20.0, 0.0),
+        (20.0, 10.0),
+        (10.0, 10.0),
+        (10.0 + back, 10.0 + rise),
+        (0.0, 10.0 + rise),
+    ]
+    .map(|(x, y)| Point::new(x, y, 0.0));
+    let wire = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+    let plane = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+    let profile = make_face(&mut model, plane, &[wire], T).unwrap().shape;
+    let block = ogeom::algo::make_prism(
+        &mut model,
+        &profile,
+        ogeom::math::Vector::new(0.0, 0.0, 50.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let diagnosis = check(&model, &block, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    // The volume asks the same probe which faces to turn back, turns none,
+    // and is the closed form: the profile's area times the height.
+    let area = 20.0 * 10.0 + 10.0 * rise + 0.5 * back * rise;
+    let volume =
+        ogeom::algo::volume_properties(&model, &block, ogeom::mesh::Deflection::default(), T)
+            .unwrap();
+    assert_eq!(volume.deflection, 0.0, "the closed form was taken");
+    let volume = volume.mass;
+    assert!(
+        (volume - area * 50.0).abs() < 1e-9 * area * 50.0,
+        "{volume} against {}",
+        area * 50.0
+    );
+}

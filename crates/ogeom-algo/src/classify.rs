@@ -945,6 +945,76 @@ impl SolidBoundary {
         )
     }
 
+    /// Whether the segment from `from` to `to` meets no face of the boundary
+    /// but `except`: it crosses none inside its trim, comes within the
+    /// rings' band of none's boundary, and lies in none's surface.
+    ///
+    /// A probe stepping off a face reads that face's two sides only along
+    /// such a segment; one that meets another face on the way reads
+    /// whatever that face bounds.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_in_solid_exact`].
+    pub(crate) fn clear_between(
+        &self,
+        model: &Model,
+        from: Point,
+        to: Point,
+        except: &Shape,
+        tol: Tolerances,
+    ) -> OgeomResult<bool> {
+        let Prepared {
+            faces, ring_chord, ..
+        } = &*self.prepared;
+        let ring_chord = *ring_chord;
+        let ring_deflection = Deflection {
+            chord: ring_chord,
+            angular: 0.05,
+            ..Deflection::default()
+        };
+        let reach = tol.confusion();
+        for (prepared, rays) in faces.iter().zip(&self.rays) {
+            if prepared.face.is_same(except) || !segment_meets(&prepared.bound, from, to) {
+                continue;
+            }
+            let (surface, inverse) = prepared.placed(model)?;
+            let (start, end) = (inverse.apply(from), inverse.apply(to));
+            let found = match rays.get_or_init(|| {
+                self.kept
+                    .surface(prepared.surface, surface, self.prepared.tol)
+            }) {
+                Some(kept) if kept.tol == tol => kept.cross((start, end))?,
+                _ => {
+                    let ray: ogeom_geom::Curve =
+                        ogeom_geom::LineCurve::segment(start, end, tol)?.into();
+                    ogeom_intersect::intersect_curve_surface(
+                        &ray,
+                        surface,
+                        ogeom_intersect::CurveSurfaceOptions::default(),
+                        tol,
+                    )?
+                }
+            };
+            if !found.lying.is_empty() {
+                return Ok(false);
+            }
+            for hit in &found.crossings {
+                let (u, v) = hit.on_surface;
+                let rings = prepared.rings(model, ring_deflection, tol)?;
+                let at = rings.place(surface, Point2::new(u, v), tol);
+                let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
+                let face = &prepared.face;
+                if rings.within(model, face, ring_deflection, at, band, tol)?
+                    || rings.inside(model, face, ring_deflection, at, tol)?
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// Where `point`, off every face, stands by the parity of a ray's
     /// crossings, or `None` where every ray met a tangency, a face's
     /// boundary or a degenerate point.

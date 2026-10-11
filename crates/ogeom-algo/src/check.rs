@@ -380,10 +380,20 @@ pub(crate) fn faces_inward(
         let mut step = (size.sqrt() * 0.05).max(tol.confusion() * 1e5);
         loop {
             ogeom_core::progress::checkpoint()?;
-            if let (Ok(outside), Ok(inside)) = (
-                boundary.holds(model, point + outward * step, tol),
-                boundary.holds(model, point - outward * step, tol),
-            ) {
+            // A step reads the face's two sides only where it meets no
+            // other face on the way: off a sliver folded back between its
+            // neighbours, a step longer than the sliver is wide passes under
+            // one of them and reads the other's side. Off a sheet's rim the
+            // same step runs between the broad faces and meets none.
+            let (out_at, in_at) = (point + outward * step, point - outward * step);
+            let clear = boundary.clear_between(model, point, out_at, face, tol)?
+                && boundary.clear_between(model, point, in_at, face, tol)?;
+            if clear
+                && let (Ok(outside), Ok(inside)) = (
+                    boundary.holds(model, out_at, tol),
+                    boundary.holds(model, in_at, tol),
+                )
+            {
                 match (outside, inside) {
                     (crate::Containment::In, crate::Containment::Out) => return Ok(Some(true)),
                     (crate::Containment::Out, crate::Containment::In) => return Ok(Some(false)),
