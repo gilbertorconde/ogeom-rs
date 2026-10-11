@@ -1522,17 +1522,62 @@ pub(crate) fn fold_toward_rings(
     // The window alone cannot say which side of a seam a point is on when
     // the seam runs diagonally round (a band opened along the widest gap
     // its mesh left): both a point and its copy a period over lie within
-    // the rings' extent, only one inside them. The one inside is the face's.
+    // the rings' extent, only one inside them. Nor which turn of a strip
+    // winding round many times (a thread's flank on its drum): every copy
+    // of the point a whole period over within the strip's extent is a
+    // candidate, and one of them lies on the strip. The one inside is the
+    // face's, the nearest first.
     if !inside_boundary(rings, at) {
-        let shifts = [
-            u_period.map(|p| (p, 0.0)),
-            u_period.map(|p| (-p, 0.0)),
-            v_period.map(|p| (0.0, p)),
-            v_period.map(|p| (0.0, -p)),
-        ];
+        let (low, high) = rings.iter().flatten().fold(
+            (
+                Point2::new(f64::INFINITY, f64::INFINITY),
+                Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+            ),
+            |(lo, hi), q| {
+                (
+                    Point2::new(lo.x.min(q.x), lo.y.min(q.y)),
+                    Point2::new(hi.x.max(q.x), hi.y.max(q.y)),
+                )
+            },
+        );
+        // The whole periods that carry `x` into [lo, hi], and one further
+        // either way, nearest first; none where the extent is not finite.
+        let turns = |x: f64, lo: f64, hi: f64, period: f64| -> Vec<f64> {
+            if !(lo.is_finite() && hi.is_finite()) {
+                return Vec::new();
+            }
+            let first = ((lo - x) / period).ceil() - 1.0;
+            let last = ((hi - x) / period).floor() + 1.0;
+            if !(first.is_finite() && last.is_finite()) || last - first > 4096.0 {
+                return vec![-1.0, 1.0];
+            }
+            #[allow(clippy::cast_possible_truncation, reason = "at most 4096 turns")]
+            let (first, last) = (first as i64, last as i64);
+            #[allow(clippy::cast_precision_loss, reason = "at most 4096 turns")]
+            let mut all: Vec<f64> = (first..=last)
+                .filter(|k| *k != 0)
+                .map(|k| k as f64)
+                .collect();
+            all.sort_by(|a, b| a.abs().total_cmp(&b.abs()));
+            all
+        };
+        let mut shifts: Vec<(f64, f64)> = Vec::new();
+        if let Some(p) = u_period {
+            shifts.extend(
+                turns(at.x, low.x, high.x, p)
+                    .into_iter()
+                    .map(|k| (k * p, 0.0)),
+            );
+        }
+        if let Some(p) = v_period {
+            shifts.extend(
+                turns(at.y, low.y, high.y, p)
+                    .into_iter()
+                    .map(|k| (0.0, k * p)),
+            );
+        }
         if let Some(inside) = shifts
             .into_iter()
-            .flatten()
             .map(|(du, dv)| Point2::new(at.x + du, at.y + dv))
             .find(|q| inside_boundary(rings, *q))
         {
@@ -1699,6 +1744,49 @@ fn segment_meets(bound: &Aabb, a: Point, b: Point) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A strip winding fourteen turns up a drum, as a thread's flank does,
+    /// unrolled in the drum's chart: a parallelogram rising 0.7 a turn,
+    /// 0.2 high. A point on the strip near its top, named in the chart's
+    /// first turn, is the same point thirteen turns over, and that copy is
+    /// the one inside the ring.
+    #[test]
+    fn a_point_on_a_strip_winding_many_turns_folds_onto_its_own_turn() {
+        use core::f64::consts::TAU;
+        use ogeom_geom::{CylinderSurface, SurfaceGeometry};
+        use ogeom_math::{Cylinder, Frame};
+        let t = Tolerances::millimetres();
+        let drum: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 1.6, t).unwrap(), (-10.0, 10.0))
+                .unwrap()
+                .into();
+        let (turns, rise, height) = (14.0, 0.7, 0.2);
+        let (u0, u1) = (0.3, 0.3 + turns * TAU);
+        let v = |u: f64| -5.0 + (u - u0) / TAU * rise;
+        let ring = vec![
+            Point2::new(u0, v(u0)),
+            Point2::new(u1, v(u1)),
+            Point2::new(u1, v(u1) + height),
+            Point2::new(u0, v(u0) + height),
+        ];
+        let rings = vec![ring];
+        // On the strip in its thirteenth turn, a tenth of its height up.
+        let on = 0.3 + 13.5 * TAU;
+        let here = Point2::new(on, v(on) + height * 0.1);
+        assert!(inside_boundary(&rings, here));
+        let named = Point2::new(here.x - 13.0 * TAU, here.y);
+        let folded = fold_toward_rings(&drum, &rings, named);
+        assert!(inside_boundary(&rings, folded), "{folded:?}");
+        assert!(
+            (folded.x - here.x).abs() < 1e-9,
+            "{folded:?} against {here:?}"
+        );
+        // Off the strip at that height in every turn: no copy is inside,
+        // and the point comes back as it was asked.
+        let off = Point2::new(named.x + 0.5 * TAU, named.y);
+        let kept = fold_toward_rings(&drum, &rings, off);
+        assert!(!inside_boundary(&rings, kept));
+    }
     use crate::make_box;
     use ogeom_math::Frame;
     use ogeom_topo::{ShapeType, explore_unique};

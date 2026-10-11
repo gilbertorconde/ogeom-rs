@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A point on a thread's flank is placed on its own turn.** The exact
+  classifier folds a hit into a face's chart by whole periods to find the
+  copy inside the face's rings, and tried one period either way. A face
+  winding many turns round a drum (a thread's flank, its ring unrolled
+  over fourteen turns) holds the hit many periods over, so the hit read
+  outside the face, a ray through it was miscounted, and `check` called
+  faces of a threaded pin of the Voron 2.4r2 assembly inside out. Every
+  period within the rings' extent is now tried, nearest first.
 - **`check` no longer calls a sliver face inside out.** The orientation
   probe steps off a face's largest triangles to either side. Off a
   sub-micron step folded back between two nearly coplanar faces, a step
