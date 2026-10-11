@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drill whose seam grazes a face keeps its seam.** A through drill
+  whose top line, its seam, stands a hair above a block's top face cuts
+  the face along two lines either side of the seam, closer than the
+  weld, and sewing joins them into one line the drill's face meets on
+  both sides. The line kept the two plain pcurves the drill's face had
+  on either side, and a lookup by surface found the first for both
+  walks: the cut came back invalid. Sewing now states such a line as the
+  seam it is.
 - **A solid's mesh settles its shared edges before it is stitched.** Where
   a face's rings crossed, its edges were drawn finer and the faces across
   them drawn once more, and nothing asked those again: a narrow strip

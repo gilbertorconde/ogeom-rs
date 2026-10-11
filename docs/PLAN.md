@@ -133,6 +133,15 @@ boundary edge is carried only where the solid turns across the touching
 face). The drill's wall below the seam is then never split by the faces it
 crosses behind the wall, and its band inside the material merges into the
 outside piece, whose one ring runs along both sides of the seam.
+A drill whose seam stands up to a few tenths of a micron above a block's top
+face cuts through validly; a blind one in the same place is refused (the
+piece where it ends lies on the block at every probe), and a drill with its
+top line in a plate's top face where the face runs into a round is refused
+for some seam directions and offsets of up to a tenth of a micron (radii 11
+and 6, eight of 45 placements). Treating a plane and a drum that part by no
+more than the confusion distance as tangent closes the blind block, but the
+drum's section against the round still sees the drum above the plate, and
+the pieces stop agreeing: twice as many of those placements refused.
 
 **A section tangent to an edge at its end.** A drill whose circle on a rounded
 box's base touches the round's tangent line at the corner vertex, where the

@@ -674,6 +674,9 @@ fn sew_faces(
         sources.push((original.clone(), whole && face == original));
     }
 
+    for face in &rebuilt {
+        seam_walked_both_ways(model, face, tol)?;
+    }
     let groups = connected_groups(model, &rebuilt)?;
     let mut shells = Vec::with_capacity(groups.len());
     for group in groups {
@@ -1421,6 +1424,139 @@ fn repaced_carry(
         });
     }
     Ok(out)
+}
+
+/// Each edge `face` walks once each way, holding two plain pcurves on the
+/// face's surface at one placement, made the seam it is.
+///
+/// Two edges sewn into one can both bound one face, as the two columns of
+/// a closed surface's seam do: the lines where a plane cuts a drum within
+/// the weld of tangent, merged into one line the drum's face meets on
+/// both sides. Each carries its own column of the chart as a plain
+/// pcurve, and a lookup by surface finds the first for both walks, so one
+/// walk reads its boundary a period away. The column whose start meets
+/// the end of the edge walked before it is the one a walk follows, and
+/// the pair is stated as one seam, the forward walk's column first.
+fn seam_walked_both_ways(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<()> {
+    use ogeom_geom::Curve2d as _;
+    let Some(surface) = model
+        .node(face)
+        .and_then(|n| n.data().as_face())
+        .map(|d| d.surface)
+    else {
+        return Ok(());
+    };
+    for wire in model.ordered_children_of(face)? {
+        let walk = model.ordered_children_of(&wire)?;
+        let n = walk.len();
+        for (i, occurrence) in walk.iter().enumerate() {
+            if occurrence.orientation() != ogeom_topo::Orientation::Forward {
+                continue;
+            }
+            let Some(back) = walk.iter().position(|o| {
+                o.node() == occurrence.node()
+                    && o.orientation() == ogeom_topo::Orientation::Reversed
+            }) else {
+                continue;
+            };
+            let Some(data) = model.node(occurrence).and_then(|n| n.data().as_edge()) else {
+                continue;
+            };
+            let plain: Vec<(ogeom_topo::PCurveId, (f64, f64), ogeom_topo::Location)> = data
+                .representations
+                .iter()
+                .filter_map(|r| match r {
+                    EdgeRepr::PCurve {
+                        curve,
+                        surface: on,
+                        location,
+                        range,
+                    } if *on == surface => Some((*curve, *range, location.clone())),
+                    _ => None,
+                })
+                .collect();
+            let [(first, range, at), (second, other_range, other_at)] = plain.as_slice() else {
+                continue;
+            };
+            if at != other_at || range != other_range {
+                continue;
+            }
+            // Where the walk stands in the chart just before the forward
+            // walk of this edge: the end of the edge before it.
+            let before = &walk[(i + n - 1) % n];
+            if before.node() == occurrence.node() || back == (i + n - 1) % n {
+                continue;
+            }
+            let Some(arrived) = chart_end(model, before, surface, tol)? else {
+                continue;
+            };
+            let start = |id: ogeom_topo::PCurveId| -> OgeomResult<Option<ogeom_math::Point2>> {
+                let Some(pc) = model.geometry().pcurve(id) else {
+                    return Ok(None);
+                };
+                Ok(Some(pc.point_at(range.0, tol)?))
+            };
+            let (Some(a), Some(b)) = (start(*first)?, start(*second)?) else {
+                continue;
+            };
+            let (forward, reversed) = if a.distance(arrived) <= b.distance(arrived) {
+                (*first, *second)
+            } else {
+                (*second, *first)
+            };
+            let (range, at) = (*range, at.clone());
+            let Some(node) = model.node_mut(occurrence) else {
+                continue;
+            };
+            let ogeom_topo::NodeData::Edge(data) = node.data_mut() else {
+                continue;
+            };
+            data.representations.retain(|r| {
+                !matches!(r, EdgeRepr::PCurve { curve, surface: on, .. }
+                    if *on == surface && (*curve == forward || *curve == reversed))
+            });
+            data.add(EdgeRepr::Seam {
+                forward,
+                reversed,
+                surface,
+                location: at,
+                range,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Where an edge occurrence ends in the chart of `surface`, walked as it
+/// stands: its pcurve there (the column its orientation reads, where it is
+/// a seam) at the end of its range it arrives at.
+fn chart_end(
+    model: &Model,
+    occurrence: &Shape,
+    surface: ogeom_topo::SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<Option<ogeom_math::Point2>> {
+    use ogeom_geom::Curve2d as _;
+    let Some(data) = model.node(occurrence).and_then(|n| n.data().as_edge()) else {
+        return Ok(None);
+    };
+    let reversed = occurrence.orientation() == ogeom_topo::Orientation::Reversed;
+    let (id, range) = match data.pcurve_for(surface, occurrence.location()) {
+        Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
+        Some(EdgeRepr::Seam {
+            forward,
+            reversed: back,
+            range,
+            ..
+        }) => (if reversed { *back } else { *forward }, *range),
+        _ => return Ok(None),
+    };
+    let Some(pc) = model.geometry().pcurve(id) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        pc.point_at(if reversed { range.0 } else { range.1 }, tol)?,
+    ))
 }
 
 /// How far the pcurves carried onto `survivor` leave its curve beyond its

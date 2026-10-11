@@ -13073,6 +13073,53 @@ mod tests {
         vertex.transform(model.datums()).unwrap().apply(data.point)
     }
 
+    /// A drill through a block whose top line, its seam, stands a hair
+    /// above the block's top face: the face is cut along two lines either
+    /// side of the seam, closer than the weld, which sew into one line the
+    /// drill's face meets on both sides. That line is the drill's seam, and
+    /// the result is valid with the volume the drill exactly tangent to the
+    /// top cuts.
+    #[test]
+    fn a_drill_whose_seam_grazes_a_face_keeps_it_a_seam() {
+        let chord = Deflection::with_chord(0.01).unwrap();
+        let volume_at = |rise: f64| {
+            let mut model = Model::new();
+            let block = make_box(
+                &mut model,
+                frame_at(Point::new(-20.0, 0.0, 0.0)),
+                (40.0, 30.0, 10.0),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let up = ogeom_math::Direction::Y;
+            let seam = ogeom_math::Direction::Z;
+            let drill = make_cylinder(
+                &mut model,
+                Frame::new(Point::new(0.0, -5.0, 7.0 + rise), up, seam, T).unwrap(),
+                3.0,
+                40.0,
+                T,
+            )
+            .unwrap()
+            .shape;
+            let out = cut(&mut model, &block, &drill, T).unwrap();
+            let d = check(&model, &out.shape, T).unwrap();
+            assert!(d.is_valid(), "rise {rise}: {d}");
+            volume_properties(&model, &out.shape, chord, T)
+                .unwrap()
+                .mass
+        };
+        let tangent = volume_at(0.0);
+        for rise in [1e-9, 1e-8, 1e-7, 2e-7] {
+            let v = volume_at(rise);
+            assert!(
+                (v - tangent).abs() < 1e-6 * tangent,
+                "rise {rise}: {v} against {tangent}"
+            );
+        }
+    }
+
     /// A drill tangent to a wall along the edge where a concave round
     /// leaves it, the drill flatter than the round: the drill touches the
     /// wall from the empty side and cuts into the material behind the
