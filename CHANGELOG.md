@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A solid's mesh settles its shared edges before it is stitched.** Where
+  a face's rings crossed, its edges were drawn finer and the faces across
+  them drawn once more, and nothing asked those again: a narrow strip
+  whose one rim a neighbour refined could then cross itself, its coarse
+  rim sagging over the fine one, and the strip lost a boundary point the
+  neighbour kept. Faces drawn again are now asked again, and their edges
+  drawn finer in turn, until none comes up short. A face asked which
+  chords it wants starts from the chords its edges are already held to.
+  One solid of the DoomCube 350 assembly meshed 34 edges open; it now
+  meshes 27 open, on a face whose rims touch within a micron.
+
 ### Changed
 
 - **STEP import is about 30% faster on large assemblies.** A curve the

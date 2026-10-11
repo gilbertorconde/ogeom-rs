@@ -327,7 +327,15 @@ fn triangulate_reporting_from(
     let finer = match finer {
         Some(shared) => shared,
         None => {
-            own = face_chords(model, face, data.surface, surface, deflection, tol)?;
+            own = face_chords(
+                model,
+                face,
+                data.surface,
+                surface,
+                deflection,
+                &EdgeChords::new(),
+                tol,
+            )?;
             &own
         }
     };
@@ -676,11 +684,20 @@ pub(crate) fn face_meshes(
     tol: Tolerances,
 ) -> OgeomResult<(Vec<OgeomResult<Triangulation>>, EdgeChords)> {
     let FirstPass {
-        finer,
+        mut finer,
         mut computed,
-        changed,
+        mut changed,
     } = first_pass(read_model, faces, deflection, kept, tol)?;
-    if !changed.is_empty() {
+    // Every face across a changed edge is drawn again at the new chords,
+    // and asked again whether its rings crossed: a narrow strip drawn whole
+    // with both its rims coarse can cross once one rim is drawn finer by
+    // the face across it, the coarse rim's chords sagging over the fine
+    // one. Its edges are then drawn finer in turn, and so on until no face
+    // comes up short, or the rounds run out; the last round's meshes stand.
+    for _ in 0..SETTLING_ROUNDS {
+        if changed.is_empty() {
+            break;
+        }
         let again: Vec<usize> = (0..faces.len())
             .filter(|&i| {
                 ogeom_topo::explore(
@@ -691,23 +708,88 @@ pub(crate) fn face_meshes(
                 .is_ok_and(|es| es.iter().any(|e| changed.contains(&e.node().index())))
             })
             .collect();
-        let redone: Vec<OgeomResult<Triangulation>> =
+        let redone: Vec<OgeomResult<(Triangulation, Verdict)>> =
             ogeom_core::parallel::map_ordered(&again, |_, &index| {
                 ogeom_core::progress::checkpoint()?;
-                triangulate_with(
+                reporting_kept(
                     read_model,
                     &faces[index],
                     deflection,
                     Some(&finer),
+                    None,
                     kept,
                     tol,
                 )
             });
+        let mut short: Vec<usize> = Vec::new();
         for (index, one) in again.into_iter().zip(redone) {
-            computed[index] = one;
+            computed[index] = match one {
+                Ok((mesh, Verdict::Short)) if mesh.triangles.is_empty() => {
+                    Err(ogeom_core::ogeom_err!(
+                        NotDone,
+                        "the face's boundary enclosed no triangulable region"
+                    ))
+                }
+                Ok((mesh, verdict)) => {
+                    if verdict == Verdict::Short {
+                        short.push(index);
+                    }
+                    Ok(mesh)
+                }
+                Err(e) => Err(e),
+            };
         }
+        changed = refine_short(read_model, faces, &short, &mut finer, deflection, tol)?;
     }
     Ok((computed, finer))
+}
+
+/// How many times the faces across changed edges are drawn again.
+const SETTLING_ROUNDS: usize = 4;
+
+/// The chords each face of `short` (indices into `faces`) wants its edges
+/// drawn at, merged into `finer` where finer than held: the edges whose
+/// chord changed.
+fn refine_short(
+    read_model: &Model,
+    faces: &[Shape],
+    short: &[usize],
+    finer: &mut EdgeChords,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_core::FastSet<u32>> {
+    let mut changed: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
+    // Each face asked against the chords held before any of them answers,
+    // so the answers do not hang on the order the faces are taken in.
+    let held = finer.clone();
+    for &index in short {
+        let face = &faces[index];
+        let Some(node) = read_model.node(face) else {
+            continue;
+        };
+        let NodeData::Face(data) = node.data() else {
+            continue;
+        };
+        let Some(surface) = read_model.geometry().surface(data.surface) else {
+            continue;
+        };
+        for (edge, chord) in face_chords(
+            read_model,
+            face,
+            data.surface,
+            surface,
+            deflection,
+            &held,
+            tol,
+        )? {
+            let held = finer.entry(edge).or_insert(f64::INFINITY);
+            if chord < *held {
+                *held = chord;
+                changed.insert(edge);
+            }
+        }
+    }
+    Ok(changed)
 }
 
 /// What the first pass over a shape's faces produced: the chords its faces
@@ -796,27 +878,7 @@ fn first_pass(
     // must still draw the edges the walk held finer at that chord, or the
     // two sides of one of them disagree. Only an edge whose chord
     // *changed* sends its faces back.
-    let mut changed: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
-    for &index in &crossed {
-        let face = &faces[index];
-        let Some(node) = read_model.node(face) else {
-            continue;
-        };
-        let NodeData::Face(data) = node.data() else {
-            continue;
-        };
-        let Some(surface) = read_model.geometry().surface(data.surface) else {
-            continue;
-        };
-        for (edge, chord) in face_chords(read_model, face, data.surface, surface, deflection, tol)?
-        {
-            let held = finer.entry(edge).or_insert(f64::INFINITY);
-            if chord < *held {
-                *held = chord;
-                changed.insert(edge);
-            }
-        }
-    }
+    let changed = refine_short(read_model, faces, &crossed, &mut finer, deflection, tol)?;
     Ok(FirstPass {
         finer,
         computed,
@@ -1179,19 +1241,37 @@ fn face_chords(
     id: ogeom_topo::SurfaceId,
     surface: &SurfaceGeometry,
     deflection: Deflection,
+    held: &EdgeChords,
     tol: Tolerances,
 ) -> OgeomResult<EdgeChords> {
     let deflection = in_own_frame(model, face, deflection);
-    let mut finer = EdgeChords::new();
+    let edges: Vec<u32> =
+        ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge))?
+            .iter()
+            .map(|e| e.node().index())
+            .collect();
+    // From the chords its edges are already held to: a face whose
+    // neighbour drew one of its edges finer is asked about its rings as
+    // they are drawn, one rim fine and the rest as they were, which is
+    // where a narrow strip's coarse rim sags over its fine one. A chord
+    // only ever comes down.
+    let mut finer: EdgeChords = edges
+        .iter()
+        .filter_map(|e| held.get(e).map(|c| (*e, *c)))
+        .collect();
+    let lower = |finer: &mut EdgeChords, chord: f64| {
+        for edge in &edges {
+            let at = finer.entry(*edge).or_insert(chord);
+            *at = at.min(chord);
+        }
+    };
     let mut chord = deflection.chord;
     // A face narrower than a few chords first: its edges drawn to a
     // fraction of its width, so the boundary's sag is small against it.
     let first = trimming_rings(model, face, id, surface, deflection, &finer, tol)?.rings;
     if let Some(want) = narrow_chord(surface, &first, deflection, tol) {
         chord = want;
-        for edge in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
-            finer.insert(edge.node().index(), chord);
-        }
+        lower(&mut finer, chord);
     }
     for _ in 0..=REFINEMENTS {
         let rings = trimming_rings(model, face, id, surface, deflection, &finer, tol)?.rings;
@@ -1201,9 +1281,7 @@ fn face_chords(
             break;
         }
         chord *= 0.5;
-        for edge in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
-            finer.insert(edge.node().index(), chord);
-        }
+        lower(&mut finer, chord);
     }
     Ok(finer)
 }
@@ -4155,6 +4233,86 @@ mod tests {
         // Two turns out is two turns back.
         let two = (low.0 - span, low.1 - span);
         assert_eq!(turns_into_domain(two, domain), 2.0);
+    }
+
+    /// A plane strip 0.03 wide between two concentric arcs of a 15 mm
+    /// circle, its inner rim already held to a fine chord by the face
+    /// across it: the outer rim, drawn at the coarse chord, sags across the
+    /// inner one, so the face asks for its outer rim drawn finer. Asked
+    /// from nothing, both rims drawn coarse at the same angles, it asks
+    /// for nothing: the narrow strip is whole until one rim is refined.
+    #[test]
+    fn a_strip_with_one_rim_held_fine_asks_for_its_other_rim_finer() {
+        use ogeom_geom::{CircleCurve, Curve, PlaneSurface};
+        use ogeom_math::{Circle, Frame, Plane};
+        let mut model = Model::new();
+        let (inner, outer, angle) = (15.0, 15.03, core::f64::consts::FRAC_PI_3);
+        let at = |r: f64, a: f64| Point::new(r * a.cos(), r * a.sin(), 0.0);
+        let corners = [
+            at(outer, 0.0),
+            at(outer, angle),
+            at(inner, angle),
+            at(inner, 0.0),
+        ];
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|p| ogeom_algo::make_vertex(&mut model, *p).shape)
+            .collect();
+        let arc =
+            |r: f64| -> Curve { CircleCurve::new(Circle::new(Frame::WORLD, r, T).unwrap()).into() };
+        let line = |a: Point, b: Point| -> Curve {
+            ogeom_geom::LineCurve::segment(a, b, T).unwrap().into()
+        };
+        let mut edge = |curve: Curve, range: (f64, f64), from: usize, to: usize| {
+            ogeom_algo::make_edge_between(
+                &mut model,
+                curve,
+                range,
+                &vertices[from],
+                &vertices[to],
+                T,
+            )
+            .unwrap()
+            .shape
+        };
+        let outer_edge = edge(arc(outer), (0.0, angle), 0, 1);
+        let top = edge(
+            line(corners[1], corners[2]),
+            (0.0, corners[1].distance(corners[2])),
+            1,
+            2,
+        );
+        let inner_edge = edge(arc(inner), (0.0, angle), 3, 2);
+        let bottom = edge(
+            line(corners[3], corners[0]),
+            (0.0, corners[3].distance(corners[0])),
+            3,
+            0,
+        );
+        let plane: SurfaceGeometry = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+        let ring = vec![outer_edge.clone(), top, inner_edge.reversed(), bottom];
+        let face = ogeom_algo::make_face_with_pcurves(&mut model, plane, &[ring], T)
+            .unwrap()
+            .shape;
+        let data = model.node(&face).unwrap().data().as_face().unwrap().clone();
+        let surface = model.geometry().surface(data.surface).unwrap().clone();
+        let coarse = Deflection::default();
+        let alone = face_chords(
+            &model,
+            &face,
+            data.surface,
+            &surface,
+            coarse,
+            &EdgeChords::new(),
+            T,
+        )
+        .unwrap();
+        assert!(!alone.contains_key(&outer_edge.node().index()), "{alone:?}");
+        let held: EdgeChords = [(inner_edge.node().index(), coarse.chord / 128.0)].into();
+        let asked = face_chords(&model, &face, data.surface, &surface, coarse, &held, T).unwrap();
+        let outer_chord = asked.get(&outer_edge.node().index()).copied();
+        assert!(outer_chord.is_some_and(|c| c < coarse.chord), "{asked:?}");
+        assert!(asked[&inner_edge.node().index()] <= coarse.chord / 128.0);
     }
 
     #[test]

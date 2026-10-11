@@ -283,6 +283,17 @@ what an application would edit next.
 coplanar distance estimate asks them to change linearly, so a coarse mesh of
 a surface whose curvature varies fast can read its inflections as scatter.
 
+**A face whose rims touch within a micron meshes open.** One solid of the
+DoomCube 350 assembly has a cylinder face between a circle and a spline edge
+that dips to within half a micron of it and touches it: its ring crosses
+itself in the chart at any chord, the crossing segments are refused as
+constraints, and the face loses boundary points its neighbours keep (27
+edges open). Clipping such a ring ear by ear closes the mesh but folds about
+half the face's area (4 of 7 square millimetres) and hides from the mesh
+conversion the faces it withdraws because they mesh open; it was not kept.
+A face this degenerate wants healing (the spline edge projected onto the
+cylinder, or the sliver removed) before it is meshed.
+
 ### Speed
 
 **A per-face state cache.** The boolean's build phase could read a piece's
