@@ -1664,6 +1664,211 @@ fn graze_contacts(
     Ok(out)
 }
 
+/// The boundary edges a tangential contact runs along, carried onto the
+/// other face as contacts.
+///
+/// Where two faces touch along a curve, neither passes through the other
+/// there and the curve splits nothing: it is set aside from the
+/// arrangement. But where the curve runs along a boundary edge of one
+/// face, the solid's boundary turns at that edge onto a neighbour, and the
+/// other face can pass from outside the solid into it across the line it
+/// touches: a drill tangent to a wall along the edge where a concave round
+/// leaves the wall, the drill flatter than the round, cuts a sliver of
+/// material from the round's side on, and its wall is lined from the
+/// tangent line to where it leaves the solid. The edge is carried onto the
+/// other face as a contact, so the face is split along it and its pieces
+/// either side are classified on their own; where both lie the same way,
+/// the split costs an edge both faces already share.
+fn tangent_contacts(
+    ga: &GSolid,
+    gb: &GSolid,
+    tangents: &[TangentRec],
+    contacts: &[ContactRec],
+    tol: Tolerances,
+) -> OgeomResult<Vec<ContactRec>> {
+    let reach = tol.confusion() * GRAZE_REACH;
+    let weld = tol.confusion() * 1e2;
+    let mut out: Vec<ContactRec> = Vec::new();
+    for contact in tangents {
+        let (lo, hi) = contact.curve.domain();
+        let mut contact_bound = ogeom_math::Aabb::EMPTY;
+        for i in 0..=16 {
+            let t = lo + (hi - lo) * f64::from(i) / 16.0;
+            contact_bound = contact_bound.with_point(contact.curve.point_at(t, tol)?);
+        }
+        for (solid, owner, target, target_from_a, target_face) in [
+            (
+                ga,
+                &ga.faces[contact.face_a],
+                &gb.faces[contact.face_b],
+                false,
+                contact.face_b,
+            ),
+            (
+                gb,
+                &gb.faces[contact.face_b],
+                &ga.faces[contact.face_a],
+                true,
+                contact.face_a,
+            ),
+        ] {
+            for e in &owner.edges {
+                let held = |c: &ContactRec| {
+                    c.node == e.node
+                        && c.target_from_a == target_from_a
+                        && c.target_face == target_face
+                };
+                let near = reach.max(e.tolerance);
+                if e.other_side.is_some()
+                    || !e.bound.expanded(near).intersects(&contact_bound)
+                    || contacts.iter().chain(&out).any(held)
+                {
+                    continue;
+                }
+                let span = e
+                    .curve
+                    .point_at(e.crange.0, tol)?
+                    .distance(e.curve.point_at(e.crange.1, tol)?);
+                if span <= weld {
+                    continue;
+                }
+                // The edge lies along the contact curve and on the other
+                // surface, end to end.
+                let mut lies = true;
+                for i in 0..=16 {
+                    let t = e.crange.0 + (e.crange.1 - e.crange.0) * f64::from(i) / 16.0;
+                    let p = e.curve.point_at(t, tol)?;
+                    if ogeom_algo::project_on_curve(&contact.curve, p, 64, tol)?.distance > near
+                        || ogeom_algo::project_on_surface(&target.surface, p, 16, tol)?.distance
+                            > near
+                    {
+                        lies = false;
+                        break;
+                    }
+                }
+                if !lies {
+                    continue;
+                }
+                // The solid's boundary turns across the other surface at
+                // the edge: the face across the edge leaves that surface to
+                // the other side from this one. A seam, or an edge whose
+                // two faces both stay outside (a drill tangent to a box's
+                // top along the top's edge), splits nothing.
+                let Some(across) = solid.faces.iter().find(|f| {
+                    !core::ptr::eq(*f, owner) && f.edges.iter().any(|x| x.node == e.node)
+                }) else {
+                    continue;
+                };
+                let Some(across_edge) = across.edges.iter().find(|x| x.node == e.node) else {
+                    continue;
+                };
+                let (Some(own_side), Some(other_side)) = (
+                    side_off_edge(owner, e, &target.surface, near, tol)?,
+                    side_off_edge(across, across_edge, &target.surface, near, tol)?,
+                ) else {
+                    continue;
+                };
+                if own_side.signum() == other_side.signum() {
+                    continue;
+                }
+                let Ok((pcurve, _, true, ..)) = ogeom_algo::pcurve_fit::fit_projected_pcurve(
+                    &e.curve,
+                    e.crange,
+                    &target.surface,
+                    tol,
+                ) else {
+                    continue;
+                };
+                if *DEBUG_WIRE {
+                    eprintln!(
+                        "TANGENT edge {} over {:?} onto face {target_face} (from_a {target_from_a})",
+                        e.node.index(),
+                        e.crange
+                    );
+                }
+                out.push(ContactRec {
+                    curve: (*e.curve).clone(),
+                    crange: e.crange,
+                    pcurve,
+                    prange: e.crange,
+                    node: e.node,
+                    tolerance: e.tolerance.max(owner.tolerance + target.tolerance),
+                    target_from_a,
+                    target_face,
+                    bound: e.bound,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Which side of `other` the face lies on just off its edge `e`: the
+/// signed distance along `other`'s normal of a point of the face a short
+/// way in from the middle of the edge, or `None` where no such point is
+/// decided (the face is narrower than any step tried, or lies on `other`
+/// there to within the confusion distance).
+///
+/// The step is taken in the face's chart, square to the edge's pcurve,
+/// starting at a twentieth of the edge's span and halving until the point
+/// lands inside the face's trim.
+fn side_off_edge(
+    face: &GFace,
+    e: &BoundaryEdge,
+    other: &SurfaceGeometry,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let (p0, p1) = e.prange;
+    let tm = f64::midpoint(p0, p1);
+    let h = (p1 - p0).abs() * 1e-3;
+    if h <= 0.0 {
+        return Ok(None);
+    }
+    let at = e.pcurve.point_at(tm, tol)?;
+    let (before, after) = (
+        e.pcurve.point_at(tm - h, tol)?,
+        e.pcurve.point_at(tm + h, tol)?,
+    );
+    let along = (after.x - before.x, after.y - before.y);
+    let length = along.0.hypot(along.1);
+    if length <= f64::MIN_POSITIVE {
+        return Ok(None);
+    }
+    let square = (-along.1 / length, along.0 / length);
+    let (su, sv) = face.surface.d1_at(at.x, at.y, tol)?;
+    let per_param = su.magnitude() * square.0.abs() + sv.magnitude() * square.1.abs();
+    if per_param <= f64::MIN_POSITIVE {
+        return Ok(None);
+    }
+    let span = e
+        .curve
+        .point_at(e.crange.0, tol)?
+        .distance(e.curve.point_at(e.crange.1, tol)?);
+    let mut step = span * 0.05;
+    for _ in 0..8 {
+        for sign in [1.0, -1.0] {
+            let k = sign * step / per_param;
+            let q2 = Point2::new(square.0.mul_add(k, at.x), square.1.mul_add(k, at.y));
+            let Ok(q) = face.surface.point_at(q2.x, q2.y, tol) else {
+                continue;
+            };
+            if chart_point_within(face, q, reach, tol).is_none() {
+                continue;
+            }
+            let foot = ogeom_geom::project_on_surface(other, q, 16, tol)?;
+            let normal = other.normal_at(foot.parameters.0, foot.parameters.1, tol)?;
+            let side = (q - foot.point).dot(normal.vector());
+            if side.abs() > tol.confusion() {
+                return Ok(Some(side));
+            }
+            return Ok(None);
+        }
+        step *= 0.5;
+    }
+    Ok(None)
+}
+
 /// One split an edge is asked for, with how honestly it can be placed.
 #[derive(Debug, Clone, Copy)]
 struct Pave {
@@ -3392,6 +3597,8 @@ fn fill(
     }
     let grazed = graze_contacts(ga, gb, &sections, &contacts, tol)?;
     contacts.extend(grazed);
+    let touched = tangent_contacts(ga, gb, &tangents, &contacts, tol)?;
+    contacts.extend(touched);
 
     // Boundary polylines per face, for the trim tests.
     let outline = |face: &GFace| -> OgeomResult<Vec<Vec<Point2>>> {
@@ -12864,6 +13071,87 @@ mod tests {
     fn vertex_point(model: &Model, vertex: &Shape) -> Point {
         let data = model.node(vertex).unwrap().data().as_vertex().unwrap();
         vertex.transform(model.datums()).unwrap().apply(data.point)
+    }
+
+    /// A drill tangent to a wall along the edge where a concave round
+    /// leaves it, the drill flatter than the round: the drill touches the
+    /// wall from the empty side and cuts into the material behind the
+    /// round, so its wall lines the cut from the tangent line to where it
+    /// leaves the solid. The material is a slab with a notch whose inner
+    /// corner is rounded, and the volume removed is the drill's disc over
+    /// the material's section, in closed form.
+    #[test]
+    fn a_drill_tangent_to_a_wall_along_a_rounds_edge_cuts_the_sliver_behind_it() {
+        let mut model = Model::new();
+        let slab = make_box(&mut model, Frame::WORLD, (40.0, 40.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let notch = make_box(
+            &mut model,
+            frame_at(Point::new(20.0, 20.0, -1.0)),
+            (21.0, 21.0, 12.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let notched = cut(&mut model, &slab, &notch, T).unwrap().shape;
+        // The round: the corner square less a cylinder of radius 2 about
+        // (22, 22), tangent to the walls y = 20 and x = 20 at (22, 20) and
+        // (20, 22).
+        let square = make_box(
+            &mut model,
+            frame_at(Point::new(20.0, 20.0, 0.0)),
+            (2.0, 2.0, 10.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let bore = make_cylinder(
+            &mut model,
+            frame_at(Point::new(22.0, 22.0, -1.0)),
+            2.0,
+            12.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let round = cut(&mut model, &square, &bore, T).unwrap().shape;
+        let part = fuse(&mut model, &notched, &round, T).unwrap().shape;
+        let chord = Deflection::with_chord(0.01).unwrap();
+        let before = volume_properties(&model, &part, chord, T).unwrap().mass;
+        for seam in [
+            Direction::X,
+            Direction::new(ogeom_math::Vector::new(-1.0, 0.0, 0.0), T).unwrap(),
+        ] {
+            let drill = make_cylinder(
+                &mut model,
+                Frame::new(Point::new(22.0, 50.0, -1.0), Direction::Z, seam, T).unwrap(),
+                30.0,
+                12.0,
+                T,
+            )
+            .unwrap()
+            .shape;
+            let out = cut(&mut model, &part, &drill, T).unwrap();
+            check(&model, &out.shape, T).unwrap();
+            // The integral of sqrt(r^2 - u^2).
+            let seg = |u: f64, r: f64| 0.5 * (u * (r * r - u * u).sqrt() + r * r * (u / r).asin());
+            // Over the block x in [0, 20]: between y = 40 and the drill's
+            // lower arc, y = 50 - sqrt(900 - (x - 22)^2).
+            let block = (seg(-2.0, 30.0) - seg(-22.0, 30.0)) - 10.0 * 20.0;
+            // Over the corner square x in [20, 22]: the square less its
+            // quarter disc, less what lies below the drill's arc.
+            let corner = (4.0 - (seg(0.0, 2.0) - seg(-2.0, 2.0)))
+                - (60.0 - (seg(0.0, 30.0) - seg(-2.0, 30.0)));
+            let expected = before - 10.0 * (block + corner);
+            let after = volume_properties(&model, &out.shape, chord, T)
+                .unwrap()
+                .mass;
+            assert!(
+                (after - expected).abs() < 1e-6 * expected,
+                "seam {seam:?}: {after} against {expected}"
+            );
+        }
     }
 
     /// A box cut by one overlapping its corner: the target's three edges

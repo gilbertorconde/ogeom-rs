@@ -124,12 +124,12 @@ seam closes.
 **A section tangent to an edge at its end.** A drill whose circle on a rounded
 box's base touches the round's tangent line at the corner vertex, where the
 corner ball touches the base, is refused. At seeds 1 to 3 the stress drill
-scenario refuses two, two and one drills (on the rounded box and
-`nist_ctc_01`); the three items above and the next cover the diagnosed ones.
+scenario refuses one drill each: seed 1's drill 2 on the rounded box is this
+item, and seeds 2 and 3 each refuse one on `nist_ctc_03` (the next).
 
-**Seed 2's drills on a corpus part.** Seed 2's drills 2 and 4 on
-`nist_ctc_01` are refused and not yet diagnosed; drill 2 refuses the same on
-the part read without its bands seamed.
+**Drills on `nist_ctc_03`.** Seed 2's drill 5 (radius 32 along y) and seed
+3's drill 0 (radius 87 along x) on `nist_ctc_03` are refused as not closing
+and not yet diagnosed.
 
 **A tilted half ball drilled on the diagonal chart.** A half ball charted
 about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled

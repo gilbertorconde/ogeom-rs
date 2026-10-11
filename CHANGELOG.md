@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drill tangent to a wall along a round's edge cuts the sliver behind
+  it.** Where two faces touch along a curve that runs along a boundary
+  edge of one of them, the solid's boundary turns at that edge, and the
+  other face can pass from outside the solid into it across the line it
+  touches: a drill tangent to a wall exactly where a concave round leaves
+  it, the drill flatter than the round, lines the cut from the tangent
+  line on. The touch was set aside as splitting nothing, the drill's wall
+  stayed one piece, and the cut was refused as not closing. The edge is
+  now carried onto the touching face as a contact, which splits it there.
 - **A polynomial's leading term is kept where its roots are large.**
   `solve::roots` dropped a leading coefficient small beside the largest
   one, which `(x - 1e6)^4` is, and solved what was left: a line anchored
