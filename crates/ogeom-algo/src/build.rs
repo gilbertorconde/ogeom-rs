@@ -1207,8 +1207,8 @@ pub fn make_shell(model: &mut Model, faces: &[Shape]) -> OgeomResult<Built> {
 pub fn make_solid(model: &mut Model, shells: &[Shape]) -> OgeomResult<Built> {
     let mut used = Vec::with_capacity(shells.len());
     for (i, shell) in shells.iter().enumerate() {
-        let encloses = enclosed_volume(model, shell)?;
-        let inside_out = encloses.is_some_and(|v| if i == 0 { v < 0.0 } else { v > 0.0 });
+        let encloses = encloses_material(model, shell)?;
+        let inside_out = encloses.is_some_and(|out| if i == 0 { !out } else { out });
         used.push(if inside_out {
             shell.reversed()
         } else {
@@ -1227,14 +1227,39 @@ pub fn make_solid(model: &mut Model, shells: &[Shape]) -> OgeomResult<Built> {
 /// faces face out; `None` for anything else: an open shell, one with an
 /// edge both its faces walk the same way (no whole turn makes it right),
 /// or one whose mesh does not close.
-fn enclosed_volume(model: &Model, shell: &Shape) -> OgeomResult<Option<f64>> {
+fn encloses_material(model: &Model, shell: &Shape) -> OgeomResult<Option<bool>> {
+    /// How many of the shell's faces are probed before it is meshed.
+    const PROBED: usize = 4;
     if model.node(shell).map(ogeom_topo::TShape::kind) != Some(ShapeType::Shell)
         || !is_shell_closed(model, shell)?
         || !crate::check::walked_one_way(model, shell)?.is_empty()
     {
         return Ok(None);
     }
-    Ok(ogeom_mesh::triangulate(
+    // Its faces agree with each other, so any one of them says which way
+    // the whole shell faces: one probed off its two sides against the
+    // region the shell encloses faces out of it or into it. Probing one
+    // face costs that face's mesh and a few rays, where the shell's volume
+    // costs every face's mesh; the volume answers only where no face
+    // probed settles.
+    let tol = Tolerances::default();
+    if let Ok(boundary) = crate::check::probe_boundary(model, shell, tol) {
+        for face in ogeom_topo::explore_unique(model, shell, ShapeType::Face)?
+            .iter()
+            .take(PROBED)
+        {
+            if let Ok(Some(inward)) = crate::check::faces_inward(model, face, &boundary, tol) {
+                return Ok(Some(!inward));
+            }
+        }
+    }
+    Ok(enclosed_volume(model, shell).map(|v| v > 0.0))
+}
+
+/// The volume a closed shell whose faces agree encloses, from its mesh:
+/// positive where they face out of it.
+fn enclosed_volume(model: &Model, shell: &Shape) -> Option<f64> {
+    ogeom_mesh::triangulate(
         model,
         shell,
         ogeom_mesh::Deflection::default(),
@@ -1242,7 +1267,7 @@ fn enclosed_volume(model: &Model, shell: &Shape) -> OgeomResult<Option<f64>> {
     )
     .ok()
     .filter(ogeom_topo::Triangulation::is_closed)
-    .map(|mesh| mesh.volume()))
+    .map(|mesh| mesh.volume())
 }
 
 /// Whether every edge in a shell is shared by exactly two faces.
@@ -4415,8 +4440,8 @@ mod solid_tests {
             let d = crate::check(&model, &solid, T).unwrap();
             assert!(d.is_valid(), "{outer_in} {void_out}: {d}");
             let shells = model.children_of(&solid).unwrap();
-            assert!(enclosed_volume(&model, &shells[0]).unwrap().unwrap() > 0.0);
-            assert!(enclosed_volume(&model, &shells[1]).unwrap().unwrap() < 0.0);
+            assert!(enclosed_volume(&model, &shells[0]).unwrap() > 0.0);
+            assert!(enclosed_volume(&model, &shells[1]).unwrap() < 0.0);
             let v = crate::volume_properties(&model, &solid, ogeom_mesh::Deflection::default(), T)
                 .unwrap()
                 .mass;
