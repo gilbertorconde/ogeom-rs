@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A STEP or IGES face on a small chart reads again.** Where a face's
+  pcurves missed each other at a corner by more than a millionth of the
+  chart's span, the reader took the miss for a pole and laid a pole edge
+  in it. On a patch whose chart spans a fortieth of a unit, a miss of
+  6e-8 is that, and too short to be an edge: the segment was refused and
+  the whole file with it. The Voron 2.4r2 assembly (1563 solids), which
+  read before 0.7.0, was refused from then on. A miss too short in the
+  chart to be an edge, whose ends stand at one point in space, is now
+  the fitting slop it is.
 - **A drill tangent to a wall along a round's edge cuts the sliver behind
   it.** Where two faces touch along a curve that runs along a boundary
   edge of one of them, the solid's boundary turns at that edge, and the

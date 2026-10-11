@@ -1022,9 +1022,20 @@ pub fn closed_at_poles(
     for (i, edge) in edges.iter().enumerate() {
         let j = (i + 1) % edges.len();
         // A miss that small is fitting slop between images that meet, and
-        // collapses to a point on any surface.
+        // collapses to a point on any surface. So is one too short in the
+        // chart to be an edge of its own whose ends stand at one point in
+        // space: on a chart spanning a fortieth of a unit, a millionth of
+        // the span is shorter than the confusion distance.
         let (from, to) = (ends[i].1, ends[j].0);
-        if from.distance(to) <= span * 1e-6 {
+        let gap = from.distance(to);
+        let meets_in_space = || match (
+            geometry.point_at(from.x, from.y, tol),
+            geometry.point_at(to.x, to.y, tol),
+        ) {
+            (Ok(p), Ok(q)) => p.distance(q) <= tol.confusion(),
+            _ => false,
+        };
+        if gap <= span * 1e-6 || (gap <= tol.confusion() && meets_in_space()) {
             runs.push(None);
             continue;
         }
@@ -3301,6 +3312,82 @@ mod tests {
                 .shape
             })
             .collect()
+    }
+
+    /// A face on a patch whose chart spans a fortieth of a unit, its
+    /// pcurves meeting at one corner 6e-8 apart in the chart and less than
+    /// the confusion distance apart in space: the miss is fitting slop, as
+    /// a miss of a millionth of the chart's span is. It is too short in the
+    /// chart to be an edge of its own, so no pole is laid there, and the
+    /// wire comes back as it was.
+    #[test]
+    fn a_small_chart_miss_whose_ends_meet_in_space_lays_no_pole() {
+        use ogeom_geom::{BSplineSurface, Line2d, SurfaceGeometry};
+        use ogeom_math::{ControlGrid, KnotVector, Point2};
+        let side = 0.025;
+        let mut model = Model::new();
+        // The patch p(u, v) = (u, v, 0) over [0, side] each way.
+        let knots = || KnotVector::new(vec![0.0, 0.0, side, side], 1).unwrap();
+        let grid = ControlGrid::new(
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(0.0, side, 0.0),
+                Point::new(side, 0.0, 0.0),
+                Point::new(side, side, 0.0),
+            ],
+            2,
+            2,
+        )
+        .unwrap();
+        let surface: SurfaceGeometry = BSplineSurface::new(knots(), knots(), &grid, T)
+            .unwrap()
+            .into();
+        let surface_id = model.geometry_mut().add_surface(surface);
+        let corners = [(0.0, 0.0), (side, 0.0), (side, side), (0.0, side)];
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|&(x, y)| model.add_vertex(VertexData::new(Point::new(x, y, 0.0))))
+            .collect();
+        let miss = 6e-8;
+        let edges: Vec<Shape> = (0..4)
+            .map(|i| {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                let (pa, pb) = (Point::new(a.0, a.1, 0.0), Point::new(b.0, b.1, 0.0));
+                let edge = make_edge_between(
+                    &mut model,
+                    segment(pa, pb),
+                    (0.0, side),
+                    &vertices[i],
+                    &vertices[(i + 1) % 4],
+                    T,
+                )
+                .unwrap()
+                .shape;
+                // The second edge's pcurve starts a hair up the chart from
+                // where the first one's ends.
+                let start = if i == 1 {
+                    Point2::new(a.0, a.1 + miss)
+                } else {
+                    Point2::new(a.0, a.1)
+                };
+                let end = Point2::new(b.0, b.1);
+                attach_pcurve(
+                    &mut model,
+                    &edge,
+                    Line2d::segment(start, end, T).unwrap().into(),
+                    surface_id,
+                    Location::identity(),
+                    (0.0, start.distance(end)),
+                )
+                .unwrap();
+                edge
+            })
+            .collect();
+        let closed = closed_at_poles(&mut model, surface_id, &edges, T).unwrap();
+        assert_eq!(closed.len(), 4, "no pole edge is laid in the miss");
+        for (got, given) in closed.iter().zip(&edges) {
+            assert!(got.is_same(given));
+        }
     }
 
     #[test]
