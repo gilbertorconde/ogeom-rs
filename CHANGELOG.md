@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face wrapping a closed chart once is trimmed in its chart.** A ring
+  that comes out a whole period below a surface closed but not periodic
+  (a B-spline band all the way round) is slid back into the chart, by
+  whole periods. The count rounded a turn's length over the chart's span,
+  a hair over one, up to two, and the ring came to rest a period above
+  the chart. Every point of the face then read outside its own trim:
+  the exact classifier missed the face, `check` called the faces beside
+  it inside out, and booleans asking it which side a piece is on were
+  answered wrongly. Three faces of one solid of the Voron 2.4r2 assembly
+  were named.
 - **A STEP or IGES face on a small chart reads again.** Where a face's
   pcurves missed each other at a corner by more than a millionth of the
   chart's span, the reader took the miss for a pole and laid a pole edge

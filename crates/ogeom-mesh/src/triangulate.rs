@@ -1294,6 +1294,27 @@ type WalkedRing = (
     Vec<usize>,
 );
 
+/// The whole periods a ring spanning `extent` along a closed direction is
+/// slid by to stand in `domain`: up where it starts below, down where it
+/// ends above, and none where it is already inside.
+///
+/// A hair past an end is fit noise, not a period: the knots take it, and
+/// rounding it up to a whole turn would carry the ring a period the wrong
+/// way. The same hair is taken off before counting, so a ring a whole
+/// period out by rounding comes back one period, not two.
+fn turns_into_domain(extent: (f64, f64), domain: (f64, f64)) -> f64 {
+    let ((least, most), (lo, hi)) = (extent, domain);
+    let span = hi - lo;
+    let slack = span * 1e-6;
+    if least < lo - slack {
+        ((lo - least - slack) / span).ceil()
+    } else if most > hi + slack {
+        -((most - hi - slack) / span).ceil()
+    } else {
+        0.0
+    }
+}
+
 fn trimming_rings(
     model: &Model,
     face: &Shape,
@@ -1640,17 +1661,7 @@ fn trimming_rings(
                 if !(least.is_finite() && most.is_finite()) || most - least > span * (1.0 + 1e-9) {
                     continue;
                 }
-                // A hair past the end is fit noise, not a period: the knots
-                // take it, and rounding it up to a whole turn would carry the
-                // ring a period the wrong way.
-                let slack = span * 1e-6;
-                let turns = if least < lo - slack {
-                    ((lo - least) / span).ceil()
-                } else if most > hi + slack {
-                    -((most - hi) / span).ceil()
-                } else {
-                    0.0
-                };
+                let turns = turns_into_domain((least, most), (lo, hi));
                 if turns == 0.0 {
                     continue;
                 }
@@ -4118,6 +4129,33 @@ pub fn polyline_of_edge(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A ring wrapping a closed chart once, read a whole turn low: the
+    /// extent a patch's full band reads before it is slid, on a chart of
+    /// [-3.14159265358979, 3.14159265358979] as a file states it. The slide
+    /// is one turn up, though the turn's length over the chart's span
+    /// rounds to a hair over one; a hair past an end is no turn, and a ring
+    /// inside stays.
+    #[test]
+    #[allow(
+        clippy::excessive_precision,
+        clippy::approx_constant,
+        reason = "the values as a file states them, a hair short of pi"
+    )]
+    fn a_ring_a_whole_turn_out_slides_back_one_turn() {
+        let domain = (-3.141_592_653_589_79, 3.141_592_653_589_79);
+        let span = domain.1 - domain.0;
+        let low = (-9.424_777_960_769_370_47, -3.141_592_653_589_744_27);
+        assert!((domain.0 - low.0) / span > 1.0);
+        assert_eq!(turns_into_domain(low, domain), 1.0);
+        let high = (low.0 + 2.0 * span, low.1 + 2.0 * span);
+        assert_eq!(turns_into_domain(high, domain), -1.0);
+        assert_eq!(turns_into_domain((domain.0 - 1e-9, domain.1), domain), 0.0);
+        assert_eq!(turns_into_domain((-1.0, 2.0), domain), 0.0);
+        // Two turns out is two turns back.
+        let two = (low.0 - span, low.1 - span);
+        assert_eq!(turns_into_domain(two, domain), 2.0);
+    }
 
     #[test]
     fn a_wild_chart_refuses_instead_of_crashing() {
