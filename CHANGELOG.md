@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A polynomial's leading term is kept where its roots are large.**
+  `solve::roots` dropped a leading coefficient small beside the largest
+  one, which `(x - 1e6)^4` is, and solved what was left: a line anchored
+  some ten thousand units from a cone found no crossing, and the quartic
+  came back with a root at a quarter of the true one. The leading term is
+  now dropped only where it is nothing at the size of the remaining
+  polynomial's roots.
 - **A boolean traces every edge and vertex of its arguments.** `fuse`,
   `cut`, `common` and `split_sheet` record each edge and vertex as modified
   into its pieces in the result where it was cut short, split or rebuilt,

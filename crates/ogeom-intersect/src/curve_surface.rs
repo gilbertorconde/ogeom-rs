@@ -1131,6 +1131,29 @@ mod tests {
         }
     }
 
+    /// A line anchored far from a cone meets it where one anchored beside
+    /// it does: the quadratic's constant term grows with the anchor's
+    /// distance, and its leading term must not be dropped for that.
+    #[test]
+    fn a_line_anchored_far_away_still_crosses_a_cone() {
+        use ogeom_geom::ConeSurface;
+        use ogeom_math::Cone;
+        let options = CurveSurfaceOptions::default();
+        let cone: SurfaceGeometry = ConeSurface::new(
+            Cone::new(Frame::WORLD, 10.0, core::f64::consts::FRAC_PI_4, T).unwrap(),
+            (0.0, 20.0),
+        )
+        .unwrap()
+        .into();
+        let far = segment(Point::new(-1e5, 0.0, 5.0), Point::new(50.0, 0.0, 5.0));
+        let found = intersect_curve_surface(&far, &cone, options, T).unwrap();
+        let xs: Vec<f64> = found.crossings.iter().map(|c| c.point.x).collect();
+        assert_eq!(xs.len(), 2, "{xs:?}");
+        for (got, want) in xs.iter().zip([-15.0, 15.0]) {
+            assert!((got - want).abs() < 1e-6, "{xs:?}");
+        }
+    }
+
     /// Lines that miss a torus through its hole or along its axis meet
     /// nothing; one grazing the outer equator touches it once, at the
     /// tangent point; a segment ending on the tube keeps its end crossings.

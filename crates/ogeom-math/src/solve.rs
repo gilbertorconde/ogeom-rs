@@ -344,12 +344,14 @@ where
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if every
 /// coefficient is zero, where every value is a root.
 pub fn roots(coefficients: &[f64], tolerance: f64) -> OgeomResult<Vec<f64>> {
-    // Drop leading zeros so the true degree drives the choice of method. A
-    // "cubic" whose cubic term is zero is a quadratic and must be solved as
-    // one, or the leading division blows up.
+    // Drop a leading term that is nothing where the roots lie, so the true
+    // degree drives the choice of method. A "cubic" whose cubic term is
+    // zero is a quadratic and must be solved as one, or the leading
+    // division blows up; one whose cubic term is rounding's leftover of
+    // zero is the same quadratic with a spurious root far away.
     let mut c = coefficients;
     while let Some((&last, rest)) = c.split_last() {
-        if last.abs() <= tolerance * c.iter().fold(0.0_f64, |m, v| m.max(v.abs())).max(1.0) {
+        if last == 0.0 || negligible_lead(last, rest, tolerance) {
             c = rest;
         } else {
             break;
@@ -465,6 +467,52 @@ pub fn cubic_roots(a: f64, b: f64, c: f64, d: f64) -> Vec<f64> {
         r.sort_by(|x, y| x.partial_cmp(y).unwrap_or(core::cmp::Ordering::Equal));
         r
     }
+}
+
+/// Whether a leading coefficient `lead` is nothing beside the polynomial
+/// `rest` it tops, where that polynomial's roots lie.
+///
+/// Compared against the largest coefficient, a leading term is dropped
+/// whenever the roots are large: `(x - 1e6)^4` has a constant term of 1e24
+/// over a leading one of 1. So the comparison is made at the size of the
+/// roots instead: within twice Fujiwara's bound on `rest`'s roots, the
+/// leading term is at most `lead * bound^n`, and it is dropped where that
+/// is within `tolerance` of the largest term of `rest` there. A `rest`
+/// that is a constant has no roots to stand at, and its lead is kept: the
+/// roots of `x^2 - 1e10` are the leading term's.
+fn negligible_lead(lead: f64, rest: &[f64], tolerance: f64) -> bool {
+    let Some(m) = rest.iter().rposition(|v| *v != 0.0) else {
+        return false;
+    };
+    if m == 0 {
+        return false;
+    }
+    let top = rest[m].abs();
+    let mut bound = 0.0_f64;
+    for k in 1..=m {
+        let ratio = (rest[m - k] / rest[m]).abs();
+        let ratio = if k == m { ratio / 2.0 } else { ratio };
+        #[allow(clippy::cast_precision_loss, reason = "a degree")]
+        let term = if k == 1 {
+            ratio
+        } else {
+            ratio.powf(1.0 / k as f64)
+        };
+        bound = bound.max(term);
+    }
+    let bound = (2.0 * bound).max(1.0);
+    if !bound.is_finite() {
+        return false;
+    }
+    // The largest term of `rest` at the bound, and the leading term there.
+    let mut largest = 0.0_f64;
+    let mut power = 1.0_f64;
+    for v in rest {
+        largest = largest.max(v.abs() * power);
+        power *= bound;
+    }
+    let leading = lead.abs() * power;
+    leading <= tolerance * largest.max(top)
 }
 
 /// Polynomials up to this degree are solved with their working on the stack.
@@ -1350,6 +1398,35 @@ mod tests {
         assert_eq!(r.len(), 2);
         assert_relative_eq!(r[0], -2.0, epsilon = 1e-12);
         assert_relative_eq!(r[1], 2.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn roots_far_from_the_origin_keep_their_leading_term() {
+        // (x - 1e6)^4: the constant term is 1e24 and the leading one is 1,
+        // which is no reason to drop it. Dropped, the "cubic" that is left
+        // has a root at a quarter of the true one.
+        let r = 1e6_f64;
+        let c = [r * r * r * r, -4.0 * r * r * r, 6.0 * r * r, -4.0 * r, 1.0];
+        let found = roots(&c, 1e-9).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_relative_eq!(found[0], r, max_relative = 1e-6);
+        // (x - 1e6)^3 likewise, and a quadratic whose roots stand at 1e5.
+        let c = [-r * r * r, 3.0 * r * r, -3.0 * r, 1.0];
+        let found = roots(&c, 1e-9).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_relative_eq!(found[0], r, max_relative = 1e-6);
+        let s = 1e5_f64;
+        let found = roots(&[-s * s, 0.0, 1.0], 1e-9).unwrap();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_relative_eq!(found[0], -s, max_relative = 1e-12);
+        assert_relative_eq!(found[1], s, max_relative = 1e-12);
+        // A leading term that is rounding's leftover of zero is still
+        // dropped: the quadratic's roots stand near one, and the cubic
+        // term is nothing there.
+        let found = roots(&[-4.0, 0.0, 1.0, 1e-14], 1e-9).unwrap();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_relative_eq!(found[0], -2.0, epsilon = 1e-9);
+        assert_relative_eq!(found[1], 2.0, epsilon = 1e-9);
     }
 
     #[test]
