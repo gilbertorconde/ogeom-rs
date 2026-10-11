@@ -111,7 +111,13 @@ twice at its double point, or two loops crossing it a hundredth of a
 millimetre apart. With the drill's seam toward -y, the marcher returns the
 section as six open pieces whose fits miss by up to 9e-3, and the kept pieces
 do not close; the same placement moved by a few ulps leaves the drill less
-the part unclosed. With the seam toward z it closes.
+the part unclosed. With the seam toward z it closes. The stress drill
+scenario's seed 2 drill 5 on `nist_ctc_03` is the same: the drill's top
+ruling lies in the plate's top face and runs into the round of radius 11 at
+its edge, where the drill, the round and the plate's face are tangent at one
+point; the marched drill-round section, fitted to 2.8e-4, crosses the round's
+tangent edge twice 9.5e-3 apart, and the sliver between the crossings sews
+to nothing (its twin edges stand 9.2e-4 apart).
 
 **A drill's seam along the other part's edge.** A drill whose wall runs along
 a round's tangent line with its own seam on that line: the section hugs an
@@ -119,17 +125,21 @@ edge on both sides and lays no split, and the boolean refuses. A drill tangent
 to a plane along a face's edge, seam there, is the same. Carrying the seam
 onto that face as a contact closes it, but the same contact breaks a drill
 whose seam crosses a face's interior lying in its plane. Turned away, the
-seam closes.
+seam closes. The concave case: seed 3's drill 0 on `nist_ctc_03` has its seam
+along the edge where a wall (y = 425.455) meets the lip's ceiling above it,
+with the drill inside the material on both sides of the line, so the edge
+turns nothing and is rightly carried as no contact (the touch along a
+boundary edge is carried only where the solid turns across the touching
+face). The drill's wall below the seam is then never split by the faces it
+crosses behind the wall, and its band inside the material merges into the
+outside piece, whose one ring runs along both sides of the seam.
 
 **A section tangent to an edge at its end.** A drill whose circle on a rounded
 box's base touches the round's tangent line at the corner vertex, where the
 corner ball touches the base, is refused. At seeds 1 to 3 the stress drill
 scenario refuses one drill each: seed 1's drill 2 on the rounded box is this
-item, and seeds 2 and 3 each refuse one on `nist_ctc_03` (the next).
-
-**Drills on `nist_ctc_03`.** Seed 2's drill 5 (radius 32 along y) and seed
-3's drill 0 (radius 87 along x) on `nist_ctc_03` are refused as not closing
-and not yet diagnosed.
+item, and seeds 2 and 3 each refuse one on `nist_ctc_03`, recorded under the
+two items above.
 
 **A tilted half ball drilled on the diagonal chart.** A half ball charted
 about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled
