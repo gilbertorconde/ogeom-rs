@@ -27,8 +27,8 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
 }
 
 /// A part whose bands, caps and pole corners all arrived seamless: healed,
-/// it is valid and measures the same, and a drill through a spherical
-/// pocket and the bands around it cuts, the cut and the common adding up to
+/// it is valid and measures the same, and a drill through a ball standing
+/// on the part and the bands around it cuts, the cut and the common adding up to
 /// the part.
 #[test]
 fn seamless_faces_heal_and_a_drill_cuts_through_them() {
@@ -47,13 +47,15 @@ fn seamless_faces_heal_and_a_drill_cuts_through_them() {
         "{whole} against {before}"
     );
 
-    // The pocket's floor faces into the sphere: the material is outside it.
-    let beside_pole = Point::new(114.3, 46.625, -107.95);
-    let within_pocket = Point::new(114.3, 48.625, -107.95);
+    // The ball stands on the plate, the concave fillet at its foot turned
+    // into the material: the ball is material up to its top pole, and above
+    // it is outside.
+    let below_pole = Point::new(114.3, 78.375, -107.95);
+    let above_pole = Point::new(114.3, 80.375, -107.95);
     let fine = Deflection::with_chord(0.01).unwrap();
     for (at, want) in [
-        (beside_pole, ogeom::algo::Containment::In),
-        (within_pocket, ogeom::algo::Containment::Out),
+        (below_pole, ogeom::algo::Containment::In),
+        (above_pole, ogeom::algo::Containment::Out),
     ] {
         let found = ogeom::algo::classify_in_solid(model, &part, at, fine, T).unwrap();
         assert_eq!(found, want, "at {at:?}");

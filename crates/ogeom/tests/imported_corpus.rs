@@ -19,7 +19,9 @@ fn corpus(name: &str) -> String {
 /// Healing sweeps the whole corpus: every part reads, every shell closes,
 /// every part measures, and each volume pins to its known figure: the
 /// values ftc_07 and ftc_11 arbitrated against the kernel's exact ray
-/// classifier and ctc_01 against an orientation-free even-odd grid. A loose
+/// classifier and ctc_01 against an orientation-free even-odd grid, and
+/// ftc_06 with its two balls standing on the plate, as their own loops and
+/// the concave fillets at their feet say, none of its faces inside out. A loose
 /// relative band absorbs mesh refinements. An orientation or unit
 /// mistake moves a volume by whole factors and cannot hide inside it.
 #[test]
@@ -31,7 +33,7 @@ fn the_corpus_heals_and_every_part_measures() {
         ("nist_ctc_03_asme1_rc.stp", 331_884.8),
         ("nist_ctc_04_asme1_rd.stp", 17_519_472.2),
         ("nist_ctc_05_asme1_rd.stp", 12_694_721.1),
-        ("nist_ftc_06_asme1_rd.stp", 3_289_989.2),
+        ("nist_ftc_06_asme1_rd.stp", 3_323_546.1),
         ("nist_ftc_07_asme1_rd.stp", 1_726_286.9),
         ("nist_ftc_08_asme1_rc.stp", 503_596.4),
         ("nist_ftc_09_asme1_rd.stp", 136_453.8),

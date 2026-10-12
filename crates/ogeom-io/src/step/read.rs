@@ -2459,6 +2459,54 @@ impl<'a> Reader<'a> {
             }
         }
 
+        // A sphere face bounded by a single parallel: the pole on the side
+        // the face's material lies is the other boundary, which files leave
+        // unwritten as they leave a cone's apex. The ring is walked with the
+        // material on its left about the face's own normal, so the pole
+        // that left points toward is the one the face reaches.
+        if wires.len() == 1
+            && let SurfaceGeometry::Sphere(ball) = &surface
+            && let [(ring, at)] = closed_ring_edges(&self.model, &wires)?.as_slice()
+            && ogeom_algo::rings_are_parallels(&self.model, &surface, &[ring], self.tol)?
+            && let Some(pole) = pole_on_the_left(
+                &self.model,
+                &surface,
+                ball.sphere(),
+                ring,
+                at,
+                face_forward,
+                self.tol,
+            )?
+        {
+            let vertex = self.model.add_vertex(ogeom_topo::VertexData::new(pole));
+            let mut data = ogeom_topo::EdgeData::new();
+            data.degenerate = true;
+            let collapsed = self.model.add_edge(data, &[vertex.clone(), vertex])?;
+            match ogeom_algo::make_revolution_band(
+                &mut self.model,
+                &surface,
+                ring,
+                &collapsed,
+                self.tol,
+            ) {
+                Ok(built) => {
+                    let shape = if face_forward {
+                        built
+                    } else {
+                        built.reversed()
+                    };
+                    self.faces.insert(id, shape.clone());
+                    return Ok(Some(shape));
+                }
+                Err(e) => {
+                    self.report.warnings.push(format!(
+                        "#{id}: no pole could be synthesised ({e}); the face \
+                         may not triangulate"
+                    ));
+                }
+            }
+        }
+
         // Every wire's images on one branch of a periodic chart: a file's
         // pcurves, or fits of them, answer in whatever phase they like, and
         // a hole loop straddling a drum's seam arrives half on each branch.
@@ -4778,6 +4826,61 @@ fn same_column(circle: &ogeom_math::Circle, p: Point, q: Point, tol: Tolerances)
 
 /// For a two-wire periodic face: each wire's single closed edge with its
 /// vertex, empty when the shape is anything else.
+/// The pole of `ball` a ring walked as `ring` turns toward: the side its
+/// material lies on, left of the walk about the face's own normal, which is
+/// the surface's (its chart's `du x dv`, inward on a ball framed
+/// left-handed) where the face runs with its surface. `None` where the ring
+/// has no curve to walk or stands square to neither pole.
+fn pole_on_the_left(
+    model: &Model,
+    surface: &SurfaceGeometry,
+    ball: ogeom_math::Sphere,
+    ring: &Shape,
+    at: &Shape,
+    face_forward: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    let Some(data) = model.node(ring).and_then(|n| n.data().as_edge()) else {
+        return Ok(None);
+    };
+    let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        return Ok(None);
+    };
+    let Some(curve) = model.geometry().curve(*curve) else {
+        return Ok(None);
+    };
+    let Some(start) = model
+        .node(at)
+        .and_then(|n| n.data().as_vertex())
+        .map(|v| v.point)
+    else {
+        return Ok(None);
+    };
+    let reversed = ring.orientation() == ogeom_topo::Orientation::Reversed;
+    let t = if reversed { range.1 } else { range.0 };
+    let along = curve.d1_at(t, tol)? * if reversed { -1.0 } else { 1.0 };
+    let local = ball.frame().to_local(start);
+    let (u, v) = (
+        local.y.atan2(local.x),
+        (local.z / ball.radius()).clamp(-1.0, 1.0).asin(),
+    );
+    let (du, dv) = surface.d1_at(u, v, tol)?;
+    let own = du.cross(dv);
+    let normal = if face_forward { own } else { -own };
+    let left = normal.cross(along);
+    let axis = ball.frame().z().vector() * ball.radius();
+    let lean = left.dot(axis);
+
+    if lean.abs() <= tol.confusion() * left.magnitude() {
+        return Ok(None);
+    }
+    Ok(Some(if lean > 0.0 {
+        ball.centre() + axis
+    } else {
+        ball.centre() - axis
+    }))
+}
+
 fn closed_ring_edges(model: &Model, wires: &[Shape]) -> OgeomResult<Vec<(Shape, Shape)>> {
     let mut out = Vec::new();
     for wire in wires {

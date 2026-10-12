@@ -24,12 +24,12 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
         .mass
 }
 
-/// How much of a closed triangle mesh lies inside an unbounded cylinder:
-/// the length the mesh encloses along each ray parallel to the axis,
-/// integrated over the cylinder's disc by the midpoint rule in polar
-/// coordinates. Each crossing adds its height along the axis signed by
-/// which way the triangle faces, so the sum is the length inside, in any
-/// order.
+/// How much of a closed triangle mesh lies inside a cylinder `along` long
+/// from `origin`: the length the mesh encloses along each ray parallel to
+/// the axis, within the cylinder's length, integrated over its disc by the
+/// midpoint rule in polar coordinates. Each crossing adds its height along
+/// the axis, held to the cylinder's length and signed by which way the
+/// triangle faces, so the sum is the length inside, in any order.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -41,6 +41,7 @@ fn mesh_inside_cylinder(
     origin: Point,
     (x, y, z): (Vector, Vector, Vector),
     radius: f64,
+    along: f64,
     (rings, spokes): (usize, usize),
 ) -> f64 {
     // Every vertex in the cylinder's own frame: (across, across, along).
@@ -103,7 +104,9 @@ fn mesh_inside_cylinder(
                 if u < 0.0 || v < 0.0 || u + v > 1.0 {
                     continue;
                 }
-                let h = p[2] + u * (q[2] - p[2]) + v * (s[2] - p[2]);
+                // Held to the drill's own length: an entry and an exit
+                // clamped to it bound what of their stretch the drill holds.
+                let h = (p[2] + u * (q[2] - p[2]) + v * (s[2] - p[2])).clamp(0.0, along);
                 // The sign of the normal's component along the axis:
                 // positive where the ray leaves the solid.
                 length += h * det.signum();
@@ -172,8 +175,8 @@ fn drill(start: Point, axis: Vector, radius: f64, length: f64, share: f64) {
     // finely each way, either measure moves by under 6e-5 of itself; the
     // coarse one alone misses the common by up to 3.5e-4, the extrapolated
     // one by under 5e-6.
-    let [coarse, fine] =
-        meshes.map(|mesh| mesh_inside_cylinder(&mesh, start, (x, y, z), radius, (300, 1200)));
+    let [coarse, fine] = meshes
+        .map(|mesh| mesh_inside_cylinder(&mesh, start, (x, y, z), radius, length, (300, 1200)));
     let inside = fine + (fine - coarse) * FINE / (COARSE - FINE);
     assert!(
         (b - inside).abs() < b * share,
@@ -288,7 +291,14 @@ fn a_drill_lying_in_a_plate_s_underside_between_its_rounds_cuts() {
         (c + b - bore).abs() < bore * 1e-6,
         "{c} + {b} against the drill's {bore}"
     );
-    let inside = mesh_inside_cylinder(&mesh, start, (x, z.cross(x), z), radius, (300, 1200));
+    let inside = mesh_inside_cylinder(
+        &mesh,
+        start,
+        (x, z.cross(x), z),
+        radius,
+        length,
+        (300, 1200),
+    );
     assert!(
         (b - inside).abs() < b * 5e-5,
         "common {b} against {inside} measured on the mesh as read"

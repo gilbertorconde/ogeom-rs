@@ -32,6 +32,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A ball face a file bounds by one parallel is the half it walks round.**
+  A STEP sphere face bounded by its equator alone, with no vertex at a
+  pole, read as whichever half the chart's start fell on: the hemisphere
+  above came back as the one below, 20 mm off for a radius of 20 (#202).
+  The pole the file leaves unwritten is now put in on the side the ring is
+  walked round, its material's side about the face's own normal, and the
+  face built as a cap on it, as a cone bounded by one ring already has its
+  apex put in. The NIST part `nist_ftc_06` read its two balls inside out
+  for the same reason, as pockets where its loops and the concave fillets
+  at their feet stand them on the plate: its volume is now 3,323,546 mm3,
+  not 3,289,989.
+
 - **A closed section starts at a vertex it passes a hair from.** A circle
   the boolean cuts from a plane and a ball or a drum starts where a world
   axis falls in its plane, and a piece reaching across that start is split
