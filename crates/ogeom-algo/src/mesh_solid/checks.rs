@@ -877,6 +877,52 @@ pub(super) fn give_back(groups: &mut Groups, to: usize, record: Absorbed) {
 /// The curved faces whose meshes do not meet their neighbours', where the
 /// solid does not mesh closed.
 ///
+/// The built faces whose boundary does not close: a wire whose edges do not
+/// meet end to end, or a boundary that does not close in its surface's
+/// chart. Its edges are drawn alike from both sides, so the solid can mesh
+/// closed and pass every check on its mesh while it checks broken. The
+/// curved faces among them are the culprits; where only planes are found,
+/// those that can be gathered again.
+pub(super) fn broken_faces(
+    model: &Model,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    regrouped: &Regrouped,
+    tol: Tolerances,
+) -> OgeomResult<Vec<usize>> {
+    let faces: Vec<(usize, &Shape)> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
+        .collect();
+    let broken = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
+        let mut found = crate::Diagnosis::default();
+        for wire in model.ordered_children_of(face)? {
+            crate::check::check_wire(model, &wire, tol, &mut found)?;
+        }
+        Ok(!found.problems.is_empty()
+            || !crate::chart_breaks(model, face, &|_| false, tol)?.is_empty())
+    });
+    let mut out = Vec::new();
+    for (&(g, _), broken) in faces.iter().zip(broken) {
+        if broken? {
+            out.push(g);
+        }
+    }
+    let curved: Vec<usize> = out
+        .iter()
+        .copied()
+        .filter(|&g| matches!(groups.carriers.get(g), Some(Carrier::Curved(_))))
+        .collect();
+    if !curved.is_empty() {
+        return Ok(curved);
+    }
+    Ok(out
+        .into_iter()
+        .filter(|&g| regrouped.can_withdraw(groups, g))
+        .collect())
+}
+
 /// Each built face is meshed on its own, its edges drawn alike for every
 /// face, and the meshes are joined where their points coincide. A mesh
 /// edge used other than twice is a gap or an overlap: a face whose trim

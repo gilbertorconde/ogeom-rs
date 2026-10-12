@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The mesh converter facets a face whose boundary does not close.** A
+  printed part of the DoomCube 350 assembly, meshed and converted back,
+  came back with a face whose wire's edges stood 4 mm apart. They were
+  drawn alike from both sides, so the solid meshed closed and passed the
+  converter's checks while it checked broken and a tenth short of the
+  part's volume. A built face whose wire does not meet end to end, or
+  whose boundary does not close in its chart, is now faceted
+  (`FallbackReason::BoundaryOpen`).
 - **A thin lump is not taken for a membrane.** A leaning torus whose tube
   pokes a little way past a drum's or a cone's flat end: the cut keeps the
   tip as a lump of its own, bounded by a patch of the torus and a patch of

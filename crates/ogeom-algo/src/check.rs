@@ -729,7 +729,7 @@ pub(crate) fn pcurve_off_curve(
 }
 
 /// A wire's edges must meet end to end.
-fn check_wire(
+pub(crate) fn check_wire(
     model: &Model,
     wire: &Shape,
     tol: Tolerances,

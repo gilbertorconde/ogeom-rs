@@ -63,9 +63,9 @@ use bodies::{assemble, body_culprits};
 use builder::Builder;
 use caches::{AreaCache, ImageCache, SnapCache};
 use checks::{
-    Regrouped, absorb_facets, any_turned_in, backwards_facets, collapsed_beside, crossed_seams,
-    failing_faces, folded_seams, give_back, overlapping_faces, planes_off_their_vertices,
-    unbuilt_culprits, unmatched_faces,
+    Regrouped, absorb_facets, any_turned_in, backwards_facets, broken_faces, collapsed_beside,
+    crossed_seams, failing_faces, folded_seams, give_back, overlapping_faces,
+    planes_off_their_vertices, unbuilt_culprits, unmatched_faces,
 };
 use planner::{NOISE_FLOOR, Planner, Replan};
 use regions::{flat_noise, split_disconnected};
@@ -1013,6 +1013,14 @@ fn build_from(
                                 unmatched_faces(model, &shape, &groups, &built, flat, kept.meshes(), tol)
                             );
                             reason = FallbackReason::MeshesOpen;
+                        }
+                        if culprits.is_empty() && options.recognize {
+                            culprits = or_withdraw!(
+                                'checks,
+                                &built,
+                                broken_faces(model, &groups, &built, &regrouped, tol)
+                            );
+                            reason = FallbackReason::BoundaryOpen;
                         }
                         if culprits.is_empty() {
                             report.faces = built.iter().flatten().count();

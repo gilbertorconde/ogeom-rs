@@ -102,6 +102,9 @@ pub enum FallbackReason {
     MeshesOpen,
     /// Building its face, or meshing or measuring it once built, failed.
     BuildFailed,
+    /// Its face's boundary did not close: a wire's edges did not meet end
+    /// to end, or did not close in its surface's chart.
+    BoundaryOpen,
 }
 
 impl fmt::Display for FallbackReason {
@@ -115,6 +118,7 @@ impl fmt::Display for FallbackReason {
             Self::Overlaps => "its face overlapped a neighbour",
             Self::MeshesOpen => "its face did not mesh closed with its neighbours",
             Self::BuildFailed => "building or meshing its face failed",
+            Self::BoundaryOpen => "its face's boundary did not close",
         })
     }
 }

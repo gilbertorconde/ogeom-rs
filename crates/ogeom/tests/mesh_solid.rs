@@ -5953,3 +5953,39 @@ fn a_drill_point_comes_back_a_cone_to_its_apex() {
     let drawn = ogeom::mesh::triangulate(&back, &built.shape, Deflection::default(), T).unwrap();
     assert!(drawn.is_closed());
 }
+
+/// A printed part of the DoomCube 350 assembly (the STEP file named by
+/// `OGEOM_TEST_DOOMCUBE`, not ours to bundle; the test is skipped where the
+/// variable is unset): solid 375, meshed at a thousandth of its diagonal
+/// and converted back. One face it built had a wire whose edges stood 4 mm
+/// apart, drawn alike from both sides so the solid still meshed closed,
+/// and the result checked broken and a tenth short of the part's volume.
+/// A face whose boundary does not close is faceted instead.
+#[test]
+fn a_built_face_whose_boundary_does_not_close_is_faceted() {
+    let Some(path) = std::env::var_os("OGEOM_TEST_DOOMCUBE") else {
+        return;
+    };
+    let text = std::fs::read_to_string(path).expect("the file the variable names reads");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[375];
+    let diagonal = tight_bounds(model, part, T).unwrap().diagonal();
+    let mesh = ogeom::mesh::triangulate(
+        model,
+        part,
+        Deflection::with_chord(diagonal * 1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let diagnosis = check(&back, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let fine = Deflection::with_chord(diagonal * 1e-5).unwrap();
+    let (want, got) = (
+        volume_properties(model, part, fine, T).unwrap().mass,
+        volume_properties(&back, &out.shape, fine, T).unwrap().mass,
+    );
+    assert!((got - want).abs() <= want * 3e-3, "{got} against {want}");
+}
