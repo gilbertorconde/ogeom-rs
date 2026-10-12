@@ -404,36 +404,35 @@ recorded count per bench, and a gate at a few percent.
   the fillets. Letting the caller take items as one of the workers gained
   3% on boolean_drill and 7% on boolean_local, under the 10% bar; a
   persistent pool could win at most that 8% on the smallest booleans.
-- Closed-form feet: cone and torus on surfaces (the inversions already
-  exist in `ogeom-math/src/elementary.rs`), extrusions and revolutions
-  through their profile, line and circle on curves; Newton on
-  `(C - P) . C'` after the bracket instead of Brent.
-- Newton solves still on the heap solver: the intersection walker, the
-  fillet march, the marched intersections. Move them to
-  `newton_system_fixed`; seed the walker with a tangent predictor.
+- Closed-form feet on curves: `project_on_curve` in
+  `ogeom-algo/src/measure.rs` samples a line or a circle like any curve
+  (`line_parameter` and `circle_parameter` exist in
+  `ogeom-math/src/elementary.rs`), and refines with Brent's minimizer
+  where Newton on `(C - P) . C'` after the bracket would do. Surfaces
+  (cone, torus, extrusions and revolutions through their profile) already
+  have closed-form feet. Reading the DoomCube and Voron 2.4 assemblies
+  projects only onto splines this way (33,000 calls, 0.2 s of 27 s), so
+  the gain is for other callers.
+- The intersection walker: six or more unknowns still go to the heap
+  solver, `Condition::system_at` allocates on every evaluation, and each
+  step corrects from the last point rather than a tangent prediction.
 - One jet call where separate point, first and second derivative calls
-  are made (curve on surface, the fillet march, mass integration, the
-  mesh lift); allocation-free curve derivatives (a curve jet).
-- Grid corners in `sample_by` are evaluated four times each.
-- Box rejection before curve-curve crossings, the section's own box in
-  paving, local-support boxes for a spline curve's sub-range.
-- `check` per edge and per face through `map_ordered`; self-intersection
-  through a box tree instead of every face pair.
-- IGES derives its pcurves serially; STEP prepares them in parallel.
-- `repair_same_parameter` dedupes in O(E^2) and measures more weakly than
-  `reduce_tolerances`; `fix_shape` transforms every face's surface before
-  knowing an edge needs it.
-- `matched_loop` in pipe sections copies the loop for every candidate
-  start (about 14k copies of a 7000-point loop per circular section).
-- The guided sweep law resamples its guide at every station and bisects
-  60 times.
-- The mesh draws each edge five to seven times and rebuilds a whole-face
-  index per edge (`ogeom-mesh/src/attach.rs`); its sealing passes rebuild
-  the edge-use map four times and scan border vertices against border
-  edges.
-- Mesh conversion meshes every face again after the whole-shape mesh in
-  each build iteration; primitive refinement allocates in its Jacobian
-  loop; piece nesting has no box rejection.
+  are made: `CurveOnSurface::derivatives_at`, the mesh lift (point then
+  normal), and the side probes of mass integration; allocation-free curve
+  derivatives (a curve jet; `derivatives_at` returns a `Vec`).
+- Box rejection: `general_3d` in the curve crossings samples both curves
+  before any whole-curve box test, and `section_face.rs` does not filter
+  edges by box; section-against-edge paving tests the other face's box,
+  not the section's own; a spline's sub-range is bounded by its whole
+  control polygon.
+- The guided sweep law samples each guide at 257 points at every station
+  and bisects each sign change 60 times.
+- The mesh still draws an edge again for each face's rings and chords and
+  in each settling round; its sealing passes build the edge-use map three
+  times.
+- Primitive refinement in the converter clones its parameters twice per
+  point and builds a new matrix every iteration; piece nesting ray-casts
+  every pair of pieces against every triangle with no box test.
 
 **Algorithms worth the work.**
 - Classify a boolean's pieces once per connected region, not per piece
