@@ -2211,7 +2211,13 @@ fn on_meridian(
     // the branch the range actually sits on is the one the line is built
     // from.
     let alpha = sweep.mul_add(mid, -x_mid);
-    let slack = tol.parametric().max(1e-9);
+    // A range read off points found by projection overshoots a pole by
+    // what that projection leaves: an angle the radius turns into the
+    // confusion distance is no overshoot, and the lift below measures it.
+    let slack = tol
+        .parametric()
+        .max(1e-9)
+        .max(tol.confusion() / sphere.radius());
     let (axis_point, towards) = if x0 >= -slack && x1 <= half + slack {
         // The descending half: latitude π/2 − (sweep·t − α), longitude
         // constant.
@@ -2953,6 +2959,45 @@ mod tests {
                     "a range across a pole has no one line"
                 );
                 let _ = s;
+            }
+        }
+    }
+
+    /// A half meridian whose ends were read off the poles by projection
+    /// runs a few nanoradians past them. That is the projection's own
+    /// error, far inside the confusion distance, and the half is still the
+    /// straight line it is, lifting onto the circle across the whole range.
+    #[test]
+    fn a_meridian_half_read_slightly_past_its_poles_is_still_a_line() {
+        let half = core::f64::consts::PI;
+        let ball = sphere(Point::new(1.0, -2.0, 0.5), 0.2);
+        let cut = plane(
+            Point::new(1.0, -2.0, 0.5),
+            Vector::new(-0.7_f64.sin(), 0.7_f64.cos(), 0.0),
+        );
+        let SurfaceIntersection::Along(curves) =
+            intersect_surfaces(&ball, &cut, IntersectOptions::default(), T).unwrap()
+        else {
+            panic!("a plane through the centre meets the ball along a circle");
+        };
+        let circle = &curves[0].curve;
+        let SurfaceGeometry::Sphere(s) = &ball else {
+            panic!("a sphere surface");
+        };
+        for over in [2e-9, 1e-8, 1e-7] {
+            for (lo, hi) in [(-over, half + over), (half - over, 2.0 * half + over)] {
+                let pcurve = exact_pcurve_over(circle, (lo, hi), &ball, T)
+                    .unwrap_or_else(|| panic!("{over} past the poles: no line"));
+                for i in 0..=16 {
+                    let t = (hi - lo).mul_add(f64::from(i) / 16.0, lo);
+                    let uv = pcurve.point_at(t, T).unwrap();
+                    let lifted = ogeom_math::elementary::sphere_at(&s.sphere(), uv.x, uv.y).point;
+                    let want = circle.point_at(t, T).unwrap();
+                    assert!(
+                        want.distance(lifted) < 1e-9,
+                        "{over}, t {t}: {lifted:?} against {want:?}"
+                    );
+                }
             }
         }
     }

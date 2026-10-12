@@ -25,6 +25,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Every edge of a box at a slant rounds.** A box corner's ball meets
+  two of its bands along meridians through the poles of its chart, and the
+  boolean splits such a circle at the poles found by projecting them onto
+  it. At a slant the projection leaves the poles a nanoradian or so off,
+  past the slack the half-meridian's straight pcurve allowed, so the arc
+  was marched and fitted instead, and the bands then could not close
+  against the fitted rim: three corners of a slanted cube in eight refused.
+  The slack is now the angle the ball's radius turns into the confusion
+  distance, and the lift back onto the circle still measures the line.
+  In the stress round scenario, which rounds every edge of a slanted box
+  in three cases in ten, refusals fell from about 17% to about 3%.
+
 - **`offset_shape` offsets a whole torus and a solid with voids.** A
   whole torus is one face bounded by nothing but its seams, and the offset
   assembled faces from their trims: it refused every torus, out or in. It
