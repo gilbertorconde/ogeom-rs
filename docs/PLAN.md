@@ -23,6 +23,26 @@ first, then refusals, then cost.
 
 ### Checking and measurement
 
+**Meshes of doubly curved faces stand off by up to twice the chord.** The
+grid holds each row and each column to the chord, and a cell's middle
+stands off by both sags together; the repair pass fires only at three
+chords. A ball of radius 20 meshed at chord 0.1 stands off 0.17, at 0.5
+0.68, and says so (`deflection_met` false). A cone's face, scaled by its
+mean radius for Delaunay, joins points three columns apart where its
+radius is far from the mean: the cone of #202 stands off 0.08 at chord
+0.0125. What was tried (2026-10-12): holding each direction to half the
+chord on balls and tori, with the repair asking each triangle's middle
+and splitting its longest interior edge, puts balls within the chord at
+every chord asked and passes the mesh conversion corpus, but the
+inserted points break a ball's symmetry (`a_sphere_converges_on_the_volume_a_sphere_has`
+reads its centre off the origin) and three `mesh_solid` conversions;
+the repair at one chord on every edge, or at the middle alone, leaves
+converted faces whose meshes do not meet (217 edges on `nist_ctc_02`) or
+a button head of 57 faces. A grid fine enough by construction (rows and
+columns from the surface's curvature both ways, the cone's chart scaled
+per row) keeps the symmetry and the converter's inputs regular, and is
+the next thing to try. Closes the rest of #202.
+
 **Some fits through bare points are trusted between their points.** A fit
 through points (`fit_points`, `fit_points_at`, the grid fits) states its
 error at the points only. These callers still read it, or nothing, where
@@ -178,10 +198,13 @@ the fuse drops the short piece, the loop closes in space within its
 vertex's radius, and on the fused face its pcurve stops 1e-4 short of the
 column it closes on. A later boolean on the fused solid meets that gap:
 past its arrangement's node snap, the strand ending on the column dangles
-and it refuses. Of the chain stress scenario's 900 cases at seeds 4, 9 and
-10, 3, 5 and 3 are refused this way or nearby (a marched fit beside a
-pole, a wire that does not close). The fuse should carry the short piece
-into the loop's pcurve, or state the loop on the column it closes on.
+and it refuses. The fuse should carry the short piece into the loop's
+pcurve, or state the loop on the column it closes on. Of the chain stress
+scenario's 900 cases at seeds 4, 9 and 10, 1, 2 and 1 are refused (3, 5
+and 3 before the seam fixes of 2026-10-12): three marched fits beside a
+sphere's pole ("a branch passing beside a chart's pole fits nothing
+yet"), and seed 4's `chain/primitives/178`, two fused balls cut by a
+cone, whose boundary strand dangles.
 
 **A tilted half ball drilled on the diagonal chart.** A half ball charted
 about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled
