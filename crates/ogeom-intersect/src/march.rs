@@ -231,13 +231,18 @@ pub fn seeds(
             found.push(Seed::at(a, b, contact, tol));
         }
     }
-    // A branch that runs in from a spline's border at a grazing angle can
-    // be thinner than the sampling's sag, and no pair of cells crosses on
-    // it. Where it meets the border it is a curve piercing a surface,
-    // which is found exactly: each border of each spline is intersected
-    // with the other surface, and every piercing seeds.
+    // A branch that runs in from a border at a grazing angle can be
+    // thinner than the sampling's sag, and a short one cut off in a corner
+    // of both domains can lie inside a single pair of cells without
+    // crossing them: no pair of cells crosses on it. Where it meets the
+    // border it is a curve piercing a surface, which is found exactly:
+    // each border of each spline, and each rim of a drum or a cone, is
+    // intersected with the other surface, and every piercing seeds.
     for (from_a, border_of, other) in [(true, a, b), (false, b, a)] {
-        for (border, at) in spline_borders(border_of, tol) {
+        let borders = spline_borders(border_of, tol)
+            .into_iter()
+            .chain(rims(border_of, tol));
+        for (border, at) in borders {
             let Ok(met) = crate::intersect_curve_surface(
                 &border,
                 other,
@@ -783,6 +788,44 @@ fn spline_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
                 out.push((c, Box::new(move |t| (t, v))));
             }
         }
+    }
+    out
+}
+
+/// The rims of a drum or a cone: the circles at the ends of its height,
+/// where those ends are a part's height and not a chart's clamp.
+fn rims(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
+    /// Past this a height is a chart's stand-in for no end at all.
+    const FAR: f64 = 1e6;
+    if !matches!(
+        surface,
+        SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
+    ) || !surface.is_closed_u(tol)
+    {
+        return Vec::new();
+    }
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let turn = u1 - u0;
+    let mut out: Vec<Border> = Vec::new();
+    for v in [v0, v1] {
+        if !v.is_finite() || v.abs() > FAR {
+            continue;
+        }
+        // Three points a third of a turn apart: the circle through them
+        // starts at the first and runs the way the angle does, so its
+        // parameter is the angle from the chart's start. A cone's apex is
+        // no circle, and is passed over.
+        let at = |k: f64| surface.point_at(turn.mul_add(k / 3.0, u0), v, tol);
+        let (Ok(p0), Ok(p1), Ok(p2)) = (at(0.0), at(1.0), at(2.0)) else {
+            continue;
+        };
+        let Ok(circle) = ogeom_math::Circle::through(p0, p1, p2, tol) else {
+            continue;
+        };
+        out.push((
+            ogeom_geom::CircleCurve::new(circle).into(),
+            Box::new(move |t| (u0 + t, v)),
+        ));
     }
     out
 }
@@ -2506,6 +2549,47 @@ mod tests {
         CylinderSurface::new(Cylinder::new(frame, radius, T).unwrap(), height)
             .unwrap()
             .into()
+    }
+
+    /// Two drums across each other, the second's foot a little above the
+    /// first's axis and the first's end a little past the second's axis.
+    /// Their crossing is one loop, and the domains cut it into two arcs:
+    /// a long one, and one 0.09 long between the first drum's rim and the
+    /// second's, inside one pair of cells and crossing neither. It is
+    /// seeded where the rims pierce the other drum.
+    #[test]
+    fn a_short_arc_cut_off_between_two_rims_is_found() {
+        let drum = |origin: Point, axis: Direction, x: Direction, radius: f64, height: f64| {
+            let frame = Frame::new(origin, axis, x, T).unwrap();
+            SurfaceGeometry::from(
+                CylinderSurface::new(Cylinder::new(frame, radius, T).unwrap(), (0.0, height))
+                    .unwrap(),
+            )
+        };
+        let a = drum(
+            Point::new(-1.419_880_124_370_016_3, -1.0, 3.0),
+            Direction::X,
+            Direction::Y,
+            1.773_938_116_486_465_8,
+            2.5,
+        );
+        let b = drum(
+            Point::new(0.510_316_713_993_857_4, 1.5, 2.230_205_316_817_85),
+            Direction::Z,
+            Direction::X,
+            1.040_566_819_682_834_4,
+            4.0,
+        );
+        let found = branches(&a, &b, Marching::default(), T).unwrap();
+        // The short arc runs between the two rims, all of it past
+        // x = 1.02; the long one reaches back to x = -0.24.
+        assert!(
+            found
+                .iter()
+                .any(|branch| branch.points.iter().all(|p| p.x > 1.02)),
+            "{} branches, none the short arc",
+            found.len()
+        );
     }
 
     fn sphere(centre: Point, radius: f64) -> SurfaceGeometry {

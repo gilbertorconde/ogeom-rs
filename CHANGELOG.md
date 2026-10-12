@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A short arc between two rims is found.** Two drums across each other,
+  or a drum across a cone, cross in one loop that their rims can cut into
+  a long arc and a short one tucked into a corner of both walls' charts.
+  The short one lay inside one pair of the marcher's sampling cells and
+  crossed neither, so it was never seeded, and the boolean refused: the
+  kept pieces did not close. The rims of drums and cones are now
+  intersected with the other surface, as a spline's borders were, and
+  every piercing seeds.
 - **A hole named a turn round its wall is drawn as a hole.** A face on a
   periodic surface whose hole's pcurves stand a whole period from the
   face's own bound (a converted bore whose cross bores' loops came out at
