@@ -296,6 +296,16 @@ what an application would edit next.
 coplanar distance estimate asks them to change linearly, so a coarse mesh of
 a surface whose curvature varies fast can read its inflections as scatter.
 
+**Converted parts of the real assemblies.** Fifty solids of the DoomCube 350
+assembly and fifty-three of the Voron 2.4, each meshed at a thousandth of
+its diagonal and converted back, come back valid within 3e-3 of their
+volume but for four. Voron solid 990 comes back with a planar face of
+0.09 square millimetres that `check` calls turned in; the cylinder beside
+it meshes 0.023 off its surface at a chord of 1e-4 (the mesher says it
+missed), so a winding number over that mesh is no witness either way. Not
+diagnosed. DoomCube 630 and Voron 1170 and 1200 come back valid, 3.1e-3
+and 3.2e-3 under their volume.
+
 **A face whose rims touch within a micron meshes open.** One solid of the
 DoomCube 350 assembly has a cylinder face between a circle and a spline edge
 that dips to within half a micron of it and touches it: its ring crosses
