@@ -777,6 +777,63 @@ fn primitive(model: &mut Model, rng: &mut Rng, oblique: bool) -> Option<(Shape, 
     Some((shape, m, placed))
 }
 
+/// Three primitives along any direction: the first two fused, and that
+/// cut by and in common with the third. The cut and the common add up to
+/// the fused pair, so a boolean on a boolean's result, sections and all, is
+/// held to the same identity as one on primitives.
+fn chain_case(rng: &mut Rng) -> Verdict {
+    let mut model = Model::new();
+    let mut parts = Vec::new();
+    for _ in 0..3 {
+        let Some(p) = primitive(&mut model, rng, true) else {
+            return Verdict::of(Outcome::Refused, "primitive");
+        };
+        parts.push(p);
+    }
+    let what = format!(
+        "({} with {}) against {}",
+        parts[0].2, parts[1].2, parts[2].2
+    );
+    let fused = ogeom::boolean::fuse(&mut model, &parts[0].0, &parts[1].0, T);
+    let (fused, mf) = match judged(&model, &format!("{what}: first fuse"), fused) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let c = parts[2].0.clone();
+    let common = ogeom::boolean::common(&mut model, &fused, &c, T);
+    let common = match common {
+        Err(_) => None,
+        other => match judged(&model, &format!("{what}: common"), other) {
+            Ok((_, m)) => Some(m),
+            Err(v) => return v,
+        },
+    };
+    let cut = ogeom::boolean::cut(&mut model, &fused, &c, T);
+    let (_, cut) = match judged(&model, &format!("{what}: cut"), cut) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let common = match common {
+        Some(m) => m,
+        None if (cut.volume - mf.volume).abs() <= allowance(mf.volume, &[&mf, &cut]) => {
+            Measure::NOTHING
+        }
+        None => return Verdict::of(Outcome::Refused, format!("{what}: common refused")),
+    };
+    let slack = allowance(mf.volume + parts[2].1.volume, &[&mf, &cut, &common]);
+    let miss = cut.volume + common.volume - mf.volume;
+    if miss.abs() > slack {
+        return Verdict::of(
+            Outcome::Wrong,
+            format!(
+                "{what}: cut {:.9} + common {:.9} against {:.9}, off {miss:.3e} against {slack:.3e}",
+                cut.volume, common.volume, mf.volume
+            ),
+        );
+    }
+    Verdict::ok().read_from(&[("fused", &mf), ("cut", &cut), ("common", &common)])
+}
+
 /// Two primitives, and the boolean identities: the fuse and the common
 /// add up to the two, and the cut is the first less the common.
 fn pair_case(rng: &mut Rng, oblique: bool) -> Verdict {
@@ -941,6 +998,14 @@ fn cases(seed: u64, per_part: usize, corpus: bool) -> Vec<Case> {
                 run: Box::new(move || fillet_case(&part, &mut Rng::new(s))),
             });
         }
+    }
+    for i in 0..per_part * 3 {
+        let key = format!("chain/primitives/{i}");
+        let s = case_seed(seed, &key);
+        out.push(Case {
+            key,
+            run: Box::new(move || chain_case(&mut Rng::new(s))),
+        });
     }
     for (scenario, oblique) in [("pairs", false), ("oblique", true)] {
         for i in 0..per_part * 6 {
