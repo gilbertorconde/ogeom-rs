@@ -465,6 +465,7 @@ fn triangulate_reporting_from(
         .into_iter()
         .map(|t| if flip { [t[0], t[2], t[1]] } else { t })
         .collect();
+    split_flat_triangles(&mut mesh, tol);
     // The chord is met where the mesh says it is. The grid holds each row
     // and column to it, and a cell's middle can stand off by both sides'
     // sags together: each triangle's middle, lifted onto the surface, is
@@ -1284,6 +1285,102 @@ fn face_chords(
         lower(&mut finer, chord);
     }
     Ok(finer)
+}
+
+/// How many times [`split_flat_triangles`] goes round a face: one per flat
+/// triangle in the longest row of them along one line.
+const FLAT_PASSES: usize = 16;
+
+/// Take apart every triangle whose corners lie on one line in space.
+///
+/// A chart triangle can be sound and its lift have no area: on a cone, the
+/// apex and two points on one ruling, the apex taken at another `u`. Its
+/// edges pair with its neighbours', so a weld finds the mesh closed, but a
+/// reader that drops triangles with no area (as a 3MF reader may) finds a
+/// hole where it was. The corner on the long side splits the neighbour
+/// across that side in two instead, and the flat triangle goes: the pair's
+/// outline, and so every edge the face shares, is what it was.
+fn split_flat_triangles(mesh: &mut Triangulation, tol: Tolerances) {
+    let mut across: ogeom_core::FastMap<(u32, u32), usize> = ogeom_core::FastMap::default();
+    for (i, t) in mesh.triangles.iter().enumerate() {
+        for k in 0..3 {
+            across.insert((t[k], t[(k + 1) % 3]), i);
+        }
+    }
+    let at = |mesh: &Triangulation, i: u32| mesh.positions[i as usize];
+    // Whether `m` lies on the segment from `p` to `q`, strictly between them.
+    let between = |p: Point, q: Point, m: Point| {
+        let side = q - p;
+        let length = side.magnitude();
+        if length <= tol.confusion() {
+            return false;
+        }
+        let along = (m - p).dot(side) / (length * length);
+        let off = (m - p).cross(side).magnitude() / length;
+        off <= tol.confusion()
+            && along * length > tol.confusion()
+            && (1.0 - along) * length > tol.confusion()
+    };
+    let flat = |mesh: &Triangulation, t: [u32; 3]| {
+        let [a, b, c] = t.map(|i| at(mesh, i));
+        (b - a).cross(c - a).magnitude()
+            <= tol.confusion() * a.distance(b).max(b.distance(c)).max(c.distance(a))
+    };
+    let mut gone = vec![false; mesh.triangles.len()];
+    // A ruling can carry several flat triangles in a row, each the other's
+    // neighbour across its long side: the one whose neighbour has area goes
+    // first, and the next pass finds the one inside it a neighbour that
+    // now has area too.
+    for _ in 0..FLAT_PASSES {
+        let mut split = false;
+        for i in 0..mesh.triangles.len() {
+            if gone[i] {
+                continue;
+            }
+            let t = mesh.triangles[i];
+            // The corner `m` on the side from `p` to `q`, wound `p, q, m`.
+            let Some([p, q, m]) = (0..3)
+                .map(|k| [t[k], t[(k + 1) % 3], t[(k + 2) % 3]])
+                .find(|[p, q, m]| between(at(mesh, *p), at(mesh, *q), at(mesh, *m)))
+            else {
+                continue;
+            };
+            let Some(&n) = across.get(&(q, p)) else {
+                continue;
+            };
+            if n == i || gone[n] {
+                continue;
+            }
+            let other = mesh.triangles[n];
+            let Some(&d) = other.iter().find(|&&v| v != p && v != q) else {
+                continue;
+            };
+            let halves = [[q, m, d], [m, p, d]];
+            if halves.iter().any(|h| flat(mesh, *h)) {
+                continue;
+            }
+            gone[i] = true;
+            mesh.triangles[n] = halves[0];
+            for k in 0..3 {
+                across.insert((halves[0][k], halves[0][(k + 1) % 3]), n);
+            }
+            across.remove(&(q, p));
+            across.remove(&(p, q));
+            let added = mesh.triangles.len();
+            mesh.triangles.push(halves[1]);
+            gone.push(false);
+            for k in 0..3 {
+                across.insert((halves[1][k], halves[1][(k + 1) % 3]), added);
+            }
+            split = true;
+        }
+        if !split {
+            break;
+        }
+    }
+    let mut kept = gone.iter();
+    mesh.triangles
+        .retain(|_| !kept.next().copied().unwrap_or(false));
 }
 
 /// How many chords wide a face must be for its edges to be drawn at the

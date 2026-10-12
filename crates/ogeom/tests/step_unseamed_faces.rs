@@ -310,3 +310,48 @@ fn a_pointed_cone_meshes_close_to_its_chord() {
         }
     }
 }
+
+/// A quarter of a cone, cut from it by two planes through its axis, is
+/// bounded by its apex, two rulings and a quarter circle. Its rows near
+/// the apex hold points on the same ruling, and a triangle from the apex
+/// to two of them has no area: its corners lie on one line. It closes
+/// the mesh only for a reader that keeps triangles with no area, and one
+/// that drops them (as a 3MF reader may) finds a hole.
+#[test]
+fn a_quarter_cone_meshes_without_triangles_on_a_ruling() {
+    let mut model = ogeom::topo::Model::new();
+    let cone = ogeom::algo::make_cone(&mut model, ogeom::math::Frame::WORLD, 1.0, 0.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let quarter = ogeom::algo::make_box(&mut model, ogeom::math::Frame::WORLD, (2.0, 2.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let part = ogeom::boolean::common(&mut model, &cone, &quarter, T)
+        .unwrap()
+        .shape;
+    for chord in [0.0125, 0.05, 0.125] {
+        let deflection = Deflection {
+            chord,
+            angular: 0.5,
+            ..Deflection::default()
+        };
+        let (faces, _) = face_meshes_for(&model, &part, deflection, None, T).unwrap();
+        for (_, mesh) in faces {
+            let mesh = mesh.unwrap();
+            for t in &mesh.triangles {
+                let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                let longest = a.distance(b).max(b.distance(c)).max(c.distance(a));
+                let shortest = a.distance(b).min(b.distance(c)).min(c.distance(a));
+                if shortest <= 1e-9 {
+                    // Two corners on the apex: the weld makes it a segment.
+                    continue;
+                }
+                let area = (b - a).cross(c - a).magnitude() / 2.0;
+                assert!(
+                    area > 1e-6 * longest * longest,
+                    "chord {chord}: corners {a:?} {b:?} {c:?} lie on one line"
+                );
+            }
+        }
+    }
+}

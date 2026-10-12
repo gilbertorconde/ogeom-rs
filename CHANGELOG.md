@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A cone bounded at its apex meshes with no flat triangles (#210).** Since
+  0.10.0 a cone's rows near its apex hold points on the same ruling, and
+  the chart joined the apex to two of them in a triangle whose corners lie
+  on one line. Its edges paired, so the mesh welded closed, but a reader
+  that drops triangles with no area, as a 3MF reader may, found a hole. A
+  face's flat triangles now split their neighbour across the long side
+  instead, leaving every shared edge as it was.
+
 ## [0.10.0] - 2026-10-12
 
 A minor release, since the API changes: `ProjectedCurve` gains `Parabola`
