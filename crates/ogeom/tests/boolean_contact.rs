@@ -1153,8 +1153,9 @@ fn a_prism_beside_a_leaning_wall_parts_from_it() {
 /// an exported mesh holds them), and converted as it is: its rounds are
 /// strips of facets, each leaning its own few microns. A prism of its top
 /// face pushed down into it and through it runs along those facets, and
-/// at a fuzz wider than the lean the three operations come out sound and
-/// hold what the two inputs do. Every edge states at least what its pcurves
+/// at a fuzz wider than the lean the three operations (`fuse_fuzzy`,
+/// `cut_fuzzy`, `common_fuzzy`) come out sound and hold what the two inputs
+/// do; through the whole block the plain common is refused. Every edge states at least what its pcurves
 /// stand off its curve, its own stated slop below the fuzz included.
 #[test]
 #[allow(
@@ -1215,7 +1216,6 @@ fn a_prism_along_a_faceted_round_combines_at_a_fuzz() {
         })
         .unwrap();
     let fuzz = 1e-5;
-    let loose = Tolerances::with_scale(1e-7 / fuzz).unwrap();
     for depth in [3.0, 10.0] {
         let pad = ogeom::algo::make_prism(
             &mut model,
@@ -1230,7 +1230,7 @@ fn a_prism_along_a_faceted_round_combines_at_a_fuzz() {
             .unwrap_or_else(|e| panic!("fuse at depth {depth}: {e}"));
         let cut = ogeom::boolean::cut_fuzzy(&mut model, &part, &pad, fuzz, T)
             .unwrap_or_else(|e| panic!("cut at depth {depth}: {e}"));
-        let common = ogeom::boolean::common(&mut model, &part, &pad, loose)
+        let common = ogeom::boolean::common_fuzzy(&mut model, &part, &pad, fuzz, T)
             .unwrap_or_else(|e| panic!("common at depth {depth}: {e}"));
         let mut got = Vec::new();
         for (name, out) in [("fuse", &fused), ("cut", &cut), ("common", &common)] {

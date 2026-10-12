@@ -226,6 +226,40 @@ fn fuzzy_fusion_closes_small_gaps_and_inputs_survive() {
     }
 }
 
+/// A fuzz that is no distance is refused by each of the fuzzy booleans.
+#[test]
+fn the_fuzzy_booleans_refuse_a_fuzz_that_is_no_distance() {
+    let mut model = Model::new();
+    let a = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let f = Frame::new(Point::new(5.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let b = ogeom::algo::make_box(&mut model, f, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    for fuzz in [-1.0, 0.0, f64::NAN] {
+        for (name, made) in [
+            (
+                "fuse",
+                ogeom::boolean::fuse_fuzzy(&mut model, &a, &b, fuzz, T),
+            ),
+            (
+                "cut",
+                ogeom::boolean::cut_fuzzy(&mut model, &a, &b, fuzz, T),
+            ),
+            (
+                "common",
+                ogeom::boolean::common_fuzzy(&mut model, &a, &b, fuzz, T),
+            ),
+        ] {
+            assert!(
+                matches!(made, Err(ogeom::core::OgeomError::Construction(_))),
+                "{name} at a fuzz of {fuzz}"
+            );
+        }
+    }
+}
+
 /// A periodic pattern: three boxes at a flush period fuse into one bar.
 #[test]
 fn a_periodic_pattern_fuses_into_one() {

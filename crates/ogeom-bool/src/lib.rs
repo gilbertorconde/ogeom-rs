@@ -11174,6 +11174,22 @@ pub fn cut_fuzzy(
     cut(model, a, b, loosened)
 }
 
+/// [`common`] at a stated fuzz.
+///
+/// # Errors
+///
+/// As [`fuse_fuzzy`].
+pub fn common_fuzzy(
+    model: &mut Model,
+    a: &Shape,
+    b: &Shape,
+    fuzz: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let loosened = fuzzed(fuzz, tol)?;
+    common(model, a, b, loosened)
+}
+
 /// A shape repeated `count` times along a direction at a period and fused
 /// into one: the periodic pattern as a composition of what exists.
 ///

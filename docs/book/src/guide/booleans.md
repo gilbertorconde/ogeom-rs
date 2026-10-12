@@ -18,7 +18,7 @@ The [getting-started example](getting-started.md#a-first-solid) is a
 | Function | What it does |
 |---|---|
 | `cells` | Full cellular decomposition of two solids: every region classified against both inputs. The four booleans select from this. Use it when you need a different selection. |
-| `fuse_fuzzy`, `cut_fuzzy` | Take an explicit fuzz distance, for inputs whose faces almost coincide (mostly imported geometry). Avoids the sliver faces an exact operation would create along the near-contact. |
+| `fuse_fuzzy`, `cut_fuzzy`, `common_fuzzy` | Take an explicit fuzz distance, for inputs whose faces almost coincide (mostly imported geometry). Avoids the sliver faces an exact operation would create along the near-contact. |
 | `make_volume` | Builds the solids enclosed by an arbitrary set of faces. |
 | `remove_faces` | Defeaturing: deletes a feature's faces from a solid and closes the gap. Neighbouring faces extend to fill it, or the band is re-intersected where extension cannot close it. |
 | `make_periodic` | Prepares shapes for repetition along an axis. |

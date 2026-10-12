@@ -11,6 +11,12 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`common_fuzzy`** beside `fuse_fuzzy` and `cut_fuzzy`: the common at a
+  stated fuzz, for a host retrying a tolerance-sensitive common as it
+  retries the other two.
+
 ### Fixed
 
 - **A face's seam columns meet the rest of its boundary within its radii.**
