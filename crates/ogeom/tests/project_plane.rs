@@ -6,7 +6,7 @@
 use ogeom::algo::{ProjectedCurve, make_box, make_cylinder, make_edge, project_edge_onto_plane};
 use ogeom::core::Tolerances;
 use ogeom::geom::{BSplineCurve, Curve, Curve2d as _, Curve3d, HelixCurve};
-use ogeom::math::{Direction, Frame, KnotVector, Plane, Point, Point2, Vector};
+use ogeom::math::{Direction, Frame, KnotVector, Plane, Point, Point2, Vector, Vector2};
 use ogeom::topo::{EdgeRepr, Model, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
@@ -304,4 +304,171 @@ fn a_wiggling_curve_projects_onto_its_plane_between_the_samples() {
         off <= error + 1e-6,
         "the projection strays {off} and states {error}"
     );
+}
+
+/// A parabola and a hyperbola in a plane tilted thirty degrees about `x`,
+/// projected onto `xy`: each comes back as the conic it projects to, every
+/// projected point of the edge on it to the confusion distance.
+#[test]
+fn a_tilted_parabola_and_hyperbola_project_to_conics() {
+    use ogeom::geom::{HyperbolaCurve, ParabolaCurve};
+    use ogeom::math::{Hyperbola, Parabola};
+    let tilt = Direction::new(Vector::new(0.0, -0.5, 0.75_f64.sqrt()), T).unwrap();
+    let frame = Frame::new(Point::new(0.0, 0.0, 5.0), tilt, Direction::X, T).unwrap();
+    let ground = plane(Point::ORIGIN, Vector::Z, Vector::X);
+    let flat = |p: Point| Point2::new(p.x, p.y);
+    let mut model = Model::new();
+
+    let parabola =
+        Curve::Parabola(ParabolaCurve::new(Parabola::new(frame, 2.0, T).unwrap(), 100.0).unwrap());
+    let edge = make_edge(&mut model, parabola.clone(), (-3.0, 3.0), T)
+        .unwrap()
+        .shape;
+    let ProjectedCurve::Parabola {
+        vertex,
+        axis,
+        focal,
+        range,
+    } = project_edge_onto_plane(&model, &edge, &ground, T).unwrap()
+    else {
+        panic!("a parabola projects to a parabola");
+    };
+    let side = Vector2::new(-axis.y, axis.x);
+    for k in 0..=50 {
+        let t = -3.0 + 6.0 * f64::from(k) / 50.0;
+        let d = flat(parabola.point_at(t, T).unwrap()) - vertex;
+        let s = d.dot(side);
+        let on = vertex + axis * (s * s / (4.0 * focal)) + side * s;
+        assert!(
+            on.distance(vertex + d) <= T.confusion(),
+            "t {t}: off by {}",
+            on.distance(vertex + d)
+        );
+        assert!(
+            s >= range.0 - 1e-9 && s <= range.1 + 1e-9,
+            "t {t}: s {s} outside {range:?}"
+        );
+    }
+
+    let hyperbola = Curve::Hyperbola(
+        HyperbolaCurve::new(Hyperbola::new(frame, 4.0, 2.0, T).unwrap(), 10.0).unwrap(),
+    );
+    let edge = make_edge(&mut model, hyperbola.clone(), (-1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let ProjectedCurve::Hyperbola {
+        centre,
+        major,
+        minor,
+        range,
+    } = project_edge_onto_plane(&model, &edge, &ground, T).unwrap()
+    else {
+        panic!("a hyperbola projects to a hyperbola");
+    };
+    assert!(major.dot(minor).abs() <= 1e-12 * major.magnitude() * minor.magnitude());
+    for k in 0..=50 {
+        let t = -1.0 + 2.0 * f64::from(k) / 50.0;
+        let p = flat(hyperbola.point_at(t, T).unwrap());
+        let d = p - centre;
+        let s = (d.dot(minor) / minor.dot(minor)).asinh();
+        let on = centre + major * s.cosh() + minor * s.sinh();
+        assert!(
+            on.distance(p) <= T.confusion(),
+            "t {t}: off by {}",
+            on.distance(p)
+        );
+        assert!(
+            s >= range.0 - 1e-9 && s <= range.1 + 1e-9,
+            "t {t}: s {s} outside {range:?}"
+        );
+    }
+}
+
+/// A parabola or a hyperbola whose plane stands square to the target is
+/// seen edge-on: a segment, its ends the farthest points the piece reaches
+/// along the line, the parabola folded back on its axis included.
+#[test]
+fn a_conic_square_to_the_plane_projects_to_a_segment() {
+    use ogeom::geom::{HyperbolaCurve, ParabolaCurve};
+    use ogeom::math::{Hyperbola, Parabola};
+    let ground = plane(Point::ORIGIN, Vector::Z, Vector::X);
+    let mut model = Model::new();
+    let segment =
+        |model: &Model, edge: &Shape| match project_edge_onto_plane(model, edge, &ground, T)
+            .unwrap()
+        {
+            ProjectedCurve::Line { start, end } => {
+                let (a, b) = if start.x <= end.x {
+                    (start, end)
+                } else {
+                    (end, start)
+                };
+                (a, b)
+            }
+            other => panic!("a segment, not {other:?}"),
+        };
+    // Opening along z: the parabola's side, along x, is all that shows.
+    let up = Frame::new(Point::ORIGIN, Direction::Y, Direction::Z, T).unwrap();
+    let p = Curve::Parabola(ParabolaCurve::new(Parabola::new(up, 1.0, T).unwrap(), 100.0).unwrap());
+    let edge = make_edge(&mut model, p, (-2.0, 3.0), T).unwrap().shape;
+    let (a, b) = segment(&model, &edge);
+    assert!(close(a, (-2.0, 0.0)) && close(b, (3.0, 0.0)), "{a:?} {b:?}");
+    // Opening along x, its side along z: folded back on the axis, from the
+    // vertex to the farther end, t^2 / 4 at t = 3.
+    let flat = Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap();
+    let p =
+        Curve::Parabola(ParabolaCurve::new(Parabola::new(flat, 1.0, T).unwrap(), 100.0).unwrap());
+    let edge = make_edge(&mut model, p, (-2.0, 3.0), T).unwrap().shape;
+    let (a, b) = segment(&model, &edge);
+    assert!(close(a, (0.0, 0.0)) && close(b, (2.25, 0.0)), "{a:?} {b:?}");
+    // A hyperbola with its minor axis along z: `4 cosh t` along x.
+    let h = Curve::Hyperbola(
+        HyperbolaCurve::new(Hyperbola::new(flat, 4.0, 2.0, T).unwrap(), 10.0).unwrap(),
+    );
+    let edge = make_edge(&mut model, h, (-1.0, 2.0), T).unwrap().shape;
+    let (a, b) = segment(&model, &edge);
+    assert!(
+        close(a, (4.0, 0.0)) && close(b, (4.0 * 2.0_f64.cosh(), 0.0)),
+        "{a:?} {b:?}"
+    );
+}
+
+/// A periodic cubic spline (uniform knots, not clamped) projects to a
+/// clamped spline, exact, through the edge's projected points.
+#[test]
+fn a_periodic_spline_projects_clamped() {
+    let control = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(4.0, 0.0, 1.0),
+        Point::new(5.0, 3.0, 2.0),
+        Point::new(2.0, 5.0, 1.0),
+        Point::new(-1.0, 3.0, 0.0),
+    ];
+    let spline = BSplineCurve::periodic(&control, 3, T).unwrap();
+    assert!(!spline.knots().is_clamped());
+    let curve = Curve::BSpline(spline);
+    let range = curve.domain();
+    let mut model = Model::new();
+    let edge = make_edge(&mut model, curve.clone(), range, T)
+        .unwrap()
+        .shape;
+    let ground = plane(Point::ORIGIN, Vector::Z, Vector::X);
+    let ProjectedCurve::BSpline {
+        curve: projected,
+        fit_error,
+    } = project_edge_onto_plane(&model, &edge, &ground, T).unwrap()
+    else {
+        panic!("a spline projects to a spline");
+    };
+    assert_eq!(fit_error, None);
+    assert!(projected.knots().is_clamped());
+    let (a, b) = projected.domain();
+    for k in 0..=50 {
+        let f = f64::from(k) / 50.0;
+        let p = curve
+            .point_at(range.0 + (range.1 - range.0) * f, T)
+            .unwrap();
+        let q = projected.point_at(a + (b - a) * f, T).unwrap();
+        assert!(q.distance(Point2::new(p.x, p.y)) <= T.confusion(), "at {f}");
+    }
 }

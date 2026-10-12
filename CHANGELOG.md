@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`project_edge_onto_plane` keeps parabolas and hyperbolas.** They come
+  back as `ProjectedCurve::Parabola` and `ProjectedCurve::Hyperbola`
+  (exact, on their principal axes; a segment where the conic's plane
+  stands square to the target) instead of fitted splines, and a spline
+  whose knots are not clamped (a periodic one) comes back clamped, still
+  exact.
 - **`common_fuzzy`** beside `fuse_fuzzy` and `cut_fuzzy`: the common at a
   stated fuzz, for a host retrying a tolerance-sensitive common as it
   retries the other two.

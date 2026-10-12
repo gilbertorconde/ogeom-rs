@@ -4,10 +4,12 @@
 //! Orthogonal projection onto a plane is affine, so it keeps every curve
 //! whose family is closed under affine maps: a line stays a line (or
 //! collapses to a point), a circle or ellipse becomes an ellipse (a circle
-//! when its plane is parallel, a segment when it stands square), and a
-//! B-spline becomes the B-spline on its projected control points, weights
-//! unchanged. Any other curve is fitted, and the fit's error is returned
-//! with it.
+//! when its plane is parallel, a segment when it stands square), a parabola
+//! a parabola and a hyperbola a hyperbola (each a segment when its plane
+//! stands square), and a B-spline becomes the B-spline on its projected
+//! control points, weights unchanged, clamped first where its knots are
+//! not. Any other curve is fitted, and the fit's error is returned with
+//! it.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{BSpline2d, BSplineCurve, Curve, Curve3d as _, Transformable as _};
@@ -49,6 +51,34 @@ pub enum ProjectedCurve {
         /// The minor semi-axis over the major, in `(0, 1)`.
         ratio: f64,
         /// The arc's eccentric angles, `range.0 < range.1`.
+        range: (f64, f64),
+    },
+    /// A parabola or a piece of one, `vertex + axis s^2 / (4 focal) + side s`
+    /// with `axis` a unit vector and `side` it turned a quarter
+    /// counter-clockwise, over `s` from `range.0` to `range.1`. `s` is the
+    /// edge's own parameter scaled and shifted, increasing with it or
+    /// against it.
+    Parabola {
+        /// The vertex.
+        vertex: Point2,
+        /// The unit direction the parabola opens in.
+        axis: Vector2,
+        /// The distance from the vertex to the focus.
+        focal: f64,
+        /// The piece's parameters, `range.0 < range.1`.
+        range: (f64, f64),
+    },
+    /// A hyperbola's branch or a piece of one, `centre + major cosh s +
+    /// minor sinh s` with `major` and `minor` square, over `s` from
+    /// `range.0` to `range.1`: the edge's own parameter shifted.
+    Hyperbola {
+        /// The centre, off the branch.
+        centre: Point2,
+        /// The major semi-axis: centre to vertex.
+        major: Vector2,
+        /// The minor semi-axis, square to the major.
+        minor: Vector2,
+        /// The piece's parameters, `range.0 < range.1`.
         range: (f64, f64),
     },
     /// A B-spline: exact for a B-spline edge, fitted for any other curve at
@@ -162,8 +192,30 @@ fn project_curve(
                 tol,
             )
         }
+        Curve::Parabola(c) if !c.is_reversed() => {
+            let parabola = c.parabola();
+            let frame = parabola.frame();
+            Ok(parabolic(
+                onto.point(parabola.apex()),
+                onto.vector(frame.x().vector() / (4.0 * parabola.focal())),
+                onto.vector(frame.y().vector()),
+                range,
+                tol,
+            ))
+        }
+        Curve::Hyperbola(c) if !c.is_reversed() => {
+            let hyperbola = c.hyperbola();
+            let frame = hyperbola.frame();
+            Ok(hyperbolic(
+                onto.point(hyperbola.centre()),
+                onto.vector(frame.x().vector() * hyperbola.major_radius()),
+                onto.vector(frame.y().vector() * hyperbola.minor_radius()),
+                range,
+                tol,
+            ))
+        }
         Curve::BSpline(spline) => {
-            let piece = restricted(spline, range, tol)?;
+            let piece = clamped(&restricted(spline, range, tol)?, tol)?;
             Ok(ProjectedCurve::BSpline {
                 curve: projected_spline(&piece, onto, tol)?,
                 fit_error: None,
@@ -237,6 +289,123 @@ fn conic(
     })
 }
 
+/// The projection of `origin + p t^2 + q t` over `range`: a parabola, a
+/// segment where `q` lies along `p` or `p` vanishes (the parabola seen
+/// edge-on), a point where both do.
+fn parabolic(
+    origin: Point2,
+    p: Vector2,
+    q: Vector2,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> ProjectedCurve {
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let reach = (lo.abs().max(hi.abs())).max(1.0);
+    // `q` split along `p` and square to it.
+    let pp = p.dot(p);
+    let alpha = if pp > 0.0 { q.dot(p) / pp } else { 0.0 };
+    let across = q - p * alpha;
+    let at = |t: f64| origin + p * (t * t) + q * t;
+    if p.magnitude() * reach * reach <= tol.confusion()
+        || across.magnitude() * reach <= tol.confusion()
+    {
+        // On one line: the ends and, where it lies inside, the turn.
+        let mut points = vec![at(lo), at(hi)];
+        if pp > 0.0 {
+            let turn = -0.5 * alpha;
+            if turn > lo && turn < hi {
+                points.push(at(turn));
+            }
+        }
+        return line_through(&points, tol);
+    }
+    // With `s = w (t + alpha / 2)`, `w = |across|`, the point is
+    // `vertex + p s^2 / w^2 + across / w s`.
+    let w = across.magnitude();
+    let vertex = origin - p * (alpha * alpha / 4.0) - across * (alpha / 2.0);
+    let axis = p / p.magnitude();
+    let focal = w * w / (4.0 * p.magnitude());
+    // `side` the axis turned counter-clockwise; where the parabola runs the
+    // other way, `s` runs against `t`.
+    let sense = if axis.cross(across) > 0.0 { 1.0 } else { -1.0 };
+    let (a, b) = (
+        sense * w * (lo + alpha / 2.0),
+        sense * w * (hi + alpha / 2.0),
+    );
+    ProjectedCurve::Parabola {
+        vertex,
+        axis,
+        focal,
+        range: (a.min(b), a.max(b)),
+    }
+}
+
+/// The projection of `centre + u cosh t + v sinh t` over `range`: a
+/// hyperbola on its principal axes, a segment where `u` and `v` lie along
+/// one line (the hyperbola seen edge-on).
+fn hyperbolic(
+    centre: Point2,
+    u: Vector2,
+    v: Vector2,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> ProjectedCurve {
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let at = |t: f64| centre + u * t.cosh() + v * t.sinh();
+    let scale = u.magnitude().max(v.magnitude()) * lo.abs().max(hi.abs()).cosh();
+    let squared = u.dot(u) + v.dot(v);
+    if u.cross(v).abs() * scale <= tol.confusion() * squared.max(f64::MIN_POSITIVE).sqrt()
+        || 2.0 * u.dot(v).abs() >= squared
+    {
+        // On one line through the centre: the ends and, where the point
+        // turns back along it, the turn, where `tanh t` is `-b / a`.
+        let mut points = vec![at(lo), at(hi)];
+        let along = if u.magnitude() >= v.magnitude() { u } else { v };
+        if along.magnitude() > 0.0 {
+            let (a, b) = (u.dot(along), v.dot(along));
+            if b.abs() < a.abs() {
+                let turn = (-b / a).atanh();
+                if turn > lo && turn < hi {
+                    points.push(at(turn));
+                }
+            }
+        }
+        return line_through(&points, tol);
+    }
+    // Shifted by `t0`, the conjugate pair turns square:
+    // `tanh 2 t0 = -2 u.v / (|u|^2 + |v|^2)`.
+    let t0 = 0.5 * (-2.0 * u.dot(v) / squared).atanh();
+    let major = u * t0.cosh() + v * t0.sinh();
+    let minor = u * t0.sinh() + v * t0.cosh();
+    ProjectedCurve::Hyperbola {
+        centre,
+        major,
+        minor,
+        range: (lo - t0, hi - t0),
+    }
+}
+
+/// The segment holding points on one line, or the point they all are.
+fn line_through(points: &[Point2], tol: Tolerances) -> ProjectedCurve {
+    let mut start = points[0];
+    let mut end = points[0];
+    for &p in points {
+        if p.distance(start) > end.distance(start) {
+            end = p;
+        }
+    }
+    for &p in points {
+        if p.distance(end) > start.distance(end) {
+            start = p;
+        }
+    }
+    if start.distance(end) <= tol.confusion() {
+        ProjectedCurve::Point(start.midpoint(end))
+    } else {
+        ProjectedCurve::Line { start, end }
+    }
+}
+
 /// A range moved by whole turns to start in `[0, 2 pi)`.
 fn normalized(from: f64, to: f64) -> (f64, f64) {
     let start = from.rem_euclid(core::f64::consts::TAU);
@@ -280,6 +449,64 @@ fn restricted(
         piece = piece.split_at(range.1, tol)?.0;
     }
     Ok(piece)
+}
+
+/// A spline clamped at both ends of its domain, the curve unchanged; a
+/// clamped spline as it is.
+fn clamped(spline: &BSplineCurve, tol: Tolerances) -> OgeomResult<BSplineCurve> {
+    let knots = spline.knots();
+    if knots.is_clamped() {
+        return Ok(spline.clone());
+    }
+    let control: Vec<Weighted<Point>> = spline.control_points().to_vec();
+    let (knots, control) = clamped_start(knots, &control, tol)?;
+    // The end clamped as the start of the spline run backwards.
+    let (knots, control) = reversed(&knots, &control)?;
+    let (knots, control) = clamped_start(&knots, &control, tol)?;
+    let (knots, control) = reversed(&knots, &control)?;
+    if spline.is_rational() {
+        BSplineCurve::rational(knots, control)
+    } else {
+        BSplineCurve::new(knots, control.iter().map(|c| c.scaled).collect(), tol)
+    }
+}
+
+/// The domain's first knot taken to the degree's multiplicity by knot
+/// insertion, and the knots before its first copy dropped with the control
+/// points they alone held.
+fn clamped_start(
+    knots: &KnotVector,
+    control: &[Weighted<Point>],
+    tol: Tolerances,
+) -> OgeomResult<(KnotVector, Vec<Weighted<Point>>)> {
+    let p = knots.degree();
+    let (lo, _) = knots.domain();
+    let (refined, points) = ogeom_math::bspline::insert_knot(
+        knots,
+        control,
+        lo,
+        p.saturating_sub(knots.multiplicity_of(lo)),
+        tol,
+    )?;
+    let cut = refined.knots().partition_point(|k| *k < lo);
+    let mut start = vec![lo];
+    start.extend_from_slice(&refined.knots()[cut..]);
+    Ok((
+        KnotVector::new(start, p)?,
+        points[cut.saturating_sub(1)..].to_vec(),
+    ))
+}
+
+/// The same spline run backwards: knots mirrored, control points reversed.
+fn reversed(
+    knots: &KnotVector,
+    control: &[Weighted<Point>],
+) -> OgeomResult<(KnotVector, Vec<Weighted<Point>>)> {
+    let mirrored: Vec<f64> = knots.knots().iter().rev().map(|k| -k).collect();
+    Ok((
+        KnotVector::new(mirrored, knots.degree())?,
+        control.iter().rev().copied().collect(),
+    ))
 }
 
 /// A spline's projection: the same knots, each control point projected,
