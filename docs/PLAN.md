@@ -190,11 +190,10 @@ distance widens when any one fit presses against it. So the same mesh
 listed otherwise finds other regions: on `nist_ftc_07` 378 to 666 faces
 over 30 rotations (the distance widened in about half), and on every
 corpus part some shuffled listing gives a different face count, a region
-faceted (`grid_point_on_a_diagonal_boundary`, `nist_ftc_10`) or a solid
-that tessellates open (`nist_ftc_10`). Two results that did not meet are
-fixed: 29 of 30 rotations of `nist_ftc_07` now meet, against 9; in the
-others a single long facet of a round's row is left a face of its own
-and meets the round's mesh 3 or 4 edges short. Putting
+faceted (`grid_point_on_a_diagonal_boundary`, `nist_ftc_10`). All 30
+rotations of `nist_ftc_07` meet, against 9, at 349 to 614 faces, one with a
+region faceted; all 30 of `nist_ftc_10` meet, at 282 to 369 faces, three
+with one to three regions faceted. Putting
 the mesh in an order read off the geometry (points by position, triangles
 by their corners; patch `canonical-order.patch` in the scratch crate)
 makes every listing one result, but the one it picks facets two regions

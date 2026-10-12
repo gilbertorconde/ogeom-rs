@@ -442,18 +442,12 @@ fn nist_ftc_07_whatever_corner_each_triangle_lists_first() {
 /// of its flat rows to planes, which join it once it is put between its
 /// flanks, and its faces meshed one by one meet edge to edge. Listed from
 /// the thousandth triangle, a single long facet of a round's row is left a
-/// face of its own, whose chords meet the round's mesh in a few places,
-/// and that is not checked.
+/// face of its own, and its chords and the round's settle to meet.
 #[test]
 #[ignore = "heavy"]
 fn nist_ftc_07_whatever_triangle_its_list_starts_at() {
-    for (start, meet) in [
-        (997_usize, false),
-        (1994, true),
-        (6757, true),
-        (13514, true),
-    ] {
-        let report = comes_back_listed("nist_ftc_07_asme1_rd.stp", true, meet, |mesh| {
+    for start in [997_usize, 1994, 6757, 13514] {
+        let report = comes_back_listed("nist_ftc_07_asme1_rd.stp", true, true, |mesh| {
             mesh.triangles.rotate_left(start);
         });
         assert_eq!(report.curved_faceted, 0, "{start}: {:?}", report.fallbacks);
