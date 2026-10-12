@@ -7,5 +7,6 @@
   "oblique": { "ok": 120, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "offset": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "pairs": { "ok": 120, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
-  "round": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 }
+  "round": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
+  "rounded": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 }
 }

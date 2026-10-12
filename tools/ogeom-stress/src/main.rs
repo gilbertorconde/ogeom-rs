@@ -1295,6 +1295,82 @@ fn bore_round(model: &mut Model, frame: Frame, dims: (f64, f64, f64), rng: &mut 
     Verdict::ok().read_from(&[("bored", &mb), ("result", &m)])
 }
 
+/// A slanted box rounded on every edge, cut by and in common with an
+/// oblique primitive: the two add up to the rounded box, whose volume is
+/// Steiner's, so booleans on blends (cylinders, tori, corner balls) are
+/// held to an exact total.
+fn rounded_case(rng: &mut Rng) -> Verdict {
+    use core::f64::consts::PI;
+    let mut model = Model::new();
+    let at = Point::new(
+        rng.range(-3.0, 1.0),
+        rng.range(-3.0, 1.0),
+        rng.range(-3.0, 1.0),
+    );
+    let z = Vector::new(
+        rng.range(-1.0, 1.0),
+        rng.range(-1.0, 1.0),
+        rng.range(-1.0, 1.0),
+    );
+    let Ok(z) = Direction::new(z, T) else {
+        return Verdict::of(Outcome::Refused, "degenerate axis");
+    };
+    let Ok(x) = Direction::new(across(z.vector(), rng), T) else {
+        return Verdict::of(Outcome::Refused, "degenerate axis");
+    };
+    let dims = (
+        rng.range(2.0, 6.0),
+        rng.range(2.0, 6.0),
+        rng.range(2.0, 6.0),
+    );
+    let Ok(built) = ogeom::algo::make_box(&mut model, frame_at(at, z, x), dims, T) else {
+        return Verdict::of(Outcome::Refused, "box");
+    };
+    let edges =
+        ogeom::topo::explore_unique(&model, &built.shape, ShapeType::Edge).unwrap_or_default();
+    let r = dims.0.min(dims.1).min(dims.2) * rng.range(0.05, 0.4);
+    let what = format!("box {dims:?} at {at:?} along {z:?} x {x:?} rounded {r}");
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &built.shape, &edges, r, T);
+    let (rounded, mr) = match judged(&model, &what, rounded) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let (a, b, c) = (dims.0 - 2.0 * r, dims.1 - 2.0 * r, dims.2 - 2.0 * r);
+    let exact = a * b * c
+        + 2.0 * r * (a * b + b * c + a * c)
+        + PI * r * r * (a + b + c)
+        + 4.0 / 3.0 * PI * r * r * r;
+    let Some((tool, _, tool_what)) = primitive(&mut model, rng, true) else {
+        return Verdict::of(Outcome::Refused, "primitive");
+    };
+    let what = format!("{what} against {tool_what}");
+    let cut = ogeom::boolean::cut(&mut model, &rounded, &tool, T);
+    let (_, cut) = match judged(&model, &format!("{what}: cut"), cut) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let common = ogeom::boolean::common(&mut model, &rounded, &tool, T);
+    let common = match common {
+        Err(_) if (cut.volume - exact).abs() <= allowance(exact, &[&mr, &cut]) => Measure::NOTHING,
+        other => match judged(&model, &format!("{what}: common"), other) {
+            Ok((_, m)) => m,
+            Err(v) => return v,
+        },
+    };
+    let slack = allowance(exact, &[&mr, &cut, &common]);
+    let miss = cut.volume + common.volume - exact;
+    if miss.abs() > slack {
+        return Verdict::of(
+            Outcome::Wrong,
+            format!(
+                "{what}: cut {:.9} + common {:.9} against {exact:.9}, off {miss:.3e} against {slack:.3e}",
+                cut.volume, common.volume
+            ),
+        );
+    }
+    Verdict::ok().read_from(&[("rounded", &mr), ("cut", &cut), ("common", &common)])
+}
+
 /// An oblique box or drum hollowed by `make_thick_solid`, opened at one of
 /// its flat faces: the cavity is the solid shrunk by the wall on every side
 /// but the opened one, where it runs out flush.
@@ -1646,6 +1722,14 @@ fn cases(seed: u64, per_part: usize, corpus: bool) -> Vec<Case> {
         out.push(Case {
             key,
             run: Box::new(move || round_case(&mut Rng::new(s))),
+        });
+    }
+    for i in 0..per_part * 3 {
+        let key = format!("rounded/primitives/{i}");
+        let s = case_seed(seed, &key);
+        out.push(Case {
+            key,
+            run: Box::new(move || rounded_case(&mut Rng::new(s))),
         });
     }
     for i in 0..per_part * 3 {

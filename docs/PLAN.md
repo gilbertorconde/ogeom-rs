@@ -53,6 +53,22 @@ a blend's wedge carries are measured densely the same way.
 
 ### Booleans
 
+**Tools against a box rounded on every edge.** The stress `rounded`
+scenario cuts a slanted box rounded on all twelve edges by an oblique
+primitive and takes the common, the two adding up to Steiner's volume. At
+seeds 1 to 4, 50 cases each, none is wrong, and two refuse once #199 is in:
+
+- `--seed 3 --case rounded/primitives/118`: a cone through a box rounded
+  at 0.62 refuses with "edge 0 ends where edge 1 does not begin", two
+  vertices 1.07e-4 apart where the cone's sections cross the tangent seam
+  between a box face and a band. The plane and the cylinder meet
+  tangentially there, so the cone's two sections reach the seam's line
+  that far apart. Exact conics (#200) leave it as it was.
+- `--seed 2 --case rounded/primitives/134`: a drum of radius 3 through a
+  box rounded at 1.39 refuses with "the kept pieces did not close into a
+  shell", five open edges round a corner ball and its bands, as though a
+  piece of one face were dropped.
+
 **Nearly coplanar faces are not paired as coincident.** A piece that reads on
 the other solid's boundary at every point asked, with no coincident partner
 face, is refused by the boolean's piece classification ("a contact over a
