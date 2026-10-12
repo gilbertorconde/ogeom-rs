@@ -143,6 +143,10 @@ fn circle_sag_count(pcurve: &PlanarCurve, lo: f64, hi: f64, count: usize) -> Opt
 /// Parameter-space node snap for the arrangement.
 const PARAM_SNAP: f64 = 1e-6;
 
+/// The widest chart gap a seam column's end may stand from the face's
+/// other edges and still meet them within their radii in space.
+const SEAM_HAIR: f64 = 1e-3;
+
 // --- gathering ---------------------------------------------------------------
 
 /// An edge occurrence's identity: its node and where it is placed.
@@ -704,29 +708,55 @@ fn gather(
             .map(|(i, _)| i)
             .collect();
         for i in seam_indices {
-            let mut pool: Vec<Point2> = Vec::new();
+            // Each other end in the chart, with how far its edge may stand
+            // off where it meets the next: its own radius, or its ends'.
+            let mut pool: Vec<(Point2, f64)> = Vec::new();
             for (j, e) in edges.iter().enumerate() {
                 if j == i {
                     continue;
                 }
+                let reach = e.tolerance.max(e.ends_tolerance);
                 for t in [e.prange.0, e.prange.1] {
-                    pool.push(e.pcurve.point_at(t, tol)?);
+                    pool.push((e.pcurve.point_at(t, tol)?, reach));
                 }
                 if let Some((other, orange)) = &e.other_side {
                     for t in [orange.0, orange.1] {
-                        pool.push(other.point_at(t, tol)?);
+                        pool.push((other.point_at(t, tol)?, reach));
                     }
                 }
             }
             for p in &poles {
                 for t in [p.prange.0, p.prange.1] {
-                    pool.push(p.pcurve.point_at(t, tol)?);
+                    pool.push((p.pcurve.point_at(t, tol)?, 0.0));
                 }
             }
+            let own = edges[i].tolerance.max(edges[i].ends_tolerance);
+            // Two ends meet within PARAM_SNAP in the chart, or as far apart
+            // across it as both their radii reach in space, twice over: a
+            // loop's pcurve, sewn shut in space within its ends' radius, can
+            // stop a hair short of the column it closes on. Read across the
+            // chart, not in space, where the seam's two columns are one.
+            let meets = |q: Point2, at: Point2, reach: f64| -> bool {
+                let apart = q.distance(at);
+                if apart <= PARAM_SNAP {
+                    return true;
+                }
+                // A hair, not a turn: at a pole a column's whole width
+                // costs nothing in space.
+                if apart > SEAM_HAIR {
+                    return false;
+                }
+                let middle = Point2::new(f64::midpoint(q.x, at.x), f64::midpoint(q.y, at.y));
+                let Ok((du, dv)) = surface.d1_at(middle.x, middle.y, tol) else {
+                    return false;
+                };
+                let across = (du.magnitude() * (q.x - at.x)).hypot(dv.magnitude() * (q.y - at.y));
+                across <= 2.0 * (reach + own) + tol.confusion()
+            };
             let connected = |pc: &PlanarCurve, range: (f64, f64)| -> OgeomResult<bool> {
                 for t in [range.0, range.1] {
                     let at = pc.point_at(t, tol)?;
-                    if !pool.iter().any(|q| q.distance(at) <= PARAM_SNAP) {
+                    if !pool.iter().any(|&(q, reach)| meets(q, at, reach)) {
                         return Ok(false);
                     }
                 }

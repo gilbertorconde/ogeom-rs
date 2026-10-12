@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face's seam columns meet the rest of its boundary within its radii.**
+  A boolean reads whether a face uses both columns of a seam by whether
+  each column's ends meet the face's other edges, and it held them to a
+  fixed parameter snap. A torus fused with a drum keeps a meridian loop
+  whose pcurve stops 7.6e-5 short of the seam column it closes on, two
+  hundredths of a micron in space, and cutting the fused solid dropped the
+  column and refused. Ends that meet across the chart within both edges'
+  radii in space now meet.
 - **A ray meeting a curved face near its trim reads the true trim.** The
   exact classifier counts a ray's crossing of a face where the hit lies
   inside the face's rings, polylines straight in the face's chart. Beside
