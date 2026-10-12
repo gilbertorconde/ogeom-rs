@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sheet offset or thickened states its edges' pcurve gaps.** The walls
+  between a thickened sheet's layers are ruled between their rims, fitted
+  where no closed form joins them, and their pcurves lift to the fit rather
+  than to the rim: a drum's wall thickened by one stated 1e-7 on rims its
+  end walls' pcurves stood 2.1e-4 off, and a moved fitted face's pcurves
+  strayed between their samples. Every edge the offset or the thickening
+  makes now states what its pcurves measure along it; the given sheet's
+  own edges are left as they were.
 - **A drafted face's rebuilt edges state their pcurves' gaps.** An edge
   the draft rebuilds on a fitted support was widened by how far its
   projected pcurve's samples stood off the curve, not by how far the

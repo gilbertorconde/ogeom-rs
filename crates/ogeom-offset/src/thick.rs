@@ -110,6 +110,10 @@ pub fn offset_sheet(
     } else {
         make_shell(model, &layer.faces)?.shape
     };
+    // A moved face on a fitted surface carries fitted pcurves, which stand
+    // off its edges between their samples; every edge the offset made
+    // states what its pcurves measure along it.
+    state_new_gaps(model, sheet, &shape, tol)?;
     let mut history = layer.history;
     if !read.root_is_face {
         history.modify(&read.root, shape.clone());
@@ -248,6 +252,11 @@ pub fn make_thick_sheet(
     if !read.root_is_face {
         history.generate(&read.root, solid.clone());
     }
+    // The walls between the layers are ruled between their rims, fitted
+    // where no closed form joins them (an annulus between two circles),
+    // and their pcurves lift to the fit, not to the rim: every edge the
+    // thickening made states what its pcurves measure along it.
+    state_new_gaps(model, sheet, &solid, tol)?;
     Ok(Built::new(solid, with_prefix(read.prefix, history)))
 }
 
@@ -2210,4 +2219,24 @@ fn side_face(
     } else {
         bare.reversed()
     })
+}
+
+/// Every edge of `built` that `given` does not hold widened to what its
+/// pcurves measure along it. The given sheet's own edges are the caller's,
+/// and are left as they were.
+fn state_new_gaps(
+    model: &mut Model,
+    given: &Shape,
+    built: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let held: ogeom_core::FastSet<_> = ogeom_topo::explore_unique(model, given, ShapeType::Edge)?
+        .iter()
+        .map(Shape::node)
+        .collect();
+    let made: Vec<Shape> = ogeom_topo::explore_unique(model, built, ShapeType::Edge)?
+        .into_iter()
+        .filter(|e| !held.contains(&e.node()))
+        .collect();
+    ogeom_algo::state_pcurve_gaps_of(model, &made, tol)
 }

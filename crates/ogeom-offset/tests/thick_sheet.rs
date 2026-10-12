@@ -1210,3 +1210,63 @@ fn a_line_turning_into_an_arc_thickens_with_a_mitre() {
     let inside = (15.0 + 15.0_f64.sqrt()) / 2.0 + 4.5 * (FRAC_PI_2 - a) + 12.5 * a - 2.5;
     thickens_to(&mut model, &sheet, -1.0, false, 5.0 * inside);
 }
+
+/// Every edge of a sheet offset or thickened stands within its own stated
+/// tolerance of each pcurve it carries, measured along the whole edge: a
+/// drum's wall (its end walls ruled between two circles, fitted), a
+/// quarter cylinder, and a saddle with a hole, whose moved faces are
+/// fitted.
+#[test]
+fn offset_and_thickened_sheets_state_their_pcurves_gaps() {
+    let held = |model: &Model, shape: &Shape, what: &str| {
+        for edge in ogeom_topo::explore_unique(model, shape, ShapeType::Edge).unwrap() {
+            let stated = model
+                .node(&edge)
+                .unwrap()
+                .data()
+                .as_edge()
+                .unwrap()
+                .tolerance
+                .get();
+            if let Some(gap) = ogeom_algo::edge_pcurve_gap(model, &edge, T).unwrap() {
+                assert!(
+                    gap <= stated,
+                    "{what}: a pcurve stands {gap:e} off an edge stating {stated:e}"
+                );
+            }
+        }
+    };
+    let mut model = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 4.0, 6.0, T)
+        .unwrap()
+        .shape;
+    let wall = ogeom_topo::explore_unique(&model, &drum, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let Some(NodeData::Face(data)) = model.node(f).map(|n| n.data()) else {
+                return false;
+            };
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Cylinder(_))
+            )
+        })
+        .unwrap();
+    let tube = make_thick_sheet(&mut model, &wall, 1.0, false, T)
+        .unwrap()
+        .shape;
+    held(&model, &tube, "thickened drum wall");
+    let quarter = quarter_cylinder(&mut model);
+    let sector = make_thick_sheet(&mut model, &quarter, 1.0, false, T)
+        .unwrap()
+        .shape;
+    held(&model, &sector, "thickened quarter cylinder");
+    let (face, _) = saddle_with(&mut model, Some((Point2::new(0.45, 0.55), 0.2)));
+    let thick = make_thick_sheet(&mut model, &face, 0.6, true, T)
+        .unwrap()
+        .shape;
+    held(&model, &thick, "thickened saddle");
+    let moved = offset_sheet(&mut model, &face, 1.0, T).unwrap().shape;
+    held(&model, &moved, "offset saddle");
+}
