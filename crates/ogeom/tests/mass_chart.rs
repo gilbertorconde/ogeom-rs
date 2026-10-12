@@ -807,3 +807,45 @@ fn a_face_whose_integral_does_not_settle_leaves_only_itself_to_the_mesh() {
         left.mass - owed
     );
 }
+
+/// A cylinder whose top cap stands on an offset of the plane below it: the
+/// same plane, the same chart, but a surface no closed form speaks for.
+/// Only the cap is meshed, closed against its rim's arc, and every other
+/// face keeps its closed form: the whole solid meshed at the default chord
+/// reads the cylinder's side 0.6% short, and an embossed feature's few
+/// cubic millimetres as volume lost.
+#[test]
+fn a_face_no_closed_form_speaks_for_leaves_only_itself_to_the_mesh() {
+    use ogeom::geom::{OffsetSurface, Surface as _, SurfaceGeometry, Transformable as _};
+    use ogeom::topo::{ShapeType, explore_unique};
+    let mut model = Model::new();
+    let cylinder = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&model, &cylinder, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|face| {
+            let data = model.node(face).unwrap().data().as_face().unwrap();
+            let surface = model.geometry().surface(data.surface).unwrap();
+            matches!(surface, SurfaceGeometry::Plane(_))
+                && surface.point_at(0.0, 0.0, T).unwrap().z > 10.0
+        })
+        .unwrap();
+    let id = model.node(&top).unwrap().data().as_face().unwrap().surface;
+    let plane = model.geometry().surface(id).unwrap().clone();
+    let normal = plane.normal_at(0.0, 0.0, T).unwrap().vector();
+    let below = plane
+        .transformed(&ogeom::math::Transform::translation(normal * -1.0), T)
+        .unwrap();
+    *model.geometry_mut().surface_mut(id).unwrap() =
+        SurfaceGeometry::Offset(Box::new(OffsetSurface::new(below, 1.0).unwrap()));
+
+    let exact = PI * 100.0 * 20.0;
+    let found = volume_properties(&model, &cylinder, Deflection::default(), T).unwrap();
+    assert!(
+        (found.mass - exact).abs() <= exact * 1e-8,
+        "the cylinder measures {} against {exact}",
+        found.mass
+    );
+}

@@ -40,6 +40,18 @@ bump may break the API and a patch bump may not.
   smaller, down to the exact operation itself. The same holds for
   `cut_fuzzy` and `common_fuzzy`.
 
+- **A face no closed form speaks for leaves only itself to the mesh
+  (#209).** One face whose volume integral has no closed form (a surface
+  the charts cannot integrate, or a boundary they cannot walk) sent the
+  whole solid to the mesh, so a cylinder's side drawn to the default chord
+  read 0.6% short: text embossed on a Ø20 cylinder measured as volume
+  lost. That face alone is now measured on its mesh, drawn to a tenth of
+  the chord, every other face in closed form, and the strip between each
+  of its chords and the edge's arc is added back, so a meshed face meets
+  its exact neighbours on their edges. The drill through `nist_ctc_01` whose sliver is meshed now agrees
+  with the part less the core to a part in a trillion, from a part in a
+  billion.
+
 ## [0.10.0] - 2026-10-12
 
 A minor release, since the API changes: `ProjectedCurve` gains `Parabola`

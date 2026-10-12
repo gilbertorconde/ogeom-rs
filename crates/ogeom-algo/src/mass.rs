@@ -564,13 +564,15 @@ fn exact_volume_properties(
     let mut exact = Vec::with_capacity(faces.len());
     // The face each region of `exact` belongs to.
     let mut region_of: Vec<usize> = Vec::with_capacity(faces.len());
+    // The faces no closed form speaks for, measured on their own meshes.
+    let mut unspoken: Vec<usize> = Vec::new();
     // Each face prepared on its own, and taken in the faces' order.
     let prepared =
         ogeom_core::parallel::map_ordered(&faces, |_, face| integrable_face(model, face, tol));
     for (at, (face, found)) in faces.iter().zip(prepared).enumerate() {
         // A face the closed forms cannot evaluate (a chart point a hair off
-        // its surface's domain) is left to the mesh, like one they do not
-        // speak at all.
+        // its surface's domain) is left to its mesh, like one they do not
+        // speak at all; the rest keep their closed forms.
         match or_mesh(found, None)? {
             Some(found) => {
                 region_of.extend(std::iter::repeat_n(at, found.len()));
@@ -583,9 +585,14 @@ fn exact_volume_properties(
                         face.node().index()
                     );
                 }
-                return Ok(None);
+                unspoken.push(at);
             }
         }
+    }
+    // With no closed form anywhere there is nothing to keep: the mesh
+    // measures the whole.
+    if exact.is_empty() {
+        return Ok(None);
     }
     // And the faces must agree with each other about which way is out. A
     // boundary that cannot be walked to ask (a pcurve whose domain falls
@@ -645,6 +652,16 @@ fn exact_volume_properties(
             }
             turned.extend(facing_in);
         }
+    }
+    // A face no closed form speaks for is drawn as its flag says, and one
+    // the probe finds facing in has no walk of its own to say how its
+    // drawing stands against its neighbours': the whole-shape mesh, which
+    // mends the turns within each piece, measures it instead.
+    if unspoken
+        .iter()
+        .any(|&at| turned.contains(&(faces[at].node(), faces[at].location().clone())))
+    {
+        return Ok(None);
     }
     let sign: Vec<f64> = region_of
         .iter()
@@ -746,7 +763,9 @@ fn exact_volume_properties(
     let mut meshed: Vec<usize> = (0..exact.len())
         .filter(|&i| settled[i].is_none())
         .map(|i| region_of[i])
+        .chain(unspoken)
         .collect();
+    meshed.sort_unstable();
     meshed.dedup();
     let mut total = Moments::zero();
     for (i, found) in settled.iter().enumerate() {
@@ -757,17 +776,27 @@ fn exact_volume_properties(
         }
     }
     for &at in &meshed {
-        let mesh = ogeom_mesh::triangulate(model, &faces[at], deflection, tol)?;
+        // A face's mesh stands off its surface by up to the chord all over,
+        // and the flux through it off by the chord over its area; the faces
+        // round it are exact, so it alone is drawn a tenth as coarse.
+        let finer = Deflection {
+            chord: deflection.chord * MESHED_FACE_CHORD,
+            ..deflection
+        };
+        let mesh = ogeom_mesh::triangulate(model, &faces[at], finer, tol)?;
         let mut acc = Accumulator::new();
         for triangle in &mesh.triangles {
             let [a, b, c] = triangle.map(|i| mesh.positions[i as usize]);
             let volume = (a - reference).dot((b - reference).cross(c - reference)) / 6.0;
             acc.add(&[reference, a, b, c], volume);
         }
-        let face_sign = region_of
-            .iter()
-            .position(|&r| r == at)
-            .map_or(1.0, |i| sign[i]);
+        rim_slivers(model, &faces[at], &mesh, reference, &mut acc, tol)?;
+        let face = &faces[at];
+        let face_sign = if turned.contains(&(face.node(), face.location().clone())) {
+            -1.0
+        } else {
+            1.0
+        };
         total.add_signed(
             &Moments {
                 mass: acc.mass,
@@ -917,6 +946,182 @@ fn or_mesh<T>(result: OgeomResult<T>, fallback: T) -> OgeomResult<T> {
 /// Whether the exact path says which faces it leaves to the mesh. Read once.
 static DEBUG_MASS: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("OGEOM_DEBUG_MASS").is_some());
+
+/// The slivers between a face's mesh and its edges, added to `acc`.
+///
+/// A face measured on its own mesh ends on its boundary's chords, and its
+/// neighbours, measured in closed form, end on the edges themselves: the
+/// flux through the strip between each chord and its arc belongs to the
+/// face and is not in its triangles. Each chord along an edge is closed
+/// against its arc by a fan from its start, the arc drawn fine enough
+/// that what is left between them is below the confusion distance.
+fn rim_slivers(
+    model: &Model,
+    face: &Shape,
+    mesh: &ogeom_topo::Triangulation,
+    reference: Point,
+    acc: &mut Accumulator,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let bits = |p: Point| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    let mut sides: ogeom_core::FastSet<([u64; 3], [u64; 3])> = ogeom_core::FastSet::default();
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (a, b) = (
+                mesh.positions[t[k] as usize],
+                mesh.positions[t[(k + 1) % 3] as usize],
+            );
+            sides.insert((bits(a), bits(b)));
+        }
+    }
+    let mut curves = Vec::new();
+    for edge in explore_unique(model, face, ShapeType::Edge)? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        if data.degenerate {
+            continue;
+        }
+        let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let placement = edge.transform(model.datums())?;
+        // A chord ends on its edge's vertices, which may stand off the
+        // curve by as much as the edge's tolerance says.
+        let near = (data.tolerance.get() * 2.0).max(tol.confusion() * 10.0);
+        curves.push((geometry.clone().transformed(&placement, tol)?, near));
+    }
+    let mut corners = Vec::new();
+    for vertex in explore_unique(model, face, ShapeType::Vertex)? {
+        if let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+            corners.push(vertex.transform(model.datums())?.apply(data.point));
+        }
+    }
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (a, b) = (
+                mesh.positions[t[k] as usize],
+                mesh.positions[t[(k + 1) % 3] as usize],
+            );
+            // A side whose twin runs the other way is inside the face, or on
+            // a seam it meets itself across.
+            if a.distance(b) <= tol.confusion() || sides.contains(&(bits(b), bits(a))) {
+                continue;
+            }
+            // Where a rim meets another tangentially, both ends can lie on
+            // two curves: the arc is the one hugging the chord.
+            let Some(arc) = curves
+                .iter()
+                .filter_map(|(curve, near)| arc_of(curve, a, b, *near, tol))
+                .min_by(|x, y| x.0.total_cmp(&y.0))
+                .map(|(_, arc)| arc)
+                .or_else(|| round_a_corner(&curves, &corners, a, b, tol))
+            else {
+                continue;
+            };
+            for pair in arc.windows(2) {
+                let (p, q) = (pair[0], pair[1]);
+                let volume = (a - reference).dot((p - reference).cross(q - reference)) / 6.0;
+                acc.add(&[reference, a, p, q], volume);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The points of `curve` from `a` to `b`, both of which lie on it, drawn
+/// so finely that no stretch between them stands off its chord by more
+/// than the confusion distance, with how far the arc's middle stands off
+/// the chord's; `None` where `a` or `b` is off it, or the arc between
+/// them strays further from the chord than the chord is long.
+fn arc_of(
+    curve: &ogeom_geom::Curve,
+    a: Point,
+    b: Point,
+    near: f64,
+    tol: Tolerances,
+) -> Option<(f64, Vec<Point>)> {
+    use ogeom_geom::Curve3d as _;
+    let at = |p: Point| {
+        crate::project_on_curve(curve, p, 64, tol)
+            .ok()
+            .filter(|found| found.distance <= near)
+            .map(|found| found.parameter)
+    };
+    let (ta, tb) = (at(a)?, at(b)?);
+    // Of the two ways round a closed curve, the one whose middle is
+    // nearer the chord's.
+    let mut tb = tb;
+    if curve.is_closed(tol) {
+        let (lo, hi) = curve.domain();
+        let period = hi - lo;
+        let middle = a.midpoint(b);
+        let other = if tb > ta { tb - period } else { tb + period };
+        let off = |t: f64| {
+            curve
+                .point_at(f64::midpoint(ta, t), tol)
+                .map_or(f64::INFINITY, |p| p.distance(middle))
+        };
+        if off(other) < off(tb) {
+            tb = other;
+        }
+    }
+    let sag = curve
+        .point_at(f64::midpoint(ta, tb), tol)
+        .ok()?
+        .distance(a.midpoint(b));
+    if sag > a.distance(b) {
+        return None;
+    }
+    // A chord's sag falls as the square of its share of the arc.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let pieces = ((sag / tol.confusion()).sqrt().ceil() as usize).clamp(1, MAX_RIM_PIECES);
+    let mut points = Vec::with_capacity(pieces + 1);
+    points.push(a);
+    for k in 1..pieces {
+        #[allow(clippy::cast_precision_loss)]
+        let f = k as f64 / pieces as f64;
+        points.push(curve.point_at(ta + (tb - ta) * f, tol).ok()?);
+    }
+    points.push(b);
+    Some((sag, points))
+}
+
+/// The face's boundary from `a` on one curve round a corner to `b` on
+/// another: a chord the mesh drew across the corner where the two meet,
+/// as it may at the tip of a sliver whose sides meet tangentially.
+fn round_a_corner(
+    curves: &[(ogeom_geom::Curve, f64)],
+    corners: &[Point],
+    a: Point,
+    b: Point,
+    tol: Tolerances,
+) -> Option<Vec<Point>> {
+    for (first, near_first) in curves {
+        for (second, near_second) in curves {
+            for &corner in corners {
+                let Some((_, to)) = arc_of(first, a, corner, *near_first, tol) else {
+                    continue;
+                };
+                let Some((_, on)) = arc_of(second, corner, b, *near_second, tol) else {
+                    continue;
+                };
+                return Some(to.into_iter().chain(on.into_iter().skip(1)).collect());
+            }
+        }
+    }
+    None
+}
+
+/// The share of the caller's chord a face measured on its own mesh, among
+/// faces measured exactly, is drawn to.
+const MESHED_FACE_CHORD: f64 = 0.1;
+
+/// How many pieces [`arc_of`] draws one chord's arc in at most.
+const MAX_RIM_PIECES: usize = 4096;
 
 /// Somewhere on the shape to measure moments from.
 fn reference_point(faces: &[ExactFace], tol: Tolerances) -> OgeomResult<Point> {
