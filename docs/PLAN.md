@@ -27,10 +27,8 @@ first, then refusals, then cost.
 grid holds each row and each column to the chord, and a cell's middle
 stands off by both sags together; the repair pass fires only at three
 chords. A ball of radius 20 meshed at chord 0.1 stands off 0.17, at 0.5
-0.68, and says so (`deflection_met` false). A cone's face, scaled by its
-mean radius for Delaunay, joins points three columns apart where its
-radius is far from the mean: the cone of #202 stands off 0.08 at chord
-0.0125. What was tried (2026-10-12): holding each direction to half the
+0.68, and says so (`deflection_met` false). (A cone's rows, held to a
+cell and a half since, keep it to 1.3 chords at 0.0125.) What was tried (2026-10-12): holding each direction to half the
 chord on balls and tori, with the repair asking each triangle's middle
 and splitting its longest interior edge, puts balls within the chord at
 every chord asked and passes the mesh conversion corpus, but the
@@ -41,7 +39,7 @@ converted faces whose meshes do not meet (217 edges on `nist_ctc_02`) or
 a button head of 57 faces. A grid fine enough by construction (rows and
 columns from the surface's curvature both ways, the cone's chart scaled
 per row) keeps the symmetry and the converter's inputs regular, and is
-the next thing to try. Closes the rest of #202.
+the next thing to try.
 
 **Some fits through bare points are trusted between their points.** A fit
 through points (`fit_points`, `fit_points_at`, the grid fits) states its

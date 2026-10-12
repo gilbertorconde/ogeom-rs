@@ -350,6 +350,16 @@ fn a_slit_sphere_zone_meshes_its_own_region_not_the_complement() {
                 mesh.positions[t[1] as usize],
                 mesh.positions[t[2] as usize],
             ];
+            // A corner on a cone's apex stands at one point whatever its
+            // chart column, which says nothing of where the triangle is:
+            // its chart centre is no measure there.
+            if let ogeom_geom::SurfaceGeometry::Cone(cone) = &surface
+                && [a, b, c]
+                    .iter()
+                    .any(|p| p.distance(cone.cone().apex()) <= 1e-9)
+            {
+                continue;
+            }
             let mid = ogeom_math::Point::from_vector(
                 (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0,
             );

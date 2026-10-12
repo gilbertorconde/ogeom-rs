@@ -3525,8 +3525,18 @@ fn add_interior_points(
     };
     // The columns along one row: the u resolution measured at that row.
     let columns_at = |v: f64| refine_line(surface, (low.x, high.x), |u| (u, v), deflection, tol);
+    // A cone's circumference runs from nothing at its apex to its widest
+    // at the other end, and Delaunay in a chart scaled by the mean bridges
+    // the wide end's columns three at a time between rows held to six
+    // cells: its rows are held to a cell and a half.
+    let aspect = if matches!(surface.kind(), ogeom_geom::SurfaceKind::Cone) {
+        CONE_CELL_ASPECT
+    } else {
+        CELL_ASPECT
+    };
     let rows = spread_to_aspect(
         rows,
+        aspect,
         low.x,
         high.x,
         |v| columns_at(v).0.len(),
@@ -3570,6 +3580,7 @@ fn add_interior_points(
         // bridge across the rows as badly as the bore bridged its columns.
         let columns = spread_to_aspect(
             columns,
+            CELL_ASPECT,
             low.y,
             high.y,
             |_| rows.len(),
@@ -3764,8 +3775,11 @@ const KEEP_OUT: f64 = 0.35;
 /// as narrow as the columns are.
 const CELL_ASPECT: f64 = 6.0;
 
+/// [`CELL_ASPECT`] for a cone's rows: see where it is used.
+const CONE_CELL_ASPECT: f64 = 1.5;
+
 /// Grid lines in one direction spread so that no cell is longer, in
-/// space, than [`CELL_ASPECT`] times its width the other way: extra
+/// space, than `aspect` times its width the other way: extra
 /// lines added evenly between the ones sag chose.
 ///
 /// Written for rows against columns and used both ways round. `lines`
@@ -3777,6 +3791,7 @@ const CELL_ASPECT: f64 = 6.0;
 /// along this one's line `t`.
 fn spread_to_aspect(
     lines: Vec<f64>,
+    aspect: f64,
     lo: f64,
     hi: f64,
     crossings_at: impl Fn(f64) -> usize,
@@ -3816,7 +3831,7 @@ fn spread_to_aspect(
         let (a, b) = (pair[0], pair[1]);
         out.push(a);
         let tall = length(i);
-        let pieces = (tall / (CELL_ASPECT * cell)).ceil();
+        let pieces = (tall / (aspect * cell)).ceil();
         if pieces.is_finite() && pieces > 1.0 {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let n = (pieces as usize).min(MAX_DIRECTION_STEPS);
@@ -5259,6 +5274,7 @@ mod predicate_tests {
         let sagged = vec![0.0, 50.0, 100.0];
         let spread = spread_to_aspect(
             sagged.clone(),
+            CELL_ASPECT,
             0.0,
             16.0,
             |_| 17,
@@ -5278,6 +5294,7 @@ mod predicate_tests {
         // Three columns is flat along `u` as well; nothing to hold to.
         let flat = spread_to_aspect(
             sagged.clone(),
+            CELL_ASPECT,
             0.0,
             16.0,
             |_| 3,
@@ -5290,6 +5307,7 @@ mod predicate_tests {
         let fine = vec![0.0, 4.0, 8.0];
         let same = spread_to_aspect(
             fine.clone(),
+            CELL_ASPECT,
             0.0,
             16.0,
             |_| 17,

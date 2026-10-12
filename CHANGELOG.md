@@ -32,6 +32,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A cone meshes close to its chord.** A cone's circumference runs from
+  nothing at its apex to its widest at the base, and the triangulation,
+  Delaunay in a chart scaled by the mean, bridged the wide end's columns
+  three at a time between rows up to six cells apart: a pointed cone stood
+  0.09 mm off at a 0.0125 mm chord (#202). A cone's rows are now held to a
+  cell and a half, and it stands 0.016 mm off.
+
 - **An edge the segment cap stops is sampled all along.** An edge drawn
   to a chord its curve needs more points for than the cap allows was
   split from its start until the cap was reached, and the rest kept only

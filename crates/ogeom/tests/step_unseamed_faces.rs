@@ -278,3 +278,35 @@ fn a_spline_dome_closed_at_its_pole_meshes() {
         );
     }
 }
+
+/// A cone coming to a point, meshed at a fine chord: its wide end's columns
+/// are not bridged several at a time between rows, and every triangle's
+/// middle stands within twice the chord of the cone.
+#[test]
+fn a_pointed_cone_meshes_close_to_its_chord() {
+    let mut model = ogeom::topo::Model::new();
+    let cone = ogeom::algo::make_cone(&mut model, ogeom::math::Frame::WORLD, 10.0, 0.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let slant = 30.0 / 10f64.hypot(30.0);
+    for chord in [0.0125, 0.1] {
+        let deflection = Deflection {
+            chord,
+            ..Deflection::default()
+        };
+        let (faces, _) = face_meshes_for(&model, &cone, deflection, None, T).unwrap();
+        for (_, mesh) in faces {
+            let mesh = mesh.unwrap();
+            for t in &mesh.triangles {
+                let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                let m = (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0;
+                let off = if m.z.abs() < 1e-9 {
+                    0.0
+                } else {
+                    (m.x.hypot(m.y) - 10.0 * (1.0 - m.z / 30.0)).abs() * slant
+                };
+                assert!(off <= 2.0 * chord, "chord {chord}: a middle {off} off");
+            }
+        }
+    }
+}
