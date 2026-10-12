@@ -472,3 +472,99 @@ fn a_periodic_spline_projects_clamped() {
         assert!(q.distance(Point2::new(p.x, p.y)) <= T.confusion(), "at {f}");
     }
 }
+
+/// The conic edges a box's planar face cuts from a cone, each with the
+/// plane its face lies on.
+fn conic_edges(model: &Model, part: &Shape) -> Vec<(Shape, Plane)> {
+    use ogeom::geom::SurfaceGeometry;
+    let mut out = Vec::new();
+    for face in explore_unique(model, part, ShapeType::Face).unwrap() {
+        let data = model.node(&face).unwrap().data().as_face().unwrap();
+        let SurfaceGeometry::Plane(plane) = model.geometry().surface(data.surface).unwrap() else {
+            continue;
+        };
+        for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
+            let edge_data = model.node(&edge).unwrap().data().as_edge().unwrap();
+            let Some(EdgeRepr::Curve3d { curve, .. }) = edge_data.curve3d() else {
+                continue;
+            };
+            let kind = model.geometry().curve(*curve).unwrap().kind();
+            if !matches!(
+                kind,
+                ogeom::geom::CurveKind::Line | ogeom::geom::CurveKind::Circle
+            ) {
+                out.push((edge, plane.plane()));
+            }
+        }
+    }
+    out
+}
+
+/// A cone cut by a plane parallel to its axis keeps the hyperbola the
+/// plane and the cone meet in, and by a plane parallel to a ruling the
+/// parabola: the edge's own curve is the conic, and it projects onto its
+/// plane as one, every point on it.
+#[test]
+fn a_cone_cut_by_a_plane_keeps_its_exact_conic() {
+    let mut model = Model::new();
+    let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, 10.0, 0.0, 10.0, T)
+        .unwrap()
+        .shape;
+    // x >= 3: the hyperbola (10 - z)^2 - y^2 = 9 on the plane x = 3.
+    let across = Frame::new(Point::new(3.0, -20.0, -5.0), Direction::Z, Direction::X, T).unwrap();
+    let block = make_box(&mut model, across, (20.0, 40.0, 20.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &cone, &block, T)
+        .unwrap()
+        .shape;
+    let edges = conic_edges(&model, &cut);
+    assert!(!edges.is_empty(), "the cut face has a conic edge");
+    for (edge, plane) in &edges {
+        let projected = project_edge_onto_plane(&model, edge, plane, T).unwrap();
+        assert!(
+            matches!(projected, ProjectedCurve::Hyperbola { .. }),
+            "{projected:?}"
+        );
+        let data = model.node(edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            panic!("the edge has a curve");
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        for k in 0..=16 {
+            let t = range.0 + (range.1 - range.0) * f64::from(k) / 16.0;
+            let p = curve.point_at(t, T).unwrap();
+            let off = (10.0 - p.z).powi(2) - p.y * p.y - 9.0;
+            assert!(
+                (p.x - 3.0).abs() < 1e-9 && off.abs() < 1e-6,
+                "{p:?} off by {off}"
+            );
+        }
+    }
+
+    // Square to the ruling the cone has at u = 0: a parabola.
+    let mut model = Model::new();
+    let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, 10.0, 0.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let normal = Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap();
+    let along = Direction::new(Vector::new(1.0, 0.0, -1.0), T).unwrap();
+    let side = normal.vector().cross(along.vector());
+    let corner = Point::new(4.0, 0.0, 4.0) - along.vector() * 30.0 - side * 30.0;
+    let tilted = Frame::new(corner, normal, along, T).unwrap();
+    let block = make_box(&mut model, tilted, (60.0, 60.0, 30.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &cone, &block, T)
+        .unwrap()
+        .shape;
+    let edges = conic_edges(&model, &cut);
+    assert!(!edges.is_empty(), "the cut face has a conic edge");
+    for (edge, plane) in &edges {
+        let projected = project_edge_onto_plane(&model, edge, plane, T).unwrap();
+        assert!(
+            matches!(projected, ProjectedCurve::Parabola { .. }),
+            "{projected:?}"
+        );
+    }
+}

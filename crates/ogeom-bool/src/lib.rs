@@ -7106,6 +7106,18 @@ fn fitted_image(
                 return Ok(Some(((u, v), back.distance(p))));
             }
         }
+        // A cone's image is read in closed form too, past its window's ends:
+        // an open conic it cuts is stated over a span that climbs beyond the
+        // window, which the face trims, and a projection clamped to the
+        // window puts those points off the surface.
+        if let SurfaceGeometry::Cone(cone) = surface
+            && let Ok((u, v)) = ogeom_math::elementary::cone_parameters(&cone.cone(), p, tol)
+        {
+            let back = ogeom_math::elementary::cone_at(&cone.cone(), u, v).point;
+            if back.distance(p) <= budget.max(tol.confusion() * 1e2) {
+                return Ok(Some(((u, v), back.distance(p))));
+            }
+        }
         let mut foot = match guess {
             Some(g) => ogeom_algo::project_on_surface_from(surface, p, g, tol)?,
             None => ogeom_algo::project_on_surface(surface, p, 24, tol)?,
@@ -7203,9 +7215,16 @@ fn fitted_image(
     if let Some(&t) = params.last() {
         checks.push(t);
     }
+    // A cone is read past its window's ends, as its points were inverted.
+    let lift = |u: f64, v: f64| match surface {
+        SurfaceGeometry::Cone(cone) => {
+            Ok(ogeom_math::elementary::cone_at(&cone.cone(), u, v).point)
+        }
+        _ => surface.point_at(u, v, tol),
+    };
     for t in checks {
         let uv = planar.point_at(t, tol)?;
-        let Ok(on_surface) = surface.point_at(uv.x, uv.y, tol) else {
+        let Ok(on_surface) = lift(uv.x, uv.y) else {
             if *DEBUG_WIRE {
                 eprintln!("IMAGE FIT: the image leaves the chart at {uv:?}; no image");
             }

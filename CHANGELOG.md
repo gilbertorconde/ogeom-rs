@@ -22,6 +22,15 @@ bump may break the API and a patch bump may not.
   splits: the piece inside the curve as two faces meeting at the seam,
   the piece outside wrapping round.
 
+- **A boolean of a plane and a cone keeps the exact conic (#211).** The
+  intersection stated the hyperbola or parabola exactly, over a span that
+  runs past the cone's window for the face to trim, and the boolean fitted
+  its pcurve on the cone by projection, which clamps to the window: the
+  points past it stood off the surface, the fit was refused, and the pair
+  was marched into a spline. A cone's image is now read in closed form past
+  its window, so the section edge is the conic and projects onto its plane
+  as `ProjectedCurve::Hyperbola` or `Parabola`.
+
 ### Fixed
 
 - **A cone bounded at its apex meshes with no flat triangles (#210).** Since
