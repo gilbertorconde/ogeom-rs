@@ -226,6 +226,50 @@ fn fuzzy_fusion_closes_small_gaps_and_inputs_survive() {
     }
 }
 
+/// A fuzz of a tenth of a millimetre on ten-millimetre boxes loosens the
+/// boolean's welds and probes to most of a box. Its result is held to the
+/// volume the exact operation finds: two boxes overlapping by 0.05 mm,
+/// touching, or overlapping by 3 mm at a fuzz of 0.05 fuse whole, neither
+/// box dropped and nothing come out empty.
+#[test]
+fn a_coarse_fuzz_keeps_both_boxes() {
+    for (z, fuzz, want) in [
+        (9.95, 0.1, 1995.0),
+        (10.0, 0.1, 2000.0),
+        (7.0, 0.05, 1700.0),
+    ] {
+        let mut model = Model::new();
+        let a = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let f = Frame::new(Point::new(0.0, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+        let b = ogeom::algo::make_box(&mut model, f, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let fused = ogeom::boolean::fuse_fuzzy(&mut model, &a, &b, fuzz, T)
+            .unwrap_or_else(|e| panic!("at z {z}, fuzz {fuzz}: {e}"))
+            .shape;
+        let v = ogeom::algo::volume_properties(&model, &fused, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!(
+            (v - want).abs() <= fuzz * 1200.0,
+            "at z {z}, fuzz {fuzz}: {v} against {want}"
+        );
+        let cut = ogeom::boolean::cut_fuzzy(&mut model, &a, &b, fuzz, T)
+            .unwrap()
+            .shape;
+        let left = ogeom::algo::volume_properties(&model, &cut, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        let kept = (z.min(10.0)) * 100.0;
+        assert!(
+            (left - kept).abs() <= fuzz * 1200.0,
+            "cut at z {z}, fuzz {fuzz}: {left} against {kept}"
+        );
+    }
+}
+
 /// A fuzz that is no distance is refused by each of the fuzzy booleans.
 #[test]
 fn the_fuzzy_booleans_refuse_a_fuzz_that_is_no_distance() {

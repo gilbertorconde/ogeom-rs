@@ -11233,6 +11233,14 @@ fn fuzzed(fuzz: f64, tol: Tolerances) -> OgeomResult<Tolerances> {
 
 /// [`fuse`] with geometry within `fuzz` of touching counted as touching.
 ///
+/// The fuzz loosens every decision the boolean makes, its welds and probes
+/// included, and those reach well past the fuzz itself: at a fuzz near a
+/// hundredth of the operands' size they can swallow a face. A result is
+/// kept only where its volume agrees, within the fuzz over the operands'
+/// area, with what the exact operation finds, or with what any union of
+/// the two can hold where the exact one is refused; otherwise the fuzz is
+/// taken a tenth smaller, down to the exact operation itself.
+///
 /// # Errors
 ///
 /// As [`fuse`], plus a non-positive fuzz.
@@ -11243,8 +11251,7 @@ pub fn fuse_fuzzy(
     fuzz: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let loosened = fuzzed(fuzz, tol)?;
-    fuse(model, a, b, loosened)
+    at_a_fuzz(model, a, b, fuzz, tol, fuse, |va, vb| (va.max(vb), va + vb))
 }
 
 /// [`cut`] at a stated fuzz.
@@ -11259,8 +11266,9 @@ pub fn cut_fuzzy(
     fuzz: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let loosened = fuzzed(fuzz, tol)?;
-    cut(model, a, b, loosened)
+    at_a_fuzz(model, a, b, fuzz, tol, cut, |va, vb| {
+        ((va - vb).max(0.0), va)
+    })
 }
 
 /// [`common`] at a stated fuzz.
@@ -11275,8 +11283,85 @@ pub fn common_fuzzy(
     fuzz: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    at_a_fuzz(model, a, b, fuzz, tol, common, |va, vb| (0.0, va.min(vb)))
+}
+
+/// One boolean at a fuzz, as [`fuse_fuzzy`] says: the largest fuzz up to
+/// `fuzz`, a tenth smaller at a time, whose result holds the volume the
+/// exact `operation` finds, or lies within `span` of the operands'
+/// volumes where the exact one is refused.
+fn at_a_fuzz(
+    model: &mut Model,
+    a: &Shape,
+    b: &Shape,
+    fuzz: f64,
+    tol: Tolerances,
+    operation: fn(&mut Model, &Shape, &Shape, Tolerances) -> OgeomResult<Built>,
+    span: fn(f64, f64) -> (f64, f64),
+) -> OgeomResult<Built> {
     let loosened = fuzzed(fuzz, tol)?;
-    common(model, a, b, loosened)
+    if loosened.confusion() <= tol.confusion() {
+        return operation(model, a, b, tol);
+    }
+    let measure = |model: &Model, shape: &Shape| -> Option<(f64, f64)> {
+        let found =
+            ogeom_algo::volume_properties(model, shape, ogeom_mesh::Deflection::default(), tol)
+                .ok()?;
+        Some((found.mass, found.deflection))
+    };
+    // Where the operands cannot be measured there is nothing to hold a
+    // result to, and the fuzz is taken as asked.
+    let (Some((va, da)), Some((vb, db))) = (measure(model, a), measure(model, b)) else {
+        return operation(model, a, b, loosened);
+    };
+    let area = box_area(model, a, tol) + box_area(model, b, tol);
+    let exact = operation(model, a, b, tol);
+    let held = match &exact {
+        Ok(built) => measure(model, &built.shape).map(|(v, _)| (v, v)),
+        Err(_) => Some(span(va, vb)),
+    };
+    let Some((low, high)) = held else {
+        return exact;
+    };
+    let mut first_error = None;
+    let mut f = fuzz;
+    while f > tol.confusion() {
+        let at = fuzzed(f, tol)?;
+        match operation(model, a, b, at) {
+            Ok(built) => {
+                // A meshed measure stands off by its chord over the area.
+                let slack = (f + da.max(db)) * area + (va + vb) * 1e-9;
+                if let Some((v, dv)) = measure(model, &built.shape)
+                    && v >= low - slack - dv * area
+                    && v <= high + slack + dv * area
+                {
+                    return Ok(built);
+                }
+            }
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
+        f /= 10.0;
+    }
+    match (exact, first_error) {
+        (Ok(built), _) => Ok(built),
+        (Err(_), Some(e)) => Err(e),
+        (Err(e), None) => Err(e),
+    }
+}
+
+/// The area of a shape's bounding box: what the fuzz moves its faces over,
+/// at most, for a shape that is not a sponge.
+fn box_area(model: &Model, shape: &Shape, tol: Tolerances) -> f64 {
+    let Ok(bound) = ogeom_algo::tight_bounds(model, shape, tol) else {
+        return 0.0;
+    };
+    let (Some(lo), Some(hi)) = (bound.low(), bound.high()) else {
+        return 0.0;
+    };
+    let (x, y, z) = (hi.x - lo.x, hi.y - lo.y, hi.z - lo.z);
+    2.0 * (x * y + y * z + z * x)
 }
 
 /// A shape repeated `count` times along a direction at a period and fused

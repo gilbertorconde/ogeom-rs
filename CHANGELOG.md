@@ -29,6 +29,17 @@ bump may break the API and a patch bump may not.
   exact coordinates open along three edges. The point is now known by
   where the triangulation holds it.
 
+- **A fuzzy boolean at a coarse fuzz keeps both operands (#215).**
+  `fuse_fuzzy` loosens every weld and probe the boolean makes, and those
+  reach well past the fuzz: at a fuzz of 0.1 mm on ten-millimetre boxes,
+  two boxes overlapping by 0.05 mm or touching fused to the first box
+  alone, and boxes overlapping by 3 mm at 0.05 came out empty. A fuzzy
+  result is now kept only where its volume agrees, within the fuzz over
+  the operands' area, with the exact operation's (or with what the two
+  can hold where that is refused); otherwise the fuzz is taken a tenth
+  smaller, down to the exact operation itself. The same holds for
+  `cut_fuzzy` and `common_fuzzy`.
+
 ## [0.10.0] - 2026-10-12
 
 A minor release, since the API changes: `ProjectedCurve` gains `Parabola`
