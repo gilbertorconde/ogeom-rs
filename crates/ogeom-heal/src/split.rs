@@ -1023,15 +1023,29 @@ fn next_stretch(
     if cutter.closed {
         return Ok(Found::Rebase(meetings[0].t));
     }
+    // A span whose ends and middle stand within the path's own reach of
+    // each other is no stretch: a closed path walked from where it crosses
+    // a seam meets the seam's two sides a hair apart, at its start and
+    // again just after. A path closing on itself has its ends together
+    // too, and its middle far off.
+    let negligible = |a: f64, b: f64| -> OgeomResult<bool> {
+        if b - a <= t_eps {
+            return Ok(true);
+        }
+        let reach = cutter.tolerance() + tol.confusion() * 10.0;
+        let start = cutter.point(a, tol)?;
+        Ok(start.distance(cutter.point(b, tol)?) <= reach
+            && start.distance(cutter.point(f64::midpoint(a, b), tol)?) <= reach)
+    };
     let (first, last) = (&meetings[0], &meetings[meetings.len() - 1]);
     for (a, b) in [(lo, first.t), (last.t, hi)] {
-        if b - a > t_eps && !cutter.is_consumed(a, b) && within(a, b)? {
+        if !negligible(a, b)? && !cutter.is_consumed(a, b) && within(a, b)? {
             return Ok(Found::Dangling);
         }
     }
     for pair in meetings.windows(2) {
         let (a, b) = (&pair[0], &pair[1]);
-        if b.t - a.t <= t_eps || cutter.is_consumed(a.t, b.t) {
+        if negligible(a.t, b.t)? || cutter.is_consumed(a.t, b.t) {
             continue;
         }
         if within(a.t, b.t)? {

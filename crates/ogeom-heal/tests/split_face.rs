@@ -945,3 +945,75 @@ fn a_split_states_its_edges_pcurves_gaps() {
         }
     }
 }
+
+/// A rectangle facing a cylinder's seam, projected onto it, crosses the
+/// seam. A closed path walked from where it meets the seam meets the
+/// seam's other side a hair further on, and that hair is no stretch to
+/// cut: the face splits as it does anywhere else, the piece inside the
+/// rectangle covering the arc the rectangle faces, the piece outside
+/// wrapping round, and the solid stays sound.
+#[test]
+fn a_closed_curve_across_a_cylinders_seam_splits_it() {
+    let mut model = Model::new();
+    let cylinder = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 15.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let rectangle = make_polygon(
+        &mut model,
+        &[
+            Point::new(25.0, -5.0, 9.0),
+            Point::new(25.0, 5.0, 9.0),
+            Point::new(25.0, 5.0, 21.0),
+            Point::new(25.0, -5.0, 21.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let side = faces(&model, &cylinder)
+        .into_iter()
+        .find(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Cylinder(_))
+            )
+        })
+        .unwrap();
+    let split = split_face(
+        &mut model,
+        &cylinder,
+        &side,
+        &[rectangle],
+        Projection::Along(Direction::X),
+        T,
+    )
+    .unwrap()
+    .shape;
+    assert!(ogeom_algo::check(&model, &split, T).unwrap().is_valid());
+    let sides: Vec<f64> = faces(&model, &split)
+        .iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Cylinder(_))
+            )
+        })
+        .map(|f| area(&model, f))
+        .collect();
+    let whole = TAU * 15.0 * 30.0;
+    let faced = 2.0 * (5.0_f64 / 15.0).asin() * 15.0 * 12.0;
+    let total: f64 = sides.iter().sum();
+    let largest = sides.iter().copied().fold(0.0, f64::max);
+    assert!(
+        (total - whole).abs() < whole * 1e-6,
+        "{sides:?} against {whole}"
+    );
+    assert!(
+        (whole - largest - faced).abs() < faced * 1e-4,
+        "inside the rectangle {} against {faced}",
+        whole - largest
+    );
+}

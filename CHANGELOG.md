@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`split_face` splits along a closed curve across a periodic face's seam
+  (#208).** A closed path is walked from where it first meets the face's
+  boundary; one that crosses a seam meets the seam's two sides there a
+  hair apart, and the hair between them, lying on the seam, was refused
+  as a curve running along the boundary. A span whose ends stand within
+  the path's own reach of each other is now no stretch, and the face
+  splits: the piece inside the curve as two faces meeting at the seam,
+  the piece outside wrapping round.
+
+### Fixed
+
 - **A cone bounded at its apex meshes with no flat triangles (#210).** Since
   0.10.0 a cone's rows near its apex hold points on the same ruling, and
   the chart joined the apex to two of them in a triangle whose corners lie
