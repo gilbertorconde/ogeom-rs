@@ -3749,10 +3749,16 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_differing_rows_cut_and_fuse()
 /// millimetre down the facet; rising counts leave a facet's side edge beside
 /// the next wall to within the rounding. Each face lies on one side of the
 /// other's plane, and neither line splits anything.
+///
+/// With rows of eight, nine, nine, five, four, five and five, a corner's top
+/// facet shares its top edge with the pad's wall and leans into the pad by
+/// a hundred-thousandth of a radian. Its roomiest probe stands by that edge,
+/// where the two are within rounding of each other, and reads it outside;
+/// read at the centre of its area it is inside, as it is.
 #[test]
 fn pads_into_a_slab_drafted_a_hundred_thousandth_with_rows_kept_cut_and_fuse() {
     let mut failed = Vec::new();
-    for counts in [[8; 7], [5, 6, 7, 7, 8, 8, 8]] {
+    for counts in [[8; 7], [5, 6, 7, 7, 8, 8, 8], [8, 9, 9, 5, 4, 5, 5]] {
         for depth in [3.0, 10.0] {
             if let Err(e) = pad_on_a_drafted_slab(depth, 0.00001, counts, true) {
                 failed.push(format!("{counts:?}: {e}"));

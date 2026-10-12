@@ -7244,12 +7244,21 @@ thread_local! {
     /// keeps that answer. On for the second. Read once per boolean on the
     /// calling thread.
     static SETTLE_FROM_BOTH_SIDES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether a piece that reads in or out is read again at the centre of
+    /// its area. Off but for the attempt after kept pieces fail to close.
+    /// Read once per boolean on the calling thread.
+    static PROBE_AT_CENTRE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// An operation run once, and where it refuses, again in two steps. Where
+/// An operation run once, and where it refuses, again in three steps. Where
 /// the refusal is a piece on the other solid's boundary
 /// with no coincident partner, once more with such pieces settled from both
-/// sides of them. And where it still refuses, at a confusion distance ten
+/// sides of them. Where the kept pieces did not close, once more with each
+/// piece read at the centre of its area: a face
+/// leaning off the other's by microradians, the two meeting along an edge
+/// and nothing splitting it, stands within rounding of the other near that
+/// edge, and a probe there can read the wrong side. And where it still
+/// refuses, at a confusion distance ten
 /// and then a hundred times wider: a sliver a few microns thick (two walls
 /// a few microns apart, a face tilted a few microradians) is then the kind
 /// the boolean welds, and the result is kept only if nothing in it states
@@ -7277,6 +7286,23 @@ fn settled(
     SETTLE_FROM_BOTH_SIDES.set(true);
     let _reset = Reset;
     if refusal.to_string().contains("no coincident partner face") {
+        match attempt(model, tol) {
+            Ok(built) => return Ok(built),
+            Err(ogeom_core::OgeomError::Cancelled) => {
+                return Err(ogeom_core::OgeomError::Cancelled);
+            }
+            Err(_) => {}
+        }
+    }
+    if refusal.to_string().contains("did not close into a shell") {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                PROBE_AT_CENTRE.set(false);
+            }
+        }
+        PROBE_AT_CENTRE.set(true);
+        let _clear = Clear;
         match attempt(model, tol) {
             Ok(built) => return Ok(built),
             Err(ogeom_core::OgeomError::Cancelled) => {
@@ -7452,6 +7478,7 @@ fn general_fuse_as(
     // Read here, on the caller's thread: the pieces are classified on
     // worker threads, which do not share it.
     let settle = SETTLE_FROM_BOTH_SIDES.get();
+    let read_at_centre = PROBE_AT_CENTRE.get();
     ogeom_core::progress::stage("boolean: gather");
     let ga = gather(
         model,
@@ -8664,6 +8691,36 @@ fn general_fuse_as(
                         }
                         if !matches!(says.1, Containment::On) {
                             break;
+                        }
+                    }
+                }
+                // On the attempt after kept pieces failed to close, a piece
+                // is read at the centre of its area where that lies inside
+                // it: the roomiest probe can stand by a corner, and a face
+                // leaning microradians off the other solid's, the two
+                // sharing an edge, reads within rounding of it there.
+                if read_at_centre
+                    && matches!(chosen, Some((_, _, Containment::In | Containment::Out)))
+                    && let Some(centre) = arrange::centroid_of(&piece.outlines)
+                    && arrange::inside_rings(&piece.outlines, centre)
+                {
+                    if fine.is_none() {
+                        let reached = rings_near(&piece.outlines, &[centre]);
+                        fine = FineRings::of(
+                            face,
+                            &piece.rings,
+                            &sections,
+                            from_a,
+                            Some(&reached),
+                            tol,
+                        );
+                    }
+                    if fine.as_ref().is_none_or(|f| f.inside(centre)) {
+                        let at = face.surface.point_at(centre.x, centre.y, tol)?;
+                        if let Ok(says @ (Containment::In | Containment::Out)) =
+                            boundary.holds(model, at, tol)
+                        {
+                            chosen = Some((centre, at, says));
                         }
                     }
                 }

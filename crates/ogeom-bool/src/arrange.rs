@@ -863,6 +863,32 @@ fn inside(ring: &[Point2], p: Point2) -> bool {
     inside
 }
 
+/// The centre of the area the rings bound, its holes taken out: the outer
+/// ring runs counter-clockwise and the holes clockwise, so their signed
+/// areas sum to the region's. `None` for rings bounding no area.
+pub(crate) fn centroid_of(rings: &[Vec<Point2>]) -> Option<Point2> {
+    let (mut area, mut x, mut y) = (0.0, 0.0, 0.0);
+    for ring in rings {
+        let Some(&origin) = ring.first() else {
+            continue;
+        };
+        // Each ring's moments are taken about its own first point, which
+        // keeps them exact far out in a chart, and moved back after.
+        let (mut own, mut mx, mut my) = (0.0, 0.0, 0.0);
+        for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+            let (a, b) = (*a - origin, *b - origin);
+            let twice = a.cross(b);
+            own += twice;
+            mx += (a.x + b.x) * twice;
+            my += (a.y + b.y) * twice;
+        }
+        area += own;
+        x += (3.0 * origin.x).mul_add(own, mx);
+        y += (3.0 * origin.y).mul_add(own, my);
+    }
+    (area > 0.0).then(|| Point2::new(x / (3.0 * area), y / (3.0 * area)))
+}
+
 /// Even-odd containment of a point in a piece's rings.
 ///
 /// A ring is a closed loop stored without repeating its first point, so each
@@ -1514,6 +1540,20 @@ mod tests {
     fn assemble<T: Clone>(strands: &[Strand<T>], snap: f64) -> OgeomResult<Vec<Piece<'_, T>>> {
         let places: Vec<usize> = (0..strands.len()).collect();
         super::assemble(strands, &places, snap, &[])
+    }
+
+    /// A two by two square with a unit hole in its right half, far out in
+    /// its chart: the area left is three, centred a sixth left of the
+    /// square's middle.
+    #[test]
+    fn a_holed_squares_centre_stands_off_its_hole() {
+        let o = 1e7;
+        let p = |x: f64, y: f64| Point2::new(o + x, o + y);
+        let outer = vec![p(-1.0, -1.0), p(1.0, -1.0), p(1.0, 1.0), p(-1.0, 1.0)];
+        let hole = vec![p(0.0, -0.5), p(0.0, 0.5), p(1.0, 0.5), p(1.0, -0.5)];
+        let c = centroid_of(&[outer, hole]).unwrap();
+        assert!((c.x - (o - 1.0 / 6.0)).abs() < 1e-8, "{c:?}");
+        assert!((c.y - o).abs() < 1e-8, "{c:?}");
     }
 
     /// A strip one long and a hundredth wide encloses its own area wherever

@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A piece read by its corner is read again at its centre.** A face
+  leaning a hundred-thousandth of a radian into the other solid, the two
+  sharing an edge, was read at its roomiest probe, which stood by that
+  edge within rounding of the other's face and read outside: the fuse
+  kept it and its pieces did not close. Where kept pieces do not close,
+  the boolean now tries again with each piece read at the centre of its
+  area where that lies inside it.
 - **A blend's wedge states its edges' pcurve gaps before it is applied.**
   A marched band's rails and legs carry fitted pcurves that stand off
   their edges between their samples; one wedge's edge stated 1.3e-4 where
