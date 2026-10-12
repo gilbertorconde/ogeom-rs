@@ -1343,6 +1343,85 @@ struct SectionRec {
     tolerance: f64,
 }
 
+/// A closed circular section whose seam stands a hair from a vertex of
+/// either face on it, turned to start at that vertex.
+///
+/// The section's own start is wherever its frame happened to point (a
+/// world axis projected into its plane), and a piece reaching across it is
+/// split there to stay within one period. Where a face's vertex sits on
+/// the circle a sliver of a turn from that start, the split leaves an arc
+/// the paving takes for dust and collapses, dragging the vertex along the
+/// circle. Starting the circle at the vertex leaves nothing to split. A
+/// seam already on a vertex, or well clear of every one, is left alone.
+fn seamed_at_a_stop(
+    section: &SectionRec,
+    fa: &GFace,
+    fb: &GFace,
+    tol: Tolerances,
+) -> Option<SectionRec> {
+    use core::f64::consts::TAU;
+    if !section.closed || section.tolerance > 0.0 {
+        return None;
+    }
+    let Curve::Circle(c) = &section.curve else {
+        return None;
+    };
+    let circle = c.circle();
+    let (centre, radius) = (circle.centre(), circle.radius());
+    let frame = circle.frame();
+    // The angle a point stands at along the curve's own parameter.
+    let sweep = if c.is_reversed() { -1.0 } else { 1.0 };
+    let angle_of = |p: Point| {
+        let local = frame.to_local(p);
+        (sweep * local.y.atan2(local.x)).rem_euclid(TAU)
+    };
+    let mut nearest: Option<f64> = None;
+    for face in [fa, fb] {
+        for e in &face.edges {
+            for end in [e.crange.0, e.crange.1] {
+                let Ok(p) = e.curve.point_at(end, tol) else {
+                    continue;
+                };
+                let local = frame.to_local(p);
+                let off = local.z.hypot(local.x.hypot(local.y) - radius);
+                if off > tol.confusion() * 10.0 {
+                    continue;
+                }
+                let a = angle_of(p);
+                let shift = if a > TAU / 2.0 { a - TAU } else { a };
+                if nearest.is_none_or(|n| shift.abs() < n.abs()) {
+                    nearest = Some(shift);
+                }
+            }
+        }
+    }
+    let shift = nearest?;
+    if shift.abs() <= tol.parametric() || shift.abs() > 1e-2 {
+        return None;
+    }
+    let start = c.point_at(shift, tol).ok()?;
+    let x = ogeom_math::Direction::new(start - centre, tol).ok()?;
+    let z = if c.is_reversed() {
+        -frame.z()
+    } else {
+        frame.z()
+    };
+    let turned = ogeom_math::Frame::new(centre, z, x, tol).ok()?;
+    let curve: Curve =
+        ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(turned, radius, tol).ok()?).into();
+    let pc_a = ogeom_intersect::exact_pcurve_of(&curve, &fa.surface, tol)?;
+    let pc_b = ogeom_intersect::exact_pcurve_of(&curve, &fb.surface, tol)?;
+    Some(SectionRec {
+        curve,
+        pc_a,
+        pc_b,
+        face_a: section.face_a,
+        face_b: section.face_b,
+        closed: true,
+        tolerance: section.tolerance,
+    })
+}
+
 /// A face's welded chart outline, borrowed as the trim tests take it.
 fn outline_refs(face: &GFace, tol: Tolerances) -> OgeomResult<Vec<&[Point2]>> {
     let Some(lines) = face.outline(tol) else {
@@ -3624,6 +3703,16 @@ fn fill(
         }));
         tangents.extend(pair.tangents);
         same_pairs.extend(pair.same_pairs);
+    }
+    for section in &mut sections {
+        if let Some(rebased) = seamed_at_a_stop(
+            section,
+            &ga.faces[section.face_a],
+            &gb.faces[section.face_b],
+            tol,
+        ) {
+            *section = rebased;
+        }
     }
     let grazed = graze_contacts(ga, gb, &sections, &contacts, tol)?;
     contacts.extend(grazed);

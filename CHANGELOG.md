@@ -25,6 +25,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A closed section starts at a vertex it passes a hair from.** A circle
+  the boolean cuts from a plane and a ball or a drum starts where a world
+  axis falls in its plane, and a piece reaching across that start is split
+  there. On a solid a hair off the world axes the start fell a few
+  ten-thousandths of a radian from a face's vertex on the circle, the
+  sliver between was taken for dust, and the arc beside it was left short
+  of its neighbours: rounding every edge of such a box refused with "a
+  face boundary strand dangles". Such a circle now starts at the vertex.
+
 - **A curve answers an ulp past the end of a domain that ends far out.**
   A curve refused a parameter more than the parametric confusion (1e-9)
   past its domain, but a line's unbounded domain ends at a billion, where

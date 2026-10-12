@@ -196,19 +196,6 @@ winding loop is the rail, `pole_leg` in `marched.rs` splits it clear of the
 hole and starts the seam there. When it is the edge, the seam leaves from the
 edge's own vertex and can cross the hole. No measured part builds one.
 
-**A box a hair off the world axes, every edge rounded.** At stress round
-seed 2 (one case in 900), a box whose frame sits 3e-4 rad off the world
-axes, rounded on all twelve edges at r = 0.474, refuses with "a face
-boundary strand dangles" when its third band at one corner is cut; the
-bands taken in the reverse order close. After the second band, a quarter
-arc between a band and the corner ball runs (0, pi/2 - 3.048e-4), the tilt
-itself, and its end vertex carries a tolerance of 2.6e-4. The circles the
-intersector makes from plane and sphere (`circle_on`) start where the world
-axis projects, which here falls inside the stretch where the arc hugs the
-tangent host plane, and the third cut finds the cylinder's ruling and the
-short arc not meeting. Not yet traced to the step that takes the arc's
-domain start for its vertex.
-
 ### Construction and exchange
 
 **The converter's result depends on how the mesh lists its triangles.**
