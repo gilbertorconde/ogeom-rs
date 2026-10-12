@@ -10828,13 +10828,23 @@ fn without_membranes(
         if n.dot(m) > -0.99 * n.magnitude() * m.magnitude() {
             return Ok(false);
         }
-        // An inner point of the first, on the second's surface.
+        // The first's inner points, every one on the second's surface: a
+        // thin lens (a tube's tip poking through a cap, cut off by it) is
+        // two faces on the same loop facing apart too, as thin as a weld
+        // only near its rim.
         let mesh =
             ogeom_mesh::triangulate_face(model, first, ogeom_mesh::Deflection::default(), tol)?;
-        let probe = mesh.triangles.first().map_or(at, |t| {
-            let [p, q, r] = t.map(|i| mesh.positions[i as usize]);
-            Point::from_vector((p.to_vector() + q.to_vector() + r.to_vector()) / 3.0)
-        });
+        let mut probes: Vec<Point> = mesh
+            .triangles
+            .iter()
+            .map(|t| {
+                let [p, q, r] = t.map(|i| mesh.positions[i as usize]);
+                Point::from_vector((p.to_vector() + q.to_vector() + r.to_vector()) / 3.0)
+            })
+            .collect();
+        if probes.is_empty() {
+            probes.push(at);
+        }
         let Some(NodeData::Face(data)) = model.node(second).map(|n| n.data()) else {
             return Ok(false);
         };
@@ -10842,14 +10852,19 @@ fn without_membranes(
             return Ok(false);
         };
         let placed = surface.transformed(&second.transform(model.datums())?, tol)?;
-        let foot = ogeom_algo::project_on_surface(&placed, probe, 16, tol)?;
         // As far as the weld that joined their corners reached: its floor
         // past what the corners themselves own.
         let owned = explore_unique(model, first, ShapeType::Vertex)?
             .iter()
             .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
             .fold(0.0_f64, |acc, d| acc.max(d.tolerance.get()));
-        Ok(foot.point.distance(probe) <= weld + owned)
+        for probe in probes {
+            let foot = ogeom_algo::project_on_surface(&placed, probe, 16, tol)?;
+            if foot.point.distance(probe) > weld + owned {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     };
     let mut emptied = Vec::new();
     for (index, shell) in shells.iter_mut().enumerate() {

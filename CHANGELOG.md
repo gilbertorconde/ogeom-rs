@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A thin lump is not taken for a membrane.** A leaning torus whose tube
+  pokes a little way past a drum's or a cone's flat end: the cut keeps the
+  tip as a lump of its own, bounded by a patch of the torus and a patch of
+  the end on one loop. The two face apart and are as thin as a weld near
+  the loop, and read at one point there they were dropped as a membrane:
+  the cut came back valid and 0.009 cubic millimetres short. Every inner
+  point of the one face must now lie on the other.
 - **A boolean refuses a face it made that does not close in its chart.**
   A drill whose top line touched `nist_ftc_11`'s bore rim where the bore
   meets the torus above it came back as a cut whose drill wall did not
