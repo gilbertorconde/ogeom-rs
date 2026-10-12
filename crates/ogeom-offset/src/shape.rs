@@ -601,6 +601,8 @@ struct Prepared {
     sign: f64,
     /// For a full revolution band (seam and two closed rings), the rings.
     rings: Option<[Shape; 2]>,
+    /// Whether the face is a whole torus, bounded by its seams alone.
+    whole_torus: bool,
 }
 
 /// Rebuild a solid's topology on moved supports: the rebuild under both
@@ -669,6 +671,11 @@ pub(crate) fn rebuilt(
             .cloned()
             .collect();
 
+        // A whole torus: its seams, walked twice each, whole or in pieces,
+        // are its only edges.
+        let whole_torus = matches!(surface, SurfaceGeometry::Torus(_))
+            && !counts.is_empty()
+            && counts.values().all(|c| *c == 2);
         let both_poles = closed_rings.len() == 2
             && closed_rings.iter().all(|ring| {
                 model
@@ -800,6 +807,7 @@ pub(crate) fn rebuilt(
             surface: moved,
             amount,
             sign,
+            whole_torus,
             // A band needs a ring with an angle to anchor its chart; a whole
             // sphere, bounded by its two poles alone, is assembled wire by
             // wire like any other seamed face.
@@ -1436,7 +1444,25 @@ pub(crate) fn rebuilt(
     // pcurves on the moved surface.
     let mut rebuilt_faces: Vec<Shape> = Vec::with_capacity(prepared.len());
     for prep in &prepared {
-        let built = if let Some(rings) = &prep.rings {
+        let built = if let (true, SurfaceGeometry::Torus(t)) = (prep.whole_torus, &prep.surface) {
+            // The moved torus whole, built as a torus primitive's face is:
+            // nothing but its seams bounds it, and the wire assembly has no
+            // trim to rebuild it from.
+            let torus = t.torus();
+            let face = ogeom_algo::torus_face_seamed_at(
+                model,
+                torus.frame(),
+                torus.major_radius(),
+                torus.minor_radius(),
+                0.0,
+                tol,
+            )?;
+            if prep.shape.orientation() == Orientation::Reversed {
+                face.reversed()
+            } else {
+                face
+            }
+        } else if let Some(rings) = &prep.rings {
             let (Some(lo), Some(hi)) = (
                 new_edges.get(&rings[0].node()),
                 new_edges.get(&rings[1].node()),
@@ -1491,27 +1517,35 @@ pub(crate) fn rebuilt(
         rebuilt_faces.push(built);
     }
 
-    let sewn = sew(model, &rebuilt_faces, tol)?;
-    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
-        ogeom_bail!(Construction, "the offset solid did not close");
-    }
-    // The faces carried their use-orientations through; the *shell* has one
-    // too, and a solid whose outer shell was used reversed reads inside out
-    // if the rebuilt shell forgets it.
-    let outer = {
-        let old_reversed = model
-            .children_of(solid)?
-            .first()
-            .is_some_and(|s| s.orientation() == Orientation::Reversed);
-        if old_reversed {
+    // Each of the solid's shells sewn on its own, its faces in the order
+    // the walk of the solid met them: the outer shell and every void, each
+    // closed. The faces carried their use-orientations through; a shell
+    // has one too, and one used reversed reads inside out if its rebuilt
+    // shell forgets it.
+    let mut shells = Vec::new();
+    let mut taken = 0;
+    for old in model.children_of(solid)? {
+        let count = explore(model, &old, Filter::OfType(ShapeType::Face))?.len();
+        let Some(own) = rebuilt_faces.get(taken..taken + count) else {
+            ogeom_bail!(Construction, "the offset solid did not close");
+        };
+        taken += count;
+        let sewn = sew(model, own, tol)?;
+        if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+            ogeom_bail!(Construction, "the offset solid did not close");
+        }
+        shells.push(if old.orientation() == Orientation::Reversed {
             sewn.shells[0].reversed()
         } else {
             sewn.shells[0].clone()
-        }
-    };
+        });
+    }
+    if shells.is_empty() || taken != rebuilt_faces.len() {
+        ogeom_bail!(Construction, "the offset solid did not close");
+    }
     // Put together raw: `make_solid` would turn an inside-out shell to
     // face out, and the guard below reads it.
-    let offset = model.add_solid(std::slice::from_ref(&outer))?;
+    let offset = model.add_solid(&shells)?;
 
     // The one global guard the local checks cannot give: an offset that
     // moved faces past each other builds a shell that is closed and inside

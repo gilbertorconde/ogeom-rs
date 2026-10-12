@@ -25,6 +25,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`offset_shape` offsets a whole torus and a solid with voids.** A
+  whole torus is one face bounded by nothing but its seams, and the offset
+  assembled faces from their trims: it refused every torus, out or in. It
+  is now the moved torus whole. And a solid with a void sewed all its
+  faces into one shell and refused when they made two; each shell is now
+  sewn on its own and the solid put together from them.
 - **An unclamped spline evaluates at its ends and takes a knot there.**
   With its first or last knot repeated, an unclamped spline's span lookup
   landed on a span of no length at that end of its domain and evaluated

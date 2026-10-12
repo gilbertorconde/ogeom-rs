@@ -1202,7 +1202,12 @@ pub fn make_torus(
 /// `[v0, v0 + 2pi]`, and its seam round the tube is the tube's circle at
 /// longitude zero. The face alone, on `frame` made right-handed as
 /// [`make_torus`] makes it.
-pub(crate) fn torus_face_seamed_at(
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// radius is not a size.
+pub fn torus_face_seamed_at(
     model: &mut Model,
     frame: Frame,
     major: f64,

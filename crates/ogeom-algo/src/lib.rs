@@ -84,7 +84,7 @@ pub use pcurve_gap::{edge_pcurve_gap, pcurve_gap, state_pcurve_gaps, state_pcurv
 pub use place::{copied, transformed};
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_hexahedron, make_parallelepiped,
-    make_polyhedron, make_sphere, make_torus, make_wedge,
+    make_polyhedron, make_sphere, make_torus, make_wedge, torus_face_seamed_at,
 };
 pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
