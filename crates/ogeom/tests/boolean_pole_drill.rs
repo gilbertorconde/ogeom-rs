@@ -730,3 +730,95 @@ fn a_sliver_of_a_ball_beside_its_pole_is_read_against_its_true_trim() {
     let diagnosis = check(&model, &common, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
 }
+
+/// Two oblique boxes fused, cut by a ball one of whose faces passes beside
+/// its chart's pole, not through it: that face cuts a small circle round
+/// the pole, whose image no chart about that pole holds, so the ball is
+/// charted about an axis clear of it. The cut and the common add up to the
+/// fused pair.
+#[test]
+fn a_plane_beside_a_ball_s_pole_turns_its_chart() {
+    let mut model = Model::new();
+    let frame = |at: (f64, f64, f64), z: (f64, f64, f64), x: (f64, f64, f64)| {
+        Frame::new(
+            Point::new(at.0, at.1, at.2),
+            Direction::new(Vector::new(z.0, z.1, z.2), T).unwrap(),
+            Direction::new(Vector::new(x.0, x.1, x.2), T).unwrap(),
+            T,
+        )
+        .unwrap()
+    };
+    let first = make_box(
+        &mut model,
+        frame(
+            (2.0, -1.843_077_895_014_359_6, 0.5),
+            (
+                -0.542_500_285_810_833_2,
+                -0.703_634_176_884_512_1,
+                0.458_903_459_362_881_07,
+            ),
+            (
+                -0.840_055_617_143_986_7,
+                0.454_400_559_053_330_6,
+                -0.296_355_685_008_498_4,
+            ),
+        ),
+        (5.452_203_210_302_122, 5.5, 6.5),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let second = make_box(
+        &mut model,
+        frame(
+            (2.136_387_783_977_939_5, 1.5, -3.0),
+            (
+                -0.231_694_730_394_031_1,
+                0.185_443_820_116_384_33,
+                -0.954_949_287_390_843_3,
+            ),
+            (0.0, -0.981_661_732_134_095_8, -0.190_631_171_804_316_57),
+        ),
+        (4.197_667_522_462_558, 7.5, 7.597_456_914_006_61),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &first, &second, T)
+        .unwrap()
+        .shape;
+    let ball = make_sphere(
+        &mut model,
+        frame(
+            (2.821_697_342_574_099, 0.0, -0.5),
+            (
+                0.185_798_440_566_491_9,
+                -0.503_200_703_192_765_2,
+                0.843_959_709_814_020_9,
+            ),
+            (0.0, 0.858_915_246_217_360_6, 0.512_117_759_714_863_7),
+        ),
+        3.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let cut = ogeom::boolean::cut(&mut model, &fused, &ball, T)
+        .unwrap()
+        .shape;
+    let common = ogeom::boolean::common(&mut model, &fused, &ball, T)
+        .unwrap()
+        .shape;
+    for result in [&cut, &common] {
+        assert!(check(&model, result, T).unwrap().is_valid());
+    }
+    let (whole, c, k) = (
+        volume(&model, &fused),
+        volume(&model, &common),
+        volume(&model, &cut),
+    );
+    assert!(
+        (c + k - whole).abs() < whole * 1e-6,
+        "{c} + {k} against {whole}"
+    );
+}

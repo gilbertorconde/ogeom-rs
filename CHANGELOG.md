@@ -32,6 +32,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A ball whose pole a plane passes beside is charted clear of it.** A
+  boolean restates a whole ball on a chart whose poles stand clear of the
+  other operand's curved faces, and left its planes out: a plane through a
+  pole cuts a meridian, which splits there exactly. A plane a hair beside
+  the pole cuts a small circle round it instead, whose image the chart
+  cannot hold, and the boolean refused ("a branch passing beside a chart's
+  pole fits nothing yet"): two fused boxes cut by a ball, at chain stress
+  seed 9, twice. Such a plane now counts against the pole too.
+
 - **A B-spline closed round with no seam written meshes.** Some modellers
   write a closed B-spline face (a drum, a dome, a ring of a torus) bounded
   by its rims alone, with no seam edge. Each rim then runs the chart from

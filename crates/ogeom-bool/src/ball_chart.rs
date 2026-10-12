@@ -1,5 +1,6 @@
 //! A ball, or a sphere face, restated on a chart whose poles stand clear of the other
-//! operand.
+//! operand: of its curved faces, and of its planes other than one through
+//! a pole.
 //!
 //! A sphere's chart collapses at its poles and folds at its seam. Where the
 //! other operand's boundary passes through a pole (a drill whose wall runs
@@ -81,12 +82,21 @@ fn turned(
             continue;
         };
         let walls = curved_surfaces_of(model, other, tol)?;
+        let flats = planes_of(model, other, tol)?;
         let clearance = |p: Point| -> f64 {
-            walls
+            let curved = walls
                 .iter()
                 .filter_map(|s| ogeom_algo::project_on_surface(s, p, 8, tol).ok())
                 .map(|found| found.distance)
-                .fold(f64::INFINITY, f64::min)
+                .fold(f64::INFINITY, f64::min);
+            // A plane through the pole cuts a meridian, split there exactly;
+            // one a hair beside it cuts a small circle round the pole, whose
+            // image the chart cannot hold.
+            flats
+                .iter()
+                .map(|plane| plane.distance_to(p))
+                .filter(|d| *d > tol.confusion())
+                .fold(curved, f64::min)
         };
         let poles = |axis: Vector| {
             clearance(ball.centre + axis * ball.radius)
@@ -250,6 +260,26 @@ fn curved_surfaces_of(
             continue;
         }
         out.push(surface.transformed(&face.transform(model.datums())?, tol)?);
+    }
+    Ok(out)
+}
+
+/// The planes of `shape`'s faces, placed in world space.
+fn planes_of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<ogeom_math::Plane>> {
+    let mut out = Vec::new();
+    for face in explore_unique(model, shape, ShapeType::Face)? {
+        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+            continue;
+        };
+        let Some(surface @ SurfaceGeometry::Plane(_)) = model.geometry().surface(data.surface)
+        else {
+            continue;
+        };
+        if let SurfaceGeometry::Plane(placed) =
+            surface.transformed(&face.transform(model.datums())?, tol)?
+        {
+            out.push(placed.plane());
+        }
     }
     Ok(out)
 }

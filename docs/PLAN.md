@@ -200,11 +200,12 @@ column it closes on. A later boolean on the fused solid meets that gap:
 past its arrangement's node snap, the strand ending on the column dangles
 and it refuses. The fuse should carry the short piece into the loop's
 pcurve, or state the loop on the column it closes on. Of the chain stress
-scenario's 900 cases at seeds 4, 9 and 10, 1, 2 and 1 are refused (3, 5
-and 3 before the seam fixes of 2026-10-12): three marched fits beside a
-sphere's pole ("a branch passing beside a chart's pole fits nothing
-yet"), and seed 4's `chain/primitives/178`, two fused balls cut by a
-cone, whose boundary strand dangles.
+scenario's 900 cases at seeds 4, 9 and 10, 1, 0 and 1 are refused (3, 5
+and 3 before the seam fixes of 2026-10-12): seed 10's
+`chain/primitives/29`, a torus and a ball fused and cut by a ball, a
+marched fit beside the ball's pole ("a branch passing beside a chart's
+pole fits nothing yet"), and seed 4's `chain/primitives/178`, two fused
+balls cut by a cone, whose boundary strand dangles.
 
 **A tilted half ball drilled on the diagonal chart.** A half ball charted
 about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled
