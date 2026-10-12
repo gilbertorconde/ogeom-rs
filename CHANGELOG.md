@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A blend's wedge states its edges' pcurve gaps before it is applied.**
+  A marched band's rails and legs carry fitted pcurves that stand off
+  their edges between their samples; one wedge's edge stated 1.3e-4 where
+  its pcurve stood 1.8e-4 off. The wedge's edges now state what their
+  pcurves measure along them before the boolean reads it.
 - **A face split along a projected curve states its new edges' gaps.** A
   curve dropped onto a face along its normals lands through a fitted
   pcurve where no closed form projects it, and the fit strays between its

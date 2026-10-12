@@ -806,6 +806,11 @@ pub(crate) fn apply_wedge(
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the blend wedge did not close");
     }
+    // A marched band's rails and legs carry fitted pcurves on the hosts and
+    // the band, which stand off their edges between their samples; every
+    // edge of the wedge states what its pcurves measure along it before
+    // the boolean reads it.
+    ogeom_algo::state_pcurve_gaps(model, &sewn.shells[0], tol)?;
     // Put together raw: a wedge is oriented by construction, and asks no
     // mesh to say which way it faces.
     let wedge = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
@@ -1807,6 +1812,24 @@ mod tests {
                 panic!("{name}: one wedge, not {}", wedges.len());
             };
             assert_eq!(walked_one_way(&model, &wedge.solid), 0, "{name}");
+            // Each edge stands within its own tolerance of every pcurve it
+            // carries, measured along its whole length.
+            for e in ogeom_topo::explore_unique(&model, &wedge.solid, ShapeType::Edge).unwrap() {
+                let stated = model
+                    .node(&e)
+                    .unwrap()
+                    .data()
+                    .as_edge()
+                    .unwrap()
+                    .tolerance
+                    .get();
+                if let Some(gap) = ogeom_algo::edge_pcurve_gap(&model, &e, T).unwrap() {
+                    assert!(
+                        gap <= stated,
+                        "{name}: a pcurve stands {gap:e} off an edge stating {stated:e}"
+                    );
+                }
+            }
             // The checker asks the walk too, and that every vertex is held
             // as loosely as the edges meeting it.
             let found = ogeom_algo::check(&model, &wedge.solid, T).unwrap();
