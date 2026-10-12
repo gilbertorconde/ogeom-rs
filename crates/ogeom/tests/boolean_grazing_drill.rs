@@ -517,3 +517,42 @@ fn a_drill_whose_top_touches_a_bore_rim_is_never_broken() {
         assert!(diagnosis.is_valid(), "{diagnosis}");
     }
 }
+
+/// A drill of radius 83 along x through `nist_ctc_03`, its seam on top. An
+/// edge of the cut states its tolerance at the gap its pcurve was measured
+/// to stand off, and read again by `check` at the edge's start the same gap
+/// came out ten ulps wider: the cut was called broken by rounding alone.
+#[test]
+fn a_gap_past_its_stated_tolerance_by_rounding_alone_is_within_it() {
+    let path = format!(
+        "{}/../../tests/corpus/nist_ctc_03_asme1_rc.stp",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(path).expect("the corpus file is committed");
+    let mut import = ogeom::io::read_step(&text, T).unwrap();
+    let solid = import.solids[0].clone();
+    let (part, _) =
+        ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T).unwrap();
+    let mut model = import.document.model().clone();
+    let frame = Frame::new(
+        Point::new(-309.051_276_925_560_4, 59.989_72, -5.274_848_290_028_359),
+        Direction::X,
+        Direction::Z,
+        T,
+    )
+    .unwrap();
+    let drill = make_cylinder(
+        &mut model,
+        frame,
+        83.382_388_290_028_36,
+        618.102_553_851_120_8,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let cut = ogeom::boolean::cut(&mut model, &part.shape, &drill, T)
+        .unwrap()
+        .shape;
+    let diagnosis = check(&model, &cut, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+}

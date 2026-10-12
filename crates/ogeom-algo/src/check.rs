@@ -703,6 +703,10 @@ pub(crate) fn pcurve_off_curve(
     // A pcurve fitted through its edge's points strays most between them,
     // so the samples are many more than a fit takes per span.
     const SAMPLES: u32 = 32;
+    // A gap stated where it was measured reads a few ulps wider measured
+    // again here, through another chain of evaluations: past the tolerance
+    // by rounding alone is within it.
+    let reach = reach * (1.0 + 1e-9);
     let mut widest: Option<(f64, f64)> = None;
     for i in 0..=SAMPLES {
         let t = f64::from(i) / f64::from(SAMPLES);

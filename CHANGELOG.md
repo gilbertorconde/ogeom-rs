@@ -52,6 +52,11 @@ bump may break the API and a patch bump may not.
   kept pieces did not close. The rims of drums and cones are now
   intersected with the other surface, as a spline's borders were, and
   every piercing seeds.
+- **`check` does not call a gap broken by rounding.** An edge of a drill
+  through `nist_ctc_03` stated its tolerance at the gap its pcurve stood
+  off, and `check`, measuring the same gap again at the edge's start, read
+  it ten ulps wider and called the cut broken. A gap past its tolerance by
+  a billionth of it is within it.
 - **A hole named a turn round its wall is drawn as a hole.** A face on a
   periodic surface whose hole's pcurves stand a whole period from the
   face's own bound (a converted bore whose cross bores' loops came out at
