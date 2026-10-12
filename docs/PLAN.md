@@ -155,6 +155,18 @@ rim where the bore meets the torus above it (stress seed 11, drill 14) has
 its section along the top stop a millimetre short of the touch; the face it
 leaves does not close in its chart, and the boolean refuses it.
 
+**A loop's pcurve stopped short of its seam column after a fuse.** A
+section that crosses a torus's seam a hair from its own start is marched
+as a long piece and one a few hundred-thousandths long across the seam;
+the fuse drops the short piece, the loop closes in space within its
+vertex's radius, and on the fused face its pcurve stops 1e-4 short of the
+column it closes on. A later boolean on the fused solid meets that gap:
+past its arrangement's node snap, the strand ending on the column dangles
+and it refuses. Of the chain stress scenario's 900 cases at seeds 4, 9 and
+10, 3, 5 and 3 are refused this way or nearby (a marched fit beside a
+pole, a wire that does not close). The fuse should carry the short piece
+into the loop's pcurve, or state the loop on the column it closes on.
+
 **A tilted half ball drilled on the diagonal chart.** A half ball charted
 about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled
 through, gives fuse + common and cut + common 1.2e-8 relative off the
