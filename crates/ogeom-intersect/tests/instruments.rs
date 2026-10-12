@@ -217,14 +217,18 @@ mod accuracy {
             Meeting::Touching(ref p) if p.len() == 1
         ));
 
-        // An oblique plane on a cone has no closed form and is refused.
+        // An oblique plane steeper to the axis than the wall cuts an ellipse.
+        let Meeting::Along(oblique) = surface_surface(
+            &plane(Point::ORIGIN, Vector::new(0.0, 1.0, 1.0)),
+            &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
+            T,
+        )
+        .unwrap() else {
+            panic!("an oblique plane through the cone's window cuts it");
+        };
         assert!(
-            surface_surface(
-                &plane(Point::ORIGIN, Vector::new(0.0, 1.0, 1.0)),
-                &cone(Point::ORIGIN, Vector::Z, 3.0, 0.2),
-                T,
-            )
-            .is_err()
+            matches!(oblique.as_slice(), [Curve::Ellipse(_)]),
+            "{oblique:?}"
         );
     }
 

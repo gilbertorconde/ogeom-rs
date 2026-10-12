@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **An oblique plane cuts a cone in an exact conic.** A plane oblique to a
+  cone's axis and clear of its apex meets it in an ellipse where it is
+  steeper to the axis than the cone's wall, a parabola where it runs
+  parallel to a ruling, and a hyperbola where it is shallower, one branch
+  on each nappe; each is now stated in closed form, the branches the
+  cone's window reaches only, where it was marched and fitted before.
+
 - **`project_edge_onto_plane` keeps parabolas and hyperbolas.** They come
   back as `ProjectedCurve::Parabola` and `ProjectedCurve::Hyperbola`
   (exact, on their principal axes; a segment where the conic's plane

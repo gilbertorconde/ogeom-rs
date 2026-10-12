@@ -565,8 +565,7 @@ fn coaxial_cylinder_torus(
 /// drafted wall's cap, a chamfer cone against the face it melts into), and
 /// the answer is a circle framed on the cone's own frame, so a caller
 /// re-deriving an edge finds its parameters where the old ones were. An
-/// oblique plane meets a cone in a conic, which is the marching
-/// intersector's business.
+/// oblique plane meets a cone in a conic ([`conic_of`]).
 fn plane_cone(
     plane: ogeom_math::Plane,
     cone: ogeom_math::Cone,
@@ -580,11 +579,7 @@ fn plane_cone(
         return Ok(rulings_in(plane, &cone, heights, tol));
     }
     if !square_to_axis(along, tol) {
-        ogeom_bail!(
-            NotDone,
-            "a plane oblique to a cone's axis meets it in a conic, which \
-             needs the general marching intersector"
-        );
+        return conic_of(plane, &cone, heights, tol);
     }
     // The plane's height along the axis, from the cone frame's origin.
     let height = -plane.signed_distance_to(axis.location) * along.signum();
@@ -601,6 +596,137 @@ fn plane_cone(
     Ok(match cone_parallel(&cone, centre, radius.abs(), tol) {
         Some(circle) => Meeting::Along(vec![circle]),
         None => Meeting::Apart,
+    })
+}
+
+/// An oblique plane clear of a cone's apex: the conic it cuts, exactly.
+///
+/// In the plane's own frame (`e2` the axis's direction within the plane,
+/// `e1` across it, the apex standing `k` off the plane along its normal)
+/// the cone `((p - apex) . a)^2 = |p - apex|^2 cos^2(alpha)` reads
+/// `C u^2 + D v^2 - 2 k c1 c2 v + (C - c1^2) k^2 = 0`, with `C = cos^2(alpha)`,
+/// `c1 = a . n`, `c2 = a . e2` and `D = c1^2 - sin^2(alpha)`: an ellipse
+/// where the plane is steeper to the axis than the cone's wall (`D > 0`),
+/// a hyperbola where it is shallower, one branch on each nappe, and a
+/// parabola where it runs parallel to a ruling. Only what lies on the
+/// nappe the cone's window reaches is stated, the open conics over a span
+/// that carries them past the window's far end.
+fn conic_of(
+    plane: ogeom_math::Plane,
+    cone: &ogeom_math::Cone,
+    heights: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Meeting> {
+    let a = cone.axis().direction.vector();
+    let n = plane.normal().vector();
+    let apex = cone.apex();
+    let half = cone.half_angle().abs();
+    let (sin, cos) = half.sin_cos();
+    let c1 = a.dot(n);
+    let Ok(e2) = Direction::new(a - n * c1, tol) else {
+        return Ok(Meeting::Apart);
+    };
+    let e2 = e2.vector();
+    let e1 = n.cross(e2);
+    let c2 = a.dot(e2);
+    let k = (plane.project(apex) - apex).dot(n);
+    let foot = apex + n * k;
+    let big_c = cos * cos;
+    let d = c1.mul_add(c1, -(sin * sin));
+    // Which nappes the window holds: heights measured from the apex along
+    // the axis.
+    let apex_height = cone.frame().to_local(apex).z;
+    let (lo, hi) = (
+        heights.0.min(heights.1) - apex_height,
+        heights.0.max(heights.1) - apex_height,
+    );
+    let reach = lo.abs().max(hi.abs());
+    let on_window_nappe = |p: Point| {
+        let h = (p - apex).dot(a);
+        (h >= 0.0 && hi > tol.confusion()) || (h <= 0.0 && lo < -tol.confusion())
+    };
+    if !reach.is_finite() {
+        ogeom_bail!(NotDone, "an unbounded cone window carries no conic span");
+    }
+    // A span over which an open conic's points climb past the window's far
+    // end, both ways.
+    let span = |at: &dyn Fn(f64) -> Point| -> f64 {
+        let mut t = 1.0_f64;
+        for _ in 0..64 {
+            let far = [at(t), at(-t)]
+                .iter()
+                .all(|p| (*p - apex).dot(a).abs() > reach + tol.confusion());
+            if far {
+                break;
+            }
+            t *= 2.0;
+        }
+        t
+    };
+    let frame = |origin: Point, x: Vector| -> OgeomResult<Frame> {
+        let x = Direction::new(x, tol)?;
+        Frame::new(origin, Direction::new(n, tol)?, x, tol)
+    };
+    let mut out: Vec<Curve> = Vec::new();
+    if d.abs() <= 1e-9 {
+        // Parallel to a ruling: v = q u^2 + v_apex in the plane.
+        let q = big_c / (2.0 * k * c1 * c2);
+        if !q.is_finite() {
+            return Ok(Meeting::Apart);
+        }
+        let v_apex = (big_c - c1 * c1) * k / (2.0 * c1 * c2);
+        let vertex = foot + e2 * v_apex;
+        if !on_window_nappe(vertex) {
+            return Ok(Meeting::Apart);
+        }
+        let opening = if q > 0.0 { e2 } else { -e2 };
+        let parabola =
+            ogeom_math::Parabola::new(frame(vertex, opening)?, 1.0 / (4.0 * q.abs()), tol)?;
+        let extent = span(&|t| ogeom_math::elementary::parabola_at(&parabola, t).point);
+        out.push(ogeom_geom::ParabolaCurve::new(parabola, extent)?.into());
+        return Ok(Meeting::Along(out));
+    }
+    let v0 = k * c1 * c2 / d;
+    let r = d * v0 * v0 - (big_c - c1 * c1) * k * k;
+    let centre = foot + e2 * v0;
+    if d > 0.0 {
+        if r <= tol.confusion() * tol.confusion() {
+            return Ok(Meeting::Apart);
+        }
+        let (along_u, along_v) = ((r / big_c).sqrt(), (r / d).sqrt());
+        if !on_window_nappe(centre + e2 * along_v) {
+            return Ok(Meeting::Apart);
+        }
+        let ellipse = if along_v >= along_u {
+            Ellipse::new(frame(centre, e2)?, along_v, along_u, tol)?
+        } else {
+            Ellipse::new(frame(centre, e1)?, along_u, along_v, tol)?
+        };
+        out.push(ogeom_geom::EllipseCurve::new(ellipse).into());
+        return Ok(Meeting::Along(out));
+    }
+    // A hyperbola: its branches open along e1 where r > 0, along e2 where
+    // r < 0, one on each nappe.
+    let (major_dir, major, minor) = if r > 0.0 {
+        (e1, (r / big_c).sqrt(), (r / -d).sqrt())
+    } else {
+        (e2, (-r / -d).sqrt(), (-r / big_c).sqrt())
+    };
+    if !(major > tol.confusion() && minor > tol.confusion()) {
+        return Ok(Meeting::Touching(vec![apex]));
+    }
+    for toward in [major_dir, -major_dir] {
+        if !on_window_nappe(centre + toward * major) {
+            continue;
+        }
+        let hyperbola = ogeom_math::Hyperbola::new(frame(centre, toward)?, major, minor, tol)?;
+        let extent = span(&|t| ogeom_math::elementary::hyperbola_at(&hyperbola, t).point);
+        out.push(ogeom_geom::HyperbolaCurve::new(hyperbola, extent)?.into());
+    }
+    Ok(if out.is_empty() {
+        Meeting::Apart
+    } else {
+        Meeting::Along(out)
     })
 }
 

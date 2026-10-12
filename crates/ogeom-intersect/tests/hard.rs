@@ -800,9 +800,11 @@ fn a_cone_through_its_apex_is_sectioned_on_both_nappes() {
     }
 }
 
-/// A steep plane passing half a millimetre from a cone's apex: the fitted
-/// section's images, lifted through their surfaces, stand within the
-/// tolerance it states, however fast the cone's chart turns there.
+/// A steep plane passing half a millimetre from a cone's apex: the section
+/// is the hyperbola's branch on the window's nappe, on both surfaces, and
+/// the chart images it carries, lifted through their surfaces, stand
+/// within the tolerance it states, however fast the cone's chart turns
+/// there.
 #[test]
 fn a_section_beside_a_cone_s_apex_states_its_true_tolerance() {
     use ogeom_geom::{Curve2d as _, Surface as _};
@@ -834,8 +836,15 @@ fn a_section_beside_a_cone_s_apex_states_its_true_tolerance() {
         for k in 0..=4000 {
             let t = lo + (hi - lo) * f64::from(k) / 4000.0;
             let on = c.curve.point_at(t, T).unwrap();
+            assert!(
+                off(&cone, on).abs() < 1e-9 && off(&steep, on).abs() < 1e-9,
+                "off the surfaces at {t}"
+            );
             for (surface, image) in [(&cone, &c.on_a), (&steep, &c.on_b)] {
-                let at = image.as_ref().unwrap().point_at(t, T).unwrap();
+                let Some(image) = image else {
+                    continue;
+                };
+                let at = image.point_at(t, T).unwrap();
                 let lifted = surface.point_at(at.x, at.y, T).unwrap();
                 assert!(
                     lifted.distance(on) <= c.tolerance,
