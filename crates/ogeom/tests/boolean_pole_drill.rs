@@ -665,3 +665,68 @@ fn a_torus_tube_beside_a_balls_pole() {
         "back {back} common {common} torus {vb}"
     );
 }
+
+/// A ball and a drum on oblique axes whose common keeps a sliver of the
+/// ball a few hundredths wide, two thirds of a millimetre from its pole.
+/// The sliver's rings are polylines straight in the ball's chart, which
+/// stretches there, and a ray meeting the ball just outside the sliver read
+/// as crossing it: a point outside the common read inside, and the check
+/// called the common's ball face turned in. A ray meeting a curved face
+/// near its trim reads it against rings drawn finer, and the common checks
+/// valid.
+#[test]
+fn a_sliver_of_a_ball_beside_its_pole_is_read_against_its_true_trim() {
+    let mut model = Model::new();
+    let frame = |at: [f64; 3], z: [f64; 3], x: [f64; 3]| {
+        let direction = |v: [f64; 3]| Direction::new(Vector::new(v[0], v[1], v[2]), T).unwrap();
+        Frame::new(
+            Point::new(at[0], at[1], at[2]),
+            direction(z),
+            direction(x),
+            T,
+        )
+        .unwrap()
+    };
+    let ball = make_sphere(
+        &mut model,
+        frame(
+            [1.339_148_868_768_348_6, 2.5, -1.217_733_954_411_407_6],
+            [
+                -0.757_728_519_763_805_1,
+                -0.584_303_982_865_410_6,
+                0.290_579_328_143_229_45,
+            ],
+            [0.0, 0.445_284_593_575_738_1, 0.895_389_094_597_477_1],
+        ),
+        3.75,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let drum = make_cylinder(
+        &mut model,
+        frame(
+            [-1.0, 1.926_468_907_191_658_5, -0.5],
+            [
+                0.817_392_615_291_016_8,
+                -0.571_843_915_017_859_5,
+                0.069_741_302_861_065_54,
+            ],
+            [
+                -0.576_080_994_711_431,
+                -0.811_380_686_961_981,
+                0.098_954_880_412_197_19,
+            ],
+        ),
+        1.449_072_030_036_451_2,
+        5.5,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let common = ogeom::boolean::common(&mut model, &ball, &drum, T)
+        .unwrap()
+        .shape;
+    let diagnosis = check(&model, &common, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+}

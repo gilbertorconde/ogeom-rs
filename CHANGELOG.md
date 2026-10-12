@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A ray meeting a curved face near its trim reads the true trim.** The
+  exact classifier counts a ray's crossing of a face where the hit lies
+  inside the face's rings, polylines straight in the face's chart. Beside
+  a sphere's pole the chart stretches, and a ring whose points keep to
+  their edges in space strays between them in the chart by many times the
+  band a hit is held to. A ray meeting a ball just outside a sliver of it
+  two thirds of a millimetre from its pole counted the sliver, and the
+  check called a valid common's ball face turned in. A hit within fifty
+  bands of a curved face's trim is now read against its rings drawn ten
+  times finer.
 - **The mesh converter facets a face whose boundary does not close.** A
   printed part of the DoomCube 350 assembly, meshed and converted back,
   came back with a face whose wire's edges stood 4 mm apart. They were

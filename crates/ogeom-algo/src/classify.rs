@@ -325,6 +325,9 @@ struct PreparedFace {
     /// about a few faces of a large solid, and drawing every face's rings
     /// up front cost more than all its questions.
     rings: std::sync::OnceLock<OgeomResult<Rings>>,
+    /// The rings drawn ten times finer, for a ray that meets the face
+    /// near its trim (see [`PreparedFace::fine_rings`]).
+    fine_rings: std::sync::OnceLock<OgeomResult<Rings>>,
     /// The face's surface in the model's store, under which rays cast
     /// against it are kept.
     surface: ogeom_topo::SurfaceId,
@@ -335,6 +338,10 @@ struct PreparedFace {
     /// own tolerance, never under the confusion distance.
     reach: f64,
 }
+
+/// How many bands from a curved face's trim a ray's hit is read again
+/// against the rings drawn finer.
+const NEAR_TRIM: f64 = 50.0;
 
 /// A face's trimming rings at one chord.
 #[derive(Debug)]
@@ -607,6 +614,33 @@ impl PreparedFace {
         }
     }
 
+    /// The rings drawn at a tenth of `deflection`'s chord and angle. A ring
+    /// is a polyline in the chart, straight between points its edges are
+    /// drawn at in space, and where the chart stretches (beside a sphere's
+    /// pole) a chord that keeps to its edge in space strays from it in the
+    /// chart by many times the band a hit near it is held to. Drawn when a
+    /// ray first meets the face near its trim.
+    fn fine_rings(
+        &self,
+        model: &Model,
+        deflection: Deflection,
+        tol: Tolerances,
+    ) -> OgeomResult<&Rings> {
+        let (surface, _) = self.placed(model)?;
+        let fine = Deflection {
+            chord: deflection.chord * 0.1,
+            angular: deflection.angular * 0.1,
+            ..deflection
+        };
+        match self
+            .fine_rings
+            .get_or_init(|| Rings::of(model, &self.face, surface, fine, tol))
+        {
+            Ok(rings) => Ok(rings),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     /// Where a point sits against this face: [`classify_on_face`] on what
     /// was prepared, with no surface lookup, placement or ring walk per
     /// question.
@@ -843,6 +877,7 @@ impl SolidBoundary {
                     placed: std::sync::OnceLock::new(),
                     face: face.clone(),
                     rings: std::sync::OnceLock::new(),
+                    fine_rings: std::sync::OnceLock::new(),
                     surface: data.surface,
                     bound,
                     reach: tol.confusion().max(data.tolerance.get()),
@@ -1110,10 +1145,26 @@ impl SolidBoundary {
                         // needs zero or two; abandon the ray rather than guess.
                         continue 'directions;
                     }
-                    let rings = prepared.rings(model, ring_deflection, tol)?;
-                    let at = rings.place(surface, Point2::new(u, v), tol);
+                    let mut rings = prepared.rings(model, ring_deflection, tol)?;
+                    let mut at = rings.place(surface, Point2::new(u, v), tol);
                     let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
                     let face = &prepared.face;
+                    // Near the trim on a curved face, the rings are read again
+                    // drawn finer: drawn straight in a stretched chart, they
+                    // can stray from the trim by more than the band.
+                    if !matches!(surface, ogeom_geom::SurfaceGeometry::Plane(_))
+                        && rings.within(
+                            model,
+                            face,
+                            ring_deflection,
+                            at,
+                            parametric_band(surface, (u, v), (reach + ring_chord) * NEAR_TRIM, tol),
+                            tol,
+                        )?
+                    {
+                        rings = prepared.fine_rings(model, ring_deflection, tol)?;
+                        at = rings.place(surface, Point2::new(u, v), tol);
+                    }
                     if rings.within(model, face, ring_deflection, at, band, tol)? {
                         // Too near the face's boundary to know which side of the
                         // trim it crossed, and a shared edge would be counted by
