@@ -171,6 +171,55 @@ fn a_cylinder_rim_gains_a_toroidal_blend() {
     );
 }
 
+/// A drum standing at a slant, either rim rounded. The tube's ring on the
+/// wall lies on the torus chart's outer equator, the seam of its tube
+/// angle, where rounding reads it at either end of the chart; the blend is
+/// the quarter of the tube between the wall and the cap whichever end it
+/// read, so the volume is the drum's less one Pappus ring.
+#[test]
+fn a_slanted_drum_s_rims_round_the_quarter_tube() {
+    use ogeom_math::{Direction, Vector};
+    let pi = core::f64::consts::PI;
+    let (radius, height, blend) = (1.0, 3.0, 0.2);
+    let frame = Frame::new(
+        Point::ORIGIN,
+        Direction::new(Vector::new(0.0, 0.6, 0.8), T).unwrap(),
+        Direction::new(Vector::new(0.0, 0.8, -0.6), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let k = (10.0 - 3.0 * pi) / (3.0 * (4.0 - pi));
+    let removed = 2.0 * pi * (radius - k * blend) * (1.0 - pi / 4.0) * blend * blend;
+    let want = pi * radius * radius * height - removed;
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    for rim in 0..2 {
+        let mut model = ogeom_topo::Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut model, frame, radius, height, T)
+            .unwrap()
+            .shape;
+        let rims: Vec<_> = ogeom_topo::explore_unique(&model, &drum, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                ogeom_algo::edge_vertices(&model, e)
+                    .unwrap()
+                    .is_some_and(|(a, b)| a.is_same(&b))
+            })
+            .collect();
+        assert_eq!(rims.len(), 2);
+        let result = ogeom_fillet::fillet_edge(&mut model, &drum, &rims[rim], blend, T).unwrap();
+        let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let got = ogeom_algo::volume_properties(&model, &result.shape, fine, T)
+            .unwrap()
+            .mass;
+        assert!((got - want).abs() < 1e-6, "rim {rim}: {got} against {want}");
+    }
+}
+
 #[test]
 fn a_rim_fillet_that_swallows_the_axis_is_refused() {
     let mut model = ogeom_topo::Model::new();

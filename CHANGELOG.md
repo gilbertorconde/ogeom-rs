@@ -25,6 +25,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A slanted drum's rounded rim keeps the material it should.** A rim
+  fillet's torus band runs between a ring on the wall, on the tube's outer
+  equator, and a ring on the cap. The equator is the seam of the torus
+  chart's tube angle, and at a slant rounding read its row at the far end
+  of the chart, so the band ran the other three quarters of the tube and
+  the drum lost a ring of material, valid by `check` all the same: 8.74
+  against 9.37 for a drum of radius 1 and height 3 rounded at 0.2. A row
+  on the seam of a chart periodic in its second parameter is now taken
+  at the end nearer the other ring. In a stress scenario rounding a
+  slanted drum's rims, 65 cases in 100 were wrong; none are now.
 - **Every edge of a box at a slant rounds.** A box corner's ball meets
   two of its bands along meridians through the poles of its chart, and the
   boolean splits such a circle at the poles found by projecting them onto

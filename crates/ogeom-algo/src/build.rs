@@ -1690,6 +1690,25 @@ pub fn make_revolution_band(
     if rings[1].degenerate {
         rings[1].winding = -rings[0].winding;
     }
+    // A row on the seam of a chart periodic in `v` (a torus's outer
+    // equator) reads at either end of it, and which one rounding picked
+    // decides whether the band runs a quarter of the tube or the other
+    // three. Such a row is taken at the end nearer the other ring's row.
+    if surface.is_periodic_v() {
+        let (_, (va, vb)) = surface.domain();
+        let on_seam =
+            |row: f64| (row - va).abs() <= tol.angular() || (vb - row).abs() <= tol.angular();
+        for (this, other) in [(0, 1), (1, 0)] {
+            if on_seam(rings[this].row) && !on_seam(rings[other].row) {
+                let toward = rings[other].row;
+                rings[this].row = if (toward - va).abs() <= (vb - toward).abs() {
+                    va
+                } else {
+                    vb
+                };
+            }
+        }
+    }
     let anchor = {
         let Some(node) = model.node(&rings[0].vertex) else {
             ogeom_bail!(Dangling, "vertex is not in this model");
