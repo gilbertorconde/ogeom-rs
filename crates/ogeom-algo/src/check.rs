@@ -179,7 +179,7 @@ pub fn check_kept(
     })?;
     each(of(ShapeType::Face), &mut found, |face, out| {
         check_face(model, face, tol, out)?;
-        check_face_chart(model, face, tol, out)
+        check_face_chart(model, face, &|_| false, tol, out)
     })?;
     for shell in of(ShapeType::Shell) {
         check_shell(model, shell, &mut found)?;
@@ -909,6 +909,26 @@ fn pcurves_apart(
     Ok(widest)
 }
 
+/// Where a face's boundary does not close in its surface's chart, each in
+/// a sentence; none where it closes. The test [`check`] makes of every
+/// face, for a builder asking it of the faces it made. A wire `kept` names
+/// is one the builder took over as it stood, and is not walked.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the face
+/// names a surface not in the model.
+pub fn chart_breaks(
+    model: &Model,
+    face: &Shape,
+    kept: &dyn Fn(&Shape) -> bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<String>> {
+    let mut found = Diagnosis::default();
+    check_face_chart(model, face, kept, tol, &mut found)?;
+    Ok(found.problems.into_iter().map(|p| p.what).collect())
+}
+
 /// A face's boundary, read edge by edge through the pcurve lookup the
 /// boolean and the mesher use, must close in its surface's chart.
 ///
@@ -935,6 +955,7 @@ fn pcurves_apart(
 fn check_face_chart(
     model: &Model,
     face: &Shape,
+    kept: &dyn Fn(&Shape) -> bool,
     tol: Tolerances,
     found: &mut Diagnosis,
 ) -> OgeomResult<()> {
@@ -953,6 +974,9 @@ fn check_face_chart(
     let stored = face.oriented(ogeom_topo::Orientation::Forward);
     'wires: for wire in model.ordered_children_of(&stored)? {
         let edges = model.ordered_children_of(&wire)?;
+        if kept(&wire) {
+            continue;
+        }
         let Some(ends) = chart_ends(model, surface_id, &edges, tol)? else {
             continue;
         };

@@ -51,7 +51,7 @@ pub use build::{
     surface_iso_u_curve,
 };
 pub use check::{
-    Diagnosis, Problem, Severity, check, check_kept, check_self_intersection,
+    Diagnosis, Problem, Severity, chart_breaks, check, check_kept, check_self_intersection,
     check_self_intersection_near, check_tessellation, inside_out_faces, inside_out_faces_kept,
     restore_containment,
 };

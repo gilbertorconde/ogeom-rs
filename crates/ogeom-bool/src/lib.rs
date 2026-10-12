@@ -10151,6 +10151,54 @@ fn assemble_result(
     } else {
         model.add_compound(&solids)?
     };
+    // A face made here whose boundary does not close in its surface's chart
+    // (a section stopped short of where its neighbour starts, at a contact
+    // the marcher did not follow through) holds a strand that dangles, and
+    // the result would check broken. It is refused instead, for the retries
+    // to take another way.
+    // Set aside, the faces made are known; otherwise they are the result's
+    // faces that are not the operands'.
+    let built_faces = match &made {
+        Some(made) => made.clone(),
+        None => {
+            let given: ogeom_core::FastSet<ogeom_topo::TShapeId> = [a, b]
+                .into_iter()
+                .map(|operand| explore_unique(model, operand, ShapeType::Face))
+                .collect::<OgeomResult<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .map(|face| face.node())
+                .collect();
+            explore_unique(model, &result, ShapeType::Face)?
+                .into_iter()
+                .filter(|f| !given.contains(&f.node()))
+                .collect()
+        }
+    };
+    // A wire of a face the boolean gathered that comes through as the same
+    // wire (a hole clear of the other solid, put back into the piece that
+    // holds it) closes as it did.
+    let given_wires: ogeom_core::FastSet<ogeom_topo::TShapeId> = fused
+        .a
+        .faces
+        .iter()
+        .chain(&fused.b.faces)
+        .map(|gathered| model.ordered_children_of(&gathered.face))
+        .collect::<OgeomResult<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .map(|wire| wire.node())
+        .collect();
+    let taken = |wire: &Shape| given_wires.contains(&wire.node());
+    for face in &built_faces {
+        if !ogeom_algo::chart_breaks(model, face, &taken, tol)?.is_empty() {
+            ogeom_bail!(
+                NotDone,
+                "a face the boolean made does not close in its surface's chart; the \
+                 configuration is beyond what the boolean currently resolves"
+            );
+        }
+    }
     // The faces set aside keep the boxes they had: only the faces made
     // are looked at.
     match &made {

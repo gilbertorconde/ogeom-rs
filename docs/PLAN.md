@@ -150,7 +150,10 @@ box's base touches the round's tangent line at the corner vertex, where the
 corner ball touches the base, is refused. At seeds 1 to 3 the stress drill
 scenario refuses one drill each: seed 1's drill 2 on the rounded box is this
 item, and seeds 2 and 3 each refuse one on `nist_ctc_03`, recorded under the
-two items above.
+two items above. A drill along y whose top line touches `nist_ftc_11`'s bore
+rim where the bore meets the torus above it (stress seed 11, drill 14) has
+its section along the top stop a millimetre short of the touch; the face it
+leaves does not close in its chart, and the boolean refuses it.
 
 **A tilted half ball drilled on the diagonal chart.** A half ball charted
 about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled

@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean refuses a face it made that does not close in its chart.**
+  A drill whose top line touched `nist_ftc_11`'s bore rim where the bore
+  meets the torus above it came back as a cut whose drill wall did not
+  close in its chart, a solid that checks broken. Each face the boolean
+  makes is now held to the chart test `check` makes of it, and one that
+  fails is refused, which lets the boolean's retries try another way.
+  `ogeom_algo::chart_breaks` asks the test of one face, passing over the
+  wires a caller took over as they stood.
 - **A ball whose pole a section passes beside is charted clear of it.** A
   ball and a torus whose tube passed a thousandth and a half of the ball's
   radius from its pole marched their section across the chart's collapse:

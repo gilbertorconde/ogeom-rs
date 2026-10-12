@@ -482,3 +482,38 @@ fn drill_inside_a_torus_s_outer_equator(radius: f64, angle: f64, seam: f64, inwa
         "at {angle}, seam {seam}, {inward} in: common {common} against {expected} integrated"
     );
 }
+
+/// A drill along y whose top line runs at the height of `nist_ftc_11`'s
+/// bore rim and touches the rim's circle where the bore's wall meets the
+/// torus above it. The section along the drill's top stops a millimetre
+/// short of the touch, and the drill's wall in the cut did not close in
+/// its chart. A face the boolean made that does not close is refused: the
+/// cut is valid or not given at all.
+#[test]
+fn a_drill_whose_top_touches_a_bore_rim_is_never_broken() {
+    let path = format!(
+        "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(path).expect("the corpus file is committed");
+    let mut import = ogeom::io::read_step(&text, T).unwrap();
+    let solid = import.solids[0].clone();
+    let (part, _) =
+        ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T).unwrap();
+    let mut model = import.document.model().clone();
+    let r = 13.210_863_646_990_134;
+    let frame = Frame::new(
+        Point::new(-16.0, -40.414_594_903_803_48, -r),
+        Direction::Y,
+        Direction::new(Vector::new(0.0, 0.0, -1.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let drill = make_cylinder(&mut model, frame, r, 80.829_189_807_606_97, T)
+        .unwrap()
+        .shape;
+    if let Ok(cut) = ogeom::boolean::cut(&mut model, &part.shape, &drill, T) {
+        let diagnosis = check(&model, &cut.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+    }
+}
