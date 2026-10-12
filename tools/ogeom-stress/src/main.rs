@@ -703,36 +703,62 @@ fn primitive(model: &mut Model, rng: &mut Rng) -> Option<(Shape, Measure, String
         s.max(1.0)
     };
     let kind = rng.below(5);
-    let (built, name) = match kind {
+    let (built, name, sizes) = match kind {
         0 => {
             let (a, b, c) = (size(rng), size(rng), size(rng));
-            (ogeom::algo::make_box(model, frame, (a, b, c), T), "box")
+            (
+                ogeom::algo::make_box(model, frame, (a, b, c), T),
+                "box",
+                vec![a, b, c],
+            )
         }
         1 => {
             let (r, h) = (size(rng) * 0.5, size(rng));
             (
                 ogeom::algo::make_cylinder(model, frame, r, h, T),
                 "cylinder",
+                vec![r, h],
             )
         }
-        2 => (
-            ogeom::algo::make_sphere(model, frame, size(rng) * 0.5, T),
-            "sphere",
-        ),
+        2 => {
+            let r = size(rng) * 0.5;
+            (
+                ogeom::algo::make_sphere(model, frame, r, T),
+                "sphere",
+                vec![r],
+            )
+        }
         3 => {
             let (r0, h) = (size(rng) * 0.5, size(rng));
             let r1 = r0 * rng.range(0.2, 0.9);
-            (ogeom::algo::make_cone(model, frame, r0, r1, h, T), "cone")
+            (
+                ogeom::algo::make_cone(model, frame, r0, r1, h, T),
+                "cone",
+                vec![r0, r1, h],
+            )
         }
         _ => {
             let r = size(rng) * 0.5;
             let tube = (r * rng.range(0.15, 0.45)).max(0.3);
-            (ogeom::algo::make_torus(model, frame, r, tube, T), "torus")
+            (
+                ogeom::algo::make_torus(model, frame, r, tube, T),
+                "torus",
+                vec![r, tube],
+            )
         }
     };
     let shape = built.ok()?.shape;
     let m = measure(model, &shape).ok()?;
-    Some((shape, m, name.to_string()))
+    let placed = format!(
+        "{name} {sizes:?} at ({}, {}, {}) along ({}, {}, {})",
+        at.x,
+        at.y,
+        at.z,
+        axis.x(),
+        axis.y(),
+        axis.z()
+    );
+    Some((shape, m, placed))
 }
 
 /// Two primitives, and the boolean identities: the fuse and the common
