@@ -24,6 +24,8 @@ One entry per committed file. A file without an entry does not get committed.
 | `threemf_painted_sphere.3mf` | Authored for this project, as above: a 4 680-triangle sphere painted two colours from a colour group, large enough to span several dynamic-Huffman blocks, beside a cube of type `support`. | same | 2026-09-23 |
 | `stepconf_sled_base.step` | [step-conformance](https://github.com/dan335/step-conformance) `corpus/sled_base.step` at commit `3af54de604fb`: a shop part in inches, one of whose faces' corners the chart flushes to a subnormal-tiny parameter | CC0 1.0 (the corpus's `LICENSE`) | 2026-10-12 |
 
+| `stepconf_bowl_01.step` | [step-conformance](https://github.com/dan335/step-conformance) `corpus/bowl_01.step` at commit `3af54de604fb`: a bowl 380 mm across whose revolved rim needs more grid steps round than a fixed cap of 512 allows at a chord of a few microns | CC0 1.0 (the corpus's `LICENSE`) | 2026-10-12 |
+
 The eleven `.stp` files are the **AP203 geometry-only** exports of the CTC 1–5 and
 FTC 6–11 test parts from the NIST MBE PMI Validation and Conformance Testing
 project: part geometry with no PMI, which is the subset a geometry kernel reads

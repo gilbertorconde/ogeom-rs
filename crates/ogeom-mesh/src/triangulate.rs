@@ -3955,24 +3955,38 @@ const U_PROBES: usize = 8;
 /// exhausted allocator.
 const REFINEMENT_ROUNDS: usize = 12;
 
-/// The most subdivisions one parameter direction may take.
+/// The fewest subdivisions one parameter direction may take before its cap
+/// stops it: the caller's [`Deflection::max_segments`] where that is more.
 ///
-/// A surface that has not converged by 512 has a singularity, not a resolution
-/// problem, and the ceiling is what makes that a coarse mesh rather than an
-/// exhausted allocator.
+/// A surface that has not converged by then has a singularity, not a
+/// resolution problem, and the ceiling is what makes that a coarse mesh
+/// rather than an exhausted allocator.
 const MAX_DIRECTION_STEPS: usize = 512;
 
-/// Subdivide `[lo, hi]` until no sub-interval errs further than `chord`.
+/// How many subdivisions one parameter direction may take at `deflection`.
+fn direction_steps(deflection: Deflection) -> usize {
+    deflection.max_segments.max(MAX_DIRECTION_STEPS)
+}
+
+/// Subdivide `[lo, hi]` until no sub-interval errs further than `chord`,
+/// or there are `cap` values.
 ///
 /// The same adaptive bisection [`discretize`] uses on a curve, applied to a
 /// line through parameter space. Each value is sampled once, by `sample`;
 /// an interval is judged by `error` from its two ends' samples and what
 /// `middle` gives at its midpoint, and a split keeps that middle, finished
-/// by `promote`, as the new value's sample. Returns the parameters in
-/// increasing order, endpoints included, with their samples.
+/// by `promote`.
+///
+/// An interval's verdict depends on its own two ends alone, so the order
+/// splits are made in changes nothing until the cap: the values come out
+/// the same however the work is ordered. The splits go in rounds, every
+/// interval that errs split at once, so a direction the cap stops is
+/// refined evenly along its whole length; a round the cap cuts short
+/// splits the intervals erring most.
 fn refine_direction<S, M>(
     (lo, hi): (f64, f64),
     chord: f64,
+    cap: usize,
     sample: impl Fn(f64) -> S,
     middle: impl Fn(f64) -> M,
     error: impl Fn(&S, &S, &M) -> f64,
@@ -3980,28 +3994,62 @@ fn refine_direction<S, M>(
 ) -> (Vec<f64>, Vec<S>) {
     let centre = f64::midpoint(lo, hi);
     let mut values = vec![lo, centre, hi];
-    let mut samples = vec![sample(lo), sample(centre), sample(hi)];
-    // A cursor rather than a rescan. Splitting an interval cannot change
-    // whether an *earlier* one errs (the earlier one's endpoints do not
-    // move), so restarting the search at zero re-measures intervals already
-    // known to be good. Walking forward measures each interval once and
-    // splits in the same left-to-right order a rescan would, so the values
-    // come out identical, including where the step cap truncates them.
-    let mut i = 0;
-    while i + 1 < values.len() && values.len() < MAX_DIRECTION_STEPS {
-        let mid = f64::midpoint(values[i], values[i + 1]);
-        let at_mid = middle(mid);
-        if error(&samples[i], &samples[i + 1], &at_mid) <= chord {
-            i += 1;
-            continue;
+    let mut samples: Vec<S> = vec![sample(lo), sample(centre), sample(hi)];
+    // Whether the interval starting at each value is known to be within
+    // the chord: its ends never move, so it stays known.
+    let mut settled = vec![false; values.len() - 1];
+    loop {
+        // Each interval still open, judged once: (index, error, middle).
+        let mut erring: Vec<(usize, f64, f64, M)> = Vec::new();
+        for i in 0..settled.len() {
+            if settled[i] {
+                continue;
+            }
+            let mid = f64::midpoint(values[i], values[i + 1]);
+            let at_mid = middle(mid);
+            let err = error(&samples[i], &samples[i + 1], &at_mid);
+            // A split that does not divide the interval means the
+            // parameters have reached the resolution of f64.
+            if err <= chord || mid <= values[i] || mid >= values[i + 1] {
+                settled[i] = true;
+                continue;
+            }
+            erring.push((i, err, mid, at_mid));
         }
-        // A split that does not divide the interval means the parameters have
-        // reached the resolution of f64, and refining further would loop.
-        if mid <= values[i] || mid >= values[i + 1] {
+        if erring.is_empty() {
             break;
         }
-        values.insert(i + 1, mid);
-        samples.insert(i + 1, promote(mid, at_mid));
+        let room = cap.saturating_sub(values.len());
+        if room == 0 {
+            break;
+        }
+        if erring.len() > room {
+            erring.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
+            erring.truncate(room);
+            erring.sort_by_key(|e| e.0);
+        }
+        let mut grown_values = Vec::with_capacity(values.len() + erring.len());
+        let mut grown_samples = Vec::with_capacity(values.len() + erring.len());
+        let mut grown_settled = Vec::with_capacity(settled.len() + erring.len());
+        let mut splits = erring.into_iter().peekable();
+        for (i, (value, sampled)) in values.into_iter().zip(samples).enumerate() {
+            grown_values.push(value);
+            grown_samples.push(sampled);
+            if i == settled.len() {
+                continue;
+            }
+            match splits.next_if(|e| e.0 == i) {
+                Some((_, _, mid, at_mid)) => {
+                    grown_settled.extend([false, false]);
+                    grown_values.push(mid);
+                    grown_samples.push(promote(mid, at_mid));
+                }
+                None => grown_settled.push(settled[i]),
+            }
+        }
+        values = grown_values;
+        samples = grown_samples;
+        settled = grown_settled;
     }
     (values, samples)
 }
@@ -4058,6 +4106,7 @@ fn refine_line(
     refine_direction(
         range,
         deflection.chord,
+        direction_steps(deflection),
         |t| GridSample::at(surface, at(t), tol),
         |t| GridSample::point_at(surface, at(t), tol),
         |a, b, m| cell_error(a, b, *m, deflection, tol),
@@ -4083,6 +4132,7 @@ fn refine_lines(
     refine_direction(
         range,
         deflection.chord,
+        direction_steps(deflection),
         |t| {
             lines
                 .iter()
@@ -4537,11 +4587,14 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
 
+    /// A cap no profile below reaches but the one written to.
+    const UNCAPPED: usize = 1 << 16;
+
     /// `refine_direction` by rescan from zero after every split: the
-    /// reference the cursor form is held to.
+    /// reference the rounds are held to.
     fn refine_by_rescan<F: Fn(f64, f64) -> f64>(lo: f64, hi: f64, chord: f64, sag: F) -> Vec<f64> {
         let mut values = vec![lo, f64::midpoint(lo, hi), hi];
-        while values.len() < MAX_DIRECTION_STEPS {
+        while values.len() < UNCAPPED {
             let Some(i) = (0..values.len() - 1).find(|&i| sag(values[i], values[i + 1]) > chord)
             else {
                 break;
@@ -4556,11 +4609,12 @@ mod tests {
     }
 
     #[test]
-    fn walking_forward_splits_where_rescanning_did() {
-        // The cursor is only sound because splitting an interval cannot change
-        // whether an earlier one sags. Held to the rescan's output exactly,
+    fn rounds_split_where_rescanning_did() {
+        // Rounds are only sound because splitting an interval cannot change
+        // whether another one sags. Held to the rescan's output exactly,
         // over sag profiles that bite in different places: flat, steep at one
-        // end, periodic, and one savage enough to reach the step cap.
+        // end, periodic; and one savage enough to reach the step cap, which
+        // must leave it refined evenly.
         /// A named sag profile to hold both forms to.
         type Profile = (&'static str, Box<dyn Fn(f64, f64) -> f64>);
         let cases: Vec<Profile> = vec![
@@ -4581,19 +4635,36 @@ mod tests {
         ];
         for (name, sag) in cases {
             for chord in [1.0, 0.1, 0.01, 1e-3] {
+                let capped = name == "beyond the cap";
+                let cap = if capped {
+                    MAX_DIRECTION_STEPS
+                } else {
+                    UNCAPPED
+                };
                 let (walked, samples) = refine_direction(
                     (0.0, 1.0),
                     chord,
+                    cap,
                     |t| t,
                     |t| t,
                     |a, b, _| sag(*a, *b),
                     |t, _| t,
                 );
                 assert_eq!(walked, samples, "{name}: each value keeps its own sample");
+                if capped {
+                    // Stopped by the cap, and refined evenly all along.
+                    assert!(walked.len() <= cap, "{name}: {} values", walked.len());
+                    let gaps: Vec<f64> = walked.windows(2).map(|w| w[1] - w[0]).collect();
+                    let (least, most) = gaps
+                        .iter()
+                        .fold((f64::INFINITY, 0.0_f64), |(l, m), g| (l.min(*g), m.max(*g)));
+                    assert!(most <= least * 2.0, "{name}: gaps from {least} to {most}");
+                    continue;
+                }
                 let rescanned = refine_by_rescan(0.0, 1.0, chord, &sag);
                 assert_eq!(
                     walked, rescanned,
-                    "{name} at chord {chord}: the cursor split somewhere the rescan did not"
+                    "{name} at chord {chord}: the rounds split somewhere the rescan did not"
                 );
             }
         }

@@ -52,6 +52,16 @@ bump may break the API and a patch bump may not.
   with the part less the core to a part in a trillion, from a part in a
   billion.
 
+- **A large face meets a fine chord (#216).** A face's grid stopped
+  refining once a parameter direction reached 512 steps, and it refined
+  from one end, leaving the rest of the direction at whatever the cap
+  left: step-conformance's `bowl_01`, 380 mm across, stood 0.012 mm off at
+  chords of 0.0033 and 0.00083 mm. A direction may now take as many steps
+  as the deflection's `max_segments` (4096 by default), and refines in
+  rounds, every interval that errs split at once, so a direction the cap
+  stops is refined evenly. The bowl's rim stands within 1.05 chords, and
+  meshes faster and lighter at the finer chord.
+
 ## [0.10.0] - 2026-10-12
 
 A minor release, since the API changes: `ProjectedCurve` gains `Parabola`

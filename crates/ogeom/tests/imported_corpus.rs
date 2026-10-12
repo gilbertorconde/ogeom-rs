@@ -1092,3 +1092,49 @@ fn faces_meeting_at_a_vertex_place_it_at_one_point() {
         assert_eq!(open, 0, "chord {chord}: {open} sides with one triangle");
     }
 }
+
+/// A bowl 380 mm across, its rim a surface of revolution: at a chord of
+/// 0.0033 mm the grid needs more than 512 steps round it. Each direction
+/// may take as many as the deflection's `max_segments`, refined evenly
+/// along its length. The rim stands within the chord of its surface, and
+/// the bowl's doubly curved face, whose grid cells may sag both ways at
+/// once, within half as much again.
+#[test]
+fn a_wide_revolved_rim_meets_a_fine_chord() {
+    use ogeom::geom::{Surface as _, SurfaceKind, Transformable as _};
+    let import = ogeom::io::read_step(&corpus("stepconf_bowl_01.step"), T).unwrap();
+    let model = import.document.model();
+    let part = import.solids.first().or(import.shells.first()).unwrap();
+    let chord = 0.0033;
+    let deflection = ogeom::mesh::Deflection {
+        chord,
+        ..ogeom::mesh::Deflection::default()
+    };
+    let (faces, _) = ogeom::mesh::face_meshes_for(model, part, deflection, None, T).unwrap();
+    let mut rims = 0;
+    for (face, mesh) in &faces {
+        let data = model.node(face).unwrap().data().as_face().unwrap();
+        let surface = model.geometry().surface(data.surface).unwrap().clone();
+        if surface.kind() != SurfaceKind::Revolution {
+            continue;
+        }
+        rims += 1;
+        let surface = surface
+            .transformed(&face.transform(model.datums()).unwrap(), T)
+            .unwrap();
+        let mesh = mesh.as_ref().unwrap();
+        let mut worst = 0.0_f64;
+        for t in &mesh.triangles {
+            let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+            let middle = ogeom::math::Point::from_vector(
+                (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0,
+            );
+            let off = ogeom::algo::project_on_surface(&surface, middle, 8, T)
+                .unwrap()
+                .distance;
+            worst = worst.max(off);
+        }
+        assert!(worst <= 1.5 * chord, "a middle {worst} off a revolved face");
+    }
+    assert!(rims > 0, "the bowl has a revolved rim");
+}
