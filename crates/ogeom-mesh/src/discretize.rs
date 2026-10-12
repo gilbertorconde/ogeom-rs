@@ -284,8 +284,93 @@ fn halved(curve: &Curve, seeds: Vec<f64>, times: u32, tol: Tolerances) -> OgeomR
 }
 
 /// The leftmost-first bisection from the seed parameters: each segment
-/// split while [`needs_split`] asks it to, up to the segment cap.
+/// split while [`needs_split`] asks it to, up to the segment cap. A curve
+/// the cap stops part-way is split again by rounds instead, so the points
+/// the cap allows spread over the whole curve rather than crowding its
+/// start and leaving the rest at its seeds.
 fn bisect(
+    curve: &Curve,
+    whole: (f64, f64),
+    parameters: Vec<f64>,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Polyline> {
+    let seeds = parameters.clone();
+    let line = bisect_leftmost(curve, whole, parameters, deflection, tol)?;
+    if line.deflection_met || line.parameters.len() < deflection.max_segments {
+        return Ok(line);
+    }
+    bisect_by_rounds(curve, whole, seeds, deflection, tol)
+}
+
+/// Every segment that [`needs_split`] asks to split, split at once, round
+/// after round, until none asks or the next round would pass the segment
+/// cap: the polyline is as fine everywhere as the cap lets it be, never
+/// fine at one end and bare at the other.
+fn bisect_by_rounds(
+    curve: &Curve,
+    whole: (f64, f64),
+    parameters: Vec<f64>,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Polyline> {
+    let mut points: Vec<Point> = parameters
+        .iter()
+        .map(|u| curve.point_at(*u, tol))
+        .collect::<OgeomResult<_>>()?;
+    let mut parameters = parameters;
+    loop {
+        let mut splits: Vec<(usize, f64, Point)> = Vec::new();
+        for i in 0..parameters.len().saturating_sub(1) {
+            let (t0, t1) = (parameters[i], parameters[i + 1]);
+            if let Some((mid, on_curve)) = needs_split(
+                curve,
+                (t0, t1),
+                (points[i], points[i + 1]),
+                whole,
+                deflection,
+                tol,
+            )? && mid > t0
+                && mid < t1
+            {
+                splits.push((i, mid, on_curve));
+            }
+        }
+        if splits.is_empty() {
+            return Ok(Polyline {
+                points,
+                parameters,
+                deflection_met: true,
+            });
+        }
+        if parameters.len() + splits.len() > deflection.max_segments {
+            return Ok(Polyline {
+                points,
+                parameters,
+                deflection_met: false,
+            });
+        }
+        let mut next_parameters = Vec::with_capacity(parameters.len() + splits.len());
+        let mut next_points = Vec::with_capacity(parameters.len() + splits.len());
+        let mut pending = splits.into_iter().peekable();
+        for i in 0..parameters.len() {
+            next_parameters.push(parameters[i]);
+            next_points.push(points[i]);
+            if let Some(&(at, mid, on_curve)) = pending.peek()
+                && at == i
+            {
+                next_parameters.push(mid);
+                next_points.push(on_curve);
+                pending.next();
+            }
+        }
+        parameters = next_parameters;
+        points = next_points;
+    }
+}
+
+/// [`bisect`] leftmost first, stopping where the segment cap is reached.
+fn bisect_leftmost(
     curve: &Curve,
     (lo, hi): (f64, f64),
     mut parameters: Vec<f64>,
@@ -865,6 +950,44 @@ mod tests {
         .unwrap();
         assert!(!line.deflection_met);
         assert!(line.segment_count() <= 20);
+    }
+
+    #[test]
+    fn a_curve_the_ceiling_stops_is_sampled_all_along() {
+        // A wavy spline drawn to a chord far finer than the ceiling allows:
+        // the points the ceiling does allow spread over the whole curve,
+        // or the end the bisection never reached is drawn as a few long
+        // chords across its waves, and a face bounded by it meshes past
+        // its rim.
+        let control: Vec<Point> = (0..40)
+            .map(|i| Point::new(f64::from(i), if i % 2 == 0 { 0.0 } else { 1.0 }, 0.0))
+            .collect();
+        let knots = KnotVector::clamped_uniform(3, control.len()).unwrap();
+        let curve: Curve = BSplineCurve::new(knots, control, T).unwrap().into();
+        let (lo, hi) = curve.domain();
+        let line = discretize(
+            &curve,
+            (lo, hi),
+            Deflection {
+                chord: 1e-9,
+                angular: 0.5,
+                min_segments: 2,
+                max_segments: 256,
+            },
+            T,
+        )
+        .unwrap();
+        assert!(!line.deflection_met);
+        let widest = line
+            .parameters
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .fold(0.0_f64, f64::max);
+        assert!(
+            widest <= (hi - lo) / 64.0,
+            "a chord spans {widest} of {}",
+            hi - lo
+        );
     }
 
     #[test]

@@ -32,6 +32,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An edge the segment cap stops is sampled all along.** An edge drawn
+  to a chord its curve needs more points for than the cap allows was
+  split from its start until the cap was reached, and the rest kept only
+  its seed points: long chords across a wavy rim, and the face inside it
+  meshed past its rim. A freeform panel whose fitted rims a self-crossing
+  boundary had drawn finer stood 5.5 mm off itself at a 0.0125 mm chord
+  (#202). Such a curve is now split by rounds, every segment that asks at
+  once, so the points the cap allows cover it evenly; it still says it
+  missed its chord.
+
 - **A ball whose pole a plane passes beside is charted clear of it.** A
   boolean restates a whole ball on a chart whose poles stand clear of the
   other operand's curved faces, and left its planes out: a plane through a
