@@ -32,6 +32,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A B-spline closed round with no seam written meshes.** Some modellers
+  write a closed B-spline face (a drum, a dome, a ring of a torus) bounded
+  by its rims alone, with no seam edge. Each rim then runs the chart from
+  one end column to the other and meets no other, the boundary enclosed
+  nothing, and the face meshed to no triangles at all (#202). The seam is
+  now put in: the surface's own column at the period's join, exact, closing
+  the rims into one loop, or running to the pole where the surface
+  collapses a row to a point.
+
 - **A ball face a file bounds by one parallel is the half it walks round.**
   A STEP sphere face bounded by its equator alone, with no vertex at a
   pole, read as whichever half the chart's start fell on: the hemisphere

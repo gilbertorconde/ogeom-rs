@@ -1072,6 +1072,182 @@ pub fn closed_at_poles(
     Ok(out)
 }
 
+/// The one wire a face on a B-spline closed round in `u` takes when its
+/// file bounds it by rings alone and writes no seam: each ring runs the
+/// whole period along the chart, from one end column to the other, and
+/// without a seam no ring meets another, so the boundary encloses nothing
+/// in the chart. The seam is the surface's own column at the period's
+/// join, exact (the iso-curve the control columns trace), from where one
+/// ring's walk ends to where the next begins; walked up one end column and
+/// back down the other, it closes the two rings into one loop. A single
+/// ring opposite a row the surface collapses to a point (a dome's pole)
+/// takes the seam to that point and back, and the pole's run across the
+/// chart is laid by [`closed_at_poles`].
+///
+/// `None` where the face is not that shape: another surface, one closed
+/// the other way or periodic, a wire of more than one edge, or a ring
+/// whose image does not run end column to end column along one row.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the
+/// surface, an edge or a pcurve is not in this model.
+pub fn belted_wire(
+    model: &mut Model,
+    surface: ogeom_topo::SurfaceId,
+    wires: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+    let Some(SurfaceGeometry::BSpline(spline)) = model.geometry().surface(surface).cloned() else {
+        return Ok(None);
+    };
+    if !spline.is_closed_u(tol) || spline.is_periodic_u() || spline.is_closed_v(tol) {
+        return Ok(None);
+    }
+    if wires.is_empty() || wires.len() > 2 {
+        return Ok(None);
+    }
+    let ((u0, u1), (v0, v1)) = spline.domain();
+    let slack = (u1 - u0).abs().max((v1 - v0).abs()) * 1e-6;
+    // Each ring: its use, the vertex it starts and ends at, and its walk's
+    // row, start column and end column.
+    struct Belt {
+        edge: Shape,
+        vertex: Shape,
+        row: f64,
+        from: f64,
+        to: f64,
+    }
+    let mut belts = Vec::with_capacity(2);
+    for wire in wires {
+        let edges = model.ordered_children_of(wire)?;
+        let [edge] = edges.as_slice() else {
+            return Ok(None);
+        };
+        let Some((a, b)) = edge_vertices(model, edge)? else {
+            return Ok(None);
+        };
+        if !a.is_same(&b) {
+            return Ok(None);
+        }
+        let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+            ogeom_bail!(Dangling, "edge is not in this model");
+        };
+        if data.degenerate {
+            return Ok(None);
+        }
+        let Some(EdgeRepr::PCurve { curve, range, .. }) = data.pcurve_for(surface, edge.location())
+        else {
+            return Ok(None);
+        };
+        let Some(planar) = model.geometry().pcurve(*curve) else {
+            ogeom_bail!(Dangling, "pcurve is not in this model");
+        };
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        let (s, e) = (
+            planar.point_at(range.0, tol)?,
+            planar.point_at(range.1, tol)?,
+        );
+        let (s, e) = if reversed { (e, s) } else { (s, e) };
+        let column = |x: f64| -> Option<f64> {
+            if (x - u0).abs() <= slack {
+                Some(u0)
+            } else if (x - u1).abs() <= slack {
+                Some(u1)
+            } else {
+                None
+            }
+        };
+        let (Some(from), Some(to)) = (column(s.x), column(e.x)) else {
+            return Ok(None);
+        };
+        if from == to || (s.y - e.y).abs() > slack {
+            return Ok(None);
+        }
+        belts.push(Belt {
+            edge: edge.clone(),
+            vertex: a,
+            row: f64::midpoint(s.y, e.y),
+            from,
+            to,
+        });
+    }
+    // The far end of the seam: the second ring's vertex, or the point the
+    // row opposite a lone ring collapses to.
+    let (end_vertex, end_row) = if let [_, second] = belts.as_slice() {
+        if second.from != belts[0].to {
+            return Ok(None);
+        }
+        (second.vertex.clone(), second.row)
+    } else {
+        let row = if (belts[0].row - v0).abs() <= (belts[0].row - v1).abs() {
+            v1
+        } else {
+            v0
+        };
+        let across = spline.iso_v_curve(row, tol)?;
+        let points: Vec<Point> = (0..=8)
+            .map(|k| {
+                let t = u0 + (u1 - u0) * f64::from(k) / 8.0;
+                ogeom_geom::Curve3d::point_at(&across, t, tol)
+            })
+            .collect::<OgeomResult<_>>()?;
+        if points
+            .iter()
+            .any(|p| p.distance(points[0]) > tol.confusion())
+        {
+            return Ok(None);
+        }
+        (model.add_vertex(VertexData::new(points[0])), row)
+    };
+    let first = &belts[0];
+    let up = first.row < end_row;
+    let (lo, hi) = if up {
+        (first.vertex.clone(), end_vertex)
+    } else {
+        (end_vertex, first.vertex.clone())
+    };
+    let column_curve: Curve = spline.iso_u_curve(first.to, tol)?.into();
+    let range = (first.row.min(end_row), first.row.max(end_row));
+    let seam = make_edge_between(model, column_curve, range, &lo, &hi, tol)?.shape;
+    let column = |u: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(
+                Point2::new(u, 0.0),
+                ogeom_math::Direction2::new(ogeom_math::Vector2::new(0.0, 1.0), tol)?,
+            ),
+            range.0,
+            range.1,
+        )?
+        .into())
+    };
+    // The seam's Forward use climbs; walked up the first ring's end column
+    // where the walk climbs, and down its start column where it falls.
+    let (forward_col, reversed_col) = if up {
+        (first.to, first.from)
+    } else {
+        (first.from, first.to)
+    };
+    attach_seam(
+        model,
+        &seam,
+        column(forward_col)?,
+        column(reversed_col)?,
+        surface,
+        Location::identity(),
+        range,
+    )?;
+    let climb = if up { seam.clone() } else { seam.reversed() };
+    let mut walk = vec![first.edge.clone(), climb.clone()];
+    if let [_, second] = belts.as_slice() {
+        walk.push(second.edge.clone());
+    }
+    walk.push(climb.reversed());
+    Ok(Some(make_wire(model, &walk, tol)?.shape))
+}
+
 /// Build a face covering the whole of `surface`, with no trimming.
 ///
 /// # Errors

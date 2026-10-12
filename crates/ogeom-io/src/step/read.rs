@@ -2507,6 +2507,12 @@ impl<'a> Reader<'a> {
             }
         }
 
+        // A spline closed round with no seam written: the rings close into
+        // one loop up and down the period's join.
+        if let Some(belt) = ogeom_algo::belted_wire(&mut self.model, surface_id, &wires, self.tol)?
+        {
+            wires = vec![belt];
+        }
         // Every wire's images on one branch of a periodic chart: a file's
         // pcurves, or fits of them, answer in whatever phase they like, and
         // a hole loop straddling a drum's seam arrives half on each branch.

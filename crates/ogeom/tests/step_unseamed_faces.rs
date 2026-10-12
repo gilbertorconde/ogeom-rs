@@ -110,6 +110,44 @@ impl Body {
         let frame = self.frame((0.0, 0.0, z));
         self.add(format!("PLANE('',#{frame})"))
     }
+
+    /// A rational B-spline surface of degree 2 round z over the nine
+    /// control points of a circle per row, closed round, its rows given by
+    /// radius, height and weight, at degree `v_degree` across them.
+    fn round_spline(&mut self, rows: &[(f64, f64, f64)], v_degree: usize, v_knots: &str) -> usize {
+        let h = core::f64::consts::FRAC_1_SQRT_2;
+        let around = [
+            (1.0, 0.0, 1.0),
+            (1.0, 1.0, h),
+            (0.0, 1.0, 1.0),
+            (-1.0, 1.0, h),
+            (-1.0, 0.0, 1.0),
+            (-1.0, -1.0, h),
+            (0.0, -1.0, 1.0),
+            (1.0, -1.0, h),
+            (1.0, 0.0, 1.0),
+        ];
+        let mut columns = Vec::new();
+        let mut weights = Vec::new();
+        for &(cx, cy, w) in &around {
+            let mut column = Vec::new();
+            let mut column_weights = Vec::new();
+            for &(r, z, wr) in rows {
+                column.push(format!("#{}", self.point((cx * r, cy * r, z))));
+                column_weights.push(format!("{:?}", w * wr));
+            }
+            columns.push(format!("({})", column.join(",")));
+            weights.push(format!("({})", column_weights.join(",")));
+        }
+        self.add(format!(
+            "( BOUNDED_SURFACE() B_SPLINE_SURFACE(2,{v_degree},({}),.UNSPECIFIED.,.T.,.F.,.F.) \
+             B_SPLINE_SURFACE_WITH_KNOTS((3,2,2,2,3),{v_knots},(0.,0.25,0.5,0.75,1.),\
+             (0.,1.),.UNSPECIFIED.) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(({})) \
+             REPRESENTATION_ITEM('') SURFACE() )",
+            columns.join(","),
+            weights.join(",")
+        ))
+    }
 }
 
 /// Every face meshed at `chord`: none refused or empty, every vertex on the
@@ -161,6 +199,74 @@ fn a_ball_bounded_by_its_equator_is_the_half_its_ring_walks_round() {
                 (p.x.hypot(p.y) - 20.0).max(0.0)
             } else if p.z < 0.0 {
                 f64::INFINITY
+            } else {
+                (p.to_vector().magnitude() - 20.0).abs()
+            }
+        };
+        let v = meshed(&text, chord, off);
+        assert!(
+            v > want - 3000.0 * chord && v < want,
+            "chord {chord}: {v} against {want}"
+        );
+    }
+}
+
+/// A drum whose wall is the rational B-spline that is exactly it, closed
+/// round, bounded by its two rims and no seam: the wall meshes, round to
+/// the chord.
+#[test]
+fn a_spline_drum_with_no_seam_meshes_round() {
+    let mut body = Body::default();
+    let bottom = body.ring(10.0, 0.0);
+    let top = body.ring(10.0, 30.0);
+    let wall = body.round_spline(&[(10.0, 0.0, 1.0), (10.0, 30.0, 1.0)], 1, "(2,2)");
+    let side = body.face(wall, &[(bottom, true), (top, false)], true);
+    let floor = body.plane(0.0);
+    let base = body.face(floor, &[(bottom, false)], false);
+    let roof = body.plane(30.0);
+    let cap = body.face(roof, &[(top, true)], true);
+    body.add(format!("CLOSED_SHELL('',(#{base},#{side},#{cap}))"));
+    let text = file(&body.0);
+    let want = core::f64::consts::PI * 100.0 * 30.0;
+    for chord in [0.0125, 0.1, 0.5] {
+        let off = |p: Point| {
+            let r = p.x.hypot(p.y);
+            if p.z.abs() < 1e-9 || (p.z - 30.0).abs() < 1e-9 {
+                (r - 10.0).max(0.0)
+            } else {
+                (r - 10.0).abs()
+            }
+        };
+        let v = meshed(&text, chord, off);
+        assert!(
+            v > want - 3000.0 * chord && v < want,
+            "chord {chord}: {v} against {want}"
+        );
+    }
+}
+
+/// A dome as a rational B-spline whose last row is its pole, bounded by its
+/// equator alone: the seam runs to the pole and the dome meshes.
+#[test]
+fn a_spline_dome_closed_at_its_pole_meshes() {
+    let h = core::f64::consts::FRAC_1_SQRT_2;
+    let mut body = Body::default();
+    let equator = body.ring(20.0, 0.0);
+    let shell = body.round_spline(
+        &[(20.0, 0.0, 1.0), (20.0, 20.0, h), (0.0, 20.0, 1.0)],
+        2,
+        "(3,3)",
+    );
+    let dome = body.face(shell, &[(equator, true)], true);
+    let floor = body.plane(0.0);
+    let base = body.face(floor, &[(equator, false)], false);
+    body.add(format!("CLOSED_SHELL('',(#{base},#{dome}))"));
+    let text = file(&body.0);
+    let want = 2.0 / 3.0 * core::f64::consts::PI * 20f64.powi(3);
+    for chord in [0.0125, 0.1, 0.5] {
+        let off = |p: Point| {
+            if p.z.abs() < 1e-9 {
+                (p.x.hypot(p.y) - 20.0).max(0.0)
             } else {
                 (p.to_vector().magnitude() - 20.0).abs()
             }
