@@ -752,3 +752,58 @@ fn a_pcurve_straying_off_its_line_only_towards_its_ends_closes() {
         );
     }
 }
+
+/// A drill of radius 60 down through `nist_ctc_01` leaves a sliver of a
+/// small round, a hundredth of a square millimetre, whose rim the drill's
+/// section meets tangentially. That one face's integral does not settle,
+/// and the volume used to mesh the whole part for it: 258 cubic
+/// millimetres off what the part less the drilled core measures, and
+/// seconds at a fine chord. The sliver is measured on its own mesh, every
+/// other face in closed form, and the cut agrees with the part less the
+/// core to a part in a billion.
+#[test]
+fn a_face_whose_integral_does_not_settle_leaves_only_itself_to_the_mesh() {
+    use ogeom::math::Direction;
+    let path = format!(
+        "{}/../../tests/corpus/nist_ctc_01_asme1_rd.stp",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(path).expect("the corpus file is committed");
+    let mut import = ogeom::io::read_step(&text, T).unwrap();
+    let solid = import.solids[0].clone();
+    let (part, _) =
+        ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T).unwrap();
+    let mut model = import.document.model().clone();
+    let frame = Frame::new(
+        Point::new(
+            340.029_792_036_204_75,
+            -110.346_261_335_767,
+            -215.505_376_318_797_23,
+        ),
+        Direction::Z,
+        Direction::Y,
+        T,
+    )
+    .unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, frame, 59.970_207_963_795_275, 358.5, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &part.shape, &drill, T)
+        .unwrap()
+        .shape;
+    let core = ogeom::boolean::common(&mut model, &part.shape, &drill, T)
+        .unwrap()
+        .shape;
+    let chord = Deflection::with_chord(1e-2).unwrap();
+    let whole = volume_properties(&model, &part.shape, chord, T).unwrap();
+    let cored = volume_properties(&model, &core, chord, T).unwrap();
+    assert_eq!((whole.deflection, cored.deflection), (0.0, 0.0));
+    let left = volume_properties(&model, &cut, chord, T).unwrap();
+    let owed = whole.mass - cored.mass;
+    assert!(
+        (left.mass - owed).abs() <= owed * 1e-9,
+        "the cut measures {} against {owed}, off by {:.3e}",
+        left.mass,
+        left.mass - owed
+    );
+}

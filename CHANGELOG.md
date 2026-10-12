@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face whose integral does not settle is meshed alone.** Where one
+  face's closed-form volume integral could not settle (a sliver of a small
+  round that a large drill's section meets tangentially), the volume
+  meshed the whole solid instead: a drill through `nist_ctc_01` measured
+  258 cubic millimetres off the part less the drilled core, and took 70
+  seconds at a chord of 2e-4. That face is now measured on its own mesh
+  and every other face in closed form; the cut agrees with the part less
+  the core to a part in a billion, in a fraction of a second.
 - **A short arc between two rims is found.** Two drums across each other,
   or a drum across a cone, cross in one loop that their rims can cut into
   a long arc and a short one tucked into a corner of both walls' charts.

@@ -320,7 +320,7 @@ fn volume_with(
     tol: Tolerances,
 ) -> OgeomResult<MassProperties> {
     deflection.validate()?;
-    if let Some(exact) = exact_volume_properties(model, shape, turning, kept, tol)? {
+    if let Some(exact) = exact_volume_properties(model, shape, turning, kept, deflection, tol)? {
         return Ok(exact);
     }
     if let Some(probed) = probed_mesh_volume(model, shape, deflection, tol)? {
@@ -554,6 +554,7 @@ fn exact_volume_properties(
     shape: &Shape,
     turning: Turning,
     kept: Option<&VolumeKept>,
+    deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Option<MassProperties>> {
     let faces = explore(model, shape, Filter::OfType(ShapeType::Face))?;
@@ -693,11 +694,6 @@ fn exact_volume_properties(
         let key = keys[i].as_ref()?;
         kept?.integral(key)
     };
-    // A region kept as one whose integral did not settle leaves the shape
-    // to the mesh, as it would after integrating every region again.
-    if (0..exact.len()).any(|i| matches!(held(i), Some(None))) {
-        return Ok(None);
-    }
     // Each face's moments are summed on their own, and added in the faces'
     // order.
     let summed = ogeom_core::parallel::map_ordered(&exact, |i, face| {
@@ -739,12 +735,47 @@ fn exact_volume_properties(
         }
         found
     });
+    // A region whose integral does not settle (a sliver its rim meets
+    // tangentially, whose panels never agree) leaves its face to the face's
+    // own mesh: the flux through a closed boundary is the sum of each
+    // face's, whatever measures it. Every other face keeps its closed form.
+    let mut settled: Vec<Option<Moments>> = Vec::with_capacity(exact.len());
+    for found in summed {
+        settled.push(or_mesh(found, None)?);
+    }
+    let mut meshed: Vec<usize> = (0..exact.len())
+        .filter(|&i| settled[i].is_none())
+        .map(|i| region_of[i])
+        .collect();
+    meshed.dedup();
     let mut total = Moments::zero();
-    for (face, sign) in summed.into_iter().zip(sign) {
-        match or_mesh(face, None)? {
-            Some(sums) => total.add_signed(&sums, sign),
-            None => return Ok(None),
+    for (i, found) in settled.iter().enumerate() {
+        if let Some(sums) = found
+            && !meshed.contains(&region_of[i])
+        {
+            total.add_signed(sums, sign[i]);
         }
+    }
+    for &at in &meshed {
+        let mesh = ogeom_mesh::triangulate(model, &faces[at], deflection, tol)?;
+        let mut acc = Accumulator::new();
+        for triangle in &mesh.triangles {
+            let [a, b, c] = triangle.map(|i| mesh.positions[i as usize]);
+            let volume = (a - reference).dot((b - reference).cross(c - reference)) / 6.0;
+            acc.add(&[reference, a, b, c], volume);
+        }
+        let face_sign = region_of
+            .iter()
+            .position(|&r| r == at)
+            .map_or(1.0, |i| sign[i]);
+        total.add_signed(
+            &Moments {
+                mass: acc.mass,
+                first: acc.first,
+                second: acc.second,
+            },
+            face_sign,
+        );
     }
     let Moments {
         mass,
@@ -772,7 +803,11 @@ fn exact_volume_properties(
         first,
         second,
     };
-    Ok(Some(acc.finish(0.0)))
+    Ok(Some(acc.finish(if meshed.is_empty() {
+        0.0
+    } else {
+        deflection.chord
+    })))
 }
 
 /// Surface area and its distribution, on the exact surfaces.
