@@ -11,6 +11,21 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-12
+
+A minor release, since the API changes: `ProjectedCurve` gains `Parabola`
+and `Hyperbola`. An oblique plane now cuts a cone in an exact conic, and
+`common_fuzzy` joins `fuse_fuzzy` and `cut_fuzzy`. It closes issue #202:
+STEP sphere faces bounded by one parallel read as the half their ring walks
+round, B-spline faces closed round with no seam written mesh, an edge the
+segment cap stops is sampled all along, and cones mesh close to their chord.
+Several silent wrong answers are fixed: a slanted drum's rounded rim that
+lost a ring of material, and a NIST part whose balls read inside out. Every
+edge of a slanted box rounds, a whole torus and a solid with voids offset,
+and booleans near a ball's pole, a closed section's seam and a line's far
+domain end no longer refuse. STEP import is about 30% faster on large
+assemblies.
+
 ### Added
 
 - **An oblique plane cuts a cone in an exact conic.** A plane oblique to a
@@ -29,6 +44,17 @@ bump may break the API and a patch bump may not.
 - **`common_fuzzy`** beside `fuse_fuzzy` and `cut_fuzzy`: the common at a
   stated fuzz, for a host retrying a tolerance-sensitive common as it
   retries the other two.
+
+### Changed
+
+- **STEP import is about 30% faster on large assemblies.** A curve the
+  readers ask whether it runs through a chart pole (a cone's apex, a
+  sphere's pole) is passed by where its guaranteed box stands clear of
+  the pole, and `make_solid` settles which way a closed shell faces by
+  probing a few of its faces instead of meshing all of them, meshing
+  only where no probe settles. The DoomCube 350 assembly reads in 9.1 s
+  instead of 12.8, the Voron 2.4r2 assembly in 18 s instead of 22, and
+  every solid comes back the same.
 
 ### Fixed
 
@@ -261,19 +287,6 @@ bump may break the API and a patch bump may not.
   chords it wants starts from the chords its edges are already held to.
   One solid of the DoomCube 350 assembly meshed 34 edges open; it now
   meshes 27 open, on a face whose rims touch within a micron.
-
-### Changed
-
-- **STEP import is about 30% faster on large assemblies.** A curve the
-  readers ask whether it runs through a chart pole (a cone's apex, a
-  sphere's pole) is passed by where its guaranteed box stands clear of
-  the pole, and `make_solid` settles which way a closed shell faces by
-  probing a few of its faces instead of meshing all of them, meshing
-  only where no probe settles. The DoomCube 350 assembly reads in 9.1 s
-  instead of 12.8, the Voron 2.4r2 assembly in 18 s instead of 22, and
-  every solid comes back the same.
-
-### Fixed
 
 - **A point on a thread's flank is placed on its own turn.** The exact
   classifier folds a hit into a face's chart by whole periods to find the
@@ -5057,7 +5070,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.16...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.16...v0.10.0
 [0.9.16]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.13...v0.9.14
