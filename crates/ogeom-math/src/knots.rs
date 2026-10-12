@@ -288,12 +288,22 @@ impl KnotVector {
     pub fn span_unchecked(&self, u: f64) -> usize {
         let last = self.control_point_count() - 1;
         // The end of the domain belongs to the last span; without this it would
-        // land one past it, since the search looks for `knots[i] <= u`.
+        // land one past it, since the search looks for `knots[i] <= u`. A
+        // span of no length (the end knot repeated, unclamped) is passed
+        // over for the one before it, and at the start for the one after.
         if u >= self.knots[last + 1] {
-            return last;
+            let mut span = last;
+            while span > self.degree && self.knots[span] >= self.knots[span + 1] {
+                span -= 1;
+            }
+            return span;
         }
         if u <= self.knots[self.degree] {
-            return self.degree;
+            let mut span = self.degree;
+            while span < last && self.knots[span] >= self.knots[span + 1] {
+                span += 1;
+            }
+            return span;
         }
         let mut low = self.degree;
         let mut high = last + 1;

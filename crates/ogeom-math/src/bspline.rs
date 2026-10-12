@@ -282,9 +282,23 @@ pub fn insert_knot<P: Blend>(
     if count == 0 {
         return Ok((knots.clone(), control.to_vec()));
     }
-    let span = knots.span(value, tol)?;
+    let mut span = knots.span(value, tol)?;
     let p = knots.degree();
     let existing = knots.multiplicity_of(value);
+    // The insertion works in the span the value opens: the last knot at or
+    // below it with a greater one after. At the end of an unclamped domain
+    // that lies past the domain's last span, which the evaluator's lookup
+    // returns; the control points the window reads are still there, the
+    // value being a knot already.
+    let k = knots.knots();
+    let opened = k.partition_point(|x| *x <= value).saturating_sub(1);
+    if opened > span
+        && opened + 1 < k.len()
+        && opened >= existing
+        && opened - existing < control.len()
+    {
+        span = opened;
+    }
     if existing + count > p {
         ogeom_bail!(
             Construction,
@@ -295,7 +309,6 @@ pub fn insert_knot<P: Blend>(
 
     let new_knots = knots.with_knot_inserted(value, count)?;
     let last = control.len() - 1;
-    let k = knots.knots();
     let (s, r) = (existing, count);
 
     let mut points: Vec<P> = vec![P::zero(); control.len() + r];
@@ -1016,6 +1029,42 @@ mod tests {
                     a.is_equal(*b, T),
                     "inserting {count} at {value} moved the curve"
                 );
+            }
+        }
+    }
+
+    /// An unclamped cubic, uniform knots: a knot inserted at either end of
+    /// its domain, up to the degree, leaves the curve where it was, and the
+    /// curve with its end knots so repeated evaluates at its ends.
+    #[test]
+    fn insertion_at_an_unclamped_domain_end_does_not_move_the_curve() {
+        let k = KnotVector::new((0..=9).map(f64::from).collect(), 3).unwrap();
+        let c: Vec<Point> = [
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 3.0),
+            (2.0, 5.0),
+            (-1.0, 3.0),
+            (0.0, 1.0),
+        ]
+        .into_iter()
+        .map(|(x, y)| Point::new(x, y, 0.5 * x))
+        .collect();
+        let (lo, hi) = k.domain();
+        for value in [lo, hi] {
+            for count in 1..=2 {
+                let (k2, c2) = insert_knot(&k, &c, value, count, T).unwrap();
+                for i in 0..=40 {
+                    let u = lo + (hi - lo) * f64::from(i) / 40.0;
+                    let (a, b) = (
+                        evaluate(&k, &c, u, T).unwrap(),
+                        evaluate(&k2, &c2, u, T).unwrap(),
+                    );
+                    assert!(
+                        a.is_equal(b, T),
+                        "{count} at {value} moved u {u}: {a:?} {b:?}"
+                    );
+                }
             }
         }
     }

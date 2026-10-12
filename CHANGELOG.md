@@ -25,6 +25,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An unclamped spline evaluates at its ends and takes a knot there.**
+  With its first or last knot repeated, an unclamped spline's span lookup
+  landed on a span of no length at that end of its domain and evaluated
+  to NaN, and a knot inserted at the end of its domain was worked in the
+  wrong span and moved the curve. The lookup passes over empty spans, and
+  insertion works in the span the value opens.
 - **A face's seam columns meet the rest of its boundary within its radii.**
   A boolean reads whether a face uses both columns of a seam by whether
   each column's ends meet the face's other edges, and it held them to a
