@@ -1101,3 +1101,50 @@ fn a_skinned_wall_drafts_about_a_level_plane_at_or_above_its_middle_section() {
         );
     }
 }
+
+/// Every edge of a drafted drum, about a neutral tilted off its axis and
+/// about one square to it, stands within its own stated tolerance of each
+/// pcurve it carries, measured along the whole edge: the drafted wall's
+/// rebuilt edges carry fitted pcurves that stray between their samples.
+#[test]
+fn a_drafted_drums_edges_state_their_pcurves_gaps() {
+    for tilt in [0.0_f64, 0.7] {
+        let mut model = ogeom_topo::Model::new();
+        let solid = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+            .unwrap()
+            .shape;
+        let wall = wall_of(&model, &solid);
+        let up = ogeom_math::Vector::new(tilt.sin(), 0.0, tilt.cos());
+        let neutral = Plane::through(
+            Point::new(0.0, 0.0, 10.0),
+            ogeom_math::Direction::new(up, T).unwrap(),
+        );
+        let drafted = ogeom_offset::apply_draft(
+            &mut model,
+            &solid,
+            std::slice::from_ref(&wall),
+            neutral,
+            ogeom_math::Direction::Z,
+            0.1,
+            T,
+        )
+        .unwrap()
+        .shape;
+        for edge in ogeom_topo::explore_unique(&model, &drafted, ShapeType::Edge).unwrap() {
+            let stated = model
+                .node(&edge)
+                .unwrap()
+                .data()
+                .as_edge()
+                .unwrap()
+                .tolerance
+                .get();
+            if let Some(gap) = ogeom_algo::edge_pcurve_gap(&model, &edge, T).unwrap() {
+                assert!(
+                    gap <= stated,
+                    "tilt {tilt}: a pcurve stands {gap:e} off an edge stating {stated:e}"
+                );
+            }
+        }
+    }
+}

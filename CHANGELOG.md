@@ -13,6 +13,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drafted face's rebuilt edges state their pcurves' gaps.** An edge
+  the draft rebuilds on a fitted support was widened by how far its
+  projected pcurve's samples stood off the curve, not by how far the
+  pcurve strays between them: on a drum drafted about a neutral tilted
+  off its axis an edge stated 1e-4 where its pcurve stood 2.9e-4 off.
+  The gap is now measured along the whole edge, and the edge and its
+  vertices state it.
 - **A drill whose seam grazes a face keeps its seam.** A through drill
   whose top line, its seam, stands a hair above a block's top face cuts
   the face along two lines either side of the seam, closer than the

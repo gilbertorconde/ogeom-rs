@@ -1879,6 +1879,24 @@ fn assembled_with_seam(
                 ogeom_topo::Location::identity(),
                 fresh_range,
             )?;
+            // The fit was measured at its own samples; lifted, it may stand
+            // farther off the curve between them, and an exact image of a
+            // curve that left the moved surface stands off along its whole
+            // length. Measured along the whole edge, that is what the edge
+            // and the vertices bounding it state.
+            if let Some(gap) = ogeom_algo::edge_pcurve_gap(model, &fresh, tol)?
+                && model
+                    .node(&fresh)
+                    .and_then(|n| n.data().as_edge())
+                    .is_some_and(|d| gap > d.tolerance.get())
+            {
+                let widened = ogeom_core::Tolerance::new(gap * (1.0 + 1e-6))?;
+                model.widen(&fresh, widened)?;
+                if let Some((a, b)) = edge_vertices(model, &fresh)? {
+                    model.widen(&a, widened)?;
+                    model.widen(&b, widened)?;
+                }
+            }
         }
     }
     Ok(face)
