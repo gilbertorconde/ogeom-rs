@@ -552,7 +552,8 @@ fn clamp_to_domain(
     if periodic {
         return Ok(a + (u - a).rem_euclid(b - a));
     }
-    if !u.is_finite() || u < a - tol.parametric() || u > b + tol.parametric() {
+    let slack = crate::traits::domain_slack(a, b, tol);
+    if !u.is_finite() || u < a - slack || u > b + slack {
         ogeom_bail!(Domain, "parameter {u} outside curve domain [{a}, {b}]");
     }
     Ok(u.clamp(a, b))

@@ -18,6 +18,16 @@
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_math::{Direction, Point, Point2, Transform, Vector, Vector2};
 
+/// How far past its ends a curve's domain still answers: the parametric
+/// confusion, or a few ulps of the ends themselves where those are large.
+/// A line's unbounded domain ends at a billion, where one ulp is a tenth of
+/// a micron, and a step to the end computed as `a + (b - a) * t` lands an
+/// ulp or so past it.
+pub(crate) fn domain_slack(a: f64, b: f64, tol: Tolerances) -> f64 {
+    tol.parametric()
+        .max(a.abs().max(b.abs()) * 4.0 * f64::EPSILON)
+}
+
 /// Whether a curve evaluated outside its domain says where it was asked
 /// from. Read once: the refusal is routine inside booleans, and reading the
 /// environment takes a lock.
@@ -235,7 +245,8 @@ pub trait Curve3d {
             let period = b - a;
             return Ok(a + (u - a).rem_euclid(period));
         }
-        if !u.is_finite() || u < a - tol.parametric() || u > b + tol.parametric() {
+        let slack = domain_slack(a, b, tol);
+        if !u.is_finite() || u < a - slack || u > b + slack {
             if *DEBUG_DOMAIN {
                 eprintln!(
                     "DOMAIN {u} outside [{a}, {b}]:\n{}",
@@ -749,5 +760,34 @@ mod tests {
             assert!(!k.is_quadric(), "{k:?}");
             assert!(!k.is_analytic(), "{k:?}");
         }
+    }
+
+    /// A line's unbounded domain ends at a billion, where an ulp is a tenth
+    /// of a micron: a parameter an ulp or two past the end, which a step
+    /// computed toward the end lands on, is the end. A short segment's end
+    /// keeps the parametric slack, and a micron past either is refused.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_domain_end_answers_an_ulp_past_it_at_any_magnitude() {
+        let tol = Tolerances::millimetres();
+        let axis = ogeom_math::Axis::new(Point::ORIGIN, Direction::X);
+        let line = crate::LineCurve::new(axis);
+        let (a, b) = line.domain();
+        for u in [b, b.next_up(), b.next_up().next_up(), a.next_down()] {
+            assert!(line.point_at(u, tol).is_ok(), "{u} on [{a}, {b}]");
+        }
+        assert!(line.point_at(b + 1e-3, tol).is_err());
+        let segment =
+            crate::LineCurve::segment(Point::ORIGIN, Point::new(1.0, 0.0, 0.0), tol).unwrap();
+        assert!(segment.point_at(1.0 + 1e-10, tol).is_ok());
+        assert!(segment.point_at(1.0 + 1e-6, tol).is_err());
+        let flat = crate::Line2d::over(
+            ogeom_math::Axis2::new(Point2::ORIGIN, ogeom_math::Direction2::X),
+            -crate::curve::LINE_EXTENT,
+            crate::curve::LINE_EXTENT,
+        )
+        .unwrap();
+        assert!(Curve2d::point_at(&flat, crate::curve::LINE_EXTENT.next_up(), tol).is_ok());
+        assert!(Curve2d::point_at(&flat, crate::curve::LINE_EXTENT + 1e-3, tol).is_err());
     }
 }

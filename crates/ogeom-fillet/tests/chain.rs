@@ -329,6 +329,44 @@ fn every_edge_of_a_slanted_box_rounds() {
     }
 }
 
+/// A slanted box whose corner tool cuts its block's planes along lines
+/// running the full unbounded domain: a step toward a line's end lands an
+/// ulp of a billion past it, which is the end, not beyond it.
+#[test]
+fn every_edge_of_a_box_whose_sections_run_to_a_line_s_end_rounds() {
+    let pi = core::f64::consts::PI;
+    let z = Direction::new(
+        Vector::new(0.5622960444626135, 0.5069790817054428, 0.6532957745882064),
+        T,
+    )
+    .unwrap();
+    let x = Direction::new(Vector::new(0.0, 0.7900197472052799, -0.6130813967375831), T).unwrap();
+    let at = Point::new(0.9018390493041868, 1.3163269939520887, 1.694201457746387);
+    let frame = Frame::new(at, z, x, T).unwrap();
+    let dims = (1.8161039209587628, 2.908987621268594, 3.5473365999764437);
+    let radius = 0.19069391608246453;
+    let mut model = ogeom_topo::Model::new();
+    let block = ogeom_algo::make_box(&mut model, frame, dims, T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom_fillet::fillet_edges(&mut model, &block, &edges, radius, T)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let (a, b, c) = (
+        dims.0 - 2.0 * radius,
+        dims.1 - 2.0 * radius,
+        dims.2 - 2.0 * radius,
+    );
+    let want = a * b * c
+        + 2.0 * radius * (a * b + b * c + a * c)
+        + pi * radius * radius * (a + b + c)
+        + 4.0 / 3.0 * pi * radius.powi(3);
+    let got = volume(&model, &rounded.shape, 1e-4);
+    assert!((got - want).abs() < 1e-5 * want, "{got} against {want}");
+}
+
 /// The top rims of a plate's nine bores, rounded as one chain: no rim
 /// meets another, so the blends are applied together. Each removes the
 /// corner between the plate and its bore turned about the bore's axis:

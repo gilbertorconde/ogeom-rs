@@ -25,6 +25,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A curve answers an ulp past the end of a domain that ends far out.**
+  A curve refused a parameter more than the parametric confusion (1e-9)
+  past its domain, but a line's unbounded domain ends at a billion, where
+  one ulp is a tenth of a micron, and a projection's or an intersection's
+  sample stepped to the end lands an ulp past it. The corner tool's cut
+  then failed on a domain error. The slack is now a few ulps of the
+  domain's ends where that exceeds the parametric confusion; a micron
+  past is refused as before. In the stress round scenario the last
+  refusals of every edge of a slanted box went with it: 900 of 900.
+
 - **A slanted drum's rounded rim keeps the material it should.** A rim
   fillet's torus band runs between a ring on the wall, on the tube's outer
   equator, and a ring on the cap. The equator is the seam of the torus
