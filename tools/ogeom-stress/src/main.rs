@@ -777,6 +777,184 @@ fn primitive(model: &mut Model, rng: &mut Rng, oblique: bool) -> Option<(Shape, 
     Some((shape, m, placed))
 }
 
+/// A box, drum, ball or torus on an oblique axis offset in or out by
+/// `offset_shape`, which keeps its topology one for one: sharp edges stay
+/// sharp, so the offset volume is the primitive's own formula at the grown
+/// sizes.
+fn offset_case(rng: &mut Rng) -> Verdict {
+    use core::f64::consts::PI;
+    let mut model = Model::new();
+    let at = Point::new(
+        rng.range(-3.0, 3.0),
+        rng.range(-3.0, 3.0),
+        rng.range(-3.0, 3.0),
+    );
+    let z = Vector::new(
+        rng.range(-1.0, 1.0),
+        rng.range(-1.0, 1.0),
+        rng.range(-1.0, 1.0),
+    );
+    let Ok(z) = Direction::new(z, T) else {
+        return Verdict::of(Outcome::Refused, "degenerate axis");
+    };
+    let Ok(x) = Direction::new(across(z.vector(), rng), T) else {
+        return Verdict::of(Outcome::Refused, "degenerate axis");
+    };
+    let frame = frame_at(at, z, x);
+    let kind = rng.below(4);
+    let (built, smallest, name): (ogeom::core::OgeomResult<ogeom::algo::Built>, f64, String) =
+        match kind {
+            0 => {
+                let (a, b, c) = (
+                    rng.range(1.0, 6.0),
+                    rng.range(1.0, 6.0),
+                    rng.range(1.0, 6.0),
+                );
+                (
+                    ogeom::algo::make_box(&mut model, frame, (a, b, c), T),
+                    a.min(b).min(c) / 2.0,
+                    format!("box {a} {b} {c}"),
+                )
+            }
+            1 => {
+                let (r, h) = (rng.range(0.5, 3.0), rng.range(1.0, 6.0));
+                (
+                    ogeom::algo::make_cylinder(&mut model, frame, r, h, T),
+                    r.min(h / 2.0),
+                    format!("cylinder {r} {h}"),
+                )
+            }
+            2 => {
+                let r = rng.range(0.5, 3.0);
+                (
+                    ogeom::algo::make_sphere(&mut model, frame, r, T),
+                    r,
+                    format!("sphere {r}"),
+                )
+            }
+            _ => {
+                let r = rng.range(1.5, 4.0);
+                let tube = r * rng.range(0.1, 0.4);
+                (
+                    ogeom::algo::make_torus(&mut model, frame, r, tube, T),
+                    tube,
+                    format!("torus {r} {tube}"),
+                )
+            }
+        };
+    let Ok(built) = built else {
+        return Verdict::of(Outcome::Refused, "primitive");
+    };
+    let shape = built.shape;
+    let d = if rng.chance(0.5) {
+        rng.range(0.05, 1.0)
+    } else {
+        -smallest * rng.range(0.05, 0.8)
+    };
+    let what = format!("{name} at {at:?} along {z:?} seam {x:?} offset {d}");
+    let grown = ogeom::offset::offset_shape(&mut model, &shape, d, T);
+    let (_, m) = match judged(&model, &what, grown) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let words: Vec<f64> = name
+        .split(' ')
+        .skip(1)
+        .map(|w| w.parse().unwrap_or(0.0))
+        .collect();
+    let want = match kind {
+        0 => (words[0] + 2.0 * d) * (words[1] + 2.0 * d) * (words[2] + 2.0 * d),
+        1 => PI * (words[0] + d).powi(2) * (words[1] + 2.0 * d),
+        2 => 4.0 / 3.0 * PI * (words[0] + d).powi(3),
+        _ => 2.0 * PI * PI * words[0] * (words[1] + d).powi(2),
+    };
+    let slack = allowance(want.abs(), &[&m]);
+    if (m.volume - want).abs() > slack {
+        return Verdict::of(
+            Outcome::Wrong,
+            format!(
+                "{what}: volume {:.9} against {want:.9}, off {:.3e}",
+                m.volume,
+                m.volume - want
+            ),
+        );
+    }
+    Verdict::ok().read_from(&[("offset", &m)])
+}
+
+/// Two boxes on oblique axes fused, and one to three of the fused solid's
+/// edges between two planes filleted at a small radius: the result is
+/// valid and holds the fused volume within what the rounds can take.
+fn blend_case(rng: &mut Rng) -> Verdict {
+    let mut model = Model::new();
+    let mut boxes = Vec::new();
+    for _ in 0..2 {
+        let at = Point::new(
+            rng.range(-2.0, 2.0),
+            rng.range(-2.0, 2.0),
+            rng.range(-2.0, 2.0),
+        );
+        let z = Vector::new(
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        );
+        let Ok(z) = Direction::new(z, T) else {
+            return Verdict::of(Outcome::Refused, "degenerate axis");
+        };
+        let Ok(x) = Direction::new(across(z.vector(), rng), T) else {
+            return Verdict::of(Outcome::Refused, "degenerate axis");
+        };
+        let size = (
+            rng.range(2.0, 6.0),
+            rng.range(2.0, 6.0),
+            rng.range(2.0, 6.0),
+        );
+        let Ok(b) = ogeom::algo::make_box(&mut model, frame_at(at, z, x), size, T) else {
+            return Verdict::of(Outcome::Refused, "box");
+        };
+        boxes.push((
+            b.shape,
+            format!("box {size:?} at {at:?} along {z:?} x {x:?}"),
+        ));
+    }
+    let what = format!("{} with {}", boxes[0].1, boxes[1].1);
+    let fused = ogeom::boolean::fuse(&mut model, &boxes[0].0, &boxes[1].0, T);
+    let (fused, mf) = match judged(&model, &format!("{what}: fuse"), fused) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let edges = ogeom::topo::explore_unique(&model, &fused, ShapeType::Edge).unwrap_or_default();
+    if edges.is_empty() {
+        return Verdict::of(Outcome::Refused, "no edges");
+    }
+    let count = 1 + rng.below(3);
+    let mut chosen: Vec<Shape> = Vec::new();
+    for _ in 0..count {
+        let e = rng.pick(&edges).clone();
+        if !chosen.iter().any(|c| c.node() == e.node()) {
+            chosen.push(e);
+        }
+    }
+    let radius = rng.range(0.05, 0.4);
+    let result = ogeom::fillet::fillet_edges(&mut model, &fused, &chosen, radius, T);
+    let (_, m) = match judged(&model, &format!("{what}: fillet r {radius}"), result) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let change = (m.volume - mf.volume).abs() / mf.volume;
+    if change > 0.05 {
+        return Verdict::of(
+            Outcome::Wrong,
+            format!(
+                "{what}: fillet r {radius:.4} moved {:.2}% of the part",
+                change * 100.0
+            ),
+        );
+    }
+    Verdict::ok().read_from(&[("fused", &mf), ("filleted", &m)])
+}
+
 /// Three primitives along any direction: the first two fused, and that
 /// cut by and in common with the third. The cut and the common add up to
 /// the fused pair, so a boolean on a boolean's result, sections and all, is
@@ -998,6 +1176,22 @@ fn cases(seed: u64, per_part: usize, corpus: bool) -> Vec<Case> {
                 run: Box::new(move || fillet_case(&part, &mut Rng::new(s))),
             });
         }
+    }
+    for i in 0..per_part * 3 {
+        let key = format!("offset/primitives/{i}");
+        let s = case_seed(seed, &key);
+        out.push(Case {
+            key,
+            run: Box::new(move || offset_case(&mut Rng::new(s))),
+        });
+    }
+    for i in 0..per_part * 3 {
+        let key = format!("blend/boxes/{i}");
+        let s = case_seed(seed, &key);
+        out.push(Case {
+            key,
+            run: Box::new(move || blend_case(&mut Rng::new(s))),
+        });
     }
     for i in 0..per_part * 3 {
         let key = format!("chain/primitives/{i}");
