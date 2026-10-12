@@ -905,3 +905,43 @@ fn a_circle_crossing_a_hole_cuts_off_the_part_outside_it() {
     assert!((areas[0] - crescent).abs() <= crescent * 1e-5, "{areas:?}");
     assert!((areas[1] - rest).abs() <= rest * 1e-5, "{areas:?}");
 }
+
+/// The edges a split makes on a drum's wall, a circle dropped onto it
+/// along the wall's normals and fitted there, stand within their own stated
+/// tolerance of each pcurve they carry, measured along their whole length.
+#[test]
+fn a_split_states_its_edges_pcurves_gaps() {
+    let mut model = Model::new();
+    let (drum, wall) = drum(&mut model);
+    let ring = circle(
+        &mut model,
+        Point::new(0.0, 0.0, 1.5),
+        Vector::new(1.0, 0.0, 0.0),
+        3.0,
+    );
+    let built = split_face(
+        &mut model,
+        &drum,
+        &wall,
+        &[ring],
+        Projection::AlongNormals,
+        T,
+    )
+    .unwrap();
+    for edge in explore_unique(&model, &built.shape, ShapeType::Edge).unwrap() {
+        let stated = model
+            .node(&edge)
+            .unwrap()
+            .data()
+            .as_edge()
+            .unwrap()
+            .tolerance
+            .get();
+        if let Some(gap) = ogeom_algo::edge_pcurve_gap(&model, &edge, T).unwrap() {
+            assert!(
+                gap <= stated,
+                "a pcurve stands {gap:e} off an edge stating {stated:e}"
+            );
+        }
+    }
+}

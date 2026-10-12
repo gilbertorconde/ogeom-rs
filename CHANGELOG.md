@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face split along a projected curve states its new edges' gaps.** A
+  curve dropped onto a face along its normals lands through a fitted
+  pcurve where no closed form projects it, and the fit strays between its
+  samples: a circle dropped onto a drum's wall made edges stating seven
+  times less than their pcurves stood off. Every edge the split makes now
+  states what its pcurves measure along it.
 - **A sheet offset or thickened states its edges' pcurve gaps.** The walls
   between a thickened sheet's layers are ruled between their rims, fitted
   where no closed form joins them, and their pcurves lift to the fit rather

@@ -224,6 +224,20 @@ pub fn split_face(
         }
         pending = held;
     }
+    // A cut lands on the face's surface through a fitted pcurve where no
+    // closed form projects it (a circle dropped onto a drum along the
+    // normals), and the fit stands off its edge between its samples: every
+    // edge the split made states what its pcurves measure along it. The
+    // shape's own edges are the caller's, and are left as they were.
+    let held: ogeom_core::FastSet<_> = explore_unique(model, shape, ShapeType::Edge)?
+        .iter()
+        .map(Shape::node)
+        .collect();
+    let made: Vec<Shape> = explore_unique(model, &current.shape, ShapeType::Edge)?
+        .into_iter()
+        .filter(|e| !held.contains(&e.node()))
+        .collect();
+    ogeom_algo::state_pcurve_gaps_of(model, &made, tol)?;
     Ok(current)
 }
 
