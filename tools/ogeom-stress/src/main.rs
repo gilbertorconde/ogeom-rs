@@ -955,6 +955,453 @@ fn blend_case(rng: &mut Rng) -> Verdict {
     Verdict::ok().read_from(&[("fused", &mf), ("filleted", &m)])
 }
 
+/// An oblique box with edges rounded or bevelled: one edge, two that share
+/// no corner, or all twelve; or a drum with one rim or both. Each has a
+/// closed-form volume: a round takes `r^2 (1 - pi/4)` along its edge and a
+/// bevel half a square of its distance, and where all twelve meet in the
+/// corners the box is Steiner's (rounds) or keeps the corners' triple
+/// overlap (bevels).
+fn round_case(rng: &mut Rng) -> Verdict {
+    use core::f64::consts::PI;
+    let mut model = Model::new();
+    let at = Point::new(
+        rng.range(-3.0, 3.0),
+        rng.range(-3.0, 3.0),
+        rng.range(-3.0, 3.0),
+    );
+    let z = Vector::new(
+        rng.range(-1.0, 1.0),
+        rng.range(-1.0, 1.0),
+        rng.range(-1.0, 1.0),
+    );
+    let Ok(z) = Direction::new(z, T) else {
+        return Verdict::of(Outcome::Refused, "degenerate axis");
+    };
+    let Ok(x) = Direction::new(across(z.vector(), rng), T) else {
+        return Verdict::of(Outcome::Refused, "degenerate axis");
+    };
+    let dims = (
+        rng.range(1.0, 6.0),
+        rng.range(1.0, 6.0),
+        rng.range(1.0, 6.0),
+    );
+    if rng.chance(0.3) {
+        return drum_round(&mut model, frame_at(at, z, x), dims, rng);
+    }
+    if rng.chance(0.2) {
+        return bore_round(&mut model, frame_at(at, z, x), dims, rng);
+    }
+    let Ok(built) = ogeom::algo::make_box(&mut model, frame_at(at, z, x), dims, T) else {
+        return Verdict::of(Outcome::Refused, "box");
+    };
+    let shape = built.shape;
+    let edges = ogeom::topo::explore_unique(&model, &shape, ShapeType::Edge).unwrap_or_default();
+    let ends = |e: &Shape| -> Vec<Point> {
+        ogeom::topo::explore_unique(&model, e, ShapeType::Vertex)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| {
+                model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex())
+                    .map(|d| d.point)
+            })
+            .collect()
+    };
+    let all = rng.chance(0.3);
+    let first = rng.pick(&edges).clone();
+    let mut chosen = vec![first.clone()];
+    if all {
+        chosen = edges.clone();
+    } else if rng.chance(0.5) {
+        let near = ends(&first);
+        let apart: Vec<Shape> = edges
+            .iter()
+            .filter(|e| {
+                ends(e)
+                    .iter()
+                    .all(|p| near.iter().all(|q| q.distance(*p) > 1e-6))
+            })
+            .cloned()
+            .collect();
+        if !apart.is_empty() {
+            chosen.push(rng.pick(&apart).clone());
+        }
+    }
+    let r = dims.0.min(dims.1).min(dims.2) * rng.range(0.05, 0.45);
+    let length: f64 = chosen
+        .iter()
+        .map(|e| {
+            let p = ends(e);
+            p[0].distance(p[1])
+        })
+        .sum();
+    let bevel = rng.chance(0.3);
+    let what = format!(
+        "box {dims:?} at {at:?} along {z:?} x {x:?}, {} edges {} {r}",
+        chosen.len(),
+        if bevel { "bevelled" } else { "rounded" }
+    );
+    // Short of every edge, a bevel may run a second distance along the
+    // other face, given outright or by its angle from the first; on a
+    // square edge either takes a triangle of the two legs.
+    let lean = if bevel && !all { rng.below(3) } else { 0 };
+    let other = r * rng
+        .range(0.5, 1.5)
+        .min(dims.0.min(dims.1).min(dims.2) * 0.45 / r);
+    let angle = (other / r).atan();
+    let what = match lean {
+        1 => format!("{what}, {other} on the other face"),
+        2 => format!("{what}, at {angle} rad"),
+        _ => what,
+    };
+    let result = if lean > 0 {
+        let mut specs = Vec::with_capacity(chosen.len());
+        for edge in &chosen {
+            let faces =
+                ogeom::topo::explore_unique(&model, &shape, ShapeType::Face).unwrap_or_default();
+            let Some(face) = faces.into_iter().find(|f| {
+                ogeom::topo::explore_unique(&model, f, ShapeType::Edge)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|e| e.is_same(edge))
+            }) else {
+                return Verdict::of(Outcome::Wrong, format!("{what}: an edge on no face"));
+            };
+            specs.push((
+                edge.clone(),
+                if lean == 1 {
+                    ogeom::fillet::Chamfer::Distances {
+                        face,
+                        on_face: r,
+                        on_other: other,
+                    }
+                } else {
+                    ogeom::fillet::Chamfer::Angle {
+                        face,
+                        distance: r,
+                        angle,
+                    }
+                },
+            ));
+        }
+        ogeom::fillet::chamfer_edges_with(&mut model, &shape, &specs, T)
+    } else if bevel {
+        ogeom::fillet::chamfer_edges(&mut model, &shape, &chosen, r, T)
+    } else {
+        ogeom::fillet::fillet_edges(&mut model, &shape, &chosen, r, T)
+    };
+    let (_, m) = match judged(&model, &what, result) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let want = if bevel {
+        // Three bevels at a corner cut its pairs' overlaps twice over and
+        // the triple's three times: d^3 less d^3/4 to give back.
+        let corners = if all { 8.0 } else { 0.0 };
+        let legs = if lean > 0 { r * other } else { r * r };
+        (corners * 0.75 * r).mul_add(r * r, dims.0 * dims.1 * dims.2 - legs / 2.0 * length)
+    } else if all {
+        // The box shrunk by the radius, its faces' slabs, its edges'
+        // quarter cylinders and its corners' ball.
+        let (a, b, c) = (dims.0 - 2.0 * r, dims.1 - 2.0 * r, dims.2 - 2.0 * r);
+        a * b * c
+            + 2.0 * r * (a * b + b * c + a * c)
+            + PI * r * r * (a + b + c)
+            + 4.0 / 3.0 * PI * r * r * r
+    } else {
+        dims.0 * dims.1 * dims.2 - (1.0 - PI / 4.0) * r * r * length
+    };
+    let slack = allowance(want, &[&m]);
+    if (m.volume - want).abs() > slack {
+        return Verdict::of(
+            Outcome::Wrong,
+            format!(
+                "{what}: volume {:.9} against {want:.9}, off {:.3e}",
+                m.volume,
+                m.volume - want
+            ),
+        );
+    }
+    Verdict::ok().read_from(&[("result", &m)])
+}
+
+/// A drum with one rim rounded or bevelled, or both: each takes the corner
+/// between wall and cap turned about the axis, by Pappus. A round's
+/// corner has area `r^2 (1 - pi/4)` and its centroid `r (10 - 3 pi) /
+/// (3 (4 - pi))` in from the rim; a bevel's, `r^2 / 2` and `r / 3`.
+fn drum_round(model: &mut Model, frame: Frame, dims: (f64, f64, f64), rng: &mut Rng) -> Verdict {
+    use core::f64::consts::PI;
+    let (radius, height) = (dims.0 / 2.0, dims.2);
+    let Ok(built) = ogeom::algo::make_cylinder(model, frame, radius, height, T) else {
+        return Verdict::of(Outcome::Refused, "drum");
+    };
+    let shape = built.shape;
+    let rims: Vec<Shape> = ogeom::topo::explore_unique(model, &shape, ShapeType::Edge)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| {
+            ogeom::algo::edge_vertices(model, e)
+                .ok()
+                .flatten()
+                .is_some_and(|(a, b)| a.is_same(&b))
+        })
+        .collect();
+    if rims.len() != 2 {
+        return Verdict::of(Outcome::Wrong, format!("a drum with {} rims", rims.len()));
+    }
+    let chosen: Vec<Shape> = if rng.chance(0.5) {
+        rims
+    } else {
+        rims[..1].to_vec()
+    };
+    let r = radius.min(height / 2.0) * rng.range(0.05, 0.45);
+    let bevel = rng.chance(0.3);
+    let what = format!(
+        "drum r {radius} h {height} at {:?} along {:?} x {:?}, {} rims {} {r}",
+        frame.origin(),
+        frame.z(),
+        frame.x(),
+        chosen.len(),
+        if bevel { "bevelled" } else { "rounded" }
+    );
+    let result = if bevel {
+        ogeom::fillet::chamfer_edges(model, &shape, &chosen, r, T)
+    } else {
+        ogeom::fillet::fillet_edges(model, &shape, &chosen, r, T)
+    };
+    let (_, m) = match judged(model, &what, result) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let removed = if bevel {
+        PI * (radius - r / 3.0) * r * r
+    } else {
+        let k = (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI));
+        2.0 * PI * (radius - k * r) * (1.0 - PI / 4.0) * r * r
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let want = PI * radius * radius * height - removed * chosen.len() as f64;
+    let slack = allowance(want, &[&m]);
+    if (m.volume - want).abs() > slack {
+        return Verdict::of(
+            Outcome::Wrong,
+            format!(
+                "{what}: volume {:.9} against {want:.9}, off {:.3e}",
+                m.volume,
+                m.volume - want
+            ),
+        );
+    }
+    Verdict::ok().read_from(&[("result", &m)])
+}
+
+/// A box bored through along its own `z`, one rim of the bore rounded or
+/// bevelled, or both: each takes the corner between bore and face turned
+/// about the bore's axis, its centroid outside the bore's radius.
+fn bore_round(model: &mut Model, frame: Frame, dims: (f64, f64, f64), rng: &mut Rng) -> Verdict {
+    use core::f64::consts::PI;
+    let Ok(block) = ogeom::algo::make_box(model, frame, dims, T) else {
+        return Verdict::of(Outcome::Refused, "box");
+    };
+    let radius = dims.0.min(dims.1) * rng.range(0.1, 0.3);
+    let centre =
+        frame.origin() + frame.x().vector() * (dims.0 / 2.0) + frame.y().vector() * (dims.1 / 2.0)
+            - frame.z().vector();
+    let Ok(axis) = Frame::new(centre, frame.z(), frame.x(), T) else {
+        return Verdict::of(Outcome::Refused, "bore frame");
+    };
+    let Ok(drill) = ogeom::algo::make_cylinder(model, axis, radius, dims.2 + 2.0, T) else {
+        return Verdict::of(Outcome::Refused, "drill");
+    };
+    let what = format!(
+        "box {dims:?} at {:?} along {:?} x {:?} bored r {radius}",
+        frame.origin(),
+        frame.z(),
+        frame.x()
+    );
+    let bored = ogeom::boolean::cut(model, &block.shape, &drill.shape, T);
+    let (bored, mb) = match judged(model, &format!("{what}: bore"), bored) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    // The bore's rims, each the arcs the cut left of one circle: told
+    // apart by which face of the box they lie in.
+    let mut rims: [Vec<Shape>; 2] = [Vec::new(), Vec::new()];
+    for e in ogeom::topo::explore_unique(model, &bored, ShapeType::Edge).unwrap_or_default() {
+        let circle = model
+            .node(&e)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| match d.curve3d() {
+                Some(ogeom::topo::EdgeRepr::Curve3d { curve, .. }) => {
+                    model.geometry().curve(*curve)
+                }
+                _ => None,
+            })
+            .and_then(|g| match g {
+                ogeom::geom::Curve::Circle(c) => Some(c.circle()),
+                _ => None,
+            });
+        let Some(circle) = circle else { continue };
+        let Ok(placement) = e.transform(model.datums()) else {
+            continue;
+        };
+        let height = (placement.apply(circle.centre()) - frame.origin()).dot(frame.z().vector());
+        rims[usize::from(height > dims.2 / 2.0)].push(e);
+    }
+    if rims.iter().any(Vec::is_empty) {
+        return Verdict::of(Outcome::Wrong, format!("{what}: a rim with no arcs"));
+    }
+    let both = rng.chance(0.5);
+    let count = if both { 2.0 } else { 1.0 };
+    let chosen: Vec<Shape> = if both { rims.concat() } else { rims[0].clone() };
+    let room = (dims.0.min(dims.1) / 2.0 - radius)
+        .min(dims.2 / 2.0)
+        .min(radius);
+    let r = room * rng.range(0.05, 0.45);
+    let bevel = rng.chance(0.3);
+    let what = format!(
+        "{what}, {count} rims {} {r}",
+        if bevel { "bevelled" } else { "rounded" }
+    );
+    let result = if bevel {
+        ogeom::fillet::chamfer_edges(model, &bored, &chosen, r, T)
+    } else {
+        ogeom::fillet::fillet_edges(model, &bored, &chosen, r, T)
+    };
+    let (_, m) = match judged(model, &what, result) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let removed = if bevel {
+        PI * (radius + r / 3.0) * r * r
+    } else {
+        let k = (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI));
+        2.0 * PI * (radius + k * r) * (1.0 - PI / 4.0) * r * r
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let want = dims.0 * dims.1 * dims.2 - PI * radius * radius * dims.2 - removed * count;
+    let slack = allowance(want, &[&mb, &m]);
+    if (m.volume - want).abs() > slack {
+        return Verdict::of(
+            Outcome::Wrong,
+            format!(
+                "{what}: volume {:.9} against {want:.9}, off {:.3e}",
+                m.volume,
+                m.volume - want
+            ),
+        );
+    }
+    Verdict::ok().read_from(&[("bored", &mb), ("result", &m)])
+}
+
+/// An oblique box or drum hollowed by `make_thick_solid`, opened at one of
+/// its flat faces: the cavity is the solid shrunk by the wall on every side
+/// but the opened one, where it runs out flush.
+fn hollow_case(rng: &mut Rng) -> Verdict {
+    use core::f64::consts::PI;
+    let mut model = Model::new();
+    let at = Point::new(
+        rng.range(-3.0, 3.0),
+        rng.range(-3.0, 3.0),
+        rng.range(-3.0, 3.0),
+    );
+    let z = Vector::new(
+        rng.range(-1.0, 1.0),
+        rng.range(-1.0, 1.0),
+        rng.range(-1.0, 1.0),
+    );
+    let Ok(z) = Direction::new(z, T) else {
+        return Verdict::of(Outcome::Refused, "degenerate axis");
+    };
+    let Ok(x) = Direction::new(across(z.vector(), rng), T) else {
+        return Verdict::of(Outcome::Refused, "degenerate axis");
+    };
+    let frame = frame_at(at, z, x);
+    let boxed = rng.chance(0.5);
+    let dims = (
+        rng.range(1.0, 6.0),
+        rng.range(1.0, 6.0),
+        rng.range(1.0, 6.0),
+    );
+    let built = if boxed {
+        ogeom::algo::make_box(&mut model, frame, dims, T)
+    } else {
+        ogeom::algo::make_cylinder(&mut model, frame, dims.0 / 2.0, dims.2, T)
+    };
+    let Ok(built) = built else {
+        return Verdict::of(Outcome::Refused, "primitive");
+    };
+    let shape = built.shape;
+    let flats: Vec<(Shape, Vector)> = ogeom::topo::explore_unique(&model, &shape, ShapeType::Face)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| {
+            model
+                .node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| model.geometry().surface(d.surface))
+                .is_some_and(|g| matches!(g, ogeom::geom::SurfaceGeometry::Plane(_)))
+        })
+        .filter_map(|f| {
+            ogeom::algo::face_normal(&model, &f, T)
+                .ok()
+                .map(|(_, n)| (f, n))
+        })
+        .collect();
+    if flats.is_empty() {
+        return Verdict::of(Outcome::Wrong, "a primitive with no flat face");
+    }
+    let (opened, normal) = rng.pick(&flats).clone();
+    let smallest = if boxed {
+        dims.0.min(dims.1).min(dims.2)
+    } else {
+        dims.0.min(dims.2)
+    };
+    let wall = smallest * rng.range(0.05, 0.3);
+    let what = format!(
+        "{} {dims:?} at {at:?} along {z:?} x {x:?}, opened along {normal:?}, wall {wall}",
+        if boxed { "box" } else { "drum" }
+    );
+    let result = ogeom::offset::make_thick_solid(&mut model, &shape, &[opened], wall, T);
+    let (_, m) = match judged(&model, &what, result) {
+        Ok(r) => r,
+        Err(v) => return v,
+    };
+    let want = if boxed {
+        // Short by one wall along the opened face's normal, by two along
+        // the others.
+        let along = [x.vector(), frame.y().vector(), z.vector()];
+        let sides = [dims.0, dims.1, dims.2];
+        let cavity: f64 = (0..3)
+            .map(|i| {
+                let walls = if normal.dot(along[i]).abs() > 0.5 {
+                    1.0
+                } else {
+                    2.0
+                };
+                sides[i] - walls * wall
+            })
+            .product();
+        dims.0 * dims.1 * dims.2 - cavity
+    } else {
+        let (radius, height) = (dims.0 / 2.0, dims.2);
+        PI * radius * radius * height - PI * (radius - wall).powi(2) * (height - wall)
+    };
+    let slack = allowance(want, &[&m]);
+    if (m.volume - want).abs() > slack {
+        return Verdict::of(
+            Outcome::Wrong,
+            format!(
+                "{what}: volume {:.9} against {want:.9}, off {:.3e}",
+                m.volume,
+                m.volume - want
+            ),
+        );
+    }
+    Verdict::ok().read_from(&[("hollow", &m)])
+}
+
 /// Three primitives along any direction: the first two fused, and that
 /// cut by and in common with the third. The cut and the common add up to
 /// the fused pair, so a boolean on a boolean's result, sections and all, is
@@ -1191,6 +1638,22 @@ fn cases(seed: u64, per_part: usize, corpus: bool) -> Vec<Case> {
         out.push(Case {
             key,
             run: Box::new(move || blend_case(&mut Rng::new(s))),
+        });
+    }
+    for i in 0..per_part * 3 {
+        let key = format!("round/primitives/{i}");
+        let s = case_seed(seed, &key);
+        out.push(Case {
+            key,
+            run: Box::new(move || round_case(&mut Rng::new(s))),
+        });
+    }
+    for i in 0..per_part * 3 {
+        let key = format!("hollow/primitives/{i}");
+        let s = case_seed(seed, &key);
+        out.push(Case {
+            key,
+            run: Box::new(move || hollow_case(&mut Rng::new(s))),
         });
     }
     for i in 0..per_part * 3 {
