@@ -1057,3 +1057,38 @@ fn a_read_part_s_volume_does_not_move_with_its_first_face() {
         );
     }
 }
+
+/// Faces meeting at a vertex place it at the vertex's own point, bit for
+/// bit, so meshes joined on exact coordinates close. One of this part's
+/// faces has a corner whose chart parameter comes out subnormal-tiny; the
+/// triangulation holds it at zero, and the corner is still the vertex's.
+#[test]
+fn faces_meeting_at_a_vertex_place_it_at_one_point() {
+    use ogeom::core::FastMap;
+    let import = ogeom::io::read_step(&corpus("stepconf_sled_base.step"), T).unwrap();
+    let model = import.document.model();
+    let solid = &import.solids[0];
+    let bits = |p: ogeom::math::Point| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    for chord in [0.0125, 0.05, 0.1, 0.5] {
+        let deflection = ogeom::mesh::Deflection {
+            chord,
+            ..ogeom::mesh::Deflection::default()
+        };
+        let (faces, _) = ogeom::mesh::face_meshes_for(model, solid, deflection, None, T).unwrap();
+        let mut sides: FastMap<([u64; 3], [u64; 3]), usize> = FastMap::default();
+        for (_, mesh) in &faces {
+            let mesh = mesh.as_ref().unwrap();
+            for t in &mesh.triangles {
+                for k in 0..3 {
+                    let p = bits(mesh.positions[t[k] as usize]);
+                    let q = bits(mesh.positions[t[(k + 1) % 3] as usize]);
+                    if p != q {
+                        *sides.entry((p.min(q), p.max(q))).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let open = sides.values().filter(|&&n| n == 1).count();
+        assert_eq!(open, 0, "chord {chord}: {open} sides with one triangle");
+    }
+}

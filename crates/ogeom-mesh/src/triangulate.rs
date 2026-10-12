@@ -3239,12 +3239,15 @@ fn triangulate_region_inner(
     for (ring, chart) in scaled.iter().zip(rings) {
         let mut ring_handles = Vec::with_capacity(ring.len());
         for (p, uv) in ring.iter().zip(chart) {
-            exact.insert((p.x.to_bits(), p.y.to_bits()), (uv.x, uv.y));
             // A chart coordinate can come out subnormal-tiny (the sine of
             // a fold angle, the residue of an exact cancellation), and the
-            // triangulation refuses what is, for every purpose, zero.
+            // triangulation refuses what is, for every purpose, zero. The
+            // point is known by where the triangulation holds it, so its
+            // exact parameters, and the anchor they key, are found again.
+            let held = mitigate_underflow(SpadePoint::new(p.x, p.y));
+            exact.insert((held.x.to_bits(), held.y.to_bits()), (uv.x, uv.y));
             let handle = cdt
-                .insert(mitigate_underflow(SpadePoint::new(p.x, p.y)))
+                .insert(held)
                 .map_err(|e| ogeom_core::ogeom_err!(NotDone, "boundary insertion failed: {e}"))?;
             ring_handles.push(handle);
         }

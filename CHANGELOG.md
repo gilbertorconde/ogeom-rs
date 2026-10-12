@@ -21,6 +21,14 @@ bump may break the API and a patch bump may not.
   face's flat triangles now split their neighbour across the long side
   instead, leaving every shared edge as it was.
 
+- **Faces meeting at a vertex place it at one point (#217).** A boundary
+  point whose chart parameter came out subnormal-tiny was held at zero by
+  the triangulation, which then no longer found its exact parameters or
+  the vertex it is anchored to, and lifted it off the surface instead: a
+  corner 1.3e-14 mm from where its neighbours put it, and a mesh welded on
+  exact coordinates open along three edges. The point is now known by
+  where the triangulation holds it.
+
 ## [0.10.0] - 2026-10-12
 
 A minor release, since the API changes: `ProjectedCurve` gains `Parabola`

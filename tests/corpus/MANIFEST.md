@@ -22,6 +22,7 @@ One entry per committed file. A file without an entry does not get committed.
 | `threemf_cube_zip64.3mf` | Authored for this project: the parts of `threemf_cube_deflated.3mf` repacked as streaming writers lay out a package whatever its size: ZIP64 end record and locator, sizes and offsets saturated in every header and carried in ZIP64 extra fields, entries at version 4.5. | This repository's own licence (MIT OR Apache-2.0) | 2026-09-23 |
 | `threemf_components_inch.3mf` | Authored for this project, as above: model unit inch; one object of two components of a one-inch cube held in a model part of its own and reached through the production extension's `p:path`, the second component mirrored in x. | same | 2026-09-23 |
 | `threemf_painted_sphere.3mf` | Authored for this project, as above: a 4 680-triangle sphere painted two colours from a colour group, large enough to span several dynamic-Huffman blocks, beside a cube of type `support`. | same | 2026-09-23 |
+| `stepconf_sled_base.step` | [step-conformance](https://github.com/dan335/step-conformance) `corpus/sled_base.step` at commit `3af54de604fb`: a shop part in inches, one of whose faces' corners the chart flushes to a subnormal-tiny parameter | CC0 1.0 (the corpus's `LICENSE`) | 2026-10-12 |
 
 The eleven `.stp` files are the **AP203 geometry-only** exports of the CTC 1–5 and
 FTC 6–11 test parts from the NIST MBE PMI Validation and Conformance Testing
