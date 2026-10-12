@@ -26,16 +26,15 @@ first, then refusals, then cost.
 **Some fits through bare points are trusted between their points.** A fit
 through points (`fit_points`, `fit_points_at`, the grid fits) states its
 error at the points only. These callers still read it, or nothing, where
-the shape between the points matters:
+the shape between the points matters. Every edge the workspace's tests
+build through them was measured densely against its stated tolerance, and
+none stated less than its pcurves stand off:
 
 - `ogeom-offset/src/sweep.rs` (`Skin::fit`, `skinned_wall`): a grid skin's
   error becomes the slack an adopted border is widened by, and
   `adopt_border` reads that border against the surface at 33 points.
   Between the sections the skin is the fit itself; along a section the
   section curve is the truth and is not read between the grid's points.
-- `ogeom-offset/src/shape.rs` (the projected pcurve of a rebuilt edge):
-  the edge is widened by the samples' offset only, not by the fit's error
-  or the lifted gap that `ogeom-algo/src/build.rs` measures.
 - `ogeom-fillet/src/pair_marched.rs` (`contact_cut`): the ball's line of
   contact is held to its target at the march's stations only; its pcurve
   is measured densely against it, but the true contact line between
@@ -48,7 +47,9 @@ Read and left: `ogeom-algo/src/convert.rs` (`fit_pcurve` stops refining
 at 384 samples and checks middles only, but every re-derived edge is then
 measured densely by `state_pcurve_gaps_of`), and
 `ogeom-algo/src/recognize_swept.rs` (a mesh's vertices are all the truth
-there is, and the profile is measured against every one).
+there is, and the profile is measured against every one). The edges an
+offset rebuilds, a sheet offset or thickened makes, `split_face` makes and
+a blend's wedge carries are measured densely the same way.
 
 ### Booleans
 
@@ -62,16 +63,17 @@ facet. Two planar faces where one lies on one side of the other's plane, its
 corners past it by rounding at most, no longer give their planes' line as a
 section (`one_side_of` in `ogeom-bool/src/lib.rs`): a corner facet meeting
 the wall only at a vertex, and a facet's side edge beside the next wall. Of
-the 15 committed row-count sets at depths 3 and 10 drafted 0.00001, 24 of 30
-pass with each row a face of its own and 21 of 30 at the converter's own
-distance (20 and 14 before); at 0.00002, 28 and 28; at 0.00005, 30 and 27.
-What remains:
+the 15 committed row-count sets at depths 3 and 10, all 30 pass with each
+row a face of its own at 0.00001, 0.00002 and 0.00005; at the converter's
+own distance 25, 30 and 27 of 30 pass. What remains:
 
-- At 0.00001, [8,9,9,5,4,5,5] with rows kept and [7,7,7,6,6,6,5] and
-  [8,5,9,9,5,8,7] at the converter's distance, depth 3: the kept pieces do
-  not close. Not diagnosed. (The depth 3 sets with falling or mixed counts
-  whose probes every ray refused, twelve at 0.00001 and 0.00002, now pass:
-  the winding number answers them.)
+- At 0.00001, [7,7,7,6,6,6,5] and [8,5,9,9,5,8,7] at the converter's
+  distance, both depths: the kept pieces do not close. In the first, the
+  slab's merged corner face meets the pad's flat wall in a section that
+  leaves the corner edge 7.8 mm up and reaches the pad's floor two microns
+  off it; the sliver between that section and the pad's corner edge is
+  kept on one side and not the other, and the corner edge above the
+  section's end is left open.
 - At the converter's distance with depth 10 (the pad through the whole
   slab), the fuse comes out 4e-5 to 6e-5 cubic millimetres under the mesh's
   measure: 0.00001 [8;7] and three sets at 0.00005. Within the weld distance
