@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A ball whose pole a section passes beside is charted clear of it.** A
+  ball and a torus whose tube passed a thousandth and a half of the ball's
+  radius from its pole marched their section across the chart's collapse:
+  snapped onto the pole on the ball, a run of points on the torus. Every
+  result lost a sliver and the fuse's ball face faced into the material.
+  A whole ball is now charted about an axis whose poles stand clear
+  wherever the other operand comes within a hundredth of its radius of a
+  pole, not a thousandth.
 - **A face whose integral does not settle is meshed alone.** Where one
   face's closed-form volume integral could not settle (a sliver of a small
   round that a large drill's section meets tangentially), the volume

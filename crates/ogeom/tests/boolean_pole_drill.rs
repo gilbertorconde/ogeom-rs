@@ -589,3 +589,79 @@ fn a_placed_dome_or_ball_drilled_through_its_pole() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A ball and a torus whose tube passes a thousandth and a half of the ball's
+/// radius beside one of its poles. The section there was marched across
+/// the chart's collapse: snapped onto the pole on the ball and left as a
+/// run of points on the torus, a sliver lost from every result and the
+/// fuse's ball face turned into the material. The ball is charted about an
+/// axis whose poles stand clear, and the four results add up.
+#[test]
+fn a_torus_tube_beside_a_balls_pole() {
+    let mut model = Model::new();
+    let frame = |at: Point, axis: Direction, x: Direction| Frame::new(at, axis, x, T).unwrap();
+    let ball = make_sphere(
+        &mut model,
+        frame(
+            Point::new(
+                -1.457_204_608_907_108,
+                -0.799_339_000_187_928_6,
+                -2.165_425_354_226_132,
+            ),
+            Direction::X,
+            Direction::Y,
+        ),
+        3.25,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let ring = ogeom::algo::make_torus(
+        &mut model,
+        frame(
+            Point::new(
+                -2.229_968_783_447_556_6,
+                -1.501_831_531_557_040_5,
+                -1.392_870_007_057_077_9,
+            ),
+            Direction::Y,
+            Direction::X,
+        ),
+        3.255_997_530_269_826_5,
+        0.969_621_186_363_192_2,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let (va, vb) = (volume(&model, &ball), volume(&model, &ring));
+    let mut made = Vec::new();
+    for name in ["fuse", "common", "cut", "cut back"] {
+        let built = match name {
+            "fuse" => ogeom::boolean::fuse(&mut model, &ball, &ring, T),
+            "common" => ogeom::boolean::common(&mut model, &ball, &ring, T),
+            "cut" => ogeom::boolean::cut(&mut model, &ball, &ring, T),
+            _ => ogeom::boolean::cut(&mut model, &ring, &ball, T),
+        }
+        .unwrap()
+        .shape;
+        let diagnosis = check(&model, &built, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        made.push(volume(&model, &built));
+    }
+    let [fuse, common, cut, back] = made[..] else {
+        unreachable!()
+    };
+    let slack = (va + vb) * 1e-7;
+    assert!(
+        (fuse + common - va - vb).abs() <= slack,
+        "fuse {fuse} common {common}"
+    );
+    assert!(
+        (cut + common - va).abs() <= slack,
+        "cut {cut} common {common} ball {va}"
+    );
+    assert!(
+        (back + common - vb).abs() <= slack,
+        "back {back} common {common} torus {vb}"
+    );
+}

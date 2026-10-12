@@ -21,8 +21,10 @@ use ogeom_math::{Direction, Frame, Point, Point2, Vector};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, explore_unique};
 
 /// How close a pole may come to the other operand's curved surfaces, as a
-/// fraction of the ball's radius, before the chart is turned.
-const TOUCHING: f64 = 1e-3;
+/// fraction of the ball's radius, before the chart is turned. A section a
+/// thousandth and a half of the radius beside a pole is already marched
+/// across the chart's collapse and snapped onto the pole.
+const TOUCHING: f64 = 1e-2;
 
 /// A ball operand: the solid, its one face, and the sphere it lies on in
 /// world space.
