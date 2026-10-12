@@ -677,7 +677,8 @@ fn drill_case(part: &Part, rng: &mut Rng) -> Verdict {
 
 /// A primitive of a random kind and size, placed with its position and
 /// size snapped to a coarse grid half the time, so pairs meet face on face.
-fn primitive(model: &mut Model, rng: &mut Rng) -> Option<(Shape, Measure, String)> {
+/// Its axis is one of the world's, or, `oblique`, any direction at all.
+fn primitive(model: &mut Model, rng: &mut Rng, oblique: bool) -> Option<(Shape, Measure, String)> {
     let snap = |rng: &mut Rng, lo: f64, hi: f64| {
         let v = rng.range(lo, hi);
         if rng.chance(0.5) {
@@ -691,11 +692,23 @@ fn primitive(model: &mut Model, rng: &mut Rng) -> Option<(Shape, Measure, String
         snap(rng, -3.0, 3.0),
         snap(rng, -3.0, 3.0),
     );
-    let axis = *rng.pick(&[Direction::X, Direction::Y, Direction::Z]);
-    let x = if axis == Direction::X {
-        Direction::Y
+    let (axis, x) = if oblique {
+        let z = Vector::new(
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        );
+        let z = Direction::new(z, T).ok()?;
+        let x = Direction::new(across(z.vector(), rng), T).ok()?;
+        (z, x)
     } else {
-        Direction::X
+        let axis = *rng.pick(&[Direction::X, Direction::Y, Direction::Z]);
+        let x = if axis == Direction::X {
+            Direction::Y
+        } else {
+            Direction::X
+        };
+        (axis, x)
     };
     let frame = frame_at(at, axis, x);
     let size = |rng: &mut Rng| {
@@ -750,25 +763,28 @@ fn primitive(model: &mut Model, rng: &mut Rng) -> Option<(Shape, Measure, String
     let shape = built.ok()?.shape;
     let m = measure(model, &shape).ok()?;
     let placed = format!(
-        "{name} {sizes:?} at ({}, {}, {}) along ({}, {}, {})",
+        "{name} {sizes:?} at ({}, {}, {}) along ({}, {}, {}) seam toward ({}, {}, {})",
         at.x,
         at.y,
         at.z,
         axis.x(),
         axis.y(),
-        axis.z()
+        axis.z(),
+        x.x(),
+        x.y(),
+        x.z()
     );
     Some((shape, m, placed))
 }
 
 /// Two primitives, and the boolean identities: the fuse and the common
 /// add up to the two, and the cut is the first less the common.
-fn pair_case(rng: &mut Rng) -> Verdict {
+fn pair_case(rng: &mut Rng, oblique: bool) -> Verdict {
     let mut model = Model::new();
-    let Some((a, ma, ka)) = primitive(&mut model, rng) else {
+    let Some((a, ma, ka)) = primitive(&mut model, rng, oblique) else {
         return Verdict::of(Outcome::Refused, "primitive");
     };
-    let Some((b, mb, kb)) = primitive(&mut model, rng) else {
+    let Some((b, mb, kb)) = primitive(&mut model, rng, oblique) else {
         return Verdict::of(Outcome::Refused, "primitive");
     };
     let what = format!("{ka} with {kb}");
@@ -926,13 +942,15 @@ fn cases(seed: u64, per_part: usize, corpus: bool) -> Vec<Case> {
             });
         }
     }
-    for i in 0..per_part * 6 {
-        let key = format!("pairs/primitives/{i}");
-        let s = case_seed(seed, &key);
-        out.push(Case {
-            key,
-            run: Box::new(move || pair_case(&mut Rng::new(s))),
-        });
+    for (scenario, oblique) in [("pairs", false), ("oblique", true)] {
+        for i in 0..per_part * 6 {
+            let key = format!("{scenario}/primitives/{i}");
+            let s = case_seed(seed, &key);
+            out.push(Case {
+                key,
+                run: Box::new(move || pair_case(&mut Rng::new(s), oblique)),
+            });
+        }
     }
     out
 }
