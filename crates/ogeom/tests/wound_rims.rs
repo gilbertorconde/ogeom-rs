@@ -158,3 +158,75 @@ fn a_cross_hole_through_a_bore_wall_draws_closed() {
         "{measured} against about {expected}"
     );
 }
+
+/// A drum's wall with a cross hole through it, the hole's pcurves named a
+/// whole turn round the chart from the wall's own seam: the same points on
+/// the surface. Walked on its own, the hole's ring stands outside the
+/// wall's, and the wall drew whole with the hole drawn again as a disc of
+/// its own, more area than the drum has. The ring is slid back by the
+/// turn, the wall draws round the hole, and the drum draws closed.
+#[test]
+fn a_hole_named_a_turn_round_its_wall_is_drawn_as_a_hole() {
+    use ogeom::math::{Transform2, Vector2};
+    use ogeom::topo::EdgeRepr;
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let cross_frame =
+        Frame::new(Point::new(0.0, 5.0, 15.0), Direction::Y, Direction::Z, T).unwrap();
+    let cross = ogeom::algo::make_cylinder(&mut model, cross_frame, 3.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let holed = ogeom::boolean::cut(&mut model, &drum, &cross, T)
+        .unwrap()
+        .shape;
+    let wall = explore_unique(&model, &holed, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| matches!(surface_of(&model, f), SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - 10.0).abs() < 1e-9))
+        .expect("the drum keeps its wall");
+    let surface = model.node(&wall).unwrap().data().as_face().unwrap().surface;
+    let fine = Deflection::with_chord(1e-2).unwrap();
+    let owed = area_of(&ogeom::mesh::triangulate(&model, &wall, fine, T).unwrap());
+    // The hole's wire is the one with no seam on the wall.
+    let mut moved = Vec::new();
+    for wire in explore_unique(&model, &wall, ShapeType::Wire).unwrap() {
+        let edges = explore_unique(&model, &wire, ShapeType::Edge).unwrap();
+        let reprs: Vec<EdgeRepr> = edges
+            .iter()
+            .map(|e| {
+                let data = model.node(e).unwrap().data().as_edge().unwrap();
+                data.pcurve_on(surface).unwrap().clone()
+            })
+            .collect();
+        if reprs.iter().any(|r| matches!(r, EdgeRepr::Seam { .. })) {
+            continue;
+        }
+        for r in reprs {
+            if let EdgeRepr::PCurve { curve, .. } = r
+                && !moved.contains(&curve)
+            {
+                moved.push(curve);
+            }
+        }
+    }
+    assert!(!moved.is_empty(), "the wall has a hole");
+    let turn = Transform2::translation(Vector2::new(core::f64::consts::TAU, 0.0));
+    for id in &moved {
+        let shifted = model
+            .geometry()
+            .pcurve(*id)
+            .unwrap()
+            .transformed(&turn, T)
+            .unwrap();
+        *model.geometry_mut().pcurve_mut(*id).unwrap() = shifted;
+    }
+    let drawn = area_of(&ogeom::mesh::triangulate(&model, &wall, fine, T).unwrap());
+    assert!(
+        (drawn - owed).abs() <= owed * 1e-3,
+        "the wall drew {drawn:.3} against {owed:.3} before its hole was named a turn round"
+    );
+    let mesh = ogeom::mesh::triangulate(&model, &holed, Deflection::default(), T).unwrap();
+    assert!(mesh.is_closed(), "the holed drum draws closed");
+}

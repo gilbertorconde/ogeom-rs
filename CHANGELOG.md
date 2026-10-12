@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A hole named a turn round its wall is drawn as a hole.** A face on a
+  periodic surface whose hole's pcurves stand a whole period from the
+  face's own bound (a converted bore whose cross bores' loops came out at
+  u = 2pi beside a wall drawn from -pi to pi) drew whole, with each hole
+  drawn again as a disc over it: more area than the surface has, and the
+  solid's mesh, its faces turned to agree, came out open and partly inside
+  out. Each ring is now slid by whole periods to stand where the face's
+  bound does.
 - **A piece read by its corner is read again at its centre.** A face
   leaning a hundred-thousandth of a radian into the other solid, the two
   sharing an edge, was read at its roomiest probe, which stood by that

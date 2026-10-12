@@ -1709,6 +1709,71 @@ fn trimming_rings(
     for (ring, anchors) in rings.iter_mut().zip(ring_anchors.iter_mut()) {
         collapse_close_points(ring, anchors);
     }
+    // A hole's ring is walked on its own and can come to rest a whole
+    // period from the ring that bounds the face, its pcurves named in
+    // another turn of the chart: a cross bore's loop at u = 2pi beside a
+    // wall drawn from -pi to pi. Left there it lies outside the face's
+    // region, which is then drawn whole and the hole drawn again as a disc
+    // of its own. So each ring is slid by whole periods, the same lifted
+    // points, to stand where the roomiest ring (the face's own bound) does.
+    {
+        use ogeom_geom::Surface as _;
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let axes = [
+            (surface.is_periodic_u(), ub - ua),
+            (surface.is_periodic_v(), vb - va),
+        ];
+        let area = |ring: &[Point2]| -> f64 {
+            let Some(&o) = ring.first() else {
+                return 0.0;
+            };
+            ring.iter()
+                .zip(ring.iter().cycle().skip(1))
+                .map(|(a, b)| (*a - o).cross(*b - o))
+                .sum::<f64>()
+                .abs()
+        };
+        let bound = (0..rings.len()).max_by(|&a, &b| area(&rings[a]).total_cmp(&area(&rings[b])));
+        for (axis, (periodic, period)) in axes.into_iter().enumerate() {
+            let Some(bound) = bound else {
+                break;
+            };
+            if !periodic || period <= 0.0 {
+                continue;
+            }
+            let along = |p: &Point2| if axis == 0 { p.x } else { p.y };
+            let (lo, hi) = rings[bound]
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                    (lo.min(along(p)), hi.max(along(p)))
+                });
+            if !(lo.is_finite() && hi.is_finite()) {
+                continue;
+            }
+            for (k, ring) in rings.iter_mut().enumerate() {
+                if k == bound || ring.is_empty() {
+                    continue;
+                }
+                #[allow(clippy::cast_precision_loss)]
+                let mean = ring.iter().map(along).sum::<f64>() / ring.len() as f64;
+                if mean >= lo && mean <= hi {
+                    continue;
+                }
+                let turns = ((mean - f64::midpoint(lo, hi)) / period).round();
+                let moved = mean - turns * period;
+                if turns == 0.0 || moved < lo || moved > hi {
+                    continue;
+                }
+                for p in ring.iter_mut() {
+                    if axis == 0 {
+                        p.x -= turns * period;
+                    } else {
+                        p.y -= turns * period;
+                    }
+                }
+            }
+        }
+    }
     // Folded across a join, a ring on a *closed* surface can come to rest a
     // whole period outside the domain. A periodic surface would not mind
     // (it wraps), but a surface that merely closes on itself evaluates only

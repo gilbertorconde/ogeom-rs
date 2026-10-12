@@ -500,6 +500,20 @@ fn nist_ftc_10() {
     );
 }
 
+/// Listed from four fifths of the way along, its horizontal bore is fitted
+/// on a cylinder whose seam the three cross bores' loops stand beside, and
+/// those loops' pcurves come out a turn round the chart from the bore's
+/// own bound. The bore draws round its three holes, not whole with three
+/// discs over them, and the part tessellates closed.
+#[test]
+#[ignore = "heavy"]
+fn nist_ftc_10_whatever_triangle_its_list_starts_at() {
+    comes_back_listed("nist_ftc_10_asme1_rb.stp", true, true, |mesh| {
+        let start = mesh.triangles.len() * 4 / 5;
+        mesh.triangles.rotate_left(start);
+    });
+}
+
 #[test]
 fn nist_ftc_11() {
     comes_back("nist_ftc_11_asme1_rb.stp", true, true);
