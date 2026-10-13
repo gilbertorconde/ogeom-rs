@@ -3673,7 +3673,24 @@ fn add_interior_points(
             | ogeom_geom::SurfaceKind::Cone
             | ogeom_geom::SurfaceKind::Extrusion
     );
-    let rows = if ruled {
+    // A drum's or cone's rows are its two ends, its rulings drawn between
+    // them as constraints below: a row inside adds a point per column and
+    // asks nothing of the chord. Not where one end closes on an apex: its
+    // columns all meet there, and Delaunay fans across the face from the
+    // apex's few chart points.
+    let apex = || {
+        let um = f64::midpoint(low.x, high.x);
+        let across = |v: f64| span((low.x, v), (um, v)) + span((um, v), (high.x, v));
+        let (bottom, top) = (across(low.y), across(high.y));
+        bottom.min(top) <= bottom.max(top) * 1e-3
+    };
+    let round = matches!(
+        surface.kind(),
+        ogeom_geom::SurfaceKind::Cylinder | ogeom_geom::SurfaceKind::Cone
+    );
+    let rows = if round && rows.len() > 2 && !apex() {
+        vec![rows[0], rows[rows.len() - 1]]
+    } else if ruled {
         rows
     } else {
         spread_to_aspect(
