@@ -1734,11 +1734,11 @@ fn fillets_ending_on_rough_corners_are_still_cylinders() {
     );
 }
 
-/// A hole drilled through the rough box beside a corner crosses planes,
+/// Holes drilled through the rough box beside a corner cross planes,
 /// fillets and facets bounded by threaded curves a few hundredths loose.
 /// That looseness is a length in space: it welds a section's ends in each
 /// chart only as far as it reaches there, and it collapses no section or
-/// edge that is longer than its own doubt. The hole cuts and fills valid.
+/// edge that is longer than its own doubt. Each hole cuts and fills valid.
 #[test]
 #[ignore = "heavy"]
 fn holes_beside_a_rough_corner_cut_and_fill_valid() {
@@ -1751,7 +1751,7 @@ fn holes_beside_a_rough_corner_cut_and_fill_valid() {
     )
     .unwrap();
     let whole = volume(&model, &out.shape);
-    for (x, y, r) in [(2.05, 0.35, 1.0)] {
+    for (x, y, r) in [(1.1, 0.6, 1.4), (2.05, 0.35, 1.0), (1.35, 1.9, 1.4)] {
         let at = Frame::new(Point::new(x, y, -5.0), Direction::Z, Direction::X, T).unwrap();
         let drill = ogeom::algo::make_cylinder(&mut model, at, r, 20.0, T)
             .unwrap()
