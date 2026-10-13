@@ -901,12 +901,13 @@ pub(super) fn recognized_regions(
         .find(|p| !n.is_multiple_of(*p))
         .unwrap_or(1);
     let mut order: Vec<usize> = (0..n).map(|i| (i * stride) % n).collect();
-    // Seeds whose wide first sample fitted nothing, with that sample. Once
-    // every seed has been taken, those whose sample has since lost
-    // triangles to other regions are taken once more, the rest of their
-    // samples free again: a fillet sampled together with its unclaimed
-    // neighbours fits nothing, and its triangles, retired one by one, leave
-    // ever smaller samples; on its own, its neighbours claimed, it fits.
+    // Seeds whose samples fitted nothing, with those samples. Once every
+    // seed has been taken, those whose sample has since lost triangles to
+    // other regions are taken once more, the rest of their samples free
+    // again: a fillet, or a band between two, sampled together with its
+    // unclaimed neighbours fits nothing, and its triangles, retired seed by
+    // seed, leave ever smaller samples; on its own, its neighbours claimed,
+    // it fits.
     let mut straddled: Vec<(usize, Vec<usize>)> = Vec::new();
     let mut again = true;
     let mut next = 0;
@@ -965,16 +966,15 @@ pub(super) fn recognized_regions(
                 ..
             } = fit;
             let Some((found, keep)) = found else {
-                // A fine sample that fits nothing lies on nothing canonical,
-                // and its triangles are not seeded again; a wide one may
-                // have straddled a fillet and its neighbours, and only the
-                // seed is retired.
-                let retired = if wide {
-                    straddled.push((seed, region.clone()));
-                    1
-                } else {
-                    first_sample
-                };
+                // A fine sample that fits nothing is taken to lie on nothing
+                // canonical, and its first triangles are not seeded again; a
+                // wide one may have straddled a fillet and its neighbours,
+                // and only the seed is retired. Either may have grown past
+                // its first triangles onto tangent neighbours still free (a
+                // narrow band between two fillets is sampled with them both),
+                // and is taken once more when they are claimed.
+                straddled.push((seed, region.clone()));
+                let retired = if wide { 1 } else { first_sample };
                 for &t in &region[..retired.min(region.len())] {
                     tried[t] = true;
                     changed[t] = batch;

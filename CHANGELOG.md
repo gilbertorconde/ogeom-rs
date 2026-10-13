@@ -25,6 +25,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A band between two fillets is recognized once they are claimed
+  (#250).** Recognition grows regions seed by seed, and a seed's sample
+  grows across smooth edges: on a narrow band between two tangent fillets
+  (a chamfer whose edges are rounded) it runs onto both fillets, fits
+  nothing, and its first triangles were retired for good unless its first
+  dozen vertices already turned through a tight bend. Whether the band
+  was recognized then hung on the order the seeds came in, which any
+  change of the triangle count reshuffles: eight more triangles elsewhere
+  in grid_point_on_a_diagonal_boundary's mesh left its 45° band a fitted
+  sweep whose rims could not be placed, and faceted. Every seed whose
+  sample fits nothing is now taken once more after its neighbours are
+  claimed, and the band comes back a cone.
+
 - **Every triangle of a surface curved both ways keeps to the chord
   (#212).** The grid holds its rows and columns to the chord, but a
   surface curved both ways twists between them, and a triangle across a
