@@ -25,6 +25,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face of a periodic surface splits along a curve entering it across
+  the low end of its range (#229).** A cylinder whose side is two half
+  faces refused a rectangle facing the junction where one half's angle
+  range starts: the path was cut at that junction, and the piece cut off,
+  moved a period away, never met the face. The path is now cut half a
+  period from the face's middle, off the face, and the face splits across
+  either end of its range.
+
 - **A doubly curved face meshes within its chord across its cells
   (#212).** A grid cell whose row and column each sag the chord stood off
   up to twice it across its diagonal: a ball of radius 10 at a chord of

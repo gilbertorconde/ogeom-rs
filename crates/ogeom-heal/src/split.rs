@@ -523,7 +523,10 @@ fn periods(surface: &SurfaceGeometry) -> (f64, f64) {
 
 /// The segment cut where its trace crosses a line a whole number of periods
 /// from the face's window, each part moved by the periods that bring it
-/// into the window.
+/// into the window. The lines stand half a period from the window's middle,
+/// off a face narrower than a period: one at the window's own edge would cut
+/// a curve entering the face across that edge into a piece on the face and
+/// a piece a period away that never meets it.
 fn unfold(
     segment: Segment,
     surface: &SurfaceGeometry,
@@ -532,10 +535,11 @@ fn unfold(
 ) -> OgeomResult<Vec<Segment>> {
     let (pu, pv) = periods(surface);
     let mut parts = vec![segment];
-    for (axis, period, low) in [(0, pu, window.0.0), (1, pv, window.1.0)] {
-        if period <= 0.0 || !low.is_finite() {
+    for (axis, period, (lo, hi)) in [(0, pu, window.0), (1, pv, window.1)] {
+        if period <= 0.0 || !lo.is_finite() || !hi.is_finite() {
             continue;
         }
+        let low = lo - 0.5 * (period - (hi - lo)).max(0.0);
         // Which copy of the window a chart point is in.
         let copy = |p: Point2| -> f64 {
             let x = if axis == 0 { p.x } else { p.y };

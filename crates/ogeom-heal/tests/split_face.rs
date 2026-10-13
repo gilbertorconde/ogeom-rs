@@ -1017,3 +1017,118 @@ fn a_closed_curve_across_a_cylinders_seam_splits_it() {
         whole - largest
     );
 }
+
+/// A cylinder whose side is two half faces, the arcs (10,0)→(0,10)→(−10,0)
+/// and back padded 20 along z.
+fn halved_cylinder(model: &mut Model) -> Shape {
+    let circle = |x: Vector| {
+        let frame = Frame::new(
+            Point::ORIGIN,
+            Direction::Z,
+            Direction::new(x, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        Curve::from(CircleCurve::new(Circle::new(frame, 10.0, T).unwrap()))
+    };
+    let upper = make_edge(model, circle(Vector::new(1.0, 0.0, 0.0)), (0.0, PI), T)
+        .unwrap()
+        .shape;
+    let ends = explore_unique(model, &upper, ShapeType::Vertex).unwrap();
+    let lower = ogeom_algo::make_edge_between(
+        model,
+        circle(Vector::new(-1.0, 0.0, 0.0)),
+        (0.0, PI),
+        &ends[1],
+        &ends[0],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wire = ogeom_algo::make_wire(model, &[upper, lower], T)
+        .unwrap()
+        .shape;
+    let plane = SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(Frame::WORLD)));
+    let disc = make_face(model, plane, &[wire], T).unwrap().shape;
+    ogeom_algo::make_prism(model, &disc, Vector::new(0.0, 0.0, 20.0), T)
+        .unwrap()
+        .shape
+}
+
+/// A rectangle facing the junction of a halved cylinder's two side faces,
+/// projected onto the half whose angle range starts at that junction: it
+/// enters the face across the low end of its range and splits it as it
+/// does across the high end.
+#[test]
+fn a_closed_curve_across_the_low_end_of_a_periodic_faces_range_splits_it() {
+    for (x, name) in [(15.0, "low"), (-15.0, "high")] {
+        let mut model = Model::new();
+        let solid = halved_cylinder(&mut model);
+        let rectangle = make_polygon(
+            &mut model,
+            &[
+                Point::new(x, -3.0, 8.0),
+                Point::new(x, 3.0, 8.0),
+                Point::new(x, 3.0, 12.0),
+                Point::new(x, -3.0, 12.0),
+            ],
+            true,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let upper = faces(&model, &solid)
+            .into_iter()
+            .find(|f| {
+                let data = model.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    model.geometry().surface(data.surface),
+                    Some(SurfaceGeometry::Cylinder(_))
+                ) && ogeom_algo::tight_bounds(&model, f, T)
+                    .unwrap()
+                    .low()
+                    .unwrap()
+                    .y
+                    > -1e-6
+            })
+            .unwrap();
+        let before = area(&model, &upper);
+        let along = Direction::new(Vector::new(-x.signum(), 0.0, 0.0), T).unwrap();
+        let split = split_face(
+            &mut model,
+            &solid,
+            &upper,
+            &[rectangle],
+            Projection::Along(along),
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{name} end: {e}"))
+        .shape;
+        assert!(
+            ogeom_algo::check(&model, &split, T).unwrap().is_valid(),
+            "{name}"
+        );
+        let pieces: Vec<f64> = faces(&model, &split)
+            .iter()
+            .filter(|f| {
+                let data = model.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    model.geometry().surface(data.surface),
+                    Some(SurfaceGeometry::Cylinder(_))
+                )
+            })
+            .map(|f| area(&model, f))
+            .collect();
+        assert_eq!(pieces.len(), 3, "{name}: {pieces:?}");
+        let covered = (3.0_f64 / 10.0).asin() * 10.0 * 4.0;
+        let total: f64 = pieces.iter().sum();
+        assert!(
+            (total - 2.0 * before).abs() < before * 1e-6,
+            "{name}: {pieces:?}"
+        );
+        assert!(
+            pieces.iter().any(|p| (p - covered).abs() < covered * 1e-4),
+            "{name}: {pieces:?} against {covered}"
+        );
+    }
+}
