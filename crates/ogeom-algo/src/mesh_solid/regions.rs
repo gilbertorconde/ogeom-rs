@@ -27,6 +27,11 @@ const PATCH_SCALE: f64 = 20.0;
 /// against the distance, to take it before the sweeps: a hundredth.
 const EXACT_ALONE: f64 = 1e-2;
 
+/// The most turn about its axis one facet of a drum or a cone may span:
+/// a sixth of a turn, twice the half radian a mesh's default angular limit
+/// allows.
+const FACET_SPAN: f64 = core::f64::consts::FRAC_PI_3;
+
 /// How many times the median turn of a drum one of its facets may span.
 const UNEVEN_TURN: f64 = 4.0;
 
@@ -1288,39 +1293,59 @@ pub(super) fn recognized_regions(
             // others' is a flat face the fit runs through, its rim and the
             // first facets of the fillets either side of it lying on one
             // wide circle.
-            let uneven = match &shape {
-                Canonical::Cylinder(c) => {
-                    let frame = c.frame();
+            // And no facet of a drum or a cone spans much of a turn about
+            // its axis: four flat strips round a square, each with corners
+            // only at its ends, all lie on one shallow cone about the
+            // square's middle, each strip a chord of a quarter of it. A
+            // corner on the axis (a cone's apex) turns no way and is not
+            // asked.
+            let axis_frame = match &shape {
+                Canonical::Cylinder(c) => Some((c.frame(), true)),
+                Canonical::Cone(c) => Some((c.frame(), false)),
+                _ => None,
+            };
+            let (uneven, wide) = match axis_frame {
+                Some((frame, drum)) => {
                     let turn = |p: Point| {
                         let local = frame.to_local(p);
-                        local.y.atan2(local.x)
+                        (local.x.hypot(local.y) > flat).then(|| local.y.atan2(local.x))
+                    };
+                    let apart = |x: f64, y: f64| {
+                        let d = (x - y).rem_euclid(core::f64::consts::TAU);
+                        d.min(core::f64::consts::TAU - d)
                     };
                     let mut spans: Vec<f64> = region
                         .iter()
                         .map(|&t| {
-                            let a = triangles[t].map(|v| turn(points[v as usize]));
-                            let apart = |x: f64, y: f64| {
-                                let d = (x - y).rem_euclid(core::f64::consts::TAU);
-                                d.min(core::f64::consts::TAU - d)
-                            };
-                            apart(a[0], a[1])
-                                .max(apart(a[1], a[2]))
-                                .max(apart(a[0], a[2]))
+                            let a: Vec<f64> = triangles[t]
+                                .iter()
+                                .filter_map(|&v| turn(points[v as usize]))
+                                .collect();
+                            let mut widest = 0.0_f64;
+                            for i in 0..a.len() {
+                                for j in i + 1..a.len() {
+                                    widest = widest.max(apart(a[i], a[j]));
+                                }
+                            }
+                            widest
                         })
                         .collect();
                     spans.sort_by(f64::total_cmp);
                     let median = spans[spans.len() / 2];
-                    spans
-                        .last()
-                        .is_some_and(|&widest| median > 0.0 && widest > UNEVEN_TURN * median)
+                    let widest = spans.last().copied().unwrap_or(0.0);
+                    (
+                        drum && median > 0.0 && widest > UNEVEN_TURN * median,
+                        widest > FACET_SPAN,
+                    )
                 }
-                _ => false,
+                None => (false, false),
             };
             if deviation > flat
                 || flat_too
                 || spans_off
                 || apart
                 || uneven
+                || wide
                 || region.len() < 2
                 || few
             {

@@ -33,6 +33,16 @@ bump may break the API and a patch bump may not.
   change to the mesh moves. A free region a canonical surface holds
   exactly is now taken on it before any sweep is tried.
 
+- **A ring of flat strips is not read as a cone (#253).** A mesh drawn
+  the way OpenCascade and truck draw a drum, each fillet a few flat
+  strips from rim to rim, has the innermost strips of a block's four
+  bottom fillets with all their corners on one shallow cone about the
+  bottom face's middle, each strip a chord of a quarter of it. The
+  converter took that ring for a cone, which then kept the fillets beside
+  it from being placed: four of a rounded block's twelve fillets came back
+  as sixteen planes. A drum or cone whose facet spans more than a sixth of
+  a turn about its axis is no longer taken.
+
 - **A band between two fillets is recognized once they are claimed
   (#250).** Recognition grows regions seed by seed, and a seed's sample
   grows across smooth edges: on a narrow band between two tangent fillets

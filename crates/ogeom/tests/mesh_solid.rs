@@ -677,6 +677,31 @@ fn caps_zones_and_bent_tubes_come_back_exact() {
     comes_back_as(&model, &elbow, [2, 0, 0, 0, 1]);
 }
 
+/// The rounded block drawn the way OpenCascade and truck draw a drum, each
+/// fillet four flat strips from rim to rim, no row between, kept as a file
+/// so the converter sees the same triangles whatever the mesher draws. The
+/// innermost strips of the four bottom fillets have their sixteen corners
+/// on one shallow cone about the bottom face's middle, each strip a chord
+/// of a quarter of it; that is a square ring of strips, and the fillets
+/// come back cylinders.
+#[test]
+fn a_rounded_block_drawn_in_strips_keeps_its_fillets() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let path = format!(
+        "{}/../../tests/corpus/rounded_block_in_strips.obj",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mesh = ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap();
+    comes_back_from(&model, &rounded, &mesh, [6, 12, 0, 8, 0]);
+}
+
 /// A mesh as coarse as a printer's STL export (the default deflection, a
 /// tenth of a millimetre and half a radian, and a chord five times that)
 /// spans a two millimetre fillet in three or four facets, some of them
