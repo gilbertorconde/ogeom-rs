@@ -75,9 +75,13 @@ bump may break the API and a patch bump may not.
   stretch of its boundary shorter than that was welded away as dust:
   one edge stating 0.017 on a block's face welded the 0.02 a drill cut
   off the face's tight bottom edge by its corner, which the face across
-  that edge kept, and the cut refused. A stretch of the face's boundary
-  now answers to its own edge's doubt, and is kept where it is longer
-  than that.
+  that edge kept, and the cut refused. The weld is now local: each strand
+  end is welded at the doubt of the edges and vertices near it, onto a
+  node of the face's boundary where one stands within reach, and two
+  sections hugging an edge are matched by the weld at each point along
+  them. A loose edge welds what crosses or ends near it, and a crossing of
+  a tight edge elsewhere on the face stays where it is, from a hundredth
+  of a micron off the vertex to past the loose edge's doubt.
 
 - **A face curved one way only meshes in strips along its rulings
   (#213).** A drum, a cone or an extrusion took rows across its rulings

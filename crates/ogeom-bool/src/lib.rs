@@ -2798,6 +2798,35 @@ fn doubt_of(face: &GFace) -> f64 {
         )
 }
 
+/// How far apart a face's chart holds two points as one at `p`: the doubt
+/// of each edge `p` lies within reach of (twice its tolerance along it, its
+/// tolerance and its vertex's at either end), the face's own tolerance, and
+/// the holes set aside from it. A loose edge welds what crosses or ends
+/// near it, and leaves a crossing of a tight edge elsewhere on the face
+/// where it is. Never more than [`doubt_of`], the face's loosest.
+fn doubt_at(face: &GFace, p: Point, tol: Tolerances) -> OgeomResult<f64> {
+    let mut doubt = face
+        .holes_aside
+        .iter()
+        .fold(face.tolerance, |acc, hole| acc.max(hole.doubt));
+    for e in &face.edges {
+        for (end, radius) in e.ends {
+            let reach = radius + e.tolerance;
+            if p.distance(end) <= reach {
+                doubt = doubt.max(reach);
+            }
+        }
+        let along = e.tolerance * 2.0;
+        if along > doubt
+            && e.bound.distance_to(p) <= along
+            && distance_to_edge_curve(&e.curve, e.crange, p, tol)? <= along
+        {
+            doubt = along;
+        }
+    }
+    Ok(doubt.min(doubt_of(face)))
+}
+
 /// One hug decision for each stretch of an edge, shared by every section
 /// running along it.
 ///
@@ -2813,8 +2842,11 @@ fn doubt_of(face: &GFace) -> f64 {
 ///
 /// Two such pieces are decided together. Where both stay along the edge
 /// and along each other within the widest of their hug widths and the
-/// crossed face's weld, the stretch is the edge's on both faces: both
-/// pieces hug it, admitted onto the crossed face as a hugging piece is.
+/// weld at each point along them, the stretch is the edge's on both faces:
+/// both pieces hug it, admitted onto the crossed face as a hugging piece
+/// is. The weld at a point is the doubt of what lies near it on the three
+/// faces ([`doubt_at`]): a loose edge at one end of the stretch does not
+/// weld the rest of it.
 fn share_hugs(
     pieces: &mut [SectionPiece],
     sections: &[SectionRec],
@@ -2850,12 +2882,18 @@ fn share_hugs(
             0.0
         }
     };
-    // Whether the piece stays within `near` of the edge along its length.
-    let along_edge = |p: &SectionPiece, e: &BoundaryEdge, near: f64| -> OgeomResult<bool> {
+    // Whether the piece stays along the edge within the weld `near` sets
+    // at each point of its length.
+    let along_edge = |p: &SectionPiece,
+                      e: &BoundaryEdge,
+                      near: &dyn Fn(Point) -> OgeomResult<f64>|
+     -> OgeomResult<bool> {
         let s = &sections[p.section];
         for i in 0..=4 {
             let t = p.range.0 + (p.range.1 - p.range.0) * f64::from(i) / 4.0;
-            if distance_to_edge_curve(&e.curve, e.crange, point_of(s, t)?, tol)? > near {
+            let at = point_of(s, t)?;
+            let reach = near(at)?.max(e.tolerance * 2.0);
+            if distance_to_edge_curve(&e.curve, e.crange, at, tol)? > reach {
                 return Ok(false);
             }
         }
@@ -2886,13 +2924,31 @@ fn share_hugs(
                 if fy == fx || face_of(sy, 1 - side) != crossed {
                     continue;
                 }
-                let near = weld[1 - side][crossed]
-                    .max(hug_width(px, side))
-                    .max(hug_width(py, side));
+                let hugged = hug_width(px, side).max(hug_width(py, side));
+                let widest = weld[1 - side][crossed].max(hugged);
                 let (mx, my) = (middles[x], middles[y]);
-                if mx.distance(my) > 2.0 * near
-                    || distance_to_edge_curve(&sx.curve, stretch(sx, px), my, tol)? > near
-                    || distance_to_edge_curve(&sy.curve, stretch(sy, py), mx, tol)? > near
+                if mx.distance(my) > 2.0 * widest
+                    || distance_to_edge_curve(&sx.curve, stretch(sx, px), my, tol)? > widest
+                    || distance_to_edge_curve(&sy.curve, stretch(sy, py), mx, tol)? > widest
+                {
+                    continue;
+                }
+                let faces = [
+                    &own.faces[fx],
+                    &own.faces[fy],
+                    &solids[1 - side].faces[crossed],
+                ];
+                let near = |at: Point| -> OgeomResult<f64> {
+                    let mut near = hugged;
+                    for face in faces {
+                        near = near.max(doubt_at(face, at, tol)?);
+                    }
+                    Ok(near)
+                };
+                let middle = near(mx)?.max(near(my)?);
+                if mx.distance(my) > 2.0 * middle
+                    || distance_to_edge_curve(&sx.curve, stretch(sx, px), my, tol)? > middle
+                    || distance_to_edge_curve(&sy.curve, stretch(sy, py), mx, tol)? > middle
                 {
                     continue;
                 }
@@ -2900,8 +2956,7 @@ fn share_hugs(
                     let Some(ey) = own.faces[fy].edges.iter().find(|e| e.node == ex.node) else {
                         continue;
                     };
-                    let near = near.max(ex.tolerance * 2.0);
-                    if along_edge(px, ex, near)? && along_edge(py, ey, near)? {
+                    if along_edge(px, ex, &near)? && along_edge(py, ey, &near)? {
                         if !px.hugs[side] {
                             adopted.push((x, side, ex.node));
                         }
@@ -7788,10 +7843,12 @@ fn general_fuse_as(
     // A band's rail hugging a wedge's cylinder for a quarter of a micron
     // is dust in the wall's chart and a strand in the cylinder's, and the
     // sew then finds the cylinder's piece used once.
+    let chart_length =
+        |line: &[Point2]| -> f64 { line.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>() };
     let strands_of = |from_a: bool,
                       fi: usize,
                       face: &GFace|
-     -> OgeomResult<(Vec<Strand<Tag>>, f64)> {
+     -> OgeomResult<(Vec<Strand<Tag>>, f64, Vec<Junction>)> {
         let mut strands: Vec<Strand<Tag>> = Vec::new();
         // How far apart the paves one junction stands for lie. A section
         // meeting the edge all but tangentially (its fitted end sliding
@@ -8115,15 +8172,24 @@ fn general_fuse_as(
                 }
             }
         }
+        // What the face holds everywhere in its chart: its own tolerance
+        // and its holes set aside, and twice the run's confusion, which two
+        // ends each within it of one point keep between them (a fuzzy
+        // run's confusion is its fuzz). What its edges and vertices add
+        // holds only near them, and each strand end is welded at the doubt
+        // where it stands, below.
+        let everywhere = |face: &GFace| -> f64 {
+            face.holes_aside
+                .iter()
+                .fold(face.tolerance, |acc, hole| acc.max(hole.doubt))
+                .min(doubt_of(face))
+        };
         let near = contacts
             .iter()
             .filter(|c| c.target_from_a == from_a && c.target_face == fi)
             .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0))
-            // An edge's end lands in the chart within its vertex's own
-            // recorded doubt plus its own image's: a projected pcurve is
-            // honest to the edge's tolerance, and the vertex it ends at
-            // was welded to some earlier gap.
-            .max(doubt_of(face))
+            .max(tol.confusion() * 2.0)
+            .max(everywhere(face))
             .max(spread)
             .max(
                 if sections.iter().any(|s| {
@@ -8139,19 +8205,14 @@ fn general_fuse_as(
                     0.0
                 },
             );
-        // A section ends where it crosses the other face's boundary,
-        // and lands there within that boundary's own doubt: two
-        // sections through neighbouring facets of a converted mesh
-        // stop on the edge they share a few microns apart, each on its
-        // own facet's plane, and meet on this face only if the weld
-        // reaches that far.
-        let far = |section: usize| -> f64 {
+        // The face a section shares with this one.
+        let other = |section: usize| -> &GFace {
             let s = &sections[section];
-            doubt_of(if from_a {
+            if from_a {
                 &gb.faces[s.face_b]
             } else {
                 &ga.faces[s.face_a]
-            })
+            }
         };
         let face_snap = near.max(
             (0..sections.len())
@@ -8162,9 +8223,40 @@ fn general_fuse_as(
                         sections[k].face_b == fi
                     }
                 })
-                .map(far)
+                .map(|k| everywhere(other(k)))
                 .fold(0.0_f64, f64::max),
         );
+        // The weld at a strand's end, in space. An edge's end lands in the
+        // chart within its vertex's own recorded doubt plus its own image's:
+        // a projected pcurve is honest to the edge's tolerance, and the
+        // vertex it ends at was welded to some earlier gap. A section ends
+        // where it crosses the other face's boundary, and lands there within
+        // that boundary's own doubt: two sections through neighbouring
+        // facets of a converted mesh stop on the edge they share a few
+        // microns apart, each on its own facet's plane, and meet on this
+        // face only if the weld reaches that far. Both doubts are those of
+        // the edges and vertices near the end ([`doubt_at`]): a loose edge
+        // welds what crosses or ends near it, and a section crossing a
+        // tight edge elsewhere on the face keeps its crossing, as it does on
+        // the face across that edge.
+        let mut ends: Vec<(usize, usize, Point2, Point, f64)> = Vec::new();
+        for (si, st) in strands.iter().enumerate() {
+            if st.polyline.len() < 2 || matches!(st.tag, Tag::Pole { .. }) {
+                continue;
+            }
+            let last = st.polyline.len() - 1;
+            for end in [0, last] {
+                let at = st.polyline[end];
+                let Ok(q) = face.surface.point_at(at.x, at.y, tol) else {
+                    continue;
+                };
+                let mut weld = doubt_at(face, q, tol)?.max(near);
+                if let Tag::Section { section, .. } = st.tag {
+                    weld = weld.max(doubt_at(other(section), q, tol)?);
+                }
+                ends.push((si, end, at, q, weld));
+            }
+        }
         // The doubts above are lengths in space, and the weld runs in the
         // chart. Where the chart stretches every direction (a sphere of a
         // few millimetres runs a radian over its whole radius), a gap in
@@ -8179,63 +8271,184 @@ fn general_fuse_as(
             .filter_map(|p| face.surface.d1_at(p.x, p.y, tol).ok())
             .map(|(du, dv)| du.magnitude().min(dv.magnitude()))
             .fold(f64::INFINITY, f64::min);
-        let face_snap = if stretch.is_finite() && stretch > 1.0 {
-            (face_snap / stretch).max(PARAM_SNAP)
-        } else {
-            face_snap
-        };
-        // Where only one direction stretches (a cylinder's turn against its
-        // straight length) no single scale holds, and a strand can be short
-        // in the chart yet long in space. And the weld is the loosest doubt
-        // of anything on the face: one sloppy edge a section crosses sets it
-        // for every other section there. A strand longer in space than its
-        // own doubt is no dust, so the weld stays below its chart length,
-        // or it collapses and takes its neighbours' ends with it.
-        // A stretch of the face's own boundary answers to its own edge's
-        // doubt, not to the loosest of the face's: a loose edge elsewhere
-        // on the face says nothing of how far this one strays, and a
-        // section crossing it a few microns from its vertex cuts a stretch
-        // the face it meets cuts too.
-        let own_doubt = |tag: &Tag| -> f64 {
-            match tag {
-                Tag::Section { section, .. } => near.max(far(*section)),
-                Tag::Pole { .. } => f64::INFINITY,
-                Tag::Boundary { edge, .. } => face.edges.get(*edge).map_or(near, |e| {
-                    (e.tolerance * 2.0)
-                        .max(e.ends_tolerance + e.tolerance)
-                        .max(PARAM_SNAP)
-                }),
-                Tag::Contact { .. } => near,
+        let in_chart = |length: f64| -> f64 {
+            if stretch.is_finite() && stretch > 1.0 {
+                (length / stretch).max(PARAM_SNAP)
+            } else {
+                length
             }
         };
-        let face_snap = strands
+        let face_snap = in_chart(face_snap);
+        let mut reach: Vec<f64> = ends.iter().map(|e| in_chart(e.4)).collect();
+        // Where only one direction stretches (a cylinder's turn against its
+        // straight length) no single scale holds, and a strand can be short
+        // in the chart yet long in space. A strand longer in space than its
+        // own doubt is no dust, so no weld near it reaches as far as its
+        // chart length, or it collapses and takes its neighbours' ends with
+        // it.
+        let own_doubt = |si: usize| -> f64 {
+            let at_ends = ends
+                .iter()
+                .filter(|e| e.0 == si)
+                .fold(near, |acc, e| acc.max(e.4));
+            match strands[si].tag {
+                Tag::Section { section, .. } => at_ends.max(everywhere(other(section))),
+                Tag::Pole { .. } => f64::INFINITY,
+                Tag::Boundary { .. } | Tag::Contact { .. } => at_ends,
+            }
+        };
+        let loosest = reach.iter().copied().fold(face_snap, f64::max);
+        let kept: Vec<(Point2, Point2, f64)> = strands
             .iter()
-            .filter(|st| {
-                st.polyline.len() >= 2
-                    && st
-                        .polyline
-                        .windows(2)
-                        .map(|w| w[0].distance(w[1]))
-                        .sum::<f64>()
-                        <= face_snap
-            })
-            .filter_map(|st| {
+            .enumerate()
+            .filter(|(_, st)| st.polyline.len() >= 2 && chart_length(&st.polyline) <= loosest)
+            .filter_map(|(si, st)| {
                 let points: Vec<Point> = st
                     .polyline
                     .iter()
                     .filter_map(|p| face.surface.point_at(p.x, p.y, tol).ok())
                     .collect();
                 let space: f64 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
-                (space > own_doubt(&st.tag)).then(|| {
-                    st.polyline
-                        .windows(2)
-                        .map(|w| w[0].distance(w[1]))
-                        .sum::<f64>()
-                        / 2.0
+                (space > own_doubt(si)).then(|| {
+                    (
+                        st.polyline[0],
+                        st.polyline[st.polyline.len() - 1],
+                        chart_length(&st.polyline) / 2.0,
+                    )
                 })
             })
-            .fold(face_snap, f64::min)
+            .collect();
+        let face_snap = kept
+            .iter()
+            .filter(|k| k.2 * 2.0 <= face_snap)
+            .fold(face_snap, |acc, k| acc.min(k.2))
             .max(PARAM_SNAP);
+        for (e, r) in ends.iter().zip(reach.iter_mut()) {
+            for &(a, b, half) in &kept {
+                if half * 2.0 <= *r && (e.2.distance(a) <= *r || e.2.distance(b) <= *r) {
+                    *r = r.min(half);
+                }
+            }
+            *r = r.max(face_snap);
+        }
+        // Each end whose own weld reaches past the face's is welded here,
+        // onto one node with every end within its reach: a node of the
+        // face's boundary where one stands among them, the nearest to a
+        // vertex of the face first. A strand whose ends both land on the
+        // node and which is no longer than the weld there is dust.
+        let mut class: Vec<usize> = (0..ends.len()).collect();
+        fn root(class: &mut [usize], mut i: usize) -> usize {
+            while class[i] != i {
+                class[i] = class[class[i]];
+                i = class[i];
+            }
+            i
+        }
+        let mut welds: Vec<Junction> = Vec::new();
+        let mut welded = false;
+        for i in 0..ends.len() {
+            if reach[i] <= face_snap {
+                continue;
+            }
+            for j in 0..ends.len() {
+                if j != i && ends[i].2.distance(ends[j].2) <= reach[i] {
+                    let (ri, rj) = (root(&mut class, i), root(&mut class, j));
+                    if ri != rj {
+                        class[ri.max(rj)] = ri.min(rj);
+                        welded = true;
+                    }
+                }
+            }
+        }
+        if welded {
+            let off_vertex = |q: Point| -> f64 {
+                face.edges
+                    .iter()
+                    .flat_map(|e| e.ends.iter())
+                    .map(|(v, _)| v.distance(q))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            let rank = |m: usize| {
+                (
+                    u8::from(!strands[ends[m].0].boundary),
+                    off_vertex(ends[m].3),
+                )
+            };
+            let mut node: Vec<Option<usize>> = vec![None; ends.len()];
+            let mut weld_of = vec![0.0_f64; ends.len()];
+            for (i, &weld) in reach.iter().enumerate() {
+                let r = root(&mut class, i);
+                weld_of[r] = weld_of[r].max(weld);
+                let better = node[r].is_none_or(|k| {
+                    let (x, y) = (rank(i), rank(k));
+                    x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)).is_lt()
+                });
+                if better {
+                    node[r] = Some(i);
+                }
+            }
+            // A node holding ends that stand apart in space is one vertex
+            // there, on every face: a junction reaching each of them, unless
+            // one the paving found holds them all already.
+            let mut spread_of = vec![0.0_f64; ends.len()];
+            let mut held = vec![true; ends.len()];
+            for i in 0..ends.len() {
+                let r = root(&mut class, i);
+                if let Some(k) = node[r] {
+                    spread_of[r] = spread_of[r].max(ends[k].3.distance(ends[i].3));
+                    held[r] &= junctions.iter().any(|j| {
+                        j.at.distance(ends[k].3) <= j.reach && j.at.distance(ends[i].3) <= j.reach
+                    });
+                }
+            }
+            for (r, k) in node.iter().enumerate() {
+                if let Some(k) = *k
+                    && spread_of[r] > tol.confusion() * 1e2
+                    && !held[r]
+                {
+                    welds.push(Junction {
+                        at: ends[k].3,
+                        reach: spread_of[r] + tol.confusion() * 1e2,
+                        onto_vertex: false,
+                    });
+                }
+            }
+            let lengths: Vec<f64> = strands
+                .iter()
+                .map(|st| chart_length(&st.polyline))
+                .collect();
+            let mut landed: Vec<[Option<usize>; 2]> = vec![[None, None]; strands.len()];
+            for i in 0..ends.len() {
+                let r = root(&mut class, i);
+                let Some(k) = node[r] else {
+                    continue;
+                };
+                let (si, end, at, _, _) = ends[i];
+                let target = ends[k].2;
+                // A node on a seam stands on both sides of it, and the end
+                // is carried to the side it arrives from.
+                strands[si].polyline[end] = period_shifts(&face.surface)
+                    .into_iter()
+                    .map(|(du, dv)| Point2::new(target.x + du, target.y + dv))
+                    .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)))
+                    .unwrap_or(target);
+                landed[si][usize::from(end != 0)] = Some(r);
+            }
+            for (si, st) in strands.iter_mut().enumerate() {
+                if let [Some(a), Some(b)] = landed[si]
+                    && a == b
+                    && lengths[si] <= weld_of[a]
+                {
+                    if *DEBUG_STRANDS {
+                        eprintln!(
+                            "WELD from_a={from_a} fi={fi}: strand {si} is dust at its ends' weld {:.3e}",
+                            weld_of[a]
+                        );
+                    }
+                    st.polyline = vec![st.polyline[0], st.polyline[0]];
+                }
+            }
+        }
         // A section that runs along one of this face's edges into its end
         // stops within the hug's width of the node the edge was split at,
         // and two sections meeting a rail that grazes this face stop on it
@@ -8360,10 +8573,8 @@ fn general_fuse_as(
                 );
             }
         }
-        Ok((strands, face_snap))
+        Ok((strands, face_snap, welds))
     };
-    let chart_length =
-        |line: &[Point2]| -> f64 { line.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>() };
     // The identity of a piece across faces: a boundary or contact piece by
     // its edge node, a section piece by its section: the same section is
     // split the same way on both faces it cuts, and a piece that is dust
@@ -8381,8 +8592,9 @@ fn general_fuse_as(
             Tag::Pole { .. } => None,
         }
     };
-    /// A face's strands and its snap, waiting to be arranged.
-    type Prepared = Option<(Vec<Strand<Tag>>, f64)>;
+    /// A face's strands, its snap and the junctions its welds make,
+    /// waiting to be arranged.
+    type Prepared = Option<(Vec<Strand<Tag>>, f64, Vec<Junction>)>;
     // A face the other solid leaves alone (no section on it, no contact
     // into it, no edge of it split, no coincident partner, no pole, no
     // edge short enough to be anyone's dust) is one piece, itself, and is
@@ -8425,10 +8637,10 @@ fn general_fuse_as(
         for (fi, face) in solid.faces.iter().enumerate() {
             ogeom_core::progress::checkpoint()?;
             if quiet[side][fi] {
-                prepared[side].push(Some((Vec::new(), 0.0)));
+                prepared[side].push(Some((Vec::new(), 0.0, Vec::new())));
                 continue;
             }
-            let (strands, snap) = strands_of(from_a, fi, face)?;
+            let (strands, snap, welds) = strands_of(from_a, fi, face)?;
             for st in &strands {
                 if st.polyline.len() >= 2
                     && chart_length(&st.polyline) <= snap
@@ -8437,7 +8649,7 @@ fn general_fuse_as(
                     dust.push(key);
                 }
             }
-            prepared[side].push(Some((strands, snap)));
+            prepared[side].push(Some((strands, snap, welds)));
         }
     }
     ogeom_core::progress::stage("boolean: split arrange");
@@ -8505,22 +8717,25 @@ fn general_fuse_as(
                 (&gb, &ga.solid, boundaries[1].as_ref())
             };
             let face = &own.faces[fi];
-            let Some((mut strands, mut face_snap)) = prepared_face
+            let mut junctions: Vec<Junction> = Vec::new();
+            let Some((mut strands, mut face_snap, welds)) = prepared_face
                 .lock()
                 .map_err(|_| ogeom_core::ogeom_err!(Construction, "a face's work was poisoned"))?
                 .take()
             else {
                 ogeom_bail!(Construction, "a face was prepared twice");
             };
+            junctions.extend(welds);
             if quiet[usize::from(!from_a)][fi] {
                 if let Some(piece) = quiet_piece(model, from_a, fi, face, boundary, tol)? {
                     return Ok((vec![piece], Vec::new()));
                 }
                 // Read on the other solid after all: split it as any face.
-                (strands, face_snap) = strands_of(from_a, fi, face)?;
+                let welds;
+                (strands, face_snap, welds) = strands_of(from_a, fi, face)?;
+                junctions.extend(welds);
             }
             let mut pieces: Vec<FacePiece> = Vec::new();
-            let mut junctions: Vec<Junction> = Vec::new();
             // A strand's ends in space, or none for a pole.
             let space_ends = |face: &GFace, tag: &Tag| -> OgeomResult<Option<(Point, Point)>> {
                 Ok(Some(match tag {
