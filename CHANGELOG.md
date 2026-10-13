@@ -25,6 +25,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section crossing a tight edge near its vertex is kept beside a
+  loose edge (#235).** A face's weld is its loosest edge's doubt, and a
+  stretch of its boundary shorter than that was welded away as dust:
+  one edge stating 0.017 on a block's face welded the 0.02 a drill cut
+  off the face's tight bottom edge by its corner, which the face across
+  that edge kept, and the cut refused. A stretch of the face's boundary
+  now answers to its own edge's doubt, and is kept where it is longer
+  than that.
+
 - **A face of a periodic surface splits along a curve entering it across
   the low end of its range (#229).** A cylinder whose side is two half
   faces refused a rectangle facing the junction where one half's angle

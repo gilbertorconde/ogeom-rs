@@ -8191,11 +8191,21 @@ fn general_fuse_as(
         // for every other section there. A strand longer in space than its
         // own doubt is no dust, so the weld stays below its chart length,
         // or it collapses and takes its neighbours' ends with it.
+        // A stretch of the face's own boundary answers to its own edge's
+        // doubt, not to the loosest of the face's: a loose edge elsewhere
+        // on the face says nothing of how far this one strays, and a
+        // section crossing it a few microns from its vertex cuts a stretch
+        // the face it meets cuts too.
         let own_doubt = |tag: &Tag| -> f64 {
             match tag {
                 Tag::Section { section, .. } => near.max(far(*section)),
                 Tag::Pole { .. } => f64::INFINITY,
-                Tag::Boundary { .. } | Tag::Contact { .. } => near,
+                Tag::Boundary { edge, .. } => face.edges.get(*edge).map_or(near, |e| {
+                    (e.tolerance * 2.0)
+                        .max(e.ends_tolerance + e.tolerance)
+                        .max(PARAM_SNAP)
+                }),
+                Tag::Contact { .. } => near,
             }
         };
         let face_snap = strands
