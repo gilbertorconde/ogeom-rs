@@ -25,6 +25,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A point is classified along the rays that leave the solid soonest
+  (#239).** Each of the six fixed directions ran from the point past the
+  far side of the solid, and they were tried in a fixed order: a ray from
+  beside a thread crossed the whole part and its thread faces. Each ray
+  now stops just past the boundary's box, and the directions are tried in
+  the order they leave it. The user's solid checks in 3.0 s (3.3 s).
+
 - **A solid with thread faces checks in seconds (#239).** A curve's
   segments find the cells of a spline surface's seeding near them through
   a tree of the cells' boxes, built once per surface, instead of every
