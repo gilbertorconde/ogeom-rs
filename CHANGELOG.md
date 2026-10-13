@@ -38,6 +38,13 @@ bump may break the API and a patch bump may not.
   sample fits nothing is now taken once more after its neighbours are
   claimed, and the band comes back a cone.
 
+- **A cone meshes within its chord at its apex.** Every ruling of a cone
+  meets at its apex, and a triangle there joining points on rulings far
+  apart cut inside the cone: on cone_point, 22 triangles stood up to 2.06
+  chords off at 0.0125. Every curved face now holds the middles of a
+  triangle's sides, lifted, to the chord as well as its centre, as #212
+  did for surfaces curved both ways alone.
+
 - **Every triangle of a surface curved both ways keeps to the chord
   (#212).** The grid holds its rows and columns to the chord, but a
   surface curved both ways twists between them, and a triangle across a

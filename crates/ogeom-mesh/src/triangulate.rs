@@ -3358,12 +3358,6 @@ fn triangulate_region_inner(
         // chart edges end at it.
         let mut lifted: ogeom_core::FastMap<[u64; 2], Option<Point>> =
             ogeom_core::FastMap::default();
-        let doubly_curved = !matches!(
-            surface.kind(),
-            ogeom_geom::SurfaceKind::Cylinder
-                | ogeom_geom::SurfaceKind::Cone
-                | ogeom_geom::SurfaceKind::Extrusion
-        );
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
             let before = cdt.num_vertices();
@@ -3427,22 +3421,34 @@ fn triangulate_region_inner(
                 });
                 // A surface curved both ways twists between its rows and
                 // columns, and a triangle whose edges each keep to the chord
-                // can still stand off it in its middle: its middle, lifted, is
-                // held to the chord itself. A surface straight one way is
-                // drawn in strips along its rulings, which keep to it.
+                // can still stand off it in its middle. A ruled face is not
+                // safe either: a triangle joining points on rulings far
+                // apart (at a cone's apex, where every ruling meets) cuts
+                // inside its curve. So on every curved face a triangle's
+                // middle and the middles of its sides, lifted, are held to
+                // the chord against its plane.
                 let middle_off = || {
                     let lift =
                         |p: (f64, f64)| GridSample::point_at(surface, scale.from(p.0, p.1), tol);
                     let [a, b, c] = corners.map(lift);
-                    match (a, b, c, lift((centre.x, centre.y))) {
-                        (Some(a), Some(b), Some(c), Some(m)) => (b - a)
-                            .cross(c - a)
-                            .normalized(tol)
-                            .is_ok_and(|n| (m - a).dot(n).abs() > deflection.chord),
-                        _ => false,
-                    }
+                    let (Some(a), Some(b), Some(c)) = (a, b, c) else {
+                        return false;
+                    };
+                    let Ok(n) = (b - a).cross(c - a).normalized(tol) else {
+                        return false;
+                    };
+                    let half = |i: usize, j: usize| {
+                        (
+                            f64::midpoint(corners[i].0, corners[j].0),
+                            f64::midpoint(corners[i].1, corners[j].1),
+                        )
+                    };
+                    [(centre.x, centre.y), half(0, 1), half(1, 2), half(2, 0)]
+                        .into_iter()
+                        .filter_map(lift)
+                        .any(|m| (m - a).dot(n).abs() > deflection.chord)
                 };
-                if sagged || (doubly_curved && middle_off()) {
+                if sagged || middle_off() {
                     worst.push(SpadePoint::new(centre.x, centre.y));
                 }
             }
