@@ -399,3 +399,55 @@ fn a_twisting_wall_meshes_within_its_chord_in_every_triangle() {
         }
     }
 }
+
+/// Every ruling of a cone meets at its apex, and a triangle there joining
+/// points on rulings far apart cuts inside the cone though its corners and
+/// sides lie on it. Every triangle of cone_point's curved face, at its
+/// middle and at the middles of its sides lifted onto the cone, stands
+/// within the chord of its own plane.
+#[test]
+fn a_cone_to_its_apex_meshes_within_its_chord_in_every_triangle() {
+    use ogeom::geom::Surface as _;
+    let chord = 0.0125;
+    let text = std::fs::read_to_string(corpus("generated/cone_point.step")).unwrap();
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let deflection = Deflection {
+        chord,
+        ..Deflection::default()
+    };
+    let mut cones = 0;
+    for body in import.solids.iter().chain(&import.shells) {
+        let (faces, _) = ogeom::mesh::face_meshes_for(model, body, deflection, None, T).unwrap();
+        for (face, mesh) in &faces {
+            let data = model.node(face).unwrap().data().as_face().unwrap();
+            let surface = model.geometry().surface(data.surface).unwrap();
+            if surface.kind() != ogeom::geom::SurfaceKind::Cone {
+                continue;
+            }
+            cones += 1;
+            let mesh = mesh.as_ref().unwrap();
+            for t in &mesh.triangles {
+                let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                let uv = t.map(|k| mesh.parameters[k as usize]);
+                let Ok(normal) = (b - a).cross(c - a).normalized(T) else {
+                    continue;
+                };
+                let third = 1.0 / 3.0;
+                for w in [
+                    [third, third, third],
+                    [0.5, 0.5, 0.0],
+                    [0.0, 0.5, 0.5],
+                    [0.5, 0.0, 0.5],
+                ] {
+                    let u = uv[0].0 * w[0] + uv[1].0 * w[1] + uv[2].0 * w[2];
+                    let v = uv[0].1 * w[0] + uv[1].1 * w[1] + uv[2].1 * w[2];
+                    let on = surface.point_at(u, v, T).unwrap();
+                    let off = (on - a).dot(normal).abs();
+                    assert!(off <= chord * (1.0 + 1e-9), "{off} off at ({u}, {v})");
+                }
+            }
+        }
+    }
+    assert_eq!(cones, 1);
+}
