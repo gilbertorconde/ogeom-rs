@@ -32,6 +32,7 @@ use ogeom_geom::Curve3d as _;
 use ogeom_geom::{Curve2d, Surface, SurfaceGeometry};
 use ogeom_math::{Direction, Point, Point2, Vector};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, Triangulation};
+use spade::handles::FixedVertexHandle;
 use spade::{
     ConstrainedDelaunayTriangulation, Point2 as SpadePoint, Triangulation as _, mitigate_underflow,
 };
@@ -3664,12 +3665,66 @@ fn add_interior_points(
             deflection.chord
         );
     }
+    // Each row and each column is held to the chord along its own line,
+    // and a cell's middle stands off by both sags together: on a surface
+    // curved both ways, a cell whose sides each sag the chord stands off
+    // twice it across its diagonal. Where any cell's diagonal sags past
+    // the chord, every cell gets its centre, which halves the diagonals a
+    // triangle can take, and the grid's lines between neighbouring points
+    // are held as constraints, so no triangle crosses a cell's side and
+    // each cell is drawn alone: four triangles round its centre. A grid
+    // line inside the chart then holds the triangles as the seam does, and
+    // a symmetric grid stays symmetric. A surface straight one way never
+    // asks.
+    let lifted = |u: f64, v: f64| {
+        use ogeom_geom::Surface as _;
+        surface.point_at(u, v, tol).ok()
+    };
+    let cells: Vec<(f64, f64, f64, f64)> = rows
+        .windows(2)
+        .flat_map(|pair| {
+            let (v0, v1) = (pair[0], pair[1]);
+            let (columns, _) = columns_at(f64::midpoint(v0, v1));
+            columns
+                .windows(2)
+                .map(|cell| (cell[0], cell[1], v0, v1))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    // A surface straight one way (a drum, a cone, an extrusion) sags only
+    // across its rulings, which the rows and columns already hold.
+    let ruled = matches!(
+        surface.kind(),
+        ogeom_geom::SurfaceKind::Cylinder
+            | ogeom_geom::SurfaceKind::Cone
+            | ogeom_geom::SurfaceKind::Extrusion
+    );
+    let sags = !ruled
+        && cells.len() >= MIN_CENTRED_CELLS
+        && cells.iter().any(|&(u0, u1, v0, v1)| {
+            let (um, vm) = (f64::midpoint(u0, u1), f64::midpoint(v0, v1));
+            match (
+                lifted(u0, v0),
+                lifted(u1, v1),
+                lifted(u1, v0),
+                lifted(u0, v1),
+                lifted(um, vm),
+            ) {
+                (Some(a), Some(b), Some(c), Some(d), Some(m)) => {
+                    chord_sag(a, b, m, tol).max(chord_sag(c, d, m, tol)) > deflection.chord
+                }
+                _ => false,
+            }
+        });
+    let mut placed: Vec<Vec<(usize, f64, FixedVertexHandle)>> = Vec::new();
+    let mut row_of: Vec<usize> = Vec::new();
     for (row, &v) in rows
         .iter()
         .enumerate()
         .take(rows.len().saturating_sub(1))
         .skip(1)
     {
+        let mut here: Vec<(usize, f64, FixedVertexHandle)> = Vec::new();
         // The row gap either side of this row, the finer of the two: the
         // chart scale a keep-out band is measured against along `v`.
         let dv = (v - rows[row - 1]).abs().min((rows[row + 1] - v).abs());
@@ -3729,6 +3784,104 @@ fn add_interior_points(
                     KEEP_OUT,
                     (1.0 / (du * scale.su), 1.0 / (dv * scale.sv)),
                 )
+            {
+                continue;
+            }
+            let handle = cdt
+                .insert(mitigate_underflow(point))
+                .map_err(|e| ogeom_core::ogeom_err!(NotDone, "interior insertion failed: {e}"))?;
+            if sags {
+                here.push((column, u, handle));
+            }
+        }
+        if sags {
+            // Along the row, between neighbouring columns.
+            for pair in here.windows(2) {
+                if pair[1].0 == pair[0].0 + 1 && cdt.can_add_constraint(pair[0].2, pair[1].2) {
+                    cdt.add_constraint(pair[0].2, pair[1].2);
+                }
+            }
+            // Across to the row before, at the same column.
+            if let (Some(before), Some(&last)) = (placed.last(), row_of.last())
+                && last + 1 == row
+            {
+                for &(_, u, handle) in &here {
+                    if let Some(&(_, _, above)) =
+                        before.iter().find(|p| p.1.to_bits() == u.to_bits())
+                        && cdt.can_add_constraint(above, handle)
+                    {
+                        cdt.add_constraint(above, handle);
+                    }
+                }
+            }
+            // To the boundary where the grid line meets it at a vertex: a
+            // row's ends on the chart's end columns, the first and last
+            // rows' points on the end rows.
+            let edge = |cdt: &ConstrainedDelaunayTriangulation<SpadePoint<f64>>, u: f64, v: f64| {
+                cdt.locate_vertex(mitigate_underflow(scale.to(u, v)))
+                    .map(|h| h.fix())
+            };
+            let mut ties: Vec<(FixedVertexHandle, FixedVertexHandle)> = Vec::new();
+            if let (Some(&(first, _, start)), Some(&(last, _, end))) = (here.first(), here.last()) {
+                if first == 1
+                    && let Some(b) = edge(cdt, columns[0], v)
+                {
+                    ties.push((b, start));
+                }
+                if last + 2 == columns.len()
+                    && let Some(b) = edge(cdt, columns[columns.len() - 1], v)
+                {
+                    ties.push((end, b));
+                }
+            }
+            for &(_, u, handle) in &here {
+                if row == 1
+                    && let Some(b) = edge(cdt, u, rows[0])
+                {
+                    ties.push((b, handle));
+                }
+                if row + 2 == rows.len()
+                    && let Some(b) = edge(cdt, u, rows[rows.len() - 1])
+                {
+                    ties.push((handle, b));
+                }
+            }
+            for (a, b) in ties {
+                if a != b && cdt.can_add_constraint(a, b) {
+                    cdt.add_constraint(a, b);
+                }
+            }
+            placed.push(here);
+            row_of.push(row);
+        }
+    }
+    if sags {
+        for (u0, u1, v0, v1) in cells {
+            let (um, vm) = (f64::midpoint(u0, u1), f64::midpoint(v0, v1));
+            if !region.holds(Point2::new(um, vm)) {
+                continue;
+            }
+            // A cell whose side collapses to a point (a pole, an apex) is a
+            // fan's sliver already, and a centre there lands wherever the
+            // collapse left the columns.
+            let collapsed = |v: f64| match (lifted(u0, v), lifted(u1, v)) {
+                (Some(a), Some(b)) => a.distance(b) <= tol.confusion(),
+                _ => true,
+            };
+            if collapsed(v0) || collapsed(v1) {
+                continue;
+            }
+            let point = scale.to(um, vm);
+            let (du, dv) = ((u1 - u0) * 0.5, (v1 - v0) * 0.5);
+            if lands_on_the_mesh(cdt, point, reach, (1.0, 1.0))
+                || (du > 0.0
+                    && dv > 0.0
+                    && lands_on_the_mesh(
+                        cdt,
+                        point,
+                        KEEP_OUT,
+                        (1.0 / (du * scale.su), 1.0 / (dv * scale.sv)),
+                    ))
             {
                 continue;
             }
@@ -3954,6 +4107,15 @@ const U_PROBES: usize = 8;
 /// many is degenerate, and the cap makes that a coarse mesh rather than an
 /// exhausted allocator.
 const REFINEMENT_ROUNDS: usize = 12;
+
+/// The fewest grid cells a face has for its cells to be given centres.
+///
+/// A face of fewer (a fillet's sliver, a small corner ball) keeps its grid's
+/// triangles as drawn, and its middle may stand off by up to twice the
+/// chord: such a face is drawn mostly by the rims it shares, and its
+/// neighbours, and a mesh read back into faces, are drawn to agree with the
+/// grid's own triangles there.
+const MIN_CENTRED_CELLS: usize = 128;
 
 /// The fewest subdivisions one parameter direction may take before its cap
 /// stops it: the caller's [`Deflection::max_segments`] where that is more.

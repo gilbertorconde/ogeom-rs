@@ -355,3 +355,34 @@ fn a_quarter_cone_meshes_without_triangles_on_a_ruling() {
         }
     }
 }
+
+/// A ball is curved both ways: a grid cell whose row and column each sag
+/// the chord stands off up to twice it across its diagonal. The cells get
+/// their centres, the grid's lines hold each cell to its own triangles,
+/// and every triangle's middle stands within the chord of the ball.
+#[test]
+fn a_ball_meshes_within_its_chord_across_its_cells() {
+    let mut model = ogeom::topo::Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, ogeom::math::Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    for chord in [0.0125, 0.05, 0.1] {
+        let deflection = Deflection {
+            chord,
+            ..Deflection::default()
+        };
+        let (faces, _) = face_meshes_for(&model, &ball, deflection, None, T).unwrap();
+        for (_, mesh) in faces {
+            let mesh = mesh.unwrap();
+            for t in &mesh.triangles {
+                let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                let middle = (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0;
+                let off = 10.0 - middle.magnitude();
+                assert!(
+                    off <= chord,
+                    "chord {chord}: a middle {off} inside the ball"
+                );
+            }
+        }
+    }
+}

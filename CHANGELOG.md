@@ -13,6 +13,29 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A doubly curved face meshes within its chord across its cells
+  (#212).** A grid cell whose row and column each sag the chord stood off
+  up to twice it across its diagonal: a ball of radius 10 at a chord of
+  0.0125 stood 0.016 off. Where any cell of a face sags past the chord,
+  every cell of it gets its centre and the grid's lines hold each cell to
+  its own triangles, so a ball keeps its symmetry; the ball now stands
+  within the chord, and step-conformance's bowl_01 within it at 0.0125,
+  0.05 and 0.1. A face of fewer than 128 cells keeps its grid as drawn,
+  and a surface straight one way (a drum, a cone) its rows and columns.
+
+- **A mesh drawn finely at a tangent rim reads back on its surfaces.**
+  `solid_from_mesh` turned away a rim's facets where two surfaces meet
+  tangentially (a dome on a drum, a ball on a pin): at the coplanar
+  distance they lie in one plane with the facets across the rim, and a
+  region grown before its neighbour refused them with the neighbour's
+  still-free facets, leaving the ball in thousands of planes. A patch's
+  members another curved region holds no longer stop it, and each region
+  is offered its free facets again once all are found. A facet drawn to a
+  cell's middle, a hair deeper than an equilateral one, is the surface's
+  too. A mesh every coordinate of which single precision holds scatters by
+  its quantum, and a coplanar distance asked below it is raised even where
+  its facets lie too flat to show the scatter.
+
 - **`split_face` splits along a closed curve across a periodic face's seam
   (#208).** A closed path is walked from where it first meets the face's
   boundary; one that crosses a seam meets the seam's two sides there a
