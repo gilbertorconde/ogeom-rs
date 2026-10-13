@@ -286,6 +286,11 @@ fn tangent_cylinder(
 /// still be put on its surface by [`faceted_rounds`].
 const FACETED_ROUND_FACETS: usize = 12;
 
+/// How long a smooth border a facet must share with another, against its
+/// longest, to be a neighbour along a round's rulings rather than across
+/// its end.
+const ALONG_RULINGS: f64 = 0.5;
+
 /// Put a round recognition left as facets between two flat faces tangent
 /// to it on its cylinder or cone.
 ///
@@ -331,7 +336,11 @@ pub(super) fn faceted_rounds(
             members[j].push(t);
         }
     }
-    let mut beside: Vec<Vec<usize>> = vec![Vec::new(); count];
+    // How long a border each facet shares smoothly with each other: a
+    // round's facets meet their neighbours along whole rulings, and touch
+    // whatever closes the round's ends (a corner left faceted) only along
+    // a chord of its rim.
+    let mut shared: Vec<FastMap<usize, f64>> = vec![FastMap::default(); count];
     for (h, twin) in adjacency.twin.iter().enumerate() {
         let Some(g) = *twin else {
             continue;
@@ -345,11 +354,18 @@ pub(super) fn faceted_rounds(
         {
             continue;
         }
-        beside[a].push(b);
+        let (p, q) = from_to(triangles, h);
+        *shared[a].entry(b).or_insert(0.0) += points[p as usize].distance(points[q as usize]);
     }
-    for list in &mut beside {
-        list.sort_unstable();
-        list.dedup();
+    let mut beside: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (a, borders) in shared.iter().enumerate() {
+        let longest = borders.values().copied().fold(0.0, f64::max);
+        beside[a] = borders
+            .iter()
+            .filter(|&(_, &length)| length >= ALONG_RULINGS * longest)
+            .map(|(&b, _)| b)
+            .collect();
+        beside[a].sort_unstable();
     }
     // Chains of facets each joined smoothly to two others, in order, with
     // whether they close on themselves and the groups past their two ends.

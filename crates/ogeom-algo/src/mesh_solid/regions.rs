@@ -23,6 +23,9 @@ use crate::recognize::{Canonical, recognize_curved, worst_deviation};
 /// to be a face of its own rather than facets of the curve.
 const PATCH_SCALE: f64 = 20.0;
 
+/// How many times the median turn of a drum one of its facets may span.
+const UNEVEN_TURN: f64 = 4.0;
+
 /// How much larger than a seed's flat patch another must be for a first
 /// sample to take its facets without growing on from them.
 const LEAF_SCALE: f64 = 16.0;
@@ -1266,7 +1269,57 @@ pub(super) fn recognized_regions(
                 Canonical::Torus(_) => vertices.len() < 14,
                 _ => false,
             };
-            if deviation > flat || flat_too || spans_off || region.len() < 2 || few {
+            // A region in pieces is facets of several surfaces one fit
+            // happens to pass through: on a coarse mesh, the rulings of two
+            // fillets either side of a flat face stand at the corners of a
+            // trapezoid, and every trapezoid with its two slanted sides
+            // alike lies on a circle.
+            let apart = {
+                let mut largest = region.clone();
+                keep_largest_piece(&mut largest, adjacency);
+                largest.len() != region.len()
+            };
+            // A drum's facets each span about the same turn of it, the
+            // turn its chord allows; a facet spanning many times the
+            // others' is a flat face the fit runs through, its rim and the
+            // first facets of the fillets either side of it lying on one
+            // wide circle.
+            let uneven = match &shape {
+                Canonical::Cylinder(c) => {
+                    let frame = c.frame();
+                    let turn = |p: Point| {
+                        let local = frame.to_local(p);
+                        local.y.atan2(local.x)
+                    };
+                    let mut spans: Vec<f64> = region
+                        .iter()
+                        .map(|&t| {
+                            let a = triangles[t].map(|v| turn(points[v as usize]));
+                            let apart = |x: f64, y: f64| {
+                                let d = (x - y).rem_euclid(core::f64::consts::TAU);
+                                d.min(core::f64::consts::TAU - d)
+                            };
+                            apart(a[0], a[1])
+                                .max(apart(a[1], a[2]))
+                                .max(apart(a[0], a[2]))
+                        })
+                        .collect();
+                    spans.sort_by(f64::total_cmp);
+                    let median = spans[spans.len() / 2];
+                    spans
+                        .last()
+                        .is_some_and(|&widest| median > 0.0 && widest > UNEVEN_TURN * median)
+                }
+                _ => false,
+            };
+            if deviation > flat
+                || flat_too
+                || spans_off
+                || apart
+                || uneven
+                || region.len() < 2
+                || few
+            {
                 for &t in &region {
                     tried[t] = true;
                     changed[t] = batch;
