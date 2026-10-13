@@ -125,8 +125,15 @@ pub(super) fn sags_as_the_surface(shape: &Canonical, corners: [Point; 3], flat: 
     let centroid = Point::from_vector(
         (corners[0].to_vector() + corners[1].to_vector() + corners[2].to_vector()) / 3.0,
     );
-    shape.distance_to(centroid) <= longest * turn / 6.0 + flat
+    // A sixth of the longest side's turn is the depth of an equilateral
+    // facet's middle; a facet drawn from two corners of a row to the middle
+    // of a cell below lies a hair deeper, and is the surface's as much.
+    shape.distance_to(centroid) <= longest * turn / 6.0 * SAG_MARGIN + flat
 }
+
+/// How much deeper than an equilateral facet's middle a facet's own may lie
+/// below the surface and still be the surface's.
+const SAG_MARGIN: f64 = 1.05;
 
 /// Whether a triangle is a sliver: no taller across its longest side than
 /// a tenth of that side, so its normal says little.

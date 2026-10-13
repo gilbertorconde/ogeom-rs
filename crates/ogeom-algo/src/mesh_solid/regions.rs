@@ -1083,9 +1083,23 @@ pub(super) fn recognized_regions(
                         let patch = patches.of[other];
                         let taken: Vec<usize> = if patches.area[patch] > typical * PATCH_SCALE {
                             let whole = &patches.members[patch];
+                            // A member another curved region holds is that
+                            // surface's facet, not a tangent plane's: where
+                            // two surfaces meet tangentially a facet of
+                            // each can lie in one plane at the coplanar
+                            // distance, and the free ones on this surface
+                            // still come.
+                            let elsewhere = |t: usize| {
+                                !mine.contains(&t)
+                                    && matches!(
+                                        groups.carriers.get(groups.of[t]),
+                                        Some(Carrier::Curved(_))
+                                    )
+                            };
                             let on = whole.iter().all(|&t| {
                                 let corners = triangles[t].map(|v| points[v as usize]);
                                 mine.contains(&t)
+                                    || elsewhere(t)
                                     || (groups.of[t] == usize::MAX
                                         && corners.iter().all(|p| shape.distance_to(*p) <= flat)
                                         && sags_as_the_surface(&shape, corners, flat)
@@ -1102,7 +1116,7 @@ pub(super) fn recognized_regions(
                             whole
                                 .iter()
                                 .copied()
-                                .filter(|t| !mine.contains(t))
+                                .filter(|&t| !mine.contains(&t) && !elsewhere(t))
                                 .collect()
                         } else {
                             vec![other]
@@ -1275,6 +1289,75 @@ pub(super) fn recognized_regions(
                 vertices,
                 patch: None,
             }));
+        }
+    }
+    // Where two surfaces meet tangentially, a finely drawn rim's facets
+    // lie in one plane with the facets across the rim at the coplanar
+    // distance, and a region grown before its neighbour turned them away
+    // with that neighbour's facets, which were still free. With every
+    // region found, each is offered the free facets beside it again, a
+    // large flat patch still coming whole or not at all but for the
+    // members other curved regions now hold.
+    let carriers = groups.carriers.len();
+    let typical: Vec<f64> = (0..carriers)
+        .map(|g| {
+            let mut areas: Vec<f64> = (0..n)
+                .filter(|&t| groups.of[t] == g)
+                .map(|t| patches.facet[t])
+                .collect();
+            areas.sort_by(f64::total_cmp);
+            areas.get(areas.len() / 2).copied().unwrap_or(0.0)
+        })
+        .collect();
+    loop {
+        let mut joined = false;
+        for t in 0..n {
+            if groups.of[t] != usize::MAX {
+                continue;
+            }
+            let beside = (3 * t..3 * t + 3)
+                .filter_map(|h| adjacency.twin[h].map(|g| (h, groups.of[g / 3])))
+                .find(|&(h, g)| {
+                    let Some(Carrier::Curved(curved)) = groups.carriers.get(g) else {
+                        return false;
+                    };
+                    let shape = &curved.shape;
+                    let on = |t: usize| {
+                        let corners = triangles[t].map(|v| points[v as usize]);
+                        corners.iter().all(|p| shape.distance_to(*p) <= flat)
+                            && sags_as_the_surface(shape, corners, flat)
+                            && (is_sliver(corners)
+                                || leans_as_the_surface(shape, corners, mesh.normals[t]))
+                    };
+                    if !on(t) || !mesh.smooth(h) {
+                        return false;
+                    }
+                    let patch = patches.of[t];
+                    patches.area[patch] <= typical[g] * PATCH_SCALE
+                        || patches.members[patch].iter().all(|&m| {
+                            groups.of[m] == g
+                                || matches!(
+                                    groups.carriers.get(groups.of[m]),
+                                    Some(Carrier::Curved(_))
+                                )
+                                || (groups.of[m] == usize::MAX && on(m))
+                        })
+                })
+                .map(|(_, g)| g);
+            if let Some(g) = beside {
+                groups.of[t] = g;
+                if let Some(Carrier::Curved(curved)) = groups.carriers.get_mut(g) {
+                    for v in triangles[t] {
+                        if !curved.vertices.contains(&v) {
+                            curved.vertices.push(v);
+                        }
+                    }
+                }
+                joined = true;
+            }
+        }
+        if !joined {
+            break;
         }
     }
 }

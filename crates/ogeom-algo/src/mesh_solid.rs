@@ -595,7 +595,33 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
     // its ninetieth percentile, so recognition holds to at least
     // [`NOISE_FLOOR`] times it, and says so.
     if options.recognize && options.coplanar_distance.is_some() {
-        let floor = (2.0 * quantum).max(NOISE_FLOOR * noise);
+        // A mesh every coordinate of which single precision holds was
+        // stored in it, and scatters by its quantum whether or not the
+        // facets the noise is read from show it: a strip along an axis
+        // lies flat whatever the rounding did.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the test is the round trip"
+        )]
+        let single = options.quantum.is_none()
+            && points
+                .iter()
+                .all(|p| [p.x, p.y, p.z].iter().all(|&c| f64::from(c as f32) == c));
+        let stored = if single {
+            let largest = points
+                .iter()
+                .flat_map(|p| [p.x.abs(), p.y.abs(), p.z.abs()])
+                .fold(0.0_f64, f64::max);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "an f32 coordinate's magnitude"
+            )]
+            let x = (largest as f32).max(f32::MIN_POSITIVE);
+            f64::from(f32::from_bits(x.to_bits() + 1) - x) * 3.0_f64.sqrt() / 2.0
+        } else {
+            quantum
+        };
+        let floor = (2.0 * stored).max(NOISE_FLOOR * noise);
         if flat < floor {
             flat = floor;
             report.coplanar_distance_raised = true;
