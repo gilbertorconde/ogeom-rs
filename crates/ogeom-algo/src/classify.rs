@@ -1063,7 +1063,6 @@ impl SolidBoundary {
     ) -> OgeomResult<Option<Containment>> {
         let Prepared {
             faces,
-            bound,
             centre,
             diagonal,
             ring_chord,
@@ -1076,39 +1075,9 @@ impl SolidBoundary {
             ..Deflection::default()
         };
         let reach = tol.confusion();
-        // Each direction runs from the point to just past where it leaves
-        // the boundary's box, and the directions leaving soonest are tried
-        // first: a ray across the whole solid meets every face on its way,
-        // and a large spline face costs most of the ray's time.
-        let past = diagonal * 1e-3 + 1.0;
-        let exit = |along: Vector| -> f64 {
-            let (Some(low), Some(high)) = (bound.low(), bound.high()) else {
-                return point.distance(*centre) + diagonal + 1.0;
-            };
-            let leave = |p: f64, d: f64, lo: f64, hi: f64| {
-                if d > 0.0 {
-                    (hi - p) / d
-                } else if d < 0.0 {
-                    (lo - p) / d
-                } else {
-                    f64::INFINITY
-                }
-            };
-            leave(point.x, along.x, low.x, high.x)
-                .min(leave(point.y, along.y, low.y, high.y))
-                .min(leave(point.z, along.z, low.z, high.z))
-                .max(0.0)
-                + past
-        };
-        let mut directions: Vec<(f64, Vector)> = RAY_DIRECTIONS
-            .iter()
-            .map(|d| {
-                let along = Vector::new(d[0], d[1], d[2]);
-                (exit(along), along)
-            })
-            .collect();
-        directions.sort_by(|a, b| a.0.total_cmp(&b.0));
-        'directions: for (length, along) in directions {
+        let length = point.distance(*centre) + diagonal + 1.0;
+        'directions: for direction in RAY_DIRECTIONS {
+            let along = Vector::new(direction[0], direction[1], direction[2]);
             let far = point + along * length;
             let mut crossings = 0_usize;
 
