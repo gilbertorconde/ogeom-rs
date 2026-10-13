@@ -25,6 +25,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A ray meets a spline face wherever it crosses it (#246).** A cell of a
+  spline surface's seeding that a ray passes within the surface's bow of
+  was asked of only the ray's segment passing nearest the cell's middle,
+  and on a large cell that segment is far from where the ray crosses: a
+  ray from beside a thin spline wall of Voron 2.4 solid #2 missed the wall
+  and read the wrong side. Every segment passing within the cell's bow of
+  the cell's triangle is asked again.
+- **A face's inside-out test probes only from points on the face.** It
+  probed from the chart middles of the face's largest triangles, and a
+  thin ring's triangles span its hole: their middles stood in the hole,
+  off the face, and read whatever surrounds it. A middle the face does
+  not hold is passed over.
+
 - **A solid with thread faces checks in seconds (#239).** A curve's
   segments find the cells of a spline surface's seeding near them through
   a tree of the cells' boxes, built once per surface, instead of every

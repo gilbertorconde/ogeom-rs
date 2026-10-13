@@ -546,26 +546,13 @@ fn general(
 
     let segments: Vec<((f64, Point), (f64, Point))> =
         points.windows(2).map(|pair| (pair[0], pair[1])).collect();
-    // Which segments come near which cells, by cell index. A curve running
-    // along the surface within a cell's bow comes near that cell from every
-    // segment beside it, and Newton started from each lands where the one
-    // from the nearest does: a cell it does not cross is asked of the
-    // segment passing nearest its middle.
+    // Which segments come near which cells, by cell index.
     let mut pairs: Vec<(usize, usize)> = Vec::new();
-    let mut nearest: ogeom_core::FastMap<usize, (f64, usize)> = ogeom_core::FastMap::default();
-    let mut meet = |i: usize, c: usize, pairs: &mut Vec<(usize, usize)>| {
+    let meet = |i: usize, c: usize, pairs: &mut Vec<(usize, usize)>| {
         let cell = &cells[c];
         let ((_, p0), (_, p1)) = segments[i];
-        if !segment_near_cell(p0, p1, cell, options.gap.max(cell.sag)) {
-            return;
-        }
-        pairs.push((i, c));
-        let [a, b, d] = cell.corners;
-        let middle = Point::from_vector((a.to_vector() + b.to_vector() + d.to_vector()) / 3.0);
-        let gap = distance_to_segment(middle, p0, p1);
-        let best = nearest.entry(c).or_insert((f64::INFINITY, i));
-        if gap < best.0 {
-            *best = (gap, i);
+        if segment_near_cell(p0, p1, cell, options.gap.max(cell.sag)) {
+            pairs.push((i, c));
         }
     };
     // Each segment asks the tree for the cells whose boxes, grown by their
@@ -590,11 +577,10 @@ fn general(
             // crossing the surface in the gap between the flat cell and
             // the curved patch it stands for (a ray starting a few microns
             // from the wall it leaves by) meets no cell, and is seeded by
-            // its nearness instead.
+            // every segment passing within the cell's bow of its triangle.
             if segment_meets_triangle(p0, p1, cell.corners).is_none()
                 && !(cell.sag > options.gap
                     && segment_near_cell(p0, p1, cell, cell.sag)
-                    && nearest.get(&k).is_some_and(|&(_, i)| i == segment)
                     && segment_triangle_distance(p0, p1, cell.corners) <= cell.sag)
             {
                 continue;

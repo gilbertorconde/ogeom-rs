@@ -373,6 +373,19 @@ pub(crate) fn faces_inward(
             continue;
         };
         let point = placement.apply(point);
+        // The chart middle of a triangle lies on the face only where the
+        // face's region is convex there: a thin ring's longest triangles
+        // span its hole, and their middles stand in it, off the face, where
+        // the two sides read whatever surrounds the hole. The face is asked
+        // at the boundary's own ring chord, whose band a face narrower than
+        // it (a thin sheet's rim) lies within whole.
+        let held = Deflection {
+            chord: tol.confusion() * 1e4,
+            ..Deflection::default()
+        };
+        if crate::classify_on_face(model, face, point, held, tol)? == crate::Containment::Out {
+            continue;
+        }
         let mut outward = placement.apply_vector(normal.vector());
         if flip {
             outward = -outward;
