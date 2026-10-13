@@ -201,6 +201,11 @@ pub struct Callout {
     pub polylines: Vec<Vec<ogeom_math::Point>>,
     /// Which semantic annotation this draws, where the file said.
     pub annotates: Option<Annotated>,
+    /// The topology a note describes (a bore its thread callout names),
+    /// where it draws no semantic annotation to say so through.
+    pub items: Vec<ogeom_topo::TShapeId>,
+    /// The words the callout carries as text, beside the strokes it draws.
+    pub text: Option<String>,
 }
 
 /// Which semantic annotation a callout draws.

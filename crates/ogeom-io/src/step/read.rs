@@ -4090,7 +4090,7 @@ impl<'a> Reader<'a> {
         // coordinates list; an annotation plane says which plane they are
         // drawn in and which callouts it holds; and a model item association
         // says which semantic annotation a callout is the picture of.
-        let (callouts, callout_index) = self.callouts(&annotation_ids);
+        let (callouts, callout_index) = self.callouts(&annotation_ids, &aspect_items);
         pmi.callouts = callouts;
         self.callout_index = callout_index;
         pmi
@@ -4248,6 +4248,7 @@ impl<'a> Reader<'a> {
     fn callouts(
         &mut self,
         annotation_ids: &FastMap<u64, ogeom_doc::Annotated>,
+        aspect_items: &FastMap<u64, Vec<ogeom_topo::TShapeId>>,
     ) -> (Vec<ogeom_doc::Callout>, FastMap<u64, usize>) {
         // Which callout each annotation plane holds, and the plane's frame.
         let mut plane_of: FastMap<u64, Frame> = FastMap::default();
@@ -4306,29 +4307,61 @@ impl<'a> Reader<'a> {
                 _ => String::new(),
             };
             let mut polylines = Vec::new();
+            let mut text: Option<String> = None;
             for element in args.get(1).and_then(Arg::list).unwrap_or(&[]).to_vec() {
                 let Some(occurrence) = element.reference() else {
                     continue;
                 };
+                if let Some(words) = self.annotation_text(occurrence) {
+                    text.get_or_insert(words);
+                    continue;
+                }
                 polylines.extend(self.annotation_polylines(occurrence));
             }
-            if polylines.is_empty() && !plane_of.contains_key(&id) {
+            if polylines.is_empty() && text.is_none() && !plane_of.contains_key(&id) {
                 continue;
             }
             index_of.insert(id, out.len());
+            let definitions = draws.get(&id).cloned().unwrap_or_default();
+            let annotates = definitions
+                .iter()
+                .find_map(|d| annotation_ids.get(d).copied());
+            // A note draws no semantic annotation; what it is about is the
+            // shape aspect it is associated with.
+            let mut items: Vec<ogeom_topo::TShapeId> = Vec::new();
+            if annotates.is_none() {
+                for d in &definitions {
+                    for &node in aspect_items.get(d).into_iter().flatten() {
+                        if !items.contains(&node) {
+                            items.push(node);
+                        }
+                    }
+                }
+            }
             out.push(ogeom_doc::Callout {
                 name,
                 plane: plane_of.get(&id).copied(),
                 polylines,
-                annotates: draws
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find_map(|d| annotation_ids.get(&d).copied()),
+                annotates,
+                items,
+                text,
             });
         }
         (out, index_of)
+    }
+
+    /// The words an annotation text occurrence carries: its text literal's.
+    fn annotation_text(&mut self, occurrence: u64) -> Option<String> {
+        let literal = {
+            let instance = self.instance(occurrence).ok()?;
+            let args = instance.part("ANNOTATION_TEXT_OCCURRENCE")?;
+            args.get(2).and_then(Arg::reference)?
+        };
+        let args = self.args(literal, "TEXT_LITERAL").ok()?;
+        match args.get(1) {
+            Some(Arg::Str(words)) => Some(words.clone()),
+            _ => None,
+        }
     }
 
     /// The polylines one annotation occurrence draws.

@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`Callout::text` and `Callout::items` (#228, #227).** A callout carries
+  the words it says as text of its own, written to STEP as a
+  `TEXT_LITERAL` in an annotation text occurrence beside its strokes and
+  read back from it, so a note survives a round trip. A note that draws no
+  semantic annotation names the faces or edges it is about (a bore's
+  thread callout), written as a shape aspect the callout is associated
+  with and read back from it. Both travel through the native format.
+  `Callout` gains two public fields, so building one with a struct literal
+  needs them.
+
 ### Fixed
 
 - **A doubly curved face meshes within its chord across its cells
@@ -36,6 +48,12 @@ bump may break the API and a patch bump may not.
   its quantum, and a coplanar distance asked below it is raised even where
   its facets lie too flat to show the scatter.
 
+- **PMI is anchored to the part it is about (#227).** `write_step` hung
+  every shape aspect, datum and datum target from the first part's
+  product definition, whatever part owned its faces: a dimension or note
+  on a second part's bore named the first part. Each now hangs from the
+  part whose topology it names.
+
 - **`split_face` splits along a closed curve across a periodic face's seam
   (#208).** A closed path is walked from where it first meets the face's
   boundary; one that crosses a seam meets the seam's two sides there a
@@ -53,8 +71,6 @@ bump may break the API and a patch bump may not.
   was marched into a spline. A cone's image is now read in closed form past
   its window, so the section edge is the conic and projects onto its plane
   as `ProjectedCurve::Hyperbola` or `Parabola`.
-
-### Fixed
 
 - **A cone bounded at its apex meshes with no flat triangles (#210).** Since
   0.10.0 a cone's rows near its apex hold points on the same ruling, and

@@ -1196,6 +1196,23 @@ pub fn write_document(
             None => w(&mut t, "-"),
         }
         emit(&mut out, &t);
+        // What a note says and what it is about, each a record of its own
+        // after the callout's, so a file with neither reads as it did.
+        if let Some(words) = &callout.text {
+            let mut t = Tokens::default();
+            w(&mut t, "pmi-callout-text");
+            text(&mut t, words);
+            emit(&mut out, &t);
+        }
+        if !callout.items.is_empty() {
+            let mut t = Tokens::default();
+            w(&mut t, "pmi-callout-items");
+            u(&mut t, callout.items.len() as u64);
+            for node in &callout.items {
+                key(&mut t, renumbered.node(*node)?);
+            }
+            emit(&mut out, &t);
+        }
     }
     for view in document.views() {
         let mut t = Tokens::default();
@@ -1580,7 +1597,27 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                     plane,
                     polylines,
                     annotates,
+                    items: Vec::new(),
+                    text: None,
                 });
+            }
+            "pmi-callout-text" => {
+                let words = read_text(&mut cursor)?;
+                let Some(callout) = document.pmi_mut().callouts.last_mut() else {
+                    ogeom_bail!(Construction, "a callout's text follows no callout");
+                };
+                callout.text = Some(words);
+            }
+            "pmi-callout-items" => {
+                let mut items = Vec::new();
+                for _ in 0..cursor.count()? {
+                    let node: TShapeId = cursor.handle()?;
+                    items.push(bind_node(&document, node)?);
+                }
+                let Some(callout) = document.pmi_mut().callouts.last_mut() else {
+                    ogeom_bail!(Construction, "a callout's items follow no callout");
+                };
+                callout.items = items;
             }
             "doc-view" => {
                 let name = read_text(&mut cursor)?;

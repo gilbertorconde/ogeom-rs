@@ -91,6 +91,7 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     let mut pd_of: FastMap<ProductId, u64> = FastMap::default();
     let mut sr_of: FastMap<ProductId, u64> = FastMap::default();
     let mut anchor_pds: Option<(u64, u64)> = None;
+    let mut owner: FastMap<ogeom_topo::TShapeId, (u64, u64)> = FastMap::default();
     for (id, product) in document.products() {
         let name = escape(&product.name);
         let p = writer.entity(format!("PRODUCT('{name}','{name}','',(#{pctx}))"));
@@ -101,6 +102,7 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         pd_of.insert(id, pd);
 
         let world = writer.frame(&Frame::WORLD);
+        let written_before = (writer.written_nodes.len(), writer.written_edges.len());
         let sr = match &product.kind {
             ProductKind::Part { shape } => {
                 let bodies = crate::bodies::bodies_of(writer.model, shape, "STEP")?;
@@ -151,8 +153,19 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         sr_of.insert(id, sr);
         let pds = writer.entity(format!("PRODUCT_DEFINITION_SHAPE('','',#{pd})"));
         writer.entity(format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{sr})"));
-        if anchor_pds.is_none() && matches!(product.kind, ProductKind::Part { .. }) {
-            anchor_pds = Some((pds, sr));
+        if matches!(product.kind, ProductKind::Part { .. }) {
+            if anchor_pds.is_none() {
+                anchor_pds = Some((pds, sr));
+            }
+            // Each piece of this part's topology is the part's to anchor
+            // PMI on, the first part that wrote it keeping it.
+            let (nodes, edges) = written_before;
+            for &(node, _) in writer.written_nodes[nodes..]
+                .iter()
+                .chain(&writer.written_edges[edges..])
+            {
+                owner.entry(node).or_insert((pds, sr));
+            }
         }
     }
 
@@ -256,7 +269,7 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
                 "PMI needs at least one part to anchor its aspects to"
             );
         };
-        writer.pmi(pmi, document.views(), pds, absr, lu, au, gctx)?;
+        writer.pmi(pmi, document.views(), (pds, absr), &owner, lu, au, gctx)?;
     }
 
     let mut out = String::new();
@@ -1076,8 +1089,8 @@ impl Writer<'_> {
         &mut self,
         pmi: &ogeom_doc::Pmi,
         views: &[ogeom_doc::View],
-        pds: u64,
-        absr: u64,
+        anchor: (u64, u64),
+        owner: &FastMap<ogeom_topo::TShapeId, (u64, u64)>,
         lu: u64,
         au: u64,
         gctx: u64,
@@ -1088,7 +1101,17 @@ impl Writer<'_> {
             .chain(&self.written_edges)
             .copied()
             .collect();
+        // The part whose topology the items are: the product definition an
+        // aspect of them hangs from, and the representation holding them.
+        let part_of = |items: &[ogeom_topo::TShapeId]| -> (u64, u64) {
+            items
+                .iter()
+                .find_map(|item| owner.get(item))
+                .copied()
+                .unwrap_or(anchor)
+        };
         let aspect_for = |w: &mut Self, items: &[ogeom_topo::TShapeId]| -> u64 {
+            let (pds, absr) = part_of(items);
             let aspect = w.entity(format!("SHAPE_ASPECT('','',#{pds},.T.)"));
             for item in items {
                 if let Some(&step_id) = by_node.get(item) {
@@ -1106,6 +1129,7 @@ impl Writer<'_> {
         let mut datum_ids: FastMap<&str, u64> = FastMap::default();
         for datum in &pmi.datums {
             let label = escape(&datum.label);
+            let (pds, absr) = part_of(&datum.items);
             let id = self.entity(format!("DATUM('','',#{pds},.F.,'{label}')"));
             for item in &datum.items {
                 if let Some(&step_id) = by_node.get(item) {
@@ -1190,6 +1214,7 @@ impl Writer<'_> {
                         return None;
                     }
                     let list = parts.join(",");
+                    let (pds, _) = part_of(&tolerance.items);
                     let compartment = self.entity(format!(
                         "DATUM_REFERENCE_COMPARTMENT('','',#{pds},.F.,({list}),())"
                     ));
@@ -1243,6 +1268,7 @@ impl Writer<'_> {
                 ogeom_doc::DatumTargetKind::Rectangle { .. } => "rectangle",
                 ogeom_doc::DatumTargetKind::Circle { .. } => "circle",
             };
+            let (pds, absr) = part_of(&target.items);
             let id = self.entity(format!(
                 "PLACED_DATUM_TARGET_FEATURE('','{description}',#{pds},.F.,'{identifier}')"
             ));
@@ -1292,6 +1318,7 @@ impl Writer<'_> {
         let mut callout_ids: Vec<u64> = Vec::new();
         if !pmi.callouts.is_empty() {
             let mut drawn: Vec<(u64, ogeom_doc::Annotated)> = Vec::new();
+            let mut noted: Vec<(u64, u64)> = Vec::new();
             let mut planes: Vec<String> = Vec::new();
             for callout in &pmi.callouts {
                 let name = escape(&callout.name);
@@ -1320,7 +1347,24 @@ impl Writer<'_> {
                 let occurrence = self.entity(format!(
                     "TESSELLATED_ANNOTATION_OCCURRENCE('{name}',(),#{set})"
                 ));
-                let id = self.entity(format!("DRAUGHTING_CALLOUT('{name}',(#{occurrence}))"));
+                let mut held = vec![format!("#{occurrence}")];
+                // The words as text: a literal on the callout's own plane,
+                // or the world's, in a text occurrence beside the strokes.
+                if let Some(words) = &callout.text {
+                    let words = escape(words);
+                    let placement = self.frame(&callout.plane.unwrap_or(Frame::WORLD));
+                    let font =
+                        self.entity("DRAUGHTING_PRE_DEFINED_TEXT_FONT('ISO 3098')".to_string());
+                    let literal = self.entity(format!(
+                        "TEXT_LITERAL('{name}','{words}',#{placement},'baseline left',.RIGHT.,#{font})"
+                    ));
+                    let text = self.entity(format!(
+                        "ANNOTATION_TEXT_OCCURRENCE('{name}',(),#{literal})"
+                    ));
+                    held.push(format!("#{text}"));
+                }
+                let held = held.join(",");
+                let id = self.entity(format!("DRAUGHTING_CALLOUT('{name}',({held}))"));
                 callout_ids.push(id);
                 if let Some(frame) = callout.plane {
                     let placement = self.frame(&frame);
@@ -1332,11 +1376,21 @@ impl Writer<'_> {
                 }
                 if let Some(annotates) = callout.annotates {
                     drawn.push((id, annotates));
+                } else if !callout.items.is_empty() {
+                    // A note about topology: an aspect of it, on its own part,
+                    // that the callout is the picture of.
+                    noted.push((id, aspect_for(self, &callout.items)));
                 }
             }
             let list: Vec<String> = planes.iter().map(|p| format!("#{p}")).collect();
             let list = list.join(",");
             let model = self.entity(format!("DRAUGHTING_MODEL('',({list}),#{gctx})"));
+            for (callout, aspect) in noted {
+                self.entity(format!(
+                    "DRAUGHTING_MODEL_ITEM_ASSOCIATION('PMI representation to presentation \
+                     link','',#{aspect},#{model},#{callout})"
+                ));
+            }
             for (callout, annotates) in drawn {
                 let Some(&annotation) = annotation_ids.get(&annotates) else {
                     continue;

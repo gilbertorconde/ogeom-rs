@@ -3041,6 +3041,8 @@ impl<'a> Reader<'a> {
             plane,
             polylines,
             annotates: None,
+            items: Vec::new(),
+            text: Some(text.clone()),
         };
         let dimension = measure.and_then(|(name, kind)| {
             let value = first_number(&text)?;

@@ -25,6 +25,8 @@ fn annotated_document() -> ogeom::doc::Document {
             plane: Some(Frame::WORLD),
             polylines: vec![vec![Point::new(0.0, y, 6.0), Point::new(20.0, y, 6.0)]],
             annotates: None,
+            items: Vec::new(),
+            text: None,
         });
     }
     let front = Frame::new(Point::new(10.0, -30.0, 2.5), Direction::Y, Direction::X, T).unwrap();
