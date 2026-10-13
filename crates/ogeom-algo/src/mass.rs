@@ -2803,10 +2803,11 @@ mod tests {
                 "tightening the chord lost volume: {} after {previous}",
                 props.mass
             );
+            // The mesh keeps within the chord of the sphere but need not be
+            // symmetric where triangles are added to keep it there: its
+            // centre is the sphere's to a hundredth of the chord.
             assert!(
-                props
-                    .centre
-                    .is_equal(Point::ORIGIN, Tolerances::with_scale(1e4).unwrap()),
+                props.centre.distance(Point::ORIGIN) < chord * 0.01,
                 "a sphere's centre is its centre, got {:?}",
                 props.centre
             );

@@ -25,6 +25,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Every triangle of a surface curved both ways keeps to the chord
+  (#212).** The grid holds its rows and columns to the chord, but a
+  surface curved both ways twists between them, and a triangle across a
+  cell could stand off it in its middle by twice the chord or more:
+  freeform_panel's wall stood 0.22 off at a chord of 0.1, a ball of
+  radius 5 meshed alone 0.17 off. A triangle whose middle, lifted onto
+  the surface, stands farther than the chord from its plane has its
+  middle put in, until none does: the wall keeps to 0.1 with 2% more
+  triangles, and to 0.0125 with 0.1% more. A surface straight one way,
+  drawn in strips along its rulings, is left as it was.
+
 - **A straight curve meets a spline surface where its patches' control
   hulls say it may (#239).** A ray against a spline face was tried against
   every cell of the face's seeding it passed within the surface's bow of,

@@ -3358,6 +3358,12 @@ fn triangulate_region_inner(
         // chart edges end at it.
         let mut lifted: ogeom_core::FastMap<[u64; 2], Option<Point>> =
             ogeom_core::FastMap::default();
+        let doubly_curved = !matches!(
+            surface.kind(),
+            ogeom_geom::SurfaceKind::Cylinder
+                | ogeom_geom::SurfaceKind::Cone
+                | ogeom_geom::SurfaceKind::Extrusion
+        );
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
             let before = cdt.num_vertices();
@@ -3419,7 +3425,24 @@ fn triangulate_region_inner(
                         sag > deflection.chord * 3.0
                     })
                 });
-                if sagged {
+                // A surface curved both ways twists between its rows and
+                // columns, and a triangle whose edges each keep to the chord
+                // can still stand off it in its middle: its middle, lifted, is
+                // held to the chord itself. A surface straight one way is
+                // drawn in strips along its rulings, which keep to it.
+                let middle_off = || {
+                    let lift =
+                        |p: (f64, f64)| GridSample::point_at(surface, scale.from(p.0, p.1), tol);
+                    let [a, b, c] = corners.map(lift);
+                    match (a, b, c, lift((centre.x, centre.y))) {
+                        (Some(a), Some(b), Some(c), Some(m)) => (b - a)
+                            .cross(c - a)
+                            .normalized(tol)
+                            .is_ok_and(|n| (m - a).dot(n).abs() > deflection.chord),
+                        _ => false,
+                    }
+                };
+                if sagged || (doubly_curved && middle_off()) {
                     worst.push(SpadePoint::new(centre.x, centre.y));
                 }
             }

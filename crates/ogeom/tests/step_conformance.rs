@@ -350,3 +350,52 @@ fn ruled_faces_mesh_in_strips_along_their_rulings() {
         );
     }
 }
+
+/// A wall curved both ways twists between the rows and columns its grid
+/// holds to the chord, and a triangle across a cell can stand off the wall
+/// in its middle though its corners and edges keep to it. Every triangle
+/// of freeform_panel's wall stands within the chord of the wall at its
+/// middle, lifted onto the surface.
+#[test]
+fn a_twisting_wall_meshes_within_its_chord_in_every_triangle() {
+    use ogeom::geom::Surface as _;
+    let text = std::fs::read_to_string(corpus("freeform_panel.step")).unwrap();
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let body = &import.solids[0];
+    let wall =
+        ogeom::topo::explore_unique(model, body, ogeom::topo::ShapeType::Face).unwrap()[0].clone();
+    let data = model.node(&wall).unwrap().data().as_face().unwrap();
+    let surface = model.geometry().surface(data.surface).unwrap();
+    for chord in [0.1, 0.0125] {
+        let deflection = Deflection {
+            chord,
+            ..Deflection::default()
+        };
+        let (faces, _) = ogeom::mesh::face_meshes_for(model, body, deflection, None, T).unwrap();
+        let mesh = faces
+            .iter()
+            .find(|(f, _)| f.node() == wall.node())
+            .unwrap()
+            .1
+            .as_ref()
+            .unwrap();
+        for t in &mesh.triangles {
+            let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+            let uv = t.map(|k| mesh.parameters[k as usize]);
+            let Ok(normal) = (b - a).cross(c - a).normalized(T) else {
+                continue;
+            };
+            let middle = (
+                (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
+                (uv[0].1 + uv[1].1 + uv[2].1) / 3.0,
+            );
+            let on = surface.point_at(middle.0, middle.1, T).unwrap();
+            let off = (on - a).dot(normal).abs();
+            assert!(
+                off <= chord * (1.0 + 1e-9),
+                "chord {chord}: a middle {off} off"
+            );
+        }
+    }
+}
