@@ -427,6 +427,25 @@ fn sew_faces(
         baked = split_at_vertices(model, &baked, reach, tol)?;
     }
     let faces = baked.as_slice();
+    // The widest any of the faces' own edges and vertices state, or the gap
+    // sewn across. Joining twins' ends never needs more than two such spans
+    // (two touching balls); a join that would need more is a chain of joins
+    // walking a vertex across the faces, and the slop it would record is
+    // the sew's invention, not the input's.
+    let mut stated = reach;
+    for face in faces {
+        for edge in explore_unique(model, face, ShapeType::Edge)? {
+            if let Some(e) = model.node(&edge).and_then(|n| n.data().as_edge()) {
+                stated = stated.max(e.tolerance.get());
+            }
+        }
+        for vertex in explore_unique(model, face, ShapeType::Vertex)? {
+            if let Some(v) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+                stated = stated.max(v.tolerance.get());
+            }
+        }
+    }
+    let joinable = 2.0 * stated + tol.confusion();
 
     // Vertices first, and this is not an optimisation; it is what makes the
     // rest work. Deciding that two edges are one edge leaves the *neighbouring*
@@ -547,7 +566,9 @@ fn sew_faces(
         }
         rounds += 1;
         for (gone, keep) in apart {
-            join_vertex(model, &mut vertices, gone, keep, tol)?;
+            if !join_vertex(model, &mut vertices, gone, keep, joinable, tol)? {
+                return Ok(None);
+            }
         }
     };
     // A settled face keeps its edges and vertices, so none of them may be
@@ -1209,13 +1230,15 @@ fn twin_ends_apart(
 
 /// Make `gone` one vertex with `keep`: every vertex mapped to either then
 /// maps to `keep`'s survivor, whose tolerance reaches `gone`'s span.
+/// False, and nothing joined, when that span would pass `joinable`.
 fn join_vertex(
     model: &mut Model,
     vertices: &mut FastMap<TShapeId, TShapeId>,
     gone: TShapeId,
     keep: TShapeId,
+    joinable: f64,
     tol: Tolerances,
-) -> OgeomResult<()> {
+) -> OgeomResult<bool> {
     let resolve = |vertices: &FastMap<TShapeId, TShapeId>, mut v: TShapeId| {
         while let Some(&next) = vertices.get(&v) {
             if next == v {
@@ -1227,7 +1250,7 @@ fn join_vertex(
     };
     let (gone, keep) = (resolve(vertices, gone), resolve(vertices, keep));
     if gone == keep {
-        return Ok(());
+        return Ok(true);
     }
     let (Some(g), Some(k)) = (
         model
@@ -1239,9 +1262,12 @@ fn join_vertex(
             .and_then(|n| n.data().as_vertex())
             .map(|d| d.point),
     ) else {
-        return Ok(());
+        return Ok(true);
     };
     let need = g.0.distance(k) + g.1 + tol.confusion();
+    if need > joinable {
+        return Ok(false);
+    }
     if let Some(node) = model.node_mut(&Shape::of(keep))
         && let NodeData::Vertex(v) = node.data_mut()
     {
@@ -1253,7 +1279,7 @@ fn join_vertex(
         }
     }
     vertices.insert(gone, keep);
-    Ok(())
+    Ok(true)
 }
 
 /// The dropped edge's parametric representations as the survivor carries
