@@ -8,12 +8,17 @@
 //! a parabola and a hyperbola a hyperbola (each a segment when its plane
 //! stands square), and a B-spline becomes the B-spline on its projected
 //! control points, weights unchanged, clamped first where its knots are
-//! not. Any other curve is fitted, and the fit's error is returned with
-//! it.
+//! not. An offset of a line is a line, and an offset of a circle in its
+//! own plane a circle, and each projects as one. Any other curve is
+//! fitted, and the fit's error is returned with it.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{BSpline2d, BSplineCurve, Curve, Curve3d as _, Transformable as _};
-use ogeom_math::{KnotVector, Plane, Point, Point2, Vector, Vector2, Weighted};
+use ogeom_geom::{
+    BSpline2d, BSplineCurve, CircleCurve, Curve, Curve3d as _, OffsetCurve, Transformable as _,
+};
+use ogeom_math::{
+    Circle, Frame, KnotVector, Plane, Point, Point2, Transform, Vector, Vector2, Weighted,
+};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Shape};
 
 /// An edge's orthogonal projection onto a plane, in the plane frame's `x`
@@ -232,7 +237,59 @@ fn project_curve(
             };
             project_curve(trimmed.basis(), on_basis, onto, tol)
         }
+        Curve::Offset(offset) => match exact_offset(offset, range, tol)? {
+            Some(exact) => project_curve(&exact, range, onto, tol),
+            None => fitted(curve, range, onto, tol),
+        },
         _ => fitted(curve, range, onto, tol),
+    }
+}
+
+/// An offset curve as the curve it is, at the same parameter, where that
+/// has a closed form: a line's offset is the line moved square to it, and
+/// a circle's, offset in its own plane, the circle about the same centre
+/// with the offset added to its radius. `None` for any other.
+fn exact_offset(
+    offset: &OffsetCurve,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Curve>> {
+    match offset.basis() {
+        Curve::Line(line) => {
+            // The offset direction is the same all along a line.
+            let at = f64::midpoint(range.0, range.1);
+            let shift = offset.point_at(at, tol)? - line.point_at(at, tol)?;
+            Ok(Some(
+                Curve::from(*line).transformed(&Transform::translation(shift), tol)?,
+            ))
+        }
+        Curve::Circle(circle) => {
+            let circle = circle.circle();
+            let frame = circle.frame();
+            let normal = frame.z().vector();
+            let reference = offset.reference().vector();
+            if normal.cross(reference).magnitude() > tol.angular() {
+                return Ok(None);
+            }
+            // Square to the tangent and the circle's normal: outward from
+            // the centre with the reference along the normal, inward
+            // against it.
+            let radius = circle.radius() + offset.distance() * normal.dot(reference).signum();
+            if radius.abs() <= tol.confusion() {
+                return Ok(None);
+            }
+            // A radius turned negative runs the circle half a turn round,
+            // at the same parameter.
+            let frame = if radius > 0.0 {
+                frame
+            } else {
+                Frame::new(frame.origin(), frame.z(), -frame.x(), tol)?
+            };
+            Ok(Some(
+                CircleCurve::new(Circle::new(frame, radius.abs(), tol)?).into(),
+            ))
+        }
+        _ => Ok(None),
     }
 }
 

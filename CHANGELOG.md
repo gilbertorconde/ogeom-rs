@@ -33,6 +33,15 @@ bump may break the API and a patch bump may not.
   period from the face's middle, off the face, and the face splits across
   either end of its range.
 
+- **An offset of a line or a circle projects onto a plane as a line, an
+  arc or an ellipse (#226).** `project_edge_onto_plane` fitted a B-spline
+  to an edge on an offset curve, the kind a thickening leaves on a
+  cylinder's wall, where a sketch wants the line or arc it is. An offset of
+  a line is now projected as the line moved square to it, and an offset
+  of a circle in its own plane as the circle with the offset added to its
+  radius, over the same angles: a circle onto a parallel plane, an ellipse
+  onto a tilted one, every point of the edge on it.
+
 - **A doubly curved face meshes within its chord across its cells
   (#212).** A grid cell whose row and column each sag the chord stood off
   up to twice it across its diagonal: a ball of radius 10 at a chord of

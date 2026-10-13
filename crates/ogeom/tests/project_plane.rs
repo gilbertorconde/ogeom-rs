@@ -568,3 +568,118 @@ fn a_cone_cut_by_a_plane_keeps_its_exact_conic() {
         );
     }
 }
+
+/// Whether every point of `curve` over `range`, projected onto `onto`,
+/// lies on `projected` within 1e-9.
+fn lies_on(curve: &Curve, range: (f64, f64), onto: &Plane, projected: &ProjectedCurve) -> bool {
+    let frame = onto.frame();
+    (0..=64).all(|k| {
+        let t = range.0 + (range.1 - range.0) * f64::from(k) / 64.0;
+        let d = curve.point_at(t, T).unwrap() - frame.origin();
+        let p = Point2::new(d.dot(frame.x().vector()), d.dot(frame.y().vector()));
+        match projected {
+            ProjectedCurve::Line { start, end } => {
+                let (along, across) = (*end - *start, p - *start);
+                let f = across.dot(along) / along.dot(along);
+                (-1e-12..=1.0 + 1e-12).contains(&f) && (*start + along * f).distance(p) < 1e-9
+            }
+            ProjectedCurve::Circle {
+                centre,
+                radius,
+                range,
+            } => {
+                let turn = (p.y - centre.y).atan2(p.x - centre.x);
+                let turn = range.0 + (turn - range.0).rem_euclid(core::f64::consts::TAU);
+                (p.distance(*centre) - radius).abs() < 1e-9 && turn <= range.1 + 1e-9
+            }
+            ProjectedCurve::Ellipse {
+                centre,
+                major,
+                ratio,
+                ..
+            } => {
+                let minor = Vector2::new(-major.y, major.x) * *ratio;
+                let r = p - *centre;
+                let (a, b) = (
+                    r.dot(*major) / major.dot(*major),
+                    r.dot(minor) / minor.dot(minor),
+                );
+                (a * a + b * b - 1.0).abs() < 1e-9
+            }
+            _ => false,
+        }
+    })
+}
+
+/// A wall's rim left by a thickening: a circle of radius 10 offset by 2
+/// in its own plane. Onto a parallel plane it projects as the arc of
+/// radius 12 outward, 8 inward, over the same angles; onto a tilted plane
+/// as an ellipse. Every point of the edge lies on what it projects to.
+#[test]
+fn an_offset_circle_projects_to_a_circle_or_an_ellipse() {
+    let circle = ogeom::math::Circle::new(Frame::WORLD, 10.0, T).unwrap();
+    let range = (0.3, 2.0);
+    let tilted = plane(Point::ORIGIN, Vector::new(0.0, 0.6, 0.8), Vector::X);
+    for (reference, radius) in [(Direction::Z, 12.0), (-Direction::Z, 8.0)] {
+        let offset = ogeom::geom::OffsetCurve::new(
+            Curve::Circle(ogeom::geom::CircleCurve::new(circle)),
+            2.0,
+            reference,
+        )
+        .unwrap();
+        let curve = Curve::Offset(Box::new(offset));
+        let mut model = Model::new();
+        let edge = make_edge(&mut model, curve.clone(), range, T)
+            .unwrap()
+            .shape;
+        let flat = project_edge_onto_plane(&model, &edge, &Plane::XY, T).unwrap();
+        match &flat {
+            ProjectedCurve::Circle {
+                centre,
+                radius: r,
+                range: angles,
+            } => {
+                assert!(close(*centre, (0.0, 0.0)), "{centre:?}");
+                assert!((r - radius).abs() < 1e-12, "{r} against {radius}");
+                assert!((angles.0 - range.0).abs() < 1e-12, "{angles:?}");
+                assert!((angles.1 - range.1).abs() < 1e-12, "{angles:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(lies_on(&curve, range, &Plane::XY, &flat));
+        let leaning = project_edge_onto_plane(&model, &edge, &tilted, T).unwrap();
+        assert!(
+            matches!(leaning, ProjectedCurve::Ellipse { .. }),
+            "{leaning:?}"
+        );
+        assert!(lies_on(&curve, range, &tilted, &leaning));
+    }
+}
+
+/// A line offset by 2 is the line moved 2 square to it, and projects as
+/// a segment.
+#[test]
+fn an_offset_line_projects_to_a_segment() {
+    let line = ogeom::geom::LineCurve::new(ogeom::math::Axis {
+        location: Point::new(1.0, 2.0, 3.0),
+        direction: Direction::new(Vector::new(1.0, 1.0, 0.0), T).unwrap(),
+    });
+    let offset = ogeom::geom::OffsetCurve::new(Curve::Line(line), 2.0, Direction::Z).unwrap();
+    let curve = Curve::Offset(Box::new(offset));
+    let mut model = Model::new();
+    let range = (-4.0, 6.0);
+    let edge = make_edge(&mut model, curve.clone(), range, T)
+        .unwrap()
+        .shape;
+    for onto in [
+        Plane::XY,
+        plane(Point::ORIGIN, Vector::new(0.0, 0.6, 0.8), Vector::X),
+    ] {
+        let projected = project_edge_onto_plane(&model, &edge, &onto, T).unwrap();
+        assert!(
+            matches!(projected, ProjectedCurve::Line { .. }),
+            "{projected:?}"
+        );
+        assert!(lies_on(&curve, range, &onto, &projected));
+    }
+}
