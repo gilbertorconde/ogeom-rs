@@ -3635,21 +3635,34 @@ fn add_interior_points(
     } else {
         CELL_ASPECT
     };
-    let rows = spread_to_aspect(
-        rows,
-        aspect,
-        low.x,
-        high.x,
-        |v| columns_at(v).0.len(),
-        |i| {
-            row_samples[i]
-                .iter()
-                .zip(&row_samples[i + 1])
-                .map(|(a, b)| a.distance(b))
-                .fold(0.0_f64, f64::max)
-        },
-        |a, b, v| span((a, v), (b, v)),
+    // A surface straight along `v` (a drum, a cone, an extrusion) has its
+    // columns held as constraints below instead: no triangle crosses one,
+    // so none bridges columns, and rows are wanted only where it sags.
+    let ruled = matches!(
+        surface.kind(),
+        ogeom_geom::SurfaceKind::Cylinder
+            | ogeom_geom::SurfaceKind::Cone
+            | ogeom_geom::SurfaceKind::Extrusion
     );
+    let rows = if ruled {
+        rows
+    } else {
+        spread_to_aspect(
+            rows,
+            aspect,
+            low.x,
+            high.x,
+            |v| columns_at(v).0.len(),
+            |i| {
+                row_samples[i]
+                    .iter()
+                    .zip(&row_samples[i + 1])
+                    .map(|(a, b)| a.distance(b))
+                    .fold(0.0_f64, f64::max)
+            },
+            |a, b, v| span((a, v), (b, v)),
+        )
+    };
 
     if *MESH_DEBUG_REFINE {
         let v = f64::midpoint(low.y, high.y);
@@ -3691,14 +3704,8 @@ fn add_interior_points(
                 .collect::<Vec<_>>()
         })
         .collect();
-    // A surface straight one way (a drum, a cone, an extrusion) sags only
-    // across its rulings, which the rows and columns already hold.
-    let ruled = matches!(
-        surface.kind(),
-        ogeom_geom::SurfaceKind::Cylinder
-            | ogeom_geom::SurfaceKind::Cone
-            | ogeom_geom::SurfaceKind::Extrusion
-    );
+    // A surface straight one way sags only across its rulings, which the
+    // columns already hold.
     let sags = !ruled
         && cells.len() >= MIN_CENTRED_CELLS
         && cells.iter().any(|&(u0, u1, v0, v1)| {
@@ -3887,6 +3894,126 @@ fn add_interior_points(
             }
             cdt.insert(mitigate_underflow(point))
                 .map_err(|e| ogeom_core::ogeom_err!(NotDone, "interior insertion failed: {e}"))?;
+        }
+    }
+    if ruled {
+        // Each column, where it runs inside the face, a constraint from a
+        // keep-out's width inside the boundary to as far inside the other
+        // end: the triangles between two columns stay between them.
+        let (bottom, _) = columns_at(low.y);
+        let (top, _) = columns_at(high.y);
+        let columns = if bottom.len() >= top.len() {
+            bottom
+        } else {
+            top
+        };
+        // The points already in, by chart position across: a column runs
+        // through the grid's points on it, a rounding off each, and is
+        // held through each of them rather than past it, which would leave
+        // the point on the column's far side a hair from its line.
+        let mut across: Vec<(f64, f64, FixedVertexHandle)> = cdt
+            .vertices()
+            .map(|v| (v.position().x, v.position().y, v.fix()))
+            .collect();
+        across.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (k, &u) in columns
+            .iter()
+            .enumerate()
+            .take(columns.len().saturating_sub(1))
+            .skip(1)
+        {
+            let du = (u - columns[k - 1]).abs().min((columns[k + 1] - u).abs());
+            let margin = KEEP_OUT * du * scale.su / scale.sv;
+            // Where the column crosses the boundary, and the boundary's
+            // vertex there when the column runs through one: a column drawn
+            // a rounding off a vertex still ends on it.
+            let snap = du * 1e-6;
+            let mut crossings: Vec<(f64, Option<Point2>)> = Vec::new();
+            for ring in rings {
+                for (i, &p) in ring.iter().enumerate() {
+                    let q = ring[(i + 1) % ring.len()];
+                    if (p.x < u) != (q.x < u) {
+                        let y = p.y + (u - p.x) / (q.x - p.x) * (q.y - p.y);
+                        let on = [p, q].into_iter().find(|w| (w.x - u).abs() <= snap);
+                        crossings.push((on.map_or(y, |w| w.y), on));
+                    }
+                }
+            }
+            crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for pair in crossings.windows(2) {
+                let (low_end, high_end) = (pair[0], pair[1]);
+                if !region.holds(Point2::new(u, f64::midpoint(low_end.0, high_end.0))) {
+                    continue;
+                }
+                // A stretch short against the columns' spacing is one Delaunay
+                // draws between neighbouring columns anyway.
+                if (high_end.0 - low_end.0) * scale.sv <= CELL_ASPECT * du * scale.su {
+                    continue;
+                }
+                let pair = [low_end.0, high_end.0];
+                let mut ends = Vec::with_capacity(2);
+                // From the boundary's own vertex where the column meets one,
+                // else from a keep-out's width inside it.
+                for ((at, on), inward) in [(low_end, margin), (high_end, -margin)] {
+                    let vertex = on.unwrap_or(Point2::new(u, at));
+                    if let Some(h) =
+                        cdt.locate_vertex(mitigate_underflow(scale.to(vertex.x, vertex.y)))
+                    {
+                        ends.push(h.fix());
+                        continue;
+                    }
+                    let v = at + inward;
+                    if (v - f64::midpoint(pair[0], pair[1])).abs()
+                        >= (pair[1] - pair[0]).abs() * 0.5
+                    {
+                        break;
+                    }
+                    // A boundary whose pcurves reach past the surface's
+                    // domain leaves no point there to end on.
+                    if surface.point_at(u, v, tol).is_err() {
+                        break;
+                    }
+                    let point = mitigate_underflow(scale.to(u, v));
+                    let handle = match cdt.locate_vertex(point) {
+                        Some(h) => h.fix(),
+                        None if !lands_on_the_mesh(cdt, point, reach, (1.0, 1.0)) => {
+                            cdt.insert(point).map_err(|e| {
+                                ogeom_core::ogeom_err!(NotDone, "column insertion failed: {e}")
+                            })?
+                        }
+                        None => break,
+                    };
+                    ends.push(handle);
+                }
+                let [a, b] = ends[..] else {
+                    continue;
+                };
+                if a == b {
+                    continue;
+                }
+                let (ya, yb) = (cdt.vertex(a).position().y, cdt.vertex(b).position().y);
+                let (x, near) = (u * scale.su, 1e-3 * du * scale.su);
+                let first = across.partition_point(|p| p.0 < x - near);
+                let mut through: Vec<(f64, FixedVertexHandle)> = across[first..]
+                    .iter()
+                    .take_while(|p| p.0 <= x + near)
+                    .filter(|p| p.1 > ya.min(yb) && p.1 < ya.max(yb))
+                    .map(|p| (p.1, p.2))
+                    .collect();
+                through.sort_by(|p, q| p.0.total_cmp(&q.0));
+                if ya > yb {
+                    through.reverse();
+                }
+                let chain: Vec<FixedVertexHandle> = core::iter::once(a)
+                    .chain(through.into_iter().map(|p| p.1))
+                    .chain(core::iter::once(b))
+                    .collect();
+                for link in chain.windows(2) {
+                    if link[0] != link[1] && cdt.can_add_constraint(link[0], link[1]) {
+                        cdt.add_constraint(link[0], link[1]);
+                    }
+                }
+            }
         }
     }
     Ok(())

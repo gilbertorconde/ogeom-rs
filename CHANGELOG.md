@@ -34,6 +34,24 @@ bump may break the API and a patch bump may not.
   now answers to its own edge's doubt, and is kept where it is longer
   than that.
 
+- **A face curved one way only meshes in strips along its rulings
+  (#213).** A drum, a cone or an extrusion took rows across its rulings
+  to keep its cells near square, though the surface is straight along
+  them: at a chord of 0.0125 step-conformance's cone_point meshed to 5,021
+  triangles and sled_base to 60,802, against OpenCascade's 1,563 and
+  33,822. Such a face now keeps only the rows its sag asks for, and each
+  of its columns is held as a constraint from boundary to boundary
+  through the grid's points on it, so no triangle bridges two columns:
+  cone_point meshes to 914 triangles and sled_base to 29,434.
+- **A mesh drawn in strips reads back on its rounds.** A fillet meshed as
+  long strips between its rulings, one strip per facet, comes back as its
+  cylinder: a run of facets between two planes is joined across its long
+  borders, not across the short ones its ends share with a corner left
+  faceted. A curved region in pieces, or a drum one of whose facets spans
+  many times the turn of the others, is no surface: on a coarse mesh a flat
+  face and the first facets of the fillets either side of it lie on one
+  wide circle, and were read back as one cylinder in some triangle orders.
+
 - **A face of a periodic surface splits along a curve entering it across
   the low end of its range (#229).** A cylinder whose side is two half
   faces refused a rectangle facing the junction where one half's angle

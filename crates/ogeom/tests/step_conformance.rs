@@ -328,3 +328,25 @@ fn shop_parts_mesh_closed_and_measure_what_they_did() {
         }
     }
 }
+
+/// A face curved one way only (a drum, a cone) is meshed in strips along
+/// its rulings, held apart by its columns, with no rows it does not need:
+/// at the finest chord a cone and a shop part full of drums mesh in at
+/// most a quarter more triangles than OpenCascade draws for them.
+#[test]
+fn ruled_faces_mesh_in_strips_along_their_rulings() {
+    let chord = CHORDS[0];
+    for (name, at_most) in [("generated/cone_point", 1_954), ("sled_base", 42_278)] {
+        let text = std::fs::read_to_string(corpus(&format!("{name}.step"))).unwrap();
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let parts = bodies(&import);
+        let triangles: usize = meshed(import.document.model(), &parts, chord, name)
+            .iter()
+            .map(|m| m.triangles.len())
+            .sum();
+        assert!(
+            triangles <= at_most,
+            "{name} at {chord}: {triangles} triangles, more than {at_most}"
+        );
+    }
+}

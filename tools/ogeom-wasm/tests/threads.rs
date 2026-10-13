@@ -19,7 +19,7 @@ use ogeom::mesh::{Deflection, triangulate};
 use ogeom::topo::{Model, ShapeType, Triangulation, explore_unique};
 
 /// The triangles the filleted box meshes to natively on one thread.
-const TRIANGLES: usize = 516;
+const TRIANGLES: usize = 372;
 
 fn filleted_box_mesh() -> Triangulation {
     let tol = Tolerances::default();

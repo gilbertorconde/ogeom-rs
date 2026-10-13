@@ -170,11 +170,13 @@ fn drill(start: Point, axis: Vector, radius: f64, length: f64, share: f64) {
         "{a} + {b} against {whole}"
     );
     // A mesh stands off the part's curved faces by up to its chord, so
-    // what it measures inside the drill misses by an amount proportional
-    // to the chord: extrapolated from two chords to none. Sampled half as
-    // finely each way, either measure moves by under 6e-5 of itself; the
-    // coarse one alone misses the common by up to 3.5e-4, the extrapolated
-    // one by under 5e-6.
+    // what it measures inside the drill misses by an amount about
+    // proportional to the chord: extrapolated from two chords to none.
+    // Sampled half as finely each way, either measure moves by under 6e-5
+    // of itself; the coarse one alone misses the common by up to 3.5e-4,
+    // the extrapolated one by under 3e-5: a drum meshed in long strips
+    // between its columns misses by less than the chord says at both
+    // chords, and not quite in proportion.
     let [coarse, fine] = meshes
         .map(|mesh| mesh_inside_cylinder(&mesh, start, (x, y, z), radius, length, (300, 1200)));
     let inside = fine + (fine - coarse) * FINE / (COARSE - FINE);
@@ -222,7 +224,7 @@ fn an_oblique_drill_through_the_slot_corners_cuts() {
         ),
         59.733_482_940_789_8,
         594.045_655_070_655_9,
-        2e-5,
+        4e-5,
     );
 }
 
