@@ -25,6 +25,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A straight curve meets a spline surface where its patches' control
+  hulls say it may (#239).** A ray against a spline face was tried against
+  every cell of the face's seeding it passed within the surface's bow of,
+  with Newton from every segment beside it: a solid of a user's assembly
+  whose rays ran along two thread faces of 49,152 cells took 47 s to check
+  on one thread. The surface is cut into its Bézier patches once, each
+  patch lies in its control points' box, and a ray is asked only of the
+  patches, halved down to small ones, whose boxes it meets within the gap.
+  Nothing a ray crosses is passed over: the hull holds every point of its
+  patch. The solid checks in 2.4 s.
+
 - **A ray meets a spline face wherever it crosses it (#246).** A cell of a
   spline surface's seeding that a ray passes within the surface's bow of
   was asked of only the ray's segment passing nearest the cell's middle,

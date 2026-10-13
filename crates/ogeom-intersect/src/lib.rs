@@ -41,6 +41,7 @@
 //! missing.
 
 pub mod approx;
+mod bezier_clip;
 pub mod contact;
 pub mod curve_surface;
 pub mod curves;

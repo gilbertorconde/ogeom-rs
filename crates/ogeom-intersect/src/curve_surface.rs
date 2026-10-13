@@ -106,6 +106,14 @@ pub fn intersect_curve_surface(
     options: CurveSurfaceOptions,
     tol: Tolerances,
 ) -> OgeomResult<CurveSurfaceIntersection> {
+    if let (Curve::Line(_), SurfaceGeometry::BSpline(spline)) = (curve, surface)
+        && options.samples >= 2
+        && options.gap.is_finite()
+        && options.gap > 0.0
+        && let Some(patches) = crate::bezier_clip::Patches::of(spline, tol)?
+    {
+        return clipped(curve, surface, &patches, options, tol);
+    }
     intersect_with(curve, surface, options, tol, || {
         let cells = sample_by(surface, seeding(surface, options.grid), tol);
         let tree = CellTree::over(&cells, options.gap);
@@ -130,6 +138,8 @@ pub struct PreparedSurface {
     options: CurveSurfaceOptions,
     tol: Tolerances,
     cells: std::sync::OnceLock<(Vec<Cell>, CellTree)>,
+    /// A spline's Bézier patches, for straight curves.
+    patches: std::sync::OnceLock<Option<crate::bezier_clip::Patches>>,
 }
 
 impl PreparedSurface {
@@ -145,6 +155,7 @@ impl PreparedSurface {
             options,
             tol,
             cells: std::sync::OnceLock::new(),
+            patches: std::sync::OnceLock::new(),
         }
     }
 
@@ -161,6 +172,18 @@ impl PreparedSurface {
     /// As [`intersect_curve_surface`].
     pub fn intersect(&self, curve: &Curve) -> OgeomResult<CurveSurfaceIntersection> {
         let (surface, options, tol) = (&self.surface, self.options, self.tol);
+        // A straight curve meets a spline where its patches' control hulls
+        // say it may, and nowhere else.
+        if let (Curve::Line(_), SurfaceGeometry::BSpline(spline)) = (curve, surface)
+            && options.samples >= 2
+            && options.gap.is_finite()
+            && options.gap > 0.0
+            && let Some(patches) = self
+                .patches
+                .get_or_init(|| crate::bezier_clip::Patches::of(spline, tol).ok().flatten())
+        {
+            return clipped(curve, surface, patches, options, tol);
+        }
         intersect_with(curve, surface, options, tol, || {
             let (cells, tree) = self.cells.get_or_init(|| {
                 let cells = sample_by(surface, seeding(surface, options.grid), tol);
@@ -606,6 +629,40 @@ fn general(
                 crossings.push(found);
             }
         }
+    }
+    crossings.sort_by(|a, b| {
+        a.on_curve
+            .partial_cmp(&b.on_curve)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    Ok(gathered(curve, surface, crossings, options, tol))
+}
+
+/// Where a straight curve pierces a spline surface, seeded where the
+/// surface's patches' control hulls come within the gap of it.
+fn clipped(
+    curve: &Curve,
+    surface: &SurfaceGeometry,
+    patches: &crate::bezier_clip::Patches,
+    options: CurveSurfaceOptions,
+    tol: Tolerances,
+) -> OgeomResult<CurveSurfaceIntersection> {
+    let (lo, hi) = curve.domain();
+    let (a, b) = (curve.point_at(lo, tol)?, curve.point_at(hi, tol)?);
+    let reach = tol.confusion() * 100.0;
+    let mut crossings: Vec<Piercing> = Vec::new();
+    for (f, uv) in patches.seeds(a, b, options.gap) {
+        let Some(found) = polish(curve, surface, (hi - lo).mul_add(f, lo), uv, tol) else {
+            continue;
+        };
+        if found.gap > options.gap
+            || crossings
+                .iter()
+                .any(|c| c.point.distance(found.point) <= reach)
+        {
+            continue;
+        }
+        crossings.push(found);
     }
     crossings.sort_by(|a, b| {
         a.on_curve
