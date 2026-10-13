@@ -25,6 +25,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A solid with thread faces checks in seconds (#239).** A curve's
+  segments find the cells of a spline surface's seeding near them through
+  a tree of the cells' boxes, built once per surface, instead of every
+  cell being asked of every block of segments. And the finer trimming
+  rings a face is drawn with where a ray meets it near its trim are drawn
+  at a tenth of the chord only, no longer at a tenth of the angle as well:
+  a thread face of 404 edges, each winding a whole turn, was drawn in
+  819,000 points. The user's solid that took 6 s checks in 3.3 s.
+
 - **A ray along a large spline face is intersected in time to its cells
   near it (#239).** A curve meeting a spline surface was tried against
   every cell of the surface's seeding along every one of its segments,

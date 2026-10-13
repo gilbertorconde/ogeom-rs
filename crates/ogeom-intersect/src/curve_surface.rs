@@ -107,7 +107,12 @@ pub fn intersect_curve_surface(
     tol: Tolerances,
 ) -> OgeomResult<CurveSurfaceIntersection> {
     intersect_with(curve, surface, options, tol, || {
-        std::borrow::Cow::Owned(sample_by(surface, seeding(surface, options.grid), tol))
+        let cells = sample_by(surface, seeding(surface, options.grid), tol);
+        let tree = CellTree::over(&cells, options.gap);
+        (
+            std::borrow::Cow::Owned(cells),
+            std::borrow::Cow::Owned(tree),
+        )
     })
 }
 
@@ -124,7 +129,7 @@ pub struct PreparedSurface {
     surface: SurfaceGeometry,
     options: CurveSurfaceOptions,
     tol: Tolerances,
-    cells: std::sync::OnceLock<Vec<Cell>>,
+    cells: std::sync::OnceLock<(Vec<Cell>, CellTree)>,
 }
 
 impl PreparedSurface {
@@ -157,10 +162,14 @@ impl PreparedSurface {
     pub fn intersect(&self, curve: &Curve) -> OgeomResult<CurveSurfaceIntersection> {
         let (surface, options, tol) = (&self.surface, self.options, self.tol);
         intersect_with(curve, surface, options, tol, || {
-            std::borrow::Cow::Borrowed(
-                self.cells
-                    .get_or_init(|| sample_by(surface, seeding(surface, options.grid), tol))
-                    .as_slice(),
+            let (cells, tree) = self.cells.get_or_init(|| {
+                let cells = sample_by(surface, seeding(surface, options.grid), tol);
+                let tree = CellTree::over(&cells, options.gap);
+                (cells, tree)
+            });
+            (
+                std::borrow::Cow::Borrowed(cells.as_slice()),
+                std::borrow::Cow::Borrowed(tree),
             )
         })
     }
@@ -171,7 +180,7 @@ fn intersect_with<'c>(
     surface: &SurfaceGeometry,
     options: CurveSurfaceOptions,
     tol: Tolerances,
-    cells: impl FnOnce() -> std::borrow::Cow<'c, [Cell]>,
+    cells: impl FnOnce() -> (std::borrow::Cow<'c, [Cell]>, std::borrow::Cow<'c, CellTree>),
 ) -> OgeomResult<CurveSurfaceIntersection> {
     if options.samples < 2 || options.grid < 2 {
         ogeom_bail!(Construction, "seeding needs at least two steps each way");
@@ -216,7 +225,10 @@ fn intersect_with<'c>(
             options,
             tol,
         )),
-        _ => general(curve, surface, &cells(), options, tol),
+        _ => {
+            let (cells, tree) = cells();
+            general(curve, surface, &cells, &tree, options, tol)
+        }
     }
 }
 
@@ -517,6 +529,7 @@ fn general(
     curve: &Curve,
     surface: &SurfaceGeometry,
     cells: &[Cell],
+    tree: &CellTree,
     options: CurveSurfaceOptions,
     tol: Tolerances,
 ) -> OgeomResult<CurveSurfaceIntersection> {
@@ -531,13 +544,6 @@ fn general(
         }
     }
 
-    // The samples' box, which holds every segment's.
-    let first = points.first().map_or(Point::ORIGIN, |p| p.1);
-    let (mut low, mut high) = (first, first);
-    for &(_, p) in &points {
-        low = Point::new(low.x.min(p.x), low.y.min(p.y), low.z.min(p.z));
-        high = Point::new(high.x.max(p.x), high.y.max(p.y), high.z.max(p.z));
-    }
     let segments: Vec<((f64, Point), (f64, Point))> =
         points.windows(2).map(|pair| (pair[0], pair[1])).collect();
     // Which segments come near which cells, by cell index. A curve running
@@ -562,37 +568,16 @@ fn general(
             *best = (gap, i);
         }
     };
-    // Segments a block at a time: a long curve's box holds most of a large
-    // patch's cells, and each cell comes near a handful of segments.
-    const BLOCK: usize = 8;
-    let blocks: Vec<(Point, Point)> = segments
-        .chunks(BLOCK)
-        .map(|chunk| {
-            let mut low = chunk[0].0.1;
-            let mut high = low;
-            for &((_, p), (_, q)) in chunk {
-                for r in [p, q] {
-                    low = Point::new(low.x.min(r.x), low.y.min(r.y), low.z.min(r.z));
-                    high = Point::new(high.x.max(r.x), high.y.max(r.y), high.z.max(r.z));
-                }
-            }
-            (low, high)
-        })
-        .collect();
-    for (c, cell) in cells.iter().enumerate() {
-        let margin = options.gap.max(cell.sag);
-        // A cell that misses the samples' box at its own margin meets no
-        // segment.
-        if !segment_near_cell(low, high, cell, margin) {
-            continue;
-        }
-        for (g, &(block_low, block_high)) in blocks.iter().enumerate() {
-            if !segment_near_cell(block_low, block_high, cell, margin) {
-                continue;
-            }
-            for i in g * BLOCK..((g + 1) * BLOCK).min(segments.len()) {
-                meet(i, c, &mut pairs);
-            }
+    // Each segment asks the tree for the cells whose boxes, grown by their
+    // own margins, its box meets.
+    let mut found: Vec<usize> = Vec::new();
+    for (i, &((_, p0), (_, p1))) in segments.iter().enumerate() {
+        let low = Point::new(p0.x.min(p1.x), p0.y.min(p1.y), p0.z.min(p1.z));
+        let high = Point::new(p0.x.max(p1.x), p0.y.max(p1.y), p0.z.max(p1.z));
+        found.clear();
+        tree.visit(low, high, &mut found);
+        for &c in &found {
+            meet(i, c, &mut pairs);
         }
     }
     pairs.sort_unstable();
@@ -846,6 +831,121 @@ fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
         0.0
     };
     (a + ab * f).distance(p)
+}
+
+/// The cells binned in a tree of boxes, each cell's box grown by the
+/// farthest a curve may stand from it and still be seeded there: the gap,
+/// or the cell's bow where that is wider. Built once for a surface and
+/// asked once per segment of every curve.
+#[derive(Debug, Clone)]
+pub(crate) struct CellTree {
+    nodes: Vec<TreeNode>,
+    order: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct TreeNode {
+    low: Point,
+    high: Point,
+    /// A leaf's range of `order`, or an inner node's two children.
+    span: (usize, usize),
+    leaf: bool,
+}
+
+impl CellTree {
+    /// The most cells a leaf holds.
+    const LEAF: usize = 8;
+
+    pub(crate) fn over(cells: &[Cell], gap: f64) -> Self {
+        let boxes: Vec<(Point, Point)> = cells
+            .iter()
+            .map(|c| {
+                let m = gap.max(c.sag);
+                (
+                    Point::new(c.low.x - m, c.low.y - m, c.low.z - m),
+                    Point::new(c.high.x + m, c.high.y + m, c.high.z + m),
+                )
+            })
+            .collect();
+        let mut tree = Self {
+            nodes: Vec::new(),
+            order: (0..cells.len()).collect(),
+        };
+        if !cells.is_empty() {
+            tree.build(&boxes, 0, cells.len());
+        }
+        tree
+    }
+
+    fn build(&mut self, boxes: &[(Point, Point)], from: usize, to: usize) -> usize {
+        let (mut low, mut high) = boxes[self.order[from]];
+        for &i in &self.order[from..to] {
+            let (l, h) = boxes[i];
+            low = Point::new(low.x.min(l.x), low.y.min(l.y), low.z.min(l.z));
+            high = Point::new(high.x.max(h.x), high.y.max(h.y), high.z.max(h.z));
+        }
+        let at = self.nodes.len();
+        self.nodes.push(TreeNode {
+            low,
+            high,
+            span: (from, to),
+            leaf: true,
+        });
+        if to - from <= Self::LEAF {
+            return at;
+        }
+        // Split at the median along the box's longest side.
+        let extent = high - low;
+        let axis = if extent.x >= extent.y && extent.x >= extent.z {
+            0
+        } else if extent.y >= extent.z {
+            1
+        } else {
+            2
+        };
+        let key = |i: usize| {
+            let (l, h) = boxes[i];
+            match axis {
+                0 => l.x + h.x,
+                1 => l.y + h.y,
+                _ => l.z + h.z,
+            }
+        };
+        let middle = from + (to - from) / 2;
+        self.order[from..to]
+            .select_nth_unstable_by(middle - from, |&a, &b| key(a).total_cmp(&key(b)));
+        let left = self.build(boxes, from, middle);
+        let right = self.build(boxes, middle, to);
+        self.nodes[at].span = (left, right);
+        self.nodes[at].leaf = false;
+        at
+    }
+
+    /// The cells whose grown boxes meet the box `low..high`, added to `out`.
+    pub(crate) fn visit(&self, low: Point, high: Point, out: &mut Vec<usize>) {
+        if self.nodes.is_empty() {
+            return;
+        }
+        let mut stack = vec![0_usize];
+        while let Some(n) = stack.pop() {
+            let node = &self.nodes[n];
+            if node.low.x > high.x
+                || low.x > node.high.x
+                || node.low.y > high.y
+                || low.y > node.high.y
+                || node.low.z > high.z
+                || low.z > node.high.z
+            {
+                continue;
+            }
+            if node.leaf {
+                out.extend_from_slice(&self.order[node.span.0..node.span.1]);
+            } else {
+                stack.push(node.span.0);
+                stack.push(node.span.1);
+            }
+        }
+    }
 }
 
 /// Whether a segment's box comes near a cell's.
@@ -1213,7 +1313,8 @@ mod tests {
         let line = segment(from, from + w * 800.0);
         let found = intersect_curve_surface(&line, &torus, options, T).unwrap();
         let cells = sample_by(&torus, seeding(&torus, options.grid), T);
-        let general = general(&line, &torus, &cells, options, T).unwrap();
+        let tree = CellTree::over(&cells, options.gap);
+        let general = general(&line, &torus, &cells, &tree, options, T).unwrap();
         assert!(!general.crossings.is_empty());
         assert_eq!(found.crossings.len(), general.crossings.len());
         for (a, b) in found.crossings.iter().zip(&general.crossings) {

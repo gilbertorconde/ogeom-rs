@@ -614,12 +614,15 @@ impl PreparedFace {
         }
     }
 
-    /// The rings drawn at a tenth of `deflection`'s chord and angle. A ring
+    /// The rings drawn at a tenth of `deflection`'s chord. A ring
     /// is a polyline in the chart, straight between points its edges are
     /// drawn at in space, and where the chart stretches (beside a sphere's
     /// pole) a chord that keeps to its edge in space strays from it in the
-    /// chart by many times the band a hit near it is held to. Drawn when a
-    /// ray first meets the face near its trim.
+    /// chart by many times the band a hit near it is held to. The chord
+    /// holds the chart, and the angle is the coarse rings' own: a thread's
+    /// edges wind round every turn, and a tenth of the angle would draw
+    /// them in hundreds of thousands of points. Drawn when a ray first
+    /// meets the face near its trim.
     fn fine_rings(
         &self,
         model: &Model,
@@ -629,7 +632,6 @@ impl PreparedFace {
         let (surface, _) = self.placed(model)?;
         let fine = Deflection {
             chord: deflection.chord * 0.1,
-            angular: deflection.angular * 0.1,
             ..deflection
         };
         match self
