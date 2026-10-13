@@ -531,35 +531,86 @@ fn general(
         }
     }
 
-    // Every segment's box lies within the samples' box, so a cell that
-    // misses that box at its own margin meets no segment, and only the
-    // cells near the curve are carried into the segment loop, in order.
+    // The samples' box, which holds every segment's.
     let first = points.first().map_or(Point::ORIGIN, |p| p.1);
     let (mut low, mut high) = (first, first);
     for &(_, p) in &points {
         low = Point::new(low.x.min(p.x), low.y.min(p.y), low.z.min(p.z));
         high = Point::new(high.x.max(p.x), high.y.max(p.y), high.z.max(p.z));
     }
-    let near: Vec<&Cell> = cells
-        .iter()
-        .filter(|cell| segment_near_cell(low, high, cell, options.gap.max(cell.sag)))
+    let segments: Vec<((f64, Point), (f64, Point))> =
+        points.windows(2).map(|pair| (pair[0], pair[1])).collect();
+    // Which segments come near which cells, by cell index. A curve running
+    // along the surface within a cell's bow comes near that cell from every
+    // segment beside it, and Newton started from each lands where the one
+    // from the nearest does: a cell it does not cross is asked of the
+    // segment passing nearest its middle.
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut nearest: ogeom_core::FastMap<usize, (f64, usize)> = ogeom_core::FastMap::default();
+    let mut meet = |i: usize, c: usize, pairs: &mut Vec<(usize, usize)>| {
+        let cell = &cells[c];
+        let ((_, p0), (_, p1)) = segments[i];
+        if !segment_near_cell(p0, p1, cell, options.gap.max(cell.sag)) {
+            return;
+        }
+        pairs.push((i, c));
+        let [a, b, d] = cell.corners;
+        let middle = Point::from_vector((a.to_vector() + b.to_vector() + d.to_vector()) / 3.0);
+        let gap = distance_to_segment(middle, p0, p1);
+        let best = nearest.entry(c).or_insert((f64::INFINITY, i));
+        if gap < best.0 {
+            *best = (gap, i);
+        }
+    };
+    // Segments a block at a time: a long curve's box holds most of a large
+    // patch's cells, and each cell comes near a handful of segments.
+    const BLOCK: usize = 8;
+    let blocks: Vec<(Point, Point)> = segments
+        .chunks(BLOCK)
+        .map(|chunk| {
+            let mut low = chunk[0].0.1;
+            let mut high = low;
+            for &((_, p), (_, q)) in chunk {
+                for r in [p, q] {
+                    low = Point::new(low.x.min(r.x), low.y.min(r.y), low.z.min(r.z));
+                    high = Point::new(high.x.max(r.x), high.y.max(r.y), high.z.max(r.z));
+                }
+            }
+            (low, high)
+        })
         .collect();
-
+    for (c, cell) in cells.iter().enumerate() {
+        let margin = options.gap.max(cell.sag);
+        // A cell that misses the samples' box at its own margin meets no
+        // segment.
+        if !segment_near_cell(low, high, cell, margin) {
+            continue;
+        }
+        for (g, &(block_low, block_high)) in blocks.iter().enumerate() {
+            if !segment_near_cell(block_low, block_high, cell, margin) {
+                continue;
+            }
+            for i in g * BLOCK..((g + 1) * BLOCK).min(segments.len()) {
+                meet(i, c, &mut pairs);
+            }
+        }
+    }
+    pairs.sort_unstable();
     let mut crossings: Vec<Piercing> = Vec::new();
-    for pair in points.windows(2) {
-        let (t0, p0) = pair[0];
-        let (t1, p1) = pair[1];
-        for &cell in &near {
+    for (segment, k) in pairs {
+        let ((t0, p0), (t1, p1)) = segments[segment];
+        let cell = &cells[k];
+        {
             // Near the cell within the surface's own bow from it: a curve
             // crossing the surface in the gap between the flat cell and
             // the curved patch it stands for (a ray starting a few microns
             // from the wall it leaves by) meets no cell, and is seeded by
             // its nearness instead.
-            if !segment_near_cell(p0, p1, cell, options.gap.max(cell.sag)) {
-                continue;
-            }
             if segment_meets_triangle(p0, p1, cell.corners).is_none()
-                && !(cell.sag > options.gap && segment_near_cell(p0, p1, cell, cell.sag))
+                && !(cell.sag > options.gap
+                    && segment_near_cell(p0, p1, cell, cell.sag)
+                    && nearest.get(&k).is_some_and(|&(_, i)| i == segment)
+                    && segment_triangle_distance(p0, p1, cell.corners) <= cell.sag)
             {
                 continue;
             }
@@ -719,6 +770,82 @@ fn seed_in(cell: &Cell, p0: Point, p1: Point, t0: f64, t1: f64) -> (f64, (f64, f
             wa * pa.1 + wb * pb.1 + wc * pc.1,
         ),
     )
+}
+
+/// The distance between the segment `p..q` and the triangle `corners`:
+/// nothing where it pierces the triangle, else the least of its ends'
+/// distances to the triangle and its distances to the triangle's sides.
+fn segment_triangle_distance(p: Point, q: Point, corners: [Point; 3]) -> f64 {
+    if segment_meets_triangle(p, q, corners).is_some() {
+        return 0.0;
+    }
+    let [a, b, c] = corners;
+    let mut least = point_triangle_distance(p, corners).min(point_triangle_distance(q, corners));
+    for (x, y) in [(a, b), (b, c), (c, a)] {
+        least = least.min(segment_segment_distance(p, q, x, y));
+    }
+    least
+}
+
+/// The distance from `p` to the triangle `corners`.
+fn point_triangle_distance(p: Point, [a, b, c]: [Point; 3]) -> f64 {
+    let normal = (b - a).cross(c - a);
+    let area = normal.magnitude();
+    if area > 0.0 {
+        let n = normal / area;
+        let foot = p - n * (p - a).dot(n);
+        let inside = [(a, b), (b, c), (c, a)]
+            .iter()
+            .all(|&(x, y)| (y - x).cross(foot - x).dot(n) >= 0.0);
+        if inside {
+            return (p - a).dot(n).abs();
+        }
+    }
+    distance_to_segment(p, a, b)
+        .min(distance_to_segment(p, b, c))
+        .min(distance_to_segment(p, c, a))
+}
+
+/// The distance between the segments `p..q` and `r..s`.
+fn segment_segment_distance(p: Point, q: Point, r: Point, s: Point) -> f64 {
+    let (d1, d2, w) = (q - p, s - r, p - r);
+    let (a, e, f) = (d1.dot(d1), d2.dot(d2), d2.dot(w));
+    let (b, c) = (d1.dot(d2), d1.dot(w));
+    let denominator = a * e - b * b;
+    let mut t = if denominator > 1e-300 {
+        ((b * f - c * e) / denominator).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mut u = if e > 0.0 { (b * t + f) / e } else { 0.0 };
+    if u < 0.0 {
+        u = 0.0;
+        t = if a > 0.0 {
+            (-c / a).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    } else if u > 1.0 {
+        u = 1.0;
+        t = if a > 0.0 {
+            ((b - c) / a).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+    (p + d1 * t).distance(r + d2 * u)
+}
+
+/// The distance from `p` to the segment `a..b`.
+fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
+    let ab = b - a;
+    let length = ab.dot(ab);
+    let f = if length > 0.0 {
+        ((p - a).dot(ab) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a + ab * f).distance(p)
 }
 
 /// Whether a segment's box comes near a cell's.

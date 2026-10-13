@@ -25,6 +25,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A ray along a large spline face is intersected in time to its cells
+  near it (#239).** A curve meeting a spline surface was tried against
+  every cell of the surface's seeding along every one of its segments,
+  and a cell the curve passes within the surface's bow of was polished by
+  Newton from every segment beside it, twice each. A solid of a user's
+  assembly with a thread face of 404 edges, its check casting rays along
+  that face, took 177 s on one thread. Segments are now taken a block at
+  a time against each cell, and a cell the curve does not cross is asked
+  only of the segment passing nearest it and only where that segment
+  comes within the cell's bow of the cell itself: the same solid checks
+  in 6 s.
+
 - **A section crossing a tight edge near its vertex is kept beside a
   loose edge (#235).** A face's weld is its loosest edge's doubt, and a
   stretch of its boundary shorter than that was welded away as dust:
