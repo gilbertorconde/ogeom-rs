@@ -23,6 +23,20 @@ bump may break the API and a patch bump may not.
   `Callout` gains two public fields, so building one with a struct literal
   needs them.
 
+### Changed
+
+- **Drums and cones are drawn between their rims (#213).** A cylinder or
+  cone face carried a row of points through its middle that its straight
+  rulings never asked for, a point per column. It is now drawn between its
+  two ends, its rulings held as constraints. It keeps the row where one
+  end closes on an apex, where an edge states it strays from the face by
+  more than a hundredth of the chord (a fitted intersection in the file),
+  or where it runs smoothly into another curved face; a point on every
+  fourth column of it where it runs smoothly into a flat one. At 0.0125,
+  OpenCascade in brackets: door_handle_guide 2,956 to 2,004 triangles
+  (1,948), rail_guide 8,432 to 5,576 (6,484), sled_base 29,434 to 25,878
+  (33,822), every triangle within the chord.
+
 ### Fixed
 
 - **A bore running into a drafted wall, drawn in strips, comes back round

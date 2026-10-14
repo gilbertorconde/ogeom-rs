@@ -451,3 +451,59 @@ fn a_cone_to_its_apex_meshes_within_its_chord_in_every_triangle() {
     }
     assert_eq!(cones, 1);
 }
+
+/// A drum or a cone is drawn between its two ends, its rulings held as
+/// constraints, with no row through its middle that asks nothing of the
+/// chord. door_handle_guide and rail_guide, mostly drums and cones, mesh at
+/// 0.0125 in at most 1.25 times OpenCascade's triangles (1,948 and 6,484),
+/// and every triangle of their curved faces, at its middle and the middles
+/// of its sides, stands within the chord of its face.
+#[test]
+fn drums_and_cones_mesh_between_their_rims_within_their_chord() {
+    use ogeom::geom::Surface as _;
+    let chord = 0.0125;
+    for (part, ceiling) in [
+        ("door_handle_guide.step", 2_435),
+        ("rail_guide.step", 8_105),
+    ] {
+        let text = std::fs::read_to_string(corpus(part)).unwrap();
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let model = import.document.model();
+        let mut triangles = 0;
+        for body in import.solids.iter().chain(&import.shells) {
+            let deflection = Deflection {
+                chord,
+                ..Deflection::default()
+            };
+            let (faces, _) =
+                ogeom::mesh::face_meshes_for(model, body, deflection, None, T).unwrap();
+            for (face, mesh) in &faces {
+                let mesh = mesh.as_ref().unwrap();
+                triangles += mesh.triangles.len();
+                let data = model.node(face).unwrap().data().as_face().unwrap();
+                let surface = model.geometry().surface(data.surface).unwrap();
+                for t in &mesh.triangles {
+                    let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                    let uv = t.map(|k| mesh.parameters[k as usize]);
+                    let Ok(normal) = (b - a).cross(c - a).normalized(T) else {
+                        continue;
+                    };
+                    let third = 1.0 / 3.0;
+                    for w in [
+                        [third, third, third],
+                        [0.5, 0.5, 0.0],
+                        [0.0, 0.5, 0.5],
+                        [0.5, 0.0, 0.5],
+                    ] {
+                        let u = uv[0].0 * w[0] + uv[1].0 * w[1] + uv[2].0 * w[2];
+                        let v = uv[0].1 * w[0] + uv[1].1 * w[1] + uv[2].1 * w[2];
+                        let on = surface.point_at(u, v, T).unwrap();
+                        let off = (on - a).dot(normal).abs();
+                        assert!(off <= chord * (1.0 + 1e-9), "{part}: {off} off");
+                    }
+                }
+            }
+        }
+        assert!(triangles <= ceiling, "{part}: {triangles} triangles");
+    }
+}

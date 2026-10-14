@@ -31,5 +31,5 @@ fn a_cylinder_meshes() {
         .unwrap()
         .shape;
     let mesh = triangulate(&model, &solid, Deflection::default(), tol).unwrap();
-    assert_eq!(mesh.triangles.len(), 90);
+    assert_eq!(mesh.triangles.len(), 60);
 }

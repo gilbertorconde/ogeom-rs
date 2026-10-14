@@ -280,6 +280,89 @@ fn triangulate_reporting(
 /// if it is narrower than a few of the caller's.
 type Walked = (Trimming, Option<f64>);
 
+/// How a drum or a cone is drawn between its rims, by what its rims say
+/// of the face. Its two rims alone where every edge keeps to the face
+/// within a hundredth of the chord and meets its neighbour across a
+/// crease. A row of the face's own through its middle where an edge
+/// strays further, as a fitted intersection in the file does, or the face
+/// runs on smoothly into another curved one: drawn from its rims alone, a
+/// face shows the rims' slop instead of itself, and at a smooth seam no
+/// crease in the mesh says where it ends. Every fourth column of that row
+/// where it runs on smoothly into a flat face only.
+fn rim_holds(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Rows> {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    let mut rows = Rows::Ends;
+    for edge in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Edge))? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        if data.tolerance.get() > deflection.chord * RIM_SLOP {
+            return Ok(Rows::Full);
+        }
+        // The two faces' normals at the edge's middle, each read through
+        // its own pcurve: whether the face runs on smoothly across it, and
+        // into a flat face or a curved one.
+        let mut normals = Vec::new();
+        for repr in &data.representations {
+            if let ogeom_topo::EdgeRepr::PCurve {
+                curve,
+                surface,
+                range,
+                ..
+            } = repr
+                && let (Some(c), Some(s)) = (
+                    model.geometry().pcurve(*curve),
+                    model.geometry().surface(*surface),
+                )
+                && let Ok(uv) = c.point_at(f64::midpoint(range.0, range.1), tol)
+                && let Ok(n) = s.normal_at(uv.x, uv.y, tol)
+            {
+                normals.push((
+                    *surface,
+                    n,
+                    matches!(s.kind(), ogeom_geom::SurfaceKind::Plane),
+                ));
+            }
+        }
+        for (i, (sa, na, pa)) in normals.iter().enumerate() {
+            for (sb, nb, pb) in &normals[i + 1..] {
+                if sa != sb && na.dot(*nb).abs() > SMOOTH_RIM {
+                    if *pa || *pb {
+                        rows = Rows::Sparse;
+                    } else {
+                        return Ok(Rows::Full);
+                    }
+                }
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// How a drum or a cone is drawn between its rims.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Rows {
+    /// A row through its middle, a point on every column.
+    Full,
+    /// That row with a point on every fourth column.
+    Sparse,
+    /// Its two rims alone.
+    Ends,
+}
+
+/// The cosine of the turn under which two faces meet smoothly at an edge:
+/// thirty degrees, the converter's crease.
+const SMOOTH_RIM: f64 = 0.866_025_403_784_438_6;
+
+/// How far an edge may stray from its face, against the chord, and the
+/// face still be drawn from its rims alone: a hundredth.
+const RIM_SLOP: f64 = 1e-2;
+
 /// The deflection a face is drawn to in its own frame: the caller's chord
 /// is a distance where the face stands, and a placement that scales the
 /// face scales every chord drawn before it with it.
@@ -363,7 +446,13 @@ fn triangulate_reporting_from(
         ));
     }
     let phase = Instant::now();
-    let planar = triangulate_region(&uv, surface, deflection, tol)?;
+    let planar = triangulate_region(
+        &uv,
+        surface,
+        deflection,
+        rim_holds(model, face, deflection, tol)?,
+        tol,
+    )?;
     let region_ms = phase.elapsed().as_secs_f64() * 1e3;
     let phase = Instant::now();
 
@@ -1277,7 +1366,13 @@ fn face_chords(
     }
     for _ in 0..=REFINEMENTS {
         let rings = trimming_rings(model, face, id, surface, deflection, &finer, tol)?.rings;
-        let planar = triangulate_region(&rings, surface, deflection, tol)?;
+        let planar = triangulate_region(
+            &rings,
+            surface,
+            deflection,
+            rim_holds(model, face, deflection, tol)?,
+            tol,
+        )?;
         let boundary: usize = rings.iter().map(Vec::len).sum();
         if !planar.crossed && planar.triangles.len() + 4 >= boundary + 2 * rings.len() {
             break;
@@ -3090,6 +3185,7 @@ fn triangulate_region(
     rings: &[Vec<Point2>],
     surface: &SurfaceGeometry,
     deflection: Deflection,
+    rows_kept: Rows,
     tol: Tolerances,
 ) -> OgeomResult<PlanarMesh> {
     // A chart mangled enough (trims fitted through millimetres of boundary
@@ -3119,7 +3215,7 @@ fn triangulate_region(
         }
     }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        triangulate_region_inner(rings, surface, deflection, tol)
+        triangulate_region_inner(rings, surface, deflection, rows_kept, tol)
     })) {
         Ok(result) => result,
         Err(_) => ogeom_bail!(
@@ -3211,6 +3307,7 @@ fn triangulate_region_inner(
     rings: &[Vec<Point2>],
     surface: &SurfaceGeometry,
     deflection: Deflection,
+    rows_kept: Rows,
     tol: Tolerances,
 ) -> OgeomResult<PlanarMesh> {
     let mut cdt: ConstrainedDelaunayTriangulation<SpadePoint<f64>> =
@@ -3317,7 +3414,7 @@ fn triangulate_region_inner(
     // deflection rather than by a fixed grid.
     let boundary_ms = sub.elapsed().as_secs_f64() * 1e3;
     let sub = Instant::now();
-    add_interior_points(&mut cdt, rings, surface, deflection, scale, tol)?;
+    add_interior_points(&mut cdt, rings, surface, deflection, scale, rows_kept, tol)?;
     let interior_ms = sub.elapsed().as_secs_f64() * 1e3;
     let interior_points = cdt.num_vertices();
     let sub = Instant::now();
@@ -3588,6 +3685,7 @@ fn add_interior_points(
     surface: &SurfaceGeometry,
     deflection: Deflection,
     scale: ChartScale,
+    rows_kept: Rows,
     tol: Tolerances,
 ) -> OgeomResult<()> {
     // A plane is flat everywhere; sampling it would add points that buy nothing.
@@ -3673,7 +3771,25 @@ fn add_interior_points(
             | ogeom_geom::SurfaceKind::Cone
             | ogeom_geom::SurfaceKind::Extrusion
     );
-    let rows = if ruled {
+    // A drum's or cone's rows are its two ends where its rims allow it
+    // (see `rim_holds`), its rulings drawn between them as constraints
+    // below: a row inside adds a point per column and asks nothing of the
+    // chord. Not where one end closes on an apex: its
+    // columns all meet there, and Delaunay fans across the face from the
+    // apex's few chart points.
+    let apex = || {
+        let um = f64::midpoint(low.x, high.x);
+        let across = |v: f64| span((low.x, v), (um, v)) + span((um, v), (high.x, v));
+        let (bottom, top) = (across(low.y), across(high.y));
+        bottom.min(top) <= bottom.max(top) * 1e-3
+    };
+    let round = matches!(
+        surface.kind(),
+        ogeom_geom::SurfaceKind::Cylinder | ogeom_geom::SurfaceKind::Cone
+    );
+    let rows = if round && rows_kept == Rows::Ends && rows.len() > 2 && !apex() {
+        vec![rows[0], rows[rows.len() - 1]]
+    } else if ruled {
         rows
     } else {
         spread_to_aspect(
@@ -3752,6 +3868,10 @@ fn add_interior_points(
                 _ => false,
             }
         });
+    let round_ruled = matches!(
+        surface.kind(),
+        ogeom_geom::SurfaceKind::Cylinder | ogeom_geom::SurfaceKind::Cone
+    );
     let mut placed: Vec<Vec<(usize, f64, FixedVertexHandle)>> = Vec::new();
     let mut row_of: Vec<usize> = Vec::new();
     for (row, &v) in rows
@@ -3784,6 +3904,9 @@ fn add_interior_points(
             .take(columns.len().saturating_sub(1))
             .skip(1)
         {
+            if round_ruled && rows_kept == Rows::Sparse && column % 4 != 0 {
+                continue;
+            }
             // Interior points only: the boundary is already constrained, and a
             // point landing just off a constraint would split it.
             if !region.holds(Point2::new(u, v)) {
@@ -4882,7 +5005,8 @@ mod tests {
             Point2::new(1e15, 0.0),
             Point2::new(0.0, 1e15),
         ]];
-        let Err(err) = triangulate_region(&wild, &plane, Deflection::default(), tol) else {
+        let Err(err) = triangulate_region(&wild, &plane, Deflection::default(), Rows::Ends, tol)
+        else {
             panic!("a wild chart must refuse");
         };
         assert!(err.to_string().contains("describes no face"), "{err}");
@@ -4892,7 +5016,8 @@ mod tests {
             Point2::new(f64::NAN, 1.0),
             Point2::new(1.0, 1.0),
         ]];
-        let Err(err) = triangulate_region(&nan, &plane, Deflection::default(), tol) else {
+        let Err(err) = triangulate_region(&nan, &plane, Deflection::default(), Rows::Ends, tol)
+        else {
             panic!("a NaN chart must refuse");
         };
         assert!(err.to_string().contains("non-finite"), "{err}");
