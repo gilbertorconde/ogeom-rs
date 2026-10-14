@@ -25,6 +25,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A band left between two fillets is taken on its own surface before
+  the sweeps.** A narrow band whose seeds all grew onto its still-free
+  fillets fitted nothing, and the sweep pass then took it as a surface
+  of revolution through its rim vertices whose axis missed the rims, so
+  it was faceted. Whether that happened hung on the seed order, which any
+  change to the mesh moves. A free region a canonical surface holds
+  exactly is now taken on it before any sweep is tried.
+
 - **A band between two fillets is recognized once they are claimed
   (#250).** Recognition grows regions seed by seed, and a seed's sample
   grows across smooth edges: on a narrow band between two tangent fillets

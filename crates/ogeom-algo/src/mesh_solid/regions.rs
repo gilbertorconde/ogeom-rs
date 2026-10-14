@@ -23,6 +23,10 @@ use crate::recognize::{Canonical, recognize_curved, worst_deviation};
 /// to be a face of its own rather than facets of the curve.
 const PATCH_SCALE: f64 = 20.0;
 
+/// How closely a canonical surface must hold a region recognition left,
+/// against the distance, to take it before the sweeps: a hundredth.
+const EXACT_ALONE: f64 = 1e-2;
+
 /// How many times the median turn of a drum one of its facets may span.
 const UNEVEN_TURN: f64 = 4.0;
 
@@ -1437,6 +1441,21 @@ pub(super) fn swept_regions(
     let cos_crease = options.crease.cos();
     let turn = |h: Half| adjacency.twin[h].map(|g| normals[h / 3].dot(normals[g / 3]));
     for region in smooth_regions(triangles, adjacency, &normals, options, groups) {
+        // A region every seed of which grew onto neighbours still free,
+        // and fitted nothing with them, may lie on a canonical surface
+        // once they are claimed: a narrow band between two fillets. It is
+        // asked that first, alone, and taken where a surface holds every
+        // vertex exactly (within a hundredth of the distance, no noise the
+        // recognition already passed over) and every facet sags from it as
+        // a chord does.
+        if let Some(curved) = canonical_alone(points, triangles, &normals, &region, flat, tol) {
+            let g = groups.carriers.len();
+            for &t in &region {
+                groups.of[t] = g;
+            }
+            groups.carriers.push(Carrier::Curved(curved));
+            continue;
+        }
         // The recognized bands the region runs into smoothly, offered with
         // it: a stretch of a wavy profile straight enough to pass for a
         // cone is part of the one sweep, and the sweep takes it where the
@@ -1472,6 +1491,62 @@ pub(super) fn swept_regions(
             claim_swept(groups, &region, claim);
         }
     }
+}
+
+/// The canonical surface a free region lies on by itself, as a curved
+/// carrier: see [`swept_regions`].
+fn canonical_alone(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    normals: &[Vector],
+    region: &[usize],
+    flat: f64,
+    tol: Tolerances,
+) -> Option<Curved> {
+    let mut sum: FastMap<u32, Vector> = FastMap::default();
+    for &t in region {
+        for &v in &triangles[t] {
+            *sum.entry(v).or_insert(Vector::ZERO) += normals[t];
+        }
+    }
+    let mut vertices: Vec<u32> = sum.keys().copied().collect();
+    vertices.sort_unstable();
+    let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
+    let nrm: Vec<Vector> = vertices
+        .iter()
+        .map(|v| {
+            let s = sum[v];
+            let m = s.magnitude();
+            if m > 0.0 { s / m } else { Vector::Z }
+        })
+        .collect();
+    let chords: Vec<(Point, Point)> = region
+        .iter()
+        .flat_map(|&t| {
+            let [a, b, c] = triangles[t].map(|v| points[v as usize]);
+            [(a, b), (b, c), (c, a)]
+        })
+        .collect();
+    let shape = recognize_curved(&pts, &nrm, &chords, flat, tol)?.surface;
+    let deviation = worst_deviation(&shape, &pts);
+    if deviation > flat * EXACT_ALONE
+        || region
+            .iter()
+            .any(|&t| !sags_as_the_surface(&shape, triangles[t].map(|v| points[v as usize]), flat))
+    {
+        return None;
+    }
+    Some(Curved {
+        shape,
+        deviation,
+        fitted: deviation,
+        centre: (0.0, 0.0),
+        wraps: false,
+        wraps_v: false,
+        fixed: false,
+        vertices,
+        patch: None,
+    })
 }
 
 /// The free triangles joined across edges that turn but do not crease,
