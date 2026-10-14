@@ -33,6 +33,15 @@ bump may break the API and a patch bump may not.
   region no surface holds whole is now pieced along its strips' long
   sides, and taken where every piece lies on a drum or a cone.
 
+- **A converted face closed the wrong way gives up its recognition alone.**
+  When a converted body's volume disagreed with its mesh's, every
+  recognized region of the body was faceted. nist_ftc_07 drawn in strips
+  and listed from its 1994th triangle came back as 2,792 planes for one
+  narrow band built over the wrong part of a ball. A face whose area is
+  more than half again, or less than two thirds, of its facets' is now
+  given up first, and the body checked again; it comes back with 167
+  curved faces and 3 faceted.
+
 - **A small ball's region is a cap only about a true latitude (#253).** A
   converted sphere region whose boundary ring lay within the reach of a
   plane was framed as a cap about that plane's normal, its pole inside.

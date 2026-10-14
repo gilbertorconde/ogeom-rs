@@ -84,6 +84,10 @@ pub(super) fn assemble(
     Ok((shape, bodies))
 }
 
+/// How many times its facets' area a face's own may be, either way, and
+/// the face still be taken to cover what they do.
+const AREA_ASTRAY: f64 = 1.5;
+
 /// The recognized regions to facet so every body of the result is sound: a
 /// recognized face turned into the material gives up its region, and a
 /// body whose volume is not
@@ -171,11 +175,39 @@ pub(super) fn body_culprits(
                 .copied()
                 .filter(|&g| matches!(&groups.carriers[g], Carrier::Curved(c) if matches!(c.shape, Canonical::Swept(_))))
                 .collect();
-            if sweeps.is_empty() {
+            if !sweeps.is_empty() {
+                culprits.extend(sweeps);
+                continue;
+            }
+            // Then a face closed over the wrong part of its surface, which
+            // its area shows against the facets it stands for: a ball's
+            // band taken the long way round. Only where none does so does
+            // the body give up all of its recognition.
+            let mut astray = Vec::new();
+            for &g in &own {
+                let Some(Some(face)) = built.get(g) else {
+                    continue;
+                };
+                let drawn: f64 = body
+                    .triangles
+                    .iter()
+                    .map(|&t| t as usize)
+                    .filter(|&t| groups.of[t] == g)
+                    .map(|t| {
+                        let [a, b, c] = triangles[t].map(|v| points[v as usize]);
+                        (b - a).cross(c - a).magnitude() / 2.0
+                    })
+                    .sum();
+                let face_area = crate::mass::surface_properties(model, face, deflection, tol)?.mass;
+                if face_area > drawn * AREA_ASTRAY || drawn > face_area * AREA_ASTRAY {
+                    astray.push(g);
+                }
+            }
+            if astray.is_empty() {
                 report.recognition_withdrawn = true;
                 culprits.extend(own);
             } else {
-                culprits.extend(sweeps);
+                culprits.extend(astray);
             }
         }
     }

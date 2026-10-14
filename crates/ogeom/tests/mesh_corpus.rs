@@ -750,3 +750,31 @@ fn displaced_regions_fall_back_to_facets_across_parts() {
         assert!(displaced_regions_fall_back(name, 4) > 0, "{name}");
     }
 }
+
+/// nist_ftc_07 drawn in strips and listed from its 1994th triangle, kept as
+/// a file. One of its regions, a narrow band, fits a ball ninety
+/// millimetres round and is built over the wrong part of it, 223 square
+/// millimetres for the 85 its facets cover, and the body's volume is off.
+/// That face gives up its recognition, its area showing it the one astray,
+/// and the rest of the part keeps theirs: not all 170 curved regions
+/// faceted for one.
+#[test]
+#[ignore = "heavy"]
+fn a_face_closed_the_wrong_way_gives_up_alone() {
+    let path = format!(
+        "{}/../../tests/corpus/nist_ftc_07_drawn_in_strips.obj",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mesh = ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(out.closed, "{:?}", out.report);
+    let diagnosis = check(&back, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert!(out.report.curved_faceted <= 3, "{:?}", out.report.fallbacks);
+    assert!(
+        curved(&back, &out.shape) >= 160,
+        "{} curved faces",
+        curved(&back, &out.shape)
+    );
+}
