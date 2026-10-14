@@ -386,3 +386,134 @@ fn a_ball_meshes_within_its_chord_across_its_cells() {
         }
     }
 }
+
+/// A disc 200 across and 19 thick whose top edge is one round of 19 on a
+/// torus about z (major 81, minor 19), written with no seam edge, in a file
+/// stating an accuracy of 0.01. Its top circle stands at 19.006, where the
+/// torus reaches 19.
+const ROUND_EDGE_DISC: &str = "ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('step-conformance generated part'),'2;1');
+FILE_NAME('round_edge_loose_fit.step','2026-10-12T00:00:00',(''),(''),'step-conformance generate','step-conformance generate','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
+ENDSEC;
+DATA;
+#1=( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );
+#2=( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
+#3=( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );
+#4=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.01),#1,'distance_accuracy_value','confusion accuracy');
+#5=( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#4)) GLOBAL_UNIT_ASSIGNED_CONTEXT((#1,#2,#3)) REPRESENTATION_CONTEXT('','3D') );
+#6=APPLICATION_CONTEXT('automotive design');
+#7=APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#6);
+#8=PRODUCT_CONTEXT('',#6,'mechanical');
+#9=PRODUCT_DEFINITION_CONTEXT('part definition',#6,'design');
+#10=PRODUCT('round_edge_loose_fit','round_edge_loose_fit','',(#8));
+#11=PRODUCT_DEFINITION_FORMATION('','',#10);
+#12=PRODUCT_DEFINITION('design','',#11,#9);
+#13=PRODUCT_DEFINITION_SHAPE('','',#12);
+#14=CARTESIAN_POINT('',(0.0,0.0,0.0));
+#15=DIRECTION('',(0.0,0.0,1.0));
+#16=DIRECTION('',(1.0,0.0,0.0));
+#17=AXIS2_PLACEMENT_3D('',#14,#15,#16);
+#18=CARTESIAN_POINT('',(0.0,0.0,1.1634144591899855E-15));
+#19=DIRECTION('',(0.0,0.0,1.0));
+#20=DIRECTION('',(1.0,0.0,0.0));
+#21=AXIS2_PLACEMENT_3D('',#18,#19,#20);
+#22=CIRCLE('',#21,100.0);
+#23=CARTESIAN_POINT('',(100.0,0.0,1.1634144591899855E-15));
+#24=VERTEX_POINT('',#23);
+#25=EDGE_CURVE('',#24,#24,#22,.T.);
+#26=CARTESIAN_POINT('',(0.0,0.0,19.006));
+#27=DIRECTION('',(0.0,0.0,1.0));
+#28=DIRECTION('',(1.0,0.0,0.0));
+#29=AXIS2_PLACEMENT_3D('',#26,#27,#28);
+#30=CIRCLE('',#29,81.0);
+#31=CARTESIAN_POINT('',(81.0,0.0,19.006));
+#32=VERTEX_POINT('',#31);
+#33=EDGE_CURVE('',#32,#32,#30,.T.);
+#34=CARTESIAN_POINT('',(0.0,0.0,0.0));
+#35=DIRECTION('',(0.0,0.0,1.0));
+#36=DIRECTION('',(1.0,0.0,0.0));
+#37=AXIS2_PLACEMENT_3D('',#34,#35,#36);
+#38=PLANE('',#37);
+#39=ORIENTED_EDGE('',*,*,#25,.F.);
+#40=EDGE_LOOP('',(#39));
+#41=FACE_OUTER_BOUND('',#40,.T.);
+#42=ADVANCED_FACE('',(#41),#38,.F.);
+#43=CARTESIAN_POINT('',(0.0,0.0,0.0));
+#44=DIRECTION('',(0.0,0.0,1.0));
+#45=DIRECTION('',(1.0,0.0,0.0));
+#46=AXIS2_PLACEMENT_3D('',#43,#44,#45);
+#47=TOROIDAL_SURFACE('',#46,81.0,19.0);
+#48=ORIENTED_EDGE('',*,*,#25,.T.);
+#49=EDGE_LOOP('',(#48));
+#50=ORIENTED_EDGE('',*,*,#33,.F.);
+#51=EDGE_LOOP('',(#50));
+#52=FACE_OUTER_BOUND('',#49,.T.);
+#53=FACE_BOUND('',#51,.T.);
+#54=ADVANCED_FACE('',(#52,#53),#47,.T.);
+#55=CARTESIAN_POINT('',(0.0,0.0,19.0));
+#56=DIRECTION('',(0.0,0.0,1.0));
+#57=DIRECTION('',(1.0,0.0,0.0));
+#58=AXIS2_PLACEMENT_3D('',#55,#56,#57);
+#59=PLANE('',#58);
+#60=ORIENTED_EDGE('',*,*,#33,.T.);
+#61=EDGE_LOOP('',(#60));
+#62=FACE_OUTER_BOUND('',#61,.T.);
+#63=ADVANCED_FACE('',(#62),#59,.T.);
+#64=CLOSED_SHELL('',(#42,#54,#63));
+#65=MANIFOLD_SOLID_BREP('',#64);
+#66=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#17,#65),#5);
+#67=SHAPE_DEFINITION_REPRESENTATION(#13,#66);
+ENDSEC;
+END-ISO-10303-21;
+";
+
+/// A torus face bounded by two circles and no seam, its top circle on the
+/// torus or standing a little off it within the file's accuracy: the seam
+/// put in down the face is refined like the rest of it, and every triangle
+/// side's middle stands within the chord of the torus.
+#[test]
+fn a_seamless_torus_with_a_loose_rim_meshes_its_seam_within_the_chord() {
+    let tube_off = |p: Point| ((p.x.hypot(p.y) - 81.0).hypot(p.z) - 19.0).abs();
+    for (top, gap) in [("19.0", 0.0), ("19.0005", 0.0005), ("19.006", 0.006)] {
+        let text = ROUND_EDGE_DISC.replace("19.006", top);
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let model = import.document.model();
+        for chord in [0.0033, 0.0167] {
+            let deflection = Deflection {
+                chord,
+                ..Deflection::default()
+            };
+            let (faces, _) =
+                face_meshes_for(model, &import.solids[0], deflection, None, T).unwrap();
+            let mut tori = 0;
+            for (_, mesh) in faces {
+                let mesh = mesh.unwrap();
+                if !mesh.positions.iter().any(|p| p.z > 1.0 && p.z < 18.0) {
+                    continue;
+                }
+                tori += 1;
+                let mut worst = 0f64;
+                for t in &mesh.triangles {
+                    let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                    for (p, q) in [(a, b), (b, c), (c, a)] {
+                        worst = worst.max(tube_off(p.midpoint(q)));
+                    }
+                }
+                // A side along the top circle stands off by the circle's gap.
+                assert!(
+                    worst <= chord + gap,
+                    "top {top}, chord {chord}: a side's middle {worst} off the torus"
+                );
+                // The face reports the chord met where its sides keep to it, and only there.
+                assert_eq!(
+                    mesh.deflection_met,
+                    worst <= chord,
+                    "top {top}, chord {chord}: a side's middle {worst} off the torus"
+                );
+            }
+            assert_eq!(tori, 1, "top {top}, chord {chord}");
+        }
+    }
+}

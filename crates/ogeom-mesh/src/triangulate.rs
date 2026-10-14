@@ -1778,9 +1778,11 @@ fn trimming_rings(
             // chart until its start stands nearest the first chain's end.
             let shift = ((along(a_last) - along(b[0])) / period).round() * period;
             let b_first = make(along(b[0]) + shift, across(b[0]));
-            let steps = 8;
-            for k in 1..steps {
-                let f = f64::from(k) / f64::from(steps);
+            // The run is no edge of the file's, so nothing else draws it to
+            // the chord: it is drawn here, as the grid's lines are.
+            let fractions = joining_run(surface, a_last, b_first, deflection, tol);
+            let inner = &fractions[1..fractions.len() - 1];
+            for &f in inner {
                 a.push(make(
                     along(a_last) + (along(b_first) - along(a_last)) * f,
                     across(a_last) + (across(b_first) - across(a_last)) * f,
@@ -1793,8 +1795,7 @@ fn trimming_rings(
             }
             // The way back: the same run, one period over, walked the other
             // way; the two runs lift to identical points.
-            for k in (1..steps).rev() {
-                let f = f64::from(k) / f64::from(steps);
+            for &f in inner.iter().rev() {
                 a.push(make(
                     along(a_last) + (along(b_first) - along(a_last)) * f - sign * period,
                     across(a_last) + (across(b_first) - across(a_last)) * f,
@@ -4556,6 +4557,59 @@ fn refine_line(
             normal: GridSample::normal_at(surface, at(t), tol),
         },
     )
+}
+
+/// Fractions along the straight chart run from `from` to `to`, from 0 to
+/// 1: eight even steps, each halved until no step along the run is
+/// further from honest than the chord (see [`cell_error`]), or the run
+/// holds as many steps as one grid direction may.
+fn joining_run(
+    surface: &SurfaceGeometry,
+    from: Point2,
+    to: Point2,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> Vec<f64> {
+    const EVEN_STEPS: u32 = 8;
+    let at = |f: f64| (from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f);
+    let mut fractions: Vec<f64> = (0..=EVEN_STEPS)
+        .map(|k| f64::from(k) / f64::from(EVEN_STEPS))
+        .collect();
+    let mut samples: Vec<GridSample> = fractions
+        .iter()
+        .map(|&f| GridSample::at(surface, at(f), tol))
+        .collect();
+    let cap = direction_steps(deflection);
+    loop {
+        let mut grown = Vec::with_capacity(fractions.len() * 2);
+        let mut grown_samples = Vec::with_capacity(fractions.len() * 2);
+        let mut split = false;
+        for i in 0..fractions.len() {
+            grown.push(fractions[i]);
+            grown_samples.push(samples[i]);
+            let Some(&next) = fractions.get(i + 1) else {
+                continue;
+            };
+            let mid = f64::midpoint(fractions[i], next);
+            if mid <= fractions[i] || mid >= next {
+                continue;
+            }
+            let middle = GridSample::at(surface, at(mid), tol);
+            if cell_error(&samples[i], &samples[i + 1], middle.point, deflection, tol)
+                > deflection.chord
+            {
+                grown.push(mid);
+                grown_samples.push(middle);
+                split = true;
+            }
+        }
+        if !split || grown.len() > cap {
+            break;
+        }
+        fractions = grown;
+        samples = grown_samples;
+    }
+    fractions
 }
 
 /// As [`refine_line`] over several lines at once, sharing their values:

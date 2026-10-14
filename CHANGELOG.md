@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A seamless face meshes its seam to the chord when a rim stands off its
+  surface (#261).** A face bounded by two rings that each go once round
+  and no seam edge, such as a torus band between two circles, is drawn
+  with a seam the mesher puts in between the rings. Where a ring stood
+  off the surface by a file's slop the seam came out in eight straight
+  steps whatever the chord, each standing 0.09 mm off a torus of 19 mm
+  section. The seam is now halved until every step keeps to the chord
+  and the angular limit, as the face's grid lines are.
+
 ## [0.11.1] - 2026-10-14
 
 A patch release of fixes. Meshes drawn purely in strips, as OpenCascade
