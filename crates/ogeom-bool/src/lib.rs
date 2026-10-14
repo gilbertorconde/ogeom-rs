@@ -277,6 +277,24 @@ struct BoundaryEdge {
     /// carry a few dozen microns of construction slop, and every filter that
     /// compares this edge's curve against exact geometry widens by it.
     tolerance: f64,
+    /// How far the edge stands off this face: its curve from the face's
+    /// own image of it, the pcurve on the surface, at most its tolerance.
+    /// An edge's tolerance is one radius for both its faces, and it may be
+    /// owed to one of them alone: a chord between a facet and the drum
+    /// it was converted beside lies in the facet's plane and stands off
+    /// the drum by its sag. On the facet the chord is exact, and what
+    /// meets it there is read as exactly as the facet's other edges. A
+    /// tolerance no face of the edge stands off by half of is owed to
+    /// none, and is this too.
+    standoff: f64,
+    /// The edge as this face draws it, where it stands off the face by more
+    /// than [`DRAWN_APART`]: the pcurve on the surface, over `prange`. A
+    /// chord between a facet and the drum it was converted beside is drawn
+    /// on the drum as the arc beneath it, and what meets the drum's trim
+    /// meets that arc: a section running a hair outside the arc, read
+    /// against the chord its sag away, runs along the edge it never
+    /// reaches.
+    image: Option<std::sync::Arc<Curve>>,
     /// The looser of the edge's two end vertices' own radii: the doubt an
     /// earlier junction recorded there, which the arrangement's node snap
     /// on this face must reach.
@@ -288,6 +306,52 @@ struct BoundaryEdge {
     /// A conservative box round the edge: its samples, grown by twice the
     /// sag measured between them and by its own radius.
     bound: ogeom_math::Aabb,
+}
+
+/// How far an edge must stand off a face before the face reads it as its
+/// own image of it: a hundred confusions, past the rounding of any edge
+/// whose curve and pcurve were made together.
+const DRAWN_APART: f64 = 1e2;
+
+impl BoundaryEdge {
+    /// The curve this face's boundary runs along, its range, and how far
+    /// the face may stand off it: the image where there is one, exact on
+    /// the face, or the edge's curve and its standoff.
+    fn drawn(&self) -> (&Curve, (f64, f64), f64) {
+        match &self.image {
+            Some(image) => (image, ordered(self.prange), 0.0),
+            None => (&self.curve, self.crange, self.standoff),
+        }
+    }
+
+    /// A parameter of [`BoundaryEdge::drawn`] as the edge curve's: the
+    /// image runs over the pcurve's range, mapped onto the curve's in
+    /// proportion, as the face's strands draw it.
+    fn onto_curve(&self, s: f64) -> f64 {
+        if self.image.is_some() {
+            rescale(s, self.prange, self.crange)
+        } else {
+            s
+        }
+    }
+
+    /// A parameter of the edge curve as [`BoundaryEdge::drawn`]'s.
+    fn onto_drawn(&self, t: f64) -> f64 {
+        if self.image.is_some() {
+            rescale(t, self.crange, self.prange)
+        } else {
+            t
+        }
+    }
+}
+
+/// A range low end first.
+fn ordered(range: (f64, f64)) -> (f64, f64) {
+    if range.0 <= range.1 {
+        range
+    } else {
+        (range.1, range.0)
+    }
 }
 
 /// A pole: an edge that bounds a face in parameter space and collapses to
@@ -675,6 +739,26 @@ fn gather(
                          that face's parameter space"
                     ),
                 };
+            let edge_tolerance = edge_data.tolerance.get();
+            let mut standoff = edge_tolerance;
+            if edge_tolerance > tol.confusion() * 10.0 {
+                let gap = |pc: &PlanarCurve, pr: (f64, f64)| {
+                    ogeom_algo::pcurve_fit::lifted_gap(
+                        (&world, *range),
+                        (pc, pr),
+                        &surface,
+                        false,
+                        tol,
+                    )
+                    .unwrap_or(edge_tolerance)
+                };
+                let mut measured = gap(&pcurve, prange);
+                if let Some((other, orange)) = &other_side {
+                    measured = measured.max(gap(other, *orange));
+                }
+                standoff = measured.min(edge_tolerance);
+            }
+
             edges.push(BoundaryEdge {
                 node: occurrence.key,
                 curve: world,
@@ -683,7 +767,9 @@ fn gather(
                 prange,
                 other_side,
                 seam,
-                tolerance: edge_data.tolerance.get(),
+                tolerance: edge_tolerance,
+                standoff,
+                image: None,
                 ends_tolerance: occurrence.ends_tolerance,
                 ends: occurrence.ends,
                 bound: ogeom_math::Aabb::EMPTY,
@@ -896,6 +982,66 @@ fn gather(
             };
             let at = vertex.transform(model.datums())?.apply(data.point);
             shared_vertices.push((at, vertex.oriented(ogeom_topo::Orientation::Forward)));
+        }
+    }
+    // An edge's tolerance is owed to the face whose image of it stands that
+    // far off, and each other face reads the edge as it stands off that
+    // face. One no face of it stands off by half as much (an edge stated
+    // loose, a rail welded across a gap an earlier operation left) owes it
+    // to none, and every face reads the edge to its tolerance.
+    let mut owed: ogeom_core::FastMap<EdgeKey, f64> = ogeom_core::FastMap::default();
+    for e in faces.iter().flat_map(|f: &GFace| f.edges.iter()) {
+        let most = owed.entry(e.node).or_insert(0.0);
+        *most = most.max(e.standoff);
+    }
+    for face in &mut faces {
+        for e in &mut face.edges {
+            if owed
+                .get(&e.node)
+                .is_some_and(|most| most * 2.0 < e.tolerance)
+            {
+                e.standoff = e.tolerance;
+                continue;
+            }
+            // Standing off the face, the edge is drawn as the face draws it,
+            // its pcurve read against its curve in proportion as the face's
+            // strands draw it. Where the two are paced apart by more than
+            // twice the edge's tolerance, the reach a loose edge's junction
+            // takes, that reading would put the face's stops a pace off the
+            // edge's splits, and the edge is read as it stands.
+            // A periodic curve or pcurve (a circle, in space or in a chart)
+            // is read through one window only, and parameters met along it
+            // come back folded into its period: such an edge is left to its
+            // curve.
+            if e.standoff <= tol.confusion() * DRAWN_APART
+                || e.other_side.is_some()
+                || e.pcurve.is_periodic()
+                || e.curve.is_periodic()
+            {
+                continue;
+            }
+            let paced = ogeom_algo::pcurve_fit::lifted_gap(
+                (&e.curve, e.crange),
+                (&e.pcurve, e.prange),
+                &face.surface,
+                true,
+                tol,
+            );
+            if !paced.is_ok_and(|gap| gap <= e.tolerance * 2.0) {
+                continue;
+            }
+            let (lo, hi) = ordered(e.prange);
+            e.image = ogeom_geom::TrimmedCurve::new(
+                Curve::OnSurface(Box::new(ogeom_geom::CurveOnSurface::new(
+                    e.pcurve.clone(),
+                    face.surface.clone(),
+                ))),
+                lo,
+                hi,
+                tol,
+            )
+            .ok()
+            .map(|trimmed| std::sync::Arc::new(Curve::Trimmed(Box::new(trimmed))));
         }
     }
     Ok(GSolid {
@@ -1654,7 +1800,7 @@ fn graze_contacts(
                         && c.target_from_a == target_from_a
                         && c.target_face == target_face
                 };
-                let reached = near.max(e.tolerance);
+                let reached = near.max(e.standoff);
                 if ends.iter().all(|p| e.bound.distance_to(*p) > reached)
                     || contacts.iter().chain(&out).any(held)
                 {
@@ -2788,7 +2934,7 @@ fn doubt_of(face: &GFace) -> f64 {
     face.edges
         .iter()
         .fold(0.0_f64, |acc, e| {
-            acc.max(e.tolerance * 2.0)
+            acc.max(e.standoff * 2.0)
                 .max(e.ends_tolerance + e.tolerance)
         })
         .max(
@@ -2799,11 +2945,12 @@ fn doubt_of(face: &GFace) -> f64 {
 }
 
 /// How far apart a face's chart holds two points as one at `p`: the doubt
-/// of each edge `p` lies within reach of (twice its tolerance along it, its
-/// tolerance and its vertex's at either end), the face's own tolerance, and
-/// the holes set aside from it. A loose edge welds what crosses or ends
-/// near it, and leaves a crossing of a tight edge elsewhere on the face
-/// where it is. Never more than [`doubt_of`], the face's loosest.
+/// of each edge `p` lies within reach of (twice what it stands off the face
+/// along it, its tolerance and its vertex's at either end), the face's own
+/// tolerance, and the holes set aside from it. A loose edge welds what
+/// crosses or ends near it, and leaves a crossing of a tight edge elsewhere
+/// on the face where it is. Never more than [`doubt_of`], the face's
+/// loosest.
 fn doubt_at(face: &GFace, p: Point, tol: Tolerances) -> OgeomResult<f64> {
     let mut doubt = face
         .holes_aside
@@ -2816,7 +2963,7 @@ fn doubt_at(face: &GFace, p: Point, tol: Tolerances) -> OgeomResult<f64> {
                 doubt = doubt.max(reach);
             }
         }
-        let along = e.tolerance * 2.0;
+        let along = e.standoff * 2.0;
         if along > doubt
             && e.bound.distance_to(p) <= along
             && distance_to_edge_curve(&e.curve, e.crange, p, tol)? <= along
@@ -2892,8 +3039,9 @@ fn share_hugs(
         for i in 0..=4 {
             let t = p.range.0 + (p.range.1 - p.range.0) * f64::from(i) / 4.0;
             let at = point_of(s, t)?;
-            let reach = near(at)?.max(e.tolerance * 2.0);
-            if distance_to_edge_curve(&e.curve, e.crange, at, tol)? > reach {
+            let (drawn, drange, off) = e.drawn();
+            let reach = near(at)?.max(off * 2.0);
+            if distance_to_edge_curve(drawn, drange, at, tol)? > reach {
                 return Ok(false);
             }
         }
@@ -3902,25 +4050,27 @@ fn fill(
                     // of a merged group of near-coplanar facets, a ruling of a
                     // fitted cone, a fitted rail between a cylinder and a
                     // helical flank) stands off the surface the section lies
-                    // on by as much, and meets an exact section only that
-                    // near. A near miss there is the crossing. A fitted
-                    // section states only its own error, so its reach takes
-                    // in the edge's radius on any face: where a rail grazes
-                    // the other face, the section leaves its face as far
-                    // off the rail as the rail stands off the face.
+                    // on by as much. The face stops where it draws the edge,
+                    // its pcurve on its surface, and a section on the face
+                    // meets that image exactly; the edge's curve is met only
+                    // where it is the face's own to within what it stands
+                    // off, and a near miss by that much is the crossing. A
+                    // fitted section states only its own error, so its reach
+                    // takes that standoff in as well.
+                    let (drawn, drange, off) = e.drawn();
                     let reach = if section.tolerance > 0.0 {
-                        reach + e.tolerance
+                        reach + off
                     } else {
                         reach
                     };
                     let planar = matches!(own.surface, SurfaceGeometry::Plane(_));
                     let widened = planar || section.tolerance <= 0.0;
-                    let edge_reach = if widened { reach + e.tolerance } else { reach };
+                    let edge_reach = if widened { reach + off } else { reach };
                     let cc = CurveCurveOptions {
                         gap: cc.gap.max(edge_reach),
                         ..cc
                     };
-                    let found = intersect_curves(&section.curve, &e.curve, cc, tol)?;
+                    let found = intersect_curves(&section.curve, drawn, cc, tol)?;
                     for crossing in &found.crossings {
                         if crossing.gap > edge_reach {
                             continue;
@@ -3934,17 +4084,12 @@ fn fill(
                         // crosses.
                         if !planar
                             && crossing.gap > reach
-                            && tangential(
-                                &section.curve,
-                                crossing.on_a,
-                                &e.curve,
-                                crossing.on_b,
-                                tol,
-                            )?
+                            && tangential(&section.curve, crossing.on_a, drawn, crossing.on_b, tol)?
                         {
                             continue;
                         }
-                        let mut on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
+                        let mut on_b =
+                            onto_range(e.onto_curve(crossing.on_b), &e.curve, e.crange, tol);
                         let mut honesty = honest(section.tolerance, tol);
                         // A crossing at a boundary edge's own end *is* that end's
                         // vertex, exactly. The stop the section keeps must be the
@@ -3997,7 +4142,7 @@ fn fill(
                             || tangential(
                                 &section.curve,
                                 crossing.on_a,
-                                &e.curve,
+                                drawn,
                                 crossing.on_b,
                                 tol,
                             )?;
@@ -4021,7 +4166,7 @@ fn fill(
                                 // other face (on a fitted rail, to the rail's
                                 // own honesty), so the edge is asked at the
                                 // hug width, not the section's.
-                                let foot = ogeom_algo::project_on_curve(&e.curve, tip, 64, tol)?;
+                                let foot = ogeom_algo::project_on_curve(drawn, tip, 64, tol)?;
                                 let width =
                                     (crossing.reach + honest(weld, tol)).max(tol.confusion() * 1e3);
                                 if *DEBUG_WIRE {
@@ -4034,7 +4179,12 @@ fn fill(
                                 }
                                 if foot.distance <= width {
                                     on_a = end;
-                                    on_b = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                                    on_b = onto_range(
+                                        e.onto_curve(foot.parameter),
+                                        &e.curve,
+                                        e.crange,
+                                        tol,
+                                    );
                                     // A touch at the edge's own end vertex
                                     // is that vertex: a section tangent to
                                     // the edge there runs along it for a
@@ -4135,7 +4285,7 @@ fn fill(
                         // reading the whole curve as boundary makes the meridian
                         // opposite the seam disappear, which is the octant's own
                         // edge, on a ball cut at its corner.
-                        for (lo, hi) in overlap_within(overlap, e.crange, &e.curve, tol) {
+                        for (lo, hi) in overlap_within(overlap, drange, drawn, tol) {
                             if *DEBUG_WIRE {
                                 eprintln!("PAVE s{si}: side {side} overlap ({lo:.6}, {hi:.6})");
                             }
@@ -4155,21 +4305,34 @@ fn fill(
                                 let at = section
                                     .curve
                                     .point_at(at_param(t, domain, section.closed), tol)?;
-                                let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
+                                let foot = ogeom_algo::project_on_curve(drawn, at, 64, tol)?;
                                 if foot.distance <= reach.max(tol.confusion() * 1e3) {
-                                    let on_b = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                                    let on_b = onto_range(
+                                        e.onto_curve(foot.parameter),
+                                        &e.curve,
+                                        e.crange,
+                                        tol,
+                                    );
+                                    // Drawn apart from its curve, the edge
+                                    // splits there a standoff from the foot.
+                                    let (split, gap) = if e.image.is_some() {
+                                        let split = e.curve.point_at(on_b, tol)?;
+                                        (split, at.distance(split))
+                                    } else {
+                                        (foot.point, foot.distance)
+                                    };
                                     hits.push((
                                         side,
                                         e.node,
                                         on_b,
                                         t,
-                                        honest(section.tolerance, tol).max(foot.distance),
+                                        honest(section.tolerance, tol).max(gap),
                                         false,
                                     ));
-                                    if foot.distance > tol.confusion() * 1e2 {
+                                    if gap > tol.confusion() * 1e2 {
                                         junctions.push(Junction {
-                                            at: foot.point,
-                                            reach: foot.distance + tol.confusion() * 1e2,
+                                            at: split,
+                                            reach: gap + tol.confusion() * 1e2,
                                             onto_vertex: false,
                                         });
                                     }
@@ -4561,14 +4724,14 @@ fn fill(
                         };
                         let mut near = false;
                         for (ei, e) in own.edges.iter().enumerate() {
-                            let width =
-                                held_to(reach.max(floor).max(e.tolerance * 2.0), e.tolerance * 2.0);
+                            let (drawn, drange, off) = e.drawn();
+                            let width = held_to(reach.max(floor).max(off * 2.0), off * 2.0);
                             // The edge's box holds its curve: a point outside
                             // the box grown by the width is not near it.
                             if !e.bound.expanded(width).contains(at) {
                                 continue;
                             }
-                            let d = distance_to_edge_curve(&e.curve, e.crange, at, tol)?;
+                            let d = distance_to_edge_curve(drawn, drange, at, tol)?;
                             if d <= width {
                                 if *DEBUG_WIRE {
                                     eprintln!(
@@ -4833,7 +4996,7 @@ fn fill(
                             let at = section
                                 .curve
                                 .point_at(at_param(*c, domain, section.closed), tol)?;
-                            let foot = ogeom_algo::project_on_curve(&e.curve, at, 64, tol)?;
+                            let foot = ogeom_algo::project_on_curve(e.drawn().0, at, 64, tol)?;
                             // A cut off the edge (past the stretch the
                             // section hugs, on a neighbouring edge) is no
                             // split of it. Stated as one with its distance
@@ -4841,7 +5004,8 @@ fn fill(
                             if foot.distance > reach.max(tol.confusion() * 1e3) {
                                 continue;
                             }
-                            let on_e = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                            let on_e =
+                                onto_range(e.onto_curve(foot.parameter), &e.curve, e.crange, tol);
                             if on_e <= e.crange.0.min(e.crange.1) + tol.parametric()
                                 || on_e >= e.crange.0.max(e.crange.1) - tol.parametric()
                             {
@@ -4947,9 +5111,10 @@ fn fill(
                     &gb.faces[section.face_b]
                 };
                 for e in &face.edges {
-                    let near = width.max(e.tolerance * 2.0);
+                    let (drawn, drange, off) = e.drawn();
+                    let near = width.max(off * 2.0);
                     if e.bound.expanded(near).contains(mid)
-                        && distance_to_edge_curve(&e.curve, e.crange, mid, tol)? <= near
+                        && distance_to_edge_curve(drawn, drange, mid, tol)? <= near
                     {
                         hugged.push(e);
                     }
@@ -4961,10 +5126,11 @@ fn fill(
                 if let Some(list) = paves.get(&e.node) {
                     on_edge.extend(list.iter().map(|pave| pave.t));
                 }
+                let (drawn, _, off) = e.drawn();
                 for t in on_edge {
-                    let q = e.curve.point_at(t, tol)?;
+                    let q = drawn.point_at(e.onto_drawn(t), tol)?;
                     let foot = ogeom_algo::project_on_curve(&section.curve, q, 64, tol)?;
-                    if foot.distance > width.max(e.tolerance * 2.0) {
+                    if foot.distance > width.max(off * 2.0) {
                         continue;
                     }
                     let mut f = foot.parameter;
@@ -4987,13 +5153,14 @@ fn fill(
             cuts.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
             // The edge split wherever the piece now ends.
             for e in &hugged {
+                let (drawn, _, off) = e.drawn();
                 for &c in &cuts {
                     let q = at(c)?;
-                    let foot = ogeom_algo::project_on_curve(&e.curve, q, 64, tol)?;
-                    if foot.distance > width.max(e.tolerance * 2.0) {
+                    let foot = ogeom_algo::project_on_curve(drawn, q, 64, tol)?;
+                    if foot.distance > width.max(off * 2.0) {
                         continue;
                     }
-                    let on_e = onto_range(foot.parameter, &e.curve, e.crange, tol);
+                    let on_e = onto_range(e.onto_curve(foot.parameter), &e.curve, e.crange, tol);
                     if on_e <= e.crange.0.min(e.crange.1) + tol.parametric()
                         || on_e >= e.crange.0.max(e.crange.1) - tol.parametric()
                     {
@@ -6268,7 +6435,7 @@ fn inside_plane_exactly(face: &GFace, p: Point2, tol: Tolerances) -> Option<bool
     // that far apart are sectioned.
     let at = face.surface.point_at(p.x, p.y, tol).ok()?;
     for e in &face.edges {
-        let doubt = (e.tolerance * 2.0).max(tol.confusion() * 75.0);
+        let doubt = (e.standoff * 2.0).max(tol.confusion() * 75.0);
         if !e.bound.expanded(doubt).contains(at) {
             continue;
         }
@@ -12636,6 +12803,128 @@ mod tests {
                 cluster_paves(&curve, crange, 1e-7, &paves, Some(&off_drill), T).unwrap();
             assert_eq!(clusters.len(), 1, "honesty {honesty}: {clusters:?}");
             assert!(clusters[0].at.x.abs() < half, "{clusters:?}");
+        }
+    }
+
+    /// A box whose front top edge, y = 0 at z = 10, is drawn on the top
+    /// face `shift` inside where it runs, and states `loose`: the edge's
+    /// tolerance owed to the top face alone, as a chord beside a drum owes
+    /// its sag to the drum.
+    fn box_with_an_edge_drawn_off_its_top(model: &mut Model, shift: f64, loose: f64) -> Shape {
+        let solid = make_box(model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let top = explore_unique(model, &solid, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let b = shape_bounds(model, f, T).unwrap();
+                b.low().unwrap().z > 9.9
+            })
+            .unwrap();
+        let top_surface = model.node(&top).unwrap().data().as_face().unwrap().surface;
+        let edge = explore_unique(model, &top, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let b = shape_bounds(model, e, T).unwrap();
+                b.high().unwrap().y.abs() < 1e-6
+            })
+            .unwrap();
+        let (old, range) = match model
+            .node(&edge)
+            .unwrap()
+            .data()
+            .as_edge()
+            .unwrap()
+            .pcurve_on(top_surface)
+        {
+            Some(EdgeRepr::PCurve { curve, range, .. }) => (*curve, *range),
+            _ => unreachable!("a box's edge has a plain pcurve on its top"),
+        };
+        let pcurve = model.geometry().pcurve(old).unwrap().clone();
+        let (from, to) = (
+            pcurve.point_at(range.0, T).unwrap(),
+            pcurve.point_at(range.1, T).unwrap(),
+        );
+        // Square to the edge in the chart, toward the face's middle.
+        let along = (to - from) / (to - from).magnitude();
+        let mut across = ogeom_math::Vector2::new(-along.y, along.x);
+        let middle = Point2::new(f64::midpoint(from.x, to.x), f64::midpoint(from.y, to.y));
+        let lift = |p: Point2| {
+            let SurfaceGeometry::Plane(plane) = model.geometry().surface(top_surface).unwrap()
+            else {
+                unreachable!("a box's top is a plane")
+            };
+            plane.point_at(p.x, p.y, T).unwrap()
+        };
+        if lift(middle + across).y < 0.0 {
+            across = -across;
+        }
+        let line =
+            ogeom_geom::Line2d::segment(from + across * shift, to + across * shift, T).unwrap();
+        let domain = (0.0, from.distance(to));
+        let id = model.geometry_mut().add_pcurve(PlanarCurve::Line(line));
+        let Some(NodeData::Edge(data)) = model.node_mut(&edge).map(|n| n.data_mut()) else {
+            unreachable!("an edge")
+        };
+        for repr in &mut data.representations {
+            if let EdgeRepr::PCurve {
+                curve,
+                surface,
+                range,
+                ..
+            } = repr
+                && *surface == top_surface
+            {
+                *curve = id;
+                *range = domain;
+            }
+        }
+        data.tolerance = data.tolerance.widen_to(loose);
+        solid
+    }
+
+    /// Each face reads an edge as far as it stands off that face: the top
+    /// face draws its edge as its own pcurve on its plane, the front face
+    /// reads the same edge exactly. An edge stated loose that stands off
+    /// no face of it is read to its tolerance on both.
+    #[test]
+    fn a_face_reads_an_edge_as_far_as_it_stands_off_that_face() {
+        let mut model = Model::new();
+        let solid = box_with_an_edge_drawn_off_its_top(&mut model, 0.004, 0.005);
+        let gathered = gather(&model, &solid, false, None, T).unwrap();
+        let mut read = 0;
+        for face in &gathered.faces {
+            for e in &face.edges {
+                if e.tolerance < 1e-3 {
+                    continue;
+                }
+                read += 1;
+                let normal = face.surface.normal_at(0.0, 0.0, T).unwrap().vector();
+                let (drawn, range, off) = e.drawn();
+                let middle = drawn.point_at(f64::midpoint(range.0, range.1), T).unwrap();
+                if normal.z.abs() > 0.5 {
+                    assert!((e.standoff - 0.004).abs() < 1e-6, "top: {}", e.standoff);
+                    assert!(e.image.is_some() && off == 0.0);
+                    assert!((middle.y - 0.004).abs() < 1e-6, "top drawn at {middle:?}");
+                } else {
+                    assert!(e.standoff < 1e-9, "front: {}", e.standoff);
+                    assert!(e.image.is_none());
+                    assert!(middle.y.abs() < 1e-9, "front drawn at {middle:?}");
+                }
+            }
+        }
+        assert_eq!(read, 2);
+
+        let mut model = Model::new();
+        let solid = box_with_an_edge_drawn_off_its_top(&mut model, 1e-4, 0.005);
+        let gathered = gather(&model, &solid, false, None, T).unwrap();
+        for e in gathered.faces.iter().flat_map(|f| f.edges.iter()) {
+            if e.tolerance >= 1e-3 {
+                assert_eq!(e.standoff, e.tolerance);
+                assert!(e.image.is_none());
+            }
         }
     }
 
