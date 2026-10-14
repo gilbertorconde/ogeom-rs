@@ -9941,7 +9941,7 @@ fn build_piece(
     fused: &GeneralFused,
     piece: &FacePiece,
     tol: Tolerances,
-) -> OgeomResult<Shape> {
+) -> OgeomResult<Option<Shape>> {
     let own = if piece.from_a { &fused.a } else { &fused.b };
     let face = &own.faces[piece.face];
     let surface_id = rebuild.surface_id(fused, piece.from_a, piece.face);
@@ -10055,6 +10055,21 @@ fn build_piece(
                 built
             });
         }
+        // A ring every piece of which is dust stands within its vertices'
+        // reach of one point: a hole of it is no hole, and a boundary of
+        // it bounds no face.
+        if edges.is_empty() {
+            if wires.is_empty() {
+                if *DEBUG_WIRE {
+                    eprintln!(
+                        "DUST piece from_a={} face={}: its boundary closes on one point",
+                        piece.from_a, piece.face
+                    );
+                }
+                return Ok(None);
+            }
+            continue;
+        }
         let wire = match make_wire(rebuild.model, &edges, tol) {
             Ok(w) => w.shape,
             Err(e) => {
@@ -10149,13 +10164,13 @@ fn build_piece(
             return Err(e);
         }
     };
-    Ok(
+    Ok(Some(
         if face.face.orientation() == ogeom_topo::Orientation::Reversed {
             built.reversed()
         } else {
             built
         },
-    )
+    ))
 }
 
 /// Build the exact sub-edge a tag names, pcurves attached.
@@ -10610,6 +10625,7 @@ fn assemble_result(
         settled,
         weld: floor,
         holes,
+        kept: built_from,
     } = rebuilt_pieces(model, fused, kept, &mut history, tol)?;
     let sewn = sew_around(model, &faces, &settled, tol)?;
     // Sewing rebuilds the pieces onto shared edges: the result's faces are
@@ -10641,7 +10657,7 @@ fn assemble_result(
         let (shells, shut, new) = with_aside(
             model,
             fused,
-            kept,
+            &built_from,
             &faces,
             &holes,
             &after,
@@ -11052,6 +11068,16 @@ fn rebuilt_pieces(
         }
         Ok(true)
     };
+    // Each kept piece built first: one whose boundary closes on a point is
+    // dust, and none of what follows sees it.
+    let mut pieces_built: Vec<(usize, bool, Shape)> = Vec::with_capacity(kept.len());
+    for &(index, flip) in kept {
+        if let Some(built) = build_piece(&mut rebuild, fused, &fused.pieces[index], tol)? {
+            pieces_built.push((index, flip, built));
+        }
+    }
+    let kept: Vec<(usize, bool)> = pieces_built.iter().map(|&(i, f, _)| (i, f)).collect();
+    let kept = kept.as_slice();
     // One kept turned over (a tool's face lining the cavity a cut leaves)
     // faces the other way, which no copy does.
     let mut copies = Vec::with_capacity(kept.len());
@@ -11061,10 +11087,10 @@ fn rebuilt_pieces(
     let mut faces = Vec::new();
     let mut kept_sources: ogeom_core::FastSet<Shape> = ogeom_core::FastSet::default();
     let mut built_of: ogeom_core::FastMap<usize, usize> = ogeom_core::FastMap::default();
-    for (slot, &(index, flip)) in kept.iter().enumerate() {
+    for (slot, (index, flip, built)) in pieces_built.into_iter().enumerate() {
         built_of.insert(index, slot);
         let piece = &fused.pieces[index];
-        let mut built = build_piece(&mut rebuild, fused, piece, tol)?;
+        let mut built = built;
         if flip {
             built = built.reversed();
         }
@@ -11154,6 +11180,7 @@ fn rebuilt_pieces(
         settled,
         weld: floor,
         holes,
+        kept: kept.to_vec(),
     })
 }
 
@@ -11177,6 +11204,14 @@ fn with_aside(
     keep_aside: [bool; 2],
     history: &mut History,
 ) -> OgeomResult<(Vec<Shape>, Vec<bool>, Vec<Shape>)> {
+    if kept.len() != faces.len() {
+        ogeom_bail!(
+            Construction,
+            "{} kept pieces for {} rebuilt faces; each face is read with its own piece",
+            kept.len(),
+            faces.len()
+        );
+    }
     // Each face made again with its holes, with the wires it walks itself
     // and the faces set aside beside its holes.
     let mut remade: ogeom_core::FastMap<ogeom_topo::TShapeId, Remade> =
@@ -11333,6 +11368,9 @@ struct Rebuilt {
     /// The holes left out of the arrangement each face takes back, by
     /// their place among its source face's.
     holes: Vec<Vec<usize>>,
+    /// The kept pieces each face is built from, in order: those given, less
+    /// any whose boundary closed on one point.
+    kept: Vec<(usize, bool)>,
 }
 
 /// The holes left out of each face's arrangement, given to the kept piece
