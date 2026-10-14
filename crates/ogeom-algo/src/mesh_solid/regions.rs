@@ -1755,6 +1755,40 @@ pub(super) fn swept_claim(
         return None;
     }
     let (pu, pv) = periodic(&shape);
+    // A profile that does not close, fitted to samples that go all the way
+    // round it (a bore whose rim strays from its drum, drawn in strips),
+    // leaves a gap between its ends that some triangle of the region spans:
+    // its corners stand at the two ends of the profile, where every other
+    // triangle's stand a step apart along it.
+    let along = match &shape {
+        Canonical::Swept(s) => match &s.surface {
+            ogeom_geom::SurfaceGeometry::Extrusion(_) if !pu => Some(0),
+            ogeom_geom::SurfaceGeometry::Revolution(_) if !pv => Some(1),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(along) = along {
+        let of = |c: (f64, f64)| if along == 0 { c.0 } else { c.1 };
+        let at: FastMap<u32, f64> = vertices
+            .iter()
+            .zip(&charts)
+            .map(|(&v, &c)| (v, of(c)))
+            .collect();
+        let spread = |values: &mut dyn Iterator<Item = f64>| {
+            let (lo, hi) = values.fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), x| {
+                (l.min(x), h.max(x))
+            });
+            hi - lo
+        };
+        let whole = spread(&mut at.values().copied());
+        if region
+            .iter()
+            .any(|&t| spread(&mut triangles[t].iter().map(|v| at[v])) > whole / 2.0)
+        {
+            return None;
+        }
+    }
     // Each chart direction's centre, and whether the region goes all the
     // way round it: then its centre is half a turn from the seam, as a
     // canonical band's is.

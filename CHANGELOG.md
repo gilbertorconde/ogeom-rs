@@ -52,6 +52,16 @@ with thread faces checks in seconds instead of minutes.
 
 ### Fixed
 
+- **A bore whose rim strays from it, drawn in strips, takes no open sweep
+  (#253).** nist_ctc_02's two large bores, drawn from rim to rim, have a
+  far rim standing up to 0.019 off the bore, so no drum holds them, and an
+  extrusion was fitted to the strips: its profile went all the way round
+  without closing, the last strip spanned the gap between its ends, and
+  no boundary closed on it, so the converter gave up the region as
+  unplaced. A sweep whose profile does not close is now refused where a
+  triangle of its region spans from one end of the profile to the other;
+  the bore's strips stay facets, as nothing holds their vertices.
+
 - **A bore running into a drafted wall, drawn in strips, comes back round
   (#253).** Drawn in strips from rim to rim, each strip's corners lie only
   on its two rims, so a first sample took strips of both the bore and the

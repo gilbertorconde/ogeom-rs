@@ -697,6 +697,27 @@ fn a_bore_into_a_drafted_wall_drawn_in_strips_comes_back_round() {
     assert_eq!(kinds(&back, &out.shape), [2, 2, 2, 0, 1]);
 }
 
+/// A bore drawn in strips from rim to rim (nist_ctc_02's, cut out around
+/// it and kept as a file) whose far rim is a fitted edge standing up to
+/// 0.019 off the bore: a third of that rim's vertices are off any drum,
+/// and the strips are one smooth region going all the way round. An
+/// extrusion of a profile that does not close holds every vertex, and
+/// leaves a gap between the profile's ends that the last strip spans; no
+/// boundary closes on it. The sweep is refused, and nothing is faceted for
+/// want of a boundary. (The piece cut out is open where the cut ran.)
+#[test]
+fn a_bore_with_a_loose_rim_drawn_in_strips_takes_no_open_sweep() {
+    let path = format!(
+        "{}/../../tests/corpus/bore_with_a_loose_rim_in_strips.obj",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mesh = ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert_eq!(out.report.curved_faceted, 0, "{:?}", out.report.fallbacks);
+    assert_eq!(kinds(&back, &out.shape)[1..], [1, 0, 0, 0]);
+}
+
 /// The rounded block drawn the way OpenCascade and truck draw a drum, each
 /// fillet four flat strips from rim to rim, no row between, kept as a file
 /// so the converter sees the same triangles whatever the mesher draws. The
