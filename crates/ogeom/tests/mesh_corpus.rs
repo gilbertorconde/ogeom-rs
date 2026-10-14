@@ -7,8 +7,8 @@
 mod walks;
 
 use ogeom::algo::{
-    Canonical, FallbackReason, MeshRegion, MeshRegions, MeshSolidOptions, MeshSolidReport, check,
-    shape_bounds, solid_from_mesh, volume_properties,
+    Canonical, FallbackReason, FitConstraints, MeshRegion, MeshRegions, MeshSolidOptions,
+    MeshSolidReport, SurfaceKind, check, shape_bounds, solid_from_mesh, volume_properties,
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
@@ -752,29 +752,159 @@ fn displaced_regions_fall_back_to_facets_across_parts() {
 }
 
 /// nist_ftc_07 drawn in strips and listed from its 1994th triangle, kept as
-/// a file. One of its regions, a narrow band, fits a ball ninety
-/// millimetres round and is built over the wrong part of it, 223 square
-/// millimetres for the 85 its facets cover, and the body's volume is off.
-/// That face gives up its recognition, its area showing it the one astray,
-/// and the rest of the part keeps theirs: not all 170 curved regions
-/// faceted for one.
-#[test]
-#[ignore = "heavy"]
-fn a_face_closed_the_wrong_way_gives_up_alone() {
+/// a file.
+fn ftc_07_in_strips() -> ogeom::topo::Triangulation {
     let path = format!(
         "{}/../../tests/corpus/nist_ftc_07_drawn_in_strips.obj",
         env!("CARGO_MANIFEST_DIR")
     );
-    let mesh = ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap();
+    ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// The six strips of a narrow band of nist_ftc_07 drawn in strips, a flat
+/// face 2.2 mm by 33 mm between two small cones, by where their vertices
+/// lie.
+fn band_in_strips(regions: &MeshRegions) -> Vec<usize> {
+    let points = regions.points();
+    let band = regions
+        .triangles()
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            t.iter().all(|&v| {
+                let p = points[v as usize];
+                (-145.9..=-118.7).contains(&p.x)
+                    && (10.47..=12.71).contains(&p.y)
+                    && (74.3..=101.5).contains(&p.z)
+            })
+        })
+        .map(|(t, _)| t)
+        .collect::<Vec<_>>();
+    assert_eq!(band.len(), 6);
+    band
+}
+
+/// nist_ftc_07 drawn in strips, its narrow band put on the ball of radius
+/// ninety its eight corners all lie on (two rows of four, each row a
+/// trapezoid, and every such trapezoid lies on a circle). Built, the band
+/// closes over the wrong part of the ball, 223 square millimetres for the
+/// 85 its facets cover, and the body's volume is off. That face gives up
+/// its recognition, its area showing it the one astray, and the rest of the
+/// part keeps theirs: not all 170 curved regions faceted for one.
+#[test]
+#[ignore = "heavy"]
+fn a_face_closed_the_wrong_way_gives_up_alone() {
+    let mesh = ftc_07_in_strips();
+    let mut regions = MeshRegions::find(&mesh, &MeshSolidOptions::default(), T).unwrap();
+    let band = band_in_strips(&regions);
+    // Recognition reads the band as a flat face between two cones, each
+    // with strips beyond it: cut off at the band and joined, the band is
+    // one region again.
+    let mut ids: Vec<_> = band
+        .iter()
+        .map(|&t| regions.region_of(t).unwrap())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        let triangles = regions.region(id).unwrap().triangles;
+        let corners = |t: usize| regions.triangles()[t];
+        let beyond: Vec<usize> = triangles
+            .iter()
+            .copied()
+            .filter(|t| !band.contains(t))
+            .collect();
+        let mut cut: Vec<[u32; 2]> = Vec::new();
+        for &t in triangles.iter().filter(|t| band.contains(t)) {
+            let c = corners(t);
+            for (a, b) in [(c[0], c[1]), (c[1], c[2]), (c[2], c[0])] {
+                if beyond
+                    .iter()
+                    .any(|&u| corners(u).contains(&a) && corners(u).contains(&b))
+                {
+                    cut.push([a, b]);
+                }
+            }
+        }
+        if cut.is_empty() {
+            continue;
+        }
+        let ends = |v: u32| cut.iter().filter(|e| e.contains(&v)).count();
+        let mut path = vec![
+            cut.iter()
+                .flatten()
+                .copied()
+                .find(|&v| ends(v) == 1)
+                .unwrap(),
+        ];
+        while let Some(e) = cut.iter().position(|e| e.contains(path.last().unwrap())) {
+            let e = cut.remove(e);
+            path.push(if e[0] == *path.last().unwrap() {
+                e[1]
+            } else {
+                e[0]
+            });
+        }
+        regions.split(id, &path).unwrap();
+    }
+    let mut merged = regions.region_of(band[0]).unwrap();
+    loop {
+        let others: Vec<_> = band
+            .iter()
+            .map(|&t| regions.region_of(t).unwrap())
+            .filter(|&id| id != merged)
+            .collect();
+        if others.is_empty() {
+            break;
+        }
+        merged = others
+            .iter()
+            .find_map(|&id| regions.merge(merged, id).ok())
+            .expect("the band's pieces meet");
+    }
+    regions
+        .fit(merged, SurfaceKind::Sphere, &FitConstraints::default())
+        .unwrap();
     let mut back = Model::new();
-    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let out = regions.build(&mut back).unwrap();
     assert!(out.closed, "{:?}", out.report);
     let diagnosis = check(&back, &out.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
     assert!(out.report.curved_faceted <= 3, "{:?}", out.report.fallbacks);
     assert!(
+        out.report
+            .fallbacks
+            .iter()
+            .any(|f| f.region == merged && f.reason == FallbackReason::VolumeOff),
+        "{:?}",
+        out.report.fallbacks
+    );
+    assert!(
         curved(&back, &out.shape) >= 160,
         "{} curved faces",
         curved(&back, &out.shape)
     );
+}
+
+/// The same band, left to recognition: its middle strip spans many times
+/// the turn of the ball its end strips do, so the ball is a flat face the
+/// fit runs through, as a drum's would be, and nothing is faceted.
+#[test]
+#[ignore = "heavy"]
+fn a_narrow_band_drawn_in_strips_is_not_read_as_a_ball() {
+    let mesh = ftc_07_in_strips();
+    let regions = MeshRegions::find(&mesh, &MeshSolidOptions::default(), T).unwrap();
+    for t in band_in_strips(&regions) {
+        let region = regions.region(regions.region_of(t).unwrap()).unwrap();
+        assert!(
+            !matches!(region.surface, Some(Canonical::Sphere(_))),
+            "{region:?}"
+        );
+    }
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(out.closed, "{:?}", out.report);
+    let diagnosis = check(&back, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(out.report.curved_faceted, 0, "{:?}", out.report.fallbacks);
 }

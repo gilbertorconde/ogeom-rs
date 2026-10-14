@@ -1342,7 +1342,33 @@ pub(super) fn recognized_regions(
                         widest > FACET_SPAN,
                     )
                 }
-                None => (false, false),
+                // A ball's facets likewise each span about the same angle
+                // at its centre. Drawn in strips, a flat face between two
+                // small cones has its corners in two rows of four, each row
+                // a trapezoid; the circles through the two rows lie on one
+                // ball, and its middle strip spans many times the angle its
+                // end strips do.
+                None => match &shape {
+                    Canonical::Sphere(sphere) => {
+                        let centre = sphere.frame().origin();
+                        let mut spans: Vec<f64> = region
+                            .iter()
+                            .map(|&t| {
+                                let d = triangles[t].map(|v| points[v as usize] - centre);
+                                let angle =
+                                    |x: Vector, y: Vector| x.cross(y).magnitude().atan2(x.dot(y));
+                                angle(d[0], d[1])
+                                    .max(angle(d[1], d[2]))
+                                    .max(angle(d[0], d[2]))
+                            })
+                            .collect();
+                        spans.sort_by(f64::total_cmp);
+                        let median = spans[spans.len() / 2];
+                        let widest = spans.last().copied().unwrap_or(0.0);
+                        (median > 0.0 && widest > UNEVEN_TURN * median, false)
+                    }
+                    _ => (false, false),
+                },
             };
             if deviation > flat
                 || flat_too

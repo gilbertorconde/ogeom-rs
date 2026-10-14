@@ -52,6 +52,17 @@ with thread faces checks in seconds instead of minutes.
 
 ### Fixed
 
+- **A narrow band drawn in strips is not read as a ball (#253).**
+  nist_ftc_07 drawn in strips has a flat face 2.2 mm by 33 mm between two
+  small cones, each drawn as strips from rim to rim. Its eight corners lie
+  in two rows of four, each row a trapezoid, so all eight lie on one ball
+  of radius 90, and the three faces were recognized as that ball and built
+  over the wrong part of it: it and two faces beside it were faceted. A
+  ball's region now needs its facets to span about the same angle at its
+  centre, as a drum's need about its axis: the middle strip spans more
+  than ten times its neighbours', and the band comes back a plane between
+  two cones, nothing faceted.
+
 - **A fillet drawn in strips beside a flat floor stays a cylinder (#253).**
   nist_ctc_02's floor meets a fillet's foot through a few slivers, and the
   floor with them is a smooth region that bends only there. With no row
