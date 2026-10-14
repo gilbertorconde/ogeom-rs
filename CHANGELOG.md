@@ -13,6 +13,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drill grazing a converted round's chords cuts and fills valid
+  (#249).** A converted rough corner meets each recognized round along
+  chords that stand off the round by their sag, 0.0096, and lie exactly
+  in the facets' planes. An edge's tolerance was read as a radius on both
+  its faces, so a drill tangent to the round's rim ran within that of a
+  chord for a third of a millimetre on the facet, and the boolean welded
+  junctions 0.13 across that swallowed the facets beside it. Each face
+  now reads an edge as far as it stands off that face, meeting the round
+  along its own image of the chord; the two faces' crossings of a loose
+  edge, as far apart along it as its tolerance over the crossing face's
+  lean, are one junction; two sections through one face cut each other
+  off a loose edge only where both are kept; and a kept piece whose
+  boundary is all dust is dropped. The two drills of radius 1.4 beside the
+  rough box's corner cut and fill valid again.
+
 - **A converted facet whose seam with a drum folds a micron past its
   other side is built as a fan.** The converter looks for a face whose
   boundary crosses itself in its chart, but drew each face as the

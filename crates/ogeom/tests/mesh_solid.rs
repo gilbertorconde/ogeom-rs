@@ -1882,6 +1882,48 @@ fn facets_beside_a_small_rough_corner_do_not_fold_over_themselves() {
     );
 }
 
+/// A drill beside the small rough box's corner passes a few microns
+/// outside a facet's corner, inside the reach the corner's vertex owns, and
+/// cuts off a piece of the facet every edge of which closes on that
+/// vertex. The piece is dust on every face alike, and the cut and the fill
+/// check valid and make the box.
+#[test]
+fn a_drill_beside_a_small_rough_corner_cuts_and_fills_valid() {
+    let mut model = Model::new();
+    let out = solid_from_mesh(
+        &mut model,
+        &rough_rounded_box_of((6.0, 6.0, 4.0), 1.5),
+        &MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap();
+    let whole = volume(&model, &out.shape);
+    let at = Frame::new(Point::new(0.8, 0.4, -5.0), Direction::Z, Direction::X, T).unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, at, 1.1, 20.0, T)
+        .unwrap()
+        .shape;
+    let mut shares = 0.0;
+    for (name, made) in [
+        (
+            "cut",
+            ogeom::boolean::cut(&mut model, &out.shape, &drill, T),
+        ),
+        (
+            "common",
+            ogeom::boolean::common(&mut model, &out.shape, &drill, T),
+        ),
+    ] {
+        let made = made.unwrap_or_else(|e| panic!("{name}: {e}"));
+        let diagnosis = check(&model, &made.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        shares += volume(&model, &made.shape);
+    }
+    assert!(
+        (shares - whole).abs() < whole * 2e-3,
+        "{shares} against {whole}"
+    );
+}
+
 /// Each fillet of the rough box meets its corner all but tangentially,
 /// along a chain no curve both surfaces share can be solved for. The
 /// fillets are still cylinders, bounded there by curves threaded through
@@ -1919,11 +1961,12 @@ fn fillets_ending_on_rough_corners_are_still_cylinders() {
     );
 }
 
-/// A hole drilled through the rough box beside a corner crosses planes,
+/// Holes drilled through the rough box beside a corner cross planes,
 /// fillets and facets bounded by threaded curves a few hundredths loose.
 /// That looseness is a length in space: it welds a section's ends in each
 /// chart only as far as it reaches there, and it collapses no section or
-/// edge that is longer than its own doubt. The hole cuts and fills valid.
+/// edge that is longer than its own doubt. Each hole cuts and fills valid,
+/// the two of radius 1.4 grazing the fillets' chords all but tangentially.
 #[test]
 #[ignore = "heavy"]
 fn holes_beside_a_rough_corner_cut_and_fill_valid() {
@@ -1936,7 +1979,7 @@ fn holes_beside_a_rough_corner_cut_and_fill_valid() {
     )
     .unwrap();
     let whole = volume(&model, &out.shape);
-    for (x, y, r) in [(2.05, 0.35, 1.0)] {
+    for (x, y, r) in [(1.1, 0.6, 1.4), (2.05, 0.35, 1.0), (1.35, 1.9, 1.4)] {
         let at = Frame::new(Point::new(x, y, -5.0), Direction::Z, Direction::X, T).unwrap();
         let drill = ogeom::algo::make_cylinder(&mut model, at, r, 20.0, T)
             .unwrap()
