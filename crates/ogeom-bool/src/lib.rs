@@ -4570,6 +4570,50 @@ fn fill(
                         }
                         if let Some((_, on_a)) = best {
                             at = on_a;
+                        } else if let (Some(own), Some(beside)) = if other.face_a == section.face_a
+                        {
+                            (gb.faces.get(section.face_b), gb.faces.get(other.face_b))
+                        } else {
+                            (ga.faces.get(section.face_a), ga.faces.get(other.face_a))
+                        } {
+                            // Off the edge the two faces share, the crossing
+                            // is one only where the other section is kept.
+                            // Beside a loose shared edge (a chord between a
+                            // facet and the drum it was converted beside)
+                            // the two faces' surfaces meet the crossing face
+                            // again a sag's lean off the edge, on neither
+                            // face, and a cut there leaves a stub inside the
+                            // junction the edge's crossings make. Only there
+                            // is a crossing asked whether it lies inside the
+                            // other section's face, to within that face's
+                            // doubt and the loose edge's tolerance: a tight
+                            // edge's two faces meet where it runs, however far
+                            // a stated edge drifts from their meet.
+                            let loose = beside
+                                .edges
+                                .iter()
+                                .filter(|e| {
+                                    e.tolerance > tol.confusion() * DRAWN_APART
+                                        && own.edges.iter().any(|o| o.node == e.node)
+                                })
+                                .map(|e| e.tolerance)
+                                .fold(None, |most: Option<f64>, t| {
+                                    Some(most.map_or(t, |m| m.max(t)))
+                                });
+                            if let Some(loose) = loose {
+                                let doubt = doubt_at(beside, crossing.point, tol)?
+                                    .max(both)
+                                    .max(tol.confusion() * 1e3)
+                                    + loose;
+                                if !within_face(beside, crossing.point, doubt, tol)? {
+                                    if *DEBUG_WIRE {
+                                        eprintln!(
+                                            "PAVE s{si}: cross s{sj} at {at:.6} off s{sj}'s face, no cut"
+                                        );
+                                    }
+                                    continue;
+                                }
+                            }
                         }
                     }
                     if *DEBUG_WIRE {
@@ -7233,6 +7277,24 @@ fn length_and_reach(curve: &Curve, tol: Tolerances) -> OgeomResult<(f64, f64)> {
         span = span.with_point(p);
     }
     Ok((length, span.diagonal()))
+}
+
+/// Whether a point a face's surface holds to within `margin` lies inside
+/// the face's trim, or within `margin` of its boundary as the face draws it.
+fn within_face(face: &GFace, p: Point, margin: f64, tol: Tolerances) -> OgeomResult<bool> {
+    if chart_point_within(face, p, margin.max(tol.confusion() * 1e2), tol).is_some() {
+        return Ok(true);
+    }
+    for e in &face.edges {
+        if !e.bound.expanded(margin).contains(p) {
+            continue;
+        }
+        let (drawn, drange, _) = e.drawn();
+        if distance_to_edge_curve(drawn, drange, p, tol)? <= margin {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Where a point sits in a face's chart, for a point up to `reach` off the
@@ -13118,6 +13180,26 @@ mod tests {
         .unwrap();
         let spread = lean_spread(e, t, &SurfaceGeometry::Cone(apex), at, T);
         assert!(spread.is_finite() && spread >= 0.0, "{spread}");
+    }
+
+    /// A point on a face's surface inside its trim lies within it; one
+    /// beyond its boundary lies within it only to the margin asked.
+    #[test]
+    fn a_point_beside_a_face_lies_within_it_only_to_the_margin() {
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let gathered = gather(&model, &solid, false, None, T).unwrap();
+        let top = gathered
+            .faces
+            .iter()
+            .find(|f| f.bound.low().unwrap().z > 9.9)
+            .unwrap();
+        assert!(within_face(top, Point::new(10.0, 10.0, 10.0), 1e-7, T).unwrap());
+        let beside = Point::new(10.0, -0.05, 10.0);
+        assert!(!within_face(top, beside, 1e-4, T).unwrap());
+        assert!(within_face(top, beside, 0.06, T).unwrap());
     }
 
     /// A circle's count from its sag in closed form stands its chords within
