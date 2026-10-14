@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-14
+
+A minor release, since the API changes: `Callout` gains `text` and
+`items`, so a callout carries its words and the faces it names through
+STEP and the native format. Cylinders and cones now mesh between their
+rims, a third fewer triangles on drum-heavy parts (door_handle_guide
+2,956 to 2,004 at 0.0125 mm, against OpenCascade's 1,948), and every
+triangle of a curved face, a cone's apex included, keeps to the chord.
+The mesh converter reads meshes drawn in strips, as OpenCascade and
+truck draw them, and a face it builds the wrong way round costs only
+itself. A ray meets a spline face wherever it crosses it, and a solid
+with thread faces checks in seconds instead of minutes.
+
 ### Added
 
 - **`Callout::text` and `Callout::items` (#228, #227).** A callout carries
@@ -5362,7 +5375,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.16...v0.10.0
 [0.9.16]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.14...v0.9.15
