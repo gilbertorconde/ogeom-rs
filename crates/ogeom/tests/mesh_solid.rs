@@ -677,6 +677,26 @@ fn caps_zones_and_bent_tubes_come_back_exact() {
     comes_back_as(&model, &elbow, [2, 0, 0, 0, 1]);
 }
 
+/// A bore running into a drafted wall across a slight turn, both drawn
+/// in strips from rim to rim (nist_ftc_06's, cut out around one bore and
+/// kept as a file): each strip's corners lie only on its two rims, so a
+/// first sample takes strips of both and fits neither, and the two are one
+/// smooth region no sweep holds. Pieced along their strips' long sides,
+/// the bore and the wall each lie on their own surface, and come back a
+/// drum and a cone.
+#[test]
+fn a_bore_into_a_drafted_wall_drawn_in_strips_comes_back_round() {
+    let path = format!(
+        "{}/../../tests/corpus/bore_into_drafted_wall_in_strips.obj",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mesh = ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert_eq!(out.report.curved_faceted, 0, "{:?}", out.report.fallbacks);
+    assert_eq!(kinds(&back, &out.shape), [2, 2, 2, 0, 1]);
+}
+
 /// The rounded block drawn the way OpenCascade and truck draw a drum, each
 /// fillet four flat strips from rim to rim, no row between, kept as a file
 /// so the converter sees the same triangles whatever the mesher draws. The

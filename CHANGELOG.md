@@ -25,6 +25,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A bore running into a drafted wall, drawn in strips, comes back round
+  (#253).** Drawn in strips from rim to rim, each strip's corners lie only
+  on its two rims, so a first sample took strips of both the bore and the
+  wall and fitted neither, and the two were one smooth region no sweep
+  held: nist_ftc_06's two bores came back as 64 planes. A free smooth
+  region no surface holds whole is now pieced along its strips' long
+  sides, and taken where every piece lies on a drum or a cone.
+
 - **A small ball's region is a cap only about a true latitude (#253).** A
   converted sphere region whose boundary ring lay within the reach of a
   plane was framed as a cap about that plane's normal, its pole inside.

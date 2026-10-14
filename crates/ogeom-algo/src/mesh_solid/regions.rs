@@ -1485,6 +1485,34 @@ pub(super) fn swept_regions(
             groups.carriers.push(Carrier::Curved(curved));
             continue;
         }
+        // A face drawn in strips, rim to rim, joins the next face along
+        // its rim only by the short sides of its strips, and a bore that
+        // runs into a drafted wall across a slight turn is one smooth
+        // region with it: the strips joined along their long sides are
+        // each asked alone, and taken where every piece lies on a drum or
+        // a cone. A few facets of a coarse round lie as exactly on a drum
+        // of their own, and are left to the rounds, which put them on the
+        // drum tangent to their flanks.
+        let parts = along_long_sides(points, triangles, adjacency, &region);
+        if parts.len() > 1 {
+            let fits: Vec<Option<Curved>> = parts
+                .iter()
+                .map(|part| {
+                    canonical_alone(points, triangles, &normals, part, flat, tol)
+                        .filter(|c| matches!(c.shape, Canonical::Cylinder(_) | Canonical::Cone(_)))
+                })
+                .collect();
+            if fits.iter().all(Option::is_some) {
+                for (part, curved) in parts.iter().zip(fits.into_iter().flatten()) {
+                    let g = groups.carriers.len();
+                    for &t in part {
+                        groups.of[t] = g;
+                    }
+                    groups.carriers.push(Carrier::Curved(curved));
+                }
+                continue;
+            }
+        }
         // The recognized bands the region runs into smoothly, offered with
         // it: a stretch of a wavy profile straight enough to pass for a
         // cone is part of the one sweep, and the sweep takes it where the
@@ -1520,6 +1548,55 @@ pub(super) fn swept_regions(
             claim_swept(groups, &region, claim);
         }
     }
+}
+
+/// `region` cut into the pieces its triangles make joined only across
+/// sides at least a third of the longest side of both: see
+/// [`swept_regions`].
+fn along_long_sides(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    region: &[usize],
+) -> Vec<Vec<usize>> {
+    let inside: ogeom_core::FastSet<usize> = region.iter().copied().collect();
+    let longest = |t: usize| {
+        let c = triangles[t].map(|v| points[v as usize]);
+        c[0].distance(c[1])
+            .max(c[1].distance(c[2]))
+            .max(c[2].distance(c[0]))
+    };
+    let mut seen: ogeom_core::FastSet<usize> = ogeom_core::FastSet::default();
+    let mut parts = Vec::new();
+    for &seed in region {
+        if !seen.insert(seed) {
+            continue;
+        }
+        let mut part = vec![seed];
+        let mut i = 0;
+        while i < part.len() {
+            let t = part[i];
+            i += 1;
+            for h in 3 * t..3 * t + 3 {
+                let Some(g) = adjacency.twin[h] else {
+                    continue;
+                };
+                let other = g / 3;
+                if !inside.contains(&other) || seen.contains(&other) {
+                    continue;
+                }
+                let (a, b) = from_to(triangles, h);
+                let side = points[a as usize].distance(points[b as usize]);
+                if side * 3.0 < longest(t).max(longest(other)) {
+                    continue;
+                }
+                seen.insert(other);
+                part.push(other);
+            }
+        }
+        parts.push(part);
+    }
+    parts
 }
 
 /// The canonical surface a free region lies on by itself, as a curved
