@@ -25,6 +25,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A small ball's region is a cap only about a true latitude (#253).** A
+  converted sphere region whose boundary ring lay within the reach of a
+  plane was framed as a cap about that plane's normal, its pole inside.
+  On a small ball the reach is loose: nist_ctc_02's corner blend drawn in
+  strips came back on a ball nine millimetres across whose ring stood a
+  tenth of a millimetre out of its plane, and the face's own mesh folded
+  round a pole its boundary did not go round. A ring must now also lie
+  within a hundredth of its own size of its plane.
+
 - **A band left between two fillets is taken on its own surface before
   the sweeps.** A narrow band whose seeds all grew onto its still-free
   fillets fitted nothing, and the sweep pass then took it as a surface

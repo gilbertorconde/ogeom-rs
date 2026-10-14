@@ -32,6 +32,10 @@ const EXACT_ALONE: f64 = 1e-2;
 /// allows.
 const FACET_SPAN: f64 = core::f64::consts::FRAC_PI_3;
 
+/// How far out of its plane, against its own size, a sphere region's
+/// boundary ring may lie and still be a latitude: a hundredth.
+const LATITUDE_SPREAD: f64 = 1e-2;
+
 /// How many times the median turn of a drum one of its facets may span.
 const UNEVEN_TURN: f64 = 4.0;
 
@@ -2144,7 +2148,14 @@ pub(super) fn sphere_axis(
             break;
         };
         let n = normal.vector();
-        if pts.iter().any(|p| (*p - through).dot(n).abs() > reach) {
+        // Within the reach a boundary is placed within, and within a
+        // hundredth of the ring's own size: a ring a tenth of a millimetre
+        // out of its plane, a millimetre and a half across a small ball, is
+        // no latitude, and the cap it would make holds its pole inside a
+        // boundary that does not go round it.
+        let size = pts.iter().map(|p| p.distance(through)).fold(0.0, f64::max);
+        let within = reach.min((size * LATITUDE_SPREAD).max(flat));
+        if pts.iter().any(|p| (*p - through).dot(n).abs() > within) {
             planar = false;
             break;
         }
@@ -2181,5 +2192,84 @@ pub(super) fn sphere_axis(
     if let Carrier::Curved(curved) = &mut groups.carriers[g] {
         curved.shape = Canonical::Sphere(turned);
         curved.fixed = true;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::mesh_solid::PatchRefusals;
+
+    /// A small ball's region bounded by a ring a tenth of a millimetre out
+    /// of its plane (a corner blend of nist_ctc_02 drawn in strips, read as
+    /// a ball nine millimetres across) is no cap about a latitude: its
+    /// frame is left for the re-framing that moves its poles away, not
+    /// fixed with a pole inside a boundary that does not go round it.
+    #[test]
+    fn a_ring_out_of_its_plane_is_no_latitude_of_a_small_ball() {
+        let tol = Tolerances::millimetres();
+        let centre = Point::new(
+            -50.559_740_748_617_49,
+            412.156_894_833_347_96,
+            -339.030_256_365_747_5,
+        );
+        let ring = [
+            Point::new(-50.464_907_910_19, 412.733_979_221_2, -330.0),
+            Point::new(-51.114_771_573_39, 412.341_178_423_2, -330.0),
+            Point::new(
+                -53.083_316_241_694_46,
+                413.374_664_374_059_9,
+                -330.427_142_682_764_5,
+            ),
+            Point::new(
+                -51.924_421_630_578_87,
+                414.414_671_603_378_1,
+                -330.374_852_107_652_15,
+            ),
+            Point::new(
+                -50.464_907_910_19,
+                414.957_323_846_248_87,
+                -330.427_142_682_764_4,
+            ),
+        ];
+        let radius = ring[0].distance(centre);
+        let pole = centre
+            + (Point::new(-51.481, 413.681, -330.159) - centre)
+                .normalized(tol)
+                .unwrap()
+                * radius;
+        let mut points = vec![pole];
+        points.extend(ring);
+        let triangles: Vec<[u32; 3]> = (0..5u32).map(|i| [0, 1 + i, 1 + (i + 1) % 5]).collect();
+        let adjacency = Adjacency::new(&triangles);
+        let sphere = Sphere::new(
+            Frame::new(centre, Direction::Z, Direction::X, tol).unwrap(),
+            radius,
+            tol,
+        )
+        .unwrap();
+        let mut groups = Groups {
+            of: vec![0; triangles.len()],
+            carriers: vec![Carrier::Curved(Curved {
+                shape: Canonical::Sphere(sphere),
+                deviation: 0.0,
+                fitted: 0.0,
+                centre: (0.0, 0.0),
+                wraps: false,
+                wraps_v: false,
+                fixed: false,
+                vertices: (0..6).collect(),
+                patch: None,
+            })],
+            refused: PatchRefusals::default(),
+            fans: std::collections::BTreeSet::new(),
+            narrower: FastMap::default(),
+        };
+        sphere_axis(&points, &triangles, &adjacency, &mut groups, 0, 5e-3, tol);
+        let Carrier::Curved(curved) = &groups.carriers[0] else {
+            panic!("the region is no longer curved");
+        };
+        assert!(!curved.fixed, "framed as a cap about its pole");
     }
 }
