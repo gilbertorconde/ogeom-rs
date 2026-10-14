@@ -718,6 +718,30 @@ fn a_bore_with_a_loose_rim_drawn_in_strips_takes_no_open_sweep() {
     assert_eq!(kinds(&back, &out.shape)[1..], [1, 0, 0, 0]);
 }
 
+/// A fillet between a drafted wall and a floor, drawn in strips from rim
+/// to rim between two corner balls (nist_ctc_02's, cut out around it and
+/// kept as a file). The floor meets the fillet's foot through a few
+/// slivers, and the floor with them is a smooth region that bends only
+/// there. With no row through the fillet's middle, a surface of revolution
+/// about an axis far off holds the fillet's rims, its straight strips and
+/// the flat floor alike; offered the fillet with the floor, it took both,
+/// and its seams with the balls could not be placed. A flat face bending
+/// only at a few slivers is not tried as a sweep, and the fillet stays a
+/// cylinder between its balls. (The piece cut out is open where the cut
+/// ran.)
+#[test]
+fn a_fillet_beside_a_floor_drawn_in_strips_stays_a_cylinder() {
+    let path = format!(
+        "{}/../../tests/corpus/fillet_beside_a_floor_in_strips.obj",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mesh = ogeom::io::mesh_formats::read_obj(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert_eq!(out.report.curved_faceted, 0, "{:?}", out.report.fallbacks);
+    assert_eq!(kinds(&back, &out.shape)[1..], [2, 0, 2, 0]);
+}
+
 /// The rounded block drawn the way OpenCascade and truck draw a drum, each
 /// fillet four flat strips from rim to rim, no row between, kept as a file
 /// so the converter sees the same triangles whatever the mesher draws. The

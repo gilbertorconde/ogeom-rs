@@ -52,6 +52,16 @@ with thread faces checks in seconds instead of minutes.
 
 ### Fixed
 
+- **A fillet drawn in strips beside a flat floor stays a cylinder (#253).**
+  nist_ctc_02's floor meets a fillet's foot through a few slivers, and the
+  floor with them is a smooth region that bends only there. With no row
+  through the fillet's middle, a surface of revolution about an axis far
+  off held the fillet's rims, its straight strips and the floor alike, and
+  took the fillet with the floor; its seams with the corner balls beside
+  it could not be placed, and the fillet and both balls were faceted. A
+  smooth region whose triangles are all but a few those of flat faces
+  much larger than its other facets is now not tried as a sweep.
+
 - **A bore whose rim strays from it, drawn in strips, takes no open sweep
   (#253).** nist_ctc_02's two large bores, drawn from rim to rim, have a
   far rim standing up to 0.019 off the bore, so no drum holds them, and an

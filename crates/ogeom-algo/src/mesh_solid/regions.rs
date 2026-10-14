@@ -1469,7 +1469,20 @@ pub(super) fn swept_regions(
     let normals: Vec<Vector> = triangles.iter().map(|t| unit_normal(points, *t)).collect();
     let cos_crease = options.crease.cos();
     let turn = |h: Half| adjacency.twin[h].map(|g| normals[h / 3].dot(normals[g / 3]));
-    for region in smooth_regions(triangles, adjacency, &normals, options, groups) {
+    let regions = smooth_regions(triangles, adjacency, &normals, options, groups);
+    if regions.is_empty() {
+        return;
+    }
+    let patches = FlatPatches::of(points, triangles, adjacency, &normals, flat);
+    for region in regions {
+        // A flat face that bends only where a few slivers join it to a
+        // round beside it is a plane, not a profile. Drawn in strips, the
+        // round has no row through its middle, and a sweep about an axis
+        // far off holds its rims and its straight rulings as well as the
+        // plane: offered the round with it, it would take both.
+        if curved_part(&patches, &region) < SWEPT_TRIANGLES {
+            continue;
+        }
         // A region every seed of which grew onto neighbours still free,
         // and fitted nothing with them, may lie on a canonical surface
         // once they are claimed: a narrow band between two fillets. It is
@@ -1548,6 +1561,35 @@ pub(super) fn swept_regions(
             claim_swept(groups, &region, claim);
         }
     }
+}
+
+/// How many of `region`'s triangles lie outside its flat faces: its
+/// pieces of flat patches, largest first, each more than [`PATCH_SCALE`]
+/// times larger than the median facet of what is left without it.
+fn curved_part(patches: &FlatPatches, region: &[usize]) -> usize {
+    let mut pieces: FastMap<usize, f64> = FastMap::default();
+    for &t in region {
+        *pieces.entry(patches.of[t]).or_insert(0.0) += patches.facet[t];
+    }
+    let mut pieces: Vec<(usize, f64)> = pieces.into_iter().collect();
+    pieces.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut left: Vec<usize> = region.to_vec();
+    for (patch, area) in pieces {
+        let mut areas: Vec<f64> = left
+            .iter()
+            .filter(|&&t| patches.of[t] != patch)
+            .map(|&t| patches.facet[t])
+            .collect();
+        if areas.is_empty() {
+            break;
+        }
+        areas.sort_by(f64::total_cmp);
+        if area <= areas[areas.len() / 2] * PATCH_SCALE {
+            break;
+        }
+        left.retain(|&t| patches.of[t] != patch);
+    }
+    left.len()
 }
 
 /// `region` cut into the pieces its triangles make joined only across
