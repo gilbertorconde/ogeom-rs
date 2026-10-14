@@ -11,7 +11,47 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-14
+
+A patch release of fixes. Meshes drawn purely in strips, as OpenCascade
+and truck write them, convert as ogeom's own do: a narrow band is no
+longer read as a ball, a fillet beside a floor stays a cylinder, and a
+bore whose rim strays from it takes no open sweep (#253). Drills through
+a converted rough corner, grazing the chords where its facets meet the
+rounds, cut and fill valid instead of refusing (#249).
+
 ### Fixed
+
+- **A narrow band drawn in strips is not read as a ball (#253).**
+  nist_ftc_07 drawn in strips has a flat face 2.2 mm by 33 mm between two
+  small cones, each drawn as strips from rim to rim. Its eight corners lie
+  in two rows of four, each row a trapezoid, so all eight lie on one ball
+  of radius 90, and the three faces were recognized as that ball and built
+  over the wrong part of it: it and two faces beside it were faceted. A
+  ball's region now needs its facets to span about the same angle at its
+  centre, as a drum's need about its axis: the middle strip spans more
+  than ten times its neighbours', and the band comes back a plane between
+  two cones, nothing faceted.
+
+- **A fillet drawn in strips beside a flat floor stays a cylinder (#253).**
+  nist_ctc_02's floor meets a fillet's foot through a few slivers, and the
+  floor with them is a smooth region that bends only there. With no row
+  through the fillet's middle, a surface of revolution about an axis far
+  off held the fillet's rims, its straight strips and the floor alike, and
+  took the fillet with the floor; its seams with the corner balls beside
+  it could not be placed, and the fillet and both balls were faceted. A
+  smooth region whose triangles are all but a few those of flat faces
+  much larger than its other facets is now not tried as a sweep.
+
+- **A bore whose rim strays from it, drawn in strips, takes no open sweep
+  (#253).** nist_ctc_02's two large bores, drawn from rim to rim, have a
+  far rim standing up to 0.019 off the bore, so no drum holds them, and an
+  extrusion was fitted to the strips: its profile went all the way round
+  without closing, the last strip spanned the gap between its ends, and
+  no boundary closed on it, so the converter gave up the region as
+  unplaced. A sweep whose profile does not close is now refused where a
+  triangle of its region spans from one end of the profile to the other;
+  the bore's strips stay facets, as nothing holds their vertices.
 
 - **A drill grazing a converted round's chords cuts and fills valid
   (#249).** A converted rough corner meets each recognized round along
@@ -79,37 +119,6 @@ with thread faces checks in seconds instead of minutes.
   (33,822), every triangle within the chord.
 
 ### Fixed
-
-- **A narrow band drawn in strips is not read as a ball (#253).**
-  nist_ftc_07 drawn in strips has a flat face 2.2 mm by 33 mm between two
-  small cones, each drawn as strips from rim to rim. Its eight corners lie
-  in two rows of four, each row a trapezoid, so all eight lie on one ball
-  of radius 90, and the three faces were recognized as that ball and built
-  over the wrong part of it: it and two faces beside it were faceted. A
-  ball's region now needs its facets to span about the same angle at its
-  centre, as a drum's need about its axis: the middle strip spans more
-  than ten times its neighbours', and the band comes back a plane between
-  two cones, nothing faceted.
-
-- **A fillet drawn in strips beside a flat floor stays a cylinder (#253).**
-  nist_ctc_02's floor meets a fillet's foot through a few slivers, and the
-  floor with them is a smooth region that bends only there. With no row
-  through the fillet's middle, a surface of revolution about an axis far
-  off held the fillet's rims, its straight strips and the floor alike, and
-  took the fillet with the floor; its seams with the corner balls beside
-  it could not be placed, and the fillet and both balls were faceted. A
-  smooth region whose triangles are all but a few those of flat faces
-  much larger than its other facets is now not tried as a sweep.
-
-- **A bore whose rim strays from it, drawn in strips, takes no open sweep
-  (#253).** nist_ctc_02's two large bores, drawn from rim to rim, have a
-  far rim standing up to 0.019 off the bore, so no drum holds them, and an
-  extrusion was fitted to the strips: its profile went all the way round
-  without closing, the last strip spanned the gap between its ends, and
-  no boundary closed on it, so the converter gave up the region as
-  unplaced. A sweep whose profile does not close is now refused where a
-  triangle of its region spans from one end of the profile to the other;
-  the bore's strips stay facets, as nothing holds their vertices.
 
 - **A bore running into a drafted wall, drawn in strips, comes back round
   (#253).** Drawn in strips from rim to rim, each strip's corners lie only
@@ -5434,7 +5443,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.16...v0.10.0
 [0.9.16]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.15...v0.9.16
