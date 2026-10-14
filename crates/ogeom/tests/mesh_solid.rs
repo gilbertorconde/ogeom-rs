@@ -1757,26 +1757,38 @@ fn a_filleted_plate_s_tangent_seams_end_at_their_corners() {
 /// A rounded box whose corner balls are roughened into free-form facets,
 /// as a mesh.
 fn rough_rounded_box() -> Triangulation {
+    rough_rounded_box_of((20.0, 20.0, 10.0), 2.0)
+}
+
+/// A box of `size` rounded at `radius`, its corner balls roughened by a
+/// fiftieth of a millimetre into free-form facets, as a mesh.
+fn rough_rounded_box_of(size: (f64, f64, f64), radius: f64) -> Triangulation {
     let mut model = Model::new();
-    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, size, T)
         .unwrap()
         .shape;
     let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
-    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, radius, T)
         .unwrap()
         .shape;
     let mut mesh = meshed(&model, &rounded);
+    let (high, mid) = (
+        Point::new(size.0 - radius, size.1 - radius, size.2 - radius),
+        Point::new(size.0 / 2.0, size.1 / 2.0, size.2 / 2.0),
+    );
     for (i, p) in mesh.positions.iter_mut().enumerate() {
         let near = |v: f64, low: f64, high: f64| if v < (low + high) / 2.0 { low } else { high };
         let centre = Point::new(
-            near(p.x, 2.0, 18.0),
-            near(p.y, 2.0, 18.0),
-            near(p.z, 2.0, 8.0),
+            near(p.x, radius, high.x),
+            near(p.y, radius, high.y),
+            near(p.z, radius, high.z),
         );
         let inside = |v: f64, c: f64, mid: f64| {
             if c < mid { v < c - 1e-3 } else { v > c + 1e-3 }
         };
-        if inside(p.x, centre.x, 10.0) && inside(p.y, centre.y, 10.0) && inside(p.z, centre.z, 5.0)
+        if inside(p.x, centre.x, mid.x)
+            && inside(p.y, centre.y, mid.y)
+            && inside(p.z, centre.z, mid.z)
         {
             let d = *p - centre;
             #[allow(clippy::cast_precision_loss, reason = "a vertex index")]
@@ -1785,6 +1797,89 @@ fn rough_rounded_box() -> Triangulation {
         }
     }
     mesh
+}
+
+/// A small rough rounded box converts with facets beside its rounds whose
+/// seams with the rounds bulge a micron past the facets' other sides,
+/// finer than the tessellator's chord. Every such facet is built so that
+/// no two of its edges cross in its plane away from its corners' reach:
+/// a boolean through a folded facet finds a piece of it with no inside.
+#[test]
+fn facets_beside_a_small_rough_corner_do_not_fold_over_themselves() {
+    use ogeom::geom::{Curve2d as _, Surface as _};
+    let mesh = rough_rounded_box_of((6.0, 6.0, 4.0), 1.5);
+    let mut model = Model::new();
+    let out = solid_from_mesh(&mut model, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    let cross = |p: ogeom::math::Point2, q: ogeom::math::Point2, r: ogeom::math::Point2| {
+        (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+    };
+    let mut folded = Vec::new();
+    for face in explore_unique(&model, &out.shape, ShapeType::Face).unwrap() {
+        let data = model.node(&face).unwrap().data().as_face().unwrap();
+        let ogeom::geom::SurfaceGeometry::Plane(plane) =
+            model.geometry().surface(data.surface).unwrap()
+        else {
+            continue;
+        };
+        let corners: Vec<(Point, f64)> = explore_unique(&model, &face, ShapeType::Vertex)
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let d = model.node(v).unwrap().data().as_vertex().unwrap();
+                (d.point, d.tolerance.get())
+            })
+            .collect();
+        let drawn: Vec<Vec<ogeom::math::Point2>> = explore_unique(&model, &face, ShapeType::Edge)
+            .unwrap()
+            .iter()
+            .filter_map(|e| {
+                let d = model.node(e).unwrap().data().as_edge().unwrap();
+                let Some(ogeom::topo::EdgeRepr::PCurve { curve, range, .. }) =
+                    d.pcurve_on(data.surface)
+                else {
+                    return None;
+                };
+                let pcurve = model.geometry().pcurve(*curve).unwrap();
+                Some(
+                    (0..=64)
+                        .map(|k| {
+                            let t = range.0 + (range.1 - range.0) * f64::from(k) / 64.0;
+                            pcurve.point_at(t, T).unwrap()
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        for (i, a) in drawn.iter().enumerate() {
+            for b in &drawn[i + 1..] {
+                for x in a.windows(2) {
+                    for y in b.windows(2) {
+                        let (d1, d2) = (cross(y[0], y[1], x[0]), cross(y[0], y[1], x[1]));
+                        if cross(x[0], x[1], y[0]) * cross(x[0], x[1], y[1]) >= 0.0
+                            || d1 * d2 >= 0.0
+                        {
+                            continue;
+                        }
+                        let f = d1 / (d1 - d2);
+                        let at = plane
+                            .point_at(
+                                (x[1].x - x[0].x).mul_add(f, x[0].x),
+                                (x[1].y - x[0].y).mul_add(f, x[0].y),
+                                T,
+                            )
+                            .unwrap();
+                        if !corners.iter().any(|&(v, r)| at.distance(v) <= r) {
+                            folded.push(at);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        folded.is_empty(),
+        "facets fold over themselves at {folded:?}"
+    );
 }
 
 /// Each fillet of the rough box meets its corner all but tangentially,

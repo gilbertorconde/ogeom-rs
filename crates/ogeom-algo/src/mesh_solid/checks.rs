@@ -637,13 +637,12 @@ pub(super) fn folded_seams(
                 .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
                 .map(|v| (v.point, v.tolerance.get()))
                 .collect();
-        // Drawn as the tessellator draws it first; a face whose chords
-        // cross there is drawn a hundred times finer, where chords that only
-        // crossed for their sag (two long arcs meeting at a sharp corner)
-        // part, and what still crosses is the boundary's own fold.
-        if chart_crossings(&ogeom_mesh::face_boundary(model, face, deflection, tol)?).is_empty() {
-            continue;
-        }
+        // Drawn a hundred times finer than the tessellator draws it, where
+        // chords that only cross for their sag (two long arcs meeting at a
+        // sharp corner) part, and what still crosses is the boundary's own
+        // fold. A fold shallower than the tessellator's chord (a facet's
+        // seam with the drum beside it bulging a micron past the facet's
+        // other side by a vertex) never shows in its drawing.
         let rings = ogeom_mesh::face_boundary(model, face, fine, tol)?;
         for [a, b, p, q] in chart_crossings(&rings) {
             let lift = |x: Point2| surface.point_at(x.x, x.y, tol);

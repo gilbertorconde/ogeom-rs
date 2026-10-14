@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A converted facet whose seam with a drum folds a micron past its
+  other side is built as a fan.** The converter looks for a face whose
+  boundary crosses itself in its chart, but drew each face as the
+  tessellator does first and looked closer only where that drawing
+  crossed, so a fold shallower than the tessellator's chord went unseen.
+  The rough rounded box came back with ten facets whose seam with the
+  round beside them crossed the facet's other side by up to 1.2 microns
+  over 0.07 mm by a corner, and a boolean through one of them found a
+  piece of the facet with no inside. Every face is now drawn finely, and
+  such a facet's seam is threaded straight.
+
 ## [0.11.0] - 2026-10-14
 
 A minor release, since the API changes: `Callout` gains `text` and
