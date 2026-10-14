@@ -313,6 +313,12 @@ struct BoundaryEdge {
 /// whose curve and pcurve were made together.
 const DRAWN_APART: f64 = 1e2;
 
+/// How many of a loose edge's tolerances a crossing of it may stand along
+/// it from the crossing the face across it finds: where the edge leans out
+/// of the crossing face by less than a tenth of a radian, the two are not
+/// told apart by the lean but by the touch, and held to this.
+const LEAN_SPREAD: f64 = 10.0;
+
 impl BoundaryEdge {
     /// The curve this face's boundary runs along, its range, and how far
     /// the face may stand off it: the image where there is one, exact on
@@ -2137,6 +2143,48 @@ struct Pave {
     /// (whether that face is of `a`, and its index), where the pave is
     /// such a crossing.
     across: Option<(bool, usize)>,
+    /// How far along the edge the crossing may stand from the one the
+    /// face across the edge finds: a loose edge's tolerance over the sine
+    /// of its lean out of the face that crosses it. Paves that near are
+    /// one junction, which reaches only as far as they stand apart.
+    spread: f64,
+}
+
+/// How far along a loose edge its crossing by `surface` at `at` may
+/// stand from the crossing the face across the edge finds: the edge's
+/// tolerance over the sine of its lean out of the surface there, held to
+/// [`LEAN_SPREAD`] tolerances. None for a tight edge, and none where the
+/// lean cannot be read (a cone's apex, a curve with no tangent there).
+fn lean_spread(
+    e: &BoundaryEdge,
+    t: f64,
+    surface: &SurfaceGeometry,
+    at: Point,
+    tol: Tolerances,
+) -> f64 {
+    if e.tolerance <= tol.confusion() * DRAWN_APART {
+        return 0.0;
+    }
+    let Ok(along) = e.curve.d1_at(t, tol) else {
+        return 0.0;
+    };
+    let length = along.magnitude();
+    let Ok(foot) = ogeom_geom::project_on_surface(surface, at, 16, tol) else {
+        return 0.0;
+    };
+    let Ok(normal) = surface.normal_at(foot.parameters.0, foot.parameters.1, tol) else {
+        return 0.0;
+    };
+    if length <= 0.0 {
+        return 0.0;
+    }
+    let sine = along.dot(normal.vector()).abs() / length;
+    let most = e.tolerance * LEAN_SPREAD;
+    if sine * most > e.tolerance {
+        e.tolerance / sine
+    } else {
+        most
+    }
 }
 
 /// Paves the edge cannot tell apart, as one junction each.
@@ -2207,9 +2255,18 @@ fn cluster_paves(
             continue;
         }
         // Two crossings each known to within its honesty are one point
-        // where they stand no further apart than both together.
+        // where they stand no further apart than both together. Two
+        // crossings of a loose edge within their spreads are one junction
+        // too, while every member stands within those spreads of the new
+        // one: a series of shallow crossings, each within its spread of the
+        // last, does not chain into a junction longer than the spreads.
         let joined = prev.is_some_and(|(held, last): (Point, Pave)| {
-            held.distance(at) <= floor.max(last.honesty + pave.honesty)
+            let apart = held.distance(at);
+            apart <= floor.max(last.honesty + pave.honesty)
+                || (apart <= last.spread + pave.spread
+                    && held_at
+                        .iter()
+                        .all(|p| p.distance(at) <= last.spread + pave.spread))
         });
         let touch = match (prev, off) {
             (Some((held, last)), Some(off)) if !joined => {
@@ -4015,7 +4072,7 @@ fn fill(
             let mut trim_ts: Vec<f64> = Vec::new();
             // Crossings with boundary edges: side, edge, parameter on the
             // edge, parameter on the section, and how honestly the stop sits.
-            let mut hits: Vec<(usize, EdgeKey, f64, f64, f64, bool)> = Vec::new();
+            let mut hits: Vec<(usize, EdgeKey, f64, f64, f64, bool, f64)> = Vec::new();
             // Spans of the section running *along* a boundary edge. The split
             // such a span would make already exists as boundary (stacked boxes'
             // perpendicular side planes meet exactly at the boxes' own edges),
@@ -4276,7 +4333,22 @@ fn fill(
                                 crossing.point
                             );
                         }
-                        hits.push((side, e.node, on_b, on_a, honesty, at_end.is_none()));
+                        // A loose edge (a chord between a facet and the drum
+                        // it was converted beside, standing off the drum by
+                        // its sag) is met by the faces either side of it each
+                        // where the other solid's face crosses its own image
+                        // of it: up to the tolerance apart across the edge,
+                        // and so that over the sine of the edge's lean out of
+                        // the crossing face apart along it. A drill all but
+                        // tangent to a round crosses the round's rim and the
+                        // facet's chord beside it five hundredths apart.
+                        // Held to ten tolerances, where the lean vanishes.
+                        let spread = if at_end.is_none() {
+                            lean_spread(e, on_b, &across.surface, crossing.point, tol)
+                        } else {
+                            0.0
+                        };
+                        hits.push((side, e.node, on_b, on_a, honesty, at_end.is_none(), spread));
                     }
                     for overlap in &found.overlaps {
                         // The curves overlap. What is *boundary* is the stretch
@@ -4328,6 +4400,7 @@ fn fill(
                                         t,
                                         honest(section.tolerance, tol).max(gap),
                                         false,
+                                        0.0,
                                     ));
                                     if gap > tol.confusion() * 1e2 {
                                         junctions.push(Junction {
@@ -4353,14 +4426,15 @@ fn fill(
             // the arc it ends on: thirty near-crossings inside a micron,
             // which read as stops would shatter the section and pave the
             // leg at each.
-            hits.retain(|(side, _, _, on_a, _, _)| {
+            hits.retain(|(side, _, _, on_a, _, _, _)| {
                 !along[*side].iter().any(|(lo, hi, _)| {
                     *on_a > lo + tol.parametric() && *on_a < hi - tol.parametric()
                 })
             });
-            let edge_hits: Vec<(EdgeKey, f64, f64, f64, Option<(bool, usize)>)> = hits
+            #[allow(clippy::type_complexity)]
+            let edge_hits: Vec<(EdgeKey, f64, f64, f64, Option<(bool, usize)>, f64)> = hits
                 .iter()
-                .map(|(side, node, on_b, on_a, honesty, crossed)| {
+                .map(|(side, node, on_b, on_a, honesty, crossed, spread)| {
                     let across = crossed.then(|| {
                         if *side == 0 {
                             (false, section.face_b)
@@ -4368,10 +4442,10 @@ fn fill(
                             (true, section.face_a)
                         }
                     });
-                    (*node, *on_b, *on_a, *honesty, across)
+                    (*node, *on_b, *on_a, *honesty, across, *spread)
                 })
                 .collect();
-            trim_ts.extend(hits.iter().map(|(_, _, _, on_a, _, _)| *on_a));
+            trim_ts.extend(hits.iter().map(|(_, _, _, on_a, _, _, _)| *on_a));
             let mut cross_ts: Vec<f64> = Vec::new();
             for (sj, other) in sections.iter().enumerate() {
                 if sj == si {
@@ -4471,7 +4545,7 @@ fn fill(
                     if let Some(edges) = apart_on {
                         let close = both.max(tol.confusion() * 1e2);
                         let mut best: Option<(f64, f64)> = None;
-                        for (node, _, on_a, _, _) in &edge_hits {
+                        for (node, _, on_a, _, _, _) in &edge_hits {
                             if !shared(edges, *node)
                                 || best.is_some_and(|(bd, _)| (on_a - at).abs() >= bd)
                             {
@@ -4856,7 +4930,7 @@ fn fill(
                 }
                 // Keep the paves that end a kept interval: those are where edges
                 // genuinely split.
-                for (node, on_edge, on_section, honesty, across) in &edge_hits {
+                for (node, on_edge, on_section, honesty, across, spread) in &edge_hits {
                     let s = speaks_for
                         .iter()
                         .find(|(t, _)| (t - on_section).abs() <= tol.parametric())
@@ -4873,6 +4947,7 @@ fn fill(
                                 t: *on_edge,
                                 honesty: *honesty,
                                 across: *across,
+                                spread: *spread,
                             },
                         ));
                     }
@@ -5023,6 +5098,7 @@ fn fill(
                                     t: on_e,
                                     honesty: honest(section.tolerance, tol).max(foot.distance),
                                     across: None,
+                                    spread: 0.0,
                                 },
                             ));
                         }
@@ -5175,6 +5251,7 @@ fn fill(
                             t: on_e,
                             honesty: honest(section.tolerance, tol).max(foot.distance),
                             across: None,
+                            spread: 0.0,
                         });
                     }
                 }
@@ -5370,6 +5447,7 @@ fn fill(
                         t: crossing.on_a,
                         honesty,
                         across: None,
+                        spread: 0.0,
                     });
                 }
                 let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
@@ -5378,6 +5456,7 @@ fn fill(
                         t: on_b,
                         honesty,
                         across: None,
+                        spread: 0.0,
                     });
                 }
             }
@@ -5501,6 +5580,7 @@ fn fill(
                             t,
                             honesty: honest(contact.tolerance, tol),
                             across: None,
+                            spread: 0.0,
                         });
                     }
                     if *DEBUG_WIRE {
@@ -5545,6 +5625,7 @@ fn fill(
                                 t,
                                 honesty: honest(contact.tolerance, tol),
                                 across: None,
+                                spread: 0.0,
                             });
                         }
                     }
@@ -12797,6 +12878,7 @@ mod tests {
                     t: x + 10.0,
                     honesty,
                     across: Some((false, 0)),
+                    spread: 0.0,
                 })
                 .collect();
             let clusters =
@@ -12926,6 +13008,116 @@ mod tests {
                 assert!(e.image.is_none());
             }
         }
+    }
+
+    /// The crossings either face of a loose edge finds, a lean apart along
+    /// it, are one cluster; tight, they stay two. A run of such crossings,
+    /// each within its spread of the last, makes no cluster longer than
+    /// two spreads.
+    #[test]
+    fn a_loose_edge_s_crossings_join_across_their_spread_and_no_further() {
+        let curve = Curve::Line(
+            ogeom_geom::LineCurve::segment(Point::new(0.0, 0.0, 0.0), Point::new(2.0, 0.0, 0.0), T)
+                .unwrap(),
+        );
+        let crange = ogeom_geom::Curve3d::domain(&curve);
+        let pave = |t: f64, spread: f64| Pave {
+            t,
+            honesty: 0.0,
+            across: None,
+            spread,
+        };
+        let two = [pave(1.0, 0.03), pave(1.05, 0.03)];
+        let clusters = cluster_paves(&curve, crange, 0.0096, &two, None, T).unwrap();
+        assert_eq!(clusters.len(), 1, "{clusters:?}");
+        assert!((clusters[0].span - 0.05).abs() < 1e-9, "{clusters:?}");
+        let tight = [pave(1.0, 0.0), pave(1.05, 0.0)];
+        assert_eq!(
+            cluster_paves(&curve, crange, 0.0096, &tight, None, T)
+                .unwrap()
+                .len(),
+            2
+        );
+        let run: Vec<Pave> = (0..8)
+            .map(|k| pave(0.5 + 0.05 * f64::from(k), 0.03))
+            .collect();
+        let clusters = cluster_paves(&curve, crange, 0.0096, &run, None, T).unwrap();
+        assert!(clusters.len() > 1, "{clusters:?}");
+        for c in &clusters {
+            assert!(c.span <= 0.06 + 1e-9, "{clusters:?}");
+        }
+    }
+
+    /// A crossing of a loose edge spreads along it as its tolerance over
+    /// the sine of its lean out of the crossing face, held to ten
+    /// tolerances; a tight edge's does not; and where the face's normal
+    /// cannot be read, at a cone's apex, the spread is none.
+    #[test]
+    fn a_crossing_spreads_along_a_loose_edge_by_its_lean() {
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let mut gathered = gather(&model, &solid, false, None, T).unwrap();
+        let e = gathered
+            .faces
+            .iter_mut()
+            .flat_map(|f| f.edges.iter_mut())
+            .find(|e| matches!(&*e.curve, Curve::Line(_)))
+            .unwrap();
+        let t = f64::midpoint(e.crange.0, e.crange.1);
+        let at = e.curve.point_at(t, T).unwrap();
+        let along = e.curve.d1_at(t, T).unwrap();
+        let along = along / along.magnitude();
+        let square = if along.z.abs() < 0.9 {
+            along.cross(ogeom_math::Vector::Z)
+        } else {
+            along.cross(ogeom_math::Vector::X)
+        };
+        let square = square / square.magnitude();
+        let plane_leaning = |lean: f64| -> SurfaceGeometry {
+            let normal = square * lean.cos() + along * lean.sin();
+            let frame = Frame::new(
+                at,
+                Direction::new(normal, T).unwrap(),
+                Direction::new(normal.cross(square).cross(normal), T)
+                    .or_else(|_| Direction::new(along, T))
+                    .unwrap(),
+                T,
+            )
+            .unwrap();
+            ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(frame)).into()
+        };
+        assert_eq!(lean_spread(e, t, &plane_leaning(0.3), at, T), 0.0);
+        e.tolerance = 0.01;
+        for lean in [0.3_f64, 1.2] {
+            let spread = lean_spread(e, t, &plane_leaning(lean), at, T);
+            assert!(
+                (spread - 0.01 / lean.sin()).abs() < 1e-9,
+                "{lean}: {spread}"
+            );
+        }
+        let spread = lean_spread(e, t, &plane_leaning(0.01), at, T);
+        assert!((spread - 0.1).abs() < 1e-12, "{spread}");
+        let apex = ogeom_geom::ConeSurface::new(
+            ogeom_math::Cone::new(
+                Frame::new(
+                    at,
+                    Direction::new(square, T).unwrap(),
+                    Direction::new(along, T).unwrap(),
+                    T,
+                )
+                .unwrap(),
+                0.0,
+                0.5,
+                T,
+            )
+            .unwrap(),
+            (0.0, 5.0),
+        )
+        .unwrap();
+        let spread = lean_spread(e, t, &SurfaceGeometry::Cone(apex), at, T);
+        assert!(spread.is_finite() && spread >= 0.0, "{spread}");
     }
 
     /// A circle's count from its sag in closed form stands its chords within
