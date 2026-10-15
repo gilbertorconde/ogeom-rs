@@ -255,3 +255,64 @@ Fa
         .mass;
     assert!((area - 100.0).abs() < 1e-9, "a ten by ten square: {area}");
 }
+
+#[test]
+fn placed_shapes_and_cone_charts_survive_the_round_trip() {
+    // A cone and an L-shaped prism, the pair placed by a turn and a shift:
+    // the placement has to be written as a placement record the reader
+    // takes back, the cone's charts in the format's own terms (along the
+    // ruling), and the prism's edges charted where each face uses them.
+    let mut model = Model::new();
+    let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, 5.0, 2.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let corners = [
+        Point::new(20.0, 0.0, 0.0),
+        Point::new(40.0, 0.0, 0.0),
+        Point::new(40.0, 5.0, 0.0),
+        Point::new(25.0, 5.0, 0.0),
+        Point::new(25.0, 15.0, 0.0),
+        Point::new(20.0, 15.0, 0.0),
+    ];
+    let outline = ogeom::algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let plane = ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(Frame::WORLD)).into();
+    let ell = ogeom::algo::make_face(&mut model, plane, &[outline], T)
+        .unwrap()
+        .shape;
+    let prism =
+        ogeom::algo::make_prism(&mut model, &ell, ogeom::math::Vector::new(0.0, 0.0, 7.0), T)
+            .unwrap()
+            .shape;
+    let both = ogeom::algo::make_compound(&mut model, &[cone, prism])
+        .unwrap()
+        .shape;
+    let turn = ogeom::math::Transform::rotation(
+        ogeom::math::Axis::new(Point::new(1.0, 2.0, 3.0), Direction::X),
+        0.7,
+    ) * ogeom::math::Transform::translation(ogeom::math::Vector::new(5.0, -4.0, 2.0));
+    let datum = model.add_datum(turn);
+    let placed = both.moved(&ogeom::topo::Location::of(datum));
+
+    let text = ogeom::io::brep::write(&model, &placed, T).unwrap();
+    let (back, shape) = ogeom::io::brep::read(&text, T).unwrap();
+    assert_eq!(counts(&back, &shape), counts(&model, &placed));
+    // A frustum of radii 5 and 2 over 10, and an L of area 150 over 7: both
+    // integrate in closed form, so a billionth is rounding's share.
+    let frustum = core::f64::consts::PI * 10.0 / 3.0 * (25.0 + 10.0 + 4.0);
+    let exact = frustum + 150.0 * 7.0;
+    let now = ogeom::algo::volume_properties(&back, &shape, Deflection::default(), T).unwrap();
+    assert!(
+        (now.mass - exact).abs() < exact * 1e-9,
+        "{} against {exact}",
+        now.mass
+    );
+    let was = ogeom::algo::volume_properties(&model, &placed, Deflection::default(), T).unwrap();
+    assert!(
+        now.centre.distance(was.centre) < 1e-9,
+        "and where it was: {:?} against {:?}",
+        now.centre,
+        was.centre
+    );
+}

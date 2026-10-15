@@ -2788,7 +2788,7 @@ impl<'a> Reader<'a> {
         };
         let (pcurve, off) = match prepared {
             PreparedPcurve::Exact { curve, off } | PreparedPcurve::Stated { curve, off } => {
-                (over_range(&curve, range), off)
+                (crate::pcurves::over_range(&curve, range), off)
             }
             PreparedPcurve::Fitted {
                 curve: fitted,
@@ -4679,7 +4679,7 @@ fn derive_pcurve(
     }
     let derived =
         if let Some(exact) = ogeom_intersect::exact_pcurve_over(curve, range, surface, tol) {
-            let exact = over_range(&exact, range);
+            let exact = crate::pcurves::over_range(&exact, range);
             let off = lifted(&exact);
             PreparedPcurve::Exact { curve: exact, off }
         } else {
@@ -4719,18 +4719,6 @@ fn derive_pcurve(
     }
 }
 
-/// A pcurve as it is measured over an edge's range: a line's stated
-/// domain widened to cover it, since a line evaluates anywhere.
-fn over_range(pcurve: &PlanarCurve, range: (f64, f64)) -> PlanarCurve {
-    if let PlanarCurve::Line(l) = pcurve {
-        let (lo, hi) = (l.domain().0.min(range.0), l.domain().1.max(range.1));
-        if let Ok(wider) = ogeom_geom::Line2d::over(l.axis(), lo, hi) {
-            return wider.into();
-        }
-    }
-    pcurve.clone()
-}
-
 /// The file's pcurve nearest the curve once lifted, with how far it
 /// stands. One that does not evaluate over the edge's range, or whose
 /// image leaves the surface's chart along a direction that does not close,
@@ -4763,7 +4751,7 @@ fn nearest_stated(
             let Some(shifted) = period_shifted(pcurve, turn * period.unwrap_or(0.0)) else {
                 continue;
             };
-            let shifted = over_range(&shifted, range);
+            let shifted = crate::pcurves::over_range(&shifted, range);
             if !within_chart(&shifted, range, surface, tol) {
                 continue;
             }

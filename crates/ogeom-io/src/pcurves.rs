@@ -15,6 +15,19 @@ use ogeom_geom::{PlanarCurve, SurfaceGeometry};
 
 pub(crate) use ogeom_algo::pcurve_fit::fit_projected_pcurve;
 
+/// A pcurve as it is measured over an edge's range: a line's stated
+/// domain widened to cover it, since a line evaluates anywhere.
+pub(crate) fn over_range(pcurve: &PlanarCurve, range: (f64, f64)) -> PlanarCurve {
+    use ogeom_geom::Curve2d as _;
+    if let PlanarCurve::Line(l) = pcurve {
+        let (lo, hi) = (l.domain().0.min(range.0), l.domain().1.max(range.1));
+        if let Ok(wider) = ogeom_geom::Line2d::over(l.axis(), lo, hi) {
+            return wider.into();
+        }
+    }
+    pcurve.clone()
+}
+
 /// An image slid by whole periods until its start meets `previous`.
 ///
 /// The only freedom a periodic chart leaves: every branch describes the

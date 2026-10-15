@@ -62,6 +62,34 @@ bump may break the API and a patch bump may not.
   `ogeom_algo::edges_turn`, the signed turn of a walk of edges about an
   axis, is now public.
 
+- **A shape saved in the `.brep` text format by another application reads
+  as the solid it is (#283).** Project archives keep each part's shape in
+  that format as the shape alone, and the reader got them wrong in four
+  ways: it required the content-type line those files leave out; it read a
+  seam's second chart number and its continuity, written with no space
+  between them (`2CN`), as one word; it composed a chain of placements in
+  reverse; and it dropped the placement an edge's chart is bound to, so a
+  rim used at two placements (the two ends of a padded profile) gave both
+  ends the first one's chart and faces came out empty or wrong. A
+  10 x 5 mm padded disc measured 520 mm^3 instead of 1570.8. Reading those
+  files also needed: placements kept as chains of the file's elementary
+  ones, so shared vertices and edges stay shared; wires walked end to end
+  (the file lists a wire's edges as a set); an edge's start vertex held
+  first; charts derived for edges on planes, which the format leaves out;
+  surfaces on left-handed seats rebuilt right-handed with their charts and
+  faces turned over; a cone's charts read along the ruling the format
+  measures them on; extrusions reaching both ways; and a face whose
+  placement cancels its wire's rebuilt where it stands. `read_numbered`
+  returns the edges and faces in the file's own numbering, which differs
+  from the walked wires' order for edges. The writer now writes placement
+  records the format (and the reader) accept, the file's own placement,
+  curve placements, each face's use of a chart at its own placement, and
+  cone charts along the ruling. Checked on 262 shapes from saved projects
+  against an independent reading of the same files: every face, edge and
+  solid count agrees, as does the edge and face numbering, and 176 of the
+  178 solids measure their volume to a millionth (the other two to 5e-5,
+  the share of the measurement taken from a mesh).
+
 - **A skinned loft closing to a point no longer folds its wall through
   itself near the point (#269).** The skin through the sections was
   carried on to the point, and its rows bent to meet it: past a section

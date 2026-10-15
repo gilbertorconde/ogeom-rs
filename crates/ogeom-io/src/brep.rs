@@ -6,12 +6,14 @@
 //! kernel that a mesh cannot be.
 //!
 //! The file is a header followed by tables (placements, geometry, topology),
-//! and the last of those is the interesting one. Topology records are
-//! written leaves first and *numbered backwards*: the final record is number
-//! one, and a record refers to its children by how far above it they sit. So
-//! a parent can only name children already written, the file needs no
-//! forward references, and a reader can build the model in a single pass
-//! with nothing left dangling.
+//! and the last of those is the interesting one. The header's first line,
+//! the content type, is left out by a writer saving a shape on its own (as
+//! a project archive holds its parts), so the version line alone is enough.
+//! Topology records are written leaves first and *numbered backwards*: the
+//! final record is number one, and a record refers to its children by how
+//! far above it they sit. So a parent can only name children already
+//! written, the file needs no forward references, and a reader can build
+//! the model in a single pass with nothing left dangling.
 //!
 //! ## What crosses
 //!
@@ -41,7 +43,7 @@
 //! are read and dropped for the same reason: they describe the state of the
 //! writer's own session, not the shape.
 
-use ogeom_core::FastMap;
+use ogeom_core::{FastMap, FastSet};
 use std::fmt::Write as _;
 
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
@@ -49,22 +51,24 @@ use ogeom_geom::{
     BSplineCurve, BSplineSurface, Circle2d, CircleCurve, ConeSurface, Curve, Curve2d as _,
     Curve3d as _, CylinderSurface, Ellipse2d, EllipseCurve, ExtrusionSurface, HyperbolaCurve,
     Line2d, LineCurve, ParabolaCurve, PlanarCurve, PlaneSurface, RevolutionSurface, SphereSurface,
-    Surface as _, SurfaceGeometry, TorusSurface, TrimmedCurve, TrimmedSurface,
+    Surface as _, SurfaceGeometry, TorusSurface, Transformable as _, TrimmedCurve, TrimmedSurface,
 };
 use ogeom_math::{
     Axis, Axis2, Circle, Circle2, Cone, ControlGrid, Cylinder, Direction, Direction2, Ellipse,
-    Ellipse2, Frame, Frame2, Hyperbola, KnotVector, Matrix3, Parabola, Plane, Point, Point2,
-    Sphere, Torus, Transform, Vector, Vector2, Weighted,
+    Ellipse2, Frame, Frame2, Handedness, Hyperbola, KnotVector, Matrix3, Parabola, Plane, Point,
+    Point2, Sphere, Torus, Transform, Transform2, TransformKind, Vector, Vector2, Weighted,
 };
 use ogeom_topo::{
     CurveId, EdgeData, EdgeRepr, FaceData, Location, Model, NodeData, Orientation, PCurveId, Shape,
-    ShapeType, SurfaceId, TShapeId, VertexData,
+    ShapeType, SurfaceId, TShape, TShapeId, VertexData,
 };
 
 /// What the format puts at the top of every file, and what a reader looks
 /// for to know it is one. Data, not prose: these bytes are the format.
 const CONTENT_TYPE: &str = "DBRep_DrawableShape";
 const VERSION: &str = "CASCADE Topology V1, (c) Matra-Datavision";
+/// What every version line opens with, whichever version it names.
+const VERSION_FAMILY: &str = "CASCADE Topology V";
 
 // --- writing -----------------------------------------------------------------
 
@@ -95,6 +99,8 @@ pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String
         let linear = transform.linear();
         let scale = transform.scale_factor();
         let translation = transform.translation_vector();
+        // The record's kind on its own line, then the three rows.
+        let _ = writeln!(out, "1");
         for row in 0..3 {
             let mut line = String::new();
             for column in 0..3 {
@@ -109,7 +115,7 @@ pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String
                     _ => translation.z,
                 })
             );
-            let _ = writeln!(out, "1{line}");
+            let _ = writeln!(out, "{}", line.trim_start());
         }
     }
 
@@ -118,7 +124,12 @@ pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String
         let Some(geometry) = model.geometry().pcurve(*id) else {
             ogeom_bail!(Dangling, "a pcurve is not in this model");
         };
-        write_pcurve(&mut out, geometry)?;
+        // A cone's chart runs along its axis here and along its ruling in
+        // the format.
+        match tables.ruled.get(id) {
+            Some(cos) => write_pcurve(&mut out, &geometry.stretched(1.0, 1.0 / cos, tol)?)?,
+            None => write_pcurve(&mut out, geometry)?,
+        }
     }
 
     let _ = writeln!(out, "Curves {}", tables.curves.len());
@@ -215,12 +226,21 @@ struct Tables {
     pcurve_at: FastMap<PCurveId, usize>,
     surface_at: FastMap<SurfaceId, usize>,
     location_at: FastMap<Location, usize>,
+    /// Charts on a cone, with the cosine of its half-angle.
+    ruled: FastMap<PCurveId, f64>,
+    /// Where each of an edge's charts is written as used: the placement of
+    /// the face's surface as seen from the edge, once per use the faces
+    /// make of it, by the chart's index among the edge's representations.
+    chart_uses: FastMap<TShapeId, Vec<(usize, Location)>>,
 }
 
 impl Tables {
     /// Walk the shape leaves-first, numbering everything it refers to.
     fn gather(&mut self, model: &Model, root: &Shape) -> OgeomResult<()> {
-        self.visit(model, root)
+        self.visit(model, root)?;
+        // The file's own shape is placed by a record like any other.
+        self.take_location(root.location());
+        Ok(())
     }
 
     fn visit(&mut self, model: &Model, shape: &Shape) -> OgeomResult<()> {
@@ -240,7 +260,12 @@ impl Tables {
             NodeData::Edge(data) => {
                 for representation in &data.representations {
                     match representation {
-                        EdgeRepr::Curve3d { curve, .. } => self.take_curve(*curve),
+                        EdgeRepr::Curve3d {
+                            curve, location, ..
+                        } => {
+                            self.take_curve(*curve);
+                            self.take_location(location);
+                        }
                         EdgeRepr::PCurve {
                             curve,
                             surface,
@@ -249,7 +274,8 @@ impl Tables {
                         } => {
                             self.take_pcurve(*curve);
                             self.take_surface(*surface);
-                            self.take_location(location);
+                            self.take_location(&location.inverted());
+                            self.note_ruled(model, *surface, &[*curve]);
                         }
                         EdgeRepr::Seam {
                             forward,
@@ -261,7 +287,8 @@ impl Tables {
                             self.take_pcurve(*forward);
                             self.take_pcurve(*reversed);
                             self.take_surface(*surface);
-                            self.take_location(location);
+                            self.take_location(&location.inverted());
+                            self.note_ruled(model, *surface, &[*forward, *reversed]);
                         }
                         _ => {}
                     }
@@ -270,12 +297,42 @@ impl Tables {
             NodeData::Face(data) => {
                 self.take_surface(data.surface);
                 self.take_location(&data.location);
+                // The format names an edge's chart on a face by where the
+                // face's surface sits as seen from the edge: the face's own
+                // placement taken back through the edge's inside the face.
+                for wire in model.children_of(&Shape::of(shape.node()))? {
+                    for edge in model.children_of(&wire)? {
+                        let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge())
+                        else {
+                            continue;
+                        };
+                        let Some(index) = edge_data.representations.iter().position(|r| {
+                            Some(r) == edge_data.pcurve_for(data.surface, edge.location())
+                        }) else {
+                            continue;
+                        };
+                        let seen = edge.location().inverted().then(&data.location);
+                        self.take_location(&seen);
+                        let uses = self.chart_uses.entry(edge.node()).or_default();
+                        if !uses.contains(&(index, seen.clone())) {
+                            uses.push((index, seen));
+                        }
+                    }
+                }
             }
             NodeData::Vertex(_) | NodeData::Container => {}
         }
         self.index_of.insert(shape.node(), self.order.len());
         self.order.push(shape.node());
         Ok(())
+    }
+
+    fn note_ruled(&mut self, model: &Model, surface: SurfaceId, curves: &[PCurveId]) {
+        if let Some(SurfaceGeometry::Cone(cone)) = model.geometry().surface(surface) {
+            for curve in curves {
+                self.ruled.insert(*curve, cone.cone().half_angle().cos());
+            }
+        }
     }
 
     fn take_curve(&mut self, id: CurveId) {
@@ -366,13 +423,37 @@ fn write_record(
                 1,
                 usize::from(data.degenerate)
             );
-            for representation in &data.representations {
+            for (index, representation) in data.representations.iter().enumerate() {
+                // Each use the faces make of a chart is its own line, at
+                // the placement that use names; a chart no face uses is
+                // written as if its face sat where the edge does.
+                let uses: Vec<&Location> = tables
+                    .chart_uses
+                    .get(&shape.node())
+                    .map(|uses| {
+                        uses.iter()
+                            .filter(|(at, _)| *at == index)
+                            .map(|(_, seen)| seen)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let inverted = representation.location().map(Location::inverted);
+                let seen: Vec<&Location> = if uses.is_empty() {
+                    inverted.iter().collect()
+                } else {
+                    uses
+                };
                 match representation {
-                    EdgeRepr::Curve3d { curve, range, .. } => {
+                    EdgeRepr::Curve3d {
+                        curve,
+                        range,
+                        location,
+                    } => {
                         let _ = writeln!(
                             out,
-                            "1 {} 0 {} {}",
+                            "1 {} {} {} {}",
                             tables.curve_number(*curve),
+                            tables.location_number(location),
                             real(range.0),
                             real(range.1)
                         );
@@ -381,35 +462,39 @@ fn write_record(
                         curve,
                         range,
                         surface,
-                        location,
+                        ..
                     } => {
-                        let _ = writeln!(
-                            out,
-                            "2 {} {} {} {} {}",
-                            tables.pcurve_number(*curve),
-                            tables.surface_number(*surface),
-                            tables.location_number(location),
-                            real(range.0),
-                            real(range.1)
-                        );
+                        for seen in seen {
+                            let _ = writeln!(
+                                out,
+                                "2 {} {} {} {} {}",
+                                tables.pcurve_number(*curve),
+                                tables.surface_number(*surface),
+                                tables.location_number(seen),
+                                real(range.0),
+                                real(range.1)
+                            );
+                        }
                     }
                     EdgeRepr::Seam {
                         forward,
                         reversed,
                         range,
                         surface,
-                        location,
+                        ..
                     } => {
-                        let _ = writeln!(
-                            out,
-                            "3 {} {} C0 {} {} {} {}",
-                            tables.pcurve_number(*forward),
-                            tables.pcurve_number(*reversed),
-                            tables.surface_number(*surface),
-                            tables.location_number(location),
-                            real(range.0),
-                            real(range.1)
-                        );
+                        for seen in seen {
+                            let _ = writeln!(
+                                out,
+                                "3 {} {} C0 {} {} {} {}",
+                                tables.pcurve_number(*forward),
+                                tables.pcurve_number(*reversed),
+                                tables.surface_number(*surface),
+                                tables.location_number(seen),
+                                real(range.0),
+                                real(range.1)
+                            );
+                        }
                     }
                     other => ogeom_bail!(
                         Construction,
@@ -806,15 +891,45 @@ fn direction2(v: Vector2) -> String {
 /// text is not this format, or carries a record this does not read, which
 /// it says by number rather than by shrugging.
 pub fn read(text: &str, tol: Tolerances) -> OgeomResult<(Model, Shape)> {
-    let mut lines = text.lines();
+    let (model, shape, _) = read_numbered(text, tol)?;
+    Ok((model, shape))
+}
+
+/// A shape's edges and faces in the order the file numbers them.
+///
+/// An application that names subshapes by number (the fifth edge, the
+/// second face) counts them the way the file is written: depth first from
+/// the file's own shape, each record's references in the order written,
+/// every edge or face counted the first time it is met at a placement.
+/// Faces come out in that order from exploring the shape read too, but
+/// edges need not: the file keeps a wire's edges as a set, in whatever
+/// order its writer met them, and the wire read is walked end to end.
+#[derive(Debug, Clone, Default)]
+pub struct Numbering {
+    /// The edges, first numbered first.
+    pub edges: Vec<Shape>,
+    /// The faces, first numbered first.
+    pub faces: Vec<Shape>,
+}
+
+/// [`read`], with the edges and faces as the file numbers them.
+///
+/// # Errors
+///
+/// As [`read`].
+pub fn read_numbered(text: &str, tol: Tolerances) -> OgeomResult<(Model, Shape, Numbering)> {
+    // A file written for the drawing tool opens with the content-type line;
+    // one written straight from a shape (what project archives hold) opens
+    // with the version line, often after a blank one.
+    let mut lines = text.lines().skip_while(|line| line.trim().is_empty());
     let Some(first) = lines.next() else {
         ogeom_bail!(Construction, "the file is empty");
     };
-    if first.trim() != CONTENT_TYPE {
+    let first = first.trim();
+    if first != CONTENT_TYPE && !first.starts_with(VERSION_FAMILY) {
         ogeom_bail!(
             Construction,
-            "this is not the interchange format: it opens with `{}`",
-            first.trim()
+            "this is not the interchange format: it opens with `{first}`"
         );
     }
     // The version line is whatever the writer put there; every version this
@@ -841,30 +956,54 @@ pub fn read(text: &str, tol: Tolerances) -> OgeomResult<(Model, Shape)> {
                     }
                     *offset = cursor.number()?;
                 }
-                built.locations.push(transform_of(rows, translation, tol)?);
+                let transform = transform_of(rows, translation, tol)?;
+                // One datum per placement that moves anything, so two
+                // shapes placed by it are at the same place structurally;
+                // one that moves nothing is left out of every chain.
+                built
+                    .chains
+                    .push(if transform.kind() == TransformKind::Identity {
+                        Location::identity()
+                    } else {
+                        Location::of(model.add_datum(transform))
+                    });
+                built.locations.push(transform);
             }
             2 => {
                 // A composition of placements already read, each raised to a
-                // power, ending at a zero.
+                // power, ending at a zero. Each factor applies after the ones
+                // listed before it: the first is the innermost. The chain
+                // keeps the factors, as the file does, so placements built
+                // from the same factors are the same placement.
                 let mut composed = Transform::IDENTITY;
+                let mut chain = Location::identity();
                 loop {
                     let index = cursor.count()?;
                     if index == 0 {
                         break;
                     }
                     let power: i64 = cursor.integer()?;
-                    let Some(base) = built.locations.get(index - 1).copied() else {
+                    let (Some(base), Some(factor)) = (
+                        built.locations.get(index - 1).copied(),
+                        built.chains.get(index - 1).cloned(),
+                    ) else {
                         ogeom_bail!(
                             Construction,
                             "a composed placement names placement {index}, which is not above it"
                         );
                     };
-                    let step = if power < 0 { base.inverse()? } else { base };
+                    let (step, factor) = if power < 0 {
+                        (base.inverse()?, factor.inverted())
+                    } else {
+                        (base, factor)
+                    };
                     for _ in 0..power.abs() {
-                        composed = composed * step;
+                        composed = step * composed;
+                        chain = factor.then(&chain);
                     }
                 }
                 built.locations.push(composed);
+                built.chains.push(chain);
             }
             other => ogeom_bail!(
                 Construction,
@@ -921,8 +1060,19 @@ pub fn read(text: &str, tol: Tolerances) -> OgeomResult<(Model, Shape)> {
     // already been built.
     let mut shapes: Vec<Shape> = Vec::with_capacity(cursor.room(total));
     for _ in 0..total {
-        let shape = cursor.record(&mut model, &built, &shapes, total, tol)?;
+        let shape = cursor.record(&mut model, &mut built, &shapes, total, tol)?;
         shapes.push(shape);
+    }
+    // The faces have given every edge its charts: whether those agree with
+    // the edge's curve can be measured here, and not before.
+    for edge in &shapes {
+        let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let agrees = agree_on_parameter(&model, data, tol);
+        if let Some(NodeData::Edge(data)) = model.node_mut(edge).map(TShape::data_mut) {
+            data.assert_same_parameter(agrees);
+        }
     }
     // The last reference is the file's own shape: how the whole model is
     // oriented and placed.
@@ -933,8 +1083,10 @@ pub fn read(text: &str, tol: Tolerances) -> OgeomResult<(Model, Shape)> {
             "the file's own shape is numbered {number}, which is not there"
         );
     };
-    let root = placed(root, &built, location, &mut model)?.composed(orientation);
-    Ok((model, root))
+    let sense = built.sense(&root, orientation);
+    let root = placed(root, &built, location)?.composed(sense);
+    let numbering = numbered(&model, &built, &shapes, (number, location))?;
+    Ok((model, root, numbering))
 }
 
 /// How far an unbounded conic runs when it is read.
@@ -949,9 +1101,283 @@ const OPEN_EXTENT: f64 = 1e6;
 #[derive(Default)]
 struct Built {
     locations: Vec<Transform>,
+    /// Each placement as a chain of the file's elementary placements.
+    chains: Vec<Location>,
     curves: Vec<CurveId>,
     pcurves: Vec<PCurveId>,
     surfaces: Vec<SurfaceId>,
+    /// Curves and surfaces carried to where a record places them, by the
+    /// file's curve or surface number and placement number.
+    placed_curves: FastMap<(usize, usize), CurveId>,
+    placed_surfaces: FastMap<(usize, usize), SurfaceId>,
+    /// Each edge's charts as the file states them, held until the faces
+    /// that use them are read: a chart is bound to a face occurrence, which
+    /// the edge record alone cannot name.
+    charts: FastMap<TShapeId, Vec<StatedChart>>,
+    /// How the file's charts read on a surface whose chart is not the
+    /// file's own, and the charts carried onto them.
+    chart_maps: FastMap<SurfaceId, ChartMap>,
+    mapped_charts: FastMap<(PCurveId, SurfaceId), PCurveId>,
+    /// Faces on such a surface: each built with its wires walked the other
+    /// way and used turned over, so it bounds what the file says it does.
+    turned_faces: FastSet<TShapeId>,
+    /// Each record's references as the file writes them, in its order: a
+    /// wire here is a walk, and the file's own order is what numbers its
+    /// edges.
+    written: Vec<Vec<(usize, usize)>>,
+    /// Faces rebuilt where a shell places them, by the face and that
+    /// placement.
+    settled: FastMap<(TShapeId, Location), TShapeId>,
+}
+
+/// How a chart curve in the file reads on a surface as it is built here.
+#[derive(Clone, Copy)]
+struct ChartMap {
+    /// The surface was rebuilt right-handed and its chart turned over.
+    turned: bool,
+    /// What `v` is multiplied by: a cone's chart runs along the ruling in
+    /// the file and along the axis here.
+    v_scale: f64,
+}
+
+/// One chart representation of an edge, in the file's own numbers.
+struct StatedChart {
+    /// One curve, or a seam's two (forward use first).
+    curves: (PCurveId, Option<PCurveId>),
+    surface: usize,
+    location: usize,
+    range: (f64, f64),
+}
+
+impl Built {
+    /// How a reference uses a shape: as the file says, turned over for a
+    /// face built turned over.
+    fn sense(&self, shape: &Shape, stated: Orientation) -> Orientation {
+        if self.turned_faces.contains(&shape.node()) {
+            stated.compose(Orientation::Reversed)
+        } else {
+            stated
+        }
+    }
+
+    /// The transform the file's placement number names; zero is none.
+    fn transform(&self, number: usize) -> OgeomResult<Transform> {
+        if number == 0 {
+            return Ok(Transform::IDENTITY);
+        }
+        let Some(transform) = self.locations.get(number - 1) else {
+            ogeom_bail!(
+                Construction,
+                "a record names placement {number}, which is not there"
+            );
+        };
+        Ok(*transform)
+    }
+
+    /// The placement the file's number names, as a location.
+    fn location(&self, number: usize) -> OgeomResult<Location> {
+        if number == 0 {
+            return Ok(Location::identity());
+        }
+        let Some(chain) = self.chains.get(number - 1) else {
+            ogeom_bail!(
+                Construction,
+                "a record names placement {number}, which is not there"
+            );
+        };
+        Ok(chain.clone())
+    }
+
+    /// Curve `number` where placement `location` puts it.
+    fn curve(
+        &mut self,
+        model: &mut Model,
+        number: usize,
+        location: usize,
+        tol: Tolerances,
+    ) -> OgeomResult<CurveId> {
+        let Some(id) = number
+            .checked_sub(1)
+            .and_then(|at| self.curves.get(at))
+            .copied()
+        else {
+            ogeom_bail!(Construction, "an edge names curve {number}");
+        };
+        let transform = self.transform(location)?;
+        if transform.kind() == TransformKind::Identity {
+            return Ok(id);
+        }
+        if let Some(placed) = self.placed_curves.get(&(number, location)) {
+            return Ok(*placed);
+        }
+        let Some(curve) = model.geometry().curve(id) else {
+            ogeom_bail!(Dangling, "a curve read from the file is not in the model");
+        };
+        let moved = curve.transformed(&transform, tol)?;
+        let placed = model.geometry_mut().add_curve(moved);
+        self.placed_curves.insert((number, location), placed);
+        Ok(placed)
+    }
+
+    /// Surface `number` where placement `location` puts it, on a
+    /// right-handed seat.
+    fn surface(
+        &mut self,
+        model: &mut Model,
+        number: usize,
+        location: usize,
+        tol: Tolerances,
+    ) -> OgeomResult<SurfaceId> {
+        let Some(id) = number
+            .checked_sub(1)
+            .and_then(|at| self.surfaces.get(at))
+            .copied()
+        else {
+            ogeom_bail!(Construction, "a face names surface {number}");
+        };
+        if let Some(placed) = self.placed_surfaces.get(&(number, location)) {
+            return Ok(*placed);
+        }
+        let Some(surface) = model.geometry().surface(id) else {
+            ogeom_bail!(Dangling, "a surface read from the file is not in the model");
+        };
+        let transform = self.transform(location)?;
+        let moved = transform.kind() != TransformKind::Identity;
+        let surface = if moved {
+            surface.transformed(&transform, tol)?
+        } else {
+            surface.clone()
+        };
+        let (surface, rebuilt, turned) = match right_handed(&surface, tol)? {
+            Some((upright, turned)) => (upright, true, turned),
+            None => (surface, false, false),
+        };
+        let v_scale = match &surface {
+            SurfaceGeometry::Cone(c) => c.cone().half_angle().cos(),
+            _ => 1.0,
+        };
+        let placed = if moved || rebuilt {
+            model.geometry_mut().add_surface(surface)
+        } else {
+            id
+        };
+        if turned || v_scale != 1.0 {
+            self.chart_maps.insert(placed, ChartMap { turned, v_scale });
+        }
+        self.placed_surfaces.insert((number, location), placed);
+        Ok(placed)
+    }
+
+    /// Whether faces on surface `on` are built turned over.
+    fn turned(&self, on: SurfaceId) -> bool {
+        self.chart_maps.get(&on).is_some_and(|map| map.turned)
+    }
+
+    /// A chart curve as it reads on surface `on`, carried by the surface's
+    /// chart map where it has one.
+    fn chart_on(
+        &mut self,
+        model: &mut Model,
+        curve: PCurveId,
+        on: SurfaceId,
+        tol: Tolerances,
+    ) -> OgeomResult<PCurveId> {
+        let Some(map) = self.chart_maps.get(&on).copied() else {
+            return Ok(curve);
+        };
+        if let Some(mapped) = self.mapped_charts.get(&(curve, on)) {
+            return Ok(*mapped);
+        }
+        let Some(geometry) = model.geometry().pcurve(curve) else {
+            ogeom_bail!(
+                Dangling,
+                "a chart curve read from the file is not in the model"
+            );
+        };
+        let mut mapped = geometry.stretched(1.0, map.v_scale, tol)?;
+        if map.turned {
+            mapped = mapped.transformed(&turned_chart(), tol)?;
+        }
+        let mapped = model.geometry_mut().add_pcurve(mapped);
+        self.mapped_charts.insert((curve, on), mapped);
+        Ok(mapped)
+    }
+
+    /// Give each edge of a face the chart the file binds to its use there.
+    ///
+    /// The file keys a chart by where the face's surface sits as seen from
+    /// the edge: the face's own placement, taken back through the edge's
+    /// placement inside the face. Here a chart is keyed the other way round,
+    /// by the edge's placement inside the face, on the face's surface
+    /// already carried to where the face puts it.
+    fn bind_charts(
+        &mut self,
+        model: &mut Model,
+        (surface, location): (usize, usize),
+        on: SurfaceId,
+        wires: &[Shape],
+        tol: Tolerances,
+    ) -> OgeomResult<()> {
+        let face_placement = self.transform(location)?;
+        for wire in wires {
+            for edge in model.children_of(wire)? {
+                let within = edge.location().clone();
+                let seen = within.composed(model.datums())?.inverse()? * face_placement;
+                let mut found = None;
+                for chart in self.charts.get(&edge.node()).map_or(&[][..], Vec::as_slice) {
+                    if chart.surface == surface
+                        && self.transform(chart.location)?.is_equal(&seen, tol)
+                    {
+                        found = Some((chart.curves, chart.range));
+                        break;
+                    }
+                }
+                let Some((curves, range)) = found else {
+                    plane_chart(model, &edge, on, tol)?;
+                    continue;
+                };
+                let representation = match curves {
+                    (curve, None) => EdgeRepr::PCurve {
+                        curve: self.chart_on(model, curve, on, tol)?,
+                        range,
+                        surface: on,
+                        location: within.clone(),
+                    },
+                    // A seam's sides are named by the edge's sense in the
+                    // face, which a turned face walks the other way.
+                    (first, Some(second)) => {
+                        let (first, second) = (
+                            self.chart_on(model, first, on, tol)?,
+                            self.chart_on(model, second, on, tol)?,
+                        );
+                        let (forward, reversed) = if self.turned(on) {
+                            (second, first)
+                        } else {
+                            (first, second)
+                        };
+                        EdgeRepr::Seam {
+                            forward,
+                            reversed,
+                            range,
+                            surface: on,
+                            location: within.clone(),
+                        }
+                    }
+                };
+                let Some(NodeData::Edge(data)) = model.node_mut(&edge).map(TShape::data_mut) else {
+                    ogeom_bail!(Construction, "a wire holds something that is not an edge");
+                };
+                let held = data
+                    .representations
+                    .iter()
+                    .any(|r| r.surface() == Some(on) && r.location() == Some(&within));
+                if !held {
+                    data.add(representation);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The shape a backward record number names.
@@ -995,19 +1421,364 @@ fn transform_of(
     )
 }
 
+/// A surface on a left-handed seat, rebuilt on a right-handed one; `None`
+/// for one already right-handed, or of a kind with no seat.
+///
+/// A plane keeps its chart, its normal taken as `x` crossed with `y`, which
+/// is the side the file's faces read as theirs; so does a trimmed one. A surface of revolution
+/// keeps its axis, its turn running the other way: the chart is turned
+/// over (`u` read as a full turn less `u`), and with it the side its faces
+/// call outward, which the second value says.
+fn right_handed(
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<Option<(SurfaceGeometry, bool)>> {
+    use ogeom_geom::Surface as _;
+    let upright = |frame: Frame| Frame::new(frame.origin(), frame.z(), frame.x(), tol);
+    let left = |frame: Frame| frame.handedness() == Handedness::Left;
+    let (_, v) = surface.domain();
+    Ok(Some(match surface {
+        SurfaceGeometry::Plane(s) if left(s.plane().frame()) => {
+            let frame = s.plane().frame();
+            let (u, v) = s.domain();
+            let normal = Direction::new(-frame.z().vector(), tol)?;
+            let frame = Frame::new(frame.origin(), normal, frame.x(), tol)?;
+            (PlaneSurface::over(Plane::new(frame), u, v)?.into(), false)
+        }
+        SurfaceGeometry::Cylinder(s) if left(s.cylinder().frame()) => {
+            let c = s.cylinder();
+            let c = Cylinder::new(upright(c.frame())?, c.radius(), tol)?;
+            (CylinderSurface::new(c, v)?.into(), true)
+        }
+        SurfaceGeometry::Cone(s) if left(s.cone().frame()) => {
+            let c = s.cone();
+            let c = Cone::new(
+                upright(c.frame())?,
+                c.reference_radius(),
+                c.half_angle(),
+                tol,
+            )?;
+            (ConeSurface::new(c, v)?.into(), true)
+        }
+        SurfaceGeometry::Sphere(s) if left(s.sphere().frame()) => {
+            let b = s.sphere();
+            (
+                SphereSurface::new(Sphere::new(upright(b.frame())?, b.radius(), tol)?).into(),
+                true,
+            )
+        }
+        SurfaceGeometry::Torus(s) if left(s.torus().frame()) => {
+            let t = s.torus();
+            let t = Torus::new(upright(t.frame())?, t.major_radius(), t.minor_radius(), tol)?;
+            (TorusSurface::new(t).into(), true)
+        }
+        // A trimmed plane keeps its window, which the rebuilt plane's chart
+        // shares.
+        SurfaceGeometry::Trimmed(t) => match right_handed(t.basis(), tol)? {
+            Some((basis, false)) => {
+                let (u, v) = surface.domain();
+                (
+                    SurfaceGeometry::Trimmed(Box::new(TrimmedSurface::new(basis, u, v, tol)?)),
+                    false,
+                )
+            }
+            _ => return Ok(None),
+        },
+        _ => return Ok(None),
+    }))
+}
+
+/// The chart of a surface of revolution turned over: `u` read as a full
+/// turn less `u`, `v` as it was.
+fn turned_chart() -> Transform2 {
+    Transform2::line_mirror(Point2::new(core::f64::consts::PI, 0.0), Direction2::X)
+}
+
+/// Give an edge its chart on a plane the file states none for.
+///
+/// The format leaves an edge on a plane without one where its writer can
+/// project the curve whenever it is asked, so a reader has to do the same:
+/// the image of a curve in a plane's chart is exact for every curve the
+/// format carries. Anything but a plane, trimmed or not, the file must
+/// chart itself.
+fn plane_chart(model: &mut Model, edge: &Shape, on: SurfaceId, tol: Tolerances) -> OgeomResult<()> {
+    let Some(surface) = model.geometry().surface(on).cloned() else {
+        return Ok(());
+    };
+    let flat = match &surface {
+        SurfaceGeometry::Plane(_) => true,
+        SurfaceGeometry::Trimmed(t) => matches!(t.basis(), SurfaceGeometry::Plane(_)),
+        _ => false,
+    };
+    if !flat {
+        return Ok(());
+    }
+    let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+        return Ok(());
+    };
+    let within = edge.location().clone();
+    if data.degenerate
+        || data
+            .pcurve_for(on, &within)
+            .is_some_and(|r| r.location() == Some(&within))
+    {
+        return Ok(());
+    }
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d().cloned() else {
+        return Ok(());
+    };
+    let Some(geometry) = model.geometry().curve(curve) else {
+        ogeom_bail!(Dangling, "an edge's curve is not in the model");
+    };
+    // The edge's curve where the face uses it.
+    let geometry = geometry.transformed(&within.composed(model.datums())?, tol)?;
+    let image = match ogeom_intersect::exact_pcurve_over(&geometry, range, &surface, tol) {
+        Some(exact) => crate::pcurves::over_range(&exact, range),
+        None => crate::pcurves::fit_projected_pcurve(&geometry, range, &surface, tol)?.0,
+    };
+    let image = model.geometry_mut().add_pcurve(image);
+    let Some(NodeData::Edge(data)) = model.node_mut(edge).map(TShape::data_mut) else {
+        return Ok(());
+    };
+    data.add(EdgeRepr::PCurve {
+        curve: image,
+        range,
+        surface: on,
+        location: within,
+    });
+    Ok(())
+}
+
+/// The file's numbering of the edges and faces below its own shape.
+fn numbered(
+    model: &Model,
+    built: &Built,
+    shapes: &[Shape],
+    root: (usize, usize),
+) -> OgeomResult<Numbering> {
+    let total = shapes.len();
+    let mut numbering = Numbering::default();
+    let mut met: FastSet<(TShapeId, Location)> = FastSet::default();
+    // Each entry: a record, where its parent stands, and its own placement
+    // there.
+    let mut stack = vec![(root.0, Location::identity(), built.location(root.1)?)];
+    while let Some((number, outer, own)) = stack.pop() {
+        let (Some(index), Some(shape)) = (total.checked_sub(number), pick(shapes, number, total))
+        else {
+            ogeom_bail!(
+                Construction,
+                "a record names subshape {number}, which is not above it"
+            );
+        };
+        let at = outer.then(&own);
+        let kind = model.kind_of(&shape)?;
+        if matches!(kind, ShapeType::Edge | ShapeType::Face) {
+            if !met.insert((shape.node(), at.clone())) {
+                continue;
+            }
+            if kind == ShapeType::Edge {
+                numbering.edges.push(shape.moved(&at));
+                continue;
+            }
+            // A face rebuilt where its shell placed it is the face there.
+            numbering
+                .faces
+                .push(match built.settled.get(&(shape.node(), own)) {
+                    Some(rebuilt) => Shape::of(*rebuilt).moved(&outer),
+                    None => shape.moved(&at),
+                });
+        }
+        if kind == ShapeType::Vertex {
+            continue;
+        }
+        let Some(written) = built.written.get(index) else {
+            continue;
+        };
+        for &(child, location) in written.iter().rev() {
+            stack.push((child, at.clone(), built.location(location)?));
+        }
+    }
+    Ok(numbering)
+}
+
+/// A face used at a placement, rebuilt where that puts it when the
+/// placement undoes part of its edges' placements inside it.
+///
+/// An edge's chart on a face is found from the edge's placement in the
+/// whole shape, whose tail is its placement inside the face. Where the
+/// face's placement cancels against that (a face turned one way, its wire
+/// turned back) the tail is gone from the chain; the face is then built
+/// anew in place, its surface carried there and its edges' charts bound to
+/// the placements they have there.
+fn settled(
+    model: &mut Model,
+    built: &mut Built,
+    face: Shape,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    if face.location().is_identity() || model.kind_of(&face)? != ShapeType::Face {
+        return Ok(face);
+    }
+    let Some(data) = model.node(&face).and_then(|n| n.data().as_face()).cloned() else {
+        return Ok(face);
+    };
+    let bare = Shape::of(face.node());
+    let wires = model.children_of(&bare)?;
+    let mut inside = Vec::new();
+    for wire in &wires {
+        inside.push(model.children_of(&wire.oriented(Orientation::Forward))?);
+    }
+    let outer = face.location().clone();
+    if inside
+        .iter()
+        .flatten()
+        .all(|edge| outer.then(edge.location()).ends_with(edge.location()))
+    {
+        return Ok(face);
+    }
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        ogeom_bail!(Dangling, "a face's surface is not in the model");
+    };
+    let surface = surface.transformed(&outer.composed(model.datums())?, tol)?;
+    let surface = model.geometry_mut().add_surface(surface);
+    let mut placed_wires = Vec::with_capacity(wires.len());
+    for (wire, edges) in wires.iter().zip(&inside) {
+        let mut placed_edges = Vec::with_capacity(edges.len());
+        for edge in edges {
+            let at = outer.then(edge.location());
+            let chart = model
+                .node(edge)
+                .and_then(|n| n.data().as_edge())
+                .and_then(|d| d.pcurve_for(data.surface, edge.location()))
+                .cloned();
+            let bound = match chart {
+                Some(EdgeRepr::PCurve { curve, range, .. }) => Some(EdgeRepr::PCurve {
+                    curve,
+                    range,
+                    surface,
+                    location: at.clone(),
+                }),
+                Some(EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    ..
+                }) => Some(EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    surface,
+                    location: at.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(bound) = bound
+                && let Some(NodeData::Edge(edge_data)) = model.node_mut(edge).map(TShape::data_mut)
+            {
+                edge_data.add(bound);
+            }
+            placed_edges.push(
+                Shape::of(edge.node())
+                    .moved(&at)
+                    .oriented(edge.orientation()),
+            );
+        }
+        placed_wires.push(model.add_wire(&placed_edges)?.oriented(wire.orientation()));
+    }
+    let rebuilt = model.add_face(
+        FaceData {
+            surface,
+            location: Location::identity(),
+            ..data
+        },
+        &placed_wires,
+    )?;
+    built.settled.insert((face.node(), outer), rebuilt.node());
+    Ok(rebuilt.oriented(face.orientation()))
+}
+
+/// A wire's edges in the order they run, each starting where the one
+/// before it ends; `None` where they do not make one walk.
+///
+/// The format keeps a wire's edges as a set, in whatever order its writer
+/// met them (a prism's side lists its two rims before the ruling between
+/// them), while a wire here is a walk.
+fn walked(model: &Model, edges: &[Shape]) -> OgeomResult<Option<Vec<Shape>>> {
+    // Where each use of an edge starts and ends: its vertices as the use
+    // meets them.
+    let mut ends = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let mut start = None;
+        let mut end = None;
+        for vertex in model.children_of(edge)? {
+            let at = Some((vertex.node(), vertex.location().clone()));
+            match vertex.orientation() {
+                Orientation::Forward => start = at,
+                Orientation::Reversed => end = at,
+                Orientation::Internal | Orientation::External => {}
+            }
+        }
+        let (Some(start), Some(end)) = (start, end) else {
+            return Ok(None);
+        };
+        ends.push((start, end));
+    }
+    // A walk through every edge once, closed loops included wherever they
+    // sit: each step leaves by an edge not yet taken from the vertex it is
+    // at, and a step that finds none settles its edge into the walk
+    // (Hierholzer's way), so a loop met mid-walk is spliced in rather
+    // than left over.
+    let mut leaving: FastMap<&(TShapeId, Location), Vec<usize>> = FastMap::default();
+    for (i, (start, _)) in ends.iter().enumerate().rev() {
+        leaving.entry(start).or_default().push(i);
+    }
+    let Some((first, _)) = ends.first() else {
+        return Ok(None);
+    };
+    let mut stack: Vec<(&(TShapeId, Location), Option<usize>)> = vec![(first, None)];
+    let mut order = Vec::with_capacity(edges.len());
+    while let Some(&(at, by)) = stack.last() {
+        if let Some(next) = leaving.get_mut(at).and_then(Vec::pop) {
+            stack.push((&ends[next].1, Some(next)));
+        } else {
+            stack.pop();
+            order.extend(by);
+        }
+    }
+    order.reverse();
+    if order.len() != edges.len() {
+        return Ok(None);
+    }
+    if order.iter().enumerate().all(|(at, &i)| at == i) {
+        return Ok(None);
+    }
+    Ok(Some(order.into_iter().map(|i| edges[i].clone()).collect()))
+}
+
 /// Place a shape by the file's placement number.
-fn placed(shape: Shape, built: &Built, number: usize, model: &mut Model) -> OgeomResult<Shape> {
-    if number == 0 {
+fn placed(shape: Shape, built: &Built, number: usize) -> OgeomResult<Shape> {
+    let location = built.location(number)?;
+    if location.is_identity() {
         return Ok(shape);
     }
-    let Some(transform) = built.locations.get(number - 1) else {
-        ogeom_bail!(
-            Construction,
-            "a shape names placement {number}, which is not there"
-        );
-    };
-    let datum = model.add_datum(*transform);
-    Ok(shape.moved(&Location::of(datum)))
+    Ok(shape.moved(&location))
+}
+
+/// A word, or a number and the continuity written straight after it.
+///
+/// A seam's record runs its second chart number into its continuity with no
+/// space between (`72CN` for chart 72, continuity `CN`), so the two are
+/// told apart by the continuity names, the only words that can follow.
+fn split_continuity(word: &str) -> impl Iterator<Item = &str> {
+    let split = ["C0", "C1", "C2", "C3", "CN", "G1", "G2"]
+        .iter()
+        .find_map(|name| {
+            let number = word.strip_suffix(name)?;
+            (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| word.split_at(number.len()))
+        });
+    let (first, second) = split.map_or((word, None), |(a, b)| (a, Some(b)));
+    std::iter::once(first).chain(second)
 }
 
 /// A whitespace-delimited walk over the file's body.
@@ -1019,7 +1790,7 @@ struct Cursor<'a> {
 impl<'a> Cursor<'a> {
     fn new(text: &'a str) -> Self {
         Self {
-            tokens: text.split_whitespace().collect(),
+            tokens: text.split_whitespace().flat_map(split_continuity).collect(),
             at: 0,
         }
     }
@@ -1098,12 +1869,17 @@ impl<'a> Cursor<'a> {
     }
 
     /// The origin-normal-x-y seat every elementary record opens with.
+    ///
+    /// A surface's seat may be left-handed, its `y` against the normal
+    /// crossed with `x`: the chart then runs the other way across the
+    /// surface, and the side its faces call outward turns with it, so the
+    /// `y` the file states is kept rather than derived.
     fn seat(&mut self, tol: Tolerances) -> OgeomResult<Frame> {
         let origin = self.point()?;
         let normal = self.direction(tol)?;
         let x = self.direction(tol)?;
-        let _y = self.direction(tol)?;
-        Frame::new(origin, normal, x, tol)
+        let y = self.direction(tol)?;
+        Frame::from_axes(origin, x, y, normal, tol)
     }
 
     fn seat2(&mut self, tol: Tolerances) -> OgeomResult<Frame2> {
@@ -1281,7 +2057,7 @@ impl<'a> Cursor<'a> {
             6 => {
                 let direction = self.direction(tol)?;
                 let basis = self.curve(tol)?;
-                ExtrusionSurface::new(basis, direction, 1e9)?.into()
+                ExtrusionSurface::over(basis, direction, REACH)?.into()
             }
             7 => {
                 let origin = self.point()?;
@@ -1408,7 +2184,7 @@ impl<'a> Cursor<'a> {
     fn record(
         &mut self,
         model: &mut Model,
-        built: &Built,
+        built: &mut Built,
         shapes: &[Shape],
         total: usize,
         tol: Tolerances,
@@ -1456,67 +2232,57 @@ impl<'a> Cursor<'a> {
                 let mut data = EdgeData::new();
                 data.tolerance = Tolerance::new(tolerance.max(tol.confusion()))?;
                 data.degenerate = degenerate;
+                let mut charts = Vec::new();
                 loop {
                     let kind = self.count()?;
                     match kind {
                         0 => break,
                         1 => {
                             let curve = self.count()?;
-                            let _location = self.count()?;
+                            let location = self.count()?;
                             let lo = self.number()?;
                             let hi = self.number()?;
-                            let Some(id) = built.curves.get(curve - 1).copied() else {
-                                ogeom_bail!(Construction, "an edge names curve {curve}");
-                            };
+                            let id = built.curve(model, curve, location, tol)?;
                             data.add(EdgeRepr::Curve3d {
                                 curve: id,
                                 range: (lo, hi),
                                 location: Location::identity(),
                             });
                         }
-                        2 => {
-                            let pcurve = self.count()?;
+                        2 | 3 => {
+                            let first = self.count()?;
+                            let second = if kind == 3 {
+                                let reversed = self.count()?;
+                                let _continuity = self.word()?;
+                                Some(reversed)
+                            } else {
+                                None
+                            };
                             let surface = self.count()?;
-                            let _location = self.count()?;
+                            let location = self.count()?;
                             let lo = self.number()?;
                             let hi = self.number()?;
-                            let (Some(curve), Some(on)) = (
-                                built.pcurves.get(pcurve - 1).copied(),
-                                built.surfaces.get(surface - 1).copied(),
+                            let chart = |number: usize| {
+                                number
+                                    .checked_sub(1)
+                                    .and_then(|at| built.pcurves.get(at))
+                                    .copied()
+                            };
+                            let (Some(curve), true, true) = (
+                                chart(first),
+                                second.is_none_or(|n| chart(n).is_some()),
+                                (1..=built.surfaces.len()).contains(&surface),
                             ) else {
                                 ogeom_bail!(
                                     Construction,
-                                    "an edge names chart curve {pcurve} on surface {surface}"
+                                    "an edge names chart curve {first} on surface {surface}"
                                 );
                             };
-                            data.add(EdgeRepr::PCurve {
-                                curve,
+                            charts.push(StatedChart {
+                                curves: (curve, second.and_then(chart)),
+                                surface,
+                                location,
                                 range: (lo, hi),
-                                surface: on,
-                                location: Location::identity(),
-                            });
-                        }
-                        3 => {
-                            let forward = self.count()?;
-                            let reversed = self.count()?;
-                            let _continuity = self.word()?;
-                            let surface = self.count()?;
-                            let _location = self.count()?;
-                            let lo = self.number()?;
-                            let hi = self.number()?;
-                            let (Some(f), Some(r), Some(on)) = (
-                                built.pcurves.get(forward - 1).copied(),
-                                built.pcurves.get(reversed - 1).copied(),
-                                built.surfaces.get(surface - 1).copied(),
-                            ) else {
-                                ogeom_bail!(Construction, "an edge names a seam that is not there");
-                            };
-                            data.add(EdgeRepr::Seam {
-                                forward: f,
-                                reversed: r,
-                                range: (lo, hi),
-                                surface: on,
-                                location: Location::identity(),
                             });
                         }
                         4 => {
@@ -1547,31 +2313,33 @@ impl<'a> Cursor<'a> {
                 }
                 // The file states whether its representations agree on
                 // parameterization. That is the writer's claim about its own
-                // data, and it is checked here rather than believed: the
-                // representations are evaluated against each other, and the
-                // claim is only re-established when they actually agree.
+                // data, and it is checked here rather than believed: once the
+                // faces have bound the edge's charts, the representations are
+                // evaluated against each other, and the claim is only
+                // re-established when they actually agree.
                 data.assert_same_parameter(agree_on_parameter(model, &data, tol));
-                Record::Edge(Box::new(data))
+                Record::Edge(Box::new(data), charts)
             }
             "Fa" => {
                 let _natural = self.flag()?;
                 let tolerance = self.number()?;
                 let surface = self.count()?;
-                let _location = self.count()?;
+                let location = self.count()?;
                 if self.peek() == Some("2") {
                     let _ = self.word()?;
                     let _triangulation = self.count()?;
                 }
-                let Some(on) = built.surfaces.get(surface.max(1) - 1).copied() else {
-                    ogeom_bail!(Construction, "a face names surface {surface}");
-                };
-                Record::Face(Box::new(FaceData {
-                    surface: on,
-                    location: Location::identity(),
-                    tolerance: Tolerance::new(tolerance.max(tol.confusion()))?,
-                    natural_restriction: false,
-                    triangulation: None,
-                }))
+                let on = built.surface(model, surface.max(1), location, tol)?;
+                Record::Face(
+                    Box::new(FaceData {
+                        surface: on,
+                        location: Location::identity(),
+                        tolerance: Tolerance::new(tolerance.max(tol.confusion()))?,
+                        natural_restriction: false,
+                        triangulation: None,
+                    }),
+                    (surface.max(1), location),
+                )
             }
             "Wi" => Record::Container(ShapeType::Wire),
             "Sh" => Record::Container(ShapeType::Shell),
@@ -1585,24 +2353,69 @@ impl<'a> Cursor<'a> {
         // children.
         let _flags = self.word()?;
         let mut children = Vec::new();
+        let mut written = Vec::new();
         while self.peek() != Some("*") {
             let (orientation, number, location) = self.reference()?;
+            written.push((number, location));
             let Some(child) = pick(shapes, number, total) else {
                 ogeom_bail!(
                     Construction,
                     "a record names subshape {number}, which is not above it"
                 );
             };
-            children.push(placed(child, built, location, model)?.composed(orientation));
+            let sense = built.sense(&child, orientation);
+            children.push(placed(child, built, location)?.composed(sense));
         }
         let _ = self.word()?;
+        built.written.push(written);
 
         Ok(match data {
             Record::Vertex(data) => model.add_vertex(data),
-            Record::Edge(data) => model.add_edge(*data, &children)?,
-            Record::Face(data) => model.add_face(*data, &children)?,
-            Record::Container(ShapeType::Wire) => model.add_wire(&children)?,
-            Record::Container(ShapeType::Shell) => model.add_shell(&children)?,
+            Record::Edge(data, charts) => {
+                // The file may list an edge's end before its start; an edge
+                // here holds its start first.
+                children.sort_by_key(|v| v.orientation() != Orientation::Forward);
+                let edge = model.add_edge(*data, &children)?;
+                if !charts.is_empty() {
+                    built.charts.insert(edge.node(), charts);
+                }
+                edge
+            }
+            Record::Face(data, stated) => {
+                // A wire the file places inside its face is rebuilt in the
+                // face's own frame, its edges carrying the placement: what
+                // reads a face's boundary takes the wire's frame for the
+                // face's.
+                let mut wires = Vec::with_capacity(children.len());
+                for wire in children {
+                    if wire.location().is_identity() {
+                        wires.push(wire);
+                        continue;
+                    }
+                    let edges = model.children_of(&wire.oriented(Orientation::Forward))?;
+                    wires.push(model.add_wire(&edges)?.oriented(wire.orientation()));
+                }
+                built.bind_charts(model, stated, data.surface, &wires, tol)?;
+                if built.turned(data.surface) {
+                    let wires: Vec<Shape> = wires.iter().map(Shape::reversed).collect();
+                    let face = model.add_face(*data, &wires)?;
+                    built.turned_faces.insert(face.node());
+                    face
+                } else {
+                    model.add_face(*data, &wires)?
+                }
+            }
+            Record::Container(ShapeType::Wire) => {
+                let walk = walked(model, &children)?;
+                model.add_wire(walk.as_deref().unwrap_or(&children))?
+            }
+            Record::Container(ShapeType::Shell) => {
+                let faces = children
+                    .into_iter()
+                    .map(|face| settled(model, built, face, tol))
+                    .collect::<OgeomResult<Vec<_>>>()?;
+                model.add_shell(&faces)?
+            }
             Record::Container(ShapeType::Solid) => model.add_solid(&children)?,
             Record::Container(ShapeType::CompSolid) => model.add_compsolid(&children)?,
             Record::Container(_) => model.add_compound(&children)?,
@@ -1613,8 +2426,10 @@ impl<'a> Cursor<'a> {
 /// What a record turned out to be, before its children are known.
 enum Record {
     Vertex(VertexData),
-    Edge(Box<EdgeData>),
-    Face(Box<FaceData>),
+    /// The edge, with the charts it states for the faces to bind.
+    Edge(Box<EdgeData>, Vec<StatedChart>),
+    /// The face, with its surface and placement as the file numbers them.
+    Face(Box<FaceData>, (usize, usize)),
     Container(ShapeType),
 }
 
@@ -1635,6 +2450,14 @@ fn agree_on_parameter(model: &Model, data: &EdgeData, tol: Tolerances) -> bool {
     };
     let allowed = data.tolerance.get().max(tol.confusion());
     for representation in &data.representations {
+        // A chart bound to the edge's use at a placement follows the curve
+        // carried there.
+        let Ok(moved) = representation
+            .location()
+            .map_or(Ok(Transform::IDENTITY), |l| l.composed(model.datums()))
+        else {
+            return false;
+        };
         let (pcurve, prange, surface) = match representation {
             EdgeRepr::PCurve {
                 curve,
@@ -1666,7 +2489,7 @@ fn agree_on_parameter(model: &Model, data: &EdgeData, tol: Tolerances) -> bool {
             let Ok(lifted) = on.point_at(uv.x, uv.y, tol) else {
                 return false;
             };
-            if lifted.distance(at) > allowed {
+            if lifted.distance(moved.apply(at)) > allowed {
                 return false;
             }
         }
