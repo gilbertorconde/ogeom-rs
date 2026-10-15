@@ -35,10 +35,6 @@ none stated less than its pcurves stand off:
   `adopt_border` reads that border against the surface at 33 points.
   Between the sections the skin is the fit itself; along a section the
   section curve is the truth and is not read between the grid's points.
-- `ogeom-fillet/src/pair_marched.rs` (`contact_cut`): the ball's line of
-  contact is held to its target at the march's stations only; its pcurve
-  is measured densely against it, but the true contact line between
-  stations would take a march to read.
 - `ogeom-hlr/src/exact.rs`: a silhouette is fitted through the walk's
   points and kept whether or not the fit met the chord. The fit's error
   bounds nothing there; the line is drawn.
@@ -49,7 +45,9 @@ measured densely by `state_pcurve_gaps_of`), and
 `ogeom-algo/src/recognize_swept.rs` (a mesh's vertices are all the truth
 there is, and the profile is measured against every one). The edges an
 offset rebuilds, a sheet offset or thickened makes, `split_face` makes and
-a blend's wedge carries are measured densely the same way.
+a blend's wedge carries are measured densely the same way, and the line
+of contact a marched round cuts a face along is read against the ball's
+true contact at the quarters between its stations.
 
 ### Booleans
 

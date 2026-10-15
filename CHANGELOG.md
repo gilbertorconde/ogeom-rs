@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A marched round's line of contact states how far it strays between
+  the march's stations.** Between two faces that share no edge, the line
+  along which the ball touches a face was fitted through the march's
+  touch points and stated to its target there only. Where the touch point
+  runs unevenly along the guide (a floor against a twisted, rippled
+  patch) the fit strayed from the ball's true contact between the
+  stations by ten times its stated tolerance and more. The ball
+  is now seated exactly at the quarters between every two stations, the
+  line is read against those sections both ways and fitted again with
+  any it misses, and the edge states the farthest it was read.
+
 ## [0.11.2] - 2026-10-15
 
 A patch release with one fix (#261): a face with no seam edge, such as a

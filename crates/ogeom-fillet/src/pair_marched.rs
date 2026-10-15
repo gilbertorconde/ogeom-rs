@@ -32,7 +32,7 @@ use ogeom_geom::{
     SurfaceGeometry,
 };
 use ogeom_intersect::{IntersectOptions, Marching, SurfaceIntersection};
-use ogeom_math::{Point, Point2, Vector};
+use ogeom_math::{Point, Point2, Vector, solve};
 use ogeom_topo::{Location, Model, Orientation, Shape, ShapeType, SurfaceId, explore_unique};
 
 use crate::march::{BlendStop, MarchedBlend, Sides, march_blend_seeded, seat_section};
@@ -482,7 +482,7 @@ fn seat_along(
             if !missed[f].contains(&true) {
                 continue;
             }
-            let Some(cut) = contact_cut(model, face, f, &blend, hosts, tol)? else {
+            let Some(cut) = contact_cut(model, face, f, &blend, hosts, guide, radius, tol)? else {
                 return Ok(None);
             };
             w0 = w0.max(cut.span.0);
@@ -521,7 +521,9 @@ fn seat_along(
 
     let mut stretches = Vec::with_capacity(2);
     for (f, face) in faces.iter().enumerate() {
-        stretches.push(stretch_on(model, face, f, &blend, hosts, tol)?);
+        stretches.push(stretch_on(
+            model, face, f, &blend, hosts, guide, radius, tol,
+        )?);
     }
     let [Some(a), Some(b)] = [stretches.remove(0), stretches.remove(0)] else {
         return Ok(None);
@@ -585,12 +587,15 @@ struct ContactCut {
 /// The face's stretch of the ball's line of contact: the face cut along
 /// the line, and the piece away from the round kept. `None` where the
 /// line misses the face.
+#[allow(clippy::too_many_arguments, reason = "one stretch, all its data")]
 fn stretch_on(
     model: &mut Model,
     face: &Shape,
     f: usize,
     blend: &MarchedBlend,
     hosts: &Hosts,
+    guide: &Curve,
+    radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<FaceStretch>> {
     let surface = &hosts.surfaces[f];
@@ -599,7 +604,7 @@ fn stretch_on(
         edge: cut,
         line,
         span,
-    }) = contact_cut(model, face, f, blend, hosts, tol)?
+    }) = contact_cut(model, face, f, blend, hosts, guide, radius, tol)?
     else {
         return Ok(None);
     };
@@ -661,32 +666,244 @@ fn stretch_on(
     Ok(None)
 }
 
+/// The ball's line of contact on one face, fitted at the guide's
+/// parameters and read against the ball's true contact between the
+/// stations it was fitted through.
+struct ContactLine {
+    /// The guide's parameter at each station the line was fitted through:
+    /// the march's, and the sections solved between them.
+    along: Vec<f64>,
+    /// The touch point's place in the face's chart at each station.
+    on: Vec<(f64, f64)>,
+    /// The line, parameterized as the guide.
+    line: ogeom_geom::BSplineCurve,
+    /// The farthest the line stands from the ball's true contact: at its
+    /// stations, and at the quarters of the way between them.
+    error: f64,
+}
+
+/// The ball's line of contact on face `f` (0 the first, 1 the second),
+/// fitted through the march's touch points at their guide parameters and
+/// held to `target` between them as well as at them.
+///
+/// A fit through the stations states its error at the stations only, and
+/// where the touch point runs fast or unevenly in the guide's parameter the
+/// fit can leave the true contact between them by many times its target.
+/// So the ball is seated exactly at the quarters of the way between every
+/// two neighbouring stations, the same solve the march made at each
+/// station, and wherever the line passes farther than `target` from those
+/// touch points, or reaches them a guide parameter late or early by more
+/// than the round's own fit, the one it misses most joins the stations
+/// and the line is fitted again. A line that cannot be held to `target`
+/// so is stated as far off as it was read, the closest of the fits tried.
+#[allow(clippy::too_many_arguments, reason = "one line, all its data")]
+fn contact_line(
+    blend: &MarchedBlend,
+    f: usize,
+    hosts: &Hosts,
+    guide: &Curve,
+    radius: f64,
+    target: f64,
+    tol: Tolerances,
+) -> OgeomResult<ContactLine> {
+    /// The most rounds of sections added between stations.
+    const ROUNDS: usize = 8;
+    let [first, second] = &hosts.surfaces;
+    let surface = &hosts.surfaces[f];
+    // The round's band is fitted to this, and its corners on the line are
+    // widened to it: where the line stands at a guide parameter may stray
+    // from the ball's section there by no more.
+    let usable = band_fit_target(tol);
+    let mut along = blend.along.clone();
+    let mut touch = if f == 0 {
+        blend.touch_first.clone()
+    } else {
+        blend.touch_second.clone()
+    };
+    let mut seats: Vec<[f64; 4]> = blend
+        .on_first
+        .iter()
+        .zip(&blend.on_second)
+        .map(|(a, b)| [a.0, a.1, b.0, b.1])
+        .collect();
+    let mut best: Option<(ContactLine, f64)> = None;
+    for round in 0..=ROUNDS {
+        let fitted = ogeom_geom::fit::fit_points_at(&along, &touch, 3, target, tol)?;
+        if !fitted.met && round == 0 {
+            ogeom_bail!(
+                NotDone,
+                "the ball's line of contact on a face reached {} against a target of {target}",
+                fitted.error
+            );
+        }
+        let line = fitted.curve;
+        let mut error = fitted.error;
+        let mut slip = fitted.error;
+        let mut added: Vec<(usize, f64, [f64; 4], Point)> = Vec::new();
+        for i in 0..along.len() - 1 {
+            // Seated from either neighbour; a section that lands off the
+            // stretch between them is another seating, not this one.
+            let reach = touch[i].distance(touch[i + 1]).mul_add(3.0, target);
+            // Where the line passes nearest a touch point, sought over the
+            // stations either side.
+            let (from, to) = (i.saturating_sub(1), (i + 2).min(along.len() - 1));
+            let around = (along[from], along[to]);
+            // The ball's contact anywhere over those stations, seated from
+            // the nearest of them and kept to the stretch they span.
+            let span = touch[from].distance(touch[to]);
+            let contact_at = |t: f64| -> Option<Point> {
+                let k = (from..=to)
+                    .min_by(|&j, &k| (along[j] - t).abs().total_cmp(&(along[k] - t).abs()))?;
+                let x = seat_section(
+                    first,
+                    second,
+                    radius,
+                    guide,
+                    blend.sides,
+                    on_guide(guide, t),
+                    seats[k],
+                    tol,
+                )
+                .ok()?;
+                let p = surface.point_at(x[2 * f], x[2 * f + 1], tol).ok()?;
+                (p.distance(touch[from]) + p.distance(touch[to]) <= span.mul_add(3.0, target))
+                    .then_some(p)
+            };
+            let mut worst: Option<(f64, f64, [f64; 4], Point)> = None;
+            for share in [0.25, 0.5, 0.75] {
+                let w = (along[i + 1] - along[i]).mul_add(share, along[i]);
+                if w <= along[i] || w >= along[i + 1] {
+                    continue;
+                }
+                let mut found = None;
+                for near in [seats[i], seats[i + 1]] {
+                    let Ok(x) = seat_section(
+                        first,
+                        second,
+                        radius,
+                        guide,
+                        blend.sides,
+                        on_guide(guide, w),
+                        near,
+                        tol,
+                    ) else {
+                        continue;
+                    };
+                    let truth = surface.point_at(x[2 * f], x[2 * f + 1], tol)?;
+                    if truth.distance(touch[i]) + truth.distance(touch[i + 1]) <= reach {
+                        found = Some(([x[0], x[1], x[2], x[3]], truth));
+                        break;
+                    }
+                }
+                let Some((seat, truth)) = found else {
+                    ogeom_bail!(
+                        NotDone,
+                        "the ball does not seat between two stations of its march, so its \
+                         line of contact there cannot be read"
+                    );
+                };
+                let late = line.point_at(w, tol)?.distance(truth);
+                // Off by more than the target at the same parameter, the
+                // line may still run along the contact, only a parameter
+                // ahead or behind: how far it stands off is then read both
+                // ways, the touch point from the line and the line's point
+                // from the ball's contact anywhere round the stations.
+                let off = if late <= target {
+                    late
+                } else {
+                    let criteria = solve::Criteria {
+                        residual: 0.0,
+                        step: tol.parametric(),
+                        max_iterations: 100,
+                    };
+                    let to_line = |t: f64| {
+                        line.point_at(t, tol)
+                            .map_or(f64::INFINITY, |p| p.square_distance(truth))
+                    };
+                    let nearest = solve::minimize(to_line, around.0, around.1, criteria)?;
+                    let point = line.point_at(w, tol)?;
+                    let to_contact =
+                        |t: f64| contact_at(t).map_or(f64::INFINITY, |p| p.square_distance(point));
+                    let touching = solve::minimize(to_contact, around.0, around.1, criteria)?;
+                    to_line(nearest.value)
+                        .max(to_contact(touching.value))
+                        .sqrt()
+                        .min(late)
+                };
+                error = error.max(off);
+                slip = slip.max(late);
+                let miss = (off / target).max(late / usable);
+                if miss > 1.0 && worst.as_ref().is_none_or(|held| miss > held.0) {
+                    worst = Some((miss, w, seat, truth));
+                }
+            }
+            if let Some((_, w, seat, truth)) = worst {
+                added.push((i + 1, w, seat, truth));
+            }
+        }
+        let settled = fitted.met && added.is_empty();
+        let closer = best.as_ref().is_none_or(|(held, held_slip)| {
+            (slip > usable, error) < (*held_slip > usable, held.error)
+        });
+        if closer {
+            let on = seats.iter().map(|s| (s[2 * f], s[2 * f + 1])).collect();
+            best = Some((
+                ContactLine {
+                    along: along.clone(),
+                    on,
+                    line,
+                    error,
+                },
+                slip,
+            ));
+        }
+        // A fit that misses its target through the stations it was given
+        // gains nothing from more of them.
+        if settled || !fitted.met {
+            break;
+        }
+        for (at, w, seat, truth) in added.into_iter().rev() {
+            along.insert(at, w);
+            touch.insert(at, truth);
+            seats.insert(at, seat);
+        }
+    }
+    let Some((best, slip)) = best else {
+        ogeom_bail!(Invariant, "a line of contact is fitted at least once");
+    };
+    if best.error.max(slip) > usable {
+        ogeom_bail!(
+            NotDone,
+            "the ball's line of contact on a face strays {} from the ball's true contact \
+             between the march's stations, past the round's own fit of {usable}",
+            best.error.max(slip)
+        );
+    }
+    Ok(best)
+}
+
 /// The face cut along the ball's line of contact: the touch points fitted
 /// at the guide's parameters with their places in the face's chart.
 /// `None` where the line misses the face.
+#[allow(clippy::too_many_arguments, reason = "one cut, all its data")]
 fn contact_cut(
     model: &mut Model,
     face: &Shape,
     f: usize,
     blend: &MarchedBlend,
     hosts: &Hosts,
+    guide: &Curve,
+    radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<ContactCut>> {
     let surface = &hosts.surfaces[f];
-    let (touch, on) = if f == 0 {
-        (&blend.touch_first, &blend.on_first)
-    } else {
-        (&blend.touch_second, &blend.on_second)
-    };
     let target = tol.confusion() * 10.0;
-    let line = ogeom_geom::fit::fit_points_at(&blend.along, touch, 3, target, tol)?;
-    if !line.met {
-        ogeom_bail!(
-            NotDone,
-            "the ball's line of contact on a face reached {} against a target of {target}",
-            line.error
-        );
-    }
+    let ContactLine {
+        along,
+        on,
+        line,
+        error,
+    } = contact_line(blend, f, hosts, guide, radius, target, tol)?;
     // The chart image at the same parameters, unwrapped across a periodic
     // chart's seam.
     let ((u0, u1), (v0, v1)) = surface.domain();
@@ -715,7 +932,7 @@ fn contact_cut(
             }
         }
     }
-    let image = ogeom_geom::fit::fit_points_2d_at(&blend.along, &chart, 3, target * 1e-3, tol)?;
+    let image = ogeom_geom::fit::fit_points_2d_at(&along, &chart, 3, target * 1e-3, tol)?;
     if !image.met {
         ogeom_bail!(
             NotDone,
@@ -725,12 +942,13 @@ fn contact_cut(
             target * 1e-3
         );
     }
-    let line = Curve::BSpline(line.curve);
+    let line = Curve::BSpline(line);
     let domain = line.domain();
     let image = PlanarCurve::from(image.curve);
     // The line and its image were fitted apart through the same stations;
     // the edge states how far the image, lifted, stands from the line
-    // anywhere along it, and never less than the fit's target.
+    // anywhere along it, how far the line stands from the ball's true
+    // contact between the stations, and never less than the fit's target.
     let gap =
         ogeom_algo::pcurve_fit::lifted_gap((&line, domain), (&image, domain), surface, false, tol)?;
     let edge = make_edge(model, line.clone(), domain, tol)?.shape;
@@ -743,7 +961,10 @@ fn contact_cut(
         domain,
     )?;
     crate::sheet_curved::same_parameter(model, &edge);
-    model.widen(&edge, Tolerance::new(target.max(gap + tol.confusion()))?)?;
+    model.widen(
+        &edge,
+        Tolerance::new(target.max(gap.max(error) + tol.confusion()))?,
+    )?;
     let split = ogeom_heal::split_face(
         model,
         face,
@@ -1285,4 +1506,251 @@ pub(crate) fn fillet_faces(
     history.generate(a, round.clone());
     history.generate(b, round);
     Ok(Built::new(shell, history))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+mod tests {
+    use super::*;
+    use ogeom_math::{ControlGrid, Direction, KnotVector, Plane};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A floor z = 0 and a cubic patch rising through it over y from -8 to
+    /// 8, leaning `lean` degrees off the floor across y, rippled by
+    /// `ripple` and bowed by `bow`, each with the sign that sets the ball
+    /// in the acute corner between them.
+    fn floor_and_patch(lean: &dyn Fn(f64) -> f64, ripple: f64, rows: usize, bow: f64) -> Hosts {
+        let mut points = Vec::with_capacity(4 * rows);
+        #[allow(clippy::cast_precision_loss, reason = "a small count")]
+        let last = (rows - 1) as f64;
+        for i in 0..4 {
+            let t = 11.0_f64.mul_add(f64::from(i) / 3.0, -3.0);
+            for j in 0..rows {
+                #[allow(clippy::cast_precision_loss, reason = "a small count")]
+                let y = 16.0_f64.mul_add(j as f64 / last, -8.0);
+                let (s, c) = lean(y).to_radians().sin_cos();
+                let r = if j % 2 == 0 { ripple } else { -ripple };
+                let b = bow * (y / 8.0).powi(2) + 0.3 * (t / 8.0).powi(2) + r;
+                points.push(Point::new(t.mul_add(c, b), y, t * s));
+            }
+        }
+        let cubic = KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap();
+        let mut knots = vec![0.0; 4];
+        for k in 1..rows - 3 {
+            #[allow(clippy::cast_precision_loss, reason = "a small count")]
+            knots.push(k as f64 / (rows - 3) as f64);
+        }
+        knots.extend([1.0; 4]);
+        let along = KnotVector::new(knots, 3).unwrap();
+        let patch = ogeom_geom::BSplineSurface::new(
+            cubic,
+            along,
+            &ControlGrid::new(points, 4, rows).unwrap(),
+            T,
+        )
+        .unwrap();
+        let floor = PlaneSurface::over(
+            Plane::through(Point::ORIGIN, Direction::Z),
+            (-40.0, 40.0),
+            (-40.0, 40.0),
+        )
+        .unwrap();
+        let (s, c) = lean(0.0).to_radians().sin_cos();
+        let (du, dv) = patch.d1_at(0.5, 0.5, T).unwrap();
+        let sign = if du.cross(dv).dot(Vector::new(s, 0.0, -c)) > 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let mut model = Model::new();
+        let surfaces: [SurfaceGeometry; 2] = [floor.into(), patch.into()];
+        let ids = [
+            model.geometry_mut().add_surface(surfaces[0].clone()),
+            model.geometry_mut().add_surface(surfaces[1].clone()),
+        ];
+        Hosts {
+            ids,
+            surfaces,
+            signs: [1.0, sign],
+        }
+    }
+
+    /// The marches of a ball of `radius` along where the supports' offsets
+    /// cross, each in order along its guide.
+    fn marches(hosts: &Hosts, radius: f64) -> Vec<(Curve, MarchedBlend)> {
+        #[allow(clippy::cast_possible_truncation, reason = "a sign")]
+        let sides = Sides {
+            first: 1,
+            second: hosts.signs[1] as i8,
+        };
+        let [first, second] = &hosts.surfaces;
+        let offset = |surface: &SurfaceGeometry, side: i8| -> SurfaceGeometry {
+            SurfaceGeometry::Offset(Box::new(
+                OffsetSurface::new(surface.clone(), f64::from(side) * radius).unwrap(),
+            ))
+        };
+        let SurfaceIntersection::Along(guides) = ogeom_intersect::intersect_surfaces(
+            &offset(first, sides.first),
+            &offset(second, sides.second),
+            IntersectOptions::default(),
+            T,
+        )
+        .unwrap() else {
+            return Vec::new();
+        };
+        let options = Marching {
+            chord: (radius * 3e-6).max(T.confusion() * 0.1),
+            ..Marching::default()
+        };
+        let mut found = Vec::new();
+        for guide in guides.into_iter().map(|c| c.curve) {
+            let (lo, hi) = guide.domain();
+            let Ok(blend) = march_blend_seeded(
+                first,
+                second,
+                radius,
+                &guide,
+                sides,
+                f64::midpoint(lo, hi),
+                options,
+                T,
+            ) else {
+                continue;
+            };
+            if blend.len() < 8 {
+                continue;
+            }
+            let mut order: Vec<usize> = (0..blend.len()).collect();
+            order.sort_by(|&i, &j| blend.along[i].total_cmp(&blend.along[j]));
+            order.dedup_by(|j, i| blend.along[*j] <= blend.along[*i] + T.parametric());
+            let blend = reordered(&blend, &order);
+            found.push((guide, blend));
+        }
+        found
+    }
+
+    /// How far `line` stands from the ball's true contact on the first
+    /// support at guide parameter `w`, between stations `i` and `i + 1`:
+    /// at the same parameter, or, where that is past `within`, both ways
+    /// over the stations either side, the contact from the line and the
+    /// line's point from the contact anywhere there.
+    #[allow(clippy::too_many_arguments, reason = "one reading, all its data")]
+    fn off_contact(
+        blend: &MarchedBlend,
+        hosts: &Hosts,
+        guide: &Curve,
+        radius: f64,
+        line: &ogeom_geom::BSplineCurve,
+        i: usize,
+        w: f64,
+        within: f64,
+    ) -> f64 {
+        let [first, second] = &hosts.surfaces;
+        let contact = |t: f64| -> Option<Point> {
+            let k = if (t - blend.along[i]).abs() < (t - blend.along[i + 1]).abs() {
+                i
+            } else {
+                i + 1
+            };
+            let near = [
+                blend.on_first[k].0,
+                blend.on_first[k].1,
+                blend.on_second[k].0,
+                blend.on_second[k].1,
+            ];
+            let x = seat_section(first, second, radius, guide, blend.sides, t, near, T).ok()?;
+            first.point_at(x[0], x[1], T).ok()
+        };
+        let truth = contact(w).expect("the ball seats between two stations");
+        let point = line.point_at(w, T).unwrap();
+        let late = point.distance(truth);
+        if late <= within {
+            return late;
+        }
+        let (lo, hi) = (
+            blend.along[i.saturating_sub(1)],
+            blend.along[(i + 2).min(blend.len() - 1)],
+        );
+        // Scanned finely, then the best sample refined.
+        let nearest = |g: &dyn Fn(f64) -> f64| -> f64 {
+            let at = |k: u32| (hi - lo).mul_add(f64::from(k) / 64.0, lo);
+            let best = (0..=64)
+                .min_by(|&a, &b| g(at(a)).total_cmp(&g(at(b))))
+                .unwrap();
+            let step = (hi - lo) / 64.0;
+            let refined = solve::minimize(
+                g,
+                (at(best) - step).max(lo),
+                (at(best) + step).min(hi),
+                solve::Criteria {
+                    residual: 0.0,
+                    step: 1e-15,
+                    max_iterations: 200,
+                },
+            )
+            .unwrap();
+            g(at(best)).min(g(refined.value))
+        };
+        let to_line = nearest(&|t| line.point_at(t, T).unwrap().distance(truth));
+        let to_contact = nearest(&|t| contact(t).map_or(f64::INFINITY, |p| p.distance(point)));
+        to_line.max(to_contact).min(late)
+    }
+
+    /// The farthest the bare fit through the stations and the held line
+    /// stand from the ball's true contact, read every eighth of the way
+    /// between stations, against the error the held line states.
+    fn read(hosts: &Hosts, radius: f64) -> Vec<(f64, f64, f64)> {
+        let target = T.confusion() * 10.0;
+        let mut out = Vec::new();
+        for (guide, blend) in marches(hosts, radius) {
+            let Ok(held) = contact_line(&blend, 0, hosts, &guide, radius, target, T) else {
+                continue;
+            };
+            let stated = target.max(held.error + T.confusion());
+            let bare =
+                ogeom_geom::fit::fit_points_at(&blend.along, &blend.touch_first, 3, target, T)
+                    .unwrap()
+                    .curve;
+            let (mut held_off, mut bare_off) = (0.0_f64, 0.0_f64);
+            for i in 0..blend.len() - 1 {
+                for k in 1..8 {
+                    let w = (blend.along[i + 1] - blend.along[i])
+                        .mul_add(f64::from(k) / 8.0, blend.along[i]);
+                    let off = off_contact(&blend, hosts, &guide, radius, &held.line, i, w, stated);
+                    held_off = held_off.max(off);
+                    let off = off_contact(&blend, hosts, &guide, radius, &bare, i, w, target);
+                    bare_off = bare_off.max(off);
+                }
+            }
+            out.push((stated, held_off, bare_off));
+        }
+        out
+    }
+
+    /// Where the patch twists and ripples, the ball's touch point on the
+    /// floor runs unevenly in the guide's parameter, and a fit through
+    /// the march's stations alone strays from the true contact between
+    /// them by ten times its target. The line held to the contact between
+    /// the stations stands within the error it states, read every eighth
+    /// of the way between them both ways: the contact from the line and
+    /// the line from the contact.
+    #[test]
+    fn a_line_of_contact_holds_its_stated_error_between_the_stations() {
+        let hosts = floor_and_patch(&|y| 25.0_f64.mul_add(y / 8.0, 55.0), 0.1, 9, 0.4);
+        let target = T.confusion() * 10.0;
+        let lines = read(&hosts, 2.0);
+        assert!(!lines.is_empty(), "a line of contact is read on the floor");
+        for (stated, held, _) in &lines {
+            assert!(
+                held <= stated,
+                "the line stands {held:e} off, stating {stated:e}"
+            );
+        }
+        let strayed = lines.iter().map(|l| l.2).fold(0.0, f64::max);
+        assert!(
+            strayed > target * 5.0,
+            "the stations alone leave the contact between them: {strayed:e}"
+        );
+    }
 }
