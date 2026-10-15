@@ -33,6 +33,14 @@ bump may break the API and a patch bump may not.
   1.9 times the tolerance off. Each piece of the polyline is now halved
   until the curve at its quarter points stands within a micron of it.
 
+- **A skin's error is read densely along its rows.** The sampled fit
+  reads each span at its quarter points and climbs the peaks it sees
+  there, and a peak between them could stand over the target: pipes
+  through sections held a blended ring up to 1.06 times the tolerance off
+  while stating less. Each skin is now read at eight points a knot span
+  along every row, its peaks climbed, and refitted tighter where it
+  strays; the error it states is the one read so.
+
 ## [0.11.2] - 2026-10-15
 
 A patch release with one fix (#261): a face with no seam edge, such as a

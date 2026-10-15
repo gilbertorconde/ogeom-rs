@@ -631,6 +631,76 @@ struct Traced<'a> {
     sampling: ogeom_geom::fit::Sampling,
 }
 
+impl Traced<'_> {
+    /// The farthest `surface` stands from the skin along its rows, at the
+    /// same parameters: each row (and, where the skin is known across its
+    /// rows, the line midway between two) read at `PER_SPAN` points of
+    /// every knot span of the surface, and the widest readings climbed to
+    /// the top of their peak.
+    fn off_rows(&self, surface: &ogeom_geom::BSplineSurface, tol: Tolerances) -> OgeomResult<f64> {
+        use ogeom_geom::Surface as _;
+        const PER_SPAN: usize = 8;
+        const PEAKS: usize = 8;
+        let breaks: Vec<f64> = surface
+            .u_knots()
+            .distinct()
+            .into_iter()
+            .map(|(u, _)| u)
+            .collect();
+        let vs = &self.sampling.vs;
+        let mut lines: Vec<f64> = vs.clone();
+        if self.sampling.between.1 {
+            lines.extend(vs.windows(2).map(|w| f64::midpoint(w[0], w[1])));
+        }
+        let mut us: Vec<f64> = Vec::with_capacity(breaks.len() * PER_SPAN);
+        for w in breaks.windows(2) {
+            for k in 0..PER_SPAN {
+                #[allow(clippy::cast_precision_loss, reason = "a small count")]
+                let f = k as f64 / PER_SPAN as f64;
+                us.push(w[0] + (w[1] - w[0]) * f);
+            }
+        }
+        if let Some(last) = breaks.last() {
+            us.push(*last);
+        }
+        // A point the geometry will not give is no reading.
+        let off = |u: f64, v: f64| -> OgeomResult<f64> {
+            Ok(match (self.point)(u, v) {
+                Ok(p) => p.distance(surface.point_at(u, v, tol)?),
+                Err(_) => 0.0,
+            })
+        };
+        let mut widest: f64 = 0.0;
+        for v in lines {
+            let readings: Vec<f64> = us.iter().map(|u| off(*u, v)).collect::<OgeomResult<_>>()?;
+            let mut peaks: Vec<(f64, usize)> = (0..readings.len())
+                .filter(|&i| {
+                    (i == 0 || readings[i - 1] <= readings[i])
+                        && readings.get(i + 1).is_none_or(|r| *r <= readings[i])
+                })
+                .map(|i| (readings[i], i))
+                .collect();
+            peaks.sort_by(|a, b| b.0.total_cmp(&a.0));
+            widest = readings.iter().copied().fold(widest, f64::max);
+            let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+            for &(_, i) in peaks.iter().take(PEAKS) {
+                let (mut a, mut b) = (us[i.saturating_sub(1)], us[(i + 1).min(us.len() - 1)]);
+                for _ in 0..40 {
+                    let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+                    let (oc, od) = (off(c, v)?, off(d, v)?);
+                    widest = widest.max(oc).max(od);
+                    if oc > od {
+                        b = d;
+                    } else {
+                        a = c;
+                    }
+                }
+            }
+        }
+        Ok(widest)
+    }
+}
+
 /// One section a skin passes through: a closed loop read by arc length,
 /// or the point a skin narrows to.
 #[derive(Clone)]
@@ -873,13 +943,44 @@ impl<'a> Skin<'a> {
             Some(traced) => {
                 let mut sampling = traced.sampling.clone();
                 sampling.closed_v = closed_v;
-                ogeom_geom::fit::fit_surface_sampled(
-                    |u, v| (traced.point)(u, v),
-                    &sampling,
-                    3,
-                    tolerance,
-                    tol,
-                )
+                // The sampled fit reads its spans at their quarter points
+                // and climbs the peaks it sees there; a peak between them
+                // can stand over the target. The skin is read densely
+                // along its rows after, and refitted tighter where it
+                // strays: the error it states is the one read densely.
+                const TIGHTER: usize = 3;
+                let mut target = tolerance;
+                let mut best: Option<ogeom_geom::fit::Fitted<ogeom_geom::BSplineSurface>> = None;
+                for round in 0..=TIGHTER {
+                    let fit = ogeom_geom::fit::fit_surface_sampled(
+                        |u, v| (traced.point)(u, v),
+                        &sampling,
+                        3,
+                        target,
+                        tol,
+                    );
+                    // A tighter fit that cannot be made leaves the best so
+                    // far standing, its error stated as read.
+                    let mut fitted = match fit {
+                        Ok(fitted) => fitted,
+                        Err(e) if round == 0 => return Err(e),
+                        Err(_) => break,
+                    };
+                    fitted.error = fitted.error.max(traced.off_rows(&fitted.curve, tol)?);
+                    fitted.met = fitted.error <= tolerance;
+                    let strays = !fitted.met;
+                    let error = fitted.error;
+                    if best.as_ref().is_none_or(|b| error < b.error) {
+                        best = Some(fitted);
+                    }
+                    if !strays {
+                        break;
+                    }
+                    target *= 0.9 * tolerance / error;
+                }
+                best.ok_or_else(|| {
+                    ogeom_core::ogeom_err!(Construction, "the skin could not be fitted")
+                })
             }
         }
     }
