@@ -979,12 +979,16 @@ pub fn trace(
     }
 
     // Forwards first. If it closes, that is the whole branch and there is
-    // nothing behind.
+    // nothing behind. A backward half that closes is the whole branch too,
+    // whatever stopped the forward one, turned to run the way that set off.
     let ahead = walk(a, b, from, 1.0, options, tol)?;
     if ahead.stopped == Stopped::Closed {
         return Ok(ahead);
     }
     let behind = walk(a, b, from, -1.0, options, tol)?;
+    if behind.stopped == Stopped::Closed {
+        return Ok(reversed(behind));
+    }
     let last_step = |walked: &[Point]| -> f64 {
         walked
             .windows(2)
@@ -1046,6 +1050,14 @@ pub fn trace(
         on_b,
         stopped,
     })
+}
+
+/// A traced curve run the other way.
+pub(crate) fn reversed(mut traced: Traced) -> Traced {
+    traced.points.reverse();
+    traced.on_a.reverse();
+    traced.on_b.reverse();
+    traced
 }
 
 /// Two surfaces, as a condition for the walker: four unknowns and three
@@ -2846,6 +2858,57 @@ mod tests {
             );
             assert!(p.z.abs() < 1e-7, "off the cutting plane by {}", p.z);
         }
+    }
+
+    /// A branch the backward half closes is the loop, whatever stopped the
+    /// forward half. An oblique plane cuts a drum in an ellipse, which takes
+    /// a different number of steps round each way from most seeds. From one
+    /// that goes round in fewer backwards, with points enough only for that,
+    /// the forward half runs out and the backward one closes: joined, the
+    /// two ran past the seed a second time and were reported truncated.
+    #[test]
+    fn a_branch_closed_going_backwards_is_the_loop() {
+        let drum = cylinder(Point::new(0.0, 0.0, -4.0), Vector::Z, 1.0, (0.0, 8.0));
+        let cut = plane(Point::ORIGIN, Vector::new(0.0, 1.0, 1.0));
+        let options = Marching {
+            chord: 1e-5,
+            ..Marching::default()
+        };
+        let found = seeds(&drum, &cut, options, T).unwrap();
+        let round = trace(&drum, &cut, found[0], options, T).unwrap();
+        let Some((from, ahead, behind)) = (0..round.points.len())
+            .step_by(37)
+            .map(|k| {
+                let from = Contact {
+                    on_a: round.on_a[k],
+                    on_b: round.on_b[k],
+                    point: round.points[k],
+                };
+                let ahead = walk(&drum, &cut, from, 1.0, options, T).unwrap();
+                let behind = walk(&drum, &cut, from, -1.0, options, T).unwrap();
+                (from, ahead, behind)
+            })
+            .find(|(_, ahead, behind)| {
+                ahead.stopped == Stopped::Closed
+                    && behind.stopped == Stopped::Closed
+                    && behind.points.len() < ahead.points.len()
+            })
+        else {
+            panic!("a seed the backward walk closes from in fewer points");
+        };
+
+        let options = Marching {
+            max_points: behind.points.len(),
+            ..options
+        };
+        let branch = trace(&drum, &cut, from, options, T).unwrap();
+        assert_eq!(branch.stopped, Stopped::Closed, "the backward half closed");
+        assert_eq!(branch.points.len(), behind.points.len(), "once round");
+        assert_eq!(branch.points[0], branch.points[branch.points.len() - 1]);
+        assert!(
+            (branch.points[1] - from.point).dot(ahead.points[1] - from.point) > 0.0,
+            "it runs the way the forward half set off"
+        );
     }
 
     #[test]

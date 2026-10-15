@@ -93,6 +93,15 @@ bump may break the API and a patch bump may not.
   seam are joined only where their ends, each landed on the seam, meet
   within the chord; otherwise the contact ends open at the seam.
 
+- **A curve whose backward half closes comes back as that loop (#278).**
+  Following a curve both ways (the shared walker, the intersection
+  tracer and the tangential contact tracer), a forward half that stopped
+  short of closing (out of points, or stalled where the other way
+  passed) was joined to a backward half that had closed, so the result
+  ran round the loop and on past the start a second time, reported
+  truncated or as leaving the domain. A closed backward half is now the
+  answer, a loop, turned to run the way the forward half set off.
+
 - **A part placed in an assembly is checked as it is on its own (#275).**
   Which way a face faces was probed at the middle of its largest mesh
   triangle, ranked by area from the placed mesh. A placement rounds the

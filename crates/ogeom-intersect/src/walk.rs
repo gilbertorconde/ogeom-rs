@@ -170,7 +170,8 @@ pub struct Walked {
 /// Follow a condition's curve both ways from a starting point.
 ///
 /// Forwards first; if that closes, the curve is a loop and there is nothing
-/// behind. Otherwise the backward half is walked and the two are joined.
+/// behind. Otherwise the backward half is walked: if that closes, it is the
+/// loop, and otherwise the two are joined.
 ///
 /// # Errors
 ///
@@ -197,6 +198,17 @@ pub fn follow<C: Condition + ?Sized>(
         return Ok(ahead);
     }
     let behind = walk_one_way(condition, start, -1.0, options, tol)?;
+    // A backward half that closed is the whole loop as well, solved step by
+    // step the other way round: the forward half stopped short of closing
+    // it (out of points, or stalled where the other way passed), and joined
+    // onto it would run past the start a second time. It is turned to run
+    // the way the forward half set off.
+    if behind.stopped == Stopped::Closed {
+        let mut whole = behind;
+        whole.states.reverse();
+        whole.points.reverse();
+        return Ok(whole);
+    }
 
     let mut states = behind.states;
     let mut points = behind.points;
@@ -785,6 +797,99 @@ mod tests {
             length <= circumference && length > circumference * (1.0 - 1e-4),
             "the inscribed polygon: {length} against {circumference}"
         );
+    }
+
+    /// An ellipse with semi-axes `a` and `b` about the origin in the
+    /// `z = 0` plane, posed like [`CircleAt`]: its curvature changes along
+    /// it, so a walk round it takes a different number of steps each way.
+    struct Ellipse {
+        a: f64,
+        b: f64,
+    }
+
+    impl Condition for Ellipse {
+        fn unknowns(&self) -> usize {
+            3
+        }
+        fn position(&self, x: &[f64], _tol: Tolerances) -> Option<Point> {
+            Some(Point::new(x[0], x[1], x[2]))
+        }
+        fn position_gradient(&self, _x: &[f64], _tol: Tolerances) -> Option<Vec<Vector>> {
+            Some(vec![Vector::X, Vector::Y, Vector::Z])
+        }
+        fn system(&self, x: &[f64], _tol: Tolerances) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+            let (aa, bb) = (self.a * self.a, self.b * self.b);
+            Some((
+                vec![
+                    (x[0] * x[0]).mul_add(1.0 / aa, x[1] * x[1] / bb) - 1.0,
+                    x[2],
+                ],
+                vec![
+                    vec![2.0 * x[0] / aa, 2.0 * x[1] / bb, 0.0],
+                    vec![0.0, 0.0, 1.0],
+                ],
+            ))
+        }
+        fn clamp(&self, _x: &mut [f64]) {}
+        fn outside(&self, _x: &[f64], _tol: Tolerances) -> bool {
+            false
+        }
+        fn near_edge(&self, _x: &[f64]) -> bool {
+            false
+        }
+        fn extent(&self) -> f64 {
+            self.a * 4.0
+        }
+    }
+
+    /// A loop the backward half closes is the loop, whatever stopped the
+    /// forward half. From a start where going round backwards takes fewer
+    /// points than forwards, with points enough only for the backward way,
+    /// the forward half runs out and the backward one closes: joined, the
+    /// two ran past the start a second time and were reported truncated.
+    /// What comes back is the backward loop, turned to run forwards.
+    #[test]
+    fn a_loop_closed_going_backwards_is_the_loop() {
+        let ellipse = Ellipse { a: 3.0, b: 1.0 };
+        let options = Marching {
+            chord: 1e-5,
+            ..Marching::default()
+        };
+        let (start, ahead, behind) = (0..64)
+            .map(|k| {
+                let t = f64::from(k) * 0.1;
+                let start = [3.0 * t.cos(), t.sin(), 0.0];
+                let ahead = walk_one_way(&ellipse, &start, 1.0, options, T).unwrap();
+                let behind = walk_one_way(&ellipse, &start, -1.0, options, T).unwrap();
+                (start, ahead, behind)
+            })
+            .find(|(_, ahead, behind)| {
+                ahead.stopped == Stopped::Closed
+                    && behind.stopped == Stopped::Closed
+                    && behind.points.len() < ahead.points.len()
+            })
+            .expect("a start the backward walk closes from in fewer points");
+
+        let options = Marching {
+            max_points: behind.points.len(),
+            ..options
+        };
+        let walked = follow(&ellipse, &start, options, T).unwrap();
+        assert_eq!(walked.stopped, Stopped::Closed, "the backward half closed");
+        assert_eq!(walked.points.len(), behind.points.len(), "once round");
+        let (first, last) = (walked.points[0], walked.points[walked.points.len() - 1]);
+        assert_eq!(first, last, "closed on its start");
+        assert!(
+            (walked.points[1] - first).dot(ahead.points[1] - first) > 0.0,
+            "it runs the way the forward half set off"
+        );
+        for p in &walked.points {
+            let on = (p.x / 3.0).hypot(p.y) - 1.0;
+            assert!(
+                on.abs() < 1e-9 && p.z.abs() < 1e-12,
+                "on the ellipse: {p:?}"
+            );
+        }
     }
 
     /// A curve on a closed but non-periodic chart, the cylinder

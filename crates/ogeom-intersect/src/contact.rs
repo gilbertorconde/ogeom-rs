@@ -37,7 +37,8 @@ use ogeom_geom::{Surface as _, SurfaceGeometry};
 use ogeom_math::{Point, Vector, solve};
 
 use crate::march::{
-    BRANCH_POINT_SINE, Contact, Marching, Stopped, Traced, clamp, distance_to_segment, span,
+    BRANCH_POINT_SINE, Contact, Marching, Stopped, Traced, clamp, distance_to_segment, reversed,
+    span,
 };
 
 /// How far apart the two points of a corrected contact may sit, in units of
@@ -635,6 +636,16 @@ pub fn trace_tangential(
         });
     }
     let behind = walk.one_way(seed, -1.0)?;
+    // A backward half that closed is the whole loop as well, turned to run
+    // the way the forward half set off.
+    if behind.stopped == Stopped::Closed {
+        return Ok(reversed(Traced {
+            points: behind.points,
+            on_a: behind.on_a,
+            on_b: behind.on_b,
+            stopped: Stopped::Closed,
+        }));
+    }
     let mut points = behind.points;
     let mut on_a = behind.on_a;
     let mut on_b = behind.on_b;
