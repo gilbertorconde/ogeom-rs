@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-15
+
+A patch release with one fix (#261): a face with no seam edge, such as a
+torus band between two circles, now meshes the seam ogeom adds to the
+chord asked. Where a rim stood a file's slop off its surface, that seam
+came out in eight straight steps whatever the chord, standing 0.09 mm off
+a torus of 19 mm section while the mesh reported its chord met. The
+README and the exchange guide now list everything the mesh converter
+rebuilds.
+
 ### Fixed
 
 - **A seamless face meshes its seam to the chord when a rim stands off its
@@ -5454,7 +5464,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.9.16...v0.10.0
