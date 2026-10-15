@@ -17,7 +17,7 @@ or link any other CAD kernel.
 | Meshing | tessellation at a stated deflection, per-face meshes that agree along shared edges |
 | Drawings | hidden line removal, sections, DXF output |
 | Exchange | STEP (assemblies, colours, PMI, views) and IGES in both directions; STL, OBJ, PLY, glTF, 3MF, VRML, DXF, and a native format |
-| Meshes to solids | `solid_from_mesh` turns a triangle mesh into a solid, merging flat regions into planar faces and rebuilding cylinders, cones, spheres and tori |
+| Meshes to solids | `solid_from_mesh` turns a triangle mesh into a solid, merging flat regions into planar faces and rebuilding cylinders, cones, spheres, tori, extrusions, surfaces of revolution and fitted B-spline patches |
 
 ## Scope and completeness
 

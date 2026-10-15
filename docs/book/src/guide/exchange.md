@@ -111,6 +111,11 @@ you can model on:
 - It rebuilds regions lying on a cylinder, cone, sphere or torus as that
   surface. A meshed bore becomes a cylinder again, and a meshed ball one
   spherical face.
+- It rebuilds a smooth region no such surface holds as an extrusion or a
+  surface of revolution where one fits, and otherwise, with
+  `MeshSolidOptions::patches` (on by default), as a fitted B-spline patch.
+- It reads meshes as other kernels draw them: a drum or cone drawn in
+  strips from rim to rim, with no points between, comes back round.
 
 Its report says where an open mesh is open, and which curved regions could
 not be rebuilt exactly and stayed faceted.
