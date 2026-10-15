@@ -225,7 +225,9 @@ fn a_wall_passing_through_itself_is_broken_wherever_it_stands() {
 /// first's top and the second's side at x = 1, the first's two sides at
 /// y = 0 and y = 1 with the second's bottom and its side, the first's end
 /// at x = 2 with the second's bottom), and every one is named under every
-/// placement.
+/// placement. The first's top reads facing out where the second does not
+/// cover it and into the material where it does, and is named for that
+/// rather than settled by whichever half one probe lands on.
 #[test]
 fn shells_crossing_each_other_are_broken_whatever_the_placement() {
     let mut model = Model::new();
@@ -237,6 +239,18 @@ fn shells_crossing_each_other_are_broken_whatever_the_placement() {
     let shells =
         [&first, &second].map(|s| explore_unique(&model, s, ShapeType::Shell).unwrap()[0].clone());
     let solid = model.add_solid(&shells).unwrap();
+    let top = explore_unique(&model, &first, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            ogeom::algo::shape_bounds(&model, f, T)
+                .unwrap()
+                .low()
+                .unwrap()
+                .z
+                > 0.5
+        })
+        .unwrap();
     for motion in motions() {
         let placed = ogeom::algo::transformed(&mut model, &solid, motion)
             .unwrap()
@@ -248,5 +262,64 @@ fn shells_crossing_each_other_are_broken_whatever_the_placement() {
             .filter(|p| p.what.contains("passes through another face"))
             .count();
         assert_eq!(crossings, 6, "{diagnosis}");
+        assert!(
+            diagnosis
+                .problems
+                .iter()
+                .any(|p| p.at.node() == top.node() && p.what.contains("reads facing out")),
+            "{diagnosis}"
+        );
+    }
+}
+
+/// A square turned by `turn` about the z axis at height `z`, its sides
+/// `2 * half.0` and `2 * half.1`.
+fn turned(model: &mut Model, z: f64, turn: f64, half: (f64, f64)) -> Shape {
+    let (c, s) = (turn.cos(), turn.sin());
+    let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(x, y)| {
+        Point::new(
+            (c * x).mul_add(half.0, -s * y * half.1),
+            (s * x).mul_add(half.0, c * y * half.1),
+            z,
+        )
+    });
+    make_polygon(model, &corners, true, T).unwrap().shape
+}
+
+/// `make_solid` turns a closed shell outward by more than one probe. A
+/// skin through twisted squares and rectangles carried on to a point can
+/// fold near the point, its wall reading into the material there and out
+/// everywhere else; one probe landing in the fold turned the whole shell
+/// over. Several places agreeing settle it, and where they disagree the
+/// volume the shell encloses does: given either way round, the solid made
+/// encloses its volume positively.
+#[test]
+fn make_solid_is_not_turned_over_by_one_probe() {
+    for apex_at in [
+        Point::new(1.0, 2.0, 14.0),
+        Point::new(0.0, 0.0, 14.0),
+        Point::new(-2.0, 1.0, 12.0),
+        Point::new(8.0, -6.0, 13.0),
+    ] {
+        let mut model = Model::new();
+        let mut through = vec![
+            turned(&mut model, 0.0, 0.0, (3.0, 3.0)),
+            turned(&mut model, 3.0, 0.7, (6.0, 1.0)),
+            turned(&mut model, 6.0, 1.5, (3.0, 3.0)),
+            turned(&mut model, 9.0, 2.3, (6.0, 1.0)),
+        ];
+        through.push(model.add_vertex(ogeom::topo::VertexData::new(apex_at)));
+        let loft = ogeom::offset::make_loft_skinned(&mut model, &through, 1e-3, T)
+            .unwrap()
+            .shape;
+        let shell = explore_unique(&model, &loft, ShapeType::Shell).unwrap()[0].clone();
+        for given in [shell.clone(), shell.reversed()] {
+            let solid = make_solid(&mut model, &[given]).unwrap().shape;
+            let mesh =
+                ogeom::mesh::triangulate(&model, &solid, ogeom::mesh::Deflection::default(), T)
+                    .unwrap();
+            assert!(mesh.is_closed(), "{apex_at:?}");
+            assert!(mesh.volume() > 0.0, "{apex_at:?}: {}", mesh.volume());
+        }
     }
 }

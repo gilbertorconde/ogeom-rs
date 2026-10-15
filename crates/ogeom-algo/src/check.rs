@@ -185,8 +185,9 @@ pub fn check_kept(
         check_shell(model, shell, &mut found)?;
     }
     for solid in of(ShapeType::Solid) {
-        check_orientation(model, solid, tol, kept, &mut found)?;
-        check_crossings(model, solid, tol, kept, &mut found)?;
+        let crossings = crate::self_cross::crossings(model, solid, kept, tol)?;
+        check_orientation(model, solid, tol, kept, !crossings.is_empty(), &mut found)?;
+        note_crossings(crossings, &mut found);
     }
     // Tolerance containment: a face is no looser than its edges, an edge no
     // looser than its vertices, checked through every level below each.
@@ -217,38 +218,125 @@ fn each(
     Ok(())
 }
 
-/// Report every face of a solid that faces into its material.
+/// Report every face of a solid that faces into its material, and every
+/// face that reads facing out of it at one place and into it at another.
+///
+/// A face is read at two places spread over it, not one: on a boundary that
+/// passes through itself or overlaps, a face can read out over part of its
+/// extent and in over the rest, and which part a single probe lands on
+/// would decide the answer. A probe can misread, though, and a face of a
+/// sound solid must not be named on a misreading. A face read both ways is
+/// named where the solid's boundary was found `crossed`, where its first
+/// place (the one a single probe asks) reads it facing in, or where the
+/// solid's winding number bears out a place reading it facing in; else the
+/// inward reading is taken for the probe's and nothing is named.
 fn check_orientation(
     model: &Model,
     solid: &Shape,
     tol: Tolerances,
     kept: &crate::ProbeCache,
+    crossed: bool,
     found: &mut Diagnosis,
 ) -> OgeomResult<()> {
-    for face in inside_out_faces_kept(model, solid, tol, kept)? {
-        found.note(
-            Severity::Broken,
-            &face,
-            ShapeType::Face,
-            "the face's outward normal points into the material: its \
-             orientation is reversed"
-                .into(),
-        );
+    let boundary = match probe_boundary(model, solid, tol) {
+        Ok(boundary) => boundary.keeping(kept),
+        Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+            return Err(e);
+        }
+        Err(_) => return Ok(()),
+    };
+    let faces = explore_unique(model, solid, ShapeType::Face)?;
+    let read =
+        ogeom_core::parallel::map_ordered(&faces, |_, face| -> OgeomResult<Option<String>> {
+            let places = face_places(model, face, &boundary, PLACES_READ, tol)?;
+            let read = Readings::of(&places);
+            if !read.disagree() {
+                return Ok((read.verdict() == Some(true)).then(|| {
+                    "the face's outward normal points into the material: its \
+                 orientation is reversed"
+                        .to_string()
+                }));
+            }
+            let mut credible = crossed || places.first().is_some_and(|p| p.inward);
+            for place in places.iter().filter(|p| p.inward) {
+                if credible {
+                    break;
+                }
+                credible = read_place(model, face, &boundary, place, true, tol)? == Some(true);
+            }
+            Ok(credible.then(|| {
+                format!(
+                    "the face reads facing out of the material at {} of the \
+                 places probed and into it at {}: the boundary passes \
+                 through itself or overlaps",
+                    read.out, read.inward
+                )
+            }))
+        });
+    for (face, read) in faces.iter().zip(read) {
+        if let Some(what) = read? {
+            found.note(Severity::Broken, face, ShapeType::Face, what);
+        }
     }
     Ok(())
+}
+
+/// How many places `check` reads each face at: the largest triangle's
+/// middle and that of the large triangle farthest from it. Each place costs a
+/// probe's rays, and the faces of a boundary crossing itself are named by
+/// the crossing as well.
+const PLACES_READ: usize = 2;
+
+/// How many places, over a shell's faces, must agree before they say which
+/// way the shell faces, where one probe is not to decide it.
+pub(crate) const AGREEING: usize = 3;
+
+/// What the probes of a face read: at how many places its outside was
+/// found outside the material, and at how many inside it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Readings {
+    /// Places where the face faces out of the material.
+    pub(crate) out: usize,
+    /// Places where it faces into it.
+    pub(crate) inward: usize,
+}
+
+impl Readings {
+    /// What `places` read, counted.
+    fn of(places: &[Place]) -> Self {
+        let inward = places.iter().filter(|p| p.inward).count();
+        Self {
+            out: places.len() - inward,
+            inward,
+        }
+    }
+
+    /// Whether the face faces into the material: `None` where nothing
+    /// read, or the places read disagree.
+    pub(crate) const fn verdict(self) -> Option<bool> {
+        match (self.out > 0, self.inward > 0) {
+            (true, false) => Some(false),
+            (false, true) => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Whether some places read out and others in.
+    pub(crate) const fn disagree(self) -> bool {
+        self.out > 0 && self.inward > 0
+    }
+
+    /// How many places read at all.
+    pub(crate) const fn count(self) -> usize {
+        self.out + self.inward
+    }
 }
 
 /// Report every place where a solid's boundary passes through itself: a
 /// face folded through itself, or two faces crossing away from the edges
 /// they share.
-fn check_crossings(
-    model: &Model,
-    solid: &Shape,
-    tol: Tolerances,
-    kept: &crate::ProbeCache,
-    found: &mut Diagnosis,
-) -> OgeomResult<()> {
-    for crossing in crate::self_cross::crossings(model, solid, kept, tol)? {
+fn note_crossings(crossings: Vec<crate::self_cross::Crossing>, found: &mut Diagnosis) {
+    for crossing in crossings {
         let at = crossing.at;
         let whom = if crossing.face.is_same(&crossing.other) {
             "itself"
@@ -266,7 +354,6 @@ fn check_crossings(
             ),
         );
     }
-    Ok(())
 }
 
 /// The faces of a solid that face into its material.
@@ -348,15 +435,8 @@ fn turned_in_against(
 }
 
 /// Whether a face's outward normal points into the solid's material; `None`
-/// where the probe cannot tell.
-///
-/// Probed at the middle of the face's largest mesh triangle, or of the next
-/// largest where that cannot tell. Each probe steps off the face both ways,
-/// first by a fraction of the triangle's size and then by shorter steps: a
-/// step longer than the solid is thick lands past its far side, and one
-/// across a gap narrower than the step lands in the material beyond, and
-/// either leaves both points on the same side. The shortest step stays well
-/// clear of the band within which a point counts as on the face.
+/// where the probe cannot tell: the first place of [`face_readings`] that
+/// reads decides.
 pub(crate) fn faces_inward(
     model: &Model,
     face: &Shape,
@@ -365,12 +445,52 @@ pub(crate) fn faces_inward(
 ) -> OgeomResult<Option<bool>> {
     /// How many of the largest triangles are asked before giving up.
     const PROBES: usize = 3;
+    Ok(face_places(model, face, boundary, PROBES, tol)?
+        .first()
+        .map(|p| p.inward))
+}
+
+/// Which way a face faces at up to `wanted` places spread over it.
+///
+/// Probed at the middle of the face's largest mesh triangle, then at the
+/// middles of the large triangles farthest from those already probed, so
+/// that the places read spread over the face rather than crowd where its
+/// largest triangles lie. A place that cannot tell is passed over, and a
+/// few more are tried than wanted. Each place is read by [`read_place`],
+/// its shortest step well clear of the band within which a point counts as
+/// on the face.
+pub(crate) fn face_readings(
+    model: &Model,
+    face: &Shape,
+    boundary: &crate::SolidBoundary,
+    wanted: usize,
+    tol: Tolerances,
+) -> OgeomResult<Readings> {
+    Ok(Readings::of(&face_places(
+        model, face, boundary, wanted, tol,
+    )?))
+}
+
+/// The places of [`face_readings`], each with what it read, in the order
+/// they were read.
+fn face_places(
+    model: &Model,
+    face: &Shape,
+    boundary: &crate::SolidBoundary,
+    wanted: usize,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Place>> {
+    /// How many places beyond those wanted are tried before giving up.
+    const SPARE: usize = 2;
+    /// How many of the largest triangles the places are chosen among.
+    const CHOSEN_AMONG: usize = 32;
     // Meshed where the face stands in its own frame: a placement moves the
     // probe points with the material, but placed positions round, and the
     // rounding reorders triangles of one area. Where the face reads
     // differently over its extent, that would let a rigid motion change
     // the answer.
     let own = face.located(ogeom_topo::Location::identity());
+    let mut places: Vec<Place> = Vec::new();
     let Ok(mesh) = ogeom_mesh::triangulate_face_kept(
         model,
         &own,
@@ -378,29 +498,60 @@ pub(crate) fn faces_inward(
         boundary.kept().meshes(),
         tol,
     ) else {
-        return Ok(None);
+        return Ok(places);
     };
     if mesh.parameters.len() != mesh.positions.len() {
-        return Ok(None);
+        return Ok(places);
     }
     let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
-        return Ok(None);
+        return Ok(places);
     };
     let Some(surface) = model.geometry().surface(data.surface) else {
-        return Ok(None);
+        return Ok(places);
     };
     let area = |t: &[u32; 3]| {
         let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
         (b - a).cross(c - a).magnitude()
     };
+    let middle = |t: &[u32; 3]| {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        a + ((b - a) + (c - a)) / 3.0
+    };
     let mut largest: Vec<(f64, &[u32; 3])> = mesh.triangles.iter().map(|t| (area(t), t)).collect();
     largest.sort_by(|x, y| y.0.total_cmp(&x.0));
+    largest.truncate(CHOSEN_AMONG);
+    // The largest first, then each time the one farthest from every
+    // middle already taken; ties to the larger.
+    let mut order: Vec<(f64, &[u32; 3])> = Vec::with_capacity(largest.len());
+    let mut apart: Vec<f64> = vec![f64::INFINITY; largest.len()];
+    let mut taken = vec![false; largest.len()];
+    for _ in 0..largest.len() {
+        let mut best: Option<usize> = None;
+        for k in 0..largest.len() {
+            if !taken[k] && best.is_none_or(|b| apart[k] > apart[b]) {
+                best = Some(k);
+            }
+        }
+        let Some(k) = best else { break };
+        taken[k] = true;
+        order.push(largest[k]);
+        let at = middle(largest[k].1);
+        for (j, (_, t)) in largest.iter().enumerate() {
+            apart[j] = apart[j].min(middle(t).distance(at));
+        }
+    }
     let placement = face.transform(model.datums())?;
     let flip = face.orientation() == ogeom_topo::Orientation::Reversed;
     // Twenty times the band a point counts as on the face within, and
     // never below a thousand confusion distances.
     let shortest = data.tolerance.get().max(tol.confusion() * 1e3) * 20.0;
-    for (size, triangle) in largest.into_iter().take(PROBES) {
+    // The band a point counts as on the face's boundary within.
+    let on_face = tol.confusion().max(data.tolerance.get());
+    let mut trim: Option<crate::classify::FaceTrim<'_>> = None;
+    for (size, triangle) in order.into_iter().take(wanted + SPARE) {
+        if places.len() >= wanted {
+            break;
+        }
         let uv = triangle.map(|i| mesh.parameters[i as usize]);
         let (u, v) = (
             (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
@@ -414,50 +565,107 @@ pub(crate) fn faces_inward(
         // The chart middle of a triangle lies on the face only where the
         // face's region is convex there: a thin ring's longest triangles
         // span its hole, and their middles stand in it, off the face, where
-        // the two sides read whatever surrounds the hole. The face is asked
-        // at the boundary's own ring chord, whose band a face narrower than
-        // it (a thin sheet's rim) lies within whole.
-        let held = Deflection {
-            chord: tol.confusion() * 1e4,
-            ..Deflection::default()
+        // the two sides read whatever surrounds the hole. The face's trim is
+        // drawn at the boundary's own ring chord, whose band a face narrower
+        // than it (a thin sheet's rim) lies within whole, and drawn once for
+        // every place asked.
+        if trim.is_none() {
+            let held = Deflection {
+                chord: tol.confusion() * 1e4,
+                ..Deflection::default()
+            };
+            trim = Some(crate::classify::FaceTrim::of(model, face, held, tol)?);
+        }
+        let Some(drawn) = trim.as_ref() else {
+            continue;
         };
-        if crate::classify_on_face(model, face, point, held, tol)? == crate::Containment::Out {
+        if drawn.holds(model, (u, v), on_face, tol)? == crate::Containment::Out {
             continue;
         }
         let mut outward = placement.apply_vector(normal.vector());
         if flip {
             outward = -outward;
         }
-        let mut step = (size.sqrt() * 0.05).max(tol.confusion() * 1e5);
-        loop {
-            ogeom_core::progress::checkpoint()?;
-            // A step reads the face's two sides only where it meets no
-            // other face on the way: off a sliver folded back between its
-            // neighbours, a step longer than the sliver is wide passes under
-            // one of them and reads the other's side. Off a sheet's rim the
-            // same step runs between the broad faces and meets none.
-            let (out_at, in_at) = (point + outward * step, point - outward * step);
-            let clear = boundary.clear_between(model, point, out_at, face, tol)?
-                && boundary.clear_between(model, point, in_at, face, tol)?;
-            if clear
-                && let (Ok(outside), Ok(inside)) = (
-                    boundary.holds(model, out_at, tol),
-                    boundary.holds(model, in_at, tol),
-                )
-            {
-                match (outside, inside) {
-                    (crate::Containment::In, crate::Containment::Out) => return Ok(Some(true)),
-                    (crate::Containment::Out, crate::Containment::In) => return Ok(Some(false)),
-                    _ => {}
-                }
-            }
-            if step <= shortest {
-                break;
-            }
-            step = (step * 0.1).max(shortest);
+        let first = (size.sqrt() * 0.05).max(tol.confusion() * 1e5);
+        let mut place = Place {
+            point,
+            outward,
+            ladder: Ladder { first, shortest },
+            inward: false,
+        };
+        if let Some(inward) = read_place(model, face, boundary, &place, false, tol)? {
+            place.inward = inward;
+            places.push(place);
         }
     }
-    Ok(None)
+    Ok(places)
+}
+
+/// One place a face was read at, and whether it read facing into the
+/// material there.
+#[derive(Debug, Clone, Copy)]
+struct Place {
+    point: ogeom_math::Point,
+    outward: ogeom_math::Vector,
+    ladder: Ladder,
+    inward: bool,
+}
+
+/// The steps a place is read at: from `first` down by tenths to `shortest`.
+#[derive(Debug, Clone, Copy)]
+struct Ladder {
+    first: f64,
+    shortest: f64,
+}
+
+/// Whether the face faces into the material at a place, read a step off it
+/// each way along its outward normal: by the boundary's rays, or by its
+/// winding number at the chord it was first meshed at where `by_winding`
+/// says; `None` where no step tells.
+///
+/// The first step is a fraction of the probed triangle's size, and shorter
+/// steps follow: a step longer than the solid is thick lands past its far
+/// side, and one across a gap narrower than the step lands in the material
+/// beyond, and either leaves both points on the same side.
+fn read_place(
+    model: &Model,
+    face: &Shape,
+    boundary: &crate::SolidBoundary,
+    place: &Place,
+    by_winding: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<bool>> {
+    let side = |at| -> Option<crate::Containment> {
+        if by_winding {
+            boundary.wound_coarsely(model, at, tol)
+        } else {
+            boundary.holds(model, at, tol).ok()
+        }
+    };
+    let (point, outward, ladder) = (place.point, place.outward, place.ladder);
+    let mut step = ladder.first;
+    loop {
+        ogeom_core::progress::checkpoint()?;
+        // A step reads the face's two sides only where it meets no
+        // other face on the way: off a sliver folded back between its
+        // neighbours, a step longer than the sliver is wide passes under
+        // one of them and reads the other's side. Off a sheet's rim the
+        // same step runs between the broad faces and meets none.
+        let (out_at, in_at) = (point + outward * step, point - outward * step);
+        let clear = boundary.clear_between(model, point, out_at, face, tol)?
+            && boundary.clear_between(model, point, in_at, face, tol)?;
+        if clear && let (Some(outside), Some(inside)) = (side(out_at), side(in_at)) {
+            match (outside, inside) {
+                (crate::Containment::In, crate::Containment::Out) => return Ok(Some(true)),
+                (crate::Containment::Out, crate::Containment::In) => return Ok(Some(false)),
+                _ => {}
+            }
+        }
+        if step <= ladder.shortest {
+            return Ok(None);
+        }
+        step = (step * 0.1).max(ladder.shortest);
+    }
 }
 
 /// Check that a shape's *tessellation* agrees with its topology.

@@ -1420,22 +1420,38 @@ fn encloses_material(model: &Model, shell: &Shape) -> OgeomResult<Option<bool>> 
     }
     // Its faces agree with each other, so any one of them says which way
     // the whole shell faces: one probed off its two sides against the
-    // region the shell encloses faces out of it or into it. Probing one
-    // face costs that face's mesh and a few rays, where the shell's volume
-    // costs every face's mesh; the volume answers only where no face
-    // probed settles.
+    // region the shell encloses faces out of it or into it. Probing a face
+    // costs that face's mesh and a few rays, where the shell's volume costs
+    // every face's mesh. But a shell that passes through itself reads out
+    // at some places and in at others, so no one place decides: the probes
+    // settle it only where several spread over the faces agree, and where
+    // they disagree or too few read, the volume the whole shell encloses
+    // does.
     let tol = Tolerances::default();
+    let mut read = crate::check::Readings::default();
     if let Ok(boundary) = crate::check::probe_boundary(model, shell, tol) {
         for face in ogeom_topo::explore_unique(model, shell, ShapeType::Face)?
             .iter()
             .take(PROBED)
         {
-            if let Ok(Some(inward)) = crate::check::faces_inward(model, face, &boundary, tol) {
-                return Ok(Some(!inward));
+            let wanted = crate::check::AGREEING - read.count();
+            if let Ok(more) = crate::check::face_readings(model, face, &boundary, wanted, tol) {
+                read.out += more.out;
+                read.inward += more.inward;
+            }
+            if read.count() >= crate::check::AGREEING {
+                break;
             }
         }
     }
-    Ok(enclosed_volume(model, shell).map(|v| v > 0.0))
+    if read.count() >= crate::check::AGREEING
+        && let Some(inward) = read.verdict()
+    {
+        return Ok(Some(!inward));
+    }
+    Ok(enclosed_volume(model, shell)
+        .map(|v| v > 0.0)
+        .or_else(|| read.verdict().map(|inward| !inward)))
 }
 
 /// The volume a closed shell whose faces agree encloses, from its mesh:

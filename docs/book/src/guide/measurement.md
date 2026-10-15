@@ -48,7 +48,9 @@ really broken.
 `check` also reports a solid whose boundary passes through itself: a face
 folded through itself, or two faces crossing away from the edges they
 share. The faces' meshes find where they might cross, and each crossing is
-confirmed on the surfaces before it is named.
+confirmed on the surfaces before it is named. A face is probed for which
+way it faces at two places, and one that reads out of the material at
+one and into it at the other is named too.
 
 `check_self_intersection` and `check_tessellation` are separate because
 they are more expensive. `check_self_intersection` measures every pair of

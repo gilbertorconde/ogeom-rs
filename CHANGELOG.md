@@ -30,6 +30,23 @@ bump may break the API and a patch bump may not.
   confirmed by a winding number of -1 beside it, and Voron's solid 907,
   already broken, for its four.
 
+- **One probe no longer decides which way a face or a shell faces
+  (#276).** `make_solid` turned a closed shell over on the first face
+  probe that read, at the middle of that face's largest mesh triangle; a
+  skinned loft folded near the point it closes to had that probe land in
+  the fold, and came out inside out. It now turns a shell only where
+  three places spread over its faces agree, and otherwise by the volume
+  the shell encloses. `check` reads each face at two places, its largest
+  triangle and the large triangle farthest from it, and names a face
+  that reads out of the material at one and into it at the other rather
+  than settling it by whichever half the probe landed on: the top of a
+  box half covered by a second box as another shell of one solid now
+  reads both ways under every placement. A probe can misread on a sound
+  solid, so a face read both ways is named only where the boundary was
+  found crossing itself, where the place a single probe asked reads it
+  facing in, or where the solid's winding number bears out the inward
+  reading.
+
 - **A sampled fit states no less than its miss at a crease** (#270).
   `fit_surface_sampled` read each span at its quarter points and climbed
   at most sixteen peaks, and `fit_curve_sampled`, `fit_curve_2d_sampled`

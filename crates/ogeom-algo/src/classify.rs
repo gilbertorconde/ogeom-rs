@@ -1267,6 +1267,29 @@ impl SolidBoundary {
     /// its distance from the mesh, twice at most, and no finer than
     /// [`WINDING_FINEST`] of the solid's size.
     fn wound(&self, model: &Model, point: Point, tol: Tolerances) -> Option<Containment> {
+        self.wound_finer(model, point, 3, tol)
+    }
+
+    /// [`SolidBoundary::wound`] at the first chord alone, never meshing the
+    /// faces finer: `None` also where the point stands within a curved
+    /// face's band at that chord.
+    pub(crate) fn wound_coarsely(
+        &self,
+        model: &Model,
+        point: Point,
+        tol: Tolerances,
+    ) -> Option<Containment> {
+        self.wound_finer(model, point, 1, tol)
+    }
+
+    /// [`SolidBoundary::wound`], meshing the faces at most `meshes` times.
+    fn wound_finer(
+        &self,
+        model: &Model,
+        point: Point,
+        meshes: usize,
+        tol: Tolerances,
+    ) -> Option<Containment> {
         use crate::winding::{WindingMesh, Wound};
         let prepared = &*self.prepared;
         let finest = (prepared.diagonal * WINDING_FINEST).max(tol.confusion() * 1e3);
@@ -1279,13 +1302,13 @@ impl SolidBoundary {
             .winding
             .get_or_init(|| mesh(prepared.winding_chord(tol)))
             .clone()?;
-        for _ in 0..3 {
+        for asked in 1..=meshes {
             match meshed.wind(point) {
                 Wound::Reads(read) => return Some(read),
                 Wound::Unread => return None,
                 Wound::Near(distance) => {
                     let chord = distance * 0.25;
-                    if chord < finest || chord >= meshed.chord() {
+                    if asked == meshes || chord < finest || chord >= meshed.chord() {
                         return None;
                     }
                     meshed = mesh(chord)?;
