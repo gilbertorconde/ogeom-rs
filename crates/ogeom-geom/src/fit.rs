@@ -692,7 +692,10 @@ pub const SAMPLED_LOOP_SPANS: usize = 1024;
 /// there, and the widest misses climbed to the tops of their peaks between
 /// them; a miss splits the span at its middle, and this repeats until
 /// `tolerance` holds at every point measured or the samples would pass
-/// [`SAMPLED_SPANS`] spans. Where `closed`, the last of `ts` is the first
+/// [`SAMPLED_SPANS`] spans. A fit the eighth points pass is read again at
+/// eight points of every knot span of its own, its peaks climbed, before
+/// it is stated met: a peak at a corner of the trace can stand between
+/// the eighth points. Where `closed`, the last of `ts` is the first
 /// again, the fit crosses its join C1 and refines to at most
 /// [`SAMPLED_LOOP_SPANS`] spans. The best fit is returned either
 /// way, its error the worst distance measured.
@@ -789,7 +792,8 @@ fn sampled<const D: usize, P>(
         seen.insert(t.to_bits(), p);
         Ok(p)
     };
-    let mut best: Option<(KnotVector, Vec<[f64; D]>, f64)> = None;
+    // The best fit so far, its error, and whether it was read densely.
+    let mut best: Option<(KnotVector, Vec<[f64; D]>, f64, bool)> = None;
     loop {
         let mut data = ts.iter().map(|t| at(*t)).collect::<OgeomResult<Vec<_>>>()?;
         if closed {
@@ -836,11 +840,31 @@ fn sampled<const D: usize, P>(
                 error = error.max(peak);
                 split[i] |= peak > tolerance;
             }
+            // A fit the eighth points pass is read densely before its error
+            // is stated: a peak between them can stand over the target.
+            let read = error <= tolerance;
+            if read {
+                let dense = read_densely(
+                    &mut |t| {
+                        Ok(at(t).map_or(0.0, |p| {
+                            distance::<D>(&p, &position::<D>(&knots, &control, t))
+                        }))
+                    },
+                    &knot_breaks(&knots, (ts[0], ts[ts.len() - 1])),
+                    0,
+                    error,
+                    tolerance,
+                )?;
+                error = error.max(dense.widest.0);
+                for t in dense.misses {
+                    split[span_of(&ts, t)] = true;
+                }
+            }
             if error <= tolerance {
                 return Ok((knots, control, error, true));
             }
             if best.as_ref().is_none_or(|b| error < b.2) {
-                best = Some((knots, control, error));
+                best = Some((knots, control, error, read));
             }
         }
         let mut next = Vec::with_capacity(ts.len() * 2);
@@ -856,9 +880,23 @@ fn sampled<const D: usize, P>(
         }
         ts = next;
     }
-    let Some((knots, control, error)) = best else {
+    let Some((knots, control, mut error, read)) = best else {
         ogeom_bail!(Construction, "the curve could not be sampled");
     };
+    if !read {
+        let dense = read_densely(
+            &mut |t| {
+                Ok(at(t).map_or(0.0, |p| {
+                    distance::<D>(&p, &position::<D>(&knots, &control, t))
+                }))
+            },
+            &knot_breaks(&knots, (ts[0], ts[ts.len() - 1])),
+            0,
+            error,
+            tolerance,
+        )?;
+        error = error.max(dense.widest.0);
+    }
     Ok((knots, control, error, false))
 }
 
@@ -871,7 +909,9 @@ fn sampled<const D: usize, P>(
 /// other. Every sample and every span's eighth points are measured in
 /// space: the curve and the surface at the image's chart position, each
 /// against the trace's point and against each other, and the widest
-/// misses climbed to the tops of their peaks between them. A miss splits
+/// misses climbed to the tops of their peaks between them, and once those
+/// pass, every knot span of the fit at eight points, as
+/// [`fit_curve_sampled`] reads it. A miss splits
 /// the span, and this repeats until `tolerance` holds at every point measured or the samples would
 /// pass 1024 spans; the error is the worst measured either way. The chart
 /// coordinates are weighed in the fit by the surface's own speed along
@@ -927,7 +967,8 @@ pub fn fit_trace_sampled(
         }
     }
     let weight = speed.map(|s| if s > 0.0 && s.is_finite() { s } else { 1.0 });
-    let mut best: Option<(Fitted<BSplineCurve>, BSpline2d)> = None;
+    // The best fit so far, and whether it was read densely.
+    let mut best: Option<((Fitted<BSplineCurve>, BSpline2d), bool)> = None;
     loop {
         let samples = ts.iter().map(|t| at(*t)).collect::<OgeomResult<Vec<_>>>()?;
         let data: Vec<[f64; 5]> = samples
@@ -991,13 +1032,28 @@ pub fn fit_trace_sampled(
                 error = error.max(peak);
                 split[i] |= peak > tolerance;
             }
+            // As the curve fit: read densely before the error is stated.
+            let read = error <= tolerance;
+            if read {
+                let dense = read_densely(
+                    &mut |t| Ok(off_at(t).unwrap_or(0.0)),
+                    &knot_breaks(curve.knots(), (ts[0], ts[ts.len() - 1])),
+                    0,
+                    error,
+                    tolerance,
+                )?;
+                error = error.max(dense.widest.0);
+                for t in dense.misses {
+                    split[span_of(&ts, t)] = true;
+                }
+            }
             let met = error <= tolerance;
             let candidate = (Fitted { curve, error, met }, image);
             if met {
                 return Ok(candidate);
             }
-            if best.as_ref().is_none_or(|b| error < b.0.error) {
-                best = Some(candidate);
+            if best.as_ref().is_none_or(|b| error < b.0.0.error) {
+                best = Some((candidate, read));
             }
         }
         let mut next = Vec::with_capacity(ts.len() * 2);
@@ -1013,7 +1069,28 @@ pub fn fit_trace_sampled(
         }
         ts = next;
     }
-    best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the trace could not be sampled"))
+    let Some(((mut fitted, image), read)) = best else {
+        ogeom_bail!(Construction, "the trace could not be sampled");
+    };
+    if !read {
+        let mut off_at = |t: f64| -> OgeomResult<f64> {
+            let (p, _) = at(t)?;
+            let (c, s) = (
+                fitted.curve.point_at(t, tol)?,
+                on_surface(image.point_at(t, tol)?)?,
+            );
+            Ok(c.distance(p).max(s.distance(p)).max(c.distance(s)))
+        };
+        let dense = read_densely(
+            &mut |t| Ok(off_at(t).unwrap_or(0.0)),
+            &knot_breaks(fitted.curve.knots(), (ts[0], ts[ts.len() - 1])),
+            0,
+            fitted.error,
+            tolerance,
+        )?;
+        fitted.error = fitted.error.max(dense.widest.0);
+    }
+    Ok((fitted, image))
 }
 
 /// The tops of the peaks of a curve fit's miss beside its widest eighth
@@ -2240,8 +2317,13 @@ impl Sampling {
 /// every sample (on knots that follow the samples) is measured too and
 /// decides where to refine, and the closer of the two stands. This repeats
 /// until `tolerance` holds at every point measured or a direction would
-/// pass `sampling.most` spans. The best fit is returned either way, its
-/// error the worst measured and `met` whether that is within `tolerance`.
+/// pass `sampling.most` spans. A fit the quarter points pass is read again
+/// along its sample lines (and midway between them), at eight points of
+/// every knot span of its own and its peaks climbed, along them and
+/// across, before it is stated met: a peak at a crease of the geometry can
+/// stand between the quarter points. The best fit is returned either way,
+/// read so, its error the worst measured and `met` whether that is within
+/// `tolerance`.
 ///
 /// # Errors
 ///
@@ -2268,7 +2350,8 @@ pub fn fit_surface_sampled(
         );
     }
     let (mut us, mut vs) = (sampling.us.clone(), sampling.vs.clone());
-    let mut best: Option<Fitted<crate::BSplineSurface>> = None;
+    // The best fit so far, and whether it was read densely.
+    let mut best: Option<(Fitted<crate::BSplineSurface>, bool)> = None;
     // Every point evaluated, by parameters: a split span's new sample is
     // the midpoint already checked.
     let mut seen: ogeom_core::FastMap<(u64, u64), Point> = ogeom_core::FastMap::default();
@@ -2313,7 +2396,7 @@ pub fn fit_surface_sampled(
                 (&[], &[]),
                 tol,
             )?;
-            let (between, split_u, split_v) = measured_between(
+            let (between, mut split_u, mut split_v) = measured_between(
                 &mut at,
                 &fitted.curve,
                 (&us, &vs),
@@ -2321,7 +2404,24 @@ pub fn fit_surface_sampled(
                 tolerance,
                 tol,
             )?;
-            let error = fitted.error.max(between);
+            let mut error = fitted.error.max(between);
+            // A fit the quarter points pass is read densely before its
+            // error is stated: a peak between them can stand over the
+            // target.
+            let read_densely = error <= tolerance;
+            if read_densely {
+                let along = measured_along_lines(
+                    &mut at,
+                    &fitted.curve,
+                    (&us, &vs),
+                    sampling.between,
+                    tolerance,
+                    error,
+                    (&mut split_u, &mut split_v),
+                    tol,
+                )?;
+                error = error.max(along);
+            }
             let candidate = Fitted {
                 curve: fitted.curve,
                 error,
@@ -2330,8 +2430,8 @@ pub fn fit_surface_sampled(
             if candidate.met {
                 return Ok(candidate);
             }
-            if best.as_ref().is_none_or(|b| error < b.error) {
-                best = Some(candidate);
+            if best.as_ref().is_none_or(|b| error < b.0.error) {
+                best = Some((candidate, read_densely));
             }
             splits = Some((split_u, split_v));
         }
@@ -2356,7 +2456,357 @@ pub fn fit_surface_sampled(
         }
         (us, vs) = (next_u, next_v);
     }
-    best.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "the surface could not be sampled"))
+    let Some((mut best, read_densely)) = best else {
+        ogeom_bail!(Construction, "the surface could not be sampled");
+    };
+    if !read_densely {
+        let (mut split_u, mut split_v) = (vec![false; us.len() - 1], vec![false; vs.len() - 1]);
+        let along = measured_along_lines(
+            &mut at,
+            &best.curve,
+            (&us, &vs),
+            sampling.between,
+            tolerance,
+            best.error,
+            (&mut split_u, &mut split_v),
+            tol,
+        )?;
+        best.error = best.error.max(along);
+        best.met = best.error <= tolerance;
+    }
+    Ok(best)
+}
+
+/// How many points of each knot span a fit is read at once its samples'
+/// own check passes ([`read_densely`]).
+const DENSE_PER_SPAN: usize = 8;
+
+/// The knot breaks of `knots` from `lo` to `hi`, both ends among them.
+fn knot_breaks(knots: &KnotVector, (lo, hi): (f64, f64)) -> Vec<f64> {
+    let mut breaks: Vec<f64> = knots
+        .distinct()
+        .into_iter()
+        .map(|(k, _)| k)
+        .filter(|k| (lo..=hi).contains(k))
+        .collect();
+    if breaks.first().is_none_or(|k| *k > lo) {
+        breaks.insert(0, lo);
+    }
+    if breaks.last().is_none_or(|k| *k < hi) {
+        breaks.push(hi);
+    }
+    breaks
+}
+
+/// A peak of a miss climbed along a line: its height, where it stands, and
+/// the readings either side it was climbed between.
+struct Peak {
+    height: f64,
+    at: f64,
+    reach: (f64, f64),
+}
+
+/// What [`read_densely`] read along a line.
+struct Dense {
+    /// The widest miss read, and where.
+    widest: (f64, f64),
+    /// Every peak climbed.
+    peaks: Vec<Peak>,
+    /// Where a reading or a climbed peak stands over the tolerance.
+    misses: Vec<f64>,
+}
+
+/// Golden sections of `off` between `reach`, from `top` (a height and
+/// where it was read): the highest reading met, and where. Where `lean`,
+/// each section reads one new point and keeps the other, `LEAN_STEPS`
+/// times; otherwise it reads both afresh, `STEPS` times.
+fn climb(
+    off: &mut dyn FnMut(f64) -> OgeomResult<f64>,
+    (mut a, mut b): (f64, f64),
+    mut top: (f64, f64),
+    lean: bool,
+) -> OgeomResult<(f64, f64)> {
+    const STEPS: usize = 40;
+    const LEAN_STEPS: usize = 30;
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut keep = |o: f64, t: f64| {
+        if o > top.0 {
+            top = (o, t);
+        }
+    };
+    if lean {
+        let (mut c, mut d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        let (mut oc, mut od) = (off(c)?, off(d)?);
+        keep(oc, c);
+        keep(od, d);
+        for _ in 0..LEAN_STEPS {
+            if oc > od {
+                (b, d, od) = (d, c, oc);
+                c = b - (b - a) * ratio;
+                oc = off(c)?;
+                keep(oc, c);
+            } else {
+                (a, c, oc) = (c, d, od);
+                d = a + (b - a) * ratio;
+                od = off(d)?;
+                keep(od, d);
+            }
+        }
+        return Ok(top);
+    }
+    for _ in 0..STEPS {
+        let (c, d) = (b - (b - a) * ratio, a + (b - a) * ratio);
+        let (oc, od) = (off(c)?, off(d)?);
+        keep(oc, c);
+        keep(od, d);
+        if oc > od {
+            b = d;
+        } else {
+            a = c;
+        }
+    }
+    Ok(top)
+}
+
+/// A fit's miss `off` read densely along a line: at [`DENSE_PER_SPAN`]
+/// points of every span between two of `breaks` (the fit's knots, which
+/// crowd where the geometry turns sharply), and the readings that stand at
+/// least as high as their neighbours climbed to the tops of their peaks
+/// between the readings either side: the widest `always`, every other
+/// within `NEAR_PEAK` of the reference (the widest reading, or `floor`,
+/// the miss already measured elsewhere, if wider), and every other whose
+/// neighbours' slopes could carry a crease between it and them that
+/// near. Where the miss creases at a corner of the geometry the
+/// readings either side of the corner can stand well below its peak, a
+/// third below where the fit passes through the geometry at the knots
+/// either side. `over` is the tolerance whose misses are reported.
+fn read_densely(
+    off: &mut dyn FnMut(f64) -> OgeomResult<f64>,
+    breaks: &[f64],
+    always: usize,
+    floor: f64,
+    over: f64,
+) -> OgeomResult<Dense> {
+    const NEAR_PEAK: f64 = 0.8;
+    let mut ts: Vec<f64> = Vec::with_capacity(breaks.len() * DENSE_PER_SPAN);
+    for w in breaks.windows(2) {
+        for k in 0..DENSE_PER_SPAN {
+            let f = precise(k) / precise(DENSE_PER_SPAN);
+            ts.push(w[0] + (w[1] - w[0]) * f);
+        }
+    }
+    if let Some(last) = breaks.last() {
+        ts.push(*last);
+    }
+    let readings: Vec<f64> = ts.iter().map(|t| off(*t)).collect::<OgeomResult<_>>()?;
+    let mut widest = (0.0_f64, ts.first().copied().unwrap_or(0.0));
+    let mut misses = Vec::new();
+    for (r, t) in readings.iter().zip(&ts) {
+        if *r > widest.0 {
+            widest = (*r, *t);
+        }
+        if *r > over {
+            misses.push(*t);
+        }
+    }
+    let mut standing: Vec<(f64, usize)> = (0..readings.len())
+        .filter(|&i| {
+            (i == 0 || readings[i - 1] <= readings[i])
+                && readings.get(i + 1).is_none_or(|r| *r <= readings[i])
+        })
+        .map(|i| (readings[i], i))
+        .collect();
+    standing.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let reference = floor.max(widest.0);
+    // The most a crease between two readings can rise over them, were the
+    // miss as steep as anywhere beside them: half their gap times the
+    // steepest slope read over the two gaps either side.
+    let slope = |k: usize| (readings[k + 1] - readings[k]).abs() / (ts[k + 1] - ts[k]);
+    let rise = |i: usize| -> f64 {
+        let gaps = i.saturating_sub(2)..(i + 2).min(ts.len() - 1);
+        let steepest = gaps.clone().map(slope).fold(0.0_f64, f64::max);
+        let mut rise = 0.0_f64;
+        for k in [i.checked_sub(1), Some(i)].into_iter().flatten() {
+            if k + 1 < ts.len() {
+                let crest = f64::midpoint(readings[k], readings[k + 1])
+                    + steepest * (ts[k + 1] - ts[k]) / 2.0;
+                rise = rise.max(crest);
+            }
+        }
+        rise
+    };
+    let mut peaks = Vec::new();
+    for (rank, &(reading, i)) in standing.iter().enumerate() {
+        if rank >= always && reading.max(rise(i)) < NEAR_PEAK * reference {
+            continue;
+        }
+        let reach = (ts[i.saturating_sub(1)], ts[(i + 1).min(ts.len() - 1)]);
+        let (height, at) = climb(off, reach, (reading, ts[i]), rank >= always)?;
+        if height > widest.0 {
+            widest = (height, at);
+        }
+        if height > over {
+            misses.push(at);
+        }
+        peaks.push(Peak { height, at, reach });
+    }
+    Ok(Dense {
+        widest,
+        peaks,
+        misses,
+    })
+}
+
+/// The span of `knots` that `x` lies in.
+fn span_of(knots: &[f64], x: f64) -> usize {
+    knots.partition_point(|k| *k <= x).clamp(1, knots.len() - 1) - 1
+}
+
+/// The worst distance between `surface` and `point` read densely along
+/// lines of the sampling `params`, marking the spans that miss
+/// `tolerance` in `splits`; `floor` is the miss already measured.
+///
+/// Along each direction known between its samples, every sample line
+/// across it (and along `u`, where `v` is known between its samples too,
+/// the line midway between two rows) is read as [`read_densely`] reads it,
+/// over the knot spans of `surface` that way: a corner's peak can stand
+/// between a span's quarter points, too narrow for them to see. The widest
+/// peaks are then climbed across, between the lines either side, and along
+/// again from there, and counted a hundredth over, as [`measured_between`]
+/// counts its own: a ridge (a section's corner carried across a skin) can
+/// run across the lines and peak between them. A miss on a sample line
+/// splits its span along the line, any other the cell it lies in, as
+/// [`measured_between`] does.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the sampling, its directions, the spans to split and the miss so far"
+)]
+fn measured_along_lines(
+    point: &mut impl FnMut(f64, f64) -> OgeomResult<Point>,
+    surface: &crate::BSplineSurface,
+    (us, vs): (&[f64], &[f64]),
+    between: (bool, bool),
+    tolerance: f64,
+    floor: f64,
+    (split_u, split_v): (&mut [bool], &mut [bool]),
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    use crate::traits::Surface as _;
+    const NEAR_PEAK: f64 = 0.8;
+    const ACROSS_PEAKS: usize = 16;
+    // Along `u` the widest peaks of every line are climbed whatever their
+    // height, every section read afresh: a swept skin's rows are where its
+    // sections lie, and are read the most thoroughly. Along `v` only the
+    // peaks that could reach the widest are climbed.
+    const ROW_PEAKS: usize = 8;
+    const CLIMB_MARGIN: f64 = 0.01;
+    // A point the geometry will not give is no reading.
+    let mut off = |u: f64, v: f64| -> OgeomResult<f64> {
+        Ok(match point(u, v) {
+            Ok(p) => p.distance(surface.point_at(u, v, tol)?),
+            Err(_) => 0.0,
+        })
+    };
+    let mut error = 0.0_f64;
+    let mut centres: Vec<(usize, usize)> = Vec::new();
+    // Every peak climbed on a line the other direction is known across:
+    // the peak, whether its line runs along `u`, the line, and the cell it
+    // runs through where it is no sample line.
+    let mut tops: Vec<(Peak, bool, f64, Option<usize>)> = Vec::new();
+    for along_u in [true, false] {
+        let (known_along, known_across) = if along_u {
+            between
+        } else {
+            (between.1, between.0)
+        };
+        if !known_along {
+            continue;
+        }
+        let (along, across) = if along_u { (us, vs) } else { (vs, us) };
+        let knots = if along_u {
+            surface.u_knots()
+        } else {
+            surface.v_knots()
+        };
+        let breaks = knot_breaks(knots, (along[0], along[along.len() - 1]));
+        let mut lines: Vec<(f64, Option<usize>)> = across.iter().map(|x| (*x, None)).collect();
+        if known_across && along_u {
+            lines.extend(
+                across
+                    .windows(2)
+                    .enumerate()
+                    .map(|(j, w)| (f64::midpoint(w[0], w[1]), Some(j))),
+            );
+        }
+        for (x, cell) in lines {
+            let dense = read_densely(
+                &mut |t| if along_u { off(t, x) } else { off(x, t) },
+                &breaks,
+                if along_u { ROW_PEAKS } else { 0 },
+                floor.max(error),
+                tolerance,
+            )?;
+            error = error.max(dense.widest.0);
+            for t in dense.misses {
+                let i = span_of(along, t);
+                match (cell, along_u) {
+                    (None, true) => split_u[i] = true,
+                    (None, false) => split_v[i] = true,
+                    (Some(j), true) => centres.push((i, j)),
+                    (Some(j), false) => centres.push((j, i)),
+                }
+            }
+            if known_across {
+                tops.extend(dense.peaks.into_iter().map(|p| (p, along_u, x, cell)));
+            }
+        }
+    }
+    tops.sort_by(|a, b| b.0.height.total_cmp(&a.0.height));
+    let near = NEAR_PEAK * floor.max(error);
+    for (peak, along_u, x, cell) in tops.iter().take(ACROSS_PEAKS) {
+        if peak.height < near {
+            break;
+        }
+        let (along_u, x, t) = (*along_u, *x, peak.at);
+        let across = if along_u { vs } else { us };
+        // The lines either side of this one: the samples either side of a
+        // midway line, the midway lines either side of a sample.
+        let reach = match cell {
+            Some(j) => (across[*j], across[j + 1]),
+            None => {
+                let j = across.partition_point(|y| *y < x);
+                (
+                    f64::midpoint(across[j.saturating_sub(1)], x),
+                    f64::midpoint(x, across[(j + 1).min(across.len() - 1)]),
+                )
+            }
+        };
+        let (height, y) = climb(
+            &mut |y| if along_u { off(t, y) } else { off(y, t) },
+            reach,
+            (peak.height, x),
+            true,
+        )?;
+        let (height, s) = climb(
+            &mut |s| if along_u { off(s, y) } else { off(y, s) },
+            peak.reach,
+            (height, t),
+            true,
+        )?;
+        let height = height * (1.0 + CLIMB_MARGIN);
+        error = error.max(height);
+        if height > tolerance {
+            let (u, v) = if along_u { (s, y) } else { (y, s) };
+            centres.push((span_of(us, u), span_of(vs, v)));
+        }
+    }
+    for (i, j) in centres {
+        if !split_u[i] && !split_v[j] {
+            split_u[i] = true;
+            split_v[j] = true;
+        }
+    }
+    Ok(error)
 }
 
 /// The worst distance between `surface` and `point` between the samples of
@@ -3277,6 +3727,105 @@ mod grid_tests {
         assert!(
             worst <= fitted.error,
             "the fit misses by {worst:.4e} and states {:.4e}",
+            fitted.error
+        );
+    }
+
+    /// A closed polygon of 25 corners read by arc length: the fit strays
+    /// most at the corners, in peaks too narrow for its eighth points to
+    /// see and too many to climb them all. The error a sampled curve fit
+    /// states is no less than its miss at every corner.
+    #[test]
+    fn a_sampled_curve_fit_states_no_less_than_its_miss_at_a_corner() {
+        use crate::traits::Curve3d as _;
+        let n = 25;
+        let corners: Vec<Point> = (0..n)
+            .map(|k| {
+                let k = f64::from(k);
+                let (sin, cos) = (k / f64::from(n) * core::f64::consts::TAU).sin_cos();
+                let r = 3.0f64.mul_add((5.0 * k).sin(), 10.0);
+                Point::new(r * cos, r * sin, (3.0 * k).cos())
+            })
+            .collect();
+        let mut at_corner = vec![0.0_f64];
+        for (k, c) in corners.iter().enumerate() {
+            at_corner.push(at_corner[k] + c.distance(corners[(k + 1) % corners.len()]));
+        }
+        let round = at_corner[corners.len()];
+        let polygon = |g: f64| -> Point {
+            let s = round * g;
+            let k = at_corner[1..]
+                .partition_point(|l| *l < s)
+                .min(corners.len() - 1);
+            let f = (s - at_corner[k]) / (at_corner[k + 1] - at_corner[k]);
+            let (a, b) = (corners[k], corners[(k + 1) % corners.len()]);
+            a + (b - a) * f
+        };
+        let ts: Vec<f64> = (0..=16).map(|i| f64::from(i) / 16.0).collect();
+        let fitted = fit_curve_sampled(|g| Ok(polygon(g)), &ts, true, 3, 1e-3, T).unwrap();
+        assert!(fitted.met, "{}", fitted.error);
+        let worst = at_corner[..corners.len()]
+            .iter()
+            .map(|l| {
+                let g = l / round;
+                polygon(g).distance(fitted.curve.point_at(g, T).unwrap())
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(
+            worst <= fitted.error,
+            "the fit misses by {worst:.4e} at a corner and states {:.4e}",
+            fitted.error
+        );
+    }
+
+    /// A triangle read by arc length, twisted as it rises: the surface's
+    /// only creases are its corners, ridges running up the skin at fixed
+    /// `u`, and the fit strays most along them, in peaks too narrow for a
+    /// span's quarter points to see. The error a sampled surface fit
+    /// states is no less than its miss read up every corner.
+    #[test]
+    fn a_sampled_surface_fit_states_no_less_than_its_miss_at_a_crease() {
+        use crate::traits::Surface as _;
+        let corners: [[f64; 2]; 3] = [[7.9, 8.2], [-11.2, 9.2], [-2.3, -10.0]];
+        let mut at_corner = [0.0_f64; 4];
+        for k in 0..3 {
+            let (a, b) = (corners[k], corners[(k + 1) % 3]);
+            at_corner[k + 1] = at_corner[k] + (a[0] - b[0]).hypot(a[1] - b[1]);
+        }
+        let round = at_corner[3];
+        let twisted = |u: f64, v: f64| -> OgeomResult<Point> {
+            let s = round * u;
+            let k = at_corner[1..].partition_point(|l| *l < s).min(2);
+            let f = (s - at_corner[k]) / (at_corner[k + 1] - at_corner[k]);
+            let (a, b) = (corners[k], corners[(k + 1) % 3]);
+            let (x, y) = (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f);
+            let (sin, cos) = (1.8 * v).sin_cos();
+            Ok(Point::new(x * cos - y * sin, x * sin + y * cos, 31.0 * v))
+        };
+        let tolerance = 1e-3;
+        let fitted = fit_surface_sampled(
+            twisted,
+            &Sampling::even(((0.0, 1.0), (0.0, 1.0)), 8),
+            3,
+            tolerance,
+            T,
+        )
+        .unwrap();
+        assert!(fitted.met, "{}", fitted.error);
+        let mut worst = 0.0_f64;
+        for corner in &at_corner[..3] {
+            let u = corner / round;
+            for j in 0..=1024 {
+                let v = f64::from(j) / 1024.0;
+                let off = twisted(u, v)
+                    .unwrap()
+                    .distance(fitted.curve.point_at(u, v, T).unwrap());
+                worst = worst.max(off);
+            }
+        }
+        assert!(
+            worst <= fitted.error,
+            "the fit misses by {worst:.4e} at a corner and states {:.4e}",
             fitted.error
         );
     }

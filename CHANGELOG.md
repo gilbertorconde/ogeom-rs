@@ -13,6 +13,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sampled fit states no less than its miss at a crease** (#270).
+  `fit_surface_sampled` read each span at its quarter points and climbed
+  at most sixteen peaks, and `fit_curve_sampled`, `fit_curve_2d_sampled`
+  and `fit_trace_sampled` read eighth points the same way. Where the
+  geometry creases (a polygon read by arc length) the miss peaks sharply
+  at the corner, between those points: a triangle twisted up a prism
+  stated 9.5e-4 against a tolerance of 1e-3 and stood 1.18e-3 off at a
+  corner, and a closed polygon of 25 corners stated 9.98e-4 and stood
+  1.11e-3 off. A fit those points pass is now read again at eight points
+  of every knot span of its own (a surface along its sample lines and
+  midway between its rows), every peak climbed that could reach the
+  widest, a surface's widest climbed across its lines too, and refined
+  where that misses; the error it states is the one read so.
+
 - **A skinned loft closing to a point no longer folds its wall through
   itself near the point (#269).** The skin through the sections was
   carried on to the point, and its rows bent to meet it: past a section
