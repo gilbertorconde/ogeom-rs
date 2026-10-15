@@ -23,24 +23,6 @@ first, then refusals, then cost.
 
 ### Checking and measurement
 
-**Meshes of doubly curved faces stand off by up to twice the chord.** The
-grid holds each row and each column to the chord, and a cell's middle
-stands off by both sags together; the repair pass fires only at three
-chords. A ball of radius 20 meshed at chord 0.1 stands off 0.17, at 0.5
-0.68, and says so (`deflection_met` false). (A cone's rows, held to a
-cell and a half since, keep it to 1.3 chords at 0.0125.) What was tried (2026-10-12): holding each direction to half the
-chord on balls and tori, with the repair asking each triangle's middle
-and splitting its longest interior edge, puts balls within the chord at
-every chord asked and passes the mesh conversion corpus, but the
-inserted points break a ball's symmetry (`a_sphere_converges_on_the_volume_a_sphere_has`
-reads its centre off the origin) and three `mesh_solid` conversions;
-the repair at one chord on every edge, or at the middle alone, leaves
-converted faces whose meshes do not meet (217 edges on `nist_ctc_02`) or
-a button head of 57 faces. A grid fine enough by construction (rows and
-columns from the surface's curvature both ways, the cone's chart scaled
-per row) keeps the symmetry and the converter's inputs regular, and is
-the next thing to try.
-
 **Some fits through bare points are trusted between their points.** A fit
 through points (`fit_points`, `fit_points_at`, the grid fits) states its
 error at the points only. These callers still read it, or nothing, where
@@ -279,9 +261,11 @@ aspect naming its file id lands on every piece.
 `solid_from_mesh` rebuilds planes, the four canonical surfaces, extrusions,
 surfaces of revolution and fitted B-spline patches, and leaves every other
 region faceted; `MeshSolidReport::fallbacks` names each curved region it
-faceted and why. Each change is held to the converter's standard (verified
-against every sample, edges placed on both surfaces, facets as the fallback)
-and measured on `mesh_corpus` and the truth bench before and after.
+faceted and why. It reads meshes drawn in strips along rulings, as
+OpenCascade and truck draw drums and cones, as it reads ogeom's own. Each
+change is held to the converter's standard (verified against every sample,
+edges placed on both surfaces, facets as the fallback) and measured on
+`mesh_corpus` and the truth bench before and after.
 
 **Seams between fitted regions.** Each region is fitted on its own and each
 seam solved point by point along the mesh boundary, or threaded as a chord
