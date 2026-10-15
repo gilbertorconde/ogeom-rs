@@ -35,6 +35,7 @@ pub mod recognize;
 mod recognize_patch;
 mod recognize_swept;
 mod seam_columns;
+mod self_cross;
 pub mod sew;
 pub mod sweep;
 pub mod text;

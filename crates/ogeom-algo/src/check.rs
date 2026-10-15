@@ -186,6 +186,7 @@ pub fn check_kept(
     }
     for solid in of(ShapeType::Solid) {
         check_orientation(model, solid, tol, kept, &mut found)?;
+        check_crossings(model, solid, tol, kept, &mut found)?;
     }
     // Tolerance containment: a face is no looser than its edges, an edge no
     // looser than its vertices, checked through every level below each.
@@ -232,6 +233,37 @@ fn check_orientation(
             "the face's outward normal points into the material: its \
              orientation is reversed"
                 .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Report every place where a solid's boundary passes through itself: a
+/// face folded through itself, or two faces crossing away from the edges
+/// they share.
+fn check_crossings(
+    model: &Model,
+    solid: &Shape,
+    tol: Tolerances,
+    kept: &crate::ProbeCache,
+    found: &mut Diagnosis,
+) -> OgeomResult<()> {
+    for crossing in crate::self_cross::crossings(model, solid, kept, tol)? {
+        let at = crossing.at;
+        let whom = if crossing.face.is_same(&crossing.other) {
+            "itself"
+        } else {
+            "another face of the solid"
+        };
+        found.note(
+            Severity::Broken,
+            &crossing.face,
+            ShapeType::Face,
+            format!(
+                "the face passes through {whom} at ({:.6}, {:.6}, {:.6}): the \
+                 boundary crosses itself, so it bounds no single region",
+                at.x, at.y, at.z
+            ),
         );
     }
     Ok(())

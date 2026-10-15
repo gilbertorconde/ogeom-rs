@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`check` names a solid whose boundary passes through itself (#276).**
+  Nothing in `check` looked for faces crossing each other, and which way
+  a face faces was read at one place, the middle of its largest mesh
+  triangle. A wall folded through itself passed as valid wherever that
+  place missed the fold: a skinned loft twisted on to a point at most of
+  the apex positions tried, and a prism over a profile that loops through
+  itself always. Each solid's faces are now meshed, the triangles that
+  cross each other found by their boxes, and every crossing settled on
+  the surfaces themselves: a point on both where they meet at an angle,
+  inside both faces' trims and clear of their boundaries. A face crossing
+  itself or another face of the solid is named broken; faces meeting
+  along the edges they share, or meshes crossing where the surfaces only
+  come close, are not. On the real-world assemblies DoomCube's solid 173
+  is now named for twelve crossings of cylinder and plane faces, each
+  confirmed by a winding number of -1 beside it, and Voron's solid 907,
+  already broken, for its four.
+
 - **A sampled fit states no less than its miss at a crease** (#270).
   `fit_surface_sampled` read each span at its quarter points and climbed
   at most sixteen peaks, and `fit_curve_sampled`, `fit_curve_2d_sampled`

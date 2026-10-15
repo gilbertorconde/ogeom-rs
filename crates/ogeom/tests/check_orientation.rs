@@ -144,3 +144,109 @@ fn a_sliver_face_narrower_than_the_probe_is_not_called_inside_out() {
         area * 50.0
     );
 }
+
+/// Rigid motions to check a solid under: what `check` finds is the
+/// solid's, not where it stands or which mesh triangle ranks first.
+fn motions() -> Vec<ogeom::math::Transform> {
+    use ogeom::math::{Transform, Vector};
+    (0..24)
+        .map(|step| {
+            let angle = f64::from(step) * 0.262;
+            Transform::translation(Vector::new(37.3, -11.9, 70.1))
+                * Transform::rotation(Axis::Z, angle)
+                * Transform::rotation(Axis::X, angle * 0.7)
+        })
+        .collect()
+}
+
+/// A prism two high over a limaçon with an inner loop, `r = 1 + 2 cos t`:
+/// the profile crosses itself at the origin, so the wall swept from it
+/// passes through itself along the line over the origin.
+fn looped_prism(model: &mut Model) -> Shape {
+    use ogeom::algo::fit::{Spacing, interpolate};
+    use ogeom::geom::Curve;
+    let mut pts: Vec<Point> = (0..48)
+        .map(|i| {
+            let t = TAU * f64::from(i) / 48.0;
+            let r = 2.0f64.mul_add(t.cos(), 1.0);
+            Point::new(r * t.cos(), r * t.sin(), 0.0)
+        })
+        .collect();
+    pts.push(pts[0]);
+    let spline = interpolate(&pts, 3, Spacing::Centripetal, T).unwrap();
+    let domain = spline.knots().domain();
+    let edge = ogeom::algo::make_edge(model, Curve::BSpline(spline), domain, T)
+        .unwrap()
+        .shape;
+    let wire = ogeom::algo::make_wire(model, &[edge], T).unwrap().shape;
+    let plane = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+    let profile = make_face(model, plane, &[wire], T).unwrap().shape;
+    ogeom::algo::make_prism(model, &profile, ogeom::math::Vector::new(0.0, 0.0, 2.0), T)
+        .unwrap()
+        .shape
+}
+
+/// A wall that passes through itself is reported broken wherever the
+/// solid stands. Probing its faces' sides cannot see it: wherever a probe
+/// lands, the wall reads facing out, and the solid passed as valid.
+#[test]
+fn a_wall_passing_through_itself_is_broken_wherever_it_stands() {
+    let mut model = Model::new();
+    let prism = looped_prism(&mut model);
+    let wall = explore_unique(&model, &prism, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let surface = model.node(f).unwrap().data().as_face().unwrap().surface;
+            !matches!(
+                model.geometry().surface(surface).unwrap(),
+                ogeom::geom::SurfaceGeometry::Plane(_)
+            )
+        })
+        .unwrap();
+    for motion in motions() {
+        let placed = ogeom::algo::transformed(&mut model, &prism, motion)
+            .unwrap()
+            .shape;
+        let diagnosis = check(&model, &placed, T).unwrap();
+        assert!(!diagnosis.is_usable(), "{diagnosis}");
+        let crossing: Vec<_> = diagnosis
+            .problems
+            .iter()
+            .filter(|p| p.what.contains("passes through itself"))
+            .collect();
+        assert_eq!(crossing.len(), 1, "{diagnosis}");
+        assert_eq!(crossing[0].at.node(), wall.node(), "{diagnosis}");
+    }
+}
+
+/// Two overlapping boxes as the shells of one solid. Six pairs of their
+/// faces cross, each along a segment through both faces' insides (the
+/// first's top and the second's side at x = 1, the first's two sides at
+/// y = 0 and y = 1 with the second's bottom and its side, the first's end
+/// at x = 2 with the second's bottom), and every one is named under every
+/// placement.
+#[test]
+fn shells_crossing_each_other_are_broken_whatever_the_placement() {
+    let mut model = Model::new();
+    let first = make_box(&mut model, Frame::WORLD, (2.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::WORLD.with_origin(Point::new(1.0, -1.0, 0.5));
+    let second = make_box(&mut model, at, (2.0, 3.0, 1.0), T).unwrap().shape;
+    let shells =
+        [&first, &second].map(|s| explore_unique(&model, s, ShapeType::Shell).unwrap()[0].clone());
+    let solid = model.add_solid(&shells).unwrap();
+    for motion in motions() {
+        let placed = ogeom::algo::transformed(&mut model, &solid, motion)
+            .unwrap()
+            .shape;
+        let diagnosis = check(&model, &placed, T).unwrap();
+        let crossings = diagnosis
+            .problems
+            .iter()
+            .filter(|p| p.what.contains("passes through another face"))
+            .count();
+        assert_eq!(crossings, 6, "{diagnosis}");
+    }
+}

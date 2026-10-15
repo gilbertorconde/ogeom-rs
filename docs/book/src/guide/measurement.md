@@ -45,5 +45,12 @@ be. It returns a `Diagnosis` of named `Problem`s, each with a `Severity`.
 It accepts everything the kernel legitimately builds, so what it flags is
 really broken.
 
+`check` also reports a solid whose boundary passes through itself: a face
+folded through itself, or two faces crossing away from the edges they
+share. The faces' meshes find where they might cross, and each crossing is
+confirmed on the surfaces before it is named.
+
 `check_self_intersection` and `check_tessellation` are separate because
-they are more expensive. Call them when needed.
+they are more expensive. `check_self_intersection` measures every pair of
+faces that share no topology for touching, not only for crossing. Call
+them when needed.

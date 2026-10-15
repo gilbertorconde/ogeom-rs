@@ -128,6 +128,77 @@ pub fn classify_on_face(
     })
 }
 
+/// A face's trim drawn once, for asking where many chart points of it fall,
+/// as [`classify_on_face`] places a point it has projected.
+pub(crate) struct FaceTrim<'m> {
+    face: &'m Shape,
+    surface: &'m ogeom_geom::SurfaceGeometry,
+    rings: Rings,
+    deflection: Deflection,
+}
+
+impl<'m> FaceTrim<'m> {
+    /// The trim of `face`, its rings drawn at `deflection`.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_on_face`].
+    pub(crate) fn of(
+        model: &'m Model,
+        face: &'m Shape,
+        deflection: Deflection,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        deflection.validate()?;
+        let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+            ogeom_bail!(Construction, "expected a face");
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            ogeom_bail!(Dangling, "face refers to a surface not in this model");
+        };
+        let rings = Rings::of(model, face, surface, deflection, tol)?;
+        Ok(Self {
+            face,
+            surface,
+            rings,
+            deflection,
+        })
+    }
+
+    /// Where the chart point `at` falls: [`Containment::On`] within `reach`
+    /// in space of the trim, plus the sag of the rings' chords.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_on_face`].
+    pub(crate) fn holds(
+        &self,
+        model: &Model,
+        at: (f64, f64),
+        reach: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Containment> {
+        let placed = self.rings.place(self.surface, Point2::new(at.0, at.1), tol);
+        let band = parametric_band(self.surface, at, reach + self.deflection.chord, tol);
+        if self
+            .rings
+            .within(model, self.face, self.deflection, placed, band, tol)?
+        {
+            return Ok(Containment::On);
+        }
+        Ok(
+            if self
+                .rings
+                .inside(model, self.face, self.deflection, placed, tol)?
+            {
+                Containment::In
+            } else {
+                Containment::Out
+            },
+        )
+    }
+}
+
 /// Where a point sits relative to a closed shell or solid.
 ///
 /// Ray casting against the tessellation: a ray from the point crosses the
