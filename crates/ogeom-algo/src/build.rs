@@ -479,9 +479,15 @@ pub(crate) fn wire_turn(
     edges_turn(model, &model.ordered_children_of(wire)?, axis, tol)
 }
 
-/// How a closed walk of edge occurrences turns about `axis`, as
-/// [`wire_turn`] measures a wire's.
-pub(crate) fn edges_turn(
+/// How a closed walk of edge occurrences turns about `axis`: twice the
+/// area it encloses projected square to the axis, signed by the right-hand
+/// rule, from points sampled along the edges in traversal order. Positive
+/// for a ring walked counter-clockwise about `axis`.
+///
+/// # Errors
+///
+/// As the model's placements and the curves' evaluation.
+pub fn edges_turn(
     model: &Model,
     edges: &[Shape],
     axis: ogeom_math::Vector,

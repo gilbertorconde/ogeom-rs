@@ -29,6 +29,28 @@ bump may break the API and a patch bump may not.
   lofts no longer re-read their skins' rows themselves: the fit reads
   them at least as closely.
 
+- **`unify_same_domain` merges every split wall it meets and no longer
+  refuses a valid solid (#281).** Three faults, each met on parts drawn
+  elsewhere and padded or pocketed again. Faces on one plane were grouped
+  by the normal their plane stored, so a pad whose profile ran the other
+  way round, whose walls store their planes facing in and are used
+  reversed, kept every wall it shared with the part split (an open box
+  came back with fifteen faces, not eleven); faces are now grouped by
+  the side they face. The merged boundary was chained into a single
+  wire, so a merged face with a hole in it (a pocket's floor, a boss's
+  rim across the split) refused the whole refine with "the edges do not
+  form one connected path"; the boundary is now walked as the merged
+  faces walk it, into an outer ring and one ring per hole, each wound as
+  the material lies. And the merged face kept the first face's plane
+  window, which a bounded plane (a prism's wall) sized to that face
+  alone, so the rest of the merged face read as off it and the solid's
+  orientation probe called its neighbours turned in; the window now grows
+  to hold every merged face's. A group whose boundary still does not
+  chain into rings (two rings through one vertex, an edge a third face
+  also bounds) is left split rather than failing the refine.
+  `ogeom_algo::edges_turn`, the signed turn of a walk of edges about an
+  axis, is now public.
+
 - **A skinned loft closing to a point no longer folds its wall through
   itself near the point (#269).** The skin through the sections was
   carried on to the point, and its rows bent to meet it: past a section

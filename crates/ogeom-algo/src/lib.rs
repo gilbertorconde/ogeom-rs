@@ -44,7 +44,7 @@ mod winding;
 
 pub use build::{
     attach_pcurve, attach_seam, belted_wire, chain_wire_branches, closed_at_poles, edge_vertices,
-    find_plane, is_shell_closed, is_wire_closed, make_apex_band, make_band_between,
+    edges_turn, find_plane, is_shell_closed, is_wire_closed, make_apex_band, make_band_between,
     make_band_of_rings, make_compound, make_compsolid, make_edge, make_edge_between, make_face,
     make_face_on, make_face_with_pcurves, make_natural_face, make_polygon, make_revolution_band,
     make_shell, make_solid, make_vertex, make_wire, rings_are_parallels, split_ring_on_column,

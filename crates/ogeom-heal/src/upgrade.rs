@@ -9,25 +9,29 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve2d as _, Curve3d as _, PlanarCurve, SurfaceGeometry};
 use ogeom_math::{Direction2, Plane, Point2, Transform};
 use ogeom_topo::{
-    EdgeRepr, Location, Model, NodeData, PCurveId, Shape, ShapeType, SurfaceId, TShapeId,
-    explore_unique,
+    EdgeRepr, Location, Model, NodeData, Orientation, PCurveId, Shape, ShapeType, SurfaceId,
+    TShapeId, explore_unique,
 };
 
 use crate::reshape::Reshape;
 
 /// Merge adjacent faces lying on one carrier into single faces.
 ///
-/// Two faces qualify when they share an edge and their surfaces are the
-/// same plane, in the same parameterization: the split a boolean or an
-/// exchange leaves behind. The merged face keeps the first face's surface;
-/// the shared edges dissolve; the remaining boundary re-chains into wires.
-/// Faces on other carriers pass through untouched; a curved unification
-/// wants parameterization transport this deliberately does not guess at.
+/// Two faces qualify when they share an edge and lie on one plane facing
+/// one way, whatever frame each stored its plane in and whichever way
+/// round: the split a boolean or an exchange leaves behind. The merged
+/// face keeps the first face's surface, its window grown to hold the
+/// others'; the shared edges dissolve; the remaining boundary re-chains
+/// into an outer ring and one ring per hole. Faces whose boundary does
+/// not re-chain so (two rings through one vertex, an edge a third face
+/// also bounds) are left split, the rest merged. Faces on other
+/// carriers pass through untouched; a curved unification wants
+/// parameterization transport this deliberately does not guess at.
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
-/// merged boundary fails to chain into closed wires.
+/// As the model's own builders, where the shape does not resolve in
+/// `model`.
 pub fn unify_same_domain(
     model: &mut Model,
     shape: &Shape,
@@ -191,62 +195,13 @@ fn unify_own(
         if members.len() < 2 {
             continue;
         }
-        // Interior edges (used by two members) dissolve; the rest chain.
-        let mut counts: FastMap<TShapeId, (usize, Shape)> = FastMap::default();
-        for &i in members {
-            for edge in explore_unique(model, &faces[i], ShapeType::Edge)? {
-                counts
-                    .entry(edge.node())
-                    .and_modify(|(n, _)| *n += 1)
-                    .or_insert((1, edge));
-            }
-        }
-        let boundary: Vec<Shape> = {
-            let mut edges: Vec<(TShapeId, Shape)> = counts
-                .into_iter()
-                .filter(|(_, (n, _))| *n == 1)
-                .map(|(id, (_, e))| (id, e))
-                .collect();
-            edges.sort_by_key(|(id, _)| *id);
-            edges.into_iter().map(|(_, e)| e).collect()
-        };
-        if boundary.len() < 3 {
-            continue;
-        }
-        let keeper = members[0];
-        let surface_id = {
-            let Some(NodeData::Face(data)) = model.node(&faces[keeper]).map(|n| n.data().clone())
-            else {
-                continue;
-            };
-            data.surface
-        };
-        // Every boundary edge needs a pcurve for the kept surface: the one
-        // it carries on another member's chart, moved across, or else a
-        // projection.
-        let Some(carrier) = carriers[keeper].clone() else {
+        // A cluster whose boundary does not close into rings the merged
+        // face can keep is left split, its faces untouched.
+        let Ok(Some(merged)) = merge_cluster(model, &faces, members, &carriers, &edge_users, tol)
+        else {
             continue;
         };
-        let mut charts: Vec<(SurfaceId, Carrier)> = Vec::with_capacity(members.len());
-        for &i in &members[1..] {
-            if let (Some(NodeData::Face(data)), Some(c)) =
-                (model.node(&faces[i]).map(|n| n.data()), &carriers[i])
-            {
-                charts.push((data.surface, c.clone()));
-            }
-        }
-        for edge in &boundary {
-            ensure_planar_pcurve(model, edge, surface_id, &carrier, &charts, tol)?;
-        }
-        let wire = ogeom_algo::make_wire_unordered(model, &boundary, tol)?.shape;
-        let merged = {
-            let Some(NodeData::Face(data)) = model.node(&faces[keeper]).map(|n| n.data().clone())
-            else {
-                continue;
-            };
-            model.add_face(*data, std::slice::from_ref(&wire))?
-        };
-        reshape.replace(&faces[keeper], merged);
+        reshape.replace(&faces[members[0]], merged);
         for &other in &members[1..] {
             reshape.remove(&faces[other]);
         }
@@ -260,20 +215,237 @@ fn unify_own(
     Ok((reshape.apply(model, shape)?, unified))
 }
 
+/// The face `members` make together: one face on the first member's
+/// surface, bounded by the rings their outer edges walk. `None` where they
+/// make no one face bounding the same material.
+///
+/// Every edge is walked as the members walk it, seen from the side they
+/// all face, so the rings come out wound as the material lies: the outer
+/// one counter-clockwise about that side, the holes clockwise. An edge two
+/// members walk once each, opposite ways, dissolves; one a face outside
+/// the cluster also bounds, or one walked against the rule, keeps the
+/// cluster as it is, as does a ring that does not close or a vertex two
+/// rings pass through, where no one walk is the boundary.
+fn merge_cluster(
+    model: &mut Model,
+    faces: &[Shape],
+    members: &[usize],
+    carriers: &[Option<Carrier>],
+    edge_users: &FastMap<TShapeId, Vec<usize>>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let keeper = members[0];
+    let Some(carrier) = carriers[keeper].clone() else {
+        return Ok(None);
+    };
+    let Some(NodeData::Face(keeper_data)) = model.node(&faces[keeper]).map(|n| n.data().clone())
+    else {
+        return Ok(None);
+    };
+    let surface_id = keeper_data.surface;
+
+    // Each member's edges as it walks them, seen from the side it faces.
+    let mut walks: Vec<(usize, Shape)> = Vec::new();
+    let mut uses: FastMap<TShapeId, Vec<usize>> = FastMap::default();
+    for &i in members {
+        let wires = model.children_of(&faces[i])?;
+        if wires.is_empty() {
+            return Ok(None);
+        }
+        for wire in wires {
+            for edge in model.ordered_children_of(&wire)? {
+                uses.entry(edge.node()).or_default().push(walks.len());
+                walks.push((i, edge));
+            }
+        }
+    }
+    let mut kept = vec![false; walks.len()];
+    for (node, at) in &uses {
+        let across = match at.as_slice() {
+            [_] => false,
+            [a, b] if walks[*a].0 == walks[*b].0 => false,
+            [a, b] => {
+                if walks[*a].1.orientation() == walks[*b].1.orientation()
+                    || edge_users.get(node).map_or(0, Vec::len) != 2
+                {
+                    return Ok(None);
+                }
+                true
+            }
+            _ => return Ok(None),
+        };
+        if !across {
+            for &k in at {
+                kept[k] = true;
+            }
+        }
+    }
+    let boundary: Vec<Shape> = walks
+        .iter()
+        .zip(&kept)
+        .filter(|(_, k)| **k)
+        .map(|((_, e), _)| e.clone())
+        .collect();
+    if boundary.is_empty() {
+        return Ok(None);
+    }
+    let mut seen: FastSet<TShapeId> = FastSet::default();
+    let outer_edges: Vec<Shape> = boundary
+        .iter()
+        .filter(|e| seen.insert(e.node()))
+        .cloned()
+        .collect();
+
+    // Chain the walks into rings, head to tail.
+    let mut ends: Vec<(Shape, Shape)> = Vec::with_capacity(boundary.len());
+    for edge in &boundary {
+        let Some(pair) = ogeom_algo::edge_vertices(model, edge)? else {
+            return Ok(None);
+        };
+        ends.push(pair);
+    }
+    let mut leaving: FastMap<TShapeId, usize> = FastMap::default();
+    for (k, (start, _)) in ends.iter().enumerate() {
+        if leaving.insert(start.node(), k).is_some() {
+            return Ok(None);
+        }
+    }
+    let mut placed = vec![false; boundary.len()];
+    let mut rings: Vec<Vec<Shape>> = Vec::new();
+    for first in 0..boundary.len() {
+        if placed[first] {
+            continue;
+        }
+        let mut ring = Vec::new();
+        let mut k = first;
+        loop {
+            placed[k] = true;
+            ring.push(boundary[k].clone());
+            let Some(&next) = leaving.get(&ends[k].1.node()) else {
+                return Ok(None);
+            };
+            if next == first {
+                break;
+            }
+            if placed[next] {
+                return Ok(None);
+            }
+            k = next;
+        }
+        rings.push(ring);
+    }
+
+    // The outer ring is the one turning about the side the faces face.
+    let mut turns = Vec::with_capacity(rings.len());
+    for ring in &rings {
+        turns.push(ogeom_algo::edges_turn(model, ring, carrier.outward, tol)?);
+    }
+    let area = tol.confusion() * tol.confusion();
+    let mut outer = turns.iter().enumerate().filter(|(_, t)| **t > area);
+    let (Some((outer, _)), None) = (outer.next(), outer.next()) else {
+        return Ok(None);
+    };
+    if turns.iter().filter(|t| **t < -area).count() != rings.len() - 1 {
+        return Ok(None);
+    }
+    rings.swap(0, outer);
+
+    // Every outer edge needs a pcurve for the kept surface: the one it
+    // carries on another member's chart, moved across, or else a
+    // projection.
+    let mut charts: Vec<(SurfaceId, Carrier)> = Vec::with_capacity(members.len());
+    for &i in &members[1..] {
+        if let (Some(NodeData::Face(data)), Some(c)) =
+            (model.node(&faces[i]).map(|n| n.data()), &carriers[i])
+        {
+            charts.push((data.surface, c.clone()));
+        }
+    }
+    for edge in &outer_edges {
+        ensure_planar_pcurve(model, edge, surface_id, &carrier, &charts, tol)?;
+    }
+    widen_to_members(model, surface_id, &carrier, &charts, tol)?;
+
+    // The rings as the kept face's own node walks them: a member used
+    // reversed in the solid walks its node's rings back.
+    let reversed = faces[keeper].orientation() == Orientation::Reversed;
+    let mut wires = Vec::with_capacity(rings.len());
+    for ring in rings {
+        let ring: Vec<Shape> = if reversed {
+            ring.iter().rev().map(Shape::reversed).collect()
+        } else {
+            ring
+        };
+        wires.push(ogeom_algo::make_wire(model, &ring, tol)?.shape);
+    }
+    // The kept face's mesh covers the kept face alone.
+    let mut data = *keeper_data;
+    data.triangulation = None;
+    Ok(Some(model.add_face(data, &wires)?))
+}
+
+/// Grow the window of the plane `surface_id` stores, where it is bounded,
+/// to hold every window of `charts` moved into its chart: the merged face
+/// reaches over all of them, and a point of a face past its surface's
+/// window reads as off the face.
+fn widen_to_members(
+    model: &mut Model,
+    surface_id: SurfaceId,
+    carrier: &Carrier,
+    charts: &[(SurfaceId, Carrier)],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    use ogeom_geom::Surface as _;
+    let Some(SurfaceGeometry::Plane(kept)) = model.geometry().surface(surface_id).cloned() else {
+        return Ok(());
+    };
+    let ((mut ua, mut ub), (mut va, mut vb)) = kept.domain();
+    let was = ((ua, ub), (va, vb));
+    for (id, chart) in charts {
+        let Some(SurfaceGeometry::Plane(other)) = model.geometry().surface(*id) else {
+            continue;
+        };
+        let Some(map) = chart_to_chart(chart, carrier, tol)? else {
+            ogeom_bail!(
+                Construction,
+                "two faces on one plane do not share its chart"
+            );
+        };
+        let ((a, b), (c, d)) = other.domain();
+        for (u, v) in [(a, c), (a, d), (b, c), (b, d)] {
+            let at = map.apply(Point2::new(u, v));
+            (ua, ub) = (ua.min(at.x), ub.max(at.x));
+            (va, vb) = (va.min(at.y), vb.max(at.y));
+        }
+    }
+    if ((ua, ub), (va, vb)) != was
+        && let Some(held) = model.geometry_mut().surface_mut(surface_id)
+    {
+        *held = ogeom_geom::PlaneSurface::over(kept.plane(), (ua, ub), (va, vb))?.into();
+    }
+    Ok(())
+}
+
 /// Where a planar face lies and which chart it was stored in.
 #[derive(Debug, Clone)]
 struct Carrier {
     /// The plane in world space: what "same carrier" is decided on.
     world: Plane,
+    /// The side the face faces in the world: its plane's normal, turned
+    /// back where the face is used reversed. Two faces on one plane are
+    /// one carrier only when they face the same way, whichever way each
+    /// stored its plane.
+    outward: ogeom_math::Vector,
     /// The plane as the surface stores it: the chart pcurves speak in.
     stored: Plane,
     /// What takes the stored chart to the world.
     placement: Transform,
 }
 
-/// Whether two carriers are one plane, whatever their frames.
+/// Whether two carriers are one plane facing one way, whatever their
+/// frames and whichever way each stored its plane's normal.
 fn same_carrier(a: &Carrier, b: &Carrier, tol: Tolerances) -> bool {
-    a.world.normal().dot(b.world.normal()) > 1.0 - tol.angular()
+    a.outward.dot(b.outward) > 1.0 - tol.angular()
         && a.world.signed_distance_to(b.world.frame().origin()).abs() <= tol.confusion()
 }
 
@@ -290,8 +462,15 @@ fn carrier_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     if (placement.scale_factor().abs() - 1.0).abs() > 1e-9 {
         return Ok(None);
     }
+    let world = stored.transformed(&placement, tol)?;
+    let normal = world.normal().vector();
     Ok(Some(Carrier {
-        world: stored.transformed(&placement, tol)?,
+        outward: if face.orientation() == Orientation::Reversed {
+            -normal
+        } else {
+            normal
+        },
+        world,
         stored,
         placement,
     }))
