@@ -73,7 +73,12 @@ handling is error-prone.
   document (exact geometry, tolerances, structure, PMI, views, notes) with
   no loss. Use it between ogeom sessions.
 - `brep::write` and `brep::read` store a single shape as text, for
-  model-level interchange.
+  model-level interchange. `brep::read` also takes the shapes project
+  archives save in that format, which leave out the header line.
+- `brep::read_numbered` also returns the file's own numbering of edges and
+  faces. Use it when an application names subshapes by their number in
+  the file, since reading walks a wire's edges end to end and so changes
+  their order.
 
 ## Mesh and drawing formats
 
