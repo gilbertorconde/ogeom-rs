@@ -840,3 +840,96 @@ fn a_pipe_shell_holds_its_walls_between_rows_at_a_curved_corner() {
         assert!(worst <= tolerance, "a wall strays {worst} at the corner");
     }
 }
+
+/// A square of half-side `half` about `(0, 0, z)` turned by `turn` about z,
+/// read by the fraction of its perimeter: a fit of it rounds each corner
+/// within a hair, its curvature there far beyond the rest of the loop.
+fn square_at(half: f64, z: f64, turn: f64, g: f64) -> Point {
+    let side = (g.rem_euclid(1.0) * 4.0).min(3.999_999_999);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let k = side.floor() as usize;
+    let f = side - side.floor();
+    let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+    let (a, b) = (corners[k], corners[(k + 1) % 4]);
+    let (x, y) = (
+        half * (a.0 + (b.0 - a.0) * f),
+        half * (a.1 + (b.1 - a.1) * f),
+    );
+    let (c, s) = (turn.cos(), turn.sin());
+    Point::new(c * x - s * y, s * x + c * y, z)
+}
+
+/// A spline loop fitted to [`square_at`] within a ten-thousandth, between
+/// its samples as well as at them.
+fn rounded_square(model: &mut Model, half: f64, z: f64, turn: f64) -> (Shape, ogeom_geom::Curve) {
+    let ts: Vec<f64> = (0..=48).map(|i| f64::from(i) / 48.0).collect();
+    let fitted = ogeom_geom::fit::fit_curve_sampled(
+        |g| Ok(square_at(half, z, turn, g)),
+        &ts,
+        true,
+        3,
+        1e-4,
+        T,
+    )
+    .unwrap();
+    assert!(fitted.met);
+    let curve: ogeom_geom::Curve = fitted.curve.into();
+    let edge = edge_of(model, curve.clone());
+    (
+        ogeom_algo::make_wire(model, &[edge], T).unwrap().shape,
+        curve,
+    )
+}
+
+/// A loft through rounded squares holds its end sections round their
+/// corners. A section is read along a polyline through it; that polyline
+/// was spaced by one sag measured over a first pass and spread evenly,
+/// and round a corner tighter than that pass it cut across: these end
+/// rings stood 1.9 times the tolerance inside the corners.
+#[test]
+fn a_skinned_loft_holds_its_sections_round_tight_corners() {
+    let mut model = Model::new();
+    let (half, turn) = (1.0, 0.4);
+    let mut sections = Vec::new();
+    let mut ends = Vec::new();
+    for (k, (z, scale)) in [(0.0, 1.0), (2.0, 0.6), (4.0, 0.35)]
+        .into_iter()
+        .enumerate()
+    {
+        #[allow(clippy::cast_precision_loss)]
+        let (wire, curve) = rounded_square(&mut model, half * scale, z, turn * k as f64);
+        sections.push(wire);
+        ends.push(curve);
+    }
+    let tolerance = 1e-3;
+    let loft = ogeom_offset::make_loft_skinned(&mut model, &sections, tolerance, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom_algo::check(&model, &loft, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let coarse = |curve: &ogeom_geom::Curve| -> Vec<(f64, Point)> {
+        let domain = curve.domain();
+        (0..=4000)
+            .map(|k| {
+                let t = across(domain, k, 4000);
+                (t, curve.point_at(t, T).unwrap())
+            })
+            .collect()
+    };
+    let rings = [coarse(&ends[0]), coarse(&ends[2])];
+    let walls = spline_surfaces(&model, &loft);
+    assert_eq!(walls.len(), 1, "one skinned wall");
+    let (ud, vd) = walls[0].domain();
+    let mut worst = 0.0_f64;
+    for v in [vd.0, vd.1] {
+        for i in 0..=2000 {
+            let p = walls[0].point_at(across(ud, i, 2000), v, T).unwrap();
+            let k = usize::from(p.z >= 2.0);
+            worst = worst.max(to_curve(p, &ends[2 * k], &rings[k]));
+        }
+    }
+    assert!(
+        worst <= tolerance,
+        "an end ring strays {worst} from its section"
+    );
+}

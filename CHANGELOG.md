@@ -24,6 +24,15 @@ bump may break the API and a patch bump may not.
   line is read against those sections both ways and fitted again with
   any it misses, and the edge states the farthest it was read.
 
+- **A skinned loft holds its sections round tight corners.** A section is
+  read along a polyline, and the polyline was spaced by one sag measured
+  over a first pass of 64 points and spread evenly. Round a corner tighter
+  than that pass the chords cut across it: a pipe closing a square to a
+  point along an arc had its skin 7.2e-3 inside its sections' corners at a
+  tolerance of 1e-3, and a loft through rounded squares had its end rings
+  1.9 times the tolerance off. Each piece of the polyline is now halved
+  until the curve at its quarter points stands within a micron of it.
+
 ## [0.11.2] - 2026-10-15
 
 A patch release with one fix (#261): a face with no seam edge, such as a

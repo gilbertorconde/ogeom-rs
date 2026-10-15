@@ -3198,40 +3198,66 @@ fn dense_wire(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Vec<P
             Ok(placement.apply(geometry.point_at(t, tol)?))
         };
         // Samples are read along the chords between these points, so the
-        // chords keep within a micron of the curve: the sag measured over a
-        // first pass, and the count raised by its square root (the sag
-        // falls with the square of the count).
+        // chords keep within a micron of the curve: each of `FIRST` even
+        // pieces is halved until the curve at its quarter points stands
+        // within that of its chord. One sag measured over the first pass
+        // and spread evenly will not do: round a tight corner the sag
+        // falls with the spacing, not its square, and only the pieces
+        // there need more.
         const FIRST: u32 = 64;
-        const MOST: u32 = 8192;
-        let mut sag = 0.0_f64;
+        let allowed = tol.confusion() * 10.0;
         for i in 0..FIRST {
             let (f0, f1) = (
                 f64::from(i) / f64::from(FIRST),
                 f64::from(i + 1) / f64::from(FIRST),
             );
-            let (a, b) = (at(f0)?, at(f1)?);
-            let mid = at(f64::midpoint(f0, f1))?;
-            sag = sag.max(mid.distance(a.midpoint(b)));
-        }
-        let allowed = tol.confusion() * 10.0;
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a sample count, bounded"
-        )]
-        let count = if sag <= allowed {
-            FIRST
-        } else {
-            ((f64::from(FIRST) * (sag / allowed).sqrt()).ceil() as u32).clamp(FIRST, MOST)
-        };
-        for i in 0..count {
-            dense.push(at(f64::from(i) / f64::from(count))?);
+            chords_within(&at, (f0, at(f0)?), (f1, at(f1)?), allowed, 0, &mut dense)?;
         }
     }
     if dense.is_empty() {
         ogeom_bail!(Construction, "a section has no edges");
     }
     Ok(dense)
+}
+
+/// The points of the curve `at` from `a` up to `b`, `b` itself left to the
+/// next piece, whose chords stand within `allowed` of the curve at their
+/// quarter points: a piece is halved where they do not, at most `DEEPEST`
+/// times.
+fn chords_within(
+    at: &impl Fn(f64) -> OgeomResult<Point>,
+    a: (f64, Point),
+    b: (f64, Point),
+    allowed: f64,
+    depth: u32,
+    out: &mut Vec<Point>,
+) -> OgeomResult<()> {
+    // A 64th of an edge halved this often is a few hundred-millionths of
+    // its parameter, past any corner a section is drawn with.
+    const DEEPEST: u32 = 20;
+    let chord = b.1 - a.1;
+    let length = chord.dot(chord);
+    let off = |p: Point| {
+        let t = if length > 0.0 {
+            ((p - a.1).dot(chord) / length).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.distance(a.1 + chord * t)
+    };
+    let mid = f64::midpoint(a.0, b.0);
+    let m = at(mid)?;
+    let sags = depth < DEEPEST
+        && (off(m) > allowed
+            || off(at(f64::midpoint(a.0, mid))?) > allowed
+            || off(at(f64::midpoint(mid, b.0))?) > allowed);
+    if sags {
+        chords_within(at, a, (mid, m), allowed, depth + 1, out)?;
+        chords_within(at, (mid, m), b, allowed, depth + 1, out)
+    } else {
+        out.push(a.1);
+        Ok(())
+    }
 }
 
 /// A section's dense polyline in its own frame, started and run where its
