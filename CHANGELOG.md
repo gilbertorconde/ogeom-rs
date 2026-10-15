@@ -41,6 +41,14 @@ bump may break the API and a patch bump may not.
   along every row, its peaks climbed, and refitted tighter where it
   strays; the error it states is the one read so.
 
+- **A skinned loft, pipe or helical sweep states its edges' pcurve gaps.**
+  A border two skins share is fitted on one and read on the other at
+  samples, and three rails of a loft through squares and long rectangles
+  turning between them stated less than their pcurves stood off. Every
+  edge a skinned loft, pipe, pipe shell or helical sweep makes now states
+  what its pcurves measure along it; the given sections', profile's and
+  spine's own edges are left as they were.
+
 ## [0.11.2] - 2026-10-15
 
 A patch release with one fix (#261): a face with no seam edge, such as a

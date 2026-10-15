@@ -933,3 +933,53 @@ fn a_skinned_loft_holds_its_sections_round_tight_corners() {
         "an end ring strays {worst} from its section"
     );
 }
+
+/// A loft through squares and long rectangles, each turned further than
+/// the last, skins each run between two corners as a strip and shares
+/// every rail between the two strips beside it: one fits the rail, the
+/// other reads it on its own skin at samples. Each edge stands within its
+/// own stated tolerance of every pcurve it carries, measured along the
+/// whole edge; three rails stated less than their pcurves stood off.
+#[test]
+fn a_twisted_polygon_loft_states_its_rails_gaps() {
+    let mut model = Model::new();
+    let square = [(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0)];
+    let long = [(-6.0, -1.0), (6.0, -1.0), (6.0, 1.0), (-6.0, 1.0)];
+    let sections: Vec<Shape> = [
+        (0.0, 0.0, &square),
+        (3.0, 0.7, &long),
+        (6.0, 1.5, &square),
+        (9.0, 2.3, &long),
+    ]
+    .into_iter()
+    .map(|(z, turn, corners)| {
+        let (c, s) = (f64::cos(turn), f64::sin(turn));
+        let points: Vec<Point> = corners
+            .iter()
+            .map(|(x, y)| Point::new(c * x - s * y, s * x + c * y, z))
+            .collect();
+        ogeom_algo::make_polygon(&mut model, &points, true, T)
+            .unwrap()
+            .shape
+    })
+    .collect();
+    let loft = ogeom_offset::make_loft_skinned(&mut model, &sections, 1e-3, T)
+        .unwrap()
+        .shape;
+    for edge in ogeom_topo::explore_unique(&model, &loft, ShapeType::Edge).unwrap() {
+        let stated = model
+            .node(&edge)
+            .unwrap()
+            .data()
+            .as_edge()
+            .unwrap()
+            .tolerance
+            .get();
+        if let Some(gap) = ogeom_algo::edge_pcurve_gap(&model, &edge, T).unwrap() {
+            assert!(
+                gap <= stated,
+                "a pcurve stands {gap:e} off an edge stating {stated:e}"
+            );
+        }
+    }
+}

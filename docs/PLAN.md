@@ -30,11 +30,6 @@ the shape between the points matters. Every edge the workspace's tests
 build through them was measured densely against its stated tolerance, and
 none stated less than its pcurves stand off:
 
-- `ogeom-offset/src/sweep.rs` (`Skin::fit`, `skinned_wall`): a grid skin's
-  error becomes the slack an adopted border is widened by, and
-  `adopt_border` reads that border against the surface at 33 points.
-  Between the sections the skin is the fit itself; along a section the
-  section curve is the truth and is not read between the grid's points.
 - `ogeom-hlr/src/exact.rs`: a silhouette is fitted through the walk's
   points and kept whether or not the fit met the chord. The fit's error
   bounds nothing there; the line is drawn.
@@ -45,9 +40,11 @@ measured densely by `state_pcurve_gaps_of`), and
 `ogeom-algo/src/recognize_swept.rs` (a mesh's vertices are all the truth
 there is, and the profile is measured against every one). The edges an
 offset rebuilds, a sheet offset or thickened makes, `split_face` makes and
-a blend's wedge carries are measured densely the same way, and the line
-of contact a marched round cuts a face along is read against the ball's
-true contact at the quarters between its stations.
+a blend's wedge carries are measured densely the same way, as are those
+a skinned loft, pipe or helical sweep makes, whose skins are read
+densely along their sections too; and the line of contact a marched round
+cuts a face along is read against the ball's true contact at the quarters
+between its stations.
 
 ### Booleans
 

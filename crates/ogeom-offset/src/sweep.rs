@@ -1398,6 +1398,31 @@ fn skinned_ring_strip(
     Ok((face, rail0, rail1))
 }
 
+/// Every edge of `built` that none of `given` holds widened to what its
+/// pcurves measure along it. A skin's error is measured where its fit
+/// sampled it, and a border two skins share is fitted on one and read on
+/// the other at samples; the edges state what they measure between those
+/// too. The given shapes' own edges are the caller's, and are left as they
+/// were.
+fn state_new_gaps(
+    model: &mut Model,
+    given: &[Shape],
+    built: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let mut held = ogeom_core::FastSet::default();
+    for shape in given {
+        for edge in ogeom_topo::explore_unique(model, shape, ShapeType::Edge)? {
+            held.insert(edge.node());
+        }
+    }
+    let made: Vec<Shape> = ogeom_topo::explore_unique(model, built, ShapeType::Edge)?
+        .into_iter()
+        .filter(|e| !held.contains(&e.node()))
+        .collect();
+    ogeom_algo::state_pcurve_gaps_of(model, &made, tol)
+}
+
 /// A border edge the neighbouring skin built from its own fit, adopted by
 /// this skin: the edge widens to how far it honestly sits from `surface`
 /// plus this fit's own slack, its vertices with it. Two independent fits of
@@ -2275,6 +2300,7 @@ pub fn make_loft_skinned_aligned(
     for section in sections {
         built.history.generate(section, built.shape.clone());
     }
+    state_new_gaps(model, sections, &built.shape, tol)?;
     Ok(built)
 }
 
@@ -2323,6 +2349,7 @@ pub fn make_loft_skinned_closed(
     for section in sections {
         built.history.generate(section, built.shape.clone());
     }
+    state_new_gaps(model, sections, &built.shape, tol)?;
     Ok(built)
 }
 
@@ -3073,7 +3100,9 @@ pub fn make_loft_skinned(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    loft_skinned_along(model, sections, None, tolerance, tol)
+    let built = loft_skinned_along(model, sections, None, tolerance, tol)?;
+    state_new_gaps(model, sections, &built.shape, tol)?;
+    Ok(built)
 }
 
 /// The motion carrying a loft's first section to where the sections stand
@@ -3558,6 +3587,7 @@ pub fn make_pipe_skinned(
         tol,
     )?;
     built.history.generate(spine, built.shape.clone());
+    state_new_gaps(model, std::slice::from_ref(spine), &built.shape, tol)?;
     Ok(built)
 }
 
@@ -4409,6 +4439,7 @@ pub fn make_helical_sweep(
     let solid = make_solid(model, &sewn.shells)?.shape;
     let mut history = History::new();
     history.generate(profile, solid.clone());
+    state_new_gaps(model, std::slice::from_ref(profile), &solid, tol)?;
     Ok(Built::new(solid, history))
 }
 
@@ -4993,7 +5024,9 @@ pub fn make_pipe_shell_with(
             "extended and round corners are built along a spine of straight legs"
         );
     }
-    pipe_shell_law(model, profile, spine, law, tolerance, tol)
+    let built = pipe_shell_law(model, profile, spine, law, tolerance, tol)?;
+    state_new_gaps(model, &[profile.clone(), spine.clone()], &built.shape, tol)?;
+    Ok(built)
 }
 
 /// The legs of a spine made only of straight edges, in order, each as its
