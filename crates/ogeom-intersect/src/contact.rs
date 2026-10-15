@@ -36,7 +36,9 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Surface as _, SurfaceGeometry};
 use ogeom_math::{Point, Vector, solve};
 
-use crate::march::{BRANCH_POINT_SINE, Contact, Marching, Stopped, Traced, clamp, span};
+use crate::march::{
+    BRANCH_POINT_SINE, Contact, Marching, Stopped, Traced, clamp, distance_to_segment, span,
+};
 
 /// How far apart the two points of a corrected contact may sit, in units of
 /// the confusion distance.
@@ -345,14 +347,24 @@ fn crossed_bound(
     first.map(|(_, k, bound)| (k, bound))
 }
 
+/// The four parameters a move of `by` in space from `state` predicts, each
+/// surface's lifted to first order; `state` itself where either surface
+/// cannot lift it.
+fn predicted(ja: &Jet, jb: &Jet, state: [f64; 4], by: Vector) -> [f64; 4] {
+    match (ja.lift(by), jb.lift(by)) {
+        (Some((da, ea)), Some((db, eb))) => {
+            [state[0] + da, state[1] + ea, state[2] + db, state[3] + eb]
+        }
+        _ => state,
+    }
+}
+
 /// A walk one way along the contact.
 struct Walked {
     points: Vec<Point>,
     on_a: Vec<(f64, f64)>,
     on_b: Vec<(f64, f64)>,
     stopped: Stopped,
-    /// The longest step taken.
-    longest: f64,
 }
 
 /// The settings one trace walks with.
@@ -382,6 +394,48 @@ impl Walk<'_> {
             .clamp(self.shortest, self.longest)
     }
 
+    /// Whether the walk at `at`, heading `along` with a step of `step`,
+    /// closes on its start `from`: the step onto it is solved on the contact
+    /// conditions and held to the chord like any other.
+    ///
+    /// Coming back near the start is not enough. Across the seam of a
+    /// closed but non-periodic patch the contact can break, and a walk
+    /// arriving at the seam from one side finds its start a step away on
+    /// the other: a loop joined across that gap claims a closed contact
+    /// that is not there. So the start must lie within the step the walk is
+    /// taking, the contact solved on the plane through it must land on it,
+    /// and the contact solved halfway must keep to the chord between them.
+    fn closes(
+        &self,
+        at: Contact,
+        (ja, jb): (&Jet, &Jet),
+        along: Vector,
+        step: f64,
+        from: Point,
+    ) -> bool {
+        let reach = (from - at.point).dot(along);
+        if reach <= 0.0 || reach > step {
+            return false;
+        }
+        let state = [at.on_a.0, at.on_a.1, at.on_b.0, at.on_b.1];
+        let across = ja.n.cross(along);
+        let land = |reach: f64| {
+            let pin = Pin::Step {
+                anchor: at.point,
+                along,
+                reach,
+            };
+            let guess = predicted(ja, jb, state, along * reach);
+            correct(self.a, self.b, guess, across, pin, self.tol)
+                .filter(|c| self.holds(c))
+                .map(|c| c.contact.point)
+        };
+        let near = self.options.chord.max(self.tol.confusion());
+        land(reach).is_some_and(|landed| landed.distance(from) <= near)
+            && land(reach * 0.5)
+                .is_some_and(|middle| distance_to_segment(middle, at.point, from) <= near)
+    }
+
     fn one_way(&self, from: Contact, sense: f64) -> OgeomResult<Walked> {
         let (a, b, tol) = (self.a, self.b, self.tol);
         let mut out = Walked {
@@ -389,7 +443,6 @@ impl Walk<'_> {
             on_a: vec![from.on_a],
             on_b: vec![from.on_b],
             stopped: Stopped::RanOut,
-            longest: 0.0,
         };
         let mut at = from;
         let mut previous: Option<(Vector, f64)> = None;
@@ -421,16 +474,7 @@ impl Walk<'_> {
             let across = ja.n.cross(along);
             let state = [at.on_a.0, at.on_a.1, at.on_b.0, at.on_b.1];
             let next = loop {
-                let guess = {
-                    let ta = ja.lift(along * step);
-                    let tb = jb.lift(along * step);
-                    match (ta, tb) {
-                        (Some((da, ea)), Some((db, eb))) => {
-                            [state[0] + da, state[1] + ea, state[2] + db, state[3] + eb]
-                        }
-                        _ => state,
-                    }
-                };
+                let guess = predicted(&ja, &jb, state, along * step);
                 let pin = Pin::Step {
                     anchor: at.point,
                     along,
@@ -470,7 +514,6 @@ impl Walk<'_> {
                         out.on_a[last] = edge.on_a;
                         out.on_b[last] = edge.on_b;
                     } else {
-                        out.longest = out.longest.max(taken);
                         out.points.push(edge.point);
                         out.on_a.push(edge.on_a);
                         out.on_b.push(edge.on_b);
@@ -484,11 +527,13 @@ impl Walk<'_> {
                 }
             };
             let taken = next.point.distance(at.point);
-            // Back where it began: a loop.
+            // Back where it began: a loop, if the step onto the start is one
+            // the walk can take. Only asked once the walk has gone far
+            // enough to have left, or every contact would close at once.
             if out.points.len() > 3
                 && travelled > taken * 2.0
-                && next.point.distance(from.point) <= taken
-                && (from.point - at.point).dot(along) > 0.0
+                && at.point.distance(from.point) <= step * 2.0
+                && self.closes(at, (&ja, &jb), along, step, from.point)
             {
                 out.points.push(from.point);
                 out.on_a.push(from.on_a);
@@ -497,7 +542,6 @@ impl Walk<'_> {
                 break;
             }
             travelled += taken;
-            out.longest = out.longest.max(taken);
             previous = Some((next.point - at.point, taken));
             out.points.push(next.point);
             out.on_a.push(next.on_a);
@@ -591,7 +635,6 @@ pub fn trace_tangential(
         });
     }
     let behind = walk.one_way(seed, -1.0)?;
-    let steps = ahead.longest.max(behind.longest);
     let mut points = behind.points;
     let mut on_a = behind.on_a;
     let mut on_b = behind.on_b;
@@ -612,10 +655,13 @@ pub fn trace_tangential(
         Stopped::LeftTheDomain
     };
     // A loop cut at the seam of a patch that closes on itself without
-    // being periodic: both walks end on the seam, at one point.
+    // being periodic: both walks end on the seam, each landed on it, and
+    // where the contact meets itself across the seam they land on one
+    // point. Ends further apart than the chord are a contact that breaks
+    // at the seam, and joining them would claim a loop that is not there.
     if stopped == Stopped::LeftTheDomain && points.len() > 3 {
         let gap = points[0].distance(points[points.len() - 1]);
-        if gap <= (steps * 2.0).max(tol.confusion() * 10.0) {
+        if gap <= options.chord.max(tol.confusion() * 10.0) {
             if gap <= tol.confusion() {
                 points.pop();
                 on_a.pop();
@@ -714,6 +760,146 @@ mod tests {
         let err = trace_tangential(&drum, &ball, seed(&drum, &ball, at), Marching::default(), T)
             .unwrap_err();
         assert!(err.to_string().contains("without touching"), "{err}");
+    }
+
+    /// A strip resting on the unit drum along a curve that goes once round
+    /// and climbs `rise` as it goes: `γ(u) + v (e_θ(u) + z)`, where `γ` is
+    /// the exact rational circle lifted to a height growing from zero to
+    /// `rise`, and `e_θ` the drum's own direction round. Its rulings lie in
+    /// the drum's tangent plane along `γ` and outside the drum off it, so
+    /// the two touch along `γ` and nowhere cross. The strip's chart is
+    /// closed but not periodic in `u`: where `rise` is zero its two ends
+    /// meet, and otherwise the contact breaks at its seam by `rise`.
+    fn ramp(rise: f64) -> SurfaceGeometry {
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::{ControlGrid, KnotVector, Weighted};
+        let corners = [
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ];
+        let mut grid = Vec::new();
+        for (i, (x, y)) in corners.into_iter().enumerate() {
+            let weight = if i % 2 == 0 {
+                1.0
+            } else {
+                core::f64::consts::FRAC_1_SQRT_2
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let on = Point::new(x, y, rise * i as f64 / 8.0);
+            let rule = Vector::new(-y, x, 1.0);
+            for v in [-0.5, 0.5] {
+                grid.push(Weighted::new(on + rule * v, weight, T).unwrap());
+            }
+        }
+        BSplineSurface::rational(
+            KnotVector::new(
+                vec![
+                    0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+                ],
+                2,
+            )
+            .unwrap(),
+            KnotVector::new(vec![-0.5, -0.5, 0.5, 0.5], 1).unwrap(),
+            ControlGrid::new(grid, 9, 2).unwrap(),
+        )
+        .unwrap()
+        .into()
+    }
+
+    /// How far `p` stands from the strip's line of contact, `v = 0`, at its
+    /// own angle round the drum, the seam's point counted on both sides.
+    /// The angle round grows with `u`, so the contact's point at an angle
+    /// is found by bisection.
+    fn off_contact(strip: &SurfaceGeometry, p: Point) -> f64 {
+        let tau = core::f64::consts::TAU;
+        let on = |u: f64| strip.point_at(u, 0.0, T).unwrap();
+        let angle = p.y.atan2(p.x).rem_euclid(tau);
+        [angle, angle + tau]
+            .into_iter()
+            .filter(|a| *a <= tau)
+            .map(|a| {
+                let (mut lo, mut hi) = (0.0, 1.0);
+                for _ in 0..60 {
+                    let u = f64::midpoint(lo, hi);
+                    let q = on(u);
+                    if q.y.atan2(q.x).rem_euclid(tau) < a {
+                        lo = u;
+                    } else {
+                        hi = u;
+                    }
+                }
+                p.distance(on(f64::midpoint(lo, hi)))
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// A contact closes only through a step it solved. A strip resting on a
+    /// drum along a contact that climbs 0.004 round the drum and breaks by
+    /// that at the strip's seam is traced open, from a seed on the seam,
+    /// beside it on either side, or away from it: closed, its last chord
+    /// would jump the break and miss the contact by half of it. Every chord
+    /// of what comes back keeps to the contact, and it runs the whole way
+    /// round, seam to seam. Where the contact does meet itself across the
+    /// seam, it still closes.
+    #[test]
+    fn a_contact_closes_only_through_a_step_it_solved() {
+        let chord = 1e-4;
+        let options = Marching {
+            chord,
+            ..Marching::default()
+        };
+        let drum: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 1.0, T).unwrap(), (-2.0, 2.0))
+                .unwrap()
+                .into();
+        let starts = [0.0, 1e-4, 0.3, 0.9999, 1.0];
+        for (rise, closed) in [(0.004, false), (0.0, true)] {
+            let strip = ramp(rise);
+            for u in starts {
+                let p = strip.point_at(u, 0.0, T).unwrap();
+                let from = Contact {
+                    on_a: locate(&drum, p),
+                    on_b: (u, 0.0),
+                    point: p,
+                };
+                let traced = trace_tangential(&drum, &strip, from, options, T).unwrap();
+                if closed {
+                    assert_eq!(
+                        traced.stopped,
+                        Stopped::Closed,
+                        "from {u}: a contact met across the seam is a loop"
+                    );
+                } else {
+                    assert_eq!(
+                        traced.stopped,
+                        Stopped::LeftTheDomain,
+                        "from {u}: a contact broken at the seam is not a loop"
+                    );
+                    let (first, last) = (traced.on_b[0].0, traced.on_b[traced.on_b.len() - 1].0);
+                    assert!(
+                        first.min(last) <= 1e-9 && first.max(last) >= 1.0 - 1e-9,
+                        "from {u}: the whole way round, seam to seam: {first} to {last}"
+                    );
+                }
+                for pair in traced.points.windows(2) {
+                    let miss = off_contact(&strip, pair[0] + (pair[1] - pair[0]) * 0.5);
+                    assert!(
+                        miss <= chord,
+                        "rise {rise}, from {u}: the chord {:?} to {:?} misses the contact by \
+                         {miss:e}",
+                        pair[0],
+                        pair[1]
+                    );
+                }
+            }
+        }
     }
 
     #[test]

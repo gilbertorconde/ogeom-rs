@@ -80,6 +80,19 @@ bump may break the API and a patch bump may not.
   through it must land on it, and the condition solved halfway must keep
   to the chord; otherwise the walk ends open at the seam.
 
+- **A tangential contact closes only through a step it solved (#278).**
+  The walker tracing where two surfaces touch had its own closure test:
+  a loop closed whenever a step landed within a step of its start, and
+  the start was joined on unsolved. Halves cut at the seam of a closed
+  but non-periodic patch were joined whenever their ends stood within
+  twice the longest step of each other. Where the contact breaks at the
+  seam (by 0.004 for a strip resting on a drum along a climbing curve)
+  both claimed a closed contact that is not there, the closing chord
+  missing it by half the break. The step onto the start is now solved
+  and held to the chord as in the shared walker, and halves cut at a
+  seam are joined only where their ends, each landed on the seam, meet
+  within the chord; otherwise the contact ends open at the seam.
+
 - **A part placed in an assembly is checked as it is on its own (#275).**
   Which way a face faces was probed at the middle of its largest mesh
   triangle, ranked by area from the placed mesh. A placement rounds the

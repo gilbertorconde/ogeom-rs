@@ -944,7 +944,7 @@ fn passes_near(branch: &Traced, p: Point, reach: f64) -> bool {
 }
 
 /// Distance from a point to a segment.
-fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
+pub(crate) fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
     let along = b - a;
     let length = along.square_magnitude();
     if length <= f64::MIN_POSITIVE {
