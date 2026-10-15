@@ -30,6 +30,18 @@ bump may break the API and a patch bump may not.
   closing on a point is also turned outward by its signed volume over the
   whole patch rather than its normal at one point.
 
+- **A walked curve closes only through a step it solved (#273).** The
+  shared walker behind surface intersections, silhouettes and marched
+  rounds declared a loop closed whenever a step landed within a step of
+  its start, and joined the start on without solving that last chord.
+  Across the seam of a closed but non-periodic surface the curve can
+  break (a spline sphere's silhouette by about 0.004), and the walk
+  joined it anyway: the closing chord missed the curve by 3e-3 to 8e-3 and
+  the loop claimed a closed curve that is not there. The start must now
+  lie within the step being taken, the condition solved on the plane
+  through it must land on it, and the condition solved halfway must keep
+  to the chord; otherwise the walk ends open at the seam.
+
 - **A marched round's line of contact states how far it strays between
   the march's stations.** Between two faces that share no edge, the line
   along which the ball touches a face was fitted through the march's

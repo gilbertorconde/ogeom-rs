@@ -332,9 +332,20 @@ pub fn walk_one_way<C: Condition + ?Sized>(
             break;
         };
 
-        // Back at the start: a closed loop. Only checked once the walk has
-        // gone far enough to have left, or every curve would close at once.
-        if points.len() > 3 && next_point.distance(from) <= step {
+        // Back at the start: a closed loop, if the step onto the start is
+        // one the walk can take. Only asked once the walk has gone far
+        // enough to have left, or every curve would close at once.
+        if points.len() > 3
+            && here.distance(from) <= step * 2.0
+            && closes(
+                condition,
+                &at,
+                (here, direction, step),
+                from,
+                options.chord,
+                tol,
+            )
+        {
             states.push(states[0].clone());
             points.push(from);
             stopped = Stopped::Closed;
@@ -358,6 +369,55 @@ pub fn walk_one_way<C: Condition + ?Sized>(
         points,
         stopped,
     })
+}
+
+/// Whether the walk at `at` closes on its start: the step from `here` onto
+/// `from` is solved on the condition and held to the chord like any other.
+///
+/// Coming back near the start is not enough. Across the seam of a closed
+/// but non-periodic surface the curve can break (a spline sphere's
+/// silhouette does by about 0.004, as its normals do not agree there), and
+/// a walk arriving at the seam from one side finds its start a step away
+/// on the other: a loop joined across that gap claims a closed curve that
+/// is not there. So the start must lie within the step the walk is taking,
+/// the condition solved on the plane through it must land on it, and the
+/// condition solved halfway must keep to the chord between them. The step
+/// is never longer than one the walk already accepted, and a start that is
+/// further on is closed from the next point instead.
+fn closes<C: Condition + ?Sized>(
+    condition: &C,
+    at: &[f64],
+    (here, direction, step): (Point, Vector, f64),
+    from: Point,
+    chord: f64,
+    tol: Tolerances,
+) -> bool {
+    let reach = (from - here).dot(direction);
+    if reach <= 0.0 || reach > step {
+        return false;
+    }
+    let near = chord.max(tol.confusion());
+    let Some((_, landed, _)) = correct(condition, at, (here, direction, reach), tol) else {
+        return false;
+    };
+    if landed.distance(from) > near {
+        return false;
+    }
+    let Some((_, middle, _)) = correct(condition, at, (here, direction, reach * 0.5), tol) else {
+        return false;
+    };
+    distance_to_segment(middle, here, from) <= near
+}
+
+/// Distance from a point to a segment.
+fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
+    let along = b - a;
+    let length = along.square_magnitude();
+    if length <= f64::MIN_POSITIVE {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(along) / length).clamp(0.0, 1.0);
+    p.distance(a + along * t)
 }
 
 /// The tangent, turned to keep going the way the walk is going.
@@ -724,6 +784,117 @@ mod tests {
         assert!(
             length <= circumference && length > circumference * (1.0 - 1e-4),
             "the inscribed polygon: {length} against {circumference}"
+        );
+    }
+
+    /// A curve on a closed but non-periodic chart, the cylinder
+    /// `(5 cos 2πu, 5 sin 2πu, v)` over `u` in `[0, 1]`, climbing `rise` as
+    /// it goes round: it meets itself across the seam only when `rise` is
+    /// zero, and otherwise breaks there by `rise`, as a spline sphere's
+    /// silhouette does where the sphere's normals disagree across its seam.
+    struct Climbing {
+        rise: f64,
+    }
+
+    impl Climbing {
+        /// How far `p` stands from the curve, at its own angle round the
+        /// axis, the seam's point counted on both sides.
+        fn miss(&self, p: Point) -> f64 {
+            let u = p.y.atan2(p.x).rem_euclid(core::f64::consts::TAU) / core::f64::consts::TAU;
+            [u, u + 1.0]
+                .into_iter()
+                .filter(|u| *u <= 1.0)
+                .map(|u| {
+                    let a = u * core::f64::consts::TAU;
+                    p.distance(Point::new(5.0 * a.cos(), 5.0 * a.sin(), self.rise * u))
+                })
+                .fold(f64::INFINITY, f64::min)
+        }
+    }
+
+    impl Condition for Climbing {
+        fn unknowns(&self) -> usize {
+            2
+        }
+        fn position(&self, x: &[f64], _tol: Tolerances) -> Option<Point> {
+            let a = x[0] * core::f64::consts::TAU;
+            Some(Point::new(5.0 * a.cos(), 5.0 * a.sin(), x[1]))
+        }
+        fn position_gradient(&self, x: &[f64], _tol: Tolerances) -> Option<Vec<Vector>> {
+            let a = x[0] * core::f64::consts::TAU;
+            Some(vec![
+                Vector::new(-a.sin(), a.cos(), 0.0) * (5.0 * core::f64::consts::TAU),
+                Vector::Z,
+            ])
+        }
+        fn system(&self, x: &[f64], _tol: Tolerances) -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+            Some((
+                vec![self.rise.mul_add(-x[0], x[1])],
+                vec![vec![-self.rise, 1.0]],
+            ))
+        }
+        fn clamp(&self, x: &mut [f64]) {
+            x[0] = x[0].clamp(0.0, 1.0);
+            x[1] = x[1].clamp(-1.0, 1.0);
+        }
+        fn outside(&self, x: &[f64], tol: Tolerances) -> bool {
+            let band = tol.parametric();
+            x[0] < -band || x[0] > 1.0 + band || x[1] < -1.0 - band || x[1] > 1.0 + band
+        }
+        fn near_edge(&self, x: &[f64]) -> bool {
+            x[0] <= 1e-6 || x[0] >= 1.0 - 1e-6
+        }
+        fn extent(&self) -> f64 {
+            14.0
+        }
+    }
+
+    /// A walk closes only through a step it solved. One that comes back
+    /// beside its start across a seam the curve breaks at, 0.004 here as a
+    /// spline sphere's silhouette breaks by about that, ends open at the
+    /// seam rather than claiming a loop: joined straight onto the start,
+    /// the last chord missed the curve by half the break. Every chord of
+    /// what comes back keeps to the curve, from a start on either side of
+    /// the seam or away from it; and where the curve does meet itself
+    /// across the seam, the loop still closes.
+    #[test]
+    fn a_walk_closes_only_through_a_step_it_solved() {
+        let chord = 1e-5;
+        let options = Marching {
+            chord,
+            ..Marching::default()
+        };
+        let broken = Climbing { rise: 0.004 };
+        for u in [0.0, 1e-4, 0.3, 0.9999, 1.0] {
+            let walked = follow(&broken, &[u, broken.rise * u], options, T).unwrap();
+            assert_ne!(
+                walked.stopped,
+                Stopped::Closed,
+                "from {u}: a curve broken at the seam is not a loop"
+            );
+            for pair in walked.points.windows(2) {
+                let middle = pair[0] + (pair[1] - pair[0]) * 0.5;
+                let miss = broken.miss(middle);
+                assert!(
+                    miss <= chord,
+                    "from {u}: the chord {:?} to {:?} misses the curve by {miss:e}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            let (first, last) = (&walked.states[0], &walked.states[walked.states.len() - 1]);
+            assert!(
+                first[0].min(last[0]) <= 1e-6 && first[0].max(last[0]) >= 1.0 - 1e-6,
+                "from {u}: the whole way round, seam to seam: {first:?} to {last:?}"
+            );
+        }
+
+        let whole = Climbing { rise: 0.0 };
+        let walked = follow(&whole, &[0.0, 0.0], options, T).unwrap();
+        assert_eq!(
+            walked.stopped,
+            Stopped::Closed,
+            "a circle met across the seam"
         );
     }
 
