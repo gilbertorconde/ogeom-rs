@@ -908,6 +908,26 @@ impl<'a> Skin<'a> {
         )
     }
 
+    /// The parameter across the skin each row sits at in its fitted
+    /// surface (open across).
+    fn row_parameters(&self) -> OgeomResult<Vec<f64>> {
+        if let Some(traced) = &self.traced {
+            return Ok(traced.sampling.vs.clone());
+        }
+        let grid: Vec<Vec<Point>> = self
+            .rows
+            .iter()
+            .map(|row| {
+                let mut r = row.clone();
+                if self.round {
+                    r.push(row[0]);
+                }
+                r
+            })
+            .collect();
+        Ok(ogeom_geom::fit::grid_parameters(&grid, (false, self.by_spacing))?.1)
+    }
+
     /// The skin's fitted surface: where `round`, closed the way round (each
     /// row's end its start, so the row fits' pinned ends make the two
     /// border control columns equal); where `closed_v`, smoothly across the
@@ -1509,6 +1529,9 @@ enum EndCap {
     /// The section is not: a patch skinned from the ring down to a point
     /// inside it, sharing the wall's ring edge.
     Skinned,
+    /// The solid closes on a point past the section: the cone from the ring
+    /// to it, every ruling straight, sharing the wall's ring edge.
+    Apex(Point),
 }
 
 fn skinned_solid(
@@ -1571,11 +1594,16 @@ fn skinned_solid(
                  last: bool| {
         match end {
             EndCap::Plane(outward) => cap(model, ring, curve.clone(), outward),
-            EndCap::Skinned => {
+            EndCap::Skinned | EndCap::Apex(_) => {
                 // The cone from the section to the point its rows collapse
                 // to (the section's own centroid, which a closed section
-                // winds round): the ring, a row halfway in, and the point.
-                let apex = centroid_of(std::slice::from_ref(&row.to_vec()));
+                // winds round, or the apex the loft closes on): the ring, a
+                // row halfway in, and the point. Every column is straight,
+                // so no row of it turns over on the way to the point.
+                let apex = match end {
+                    EndCap::Apex(apex) => apex,
+                    _ => centroid_of(std::slice::from_ref(&row.to_vec())),
+                };
                 let patch = match &skin.traced {
                     // Known between the samples where the skin knows its
                     // end section there, and checked there too.
@@ -1600,15 +1628,26 @@ fn skinned_solid(
                         Skin::rows(vec![row.to_vec(), half, vec![apex; row.len()]])
                     }
                 };
-                // Inside the solid behind the cap: the middle of the next
-                // section in.
-                let next = if last {
-                    &rows[rows.len() - 2]
-                } else {
-                    &rows[1]
+                // Inside the solid behind a cap: the middle of the next
+                // section in. A cone to an apex has the ring's own middle
+                // behind it (see `apex_patch`).
+                let inside = match end {
+                    EndCap::Apex(_) => None,
+                    _ => {
+                        let next = if last {
+                            &rows[rows.len() - 2]
+                        } else {
+                            &rows[1]
+                        };
+                        Some(centroid_of(std::slice::from_ref(next)))
+                    }
                 };
-                let inside = centroid_of(std::slice::from_ref(next));
-                Ok(apex_patch(model, &patch, Some(ring), Some(inside), tolerance, tol)?.0)
+                let Some((face, _)) =
+                    apex_patch(model, &patch, Some(ring), inside, None, tolerance, tol)?
+                else {
+                    ogeom_bail!(Construction, "a cone over a section was refused");
+                };
+                Ok(face)
             }
         }
     };
@@ -1643,9 +1682,10 @@ fn apex_patch(
     skin: &Skin<'_>,
     shared: Option<&Shape>,
     inside: Option<Point>,
+    unfolded_from: Option<f64>,
     tolerance: f64,
     tol: Tolerances,
-) -> OgeomResult<(Shape, Shape)> {
+) -> OgeomResult<Option<(Shape, Shape)>> {
     use ogeom_geom::Surface as _;
     let rows = &skin.rows;
     let fitted = skin.fit(false, tolerance, tol)?;
@@ -1666,6 +1706,46 @@ fn apex_patch(
     let point_at = |i: usize, j: usize| -> Point { net[i * l + j] };
     let (u_dom, v_dom) = surface.domain();
     let apex = rows[rows.len() - 1][0];
+    let surface_geo: SurfaceGeometry = surface.into();
+    // The face points away from `behind` when the cone it spans from there,
+    // the integral of (p - behind) . (du x dv) over the whole chart, holds
+    // positive volume: the whole patch votes, where a normal read at one
+    // point says only which way the patch faces there. Without a point
+    // inside, behind is the ring's middle: the fan from it to the ring adds
+    // nothing to the integral (every fan triangle contains it), so this is
+    // the signed volume the patch closes with that fan, a planar ring's
+    // cap.
+    let behind = inside.unwrap_or_else(|| centroid_of(std::slice::from_ref(&rows[0])));
+    let spans = |knots: &ogeom_math::KnotVector| -> Vec<(f64, f64)> {
+        let breaks: Vec<f64> = knots.distinct().into_iter().map(|(t, _)| t).collect();
+        breaks.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let mut held = 0.0;
+    for (u0, u1) in spans(&u_knots) {
+        for (v0, v1) in spans(&v_knots) {
+            for (u, wu) in ogeom_math::integrate::gauss_legendre_rule(u0, u1) {
+                for (v, wv) in ogeom_math::integrate::gauss_legendre_rule(v0, v1) {
+                    let p = surface_geo.point_at(u, v, tol)?;
+                    let (du, dv) = surface_geo.d1_at(u, v, tol)?;
+                    held += wu * wv * du.cross(dv).dot(p - behind);
+                }
+            }
+        }
+    }
+    if let Some(v_from) = unfolded_from {
+        let from = centroid_of(std::slice::from_ref(&rows[rows.len() - 2]));
+        let u_count = (spans(&u_knots).len() * 4).max(256);
+        if folds_toward(
+            &surface_geo,
+            (u_dom, (v_from, v_dom.1)),
+            (from, apex),
+            held,
+            u_count,
+            tol,
+        )? {
+            return Ok(None);
+        }
+    }
 
     let ring_curve = {
         let control: Vec<Point> = (0..k).map(|i| point_at(i, 0)).collect();
@@ -1683,7 +1763,6 @@ fn apex_patch(
             tol,
         )?)
     };
-    let surface_geo: SurfaceGeometry = surface.into();
     let surface_id = model.geometry_mut().add_surface(surface_geo.clone());
 
     // The ring a neighbour built is adopted, not refitted (see `adopt_border`).
@@ -1768,32 +1847,86 @@ fn apex_patch(
     )?
     .shape;
     let face = ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
-    let mid_u = f64::midpoint(u_dom.0, u_dom.1);
-    let mid_v = f64::midpoint(v_dom.0, v_dom.1);
-    let s_mid = surface_geo.point_at(mid_u, mid_v, tol)?;
-    let (du, dv) = surface_geo.d1_at(mid_u, mid_v, tol)?;
-    // Without a point inside, inside is judged from the section the patch
-    // passes through at that row, not from the whole skin's centroid: a
-    // skin that bends puts that centroid outside itself, in the crook of
-    // the bend. A patch spanning a section (a cap) has its normal square to
-    // the way out from that section's middle, and is told where inside is.
-    let local = match inside {
-        Some(at) => at,
-        None => {
-            let mut sum = Vector::ZERO;
-            for k in 0..16 {
-                let u = u_dom.0 + (u_dom.1 - u_dom.0) * f64::from(k) / 16.0;
-                sum += surface_geo.point_at(u, mid_v, tol)?.to_vector();
+    let face = if held >= 0.0 { face } else { face.reversed() };
+    Ok(Some((face, ring0)))
+}
+
+/// Whether `surface` folds between the row at `v` naught of `chart` and the
+/// point its last row collapses to, `ends.1`. Read about the line from the
+/// section's middle `ends.0` to that point, the stretch is unfolded where
+/// it is a graph over the angle round that line and the height along it:
+/// the map from the chart to (angle, height) keeps one orientation (its
+/// Jacobian is the normal's part away from the line, over the radius, so
+/// du x dv leans away from the line on the side `outward` says faces out),
+/// every column climbs toward the point, and every row goes once round the
+/// line the same way. Measured at `u_count` columns, on rows evenly up the
+/// stretch and then halving the way in to the point, where the rows shrink
+/// to the shape of the surface's tangent cone.
+fn folds_toward(
+    surface: &SurfaceGeometry,
+    chart: ((f64, f64), (f64, f64)),
+    ends: (Point, Point),
+    outward: f64,
+    u_count: usize,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Surface as _;
+    /// Rows evenly up the stretch.
+    const EVEN: u32 = 48;
+    /// Rows halving the way to the point after the even ones.
+    const CLOSING: i32 = 12;
+    let ((u0, u1), (v0, v1)) = chart;
+    let (from, to) = ends;
+    let along = to - from;
+    let length = along.magnitude();
+    if length <= tol.confusion() {
+        return Ok(true);
+    }
+    let axis = along / length;
+    let outward = outward.signum();
+    let mut vs: Vec<f64> = (0..EVEN)
+        .map(|k| v0 + (v1 - v0) * f64::from(k) / f64::from(EVEN))
+        .collect();
+    vs.extend((1..=CLOSING).map(|k| v1 - (v1 - v0) / f64::from(EVEN) * 0.5_f64.powi(k)));
+    #[allow(clippy::cast_precision_loss, reason = "a sample count")]
+    let us: Vec<f64> = (0..u_count)
+        .map(|i| u0 + (u1 - u0) * i as f64 / u_count as f64)
+        .collect();
+    let mut heights: Vec<f64> = vec![f64::NEG_INFINITY; us.len()];
+    let mut sense = 0.0;
+    for &v in &vs {
+        let mut turned = 0.0;
+        let mut first: Option<Vector> = None;
+        let mut previous: Option<Vector> = None;
+        for (i, &u) in us.iter().enumerate() {
+            let p = surface.point_at(u, v, tol)?;
+            let (du, dv) = surface.d1_at(u, v, tol)?;
+            let off = p - from;
+            let height = off.dot(axis);
+            let radial = off - axis * height;
+            if radial.magnitude() <= tol.confusion()
+                || height <= heights[i]
+                || du.cross(dv).dot(radial) * outward <= 0.0
+            {
+                return Ok(true);
             }
-            Point::from_vector(sum / 16.0)
+            heights[i] = height;
+            if let Some(last) = previous {
+                turned += last.cross(radial).dot(axis).atan2(last.dot(radial));
+            }
+            first.get_or_insert(radial);
+            previous = Some(radial);
         }
-    };
-    let face = if du.cross(dv).dot(s_mid - local) >= 0.0 {
-        face
-    } else {
-        face.reversed()
-    };
-    Ok((face, ring0))
+        if let (Some(last), Some(start)) = (previous, first) {
+            turned += last.cross(start).dot(axis).atan2(last.dot(start));
+        }
+        let round = turned / core::f64::consts::TAU;
+        if (round.abs() - 1.0).abs() > 0.5 || round * sense < 0.0 {
+            return Ok(true);
+        }
+        sense = round;
+    }
+    Ok(false)
 }
 
 /// The mean of every point in every row.
@@ -1815,11 +1948,15 @@ fn skinned_solid_to_apex(
     model: &mut Model,
     skin: &Skin<'_>,
     cap_outward: Vector,
+    unfolded_from: Option<f64>,
     tolerance: f64,
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> OgeomResult<Option<Built>> {
     use ogeom_geom::Curve3d as _;
-    let (wall, ring0) = apex_patch(model, skin, None, None, tolerance, tol)?;
+    let Some((wall, ring0)) = apex_patch(model, skin, None, None, unfolded_from, tolerance, tol)?
+    else {
+        return Ok(None);
+    };
     let (ring_curve, u_dom) = {
         let (curve, range) = spine_curve_of(model, &ring0)?;
         (curve, range)
@@ -1870,7 +2007,7 @@ fn skinned_solid_to_apex(
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the skinned apex solid did not close");
     }
-    make_solid(model, std::slice::from_ref(&sewn.shells[0]))
+    make_solid(model, std::slice::from_ref(&sewn.shells[0])).map(Some)
 }
 
 /// A solid skinned over a grid of sections that loops back on itself: the
@@ -3088,6 +3225,13 @@ fn plane_cap(
 /// well as at them: the sampling round a section is refined where the skin
 /// misses it. The caps are the first and last sections' own planes.
 ///
+/// A trailing vertex closes the solid on that point instead of a last cap.
+/// The skin runs smoothly on to it wherever that wall stays unfolded
+/// between the last section and the point; where it would fold through
+/// itself (sections turned against each other bend its rows into a figure
+/// eight there), the last section reaches the point by the straight cone
+/// over it instead, with an edge where the two meet.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if fewer than
@@ -3194,28 +3338,55 @@ fn loft_skinned_along(
         EndCap::Plane(if n.dot(towards) > 0.0 { -n } else { n })
     };
     let mut built = if let Some(apex) = apex {
-        if loops.len() < 2
+        // The skin runs smoothly through the sections and on to the point,
+        // where that holds: past a section turned against the ones before
+        // it, its rows shrink through a figure eight and come out wound the
+        // other way, the wall near the point folded through itself and
+        // facing into the material there. Such a skin is not built; the
+        // last section closes on the point by the straight cone over it
+        // instead, which cannot fold.
+        let sections_only = (loops.len() >= 2).then(|| loops.clone());
+        if sections_only.is_none()
             && let Some(Section::Loop(ring)) = loops.first()
         {
             // One ring to a point is exact machinery's job when it can be;
             // the skin still needs two rows to shape the wall, so a middle
-            // row is interpolated halfway toward the apex.
+            // row is interpolated halfway toward the apex. That skin is
+            // the cone already.
             let half = Section::Halfway(ring.clone(), apex);
             loops.push(half);
         }
         loops.push(Section::Point(apex));
         let skin = Skin::sections(loops, false)?;
-        let rows = &skin.rows;
-        let outward0 = match outward_at(rows, &cap_planes, false) {
-            EndCap::Plane(n) => n,
-            EndCap::Skinned => {
+        let smooth = match outward_at(&skin.rows, &cap_planes, false) {
+            EndCap::Plane(outward0) => {
+                let unfolded_from = match sections_only {
+                    Some(_) => {
+                        let vs = skin.row_parameters()?;
+                        Some(vs[vs.len() - 2])
+                    }
+                    None => None,
+                };
+                skinned_solid_to_apex(model, &skin, outward0, unfolded_from, tolerance, tol)?
+            }
+            EndCap::Skinned | EndCap::Apex(_) => {
                 ogeom_bail!(
                     Construction,
                     "a loft to a point starts from a planar section; a cap stands on it"
                 );
             }
         };
-        skinned_solid_to_apex(model, &skin, outward0, tolerance, tol)?
+        match (smooth, sections_only) {
+            (Some(built), _) => built,
+            (None, Some(sections)) => {
+                let skin = Skin::sections(sections, false)?;
+                let outward0 = outward_at(&skin.rows, &cap_planes, false);
+                skinned_solid(model, &skin, (outward0, EndCap::Apex(apex)), tolerance, tol)?
+            }
+            (None, None) => {
+                ogeom_bail!(Construction, "a cone over one section folded");
+            }
+        }
     } else {
         let skin = match along {
             Some(motion) => {

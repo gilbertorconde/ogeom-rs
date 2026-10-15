@@ -113,6 +113,83 @@ fn a_skinned_loft_of_circles_closes_to_a_point_on_the_axis() {
     assert!((v - swept).abs() < swept * 1e-3, "{v} against {swept}");
 }
 
+/// A square or a rectangle turned by `turn` about Z and lifted to `z`.
+fn turned(model: &mut Model, z: f64, turn: f64, half: (f64, f64)) -> Shape {
+    let (c, s) = (turn.cos(), turn.sin());
+    let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(x, y)| {
+        Point::new(
+            c * x * half.0 - s * y * half.1,
+            s * x * half.0 + c * y * half.1,
+            z,
+        )
+    });
+    make_polygon(model, &corners, true, T).unwrap().shape
+}
+
+/// Twisted squares and rectangles closing to a point on their axis, off
+/// it, and far off it. A skin carried on through the point bends its rows
+/// to meet it: past the last rectangle they shrink through a figure eight
+/// and come out wound the other way, the wall near the point folded through
+/// itself and facing into the material. So the last rectangle closes on
+/// the point by the straight cone over it, a face of its own, and every
+/// solid is the same skin through the sections plus that cone: the
+/// rectangle's area times the point's height over it, a third of it,
+/// wherever the point stands over the plane.
+#[test]
+fn a_twisted_skinned_loft_closes_outward_to_any_point() {
+    let sections = |model: &mut Model| {
+        vec![
+            turned(model, 0.0, 0.0, (3.0, 3.0)),
+            turned(model, 3.0, 0.7, (6.0, 1.0)),
+            turned(model, 6.0, 1.5, (3.0, 3.0)),
+            turned(model, 9.0, 2.3, (6.0, 1.0)),
+        ]
+    };
+    let mut skin: Option<f64> = None;
+    for apex_at in [
+        Point::new(1.0, 2.0, 14.0),
+        Point::new(0.0, 0.0, 14.0),
+        Point::new(-2.0, 1.0, 12.0),
+        Point::new(8.0, -6.0, 13.0),
+    ] {
+        let mut model = Model::new();
+        let mut through = sections(&mut model);
+        through.push(model.add_vertex(VertexData::new(apex_at)));
+        let loft = ogeom::offset::make_loft_skinned(&mut model, &through, 1e-3, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &loft, T).unwrap();
+        assert!(diagnosis.is_valid(), "{apex_at:?}: {diagnosis:?}");
+        assert_eq!(walks::edges_walked_one_way(&model, &loft), 0, "{apex_at:?}");
+        assert!(has_vertex_at(&model, &loft, apex_at));
+        let faces = explore_unique(&model, &loft, ShapeType::Face).unwrap();
+        assert_eq!(
+            faces.len(),
+            3,
+            "{apex_at:?}: the wall, the cone and the cap"
+        );
+        let cone = 24.0 * (apex_at.z - 9.0) / 3.0;
+        let v = volume(&model, &loft);
+        let skin = *skin.get_or_insert(v - cone);
+        assert!(skin > 0.0);
+        assert!(
+            (v - (skin + cone)).abs() < v * 1e-4,
+            "{apex_at:?}: {v} against {}",
+            skin + cone
+        );
+        // Short of the point, on the way to it from the last
+        // rectangle's middle, is material; past it is not.
+        let coarse = Deflection::default();
+        let side =
+            |at: Point| ogeom::algo::classify_in_solid(&model, &loft, at, coarse, T).unwrap();
+        let towards = apex_at - Point::new(0.0, 0.0, 9.0);
+        let near = Point::new(0.0, 0.0, 9.0) + towards * 0.8;
+        let past = Point::new(0.0, 0.0, 9.0) + towards * 1.2;
+        assert_eq!(side(near), ogeom::algo::Containment::In, "{apex_at:?}");
+        assert_eq!(side(past), ogeom::algo::Containment::Out, "{apex_at:?}");
+    }
+}
+
 /// A 2 x 2 square face centred on the origin in the XY plane.
 fn square_face(model: &mut Model) -> Shape {
     let wire = rectangle(model, (-1.0, -1.0), (1.0, 1.0), 0.0);
@@ -194,4 +271,54 @@ fn a_bent_pipe_closes_to_the_spine_s_end() {
     let want = 4.0 * (10.0 * PI / 2.0) / 3.0;
     let v = volume(&model, &pipe);
     assert!((v - want).abs() < want * 5e-3, "{v} against {want}");
+}
+
+/// Squares shrinking without a turn close smoothly to a point over them,
+/// on their axis or off it: one wall through the sections and on to the
+/// point, its normal turning gently across the last section (no crease
+/// there), and the solid valid.
+#[test]
+fn a_gentle_skinned_loft_stays_smooth_to_the_point() {
+    use ogeom::geom::Surface as _;
+    for apex_at in [Point::new(0.0, 0.0, 10.0), Point::new(1.0, 1.0, 10.0)] {
+        let mut model = Model::new();
+        let sections = vec![
+            turned(&mut model, 0.0, 0.0, (4.0, 4.0)),
+            turned(&mut model, 3.0, 0.0, (3.0, 3.0)),
+            turned(&mut model, 6.0, 0.0, (2.0, 2.0)),
+            model.add_vertex(VertexData::new(apex_at)),
+        ];
+        let loft = ogeom::offset::make_loft_skinned(&mut model, &sections, 1e-3, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &loft, T).unwrap();
+        assert!(diagnosis.is_valid(), "{apex_at:?}: {diagnosis:?}");
+        assert_eq!(walks::edges_walked_one_way(&model, &loft), 0, "{apex_at:?}");
+        let faces = explore_unique(&model, &loft, ShapeType::Face).unwrap();
+        assert_eq!(faces.len(), 2, "{apex_at:?}: the wall and the cap");
+        assert!(volume(&model, &loft) > 0.0);
+        // The wall is the face reaching the point; across its chart, short
+        // of the point, neighbouring normals up the wall stay close, the
+        // last section's row among them.
+        let wall = faces
+            .iter()
+            .map(|f| model.node(f).unwrap().data().as_face().unwrap().surface)
+            .map(|id| model.geometry().surface(id).unwrap().clone())
+            .find(|s| {
+                let ((u0, _), (_, v1)) = s.domain();
+                s.point_at(u0, v1, T).unwrap().distance(apex_at) < 1e-6
+            })
+            .unwrap();
+        let ((u0, u1), (v0, v1)) = wall.domain();
+        for i in 0..64 {
+            let u = u0 + (u1 - u0) * f64::from(i) / 64.0;
+            for j in 0..200 {
+                let v = v0 + (v1 - v0) * 0.9 * f64::from(j) / 200.0;
+                let dv = (v1 - v0) * 0.9 / 200.0;
+                let a = wall.normal_at(u, v, T).unwrap().vector();
+                let b = wall.normal_at(u, v + dv, T).unwrap().vector();
+                assert!(a.dot(b) > 0.9, "{apex_at:?}: a crease at ({u}, {v})");
+            }
+        }
+    }
 }

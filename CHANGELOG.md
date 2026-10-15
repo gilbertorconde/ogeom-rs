@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A skinned loft closing to a point no longer folds its wall through
+  itself near the point (#269).** The skin through the sections was
+  carried on to the point, and its rows bent to meet it: past a section
+  turned against the ones before it (twisted squares and rectangles) they
+  shrank through a figure eight and came out wound the other way, so the
+  wall near the point faced into the material. Depending on where the
+  orientation probe landed the solid came back either visibly turned in
+  (`check` rejected it) or quietly self-intersecting. The smooth skin is
+  now measured densely between the last section and the point, and kept
+  only where it is unfolded there (a graph over the angle round, and the
+  height along, the line from the section's middle to the point); where
+  it would fold, the last section closes on the point by the straight
+  cone over it, which cannot fold, with an edge where the two meet.
+  Gentle lofts and pipes to a point stay smooth as before. The patch
+  closing on a point is also turned outward by its signed volume over the
+  whole patch rather than its normal at one point.
+
 - **A marched round's line of contact states how far it strays between
   the march's stations.** Between two faces that share no edge, the line
   along which the ball touches a face was fitted through the march's
