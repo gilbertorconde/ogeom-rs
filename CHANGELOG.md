@@ -42,6 +42,19 @@ bump may break the API and a patch bump may not.
   through it must land on it, and the condition solved halfway must keep
   to the chord; otherwise the walk ends open at the seam.
 
+- **A part placed in an assembly is checked as it is on its own (#275).**
+  Which way a face faces was probed at the middle of its largest mesh
+  triangle, ranked by area from the placed mesh. A placement rounds the
+  positions, and triangles of one area (a cylinder strip's, a rectangle's
+  two) swapped places; on a face that reads out over part of its extent
+  and in over the rest, the rotation placing a part in an assembly turned
+  one more face "inside out" than the part read alone, and repair turned
+  it back and forth without settling. The face is now meshed in its own
+  frame for the probe, so a rigid placement moves the probe points with
+  the material and changes no answer: the Voron 2.4r2 body
+  `molex_0471510001:1` reads 6 reversed faces placed as alone, and none
+  after repair.
+
 - **A marched round's line of contact states how far it strays between
   the march's stations.** Between two faces that share no edge, the line
   along which the ball touches a face was fitted through the march's

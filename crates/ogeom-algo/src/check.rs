@@ -333,9 +333,15 @@ pub(crate) fn faces_inward(
 ) -> OgeomResult<Option<bool>> {
     /// How many of the largest triangles are asked before giving up.
     const PROBES: usize = 3;
+    // Meshed where the face stands in its own frame: a placement moves the
+    // probe points with the material, but placed positions round, and the
+    // rounding reorders triangles of one area. Where the face reads
+    // differently over its extent, that would let a rigid motion change
+    // the answer.
+    let own = face.located(ogeom_topo::Location::identity());
     let Ok(mesh) = ogeom_mesh::triangulate_face_kept(
         model,
-        face,
+        &own,
         Deflection::default(),
         boundary.kept().meshes(),
         tol,
@@ -1918,6 +1924,48 @@ mod tests {
             check_self_intersection(&model, &crossed, T).unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn a_rigid_placement_does_not_change_which_faces_read_inside_out() {
+        // Two overlapping boxes as the shells of one solid: the second
+        // covers half of the first's top face, so that face reads facing
+        // out over one half and in over the other, and its two triangles,
+        // of one area, are probed on opposite halves. A rigid motion moves
+        // the material with the face; it must not move which half is asked
+        // by the rounding of the triangles' placed areas.
+        use ogeom_math::{Point, Transform, Vector};
+        let mut model = Model::new();
+        let first = make_box(&mut model, Frame::WORLD, (2.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let at = Frame::WORLD.with_origin(Point::new(1.0, -1.0, 0.5));
+        let second = make_box(&mut model, at, (2.0, 3.0, 1.0), T).unwrap().shape;
+        let shells = [&first, &second]
+            .map(|s| explore_unique(&model, s, ShapeType::Shell).unwrap()[0].clone());
+        let solid = model.add_solid(&shells).unwrap();
+        let named = |model: &Model, solid: &Shape| -> Vec<_> {
+            inside_out_faces(model, solid, T)
+                .unwrap()
+                .iter()
+                .map(|f| (f.node(), f.orientation()))
+                .collect()
+        };
+        let unplaced = named(&model, &solid);
+        for step in 1..48 {
+            let angle = f64::from(step) * 0.131;
+            let motion = Transform::translation(Vector::new(37.3, -11.9, 70.1))
+                * Transform::rotation(ogeom_math::Axis::Z, angle)
+                * Transform::rotation(ogeom_math::Axis::X, angle * 0.7);
+            let placed = crate::transformed(&mut model, &solid, motion)
+                .unwrap()
+                .shape;
+            assert_eq!(
+                named(&model, &placed),
+                unplaced,
+                "placed by a rotation of {angle}, other faces read inside out"
+            );
+        }
     }
 }
 
