@@ -29,8 +29,19 @@ bump may break the API and a patch bump may not.
   lofts no longer re-read their skins' rows themselves: the fit reads
   them at least as closely.
 
+- **A skinned loft between sections wound opposite ways no longer passes
+  through itself (#282).** The skin joins its sections' points at equal
+  fractions of the way round, so two circles sketched on facing planes
+  (the two end faces of a part, each sketch facing out of its face), which
+  wind opposite ways, had each point joined to one across the loop: the
+  wall folded through the middle and the solid held no volume, and a
+  subtractive loft between them failed with "the kept pieces did not
+  close into a shell". A section winding against the one before it is now
+  walked backwards, from its point that rows up best with that section.
+  Lofts to a point and sections moved along a path are unchanged.
+
 - **`unify_same_domain` merges every split wall it meets and no longer
-  refuses a valid solid (#281).** Three faults, each met on parts drawn
+  refuses a valid solid (#281, #282).** Three faults, each met on parts drawn
   elsewhere and padded or pocketed again. Faces on one plane were grouped
   by the normal their plane stored, so a pad whose profile ran the other
   way round, whose walls store their planes facing in and are used

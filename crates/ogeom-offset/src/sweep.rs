@@ -982,6 +982,71 @@ impl ArcLoop {
         };
         a + (b - a) * t.clamp(0.0, 1.0)
     }
+
+    /// The loop's vector area: normal to a flat loop, as long as the area
+    /// it encloses, and pointing the way it winds round by the right hand.
+    fn winding(&self) -> Vector {
+        let o = self.dense[0];
+        let mut sum = Vector::new(0.0, 0.0, 0.0);
+        for w in self.dense[1..].windows(2) {
+            sum += (w[0] - o).cross(w[1] - o);
+        }
+        sum * 0.5
+    }
+
+    /// The same loop walked the other way round, from the point of it that
+    /// rows up best with `with`: the least sum of squared distances between
+    /// the two loops' points at even fractions of the way round.
+    fn reversed_against(&self, with: &Self) -> Self {
+        let mut back = self.dense.clone();
+        back[1..].reverse();
+        let marks = fractions(AROUND_SECTION);
+        let theirs: Vec<Point> = marks.iter().map(|&f| with.at(f)).collect();
+        let starts = back.len();
+        let step = (starts / (4 * AROUND_SECTION)).max(1);
+        let mut best = (f64::INFINITY, 0);
+        for start in (0..starts).step_by(step) {
+            let mut turned = back.clone();
+            turned.rotate_left(start);
+            let turned = Self::new(turned);
+            let cost: f64 = marks
+                .iter()
+                .zip(&theirs)
+                .map(|(&f, p)| {
+                    let d = turned.at(f) - *p;
+                    d.dot(d)
+                })
+                .sum();
+            if cost < best.0 {
+                best = (cost, start);
+            }
+        }
+        back.rotate_left(best.1);
+        Self::new(back)
+    }
+}
+
+/// Each section after the first turned to wind round the way the one
+/// before it does, where it winds the other way.
+///
+/// The skin joins the sections' points at equal fractions of the way
+/// round, so two sections wound opposite ways (two sketches drawn facing
+/// each other) join each point to one across the loop: the wall passes
+/// through itself and the solid has no inside. Such a section is walked
+/// backwards instead, from its point that rows up best with the section
+/// before it. Sections standing at right angles to each other have no
+/// way round in common and are left as they are.
+fn wound_alike(loops: &mut [Section]) {
+    for i in 1..loops.len() {
+        let (before, after) = loops.split_at_mut(i);
+        let (Section::Loop(prev), Section::Loop(this)) = (&before[i - 1], &mut after[0]) else {
+            continue;
+        };
+        let (a, b) = (prev.winding(), this.winding());
+        if a.dot(b) < -1e-6 * a.magnitude() * b.magnitude() {
+            *this = this.reversed_against(prev);
+        }
+    }
 }
 
 /// A skinned wall and the pieces a caller needs to close it: the rings at
@@ -3248,6 +3313,12 @@ fn loft_skinned_along(
         // section skins fine.
         cap_planes.push(ogeom_algo::find_plane(model, wire, tol)?);
         loops.push(Section::Loop(section_loop(model, wire, None, tol)?));
+    }
+    // Sections moved along a path are one section, wound alike already; a
+    // loft to a point settles for itself what a section turned against the
+    // ones before it makes.
+    if along.is_none() && apex.is_none() {
+        wound_alike(&mut loops);
     }
     // A planar end is capped by its plane; one that is not (a wavy rim),
     // by a patch skinned from the ring to a point inside it.
