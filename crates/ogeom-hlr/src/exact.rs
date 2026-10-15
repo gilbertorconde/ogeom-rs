@@ -16,7 +16,9 @@
 //!
 //! A surface whose silhouette has no closed form (a torus, a spline) has it
 //! marched: the silhouette is one equation on the surface's own chart, and
-//! the shared walker follows it.
+//! the shared walker follows it. The curve drawn through the walk is held
+//! to the walk's chord against the silhouette itself, between the walked
+//! points as well as at them.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve, Surface as _, SurfaceGeometry};
@@ -45,7 +47,9 @@ pub struct Silhouette {
 /// normal to, for a cylinder the two rulings furthest to either side, for a
 /// cone the two rulings through its apex where the same holds. Planes have
 /// none (a plane either faces the eye or does not), and a face whose
-/// surface has no closed-form silhouette has it marched and fitted.
+/// surface has no closed-form silhouette has it marched and fitted, within
+/// a hundred times the confusion distance of the true silhouette along its
+/// whole length.
 ///
 /// Each curve comes back trimmed to the stretch that lies within its own
 /// face, decided by sampling the face's trim, so a silhouette on a face
@@ -54,8 +58,8 @@ pub struct Silhouette {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// direction has no length. A marched silhouette whose walk or fit fails
-/// contributes no curve.
+/// direction has no length. A marched silhouette whose walk fails, or that
+/// no fit holds to its chord, contributes no curve.
 pub fn silhouettes(
     model: &Model,
     shape: &Shape,
@@ -292,7 +296,8 @@ pub fn iso_curves(
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// shape has no faces, or the direction has no length. A marched silhouette
-/// whose walk or fit fails contributes no curve.
+/// whose walk fails, or that no fit holds to its chord, contributes no
+/// curve.
 pub fn project_exact(
     model: &Model,
     shape: &Shape,
@@ -1047,6 +1052,138 @@ fn on_polyline(line: &[Point], p: Point) -> f64 {
     best
 }
 
+/// The curve a walked silhouette is drawn as: within `chord` of the true
+/// silhouette at every point measured, or `None`.
+///
+/// A fit through the walked points alone is measured at those points only,
+/// and one through a silhouette that turns hard between them (a bumpy
+/// spline seen from the side, a fat torus at a slant) can miss by most of
+/// the surface's own size while every point it was fitted through is on
+/// the line. So the fit is made against the silhouette itself: at any
+/// parameter between two walked points the true silhouette point is solved
+/// for, on the condition and in the plane across the walk's chord there,
+/// and the fit is measured against those points between its samples and
+/// refined until it holds. One that cannot be held, or a stretch of the
+/// walk with no silhouette under it to solve for, gives `None`.
+fn fitted_silhouette(
+    condition: &SilhouetteOn<'_>,
+    walked: &ogeom_intersect::walk::Walked,
+    chord: f64,
+    tol: Tolerances,
+) -> Option<ogeom_geom::BSplineCurve> {
+    // Chord length along the walk, with repeated points dropped so the
+    // parameters strictly increase.
+    let mut ts: Vec<f64> = Vec::with_capacity(walked.points.len());
+    let mut kept: Vec<usize> = Vec::with_capacity(walked.points.len());
+    for (i, p) in walked.points.iter().enumerate() {
+        match kept.last() {
+            None => ts.push(0.0),
+            Some(&last) => {
+                let step = p.distance(walked.points[last]);
+                if step <= tol.confusion() {
+                    continue;
+                }
+                ts.push(ts[ts.len() - 1] + step);
+            }
+        }
+        kept.push(i);
+    }
+    if kept.len() < 2 {
+        return None;
+    }
+    let trace = |t: f64| silhouette_between(condition, walked, &kept, &ts, t, chord, tol);
+    let fitted = ogeom_geom::fit::fit_curve_sampled(trace, &ts, false, 3, chord, tol).ok()?;
+    fitted.met.then_some(fitted.curve)
+}
+
+/// The true silhouette point at chord-length `t` along a walk: between the
+/// walked points it brackets, the point of the silhouette in the plane
+/// across their chord at that fraction of the way along it.
+fn silhouette_between(
+    condition: &SilhouetteOn<'_>,
+    walked: &ogeom_intersect::walk::Walked,
+    kept: &[usize],
+    ts: &[f64],
+    t: f64,
+    chord: f64,
+    tol: Tolerances,
+) -> OgeomResult<Point> {
+    use ogeom_intersect::walk::Condition as _;
+    let k = ts.partition_point(|&s| s <= t).clamp(1, ts.len() - 1) - 1;
+    let f = (t - ts[k]) / (ts[k + 1] - ts[k]);
+    let (i, j) = (kept[k], kept[k + 1]);
+    let (a, b) = (walked.points[i], walked.points[j]);
+    if f <= 0.0 {
+        return Ok(a);
+    }
+    if f >= 1.0 {
+        return Ok(b);
+    }
+    let span = b - a;
+    let length = span.magnitude();
+    let across = span / length;
+    let target = a + span * f;
+    // Two points closer than a tenth of the chord: an arc between them that
+    // turns by less than a reversal sags from their chord by under four
+    // tenths of its length, far inside the chord. The walk takes such steps
+    // where it closes on a chart's edge, and the solve there would be
+    // pushed off the chart.
+    if length <= chord * 0.1 {
+        return Ok(target);
+    }
+    // The chart position as far between the two states, the shorter way
+    // round a periodic direction.
+    let ((ua, ub), (va, vb)) = condition.surface.domain();
+    let periods = [
+        condition.surface.is_periodic_u().then_some(ub - ua),
+        condition.surface.is_periodic_v().then_some(vb - va),
+    ];
+    let mut x = [0.0_f64; 2];
+    for (axis, period) in periods.iter().enumerate() {
+        let (from, to) = (walked.states[i][axis], walked.states[j][axis]);
+        let mut gap = to - from;
+        if let Some(period) = period {
+            gap -= period * (gap / period).round();
+        }
+        x[axis] = gap.mul_add(f, from);
+    }
+    // Newton on the silhouette condition and the plane across the chord.
+    for _ in 0..32 {
+        condition.clamp(&mut x);
+        let Some(((residual, jacobian), at, gradient)) = condition.system_at(&x, tol) else {
+            break;
+        };
+        let (g, (gu, gv)) = (residual[0], (jacobian[0][0], jacobian[0][1]));
+        let (pu, pv) = (gradient[0].dot(across), gradient[1].dot(across));
+        let h = (target - at).dot(across);
+        let det = gu.mul_add(pv, -(gv * pu));
+        if !det.is_normal() {
+            break;
+        }
+        let du = (-g).mul_add(pv, -(gv * h)) / det;
+        let dv = gu.mul_add(h, pu * g) / det;
+        x[0] += du;
+        x[1] += dv;
+        let moved = (gradient[0] * du + gradient[1] * dv).magnitude();
+        if moved <= tol.confusion() * 1e-3 {
+            condition.clamp(&mut x);
+            let Some(point) = condition.position(&x, tol) else {
+                break;
+            };
+            // A solve that left the stretch between the two walked points
+            // has found some other part of the silhouette.
+            if point.distance(target) > length {
+                break;
+            }
+            return Ok(point);
+        }
+    }
+    ogeom_bail!(
+        NotDone,
+        "the silhouette between two walked points did not solve"
+    )
+}
+
 /// Silhouettes of a surface with no closed form, marched.
 ///
 /// Seeded the way the intersector seeds: the chart is sampled on a grid and
@@ -1054,9 +1191,11 @@ fn on_polyline(line: &[Point], p: Point) -> f64 {
 /// refined onto the condition before the walk begins. A silhouette loop
 /// smaller than one grid cell is stepped over.
 ///
-/// The walked polylines are fitted to curves at `chord` through the walked
-/// points, which lie on the silhouette, so what comes back is worth the
-/// chord rather than exactness; nothing is stated with it.
+/// Each walked polyline becomes a curve held to the walk's chord against
+/// the silhouette itself, between the walked points as well as at them
+/// (see [`fitted_silhouette`]), so what comes back is worth the chord
+/// rather than exactness. A walk no curve can be held to the chord along
+/// contributes none.
 fn marched_silhouettes(
     surface: &SurfaceGeometry,
     along: Vector,
@@ -1168,13 +1307,196 @@ fn marched_silhouettes(
         if walked.points.len() < 4 {
             continue;
         }
-        // Fitted through the walked points at the walk's chord; the fit is
-        // measured at those points only.
-        let Ok(fitted) = ogeom_geom::fit::fit_points(&walked.points, 3, options.chord, tol) else {
+        // Held to the walk's chord between the walked points as well as at
+        // them. One that cannot be is not drawn as though it were.
+        let Some(curve) = fitted_silhouette(&condition, &walked, options.chord, tol) else {
             continue;
         };
         walked_points.push(walked.points);
-        out.push(Curve::BSpline(fitted.curve));
+        out.push(Curve::BSpline(curve));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+mod tests {
+    use super::*;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// `n · d` at a chart position, with the unit normal the surface's own.
+    fn turned(surface: &SurfaceGeometry, along: Vector, x: [f64; 2]) -> Option<f64> {
+        Some(surface.normal_at(x[0], x[1], T).ok()?.vector().dot(along))
+    }
+
+    /// How far `p` stands from the true silhouette near chart position `x`:
+    /// Newton on the silhouette condition and on the foot of `p` along it,
+    /// the condition's gradient by central differences, so nothing here is
+    /// the walker's own. `x` is left at the foot.
+    fn off_silhouette(
+        surface: &SurfaceGeometry,
+        along: Vector,
+        p: Point,
+        x: &mut [f64; 2],
+    ) -> Option<f64> {
+        for _ in 0..50 {
+            let g = turned(surface, along, *x)?;
+            let (gu, gv) = (slope(surface, along, *x, 0)?, slope(surface, along, *x, 1)?);
+            let (su, sv) = surface.d1_at(x[0], x[1], T).ok()?;
+            let at = surface.point_at(x[0], x[1], T).ok()?;
+            // Along the silhouette: the chart direction `g` does not change in.
+            let tangent = su * -gv + sv * gu;
+            let tangent = tangent / tangent.magnitude();
+            let (pu, pv, r) = (su.dot(tangent), sv.dot(tangent), (p - at).dot(tangent));
+            let det = gu * pv - gv * pu;
+            let du = (-g * pv - gv * r) / det;
+            let dv = (gu * r + pu * g) / det;
+            x[0] += du;
+            x[1] += dv;
+            hold(surface, x);
+            if du.abs().max(dv.abs()) < 1e-13 {
+                break;
+            }
+        }
+        if turned(surface, along, *x)?.abs() <= 1e-9 {
+            return Some(p.distance(surface.point_at(x[0], x[1], T).ok()?));
+        }
+        // The foot is past the chart's edge, where a drawn line ends: onto
+        // the silhouette along either chart direction alone, which lands on
+        // it no nearer than its nearest point.
+        let mut nearest: Option<f64> = None;
+        for axis in 0..2 {
+            let mut y = *x;
+            for _ in 0..50 {
+                let g = turned(surface, along, y)?;
+                y[axis] -= g / slope(surface, along, y, axis)?;
+                hold(surface, &mut y);
+            }
+            if turned(surface, along, y)?.abs() <= 1e-9 {
+                let miss = p.distance(surface.point_at(y[0], y[1], T).ok()?);
+                nearest = Some(nearest.map_or(miss, |n| n.min(miss)));
+            }
+        }
+        nearest
+    }
+
+    /// How `n · d` changes along one chart direction: a central difference,
+    /// its ends held inside the surface's window.
+    fn slope(surface: &SurfaceGeometry, along: Vector, x: [f64; 2], axis: usize) -> Option<f64> {
+        let (mut ahead, mut behind) = (x, x);
+        ahead[axis] += 1e-6;
+        behind[axis] -= 1e-6;
+        hold(surface, &mut ahead);
+        hold(surface, &mut behind);
+        let run = ahead[axis] - behind[axis];
+        Some((turned(surface, along, ahead)? - turned(surface, along, behind)?) / run)
+    }
+
+    /// A chart position held inside the surface's window along a direction
+    /// that is not periodic; a periodic one runs on.
+    fn hold(surface: &SurfaceGeometry, x: &mut [f64; 2]) {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        if !surface.is_periodic_u() {
+            x[0] = x[0].clamp(ua, ub);
+        }
+        if !surface.is_periodic_v() {
+            x[1] = x[1].clamp(va, vb);
+        }
+    }
+
+    /// The marched silhouettes of `surface` along `along`, and the widest
+    /// distance from any of them to the true silhouette at 32 points a
+    /// span.
+    fn widest_miss(surface: &SurfaceGeometry, along: Vector) -> (usize, f64) {
+        let along = along.normalized(T).unwrap();
+        let curves = marched_silhouettes(surface, along, T).unwrap();
+        let mut widest = 0.0_f64;
+        for curve in &curves {
+            let Curve::BSpline(spline) = curve else {
+                panic!("a marched silhouette is a spline");
+            };
+            let (lo, hi) = spline.domain();
+            let n = (spline.knots().distinct().len() * 32).max(1024);
+            let start = curve.point_at(lo, T).unwrap();
+            let foot = ogeom_geom::project_on_surface(surface, start, 16, T).unwrap();
+            let mut x = [foot.parameters.0, foot.parameters.1];
+            for i in 0..=n {
+                #[expect(clippy::cast_precision_loss, reason = "a sample index")]
+                let t = (hi - lo).mul_add(i as f64 / n as f64, lo);
+                let p = curve.point_at(t, T).unwrap();
+                let miss = off_silhouette(surface, along, p, &mut x).unwrap_or_else(|| {
+                    panic!("no silhouette found beside {p:?} at {t} of {lo}..{hi}, from {x:?}")
+                });
+                widest = widest.max(miss);
+            }
+        }
+        (curves.len(), widest)
+    }
+
+    /// A spline surface from a grid over the unit square.
+    fn spline(f: impl Fn(f64, f64) -> Point, n: u32) -> SurfaceGeometry {
+        let rows: Vec<Vec<Point>> = (0..n)
+            .map(|j| {
+                (0..n)
+                    .map(|i| {
+                        f(
+                            f64::from(i) / f64::from(n - 1),
+                            f64::from(j) / f64::from(n - 1),
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        SurfaceGeometry::BSpline(
+            ogeom_geom::fit::fit_surface_grid(&rows, 3, 1e-6, T)
+                .unwrap()
+                .curve,
+        )
+    }
+
+    /// A marched silhouette is drawn within the walk's chord of the true
+    /// silhouette between the walked points, not only at them. A fit through
+    /// the walked points alone draws these outlines up to 1.6 off the bumpy
+    /// sheet's silhouette, 0.7 off the fat torus's and 0.004 off the spline
+    /// cone's, against a chord of 1e-5, with every walked point on the
+    /// line.
+    #[test]
+    fn a_marched_silhouette_keeps_to_its_chord_between_its_points() {
+        let chord = T.confusion() * 1e2;
+        let bumps = spline(
+            |x, y| {
+                let (x, y) = (10.0f64.mul_add(x, -5.0), 10.0f64.mul_add(y, -5.0));
+                Point::new(x, y, (x * 1.3).sin() * (y * 1.1).cos() * 2.0)
+            },
+            25,
+        );
+        let fat = SurfaceGeometry::Torus(ogeom_geom::TorusSurface::new(
+            ogeom_math::Torus::new(Frame::WORLD, 3.0, 2.9, T).unwrap(),
+        ));
+        let cone = spline(
+            |x, y| {
+                let around = x * std::f64::consts::TAU;
+                let r = 2.0f64.mul_add(y, 0.2);
+                Point::new(r * around.cos(), r * around.sin(), 3.0 * y)
+            },
+            33,
+        );
+        for (what, surface, along, branches) in [
+            ("a bumpy sheet", &bumps, Vector::new(0.3, 0.5, 1.0), None),
+            ("a bumpy sheet", &bumps, Vector::X, None),
+            ("a fat torus", &fat, Vector::new(1.0, 1.0, 1.0), Some(2)),
+            ("a spline cone", &cone, Vector::new(1.0, 0.0, 0.0), Some(2)),
+        ] {
+            let (count, widest) = widest_miss(surface, along);
+            assert!(count > 0, "{what} seen along {along:?} has an outline");
+            if let Some(branches) = branches {
+                assert_eq!(count, branches, "{what} seen along {along:?}");
+            }
+            assert!(
+                widest <= chord,
+                "{what} seen along {along:?} is drawn {widest:e} off its silhouette"
+            );
+        }
+    }
 }

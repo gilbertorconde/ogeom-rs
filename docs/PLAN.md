@@ -21,31 +21,6 @@ here.
 Within each group the items are ordered by risk: a possible wrong answer
 first, then refusals, then cost.
 
-### Checking and measurement
-
-**Some fits through bare points are trusted between their points.** A fit
-through points (`fit_points`, `fit_points_at`, the grid fits) states its
-error at the points only. These callers still read it, or nothing, where
-the shape between the points matters. Every edge the workspace's tests
-build through them was measured densely against its stated tolerance, and
-none stated less than its pcurves stand off:
-
-- `ogeom-hlr/src/exact.rs`: a silhouette is fitted through the walk's
-  points and kept whether or not the fit met the chord. The fit's error
-  bounds nothing there; the line is drawn.
-
-Read and left: `ogeom-algo/src/convert.rs` (`fit_pcurve` stops refining
-at 384 samples and checks middles only, but every re-derived edge is then
-measured densely by `state_pcurve_gaps_of`), and
-`ogeom-algo/src/recognize_swept.rs` (a mesh's vertices are all the truth
-there is, and the profile is measured against every one). The edges an
-offset rebuilds, a sheet offset or thickened makes, `split_face` makes and
-a blend's wedge carries are measured densely the same way, as are those
-a skinned loft, pipe or helical sweep makes, whose skins are read
-densely along their sections too; and the line of contact a marched round
-cuts a face along is read against the ball's true contact at the quarters
-between its stations.
-
 ### Booleans
 
 **Tools against a box rounded on every edge.** The stress `rounded`

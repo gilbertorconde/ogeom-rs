@@ -49,6 +49,16 @@ bump may break the API and a patch bump may not.
   what its pcurves measure along it; the given sections', profile's and
   spine's own edges are left as they were.
 
+- **A marched silhouette is drawn on its silhouette between the walked
+  points.** A torus or spline face's silhouette was fitted through the
+  points its walk found and kept whether or not the fit met the walk's
+  chord of 1e-5, measured at those points only. Seen at a slant, a bumpy
+  spline sheet's outline was drawn up to 1.6 off its silhouette, a fat
+  torus's 0.7 and a spline cone's 0.01, in 24 of 60 views measured. The
+  fit is now made against the silhouette itself, solved between the
+  walked points, and refined until it holds there; one that cannot be
+  held is not drawn. All 60 views now keep within 6e-6.
+
 ## [0.11.2] - 2026-10-15
 
 A patch release with one fix (#261): a face with no seam edge, such as a
@@ -69,7 +79,6 @@ rebuilds.
   steps whatever the chord, each standing 0.09 mm off a torus of 19 mm
   section. The seam is now halved until every step keeps to the chord
   and the angular limit, as the face's grid lines are.
-
 ## [0.11.1] - 2026-10-14
 
 A patch release of fixes. Meshes drawn purely in strips, as OpenCascade
