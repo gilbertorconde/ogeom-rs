@@ -25,7 +25,9 @@ bump may break the API and a patch bump may not.
   of every knot span of its own (a surface along its sample lines and
   midway between its rows), every peak climbed that could reach the
   widest, a surface's widest climbed across its lines too, and refined
-  where that misses; the error it states is the one read so.
+  where that misses; the error it states is the one read so. Sweeps and
+  lofts no longer re-read their skins' rows themselves: the fit reads
+  them at least as closely.
 
 - **A skinned loft closing to a point no longer folds its wall through
   itself near the point (#269).** The skin through the sections was
