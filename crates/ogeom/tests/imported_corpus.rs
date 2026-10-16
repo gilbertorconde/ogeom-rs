@@ -1138,3 +1138,181 @@ fn a_wide_revolved_rim_meets_a_fine_chord() {
     }
     assert!(rims > 0, "the bowl has a revolved rim");
 }
+
+/// The edge of `solid` passing nearest `at` while running along `along`
+/// there, read off samples of each edge's curve.
+fn edge_along(
+    model: &ogeom::topo::Model,
+    solid: &ogeom::topo::Shape,
+    at: ogeom::math::Point,
+    along: ogeom::math::Vector,
+) -> ogeom::topo::Shape {
+    use ogeom::geom::Curve3d as _;
+    let mut best: Option<(f64, ogeom::topo::Shape)> = None;
+    for edge in explore_unique(model, solid, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        let placed = edge.transform(model.datums()).unwrap();
+        let points: Vec<_> = (0..=256)
+            .map(|i| {
+                let t = (range.1 - range.0).mul_add(f64::from(i) / 256.0, range.0);
+                placed.apply(curve.point_at(t, T).unwrap())
+            })
+            .collect();
+        for pair in points.windows(2) {
+            let step = pair[1] - pair[0];
+            let length = step.magnitude();
+            if length <= 0.0 || (step.dot(along) / length).abs() < 0.9 {
+                continue;
+            }
+            let off = pair[0].distance(at).min(pair[1].distance(at));
+            if best.as_ref().is_none_or(|(held, _)| off < *held) {
+                best = Some((off, edge.clone()));
+            }
+        }
+    }
+    let (off, edge) = best.unwrap();
+    assert!(off < 0.1, "no edge runs along {along:?} through {at:?}");
+    edge
+}
+
+/// A solid's volume, its bounds, and whether it checks.
+fn measured(model: &ogeom::topo::Model, solid: &ogeom::topo::Shape) -> (f64, ogeom::math::Aabb) {
+    assert!(ogeom::algo::check(model, solid, T).unwrap().is_valid());
+    let volume =
+        ogeom::algo::volume_properties(model, solid, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    (volume, ogeom::algo::tight_bounds(model, solid, T).unwrap())
+}
+
+/// What square convex edges of these lengths lose to a round of `radius`:
+/// the corner outside the ball's quarter circle, along each.
+fn square_round_loss(model: &ogeom::topo::Model, edges: &[ogeom::topo::Shape], radius: f64) -> f64 {
+    let length: f64 = edges
+        .iter()
+        .map(|e| {
+            ogeom::algo::linear_properties(model, e, ogeom::mesh::Deflection::default(), T)
+                .unwrap()
+                .mass
+        })
+        .sum();
+    (1.0 - std::f64::consts::FRAC_PI_4) * radius * radius * length
+}
+
+/// A rib's top edges rounded where one of its walls is swept from a
+/// fitted profile: a straight wall, the swept one, and a round end, the
+/// three meeting at shallow corners. The swept wall ends where its
+/// profile does, and the crease along its top is a fitted cubic that does
+/// not continue the way the wall does; the ball's run-out past either end
+/// stands on both. Each round loses the corner outside its quarter circle
+/// along its edge and nothing else, whichever order the edges are named in,
+/// and the rib keeps its bounds.
+#[test]
+fn a_rib_rounds_along_a_wall_swept_from_a_fitted_profile() {
+    use ogeom::math::{Point, Vector};
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("rib_round_on_a_swept_spline_wall.ogeom")).unwrap();
+    let rib = &roots[0];
+    let straight = edge_along(
+        &model,
+        rib,
+        Point::new(-13.13, 9.51, -14.4),
+        Vector::new(0.0, 0.0, 1.0),
+    );
+    let swept = edge_along(
+        &model,
+        rib,
+        Point::new(-16.0, 9.51, -20.46),
+        Vector::new(-0.8, 0.0, -0.6),
+    );
+    let end = edge_along(
+        &model,
+        rib,
+        Point::new(-24.36, 9.51, -26.69),
+        Vector::new(0.26, 0.0, -0.97),
+    );
+    let radius = 0.85;
+    let (before, bounds) = measured(&model, rib);
+    let loss = square_round_loss(
+        &model,
+        &[straight.clone(), swept.clone(), end.clone()],
+        radius,
+    );
+    for named in [
+        [straight.clone(), swept.clone(), end.clone()],
+        [end.clone(), straight.clone(), swept.clone()],
+    ] {
+        let mut model = model.clone();
+        let rounded = ogeom::fillet::fillet_edges(&mut model, rib, &named, radius, T).unwrap();
+        let (after, held) = measured(&model, &rounded.shape);
+        assert!(
+            (before - after - loss).abs() <= loss * 0.02,
+            "the rounds took {} where their sections over their edges are {loss}",
+            before - after
+        );
+        assert!(
+            held.diagonal() - bounds.diagonal() <= 1e-6,
+            "the rib keeps its bounds"
+        );
+    }
+    // Alone, the swept wall's round runs out past both its ends over its
+    // neighbours' sharp corners: it takes its own section and some more.
+    let mut alone = model.clone();
+    let rounded =
+        ogeom::fillet::fillet_edges(&mut alone, rib, std::slice::from_ref(&swept), radius, T)
+            .unwrap();
+    let (after, _) = measured(&alone, &rounded.shape);
+    let own = square_round_loss(&model, std::slice::from_ref(&swept), radius);
+    assert!(
+        before - after >= own && before - after <= own * 1.5,
+        "the swept wall's round took {} against its own section's {own}",
+        before - after
+    );
+}
+
+/// Two top edges rounded where they meet at an inside corner of the top
+/// face, on a part whose second edge's curve runs a fraction of a micron
+/// past the vertex it ends at (the vertex's tolerance says so). Each round
+/// is capped at the vertex itself, where the other's round is tangent to
+/// the cap's plane; capped where the curve ends, the cap cut a sliver off
+/// the other round's end. Either order rounds both, each losing the corner
+/// outside its quarter circle along its edge.
+#[test]
+fn rounds_meeting_at_a_vertex_their_edge_overruns_are_capped_there() {
+    use ogeom::math::{Point, Vector};
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("inner_corner_edge_past_its_vertex.ogeom")).unwrap();
+    let part = &roots[0];
+    let down = edge_along(
+        &model,
+        part,
+        Point::new(21.6, -4.477, 0.0),
+        Vector::new(0.0, 0.0, 1.0),
+    );
+    let across = edge_along(
+        &model,
+        part,
+        Point::new(21.6, -5.7, -1.5),
+        Vector::new(0.0, 1.0, 0.0),
+    );
+    let (before, bounds) = measured(&model, part);
+    let loss = square_round_loss(&model, &[down.clone(), across.clone()], 1.0);
+    for named in [
+        [down.clone(), across.clone()],
+        [across.clone(), down.clone()],
+    ] {
+        let mut model = model.clone();
+        let rounded = ogeom::fillet::fillet_edges(&mut model, part, &named, 1.0, T).unwrap();
+        let (after, held) = measured(&model, &rounded.shape);
+        assert!(
+            (before - after - loss).abs() <= loss * 1e-3,
+            "the rounds took {} where their sections over their edges are {loss}",
+            before - after
+        );
+        assert!((held.diagonal() - bounds.diagonal()).abs() <= 1e-6);
+    }
+}

@@ -267,3 +267,28 @@ which is why the file is large. The reproducer for a face narrower than
 the chord it is drawn at: its boundary sagged by three times the face's
 width between points, and every triangle across the width stood off the
 surface by that sag, so the thread shaded as a saw of fins.
+
+## rib_round_on_a_swept_spline_wall.ogeom
+
+A box cropped, in this kernel's native format, from a community printer
+carriage as printCAD rebuilt it from its FreeCAD file: a rib 0.87 mm
+proud of a floor, its top edges a straight run, a run along a wall swept
+from a quadratic B-spline profile, and a round end, meeting at corners of
+ten and three and a half degrees; the crease along the swept wall's top
+is a fitted cubic, not the profile. The reproducer for a round on that
+crease: the swept wall ended where its profile does, so no ball seated
+past the crease's end; the crease continued as itself strayed off the
+wall by tens of microns where the run-out's cap stands; and the round end
+blended first left the swept wall's run-out landing along its rail.
+
+## inner_corner_edge_past_its_vertex.ogeom
+
+A box cropped, in this kernel's native format, from a community printer
+carriage (a hex-nut variant) as printCAD rebuilt it from its FreeCAD file:
+two top edges meeting at an inside corner of the top face, where the
+coordinates written in single precision on one side and double on the
+other leave one edge's line running 0.24 µm past the vertex it ends at,
+within the vertex's tolerance. The reproducer for a round capped where
+its edge's curve ends rather than at the vertex: the cap's plane cut the
+other round 0.24 µm deep, a sliver the boolean's arrangement could not
+place.

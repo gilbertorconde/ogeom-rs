@@ -13,6 +13,29 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A round on a wall swept from a fitted profile no longer refuses, and
+  two rounds meeting at a vertex their edge overruns are capped there
+  (#287).** A community printer carriage, rebuilt by printCAD from its
+  FreeCAD file, failed to round: a rib's top edges — a straight run, a run
+  along a wall swept from a quadratic B-spline profile, and a round end —
+  meet at corners of ten and three and a half degrees. The swept wall
+  ended where its profile does, so no ball seated past the crease's end
+  and the run-out's cap plane cut its host nowhere; and the crease along
+  the wall's top, a fitted cubic that does not continue the wall, strayed
+  off both hosts by tens of microns where the run-out's cap stands. The
+  wall's profile is now continued the same way past its ends and the wall
+  swept over it, and a crease continued as itself past its ends is
+  refitted onto where its two hosts actually meet, so a run-out's caps
+  and crease stand on them. Where a marched band and an analytic one meet
+  at a vertex, the marched band is now built first, against the faces as
+  they stand, so its run-out melts with untouched hosts rather than
+  landing along the other band's rail. On the hex-nut variant, two top
+  edges meeting at an inside corner of the top face leave one edge's line
+  running 0.24 µm past the vertex it ends at, within the vertex's
+  tolerance: a round capped where its edge's curve ends cut the other
+  round 0.24 µm deep, a sliver the boolean's arrangement could not place.
+  A straight edge's cap is now slid along its line to the vertex it ends
+  at, so the two meet flush.
 - **`check` names a solid whose boundary passes through itself (#276).**
   Nothing in `check` looked for faces crossing each other, and which way
   a face faces was read at one place, the middle of its largest mesh

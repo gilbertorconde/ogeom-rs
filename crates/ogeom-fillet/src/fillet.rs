@@ -420,16 +420,42 @@ fn fillet_edges_own(
             .any(|v| ends_of[j].iter().any(|w| w.is_same(v)))
             && !matches!((&rims[i], &rims[j]), (Some(a), Some(b)) if same_circle(a, b, tol))
     };
-    let mut round_of: Vec<usize> = Vec::with_capacity(edges.len());
-    for i in 0..edges.len() {
+    // Where a marched band and an analytic one meet at a vertex, the
+    // marched band is built first, against the faces as they stand: its
+    // run-out then melts with untouched hosts, and the analytic band built
+    // after it runs on through it, which the melt resolves. Built the other
+    // way round, the marched band's run-out lands on the analytic band's
+    // rail along a stretch, a contact the melt does not resolve. The order
+    // the edges were asked in decides nothing else.
+    let marched: Vec<bool> = edges
+        .iter()
+        .map(|e| {
+            edge_curve(model, e, tol)
+                .is_ok_and(|(c, _)| !matches!(c, Curve::Line(_) | Curve::Circle(_)))
+        })
+        .collect();
+    let mut taken: Vec<usize> = (0..edges.len()).collect();
+    taken.sort_by_key(|&i| (!marched[i], i));
+    let mut round_of: Vec<usize> = vec![0; edges.len()];
+    for (k, &i) in taken.iter().enumerate() {
         let mut round = 0;
-        while (0..i).any(|j| round_of[j] == round && meet(i, j)) {
+        while taken[..k]
+            .iter()
+            .any(|&j| round_of[j] == round && meet(i, j))
+        {
             round += 1;
         }
-        round_of.push(round);
+        round_of[i] = round;
     }
+    let rank: Vec<usize> = {
+        let mut rank = vec![0; edges.len()];
+        for (k, &i) in taken.iter().enumerate() {
+            rank[i] = k;
+        }
+        rank
+    };
     let mut order: Vec<usize> = (0..edges.len()).collect();
-    order.sort_by_key(|&i| (round_of[i], i));
+    order.sort_by_key(|&i| (round_of[i], rank[i]));
     let mut set_aside: Vec<(Shape, crate::support::Wedge)> = Vec::new();
     let mut this_round = 0;
     for index in order {

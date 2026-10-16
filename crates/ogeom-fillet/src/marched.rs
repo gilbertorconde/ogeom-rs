@@ -23,7 +23,7 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::{Curve, PlanarCurve, SurfaceGeometry};
 use ogeom_intersect::Marching;
-use ogeom_math::{Point, Point2, Vector};
+use ogeom_math::{Point, Point2, Vector, solve};
 use ogeom_topo::{Filter, Model, NodeData, Orientation, Shape, ShapeType, explore};
 
 /// How many samples cross each blend arc.
@@ -127,6 +127,45 @@ pub(crate) fn marched_fillet(
                     *held = wider.clone();
                 }
                 wider
+            }
+            // A wall swept from a fitted profile ends where its profile
+            // ends, which is where the crease along its rim ends too: the
+            // ball's section past that vertex, where its arc plane leans,
+            // has no wall to stand on. The profile is continued the same
+            // way, under the same parameters, and the wall swept over it.
+            SurfaceGeometry::Extrusion(swept) => {
+                use ogeom_geom::Surface as _;
+                let wider = match swept.curve() {
+                    Curve::BSpline(profile)
+                        if !profile.is_periodic()
+                            && ends_apart(swept.curve(), profile.domain(), tol) =>
+                    {
+                        let mut longer = profile.clone();
+                        for at_end in [false, true] {
+                            if let Ok(grown) = longer.extended(at_end, radius * 8.0, 2, tol) {
+                                longer = grown;
+                            }
+                        }
+                        let (_, extent) = swept.domain();
+                        ogeom_geom::ExtrusionSurface::over(
+                            Curve::BSpline(longer),
+                            swept.direction(),
+                            extent,
+                        )
+                        .ok()
+                    }
+                    _ => None,
+                };
+                match wider {
+                    Some(wider) => {
+                        let wider = SurfaceGeometry::Extrusion(Box::new(wider));
+                        if let Some(held) = model.geometry_mut().surface_mut(surface_id) {
+                            *held = wider.clone();
+                        }
+                        wider
+                    }
+                    None => SurfaceGeometry::Extrusion(swept),
+                }
             }
             other => other,
         };
@@ -249,8 +288,10 @@ pub(crate) fn marched_fillet(
         };
     // An open seat on a spline that ends with the edge (a converted
     // solid's every edge) leaves the ball nowhere to run out: the guide
-    // is continued past both ends by a few radii, as itself. It steers
-    // the section planes only, so its continuation need only be smooth.
+    // is continued past both ends by a few radii. A run-out's caps and its
+    // crease stand on that continuation, so it must run where the hosts
+    // still meet: continued as itself, a fitted crease bends off them by
+    // whatever its end derivatives miss, and is then put back on them.
     let (guide, guide_range) = match (&guide, closed) {
         (Curve::BSpline(spline), false)
             if !spline.is_periodic() && ends_apart(&guide, guide_range, tol) =>
@@ -261,6 +302,13 @@ pub(crate) fn marched_fillet(
                     longer = grown;
                 }
             }
+            // A continuation that cannot be put back on the hosts stays as
+            // it was: the march still runs on it, and only a run-out that
+            // stands on it misses.
+            let longer = match crease_continued(spline, &longer, [&first, &second], radius, tol) {
+                Ok(Some(on_hosts)) => on_hosts,
+                Ok(None) | Err(_) => longer,
+            };
             let domain = longer.domain();
             (Curve::BSpline(longer), domain)
         }
@@ -3419,6 +3467,152 @@ fn arc_run_out(
         range.1 + after,
         tol,
     )?)))
+}
+
+/// A spline crease continued past its ends along where its two hosts
+/// still meet, or `None` where `longer` (the crease continued as itself)
+/// already lies on both, or no better continuation is found. Each sample
+/// of `longer` past the crease's own ends is moved onto both hosts in the
+/// plane square to it there, as far as the hosts are found to meet, and
+/// the curve is refitted through the crease's own points and those at
+/// their own parameters, so the crease keeps its parameters and its
+/// window.
+fn crease_continued(
+    crease: &ogeom_geom::BSplineCurve,
+    longer: &ogeom_geom::BSplineCurve,
+    hosts: [&SurfaceGeometry; 2],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<ogeom_geom::BSplineCurve>> {
+    use ogeom_geom::Surface as _;
+    const SAMPLES: usize = 24;
+    let (a, b) = crease.domain();
+    let (lo, hi) = longer.domain();
+    let at = |from: f64, to: f64, i: usize| -> f64 {
+        #[allow(clippy::cast_precision_loss, reason = "a sample index")]
+        let s = i as f64 / SAMPLES as f64;
+        (to - from).mul_add(s, from)
+    };
+    // The samples past each end, from the crease's end outward.
+    let before: Vec<f64> = (1..=SAMPLES)
+        .map(|i| at(a, lo, i))
+        .filter(|t| *t < a)
+        .collect();
+    let after: Vec<f64> = (1..=SAMPLES)
+        .map(|i| at(b, hi, i))
+        .filter(|t| *t > b)
+        .collect();
+    let off_hosts = |p: Point| -> OgeomResult<f64> {
+        let mut off: f64 = 0.0;
+        for host in hosts {
+            off = off.max(ogeom_algo::project_on_surface(host, p, 24, tol)?.distance);
+        }
+        Ok(off)
+    };
+    let mut strays = false;
+    for &t in before.iter().chain(&after) {
+        if off_hosts(longer.point_at(t, tol)?)? > tol.confusion() {
+            strays = true;
+            break;
+        }
+    }
+    if !strays {
+        return Ok(None);
+    }
+    // One point of the hosts' meeting, in the plane through `q` square to
+    // `along`, seeded from `q`'s projections onto each.
+    let onto_both = |q: Point, along: Vector| -> Option<Point> {
+        let [first, second] = hosts;
+        let p1 = ogeom_algo::project_on_surface(first, q, 24, tol).ok()?;
+        let p2 = ogeom_algo::project_on_surface(second, q, 24, tol).ok()?;
+        let system = |x: &[f64; 4]| {
+            let (Ok(s1), Ok(s2), Ok((d1u, d1v)), Ok((d2u, d2v))) = (
+                first.point_at(x[0], x[1], tol),
+                second.point_at(x[2], x[3], tol),
+                first.d1_at(x[0], x[1], tol),
+                second.d1_at(x[2], x[3], tol),
+            ) else {
+                return ([f64::INFINITY; 4], [[0.0; 4]; 4]);
+            };
+            let gap = s1 - s2;
+            (
+                [gap.x, gap.y, gap.z, (s1 - q).dot(along)],
+                [
+                    [d1u.x, d1v.x, -d2u.x, -d2v.x],
+                    [d1u.y, d1v.y, -d2u.y, -d2v.y],
+                    [d1u.z, d1v.z, -d2u.z, -d2v.z],
+                    [d1u.dot(along), d1v.dot(along), 0.0, 0.0],
+                ],
+            )
+        };
+        let criteria = solve::Criteria {
+            residual: tol.confusion() * 0.01,
+            step: tol.parametric(),
+            max_iterations: 60,
+        };
+        let seed = [
+            p1.parameters.0,
+            p1.parameters.1,
+            p2.parameters.0,
+            p2.parameters.1,
+        ];
+        let (x, norm, _, _) = solve::newton_system_fixed(system, seed, criteria).ok()?;
+        if norm > tol.confusion() * 0.1 {
+            return None;
+        }
+        let inside = |surface: &SurfaceGeometry, u: f64, v: f64| {
+            let ((ua, ub), (va, vb)) = surface.domain();
+            let band = tol.parametric();
+            u >= ua - band && u <= ub + band && v >= va - band && v <= vb + band
+        };
+        if !inside(first, x[0], x[1]) || !inside(second, x[2], x[3]) {
+            return None;
+        }
+        let p = first.point_at(x[0], x[1], tol).ok()?;
+        // A meeting a radius off the continuation is another branch of it.
+        (p.distance(q) <= radius).then_some(p)
+    };
+    let walk = |ts: &[f64]| -> OgeomResult<Vec<(f64, Point)>> {
+        let mut out = Vec::with_capacity(ts.len());
+        for &t in ts {
+            let q = longer.point_at(t, tol)?;
+            let d = longer.d1_at(t, tol)?;
+            let m = d.magnitude();
+            if m <= tol.confusion() {
+                break;
+            }
+            let Some(p) = onto_both(q, d / m) else {
+                break;
+            };
+            out.push((t, p));
+        }
+        Ok(out)
+    };
+    let mut head = walk(&before)?;
+    head.reverse();
+    let tail = walk(&after)?;
+    if head.is_empty() && tail.is_empty() {
+        return Ok(None);
+    }
+    let inner = (crease.control_points().len() * 4).max(64);
+    let mut parameters = Vec::with_capacity(head.len() + inner + 1 + tail.len());
+    let mut points = Vec::with_capacity(parameters.capacity());
+    for (t, p) in head {
+        parameters.push(t);
+        points.push(p);
+    }
+    for i in 0..=inner {
+        #[allow(clippy::cast_precision_loss, reason = "a sample index")]
+        let t = (b - a).mul_add(i as f64 / inner as f64, a);
+        parameters.push(t);
+        points.push(crease.point_at(t, tol)?);
+    }
+    for (t, p) in tail {
+        parameters.push(t);
+        points.push(p);
+    }
+    let fitted = ogeom_geom::fit::fit_points_at(&parameters, &points, 3, tol.confusion(), tol)?;
+    Ok(fitted.met.then_some(fitted.curve))
 }
 
 /// Whether a guide's two ends stand apart: an arc, not a loop.

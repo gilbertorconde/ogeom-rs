@@ -168,9 +168,35 @@ pub(crate) fn planar_seat(
              is the straight-edge form"
         );
     };
-    let start = curve.point_at(range.0, tol)?;
-    let end = curve.point_at(range.1, tol)?;
+    let mut start = curve.point_at(range.0, tol)?;
+    let mut end = curve.point_at(range.1, tol)?;
     let along = (end - start) / start.distance(end);
+    // The edge ends where its vertices stand, which its curve may miss by
+    // up to their tolerance: a blend's cap stands at the end, and a cap
+    // stood a hair off the vertex cuts into a neighbour's blend that ends
+    // at the vertex itself, where the two meet flush. Each end is slid
+    // along the line to its vertex.
+    if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
+        let mut stands = Vec::with_capacity(2);
+        for v in [a, b] {
+            let Some(data) = model.node(&v).and_then(|n| n.data().as_vertex()) else {
+                continue;
+            };
+            let at = v.transform(model.datums())?.apply(data.point);
+            stands.push((at, data.tolerance.get()));
+        }
+        for end_point in [&mut start, &mut end] {
+            let nearest = stands.iter().min_by(|p, q| {
+                p.0.distance(*end_point)
+                    .total_cmp(&q.0.distance(*end_point))
+            });
+            if let Some(&(at, reach)) = nearest
+                && at.distance(*end_point) <= reach.max(tol.confusion())
+            {
+                *end_point = *end_point + along * (at - *end_point).dot(along);
+            }
+        }
+    }
 
     let mut normals: Vec<Vector> = Vec::new();
     let mut faces: Vec<Shape> = Vec::new();
