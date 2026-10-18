@@ -257,6 +257,14 @@ bump may break the API and a patch bump may not.
   walked points, and refined until it holds there; one that cannot be
   held is not drawn. All 60 views now keep within 6e-6.
 
+- **`check` does not name a crossing within a face's vertex tolerance.**
+  A crossing counted only where it stood clear of both faces' trims by
+  the faces' and their edges' tolerances, not their vertices'. Edges meet
+  at a vertex only to the vertex's tolerance, and an imported vertex is
+  often looser than its edges, so faces overlapping within a loose
+  vertex were named as crossing there. The vertices' tolerances now
+  count too.
+
 ### Performance
 
 - **A face's single orientation probe stops at the first place that

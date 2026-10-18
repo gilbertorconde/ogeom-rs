@@ -38,7 +38,9 @@ struct Sheet<'m> {
     surface: &'m SurfaceGeometry,
     placement: Transform,
     /// How far from its trim a point counts as on it: the widest of the
-    /// face's tolerance and its edges'.
+    /// face's tolerance, its edges' and its vertices'. Edges meet at a
+    /// vertex only within the vertex's tolerance, so near a loose vertex
+    /// the drawn trim can stand that far from where the face ends.
     reach: f64,
     trim: std::sync::OnceLock<Option<FaceTrim<'m>>>,
 }
@@ -98,9 +100,11 @@ pub(crate) fn crossings(
             continue;
         };
         let mut reach = data.tolerance.get().max(tol.confusion());
-        for edge in explore_unique(model, face, ShapeType::Edge)? {
-            if let Some(t) = model.node(&edge).and_then(|n| n.data().tolerance()) {
-                reach = reach.max(t.get());
+        for kind in [ShapeType::Edge, ShapeType::Vertex] {
+            for bound in explore_unique(model, face, kind)? {
+                if let Some(t) = model.node(&bound).and_then(|n| n.data().tolerance()) {
+                    reach = reach.max(t.get());
+                }
             }
         }
         let sheet = sheets.len();

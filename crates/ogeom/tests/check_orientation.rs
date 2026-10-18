@@ -323,3 +323,45 @@ fn make_solid_is_not_turned_over_by_one_probe() {
         }
     }
 }
+
+/// Two cubes as the shells of one solid, the second's corner pushed
+/// `s = 0.01` into the first's along the diagonal: their faces cross in
+/// six segments, all within `s√3` of the first's corner vertex, and are
+/// named while that vertex is as tight as its edges. Once its tolerance is
+/// widened past `s√3` the whole overlap lies within the vertex, which is
+/// one point to its tolerance, and nothing is named.
+#[test]
+fn a_crossing_within_a_vertex_tolerance_is_not_named() {
+    let s = 0.01;
+    let mut model = Model::new();
+    let first = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::WORLD.with_origin(Point::new(1.0 - s, 1.0 - s, 1.0 - s));
+    let second = make_box(&mut model, at, (1.0, 1.0, 1.0), T).unwrap().shape;
+    let shells =
+        [&first, &second].map(|s| explore_unique(&model, s, ShapeType::Shell).unwrap()[0].clone());
+    let solid = model.add_solid(&shells).unwrap();
+    let crossings = |model: &Model| {
+        check(model, &solid, T)
+            .unwrap()
+            .problems
+            .iter()
+            .filter(|p| p.what.contains("passes through another face"))
+            .count()
+    };
+    assert_eq!(crossings(&model), 6);
+    let corner = explore_unique(&model, &first, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| {
+            let at = model.node(v).unwrap().data().as_vertex().unwrap().point;
+            at.distance(Point::new(1.0, 1.0, 1.0)) < 1e-9
+        })
+        .unwrap();
+    // Twice s: past s√3, the overlap's far corner from the vertex.
+    model
+        .widen(&corner, ogeom::core::Tolerance::new(2.0 * s).unwrap())
+        .unwrap();
+    assert_eq!(crossings(&model), 0);
+}
