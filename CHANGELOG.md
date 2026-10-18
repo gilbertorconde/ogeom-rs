@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A straight edge's cap moves to its vertex only by the line's measured
+  overrun.** A round's or a chamfer's cap was slid to the nearest vertex
+  in either direction by up to the vertex's tolerance, so a line falling
+  short of a tolerant vertex was stretched, and a short edge could pair
+  both ends with one vertex. The cap now moves back by exactly how far
+  the line runs past its own vertex, and only where that vertex stands
+  within its tolerance of the end and the two vertices' tolerances do
+  not between them cover the edge.
 - **Only a marched round that meets an analytic one at a vertex is built
   ahead of the order asked.** The marched band was put first in every
   set mixing the two kinds, and an edge was taken as marched by its

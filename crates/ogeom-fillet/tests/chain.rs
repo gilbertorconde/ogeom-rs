@@ -503,3 +503,118 @@ fn edge_curve_of(
     };
     (model.geometry().curve(*curve).unwrap().clone(), *range)
 }
+
+/// An L-shaped block whose top has an inside corner at `(10, 10, 5)`, and
+/// its two top edges leaving that corner, the first along `y = 10`. The
+/// first edge's curve runs `overrun` past the corner, and the corner's
+/// vertex tolerance is widened to `reach` to cover it.
+fn l_block_with_an_edge_past_its_inside_corner(
+    model: &mut ogeom_topo::Model,
+    overrun: f64,
+    reach: f64,
+) -> (ogeom_topo::Shape, [ogeom_topo::Shape; 2]) {
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let notch_at = Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let notch = ogeom_algo::make_box(model, notch_at, (20.0, 20.0, 7.0), T)
+        .unwrap()
+        .shape;
+    let l_block = ogeom_bool::cut(model, &block, &notch, T).unwrap().shape;
+    let edges = [
+        edge_through(model, &l_block, Point::new(15.0, 10.0, 5.0)),
+        edge_through(model, &l_block, Point::new(10.0, 15.0, 5.0)),
+    ];
+    let corner = Point::new(10.0, 10.0, 5.0);
+    // The parameter of the first edge's curve at the corner, and how far
+    // past it the curve's range is stretched: the edge's representations
+    // share one parameter, so each range moves at that end alike.
+    let (curve, (lo, hi)) = edge_curve_of(model, &edges[0]);
+    let at = |t: f64| ogeom_geom::Curve3d::point_at(&curve, t, T).unwrap();
+    let speed = at(lo).distance(at(hi)) / (hi - lo);
+    let (end, past) = if at(lo).distance(corner) < at(hi).distance(corner) {
+        (lo, lo - overrun / speed)
+    } else {
+        (hi, hi + overrun / speed)
+    };
+    let node = model.node_mut(&edges[0]).unwrap();
+    let ogeom_topo::NodeData::Edge(data) = node.data_mut() else {
+        panic!("an edge node holds edge data");
+    };
+    for repr in &mut data.representations {
+        if let ogeom_topo::EdgeRepr::Curve3d { range, .. }
+        | ogeom_topo::EdgeRepr::PCurve { range, .. }
+        | ogeom_topo::EdgeRepr::Seam { range, .. } = repr
+        {
+            for bound in [&mut range.0, &mut range.1] {
+                if (*bound - end).abs() < 1e-12 {
+                    *bound = past;
+                }
+            }
+        }
+    }
+    let vertex = explore_unique(model, &l_block, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| {
+            model
+                .node(v)
+                .unwrap()
+                .data()
+                .as_vertex()
+                .unwrap()
+                .point
+                .distance(corner)
+                < 1e-9
+        })
+        .expect("the inside corner's vertex");
+    model
+        .widen(&vertex, ogeom_core::Tolerance::new(reach).unwrap())
+        .unwrap();
+    (l_block, edges)
+}
+
+/// Two top edges of an L-shaped block rounded, and then chamfered, where
+/// they meet at the top's inside corner, one edge's curve running a little
+/// past the corner's vertex, within the vertex's tolerance. Each blend's
+/// cap stands at the vertex, where the other blend is flush with it, so
+/// each removes exactly its edge's section over the edge's length from the
+/// outside wall to the inside corner, in either order. A cap left where
+/// the curve ends would cut into the other blend past the corner.
+#[test]
+fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
+    let size = 1.0;
+    // Far above the confusion, so a cap left where the curve ends would
+    // cut a measurable notch, and far below the blends' size.
+    let overrun = 1e-3;
+    let round = (1.0 - core::f64::consts::FRAC_PI_4) * size * size;
+    let bevel = size * size / 2.0;
+    for (chamfer, section) in [(false, round), (true, bevel)] {
+        for reversed in [false, true] {
+            let mut model = ogeom_topo::Model::new();
+            let (block, mut edges) =
+                l_block_with_an_edge_past_its_inside_corner(&mut model, overrun, overrun * 2.0);
+            if reversed {
+                edges.reverse();
+            }
+            let blended = if chamfer {
+                ogeom_fillet::chamfer_edges(&mut model, &block, &edges, size, T)
+            } else {
+                ogeom_fillet::fillet_edges(&mut model, &block, &edges, size, T)
+            }
+            .unwrap_or_else(|e| panic!("chamfer {chamfer}, reversed {reversed}: {e}"))
+            .shape;
+            assert!(ogeom_algo::check(&model, &blended, T).unwrap().is_valid());
+            let want = 1500.0 - section * 20.0;
+            let measured = volume(&model, &blended, 1e-5);
+            // The mesh at a hundred-thousandth chord reads a box corner's
+            // rounds to a micro-cubic-millimetre
+            // (a_corner_rounds_at_any_radius), and a bevel's planes exactly;
+            // the notch an overrun cap cuts is its section times 1e-3.
+            assert!(
+                (measured - want).abs() < 2e-5,
+                "chamfer {chamfer}, reversed {reversed}: {measured} against {want}"
+            );
+        }
+    }
+}

@@ -142,6 +142,18 @@ pub(crate) fn hosts_planar(
     Ok(true)
 }
 
+/// `end`, a straight edge's end, slid along `inward` onto the foot of its
+/// vertex `(at, reach)` where the line runs past that foot and the vertex
+/// stands within `reach` of the end; `end` itself otherwise.
+fn slid_back(end: Point, inward: Vector, (at, reach): (Point, f64)) -> Point {
+    let overrun = (at - end).dot(inward);
+    if overrun > 0.0 && end.distance(at) <= reach {
+        end + inward * overrun
+    } else {
+        end
+    }
+}
+
 /// Find the seat of a blend: the straight edge's ends and direction, and the
 /// outward normals of the exactly two planar faces of `solid` meeting there.
 ///
@@ -171,30 +183,34 @@ pub(crate) fn planar_seat(
     let mut start = curve.point_at(range.0, tol)?;
     let mut end = curve.point_at(range.1, tol)?;
     let along = (end - start) / start.distance(end);
-    // The edge ends where its vertices stand, which its curve may miss by
-    // up to their tolerance: a blend's cap stands at the end, and a cap
-    // stood a hair off the vertex cuts into a neighbour's blend that ends
-    // at the vertex itself, where the two meet flush. Each end is slid
-    // along the line to its vertex.
+    // The edge ends where its vertices stand, which its line may run past
+    // by up to their tolerance. A blend's or a chamfer's cap stands square
+    // to the edge at its end, and a cap past the vertex cuts into a
+    // neighbour's that ends at the vertex itself, where the two meet
+    // flush. So an end is slid back along the line by exactly the line's
+    // overrun of its vertex's foot, where the vertex stands within its
+    // tolerance of that end. Each end is paired with its own vertex, and
+    // where the two vertices' tolerances span the whole edge, which vertex
+    // an end belongs to is not known and neither end moves.
     if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
-        let mut stands = Vec::with_capacity(2);
-        for v in [a, b] {
-            let Some(data) = model.node(&v).and_then(|n| n.data().as_vertex()) else {
-                continue;
+        let stand = |v: &Shape| -> OgeomResult<(Point, f64)> {
+            let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+                ogeom_bail!(Dangling, "an edge's vertex is not in this model");
             };
             let at = v.transform(model.datums())?.apply(data.point);
-            stands.push((at, data.tolerance.get()));
-        }
-        for end_point in [&mut start, &mut end] {
-            let nearest = stands.iter().min_by(|p, q| {
-                p.0.distance(*end_point)
-                    .total_cmp(&q.0.distance(*end_point))
-            });
-            if let Some(&(at, reach)) = nearest
-                && at.distance(*end_point) <= reach.max(tol.confusion())
+            Ok((at, data.tolerance.get().max(tol.confusion())))
+        };
+        let (first, second) = (stand(&a)?, stand(&b)?);
+        if !a.is_same(&b) && start.distance(end) > first.1 + second.1 {
+            let (at_start, at_end) = if start.distance(first.0) + end.distance(second.0)
+                <= start.distance(second.0) + end.distance(first.0)
             {
-                *end_point = *end_point + along * (at - *end_point).dot(along);
-            }
+                (first, second)
+            } else {
+                (second, first)
+            };
+            start = slid_back(start, along, at_start);
+            end = slid_back(end, -along, at_end);
         }
     }
 
