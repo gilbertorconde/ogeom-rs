@@ -507,11 +507,15 @@ fn edge_curve_of(
 /// An L-shaped block whose top has an inside corner at `(10, 10, 5)`, and
 /// its two top edges leaving that corner, the first along `y = 10`. The
 /// first edge's curve runs `overrun` past the corner, and the corner's
-/// vertex tolerance is widened to `reach` to cover it.
+/// vertex tolerance is widened to `reach` to cover it. Where
+/// `vertex_follows`, the vertex stands where the stretched curve ends, off
+/// the wall `x = 10` the first edge meets there and off the second edge's
+/// line, rather than at the corner.
 fn l_block_with_an_edge_past_its_inside_corner(
     model: &mut ogeom_topo::Model,
     overrun: f64,
     reach: f64,
+    vertex_follows: bool,
 ) -> (ogeom_topo::Shape, [ogeom_topo::Shape; 2]) {
     let block = ogeom_algo::make_box(model, Frame::WORLD, (20.0, 20.0, 5.0), T)
         .unwrap()
@@ -571,6 +575,12 @@ fn l_block_with_an_edge_past_its_inside_corner(
     model
         .widen(&vertex, ogeom_core::Tolerance::new(reach).unwrap())
         .unwrap();
+    if vertex_follows {
+        let ogeom_topo::NodeData::Vertex(data) = model.node_mut(&vertex).unwrap().data_mut() else {
+            panic!("a vertex node holds vertex data");
+        };
+        data.point = at(past);
+    }
     (l_block, edges)
 }
 
@@ -592,8 +602,12 @@ fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
     for (chamfer, section) in [(false, round), (true, bevel)] {
         for reversed in [false, true] {
             let mut model = ogeom_topo::Model::new();
-            let (block, mut edges) =
-                l_block_with_an_edge_past_its_inside_corner(&mut model, overrun, overrun * 2.0);
+            let (block, mut edges) = l_block_with_an_edge_past_its_inside_corner(
+                &mut model,
+                overrun,
+                overrun * 2.0,
+                false,
+            );
             if reversed {
                 edges.reverse();
             }
@@ -611,6 +625,54 @@ fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
             // rounds to a micro-cubic-millimetre
             // (a_corner_rounds_at_any_radius), and a bevel's planes exactly;
             // the notch an overrun cap cuts is its section times 1e-3.
+            assert!(
+                (measured - want).abs() < 2e-5,
+                "chamfer {chamfer}, reversed {reversed}: {measured} against {want}"
+            );
+        }
+    }
+}
+
+/// The same two blends where the corner's vertex stands at the end of the
+/// first edge's curve, which runs past the wall `x = 10` that ends it, and
+/// off the second edge's line by as much. Measured from the vertex, neither
+/// line runs past it; measured against the second edge, which runs along
+/// that wall, the first does. Each blend's cap stands where its line meets
+/// the other edge's, flush with the other blend, so each removes exactly
+/// its edge's section over the edge's length, in either order. A cap at
+/// the vertex would cut into the other blend past the corner.
+#[test]
+fn blends_at_an_inside_corner_whose_vertex_stands_off_the_wall_meet_at_the_wall() {
+    let size = 1.0;
+    // As in the test above: a notch of the section times the overrun is
+    // far above what the mesh reads, and the overrun far below the blends.
+    let overrun = 1e-3;
+    let round = (1.0 - core::f64::consts::FRAC_PI_4) * size * size;
+    let bevel = size * size / 2.0;
+    for (chamfer, section) in [(false, round), (true, bevel)] {
+        for reversed in [false, true] {
+            let mut model = ogeom_topo::Model::new();
+            let (block, mut edges) = l_block_with_an_edge_past_its_inside_corner(
+                &mut model,
+                overrun,
+                overrun * 2.0,
+                true,
+            );
+            if reversed {
+                edges.reverse();
+            }
+            let blended = if chamfer {
+                ogeom_fillet::chamfer_edges(&mut model, &block, &edges, size, T)
+            } else {
+                ogeom_fillet::fillet_edges(&mut model, &block, &edges, size, T)
+            }
+            .unwrap_or_else(|e| panic!("chamfer {chamfer}, reversed {reversed}: {e}"))
+            .shape;
+            assert!(ogeom_algo::check(&model, &blended, T).unwrap().is_valid());
+            let want = 1500.0 - section * 20.0;
+            let measured = volume(&model, &blended, 1e-5);
+            // The same reading as the test above: the notch a cap past the
+            // wall cuts is the section times 1e-3, ten times this bound.
             assert!(
                 (measured - want).abs() < 2e-5,
                 "chamfer {chamfer}, reversed {reversed}: {measured} against {want}"

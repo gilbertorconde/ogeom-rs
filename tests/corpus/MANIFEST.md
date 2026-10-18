@@ -292,3 +292,15 @@ within the vertex's tolerance. The reproducer for a round capped where
 its edge's curve ends rather than at the vertex: the cap's plane cut the
 other round 0.24 µm deep, a sliver the boolean's arrangement could not
 place.
+
+## inner_corner_vertex_off_the_wall.ogeom
+
+A box cropped, in this kernel's native format, from the same hex-nut
+carriage as `inner_corner_edge_past_its_vertex.ogeom`, as printCAD
+rebuilt it from its FreeCAD file whole: the same two top edges meeting at
+an inside corner of the top face, but with the corner's vertex standing
+where the second edge's line starts, 0.24 µm off the wall the first edge
+runs down, within the vertex's tolerance. The reproducer for a round
+capped at its vertex rather than where its line meets the wall: the cap
+cut the other round, or the corner of the wall it left, 0.24 µm deep, a
+sliver the boolean's arrangement could not place.

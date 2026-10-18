@@ -1316,3 +1316,48 @@ fn rounds_meeting_at_a_vertex_their_edge_overruns_are_capped_there() {
         assert!((held.diagonal() - bounds.diagonal()).abs() <= 1e-6);
     }
 }
+
+/// The same two top edges on a part where the inside corner's vertex
+/// stands where the second edge's line starts, 0.24 µm off the wall the
+/// first edge runs down, which the second edge's line runs into that far:
+/// measured from the vertex, neither line runs past it. Each round is
+/// capped where its line meets the other edge's, flush with the other
+/// round; capped at the vertex, the second round cut a sliver off the
+/// first's end, or off the wall's corner left after it, which the
+/// boolean's arrangement could not place. Either order rounds both, each
+/// losing the corner outside its quarter circle along its edge.
+#[test]
+fn rounds_meeting_at_a_vertex_off_one_edges_wall_are_capped_at_the_wall() {
+    use ogeom::math::{Point, Vector};
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("inner_corner_vertex_off_the_wall.ogeom")).unwrap();
+    let part = &roots[0];
+    let down = edge_along(
+        &model,
+        part,
+        Point::new(21.6, -4.477, 4.95),
+        Vector::new(0.0, 0.0, 1.0),
+    );
+    let across = edge_along(
+        &model,
+        part,
+        Point::new(21.6, -5.7, -1.5),
+        Vector::new(0.0, 1.0, 0.0),
+    );
+    let (before, bounds) = measured(&model, part);
+    let loss = square_round_loss(&model, &[down.clone(), across.clone()], 1.0);
+    for named in [
+        [down.clone(), across.clone()],
+        [across.clone(), down.clone()],
+    ] {
+        let mut model = model.clone();
+        let rounded = ogeom::fillet::fillet_edges(&mut model, part, &named, 1.0, T).unwrap();
+        let (after, held) = measured(&model, &rounded.shape);
+        assert!(
+            (before - after - loss).abs() <= loss * 1e-3,
+            "the rounds took {} where their sections over their edges are {loss}",
+            before - after
+        );
+        assert!((held.diagonal() - bounds.diagonal()).abs() <= 1e-6);
+    }
+}

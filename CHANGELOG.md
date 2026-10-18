@@ -20,6 +20,16 @@ bump may break the API and a patch bump may not.
   at zero: a shape imported with an extrusion face could not be saved
   and opened again. The reader now takes any finite, increasing window
   (#295).
+- **Rounds and chamfers meeting at an inside corner whose vertex stands
+  off one edge's wall meet flush.** A straight edge's cap was slid back
+  only to its vertex, so where the vertex stood at one edge's line end,
+  off the wall that edge runs into by less than its tolerance, the cap
+  stood past the wall and cut a sliver off the neighbouring blend; on an
+  imported part the boolean's arrangement could not place it and
+  `fillet_edges` refused. The cap now also slides back to where the line
+  meets the next straight edge of either of its faces at that vertex,
+  whichever place lies furthest back, each within the vertex's tolerance
+  (#298).
 
 ## [0.11.3] - 2026-10-18
 

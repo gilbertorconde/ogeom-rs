@@ -114,6 +114,22 @@ pub(crate) fn edge_curve(
     Ok((placed, *range))
 }
 
+/// A straight edge's line, placed in the world, as a point on it and its
+/// unit direction; `None` for an edge with no curve or a curved one.
+fn edge_line(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Option<(Point, Vector)>> {
+    let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+        ogeom_bail!(Dangling, "edge is not in this model");
+    };
+    if data.curve3d().is_none() {
+        return Ok(None);
+    }
+    let (Curve::Line(line), _) = edge_curve(model, edge, tol)? else {
+        return Ok(None);
+    };
+    let axis = line.axis();
+    Ok(Some((axis.location, axis.direction.vector())))
+}
+
 /// Whether every face of `solid` bounding `edge` is planar: the straight
 /// seat's own forms speak only planes, and a straight edge on a curved
 /// face (a ruling of a drum where it meets a wall) is the march's.
@@ -142,12 +158,39 @@ pub(crate) fn hosts_planar(
     Ok(true)
 }
 
-/// `end`, a straight edge's end, slid along `inward` onto the foot of its
-/// vertex `(at, reach)` where the line runs past that foot and the vertex
-/// stands within `reach` of the end; `end` itself otherwise.
-fn slid_back(end: Point, inward: Vector, (at, reach): (Point, f64)) -> Point {
-    let overrun = (at - end).dot(inward);
-    if overrun > 0.0 && end.distance(at) <= reach {
+/// `end`, a straight edge's end, slid back along `inward` to where its
+/// vertex `(at, reach)` stands: the vertex's foot on the line, or where the
+/// line meets one of `meeting` (the lines, as `(point, unit direction)`, of
+/// the other straight edges of its faces leaving the vertex), whichever
+/// lies furthest back. A meeting counts where it stands within `reach` of
+/// the vertex and of `end`; the end moves only where the vertex stands
+/// within `reach` of it and the line runs past the place found. `end`
+/// itself otherwise.
+fn slid_back(
+    end: Point,
+    inward: Vector,
+    (at, reach): (Point, f64),
+    meeting: &[(Point, Vector)],
+    tol: Tolerances,
+) -> Point {
+    if end.distance(at) > reach {
+        return end;
+    }
+    let mut overrun = (at - end).dot(inward);
+    for &(through, along) in meeting {
+        // Where the line comes nearest the other: on the face both lie
+        // in, where they cross.
+        let normal = inward.cross(along);
+        let across = normal.dot(normal);
+        if across <= tol.angular() * tol.angular() {
+            continue;
+        }
+        let back = (through - end).cross(along).dot(normal) / across;
+        if back.abs() <= reach && (end + inward * back).distance(at) <= reach {
+            overrun = overrun.max(back);
+        }
+    }
+    if overrun > 0.0 {
         end + inward * overrun
     } else {
         end
@@ -183,45 +226,40 @@ pub(crate) fn planar_seat(
     let mut start = curve.point_at(range.0, tol)?;
     let mut end = curve.point_at(range.1, tol)?;
     let along = (end - start) / start.distance(end);
-    // The edge ends where its vertices stand, which its line may run past
-    // by up to their tolerance. A blend's or a chamfer's cap stands square
-    // to the edge at its end, and a cap past the vertex cuts into a
-    // neighbour's that ends at the vertex itself, where the two meet
-    // flush. So an end is slid back along the line by exactly the line's
-    // overrun of its vertex's foot, where the vertex stands within its
-    // tolerance of that end. Each end is paired with its own vertex, and
-    // where the two vertices' tolerances span the whole edge, which vertex
-    // an end belongs to is not known and neither end moves.
-    if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
-        let stand = |v: &Shape| -> OgeomResult<(Point, f64)> {
-            let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
-                ogeom_bail!(Dangling, "an edge's vertex is not in this model");
-            };
-            let at = v.transform(model.datums())?.apply(data.point);
-            Ok((at, data.tolerance.get().max(tol.confusion())))
-        };
-        let (first, second) = (stand(&a)?, stand(&b)?);
-        if !a.is_same(&b) && start.distance(end) > first.1 + second.1 {
-            let (at_start, at_end) = if start.distance(first.0) + end.distance(second.0)
-                <= start.distance(second.0) + end.distance(first.0)
-            {
-                (first, second)
-            } else {
-                (second, first)
-            };
-            start = slid_back(start, along, at_start);
-            end = slid_back(end, -along, at_end);
-        }
-    }
-
+    let vertices = ogeom_algo::edge_vertices(model, edge)?;
     let mut normals: Vec<Vector> = Vec::new();
     let mut faces: Vec<Shape> = Vec::new();
+    // The lines of the other straight edges of the two faces leaving each
+    // of the edge's vertices: where each face's boundary turns there.
+    let mut meeting: [Vec<(Point, Vector)>; 2] = [Vec::new(), Vec::new()];
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
-        let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
-            .iter()
-            .any(|e| same_occurrence(model, e, edge, tol));
-        if !touches {
+        let bounds = explore(model, &face, Filter::OfType(ShapeType::Edge))?;
+        if !bounds.iter().any(|e| same_occurrence(model, e, edge, tol)) {
             continue;
+        }
+        if let Some((a, b)) = &vertices {
+            for other in &bounds {
+                if same_occurrence(model, other, edge, tol) {
+                    continue;
+                }
+                let Some((p, q)) = ogeom_algo::edge_vertices(model, other)? else {
+                    continue;
+                };
+                let leaves = [a, b].map(|v| {
+                    same_occurrence(model, &p, v, tol) || same_occurrence(model, &q, v, tol)
+                });
+                if leaves == [false, false] {
+                    continue;
+                }
+                let Some(line) = edge_line(model, other, tol)? else {
+                    continue;
+                };
+                for (lines, leaves) in meeting.iter_mut().zip(leaves) {
+                    if leaves {
+                        lines.push(line);
+                    }
+                }
+            }
         }
         let Some(node) = model.node(&face) else {
             ogeom_bail!(Dangling, "face is not in this model");
@@ -250,6 +288,43 @@ pub(crate) fn planar_seat(
             "a blend needs an edge shared by exactly two faces, found {}",
             normals.len()
         );
+    }
+    // The edge ends where its vertices stand, which its line may run past
+    // by up to their tolerance, and a vertex stands only within its
+    // tolerance of the corner where each of the edge's faces turns: where
+    // the line meets the next edge of that face's boundary. A blend's or a
+    // chamfer's cap stands square to the edge at its end, and a cap past
+    // the vertex's foot or past such a corner cuts into a neighbour's that
+    // ends there, where the two meet flush. So an end is slid back along
+    // the line by exactly the line's overrun of the furthest back of those
+    // places, each within the vertex's tolerance; it leaves at most that
+    // tolerance of material, rather than cutting into a neighbour. Each end
+    // is paired with its own vertex, and where the two vertices'
+    // tolerances span the whole edge, which vertex an end belongs to is not
+    // known and neither end moves; no end moves by more than its vertex's
+    // tolerance, so the two slides never meet.
+    if let Some((a, b)) = &vertices {
+        let stand = |v: &Shape| -> OgeomResult<(Point, f64)> {
+            let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+                ogeom_bail!(Dangling, "an edge's vertex is not in this model");
+            };
+            let at = v.transform(model.datums())?.apply(data.point);
+            Ok((at, data.tolerance.get().max(tol.confusion())))
+        };
+        let (first, second) = (stand(a)?, stand(b)?);
+        if !a.is_same(b) && start.distance(end) > first.1 + second.1 {
+            let [at_first, at_second] = &meeting;
+            let ((start_at, start_meets), (end_at, end_meets)) = if start.distance(first.0)
+                + end.distance(second.0)
+                <= start.distance(second.0) + end.distance(first.0)
+            {
+                ((first, at_first), (second, at_second))
+            } else {
+                ((second, at_second), (first, at_first))
+            };
+            start = slid_back(start, along, start_at, start_meets, tol);
+            end = slid_back(end, -along, end_at, end_meets, tol);
+        }
     }
 
     let mut seat = Seat {
