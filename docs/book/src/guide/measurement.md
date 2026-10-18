@@ -52,7 +52,9 @@ confirmed on the surfaces before it is named. A face is probed for which
 way it faces at two places, and one that reads out of the material at
 one and into it at the other is named too.
 
-`check_self_intersection` and `check_tessellation` are separate because
-they are more expensive. `check_self_intersection` measures every pair of
-faces that share no topology for touching, not only for crossing. Call
-them when needed.
+`check_self_intersection` asks a different question: it measures the
+exact distance between every pair of faces that share no edge or vertex,
+and names any pair that touches, not only one that crosses, but it never
+looks at a face against its neighbours or itself. It costs more than the
+crossing test in `check`, as does `check_tessellation`, which compares a
+shape's mesh with its topology. Call them when that is the question.
