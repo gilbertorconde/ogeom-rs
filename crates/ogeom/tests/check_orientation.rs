@@ -365,3 +365,79 @@ fn a_crossing_within_a_vertex_tolerance_is_not_named() {
         .unwrap();
     assert_eq!(crossings(&model), 0);
 }
+
+/// Sound solids whose faces meet themselves or each other without
+/// crossing are valid wherever they stand: a box rounded along every
+/// edge, its bands and corner patches meeting their neighbours tangent; a
+/// torus, its one face meeting itself along both seams; a cone, its wall
+/// closing to a point at the apex; a sphere, its face closing at both
+/// poles; and a tube whose bore comes within 0.01 of its outside, where
+/// the two walls' meshes cross and the surfaces do not. A crossing test
+/// that took a tangent junction, a seam, a point where a surface closes,
+/// or two meshes crossing for a crossing would name one of these.
+#[test]
+fn faces_meeting_at_a_seam_an_apex_or_tangent_are_no_crossing() {
+    let mut model = Model::new();
+    // The bore's centre is turned off the outside's seam by half the
+    // angle the outside's mesh steps by (thirteen steps at the default
+    // deflection), so the thin wall stands where the outside's chord sags
+    // inward farthest, some 0.29, and the bore's mesh passes through it.
+    let tube = {
+        let outside = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let (off, turn) = (4.99, std::f64::consts::PI / 13.0);
+        let at = Frame::WORLD.with_origin(Point::new(off * turn.cos(), off * turn.sin(), -1.0));
+        let bore = ogeom::algo::make_cylinder(&mut model, at, 5.0, 7.0, T)
+            .unwrap()
+            .shape;
+        ogeom::boolean::cut(&mut model, &outside, &bore, T)
+            .unwrap()
+            .shape
+    };
+    let block = make_box(&mut model, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let solids = [
+        (
+            "rounded box",
+            ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+                .unwrap()
+                .shape,
+        ),
+        (
+            "torus",
+            ogeom::algo::make_torus(&mut model, Frame::WORLD, 5.0, 2.0, T)
+                .unwrap()
+                .shape,
+        ),
+        (
+            "cone",
+            ogeom::algo::make_cone(&mut model, Frame::WORLD, 4.0, 0.0, 6.0, T)
+                .unwrap()
+                .shape,
+        ),
+        (
+            "sphere",
+            ogeom::algo::make_sphere(&mut model, Frame::WORLD, 3.0, T)
+                .unwrap()
+                .shape,
+        ),
+        ("thin-walled tube", tube),
+    ];
+    let placements = [
+        ogeom::math::Transform::IDENTITY,
+        motions()[5],
+        motions()[17],
+    ];
+    for (what, solid) in solids {
+        for (k, motion) in placements.iter().enumerate() {
+            let placed = ogeom::algo::transformed(&mut model, &solid, *motion)
+                .unwrap()
+                .shape;
+            let diagnosis = check(&model, &placed, T).unwrap();
+            assert!(diagnosis.is_valid(), "{what}, placement {k}: {diagnosis}");
+        }
+    }
+}
