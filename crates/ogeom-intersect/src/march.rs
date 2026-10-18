@@ -2136,22 +2136,45 @@ fn touching_point(
         Some([gap.x, gap.y, gap.z, na.dot(bu) / lu, na.dot(bv) / lv])
     };
     // Forward differences: the Jacobian's own error slows the iteration and
-    // moves no root.
+    // moves no root. They are taken at the point the residual measures,
+    // held to the charts, and step back into a chart where a step forward
+    // would leave it: a touch on a bound that does not repeat (a profile
+    // ending on its apex) draws the iteration onto the bound and past it,
+    // and a step clamped back onto the bound would read that parameter as
+    // moving nothing, the Jacobian as singular.
     const STEP: f64 = 1e-7;
+    let step_from = |k: usize, at: f64| -> f64 {
+        let surface = if k < 2 { a } else { b };
+        let ((_, ub), (_, vb)) = surface.domain();
+        let (periodic, high) = if matches!(k, 0 | 2) {
+            (surface.is_periodic_u(), ub)
+        } else {
+            (surface.is_periodic_v(), vb)
+        };
+        if periodic || at + STEP <= high {
+            STEP
+        } else {
+            -STEP
+        }
+    };
     let system = |x: &[f64; 5]| {
         let failed = || ([f64::INFINITY; 5], [[0.0; 5]; 5]);
-        let Some(here) = eval(x) else {
+        let mut at = *x;
+        (at[0], at[1]) = clamp(a, x[0], x[1]);
+        (at[2], at[3]) = clamp(b, x[2], x[3]);
+        let Some(here) = eval(&at) else {
             return failed();
         };
         let mut jacobian = [[0.0; 5]; 5];
         for k in 0..5 {
-            let mut moved = *x;
-            moved[k] += STEP;
+            let step = if k < 4 { step_from(k, at[k]) } else { STEP };
+            let mut moved = at;
+            moved[k] += step;
             let Some(there) = eval(&moved) else {
                 return failed();
             };
             for (row, (t, h)) in jacobian.iter_mut().zip(there.iter().zip(here.iter())) {
-                row[k] = (t - h) / STEP;
+                row[k] = (t - h) / step;
             }
         }
         (here, jacobian)

@@ -1361,3 +1361,37 @@ fn rounds_meeting_at_a_vertex_off_one_edges_wall_are_capped_at_the_wall() {
         assert!((held.diagonal() - bounds.diagonal()).abs() <= 1e-6);
     }
 }
+
+/// A pad fused onto a part where the pad's curved side touches a wall
+/// swept from a quadratic profile, at the point where both their profiles
+/// end on their apexes and the pad's foot stands on the wall's end. The
+/// section between the two curved faces runs into that touch ever more
+/// shallowly; it ends on the touch, where the faces' boundary edges meet
+/// it, and the fuse closes. What the part gains is the pad less what of
+/// it the part already held.
+#[test]
+fn a_pad_touching_a_swept_wall_where_both_profiles_end_fuses() {
+    let (mut model, roots) =
+        ogeom::io::native::read(&corpus("pad_arc_touching_a_swept_wall_at_its_end.ogeom")).unwrap();
+    let (part, pad) = (&roots[0], &roots[1]);
+    let (before, _) = measured(&model, part);
+    let (pad_volume, _) = measured(&model, pad);
+    let mut held = model.clone();
+    let fused = ogeom::boolean::fuse(&mut model, part, pad, T).unwrap();
+    let (after, _) = measured(&model, &fused.shape);
+    let common = ogeom::boolean::common(&mut held, part, pad, T).unwrap();
+    let (shared, _) = measured(&held, &common.shape);
+    // The pad's section is the corner its quadratic side cuts off a 2 mm
+    // square: a third of the square's half, 2/3 mm², swept 3.92 mm. Its
+    // faces are planes and one swept quadratic, which the mesh measures
+    // to well under a ten-thousandth.
+    assert!((pad_volume - 2.0 / 3.0 * 3.92).abs() <= 1e-4);
+    // Inclusion and exclusion, to a hundredth of what the pad adds: the
+    // meshes measure the part's spline faces to a few millionths.
+    let gained = pad_volume - shared;
+    assert!(
+        (after - before - gained).abs() <= gained * 1e-2,
+        "the part gained {} where the pad stands {gained} outside it",
+        after - before
+    );
+}

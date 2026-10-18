@@ -30,6 +30,16 @@ bump may break the API and a patch bump may not.
   meets the next straight edge of either of its faces at that vertex,
   whichever place lies furthest back, each within the vertex's tolerance
   (#298).
+- **A section running into a point where two curved faces touch at
+  their ends reaches it.** Where two walls swept from quadratic profiles
+  touch at the apexes their profiles end on (a pad's rounded side
+  standing on a wall's end), the marched section between them stalls
+  short of the touch and is carried onto it once the touch is solved.
+  The solve's Jacobian was differenced through the clamp to each face's
+  chart, so a step past the bound the touch sits on read as no change
+  and the solve gave up: the section stopped 0.2 µm short and the fuse
+  failed with "edge 1 ends where edge 2 does not begin". The
+  differences now step back into the chart at a bound (#297).
 
 ## [0.11.3] - 2026-10-18
 

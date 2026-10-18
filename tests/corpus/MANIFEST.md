@@ -304,3 +304,17 @@ runs down, within the vertex's tolerance. The reproducer for a round
 capped at its vertex rather than where its line meets the wall: the cap
 cut the other round, or the corner of the wall it left, 0.24 µm deep, a
 sliver the boolean's arrangement could not place.
+
+## pad_arc_touching_a_swept_wall_at_its_end.ogeom
+
+Two solids in this kernel's native format: a box cropped from a community
+printer carriage as printCAD rebuilt it from its FreeCAD file, and the
+pad printCAD fused onto it, a prism whose side is a quadratic B-spline
+leaving a straight edge square. The carriage's wall there is swept from
+a quadratic profile that turns straight down at its end, and the pad's
+curved side and that wall touch, normals parallel, at the point where
+both profiles end on their apexes, the pad's foot level with the wall's
+end. The reproducer for a section running into that touch: the walk
+stalled 0.2 µm short of it, the touch was not solved because the touch
+lies a rounding past the end of one chart, and the fuse left a gap
+between the section's end and the edges meeting at the touch.

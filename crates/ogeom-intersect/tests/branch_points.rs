@@ -113,3 +113,76 @@ fn tangential_contact_traces_as_the_circle_it_is() {
         );
     }
 }
+
+/// Two walls swept square to each other from quadratic profiles, each
+/// profile ending on its apex: one along x, its apex line y = 5.64 at
+/// z = -15.68, one down z from z = -11.76, its apex line y = 5.64 at
+/// x = -11.21. They touch where the apex lines cross, normals parallel,
+/// and the section runs into that touch ever more shallowly until the walk
+/// gives out short of it. One profile's apex is drawn a nanometre past its
+/// end, as rounding leaves it in a part read from a file: the touch lies a
+/// hair outside that wall's chart, where the search for it must reach onto
+/// the bound and back. The section ends on the touch, to the confusion
+/// distance either way the apex is pushed.
+#[test]
+fn a_section_into_a_touch_where_both_walls_end_ends_on_it() {
+    use ogeom_geom::{BSplineCurve, Curve, ExtrusionSurface};
+    use ogeom_math::{KnotVector, Vector};
+    let quadratic = |control: [Point; 3]| -> Curve {
+        BSplineCurve::new(
+            KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).unwrap(),
+            control.to_vec(),
+            T,
+        )
+        .unwrap()
+        .into()
+    };
+    let touch = Point::new(-11.21, 5.64, -15.68);
+    // A nanometre off the middle control point tilts the profile's end
+    // off level by two in a billion, and the apex moves just past that
+    // end: lowered, on the wall along x, whose profile ends on its apex,
+    // and on the wall down z, whose profile starts on it.
+    for (along_x, down_z) in [(-1e-9, 0.0), (0.0, 1e-9)] {
+        let a: SurfaceGeometry = ExtrusionSurface::new(
+            quadratic([
+                Point::new(-13.13, -3.29, 0.0),
+                Point::new(-13.13, 5.64 + along_x, 0.0),
+                Point::new(-13.13, 5.64, -15.68),
+            ]),
+            Direction::X,
+            22.96,
+        )
+        .unwrap()
+        .into();
+        let b: SurfaceGeometry = ExtrusionSurface::new(
+            quadratic([
+                Point::new(-11.21, 5.64, -11.76),
+                Point::new(-9.21, 5.64 - down_z, -11.76),
+                Point::new(-9.21, 3.64, -11.76),
+            ]),
+            Direction::new(Vector::new(0.0, 0.0, -1.0), T).unwrap(),
+            3.92,
+        )
+        .unwrap()
+        .into();
+        // A chord a boolean marches a part of this size at.
+        let marching = Marching {
+            chord: 1e-6,
+            ..Marching::default()
+        };
+        let found = branches(&a, &b, marching, T).unwrap();
+        assert_eq!(found.len(), 1, "one section from the touch to the top");
+        let ends = [
+            found[0].points[0],
+            found[0].points[found[0].points.len() - 1],
+        ];
+        let miss = ends
+            .iter()
+            .map(|p| p.distance(touch))
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            miss <= T.confusion(),
+            "the section stops {miss} short of the touch ({along_x}, {down_z})"
+        );
+    }
+}
