@@ -11,6 +11,20 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-10-18
+
+A patch release of fixes. `check` names a solid whose boundary passes
+through itself, settled on the exact surfaces, and no longer lets one
+probe decide which way a face or shell faces (#276). `refine` merges
+every split wall (#281), a skinned loft between sections wound opposite
+ways or closing to a point no longer folds (#269, #282), surface walkers
+close a loop only through a step they solved (#273, #278), and `.brep`
+files saved by other applications read as the solids they hold (#283).
+Rounds on walls swept from fitted profiles and at vertices their edge
+overruns now build (#287). Sweeps, marched rounds and silhouettes state
+how far they stray between samples. Mass properties and shape healing
+probe each face's orientation once, about 10% faster.
+
 ### Fixed
 
 - **A straight edge's cap moves to its vertex only by the line's measured
@@ -5749,7 +5763,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.10.0...v0.11.0
