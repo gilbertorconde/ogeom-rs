@@ -248,7 +248,14 @@ fn check_orientation(
     let faces = explore_unique(model, solid, ShapeType::Face)?;
     let read =
         ogeom_core::parallel::map_ordered(&faces, |_, face| -> OgeomResult<Option<String>> {
-            let places = face_places(model, face, &boundary, PLACES_READ, tol)?;
+            let places = face_places(
+                model,
+                face,
+                &boundary,
+                PLACES_READ,
+                PLACES_READ + SPARE,
+                tol,
+            )?;
             let read = Readings::of(&places);
             if !read.disagree() {
                 return Ok((read.verdict() == Some(true)).then(|| {
@@ -436,16 +443,16 @@ fn turned_in_against(
 
 /// Whether a face's outward normal points into the solid's material; `None`
 /// where the probe cannot tell: the first place of [`face_readings`] that
-/// reads decides.
+/// reads decides, among as many triangles as a reading of three places
+/// tries.
 pub(crate) fn faces_inward(
     model: &Model,
     face: &Shape,
     boundary: &crate::SolidBoundary,
     tol: Tolerances,
 ) -> OgeomResult<Option<bool>> {
-    /// How many of the largest triangles are asked before giving up.
     const PROBES: usize = 3;
-    Ok(face_places(model, face, boundary, PROBES, tol)?
+    Ok(face_places(model, face, boundary, 1, PROBES + SPARE, tol)?
         .first()
         .map(|p| p.inward))
 }
@@ -467,21 +474,28 @@ pub(crate) fn face_readings(
     tol: Tolerances,
 ) -> OgeomResult<Readings> {
     Ok(Readings::of(&face_places(
-        model, face, boundary, wanted, tol,
+        model,
+        face,
+        boundary,
+        wanted,
+        wanted + SPARE,
+        tol,
     )?))
 }
 
-/// The places of [`face_readings`], each with what it read, in the order
-/// they were read.
+/// How many places beyond those wanted are tried before giving up.
+const SPARE: usize = 2;
+
+/// The places of [`face_readings`], up to `wanted` of them among the first
+/// `tried` triangles, each with what it read, in the order they were read.
 fn face_places(
     model: &Model,
     face: &Shape,
     boundary: &crate::SolidBoundary,
     wanted: usize,
+    tried: usize,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Place>> {
-    /// How many places beyond those wanted are tried before giving up.
-    const SPARE: usize = 2;
     /// How many of the largest triangles the places are chosen among.
     const CHOSEN_AMONG: usize = 32;
     // Meshed where the face stands in its own frame: a placement moves the
@@ -548,7 +562,7 @@ fn face_places(
     // The band a point counts as on the face's boundary within.
     let on_face = tol.confusion().max(data.tolerance.get());
     let mut trim: Option<crate::classify::FaceTrim<'_>> = None;
-    for (size, triangle) in order.into_iter().take(wanted + SPARE) {
+    for (size, triangle) in order.into_iter().take(tried) {
         if places.len() >= wanted {
             break;
         }

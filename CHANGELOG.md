@@ -257,6 +257,16 @@ bump may break the API and a patch bump may not.
   walked points, and refined until it holds there; one that cannot be
   held is not drawn. All 60 views now keep within 6e-6.
 
+### Performance
+
+- **A face's single orientation probe stops at the first place that
+  reads.** The probe that the mass properties, `inside_out_faces`, offset,
+  meshing a solid and `fix_shape` ask went on to read up to three places
+  and kept only the first; it now reads the first and stops, among the
+  same candidate triangles, so every answer is unchanged. The mass
+  properties of the largest corpus part take 8 percent less time and
+  `fix_shape` on it 12 percent less.
+
 ## [0.11.2] - 2026-10-15
 
 A patch release with one fix (#261): a face with no seam edge, such as a
