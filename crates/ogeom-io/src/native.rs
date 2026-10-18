@@ -2765,16 +2765,9 @@ impl<'a> Cursor<'a> {
             }
             "extrusion" => {
                 let direction = self.direction(tol)?;
-                let (start, end) = self.range()?;
-                if start != 0.0 {
-                    ogeom_bail!(
-                        Construction,
-                        "an extrusion's extent starts at zero; this one starts \
-                         at {start}"
-                    );
-                }
+                let extent = self.range()?;
                 let basis = self.curve(tol)?;
-                ExtrusionSurface::new(basis, direction, end)?.into()
+                ExtrusionSurface::over(basis, direction, extent)?.into()
             }
             "tsurface" => {
                 let u_range = self.range()?;
@@ -3390,6 +3383,50 @@ mod tests {
                 .curves()
                 .any(|(_, c)| matches!(c, Curve::BSpline(b) if b.is_periodic()))
         );
+    }
+
+    /// A `.brep` extrusion is given a window reaching both ways from its
+    /// curve; the reader has to take back the window the writer wrote, not
+    /// only the `[0, distance]` of a swept profile.
+    #[test]
+    fn an_extrusion_over_a_window_below_zero_round_trips() {
+        let mut model = Model::new();
+        let line =
+            Curve::Line(LineCurve::over(Axis::new(Point::ORIGIN, Direction::X), 0.0, 5.0).unwrap());
+        let extrusion = ExtrusionSurface::over(line, Direction::Z, (-1e9, 1e9)).unwrap();
+        model.geometry_mut().add_surface(extrusion.into());
+        let text = write(&model, &[], WriteOptions::default()).unwrap();
+        let (back, _) = read(&text).unwrap();
+        assert_eq!(write(&back, &[], WriteOptions::default()).unwrap(), text);
+        let window = back
+            .geometry()
+            .surfaces()
+            .find_map(|(_, s)| match s {
+                SurfaceGeometry::Extrusion(e) => Some(e.domain().1),
+                _ => None,
+            })
+            .expect("the extrusion survives");
+        assert_eq!(window, (-1e9, 1e9));
+    }
+
+    /// The window still has to be one: empty or backwards is refused.
+    #[test]
+    fn an_extrusion_over_an_empty_window_is_refused() {
+        let mut model = Model::new();
+        let line =
+            Curve::Line(LineCurve::over(Axis::new(Point::ORIGIN, Direction::X), 0.0, 5.0).unwrap());
+        let extrusion = ExtrusionSurface::new(line, Direction::Z, 3.0).unwrap();
+        model.geometry_mut().add_surface(extrusion.into());
+        let text = write(&model, &[], WriteOptions::default()).unwrap();
+        assert!(read(&text).is_ok());
+        let window = "1.0 0.0 3.0 line";
+        assert!(text.contains(window), "{text}");
+        for bad in ["1.0 3.0 3.0 line", "1.0 3.0 0.0 line", "1.0 0.0 inf line"] {
+            assert!(
+                read(&text.replacen(window, bad, 1)).is_err(),
+                "`{bad}` read"
+            );
+        }
     }
 
     #[test]

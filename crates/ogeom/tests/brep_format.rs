@@ -316,3 +316,52 @@ fn placed_shapes_and_cone_charts_survive_the_round_trip() {
         was.centre
     );
 }
+
+#[test]
+fn a_read_extrusion_survives_the_native_format() {
+    // An elliptic prism's wall is an extrusion; read back from `.brep` it
+    // reaches both ways from its curve, and the native format has to carry
+    // that window through a write and a read.
+    let mut model = Model::new();
+    let ellipse = ogeom::geom::Curve::Ellipse(ogeom::geom::EllipseCurve::new(
+        ogeom::math::Ellipse::new(Frame::WORLD, 10.0, 5.0, T).unwrap(),
+    ));
+    let range = ogeom::geom::Curve3d::domain(&ellipse);
+    let edge = ogeom::algo::make_edge(&mut model, ellipse, range, T)
+        .unwrap()
+        .shape;
+    let plane =
+        ogeom::geom::PlaneSurface::over(ogeom::math::Plane::XY, (-20.0, 20.0), (-20.0, 20.0))
+            .unwrap();
+    let face = ogeom::algo::make_face_with_pcurves(&mut model, plane.into(), &[vec![edge]], T)
+        .unwrap()
+        .shape;
+    let prism = ogeom::algo::make_prism(
+        &mut model,
+        &face,
+        ogeom::math::Vector::new(0.0, 0.0, 4.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+
+    let text = ogeom::io::brep::write(&model, &prism, T).unwrap();
+    let (read, solid) = ogeom::io::brep::read(&text, T).unwrap();
+    assert!(
+        read.geometry()
+            .surfaces()
+            .any(|(_, s)| matches!(s, ogeom::geom::SurfaceGeometry::Extrusion(_))),
+        "the wall is an extrusion"
+    );
+    let options = ogeom::io::native::WriteOptions::default();
+    let native = ogeom::io::native::write(&read, std::slice::from_ref(&solid), options).unwrap();
+    let (back, roots) = ogeom::io::native::read(&native).unwrap();
+    assert_eq!(
+        ogeom::io::native::write(&back, &roots, options).unwrap(),
+        native
+    );
+    assert_eq!(counts(&back, &roots[0]), counts(&read, &solid));
+    assert!(ogeom::algo::check(&back, &roots[0], T).unwrap().is_valid());
+    let (now, was) = (volume(&back, &roots[0]), volume(&model, &prism));
+    assert!((now - was).abs() < 1e-9 * was, "{now} against {was}");
+}

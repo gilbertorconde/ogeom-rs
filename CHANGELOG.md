@@ -11,6 +11,16 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The native format reads back an extrusion whose window starts below
+  zero.** `native::write` writes an extrusion's window as it stands, and
+  `.brep` and STEP imports give extrusions windows reaching both ways
+  from their curve, but `native::read` refused any window not starting
+  at zero: a shape imported with an extrusion face could not be saved
+  and opened again. The reader now takes any finite, increasing window
+  (#295).
+
 ## [0.11.3] - 2026-10-18
 
 A patch release of fixes. `check` names a solid whose boundary passes
