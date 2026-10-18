@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A spline crease's continuation is never cut short by its refit.** A
+  crease continued past its ends is put back on its hosts only where
+  both hosts are found to meet along the whole continuation; where a host
+  ends first, the continuation stays as itself rather than being refitted
+  over the stretch walked, which could end it a fraction of a radius past
+  the crease. A wall swept from a fitted profile is continued twice as
+  far as the crease, so the crease's continuation meets it to its end.
+  An error in that refit is returned rather than taken as no refit.
 - **A round on a wall swept from a fitted profile no longer refuses, and
   two rounds meeting at a vertex their edge overruns are capped there
   (#287).** A community printer carriage, rebuilt by printCAD from its

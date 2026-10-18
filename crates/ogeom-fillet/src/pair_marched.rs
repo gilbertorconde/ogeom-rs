@@ -62,7 +62,7 @@ pub(crate) fn hosts_of(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Hosts> {
-    let mut reach = radius * 6.0;
+    let mut reach = radius * crate::marched::HOST_REACH;
     for face in faces {
         reach += shape_bounds(model, face, tol)?.diagonal();
     }
@@ -85,23 +85,9 @@ pub(crate) fn hosts_of(
                 let (_, (h0, h1)) = cylinder.domain();
                 CylinderSurface::new(cylinder.cylinder(), (h0 - reach, h1 + reach))?.into()
             }
-            SurfaceGeometry::BSpline(patch) => {
-                let mut longer = patch;
-                for (along_u, closed) in [
-                    (true, longer.is_closed_u(tol) || longer.is_periodic_u()),
-                    (false, longer.is_closed_v(tol) || longer.is_periodic_v()),
-                ] {
-                    if closed {
-                        continue;
-                    }
-                    for at_end in [false, true] {
-                        if let Ok(grown) = longer.extended(along_u, at_end, radius * 6.0, 2, tol) {
-                            longer = grown;
-                        }
-                    }
-                }
-                SurfaceGeometry::BSpline(longer)
-            }
+            SurfaceGeometry::BSpline(patch) => SurfaceGeometry::BSpline(
+                crate::marched::continued_patch(patch, radius * crate::marched::HOST_REACH, tol),
+            ),
             SurfaceGeometry::Trimmed(_) | SurfaceGeometry::Offset(_) => ogeom_bail!(
                 Construction,
                 "a round between faces that share no edge rolls on surfaces with their own \

@@ -29,6 +29,21 @@ use ogeom_topo::{Filter, Model, NodeData, Orientation, Shape, ShapeType, explore
 /// How many samples cross each blend arc.
 const ACROSS: usize = 17;
 
+/// How far, in radii, an open spline crease is continued past each end:
+/// the march runs on into the continuation, and a run-out's caps and its
+/// crease stand on it.
+const CREASE_REACH: f64 = 8.0;
+
+/// How far, in radii, a fitted host patch is continued past each open
+/// side: room for the ball to roll out through the wall it meets.
+pub(crate) const HOST_REACH: f64 = 6.0;
+
+/// How far, in radii, a wall swept from a fitted profile has its profile
+/// continued: twice the crease's reach, so a crease continuation that
+/// runs across the profile at a slant meets the wall over its whole
+/// length.
+const WALL_REACH: f64 = 2.0 * CREASE_REACH;
+
 /// Round an edge whose seat only the marching machinery can speak: the
 /// intersection curve of two analytic faces, closed on itself.
 pub(crate) fn marched_fillet(
@@ -106,23 +121,8 @@ pub(crate) fn marched_fillet(
         // stand on one chart, as an analytic host's windowed copy does.
         let stored = match stored {
             SurfaceGeometry::BSpline(patch) => {
-                use ogeom_geom::Surface as _;
-                let reach = radius * 6.0;
-                let mut longer = patch;
-                for (along_u, closed) in [
-                    (true, longer.is_closed_u(tol) || longer.is_periodic_u()),
-                    (false, longer.is_closed_v(tol) || longer.is_periodic_v()),
-                ] {
-                    if closed {
-                        continue;
-                    }
-                    for at_end in [false, true] {
-                        if let Ok(grown) = longer.extended(along_u, at_end, reach, 2, tol) {
-                            longer = grown;
-                        }
-                    }
-                }
-                let wider = SurfaceGeometry::BSpline(longer);
+                let wider =
+                    SurfaceGeometry::BSpline(continued_patch(patch, radius * HOST_REACH, tol));
                 if let Some(held) = model.geometry_mut().surface_mut(surface_id) {
                     *held = wider.clone();
                 }
@@ -140,12 +140,7 @@ pub(crate) fn marched_fillet(
                         if !profile.is_periodic()
                             && ends_apart(swept.curve(), profile.domain(), tol) =>
                     {
-                        let mut longer = profile.clone();
-                        for at_end in [false, true] {
-                            if let Ok(grown) = longer.extended(at_end, radius * 8.0, 2, tol) {
-                                longer = grown;
-                            }
-                        }
+                        let longer = continued_curve(profile.clone(), radius * WALL_REACH, tol);
                         let (_, extent) = swept.domain();
                         ogeom_geom::ExtrusionSurface::over(
                             Curve::BSpline(longer),
@@ -296,19 +291,8 @@ pub(crate) fn marched_fillet(
         (Curve::BSpline(spline), false)
             if !spline.is_periodic() && ends_apart(&guide, guide_range, tol) =>
         {
-            let mut longer = spline.clone();
-            for at_end in [false, true] {
-                if let Ok(grown) = longer.extended(at_end, radius * 8.0, 2, tol) {
-                    longer = grown;
-                }
-            }
-            // A continuation that cannot be put back on the hosts stays as
-            // it was: the march still runs on it, and only a run-out that
-            // stands on it misses.
-            let longer = match crease_continued(spline, &longer, [&first, &second], radius, tol) {
-                Ok(Some(on_hosts)) => on_hosts,
-                Ok(None) | Err(_) => longer,
-            };
+            let longer = continued_curve(spline.clone(), radius * CREASE_REACH, tol);
+            let longer = crease_continued(spline, longer, [&first, &second], radius, tol)?;
             let domain = longer.domain();
             (Curve::BSpline(longer), domain)
         }
@@ -3469,23 +3453,79 @@ fn arc_run_out(
     )?)))
 }
 
-/// A spline crease continued past its ends along where its two hosts
-/// still meet, or `None` where `longer` (the crease continued as itself)
-/// already lies on both, or no better continuation is found. Each sample
-/// of `longer` past the crease's own ends is moved onto both hosts in the
-/// plane square to it there, as far as the hosts are found to meet, and
-/// the curve is refitted through the crease's own points and those at
-/// their own parameters, so the crease keeps its parameters and its
-/// window.
+/// `spline` continued past both ends by `reach` in space, as itself, to
+/// second order. An end the spline stands still at is not continued: it
+/// has no direction to continue in.
+fn continued_curve(
+    spline: ogeom_geom::BSplineCurve,
+    reach: f64,
+    tol: Tolerances,
+) -> ogeom_geom::BSplineCurve {
+    let mut longer = spline;
+    for at_end in [false, true] {
+        if let Ok(grown) = longer.extended(at_end, reach, 2, tol) {
+            longer = grown;
+        }
+    }
+    longer
+}
+
+/// `patch` continued past each open side by `reach` in space, as itself,
+/// to second order: the same parameters over a wider window. A closed or
+/// periodic direction has no side to continue, and a side the patch stands
+/// still along has no direction to continue in.
+pub(crate) fn continued_patch(
+    patch: ogeom_geom::BSplineSurface,
+    reach: f64,
+    tol: Tolerances,
+) -> ogeom_geom::BSplineSurface {
+    use ogeom_geom::Surface as _;
+    let open = [
+        (true, !(patch.is_closed_u(tol) || patch.is_periodic_u())),
+        (false, !(patch.is_closed_v(tol) || patch.is_periodic_v())),
+    ];
+    let mut longer = patch;
+    for (along_u, open) in open {
+        if !open {
+            continue;
+        }
+        for at_end in [false, true] {
+            if let Ok(grown) = longer.extended(along_u, at_end, reach, 2, tol) {
+                longer = grown;
+            }
+        }
+    }
+    longer
+}
+
+/// The guide an open spline crease is marched on: `longer`, the crease
+/// continued as itself, unless that strays off its two hosts past an end
+/// and the hosts are found to meet all the way along both continuations.
+/// Then each sample of `longer` past the crease's ends is moved onto both
+/// hosts in the plane square to it there, and the curve is refitted
+/// through the crease's own points and those at their own parameters, so
+/// the crease keeps its parameters, its window and the full length of its
+/// continuation. A walk that stops short of the continuation's end (a host
+/// that ends first, a meeting that turns away) keeps `longer`: refitted
+/// over only what was walked, the continuation would end short, and a
+/// run-out past that end would have no guide.
+///
+/// # Errors
+///
+/// As the hosts' and the curves' evaluation, and the fit.
 fn crease_continued(
     crease: &ogeom_geom::BSplineCurve,
-    longer: &ogeom_geom::BSplineCurve,
+    longer: ogeom_geom::BSplineCurve,
     hosts: [&SurfaceGeometry; 2],
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<ogeom_geom::BSplineCurve>> {
+) -> OgeomResult<ogeom_geom::BSplineCurve> {
     use ogeom_geom::Surface as _;
+    // Samples past each end: three per radius of the continuation.
     const SAMPLES: usize = 24;
+    // The seed grid of a projection onto a host whose foot no closed form
+    // gives.
+    const SEED_GRID: usize = 24;
     let (a, b) = crease.domain();
     let (lo, hi) = longer.domain();
     let at = |from: f64, to: f64, i: usize| -> f64 {
@@ -3505,7 +3545,7 @@ fn crease_continued(
     let off_hosts = |p: Point| -> OgeomResult<f64> {
         let mut off: f64 = 0.0;
         for host in hosts {
-            off = off.max(ogeom_algo::project_on_surface(host, p, 24, tol)?.distance);
+            off = off.max(ogeom_algo::project_on_surface(host, p, SEED_GRID, tol)?.distance);
         }
         Ok(off)
     };
@@ -3517,14 +3557,20 @@ fn crease_continued(
         }
     }
     if !strays {
-        return Ok(None);
+        return Ok(longer);
     }
+    // The Newton solve settles to a hundredth of the confusion, and a
+    // point whose residual stays above a tenth of it is not a meeting:
+    // the refit through these points is held to the confusion.
+    let settled = tol.confusion() * 0.01;
+    let met = tol.confusion() * 0.1;
     // One point of the hosts' meeting, in the plane through `q` square to
-    // `along`, seeded from `q`'s projections onto each.
-    let onto_both = |q: Point, along: Vector| -> Option<Point> {
+    // `along`, seeded from `q`'s projections onto each; `None` where the
+    // solve finds none there.
+    let onto_both = |q: Point, along: Vector| -> OgeomResult<Option<Point>> {
         let [first, second] = hosts;
-        let p1 = ogeom_algo::project_on_surface(first, q, 24, tol).ok()?;
-        let p2 = ogeom_algo::project_on_surface(second, q, 24, tol).ok()?;
+        let p1 = ogeom_algo::project_on_surface(first, q, SEED_GRID, tol)?;
+        let p2 = ogeom_algo::project_on_surface(second, q, SEED_GRID, tol)?;
         let system = |x: &[f64; 4]| {
             let (Ok(s1), Ok(s2), Ok((d1u, d1v)), Ok((d2u, d2v))) = (
                 first.point_at(x[0], x[1], tol),
@@ -3546,7 +3592,7 @@ fn crease_continued(
             )
         };
         let criteria = solve::Criteria {
-            residual: tol.confusion() * 0.01,
+            residual: settled,
             step: tol.parametric(),
             max_iterations: 60,
         };
@@ -3556,9 +3602,13 @@ fn crease_continued(
             p2.parameters.0,
             p2.parameters.1,
         ];
-        let (x, norm, _, _) = solve::newton_system_fixed(system, seed, criteria).ok()?;
-        if norm > tol.confusion() * 0.1 {
-            return None;
+        // A singular system is two hosts tangent along the plane, or a
+        // point off a host's window: no transverse meeting there.
+        let Ok((x, norm, _, _)) = solve::newton_system_fixed(system, seed, criteria) else {
+            return Ok(None);
+        };
+        if norm > met {
+            return Ok(None);
         }
         let inside = |surface: &SurfaceGeometry, u: f64, v: f64| {
             let ((ua, ub), (va, vb)) = surface.domain();
@@ -3566,34 +3616,34 @@ fn crease_continued(
             u >= ua - band && u <= ub + band && v >= va - band && v <= vb + band
         };
         if !inside(first, x[0], x[1]) || !inside(second, x[2], x[3]) {
-            return None;
+            return Ok(None);
         }
-        let p = first.point_at(x[0], x[1], tol).ok()?;
+        let p = first.point_at(x[0], x[1], tol)?;
         // A meeting a radius off the continuation is another branch of it.
-        (p.distance(q) <= radius).then_some(p)
+        Ok((p.distance(q) <= radius).then_some(p))
     };
-    let walk = |ts: &[f64]| -> OgeomResult<Vec<(f64, Point)>> {
+    // Every sample of `ts` moved onto both hosts, or `None` where one is not.
+    let walk = |ts: &[f64]| -> OgeomResult<Option<Vec<(f64, Point)>>> {
         let mut out = Vec::with_capacity(ts.len());
         for &t in ts {
             let q = longer.point_at(t, tol)?;
             let d = longer.d1_at(t, tol)?;
             let m = d.magnitude();
             if m <= tol.confusion() {
-                break;
+                return Ok(None);
             }
-            let Some(p) = onto_both(q, d / m) else {
-                break;
+            let Some(p) = onto_both(q, d / m)? else {
+                return Ok(None);
             };
             out.push((t, p));
         }
-        Ok(out)
+        Ok(Some(out))
     };
-    let mut head = walk(&before)?;
+    let (Some(mut head), Some(tail)) = (walk(&before)?, walk(&after)?) else {
+        return Ok(longer);
+    };
     head.reverse();
-    let tail = walk(&after)?;
-    if head.is_empty() && tail.is_empty() {
-        return Ok(None);
-    }
+    // The crease's own points, enough to pin each of its spans.
     let inner = (crease.control_points().len() * 4).max(64);
     let mut parameters = Vec::with_capacity(head.len() + inner + 1 + tail.len());
     let mut points = Vec::with_capacity(parameters.capacity());
@@ -3612,7 +3662,7 @@ fn crease_continued(
         points.push(p);
     }
     let fitted = ogeom_geom::fit::fit_points_at(&parameters, &points, 3, tol.confusion(), tol)?;
-    Ok(fitted.met.then_some(fitted.curve))
+    Ok(if fitted.met { fitted.curve } else { longer })
 }
 
 /// Whether a guide's two ends stand apart: an arc, not a loop.
@@ -3809,6 +3859,54 @@ pub(crate) fn touching_ball(spine: &[Point], p: Point) -> Point {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A crease bowed off the line its two plane hosts meet along, so its
+    /// continuation as itself strays off them, between hosts that end five
+    /// radii past the crease's ends: the meeting cannot be followed over
+    /// the eight-radius continuation, and the continuation is kept whole,
+    /// on its own parameters out to both its ends, rather than refitted
+    /// over the stretch the hosts hold.
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn a_crease_continuation_its_hosts_end_short_of_is_kept_whole() {
+        use ogeom_math::{Direction, Frame, KnotVector, Plane};
+        let tol = Tolerances::default();
+        let radius = 1.0;
+        let crease = ogeom_geom::BSplineCurve::new(
+            KnotVector::clamped_uniform(3, 4).unwrap(),
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(7.0, 0.0, 1e-3),
+                Point::new(13.0, 0.0, 1e-3),
+                Point::new(20.0, 0.0, 0.0),
+            ],
+            tol,
+        )
+        .unwrap();
+        let floor: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(Plane::XY, (-5.0, 25.0), (-5.0, 5.0))
+                .unwrap()
+                .into();
+        let wall_frame = Frame::new(Point::ORIGIN, -Direction::Y, Direction::X, tol).unwrap();
+        let wall: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(Plane::new(wall_frame), (-5.0, 25.0), (-5.0, 5.0))
+                .unwrap()
+                .into();
+        let longer = continued_curve(crease.clone(), radius * CREASE_REACH, tol);
+        let continued =
+            crease_continued(&crease, longer.clone(), [&floor, &wall], radius, tol).unwrap();
+        assert_eq!(continued.domain(), longer.domain());
+        for t in [longer.domain().0, longer.domain().1] {
+            let (kept, own) = (
+                continued.point_at(t, tol).unwrap(),
+                longer.point_at(t, tol).unwrap(),
+            );
+            assert!(
+                kept.distance(own) <= tol.confusion(),
+                "{kept:?} against {own:?}"
+            );
+        }
+    }
 
     /// A strip one long and a hundredth wide, closed on its first point,
     /// encloses its own area wherever it stands in its chart, up to 2e7
