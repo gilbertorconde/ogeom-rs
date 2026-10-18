@@ -213,7 +213,7 @@ fn a_wall_passing_through_itself_is_broken_wherever_it_stands() {
         let crossing: Vec<_> = diagnosis
             .problems
             .iter()
-            .filter(|p| p.what.contains("passes through itself"))
+            .filter(|p| p.what.contains("the face passes through itself"))
             .collect();
         assert_eq!(crossing.len(), 1, "{diagnosis}");
         assert_eq!(crossing[0].at.node(), wall.node(), "{diagnosis}");
