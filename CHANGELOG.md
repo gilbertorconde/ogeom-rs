@@ -11,6 +11,15 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-10-18
+
+A patch release of fixes. A shape imported with an extrusion face (from
+`.brep` or STEP) saves to the native format and reads back (#295).
+Rounds and chamfers meeting at an inside corner whose vertex stands a
+hair off one edge's wall meet flush rather than refusing (#298), and a
+section running into a point where two curved faces touch at their
+ends reaches it, so a pad standing on a swept wall's end fuses (#297).
+
 ### Fixed
 
 - **The native format reads back an extrusion whose window starts below
@@ -5793,7 +5802,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.0...v0.11.1
