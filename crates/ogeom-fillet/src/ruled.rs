@@ -27,16 +27,31 @@ enum Trace {
     Circle { centre_on_axis: Point, radius: f64 },
 }
 
-/// Blend a straight `edge` whose two faces are planes or drums parallel to
-/// it, at least one a drum; `None` where the seat is not of that kind.
-pub(crate) fn ruled_fillet(
-    model: &mut Model,
+/// A straight crease between two planes or drums parallel to it, at least
+/// one a drum: the seat the ruled fillet blends.
+pub(crate) struct RuledSeat {
+    guide: Curve,
+    range: (f64, f64),
+    start: Point,
+    end: Point,
+    length: f64,
+    along: Vector,
+    faces: Vec<Shape>,
+    hosts: Vec<(SurfaceGeometry, f64, Trace)>,
+}
+
+/// The ruled seat of a straight `edge` of `solid`; `None` where the seat is
+/// not of that kind.
+///
+/// # Errors
+///
+/// A construction error where the edge has no length.
+pub(crate) fn ruled_seat(
+    model: &Model,
     solid: &Shape,
     edge: &Shape,
-    radius: f64,
-    mates: Option<(usize, &[Mate])>,
     tol: Tolerances,
-) -> OgeomResult<Option<Built>> {
+) -> OgeomResult<Option<RuledSeat>> {
     let (guide, range) = edge_curve(model, edge, tol)?;
     let Curve::Line(_) = &guide else {
         return Ok(None);
@@ -97,6 +112,38 @@ pub(crate) fn ruled_fillet(
     if hosts.iter().all(|(_, _, t)| matches!(t, Trace::Line)) {
         return Ok(None);
     }
+    Ok(Some(RuledSeat {
+        guide,
+        range,
+        start,
+        end,
+        length,
+        along,
+        faces,
+        hosts,
+    }))
+}
+
+/// Blend a straight `edge` on its ruled `seat`.
+pub(crate) fn ruled_fillet(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    mates: Option<(usize, &[Mate])>,
+    seat: RuledSeat,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let RuledSeat {
+        guide,
+        range,
+        start,
+        end,
+        length,
+        along,
+        faces,
+        hosts,
+    } = seat;
 
     let convex = crate::marched::crease_convexity(
         model,
@@ -280,5 +327,5 @@ pub(crate) fn ruled_fillet(
         ogeom_bool::fuse(model, solid, &wedge, tol)?
     };
     result.history.delete(edge);
-    Ok(Some(result))
+    Ok(result)
 }

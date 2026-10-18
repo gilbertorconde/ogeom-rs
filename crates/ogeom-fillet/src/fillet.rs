@@ -149,29 +149,14 @@ fn fillet_edge_seat(
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
-    let (curve, crange) = edge_curve(model, edge, tol)?;
-    let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
-    match curve {
-        Curve::Line(_) if crate::support::hosts_planar(model, solid, edge, tol)? => {
-            planar_fillet(model, solid, edge, radius, mates, tol)
+    match route(model, solid, edge, tol)? {
+        Route::Planar => planar_fillet(model, solid, edge, radius, mates, tol),
+        Route::Ruled(seat) => {
+            crate::ruled::ruled_fillet(model, solid, edge, radius, mates, seat, tol)
         }
-        Curve::Line(_) => match crate::ruled::ruled_fillet(model, solid, edge, radius, mates, tol)?
-        {
-            Some(built) => Ok(built),
-            None => crate::marched::marched_fillet(model, solid, edge, radius, mates, tol),
-        },
-        Curve::Circle(c) => {
-            // A rim on a planar cap and its coaxial wall is the revolved
-            // blend's, exact; a circle on any other pair of hosts (a bore
-            // down a ball's axis, a ring's own rim) is a seat like any
-            // other for the march.
-            let seat = match revolved_seat(model, solid, edge, &c, tol) {
-                Ok(seat) => seat,
-                Err(OgeomError::Construction(_)) => {
-                    return crate::marched::marched_fillet(model, solid, edge, radius, mates, tol);
-                }
-                Err(e) => return Err(e),
-            };
+        Route::Revolved(c, crange, seat) => {
+            let closed =
+                ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
             if closed {
                 return revolved_fillet(model, solid, edge, &c, radius, tol);
             }
@@ -182,8 +167,43 @@ fn fillet_edge_seat(
                 revolved_arc_fillet(model, solid, edge, &c, radius, tol)
             }
         }
-        _ => crate::marched::marched_fillet(model, solid, edge, radius, mates, tol),
+        Route::Marched => crate::marched::marched_fillet(model, solid, edge, radius, mates, tol),
     }
+}
+
+/// The construction that rounds an edge, chosen by its curve and the two
+/// faces it lies between.
+enum Route {
+    /// A straight edge between two planes.
+    Planar,
+    /// A straight edge between planes or drums parallel to it.
+    Ruled(crate::ruled::RuledSeat),
+    /// A circle between a planar cap and its coaxial wall, with the
+    /// edge's range on it.
+    Revolved(CircleCurve, (f64, f64), crate::support::RevolvedSeat),
+    /// Any other seat: the march.
+    Marched,
+}
+
+/// How `edge` of `solid` is rounded. A rim on a planar cap and its
+/// coaxial wall is the revolved blend's, exact; a circle on any other pair
+/// of hosts (a bore down a ball's axis, a ring's own rim) is a seat like
+/// any other for the march.
+fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomResult<Route> {
+    let (curve, crange) = edge_curve(model, edge, tol)?;
+    Ok(match curve {
+        Curve::Line(_) if crate::support::hosts_planar(model, solid, edge, tol)? => Route::Planar,
+        Curve::Line(_) => match crate::ruled::ruled_seat(model, solid, edge, tol)? {
+            Some(seat) => Route::Ruled(seat),
+            None => Route::Marched,
+        },
+        Curve::Circle(c) => match revolved_seat(model, solid, edge, &c, tol) {
+            Ok(seat) => Route::Revolved(c, crange, seat),
+            Err(OgeomError::Construction(_)) => Route::Marched,
+            Err(e) => return Err(e),
+        },
+        _ => Route::Marched,
+    })
 }
 
 /// Round a chain of edges in one call, each blend applied in turn and every
@@ -425,17 +445,27 @@ fn fillet_edges_own(
     // run-out then melts with untouched hosts, and the analytic band built
     // after it runs on through it, which the melt resolves. Built the other
     // way round, the marched band's run-out lands on the analytic band's
-    // rail along a stretch, a contact the melt does not resolve. The order
-    // the edges were asked in decides nothing else.
-    let marched: Vec<bool> = edges
-        .iter()
-        .map(|e| {
-            edge_curve(model, e, tol)
-                .is_ok_and(|(c, _)| !matches!(c, Curve::Line(_) | Curve::Circle(_)))
+    // rail along a stretch, a contact the melt does not resolve. Each edge
+    // is routed on the solid as given: earlier rounds trim an edge's hosts
+    // but leave their surfaces, which are what the route reads. The order
+    // the edges were asked in decides everything else.
+    let mut marched: Vec<Option<bool>> = vec![None; edges.len()];
+    for i in 0..edges.len() {
+        if (0..edges.len()).any(|j| j != i && meet(i, j)) {
+            marched[i] = Some(matches!(
+                route(model, solid, &edges[i], tol)?,
+                Route::Marched
+            ));
+        }
+    }
+    let first: Vec<bool> = (0..edges.len())
+        .map(|i| {
+            marched[i] == Some(true)
+                && (0..edges.len()).any(|j| meet(i, j) && marched[j] == Some(false))
         })
         .collect();
     let mut taken: Vec<usize> = (0..edges.len()).collect();
-    taken.sort_by_key(|&i| (!marched[i], i));
+    taken.sort_by_key(|&i| (!first[i], i));
     let mut round_of: Vec<usize> = vec![0; edges.len()];
     for (k, &i) in taken.iter().enumerate() {
         let mut round = 0;

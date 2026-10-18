@@ -13,6 +13,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Only a marched round that meets an analytic one at a vertex is built
+  ahead of the order asked.** The marched band was put first in every
+  set mixing the two kinds, and an edge was taken as marched by its
+  curve alone, so a straight edge rounded by the march was not, and a
+  spline far from any analytic edge was moved anyway. The order now reads
+  the construction each edge is actually rounded by.
 - **A spline crease's continuation is never cut short by its refit.** A
   crease continued past its ends is put back on its hosts only where
   both hosts are found to meet along the whole continuation; where a host
