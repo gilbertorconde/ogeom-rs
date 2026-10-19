@@ -409,3 +409,144 @@ fn a_mesh_reports_the_chord_it_meets() {
         sag(&drum_mesh)
     );
 }
+
+/// A prism 4 long on a 2 by 2 square with a quarter round of radius 1
+/// notched out of one corner, standing on the plane x = 0 on the side
+/// `length` points to, its notch's arc running from `u = 0` of its circle
+/// at one end of the arc or the other.
+fn notched_prism(
+    model: &mut ogeom_topo::Model,
+    arc_from_the_floor: bool,
+    length: f64,
+) -> ogeom_topo::Shape {
+    use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve, PlaneSurface};
+    use ogeom_math::{Circle, Direction, Plane, Vector};
+    let at = |y: f64, z: f64| Point::new(0.0, y, z);
+    let corners = [
+        at(0.0, 0.0),
+        at(2.0, 0.0),
+        at(2.0, 1.0),
+        at(1.0, 2.0),
+        at(0.0, 2.0),
+    ];
+    let vertices: Vec<_> = corners
+        .iter()
+        .map(|p| ogeom_algo::make_vertex(model, *p).shape)
+        .collect();
+    let mut edges = Vec::new();
+    for (i, j) in [(0, 1), (1, 2), (3, 4), (4, 0)] {
+        let line = LineCurve::segment(corners[i], corners[j], T).unwrap();
+        let range = line.domain();
+        edges.push(
+            ogeom_algo::make_edge_between(
+                model,
+                Curve::Line(line),
+                range,
+                &vertices[i],
+                &vertices[j],
+                T,
+            )
+            .unwrap()
+            .shape,
+        );
+    }
+    let towards = |x, y, z| Direction::new(Vector::new(x, y, z), T).unwrap();
+    // Either way the arc runs a quarter turn from its circle's `x`: from
+    // the floor's end at (2, 1) round to (1, 2), or back.
+    let (frame, from, to) = if arc_from_the_floor {
+        (
+            Frame::new(
+                at(2.0, 2.0),
+                towards(-1.0, 0.0, 0.0),
+                towards(0.0, 0.0, -1.0),
+                T,
+            ),
+            2,
+            3,
+        )
+    } else {
+        (
+            Frame::new(
+                at(2.0, 2.0),
+                towards(1.0, 0.0, 0.0),
+                towards(0.0, -1.0, 0.0),
+                T,
+            ),
+            3,
+            2,
+        )
+    };
+    let arc = Curve::Circle(CircleCurve::new(
+        Circle::new(frame.unwrap(), 1.0, T).unwrap(),
+    ));
+    let arc = ogeom_algo::make_edge_between(
+        model,
+        arc,
+        (0.0, core::f64::consts::FRAC_PI_2),
+        &vertices[from],
+        &vertices[to],
+        T,
+    )
+    .unwrap()
+    .shape;
+    edges.insert(
+        2,
+        if arc_from_the_floor {
+            arc
+        } else {
+            arc.reversed()
+        },
+    );
+    let plane = PlaneSurface::over(
+        Plane::new(Frame::new(Point::ORIGIN, Direction::X, Direction::Y, T).unwrap()),
+        (-5.0, 5.0),
+        (-5.0, 5.0),
+    )
+    .unwrap();
+    let profile = ogeom_algo::make_face_with_pcurves(model, plane.into(), &[edges], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(model, &profile, Vector::new(length, 0.0, 0.0), T)
+        .unwrap()
+        .shape
+}
+
+#[test]
+fn a_notched_prism_fuses_with_its_mirror_where_its_wall_chart_closes() {
+    // The notch's wall is a quarter of a cylinder whose chart closes along
+    // one of the wall's straight edges. Mirrored and baked, the wall's
+    // chart runs the other way round, and that edge can land on the other
+    // side of the closure from the rest of the wall's ring: the bake must
+    // place it beside the face, or the fuse finds a ring that does not
+    // close.
+    for (arc_from_the_floor, length) in [(true, -4.0), (false, 4.0), (true, 4.0), (false, -4.0)] {
+        let mut model = ogeom_topo::Model::new();
+        let half = notched_prism(&mut model, arc_from_the_floor, length);
+        let copy = ogeom_algo::copied(&mut model, &half).unwrap().shape;
+        let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+        let image = ogeom_algo::transformed(&mut model, &copy, mirror)
+            .unwrap()
+            .shape;
+        let case = format!("arc from the floor {arc_from_the_floor}, length {length}");
+        let fused = ogeom_bool::fuse(&mut model, &half, &image, T)
+            .unwrap_or_else(|e| panic!("{case}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{case}: {:?}", diagnosis.problems);
+        assert_eq!(
+            walks::edges_walked_one_way(&model, &fused.shape),
+            0,
+            "{case}"
+        );
+        // The halves share only the face on the mirror plane, so their
+        // volumes add, each the profile's area, the square less the
+        // quarter disc, over the length. The exact integrals measure the
+        // analytic faces to rounding.
+        let each = 4.0 * (4.0 - core::f64::consts::FRAC_PI_4);
+        let measured = vol(&model, &fused.shape);
+        assert!(
+            (measured - 2.0 * each).abs() < each * 1e-8,
+            "{case}: fused volume {measured} against {}",
+            2.0 * each
+        );
+    }
+}

@@ -598,6 +598,7 @@ impl Rebuild<'_> {
                         &new_curve,
                         new_range,
                         &patch_surface,
+                        (edge.orientation() == Orientation::Reversed) == walked_back,
                         tol,
                     )?;
                     let iso = match iso {
@@ -1069,7 +1070,10 @@ fn fit_pcurve_at(
 /// Both endpoints project onto the patch; the pcurve is the straight chart
 /// segment between them, exact because the boundary conversion and the patch
 /// direction share one parameterization. `None` for anything that was not an
-/// axis-aligned chart line, which takes the fitted path.
+/// axis-aligned chart line, which takes the fitted path. `along` says
+/// whether the face's ring, which keeps the face on its left in the new
+/// chart, runs the edge the way its curve does.
+#[allow(clippy::too_many_arguments)]
 fn exact_iso_pcurve(
     model: &Model,
     old_repr: Option<&EdgeRepr>,
@@ -1077,6 +1081,7 @@ fn exact_iso_pcurve(
     curve: &Curve,
     range: (f64, f64),
     surface: &SurfaceGeometry,
+    along: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<ogeom_geom::PlanarCurve>> {
     let Some(EdgeRepr::PCurve { curve: old_pc, .. }) = old_repr else {
@@ -1150,13 +1155,24 @@ fn exact_iso_pcurve(
         let m = crate::measure::project_on_surface(surface, middle, 24, tol)?
             .parameters
             .0;
-        let u = a.x.max(b.x).min(m).max(a.x.min(b.x));
-        a.x = u;
-        b.x = u;
+        let mut u = a.x.max(b.x).min(m).max(a.x.min(b.x));
         if (a.y - b.y).abs() < (nv1 - nv0) * 1e-9 {
             a.y = nv0;
             b.y = nv1;
         }
+        // A column on the closure of a closed chart images to both of the
+        // chart's edges, and its own points, all on the closure, cannot
+        // tell which. The face can: the ring keeps it on its left, so a
+        // column the ring runs up the chart has the face below it in `u`
+        // and stands on the chart's last edge, and one run down stands on
+        // its first.
+        let span = nu1 - nu0;
+        let closed = surface.is_periodic_u() || surface.is_closed_u(tol);
+        if closed && ((u - nu0).abs() < span * 1e-6 || (u - nu1).abs() < span * 1e-6) {
+            u = if (b.y > a.y) == along { nu1 } else { nu0 };
+        }
+        a.x = u;
+        b.x = u;
     }
     Ok(Some(ogeom_geom::Line2d::segment(a, b, tol)?.into()))
 }
