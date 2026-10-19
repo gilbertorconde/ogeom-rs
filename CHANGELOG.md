@@ -37,6 +37,15 @@ bump may break the API and a patch bump may not.
   the clusters its other faces make on their own are merged as before
   (#315).
 
+- **`check` reports an edge whose pcurve stands farther off its curve
+  than the edge is long (#314).** Such a pcurve describes another stretch
+  of its surface: a fit whose end landed on the far side of a closed
+  chart runs the far way round it. A tolerance widened to cover the gap
+  hid it from every containment test, and the next boolean welded the
+  face's boundary into dust. An exact pcurve is never reported, but one
+  only within its tolerance of the edge can be: the test is a heuristic,
+  and it is reported as suspect, not broken.
+
 ### Fixed
 
 - **A part fused with its mirror image builds where a face's chart closes

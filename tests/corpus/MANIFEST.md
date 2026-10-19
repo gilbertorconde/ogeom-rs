@@ -362,6 +362,18 @@ part's own half of the channel, and the image's bake pinned the bore's
 fitted edges to a vertex's image on the wrong side of the bore's chart
 closure; either left the channel's arrangement no piece of the face.
 
+## half_channel_mirror_baked_round_the_back.ogeom
+
+The mirror image of `half_channel_on_the_mirror_plane.ogeom`, in this
+kernel's native format, as the bake of a reflected solid left it before
+fba778b and 909de8f: one fitted edge, 1.17 mm long where the bore meets
+the channel, ends on the far side of the bore's chart closure, so its
+pcurve runs the far way round the bore, 2.48 mm off its curve, and the
+bake widened the edge and its vertices to cover that. Every containment
+test passes within the widened tolerance. The reproducer for `check`
+reporting an edge whose pcurve stands farther off its curve than the edge
+is long.
+
 ## curved_walls_across_the_mirror_plane.ogeom
 
 Two boxes cropped, in this kernel's native format, from the same half of

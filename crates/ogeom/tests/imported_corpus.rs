@@ -1882,3 +1882,28 @@ fn a_part_on_its_mirror_plane_fuses_with_its_mirror_image() {
     // The part reaches the plane from one side; the whole spans it.
     assert!(bounds.low().unwrap().x < -3.0 && bounds.high().unwrap().x > 3.0);
 }
+
+/// The mirror image of `half_channel_on_the_mirror_plane.ogeom` as a bake
+/// that pinned a fitted edge's end on the wrong side of the bore's chart
+/// closure left it: the edge, 1.17 long where the bore meets the channel,
+/// has a pcurve running the far way round the bore, 2.48 off its curve,
+/// and a tolerance widened to cover it. Every containment test passes
+/// within that tolerance; check names the edge as suspect, and nothing
+/// as broken.
+#[test]
+fn a_bake_s_pcurve_round_the_back_of_its_chart_is_suspect() {
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("half_channel_mirror_baked_round_the_back.ogeom")).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &roots[0], T).unwrap();
+    assert!(diagnosis.is_usable(), "{diagnosis}");
+    let suspect = diagnosis.of(ogeom::algo::Severity::Suspect);
+    assert_eq!(suspect.len(), 1, "{diagnosis}");
+    assert_eq!(suspect[0].kind, ShapeType::Edge);
+    let edge = model
+        .node(&suspect[0].at)
+        .unwrap()
+        .data()
+        .as_edge()
+        .unwrap();
+    assert!(edge.tolerance.get() > 2.4, "{diagnosis}");
+}

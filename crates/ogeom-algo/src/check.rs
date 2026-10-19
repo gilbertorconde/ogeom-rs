@@ -858,6 +858,16 @@ fn check_edge(
         }
     }
 
+    check_spanned(
+        model,
+        edge,
+        (geometry, *range),
+        &placement,
+        data.tolerance.get(),
+        tol,
+        found,
+    )?;
+
     let curve_location = match data.curve3d() {
         Some(EdgeRepr::Curve3d { location, .. }) => location.clone(),
         _ => ogeom_topo::Location::identity(),
@@ -871,6 +881,77 @@ fn check_edge(
         tol,
         found,
     )?;
+    Ok(())
+}
+
+/// An edge whose pcurve stands farther off its curve than the edge is long
+/// is reported suspect.
+///
+/// The pcurve then describes some other stretch of its surface, one the
+/// edge does not reach at its own scale: a fit whose end landed on the far
+/// side of a closed chart runs the far way round it. Its tolerance covers
+/// the gap, as it must for the edge to pass the containment tests, and is
+/// then wider than the edge is long. A gap past the tolerance is broken
+/// and reported by [`check_pcurves`], so only an edge no longer than its
+/// tolerance is measured here.
+///
+/// An exact pcurve, paced like its curve or not, stands off it by no more
+/// than the chord between two of its points, and is never reported. One
+/// that is only within its tolerance of the edge can be: the test is a
+/// heuristic, which is why the finding is suspect and not broken.
+fn check_spanned(
+    model: &Model,
+    edge: &Shape,
+    (curve, range): (&ogeom_geom::Curve, (f64, f64)),
+    placement: &ogeom_math::Transform,
+    tolerance: f64,
+    tol: Tolerances,
+    found: &mut Diagnosis,
+) -> OgeomResult<()> {
+    // A polyline through points of the edge in order is no longer than
+    // the edge: where it is longer than the tolerance, so is the edge. The
+    // chord between the ends is the one-piece polyline, and turns most
+    // edges away for two evaluations.
+    const PIECES: u32 = 16;
+    let scale = placement.scale_factor().abs();
+    let at = |f: f64| curve.point_at((range.1 - range.0).mul_add(f, range.0), tol);
+    if at(0.0)?.distance(at(1.0)?) * scale > tolerance {
+        return Ok(());
+    }
+    let mut polyline = 0.0;
+    let mut last = at(0.0)?;
+    for i in 1..=PIECES {
+        let next = at(f64::from(i) / f64::from(PIECES))?;
+        polyline += last.distance(next);
+        last = next;
+    }
+    if polyline * scale > tolerance {
+        return Ok(());
+    }
+    let Ok(length) = crate::length::curve_length(curve, range, tol) else {
+        return Ok(());
+    };
+    if length * scale > tolerance {
+        return Ok(());
+    }
+    let Some(gap) = crate::pcurve_gap::edge_pcurve_gap(model, edge, tol)? else {
+        return Ok(());
+    };
+    // Below the confusion tolerance a gap and a length are rounding: an
+    // edge with no length has a gap of a few ulps.
+    if gap > length + tol.confusion() {
+        found.note(
+            Severity::Suspect,
+            edge,
+            ShapeType::Edge,
+            format!(
+                "has a pcurve {gap} off its curve, farther than the edge's own \
+                 length of {length}: the pcurve describes another stretch of its \
+                 surface, and the tolerance of {tolerance} covering it is wider \
+                 than the edge"
+            ),
+        );
+    }
     Ok(())
 }
 
@@ -1997,6 +2078,115 @@ mod tests {
                 .any(|p| p.kind == ShapeType::Edge && p.what.contains("leaves its curve by")),
             "got {found}"
         );
+    }
+
+    #[test]
+    fn a_pcurve_farther_off_than_its_edge_is_long_is_suspect() {
+        // A box a thousandth tall: one of its upright edges, 0.001 long,
+        // widened to 0.002 with its vertices, has its pcurve on one face
+        // moved sideways in that face's chart, where a plane's chart
+        // measures as space does. Moved 0.0015 the pcurve stands farther
+        // off than the edge is long; moved 0.0005 it does not. Either way
+        // the tolerance covers it, and nothing is broken.
+        for (offset, reported) in [(0.0015, true), (0.0005, false)] {
+            let mut model = Model::new();
+            let solid = make_box(&mut model, Frame::WORLD, (1.0, 1.0, 0.001), T)
+                .unwrap()
+                .shape;
+            let edge = explore_unique(&model, &solid, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .find(|edge| {
+                    let (a, b) = crate::build::edge_vertices(&model, edge).unwrap().unwrap();
+                    let at = |v: &Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+                    (at(&a).distance(at(&b)) - 0.001).abs() < 1e-12
+                })
+                .unwrap();
+            model.widen(&edge, Tolerance::new(0.002).unwrap()).unwrap();
+            let NodeData::Edge(data) = model.node(&edge).unwrap().data().clone() else {
+                panic!("not an edge")
+            };
+            let (original, surface) = data
+                .representations
+                .iter()
+                .find_map(|r| match r {
+                    EdgeRepr::PCurve { curve, surface, .. } => Some((*curve, *surface)),
+                    _ => None,
+                })
+                .unwrap();
+            let basis = model.geometry().pcurve(original).unwrap().clone();
+            let moved = model
+                .geometry_mut()
+                .add_pcurve(ogeom_geom::PlanarCurve::Offset(Box::new(
+                    ogeom_geom::Offset2d::new(basis, offset).unwrap(),
+                )));
+            if let Some(NodeData::Edge(data)) =
+                model.node_mut(&edge).map(ogeom_topo::TShape::data_mut)
+            {
+                for repr in &mut data.representations {
+                    if let EdgeRepr::PCurve {
+                        curve, surface: s, ..
+                    } = repr
+                        && *s == surface
+                    {
+                        *curve = moved;
+                    }
+                }
+            }
+
+            let found = check(&model, &solid, T).unwrap();
+            assert!(found.is_usable(), "got {found}");
+            let suspect = found.of(Severity::Suspect);
+            if reported {
+                assert_eq!(suspect.len(), 1, "got {found}");
+                assert!(suspect[0].at.is_same(&edge), "got {found}");
+            } else {
+                assert!(found.is_valid(), "got {found}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_edge_below_the_confusion_tolerance_is_not_suspect() {
+        // An edge 5e-8 long on the x axis, with a pcurve on the plane z = 0
+        // running beside it 8e-8 off: farther off than the edge is long,
+        // and within its tolerance, but both below the confusion
+        // tolerance, where a gap and a length are rounding.
+        use ogeom_geom::{Curve, Curve2d as _, Curve3d as _, LineCurve, PlaneSurface};
+        let mut model = Model::new();
+        let line = LineCurve::segment(Point::ORIGIN, Point::new(1.0, 0.0, 0.0), T).unwrap();
+        let start = line.domain().0;
+        let edge = crate::make_edge(&mut model, Curve::Line(line), (start, start + 5e-8), T)
+            .unwrap()
+            .shape;
+        let plane = PlaneSurface::over(
+            ogeom_math::Plane::new(Frame::WORLD),
+            (-1.0, 1.0),
+            (-1.0, 1.0),
+        )
+        .unwrap();
+        let surface = model.geometry_mut().add_surface(plane.into());
+        let beside: ogeom_geom::PlanarCurve =
+            ogeom_geom::Line2d::segment(Point2::new(0.0, 8e-8), Point2::new(1.0, 8e-8), T)
+                .unwrap()
+                .into();
+        let range = (beside.domain().0, beside.domain().0 + 5e-8);
+        let pcurve = model.geometry_mut().add_pcurve(beside);
+        if let Some(NodeData::Edge(data)) = model.node_mut(&edge).map(ogeom_topo::TShape::data_mut)
+        {
+            data.representations.push(EdgeRepr::PCurve {
+                curve: pcurve,
+                range,
+                surface,
+                location: ogeom_topo::Location::identity(),
+            });
+        }
+        let gap = crate::pcurve_gap::edge_pcurve_gap(&model, &edge, T)
+            .unwrap()
+            .unwrap();
+        assert!(gap > 5e-8 && gap < 1e-7, "{gap}");
+        let found = check(&model, &edge, T).unwrap();
+        assert!(found.is_valid(), "got {found}");
     }
 
     #[test]
