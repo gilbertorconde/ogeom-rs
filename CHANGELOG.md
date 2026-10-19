@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-10-19
+
+A patch release of fixes, with two changes in behaviour. A part fused
+with its own mirror image builds (#302). `fillet_edges` runs a round on
+past its edge's end down a ramp (#304), rounds a chain carried on along
+its tangent continuations, under an overhanging roof and round a short
+rim (#306), meets two fillets of one call where their creases turn
+rather than capping each, and stops a marched round where its crease
+turns back into the material. `unify_same_domain` merges faces on one
+curved carrier as well as one plane (#305), and a boolean passes through
+the faces a single-lump tool cannot reach.
+
 ### Changed
 
 - **A boolean passes through the faces a single-lump tool cannot reach,
@@ -5898,7 +5910,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.5...HEAD
+[0.11.5]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.1...v0.11.2
