@@ -1395,3 +1395,35 @@ fn a_pad_touching_a_swept_wall_where_both_profiles_end_fuses() {
         after - before
     );
 }
+
+/// A part standing on its mirror plane fused with its own mirror image. Its
+/// half-round channel is centred on that plane, so the two halves meet in
+/// the channel's two halves and in the faces they share on the plane, and
+/// the image's edges, on left-handed frames, split the part's channel as
+/// contacts. The slanted bore's walls carry fitted edges ending where the
+/// bore's chart closes, which the image's bake refits. The halves share
+/// only faces on the plane, so their volumes add.
+#[test]
+fn a_part_on_its_mirror_plane_fuses_with_its_mirror_image() {
+    let (mut model, roots) =
+        ogeom::io::native::read(&corpus("half_channel_on_the_mirror_plane.ogeom")).unwrap();
+    let part = &roots[0];
+    let (half, _) = measured(&model, part);
+    let copy = ogeom::algo::copied(&mut model, part).unwrap().shape;
+    let mirror =
+        ogeom::math::Transform::plane_mirror(ogeom::math::Point::ORIGIN, ogeom::math::Direction::X);
+    let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+        .unwrap()
+        .shape;
+    let fused = ogeom::boolean::fuse(&mut model, part, &image, T).unwrap();
+    let (whole, bounds) = measured(&model, &fused.shape);
+    assert_eq!(edges_walked_one_way(&model, &fused.shape), 0);
+    // Both volumes are the same exact integrals over the same faces and
+    // their images: rounding, and the fitted edges' micron.
+    assert!(
+        (whole - 2.0 * half).abs() <= half * 1e-8,
+        "the whole measures {whole} against twice the half's {half}"
+    );
+    // The part reaches the plane from one side; the whole spans it.
+    assert!(bounds.low().unwrap().x < -3.0 && bounds.high().unwrap().x > 3.0);
+}

@@ -1040,16 +1040,26 @@ fn fit_pcurve_at(
     }
     // Ring corners are shared property: every edge meeting a vertex uses the
     // vertex's own chart image, projected once per face, so the ring closes
-    // exactly instead of to each fit's own rounding.
+    // exactly instead of to each fit's own rounding. A vertex on the
+    // closure has an image on either side of it, and the one projected for
+    // the ring need not be the side this edge arrives at: it is taken the
+    // whole periods round that put it where the unwrapped trace stands.
+    let beside = |corner: Point2, at: Point2| -> Point2 {
+        if !span.is_finite() || span <= 0.0 {
+            return corner;
+        }
+        let turns = ((at.x - corner.x) / span).round();
+        Point2::new(turns.mul_add(span, corner.x), corner.y)
+    };
     if let Some(start) = ends.0
         && let Some(first) = trace.first_mut()
     {
-        *first = start;
+        *first = beside(start, *first);
     }
     if let Some(end) = ends.1
         && let Some(last) = trace.last_mut()
     {
-        *last = end;
+        *last = beside(end, *last);
     }
     // The target holds in space, where the edge is compared with its
     // pcurve's image; the chart stretches a step in `u` or `v` by up to its

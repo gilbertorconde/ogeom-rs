@@ -318,3 +318,16 @@ end. The reproducer for a section running into that touch: the walk
 stalled 0.2 µm short of it, the touch was not solved because the touch
 lies a rounding past the end of one chart, and the fuse left a gap
 between the section's end and the edges meeting at the touch.
+
+## half_channel_on_the_mirror_plane.ogeom
+
+A box cropped, in this kernel's native format, from a community printer
+carriage as printCAD rebuilt it from its FreeCAD file: half of a
+symmetric part, cut off at x = 0 where its mirror plane stands, so a
+half-round channel of 3 mm radius centred on that plane runs along y on
+it, and a bore of 1.25 mm radius running across x meets the channel in
+fitted curves. The reproducer for fusing a part with its own mirror
+image: the image's arcs, on left-handed frames, were imaged onto the
+part's own half of the channel, and the image's bake pinned the bore's
+fitted edges to a vertex's image on the wrong side of the bore's chart
+closure; either left the channel's arrangement no piece of the face.

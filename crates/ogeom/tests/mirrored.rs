@@ -413,11 +413,14 @@ fn a_mesh_reports_the_chord_it_meets() {
 /// A prism 4 long on a 2 by 2 square with a quarter round of radius 1
 /// notched out of one corner, standing on the plane x = 0 on the side
 /// `length` points to, its notch's arc running from `u = 0` of its circle
-/// at one end of the arc or the other.
+/// at one end of the arc or the other; drilled, where `drill` is given, by
+/// an upright pin of that radius through the notch's straight edge along
+/// y = 2, z = 1.
 fn notched_prism(
     model: &mut ogeom_topo::Model,
     arc_from_the_floor: bool,
     length: f64,
+    drill: Option<f64>,
 ) -> ogeom_topo::Shape {
     use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve, PlaneSurface};
     use ogeom_math::{Circle, Direction, Plane, Vector};
@@ -506,9 +509,28 @@ fn notched_prism(
     let profile = ogeom_algo::make_face_with_pcurves(model, plane.into(), &[edges], T)
         .unwrap()
         .shape;
-    ogeom_algo::make_prism(model, &profile, Vector::new(length, 0.0, 0.0), T)
+    let prism = ogeom_algo::make_prism(model, &profile, Vector::new(length, 0.0, 0.0), T)
         .unwrap()
-        .shape
+        .shape;
+    let Some(radius) = drill else {
+        return prism;
+    };
+    let pin = ogeom_algo::make_cylinder(
+        model,
+        Frame::new(
+            Point::new(length / 2.0, 2.0, -1.0),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap(),
+        radius,
+        5.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom_bool::cut(model, &prism, &pin, T).unwrap().shape
 }
 
 #[test]
@@ -518,16 +540,26 @@ fn a_notched_prism_fuses_with_its_mirror_where_its_wall_chart_closes() {
     // chart runs the other way round, and that edge can land on the other
     // side of the closure from the rest of the wall's ring: the bake must
     // place it beside the face, or the fuse finds a ring that does not
-    // close.
-    for (arc_from_the_floor, length) in [(true, -4.0), (false, 4.0), (true, 4.0), (false, -4.0)] {
+    // close. Drilled through that edge, the pin's fitted edges on the wall
+    // end on the closure too, and each must end there on the side its own
+    // curve arrives from, or its pcurve runs round the back of the chart.
+    for (arc_from_the_floor, length, drill) in [
+        (true, -4.0, None),
+        (false, 4.0, None),
+        (true, 4.0, None),
+        (false, -4.0, None),
+        (true, -4.0, Some(0.5)),
+        (false, 4.0, Some(0.5)),
+    ] {
         let mut model = ogeom_topo::Model::new();
-        let half = notched_prism(&mut model, arc_from_the_floor, length);
+        let half = notched_prism(&mut model, arc_from_the_floor, length, drill);
         let copy = ogeom_algo::copied(&mut model, &half).unwrap().shape;
         let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
         let image = ogeom_algo::transformed(&mut model, &copy, mirror)
             .unwrap()
             .shape;
-        let case = format!("arc from the floor {arc_from_the_floor}, length {length}");
+        let case =
+            format!("arc from the floor {arc_from_the_floor}, length {length}, drill {drill:?}");
         let fused = ogeom_bool::fuse(&mut model, &half, &image, T)
             .unwrap_or_else(|e| panic!("{case}: {e}"));
         let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
@@ -538,10 +570,15 @@ fn a_notched_prism_fuses_with_its_mirror_where_its_wall_chart_closes() {
             "{case}"
         );
         // The halves share only the face on the mirror plane, so their
-        // volumes add, each the profile's area, the square less the
-        // quarter disc, over the length. The exact integrals measure the
-        // analytic faces to rounding.
-        let each = 4.0 * (4.0 - core::f64::consts::FRAC_PI_4);
+        // volumes add. Undrilled, each is the profile's area, the square
+        // less the quarter disc, over the length; drilled, it is measured.
+        // The exact integrals measure analytic faces to rounding, and the
+        // pin's fitted edges stand within a micron of its exact curves.
+        let each = if drill.is_some() {
+            vol(&model, &half)
+        } else {
+            4.0 * (4.0 - core::f64::consts::FRAC_PI_4)
+        };
         let measured = vol(&model, &fused.shape);
         assert!(
             (measured - 2.0 * each).abs() < each * 1e-8,

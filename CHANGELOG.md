@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A solid fuses with its own mirror image.** Fusing a part with its
+  mirror across a plane it stands on failed with "arrangement left no
+  piece of the face" or "a face boundary strand dangles". A mirrored
+  circle stands on a left-handed frame, and its closed-form pcurve on a
+  cylinder, cone, sphere or torus ran the other way round the axis, so
+  the image's arcs split the part's faces on its own side. Baking the
+  image, a fitted edge ending on a vertex on a cylinder's seam line was
+  pinned to the vertex's image on the other side of the seam, and an
+  edge lying along the seam line was put on the chart's edge away from
+  its face. Each is now placed where its curve and its face are (#302).
+
 ## [0.11.4] - 2026-10-18
 
 A patch release of fixes. A shape imported with an extrusion face (from
