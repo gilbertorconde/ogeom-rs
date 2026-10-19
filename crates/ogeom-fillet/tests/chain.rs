@@ -943,58 +943,320 @@ fn polygon_prism(
         .shape
 }
 
+/// A round's section across a straight crease between a host `z <= 2`
+/// and a wall through the crease at `(edge, 2)` in a plane `(u, z)` square
+/// to it, the wall's outward normal `(nu, nz)`: the material lies under the
+/// host and behind the wall. Measured a column at a time: the heights `z`
+/// a vertical line at `u` holds of the round's section, and of what stands
+/// past the wall's plane under the host.
+struct Section {
+    centre: (f64, f64),
+    radius: f64,
+    /// Half-planes `a.(u, z) <= b` bounding the corner the ball rounds.
+    sides: Vec<((f64, f64), f64)>,
+    /// The wall's half-plane, the material on its `<=` side.
+    wall: ((f64, f64), f64),
+    area: f64,
+}
+
+impl Section {
+    fn new(edge: f64, (nu, nz): (f64, f64), radius: f64) -> Self {
+        let m = nu.hypot(nz);
+        let n = (nu / m, nz / m);
+        let crease = (edge, 2.0);
+        // The ball's centre a radius in from both the host and the wall.
+        let k = radius / (1.0 + n.1);
+        let centre = (crease.0 - n.0 * k, crease.1 - (1.0 + n.1) * k);
+        let wall = (n, n.0.mul_add(crease.0, n.1 * crease.1));
+        let mut sides = vec![((0.0, 1.0), 2.0), wall];
+        // Each contact's radius bounds the corner on the crease's side.
+        for (cu, cz) in [(0.0, 1.0), n] {
+            let (mut au, mut az) = (cz, -cu);
+            if au.mul_add(crease.0 - centre.0, az * (crease.1 - centre.1)) < 0.0 {
+                (au, az) = (-au, -az);
+            }
+            sides.push(((-au, -az), -au.mul_add(centre.0, az * centre.1)));
+        }
+        let dihedral = (-n.1).acos();
+        let area = radius * radius / (dihedral / 2.0).tan()
+            - radius * radius * (core::f64::consts::PI - dihedral) / 2.0;
+        Self {
+            centre,
+            radius,
+            sides,
+            wall,
+            area,
+        }
+    }
+
+    /// The heights of the column at `u` in the section: under the host and
+    /// within the corner, less the ball.
+    fn column(&self, u: f64) -> [(f64, f64); 2] {
+        let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+        for &((au, az), b) in &self.sides {
+            if az.abs() < 1e-15 {
+                if au * u > b {
+                    return [(0.0, 0.0); 2];
+                }
+            } else if az > 0.0 {
+                hi = hi.min((b - au * u) / az);
+            } else {
+                lo = lo.max((b - au * u) / az);
+            }
+        }
+        if hi <= lo {
+            return [(0.0, 0.0); 2];
+        }
+        let reach = self
+            .radius
+            .mul_add(self.radius, -(u - self.centre.0).powi(2));
+        if reach <= 0.0 {
+            return [(lo, hi), (0.0, 0.0)];
+        }
+        let h = reach.sqrt();
+        [
+            (lo, hi.min(self.centre.1 - h)),
+            (lo.max(self.centre.1 + h), hi),
+        ]
+    }
+
+    /// The heights of the column at `u` past the wall's plane, under the
+    /// host, down to `floor`.
+    fn past(&self, u: f64, floor: f64) -> (f64, f64) {
+        let ((au, az), b) = self.wall;
+        if az.abs() < 1e-15 {
+            return if au * u > b { (floor, 2.0) } else { (0.0, 0.0) };
+        }
+        let at = (b - au * u) / az;
+        if az > 0.0 {
+            (at.max(floor), 2.0)
+        } else {
+            (floor, at.min(2.0))
+        }
+    }
+}
+
+/// How much of the heights `a` and `b`, each a few disjoint runs, overlap.
+fn overlap(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+    let mut sum = 0.0;
+    for &(p, q) in a {
+        for &(r, t) in b {
+            sum += (q.min(t) - p.max(r)).max(0.0);
+        }
+    }
+    sum
+}
+
+/// The total length of the heights `a`, a few disjoint runs.
+fn span(a: &[(f64, f64)]) -> f64 {
+    a.iter().map(|&(p, q)| (q - p).max(0.0)).sum()
+}
+
+/// The midpoint sum of `f` over the rectangle `[x0, x1] x [y0, y1]`, `n`
+/// cells to a unit each way.
+fn integral(
+    (x0, x1): (f64, f64),
+    (y0, y1): (f64, f64),
+    n: f64,
+    f: impl Fn(f64, f64) -> f64,
+) -> f64 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a cell count"
+    )]
+    let (nx, ny) = (
+        ((x1 - x0) * n).round() as usize,
+        ((y1 - y0) * n).round() as usize,
+    );
+    #[allow(clippy::cast_precision_loss, reason = "a cell count")]
+    let (dx, dy) = ((x1 - x0) / nx as f64, (y1 - y0) / ny as f64);
+    let mut sum = 0.0;
+    for i in 0..nx {
+        #[allow(clippy::cast_precision_loss, reason = "a cell index")]
+        let x = (i as f64 + 0.5).mul_add(dx, x0);
+        for j in 0..ny {
+            #[allow(clippy::cast_precision_loss, reason = "a cell index")]
+            let y = (j as f64 + 0.5).mul_add(dy, y0);
+            sum += f(x, y);
+        }
+    }
+    sum * dx * dy
+}
+
+/// A block six square and two high with a notch where `x >= 3` and `y` is
+/// past the wall `y = 3 - d + d z / 2`, drafted by `d` over its height,
+/// all turned `spin` about the `z` axis: returns the block and the two top
+/// creases leaving the notch's inside corner `(3, 3, 2)` (turned), the
+/// drafted wall's first.
+fn drafted_inside_corner(
+    model: &mut ogeom_topo::Model,
+    draft: f64,
+    spin: f64,
+) -> (ogeom_topo::Shape, [ogeom_topo::Shape; 2]) {
+    let (s, c) = spin.sin_cos();
+    let turn = |p: Point| Point::new(p.x * c - p.y * s, p.x * s + p.y * c, p.z);
+    let turn_v = |v: Vector| Vector::new(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+    let frame = Frame::new(
+        Point::ORIGIN,
+        Direction::Z,
+        Direction::new(turn_v(Vector::X), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let block = ogeom_algo::make_box(model, frame, (6.0, 6.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let wall = |z: f64| draft.mul_add(z / 2.0, 3.0 - draft);
+    let notch = polygon_prism(
+        model,
+        &[
+            turn(Point::new(3.0, wall(-1.0), -1.0)),
+            turn(Point::new(3.0, 7.0, -1.0)),
+            turn(Point::new(3.0, 7.0, 3.0)),
+            turn(Point::new(3.0, wall(3.0), 3.0)),
+        ],
+        Direction::new(turn_v(Vector::X), T).unwrap(),
+        turn_v(Vector::new(4.0, 0.0, 0.0)),
+    );
+    let cut = ogeom_bool::cut(model, &block, &notch, T).unwrap().shape;
+    let block = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    let edges = [
+        placed_edge_through(model, &block, turn(Point::new(4.5, 3.0, 2.0))),
+        placed_edge_through(model, &block, turn(Point::new(3.0, 4.5, 2.0))),
+    ];
+    (block, edges)
+}
+
+/// Whether every face `edge` generated lies along it: on a cylinder or an
+/// extrusion whose direction is the edge's own (its band), or on a plane
+/// holding that direction (a host's plane carried past it).
+fn generated_along(
+    model: &ogeom_topo::Model,
+    history: &ogeom_algo::History,
+    edge: &ogeom_topo::Shape,
+    along: Vector,
+) -> bool {
+    let faces = history.generated(edge);
+    !faces.is_empty()
+        && faces.iter().all(|face| {
+            let data = model.node(face).unwrap().data().as_face().unwrap();
+            let placed = face.transform(model.datums()).unwrap();
+            match model.geometry().surface(data.surface).unwrap() {
+                ogeom_geom::SurfaceGeometry::Cylinder(c) => {
+                    placed
+                        .apply_vector(c.cylinder().axis().direction.vector())
+                        .cross(along)
+                        .magnitude()
+                        < 1e-9
+                }
+                ogeom_geom::SurfaceGeometry::Extrusion(e) => {
+                    placed
+                        .apply_vector(e.direction().vector())
+                        .cross(along)
+                        .magnitude()
+                        < 1e-9
+                }
+                ogeom_geom::SurfaceGeometry::Plane(p) => {
+                    placed
+                        .apply_vector(p.plane().normal().vector())
+                        .dot(along)
+                        .abs()
+                        < 1e-9
+                }
+                _ => false,
+            }
+        })
+}
+
 /// Two top edges of a block rounded where they meet at its inside corner,
-/// one of the walls there drafted so the corner's two dihedrals differ. The
-/// two bands' end sections are no reflection of each other in any plane, so
-/// no junction closes the corner: the request rounds exactly as it does
-/// with none, each band capped at the corner, in either order. The figures
-/// are what the rounding without junctions takes.
+/// one wall there drafted so the two bands' end sections differ, the
+/// overhanging way and the moulded way. Each band carried on is the
+/// straight band of its end section, above which stands what its ball
+/// rolls off and what lies past its wall's plane; the corner takes what
+/// lies above both. Measured against that region a column at a time: each
+/// crease's section along it, and near the corner, past both caps what
+/// stands above both bands, and before the square wall's cap what of its
+/// section stands above the drafted band. Capped at the vertex instead,
+/// the bands left the corner cell and, the moulded way, the square band
+/// cut under the drafted one. Each band's faces stay its own edge's.
 #[test]
-fn rounds_at_a_drafted_inside_corner_meet_as_without_a_junction() {
-    for (draft, want) in [
-        (0.005_f64, [0.322_843, 0.322_858]),
-        (0.2, [0.363_268, 0.363_867]),
+fn rounds_at_a_drafted_inside_corner_meet_along_their_own_intersection() {
+    let r = 0.5;
+    let spun = 30.0_f64.to_radians();
+    for (draft, spin) in [
+        (0.005_f64, 0.0),
+        (0.2, 0.0),
+        (-0.2, 0.0),
+        (-0.5, 0.0),
+        (0.2, spun),
+        (-0.2, spun),
     ] {
+        let drafted = Section::new(3.0, (1.0, -draft / 2.0), r);
+        let square = Section::new(3.0, (1.0, 0.0), r);
+        let near = integral((2.0, 3.0), (2.0, 3.0 + draft.abs()), 2e3, |x, y| {
+            let [a0, a1] = drafted.column(y);
+            let [b0, b1] = square.column(x);
+            let above = [a0, a1, drafted.past(y, -1.0)];
+            if y < 3.0 {
+                overlap(&above, &[b0, b1, square.past(x, -1.0)])
+            } else {
+                overlap(&above, &[b0, b1]) - span(&[b0, b1])
+            }
+        });
+        let want = 3.0f64.mul_add(drafted.area + square.area, near);
         let mut model = ogeom_topo::Model::new();
-        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (6.0, 6.0, 2.0), T)
-            .unwrap()
-            .shape;
-        let wall = |z: f64| draft.mul_add(z / 2.0, 3.0 - draft);
-        let notch = polygon_prism(
-            &mut model,
-            &[
-                Point::new(3.0, wall(-1.0), -1.0),
-                Point::new(3.0, 7.0, -1.0),
-                Point::new(3.0, 7.0, 3.0),
-                Point::new(3.0, wall(3.0), 3.0),
-            ],
-            Direction::X,
-            Vector::new(4.0, 0.0, 0.0),
-        );
-        let cut = ogeom_bool::cut(&mut model, &block, &notch, T)
-            .unwrap()
-            .shape;
-        let block = explore_unique(&model, &cut, ShapeType::Solid).unwrap()[0].clone();
-        let edges = [
-            placed_edge_through(&model, &block, Point::new(4.5, 3.0, 2.0)),
-            placed_edge_through(&model, &block, Point::new(3.0, 4.5, 2.0)),
-        ];
-        let removed = removed_both_ways(&model, &block, &edges, 0.5);
-        for (got, want) in removed.iter().zip(want) {
+        let (block, edges) = drafted_inside_corner(&mut model, draft, spin);
+        let before = volume(&model, &block, 1e-4);
+        for named in [edges.clone(), [edges[1].clone(), edges[0].clone()]] {
+            let mut model = model.clone();
+            let rounded = ogeom_fillet::fillet_edges(&mut model, &block, &named, r, T).unwrap();
             assert!(
-                (got - want).abs() < 2e-6,
-                "draft {draft}: {removed:?} against {want}"
+                ogeom_algo::check(&model, &rounded.shape, T)
+                    .unwrap()
+                    .is_valid()
             );
+            let removed = before - volume(&model, &rounded.shape, 1e-4);
+            assert!(
+                (removed - want).abs() < 3e-6,
+                "draft {draft} spin {spin}: {removed} against {want}"
+            );
+            let (s, c) = spin.sin_cos();
+            for (edge, along) in edges
+                .iter()
+                .zip([Vector::new(c, s, 0.0), Vector::new(-s, c, 0.0)])
+            {
+                assert!(
+                    generated_along(&model, &rounded.history, edge, along),
+                    "draft {draft} spin {spin}: an edge credited a face off its own band"
+                );
+            }
         }
     }
 }
 
 /// Two top edges of a block rounded where they meet at its outside corner,
-/// the side wall drafted: as at the drafted inside corner, no junction, and
-/// the later band runs on through the earlier as without one.
+/// the side wall drafted so its top stands `d` in. The two end sections
+/// differ, and each band runs out past the vertex as it does alone, along
+/// its own straight continuation until the solid has left its section; the
+/// two cuts take their union, in either order. Measured against that union
+/// a column at a time near the corner. Built after the side wall's band,
+/// the front band stopped at its vertex where the solid ran on under it.
 #[test]
-fn rounds_at_a_drafted_outside_corner_meet_as_without_a_junction() {
-    for (draft, want) in [(0.2, [0.363_860, 0.363_860]), (0.5, [0.299_542, 0.299_049])] {
+fn rounds_at_a_drafted_outside_corner_take_both_bands_run_out() {
+    let r = 0.5;
+    for draft in [0.2_f64, 0.5, 0.8] {
+        let front = Section::new(0.0, (1.0, 0.0), r);
+        let side = Section::new(4.0 - draft, (1.0, draft / 2.0), r);
+        let near = integral((2.6, 4.0), (0.0, 0.6), 2e3, |x, y| {
+            // The solid's column: under the top and behind the side wall.
+            let solid = (0.0, ((4.0 - x) * 2.0 / draft).min(2.0));
+            let clip = |runs: [(f64, f64); 2]| runs.map(|(p, q)| (p.max(solid.0), q.min(solid.1)));
+            let a = clip(front.column(-y));
+            let b = clip(side.column(x));
+            span(&a) + span(&b) - overlap(&a, &b)
+        });
+        let want = 2.6f64.mul_add(front.area, 3.4 * side.area) + near;
         let mut model = ogeom_topo::Model::new();
         let block = polygon_prism(
             &mut model,
@@ -1011,11 +1273,243 @@ fn rounds_at_a_drafted_outside_corner_meet_as_without_a_junction() {
             placed_edge_through(&model, &block, Point::new((4.0 - draft) / 2.0, 0.0, 2.0)),
             placed_edge_through(&model, &block, Point::new(4.0 - draft, 2.0, 2.0)),
         ];
+        for got in removed_both_ways(&model, &block, &edges, r) {
+            assert!(
+                (got - want).abs() < 3e-6,
+                "draft {draft}: {got} against {want}"
+            );
+        }
+    }
+}
+
+/// A block eight square and two high with a pocket `[2, 6]` square and one
+/// deep, its wall `y = 2` drafted by `d` over the pocket's depth: returns
+/// the block and the pocket's four rim creases, the drafted wall's first,
+/// then round the rim.
+fn drafted_pocket(
+    model: &mut ogeom_topo::Model,
+    draft: f64,
+) -> (ogeom_topo::Shape, Vec<ogeom_topo::Shape>) {
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (8.0, 8.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let wall = |z: f64| draft.mul_add(2.0 - z, 2.0);
+    let pocket = polygon_prism(
+        model,
+        &[
+            Point::new(2.0, wall(1.0), 1.0),
+            Point::new(2.0, 6.0, 1.0),
+            Point::new(2.0, 6.0, 3.0),
+            Point::new(2.0, wall(3.0), 3.0),
+        ],
+        Direction::X,
+        Vector::new(4.0, 0.0, 0.0),
+    );
+    let cut = ogeom_bool::cut(model, &block, &pocket, T).unwrap().shape;
+    let block = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    let edges = [(4.0, 2.0), (6.0, 4.0), (4.0, 6.0), (2.0, 4.0)]
+        .map(|(x, y)| placed_edge_through(model, &block, Point::new(x, y, 2.0)))
+        .to_vec();
+    (block, edges)
+}
+
+/// A pocket's four rim creases rounded together, one wall drafted: the
+/// two corners at the square walls meet flush in their bisecting planes,
+/// and the two at the drafted wall, whose bands also meet others at their
+/// far ends, are no crossed junction and round as without one. Taking them
+/// crossed would group the drafted band with its neighbours and drop the
+/// flush corners. The figures are what the rounding gives with the flush
+/// corners taken and the drafted ones capped, in each order, as before
+/// crossed junctions were taken at all.
+#[test]
+fn a_drafted_pocket_s_rim_keeps_its_flush_corners() {
+    for (draft, want) in [
+        (0.1_f64, [0.837_197, 0.835_998]),
+        (-0.1, [0.937_528, 0.938_727]),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let (block, edges) = drafted_pocket(&mut model, draft);
         let removed = removed_both_ways(&model, &block, &edges, 0.5);
         for (got, want) in removed.iter().zip(want) {
             assert!(
                 (got - want).abs() < 2e-6,
                 "draft {draft}: {removed:?} against {want}"
+            );
+        }
+    }
+}
+
+/// The runs two lists of disjoint runs share.
+fn meet(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for &(p, q) in a {
+        for &(r, t) in b {
+            let (lo, hi) = (p.max(r), q.min(t));
+            if hi > lo {
+                out.push((lo, hi));
+            }
+        }
+    }
+    out
+}
+
+/// A block eight square and two high notched at the top corner `(4, 3, 2)`
+/// past two walls: one through the crease `y = 3` (the first edge, along
+/// `x` from the corner), leaning `lean` from the vertical with its foot
+/// in under the material for a positive lean, and one vertical along the
+/// second edge, which leaves the corner at `plan` from the first in plan.
+/// Returns the block and the two top creases leaving the corner.
+fn turned_corner(
+    model: &mut ogeom_topo::Model,
+    plan: f64,
+    lean: f64,
+) -> (ogeom_topo::Shape, [ogeom_topo::Shape; 2]) {
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (8.0, 8.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let corner = Point::new(4.0, 3.0, 2.0);
+    let (s, c) = plan.sin_cos();
+    let past = |model: &mut ogeom_topo::Model, n: Vector, x: Vector| {
+        let y = n.cross(x);
+        let origin = corner - x * 20.0 - y * 20.0;
+        let frame = Frame::new(
+            origin,
+            Direction::new(n, T).unwrap(),
+            Direction::new(x, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, frame, (40.0, 40.0, 40.0), T)
+            .unwrap()
+            .shape
+    };
+    let first = past(model, Vector::new(0.0, lean.cos(), -lean.sin()), Vector::X);
+    let second = past(model, Vector::new(s, -c, 0.0), Vector::new(c, s, 0.0));
+    let notch = ogeom_bool::common(model, &first, &second, T).unwrap().shape;
+    let cut = ogeom_bool::cut(model, &block, &notch, T).unwrap().shape;
+    let block = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    let point = |v: &ogeom_topo::Shape| {
+        let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+        v.transform(model.datums()).unwrap().apply(p)
+    };
+    // The top creases leaving the corner, the one along `x` first.
+    let mut edges: Vec<ogeom_topo::Shape> = explore_unique(model, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+            let (p, q) = (point(&a), point(&b));
+            (p.z - 2.0).abs() < 1e-9
+                && (q.z - 2.0).abs() < 1e-9
+                && (p.distance(corner) < 1e-9 || q.distance(corner) < 1e-9)
+        })
+        .collect();
+    edges.sort_by_key(|e| {
+        let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+        (point(&a).y - 3.0).abs() + (point(&b).y - 3.0).abs() > 1e-9
+    });
+    let [first, second] = edges.as_slice() else {
+        panic!("two top creases at the corner");
+    };
+    (block, [first.clone(), second.clone()])
+}
+
+/// Two top creases rounded where they meet at an inside corner whose plan
+/// angle is obtuse, the first edge's wall leaning in under the material,
+/// the second's vertical. The walls' meeting line leans, and material
+/// beside the second band past the first wall's plane, before the first
+/// band's cap, lies above both bands. Measured within a box round the
+/// corner against what lies above both bands carried on, a column at a
+/// time; where the corner is not taken the request rounds as without a
+/// junction, which leaves material above both, and the figures are what
+/// that rounding takes in each order.
+#[test]
+fn rounds_at_an_obtuse_corner_under_a_leaning_wall_take_all_above_both_or_none() {
+    let r = 0.5;
+    let lean = 0.1_f64.atan();
+    let (wx, wy, half) = (4.0, 3.0, 1.2);
+    for (degrees, without) in [
+        (120.0_f64, [0.153_359, 0.155_956]),
+        (150.0, [0.135_715, 0.142_627]),
+        (170.0, [0.099_277, 0.118_238]),
+    ] {
+        let plan = degrees.to_radians();
+        let (s, c) = plan.sin_cos();
+        let first = Section::new(0.0, (lean.cos(), -lean.sin()), r);
+        let second = Section::new(0.0, (1.0, 0.0), r);
+        let want = integral(
+            (wx - half, wx + half),
+            (wy - half, wy + half),
+            1e3,
+            |x, y| {
+                let (px, py) = (x - wx, y - wy);
+                let (ua, ub) = (py, px * s - py * c);
+                let [a0, a1] = first.column(ua);
+                let [b0, b1] = second.column(ub);
+                let (ra, rb) = ([a0, a1], [b0, b1]);
+                let (pa, pb) = (first.past(ua, 0.0), second.past(ub, 0.0));
+                let ua_all = [a0, a1, pa];
+                let ub_all = [b0, b1, pb];
+                let open = meet(&[pa], &[pb]);
+                let solid = |runs: &[(f64, f64)]| -> f64 {
+                    let runs: Vec<(f64, f64)> = runs
+                        .iter()
+                        .map(|&(p, q)| (p.max(0.0), q.min(2.0)))
+                        .collect();
+                    span(&runs) - overlap(&runs, &open)
+                };
+                let along_first = px >= 0.0;
+                let along_second = px.mul_add(c, py * s) >= 0.0;
+                let xa = meet(&ra, &ub_all);
+                let xb = meet(&rb, &ua_all);
+                if along_first && along_second {
+                    solid(&xa) + solid(&xb) - solid(&meet(&xa, &xb))
+                } else if along_first {
+                    solid(&xa)
+                } else if along_second {
+                    solid(&xb)
+                } else {
+                    solid(&meet(&ua_all, &ub_all))
+                }
+            },
+        );
+        let mut model = ogeom_topo::Model::new();
+        let (block, edges) = turned_corner(&mut model, plan, lean);
+        for (named, without) in [edges.clone(), [edges[1].clone(), edges[0].clone()]]
+            .into_iter()
+            .zip(without)
+        {
+            let mut model = model.clone();
+            let rounded = ogeom_fillet::fillet_edges(&mut model, &block, &named, r, T).unwrap();
+            assert!(
+                ogeom_algo::check(&model, &rounded.shape, T)
+                    .unwrap()
+                    .is_valid()
+            );
+            let gone = ogeom_bool::cut(&mut model, &block, &rounded.shape, T)
+                .unwrap()
+                .shape;
+            let window = ogeom_algo::make_box(
+                &mut model,
+                Frame::new(
+                    Point::new(wx - half, wy - half, -1.0),
+                    Direction::Z,
+                    Direction::X,
+                    T,
+                )
+                .unwrap(),
+                (half * 2.0, half * 2.0, 4.0),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let near = ogeom_bool::common(&mut model, &gone, &window, T)
+                .unwrap()
+                .shape;
+            let got = volume(&model, &near, 1e-4);
+            assert!(
+                (got - want).abs() < 2e-5 || (got - without).abs() < 2e-6,
+                "{degrees} degrees: {got} against {want}, or {without} without a junction"
             );
         }
     }

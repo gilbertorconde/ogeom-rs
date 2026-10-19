@@ -31,9 +31,19 @@
 //! carries one band's end section onto the other's: the shared host a
 //! plane, the reflection taking the one wall's tangent plane at the vertex
 //! onto the other's, and the plane through the vertex, each to the fit a
-//! marched band is held to. Elsewhere (a drafted wall beside a square one,
-//! a curved shared host) the sections differ and no junction is taken: the
-//! bands meet as they did without one.
+//! marched band is held to.
+//!
+//! Where the sections differ (a drafted wall beside a square one) and both
+//! creases are straight, the junction is crossed: no plane bounds it. Across
+//! a re-entrant turn the corner takes what lies above both bands carried
+//! on, what stands past a band's wall's plane lying above that band as much
+//! as what its ball rolls off, so each band is carried on with its section
+//! widened past its wall and the two are intersected in one boolean, which
+//! bounds the corner by the bands' own intersection ([`corner`]). Across a
+//! convex turn each band runs out past the vertex as it does alone, and
+//! the two cuts take their union. Elsewhere (a curved shared host, a curved
+//! crease whose sections differ) no junction is taken: the bands meet as
+//! they did without one.
 
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::Curve3d as _;
@@ -56,6 +66,15 @@ pub(crate) struct Junction {
     /// The plane the bands meet flush in, through a point on it and by its
     /// unit normal towards the first edge's side.
     pub flush: (Point, Vector),
+    /// The bands' end sections are no reflection of each other, so no
+    /// plane bounds the meeting: across a re-entrant turn the boolean's own
+    /// intersection of the bands carried on bounds the corner, and across
+    /// a convex one each band runs out as it does alone.
+    pub crossed: bool,
+    /// The shared host's outward unit normal at the vertex.
+    pub top: Vector,
+    /// Each edge's wall's outward unit normal at the vertex.
+    pub sides: [Vector; 2],
 }
 
 impl Junction {
@@ -309,25 +328,46 @@ fn junction(
     );
     let fit = crate::marched::band_fit_target(tol);
     let turn = outward[0].dot(leaving[1]).clamp(-1.0, 1.0).acos();
-    if reentrant {
-        // Carried on, each band is a straight band of its end section, so
-        // the reflection alone decides the meeting. The cell it closes
-        // reaches from the vertex to where the bands' contacts on the
-        // shared host meet, a radius under it: the material must hold that
-        // reach, or the continuations run out of the solid (a turn folding
-        // back on itself) and the cell is not the corner's.
-        if miss > fit {
-            return Ok(None);
+    // Where the end sections are no reflection of each other, two straight
+    // creases still meet exactly: each band carried on is the straight band
+    // of its end section. Across a re-entrant turn the boolean bounds the
+    // corner both take along the bands' own intersection, whether the
+    // material holds it asked of the corner itself; across a convex one
+    // each band runs out past the vertex as it does alone, built from the
+    // solid as it stands, and the two cuts take their union.
+    let straight = || -> OgeomResult<bool> {
+        for edge in &edges {
+            let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
+            if !matches!(curve, ogeom_geom::Curve::Line(_)) {
+                return Ok(false);
+            }
         }
-        let probe = crate::support::material_probe(model, solid, tol)?;
-        // The vertex itself stands on the solid's edge; its neighbourhood
-        // past it is what the cell takes.
-        let under = top * (radius * 0.5);
-        for k in 1..=8 {
-            let p = at + (meet - at) * (f64::from(k) / 8.0) - under;
-            if probe.holds(model, p, tol)? != ogeom_algo::Containment::In {
+        Ok(true)
+    };
+    let crossed = if reentrant {
+        if miss > fit {
+            if !straight()? {
                 return Ok(None);
             }
+            true
+        } else {
+            // Carried on, each band is a straight band of its end section,
+            // so the reflection alone decides the meeting. The cell it
+            // closes reaches from the vertex to where the bands' contacts on
+            // the shared host meet, a radius under it: the material must
+            // hold that reach, or the continuations run out of the solid (a
+            // turn folding back on itself) and the cell is not the corner's.
+            let probe = crate::support::material_probe(model, solid, tol)?;
+            // The vertex itself stands on the solid's edge; its
+            // neighbourhood past it is what the cell takes.
+            let under = top * (radius * 0.5);
+            for k in 1..=8 {
+                let p = at + (meet - at) * (f64::from(k) / 8.0) - under;
+                if probe.holds(model, p, tol)? != ogeom_algo::Containment::In {
+                    return Ok(None);
+                }
+            }
+            false
         }
     } else {
         // Across a convex turn the bands themselves meet. Each sweeps its
@@ -346,15 +386,23 @@ fn junction(
         }
         let along = radius * (turn / 2.0).tan();
         if (bend * along).mul_add(along / 2.0, miss) > fit {
-            return Ok(None);
+            if !straight()? {
+                return Ok(None);
+            }
+            true
+        } else {
+            false
         }
-    }
+    };
     Ok(Some(Junction {
         at,
         pair,
         outward,
         reentrant,
         flush: (meet, bisector),
+        crossed,
+        top,
+        sides: [side_0, side_1],
     }))
 }
 
@@ -673,6 +721,407 @@ fn in_plane(model: &Model, face: &Shape, at: Point, normal: Vector, gap: f64) ->
     Ok(true)
 }
 
+/// The two bands of a crossed junction and the corner they take across
+/// their re-entrant turn, in one wedge, with the faces of it that came from
+/// the second band.
+///
+/// Carried on past the vertex, each band is the straight band of its end
+/// section, and what it leaves is what lies under both its hosts' planes
+/// outside its ball: what stands past its wall's plane lies above the band
+/// as much as what its ball rolls off. Near the corner the material taken
+/// is what lies above both bands, bounded by the boolean's own intersection
+/// of the two. So each band is taken as its wedge carried on through the
+/// corner, its section widened past its wall over the reach where the
+/// other's wedge stands, from as far back into its own wedge as the other's
+/// wedge, or the other band carried on past this one's wall, reaches, and
+/// the two are intersected in one boolean: each band's wedge is kept to
+/// what stands above the other carried on, and past both caps the two
+/// continuations keep the cell above both.
+///
+/// The corner is taken only where the material holds all of it (a turn
+/// folding back past the solid's far side, or widenings that meet past
+/// both walls in the open, leave it), and where it holds all that each
+/// band carried on keeps past the other's wall, which lies above both.
+/// Elsewhere this refuses, and the request rounds without crossed
+/// junctions.
+pub(crate) fn corner(
+    model: &mut Model,
+    wedges: [&Shape; 2],
+    junction: &Junction,
+    solid: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Vec<Shape>)> {
+    let at = junction.at;
+    let near = tol.confusion() * 1e3;
+    let mut caps = Vec::with_capacity(2);
+    let mut sections = Vec::with_capacity(2);
+    for (slot, wedge) in wedges.iter().enumerate() {
+        let Some(cap) = cap_at(model, wedge, at, junction.outward[slot], tol)? else {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a band meeting another across a re-entrant turn has no cap at the vertex"
+            );
+        };
+        sections.push(Section::of(model, &cap, near, tol)?);
+        caps.push(cap);
+    }
+    // Each wedge is the straight band of its end section from its cap back
+    // to its far end, trimmed there by planes or run out, its faces planes
+    // and its band a cylinder. Along the crease every face reaches no
+    // farther than its edges do, each within the hull of its control
+    // points, so the wedge lies within the hull of its section's hull
+    // points placed at the cap and as far back as its edges reach.
+    let mut hulls: Vec<Vec<Point>> = Vec::with_capacity(2);
+    for (slot, wedge) in wedges.iter().enumerate() {
+        for face in explore_unique(model, wedge, ShapeType::Face)? {
+            let surface = model
+                .node(&face)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| model.geometry().surface(d.surface));
+            if !matches!(
+                surface,
+                Some(
+                    ogeom_geom::SurfaceGeometry::Plane(_)
+                        | ogeom_geom::SurfaceGeometry::Cylinder(_)
+                )
+            ) {
+                ogeom_core::ogeom_bail!(
+                    Construction,
+                    "a crossed junction's band is not a straight band between planes"
+                );
+            }
+        }
+        let mut back = 0.0_f64;
+        for edge in explore_unique(model, wedge, ShapeType::Edge)? {
+            let (curve, range) = crate::support::edge_curve(model, &edge, tol)?;
+            for point in curve.to_bspline_over(range, tol)?.control_points() {
+                back = back.max(-(point.point() - at).dot(junction.outward[slot]));
+            }
+        }
+        let shift = -junction.outward[slot] * back;
+        let hull = sections[slot].hull();
+        let far: Vec<Point> = hull.iter().map(|&q| q + shift).collect();
+        hulls.push(hull.into_iter().chain(far).collect());
+    }
+    // How far the cell can reach: a point of one continuation a distance s
+    // along stands s sin(angle) off the other's crease line, less its own
+    // section's reach, so the two hold no common point past
+    // (w0 + w1) / sin(angle) along either.
+    let reach = [sections[0].reach(at), sections[1].reach(at)];
+    let sine = junction.outward[0].cross(junction.outward[1]).magnitude();
+    if sine <= tol.angular() {
+        ogeom_core::ogeom_bail!(Construction, "two bands meeting across a turn run parallel");
+    }
+    let cell = (reach[0] + reach[1]) / sine + reach[0] + reach[1];
+    // Where the walls' meeting line leans, a band carried on stands past
+    // the other's wall's plane for a stretch past its cap: the material
+    // there lies above both bands, beside the band and before the other's
+    // cap. A section point q a distance s = (q - v).n past the other's
+    // wall, the band leaving along u with u.n < 0 (the turn re-entrant),
+    // stays past it for s / -(u.n) along. Its hull reaches the far end of
+    // that stretch.
+    let mut crossing: Vec<Vec<Point>> = Vec::with_capacity(2);
+    for (section, (along, wall)) in sections.iter().zip(
+        junction
+            .outward
+            .into_iter()
+            .zip([junction.sides[1], junction.sides[0]]),
+    ) {
+        let rate = along.dot(wall);
+        if rate >= -tol.angular() {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a band carried on across a re-entrant turn does not run behind the other's wall"
+            );
+        }
+        crossing.push(
+            section
+                .hull()
+                .into_iter()
+                .filter_map(|q| {
+                    let s = (q - at).dot(wall);
+                    (s > 0.0).then(|| q + along * (s / -rate))
+                })
+                .collect(),
+        );
+    }
+    let mut carried = Vec::with_capacity(2);
+    let mut ahead = [0.0; 2];
+    for slot in 0..2 {
+        let along = junction.outward[slot];
+        let others: Vec<Point> = hulls[1 - slot]
+            .iter()
+            .chain(&crossing[1 - slot])
+            .copied()
+            .collect();
+        let own = crossing[slot]
+            .iter()
+            .map(|p| (*p - at).dot(along))
+            .fold(0.0_f64, f64::max);
+        // Back into its own wedge as far as the other's reaches, on past its
+        // cap as far as the other's wedge or the cell does, and across past
+        // its wall as far as the other's wedge stands from the vertex.
+        let behind = others
+            .iter()
+            .map(|p| -(*p - at).dot(along))
+            .fold(0.0_f64, f64::max);
+
+        ahead[slot] = others
+            .iter()
+            .map(|p| (*p - at).dot(along))
+            .fold(cell.max(own), f64::max)
+            + reach[slot];
+        let span = others
+            .iter()
+            .map(|p| p.distance(at))
+            .fold(0.0_f64, f64::max)
+            + reach[slot];
+        let (wedge, cap) = if behind > near {
+            let start = at - along * behind;
+            let trimmed = crate::support::trimmed_wedge(
+                model,
+                wedges[slot],
+                (start, -along),
+                behind + reach[slot],
+                tol,
+            )?;
+            let Some(cap) = cap_at(model, &trimmed, start, along, tol)? else {
+                ogeom_core::ogeom_bail!(
+                    Construction,
+                    "a band cut back for its junction's corner has no end there"
+                );
+            };
+            (trimmed, cap)
+        } else {
+            (wedges[slot].clone(), caps[slot].clone())
+        };
+        carried.push(carried_widened(
+            model,
+            &wedge,
+            &cap,
+            along,
+            (at + along * ahead[slot], along),
+            (junction.top, span),
+            tol,
+        )?);
+    }
+    // Taken in an order of the bands' own directions, not the order the
+    // request named the edges in, so either naming builds the same corner.
+    let [u, v] = junction.outward;
+    let first = usize::from(
+        (u.x, u.y, u.z)
+            .partial_cmp(&(v.x, v.y, v.z))
+            .is_some_and(core::cmp::Ordering::is_gt),
+    );
+    let common = ogeom_bool::common(model, &carried[first], &carried[1 - first], tol)?;
+    let taken = common.shape;
+    if explore_unique(model, &taken, ShapeType::Face)?.is_empty() {
+        ogeom_core::ogeom_bail!(Construction, "two bands carried on take no corner");
+    }
+    // The corner must lie in the material: nothing of it outside the solid.
+    let outside = ogeom_bool::cut(model, &taken, solid, tol)?;
+    if !explore_unique(model, &outside.shape, ShapeType::Face)?.is_empty() {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "the corner two bands carried on take leaves the material"
+        );
+    }
+    // Nor may it reach either continuation's far end: no face of it lies
+    // in either far end's plane.
+    for face in explore_unique(model, &taken, ShapeType::Face)? {
+        for (along, far) in junction.outward.into_iter().zip(ahead) {
+            if in_plane(model, &face, at + along * far, along, near)? {
+                ogeom_core::ogeom_bail!(
+                    Construction,
+                    "the corner reaches a band continuation's far end"
+                );
+            }
+        }
+    }
+    // Nor may it leave behind what lies above both bands for certain: each
+    // band carried on, its wedge with it, where it stands past the other's
+    // wall's plane. That is above the band, and past the other's wall above
+    // the other, so the corner must hold it all.
+    for slot in 0..2 {
+        let along = junction.outward[slot];
+        let band = carried_to(
+            model,
+            wedges[slot],
+            &caps[slot],
+            along,
+            (at + along * ahead[slot], along),
+            tol,
+        )?;
+        let past = half_space(
+            model,
+            (at, junction.sides[1 - slot]),
+            ahead[0] + ahead[1],
+            tol,
+        )?;
+        let above = ogeom_bool::common(model, &band, &past, tol)?.shape;
+        let left = ogeom_bool::cut(model, &above, &taken, tol)?.shape;
+        if !explore_unique(model, &left, ShapeType::Face)?.is_empty() {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "the corner two bands carried on take leaves material above both"
+            );
+        }
+    }
+    let mut of_second = Vec::new();
+    for face in explore_unique(model, &carried[1], ShapeType::Face)? {
+        of_second.extend(common.history.trace(&face).iter().cloned());
+    }
+    Ok((taken, of_second))
+}
+
+/// The half-space past the plane through `on` with unit `normal`, as a
+/// cube of side `2 size` standing on the plane with `on` at its middle.
+fn half_space(
+    model: &mut Model,
+    (on, normal): (Point, Vector),
+    size: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let z = ogeom_math::Direction::new(normal, tol)?;
+    let seed = if normal.x.abs() < 0.9 {
+        Vector::new(1.0, 0.0, 0.0)
+    } else {
+        Vector::new(0.0, 1.0, 0.0)
+    };
+    let x = ogeom_math::Direction::new(seed - normal * seed.dot(normal), tol)?;
+    let y = normal.cross(x.vector());
+    let origin = on - (x.vector() + y) * size;
+    Ok(ogeom_algo::make_box(
+        model,
+        ogeom_math::Frame::new(origin, z, x, tol)?,
+        (size * 2.0, size * 2.0, size * 2.0),
+        tol,
+    )?
+    .shape)
+}
+
+/// A band's end section on its planar cap: its two straight legs, the
+/// ball's arc between their far ends, and the cap's plane.
+struct Section {
+    lines: Vec<(Point, Point)>,
+    arc: ogeom_geom::BSplineCurve,
+    plane: (Point, Vector),
+}
+
+impl Section {
+    /// The section on `cap`, its legs told from its arc within `near`.
+    fn of(model: &Model, cap: &Shape, near: f64, tol: Tolerances) -> OgeomResult<Self> {
+        let mut lines: Vec<(Point, Point)> = Vec::new();
+        let mut arc = None;
+        for edge in explore_unique(model, cap, ShapeType::Edge)? {
+            let (curve, range) = crate::support::edge_curve(model, &edge, tol)?;
+            let ends = (curve.point_at(range.0, tol)?, curve.point_at(range.1, tol)?);
+            let middle = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
+            if middle.distance(ends.0.midpoint(ends.1)) <= near {
+                lines.push(ends);
+            } else if arc.is_none() {
+                arc = Some(curve.to_bspline_over(range, tol)?);
+            } else {
+                ogeom_core::ogeom_bail!(Construction, "a band's end cap has two curved sides");
+            }
+        }
+        let Some(arc) = arc else {
+            ogeom_core::ogeom_bail!(Construction, "a band's end cap has no arc");
+        };
+        let Some(plane) = plane_of(model, cap, tol)? else {
+            ogeom_core::ogeom_bail!(Construction, "a band's end cap is not planar");
+        };
+        Ok(Self { lines, arc, plane })
+    }
+
+    /// Points whose hull holds the section: its legs' ends and its arc's
+    /// control points, the arc's weights all positive.
+    fn hull(&self) -> Vec<Point> {
+        self.lines
+            .iter()
+            .flat_map(|&(p, q)| [p, q])
+            .chain(self.arc.control_points().iter().map(|w| w.point()))
+            .collect()
+    }
+
+    /// The farthest the section reaches from `at`.
+    fn reach(&self, at: Point) -> f64 {
+        self.hull()
+            .iter()
+            .map(|p| p.distance(at))
+            .fold(0.0, f64::max)
+    }
+
+    /// The section widened to bound, besides itself, what stands past the
+    /// wall's plane under the shared host with outward unit normal `top`
+    /// within `span`: the wall's leg carried on down past its contact, out
+    /// past the wall, back up to the host's plane past the crease, and in
+    /// along the host to the crease, whose own leg then runs on to its
+    /// contact. With it, the sides that close the part it gains in the
+    /// section's plane.
+    fn widened(
+        &self,
+        top: Vector,
+        span: f64,
+        near: f64,
+    ) -> OgeomResult<(Self, Vec<(Point, Point)>)> {
+        let [(a, b), (c, d)] = self.lines.as_slice() else {
+            ogeom_core::ogeom_bail!(Construction, "a band's end cap has no two straight legs");
+        };
+        let (crease, [far_0, far_1]) = if a.distance(*c) <= near {
+            (*a, [*b, *d])
+        } else if a.distance(*d) <= near {
+            (*a, [*b, *c])
+        } else if b.distance(*c) <= near {
+            (*b, [*a, *d])
+        } else if b.distance(*d) <= near {
+            (*b, [*a, *c])
+        } else {
+            ogeom_core::ogeom_bail!(Construction, "a band's end cap's legs do not meet");
+        };
+        let unit = |v: Vector| -> OgeomResult<Vector> {
+            let m = v.magnitude();
+            if m <= near {
+                ogeom_core::ogeom_bail!(Construction, "a band's end cap has a leg of no length");
+            }
+            Ok(v / m)
+        };
+        let (u0, u1) = (unit(far_0 - crease)?, unit(far_1 - crease)?);
+        let (on_top, on_wall) = if u0.dot(top).abs() <= u1.dot(top).abs() {
+            (far_0, far_1)
+        } else {
+            (far_1, far_0)
+        };
+        let down = unit(on_wall - crease)?;
+        let mut out = unit(self.plane.1.cross(down))?;
+        if (on_top - crease).dot(out) > 0.0 {
+            out = -out;
+        }
+        let past = unit(crease - on_top)?;
+        let deep = on_wall + down * span;
+        let wide = deep + out * span;
+        let level = crease + past * span;
+        let gained = vec![
+            (on_wall, deep),
+            (deep, wide),
+            (wide, level),
+            (level, crease),
+        ];
+        let mut lines = gained.clone();
+        lines.push((crease, on_top));
+        let mut closing = gained;
+        closing.push((crease, on_wall));
+        Ok((
+            Self {
+                lines,
+                arc: self.arc.clone(),
+                plane: self.plane,
+            },
+            closing,
+        ))
+    }
+}
+
 /// `wedge` carried on past its planar end face `cap` along `along`, the
 /// crease's direction there, to the plane through `on` with unit `normal`:
 /// each point of the cap slides along `along` until it meets the plane, so
@@ -686,44 +1135,112 @@ pub(crate) fn carried_to(
     wedge: &Shape,
     cap: &Shape,
     along: Vector,
-    (on, normal): (Point, Vector),
+    plane: (Point, Vector),
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
-    use ogeom_geom::{Curve, ExtrusionSurface, PlaneSurface};
+    let mut rings = Rings {
+        pool: Vec::new(),
+        near: tol.confusion() * 1e3,
+        tol,
+    };
+    let section = Section::of(model, cap, rings.near, tol)?;
+    let mut faces: Vec<Shape> = explore_unique(model, wedge, ShapeType::Face)?
+        .into_iter()
+        .filter(|f| !f.is_same(cap))
+        .collect();
+    faces.extend(swept_past(model, &section, along, plane, &mut rings, tol)?);
+    closed_wedge(model, &faces, rings.near, tol)
+}
+
+/// `wedge` carried on past its planar end face `cap` as [`carried_to`]
+/// carries it, its section widened past the wall under the shared host
+/// with outward unit normal `top` within `span`: the wedge and what stands
+/// above its band carried on, in one solid.
+fn carried_widened(
+    model: &mut Model,
+    wedge: &Shape,
+    cap: &Shape,
+    along: Vector,
+    plane: (Point, Vector),
+    (top, span): (Vector, f64),
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let mut rings = Rings {
+        pool: Vec::new(),
+        near: tol.confusion() * 1e3,
+        tol,
+    };
+    let (section, closing) =
+        Section::of(model, cap, rings.near, tol)?.widened(top, span, rings.near)?;
+    let mut faces: Vec<Shape> = explore_unique(model, wedge, ShapeType::Face)?
+        .into_iter()
+        .filter(|f| !f.is_same(cap))
+        .collect();
+    let mut edges = Vec::new();
+    for (p, q) in closing {
+        if let Some(e) = rings.segment(model, p, q)? {
+            edges.push(e);
+        }
+    }
+    faces.push(face_on(
+        model,
+        plane_through(section.plane, tol)?,
+        edges,
+        tol,
+    )?);
+    faces.extend(swept_past(model, &section, along, plane, &mut rings, tol)?);
+    closed_wedge(model, &faces, rings.near, tol)
+}
+
+/// A face on `surface` bounded by `edges`, in any order.
+fn face_on(
+    model: &mut Model,
+    surface: ogeom_geom::SurfaceGeometry,
+    edges: Vec<Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let wire = ogeom_algo::make_wire_unordered(model, &edges, tol)?.shape;
+    Ok(ogeom_algo::make_face(model, surface, &[wire], tol)?.shape)
+}
+
+/// The plane through `on` with unit `normal`, as a surface.
+fn plane_through(
+    (on, normal): (Point, Vector),
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::SurfaceGeometry> {
+    Ok(ogeom_geom::PlaneSurface::over(
+        ogeom_math::Plane::through(on, ogeom_math::Direction::new(normal, tol)?),
+        (-1e3, 1e3),
+        (-1e3, 1e3),
+    )?
+    .into())
+}
+
+/// The faces of `section` swept along `along` to the plane through `on`
+/// with unit `normal`: each leg's sweep, the arc's, and the far end in the
+/// plane. Every point of the section must slide forwards onto the plane, or
+/// stand in it: one behind it would carry the band back over its own end.
+fn swept_past(
+    model: &mut Model,
+    section: &Section,
+    along: Vector,
+    (on, normal): (Point, Vector),
+    rings: &mut Rings,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    use ogeom_geom::{Curve, ExtrusionSurface};
     let rate = along.dot(normal);
     if rate.abs() <= tol.angular() {
         ogeom_core::ogeom_bail!(Construction, "a band runs parallel to the plane it meets");
     }
     let slide = |q: Point| -> f64 { (on - q).dot(normal) / rate };
     let image = |q: Point| -> Point { q + along * slide(q) };
-    let near = tol.confusion() * 1e3;
-    // The cap's edges: its two legs are straight, and the third is the
-    // ball's arc.
-    let mut lines: Vec<(Point, Point)> = Vec::new();
-    let mut arc: Option<(Curve, (f64, f64))> = None;
-    for edge in explore_unique(model, cap, ShapeType::Edge)? {
-        let (curve, range) = crate::support::edge_curve(model, &edge, tol)?;
-        let ends = (curve.point_at(range.0, tol)?, curve.point_at(range.1, tol)?);
-        let middle = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
-        if middle.distance(ends.0.midpoint(ends.1)) <= near {
-            lines.push(ends);
-        } else if arc.is_none() {
-            arc = Some((curve, range));
-        } else {
-            ogeom_core::ogeom_bail!(Construction, "a band's end cap has two curved sides");
-        }
-    }
-    let Some((arc, range)) = arc else {
-        ogeom_core::ogeom_bail!(Construction, "a band's end cap has no arc");
-    };
-    // Every point of the cap slides forwards onto the plane, or stands in
-    // it: one behind it would carry the band back over its own end.
-    let mut corners: Vec<Point> = lines.iter().flat_map(|&(p, q)| [p, q]).collect();
+    let near = rings.near;
+    let arc: Curve = section.arc.clone().into();
+    let (lo, hi) = arc.domain();
+    let mut corners: Vec<Point> = section.lines.iter().flat_map(|&(p, q)| [p, q]).collect();
     for k in 0..=16 {
-        corners.push(arc.point_at(
-            (range.1 - range.0).mul_add(f64::from(k) / 16.0, range.0),
-            tol,
-        )?);
+        corners.push(arc.point_at((hi - lo).mul_add(f64::from(k) / 16.0, lo), tol)?);
     }
     if corners.iter().any(|&q| slide(q) < -near) {
         ogeom_core::ogeom_bail!(
@@ -731,37 +1248,18 @@ pub(crate) fn carried_to(
             "a band's end section stands past the plane its junction meets in"
         );
     }
-    let arc = arc.to_bspline_over(range, tol)?;
-    let moved: Vec<ogeom_math::Weighted<Point>> = arc
+    let moved: Vec<ogeom_math::Weighted<Point>> = section
+        .arc
         .control_points()
         .iter()
         .map(|w| ogeom_math::Weighted::new(image(w.point()), w.weight, tol))
         .collect::<OgeomResult<_>>()?;
-    let far: Curve = ogeom_geom::BSplineCurve::rational(arc.knots().clone(), moved)?.into();
-    let arc: Curve = arc.into();
-    let (a0, a1) = (
-        arc.point_at(arc.domain().0, tol)?,
-        arc.point_at(arc.domain().1, tol)?,
-    );
-    let mut rings = Rings {
-        pool: Vec::new(),
-        near,
-        tol,
-    };
-    let mut faces: Vec<Shape> = explore_unique(model, wedge, ShapeType::Face)?
-        .into_iter()
-        .filter(|f| !f.is_same(cap))
-        .collect();
-    let face_on = |model: &mut Model,
-                   surface: ogeom_geom::SurfaceGeometry,
-                   edges: Vec<Shape>|
-     -> OgeomResult<Shape> {
-        let wire = ogeom_algo::make_wire_unordered(model, &edges, tol)?.shape;
-        Ok(ogeom_algo::make_face(model, surface, &[wire], tol)?.shape)
-    };
+    let far: Curve = ogeom_geom::BSplineCurve::rational(section.arc.knots().clone(), moved)?.into();
+    let (a0, a1) = (arc.point_at(lo, tol)?, arc.point_at(hi, tol)?);
+    let mut faces = Vec::new();
     // Each leg swept to the plane: a quad, or a triangle where one end
     // already stands in it, or nothing where both do.
-    for &(p, q) in &lines {
+    for &(p, q) in &section.lines {
         let (p2, q2) = (image(p), image(q));
         let mut edges = Vec::new();
         for (x, y) in [(p, q), (q, q2), (q2, p2), (p2, p)] {
@@ -777,12 +1275,12 @@ pub(crate) fn carried_to(
         if m <= tol.angular() {
             continue;
         }
-        let surface = PlaneSurface::over(
-            ogeom_math::Plane::through(p, ogeom_math::Direction::new(plane_normal / m, tol)?),
-            (-1e3, 1e3),
-            (-1e3, 1e3),
-        )?;
-        faces.push(face_on(model, surface.into(), edges)?);
+        faces.push(face_on(
+            model,
+            plane_through((p, plane_normal / m), tol)?,
+            edges,
+            tol,
+        )?);
     }
     // The band swept to the plane, on the extrusion of the arc.
     {
@@ -805,24 +1303,35 @@ pub(crate) fn carried_to(
             ogeom_math::Direction::new(along, tol)?,
             (-reach, reach * 2.0),
         )?;
-        faces.push(face_on(model, surface.into(), edges)?);
+        faces.push(face_on(model, surface.into(), edges, tol)?);
     }
     // The far end in the plane.
     {
         let mut edges = vec![rings.edge(model, far)?];
-        for (p, q) in &lines {
+        for (p, q) in &section.lines {
             if let Some(e) = rings.segment(model, image(*p), image(*q))? {
                 edges.push(e);
             }
         }
-        let surface = PlaneSurface::over(
-            ogeom_math::Plane::through(on, ogeom_math::Direction::new(normal, tol)?),
-            (-1e3, 1e3),
-            (-1e3, 1e3),
-        )?;
-        faces.push(face_on(model, surface.into(), edges)?);
+        faces.push(face_on(
+            model,
+            plane_through((on, normal), tol)?,
+            edges,
+            tol,
+        )?);
     }
-    let sewn = ogeom_algo::sew_within(model, &faces, near, tol)?;
+    Ok(faces)
+}
+
+/// `faces` sewn within `near` into one closed shell, every edge trimmed on
+/// each face's surface, and made a solid.
+fn closed_wedge(
+    model: &mut Model,
+    faces: &[Shape],
+    near: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let sewn = ogeom_algo::sew_within(model, faces, near, tol)?;
     let [shell] = sewn.shells.as_slice() else {
         ogeom_core::ogeom_bail!(
             Construction,

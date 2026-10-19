@@ -255,9 +255,15 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 /// cell; across a convex turn both stop in it where the bands' own
 /// curvature keeps their sections there within that fit. Either way the
 /// two are built from the solid as it stands and joined across the plane
-/// into one wedge, each band's faces credited to its own edge. Elsewhere
-/// (a drafted wall beside a square one, a wider convex turn of curved
-/// bands) and wherever the meeting does not close, the later seat runs on
+/// into one wedge, each band's faces credited to its own edge. Where the
+/// end sections differ (a drafted wall beside a square one) and both
+/// creases are straight, and the two meet no other edge of the request,
+/// across a re-entrant turn the corner takes what
+/// lies above both bands carried on, bounded by the boolean's own
+/// intersection of the two, where the material holds it all; across a
+/// convex turn each band runs out past the vertex as it does alone and the
+/// cuts take their union. Elsewhere (a wider convex turn of curved bands)
+/// and wherever the meeting does not close, the later seat runs on
 /// through the earlier blend's band and the cut trims the two bands
 /// against each other along their own intersection, or the caps stand, as
 /// without a junction. Where three or
@@ -337,41 +343,58 @@ fn fillet_edges_meeting(
     // junction is taken, the surfaces a marched seat continues past its
     // faces and writes back, which the attempt notes before it builds.
     let mark = model.note_widened();
-    let mut taken = Taken::default();
-    match fillet_edges_own(model, solid, edges, radius, Some(&mut taken), tol) {
-        Ok(built) => {
-            model.keep_widened(mark);
-            Ok(built)
-        }
-        // A cancelled request stops, and a key that does not resolve says
-        // the caller's model is not the one the shapes are in: neither is
-        // the junctions' to answer for.
-        Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => {
-            model.keep_widened(mark);
-            Err(e)
-        }
-        // With no junction taken the attempt was the rounding without one.
-        Err(e) if !taken.any => {
-            model.keep_widened(mark);
-            Err(e)
-        }
-        Err(_) => {
-            model.undo_widened(mark);
-            for (id, surface) in taken.surfaces {
-                if let Some(held) = model.geometry_mut().surface_mut(id) {
-                    *held = surface;
+    // Crossed junctions first; where one does not close, the request is
+    // rounded again with the flush junctions alone, and where that does
+    // not close either, with none.
+    for crossed in [true, false] {
+        let mut taken = Taken {
+            crossed,
+            ..Taken::default()
+        };
+        match fillet_edges_own(model, solid, edges, radius, Some(&mut taken), tol) {
+            Ok(built) => {
+                model.keep_widened(mark);
+                return Ok(built);
+            }
+            // A cancelled request stops, and a key that does not resolve
+            // says the caller's model is not the one the shapes are in:
+            // neither is the junctions' to answer for.
+            Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => {
+                model.keep_widened(mark);
+                return Err(e);
+            }
+            // With no junction taken the attempt was the rounding without
+            // one.
+            Err(e) if !taken.any => {
+                model.keep_widened(mark);
+                return Err(e);
+            }
+            Err(_) => {
+                model.undo_widened(mark);
+                for (id, surface) in taken.surfaces {
+                    if let Some(held) = model.geometry_mut().surface_mut(id) {
+                        *held = surface;
+                    }
+                }
+                // Without a crossed junction taken, the next attempt would
+                // take the same flush ones again.
+                if !taken.any_crossed {
+                    break;
                 }
             }
-            fillet_edges_own(model, solid, edges, radius, None, tol)
         }
     }
+    fillet_edges_own(model, solid, edges, radius, None, tol)
 }
 
-/// What a rounding with junctions took: whether any junction, and the
-/// solid's face surfaces as they stood before it built a band.
+/// What a rounding with junctions may take and took: whether crossed
+/// junctions may be taken, whether any junction and any crossed one was,
+/// and the solid's face surfaces as they stood before it built a band.
 #[derive(Default)]
 struct Taken {
+    crossed: bool,
     any: bool,
+    any_crossed: bool,
     surfaces: Vec<(ogeom_topo::SurfaceId, SurfaceGeometry)>,
 }
 
@@ -515,8 +538,12 @@ fn fillet_edges_own(
             .iter()
             .map(|e| host_faces.get(&e.node()).cloned().unwrap_or_default())
             .collect();
-        let found = crate::junction::junctions(model, solid, edges, &given, &mates, radius, tol)
-            .unwrap_or_default();
+        let mut found =
+            crate::junction::junctions(model, solid, edges, &given, &mates, radius, tol)
+                .unwrap_or_default();
+        if meeting.as_ref().is_some_and(|taken| !taken.crossed) {
+            found.retain(|junction| !junction.crossed);
+        }
         joinable(model, edges, found)?
     } else {
         Vec::new()
@@ -525,6 +552,7 @@ fn fillet_edges_own(
         && !junctions.is_empty()
     {
         taken.any = true;
+        taken.any_crossed = junctions.iter().any(|junction| junction.crossed);
         for face in explore_unique(model, solid, ShapeType::Face)? {
             let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
                 continue;
@@ -537,7 +565,9 @@ fn fillet_edges_own(
             }
         }
     }
-    for junction in &junctions {
+    // A band stops at the vertex where a junction closes the corner; across
+    // a crossed convex turn each runs out as it does alone.
+    for junction in junctions.iter().filter(|j| j.reentrant || !j.crossed) {
         for &index in &junction.pair {
             let mate = &mut mates[index];
             let end = usize::from(
@@ -686,6 +716,7 @@ fn fillet_edges_own(
         if round_of[index] != this_round {
             this_round = round_of[index];
             if let Some(b) = built.take() {
+                with_corners(model, &mut set_aside, &junctions, &b.shape, tol)?;
                 let joined = join_flush(model, core::mem::take(&mut set_aside), &junctions, tol)?;
                 built = Some(apply_set_aside(model, b, joined, tol)?);
             }
@@ -775,6 +806,12 @@ fn fillet_edges_own(
                             let Some(slot) = junction.slot(index) else {
                                 continue;
                             };
+                            // A crossed junction's bands stand as built:
+                            // a re-entrant one's corner is built from the
+                            // two once the round has set both aside.
+                            if junction.crossed {
+                                continue;
+                            }
                             let plane = junction.keeps(slot);
                             // Across a re-entrant turn the band is carried
                             // on past its cap to the plane it meets the
@@ -844,6 +881,7 @@ fn fillet_edges_own(
         }
     }
     let built = built.unwrap_or_else(|| unreachable!());
+    with_corners(model, &mut set_aside, &junctions, &built.shape, tol)?;
     let joined = join_flush(model, set_aside, &junctions, tol)?;
     apply_set_aside(model, built, joined, tol)
 }
@@ -866,6 +904,29 @@ fn joinable(
                 .unwrap_or_default(),
         );
     }
+    // A crossed junction is taken only between two edges that meet each
+    // other at its vertex alone and no other edge of the request anywhere:
+    // its two bands are then built in a round of their own and joined into
+    // one wedge, and no other junction, corner or round order is changed.
+    let found: Vec<crate::junction::Junction> = found
+        .into_iter()
+        .filter(|junction| {
+            if !junction.crossed {
+                return true;
+            }
+            let [a, b] = junction.pair;
+            let shared = ends[a]
+                .iter()
+                .filter(|v| ends[b].iter().any(|w| w.is_same(v)))
+                .count();
+            let alone = (0..edges.len()).filter(|&k| k != a && k != b).all(|k| {
+                !ends[k]
+                    .iter()
+                    .any(|v| ends[a].iter().chain(&ends[b]).any(|w| w.is_same(v)))
+            });
+            shared == 1 && alone
+        })
+        .collect();
     let mut group: Vec<usize> = (0..edges.len()).collect();
     let mut kept: Vec<crate::junction::Junction> = Vec::new();
     for junction in found {
@@ -899,6 +960,75 @@ fn joinable(
     Ok(kept)
 }
 
+/// Join, among the wedges a round set aside, the two bands of each crossed
+/// re-entrant junction the round built into the one wedge that also takes
+/// their corner, in the material of `solid`, the solid the round's wedges
+/// apply to. The joined wedge is set aside with the first band's edge, its
+/// faces from the second band credited to the second's.
+fn with_corners(
+    model: &mut Model,
+    set_aside: &mut Vec<(usize, Shape, crate::support::Wedge)>,
+    junctions: &[crate::junction::Junction],
+    solid: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for junction in junctions.iter().filter(|j| j.crossed && j.reentrant) {
+        let bands = |slot: usize| -> Vec<usize> {
+            (0..set_aside.len())
+                .filter(|&k| set_aside[k].0 == junction.pair[slot])
+                .collect()
+        };
+        let (first, second) = (bands(0), bands(1));
+        // Built in the same round, or not yet.
+        if first.is_empty() && second.is_empty() {
+            continue;
+        }
+        let ([a], [b]) = (first.as_slice(), second.as_slice()) else {
+            ogeom_bail!(
+                Construction,
+                "a crossed junction's bands are not one cut wedge each in their round"
+            );
+        };
+        let (a, b) = (*a, *b);
+        if set_aside[a].2.additive || set_aside[b].2.additive {
+            ogeom_bail!(Construction, "a crossed junction's band is a fill");
+        }
+        let (taken, of_second) = crate::junction::corner(
+            model,
+            [&set_aside[a].2.solid, &set_aside[b].2.solid],
+            junction,
+            solid,
+            tol,
+        )?;
+        let second = set_aside[b].1.clone();
+        let later = set_aside.remove(a.max(b));
+        let earlier = set_aside.remove(a.min(b));
+        let ((index, edge, first), (_, other, last)) = if a < b {
+            (earlier, later)
+        } else {
+            (later, earlier)
+        };
+        let mut rounded = first.edges;
+        rounded.extend(last.edges);
+        rounded.push(other);
+        set_aside.push((
+            index,
+            edge,
+            crate::support::Wedge {
+                solid: taken,
+                additive: false,
+                edges: rounded,
+                melt_refusal: first.melt_refusal.or(last.melt_refusal),
+                credit: of_second
+                    .into_iter()
+                    .map(|face| (face, second.clone()))
+                    .collect(),
+            },
+        ));
+    }
+    Ok(())
+}
+
 /// The wedges a round set aside, those of two bands meeting in a
 /// junction's plane joined into one across it, each wedge with the edge it
 /// rounds.
@@ -913,7 +1043,7 @@ fn join_flush(
         .into_iter()
         .map(|(index, edge, wedge)| Some((vec![index], edge, wedge)))
         .collect();
-    for junction in junctions {
+    for junction in junctions.iter().filter(|j| !j.crossed) {
         let (on, normal) = junction.flush;
         // The wedge holding each side's piece that ends in the plane.
         let mut sides = [None, None];

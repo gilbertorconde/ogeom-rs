@@ -138,6 +138,24 @@ bump may break the API and a patch bump may not.
   evaluate it, and the face passed while meshing open. The gap is now
   measured from where the surface stops in that direction (#325).
 
+- **Two fillets of one `fillet_edges` call meet at a drafted corner along
+  their own intersection (#326).** Where the two walls at a junction
+  differ (a drafted wall beside a square one), no plane bounds the
+  meeting and each band was capped as without a junction. At an inside
+  corner the cell above both bands kept its material, 0.009 to 0.020 mm³
+  at r = 0.5. Now, where both creases are straight, each band is carried
+  on with what stands past its wall's plane, and the two are intersected
+  in one boolean: each wedge is kept to what stands above the other band
+  carried on, and the corner is bounded by the bands' own intersection,
+  where the material holds all of it. At an outside corner the band
+  built second stopped at its vertex where the solid ran on under it,
+  so one order came short (0.000493 mm³ at a 0.5 mm draft); each band
+  now runs out as it does alone and the cuts take their union, in either
+  order. A crossed corner is taken only between two edges that meet no
+  other edge of the request. Every case measured matches a semi-analytic
+  ideal; a corner the construction does not close rounds with its flush
+  junctions alone, as before.
+
 ## [0.11.5] - 2026-10-19
 
 A patch release of fixes, with two changes in behaviour. A part fused
