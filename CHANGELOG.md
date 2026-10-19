@@ -11,6 +11,19 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A part fused with its mirror image builds where a face's chart closes
+  in `v` along its boundary.** The bake a reflecting placement forces
+  places an edge on the closure of a closed chart beside its face, but did
+  so only for a column on a chart closing in `u`: a row on a chart closing
+  in `v` (a torus wall's edge on the circle its chart closes along) took
+  whichever side the projection answered, and a column ending on that
+  closure was not given the iso line at all, its fallback pcurve standing
+  a period away from the rows. A notched profile revolved a quarter turn
+  and fused with its mirror failed with "a face boundary strand dangles";
+  it now builds, at twice Pappus's volume for each half (#319).
+
 ## [0.11.5] - 2026-10-19
 
 A patch release of fixes, with two changes in behaviour. A part fused

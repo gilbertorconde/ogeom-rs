@@ -410,18 +410,10 @@ fn a_mesh_reports_the_chord_it_meets() {
     );
 }
 
-/// A prism 4 long on a 2 by 2 square with a quarter round of radius 1
-/// notched out of one corner, standing on the plane x = 0 on the side
-/// `length` points to, its notch's arc running from `u = 0` of its circle
-/// at one end of the arc or the other; drilled, where `drill` is given, by
-/// an upright pin of that radius through the notch's straight edge along
-/// y = 2, z = 1.
-fn notched_prism(
-    model: &mut ogeom_topo::Model,
-    arc_from_the_floor: bool,
-    length: f64,
-    drill: Option<f64>,
-) -> ogeom_topo::Shape {
+/// A 2 by 2 square on the plane x = 0 with a quarter round of radius 1
+/// notched out of its corner at y = z = 2, its notch's arc running from
+/// `u = 0` of its circle at one end of the arc or the other.
+fn notched_profile(model: &mut ogeom_topo::Model, arc_from_the_floor: bool) -> ogeom_topo::Shape {
     use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve, PlaneSurface};
     use ogeom_math::{Circle, Direction, Plane, Vector};
     let at = |y: f64, z: f64| Point::new(0.0, y, z);
@@ -506,9 +498,23 @@ fn notched_prism(
         (-5.0, 5.0),
     )
     .unwrap();
-    let profile = ogeom_algo::make_face_with_pcurves(model, plane.into(), &[edges], T)
+    ogeom_algo::make_face_with_pcurves(model, plane.into(), &[edges], T)
         .unwrap()
-        .shape;
+        .shape
+}
+
+/// A prism 4 long on [`notched_profile`], standing on the plane x = 0 on
+/// the side `length` points to; drilled, where `drill` is given, by an
+/// upright pin of that radius through the notch's straight edge along
+/// y = 2, z = 1.
+fn notched_prism(
+    model: &mut ogeom_topo::Model,
+    arc_from_the_floor: bool,
+    length: f64,
+    drill: Option<f64>,
+) -> ogeom_topo::Shape {
+    use ogeom_math::{Direction, Vector};
+    let profile = notched_profile(model, arc_from_the_floor);
     let prism = ogeom_algo::make_prism(model, &profile, Vector::new(length, 0.0, 0.0), T)
         .unwrap()
         .shape;
@@ -579,6 +585,60 @@ fn a_notched_prism_fuses_with_its_mirror_where_its_wall_chart_closes() {
         } else {
             4.0 * (4.0 - core::f64::consts::FRAC_PI_4)
         };
+        let measured = vol(&model, &fused.shape);
+        assert!(
+            (measured - 2.0 * each).abs() < each * 1e-8,
+            "{case}: fused volume {measured} against {}",
+            2.0 * each
+        );
+    }
+}
+
+#[test]
+fn a_notched_ring_fuses_with_its_mirror_where_its_wall_chart_closes_across_it() {
+    // The notched profile turned a quarter about the line x = 0, y = 5
+    // along z: the notch's wall is a quarter of a torus whose chart closes
+    // in v along the circle the profile's corner (1, 2) sweeps, which the
+    // wall's ring runs as a row, and its two arcs, columns, end on it.
+    // Mirrored and baked, the row and the columns' ends on the closure
+    // must land on the side of it the rest of the wall's ring stands on,
+    // or the fuse finds a ring that does not close.
+    use core::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+    for (arc_from_the_floor, up) in [(true, true), (false, true), (true, false), (false, false)] {
+        let mut model = ogeom_topo::Model::new();
+        let profile = notched_profile(&mut model, arc_from_the_floor);
+        let axis = ogeom_math::Axis {
+            location: Point::new(0.0, 5.0, 0.0),
+            direction: if up {
+                ogeom_math::Direction::Z
+            } else {
+                -ogeom_math::Direction::Z
+            },
+        };
+        let half = ogeom_algo::make_revolution(&mut model, &profile, axis, FRAC_PI_2, T)
+            .unwrap()
+            .shape;
+        let copy = ogeom_algo::copied(&mut model, &half).unwrap().shape;
+        let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+        let image = ogeom_algo::transformed(&mut model, &copy, mirror)
+            .unwrap()
+            .shape;
+        let case = format!("arc from the floor {arc_from_the_floor}, turned up {up}");
+        let fused = ogeom_bool::fuse(&mut model, &half, &image, T)
+            .unwrap_or_else(|e| panic!("{case}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{case}: {:?}", diagnosis.problems);
+        assert_eq!(
+            walks::edges_walked_one_way(&model, &fused.shape),
+            0,
+            "{case}"
+        );
+        // Pappus: each half is the profile's area swept a quarter turn at
+        // its centroid's distance from the axis. The square's centroid is
+        // at y = 1, the quarter disc's at y = 2 - 4 / (3 pi).
+        let area = 4.0 - FRAC_PI_4;
+        let centroid = (4.0 - FRAC_PI_4 * (2.0 - 4.0 / (3.0 * PI))) / area;
+        let each = area * (5.0 - centroid) * FRAC_PI_2;
         let measured = vol(&model, &fused.shape);
         assert!(
             (measured - 2.0 * each).abs() < each * 1e-8,

@@ -1113,78 +1113,103 @@ fn exact_iso_pcurve(
     let mut a = Point2::new(a.parameters.0, a.parameters.1);
     let mut b = Point2::new(b.parameters.0, b.parameters.1);
     let row = d.vector().y.abs() <= 1e-12;
+    let closed_u = surface.is_periodic_u() || surface.is_closed_u(tol);
+    let closed_v = surface.is_periodic_v() || surface.is_closed_v(tol);
+    // The image of the edge's point at `t`.
+    let inside = |t: f64| -> OgeomResult<Point2> {
+        let p = curve.point_at(t, tol)?;
+        let at = crate::measure::project_on_surface(surface, p, 24, tol)?.parameters;
+        Ok(Point2::new(at.0, at.1))
+    };
     if row {
-        // A row's v is one value; the endpoints agree up to projection noise,
-        // and a full-width row on a closed chart runs edge to edge, its
-        // seam-side endpoints snapped to the chart's own edges.
-        let v = f64::midpoint(a.y, b.y);
+        // A row's v is one value; the endpoints agree up to projection noise.
+        let mut v = f64::midpoint(a.y, b.y);
+        (a.x, b.x) = run_ends(
+            (a.x, b.x),
+            (nu0, nu1),
+            closed_u,
+            range,
+            |t| Ok(inside(t)?.x),
+        )?;
+        // A row the ring runs along the chart has the face above it in `v`.
+        if let Some(side) = beside_face(&[a.y, b.y], (nv0, nv1), closed_v, (b.x > a.x) == along) {
+            v = side;
+        }
         a.y = v;
         b.y = v;
-        let span = nu1 - nu0;
-        // On the closure both chart edges image the same point, and the
-        // projection answers with either: taken wrong, a half circle from
-        // the seam round the back becomes the segment from the seam to the
-        // half-way column (the *front* half, mirrored), and the wall's
-        // ring loses its far side. The edge's own interior decides which
-        // column a seam endpoint is: the image of a point a little way in
-        // from that end lies on the same side of the chart.
-        let at_seam = |u: &f64| (*u - nu0).abs() < span * 1e-6 || (*u - nu1).abs() < span * 1e-6;
-        let inside = |t: f64| -> OgeomResult<f64> {
-            let p = curve.point_at(t, tol)?;
-            Ok(crate::measure::project_on_surface(surface, p, 24, tol)?
-                .parameters
-                .0)
-        };
-        let middle = f64::midpoint(nu0, nu1);
-        let step = (range.1 - range.0) * 0.02;
-        if at_seam(&a.x) {
-            a.x = if inside(range.0 + step)? < middle {
-                nu0
-            } else {
-                nu1
-            };
-        }
-        if at_seam(&b.x) {
-            b.x = if inside(range.1 - step)? < middle {
-                nu0
-            } else {
-                nu1
-            };
-        }
-        if (a.x - b.x).abs() < span * 1e-9 {
-            // A closed row: the full width, oriented by the curve's start.
-            a.x = nu0;
-            b.x = nu1;
-        }
     } else {
         // A column's end on a pole images to every u there, and the
         // projection answers with any of them; the edge's middle images
         // to its own column. Of the three, the median is the column
         // whichever end, if either, stands on a pole.
-        let middle = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
-        let m = crate::measure::project_on_surface(surface, middle, 24, tol)?
-            .parameters
-            .0;
+        let m = inside(f64::midpoint(range.0, range.1))?.x;
         let mut u = a.x.max(b.x).min(m).max(a.x.min(b.x));
-        if (a.y - b.y).abs() < (nv1 - nv0) * 1e-9 {
-            a.y = nv0;
-            b.y = nv1;
-        }
-        // A column on the closure of a closed chart images to both of the
-        // chart's edges, and its own points, all on the closure, cannot
-        // tell which. The face can: the ring keeps it on its left, so a
-        // column the ring runs up the chart has the face below it in `u`
-        // and stands on the chart's last edge, and one run down stands on
-        // its first.
-        let span = nu1 - nu0;
-        let closed = surface.is_periodic_u() || surface.is_closed_u(tol);
-        if closed && ((u - nu0).abs() < span * 1e-6 || (u - nu1).abs() < span * 1e-6) {
-            u = if (b.y > a.y) == along { nu1 } else { nu0 };
+        (a.y, b.y) = run_ends(
+            (a.y, b.y),
+            (nv0, nv1),
+            closed_v,
+            range,
+            |t| Ok(inside(t)?.y),
+        )?;
+        // A column the ring runs up the chart has the face below it in `u`.
+        if let Some(side) = beside_face(&[u], (nu0, nu1), closed_u, (b.y > a.y) != along) {
+            u = side;
         }
         a.x = u;
         b.x = u;
     }
     Ok(Some(ogeom_geom::Line2d::segment(a, b, tol)?.into()))
+}
+
+/// The ends of an iso line in the coordinate it runs along, `ends` as its
+/// end points project onto a chart spanning `(lo, hi)` that way; `at`
+/// answers that coordinate for the edge's point at a parameter in `range`.
+///
+/// On the closure of a closed chart both chart edges image the same point,
+/// and the projection answers with either: taken wrong, a half circle from
+/// the seam round the back becomes the segment from the seam to the
+/// half-way line (the *front* half, mirrored), and the face's ring loses
+/// its far side. The edge's own interior decides which edge a closure end
+/// is: the image of a point a little way in from that end lies on the same
+/// side of the chart. A line whose ends meet is closed and runs the full
+/// width, oriented by the curve's start.
+fn run_ends(
+    ends: (f64, f64),
+    (lo, hi): (f64, f64),
+    closed: bool,
+    range: (f64, f64),
+    at: impl Fn(f64) -> OgeomResult<f64>,
+) -> OgeomResult<(f64, f64)> {
+    let (mut from, mut to) = ends;
+    let span = hi - lo;
+    let on_closure = |x: f64| (x - lo).abs() < span * 1e-6 || (x - hi).abs() < span * 1e-6;
+    let middle = f64::midpoint(lo, hi);
+    let step = (range.1 - range.0) * 0.02;
+    if closed && on_closure(from) {
+        from = if at(range.0 + step)? < middle { lo } else { hi };
+    }
+    if closed && on_closure(to) {
+        to = if at(range.1 - step)? < middle { lo } else { hi };
+    }
+    if (from - to).abs() < span * 1e-9 {
+        (from, to) = (lo, hi);
+    }
+    Ok((from, to))
+}
+
+/// The chart edge an iso line on the closure of a closed chart stands on,
+/// or `None` where `at`, the line's fixed coordinate as its points project,
+/// is not on the closure or the chart does not close across the line.
+///
+/// On the closure both of the chart's edges image the line, and its own
+/// points, all on the closure, cannot tell which. The face can: the ring
+/// keeps it on its left, so the line stands on the chart's first edge
+/// across it where the face lies above it (`face_above`) and on the last
+/// where the face lies below.
+fn beside_face(at: &[f64], (lo, hi): (f64, f64), closed: bool, face_above: bool) -> Option<f64> {
+    let span = hi - lo;
+    let on_closure = |x: &f64| (x - lo).abs() < span * 1e-6 || (x - hi).abs() < span * 1e-6;
+    (closed && at.iter().any(on_closure)).then_some(if face_above { lo } else { hi })
 }
 
 /// Exact seam pcurves for a closed patch: the chart's two edges the seam
