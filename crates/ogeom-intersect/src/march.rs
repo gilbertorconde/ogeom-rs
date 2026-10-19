@@ -2244,12 +2244,22 @@ fn split_at_touches(
     tol: Tolerances,
 ) -> Vec<Traced> {
     let reach = options.chord.max(tol.confusion()) * 60.0;
-    // How far short of a touch a stall may end and still be carried onto
-    // it: the walk gives out where the arms close in on each other.
+    // How far a touch solved from a low-angle sample may stand from it and
+    // still be the one it lies beside, and how far short of a touch any
+    // stalled end is carried onto it: the walk gives out where the arms
+    // close in on each other. A touch solved from a stalled end itself is
+    // that end's at any distance: a stall cut back to the last sample
+    // clear of it stands a whole stride short, and `carry_onto` follows
+    // the section out to the touch or leaves the end where it is. Both ends
+    // of a branch marked stalled count as stalled, though one may have
+    // left the domain: `carry_onto` leaves such an end where it is unless
+    // the section runs on from it, ahead, to the touch.
     let carry = reach * 40.0;
 
     let mut touches: Vec<Touch> = Vec::new();
-    for branch in &found {
+    // The touch solved from each stalled branch's ends, head then tail.
+    let mut solved_ends: Vec<[Option<usize>; 2]> = vec![[None; 2]; found.len()];
+    for (branch, solved) in found.iter().zip(&mut solved_ends) {
         let n = branch.points.len();
         if n < 5 || !interior_is_transversal(branch, a, b, tol) {
             continue;
@@ -2271,12 +2281,19 @@ fn split_at_touches(
             let Some(touch) = touching_point(a, b, branch.on_a[i], branch.on_b[i], tol) else {
                 continue;
             };
-            if touch.point.distance(branch.points[i]) <= carry
-                && !touches
-                    .iter()
-                    .any(|t| t.point.distance(touch.point) <= reach)
-            {
-                touches.push(touch);
+            let stall = branch.stopped == Stopped::Stalled && (i == 0 || i + 1 == n);
+            if !stall && touch.point.distance(branch.points[i]) > carry {
+                continue;
+            }
+            let at = touches
+                .iter()
+                .position(|t| t.point.distance(touch.point) <= reach)
+                .unwrap_or_else(|| {
+                    touches.push(touch);
+                    touches.len() - 1
+                });
+            if stall {
+                solved[usize::from(i != 0)] = Some(at);
             }
         }
     }
@@ -2288,7 +2305,7 @@ fn split_at_touches(
     };
 
     let mut out = Vec::with_capacity(found.len());
-    for branch in found {
+    for (branch, solved) in found.into_iter().zip(solved_ends) {
         let n = branch.points.len();
         // A sample on a touch, or either end of a step passing within
         // reach of one: the walk strides straight arms in long steps.
@@ -2307,9 +2324,23 @@ fn split_at_touches(
                 visits[i].get_or_insert(t);
             }
         }
-        let stall_end = |at: usize| {
-            branch.stopped == Stopped::Stalled && touch_near(branch.points[at], carry).is_some()
+        // The touch a stalled end heads for: one within `carry` of it, or
+        // failing that the one solved from the end itself. Where the end
+        // will not carry onto the first, the one solved from it is tried
+        // next: two crossings a little apart on one branch both lie within
+        // `carry` of its end, and the one listed first may be the other.
+        let solved_at = |at: usize| if at == 0 { solved[0] } else { solved[1] };
+        let end_touch = |at: usize| -> Option<usize> {
+            if branch.stopped != Stopped::Stalled {
+                return None;
+            }
+            touch_near(branch.points[at], carry).or_else(|| solved_at(at))
         };
+        let end_fallback = |at: usize| -> Option<usize> {
+            let first = end_touch(at)?;
+            solved_at(at).filter(|&t| t != first)
+        };
+        let stall_end = |at: usize| end_touch(at).is_some();
         let touched =
             visits.iter().any(Option::is_some) || (n > 0 && (stall_end(0) || stall_end(n - 1)));
         if !touched || !interior_is_transversal(&branch, a, b, tol) {
@@ -2347,7 +2378,7 @@ fn split_at_touches(
                 continue;
             }
             if run.is_empty() && k == 0 && !closed && stall_end(i) {
-                head = touch_near(branch.points[i], carry);
+                head = end_touch(i);
             }
             run.push(i);
         }
@@ -2355,8 +2386,8 @@ fn split_at_touches(
             let last = *run.last().unwrap_or(&0);
             let tail = if closed {
                 visits[order[0]]
-            } else if stall_end(last) && last == n - 1 {
-                touch_near(branch.points[last], carry)
+            } else if last == n - 1 {
+                end_touch(last)
             } else {
                 None
             };
@@ -2410,9 +2441,21 @@ fn split_at_touches(
             if arc.points.len() < 2 {
                 continue;
             }
-            for (end, at_head) in [(tail, false), (head, true)] {
-                if let Some(t) = end {
-                    carry_onto(&mut arc, &touches[t], at_head, a, b, reach, tol);
+            let fallback = |at_end: bool, index: usize| {
+                (at_end && !closed && visits[index].is_none())
+                    .then(|| end_fallback(index))
+                    .flatten()
+            };
+            let ends = [
+                (tail, false, fallback(run.last() == Some(&(n - 1)), n - 1)),
+                (head, true, fallback(run.first() == Some(&0), 0)),
+            ];
+            for (end, at_head, next) in ends {
+                if let Some(t) = end
+                    && !carry_onto(&mut arc, &touches[t], at_head, (a, b), options, tol)
+                    && let Some(t) = next
+                {
+                    carry_onto(&mut arc, &touches[t], at_head, (a, b), options, tol);
                 }
             }
             let length: f64 = arc.points.windows(2).map(|w| w[0].distance(w[1])).sum();
@@ -2444,17 +2487,19 @@ fn split_at_touches(
 
 /// An arc's end carried onto a touch: samples along the straight way there
 /// corrected onto both surfaces, then the touch itself. The arc stays as it
-/// was where the end does not head for the touch or a sample further than
-/// `reach` from it will not settle onto the section.
+/// was where the end does not head for the touch, a sample further than
+/// `reach` from it will not settle onto the section, or the samples would
+/// take the arc past the points a branch may hold. Whether the end was
+/// carried onto the touch.
 fn carry_onto(
     arc: &mut Traced,
     touch: &Touch,
     at_head: bool,
-    a: &SurfaceGeometry,
-    b: &SurfaceGeometry,
-    reach: f64,
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    options: Marching,
     tol: Tolerances,
-) {
+) -> bool {
+    let reach = options.chord.max(tol.confusion()) * 60.0;
     let n = arc.points.len();
     let (end, inner) = if at_head { (0, 1) } else { (n - 1, n - 2) };
     let from = arc.points[end];
@@ -2465,7 +2510,7 @@ fn carry_onto(
         let along = gap * (1.0 / distance);
         let heading = from - arc.points[inner];
         if distance > reach && heading.dot(along) < 0.5 * heading.magnitude() {
-            return;
+            return false;
         }
         // How far short of the touch each sample stands: steps of at most
         // `reach` down to it, then halving to an eighth of it, where the
@@ -2473,6 +2518,10 @@ fn carry_onto(
         // one and the last straight stretch bows from the arm well inside
         // the chord.
         let pieces = (distance / reach).ceil().max(1.0);
+        #[allow(clippy::cast_precision_loss)]
+        if pieces + 3.0 > options.max_points.saturating_sub(n) as f64 {
+            return false;
+        }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let count = pieces as usize;
         #[allow(clippy::cast_precision_loss)]
@@ -2495,7 +2544,7 @@ fn carry_onto(
                 // Beside the touch a sample that will not settle is left
                 // out; further off, the arm is not there to follow.
                 if remaining > reach {
-                    return;
+                    return false;
                 }
                 continue;
             };
@@ -2517,7 +2566,7 @@ fn carry_onto(
         arc.points[end] = touch.point;
         arc.on_a[end] = beside(a, touch.on_a, on_a);
         arc.on_b[end] = beside(b, touch.on_b, on_b);
-        return;
+        return true;
     }
     if at_head {
         added.reverse();
@@ -2529,6 +2578,7 @@ fn carry_onto(
         arc.on_a.extend(added.iter().map(|c| c.on_a));
         arc.on_b.extend(added.iter().map(|c| c.on_b));
     }
+    true
 }
 
 /// Newton projection of a point onto a surface, warm-started.

@@ -59,6 +59,19 @@ bump may break the API and a patch bump may not.
   and fused with its mirror failed with "a face boundary strand dangles";
   it now builds, at twice Pappus's volume for each half (#319).
 
+- **A section stalling a long stride short of a touch is carried onto
+  it.** Where a marched section runs straight into a point where the two
+  surfaces touch, the walk takes long strides, and cutting the stall's
+  wander away left its end a whole stride short. The touch was solved
+  from that end but taken only within 2400 chords of it, so a longer
+  stride left the section short: 2.7 µm on two swept walls meeting at
+  their apexes. A touch solved from a stalled end is now that end's at
+  any distance, and the end is followed out to it along the section.
+  Where another touch lies as near and the end does not run into it, the
+  end is carried onto the one solved from it instead: on a saddle
+  crossing a plane along three lines, an arm ending 5.2e-2 short of the
+  crossing it runs into now reaches it (#321).
+
 ## [0.11.5] - 2026-10-19
 
 A patch release of fixes, with two changes in behaviour. A part fused
