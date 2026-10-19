@@ -1672,6 +1672,27 @@ fn exact_pcurve(
     if let Some(forward) = forward {
         return exact_pcurve(&forward, range, surface, tol);
     }
+    // The circle cases read the frame's `z` as the axis the parameter turns
+    // about, which holds on a right-handed frame only. A mirrored circle
+    // stands on a left-handed one, its parameter turning from `x` towards a
+    // `y` that runs clockwise about `z`, and is read as its right-handed
+    // spelling: the same `x` and `y`, `z` reversed, the same point at every
+    // parameter.
+    if let Curve::Circle(c) = curve
+        && c.circle().frame().handedness() == ogeom_math::Handedness::Left
+    {
+        let frame = c.circle().frame();
+        let right =
+            ogeom_math::Frame::from_axes(frame.origin(), frame.x(), frame.y(), -frame.z(), tol)
+                .ok()?;
+        let circle = ogeom_math::Circle::new(right, c.circle().radius(), tol).ok()?;
+        return exact_pcurve(
+            &Curve::Circle(ogeom_geom::CircleCurve::new(circle)),
+            range,
+            surface,
+            tol,
+        );
+    }
     match surface {
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, range, c.cylinder(), tol),
@@ -2889,6 +2910,79 @@ mod tests {
                     assert!(
                         p3.distance(lifted) < 1e-9,
                         "normal {normal:?}, t {t}: pcurve lifts {lifted:?} against {p3:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_circle_on_a_left_handed_frame_keeps_its_pcurve_same_parameter() {
+        // A mirrored circle stands on a left-handed frame: its parameter
+        // runs from `x` towards a `y` that turns clockwise about `z`. Read
+        // by `z` alone, its pcurve runs the other way round the axis from
+        // the curve, and lifts to the circle's mirror image across its `x`.
+        // Each circle is taken on both frames through its `x`, and its
+        // pcurve lifted through the surface must give the curve's own point
+        // back at every parameter.
+        use ogeom_geom::ConeSurface;
+        let cone: SurfaceGeometry = ConeSurface::new(
+            ogeom_math::Cone::new(Frame::WORLD, 1.0, core::f64::consts::FRAC_PI_6, T).unwrap(),
+            (-1.0, 3.0),
+        )
+        .unwrap()
+        .into();
+        let on = |centre: Point, normal: Direction, radius: f64| {
+            (Frame::new(centre, normal, Direction::X, T).unwrap(), radius)
+        };
+        let cases = [
+            (
+                cylinder(Vector::Z, 2.0),
+                on(Point::new(0.0, 0.0, 1.0), Direction::Z, 2.0),
+            ),
+            (
+                sphere(Point::ORIGIN, 2.0),
+                on(Point::new(0.0, 0.0, 1.0), Direction::Z, 3.0_f64.sqrt()),
+            ),
+            (
+                cone.clone(),
+                on(
+                    Point::new(0.0, 0.0, 1.0),
+                    Direction::Z,
+                    1.0 + core::f64::consts::FRAC_PI_6.tan(),
+                ),
+            ),
+            (
+                torus(Point::ORIGIN, Vector::Z, 2.0, 0.5),
+                on(Point::ORIGIN, Direction::Z, 2.5),
+            ),
+            (
+                torus(Point::ORIGIN, Vector::Z, 2.0, 0.5),
+                on(Point::new(2.0, 0.0, 0.0), Direction::Y, 0.5),
+            ),
+        ];
+        for (surface, (frame, radius)) in &cases {
+            for frame in [*frame, frame.mirrored()] {
+                let circle: Curve = ogeom_geom::CircleCurve::new(
+                    ogeom_math::Circle::new(frame, *radius, T).unwrap(),
+                )
+                .into();
+                let pcurve = exact_pcurve_of(&circle, surface, T)
+                    .expect("a circle of the surface has a closed-form pcurve");
+                for i in 0..=8 {
+                    let t = core::f64::consts::TAU * f64::from(i) / 8.0;
+                    let uv = pcurve.point_at(t, T).unwrap();
+                    let lifted = surface
+                        .point_at(uv.x.rem_euclid(core::f64::consts::TAU), uv.y, T)
+                        .or_else(|_| surface.point_at(uv.x, uv.y, T))
+                        .unwrap();
+                    let p3 = circle.point_at(t, T).unwrap();
+                    // Both sides are closed forms of one point: rounding
+                    // only.
+                    assert!(
+                        p3.distance(lifted) < 1e-9,
+                        "{:?} frame, t {t}: pcurve lifts {lifted:?} against {p3:?}",
+                        frame.handedness()
                     );
                 }
             }
