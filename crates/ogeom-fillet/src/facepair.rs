@@ -193,7 +193,7 @@ pub fn blend_faces(
         faces: [a.clone(), b.clone()],
         convex,
     };
-    seated_fillet(model, solid, &seat, radius, None, tol)
+    seated_fillet(model, solid, &seat, radius, None, &[], tol)
 }
 
 /// A face's plane origin and its outward normal, refusing anything curved.

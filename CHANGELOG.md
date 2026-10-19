@@ -48,6 +48,16 @@ bump may break the API and a patch bump may not.
   section away, and stops on that face with no cap. A step or a ledge
   past the end, material no ball on the edge touches, still stops the
   round square (#304).
+- **A fillet chain rounds on along its tangent continuations.** Two
+  things refused a chain carried on along tangent-continuous edges. A
+  straight crease running up under a face that overhangs its corner (a
+  rib under a slanted roof) was refused, its contacts standing behind
+  the roof, and rounded alone its band cut into the roof. The band is now
+  trimmed by the roof's plane and stops on it. A short arc of a rim was
+  taken for a piece of a rim that closes whenever the rim stood opposite
+  its middle, and its round ran the whole turn, through the part where
+  the rim stops. A rim now runs the whole turn only where the edges on
+  its circle that bound its wall close it (#306).
 
 ## [0.11.4] - 2026-10-18
 

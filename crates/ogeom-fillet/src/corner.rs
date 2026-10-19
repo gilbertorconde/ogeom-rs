@@ -786,7 +786,7 @@ fn setback_corner(
             faces,
             convex: true,
         };
-        let cut = crate::fillet::seated_fillet(model, &rounded, &seat, radius, None, tol)
+        let cut = crate::fillet::seated_fillet(model, &rounded, &seat, radius, None, &[], tol)
             .map_err(|e| ogeom_core::ogeom_err!(NotDone, "the ridge's flush fillet failed: {e}"))?;
         history = history.then(&cut.history);
         rounded = cut.shape;

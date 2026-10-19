@@ -1496,6 +1496,105 @@ fn a_round_runs_out_along_its_wall_onto_a_ramp_past_its_end() {
     }
 }
 
+/// A rib's top edges rounded as one chain carried on along their tangent
+/// continuations: two straight runs that continue up under a slanted
+/// roof, and a round end whose rim is split at the wall's seam into a
+/// long arc and a short one. The runs under the roof stop on it, cut off
+/// by its plane: at a point of the section a distance b in from the rib's
+/// top the roof stands h - k b up the run, k its slope, so each takes the
+/// section (1 - pi/4) r^2 times h less k times the section's centroid's
+/// distance from the top, r (10 - 3 pi) / (3 (4 - pi)). The rim stops
+/// where the rib's walls leave it, so the short arc's round runs its own
+/// arc and takes the section turned about the axis at the centroid's
+/// radius over that arc, alone or with the rest. Each of the three adds
+/// that to what the rest of the chain takes, whichever order the edges
+/// are named in.
+#[test]
+fn a_rib_s_chain_rounds_on_along_its_tangent_continuations() {
+    use ogeom::math::{Point, Vector};
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("rib_chain_under_a_slanted_roof.ogeom")).unwrap();
+    let rib = &roots[0];
+    let along = |at: (f64, f64), dir: (f64, f64)| {
+        edge_along(
+            &model,
+            rib,
+            Point::new(at.0, 9.51, at.1),
+            Vector::new(dir.0, 0.0, dir.1),
+        )
+    };
+    let picked = [
+        along((-9.21, -5.88), (0.0, 1.0)),
+        along((-13.13, -7.84), (0.0, 1.0)),
+        along((-4.605, -11.76), (1.0, 0.0)),
+        along((-4.605, -15.68), (1.0, 0.0)),
+        along((-16.004, -20.458), (-0.806, -0.592)),
+        along((-24.472, -26.004), (-0.068, 0.998)),
+    ];
+    let short_arc = along((-20.191, -29.293), (-0.982, -0.191));
+    let under_roof = [
+        along((-13.13, 1.043), (0.0, 1.0)),
+        along((-9.21, 1.043), (0.0, 1.0)),
+    ];
+    let radius = 0.85;
+    let pi = std::f64::consts::PI;
+    let section = (1.0 - pi / 4.0) * radius * radius;
+    let centroid = radius * (10.0 - 3.0 * pi) / (3.0 * (4.0 - pi));
+    // The roof's outward normal is (0, 0.717..., -0.697...).
+    let slope: f64 = 0.717_058_867_531_502 / 0.697_012_611_431_414_5;
+    let length = |edge: &ogeom::topo::Shape| {
+        ogeom::algo::linear_properties(&model, edge, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let roofed: f64 = under_roof
+        .iter()
+        .map(|e| section * slope.mul_add(-centroid, length(e)))
+        .sum();
+    // The rim's radius is 3.6, and a circle's parameter is its angle.
+    let turn = match model
+        .node(&short_arc)
+        .unwrap()
+        .data()
+        .as_edge()
+        .unwrap()
+        .curve3d()
+    {
+        Some(ogeom::topo::EdgeRepr::Curve3d { range, .. }) => range.1 - range.0,
+        _ => unreachable!("the short arc has its curve"),
+    };
+    let arc = section * (3.6 - centroid) * turn;
+    let (before, bounds) = measured(&model, rib);
+    let took = |named: &[ogeom::topo::Shape]| {
+        let mut model = model.clone();
+        let rounded = ogeom::fillet::fillet_edges(&mut model, rib, named, radius, T).unwrap();
+        let (after, held) = measured(&model, &rounded.shape);
+        assert!((held.diagonal() - bounds.diagonal()).abs() <= 1e-6);
+        before - after
+    };
+    let alone = took(std::slice::from_ref(&short_arc));
+    assert!(
+        (alone - arc).abs() <= arc * 1e-3,
+        "the short arc's round took {alone} where its section over its arc is {arc}"
+    );
+    let rest = took(&picked);
+    let mut chain: Vec<_> = picked.to_vec();
+    chain.push(short_arc);
+    chain.extend(under_roof);
+    let added = roofed + arc;
+    for order in [false, true] {
+        if order {
+            chain.reverse();
+        }
+        let whole = took(&chain);
+        assert!(
+            (whole - rest - added).abs() <= added * 1e-3,
+            "the continuations took {} where their sections are {added}",
+            whole - rest
+        );
+    }
+}
+
 /// A pad fused onto a part where the pad's curved side touches a wall
 /// swept from a quadratic profile, at the point where both their profiles
 /// end on their apexes and the pad's foot stands on the wall's end. The

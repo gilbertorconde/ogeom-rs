@@ -509,9 +509,9 @@ fn profile_prism(
         .shape
 }
 
-/// The volume a fillet of `radius` on the floor edge of a profile prism
-/// took from it.
-fn removed_by_floor_round(profile: &[(f64, f64)], length: f64, radius: f64) -> f64 {
+/// The volume a fillet of `radius` on the edge of a profile prism through
+/// `middle` took from it.
+fn removed_by_round(profile: &[(f64, f64)], middle: Point, radius: f64) -> f64 {
     let mut model = ogeom_topo::Model::new();
     let prism = profile_prism(&mut model, profile, 2.0);
     let fine = ogeom_mesh::Deflection {
@@ -521,7 +521,7 @@ fn removed_by_floor_round(profile: &[(f64, f64)], length: f64, radius: f64) -> f
     let before = ogeom_algo::volume_properties(&model, &prism, fine, T)
         .unwrap()
         .mass;
-    let edge = edge_with_midpoint(&model, &prism, Point::new(0.0, length / 2.0, 0.0));
+    let edge = edge_with_midpoint(&model, &prism, middle);
     let rounded = ogeom_fillet::fillet_edges(&mut model, &prism, &[edge], radius, T)
         .unwrap()
         .shape;
@@ -551,7 +551,7 @@ fn a_round_runs_out_along_its_wall_onto_a_ramp() {
             (length + height / slope, height),
             (0.0, height),
         ];
-        let removed = removed_by_floor_round(&profile, length, radius);
+        let removed = removed_by_round(&profile, Point::new(0.0, length / 2.0, 0.0), radius);
         let want = (1.0 - core::f64::consts::FRAC_PI_4) * radius * radius * length
             + radius.powi(3) * (5.0 / 6.0 - core::f64::consts::FRAC_PI_4) / slope;
         assert!(
@@ -586,11 +586,42 @@ fn a_round_stops_square_at_a_step_past_its_end() {
         (0.0, height),
     ];
     for (name, profile) in [("down", &down), ("up", &up)] {
-        let removed = removed_by_floor_round(profile, length, radius);
+        let removed = removed_by_round(profile, Point::new(0.0, length / 2.0, 0.0), radius);
         let want = (1.0 - core::f64::consts::FRAC_PI_4) * radius * radius * length;
         assert!(
             (removed - want).abs() < 1e-4,
             "step {name}: the round took {removed} against {want}"
+        );
+    }
+}
+
+/// A round on a rib's top edge where the rib runs up under a slanted roof,
+/// the roof turned over the rib's corner: the band stops on the roof,
+/// cut off by its plane, and takes nothing from what the roof bounds. At
+/// a point of the section a distance b in from the rib's top, the roof
+/// stands h - k b over the floor, k its slope, so the band takes the
+/// section (1 - pi/4) r^2 times h less k times the section's centroid's
+/// distance from the top, r (10 - 3 pi) / (3 (4 - pi)).
+#[test]
+fn a_round_running_up_under_a_roof_stops_on_it() {
+    let (height, radius) = (2.0, 0.5);
+    let section = (1.0 - core::f64::consts::FRAC_PI_4) * radius * radius;
+    let centroid =
+        radius * (10.0 - 3.0 * core::f64::consts::PI) / (3.0 * (4.0 - core::f64::consts::PI));
+    for slope in [0.5, 1.0, 2.0] {
+        let profile = [
+            (-3.0, 0.0),
+            (0.0, 0.0),
+            (0.0, height),
+            (2.0, 2.0f64.mul_add(slope, height)),
+            (2.0, 2.0f64.mul_add(slope, height + 1.0)),
+            (-3.0, 2.0f64.mul_add(slope, height + 1.0)),
+        ];
+        let removed = removed_by_round(&profile, Point::new(0.0, 0.0, height / 2.0), radius);
+        let want = section * slope.mul_add(-centroid, height);
+        assert!(
+            (removed - want).abs() < 1e-4,
+            "slope {slope}: the round took {removed} against {want}"
         );
     }
 }

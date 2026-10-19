@@ -492,6 +492,85 @@ fn rims_that_meet_nothing_round_together() {
     assert!(credited >= 9, "{credited}");
 }
 
+/// A keyhole: a drum of radius 2, its seam at 310 degrees, fused with a
+/// neck 2 wide, 1 high. The drum's wall is one face, and its rim on the
+/// top splits at the seam into a long arc and a short one, 310 to 330
+/// degrees. The rim stops where the neck leaves it, so the short arc's
+/// round runs its own 20 degrees and no further, though the wall and the
+/// long arc stand opposite its middle. Rounded alone, and with the long
+/// arc, each round removes the corner between the top and the wall
+/// turned about the axis over its arc: area `r^2 (1 - pi/4)`, its
+/// centroid `r (10 - 3 pi) / (3 (4 - pi))` in from the rim, by Pappus.
+#[test]
+fn a_short_arc_of_a_rim_that_stops_rounds_over_its_own_arc() {
+    let pi = core::f64::consts::PI;
+    let radius = 2.0;
+    let mut model = ogeom_topo::Model::new();
+    let at = |degrees: f64| {
+        let a = degrees.to_radians();
+        Point::new(radius * a.cos(), radius * a.sin(), 0.0)
+    };
+    let seam = Direction::new(at(310.0) - Point::ORIGIN, T).unwrap();
+    let drum = ogeom_algo::make_cylinder(
+        &mut model,
+        Frame::new(Point::ORIGIN, Direction::Z, seam, T).unwrap(),
+        radius,
+        1.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let neck = ogeom_algo::make_box(
+        &mut model,
+        Frame::new(Point::new(0.0, -1.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+        (5.0, 2.0, 1.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let keyhole = ogeom_bool::fuse(&mut model, &drum, &neck, T).unwrap().shape;
+    // The top edge whose bounds hold `inside` and lie within `within` of
+    // it: the long arc alone reaches round to x = -2, and the short one
+    // alone stays near 320 degrees.
+    let top = |inside: Point, within: f64| {
+        explore_unique(&model, &keyhole, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let bounds = ogeom_algo::shape_bounds(&model, e, T).unwrap();
+                let (lo, hi) = (bounds.low().unwrap(), bounds.high().unwrap());
+                lo.z > 0.999
+                    && bounds.distance_to(inside) < 1e-6
+                    && lo.distance(inside).max(hi.distance(inside)) < within
+            })
+            .expect("the rim has that arc")
+    };
+    let middle = at(320.0);
+    let (long, short) = (
+        top(Point::new(-radius, 0.0, 1.0), 5.0),
+        top(Point::new(middle.x, middle.y, 1.0), 0.5),
+    );
+    let r = 0.3;
+    let area = r * r * (1.0 - pi / 4.0);
+    let centroid = radius - r * (10.0 - 3.0 * pi) / (3.0 * (4.0 - pi));
+    let before = volume(&model, &keyhole, 1e-4);
+    for (named, sweep) in [(vec![short.clone()], 20.0), (vec![long, short], 300.0)] {
+        let mut model = model.clone();
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &keyhole, &named, r, T).unwrap();
+        assert!(
+            ogeom_algo::check(&model, &rounded.shape, T)
+                .unwrap()
+                .is_valid()
+        );
+        let removed = before - volume(&model, &rounded.shape, 1e-4);
+        let want = area * centroid * f64::to_radians(sweep);
+        assert!(
+            (removed - want).abs() < want * 1e-3,
+            "{sweep} degrees: {removed} against {want}"
+        );
+    }
+}
+
 /// An edge's curve and range, read off the model.
 fn edge_curve_of(
     model: &ogeom_topo::Model,

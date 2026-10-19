@@ -315,6 +315,20 @@ it. The reproducer for a round of 5 mm radius on that edge stopped square
 at the edge's end: its cap left a step and kept the corner the ramp cuts
 off past the end, where the round runs out along the wall onto the ramp.
 
+## rib_chain_under_a_slanted_roof.ogeom
+
+A box cropped, in this kernel's native format, from the community printer
+carriage of `floor_edge_ending_at_a_ramp.ogeom`, as printCAD rebuilt it
+from its FreeCAD file: a rib 0.87 mm proud of a floor whose top edges
+run straight, along a wall swept from a fitted profile and round an end
+of 3.6 mm radius, two of its straight runs continuing tangentially up
+under a slanted roof that overhangs the rib, and the round end's rim
+split at its wall's seam into a long arc and a short one. The reproducer
+for a fillet chain carried on along those continuations: the runs under
+the roof were refused, their contacts standing behind the roof, and the
+short arc's round ran the whole turn of a rim that stops, through the
+rib.
+
 ## pad_arc_touching_a_swept_wall_at_its_end.ogeom
 
 Two solids in this kernel's native format: a box cropped from a community

@@ -12,8 +12,8 @@
 //! the blend.
 
 use crate::support::{
-    Seat, apply_wedge, edge_curve, face_from_edges, planar_face, planar_seat, revolved_flanks,
-    revolved_seat, segment_between,
+    Seat, apply_wedge, apply_wedge_solid, edge_curve, face_from_edges, planar_face, planar_seat,
+    revolved_flanks, revolved_seat, segment_between, trimmed_wedge, wedge_solid,
 };
 use ogeom_algo::{Built, make_edge_between, make_revolution_band, make_vertex};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
@@ -1005,6 +1005,46 @@ fn planar_fillet(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let mut seat = planar_seat(model, solid, edge, tol)?;
+    // Where a convex crease runs into a face overhanging its corner (a rib
+    // running up under a slanted roof), the band is trimmed by that face's
+    // plane: carried on until the plane has passed its whole section, and
+    // what lies behind the plane cut off it, so the band stops on the face
+    // rather than cutting into what it bounds. A face square to the crease
+    // meets the band's cap in the cap's own plane, and the cap stands.
+    let mut trims: Vec<(Point, Vector)> = Vec::new();
+    let mut trimmed = [false; 2];
+    for (slot, end) in [true, false].into_iter().enumerate() {
+        if !seat.convex {
+            break;
+        }
+        let at = if end { seat.start } else { seat.end };
+        let outward = if end { -seat.along } else { seat.along };
+        let hosts = [&seat.faces[0], &seat.faces[1]];
+        let Some((origin, normal)) =
+            crate::support::overhang_at(model, solid, edge, hosts, at, outward, tol)?
+        else {
+            continue;
+        };
+        let Some(inward) = seat_centre(&seat, radius, tol)? else {
+            continue;
+        };
+        // Where each point of the section crosses the plane, carried along
+        // `outward`: a plane passes a section last at one of its corners.
+        let rate = -outward.dot(normal);
+        let crossings =
+            section_at(&seat, at, inward, radius).map(|p| (origin - p).dot(normal) / rate);
+        if crossings.iter().all(|c| c.abs() <= tol.confusion() * 1e3) {
+            continue;
+        }
+        let reach = crossings.iter().fold(0.0_f64, |m, c| m.max(-*c)) + radius * 0.25;
+        if end {
+            seat.start -= seat.along * reach;
+        } else {
+            seat.end += seat.along * reach;
+        }
+        trims.push((at - normal * (at - origin).dot(normal), normal));
+        trimmed[slot] = true;
+    }
     // A straight seat asked to meet runs out. Where the edge ends against
     // a neighbouring blend (a band tangent to one of the hosts at the end
     // vertex), the material past the end is that blend's own rounding, and
@@ -1017,10 +1057,14 @@ fn planar_fillet(
     // face has cut its whole section away, and the cut trims it there. At
     // a plain wall the cap already stands in the wall's own plane and
     // stays; at a step the seat stops where the edge does.
-    for end in [true, false] {
+    for (slot, end) in [true, false].into_iter().enumerate() {
         let Some((index, mates)) = mates else {
             break;
         };
+        // A band trimmed by a face it runs into stops on that face.
+        if trimmed[slot] {
+            continue;
+        }
         let at = if end { seat.start } else { seat.end };
         let outward = if end { -seat.along } else { seat.along };
         // A mate leaving this vertex the way this edge arrives is a chain
@@ -1050,21 +1094,10 @@ fn planar_fillet(
             continue;
         }
         // The ball's centre line, a radius in from both hosts.
-        let a = seat.leg(0, tol)? * if seat.convex { 1.0 } else { -1.0 };
-        let b = seat.leg(1, tol)? * if seat.convex { 1.0 } else { -1.0 };
-        let bisector = {
-            let u = a + b;
-            let m = u.magnitude();
-            if m <= tol.angular() {
-                continue;
-            }
-            u / m
-        };
-        let depth = seat.normals[0].dot(bisector).abs();
-        if depth <= tol.angular() {
+        let Some(inward) = seat_centre(&seat, radius, tol)? else {
             continue;
-        }
-        let centre_at = |s: f64| at + outward * s + bisector * (radius / depth);
+        };
+        let centre_at = |s: f64| at + outward * s + inward;
         let step = radius / 8.0;
         let mut reach: Option<f64> = None;
         let probe = crate::support::material_probe(model, solid, tol)?;
@@ -1081,18 +1114,7 @@ fn planar_fillet(
             // No blend follows: the band runs out across whatever face cuts
             // the corner away past the end, probed over its section there,
             // the crease, the two contacts, each leg's middle and the arc's.
-            let centre = centre_at(0.0);
-            let touch = [0, 1].map(|i| centre + seat.normals[i] * radius);
-            let towards = at - centre;
-            let arc = centre + towards * (radius / towards.magnitude());
-            let section = [
-                at,
-                touch[0],
-                touch[1],
-                at.midpoint(touch[0]),
-                at.midpoint(touch[1]),
-                arc,
-            ];
+            let section = section_at(&seat, at, inward, radius);
             reach = crate::support::run_out_reach(
                 model, solid, edge, hosts, at, outward, &section, radius, tol,
             )?;
@@ -1132,7 +1154,42 @@ fn planar_fillet(
             seat.end += seat.along * reach;
         }
     }
-    seated_fillet(model, solid, &seat, radius, Some(edge), tol)
+    seated_fillet(model, solid, &seat, radius, Some(edge), &trims, tol)
+}
+
+/// From a point of a straight seat's crease to the ball's centre in the
+/// section square to the crease there; `None` where the faces meet too
+/// sharply or too flat to seat a ball.
+fn seat_centre(seat: &Seat, radius: f64, tol: Tolerances) -> OgeomResult<Option<Vector>> {
+    let sign = if seat.convex { 1.0 } else { -1.0 };
+    let bisector = seat.leg(0, tol)? * sign + seat.leg(1, tol)? * sign;
+    let m = bisector.magnitude();
+    if m <= tol.angular() {
+        return Ok(None);
+    }
+    let depth = seat.normals[0].dot(bisector / m).abs();
+    if depth <= tol.angular() {
+        return Ok(None);
+    }
+    Ok(Some(bisector / m * (radius / depth)))
+}
+
+/// Points of a straight seat's band section square to the crease at `at`,
+/// the ball's centre `inward` of it: the section's corners (the crease and
+/// the two contacts) first, then each leg's middle and the arc's.
+fn section_at(seat: &Seat, at: Point, inward: Vector, radius: f64) -> [Point; 6] {
+    let centre = at + inward;
+    let sign = if seat.convex { 1.0 } else { -1.0 };
+    let touch = [0, 1].map(|i| centre + seat.normals[i] * (radius * sign));
+    let arc = centre - inward * (radius / inward.magnitude());
+    [
+        at,
+        touch[0],
+        touch[1],
+        at.midpoint(touch[0]),
+        at.midpoint(touch[1]),
+        arc,
+    ]
 }
 
 /// The cylindrical blend of a seat, whatever found the seat.
@@ -1148,6 +1205,7 @@ pub(crate) fn seated_fillet(
     seat: &Seat,
     radius: f64,
     edge: Option<&Shape>,
+    trims: &[(Point, Vector)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     // Order the two faces so the blend arc sweeps positively about the edge
@@ -1282,7 +1340,13 @@ pub(crate) fn seated_fillet(
     };
 
     let faces = [leg_a, leg_b, cap0, cap1, blend.reversed()];
-    apply_wedge(model, solid, edge, &faces, !seat.convex, tol)
+    let mut wedge = wedge_solid(model, &faces, tol)?;
+    // Wide and deep enough to hold all of the wedge behind each plane.
+    let span = length + (centre.distance(apex0) + radius) * 4.0;
+    for &plane in trims {
+        wedge = trimmed_wedge(model, &wedge, plane, span, tol)?;
+    }
+    apply_wedge_solid(model, solid, edge, &wedge, !seat.convex, tol)
 }
 
 /// The circular-rim fillet: a ball rolling around a rim where a cylindrical

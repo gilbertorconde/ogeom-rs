@@ -415,6 +415,9 @@ pub(crate) struct RevolvedSeat {
     pub cap_face: Shape,
     /// The cylindrical wall.
     pub wall_face: Shape,
+    /// Whether the rims on the rim's circle (edges bounding walls on its
+    /// cylinder) run its whole turn, in one piece or in several.
+    pub closes: bool,
 }
 
 impl RevolvedSeat {
@@ -600,6 +603,13 @@ pub(crate) fn revolved_seat(
         if lean < 0.0 { 1.0 } else { -1.0 }
     };
 
+    let frame = Frame::new(
+        rim_centre,
+        Direction::new(up, tol)?,
+        rim_circle.frame().x(),
+        tol,
+    )?;
+    let closes = circle_covered(model, solid, &rim_circle, &frame, tol)?;
     Ok(RevolvedSeat {
         centre: rim_centre,
         radius: rim_radius,
@@ -609,18 +619,112 @@ pub(crate) fn revolved_seat(
         tau,
         cap_face,
         wall_face,
+        closes,
     })
+}
+
+/// Whether the rims on `circle` run its whole turn between them: the
+/// edges of `solid` on the circle that bound a wall on the circle's own
+/// cylinder, each edge's arc taken as angles about `frame`, whose origin
+/// is the circle's centre, and no gap left between them round the turn.
+/// An edge on the circle between two faces of the cap's plane (where a
+/// drum's top meets a neck fused onto it) is no rim.
+fn circle_covered(
+    model: &Model,
+    solid: &Shape,
+    circle: &Circle,
+    frame: &Frame,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use core::f64::consts::TAU;
+    let reach = tol.confusion() * 100.0;
+    let angle_of = |p: Point| {
+        let local = frame.to_local(p);
+        local.y.atan2(local.x)
+    };
+    // Each arc as its start and its sweep, turning positively about the
+    // frame's axis.
+    let mut arcs: Vec<(f64, f64)> = Vec::new();
+    let axis = circle.frame().z().vector();
+    let mut on_walls: Vec<Shape> = Vec::new();
+    for face in ogeom_topo::explore_unique(model, solid, ShapeType::Face)? {
+        let Some(SurfaceGeometry::Cylinder(c)) = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+        else {
+            continue;
+        };
+        let placement = face.transform(model.datums())?;
+        let cylinder = c.cylinder();
+        let axis_point = placement.apply(cylinder.frame().origin());
+        let axis_z = placement.apply_vector(cylinder.frame().z().vector());
+        let to_centre = circle.centre() - axis_point;
+        let off_axis = (to_centre - axis_z * to_centre.dot(axis_z)).magnitude();
+        if axis_z.cross(axis).magnitude() <= tol.angular()
+            && off_axis <= reach
+            && (cylinder.radius() - circle.radius()).abs() <= reach
+        {
+            on_walls.extend(ogeom_topo::explore_unique(model, &face, ShapeType::Edge)?);
+        }
+    }
+    for edge in on_walls {
+        let Ok((Curve::Circle(c), range)) = edge_curve(model, &edge, tol) else {
+            continue;
+        };
+        let c = c.circle();
+        if c.centre().distance(circle.centre()) > reach
+            || (c.radius() - circle.radius()).abs() > reach
+            || c.frame()
+                .z()
+                .vector()
+                .cross(circle.frame().z().vector())
+                .magnitude()
+                > tol.angular()
+        {
+            continue;
+        }
+        if ogeom_algo::edge_vertices(model, &edge)?.is_some_and(|(a, b)| a.is_same(&b)) {
+            return Ok(true);
+        }
+        let curve = Curve::Circle(CircleCurve::new(c));
+        let [a0, am, a1] = [range.0, f64::midpoint(range.0, range.1), range.1]
+            .map(|t| curve.point_at(t, tol).map(angle_of));
+        let (a0, am, a1) = (a0?, am?, a1?);
+        let (to_mid, to_end) = ((am - a0).rem_euclid(TAU), (a1 - a0).rem_euclid(TAU));
+        arcs.push(if to_mid <= to_end {
+            (a0.rem_euclid(TAU), to_end)
+        } else {
+            (a1.rem_euclid(TAU), (a0 - a1).rem_euclid(TAU))
+        });
+    }
+    if arcs.is_empty() {
+        return Ok(false);
+    }
+    arcs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let slack = tol.confusion() * 1e3 / circle.radius();
+    let first = arcs[0].0;
+    let mut covered = first;
+    for (start, sweep) in arcs {
+        if start > covered + slack {
+            return Ok(false);
+        }
+        covered = covered.max(start + sweep);
+    }
+    Ok(covered >= first + TAU - slack)
 }
 
 /// Whether a blend along an open arc of a rim must run the whole turn.
 ///
 /// An open arc is two different seats: a piece a boolean split off a full
 /// rim, whose blend must run the whole turn, or a rim that genuinely stops,
-/// a stadium's rounded end or a rounded corner. The two faces answer: the
-/// rim goes on round the arc's complement only where the wall stands just
-/// below it and the cap lies just beside it, on the cap's own side of the
-/// rim. A wall that carries on past where the cap ends (a boss standing
-/// over the edge of a block) holds no rim there.
+/// a stadium's rounded end or a rounded corner. The solid's edges on the
+/// rim's circle answer first: a rim that stops leaves a gap between them
+/// somewhere round the turn. The two faces answer then: the rim goes on
+/// round the arc's complement only where the wall stands just below it and
+/// the cap lies just beside it, on the cap's own side of the rim. A wall
+/// that carries on past where the cap ends (a boss standing over the edge
+/// of a block) holds no rim there.
 pub(crate) fn runs_whole_turn(
     model: &Model,
     seat: &RevolvedSeat,
@@ -629,6 +733,9 @@ pub(crate) fn runs_whole_turn(
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     use ogeom_geom::Curve3d as _;
+    if !seat.closes {
+        return Ok(false);
+    }
     let frame = seat.frame_at(seat.centre, tol)?;
     let angle_of = |t: f64| -> OgeomResult<f64> {
         let local = frame.to_local(arc.point_at(t, tol)?);
@@ -860,6 +967,84 @@ pub(crate) fn material_probe(
     ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)
 }
 
+/// The faces of `solid` following the crease of `edge` at its end `at`:
+/// the faces other than `hosts` meeting the edge's vertex there, each a
+/// plane as a point on it and its outward unit normal. `None` where one of
+/// them is not a plane, or none follows.
+pub(crate) fn following_planes(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    hosts: [&Shape; 2],
+    at: Point,
+) -> OgeomResult<Option<Vec<(Shape, Point, Vector)>>> {
+    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(None);
+    };
+    let point_of = |v: &Shape| -> OgeomResult<Point> {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Dangling, "an edge's vertex is not in this model");
+        };
+        Ok(v.transform(model.datums())?.apply(data.point))
+    };
+    let vertex = if point_of(&a)?.distance(at) <= point_of(&b)?.distance(at) {
+        a
+    } else {
+        b
+    };
+    let mut following: Vec<(Shape, Point, Vector)> = Vec::new();
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if hosts.iter().any(|h| h.is_same(&face)) {
+            continue;
+        }
+        let meets = explore(model, &face, Filter::OfType(ShapeType::Vertex))?
+            .iter()
+            .any(|v| v.is_same(&vertex));
+        if !meets {
+            continue;
+        }
+        let Some(SurfaceGeometry::Plane(plane)) = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+        else {
+            return Ok(None);
+        };
+        let placement = face.transform(model.datums())?;
+        let origin = placement.apply(plane.plane().origin());
+        let mut normal = placement.apply_vector(plane.plane().normal().vector());
+        if face.orientation() == Orientation::Reversed {
+            normal = -normal;
+        }
+        following.push((face, origin, normal));
+    }
+    Ok((!following.is_empty()).then_some(following))
+}
+
+/// The plane of the face a straight crease runs into at its end `at`,
+/// leaving it along `outward`: the one face following the crease there,
+/// planar, and turned against `outward`, so its material overhangs the
+/// crease's corner (a rib running up under a slanted roof). A band along
+/// the crease is trimmed by that plane, or it cuts into what the face
+/// bounds. The plane comes as a point on it and its outward unit normal.
+pub(crate) fn overhang_at(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    hosts: [&Shape; 2],
+    at: Point,
+    outward: Vector,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, Vector)>> {
+    let Some(following) = following_planes(model, solid, edge, hosts, at)? else {
+        return Ok(None);
+    };
+    let [(_, origin, normal)] = following.as_slice() else {
+        return Ok(None);
+    };
+    Ok((outward.dot(*normal) < -tol.angular()).then_some((*origin, *normal)))
+}
+
 /// How far a convex straight seat's band runs out past the end `at` of
 /// `edge`, along `outward`, where the faces meeting the crease there cut
 /// the corner away obliquely: a floor giving way to a ramp, the wall the
@@ -895,45 +1080,9 @@ pub(crate) fn run_out_reach(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+    let Some(following) = following_planes(model, solid, edge, hosts, at)? else {
         return Ok(None);
     };
-    let point_of = |v: &Shape| -> OgeomResult<Point> {
-        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
-            ogeom_bail!(Dangling, "an edge's vertex is not in this model");
-        };
-        Ok(v.transform(model.datums())?.apply(data.point))
-    };
-    let vertex = if point_of(&a)?.distance(at) <= point_of(&b)?.distance(at) {
-        a
-    } else {
-        b
-    };
-    // The faces following the crease at its end, each a plane as a point
-    // and a unit normal.
-    let mut following: Vec<(Shape, Point, Vector)> = Vec::new();
-    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
-        if hosts.iter().any(|h| h.is_same(&face)) {
-            continue;
-        }
-        let meets = explore(model, &face, Filter::OfType(ShapeType::Vertex))?
-            .iter()
-            .any(|v| v.is_same(&vertex));
-        if !meets {
-            continue;
-        }
-        let Some(SurfaceGeometry::Plane(plane)) = model
-            .node(&face)
-            .and_then(|n| n.data().as_face())
-            .and_then(|d| model.geometry().surface(d.surface))
-        else {
-            return Ok(None);
-        };
-        let placement = face.transform(model.datums())?;
-        let origin = placement.apply(plane.plane().origin());
-        let normal = placement.apply_vector(plane.plane().normal().vector());
-        following.push((face, origin, normal));
-    }
     if following.is_empty() {
         return Ok(None);
     }
@@ -1087,6 +1236,16 @@ pub(crate) fn apply_wedge(
     additive: bool,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_algo::Built> {
+    let wedge = wedge_solid(model, faces, tol)?;
+    apply_wedge_solid(model, solid, edge, &wedge, additive, tol)
+}
+
+/// Sew the wedge's faces into a solid, demanding a closed shell.
+pub(crate) fn wedge_solid(
+    model: &mut Model,
+    faces: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
     let sewn = ogeom_algo::sew(model, faces, tol)?;
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the blend wedge did not close");
@@ -1098,7 +1257,56 @@ pub(crate) fn apply_wedge(
     ogeom_algo::state_pcurve_gaps(model, &sewn.shells[0], tol)?;
     // Put together raw: a wedge is oriented by construction, and asks no
     // mesh to say which way it faces.
-    let wedge = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
+    model.add_solid(std::slice::from_ref(&sewn.shells[0]))
+}
+
+/// The wedge with what lies behind a plane cut away: the plane as a point
+/// on it and its outward unit normal, the part of the wedge on the
+/// normal's back side within `span` of `origin` gone.
+pub(crate) fn trimmed_wedge(
+    model: &mut Model,
+    wedge: &Shape,
+    (origin, normal): (Point, Vector),
+    span: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let inward = Direction::new(-normal, tol)?;
+    let across = {
+        let x = if normal.x.abs() < 0.9 {
+            Vector::new(1.0, 0.0, 0.0)
+        } else {
+            Vector::new(0.0, 1.0, 0.0)
+        };
+        Direction::new(x - normal * x.dot(normal), tol)?
+    };
+    let frame = Frame::new(origin, inward, across, tol)?;
+    let corner = origin - (frame.x().vector() + frame.y().vector()) * span;
+    let behind = ogeom_algo::make_box(
+        model,
+        Frame::new(corner, inward, across, tol)?,
+        (span * 2.0, span * 2.0, span * 2.0),
+        tol,
+    )?
+    .shape;
+    let cut = ogeom_bool::cut(model, wedge, &behind, tol)?.shape;
+    let solids = explore(model, &cut, Filter::OfType(ShapeType::Solid))?;
+    let [solid] = solids.as_slice() else {
+        ogeom_bail!(Construction, "the blend wedge trimmed by a face fell apart");
+    };
+    Ok(solid.clone())
+}
+
+/// Apply a wedge to the solid: subtracted on a convex edge, fused on a
+/// concave one, or set aside where a caller collects wedges.
+pub(crate) fn apply_wedge_solid(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    wedge: &Shape,
+    additive: bool,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_algo::Built> {
+    let wedge = wedge.clone();
     let set_aside = WEDGES.with(|held| {
         held.borrow_mut().as_mut().map(|wedges| {
             wedges.push(Wedge {
@@ -1279,6 +1487,35 @@ pub(crate) fn ball_fits(
         };
         Ok(Some((placed, n)))
     };
+    // The planes a straight crease between planes runs into at its ends,
+    // which trim its band: a contact behind one is cut off with the band's
+    // end, not a band running past its face.
+    let mut overhangs: Vec<(Point, Vector)> = Vec::new();
+    let planar = |face: &Shape| {
+        model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, SurfaceGeometry::Plane(_)))
+    };
+    if matches!(curve, Curve::Line(_)) && planar(face0) && planar(face1) {
+        let tangent = {
+            let d = curve.d1_at(range.0, tol)?;
+            d / d.magnitude()
+        };
+        for (t, outward) in [(range.0, -tangent), (range.1, tangent)] {
+            let at = curve.point_at(t, tol)?;
+            if let Some(plane) = overhang_at(model, solid, edge, [face0, face1], at, outward, tol)?
+            {
+                overhangs.push(plane);
+            }
+        }
+    }
+    let trimmed_off = |p: Point| {
+        overhangs
+            .iter()
+            .any(|(origin, normal)| (p - *origin).dot(*normal) < -tol.confusion())
+    };
     // The edge's curve comes placed. Stations stay clear of its ends,
     // where a neighbouring face in a chain carries the band on.
     let mut missed: Option<String> = None;
@@ -1354,6 +1591,12 @@ pub(crate) fn ball_fits(
             if !chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)?
                 && !on_boundary(model, solid, found.point, tol)?
             {
+                // A convex seat's band is cut off where its contact stands
+                // behind a face the crease runs into: walking into the
+                // first face from a convex edge goes behind the second.
+                if d0.dot(n1) < 0.0 && trimmed_off(found.point) {
+                    continue;
+                }
                 let refusal = format!(
                     "a blend of radius {radius} on the edge through {p:?} sets back {setback} \
                      across a face that does not reach so far"
