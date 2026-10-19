@@ -441,3 +441,596 @@ fn a_half_fused_with_its_mirror_image_unifies_its_curved_faces() {
         "{after} against {before}"
     );
 }
+
+/// Unify `shape`, and check what unification must keep: the result is
+/// valid, its mesh closes and its volume is `shape`'s. The volumes are
+/// exact integrals over the faces, so the two agree to rounding; 1e-9
+/// relative leaves room for the merged faces' boundaries being summed in
+/// another order.
+fn unified_keeping_the_solid(model: &mut Model, shape: &ogeom::topo::Shape) -> ogeom::topo::Shape {
+    let before = exact_volume(model, shape);
+    let refined = ogeom::heal::unify_same_domain(model, shape, T)
+        .unwrap()
+        .0
+        .shape;
+    let diagnosis = ogeom::algo::check(model, &refined, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let mesh = ogeom::mesh::triangulate(model, &refined, Deflection::default(), T).unwrap();
+    assert!(mesh.is_closed(), "the unified solid draws closed");
+    let after = exact_volume(model, &refined);
+    assert!(
+        (after - before).abs() < before * 1e-9,
+        "{after} against {before}"
+    );
+    refined
+}
+
+/// Two coaxial cylinders fused end to end, on one frame: each side is a
+/// whole band with its own seam, the two seams running up one line, and
+/// the bands meet round the circle between them. Unified, they are one
+/// band whose seam runs on from one band's into the other's.
+#[test]
+fn stacked_cylinder_bands_unify_into_one() {
+    use ogeom::geom::SurfaceKind;
+    let (r, h) = (3.0, 5.0);
+    let mut model = Model::new();
+    let lower = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, r, h, T)
+        .unwrap()
+        .shape;
+    let second = Frame::new(Point::new(0.0, 0.0, h), Direction::Z, Direction::X, T).unwrap();
+    let upper = ogeom::algo::make_cylinder(&mut model, second, r, h, T)
+        .unwrap()
+        .shape;
+    let stacked = ogeom::boolean::fuse(&mut model, &lower, &upper, T)
+        .unwrap()
+        .shape;
+    assert_eq!(faces_on(&model, &stacked, SurfaceKind::Cylinder), 2);
+
+    let refined = unified_keeping_the_solid(&mut model, &stacked);
+    assert_eq!(faces_on(&model, &refined, SurfaceKind::Cylinder), 1);
+    assert_eq!(planar_faces(&model, &refined), 2);
+    let drum = core::f64::consts::PI * r * r * 2.0 * h;
+    let volume = exact_volume(&model, &refined);
+    assert!(
+        (volume - drum).abs() < drum * 1e-9,
+        "{volume} against {drum}"
+    );
+}
+
+/// Bands whose seams meet end to end but run opposite ways from the vertex
+/// between them: two cylinders stacked, the second pointing down from the
+/// top; and a sphere (axis along x) cut at its equator and fused with its
+/// mirror image. One face would walk a seam line made of two edges, one
+/// forward and one back, which offsets do not read as one seam. So each
+/// pair stays split, and the solid still draws closed.
+#[test]
+fn seams_running_both_ways_from_a_vertex_stay_split() {
+    use ogeom::geom::SurfaceKind;
+    for kind in [SurfaceKind::Cylinder, SurfaceKind::Sphere] {
+        let mut model = Model::new();
+        let split = if kind == SurfaceKind::Cylinder {
+            let lower = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
+                .unwrap()
+                .shape;
+            let down = Frame::new(
+                Point::new(0.0, 0.0, 10.0),
+                Direction::Z.reversed(),
+                Direction::X,
+                T,
+            )
+            .unwrap();
+            let upper = ogeom::algo::make_cylinder(&mut model, down, 3.0, 5.0, T)
+                .unwrap()
+                .shape;
+            ogeom::boolean::fuse(&mut model, &lower, &upper, T)
+                .unwrap()
+                .shape
+        } else {
+            let polar = Frame::new(Point::ORIGIN, Direction::X, Direction::Y, T).unwrap();
+            let ball = ogeom::algo::make_sphere(&mut model, polar, 5.0, T)
+                .unwrap()
+                .shape;
+            let corner =
+                Frame::new(Point::new(0.0, -6.0, -6.0), Direction::Z, Direction::X, T).unwrap();
+            let keep = ogeom::algo::make_box(&mut model, corner, (6.0, 12.0, 12.0), T)
+                .unwrap()
+                .shape;
+            let half = ogeom::boolean::common(&mut model, &ball, &keep, T)
+                .unwrap()
+                .shape;
+            let copy = ogeom::algo::copied(&mut model, &half).unwrap().shape;
+            let mirror = ogeom::math::Transform::plane_mirror(Point::ORIGIN, Direction::X);
+            let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+                .unwrap()
+                .shape;
+            ogeom::boolean::fuse(&mut model, &half, &image, T)
+                .unwrap()
+                .shape
+        };
+        assert_eq!(faces_on(&model, &split, kind), 2, "{kind:?}");
+
+        let refined = unified_keeping_the_solid(&mut model, &split);
+        assert_eq!(faces_on(&model, &refined, kind), 2, "{kind:?}");
+    }
+}
+
+/// Bands whose seams start at different angles round the circle they
+/// share: two cylinders stacked, the second turned a quarter round; the
+/// upper half of a torus fused with its mirror image turned 0.7 rad; and a
+/// sphere's half fused with its mirror image turned 0.7 rad about the
+/// axis. One face would need a seam running along part of the shared
+/// circle between the two seams, which meshes, booleans and offsets do not
+/// read as a seam. So each pair stays split, and the solid still draws
+/// closed and takes a box cut through it.
+#[test]
+fn bands_whose_seams_start_apart_stay_split() {
+    use ogeom::geom::SurfaceKind;
+    use ogeom::math::{Axis, Transform};
+    let corner = |x: f64, y: f64, z: f64| {
+        Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap()
+    };
+    let mirrored_and_turned = |model: &mut Model,
+                               solid: &ogeom::topo::Shape,
+                               keep: (Frame, (f64, f64, f64)),
+                               axis: Direction| {
+        let keep = ogeom::algo::make_box(model, keep.0, keep.1, T)
+            .unwrap()
+            .shape;
+        let half = ogeom::boolean::common(model, solid, &keep, T)
+            .unwrap()
+            .shape;
+        let copy = ogeom::algo::copied(model, &half).unwrap().shape;
+        let turn = Transform::rotation(Axis::new(Point::ORIGIN, axis), 0.7)
+            * Transform::plane_mirror(Point::ORIGIN, axis);
+        let image = ogeom::algo::transformed(model, &copy, turn).unwrap().shape;
+        ogeom::boolean::fuse(model, &half, &image, T).unwrap().shape
+    };
+    for kind in [
+        SurfaceKind::Cylinder,
+        SurfaceKind::Torus,
+        SurfaceKind::Sphere,
+    ] {
+        let mut model = Model::new();
+        let (split, cutter) = match kind {
+            SurfaceKind::Cylinder => {
+                let lower = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
+                    .unwrap()
+                    .shape;
+                let second =
+                    Frame::new(Point::new(0.0, 0.0, 5.0), Direction::Z, Direction::Y, T).unwrap();
+                let upper = ogeom::algo::make_cylinder(&mut model, second, 3.0, 5.0, T)
+                    .unwrap()
+                    .shape;
+                let stacked = ogeom::boolean::fuse(&mut model, &lower, &upper, T)
+                    .unwrap()
+                    .shape;
+                (stacked, (corner(1.0, -4.0, 2.0), (5.0, 8.0, 6.0)))
+            }
+            SurfaceKind::Torus => {
+                let torus = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+                    .unwrap()
+                    .shape;
+                let keep = (corner(-15.0, -15.0, 0.0), (30.0, 30.0, 5.0));
+                let fused = mirrored_and_turned(&mut model, &torus, keep, Direction::Z);
+                (fused, (corner(2.0, -20.0, -5.0), (20.0, 40.0, 10.0)))
+            }
+            _ => {
+                let polar = Frame::new(Point::ORIGIN, Direction::X, Direction::Y, T).unwrap();
+                let ball = ogeom::algo::make_sphere(&mut model, polar, 5.0, T)
+                    .unwrap()
+                    .shape;
+                let keep = (corner(0.0, -6.0, -6.0), (6.0, 12.0, 12.0));
+                let fused = mirrored_and_turned(&mut model, &ball, keep, Direction::X);
+                (fused, (corner(-1.0, -1.0, -6.0), (8.0, 8.0, 12.0)))
+            }
+        };
+        assert_eq!(faces_on(&model, &split, kind), 2, "{kind:?}");
+
+        let refined = unified_keeping_the_solid(&mut model, &split);
+        assert_eq!(faces_on(&model, &refined, kind), 2, "{kind:?}");
+        let block = ogeom::algo::make_box(&mut model, cutter.0, cutter.1, T)
+            .unwrap()
+            .shape;
+        let cut = ogeom::boolean::cut(&mut model, &refined, &block, T)
+            .unwrap()
+            .shape;
+        let mesh = ogeom::mesh::triangulate(&model, &cut, Deflection::default(), T).unwrap();
+        assert!(mesh.is_closed(), "{kind:?}: the cut draws closed");
+    }
+}
+
+/// A prism on an ellipse centred on the plane x = 0, cut to its half on
+/// one side and fused with its mirror image. The image's wall is swept
+/// from the mirrored ellipse, whose eccentric angle runs the other way.
+/// Unified, the wall is one face again, a whole tube closed by a seam.
+#[test]
+fn an_elliptic_wall_fused_with_its_mirror_image_unifies() {
+    use ogeom::geom::SurfaceKind;
+    let (major, minor, h) = (4.0, 2.0, 5.0);
+    let mut model = Model::new();
+    // The ellipse's `x` runs along y and its `y` along -x, so the mirror
+    // in x = 0 runs its angle backwards.
+    let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::Y, T).unwrap();
+    let ellipse = ogeom::math::Ellipse::new(frame, major, minor, T).unwrap();
+    let rim = ogeom::algo::make_edge(
+        &mut model,
+        ogeom::geom::Curve::Ellipse(ogeom::geom::EllipseCurve::new(ellipse)),
+        (0.0, core::f64::consts::TAU),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wire = ogeom::algo::make_wire(&mut model, &[rim], T).unwrap().shape;
+    let plane = ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(Frame::WORLD));
+    let base = ogeom::algo::make_face(&mut model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let whole =
+        ogeom::algo::make_prism(&mut model, &base, ogeom::math::Vector::new(0.0, 0.0, h), T)
+            .unwrap()
+            .shape;
+    assert_eq!(faces_on(&model, &whole, SurfaceKind::Extrusion), 1);
+    let side = Frame::new(Point::new(0.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let keep = ogeom::algo::make_box(&mut model, side, (6.0, 12.0, h + 2.0), T)
+        .unwrap()
+        .shape;
+    let half = ogeom::boolean::common(&mut model, &whole, &keep, T)
+        .unwrap()
+        .shape;
+    let copy = ogeom::algo::copied(&mut model, &half).unwrap().shape;
+    let mirror = ogeom::math::Transform::plane_mirror(Point::ORIGIN, Direction::X);
+    let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+        .unwrap()
+        .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &half, &image, T)
+        .unwrap()
+        .shape;
+    assert_eq!(
+        faces_on(&model, &fused, SurfaceKind::Extrusion),
+        2,
+        "the fuse leaves the wall split"
+    );
+
+    let refined = unified_keeping_the_solid(&mut model, &fused);
+    assert_eq!(faces_on(&model, &refined, SurfaceKind::Extrusion), 1);
+    assert_eq!(planar_faces(&model, &refined), 2);
+    let prism = core::f64::consts::PI * major * minor * h;
+    let volume = exact_volume(&model, &refined);
+    assert!(
+        (volume - prism).abs() < prism * 1e-9,
+        "{volume} against {prism}"
+    );
+}
+
+/// A half torus swept from a disk, each half covering the whole tube and
+/// so closed on itself by the tube's seam, fused with a copy turned half
+/// round the axis: the two meet along both their end circles. Unified,
+/// they are the whole torus: one face, closed both ways round.
+#[test]
+fn torus_halves_round_the_whole_tube_unify() {
+    use ogeom::geom::SurfaceKind;
+    let (major, minor) = (10.0, 3.0);
+    let mut model = Model::new();
+    let at = Frame::new(Point::new(major, 0.0, 0.0), Direction::Y, Direction::X, T).unwrap();
+    let rim = ogeom::algo::make_edge(
+        &mut model,
+        ogeom::geom::Curve::Circle(ogeom::geom::CircleCurve::new(
+            ogeom::math::Circle::new(at, minor, T).unwrap(),
+        )),
+        (0.0, core::f64::consts::TAU),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wire = ogeom::algo::make_wire(&mut model, &[rim], T).unwrap().shape;
+    let disk = ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(at));
+    let disk = ogeom::algo::make_face(&mut model, disk.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let axis = ogeom::math::Axis::new(Point::ORIGIN, Direction::Z);
+    let half = ogeom::algo::make_revolution(&mut model, &disk, axis, core::f64::consts::PI, T)
+        .unwrap()
+        .shape;
+    let copy = ogeom::algo::copied(&mut model, &half).unwrap().shape;
+    let turn = ogeom::math::Transform::rotation(axis, core::f64::consts::PI);
+    let other = ogeom::algo::transformed(&mut model, &copy, turn)
+        .unwrap()
+        .shape;
+    let whole = ogeom::boolean::fuse(&mut model, &half, &other, T)
+        .unwrap()
+        .shape;
+    assert_eq!(faces_on(&model, &whole, SurfaceKind::Torus), 2);
+
+    let refined = unified_keeping_the_solid(&mut model, &whole);
+    assert_eq!(
+        explore_unique(&model, &refined, ShapeType::Face)
+            .unwrap()
+            .len(),
+        1
+    );
+    // Pappus: the disk's area swept round the circle its centre runs.
+    let torus = core::f64::consts::PI * minor * minor * core::f64::consts::TAU * major;
+    let volume = exact_volume(&model, &refined);
+    assert!(
+        (volume - torus).abs() < torus * 1e-9,
+        "{volume} against {torus}"
+    );
+}
+
+/// `shape` with one of its curved faces cut along each line in turn, each
+/// time the first face the line crosses.
+fn cut_along(
+    model: &mut Model,
+    shape: &ogeom::topo::Shape,
+    lines: &[ogeom::heal::IsoLine],
+) -> ogeom::topo::Shape {
+    let mut shape = shape.clone();
+    for &line in lines {
+        let face = explore_unique(model, &shape, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                planar_faces(model, f) == 0
+                    && ogeom::heal::divide_face(&mut model.clone(), &shape, f, line, T).is_ok()
+            })
+            .unwrap();
+        shape = ogeom::heal::divide_face(model, &shape, &face, line, T)
+            .unwrap()
+            .shape;
+    }
+    shape
+}
+
+/// A drum's side and a torus cut into pieces along their own parameters,
+/// so every piece lies on the one surface: cut in two round the axis, the
+/// halves share two edges, one inside the old face and the old seam,
+/// which each half reads on its own side; cut again, three or four pieces
+/// meet round the axis and across it. Unified, the pieces are one face
+/// again, the old seam its seam. So are the halves where the old seam
+/// carries one pcurve for both, as a file can store it, and one half reads
+/// it a period away from the rest of its boundary.
+#[test]
+fn pieces_of_one_surface_unify_round_the_axis() {
+    use core::f64::consts::PI;
+    use ogeom::geom::SurfaceKind;
+    use ogeom::heal::IsoLine;
+    use ogeom::topo::{EdgeRepr, NodeData};
+    let (r, h) = (3.0, 5.0);
+    let (major, minor) = (10.0, 3.0);
+    let drum = PI * r * r * h;
+    // Pappus: the tube's disk swept round the circle its centre runs.
+    let ring = PI * minor * minor * 2.0 * PI * major;
+    let cases: [(SurfaceKind, &[IsoLine], bool); 5] = [
+        (SurfaceKind::Cylinder, &[IsoLine::U(PI)], false),
+        (SurfaceKind::Cylinder, &[IsoLine::U(PI)], true),
+        (
+            SurfaceKind::Cylinder,
+            &[IsoLine::U(PI), IsoLine::U(1.0)],
+            false,
+        ),
+        (
+            SurfaceKind::Cylinder,
+            &[IsoLine::U(PI), IsoLine::U(1.0), IsoLine::V(2.0)],
+            false,
+        ),
+        (SurfaceKind::Torus, &[IsoLine::U(PI), IsoLine::V(PI)], false),
+    ];
+    for (kind, lines, one_pcurve) in cases {
+        let mut model = Model::new();
+        let (solid, closed_form) = if kind == SurfaceKind::Torus {
+            let torus = ogeom::algo::make_torus(&mut model, Frame::WORLD, major, minor, T)
+                .unwrap()
+                .shape;
+            (torus, ring)
+        } else {
+            let cylinder = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, r, h, T)
+                .unwrap()
+                .shape;
+            (cylinder, drum)
+        };
+        let pieces = cut_along(&mut model, &solid, lines);
+        assert_eq!(faces_on(&model, &pieces, kind), lines.len() + 1);
+        if one_pcurve {
+            for edge in explore_unique(&model, &pieces, ShapeType::Edge).unwrap() {
+                let Some(NodeData::Edge(data)) = model.node_mut(&edge).map(|n| n.data_mut()) else {
+                    continue;
+                };
+                for repr in &mut data.representations {
+                    if let EdgeRepr::Seam {
+                        forward,
+                        surface,
+                        location,
+                        range,
+                        ..
+                    } = repr.clone()
+                    {
+                        *repr = EdgeRepr::PCurve {
+                            curve: forward,
+                            surface,
+                            location,
+                            range,
+                        };
+                    }
+                }
+            }
+            let diagnosis = ogeom::algo::check(&model, &pieces, T).unwrap();
+            assert!(diagnosis.is_valid(), "{diagnosis}");
+        }
+
+        let refined = unified_keeping_the_solid(&mut model, &pieces);
+        assert_eq!(
+            faces_on(&model, &refined, kind),
+            1,
+            "{kind:?} cut along {lines:?}"
+        );
+        let volume = exact_volume(&model, &refined);
+        assert!(
+            (volume - closed_form).abs() < closed_form * 1e-9,
+            "{volume} against {closed_form}"
+        );
+    }
+}
+
+/// A cylinder cut to its half on one side of x = 0 and fused with its
+/// mirror image, the image's pcurves on the two lines the halves share
+/// restated as linear splines over twice their range: the same chart
+/// lines, read at another pace. Unified, the halves are one tube again,
+/// the line whose sides land a period apart its seam, both its sides the
+/// one curve a period across.
+#[test]
+fn half_tubes_whose_shared_lines_read_at_another_pace_unify() {
+    use ogeom::geom::{Curve2d as _, SurfaceGeometry, SurfaceKind};
+    use ogeom::topo::{EdgeRepr, NodeData};
+    let (r, h) = (3.0, 5.0);
+    let mut model = Model::new();
+    let whole = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, r, h, T)
+        .unwrap()
+        .shape;
+    let side = Frame::new(Point::new(0.0, -5.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let keep = ogeom::algo::make_box(&mut model, side, (5.0, 10.0, h + 2.0), T)
+        .unwrap()
+        .shape;
+    let half = ogeom::boolean::common(&mut model, &whole, &keep, T)
+        .unwrap()
+        .shape;
+    let copy = ogeom::algo::copied(&mut model, &half).unwrap().shape;
+    let mirror = ogeom::math::Transform::plane_mirror(Point::ORIGIN, Direction::X);
+    let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+        .unwrap()
+        .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &half, &image, T)
+        .unwrap()
+        .shape;
+    let tubes: Vec<_> = explore_unique(&model, &fused, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| faces_on(&model, f, SurfaceKind::Cylinder) == 1)
+        .collect();
+    assert_eq!(tubes.len(), 2, "the fuse leaves the tube split");
+
+    let first: Vec<_> = explore_unique(&model, &tubes[0], ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .map(|e| e.node())
+        .collect();
+    let Some(NodeData::Face(data)) = model.node(&tubes[1]).map(|n| n.data().clone()) else {
+        panic!("a face holds face data");
+    };
+    assert!(matches!(
+        model.geometry().surface(data.surface),
+        Some(SurfaceGeometry::Cylinder(_))
+    ));
+    let mut restated = 0;
+    for edge in explore_unique(&model, &tubes[1], ShapeType::Edge).unwrap() {
+        if !first.contains(&edge.node()) {
+            continue;
+        }
+        let edge_data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::PCurve { curve, range, .. }) =
+            edge_data.pcurve_for(data.surface, edge.location()).cloned()
+        else {
+            panic!("a shared line carries a pcurve on each half");
+        };
+        let line = model.geometry().pcurve(curve).unwrap().clone();
+        let ends = vec![
+            line.point_at(range.0, T).unwrap(),
+            line.point_at(range.1, T).unwrap(),
+        ];
+        let span = 2.0 * (range.1 - range.0);
+        let knots = ogeom::math::KnotVector::new(vec![0.0, 0.0, span, span], 1).unwrap();
+        let paced = ogeom::geom::BSpline2d::new(knots, ends, T).unwrap();
+        if let Some(NodeData::Edge(held)) = model.node_mut(&edge).map(|n| n.data_mut()) {
+            held.representations
+                .retain(|r| r.surface() != Some(data.surface));
+        }
+        ogeom::algo::attach_pcurve(
+            &mut model,
+            &edge,
+            paced.into(),
+            data.surface,
+            edge.location().clone(),
+            (0.0, span),
+        )
+        .unwrap();
+        restated += 1;
+    }
+    assert_eq!(restated, 2, "the halves share two lines");
+    let diagnosis = ogeom::algo::check(&model, &fused, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+
+    let refined = unified_keeping_the_solid(&mut model, &fused);
+    assert_eq!(faces_on(&model, &refined, SurfaceKind::Cylinder), 1);
+    let drum = core::f64::consts::PI * r * r * h;
+    let volume = exact_volume(&model, &refined);
+    assert!(
+        (volume - drum).abs() < drum * 1e-9,
+        "{volume} against {drum}"
+    );
+}
+
+/// A whole drum with a tube stacked on it, the tube made of two halves
+/// fused across x = 0, and the drum's seam damaged as a file can carry it:
+/// both its sides read on one sheet, so the drum closes into no band and
+/// the three walls make no one face. The drum is left as it is, and the
+/// tube's halves still merge into one tube, as with no drum beneath them.
+#[test]
+fn a_band_whose_seam_closes_nothing_leaves_its_neighbours_merging() {
+    use ogeom::geom::SurfaceKind;
+    use ogeom::topo::{EdgeRepr, NodeData};
+    let (r, h) = (3.0, 5.0);
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, r, h, T)
+        .unwrap()
+        .shape;
+    let up = Frame::new(Point::new(0.0, 0.0, h), Direction::Z, Direction::X, T).unwrap();
+    let tube = ogeom::algo::make_cylinder(&mut model, up, r, h, T)
+        .unwrap()
+        .shape;
+    let side = Frame::new(
+        Point::new(0.0, -5.0, h - 1.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let keep = ogeom::algo::make_box(&mut model, side, (5.0, 10.0, h + 2.0), T)
+        .unwrap()
+        .shape;
+    let half = ogeom::boolean::common(&mut model, &tube, &keep, T)
+        .unwrap()
+        .shape;
+    let copy = ogeom::algo::copied(&mut model, &half).unwrap().shape;
+    let mirror = ogeom::math::Transform::plane_mirror(Point::ORIGIN, Direction::X);
+    let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+        .unwrap()
+        .shape;
+    let halves = ogeom::boolean::fuse(&mut model, &half, &image, T)
+        .unwrap()
+        .shape;
+    let stacked = ogeom::boolean::fuse(&mut model, &drum, &halves, T)
+        .unwrap()
+        .shape;
+    assert_eq!(faces_on(&model, &stacked, SurfaceKind::Cylinder), 3);
+    let mut damaged = 0;
+    for edge in explore_unique(&model, &stacked, ShapeType::Edge).unwrap() {
+        let Some(NodeData::Edge(data)) = model.node_mut(&edge).map(|n| n.data_mut()) else {
+            continue;
+        };
+        for repr in &mut data.representations {
+            if let EdgeRepr::Seam {
+                forward, reversed, ..
+            } = repr
+            {
+                *reversed = *forward;
+                damaged += 1;
+            }
+        }
+    }
+    assert_eq!(damaged, 1, "only the drum walks a seam");
+
+    let refined = ogeom::heal::unify_same_domain(&mut model, &stacked, T)
+        .unwrap()
+        .0
+        .shape;
+    assert_eq!(faces_on(&model, &refined, SurfaceKind::Cylinder), 2);
+}

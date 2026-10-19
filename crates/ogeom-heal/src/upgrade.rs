@@ -23,16 +23,18 @@ mod curved;
 /// one way, whatever frame each stored it in and whichever way round: the
 /// split a boolean or an exchange leaves behind. A carrier is a plane; a
 /// cylinder, cone, sphere or torus of one size about one axis; or an
-/// extrusion of one basis curve along one line. The merged face keeps the
-/// first face's surface, its window grown to hold the others'; the others'
-/// pcurves are carried into its chart by the exact map between the two
-/// charts (a turn and a shift on a plane; on a curved carrier each
-/// parameter run either way and shifted, by a period where it repeats);
-/// the shared edges dissolve; the remaining boundary re-chains into an
+/// extrusion of one basis curve along one line, the curve's parameter run
+/// either way and shifted. The merged face keeps the first face's surface,
+/// its window grown to hold the others'; the others' pcurves are carried
+/// into its chart by the exact map between the two charts (a turn and a
+/// shift on a plane; on a curved carrier each parameter run either way and
+/// shifted, by a period where it repeats); the shared edges dissolve, or
+/// stay as a seam where the merged face closes round its carrier; the
+/// faces' own seams stay seams; the remaining boundary re-chains into an
 /// outer ring and one ring per hole. Faces whose boundary does not
 /// re-chain so (two rings through one vertex, an edge a third face also
-/// bounds, a band closing round its axis) are left split, the rest
-/// merged. Faces on any other surface pass through untouched.
+/// bounds, a band closing round its axis with no seam) are left split, the
+/// rest merged. Faces on any other surface pass through untouched.
 ///
 /// # Errors
 ///
@@ -202,14 +204,31 @@ fn unify_own(
             continue;
         }
         // A cluster whose boundary does not close into rings the merged
-        // face can keep is left split, its faces untouched.
-        let Ok(Some(merged)) = merge_cluster(model, &faces, members, &carriers, &edge_users, tol)
-        else {
-            continue;
-        };
-        reshape.replace(&faces[members[0]], merged);
-        for &other in &members[1..] {
-            reshape.remove(&faces[other]);
+        // face can keep is left split, its faces untouched. Where it holds
+        // faces on seams or on extrusions related by more than a lift, the
+        // clusters its plain pairs make are tried in its place.
+        let mut tries = vec![members.clone()];
+        let mut k = 0;
+        while k < tries.len() {
+            let attempt = &tries[k];
+            k += 1;
+            match merge_cluster(model, &faces, attempt, &carriers, &edge_users, tol) {
+                Ok(Some(merged)) => {
+                    reshape.replace(&faces[attempt[0]], merged);
+                    for &other in &attempt[1..] {
+                        reshape.remove(&faces[other]);
+                    }
+                }
+                // A curved merge edits nothing before its face builds, and
+                // a flat cluster's plain clusters are itself.
+                Ok(None) | Err(_) if k == 1 => {
+                    let plain = plain_clusters(model, &faces, members, &carriers, tol)?;
+                    if plain.as_slice() != [members.clone()] {
+                        tries.extend(plain);
+                    }
+                }
+                _ => {}
+            }
         }
     }
     if reshape.is_empty() {
@@ -219,6 +238,57 @@ fn unify_own(
     }
     let unified = reshape.len();
     Ok((reshape.apply(model, shape)?, unified))
+}
+
+/// The clusters `members` falls into when only plain pairs join: faces
+/// sharing an edge whose carriers are one by [`same_plain_carrier`], in the
+/// order of their first member, each of two faces or more.
+fn plain_clusters(
+    model: &Model,
+    faces: &[Shape],
+    members: &[usize],
+    carriers: &[Option<Carrier>],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vec<usize>>> {
+    let mut group: Vec<usize> = (0..members.len()).collect();
+    fn root(group: &mut [usize], mut i: usize) -> usize {
+        while group[i] != i {
+            group[i] = group[group[i]];
+            i = group[i];
+        }
+        i
+    }
+    let mut edge_users: FastMap<TShapeId, Vec<usize>> = FastMap::default();
+    for (k, &i) in members.iter().enumerate() {
+        for edge in explore_unique(model, &faces[i], ShapeType::Edge)? {
+            edge_users.entry(edge.node()).or_default().push(k);
+        }
+    }
+    let mut pairs: Vec<(usize, usize)> = edge_users
+        .values()
+        .flat_map(|users| users.windows(2).map(|w| (w[0], w[1])))
+        .collect();
+    pairs.sort_unstable();
+    for (a, b) in pairs {
+        if let (Some(ca), Some(cb)) = (&carriers[members[a]], &carriers[members[b]])
+            && same_plain_carrier(ca, cb, tol)
+        {
+            let (ra, rb) = (root(&mut group, a), root(&mut group, b));
+            group[ra] = rb;
+        }
+    }
+    let mut cluster_of_root: FastMap<usize, usize> = FastMap::default();
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    for (k, &i) in members.iter().enumerate() {
+        let r = root(&mut group, k);
+        let c = *cluster_of_root.entry(r).or_insert_with(|| {
+            clusters.push(Vec::new());
+            clusters.len() - 1
+        });
+        clusters[c].push(i);
+    }
+    clusters.retain(|c| c.len() > 1);
+    Ok(clusters)
 }
 
 /// The face `members` make together: one face on the first member's
@@ -251,6 +321,7 @@ fn merge_cluster(
 
     // Each member's edges as it walks them, seen from the side it faces.
     let mut walks: Vec<(usize, Shape)> = Vec::new();
+    let mut runs: Vec<core::ops::Range<usize>> = Vec::new();
     let mut uses: FastMap<TShapeId, Vec<usize>> = FastMap::default();
     for &i in members {
         let wires = model.children_of(&faces[i])?;
@@ -258,10 +329,12 @@ fn merge_cluster(
             return Ok(None);
         }
         for wire in wires {
+            let start = walks.len();
             for edge in model.ordered_children_of(&wire)? {
                 uses.entry(edge.node()).or_default().push(walks.len());
                 walks.push((i, edge));
             }
+            runs.push(start..walks.len());
         }
     }
     let mut kept = vec![false; walks.len()];
@@ -286,14 +359,14 @@ fn merge_cluster(
         }
     }
     let reversed = faces[keeper].orientation() == Orientation::Reversed;
-    let rings = match &carrier {
+    let (rings, edits) = match &carrier {
         Carrier::Flat(flat) => {
             let Some(rings) =
                 flat_rings(model, faces, members, carriers, &walks, &kept, flat, tol)?
             else {
                 return Ok(None);
             };
-            rings
+            (rings, None)
         }
         Carrier::Curved(_) => {
             let mut on: Vec<&curved::Curved> = Vec::with_capacity(members.len());
@@ -306,11 +379,12 @@ fn merge_cluster(
             let cluster = curved::Members {
                 members,
                 carriers: &on,
+                wires: &runs,
             };
-            let Some(rings) = curved::merge(model, &cluster, &walks, &kept, reversed, tol)? else {
+            let Some(merged) = curved::merge(model, &cluster, &walks, &kept, reversed, tol)? else {
                 return Ok(None);
             };
-            rings
+            (merged.rings, Some(merged.edits))
         }
     };
 
@@ -329,7 +403,13 @@ fn merge_cluster(
     // The kept face's mesh covers the kept face alone.
     let mut data = *keeper_data;
     data.triangulation = None;
-    Ok(Some(model.add_face(data, &wires)?))
+    let face = model.add_face(data, &wires)?;
+    // The curved carrier's edits wait for the face, so a ring that does not
+    // build leaves the members' edges and surface as they were.
+    if let Some(edits) = edits {
+        edits.apply(model)?;
+    }
+    Ok(Some(face))
 }
 
 /// The rings a cluster on one plane makes, outer first, as indices into
@@ -516,6 +596,15 @@ fn same_carrier(a: &Carrier, b: &Carrier, tol: Tolerances) -> bool {
         }
         (Carrier::Curved(a), Carrier::Curved(b)) => curved::same_carrier(a, b, tol),
         _ => false,
+    }
+}
+
+/// [`same_carrier`] for the pairs any cluster can fall back to: two planes,
+/// or two curved faces neither on a seam and related by a plain map.
+fn same_plain_carrier(a: &Carrier, b: &Carrier, tol: Tolerances) -> bool {
+    match (a, b) {
+        (Carrier::Curved(a), Carrier::Curved(b)) => curved::same_plain_carrier(a, b, tol),
+        _ => same_carrier(a, b, tol),
     }
 }
 

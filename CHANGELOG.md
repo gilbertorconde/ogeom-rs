@@ -11,6 +11,32 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **`unify_same_domain` merges the curved faces it still left split.**
+  - Faces that already walk a seam merge. Two cylinder bands stacked end
+    to end become one band, its seam running on from one band's into the
+    other's. Two half tori that each cover the whole tube become one torus
+    face. Bands whose seams start at different angles round the circle
+    they share stay split: one face would need a seam running along part
+    of that circle. So do bands whose seams meet but run opposite ways
+    from the vertex between them.
+  - Extrusions on an ellipse, a hyperbola or a parabola are compared, as
+    is a basis curve whose parameter runs backwards or is shifted along
+    itself. An elliptic wall fused with its mirror image is one face
+    again, a tube closed by a seam.
+  - Two faces on one surface that close round its axis merge. The edge
+    they share may carry one pcurve for both, which one face reads a
+    period away from the rest of its boundary.
+  - A seam two faces make takes its second side as its first moved a
+    whole period across, so the two faces' pcurves may span any ranges.
+    Before, both had to be chart lines of one length.
+
+  Each map between charts is exact, and a pair no exact map relates stays
+  split. Where a cluster holding such faces does not merge as a whole,
+  the clusters its other faces make on their own are merged as before
+  (#315).
+
 ### Fixed
 
 - **A part fused with its mirror image builds where a face's chart closes
