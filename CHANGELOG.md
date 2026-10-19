@@ -11,6 +11,22 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **`unify_same_domain` merges curved faces as well as flat ones.** Faces
+  sharing an edge on one cylinder, cone, sphere or torus (one axis, one
+  size) or on one extrusion (one basis curve swept along one line) merge
+  into one face on the first face's surface, whatever frame each stored
+  its surface in. The others' pcurves are carried into that chart by the
+  exact map between the two charts, each parameter run either way and
+  shifted, by whole periods where it repeats; a pair whose charts no such
+  map relates stays split. Halves that close round their axis, such as
+  the two halves of a bore, keep one shared edge as the merged face's
+  seam. A part fused with its own mirror image no longer keeps every
+  curved face the mirror plane crosses split in two: on the carriage of
+  the report, 46 cylinder faces become 38 and 20 extrusion faces 16, the
+  volume unchanged (#305).
+
 ### Fixed
 
 - **A solid fuses with its own mirror image.** Fusing a part with its

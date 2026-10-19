@@ -331,3 +331,16 @@ image: the image's arcs, on left-handed frames, were imaged onto the
 part's own half of the channel, and the image's bake pinned the bore's
 fitted edges to a vertex's image on the wrong side of the bore's chart
 closure; either left the channel's arrangement no piece of the face.
+
+## curved_walls_across_the_mirror_plane.ogeom
+
+Two boxes cropped, in this kernel's native format, from the same half of
+a community printer carriage as `half_channel_on_the_mirror_plane.ogeom`,
+as printCAD rebuilt it from its FreeCAD file, each reaching the plane
+x = 0 its mirror stands on: one holds two walls swept from quadratic
+B-spline profiles drawn on that plane and two rounds running square to
+it, the other half of a bore whose axis lies in it. The reproducer for
+unifying a part fused with its own mirror image: every face on a
+cylinder or an extrusion that the plane crosses stayed split in two,
+the image's half on a frame turned half round or swept the other way,
+and the two halves of the bore make a whole tube that needs a seam.

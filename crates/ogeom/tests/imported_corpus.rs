@@ -1180,6 +1180,76 @@ fn edge_along(
 }
 
 /// A solid's volume, its bounds, and whether it checks.
+/// Each box of a half carriage fused with its mirror image across the
+/// plane its swept walls, rounds and bore are cut in half by, then
+/// unified: every cylinder and extrusion face the plane split is one face
+/// again (the bore a whole tube closed by a seam), the image's halves
+/// carried into the part's charts, and the solid is unchanged.
+#[test]
+fn curved_walls_split_by_the_mirror_plane_unify() {
+    use ogeom::geom::{Surface as _, SurfaceKind};
+    let (mut model, roots) =
+        ogeom::io::native::read(&corpus("curved_walls_across_the_mirror_plane.ogeom")).unwrap();
+    // How many faces lie on each kind of surface, and how many edges on
+    // the mirror plane two faces on one kind of curved surface share.
+    let census = |model: &ogeom::topo::Model, solid: &ogeom::topo::Shape| {
+        let mut kinds = (0, 0);
+        let mut users: ogeom::core::FastMap<_, Vec<SurfaceKind>> = ogeom::core::FastMap::default();
+        for face in explore_unique(model, solid, ShapeType::Face).unwrap() {
+            let Some(ogeom::topo::NodeData::Face(data)) = model.node(&face).map(|n| n.data())
+            else {
+                continue;
+            };
+            let kind = model.geometry().surface(data.surface).unwrap().kind();
+            match kind {
+                SurfaceKind::Cylinder => kinds.0 += 1,
+                SurfaceKind::Extrusion => kinds.1 += 1,
+                _ => {}
+            }
+            for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
+                let b = ogeom::algo::tight_bounds(model, &edge, T).unwrap();
+                if b.low().unwrap().x.abs() <= 1e-6 && b.high().unwrap().x.abs() <= 1e-6 {
+                    users.entry(edge.node()).or_default().push(kind);
+                }
+            }
+        }
+        let split = users
+            .values()
+            .filter(|k| matches!(k.as_slice(), [a, b] if a == b && *a != SurfaceKind::Plane))
+            .count();
+        (kinds, split)
+    };
+    // Cylinders and extrusions fused, then unified: the sweeps' box holds
+    // two rounds and two swept walls on the plane and a pair of walls
+    // split in the part itself; the bore's box holds the bore.
+    let expected = [((6, 10), (4, 7)), ((2, 0), (1, 0))];
+    for (part, (fused_kinds, unified_kinds)) in roots.iter().zip(expected) {
+        let (half, _) = measured(&model, part);
+        let copy = ogeom::algo::copied(&mut model, part).unwrap().shape;
+        let mirror = ogeom::math::Transform::plane_mirror(
+            ogeom::math::Point::ORIGIN,
+            ogeom::math::Direction::X,
+        );
+        let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+            .unwrap()
+            .shape;
+        let fused = ogeom::boolean::fuse(&mut model, part, &image, T)
+            .unwrap()
+            .shape;
+        let (kinds, split) = census(&model, &fused);
+        assert_eq!(kinds, fused_kinds);
+        assert!(split > 0, "the fuse leaves faces split on the plane");
+
+        let (unified, _) = ogeom::heal::unify_same_domain(&mut model, &fused, T).unwrap();
+        let (whole, _) = measured(&model, &unified.shape);
+        assert_eq!(census(&model, &unified.shape), (unified_kinds, 0));
+        assert!(
+            (whole - 2.0 * half).abs() <= half * 1e-8,
+            "the whole measures {whole} against twice the half's {half}"
+        );
+    }
+}
+
 fn measured(model: &ogeom::topo::Model, solid: &ogeom::topo::Shape) -> (f64, ogeom::math::Aabb) {
     assert!(ogeom::algo::check(model, solid, T).unwrap().is_valid());
     let volume =

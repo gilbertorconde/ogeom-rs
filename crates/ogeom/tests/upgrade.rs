@@ -334,3 +334,110 @@ fn a_merged_face_keeps_the_hole_its_pieces_shared() {
         "{after} against {before}"
     );
 }
+
+/// How many faces of `shape` lie on a surface of `kind`.
+fn faces_on(model: &Model, shape: &ogeom::topo::Shape, kind: ogeom::geom::SurfaceKind) -> usize {
+    use ogeom::geom::Surface as _;
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter(|f| {
+            let Some(ogeom::topo::NodeData::Face(data)) = model.node(f).map(|n| n.data()) else {
+                return false;
+            };
+            model
+                .geometry()
+                .surface(data.surface)
+                .is_some_and(|s| s.kind() == kind)
+        })
+        .count()
+}
+
+/// A block carrying a round boss, a tapered boss and a dome, drilled
+/// through, all centred on the plane x = 0, cut down to its half on one
+/// side and fused with its own mirror image: the fuse leaves every curved
+/// face the plane crosses in two, the image's half on a frame turned or
+/// run the other way. Unified, each is one face again, the bore a whole
+/// tube closed by a seam, the solid the whole block it was cut from.
+#[test]
+fn a_half_fused_with_its_mirror_image_unifies_its_curved_faces() {
+    use ogeom::geom::SurfaceKind;
+    let mut model = Model::new();
+    let along_y = |x: f64, y: f64, z: f64| {
+        Frame::new(Point::new(x, y, z), Direction::Y, Direction::Z, T).unwrap()
+    };
+    let corner = Frame::new(Point::new(-10.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let mut whole = ogeom::algo::make_box(&mut model, corner, (20.0, 30.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let boss = ogeom::algo::make_cylinder(&mut model, along_y(0.0, 2.0, 5.0), 3.0, 7.0, T)
+        .unwrap()
+        .shape;
+    let taper = ogeom::algo::make_cone(&mut model, along_y(0.0, 12.0, 5.0), 3.0, 2.0, 6.0, T)
+        .unwrap()
+        .shape;
+    let polar = Frame::new(Point::new(0.0, 24.0, 4.0), Direction::X, Direction::Y, T).unwrap();
+    let dome = ogeom::algo::make_sphere(&mut model, polar, 3.0, T)
+        .unwrap()
+        .shape;
+    for part in [boss, taper, dome] {
+        whole = ogeom::boolean::fuse(&mut model, &whole, &part, T)
+            .unwrap()
+            .shape;
+    }
+    let drill = ogeom::algo::make_cylinder(&mut model, along_y(0.0, -1.0, 2.5), 1.0, 32.0, T)
+        .unwrap()
+        .shape;
+    let whole = ogeom::boolean::cut(&mut model, &whole, &drill, T)
+        .unwrap()
+        .shape;
+    let side = Frame::new(Point::new(0.0, -2.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let keep = ogeom::algo::make_box(&mut model, side, (12.0, 34.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let half = ogeom::boolean::common(&mut model, &whole, &keep, T)
+        .unwrap()
+        .shape;
+    let copy = ogeom::algo::copied(&mut model, &half).unwrap().shape;
+    let mirror = ogeom::math::Transform::plane_mirror(Point::ORIGIN, Direction::X);
+    let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+        .unwrap()
+        .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &half, &image, T)
+        .unwrap()
+        .shape;
+    // The boss and the bore, the tapered boss, the dome.
+    let kinds = [
+        (SurfaceKind::Cylinder, 2),
+        (SurfaceKind::Cone, 1),
+        (SurfaceKind::Sphere, 1),
+    ];
+    for (kind, whole_count) in kinds {
+        assert_eq!(faces_on(&model, &whole, kind), whole_count, "{kind:?}");
+        assert_eq!(
+            faces_on(&model, &fused, kind),
+            2 * whole_count,
+            "the fuse leaves each {kind:?} face split"
+        );
+    }
+
+    let refined = ogeom::heal::unify_same_domain(&mut model, &fused, T)
+        .unwrap()
+        .0
+        .shape;
+    for (kind, whole_count) in kinds {
+        assert_eq!(faces_on(&model, &refined, kind), whole_count, "{kind:?}");
+    }
+    let diagnosis = ogeom::algo::check(&model, &refined, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let mesh = ogeom::mesh::triangulate(&model, &refined, Deflection::default(), T).unwrap();
+    assert!(
+        mesh.is_closed(),
+        "the refined solid draws closed, the bore's seam and all"
+    );
+    let (before, after) = (exact_volume(&model, &whole), exact_volume(&model, &refined));
+    assert!(
+        (after - before).abs() < before * 1e-9,
+        "{after} against {before}"
+    );
+}
