@@ -58,6 +58,26 @@ bump may break the API and a patch bump may not.
   a period away from the rows. A notched profile revolved a quarter turn
   and fused with its mirror failed with "a face boundary strand dangles";
   it now builds, at twice Pappus's volume for each half (#319).
+- **`fillet_edge` runs a round out onto a ramp, as `fillet_edges` does.**
+  The run-out of #304 was reached only through `fillet_edges`. Rounded
+  alone, the same edge still stopped square at its end, leaving a cap
+  and a step. On the #304 carriage it removed 57.79 mm³ against 63.62.
+  The two entry points now give the same rounding on one edge, except at
+  an end against a neighbouring blend: `fillet_edge` stops flush there,
+  which is the state `round_vertex` closes. A shape that bounds no
+  inside (an open shell) keeps the flush cap rather than refusing.
+- **`round_vertex` closes a corner that a band ran out through.**
+  Rounded one at a time, an edge's band now runs out past a vertex where
+  the face there leans out past its cap. The band of the edge it crosses
+  then stops flush against it, short of the corner's block, and the
+  corner tool left slivers there. Where one ball touches every face, the
+  tool now carries that band back to its block first. It does so only
+  for a band that stands against another of the corner's bands; a band
+  stopped by a notch is left alone. Across 80 cases (every corner of
+  five sheared blocks, with the edges rounded in both orders), three
+  fillets one at a time and `round_vertex` now give the solid
+  `fillet_edges` gives the three edges in one call. Before, 16 matched
+  and 10 refused (#313).
 
 ## [0.11.5] - 2026-10-19
 

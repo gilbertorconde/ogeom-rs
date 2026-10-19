@@ -34,6 +34,18 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// reads as a cut: the faces are modified into their trimmed pieces, and the
 /// edge's neighbourhood gains the blend face.
 ///
+/// The blend is the one [`fillet_edges`] builds on this one edge. Where a
+/// face cuts the corner away past an end (a floor giving way to a ramp
+/// under a wall that carries on), both run it out onto that face. Two
+/// things differ:
+///
+/// - Where the edge ends against a neighbouring blend, this blend stops
+///   flush there instead of running on through it. Three such flush blends
+///   and their vertex are what [`round_vertex`](crate::round_vertex)
+///   closes.
+/// - The ball need only fit somewhere along the edge, where
+///   [`fillet_edges`] wants it to fit at every station it checks.
+///
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
 ///
@@ -130,9 +142,11 @@ impl Mate {
 
 /// [`fillet_edge`], with the straight seat told what else was asked for.
 ///
-/// One edge at a time stops flush against whatever it ends on: that is the
-/// state the corner tool (`round_vertex`) is built for, three flush blends
-/// and a vertex. Edges asked for together meet: where one of them ends at
+/// One edge at a time stops flush against a neighbouring blend it ends on:
+/// that is the state the corner tool (`round_vertex`) is built for, three
+/// flush blends and a vertex. Where no blend follows, the seat is the same
+/// alone and in a request, and runs out the same way onto a face cutting
+/// its corner away. Edges asked for together meet: where one of them ends at
 /// a vertex another leaves *tangentially*, the two are a chain and their
 /// caps stand flush in one plane; where it ends against the band of one
 /// that left the vertex some other way, the later seat runs on through
@@ -1423,45 +1437,46 @@ fn planar_fillet(
         trims.push((at - normal * (at - origin).dot(normal), normal));
         trimmed[slot] = true;
     }
-    // A straight seat asked to meet runs out. Where the edge ends against
-    // a neighbouring blend (a band tangent to one of the hosts at the end
-    // vertex), the material past the end is that blend's own rounding, and
-    // the seat carries on through it until the ball has left the solid; the
-    // cut then trims the two bands against each other along their own
-    // intersection, which is what two fillets meeting at a corner are.
-    // Where a convex edge ends at a face that cuts the corner away
-    // obliquely (a floor giving way to a ramp under a wall that carries
-    // on), the seat runs on along the host it stays tangent to until that
-    // face has cut its whole section away, and the cut trims it there. At
-    // a plain wall the cap already stands in the wall's own plane and
-    // stays; at a step the seat stops where the edge does.
+    // A straight seat runs out. Where a convex edge ends at a face that
+    // cuts the corner away obliquely (a floor giving way to a ramp under a
+    // wall that carries on), the seat runs on along the host it stays
+    // tangent to until that face has cut its whole section away, and the
+    // cut trims it there. At a plain wall the cap already stands in the
+    // wall's own plane and stays; at a step the seat stops where the edge
+    // does. Where a seat asked to meet ends against a neighbouring blend
+    // (a band tangent to one of the hosts at the end vertex), the material
+    // past the end is that blend's own rounding, and the seat carries on
+    // through it until the ball has left the solid; the cut then trims the
+    // two bands against each other along their own intersection, which is
+    // what two fillets meeting at a corner are.
+    let mut probes = crate::support::LazyProbe::default();
     for (slot, end) in [true, false].into_iter().enumerate() {
-        let Some((index, mates)) = mates else {
-            break;
-        };
         // A band trimmed by a face it runs into stops on that face.
         if trimmed[slot] {
             continue;
         }
         let at = if end { seat.start } else { seat.end };
         let outward = if end { -seat.along } else { seat.along };
-        // A mate leaving this vertex the way this edge arrives is a chain
-        // mate: the caps stand flush and the melt joins the blends.
-        let chain = mates.iter().enumerate().any(|(i, mate)| {
-            i != index
-                && mate.ends.iter().any(|(p, leaving)| {
-                    p.distance(at) <= tol.confusion() * 1e3
-                        && leaving.cross(outward).magnitude() <= 1e-2
-                        && leaving.dot(outward) > 0.0
-                })
-        });
-        if chain {
-            continue;
-        }
-        // A corner the corner tool closed, or a junction of the request
-        // that meets the band here.
-        if Mate::settled_at(mates, index, at, tol) || Mate::meets_at(mates, index, at, tol) {
-            continue;
+        if let Some((index, mates)) = mates {
+            // A mate leaving this vertex the way this edge arrives is a
+            // chain mate: the caps stand flush and the melt joins the
+            // blends.
+            let chain = mates.iter().enumerate().any(|(i, mate)| {
+                i != index
+                    && mate.ends.iter().any(|(p, leaving)| {
+                        p.distance(at) <= tol.confusion() * 1e3
+                            && leaving.cross(outward).magnitude() <= 1e-2
+                            && leaving.dot(outward) > 0.0
+                    })
+            });
+            if chain {
+                continue;
+            }
+            // A corner the corner tool closed, or a junction of the request
+            // that meets the band here.
+            if Mate::settled_at(mates, index, at, tol) || Mate::meets_at(mates, index, at, tol) {
+                continue;
+            }
         }
         let hosts = [&seat.faces[0], &seat.faces[1]];
         if !crate::marched::crease_terminates_at(model, solid, edge, hosts, at, tol)? {
@@ -1469,8 +1484,9 @@ fn planar_fillet(
         }
         let through_blend =
             crate::marched::neighbour_blend_at(model, solid, hosts, at, seat.convex, radius, tol)?;
-        // A fill runs on only through a neighbouring blend.
-        if !through_blend && !seat.convex {
+        // One edge at a time stops flush against a neighbouring blend: the
+        // state the corner tool closes. A fill runs on only through one.
+        if through_blend && mates.is_none() || !through_blend && !seat.convex {
             continue;
         }
         // The ball's centre line, a radius in from both hosts.
@@ -1480,8 +1496,10 @@ fn planar_fillet(
         let centre_at = |s: f64| at + outward * s + inward;
         let step = radius / 8.0;
         let mut reach: Option<f64> = None;
-        let probe = crate::support::material_probe(model, solid, tol)?;
         if through_blend {
+            let Some(probe) = probes.get(model, solid, tol)? else {
+                continue;
+            };
             for k in 1..=32 {
                 let s = step * f64::from(k);
                 let inside = probe.holds(model, centre_at(s), tol)? == ogeom_algo::Containment::In;
@@ -1496,7 +1514,16 @@ fn planar_fillet(
             // the crease, the two contacts, each leg's middle and the arc's.
             let section = section_at(&seat, at, inward, radius);
             reach = crate::support::run_out_reach(
-                model, solid, edge, hosts, at, outward, &section, radius, tol,
+                model,
+                solid,
+                edge,
+                hosts,
+                at,
+                outward,
+                &section,
+                radius,
+                &mut probes,
+                tol,
             )?;
         }
         if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
@@ -1511,21 +1538,18 @@ fn planar_fillet(
         // leaving the vertex obliquely), and a seat carried further would
         // round material no ball on this edge touches: it stops at the
         // vertex, as rounding this edge before the neighbour does.
-        if let Some(mate) = mates.get(index) {
+        if let Some(mate) = mates.and_then(|(index, mates)| mates.get(index)) {
             let own = mate
                 .ends
                 .iter()
                 .map(|(p, _)| *p)
                 .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)));
-            if let Some(own) = own {
-                let to_own = (own - at).dot(outward);
-                if to_own > tol.confusion()
-                    && to_own < reach
-                    && probe.holds(model, centre_at(to_own + step), tol)?
-                        == ogeom_algo::Containment::In
-                {
-                    reach = to_own;
-                }
+            let to_own = own.map(|own| (own - at).dot(outward));
+            if let Some(to_own) = to_own.filter(|&t| t > tol.confusion() && t < reach)
+                && let Some(probe) = probes.get(model, solid, tol)?
+                && probe.holds(model, centre_at(to_own + step), tol)? == ogeom_algo::Containment::In
+            {
+                reach = to_own;
             }
         }
         if end {

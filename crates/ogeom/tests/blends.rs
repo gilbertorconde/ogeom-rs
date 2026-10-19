@@ -1535,7 +1535,10 @@ fn round_vertex_rounds_the_corner_at_any_placement() {
 /// hexahedron bounded by the host planes and the three planes through the
 /// ball's centre square to the edges. The patch it leaves meets its three
 /// bands and three walls tangentially, and the caps at the corner are
-/// consumed while the caps at the edges' far ends stand.
+/// consumed. At its far end each edge meets a face leaning out past the
+/// cap, and its band runs out onto that face, leaving no cap: one at a
+/// time and the corner after them is the rounding `fillet_edges` gives the
+/// three edges in one call.
 #[test]
 fn round_vertex_rounds_an_oblique_corner() {
     let mut model = Model::new();
@@ -1549,7 +1552,7 @@ fn round_vertex_rounds_an_oblique_corner() {
         .unwrap()
         .shape;
     let vertex = vertex_near(&model, &block, Point::ORIGIN);
-    let mut solid = block;
+    let mut solid = block.clone();
     for edge_vector in [a, b, c] {
         let edge = edge_near(&model, &solid, Point::ORIGIN + edge_vector * 0.5);
         solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
@@ -1565,9 +1568,9 @@ fn round_vertex_rounds_an_oblique_corner() {
         .shape;
     let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
-    // Six walls, three bands, the three far caps, and the patch.
+    // Six walls, three bands and the patch.
     let faces = explore_unique(&model, &rounded, ShapeType::Face).unwrap();
-    assert_eq!(faces.len(), 13, "walls, bands, far caps and the patch");
+    assert_eq!(faces.len(), 10, "walls, bands and the patch");
     let patch = faces
         .iter()
         .find(|f| {
@@ -1597,6 +1600,248 @@ fn round_vertex_rounds_an_oblique_corner() {
         after < before && before - after < r * r * r,
         "the corner sheds its spike and no more: {before} -> {after}"
     );
+    let edges: Vec<Shape> = [a, b, c]
+        .into_iter()
+        .map(|v| edge_near(&model, &block, Point::ORIGIN + v * 0.5))
+        .collect();
+    let chain = ogeom::fillet::fillet_edges(&mut model, &block, &edges, r, T)
+        .unwrap()
+        .shape;
+    let together = ogeom::algo::volume_properties(&model, &chain, fine, T)
+        .unwrap()
+        .mass;
+    assert!(
+        (after - together).abs() <= together * 1e-9,
+        "one at a time {after} against together {together}"
+    );
+}
+
+/// A corner of a sheared block, its three edges rounded one at a time and
+/// then closed by the corner tool, against the same three edges rounded in
+/// one call. In one call the corner goes first and the bands stop flush
+/// against it. One at a time, a band runs out past the vertex where the
+/// third face there leans out past its cap, and the band of the edge it
+/// crosses stops flush against it, short of the corner's block; the corner
+/// tool carries that band back to its block. Either way the solid is the
+/// same, face for face. The corner is the sum of the sides its index's
+/// bits pick, and its edges run along the sides into the block, rounded in
+/// the sides' order or, `reversed`, the other way round.
+fn one_at_a_time_is_one_call(sides: [Vector; 3], corner_index: u32, reversed: bool) {
+    let r = 2.0;
+    let fine = ogeom::mesh::Deflection::with_chord(2e-3).unwrap();
+    let mut model = Model::new();
+    let block = ogeom::algo::make_parallelepiped(&mut model, Point::ORIGIN, sides, T)
+        .unwrap()
+        .shape;
+    let picked = |k: usize| corner_index >> k & 1 == 1;
+    let corner = (0..3).fold(
+        Point::ORIGIN,
+        |p, k| if picked(k) { p + sides[k] } else { p },
+    );
+    let mut middles: Vec<Point> = (0..3)
+        .map(|k| {
+            if picked(k) {
+                corner - sides[k] * 0.5
+            } else {
+                corner + sides[k] * 0.5
+            }
+        })
+        .collect();
+    if reversed {
+        middles.reverse();
+    }
+    let vertex = vertex_near(&model, &block, corner);
+    let edges: Vec<Shape> = middles
+        .iter()
+        .map(|m| edge_near(&model, &block, *m))
+        .collect();
+    let together = ogeom::fillet::fillet_edges(&mut model, &block, &edges, r, T)
+        .unwrap()
+        .shape;
+    let mut solid = block.clone();
+    for m in &middles {
+        let edge = edge_near(&model, &solid, *m);
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, r, T)
+            .unwrap()
+            .shape;
+    }
+    let at = format!("{sides:?} corner {corner_index} reversed {reversed}");
+    let apart = ogeom::fillet::round_vertex(&mut model, &solid, &vertex, r, T)
+        .unwrap_or_else(|e| panic!("{at}: {e}"))
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &apart, T).unwrap();
+    assert!(diagnosis.is_valid(), "{at}: {:?}", diagnosis.problems);
+    let faces = |shape: &Shape| {
+        explore_unique(&model, shape, ShapeType::Face)
+            .unwrap()
+            .len()
+    };
+    assert_eq!(
+        faces(&apart),
+        faces(&together),
+        "{at}: walls, bands and the patch"
+    );
+    let volume = |shape: &Shape| {
+        ogeom::algo::volume_properties(&model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    let (one_at_a_time, in_one_call) = (volume(&apart), volume(&together));
+    assert!(
+        (one_at_a_time - in_one_call).abs() <= in_one_call * 1e-9,
+        "{at}: {one_at_a_time} against {in_one_call}"
+    );
+}
+
+/// The corner at (20, 0, 0) of a block sheared along x: the edge back along
+/// x runs out past the vertex onto the face leaning out there, and crosses
+/// the crease of the edge rising from it.
+#[test]
+fn round_vertex_carries_a_band_stopped_by_a_run_out_back_to_the_corner() {
+    one_at_a_time_is_one_call(
+        [
+            Vector::new(20.0, 0.0, 0.0),
+            Vector::new(0.0, 20.0, 0.0),
+            Vector::new(8.0, 0.0, 20.0),
+        ],
+        1,
+        false,
+    );
+}
+
+/// The corner at (24, 20, 0) of a block sheared both ways, its edges
+/// rounded last side first: the band of the slanted edge runs out past the
+/// vertex across both other creases, and both their bands are carried
+/// back.
+#[test]
+fn round_vertex_carries_two_bands_stopped_by_one_run_out() {
+    one_at_a_time_is_one_call(
+        [
+            Vector::new(20.0, 0.0, 0.0),
+            Vector::new(4.0, 20.0, 0.0),
+            Vector::new(-5.0, 3.0, 20.0),
+        ],
+        2,
+        true,
+    );
+}
+
+/// A box's top front crease notched through at x 5..8, the piece beyond the
+/// notch rounded and the corner at its near end closed: the piece between
+/// the corner and the notch was not asked for and stays sharp. The band
+/// beyond the notch lies on the line the corner's own band would, but it
+/// stands against the notch's wall, not against a band of the corner.
+#[test]
+fn round_vertex_leaves_a_crease_beyond_a_notch_to_its_own_rounding() {
+    let r = 2.0;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let notch = ogeom::algo::make_box(
+        &mut model,
+        Frame::new(Point::new(5.0, -1.0, 7.0), Direction::Z, Direction::X, T).unwrap(),
+        (3.0, 3.0, 4.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let notched = ogeom::boolean::cut(&mut model, &block, &notch, T)
+        .unwrap()
+        .shape;
+    let vertex = vertex_near(&model, &notched, Point::new(0.0, 0.0, 10.0));
+    let beyond = edge_near(&model, &notched, Point::new(14.0, 0.0, 10.0));
+    let rounded = ogeom::fillet::fillet_edge(&mut model, &notched, &beyond, r, T)
+        .unwrap()
+        .shape;
+    let closed = ogeom::fillet::round_vertex(&mut model, &rounded, &vertex, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &closed, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The crease from the corner's block to the notch is still an edge.
+    let near = edge_near(&model, &closed, Point::new(3.5, 0.0, 10.0));
+    let ends: Vec<Point> = model
+        .children_of(&near)
+        .unwrap()
+        .iter()
+        .map(|v| model.node(v).unwrap().data().as_vertex().unwrap().point)
+        .collect();
+    let mut along: Vec<f64> = ends.iter().map(|p| p.x).collect();
+    along.sort_by(f64::total_cmp);
+    assert!(
+        ends.iter()
+            .all(|p| p.y.abs() < 1e-6 && (p.z - 10.0).abs() < 1e-6)
+            && (along[0] - r).abs() < 1e-6
+            && (along[1] - 5.0).abs() < 1e-6,
+        "the crease between the corner and the notch: {ends:?}"
+    );
+    // No band runs along it: every cylinder along x starts beyond the notch.
+    for face in explore_unique(&model, &closed, ShapeType::Face).unwrap() {
+        let data = model.node(&face).unwrap().data().as_face().unwrap();
+        let Some(ogeom::geom::SurfaceGeometry::Cylinder(c)) =
+            model.geometry().surface(data.surface)
+        else {
+            continue;
+        };
+        if c.cylinder()
+            .frame()
+            .z()
+            .vector()
+            .cross(Vector::new(1.0, 0.0, 0.0))
+            .magnitude()
+            > 1e-9
+        {
+            continue;
+        }
+        let low = ogeom::algo::shape_bounds(&model, &face, T)
+            .unwrap()
+            .low()
+            .unwrap()
+            .x;
+        assert!(low > 5.0, "a band along the crease starts at x = {low}");
+    }
+}
+
+/// [`one_at_a_time_is_one_call`] at every corner of five sheared blocks,
+/// each corner's edges rounded in both orders.
+#[test]
+#[ignore = "heavy"]
+fn round_vertex_after_one_edge_at_a_time_is_the_corner_rounded_in_one_call() {
+    let blocks = [
+        [
+            Vector::new(20.0, 0.0, 0.0),
+            Vector::new(6.0, 20.0, 0.0),
+            Vector::new(3.6, 6.0, 20.0),
+        ],
+        [
+            Vector::new(20.0, 0.0, 0.0),
+            Vector::new(-6.0, 20.0, 0.0),
+            Vector::new(-3.6, -6.0, 20.0),
+        ],
+        [
+            Vector::new(20.0, 0.0, 0.0),
+            Vector::new(4.0, 20.0, 0.0),
+            Vector::new(-5.0, 3.0, 20.0),
+        ],
+        [
+            Vector::new(20.0, 0.0, 0.0),
+            Vector::new(0.0, 20.0, 0.0),
+            Vector::new(8.0, 0.0, 20.0),
+        ],
+        [
+            Vector::new(20.0, 0.0, 0.0),
+            Vector::new(12.0, 20.0, 0.0),
+            Vector::new(-10.0, 9.0, 20.0),
+        ],
+    ];
+    for sides in blocks {
+        for corner_index in 0..8 {
+            for reversed in [false, true] {
+                one_at_a_time_is_one_call(sides, corner_index, reversed);
+            }
+        }
+    }
 }
 
 /// The N-support setback at a square pyramid's apex: four planes through

@@ -11,7 +11,7 @@
 //! *Elsewhere:* the vertex blend of `ChFi3d`'s setback family.
 
 use ogeom_algo::Built;
-use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Direction, Frame, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType};
 
@@ -27,6 +27,15 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// the corner crash into each other at a pyramid's apex) and the block is
 /// the polyhedron of the N host planes and the N planes square to the
 /// edges.
+///
+/// Where one ball touches every face, a band that another of the corner's
+/// bands stopped short of the block is carried back to it first. Rounded
+/// one at a time, an edge's band runs out past the vertex where the face
+/// there leans out past its cap, and the band of an edge it crosses stops
+/// flush against it, further out than the block reaches. Carried back,
+/// that band too ends on the ball's rim, as every band does at a corner
+/// where none ran out. A band stopped by anything else (a notch across its
+/// crease) is left as it stands, and the crease before it stays sharp.
 ///
 /// A vertex whose planes share no tangent ball (a rectangular pyramid's
 /// apex, any general N-edged vertex) is rounded by the envelope of every
@@ -48,7 +57,7 @@ use ogeom_topo::{Model, Shape, ShapeType};
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// [`OgeomError::Construction`] if the
 /// vertex is not a vertex of the solid; if fewer than three planes pass
 /// through it and other than three surfaces do, or the ball does not seat
 /// inside every face; if the region the ball's centre may occupy has a tip vertex touching more than three planes
@@ -340,6 +349,36 @@ pub(crate) fn round_vertex_with(
         })?;
     let inward_of = |k: usize| m[ring[k % n]];
 
+    // A band left short of the block by another band's run-out is carried
+    // back to it first, so the block's cut ends it as it ends a flush one.
+    // The wedge carrying it starts at the vertex or on the block's plane:
+    // the same material either way, which the boolean resolves in one or
+    // the other. Where neither carries it the corner is cut as it stands.
+    let carry = |model: &mut Model, from_vertex: bool| -> OgeomResult<Built> {
+        let mut carried = Built::from_nothing(solid.clone());
+        for k in 0..n {
+            let planes = [m[ring[k]], m[ring[(k + 1) % n]]];
+            if let Some(band) = band_gap(
+                model,
+                &carried.shape,
+                corner,
+                far,
+                &d,
+                k,
+                planes,
+                radius,
+                from_vertex,
+                tol,
+            )? {
+                carried = Built {
+                    shape: band.shape,
+                    history: carried.history.then(&band.history),
+                };
+            }
+        }
+        Ok(carried)
+    };
+
     // The block: the corner bounded by its N host planes and, through the
     // ball's centre, the N planes square to its edges, where each band's
     // circle and the ball's own rim coincide, so the cut ends the band and
@@ -362,7 +401,7 @@ pub(crate) fn round_vertex_with(
     // closes stands, so a corner no labelling closes is refused by name. A
     // failed attempt's nodes stay in the model unreferenced, under their
     // own operation.
-    let attempt = |model: &mut Model, start: usize, reverse: bool| -> OgeomResult<Built> {
+    let attempt = |model: &mut Model, held: &Built, start: usize, reverse| -> OgeomResult<Built> {
         // Edge t of the labelling and the host plane holding edges t and t+1.
         let edge_at = |t: usize| -> usize {
             if reverse {
@@ -434,25 +473,44 @@ pub(crate) fn round_vertex_with(
                 faces.len()
             );
         }
-        let rounded = ogeom_bool::cut(model, solid, &tool.shape, tol)?;
+        let rounded = ogeom_bool::cut(model, &held.shape, &tool.shape, tol)?;
         Ok(Built {
             shape: rounded.shape,
-            history: tool.history.then(&rounded.history),
+            history: held.history.then(&tool.history).then(&rounded.history),
         })
     };
     let mut outcome: Option<Built> = None;
     let mut last: Option<ogeom_core::OgeomError> = None;
-    let labellings = (0..2 * n).map(|index| (index % n, index >= n));
-    for (index, (start, reverse)) in labellings.enumerate() {
-        if forced.is_some_and(|f| f != index) {
+    let mut tried: Vec<Shape> = Vec::new();
+    'carries: for from_vertex in [Some(true), Some(false), None] {
+        let carried = match from_vertex {
+            Some(from_vertex) => match carry(model, from_vertex) {
+                Ok(carried) => carried,
+                Err(err @ (OgeomError::NotDone(_) | OgeomError::Construction(_))) => {
+                    last = Some(err);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            },
+            None => Built::from_nothing(solid.clone()),
+        };
+        // A corner with no band to carry is cut once.
+        if tried.iter().any(|held| held.is_same(&carried.shape)) {
             continue;
         }
-        match attempt(model, start, reverse) {
-            Ok(built) => {
-                outcome = Some(built);
-                break;
+        tried.push(carried.shape.clone());
+        let labellings = (0..2 * n).map(|index| (index % n, index >= n));
+        for (index, (start, reverse)) in labellings.enumerate() {
+            if forced.is_some_and(|f| f != index) {
+                continue;
             }
-            Err(err) => last = Some(err),
+            match attempt(model, &carried, start, reverse) {
+                Ok(built) => {
+                    outcome = Some(built);
+                    break 'carries;
+                }
+                Err(err) => last = Some(err),
+            }
         }
     }
     let Some(rounded) = outcome else {
@@ -467,6 +525,205 @@ pub(crate) fn round_vertex_with(
     let mut built = rounded;
     built.history.modify(vertex, built.shape.clone());
     Ok(built)
+}
+
+/// The band along edge `k` of a one-ball corner carried back to the
+/// corner's block, where a band another edge of the corner ran out left it
+/// short.
+///
+/// Edge `k`'s band is the cylinder of `radius` about the line through the
+/// ball's centre `far` along the edge's direction, between the two host
+/// planes with inward normals `planes`; the block ends it on the plane
+/// through `far` square to the edge. Rounded one at a time, another edge's
+/// band may run out past the vertex and across this edge's crease, and
+/// this band then stands flush against that one, further out than the
+/// block reaches. In the section square to the edge, the material outside
+/// the cylinder and within the two host planes is what no ball a radius in
+/// from both planes reaches, so the band's wedge is cut back to the block,
+/// `from_vertex` starting it at the vertex rather than on the block's
+/// plane: behind that plane the block's cut takes the stretch anyway.
+///
+/// Only that band is carried: its near end stands against the band of
+/// another edge of the corner (the crease's point there lies on that
+/// band's cylinder), and no stretch of the crease between the vertex and
+/// the band is still a sharp edge of the solid. A band ending against
+/// anything else (a notch across the crease, a piece of the crease nobody
+/// rounded) is left as it stands. `None` where no band is carried.
+#[allow(clippy::too_many_arguments, reason = "one question, all its data")]
+fn band_gap(
+    model: &mut Model,
+    solid: &Shape,
+    corner: Point,
+    far: Point,
+    axes: &[Direction],
+    k: usize,
+    planes: [Vector; 2],
+    radius: f64,
+    from_vertex: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let along = axes[k].vector();
+    let on_line = tol.confusion() * 100.0;
+    let point_of = |model: &Model, v: &Shape| -> OgeomResult<Option<Point>> {
+        let Some(p) = model
+            .node(v)
+            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+        else {
+            return Ok(None);
+        };
+        Ok(Some(v.transform(model.datums())?.apply(p)))
+    };
+    // Where the band starts along the edge, from the block's plane: the
+    // nearest of its vertices.
+    let mut ends: Vec<Point> = Vec::new();
+    for face in ogeom_topo::explore_unique(model, solid, ShapeType::Face)? {
+        if !on_band(model, &face, far, along, radius, tol) {
+            continue;
+        }
+        for v in ogeom_topo::explore_unique(model, &face, ShapeType::Vertex)? {
+            if let Some(p) = point_of(model, &v)? {
+                ends.push(p);
+            }
+        }
+    }
+    let Some(start) = ends
+        .iter()
+        .map(|p| (*p - far).dot(along))
+        .min_by(f64::total_cmp)
+    else {
+        return Ok(None);
+    };
+    if start <= tol.confusion() {
+        return Ok(None);
+    }
+    // The band's near end stands against another edge's band of this
+    // corner: where its section there meets the crease, a point on that
+    // band's cylinder.
+    let from = (corner - far).dot(along);
+    let gap = |p: Point, axis: Vector| {
+        let w = p - far;
+        ((w - axis * w.dot(axis)).magnitude() - radius).abs()
+    };
+    let crease_end = corner + along * (start - from);
+    if !axes
+        .iter()
+        .enumerate()
+        .any(|(j, axis)| j != k && gap(crease_end, axis.vector()) <= on_line)
+    {
+        return Ok(None);
+    }
+    // No stretch of the crease between the vertex and the band is still a
+    // sharp edge of the solid. The crease leaves the other band at its rail,
+    // where the band is tangent to the host plane the crease lies in, so
+    // the two stand apart only quadratically there and the boolean places
+    // the crossing within its vertices' tolerances. A piece each of whose
+    // ends lies on one other band's cylinder within the end's own
+    // tolerance lies on it within those tolerances all along (a line's
+    // distance from a cylinder it stays outside is convex along it): it is
+    // that band's boundary, not a stretch of sharp crease.
+    for edge in ogeom_topo::explore_unique(model, solid, ShapeType::Edge)? {
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, &edge)? else {
+            continue;
+        };
+        let (Some(pa), Some(pb)) = (point_of(model, &a)?, point_of(model, &b)?) else {
+            continue;
+        };
+        let crease = |p: Point| {
+            let w = p - corner;
+            (w - along * w.dot(along)).magnitude() <= on_line
+        };
+        if !crease(pa) || !crease(pb) {
+            continue;
+        }
+        let reach = |v: &Shape| {
+            model
+                .node(v)
+                .and_then(|n| n.data().as_vertex())
+                .map_or(0.0, |d| d.tolerance.get())
+        };
+        let (reach_a, reach_b) = (reach(&a), reach(&b));
+        let on_band_seam = axes.iter().enumerate().any(|(j, axis)| {
+            j != k && gap(pa, axis.vector()) <= reach_a && gap(pb, axis.vector()) <= reach_b
+        });
+        if on_band_seam {
+            continue;
+        }
+        let (ta, tb) = ((pa - far).dot(along), (pb - far).dot(along));
+        if ta.max(tb) > from + on_line && ta.min(tb) < start - on_line {
+            return Ok(None);
+        }
+    }
+    let face_on = |model: &Model, inward: Vector| -> OgeomResult<Option<Shape>> {
+        for face in ogeom_topo::explore_unique(model, solid, ShapeType::Face)? {
+            let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+                continue;
+            };
+            if !matches!(
+                model.geometry().surface(data.surface),
+                Some(ogeom_geom::SurfaceGeometry::Plane(_))
+            ) {
+                continue;
+            }
+            let (origin, outward) = ogeom_algo::face_normal(model, &face, tol)?;
+            if (corner - origin).dot(outward).abs() <= on_line
+                && outward.cross(inward).magnitude() < tol.angular() * 10.0
+                && outward.dot(inward) < 0.0
+            {
+                return Ok(Some(face));
+            }
+        }
+        Ok(None)
+    };
+    let (Some(first), Some(second)) = (face_on(model, planes[0])?, face_on(model, planes[1])?)
+    else {
+        return Ok(None);
+    };
+    let foot = corner + along * (far - corner).dot(along);
+    let seat = crate::support::Seat {
+        start: if from_vertex { corner } else { foot },
+        end: foot + along * start,
+        along,
+        normals: [-planes[0], -planes[1]],
+        faces: [first, second],
+        convex: true,
+    };
+    let cut = crate::fillet::seated_fillet(model, solid, &seat, radius, None, &[], tol)?;
+    // The carried band and the band it reaches lie on one cylinder: one
+    // face, as the band the corner closes in one call is.
+    let on_axis: Vec<Shape> = ogeom_topo::explore_unique(model, &cut.shape, ShapeType::Face)?
+        .into_iter()
+        .filter(|face| on_band(model, face, far, along, radius, tol))
+        .collect();
+    let (unified, _) = ogeom_heal::unify_same_domain_around(model, &cut.shape, &on_axis, tol)?;
+    Ok(Some(Built {
+        shape: unified.shape,
+        history: cut.history.then(&unified.history),
+    }))
+}
+
+/// Whether `face` lies on the cylinder of `radius` about the line through
+/// `far` along `along`.
+fn on_band(
+    model: &Model,
+    face: &Shape,
+    far: Point,
+    along: Vector,
+    radius: f64,
+    tol: Tolerances,
+) -> bool {
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+        return false;
+    };
+    let Some(ogeom_geom::SurfaceGeometry::Cylinder(c)) = model.geometry().surface(data.surface)
+    else {
+        return false;
+    };
+    let frame = c.cylinder().frame();
+    let axis = frame.z().vector();
+    let off = far - frame.origin();
+    (c.cylinder().radius() - radius).abs() <= tol.confusion()
+        && axis.cross(along).magnitude() <= tol.angular()
+        && (off - axis * off.dot(axis)).magnitude() <= tol.confusion()
 }
 
 /// A vertex of the region the ball's centre may occupy: a point a radius

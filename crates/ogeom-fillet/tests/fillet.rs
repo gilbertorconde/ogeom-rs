@@ -510,27 +510,40 @@ fn profile_prism(
 }
 
 /// The volume a fillet of `radius` on the edge of a profile prism through
-/// `middle` took from it.
-fn removed_by_round(profile: &[(f64, f64)], middle: Point, radius: f64) -> f64 {
-    let mut model = ogeom_topo::Model::new();
-    let prism = profile_prism(&mut model, profile, 2.0);
+/// `middle` took from it, rounded alone by `fillet_edge` and as a request
+/// of one edge by `fillet_edges`: the same edge on the same solid, so the
+/// same rounding.
+fn removed_by_round(
+    profile: &[(f64, f64)],
+    middle: Point,
+    radius: f64,
+) -> [(&'static str, f64); 2] {
     let fine = ogeom_mesh::Deflection {
         chord: 1e-4,
         ..ogeom_mesh::Deflection::default()
     };
-    let before = ogeom_algo::volume_properties(&model, &prism, fine, T)
-        .unwrap()
-        .mass;
-    let edge = edge_with_midpoint(&model, &prism, middle);
-    let rounded = ogeom_fillet::fillet_edges(&mut model, &prism, &[edge], radius, T)
+    let round = |alone: bool| {
+        let mut model = ogeom_topo::Model::new();
+        let prism = profile_prism(&mut model, profile, 2.0);
+        let before = ogeom_algo::volume_properties(&model, &prism, fine, T)
+            .unwrap()
+            .mass;
+        let edge = edge_with_midpoint(&model, &prism, middle);
+        let rounded = if alone {
+            ogeom_fillet::fillet_edge(&mut model, &prism, &edge, radius, T)
+        } else {
+            ogeom_fillet::fillet_edges(&mut model, &prism, &[edge], radius, T)
+        }
         .unwrap()
         .shape;
-    let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
-    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
-    before
-        - ogeom_algo::volume_properties(&model, &rounded, fine, T)
-            .unwrap()
-            .mass
+        let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        before
+            - ogeom_algo::volume_properties(&model, &rounded, fine, T)
+                .unwrap()
+                .mass
+    };
+    [("fillet_edge", round(true)), ("fillet_edges", round(false))]
 }
 
 /// A round on a floor edge whose floor gives way to a ramp at the edge's
@@ -551,13 +564,15 @@ fn a_round_runs_out_along_its_wall_onto_a_ramp() {
             (length + height / slope, height),
             (0.0, height),
         ];
-        let removed = removed_by_round(&profile, Point::new(0.0, length / 2.0, 0.0), radius);
         let want = (1.0 - core::f64::consts::FRAC_PI_4) * radius * radius * length
             + radius.powi(3) * (5.0 / 6.0 - core::f64::consts::FRAC_PI_4) / slope;
-        assert!(
-            (removed - want).abs() < 1e-4,
-            "slope {slope}: the round took {removed} against {want}"
-        );
+        for (by, removed) in removed_by_round(&profile, Point::new(0.0, length / 2.0, 0.0), radius)
+        {
+            assert!(
+                (removed - want).abs() < 1e-4,
+                "slope {slope}: the round by {by} took {removed} against {want}"
+            );
+        }
     }
 }
 
@@ -586,12 +601,13 @@ fn a_round_stops_square_at_a_step_past_its_end() {
         (0.0, height),
     ];
     for (name, profile) in [("down", &down), ("up", &up)] {
-        let removed = removed_by_round(profile, Point::new(0.0, length / 2.0, 0.0), radius);
         let want = (1.0 - core::f64::consts::FRAC_PI_4) * radius * radius * length;
-        assert!(
-            (removed - want).abs() < 1e-4,
-            "step {name}: the round took {removed} against {want}"
-        );
+        for (by, removed) in removed_by_round(profile, Point::new(0.0, length / 2.0, 0.0), radius) {
+            assert!(
+                (removed - want).abs() < 1e-4,
+                "step {name}: the round by {by} took {removed} against {want}"
+            );
+        }
     }
 }
 
@@ -617,11 +633,13 @@ fn a_round_running_up_under_a_roof_stops_on_it() {
             (2.0, 2.0f64.mul_add(slope, height + 1.0)),
             (-3.0, 2.0f64.mul_add(slope, height + 1.0)),
         ];
-        let removed = removed_by_round(&profile, Point::new(0.0, 0.0, height / 2.0), radius);
         let want = section * slope.mul_add(-centroid, height);
-        assert!(
-            (removed - want).abs() < 1e-4,
-            "slope {slope}: the round took {removed} against {want}"
-        );
+        for (by, removed) in removed_by_round(&profile, Point::new(0.0, 0.0, height / 2.0), radius)
+        {
+            assert!(
+                (removed - want).abs() < 1e-4,
+                "slope {slope}: the round by {by} took {removed} against {want}"
+            );
+        }
     }
 }

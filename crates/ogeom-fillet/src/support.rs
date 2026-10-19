@@ -967,6 +967,31 @@ pub(crate) fn material_probe(
     ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)
 }
 
+/// [`material_probe`] built the first time a seat's run-out asks, and
+/// kept for the rest of that seat. A shape that bounds no inside (an open
+/// shell) has no probe, and a seat on it does not run out.
+#[derive(Default)]
+pub(crate) struct LazyProbe(Option<Option<ogeom_algo::SolidBoundary>>);
+
+impl LazyProbe {
+    /// The probe of `solid`, or `None` where it bounds no inside.
+    pub(crate) fn get(
+        &mut self,
+        model: &Model,
+        solid: &Shape,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<&ogeom_algo::SolidBoundary>> {
+        if self.0.is_none() {
+            self.0 = Some(match material_probe(model, solid, tol) {
+                Ok(probe) => Some(probe),
+                Err(ogeom_core::OgeomError::Construction(_)) => None,
+                Err(e) => return Err(e),
+            });
+        }
+        Ok(self.0.as_ref().and_then(Option::as_ref))
+    }
+}
+
 /// The faces of `solid` following the crease of `edge` at its end `at`:
 /// the faces other than `hosts` meeting the edge's vertex there, each a
 /// plane as a point on it and its outward unit normal. `None` where one of
@@ -1078,6 +1103,7 @@ pub(crate) fn run_out_reach(
     outward: Vector,
     section: &[Point],
     radius: f64,
+    probe: &mut LazyProbe,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
     let Some(following) = following_planes(model, solid, edge, hosts, at)? else {
@@ -1086,7 +1112,9 @@ pub(crate) fn run_out_reach(
     if following.is_empty() {
         return Ok(None);
     }
-    let probe = material_probe(model, solid, tol)?;
+    let Some(probe) = probe.get(model, solid, tol)? else {
+        return Ok(None);
+    };
     let held = |p: Point| -> OgeomResult<bool> {
         Ok(probe.holds(model, p, tol)? != ogeom_algo::Containment::Out)
     };

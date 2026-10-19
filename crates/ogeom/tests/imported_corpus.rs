@@ -1478,35 +1478,44 @@ fn a_round_runs_out_along_its_wall_onto_a_ramp_past_its_end() {
     let (before, bounds) = measured(&model, part);
     let loss = square_round_loss(&model, std::slice::from_ref(&edge), radius)
         + radius.powi(3) * (5.0 / 6.0 - std::f64::consts::FRAC_PI_4) / slope;
-    let rounded =
-        ogeom::fillet::fillet_edges(&mut model, part, std::slice::from_ref(&edge), radius, T)
-            .unwrap();
-    let (after, held) = measured(&model, &rounded.shape);
-    assert!(
-        (before - after - loss).abs() <= loss * 1e-3,
-        "the round took {} where its section along the edge and past it is {loss}",
-        before - after
-    );
-    assert!((held.diagonal() - bounds.diagonal()).abs() <= 1e-6);
-    let [band] = rounded.history.generated(&edge) else {
-        panic!("the round is one face");
-    };
-    let reach = ogeom::algo::shape_bounds(&model, band, T)
-        .unwrap()
-        .high()
-        .unwrap()
-        .y;
-    assert!(
-        (reach - (end + radius / slope)).abs() <= 1e-3,
-        "the round reaches y = {reach}"
-    );
-    for face in explore_unique(&model, &rounded.shape, ShapeType::Face).unwrap() {
-        let b = ogeom::algo::shape_bounds(&model, &face, T).unwrap();
-        let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+    // Rounded alone and as a request of one edge: the same rounding.
+    for alone in [true, false] {
+        let by = if alone { "fillet_edge" } else { "fillet_edges" };
+        let rounded = if alone {
+            ogeom::fillet::fillet_edge(&mut model, part, &edge, radius, T)
+        } else {
+            ogeom::fillet::fillet_edges(&mut model, part, std::slice::from_ref(&edge), radius, T)
+        }
+        .unwrap();
+        let diagnosis = ogeom::algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{by}: {:?}", diagnosis.problems);
+        let (after, held) = measured(&model, &rounded.shape);
         assert!(
-            !((lo.y - end).abs() <= 1e-3 && (hi.y - end).abs() <= 1e-3 && hi.x > -9.2),
-            "a cap stands at the edge's end"
+            (before - after - loss).abs() <= loss * 1e-3,
+            "the round by {by} took {} where its section along the edge and past it is {loss}",
+            before - after
         );
+        assert!((held.diagonal() - bounds.diagonal()).abs() <= 1e-6);
+        let [band] = rounded.history.generated(&edge) else {
+            panic!("the round by {by} is one face");
+        };
+        let reach = ogeom::algo::shape_bounds(&model, band, T)
+            .unwrap()
+            .high()
+            .unwrap()
+            .y;
+        assert!(
+            (reach - (end + radius / slope)).abs() <= 1e-3,
+            "the round by {by} reaches y = {reach}"
+        );
+        for face in explore_unique(&model, &rounded.shape, ShapeType::Face).unwrap() {
+            let b = ogeom::algo::shape_bounds(&model, &face, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            assert!(
+                !((lo.y - end).abs() <= 1e-3 && (hi.y - end).abs() <= 1e-3 && hi.x > -9.2),
+                "a cap stands at the edge's end of the round by {by}"
+            );
+        }
     }
 }
 
