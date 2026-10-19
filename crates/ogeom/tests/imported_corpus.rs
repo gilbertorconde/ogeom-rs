@@ -1744,6 +1744,79 @@ fn a_rib_s_chain_rounds_on_along_its_tangent_continuations() {
     }
 }
 
+/// The rib's lower top crease, along a wall swept from a fitted profile,
+/// rounded alone and with the rest of the rib's chain. It leaves the round
+/// end's rim with the wall turned a degree and a half back behind the
+/// rim's, and ends where the outline turns back into the material along a
+/// straight top edge. Alone, its round stops at both ends of the crease,
+/// since past either the crease carries on into the material: the corner's
+/// section along it, less its moment about the wall times the crease's turn
+/// towards the material. With the chain it meets the rim's round and the
+/// straight edge's across those two re-entrant turns, each adding the cell
+/// past both caps, twice the moment times tan(t/2), t the turn.
+#[test]
+fn a_rib_s_lower_spline_crease_rounds_alone_and_with_its_chain() {
+    use ogeom::math::{Point, Vector};
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("rib_chain_under_a_slanted_roof.ogeom")).unwrap();
+    let rib = &roots[0];
+    let along = |at: (f64, f64), dir: (f64, f64)| {
+        edge_along(
+            &model,
+            rib,
+            Point::new(at.0, 9.51, at.1),
+            Vector::new(dir.0, 0.0, dir.1),
+        )
+    };
+    let straight_end = along((-4.605, -15.68), (1.0, 0.0));
+    let short_arc = along((-20.191, -29.293), (-0.982, -0.191));
+    let chain = [
+        along((-9.21, -5.88), (0.0, 1.0)),
+        along((-13.13, -7.84), (0.0, 1.0)),
+        along((-4.605, -11.76), (1.0, 0.0)),
+        straight_end.clone(),
+        along((-16.004, -20.458), (-0.806, -0.592)),
+        along((-24.472, -26.004), (-0.068, 0.998)),
+        short_arc.clone(),
+        along((-13.13, 1.043), (0.0, 1.0)),
+        along((-9.21, 1.043), (0.0, 1.0)),
+    ];
+    let spline = along((-19.06, -28.92), (0.935, 0.355));
+    let radius: f64 = 0.85;
+    let section = (1.0 - std::f64::consts::FRAC_PI_4) * radius * radius;
+    let moment = (5.0 / 6.0 - std::f64::consts::FRAC_PI_4) * radius.powi(3);
+    let (length, turn, ends) = rib_crease(&model, rib, &spline);
+    let band = section.mul_add(length, -moment * turn);
+    let cells = [&short_arc, &straight_end]
+        .map(|e| turn_between(&ends, &rib_crease(&model, rib, e).2))
+        .iter()
+        .map(|t| 2.0 * moment * (t / 2.0).tan())
+        .sum::<f64>();
+    let (before, bounds) = measured(&model, rib);
+    let took = |named: &[ogeom::topo::Shape]| {
+        let mut model = model.clone();
+        let rounded = ogeom::fillet::fillet_edges(&mut model, rib, named, radius, T).unwrap();
+        let (after, held) = measured(&model, &rounded.shape);
+        assert!(held.diagonal() - bounds.diagonal() <= 1e-6);
+        before - after
+    };
+    let alone = took(std::slice::from_ref(&spline));
+    assert!(
+        (alone - band).abs() <= band * 1e-4,
+        "the spline's round took {alone} where its section along it is {band}"
+    );
+    let rest = took(&chain);
+    let mut whole = chain.to_vec();
+    whole.push(spline);
+    let added = took(&whole) - rest;
+    assert!(
+        (added - band - cells).abs() <= (band + cells) * 1e-4,
+        "the spline's round added {added} to the chain where its band and the corners \
+         take {}",
+        band + cells
+    );
+}
+
 /// A pad fused onto a part where the pad's curved side touches a wall
 /// swept from a quadratic profile, at the point where both their profiles
 /// end on their apexes and the pad's foot stands on the wall's end. The

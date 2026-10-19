@@ -40,6 +40,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A marched round stops where its crease turns back into the material.**
+  A crease along a wall swept from a spline, ending where the wall turns
+  on into a round boss 1.3° back behind it, was refused: "the marched
+  band's end where its crease runs out on another face does not melt with
+  that face". The band ran out past the vertex as through an end wall,
+  but the crease carried on runs into the material there, and the boss
+  curving away let the ball out only 3.5 mm on, along the boss's own rim,
+  in a grazing contact the melt could not resolve. A band now stops at
+  its vertex where every face there stands behind the crease carried a
+  radius on, by more than the face's own tolerance. The carriage's lower
+  rib crease rounds alone to its closed form, 2.741 mm³, and the
+  carriage's ten-edge fillet comes to 11686.820 mm³ against the source's
+  11686.827, `check` clean (#306).
 - **Two fillets of one `fillet_edges` call meet where their creases turn.**
   Two convex creases sharing a face and turning at a vertex were rounded
   each to its own cap there. Across an inside corner (an L-shaped top's

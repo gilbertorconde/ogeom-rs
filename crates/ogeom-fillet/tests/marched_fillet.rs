@@ -843,3 +843,35 @@ fn a_round_turning_shallowly_into_a_boss_s_rim_meets_the_rim_s_round_flush() {
         );
     }
 }
+
+/// A round on a crease that ends where its wall turns on a degree and a
+/// half back behind it, into a boss curving away round the material,
+/// stops at the crease's end. The crease's continuation past the vertex
+/// runs into the material there, and the boss's own rim carries the corner
+/// on. Run out along the rim instead, the band met the boss along a
+/// grazing stretch the melt did not resolve. Capped square to the crease
+/// at both ends (the end wall at the start stands square to it), the band
+/// takes the closed form: the corner's section along the crease, less its
+/// moment about the wall times the crease's turn towards the material.
+#[test]
+fn a_round_into_a_boss_turning_back_behind_its_wall_stops_at_the_crease_s_end() {
+    let pi = core::f64::consts::PI;
+    let radius = 0.85;
+    let mut model = ogeom_topo::Model::new();
+    let (solid, along_spline, _, spline) = rib_into_a_boss(&mut model, -1.3_f64.to_radians());
+    let before = volume(&model, &solid, 1e-4);
+    let rounded = ogeom_fillet::fillet_edges(&mut model, &solid, &[along_spline], radius, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let removed = before - volume(&model, &rounded, 1e-4);
+    let (length, bend) = length_and_turn(&spline);
+    let section = (1.0 - pi / 4.0) * radius * radius;
+    let moment = (5.0 / 6.0 - pi / 4.0) * radius.powi(3);
+    let want = section.mul_add(length, -moment * bend);
+    assert!(
+        (removed - want).abs() < want * 1e-4,
+        "{removed} against {want}"
+    );
+}

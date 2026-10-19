@@ -330,7 +330,10 @@ split at its wall's seam into a long arc and a short one. The reproducer
 for a fillet chain carried on along those continuations: the runs under
 the roof were refused, their contacts standing behind the roof, and the
 short arc's round ran the whole turn of a rim that stops, through the
-rib.
+rib. Also the reproducer for a round on the rib's other top crease along
+a swept wall, which leaves the short arc's rim with the wall turned 1.3°
+back behind it: its run-out ran along the rim in a grazing contact the
+melt could not resolve.
 
 ## pad_arc_touching_a_swept_wall_at_its_end.ogeom
 

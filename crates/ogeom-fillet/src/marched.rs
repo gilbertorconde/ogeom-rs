@@ -1204,6 +1204,24 @@ fn open_runout_wedge(
             {
                 continue;
             }
+            // Where every face at the end turns back behind the crease (a
+            // re-entrant turn of the wall, however slight), the crease's
+            // continuation runs into the material: the solid goes on past
+            // the vertex beside the band, and a run-out would round the
+            // corner of whatever edge carries on there, material no ball on
+            // this edge touches. The band stops at the vertex.
+            if crease_runs_behind(
+                model,
+                solid,
+                edge,
+                host_faces,
+                at,
+                outward_here,
+                radius,
+                tol,
+            )? {
+                continue;
+            }
             ends_on_a_wall = true;
             // Where the ball's contacts stand against the host faces past
             // the window: `Out` of both is clear of the solid, `On` either
@@ -2200,6 +2218,68 @@ pub(crate) fn crease_terminates_at(
         }
     }
     Ok(true)
+}
+
+/// Whether every face other than the hosts at the crease's end vertex
+/// nearest `at` turns back behind the crease: the crease carried on a
+/// `radius` past the vertex along `outward` stands behind the face's
+/// tangent plane there by more than the face's own tolerance. The crease's
+/// continuation then runs into the material, not out through those faces.
+/// `false` where no other face meets the vertex, or where one stands
+/// across the crease, or along it within what its tolerance can say.
+#[allow(clippy::too_many_arguments, reason = "one question, all its data")]
+fn crease_runs_behind(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    host_faces: [&Shape; 2],
+    at: Point,
+    outward: Vector,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(false);
+    };
+    let point_of = |v: &Shape| -> OgeomResult<Point> {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex().cloned()) else {
+            ogeom_bail!(Construction, "vertex node holds no point");
+        };
+        Ok(v.transform(model.datums())?.apply(data.point))
+    };
+    let vertex = if point_of(&a)?.distance(at) <= point_of(&b)?.distance(at) {
+        a
+    } else {
+        b
+    };
+    let mut behind = false;
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if host_faces.iter().any(|h| h.is_same(&face)) {
+            continue;
+        }
+        let meets = explore(model, &face, Filter::OfType(ShapeType::Vertex))?
+            .iter()
+            .any(|v| v.is_same(&vertex));
+        if !meets {
+            continue;
+        }
+        let Some(normal) = face_normal_near(model, &face, at, tol)? else {
+            return Ok(false);
+        };
+        let sign = if face.orientation() == Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        };
+        let held = model
+            .tolerance_of(&face)?
+            .map_or(tol.confusion(), ogeom_core::Tolerance::get);
+        if (normal * sign).dot(outward) * radius >= -held {
+            return Ok(false);
+        }
+        behind = true;
+    }
+    Ok(behind)
 }
 
 /// Whether a face other than the hosts meets the crease's end at `at`

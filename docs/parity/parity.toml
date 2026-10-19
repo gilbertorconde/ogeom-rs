@@ -1087,7 +1087,10 @@ between two analytic walls, a conic seat re-opened to its full loop), with \
 the blend fitted through the ball's own arcs and the legs melting on the \
 hosts' exact surfaces. An open seat runs out: where the crease ends at a \
 wall the band runs on until the ball has left the solid and the cut trims \
-it against the wall; where it ends at a split (a seam vertex, or a \
+it against the wall; where the faces at its end all turn back behind the \
+crease (a re-entrant turn of its wall, however slight), its continuation \
+runs into the material and the band stops at the vertex; where it ends \
+at a split (a seam vertex, or a \
 neighbouring blend's own rail), the band is capped in the end section's \
 own plane, and two such blends meet cap to cap along the shared arc, both \
 caps consumed, in either order. Two convex creases of one request that \
