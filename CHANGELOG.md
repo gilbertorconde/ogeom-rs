@@ -23,6 +23,15 @@ bump may break the API and a patch bump may not.
   pinned to the vertex's image on the other side of the seam, and an
   edge lying along the seam line was put on the chart's edge away from
   its face. Each is now placed where its curve and its face are (#302).
+- **A round runs out past its edge's end onto a ramp.** Where a straight
+  edge's floor gave way at its end to a face rising obliquely, the wall
+  carrying on above it, `fillet_edges` stopped the round square at the
+  end vertex: a cap and a step were left, and the corner past the end
+  kept its material. The round's cylinder now carries on along the face
+  it stays tangent to until the face that follows has cut its whole
+  section away, and stops on that face with no cap. A step or a ledge
+  past the end, material no ball on the edge touches, still stops the
+  round square (#304).
 
 ## [0.11.4] - 2026-10-18
 

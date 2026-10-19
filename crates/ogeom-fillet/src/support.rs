@@ -860,6 +860,174 @@ pub(crate) fn material_probe(
     ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)
 }
 
+/// How far a convex straight seat's band runs out past the end `at` of
+/// `edge`, along `outward`, where the faces meeting the crease there cut
+/// the corner away obliquely: a floor giving way to a ramp, the wall the
+/// ball rolls on carrying on above it. The band carries on along the host
+/// it stays tangent to until its whole section has left the material, and
+/// the cut trims it against the face that follows.
+///
+/// `section` holds points of the band's section square to the crease at
+/// `at`: its corners (the crease and the two contacts) and points between.
+/// Each is carried past `at` and asked whether it stands in the material,
+/// first a short way past the cap and then a stride at a time over four
+/// radii. Where a ramp is the only face that follows, the material in
+/// the section shrinks across a plane; the section lies within the
+/// triangle of its corners, and a plane leaves a triangle last at a
+/// corner, so the corners' answers are exact.
+///
+/// `None` where the cap stands flush: nothing of the section stands in the
+/// material just past `at` (a wall square to the crease, or one leaning
+/// back over it), or the section does not leave the material within reach,
+/// or a point of it leaves the material, comes back into it, or leaves
+/// other than through a planar face meeting the crease's end there. That
+/// last is a step or a ledge past the end rather than a ramp across it:
+/// material no ball on this edge touches.
+#[allow(clippy::too_many_arguments, reason = "one question, all its data")]
+pub(crate) fn run_out_reach(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    hosts: [&Shape; 2],
+    at: Point,
+    outward: Vector,
+    section: &[Point],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(None);
+    };
+    let point_of = |v: &Shape| -> OgeomResult<Point> {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Dangling, "an edge's vertex is not in this model");
+        };
+        Ok(v.transform(model.datums())?.apply(data.point))
+    };
+    let vertex = if point_of(&a)?.distance(at) <= point_of(&b)?.distance(at) {
+        a
+    } else {
+        b
+    };
+    // The faces following the crease at its end, each a plane as a point
+    // and a unit normal.
+    let mut following: Vec<(Shape, Point, Vector)> = Vec::new();
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if hosts.iter().any(|h| h.is_same(&face)) {
+            continue;
+        }
+        let meets = explore(model, &face, Filter::OfType(ShapeType::Vertex))?
+            .iter()
+            .any(|v| v.is_same(&vertex));
+        if !meets {
+            continue;
+        }
+        let Some(SurfaceGeometry::Plane(plane)) = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+        else {
+            return Ok(None);
+        };
+        let placement = face.transform(model.datums())?;
+        let origin = placement.apply(plane.plane().origin());
+        let normal = placement.apply_vector(plane.plane().normal().vector());
+        following.push((face, origin, normal));
+    }
+    if following.is_empty() {
+        return Ok(None);
+    }
+    let probe = material_probe(model, solid, tol)?;
+    let held = |p: Point| -> OgeomResult<bool> {
+        Ok(probe.holds(model, p, tol)? != ogeom_algo::Containment::Out)
+    };
+    let stride = radius / 8.0;
+    // A short way past the cap, but well clear of the band the boundary
+    // reads a point as on it within.
+    let first = (stride / 8.0).max(tol.confusion() * 1e5).min(stride);
+    let margin = radius * 0.25;
+    let mut stations = vec![first];
+    stations.extend((1..=32).map(|k| stride * f64::from(k)));
+    // Per point, the last station it stood in the material at and the
+    // first it had left it by.
+    let mut last_held: Vec<Option<f64>> = vec![None; section.len()];
+    let mut left_by: Vec<Option<f64>> = vec![None; section.len()];
+    let mut clear_from: Option<f64> = None;
+    let mut reached = false;
+    for (k, &s) in stations.iter().enumerate() {
+        for (i, &p) in section.iter().enumerate() {
+            if held(p + outward * s)? {
+                if left_by[i].is_some() {
+                    return Ok(None);
+                }
+                last_held[i] = Some(s);
+            } else if left_by[i].is_none() {
+                left_by[i] = Some(s);
+            }
+        }
+        if k == 0 && last_held.iter().all(Option::is_none) {
+            return Ok(None);
+        }
+        if last_held
+            .iter()
+            .zip(&left_by)
+            .all(|(h, l)| h.is_none() || l.is_some())
+        {
+            let from = *clear_from.get_or_insert(s);
+            if s >= from + margin {
+                reached = true;
+                break;
+            }
+        }
+    }
+    if !reached {
+        return Ok(None);
+    }
+    // Each point that stood in the material past the cap leaves it through
+    // a face following the crease: its line crosses that face's plane
+    // between the last station it stood in and the first it had left by,
+    // give or take the first station's distance (the band the boundary
+    // reads a point as on it within), and the crossing lies on the face.
+    let deflection = ogeom_mesh::Deflection {
+        chord: (radius * 1e-3).max(tol.confusion() * 1e2),
+        ..ogeom_mesh::Deflection::default()
+    };
+    let mut leaves = 0.0_f64;
+    for (i, &p) in section.iter().enumerate() {
+        let (Some(held_to), Some(left)) = (last_held[i], left_by[i]) else {
+            continue;
+        };
+        let mut through: Option<f64> = None;
+        for (face, origin, normal) in &following {
+            let rate = outward.dot(*normal);
+            if rate.abs() <= tol.angular() {
+                continue;
+            }
+            let s = (*origin - p).dot(*normal) / rate;
+            if s < held_to - first || s > left + first {
+                continue;
+            }
+            let crossing = p + outward * s;
+            if ogeom_algo::classify_on_face(model, face, crossing, deflection, tol)?
+                != ogeom_algo::Containment::Out
+            {
+                through = Some(through.map_or(s, |t: f64| t.min(s)));
+            }
+        }
+        let Some(s) = through else {
+            return Ok(None);
+        };
+        leaves = leaves.max(s);
+    }
+    let reach = leaves + margin;
+    for &p in section {
+        if held(p + outward * reach)? {
+            return Ok(None);
+        }
+    }
+    Ok(Some(reach))
+}
+
 /// A blend's wedge set aside to be applied with others in one boolean.
 pub(crate) struct Wedge {
     /// The wedge as a solid.

@@ -305,6 +305,16 @@ capped at its vertex rather than where its line meets the wall: the cap
 cut the other round, or the corner of the wall it left, 0.24 µm deep, a
 sliver the boolean's arrangement could not place.
 
+## floor_edge_ending_at_a_ramp.ogeom
+
+A box cropped, in this kernel's native format, from a community printer
+carriage as printCAD rebuilt it from its FreeCAD file: a floor edge
+10.8 mm long between a floor and a wall, at whose end the floor gives way
+to a ramp rising at a little over 45 degrees, the wall carrying on above
+it. The reproducer for a round of 5 mm radius on that edge stopped square
+at the edge's end: its cap left a step and kept the corner the ramp cuts
+off past the end, where the round runs out along the wall onto the ramp.
+
 ## pad_arc_touching_a_swept_wall_at_its_end.ogeom
 
 Two solids in this kernel's native format: a box cropped from a community

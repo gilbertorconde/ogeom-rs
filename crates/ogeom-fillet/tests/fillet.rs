@@ -477,3 +477,120 @@ fn blends_overlapping_across_a_shared_face_are_refused() {
     let overlaps = ogeom_fillet::fillet_edges(&mut model, &block.shape, &[low, high], 0.3, T);
     assert!(overlaps.is_err());
 }
+
+/// A prism standing on its profile in the plane x = 0, extruded `depth`
+/// back along -x, with the profile's points given as (y, z): its face on
+/// x = 0 is a wall, and the profile's first side, along y on z = 0, is a
+/// floor meeting that wall.
+fn profile_prism(
+    model: &mut ogeom_topo::Model,
+    profile: &[(f64, f64)],
+    depth: f64,
+) -> ogeom_topo::Shape {
+    use ogeom_math::{Direction, Plane, Vector};
+    let points: Vec<Point> = profile
+        .iter()
+        .map(|&(y, z)| Point::new(0.0, y, z))
+        .collect();
+    let wire = ogeom_algo::make_polygon(model, &points, true, T)
+        .unwrap()
+        .shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::X),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(model, &face, Vector::new(-depth, 0.0, 0.0), T)
+        .unwrap()
+        .shape
+}
+
+/// The volume a fillet of `radius` on the floor edge of a profile prism
+/// took from it.
+fn removed_by_floor_round(profile: &[(f64, f64)], length: f64, radius: f64) -> f64 {
+    let mut model = ogeom_topo::Model::new();
+    let prism = profile_prism(&mut model, profile, 2.0);
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let before = ogeom_algo::volume_properties(&model, &prism, fine, T)
+        .unwrap()
+        .mass;
+    let edge = edge_with_midpoint(&model, &prism, Point::new(0.0, length / 2.0, 0.0));
+    let rounded = ogeom_fillet::fillet_edges(&mut model, &prism, &[edge], radius, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    before
+        - ogeom_algo::volume_properties(&model, &rounded, fine, T)
+            .unwrap()
+            .mass
+}
+
+/// A round on a floor edge whose floor gives way to a ramp at the edge's
+/// end, the wall carrying on above it: the round's cylinder runs on past
+/// the end along the wall until the ramp has cut its whole section away,
+/// and stops on the ramp with no cap. Past the end, the section above a
+/// ramp of slope k standing h over the floor is the corner outside the
+/// quarter circle above h, and summed along the ramp it is
+/// r^3 (5/6 - pi/4) / k, on top of the section (1 - pi/4) r^2 along the
+/// edge.
+#[test]
+fn a_round_runs_out_along_its_wall_onto_a_ramp() {
+    let (length, height, radius) = (3.0, 2.0, 1.0);
+    for slope in [3.0_f64.sqrt(), 1.0, 1.0 / 3.0_f64.sqrt()] {
+        let profile = [
+            (0.0, 0.0),
+            (length, 0.0),
+            (length + height / slope, height),
+            (0.0, height),
+        ];
+        let removed = removed_by_floor_round(&profile, length, radius);
+        let want = (1.0 - core::f64::consts::FRAC_PI_4) * radius * radius * length
+            + radius.powi(3) * (5.0 / 6.0 - core::f64::consts::FRAC_PI_4) / slope;
+        assert!(
+            (removed - want).abs() < 1e-4,
+            "slope {slope}: the round took {removed} against {want}"
+        );
+    }
+}
+
+/// Where the floor steps down or up at the edge's end and the material
+/// carries on past it, no ball on the edge reaches that material: the
+/// round stops square at the end, taking its section along the edge and
+/// nothing else, though its section leaves the material at the far end
+/// of the step.
+#[test]
+fn a_round_stops_square_at_a_step_past_its_end() {
+    let (length, height, radius) = (3.0, 2.0, 1.0);
+    let down = [
+        (0.0, 0.0),
+        (length, 0.0),
+        (length, -0.5),
+        (length + 2.0, -0.5),
+        (length + 2.0, height),
+        (0.0, height),
+    ];
+    let up = [
+        (0.0, 0.0),
+        (length, 0.0),
+        (length, 0.5),
+        (length + 2.0, 0.5),
+        (length + 2.0, height),
+        (0.0, height),
+    ];
+    for (name, profile) in [("down", &down), ("up", &up)] {
+        let removed = removed_by_floor_round(profile, length, radius);
+        let want = (1.0 - core::f64::consts::FRAC_PI_4) * radius * radius * length;
+        assert!(
+            (removed - want).abs() < 1e-4,
+            "step {name}: the round took {removed} against {want}"
+        );
+    }
+}

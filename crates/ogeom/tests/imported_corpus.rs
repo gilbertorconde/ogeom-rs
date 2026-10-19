@@ -1362,6 +1362,70 @@ fn rounds_meeting_at_a_vertex_off_one_edges_wall_are_capped_at_the_wall() {
     }
 }
 
+/// A floor edge rounded where, at its end, the floor gives way to a ramp
+/// rising at a little over 45 degrees and the wall the round rolls on
+/// carries on above the ramp. The round's cylinder runs on past the end
+/// along the wall until the ramp has cut its whole section away, a radius
+/// over the ramp's slope, and stops on the ramp: no cap stands at the
+/// edge's end. Past the end, the section above the ramp standing h over
+/// the floor is the corner outside the quarter circle above h, and summed
+/// along the ramp it is r^3 (5/6 - pi/4) over the slope, on top of the
+/// corner outside the quarter circle along the edge.
+#[test]
+fn a_round_runs_out_along_its_wall_onto_a_ramp_past_its_end() {
+    use ogeom::math::{Point, Vector};
+    let (mut model, roots) =
+        ogeom::io::native::read(&corpus("floor_edge_ending_at_a_ramp.ogeom")).unwrap();
+    let part = &roots[0];
+    let edge = edge_along(
+        &model,
+        part,
+        Point::new(-4.2, 2.0, 0.0),
+        Vector::new(0.0, 1.0, 0.0),
+    );
+    let radius = 5.0;
+    // The ramp's outward normal is (0, 0.717..., -0.697...).
+    let slope = 0.717_058_867_531_502 / 0.697_012_611_431_414_5;
+    let end = ogeom::algo::shape_bounds(&model, &edge, T)
+        .unwrap()
+        .high()
+        .unwrap()
+        .y;
+    let (before, bounds) = measured(&model, part);
+    let loss = square_round_loss(&model, std::slice::from_ref(&edge), radius)
+        + radius.powi(3) * (5.0 / 6.0 - std::f64::consts::FRAC_PI_4) / slope;
+    let rounded =
+        ogeom::fillet::fillet_edges(&mut model, part, std::slice::from_ref(&edge), radius, T)
+            .unwrap();
+    let (after, held) = measured(&model, &rounded.shape);
+    assert!(
+        (before - after - loss).abs() <= loss * 1e-3,
+        "the round took {} where its section along the edge and past it is {loss}",
+        before - after
+    );
+    assert!((held.diagonal() - bounds.diagonal()).abs() <= 1e-6);
+    let [band] = rounded.history.generated(&edge) else {
+        panic!("the round is one face");
+    };
+    let reach = ogeom::algo::shape_bounds(&model, band, T)
+        .unwrap()
+        .high()
+        .unwrap()
+        .y;
+    assert!(
+        (reach - (end + radius / slope)).abs() <= 1e-3,
+        "the round reaches y = {reach}"
+    );
+    for face in explore_unique(&model, &rounded.shape, ShapeType::Face).unwrap() {
+        let b = ogeom::algo::shape_bounds(&model, &face, T).unwrap();
+        let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+        assert!(
+            !((lo.y - end).abs() <= 1e-3 && (hi.y - end).abs() <= 1e-3 && hi.x > -9.2),
+            "a cap stands at the edge's end"
+        );
+    }
+}
+
 /// A pad fused onto a part where the pad's curved side touches a wall
 /// swept from a quadratic profile, at the point where both their profiles
 /// end on their apexes and the pad's foot stands on the wall's end. The

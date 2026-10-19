@@ -1010,7 +1010,11 @@ fn planar_fillet(
     // vertex), the material past the end is that blend's own rounding, and
     // the seat carries on through it until the ball has left the solid; the
     // cut then trims the two bands against each other along their own
-    // intersection, which is what two fillets meeting at a corner are. At
+    // intersection, which is what two fillets meeting at a corner are.
+    // Where a convex edge ends at a face that cuts the corner away
+    // obliquely (a floor giving way to a ramp under a wall that carries
+    // on), the seat runs on along the host it stays tangent to until that
+    // face has cut its whole section away, and the cut trims it there. At
     // a plain wall the cap already stands in the wall's own plane and
     // stays; at a step the seat stops where the edge does.
     for end in [true, false] {
@@ -1036,17 +1040,13 @@ fn planar_fillet(
             continue;
         }
         let hosts = [&seat.faces[0], &seat.faces[1]];
-        if !crate::marched::crease_terminates_at(model, solid, edge, hosts, at, tol)?
-            || !crate::marched::neighbour_blend_at(
-                model,
-                solid,
-                hosts,
-                at,
-                seat.convex,
-                radius,
-                tol,
-            )?
-        {
+        if !crate::marched::crease_terminates_at(model, solid, edge, hosts, at, tol)? {
+            continue;
+        }
+        let through_blend =
+            crate::marched::neighbour_blend_at(model, solid, hosts, at, seat.convex, radius, tol)?;
+        // A fill runs on only through a neighbouring blend.
+        if !through_blend && !seat.convex {
             continue;
         }
         // The ball's centre line, a radius in from both hosts.
@@ -1068,13 +1068,34 @@ fn planar_fillet(
         let step = radius / 8.0;
         let mut reach: Option<f64> = None;
         let probe = crate::support::material_probe(model, solid, tol)?;
-        for k in 1..=32 {
-            let s = step * f64::from(k);
-            let inside = probe.holds(model, centre_at(s), tol)? == ogeom_algo::Containment::In;
-            if inside != seat.convex {
-                reach = Some(s + radius * 0.25);
-                break;
+        if through_blend {
+            for k in 1..=32 {
+                let s = step * f64::from(k);
+                let inside = probe.holds(model, centre_at(s), tol)? == ogeom_algo::Containment::In;
+                if inside != seat.convex {
+                    reach = Some(s + radius * 0.25);
+                    break;
+                }
             }
+        } else {
+            // No blend follows: the band runs out across whatever face cuts
+            // the corner away past the end, probed over its section there,
+            // the crease, the two contacts, each leg's middle and the arc's.
+            let centre = centre_at(0.0);
+            let touch = [0, 1].map(|i| centre + seat.normals[i] * radius);
+            let towards = at - centre;
+            let arc = centre + towards * (radius / towards.magnitude());
+            let section = [
+                at,
+                touch[0],
+                touch[1],
+                at.midpoint(touch[0]),
+                at.midpoint(touch[1]),
+                arc,
+            ];
+            reach = crate::support::run_out_reach(
+                model, solid, edge, hosts, at, outward, &section, radius, tol,
+            )?;
         }
         if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
             eprintln!("RUNOUT straight seat end {end}: reach {reach:?}");
