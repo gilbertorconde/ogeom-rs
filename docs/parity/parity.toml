@@ -1090,7 +1090,20 @@ wall the band runs on until the ball has left the solid and the cut trims \
 it against the wall; where it ends at a split (a seam vertex, or a \
 neighbouring blend's own rail), the band is capped in the end section's \
 own plane, and two such blends meet cap to cap along the shared arc, both \
-caps consumed, in either order. An L-bracket's end rim blends over its \
+caps consumed, in either order. Two convex creases of one request that \
+share a face and turn at a vertex meet there: carried on past it each is \
+a straight band of its end section, and two of one radius cross in the \
+plane bisecting their centre lines, exactly where the reflection in it \
+carries one end section onto the other (a flat shared host, walls whose \
+tangent planes at the vertex reflect into each other). There, across a \
+re-entrant turn both run on to that plane and take the corner cell both \
+hold, where the material holds it; across a convex turn both stop in it \
+where the bands' curvature keeps their sections there within a marched \
+band's fit; either way the two are joined across it into one wedge. \
+Elsewhere (a drafted wall beside a square one, a turn folding back past \
+the solid, a wider convex turn of curved bands) the later seat runs on \
+through the earlier band or the caps stand, as without a junction, and \
+so wherever the meeting does not close. An L-bracket's end rim blends over its \
 re-entrant band as one tangent chain (line, the band's own end arc, line), \
 the ball rolling on the concave cylinder between the lines, to the \
 closed form. A fill and a wedge asked together stop at each other, \

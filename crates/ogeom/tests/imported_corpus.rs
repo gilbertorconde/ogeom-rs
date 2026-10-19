@@ -1273,6 +1273,14 @@ fn square_round_loss(model: &ogeom::topo::Model, edges: &[ogeom::topo::Shape], r
     (1.0 - std::f64::consts::FRAC_PI_4) * radius * radius * length
 }
 
+/// What two rounds of `radius` meeting across a square inside corner take
+/// past their caps: each runs on to the plane bisecting the corner, and the
+/// section a distance w in from its wall reaches w along, so each adds the
+/// corner outside its quarter circle weighted by w, r^3 (5/6 - pi/4).
+fn square_corner_cell(radius: f64) -> f64 {
+    2.0 * (5.0 / 6.0 - std::f64::consts::FRAC_PI_4) * radius.powi(3)
+}
+
 /// A rib's top edges rounded where one of its walls is swept from a
 /// fitted profile: a straight wall, the swept one, and a round end, the
 /// three meeting at shallow corners. The swept wall ends where its
@@ -1350,7 +1358,10 @@ fn a_rib_rounds_along_a_wall_swept_from_a_fitted_profile() {
 /// is capped at the vertex itself, where the other's round is tangent to
 /// the cap's plane; capped where the curve ends, the cap cut a sliver off
 /// the other round's end. Either order rounds both, each losing the corner
-/// outside its quarter circle along its edge.
+/// outside its quarter circle along its edge, and the two meeting across
+/// the square inside corner in the plane that bisects it: each runs on past
+/// its cap to that plane, which takes the cell past both caps that both
+/// rounds hold, two times r^3 (5/6 - pi/4).
 #[test]
 fn rounds_meeting_at_a_vertex_their_edge_overruns_are_capped_there() {
     use ogeom::math::{Point, Vector};
@@ -1370,7 +1381,8 @@ fn rounds_meeting_at_a_vertex_their_edge_overruns_are_capped_there() {
         Vector::new(0.0, 1.0, 0.0),
     );
     let (before, bounds) = measured(&model, part);
-    let loss = square_round_loss(&model, &[down.clone(), across.clone()], 1.0);
+    let loss =
+        square_round_loss(&model, &[down.clone(), across.clone()], 1.0) + square_corner_cell(1.0);
     for named in [
         [down.clone(), across.clone()],
         [across.clone(), down.clone()],
@@ -1395,7 +1407,8 @@ fn rounds_meeting_at_a_vertex_their_edge_overruns_are_capped_there() {
 /// round; capped at the vertex, the second round cut a sliver off the
 /// first's end, or off the wall's corner left after it, which the
 /// boolean's arrangement could not place. Either order rounds both, each
-/// losing the corner outside its quarter circle along its edge.
+/// losing the corner outside its quarter circle along its edge, and the
+/// two meeting in the plane bisecting the square inside corner, as above.
 #[test]
 fn rounds_meeting_at_a_vertex_off_one_edges_wall_are_capped_at_the_wall() {
     use ogeom::math::{Point, Vector};
@@ -1415,7 +1428,8 @@ fn rounds_meeting_at_a_vertex_off_one_edges_wall_are_capped_at_the_wall() {
         Vector::new(0.0, 1.0, 0.0),
     );
     let (before, bounds) = measured(&model, part);
-    let loss = square_round_loss(&model, &[down.clone(), across.clone()], 1.0);
+    let loss =
+        square_round_loss(&model, &[down.clone(), across.clone()], 1.0) + square_corner_cell(1.0);
     for named in [
         [down.clone(), across.clone()],
         [across.clone(), down.clone()],
@@ -1493,6 +1507,141 @@ fn a_round_runs_out_along_its_wall_onto_a_ramp_past_its_end() {
             !((lo.y - end).abs() <= 1e-3 && (hi.y - end).abs() <= 1e-3 && hi.x > -9.2),
             "a cap stands at the edge's end"
         );
+    }
+}
+
+/// A crease of the rib's top plane `y = 9.51`: its length, how far it
+/// turns towards the material along it, and its two ends with the unit
+/// direction leaving each along the crease. Which side the material lies
+/// is read off a point beside the crease's middle, under the top.
+fn rib_crease(
+    model: &ogeom::topo::Model,
+    rib: &ogeom::topo::Shape,
+    edge: &ogeom::topo::Shape,
+) -> (f64, f64, [(ogeom::math::Point, ogeom::math::Vector); 2]) {
+    use ogeom::geom::Curve3d as _;
+    let data = model.node(edge).unwrap().data().as_edge().unwrap();
+    let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        unreachable!("a rib crease has its curve");
+    };
+    let curve = model.geometry().curve(*curve).unwrap();
+    let (lo, hi) = *range;
+    let samples = 4096;
+    let at = |i: u32| (hi - lo).mul_add(f64::from(i) / f64::from(samples), lo);
+    let (mut length, mut turn) = (0.0, 0.0);
+    let heading = |t: f64| {
+        let d = curve.d1_at(t, T).unwrap();
+        d.z.atan2(d.x)
+    };
+    for i in 0..samples {
+        length += curve
+            .point_at(at(i + 1), T)
+            .unwrap()
+            .distance(curve.point_at(at(i), T).unwrap());
+        let mut step = heading(at(i + 1)) - heading(at(i));
+        if step > std::f64::consts::PI {
+            step -= std::f64::consts::TAU;
+        } else if step < -std::f64::consts::PI {
+            step += std::f64::consts::TAU;
+        }
+        turn += step;
+    }
+    let middle = f64::midpoint(lo, hi);
+    let d = curve.d1_at(middle, T).unwrap();
+    let left = ogeom::math::Vector::new(-d.z, 0.0, d.x) / d.magnitude();
+    let beside =
+        curve.point_at(middle, T).unwrap() + left * 0.05 - ogeom::math::Vector::new(0.0, 0.3, 0.0);
+    let on_left = ogeom::algo::classify_in_solid_exact(model, rib, beside, T).unwrap()
+        == ogeom::algo::Containment::In;
+    let end = |t: f64, sign: f64| {
+        let d = curve.d1_at(t, T).unwrap();
+        (curve.point_at(t, T).unwrap(), d / d.magnitude() * sign)
+    };
+    (
+        length,
+        if on_left { turn } else { -turn },
+        [end(lo, 1.0), end(hi, -1.0)],
+    )
+}
+
+/// The turn between two creases at the end they share: the angle between
+/// the one carried on past it and the other leaving it.
+fn turn_between(
+    a: &[(ogeom::math::Point, ogeom::math::Vector); 2],
+    b: &[(ogeom::math::Point, ogeom::math::Vector); 2],
+) -> f64 {
+    for (p, leaving_a) in a {
+        for (q, leaving_b) in b {
+            if p.distance(*q) < 1e-6 {
+                return (-*leaving_a).dot(*leaving_b).clamp(-1.0, 1.0).acos();
+            }
+        }
+    }
+    unreachable!("the creases share an end")
+}
+
+/// The rib's three top creases rounded together, meeting at two shallow
+/// turns: the straight wall turns back behind the swept one between them,
+/// and the round end's rim turns out from the swept wall. Each round takes
+/// its section along its crease less its moment about the wall times its
+/// crease's turn towards the material. Across the inside turn the two
+/// rounds run on past their caps to the plane bisecting it, and take the
+/// cell past both caps, twice the moment times tan(t/2); across the
+/// outside turn they meet in the plane bisecting it, where their sections
+/// agree to the fit, and leave the same twice the moment times tan(t/2) of
+/// their capped wedges' overlap. The rib keeps its bounds.
+#[test]
+fn a_rib_s_creases_meeting_at_shallow_turns_take_their_sections_and_their_corners() {
+    use ogeom::math::{Point, Vector};
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("rib_round_on_a_swept_spline_wall.ogeom")).unwrap();
+    let rib = &roots[0];
+    let straight = edge_along(
+        &model,
+        rib,
+        Point::new(-13.13, 9.51, -14.4),
+        Vector::new(0.0, 0.0, 1.0),
+    );
+    let swept = edge_along(
+        &model,
+        rib,
+        Point::new(-16.0, 9.51, -20.46),
+        Vector::new(-0.8, 0.0, -0.6),
+    );
+    let end = edge_along(
+        &model,
+        rib,
+        Point::new(-24.36, 9.51, -26.69),
+        Vector::new(0.26, 0.0, -0.97),
+    );
+    let radius: f64 = 0.85;
+    let section = (1.0 - std::f64::consts::FRAC_PI_4) * radius * radius;
+    let moment = (5.0 / 6.0 - std::f64::consts::FRAC_PI_4) * radius.powi(3);
+    let creases = [&straight, &swept, &end].map(|e| rib_crease(&model, rib, e));
+    let bands: f64 = creases
+        .iter()
+        .map(|(length, turn, _)| section.mul_add(*length, -moment * turn))
+        .sum();
+    let inside = turn_between(&creases[0].2, &creases[1].2);
+    let outside = turn_between(&creases[1].2, &creases[2].2);
+    let want = 2.0f64.mul_add(
+        moment * ((inside / 2.0).tan() - (outside / 2.0).tan()),
+        bands,
+    );
+    let (before, bounds) = measured(&model, rib);
+    for named in [
+        [straight.clone(), swept.clone(), end.clone()],
+        [end.clone(), straight.clone(), swept.clone()],
+    ] {
+        let mut model = model.clone();
+        let rounded = ogeom::fillet::fillet_edges(&mut model, rib, &named, radius, T).unwrap();
+        let (after, held) = measured(&model, &rounded.shape);
+        assert!(
+            (before - after - want).abs() <= want * 1e-4,
+            "the rounds took {} where their sections and corners are {want}",
+            before - after
+        );
+        assert!(held.diagonal() - bounds.diagonal() <= 1e-6);
     }
 }
 

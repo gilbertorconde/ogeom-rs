@@ -655,3 +655,191 @@ fn a_tee_s_junction_loop_rounds_as_a_chain_of_its_arcs() {
         assert!(chain.history.is_deleted(arc));
     }
 }
+
+/// A rib's top crease along a wall swept from a spline, turning at the
+/// spline's end into the rim of a round boss: the boss's wall leaves the
+/// spline's end on a drum of radius 3.6 whose tangent there stands `turn`
+/// off the spline's, towards the material for a positive turn and away
+/// from it for a negative one, and runs a quarter turn round to a radial
+/// end wall.
+///
+/// The top face is `y = 2`; the profile in `y = 0` runs from the origin
+/// along a cubic spline square to the end wall `x = 0`, round the arc, in
+/// along the radius, and back along `z` = that height to the end wall.
+/// Returns the solid, the crease along the spline's top, the crease along
+/// the arc's top, and the spline.
+fn rib_into_a_boss(
+    model: &mut ogeom_topo::Model,
+    turn: f64,
+) -> (
+    ogeom_topo::Shape,
+    ogeom_topo::Shape,
+    ogeom_topo::Shape,
+    ogeom_geom::Curve,
+) {
+    use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve};
+    use ogeom_math::{Axis, Circle, Direction, KnotVector, Plane, Vector};
+    let at = |x: f64, z: f64| Point::new(x, 0.0, z);
+    let spline: Curve = ogeom_geom::BSplineCurve::new(
+        KnotVector::clamped_uniform(3, 4).unwrap(),
+        vec![at(0.0, 0.0), at(4.0, 0.0), at(7.0, -0.6), at(10.0, 0.0)],
+        T,
+    )
+    .unwrap()
+    .into();
+    let end = spline.point_at(1.0, T).unwrap();
+    let leaving = spline.d1_at(1.0, T).unwrap();
+    let heading = leaving.z.atan2(leaving.x) + turn;
+    let radius = 3.6;
+    // The material lies on the profile's left, +z at the origin; the arc
+    // turns towards it.
+    let centre = end + Vector::new(-heading.sin(), 0.0, heading.cos()) * radius;
+    let frame = Frame::new(
+        centre,
+        Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(),
+        Direction::new(end - centre, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let arc: Curve = CircleCurve::new(Circle::new(frame, radius, T).unwrap()).into();
+    let sweep = core::f64::consts::FRAC_PI_2;
+    let rim_end = arc.point_at(sweep, T).unwrap();
+    let inner = rim_end + (centre - rim_end) * (1.0 / radius);
+    let back = at(0.0, inner.z);
+    let vertex = |model: &mut ogeom_topo::Model, p: Point| ogeom_algo::make_vertex(model, p).shape;
+    let corners: Vec<ogeom_topo::Shape> = [at(0.0, 0.0), end, rim_end, inner, back]
+        .into_iter()
+        .map(|p| vertex(model, p))
+        .collect();
+    let line = |model: &mut ogeom_topo::Model,
+                from: (&ogeom_topo::Shape, Point),
+                to: (&ogeom_topo::Shape, Point)| {
+        let curve: Curve =
+            LineCurve::new(Axis::new(from.1, Direction::new(to.1 - from.1, T).unwrap())).into();
+        ogeom_algo::make_edge_between(model, curve, (0.0, from.1.distance(to.1)), from.0, to.0, T)
+            .unwrap()
+            .shape
+    };
+    let edges = vec![
+        ogeom_algo::make_edge_between(
+            model,
+            spline.clone(),
+            (0.0, 1.0),
+            &corners[0],
+            &corners[1],
+            T,
+        )
+        .unwrap()
+        .shape,
+        ogeom_algo::make_edge_between(model, arc, (0.0, sweep), &corners[1], &corners[2], T)
+            .unwrap()
+            .shape,
+        line(model, (&corners[2], rim_end), (&corners[3], inner)),
+        line(model, (&corners[3], inner), (&corners[4], back)),
+        line(model, (&corners[4], back), (&corners[0], at(0.0, 0.0))),
+    ];
+    let wire = ogeom_algo::make_wire(model, &edges, T).unwrap().shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Y),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let solid = ogeom_algo::make_prism(model, &face, Vector::new(0.0, 2.0, 0.0), T)
+        .unwrap()
+        .shape;
+    let top_edge = |model: &ogeom_topo::Model, keep: &dyn Fn(Point, Point) -> bool| {
+        explore_unique(model, &solid, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let b = ogeom_algo::shape_bounds(model, e, T).unwrap();
+                let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+                (lo.y - 2.0).abs() < 1e-6 && (hi.y - 2.0).abs() < 1e-6 && keep(lo, hi)
+            })
+            .expect("a top crease")
+    };
+    let along_spline = top_edge(model, &|lo, hi| {
+        lo.x.abs() < 1e-6 && (hi.x - 10.0).abs() < 1e-6 && hi.z < 0.1
+    });
+    let along_arc = top_edge(model, &|lo, hi| {
+        lo.x > 9.0 && hi.x > 11.0 && hi.z > 1.0 && lo.z < 0.1
+    });
+    (solid, along_spline, along_arc, spline)
+}
+
+/// The length of a curve over its domain and its heading's turn, measured
+/// in the profile plane `y = 0` with the material on the left.
+fn length_and_turn(curve: &ogeom_geom::Curve) -> (f64, f64) {
+    use ogeom_geom::Curve3d as _;
+    let (lo, hi) = curve.domain();
+    let nodes = [
+        (-0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+        (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+    ];
+    let pieces = 256;
+    let mut length = 0.0;
+    for k in 0..pieces {
+        let a = (hi - lo).mul_add(f64::from(k) / f64::from(pieces), lo);
+        let b = (hi - lo).mul_add(f64::from(k + 1) / f64::from(pieces), lo);
+        for (x, w) in nodes {
+            let t = (b - a).mul_add(x, a + b) * 0.5;
+            length += w * (b - a) * 0.5 * curve.d1_at(t, T).unwrap().magnitude();
+        }
+    }
+    let heading = |t: f64| {
+        let d = curve.d1_at(t, T).unwrap();
+        d.z.atan2(d.x)
+    };
+    (length, heading(hi) - heading(lo))
+}
+
+/// A rib's top crease along a spline wall rounded with the crease that
+/// carries it on round a boss's rim, the wall turning four degrees towards
+/// the material between them. The two bands meet in the plane bisecting
+/// the turn, where their sections agree to the fit a marched band is held
+/// to, and are joined there as a chain: the spline's band stops short of
+/// the vertex by the half turn and the rim's starts there. Run out past the
+/// vertex instead, the spline's band crossed the rim's crease far along it
+/// and cut the rim's round short there. Each band takes its section along
+/// its crease less its moment about the wall times the crease's turn
+/// towards the material (the rim's a quarter turn), and the two together
+/// twice that moment times tan(turn/2) less.
+#[test]
+fn a_round_turning_shallowly_into_a_boss_s_rim_meets_the_rim_s_round_flush() {
+    let pi = core::f64::consts::PI;
+    let radius = 0.85;
+    let turn = 4.0_f64.to_radians();
+    let section = (1.0 - pi / 4.0) * radius * radius;
+    let moment = (5.0 / 6.0 - pi / 4.0) * radius.powi(3);
+    for reversed in [false, true] {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, along_spline, along_arc, spline) = rib_into_a_boss(&mut model, turn);
+        let before = volume(&model, &solid, 1e-4);
+        let named = if reversed {
+            [along_arc, along_spline]
+        } else {
+            [along_spline, along_arc]
+        };
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &solid, &named, radius, T)
+            .unwrap_or_else(|e| panic!("reversed {reversed}: {e}"))
+            .shape;
+        let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let removed = before - volume(&model, &rounded, 1e-4);
+        let (length, bend) = length_and_turn(&spline);
+        let quarter = pi / 2.0;
+        let want = section.mul_add(length, -moment * bend)
+            + section.mul_add(3.6 * quarter, -moment * quarter)
+            - 2.0 * moment * (turn / 2.0).tan();
+        assert!(
+            (removed - want).abs() < want * 1e-4,
+            "reversed {reversed}: {removed} against {want}"
+        );
+    }
+}

@@ -2567,37 +2567,56 @@ fn clipped_into_chart(
     Ok(stretches)
 }
 
-/// The map from one cylinder's chart to another's where both are one
-/// cylinder on two frames: the same axis line, within `slop`, and the same
-/// radius. The frames differ by a turn about the axis, a slide along it, or
-/// the axis reversed, so the map is exact: `(u, v)` goes to
-/// `(s·u + φ, s·v + c)`, `s` the sign between the axes, `φ` the owner's
-/// angle zero read in the target's frame, and `c` the owner's origin's
-/// height on the target's axis. A reversed axis is a half turn of the chart,
-/// not a mirror, so the map is a rigid motion of the plane.
+/// The map from one cylinder's or torus's chart to another's where both
+/// are one surface on two frames: the same axis line, within `slop`, and
+/// the same radii, and for a torus the same centre on it. The frames differ
+/// by a turn about the axis, a slide along it (a cylinder's only), or the
+/// axis reversed, so the map is exact: `(u, v)` goes to `(s·u + φ, s·v +
+/// c)`, `s` the sign between the axes, `φ` the owner's angle zero read in
+/// the target's frame, and `c` the owner's origin's height on the target's
+/// axis, zero on a torus. A reversed axis is a half turn of the chart, not
+/// a mirror, so the map is a rigid motion of the plane: on a torus it turns
+/// the tube's angle over with the axis, `v` to `-v`.
 fn coaxial_chart_map(
     owner: &SurfaceGeometry,
     target: &SurfaceGeometry,
     slop: f64,
     tol: Tolerances,
 ) -> Option<ogeom_math::Transform2> {
-    let (SurfaceGeometry::Cylinder(a), SurfaceGeometry::Cylinder(b)) = (owner, target) else {
-        return None;
-    };
-    let (a, b) = (a.cylinder(), b.cylinder());
-    let (fa, fb) = (a.frame(), b.frame());
-    let (za, zb) = (fa.z().vector(), fb.z().vector());
     let reach = slop.max(tol.confusion());
-    if za.cross(zb).magnitude() > tol.angular()
-        || b.axis().distance_to(fa.origin()) > reach
-        || (a.radius() - b.radius()).abs() > reach
-    {
+    let (fa, fb) = match (owner, target) {
+        (SurfaceGeometry::Cylinder(a), SurfaceGeometry::Cylinder(b)) => {
+            let (a, b) = (a.cylinder(), b.cylinder());
+            if (a.radius() - b.radius()).abs() > reach {
+                return None;
+            }
+            (a.frame(), b.frame())
+        }
+        (SurfaceGeometry::Torus(a), SurfaceGeometry::Torus(b)) => {
+            let (a, b) = (a.torus(), b.torus());
+            if (a.major_radius() - b.major_radius()).abs() > reach
+                || (a.minor_radius() - b.minor_radius()).abs() > reach
+                || a.frame().origin().distance(b.frame().origin()) > reach
+            {
+                return None;
+            }
+            (a.frame(), b.frame())
+        }
+        _ => return None,
+    };
+    let (za, zb) = (fa.z().vector(), fb.z().vector());
+    let axis = ogeom_math::Axis::new(fb.origin(), fb.z());
+    if za.cross(zb).magnitude() > tol.angular() || axis.distance_to(fa.origin()) > reach {
         return None;
     }
     let s = if za.dot(zb) >= 0.0 { 1.0 } else { -1.0 };
     let x = fa.x().vector();
     let phi = x.dot(fb.y().vector()).atan2(x.dot(fb.x().vector()));
-    let c = (fa.origin() - fb.origin()).dot(zb);
+    let c = if matches!(target, SurfaceGeometry::Torus(_)) {
+        0.0
+    } else {
+        (fa.origin() - fb.origin()).dot(zb)
+    };
     let slide = ogeom_math::Transform2::translation(ogeom_math::Vector2::new(phi, c));
     Some(if s > 0.0 {
         slide
@@ -2620,20 +2639,30 @@ fn carried_across(
     let map = coaxial_chart_map(owner, target, slop, tol)?;
     let carried = pcurve.transformed(&map, tol).ok()?;
     let middle = carried.point_at(0.5 * (prange.0 + prange.1), tol).ok()?;
-    let ((ua, ub), _) = target.domain();
+    let ((ua, ub), (va, vb)) = target.domain();
     let turn = core::f64::consts::TAU;
-    let turns = if middle.x < ua {
-        ((ua - middle.x) / turn).ceil()
-    } else if middle.x > ub {
-        -((middle.x - ub) / turn).ceil()
-    } else {
-        return Some(carried);
+    let turns = |at: f64, lo: f64, hi: f64| -> f64 {
+        if at < lo {
+            ((lo - at) / turn).ceil()
+        } else if at > hi {
+            -((at - hi) / turn).ceil()
+        } else {
+            0.0
+        }
     };
+    // A torus's tube angle is periodic too: carried over with a reversed
+    // axis it may land a turn off the target's `v` window.
+    let along_v = if target.is_periodic_v() {
+        turns(middle.y, va, vb)
+    } else {
+        0.0
+    };
+    let shift = ogeom_math::Vector2::new(turns(middle.x, ua, ub) * turn, along_v * turn);
+    if shift.x == 0.0 && shift.y == 0.0 {
+        return Some(carried);
+    }
     carried
-        .transformed(
-            &ogeom_math::Transform2::translation(ogeom_math::Vector2::new(turns * turn, 0.0)),
-            tol,
-        )
+        .transformed(&ogeom_math::Transform2::translation(shift), tol)
         .ok()
 }
 
@@ -13818,6 +13847,67 @@ mod tests {
             }
         }
         assert!(passed > 0);
+    }
+
+    /// A tool of one lump along two edges of a drilled plate, its box
+    /// spanning the plate while its faces reach only the edges: the hole
+    /// walls miss every face of it and stand outside it, so they are set
+    /// aside and passed through as they were, the result the one with every
+    /// face taken.
+    #[test]
+    fn a_one_lump_tool_spanning_a_plate_leaves_the_holes_it_misses_as_they_were() {
+        let mut model = Model::new();
+        let plate = drilled_plate(&mut model, 3);
+        let along_y = make_box(
+            &mut model,
+            frame_at(Point::new(-1.0, -1.0, 8.0)),
+            (5.0, 42.0, 3.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let along_x = make_box(
+            &mut model,
+            frame_at(Point::new(-1.0, -1.0, 9.0)),
+            (42.0, 5.0, 2.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let corner = fuse(&mut model, &along_y, &along_x, T).unwrap().shape;
+        assert_eq!(
+            explore_unique(&model, &corner, ShapeType::Solid)
+                .unwrap()
+                .len(),
+            1
+        );
+        let local = cut(&mut model, &plate, &corner, T).unwrap();
+        let whole = with_every_face(&mut model, &plate, &corner, [true, false], cut_keeps);
+        assert_valid(&model, &local.shape);
+        let (v_local, v_whole) = (volume(&model, &local.shape), volume(&model, &whole.shape));
+        assert!(
+            (v_local - v_whole).abs() <= 1e-9 * v_whole,
+            "{v_local} against {v_whole}"
+        );
+        let walls: Vec<Shape> = explore_unique(&model, &plate, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .filter(|f| {
+                let data = model.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    model.geometry().surface(data.surface),
+                    Some(SurfaceGeometry::Cylinder(_))
+                )
+            })
+            .collect();
+        assert_eq!(walls.len(), 9);
+        for wall in &walls {
+            let copy = local.history.copy_of(wall);
+            assert!(
+                copy.is_some_and(|c| c.is_same(wall)),
+                "a hole wall clear of the tool was not passed through"
+            );
+        }
     }
 
     #[test]

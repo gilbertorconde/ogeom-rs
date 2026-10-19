@@ -205,7 +205,10 @@ pub(crate) fn ruled_fillet(
                             && leaving.dot(outward) > 0.0
                     })
             });
-            if chain || Mate::settled_at(mates, index, at, tol) {
+            if chain
+                || Mate::settled_at(mates, index, at, tol)
+                || Mate::meets_at(mates, index, at, tol)
+            {
                 continue;
             }
             let pair = [&faces[0], &faces[1]];

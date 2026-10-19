@@ -583,6 +583,14 @@ fn edge_curve_of(
     (model.geometry().curve(*curve).unwrap().clone(), *range)
 }
 
+/// What two rounds of `radius` meeting across a square inside corner take
+/// past their caps: each runs on to the plane bisecting the corner, and the
+/// section a distance w in from its wall reaches w along, so each adds the
+/// corner outside its quarter circle weighted by w, r^3 (5/6 - pi/4).
+fn square_corner_cell(radius: f64) -> f64 {
+    2.0 * (5.0 / 6.0 - core::f64::consts::FRAC_PI_4) * radius.powi(3)
+}
+
 /// An L-shaped block whose top has an inside corner at `(10, 10, 5)`, and
 /// its two top edges leaving that corner, the first along `y = 10`. The
 /// first edge's curve runs `overrun` past the corner, and the corner's
@@ -665,11 +673,14 @@ fn l_block_with_an_edge_past_its_inside_corner(
 
 /// Two top edges of an L-shaped block rounded, and then chamfered, where
 /// they meet at the top's inside corner, one edge's curve running a little
-/// past the corner's vertex, within the vertex's tolerance. Each blend's
-/// cap stands at the vertex, where the other blend is flush with it, so
-/// each removes exactly its edge's section over the edge's length from the
-/// outside wall to the inside corner, in either order. A cap left where
-/// the curve ends would cut into the other blend past the corner.
+/// past the corner's vertex, within the vertex's tolerance. Each blend
+/// removes its edge's section over the edge's length from the outside wall
+/// to the inside corner, in either order; the two rounds also meet in the
+/// plane bisecting the corner, each running on past its cap to it, which
+/// takes the cell past both caps that both hold, two times r^3 (5/6 -
+/// pi/4). The bevels stand capped at the vertex, flush with each other. A
+/// cap left where the curve ends would cut into the other blend past the
+/// corner.
 #[test]
 fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
     let size = 1.0;
@@ -698,7 +709,12 @@ fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
             .unwrap_or_else(|e| panic!("chamfer {chamfer}, reversed {reversed}: {e}"))
             .shape;
             assert!(ogeom_algo::check(&model, &blended, T).unwrap().is_valid());
-            let want = 1500.0 - section * 20.0;
+            let cell = if chamfer {
+                0.0
+            } else {
+                square_corner_cell(size)
+            };
+            let want = 1500.0 - section * 20.0 - cell;
             let measured = volume(&model, &blended, 1e-5);
             // The mesh at a hundred-thousandth chord reads a box corner's
             // rounds to a micro-cubic-millimetre
@@ -716,10 +732,10 @@ fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
 /// first edge's curve, which runs past the wall `x = 10` that ends it, and
 /// off the second edge's line by as much. Measured from the vertex, neither
 /// line runs past it; measured against the second edge, which runs along
-/// that wall, the first does. Each blend's cap stands where its line meets
-/// the other edge's, flush with the other blend, so each removes exactly
-/// its edge's section over the edge's length, in either order. A cap at
-/// the vertex would cut into the other blend past the corner.
+/// that wall, the first does. The blends meet where the edges' lines do:
+/// the bevels capped there, flush with each other, and the rounds in the
+/// plane bisecting the corner through it, as above, in either order. A cap
+/// at the vertex would cut into the other blend past the corner.
 #[test]
 fn blends_at_an_inside_corner_whose_vertex_stands_off_the_wall_meet_at_the_wall() {
     let size = 1.0;
@@ -748,13 +764,440 @@ fn blends_at_an_inside_corner_whose_vertex_stands_off_the_wall_meet_at_the_wall(
             .unwrap_or_else(|e| panic!("chamfer {chamfer}, reversed {reversed}: {e}"))
             .shape;
             assert!(ogeom_algo::check(&model, &blended, T).unwrap().is_valid());
-            let want = 1500.0 - section * 20.0;
+            let cell = if chamfer {
+                0.0
+            } else {
+                square_corner_cell(size)
+            };
+            let want = 1500.0 - section * 20.0 - cell;
             let measured = volume(&model, &blended, 1e-5);
             // The same reading as the test above: the notch a cap past the
             // wall cuts is the section times 1e-3, ten times this bound.
             assert!(
                 (measured - want).abs() < 2e-5,
                 "chamfer {chamfer}, reversed {reversed}: {measured} against {want}"
+            );
+        }
+    }
+}
+
+/// A prism two high whose top has a re-entrant corner at `(4, 3)`: its
+/// outline runs along `y = 3` from `x = 8` to the corner and turns `turn`
+/// back towards the material there for three along, each of the two edges
+/// ending square on an end wall. Returns the solid and the two top edges
+/// leaving the corner.
+fn re_entrant_corner(
+    model: &mut ogeom_topo::Model,
+    turn: f64,
+) -> (ogeom_topo::Shape, [ogeom_topo::Shape; 2]) {
+    let (s, c) = turn.sin_cos();
+    let along = Vector::new(-c, s, 0.0);
+    let corner = Point::new(4.0, 3.0, 0.0);
+    let end = corner + along * 3.0;
+    let foot = end + Vector::new(-s, -c, 0.0);
+    let outline = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(8.0, 0.0, 0.0),
+        Point::new(8.0, 3.0, 0.0),
+        corner,
+        end,
+        foot,
+        Point::new(0.0, foot.y, 0.0),
+    ];
+    let wire = ogeom_algo::make_polygon(model, &outline, true, T)
+        .unwrap()
+        .shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let prism = ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let placed_edge_through = |at: Point| {
+        explore_unique(model, &prism, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+                let point = |v: &ogeom_topo::Shape| {
+                    let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+                    v.transform(model.datums()).unwrap().apply(p)
+                };
+                Point::midpoint(point(&a), point(&b)).distance(at) < 1e-9
+            })
+            .expect("a top edge there")
+    };
+    let edges = [
+        placed_edge_through(Point::new(6.0, 3.0, 2.0)),
+        placed_edge_through(corner + along * 1.5 + Vector::new(0.0, 0.0, 2.0)),
+    ];
+    (prism, edges)
+}
+
+/// Two top edges rounded where the outline turns back into the material
+/// between them, at a square corner and at a shallower one: the rounds
+/// meet in the plane bisecting the corner, each running on past its cap
+/// to it, so the section a distance w in from its wall reaches w tan(t/2)
+/// along, t the turn. Together they take each edge's section over its
+/// length, the corner outside the quarter circle, and twice that corner's
+/// moment about its wall times tan(t/2), in either order.
+#[test]
+fn rounds_across_a_re_entrant_turn_meet_in_the_plane_bisecting_it() {
+    let pi = core::f64::consts::PI;
+    let r = 0.5;
+    let section = (1.0 - pi / 4.0) * r * r;
+    let moment = (5.0 / 6.0 - pi / 4.0) * r.powi(3);
+    for degrees in [90.0_f64, 45.0, 150.0] {
+        let turn = degrees.to_radians();
+        for reversed in [false, true] {
+            let mut model = ogeom_topo::Model::new();
+            let (prism, mut edges) = re_entrant_corner(&mut model, turn);
+            let before = volume(&model, &prism, 1e-5);
+            if reversed {
+                edges.reverse();
+            }
+            let rounded = ogeom_fillet::fillet_edges(&mut model, &prism, &edges, r, T)
+                .unwrap_or_else(|e| panic!("{degrees} degrees, reversed {reversed}: {e}"))
+                .shape;
+            assert!(ogeom_algo::check(&model, &rounded, T).unwrap().is_valid());
+            let removed = before - volume(&model, &rounded, 1e-5);
+            let want = section.mul_add(7.0, 2.0 * moment * (turn / 2.0).tan());
+            assert!(
+                (removed - want).abs() < 2e-5,
+                "{degrees} degrees, reversed {reversed}: {removed} against {want}"
+            );
+        }
+    }
+}
+
+/// The volume `fillet_edges` takes off `solid` rounding `edges` at
+/// `radius`, in the order given and reversed, the result checked.
+fn removed_both_ways(
+    model: &ogeom_topo::Model,
+    solid: &ogeom_topo::Shape,
+    edges: &[ogeom_topo::Shape],
+    radius: f64,
+) -> [f64; 2] {
+    let before = volume(model, solid, 1e-4);
+    let mut reversed = edges.to_vec();
+    reversed.reverse();
+    [edges.to_vec(), reversed].map(|named| {
+        let mut model = model.clone();
+        let rounded = ogeom_fillet::fillet_edges(&mut model, solid, &named, radius, T)
+            .unwrap()
+            .shape;
+        assert!(ogeom_algo::check(&model, &rounded, T).unwrap().is_valid());
+        before - volume(&model, &rounded, 1e-4)
+    })
+}
+
+/// The edge of `shape` whose ends' midpoint stands at `at`, its vertices
+/// read where they are placed.
+fn placed_edge_through(
+    model: &ogeom_topo::Model,
+    shape: &ogeom_topo::Shape,
+    at: Point,
+) -> ogeom_topo::Shape {
+    explore_unique(model, shape, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+            let point = |v: &ogeom_topo::Shape| {
+                let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+                v.transform(model.datums()).unwrap().apply(p)
+            };
+            Point::midpoint(point(&a), point(&b)).distance(at) < 1e-6
+        })
+        .expect("an edge there")
+}
+
+/// A face on the plane through `on` with unit `normal` bounded by the
+/// polygon `outline`, swept along `along`.
+fn polygon_prism(
+    model: &mut ogeom_topo::Model,
+    outline: &[Point],
+    normal: Direction,
+    along: Vector,
+) -> ogeom_topo::Shape {
+    let wire = ogeom_algo::make_polygon(model, outline, true, T)
+        .unwrap()
+        .shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(outline[0], normal),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(model, &face, along, T)
+        .unwrap()
+        .shape
+}
+
+/// Two top edges of a block rounded where they meet at its inside corner,
+/// one of the walls there drafted so the corner's two dihedrals differ. The
+/// two bands' end sections are no reflection of each other in any plane, so
+/// no junction closes the corner: the request rounds exactly as it does
+/// with none, each band capped at the corner, in either order. The figures
+/// are what the rounding without junctions takes.
+#[test]
+fn rounds_at_a_drafted_inside_corner_meet_as_without_a_junction() {
+    for (draft, want) in [
+        (0.005_f64, [0.322_843, 0.322_858]),
+        (0.2, [0.363_268, 0.363_867]),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (6.0, 6.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let wall = |z: f64| draft.mul_add(z / 2.0, 3.0 - draft);
+        let notch = polygon_prism(
+            &mut model,
+            &[
+                Point::new(3.0, wall(-1.0), -1.0),
+                Point::new(3.0, 7.0, -1.0),
+                Point::new(3.0, 7.0, 3.0),
+                Point::new(3.0, wall(3.0), 3.0),
+            ],
+            Direction::X,
+            Vector::new(4.0, 0.0, 0.0),
+        );
+        let cut = ogeom_bool::cut(&mut model, &block, &notch, T)
+            .unwrap()
+            .shape;
+        let block = explore_unique(&model, &cut, ShapeType::Solid).unwrap()[0].clone();
+        let edges = [
+            placed_edge_through(&model, &block, Point::new(4.5, 3.0, 2.0)),
+            placed_edge_through(&model, &block, Point::new(3.0, 4.5, 2.0)),
+        ];
+        let removed = removed_both_ways(&model, &block, &edges, 0.5);
+        for (got, want) in removed.iter().zip(want) {
+            assert!(
+                (got - want).abs() < 2e-6,
+                "draft {draft}: {removed:?} against {want}"
+            );
+        }
+    }
+}
+
+/// Two top edges of a block rounded where they meet at its outside corner,
+/// the side wall drafted: as at the drafted inside corner, no junction, and
+/// the later band runs on through the earlier as without one.
+#[test]
+fn rounds_at_a_drafted_outside_corner_meet_as_without_a_junction() {
+    for (draft, want) in [(0.2, [0.363_860, 0.363_860]), (0.5, [0.299_542, 0.299_049])] {
+        let mut model = ogeom_topo::Model::new();
+        let block = polygon_prism(
+            &mut model,
+            &[
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(4.0, 0.0, 0.0),
+                Point::new(4.0 - draft, 0.0, 2.0),
+                Point::new(0.0, 0.0, 2.0),
+            ],
+            Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(),
+            Vector::new(0.0, 4.0, 0.0),
+        );
+        let edges = [
+            placed_edge_through(&model, &block, Point::new((4.0 - draft) / 2.0, 0.0, 2.0)),
+            placed_edge_through(&model, &block, Point::new(4.0 - draft, 2.0, 2.0)),
+        ];
+        let removed = removed_both_ways(&model, &block, &edges, 0.5);
+        for (got, want) in removed.iter().zip(want) {
+            assert!(
+                (got - want).abs() < 2e-6,
+                "draft {draft}: {removed:?} against {want}"
+            );
+        }
+    }
+}
+
+/// A box's top edges rounded, two adjacent ones and all four: each band
+/// meets its neighbours in the plane bisecting their square outside
+/// corner, and each band's face stays credited to its own edge. Each takes
+/// the corner outside its quarter circle along the box less, at each
+/// corner, the cell past the bisecting plane its cap overlapped the other
+/// band by, the corner's moment about its wall: (1 - pi/4) r^2 L per edge
+/// less 2 r^3 (5/6 - pi/4) per corner.
+#[test]
+fn a_box_s_top_edges_meet_at_their_corners_each_credited_its_own_band() {
+    let pi = core::f64::consts::PI;
+    let r = 0.5;
+    let section = (1.0 - pi / 4.0) * r * r;
+    let cell = 2.0 * (5.0 / 6.0 - pi / 4.0) * r.powi(3);
+    let mut model = ogeom_topo::Model::new();
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (4.0, 4.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let top = [(2.0, 0.0), (4.0, 2.0), (2.0, 4.0), (0.0, 2.0)]
+        .map(|(x, y)| placed_edge_through(&model, &block, Point::new(x, y, 2.0)));
+    for (count, corners) in [(2_usize, 1.0), (4, 4.0)] {
+        let named = &top[..count];
+        let removed = removed_both_ways(&model, &block, named, r);
+        #[allow(clippy::cast_precision_loss, reason = "a handful of edges")]
+        let want = section.mul_add(4.0 * count as f64, -cell * corners);
+        for got in removed {
+            assert!(
+                (got - want).abs() < 2e-5,
+                "{count} edges: {got} against {want}"
+            );
+        }
+        let mut rounded_model = model.clone();
+        let rounded = ogeom_fillet::fillet_edges(&mut rounded_model, &block, named, r, T).unwrap();
+        for edge in named {
+            assert_eq!(
+                rounded.history.generated(edge).len(),
+                1,
+                "{count} edges: each edge's own band"
+            );
+        }
+    }
+}
+
+/// A prism two high whose top's outline runs from `(8, 3)` to the corner
+/// `(4, 3)` along an arc bulging 0.4 towards +y, then turns `turn` back
+/// from the arc's end tangent along a straight edge three long. Returns
+/// the solid and the arc's and the straight edge's top creases.
+fn curved_turn(
+    model: &mut ogeom_topo::Model,
+    turn: f64,
+) -> (ogeom_topo::Shape, [ogeom_topo::Shape; 2]) {
+    use ogeom_geom::{Curve, Curve3d as _, LineCurve};
+    use ogeom_math::Axis;
+    let (from, corner) = (Point::new(8.0, 3.0, 0.0), Point::new(4.0, 3.0, 0.0));
+    let (half, sag): (f64, f64) = (2.0, 0.4);
+    let radius = half.mul_add(half, sag * sag) / (2.0 * sag);
+    let centre = Point::new(6.0, 3.0 + sag - radius, 0.0);
+    let frame = Frame::new(
+        centre,
+        Direction::Z,
+        Direction::new(from - centre, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let arc: Curve = CircleCurve::new(Circle::new(frame, radius, T).unwrap()).into();
+    let sweep = {
+        let (u, v) = ((from - centre) / radius, (corner - centre) / radius);
+        u.cross(v).z.atan2(u.dot(v))
+    };
+    let ahead = {
+        let d = arc.d1_at(sweep, T).unwrap();
+        d / d.magnitude()
+    };
+    let (s, c) = turn.sin_cos();
+    let along = Vector::new(
+        ahead.x.mul_add(c, ahead.y * s),
+        (-ahead.x).mul_add(s, ahead.y * c),
+        0.0,
+    );
+    let tip = corner + along * 3.0;
+    let outline = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(8.0, 0.0, 0.0),
+        from,
+        corner,
+        tip,
+        Point::new(tip.x, 9.0, 0.0),
+        Point::new(0.0, 9.0, 0.0),
+    ];
+    let vertices: Vec<ogeom_topo::Shape> = outline
+        .iter()
+        .map(|p| ogeom_algo::make_vertex(model, *p).shape)
+        .collect();
+    let mut edges = Vec::new();
+    for i in 0..outline.len() {
+        let j = (i + 1) % outline.len();
+        let (p, q) = (outline[i], outline[j]);
+        let edge = if i == 2 {
+            ogeom_algo::make_edge_between(
+                model,
+                arc.clone(),
+                (0.0, sweep),
+                &vertices[i],
+                &vertices[j],
+                T,
+            )
+        } else {
+            let line: Curve =
+                LineCurve::new(Axis::new(p, Direction::new(q - p, T).unwrap())).into();
+            ogeom_algo::make_edge_between(
+                model,
+                line,
+                (0.0, p.distance(q)),
+                &vertices[i],
+                &vertices[j],
+                T,
+            )
+        };
+        edges.push(edge.unwrap().shape);
+    }
+    let wire = ogeom_algo::make_wire(model, &edges, T).unwrap().shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let prism = ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let lift = Vector::new(0.0, 0.0, 2.0);
+    let mid_arc = arc.point_at(sweep / 2.0, T).unwrap() + lift;
+    let along_arc = explore_unique(model, &prism, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let b = ogeom_algo::shape_bounds(model, e, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            (lo.z - 2.0).abs() < 1e-6
+                && (hi.z - 2.0).abs() < 1e-6
+                && hi.y >= mid_arc.y - 1e-6
+                && (lo.x - 4.0).abs() < 1e-6
+                && (hi.x - 8.0).abs() < 1e-6
+        })
+        .expect("the arc's top crease");
+    let straight = placed_edge_through(model, &prism, corner + along * 1.5 + lift);
+    (prism, [along_arc, straight])
+}
+
+/// Two top creases, an arc's and a straight edge's, rounded where the
+/// outline turns back on itself past them. At 150 degrees the corner cell
+/// both rounds hold lies in the material and the two meet in the plane
+/// bisecting their straight continuations, in either order. Turned 170 or
+/// 178 degrees back, the continuations reach that plane only past the
+/// solid's far side: no junction is taken, and the request rounds exactly
+/// as it does with none. Those figures are what the rounding without
+/// junctions takes.
+#[test]
+fn rounds_at_a_curved_crease_turning_nearly_back_on_itself() {
+    let mut model = ogeom_topo::Model::new();
+    let (prism, edges) = curved_turn(&mut model, 150.0_f64.to_radians());
+    let removed = removed_both_ways(&model, &prism, &edges, 0.5);
+    assert!((removed[0] - removed[1]).abs() < 2e-6, "{removed:?}");
+    assert!((removed[0] - 0.429_067).abs() < 2e-6, "{removed:?}");
+    for (degrees, want) in [
+        (170.0_f64, [0.379_278, 0.380_335]),
+        (178.0, [0.379_036, 0.379_246]),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let (prism, edges) = curved_turn(&mut model, degrees.to_radians());
+        let removed = removed_both_ways(&model, &prism, &edges, 0.5);
+        for (got, want) in removed.iter().zip(want) {
+            assert!(
+                (got - want).abs() < 2e-6,
+                "{degrees} degrees: {removed:?} against {want}"
             );
         }
     }

@@ -279,7 +279,10 @@ is a fitted cubic, not the profile. The reproducer for a round on that
 crease: the swept wall ended where its profile does, so no ball seated
 past the crease's end; the crease continued as itself strayed off the
 wall by tens of microns where the run-out's cap stands; and the round end
-blended first left the swept wall's run-out landing along its rail.
+blended first left the swept wall's run-out landing along its rail. Also
+the reproducer for three rounds meeting at those two shallow turns: the
+swept wall's run-out crossed the round end's crease 2 mm along it and cut
+that round short, and the inside turn's cell kept its material.
 
 ## inner_corner_edge_past_its_vertex.ogeom
 

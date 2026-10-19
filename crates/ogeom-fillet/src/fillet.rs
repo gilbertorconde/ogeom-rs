@@ -86,6 +86,10 @@ pub(crate) struct Mate {
     /// the band stops flush against the corner's patch rather than running
     /// out through it.
     pub settled: [bool; 2],
+    /// Per end, whether a junction of the request meets the band there in
+    /// a plane: the band stops at the vertex and the junction closes the
+    /// corner.
+    pub meets: [bool; 2],
 }
 
 impl Mate {
@@ -110,6 +114,17 @@ impl Mate {
             mate.settled[nearer]
         });
         other || own
+    }
+
+    /// Whether a junction of the request meets edge `index` at its end
+    /// nearest `at`.
+    pub(crate) fn meets_at(mates: &[Self], index: usize, at: Point, tol: Tolerances) -> bool {
+        mates.get(index).is_some_and(|mate| {
+            mate.ends
+                .iter()
+                .zip(mate.meets)
+                .any(|((p, _), meets)| meets && p.distance(at) <= tol.confusion() * 1e3)
+        })
     }
 }
 
@@ -211,13 +226,28 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 ///
 /// At a tangent junction the neighbouring wedges' end caps stand in one
 /// plane with one cross-section, and the boolean's same-domain resolution
-/// melts them: the blends join without a seam face between them. Where
-/// two straight edges of the chain meet at a corner, the later seat runs
-/// on through the earlier blend's band and the cut trims the two bands
-/// against each other along their own intersection: two fillets meeting
-/// at a corner, the way one edge at a time ([`fillet_edge`]) deliberately
-/// does not, since the flush-ended state is what the corner tool
-/// ([`round_vertex`](crate::round_vertex)) is built for. Where three or
+/// melts them: the blends join without a seam face between them. Two
+/// convex edges of the chain that share a face and turn at a vertex meet
+/// there, the way one edge at a time ([`fillet_edge`]) deliberately does
+/// not, since the flush-ended state is what the corner tool
+/// ([`round_vertex`](crate::round_vertex)) is built for. Carried on past
+/// the vertex, each band is a straight band of its end section, and two of
+/// one radius cross in the plane through the meeting of their centre lines
+/// that bisects them, where the reflection in that plane carries the one
+/// band's end section onto the other's (the shared host flat, the two
+/// walls' tangent planes at the vertex reflections of each other, to the
+/// fit a marched band is held to). Across a re-entrant turn (an L-shaped
+/// top's inside corner) both then run on past their caps to that plane,
+/// taking the corner cell they both hold, where the material holds that
+/// cell; across a convex turn both stop in it where the bands' own
+/// curvature keeps their sections there within that fit. Either way the
+/// two are built from the solid as it stands and joined across the plane
+/// into one wedge, each band's faces credited to its own edge. Elsewhere
+/// (a drafted wall beside a square one, a wider convex turn of curved
+/// bands) and wherever the meeting does not close, the later seat runs on
+/// through the earlier blend's band and the cut trims the two bands
+/// against each other along their own intersection, or the caps stand, as
+/// without a junction. Where three or
 /// more edges of the chain meet at one vertex, the corner tool closes it
 /// with the rolling ball's own patch (the octant of a sphere at a box
 /// corner, the envelope of spheres and cylinders at a vertex no single
@@ -226,8 +256,9 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 /// first crash into each other at an apex. A corner the tool does not
 /// speak (a concave vertex, more than three surfaces with no shared
 /// ball when one of them is curved) keeps its caps,
-/// which is the honest picture of a corner no ball rolls around. Other
-/// junctions leave the wedges' caps standing likewise.
+/// which is the honest picture of a corner no ball rolls around. Two
+/// creases meeting on no shared face leave the wedges' caps standing
+/// likewise.
 ///
 /// Only two blends that round the same way trim each other. A wedge's cut
 /// would eat a fill, and a fill cannot run on through a wedge's band, so
@@ -253,16 +284,89 @@ pub fn fillet_edges(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
-        fillet_edges_own(model, solid, parts, radius, tol)
+        fillet_edges_meeting(model, solid, parts, radius, tol)
     })
 }
 
-/// [`fillet_edges`] on a shape every node below which is its own.
+/// [`fillet_edges`] on a shape every node below which is its own, its
+/// bands meeting at the junctions where two of its creases turn. Where
+/// that meeting refuses, the request is rounded again from the solid as it
+/// was given (its tolerances and surfaces put back), every band capped or
+/// run on at its ends as it is without junctions: a junction never turns a
+/// rounding into a refusal.
+fn fillet_edges_meeting(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let mut ends: Vec<Shape> = Vec::new();
+    let mut shared = false;
+    for edge in edges {
+        if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
+            for v in [a, b] {
+                if ends.iter().any(|w| w.is_same(&v)) {
+                    shared = true;
+                }
+                ends.push(v);
+            }
+        }
+    }
+    if !shared {
+        return fillet_edges_own(model, solid, edges, radius, None, tol);
+    }
+    // What an attempt changes of the given solid where it stands: the
+    // tolerances it widens, which the model's journal notes, and, once a
+    // junction is taken, the surfaces a marched seat continues past its
+    // faces and writes back, which the attempt notes before it builds.
+    let mark = model.note_widened();
+    let mut taken = Taken::default();
+    match fillet_edges_own(model, solid, edges, radius, Some(&mut taken), tol) {
+        Ok(built) => {
+            model.keep_widened(mark);
+            Ok(built)
+        }
+        // A cancelled request stops, and a key that does not resolve says
+        // the caller's model is not the one the shapes are in: neither is
+        // the junctions' to answer for.
+        Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => {
+            model.keep_widened(mark);
+            Err(e)
+        }
+        // With no junction taken the attempt was the rounding without one.
+        Err(e) if !taken.any => {
+            model.keep_widened(mark);
+            Err(e)
+        }
+        Err(_) => {
+            model.undo_widened(mark);
+            for (id, surface) in taken.surfaces {
+                if let Some(held) = model.geometry_mut().surface_mut(id) {
+                    *held = surface;
+                }
+            }
+            fillet_edges_own(model, solid, edges, radius, None, tol)
+        }
+    }
+}
+
+/// What a rounding with junctions took: whether any junction, and the
+/// solid's face surfaces as they stood before it built a band.
+#[derive(Default)]
+struct Taken {
+    any: bool,
+    surfaces: Vec<(ogeom_topo::SurfaceId, SurfaceGeometry)>,
+}
+
+/// [`fillet_edges`] on a shape every node below which is its own, with
+/// junctions where `meeting` asks, which notes there what it took.
 fn fillet_edges_own(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
     radius: f64,
+    meeting: Option<&mut Taken>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if edges.is_empty() {
@@ -331,7 +435,7 @@ fn fillet_edges_own(
         }
         built = Some(after);
     }
-    let mates: Vec<Mate> = edges
+    let mut mates: Vec<Mate> = edges
         .iter()
         .map(|e| -> OgeomResult<Mate> {
             let (curve, range) = edge_curve(model, e, tol)?;
@@ -351,7 +455,11 @@ fn fillet_edges_own(
                     .iter()
                     .any(|q| q.distance(p) <= tol.confusion() * 1e3)
             });
-            Ok(Mate { ends, settled })
+            Ok(Mate {
+                ends,
+                settled,
+                meets: [false, false],
+            })
         })
         .collect::<OgeomResult<_>>()?;
     // The circles this chain has rounded the whole turn round. A piece of
@@ -377,6 +485,46 @@ fn fillet_edges_own(
             if !held.iter().any(|f| f.is_same(&face)) {
                 held.push(face.clone());
             }
+        }
+    }
+    // Where two of the request's creases turn at a shared vertex, their
+    // bands meet there: built from the solid as it stands, each stops in
+    // the plane the two meet in (carried on to it past its cap across a
+    // re-entrant turn), and the two are joined across it into one wedge.
+    let junctions = if meeting.is_some() {
+        let given: Vec<Vec<Shape>> = edges
+            .iter()
+            .map(|e| host_faces.get(&e.node()).cloned().unwrap_or_default())
+            .collect();
+        let found = crate::junction::junctions(model, solid, edges, &given, &mates, radius, tol)
+            .unwrap_or_default();
+        joinable(model, edges, found)?
+    } else {
+        Vec::new()
+    };
+    if let Some(taken) = meeting
+        && !junctions.is_empty()
+    {
+        taken.any = true;
+        for face in explore_unique(model, solid, ShapeType::Face)? {
+            let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+                continue;
+            };
+            if taken.surfaces.iter().any(|(id, _)| *id == data.surface) {
+                continue;
+            }
+            if let Some(surface) = model.geometry().surface(data.surface) {
+                taken.surfaces.push((data.surface, surface.clone()));
+            }
+        }
+    }
+    for junction in &junctions {
+        for &index in &junction.pair {
+            let mate = &mut mates[index];
+            let end = usize::from(
+                mate.ends[1].0.distance(junction.at) < mate.ends[0].0.distance(junction.at),
+            );
+            mate.meets[end] = true;
         }
     }
     let hosts_of = |edge: &Shape| -> Vec<ogeom_topo::TShapeId> {
@@ -439,6 +587,11 @@ fn fillet_edges_own(
             .iter()
             .any(|v| ends_of[j].iter().any(|w| w.is_same(v)))
             && !matches!((&rims[i], &rims[j]), (Some(a), Some(b)) if same_circle(a, b, tol))
+            // Two bands meeting in a junction's plane are built from the
+            // solid as it stands and joined into one wedge.
+            && !junctions
+                .iter()
+                .any(|junction| junction.slot(i).is_some() && junction.slot(j).is_some())
     };
     // Where a marched band and an analytic one meet at a vertex, the
     // marched band is built first, against the faces as they stand: its
@@ -466,17 +619,37 @@ fn fillet_edges_own(
         .collect();
     let mut taken: Vec<usize> = (0..edges.len()).collect();
     taken.sort_by_key(|&i| (!first[i], i));
-    let mut round_of: Vec<usize> = vec![0; edges.len()];
-    for (k, &i) in taken.iter().enumerate() {
+    // Bands joined across a junction's plane are built in one round: each
+    // joined group takes the first round in which none of its members
+    // meets an edge already placed there.
+    let mut group: Vec<usize> = (0..edges.len()).collect();
+    for junction in &junctions {
+        let [a, b] = junction.pair;
+        let (from, to) = (group[a], group[b]);
+        for g in &mut group {
+            if *g == from {
+                *g = to;
+            }
+        }
+    }
+    let mut round_of: Vec<Option<usize>> = vec![None; edges.len()];
+    for &i in &taken {
+        if round_of[i].is_some() {
+            continue;
+        }
+        let members: Vec<usize> = (0..edges.len()).filter(|&m| group[m] == group[i]).collect();
         let mut round = 0;
-        while taken[..k]
+        while members
             .iter()
-            .any(|&j| round_of[j] == round && meet(i, j))
+            .any(|&m| (0..edges.len()).any(|j| round_of[j] == Some(round) && meet(m, j)))
         {
             round += 1;
         }
-        round_of[i] = round;
+        for m in members {
+            round_of[m] = Some(round);
+        }
     }
+    let round_of: Vec<usize> = round_of.into_iter().map(|r| r.unwrap_or(0)).collect();
     let rank: Vec<usize> = {
         let mut rank = vec![0; edges.len()];
         for (k, &i) in taken.iter().enumerate() {
@@ -486,7 +659,7 @@ fn fillet_edges_own(
     };
     let mut order: Vec<usize> = (0..edges.len()).collect();
     order.sort_by_key(|&i| (round_of[i], rank[i]));
-    let mut set_aside: Vec<(Shape, crate::support::Wedge)> = Vec::new();
+    let mut set_aside: Vec<(usize, Shape, crate::support::Wedge)> = Vec::new();
     let mut this_round = 0;
     for index in order {
         let edge = &edges[index];
@@ -494,12 +667,8 @@ fn fillet_edges_own(
         if round_of[index] != this_round {
             this_round = round_of[index];
             if let Some(b) = built.take() {
-                built = Some(apply_set_aside(
-                    model,
-                    b,
-                    core::mem::take(&mut set_aside),
-                    tol,
-                )?);
+                let joined = join_flush(model, core::mem::take(&mut set_aside), &junctions, tol)?;
+                built = Some(apply_set_aside(model, b, joined, tol)?);
             }
         }
         // A piece of a circle whose whole turn another piece's blend rounds.
@@ -580,8 +749,58 @@ fn fillet_edges_own(
                 let (step, wedges) = crate::support::collecting_wedges(|| {
                     fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)
                 });
-                set_aside.extend(wedges.into_iter().map(|w| (edge.clone(), w)));
-                step?
+                let step = step?;
+                for mut wedge in wedges {
+                    if !wedge.additive {
+                        for junction in &junctions {
+                            let Some(slot) = junction.slot(index) else {
+                                continue;
+                            };
+                            let plane = junction.keeps(slot);
+                            // Across a re-entrant turn the band is carried
+                            // on past its cap to the plane it meets the
+                            // other in; across a convex one it is trimmed
+                            // back to it. Nothing of the band but its end
+                            // stands within two radii of the vertex across
+                            // the plane: a band of its own edge coming back
+                            // that close would leave no room for its ball.
+                            if junction.reentrant {
+                                let Some(cap) = crate::junction::cap_at(
+                                    model,
+                                    &wedge.solid,
+                                    junction.at,
+                                    junction.outward[slot],
+                                    tol,
+                                )?
+                                else {
+                                    ogeom_bail!(
+                                        Construction,
+                                        "a band meeting another across a re-entrant turn has \
+                                         no cap at the vertex to carry on from"
+                                    );
+                                };
+                                wedge.solid = crate::junction::carried_to(
+                                    model,
+                                    &wedge.solid,
+                                    &cap,
+                                    junction.outward[slot],
+                                    plane,
+                                    tol,
+                                )?;
+                            } else {
+                                wedge.solid = crate::support::trimmed_wedge(
+                                    model,
+                                    &wedge.solid,
+                                    plane,
+                                    radius * 2.0,
+                                    tol,
+                                )?;
+                            }
+                        }
+                    }
+                    set_aside.push((index, edge.clone(), wedge));
+                }
+                step
             };
             if let Some(rim) = whole_rim {
                 round_rims.push(rim);
@@ -606,7 +825,157 @@ fn fillet_edges_own(
         }
     }
     let built = built.unwrap_or_else(|| unreachable!());
-    apply_set_aside(model, built, set_aside, tol)
+    let joined = join_flush(model, set_aside, &junctions, tol)?;
+    apply_set_aside(model, built, joined, tol)
+}
+
+/// The junctions of `found` whose bands can be joined: taken in turn, each
+/// joins the groups of bands already joined at its two edges, and is
+/// dropped where two edges of those groups also meet at another vertex,
+/// which joined into one round would lose the later band's running on
+/// through the earlier there.
+fn joinable(
+    model: &Model,
+    edges: &[Shape],
+    found: Vec<crate::junction::Junction>,
+) -> OgeomResult<Vec<crate::junction::Junction>> {
+    let mut ends: Vec<Vec<Shape>> = Vec::with_capacity(edges.len());
+    for edge in edges {
+        ends.push(
+            ogeom_algo::edge_vertices(model, edge)?
+                .map(|(a, b)| vec![a, b])
+                .unwrap_or_default(),
+        );
+    }
+    let mut group: Vec<usize> = (0..edges.len()).collect();
+    let mut kept: Vec<crate::junction::Junction> = Vec::new();
+    for junction in found {
+        let [a, b] = junction.pair;
+        if group[a] == group[b] {
+            continue;
+        }
+        let joined = |m: usize, n: usize| {
+            kept.iter()
+                .chain(std::iter::once(&junction))
+                .any(|j| j.slot(m).is_some() && j.slot(n).is_some())
+        };
+        let of_a: Vec<usize> = (0..edges.len()).filter(|&m| group[m] == group[a]).collect();
+        let of_b: Vec<usize> = (0..edges.len()).filter(|&m| group[m] == group[b]).collect();
+        let clash = of_a.iter().any(|&m| {
+            of_b.iter().any(|&n| {
+                !joined(m, n) && ends[m].iter().any(|v| ends[n].iter().any(|w| w.is_same(v)))
+            })
+        });
+        if clash {
+            continue;
+        }
+        let (from, to) = (group[a], group[b]);
+        for g in &mut group {
+            if *g == from {
+                *g = to;
+            }
+        }
+        kept.push(junction);
+    }
+    Ok(kept)
+}
+
+/// The wedges a round set aside, those of two bands meeting in a
+/// junction's plane joined into one across it, each wedge with the edge it
+/// rounds.
+fn join_flush(
+    model: &mut Model,
+    set_aside: Vec<(usize, Shape, crate::support::Wedge)>,
+    junctions: &[crate::junction::Junction],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Shape, crate::support::Wedge)>> {
+    // Each entry with every edge of the request whose band it holds.
+    let mut held: Vec<Option<(Vec<usize>, Shape, crate::support::Wedge)>> = set_aside
+        .into_iter()
+        .map(|(index, edge, wedge)| Some((vec![index], edge, wedge)))
+        .collect();
+    for junction in junctions {
+        let (on, normal) = junction.flush;
+        // The wedge holding each side's piece that ends in the plane.
+        let mut sides = [None, None];
+        for (slot, side) in sides.iter_mut().enumerate() {
+            for (k, entry) in held.iter().enumerate() {
+                let Some((indices, _, wedge)) = entry else {
+                    continue;
+                };
+                if !indices.contains(&junction.pair[slot]) {
+                    continue;
+                }
+                let gap = crate::marched::band_fit_target(tol) * 2.0;
+                if crate::junction::ends_in(
+                    model,
+                    &wedge.solid,
+                    (on, normal),
+                    junction.at,
+                    gap,
+                    tol,
+                )? {
+                    *side = Some(k);
+                }
+            }
+        }
+        let [Some(a), Some(b)] = sides else {
+            continue;
+        };
+        if a == b {
+            continue;
+        }
+        let (Some((mut indices, edge, first)), Some((others, other, second))) =
+            (held[a].take(), held[b].take())
+        else {
+            continue;
+        };
+        let (solid, traced) = crate::junction::joined(
+            model,
+            [&first.solid, &second.solid],
+            (on, normal),
+            junction.at,
+            crate::marched::band_fit_target(tol) * 2.0,
+            tol,
+        )?;
+        // Each face of the joined wedge stays credited to the edge whose
+        // band it came from.
+        let mut credit: Vec<(Shape, Shape)> = Vec::new();
+        for (from, rounded) in [(&first, &edge), (&second, &other)] {
+            for face in ogeom_topo::explore_unique(model, &from.solid, ShapeType::Face)? {
+                let owner = from
+                    .credit
+                    .iter()
+                    .find(|(f, _)| f.is_same(&face))
+                    .map_or_else(|| rounded.clone(), |(_, e)| e.clone());
+                for (given, image) in &traced {
+                    if given.is_same(&face) {
+                        credit.push((image.clone(), owner.clone()));
+                    }
+                }
+            }
+        }
+        indices.extend(others);
+        let mut rounded: Vec<Shape> = first.edges;
+        rounded.extend(second.edges);
+        rounded.push(other);
+        held[a] = Some((
+            indices,
+            edge,
+            crate::support::Wedge {
+                solid,
+                additive: false,
+                edges: rounded,
+                melt_refusal: first.melt_refusal.or(second.melt_refusal),
+                credit,
+            },
+        ));
+    }
+    Ok(held
+        .into_iter()
+        .flatten()
+        .map(|(_, edge, wedge)| (edge, wedge))
+        .collect())
 }
 
 /// Apply the wedges a chain set aside: the cut ones together and the
@@ -696,13 +1065,18 @@ fn apply_set_aside(
         for &i in &group {
             let (edge, wedge) = &set_aside[i];
             for face in ogeom_topo::explore_unique(model, &wedge.solid, ShapeType::Face)? {
+                let owner = wedge
+                    .credit
+                    .iter()
+                    .find(|(f, _)| f.is_same(&face))
+                    .map_or(edge, |(_, e)| e);
                 for image in step.history.trace(&face) {
                     if result.iter().any(|f| f.is_same(image)) {
-                        history.generate(edge, image.clone());
+                        history.generate(owner, image.clone());
                     }
                 }
             }
-            if let Some(rounded) = &wedge.edge {
+            for rounded in &wedge.edges {
                 history.delete(rounded);
             }
             history.delete(edge);
@@ -1018,6 +1392,10 @@ fn planar_fillet(
             break;
         }
         let at = if end { seat.start } else { seat.end };
+        // A junction of the request closes the corner at this end.
+        if mates.is_some_and(|(index, mates)| Mate::meets_at(mates, index, at, tol)) {
+            continue;
+        }
         let outward = if end { -seat.along } else { seat.along };
         let hosts = [&seat.faces[0], &seat.faces[1]];
         let Some((origin, normal)) =
@@ -1080,7 +1458,9 @@ fn planar_fillet(
         if chain {
             continue;
         }
-        if Mate::settled_at(mates, index, at, tol) {
+        // A corner the corner tool closed, or a junction of the request
+        // that meets the band here.
+        if Mate::settled_at(mates, index, at, tol) || Mate::meets_at(mates, index, at, tol) {
             continue;
         }
         let hosts = [&seat.faces[0], &seat.faces[1]];

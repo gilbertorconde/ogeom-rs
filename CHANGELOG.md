@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A boolean passes through the faces a single-lump tool cannot reach,
+  even inside that tool's box.** A face whose box missed the other
+  solid's box was set aside and passed through untouched; one inside a
+  lump's box was always gathered, split and rebuilt. Where the other
+  solid is a single lump, a face whose box misses every one of that
+  lump's faces now lies wholly in or out of it, and one point of it
+  classified outside sets it aside too. Two fillet bands joined round a
+  plate's corner span the plate in one lump while touching only its
+  edges; on a plate drilled with 256 holes they cut in 142 ms where they
+  took 197.
+
 - **`unify_same_domain` merges curved faces as well as flat ones.** Faces
   sharing an edge on one cylinder, cone, sphere or torus (one axis, one
   size) or on one extrusion (one basis curve swept along one line) merge
@@ -29,6 +40,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Two fillets of one `fillet_edges` call meet where their creases turn.**
+  Two convex creases sharing a face and turning at a vertex were rounded
+  each to its own cap there. Across an inside corner (an L-shaped top's
+  re-entrant corner) both caps stood and the corner cell both rounds hold
+  kept its material, short by twice the corner's moment about its wall
+  times tan(t/2), t the turn: 0.0959 mm³ at a square corner of radius 1.
+  Across a shallow outside turn, a spline wall turning 3.6° into a round
+  boss's rim, the marched band ran out along the rim, crossed its crease
+  2 mm on and cut the rim's round short there, which kept 0.185 mm³ of the
+  rim's corner on the carriage of #306. Carried on past the vertex, each
+  band is a straight band of its end section, and two of one radius cross
+  in the plane bisecting their centre lines: across an inside turn both now
+  run on to that plane, across an outside turn whose bands' sections there
+  agree to a marched band's fit both stop in it, and the two are joined
+  across it into one wedge. That meeting is taken only where it is exact,
+  the reflection in the plane carrying one band's end section onto the
+  other's, and wherever it is not (a drafted wall beside a square one, a
+  turn folding back past the solid, a wider outside turn of curved bands)
+  or does not close, the request rounds as it did before. Each band's
+  faces stay credited to its own edge. On the
+  carriage's chain the five junctions agree with the source's shape to
+  within 0.002 mm³ each, and two pieces of one torus whose edges include a
+  section of it meet: the boolean carries an edge between two charts of
+  one torus as it does between two of one cylinder (#306).
 - **A solid fuses with its own mirror image.** Fusing a part with its
   mirror across a plane it stands on failed with "arrangement left no
   piece of the face" or "a face boundary strand dangles". A mirrored

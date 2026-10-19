@@ -12,6 +12,7 @@ pub mod corner2d;
 mod corner_curved;
 pub mod facepair;
 pub mod fillet;
+mod junction;
 pub mod march;
 mod marched;
 mod pair_marched;

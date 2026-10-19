@@ -1183,11 +1183,15 @@ pub(crate) struct Wedge {
     pub(crate) solid: Shape,
     /// Fused on (a concave edge) rather than cut away.
     pub(crate) additive: bool,
-    /// The edge it rounds.
-    pub(crate) edge: Option<Shape>,
+    /// The edges it rounds: one, or two whose bands it joins.
+    pub(crate) edges: Vec<Shape>,
     /// What the blend is refused as when the boolean cannot apply the
     /// wedge, where its builder knows a contact the melt does not resolve.
     pub(crate) melt_refusal: Option<&'static str>,
+    /// Faces of the wedge credited to an edge other than the one it is set
+    /// aside with: a wedge joining two bands credits each band's faces to
+    /// its own edge.
+    pub(crate) credit: Vec<(Shape, Shape)>,
 }
 
 /// Name the refusal the wedge last set aside is refused as, should the
@@ -1312,8 +1316,9 @@ pub(crate) fn apply_wedge_solid(
             wedges.push(Wedge {
                 solid: wedge.clone(),
                 additive,
-                edge: edge.cloned(),
+                edges: edge.into_iter().cloned().collect(),
                 melt_refusal: None,
+                credit: Vec::new(),
             });
         })
     });

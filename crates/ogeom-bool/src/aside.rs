@@ -4,7 +4,8 @@
 //! A face whose box, widened by every tolerance it states and by the
 //! margin the pair filters allow, misses the box of each of the other
 //! solid's lumps lies outside the other solid, and no section, contact or junction can reach
-//! it. It is not gathered, split, classified or rebuilt. The faces the
+//! it; so does one, the other solid a single lump, whose box misses every
+//! face of that lump and a point of which lies outside it. It is not gathered, split, classified or rebuilt. The faces the
 //! fuse does gather keep the edges they share with it as they are, and a
 //! hole of a gathered plane whose every edge is shared with such faces,
 //! and whose box misses the other solid's, is left out of the arrangement
@@ -169,14 +170,29 @@ impl Solid {
     /// What a face of the other solid must miss to be clear of this one:
     /// a compound of wedges along a plate's opposite edges spans the plate,
     /// while each wedge's box reaches only the faces beside its edge.
-    fn reach(&self) -> Reach {
+    ///
+    /// Where the shape is one lump, `shape`, its faces' boxes go with it: a
+    /// face inside the lump's box that misses every one of them meets no
+    /// face of the lump, so it lies wholly in the lump or wholly out of it.
+    /// A band joined round a plate's corner spans the plate in one lump
+    /// while its faces reach only the plate's edges.
+    fn reach(&self, shape: &Shape) -> Reach {
         let boxes = if self.lumps.is_empty() {
             vec![self.bound]
         } else {
             self.lumps.clone()
         };
         let tree = (boxes.len() > 8).then(|| crate::box_tree::BoxTree::new(&boxes));
-        Reach { boxes, tree }
+        let walls = self.lumps.is_empty().then(|| {
+            let faces: Vec<Aabb> = self.faces.iter().map(|r| r.bound).collect();
+            let tree = (faces.len() > 8).then(|| crate::box_tree::BoxTree::new(&faces));
+            Walls {
+                faces,
+                tree,
+                shape: shape.clone(),
+            }
+        });
+        Reach { boxes, tree, walls }
     }
 }
 
@@ -197,8 +213,8 @@ pub(crate) fn set_aside(
 ) -> OgeomResult<Option<[Aside; 2]>> {
     let read_a = kept_solid(model, a, tol)?;
     let read_b = kept_solid(model, b, tol)?;
-    let reach_a = read_a.reach();
-    let reach_b = read_b.reach();
+    let reach_a = read_a.reach(a);
+    let reach_b = read_b.reach(b);
     let sides = [
         side(model, &read_a, &reach_b, tol)?,
         side(model, &read_b, &reach_a, tol)?,
@@ -395,19 +411,58 @@ fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<(Sol
 pub(crate) struct Reach {
     boxes: Vec<Aabb>,
     tree: Option<crate::box_tree::BoxTree>,
+    walls: Option<Walls>,
+}
+
+/// A one-lump solid's faces' boxes, and the solid.
+pub(crate) struct Walls {
+    faces: Vec<Aabb>,
+    tree: Option<crate::box_tree::BoxTree>,
+    shape: Shape,
+}
+
+/// Whether `bound` meets any of `boxes`, through `tree` where there is one.
+fn meets_any(boxes: &[Aabb], tree: Option<&crate::box_tree::BoxTree>, bound: &Aabb) -> bool {
+    match tree {
+        Some(tree) => {
+            let mut out = Vec::new();
+            tree.meeting(bound, &mut out);
+            !out.is_empty()
+        }
+        None => boxes.iter().any(|b| b.intersects(bound)),
+    }
 }
 
 impl Reach {
     /// Whether `bound` meets any of the boxes.
     fn meets(&self, bound: &Aabb) -> bool {
-        match &self.tree {
-            Some(tree) => {
-                let mut out = Vec::new();
-                tree.meeting(bound, &mut out);
-                !out.is_empty()
-            }
-            None => self.boxes.iter().any(|b| b.intersects(bound)),
+        meets_any(&self.boxes, self.tree.as_ref(), bound)
+    }
+
+    /// Whether `face`, whose widened box is `bound`, lies clear of the
+    /// solid: its box misses the solid's, or, the solid one lump, misses
+    /// every face of it and a point of the face lies outside it.
+    fn clears(&self, model: &Model, face: &Shape, bound: &Aabb, tol: Tolerances) -> bool {
+        if !self.meets(bound) {
+            return true;
         }
+        let Some(walls) = &self.walls else {
+            return false;
+        };
+        if meets_any(&walls.faces, walls.tree.as_ref(), bound) {
+            return false;
+        }
+        let Ok(vertices) = explore_unique(model, face, ShapeType::Vertex) else {
+            return false;
+        };
+        let Some(point) = vertices.first().and_then(|v| {
+            let data = model.node(v)?.data().as_vertex()?;
+            Some(v.transform(model.datums()).ok()?.apply(data.point))
+        }) else {
+            return false;
+        };
+        ogeom_algo::classify_in_solid_exact(model, &walls.shape, point, tol)
+            .is_ok_and(|c| c == ogeom_algo::Containment::Out)
     }
 }
 
@@ -434,7 +489,10 @@ pub(crate) fn side(
         ..
     } = solid;
     let closed = *closed;
-    let mut clear: Vec<bool> = faces.iter().map(|r| !other.meets(&r.bound)).collect();
+    let mut clear: Vec<bool> = faces
+        .iter()
+        .map(|r| other.clears(model, &r.face, &r.bound, tol))
+        .collect();
     if !clear.iter().any(|c| *c) || clear.iter().all(|c| *c) {
         return Ok(Aside::default());
     }

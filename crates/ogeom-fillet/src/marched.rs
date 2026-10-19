@@ -1196,6 +1196,14 @@ fn open_runout_wedge(
             if chain_mate || settled {
                 continue;
             }
+            // A junction of the request meets the band here and closes the
+            // corner once both bands stand; run out, this band would round
+            // material the junction does not hold.
+            if mates
+                .is_some_and(|(index, mates)| crate::fillet::Mate::meets_at(mates, index, at, tol))
+            {
+                continue;
+            }
             ends_on_a_wall = true;
             // Where the ball's contacts stand against the host faces past
             // the window: `Out` of both is clear of the solid, `On` either
@@ -2354,6 +2362,18 @@ pub(crate) fn face_normal_near(
     at: Point,
     tol: Tolerances,
 ) -> OgeomResult<Option<Vector>> {
+    face_normal_within(model, face, at, tol.confusion() * 1e3, tol)
+}
+
+/// [`face_normal_near`] for a point up to `reach` off the face's surface:
+/// a vertex standing off a face it bounds within its own tolerance.
+pub(crate) fn face_normal_within(
+    model: &Model,
+    face: &Shape,
+    at: Point,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vector>> {
     use ogeom_geom::Surface as _;
     let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
         return Ok(None);
@@ -2366,7 +2386,7 @@ pub(crate) fn face_normal_near(
         stored.transformed(&face.transform(model.datums())?, tol)?
     };
     let projection = ogeom_algo::project_on_surface(&surface, at, 24, tol)?;
-    if projection.distance > tol.confusion() * 1e3 {
+    if projection.distance > reach {
         return Ok(None);
     }
     let (u, v) = projection.parameters;
