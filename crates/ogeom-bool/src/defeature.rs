@@ -48,10 +48,21 @@
 //! the topology notices a face inside out along its own rim, and the
 //! mesher finds it as a boundary that will not close.
 //!
+//! A feature of several faces each bordering only one of the faces that
+//! must meet again (a step along an edge, a notch cut from a corner, a
+//! pocket open at an edge) is no band, and closes by **extension**: every
+//! two neighbours whose surfaces meet across the wound close the stretch
+//! of that curve it took. Between two neighbours that share no edge there
+//! (a step's top and front) the crease comes back as an edge from the face
+//! it leaves to the face it reaches; where they already share an edge along
+//! it, cut short (a notch's three edges) or split (the edge a pocket opens
+//! on), that edge runs on to where a third neighbour pierces the curve or
+//! to the other half's end.
+//!
 //! What this does not yet close is refused by name: a wound whose sides
-//! do not meet in a curve, a removal that would leave a face with no
-//! boundary and no edge to grow to, and a gap the recovered edges do not
-//! bridge.
+//! do not meet in a curve (a slot across a top, whose two halves lie on
+//! one plane), a removal that would leave a face with no boundary and no
+//! edge to grow to, and a gap the recovered edges do not bridge.
 
 use crate::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_algo::{Built, History, make_edge_between, make_solid, make_vertex, sew};
@@ -256,7 +267,15 @@ fn remove_faces_own(
     }
 
     if !interrupted.is_empty() {
-        let band = close_wound(model, faces, &interrupted, &removed, &users, &is_ring, tol)?;
+        // A band closes from its own two sides. A feature of several faces
+        // each bordering only one of the faces that must meet (a step, a
+        // notch, a pocket open at an edge) closes by extension instead;
+        // where that does not close it either, the band's refusal stands.
+        let band = match close_wound(model, faces, &interrupted, &removed, &users, &is_ring, tol) {
+            Ok(band) => band,
+            Err(refused) => close_by_extension(model, faces, &interrupted, &users, &is_ring, tol)
+                .map_err(|_| refused)?,
+        };
         for (old, new) in band {
             history.modify(&old, new.clone());
             rebuilt.push(new);
@@ -797,6 +816,190 @@ fn close_wound(
                 "an end face's surface never meets the recovered edge; the \
                  corner cannot be placed"
             ),
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut extended: FastMap<TShapeId, Shape> = FastMap::default();
+    for face in interrupted {
+        let rims: Vec<Shape> = explore(model, face, Filter::OfType(ShapeType::Edge))?
+            .into_iter()
+            .filter(|e| is_ring(e))
+            .collect();
+        let borders: Vec<Shape> = new_edges
+            .iter()
+            .filter(|(_, sides)| sides.contains(&face.node()))
+            .map(|(e, _)| e.clone())
+            .collect();
+        let new_face =
+            rebuild_interrupted(model, face, &rims, &borders, &corners, &mut extended, tol)?;
+        out.push((face.clone(), new_face));
+    }
+    Ok(out)
+}
+
+/// Close a wound by extension alone: every pair of interrupted faces whose
+/// surfaces meet along a curve through the wound's room closes the stretch
+/// of that curve the wound took, between the nearest stops either side of
+/// the room. A stop is where another interrupted face's surface pierces
+/// the curve, or where an edge the two faces already share along it
+/// dangles. Between two piercings the stretch is a new edge (a step's lost
+/// crease, from the end face it leaves to the one it reaches). Against a
+/// dangling end the other stop is the corner that edge extends to (a
+/// notch's three edges, each run on to where the three faces meet, or a
+/// pocket open at an edge, its rim's two halves joined across it).
+fn close_by_extension(
+    model: &mut Model,
+    removed_faces: &[Shape],
+    interrupted: &[Shape],
+    users: &FastMap<TShapeId, Vec<Shape>>,
+    is_ring: &dyn Fn(&Shape) -> bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Shape, Shape)>> {
+    let mut room = ogeom_math::Aabb::default();
+    for face in removed_faces {
+        room = room.union(&ogeom_algo::shape_bounds(model, face, tol)?);
+    }
+    let room = room.expanded(tol.confusion() * 1e3);
+    let Some(centre) = room.centre() else {
+        ogeom_bail!(Construction, "the removed faces have no extent");
+    };
+    let near = tol.confusion() * 1e3;
+    let point_of = |model: &Model, v: &Shape| -> OgeomResult<Point> {
+        let placement = v.transform(model.datums())?;
+        model
+            .node(v)
+            .and_then(|n| n.data().as_vertex())
+            .map(|d| placement.apply(d.point))
+            .ok_or_else(|| ogeom_err!(Construction, "a vertex holds no point"))
+    };
+
+    // The ends the removal leaves dangling: each interrupted face's edges
+    // that survive and reach a vertex the rim owned.
+    let mut dangling: Vec<(Point, [TShapeId; 2])> = Vec::new();
+    for face in interrupted {
+        let mut rim_vertices: FastSet<TShapeId> = FastSet::default();
+        for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
+            if is_ring(&edge) {
+                for v in model.ordered_children_of(&edge)? {
+                    rim_vertices.insert(v.node());
+                }
+            }
+        }
+        for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
+            if is_ring(&edge) {
+                continue;
+            }
+            let faces_of: Vec<TShapeId> = users
+                .get(&edge.node())
+                .into_iter()
+                .flatten()
+                .map(Shape::node)
+                .collect();
+            let [a, b] = faces_of.as_slice() else {
+                continue;
+            };
+            for v in model.ordered_children_of(&edge)? {
+                if rim_vertices.contains(&v.node()) {
+                    let p = point_of(model, &v)?;
+                    if !dangling.iter().any(|(q, _)| q.distance(p) <= near) {
+                        dangling.push((p, [*a, *b]));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut corner_vertices: Vec<(Point, Shape)> = Vec::new();
+    let mut vertex_at = |model: &mut Model, p: Point| -> Shape {
+        if let Some((_, v)) = corner_vertices.iter().find(|(q, _)| q.distance(p) <= near) {
+            return v.clone();
+        }
+        let v = make_vertex(model, p).shape;
+        corner_vertices.push((p, v.clone()));
+        v
+    };
+    let mut new_edges: Vec<(Shape, [TShapeId; 2])> = Vec::new();
+    let mut corners: Vec<Shape> = Vec::new();
+    for (i, first) in interrupted.iter().enumerate() {
+        let sa = placed_surface(model, first, tol)?;
+        for second in &interrupted[i + 1..] {
+            let sb = placed_surface(model, second, tol)?;
+            let Ok(SurfaceIntersection::Along(sections)) =
+                intersect_surfaces(&sa, &sb, IntersectOptions::default(), tol)
+            else {
+                continue;
+            };
+            let pair = [first.node(), second.node()];
+            for section in sections {
+                let curve = section.curve;
+                let foot = ogeom_algo::project_on_curve(&curve, centre, 64, tol)?;
+                if !room.contains(foot.point) {
+                    continue;
+                }
+                let anchor = foot.parameter;
+                // The stops along the curve: piercings by the other
+                // interrupted faces, and this pair's dangling ends on it.
+                let mut stops: Vec<(f64, Point, bool)> = Vec::new();
+                for face in interrupted {
+                    if pair.contains(&face.node()) {
+                        continue;
+                    }
+                    let se = placed_surface(model, face, tol)?;
+                    let hit =
+                        intersect_curve_surface(&curve, &se, CurveSurfaceOptions::default(), tol)?;
+                    for c in &hit.crossings {
+                        stops.push((unwrapped(&curve, c.on_curve, anchor), c.point, false));
+                    }
+                }
+                for (p, faces_of) in &dangling {
+                    let shares = faces_of.contains(&pair[0]) && faces_of.contains(&pair[1]);
+                    if !shares || nearest_distance(&curve, *p, tol) > near {
+                        continue;
+                    }
+                    let t = unwrapped(&curve, parameter_near(&curve, *p, tol)?, anchor);
+                    stops.push((t, *p, true));
+                }
+                let below = stops
+                    .iter()
+                    .filter(|s| s.0 < anchor)
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
+                    .copied();
+                let above = stops
+                    .iter()
+                    .filter(|s| s.0 > anchor)
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .copied();
+                let (Some(lo), Some(hi)) = (below, above) else {
+                    ogeom_bail!(
+                        Construction,
+                        "a curve two neighbours meet along leaves the wound \
+                         with no stop on one side; the corner cannot be placed"
+                    );
+                };
+                match (lo.2, hi.2) {
+                    // Two piercings: the stretch is an edge of its own.
+                    (false, false) => {
+                        let (v0, v1) = (vertex_at(model, lo.1), vertex_at(model, hi.1));
+                        let window = if curve.is_periodic() {
+                            let (dlo, dhi) = curve.domain();
+                            let turns = ((lo.0 - dlo) / (dhi - dlo)).floor() * (dhi - dlo);
+                            (lo.0 - turns, hi.0 - turns)
+                        } else {
+                            (lo.0, hi.0)
+                        };
+                        let edge =
+                            make_edge_between(model, curve.clone(), window, &v0, &v1, tol)?.shape;
+                        corners.push(v0);
+                        corners.push(v1);
+                        new_edges.push((edge, pair));
+                    }
+                    // A dangling end runs on to the other stop, which is
+                    // the corner. Two dangling ends meet at the upper one.
+                    (true, false) | (true, true) => corners.push(vertex_at(model, hi.1)),
+                    (false, true) => corners.push(vertex_at(model, lo.1)),
+                }
+            }
         }
     }
 

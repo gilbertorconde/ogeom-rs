@@ -750,3 +750,106 @@ fn a_loop_of_four_fillets_removes_in_one_call() {
     );
     assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
 }
+
+/// The faces of `solid` that do not lie on one of the sides of the box
+/// `size` at the origin: what a cut took out of it.
+fn faces_off_the_box(model: &Model, solid: &Shape, size: (f64, f64, f64)) -> Vec<Shape> {
+    faces_where(model, solid, |s| {
+        let SurfaceGeometry::Plane(p) = s else {
+            return true;
+        };
+        let (o, n) = (p.plane().frame().origin(), p.plane().normal().vector());
+        let sides = [
+            (Vector::new(1.0, 0.0, 0.0), 0.0),
+            (Vector::new(1.0, 0.0, 0.0), size.0),
+            (Vector::new(0.0, 1.0, 0.0), 0.0),
+            (Vector::new(0.0, 1.0, 0.0), size.1),
+            (Vector::new(0.0, 0.0, 1.0), 0.0),
+            (Vector::new(0.0, 0.0, 1.0), size.2),
+        ];
+        !sides.iter().any(|(axis, at)| {
+            n.cross(*axis).magnitude() <= 1e-9 && (o.to_vector().dot(*axis) - at).abs() <= 1e-9
+        })
+    })
+}
+
+/// A 20 x 15 x 10 box with a block cut out where `cut` stands, the cut's
+/// faces removed again: the box back exactly, six faces on its own six
+/// planes, valid, drawing closed, and its edges merged back to a box's
+/// twelve.
+fn removing_the_cut_restores_the_box(cut: (Point, (f64, f64, f64)), faces_cut: usize) {
+    let size = (20.0, 15.0, 10.0);
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, size, T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(cut.0, Direction::Z, Direction::X, T).unwrap();
+    let tool = ogeom::algo::make_box(&mut model, at, cut.1, T)
+        .unwrap()
+        .shape;
+    let cut_block = ogeom::boolean::cut(&mut model, &block, &tool, T)
+        .unwrap()
+        .shape;
+    let feature = faces_off_the_box(&model, &cut_block, size);
+    assert_eq!(feature.len(), faces_cut, "the cut's own faces");
+    let healed = ogeom::boolean::remove_faces(&mut model, &cut_block, &feature, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &healed, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let mesh = ogeom::mesh::triangulate(&model, &healed, Deflection::default(), T).unwrap();
+    assert!(mesh.is_closed(), "the box draws closed");
+    // Every face is planar and the integrals exact: the box's own volume
+    // to rounding.
+    let measured = volume(&model, &healed);
+    assert!(
+        (measured - 3000.0).abs() < 3000.0 * 1e-12,
+        "the box, exactly: {measured}"
+    );
+    assert_eq!(
+        explore_unique(&model, &healed, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!(
+        faces_off_the_box(&model, &healed, size).is_empty(),
+        "every face on the box's planes"
+    );
+    let merged = ogeom::heal::merge_edges(&mut model, &healed, T)
+        .unwrap()
+        .0
+        .shape;
+    assert_eq!(
+        explore_unique(&model, &merged, ShapeType::Edge)
+            .unwrap()
+            .len(),
+        12
+    );
+}
+
+/// A step cut along a box's top front edge: its floor borders the front
+/// alone and its wall the top alone, so neither is a band between the two
+/// faces that must meet. The top and the front meet again along the edge
+/// the step took, from the left end to the right.
+#[test]
+fn removing_a_step_restores_the_box() {
+    removing_the_cut_restores_the_box((Point::new(-1.0, -1.0, 7.0), (22.0, 4.0, 4.0)), 2);
+}
+
+/// A notch cut from a box's corner: no two of its neighbours lost the
+/// edge between them, only a stretch of it. Each of the three edges the
+/// notch cut short runs on to the corner where the top, the front and the
+/// side meet.
+#[test]
+fn removing_a_corner_notch_restores_the_box() {
+    removing_the_cut_restores_the_box((Point::new(17.0, -1.0, 7.0), (4.0, 4.0, 4.0)), 3);
+}
+
+/// A pocket cut into a box's top, open to its front: the edge between the
+/// top and the front survives either side of it, and its two halves meet
+/// again across the pocket's mouth.
+#[test]
+fn removing_a_pocket_open_at_an_edge_restores_the_box() {
+    removing_the_cut_restores_the_box((Point::new(5.0, -1.0, 6.0), (6.0, 6.0, 5.0)), 4);
+}

@@ -27,6 +27,19 @@ bump may break the API and a patch bump may not.
   crosses in two runs stays refused, its reason now stated: a region beside
   both runs would turn about two hinges (#352).
 
+- **`remove_faces` removes a step, a notch or a pocket cut at an edge.**
+  A feature of several faces each bordering only one of the neighbours
+  that must meet again was refused: a step along an edge and a notch cut
+  from a corner by "an end face's surface never meets the recovered
+  edge", a pocket open at an edge by "a wrapping band recovered an open
+  curve". Such a wound now closes by extension from the neighbours' own
+  surfaces: a step's lost crease comes back between the faces it pierces,
+  a notch's three cut-short edges run on to where its three neighbours
+  meet, and the edge a pocket opens on joins across its mouth. Each comes
+  back as the box it was cut from, its volume exact, its six faces on the
+  box's planes and twelve edges once merged. A slot right across a top,
+  whose two halves must merge, stays refused (#360).
+
 ### Changed
 
 - **`unify_same_domain` merges the curved faces it still left split.**
