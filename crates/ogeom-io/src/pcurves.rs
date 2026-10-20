@@ -282,6 +282,28 @@ pub(crate) fn split_at_poles(
     Ok(pieces)
 }
 
+/// The second use of a seam a wire walks, `image` as the walk slid it,
+/// moved one period over (see [`seam_other_side`]) where it starts where
+/// the first use's `first` does. A seam's two uses are a period apart, but
+/// the walk lands the second on the first's column where nothing tells
+/// them apart: on a chart that closes without being periodic, and where
+/// the second use leaves a pole, whose point names no column. Left there,
+/// the wire walks on from the wrong column and comes apart.
+pub(crate) fn across_from(
+    image: PlanarCurve,
+    first: &PlanarCurve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<PlanarCurve> {
+    use ogeom_geom::Curve2d as _;
+    let (here, there) = (image.point_at(range.0, tol)?, first.point_at(range.0, tol)?);
+    if here.distance(there) > tol.confusion() {
+        return Ok(image);
+    }
+    seam_other_side(&image, range, surface, tol)
+}
+
 /// The other column of a seam the wire walked only one way: a period over,
 /// toward the middle of the chart.
 ///

@@ -63,6 +63,20 @@ bump may break the API and a patch bump may not.
   tip is rounded by both to the closed form. A request of two or more
   edges keeps the check at every station (#316).
 
+- **A solid fused with its own mirror image reads back from STEP as the
+  solid it was.** A mirror leaves a circle's, ellipse's, hyperbola's or
+  parabola's frame left-handed, and STEP states a frame by its axis and
+  its `x`, the `y` taken as their cross product: the writer handed a
+  reader the mirrored conic's `-y`, so an arc ran the other way round
+  between its vertices. A conic now goes out with the axis `x × y`, the
+  same curve at every parameter. And a seam walked into a pole and back
+  out of it was read with both its sides on one column, the wire walked
+  on from the wrong one; a seam's second use is now placed a period from
+  its first wherever the walk lands them together, in the STEP and the
+  IGES reader alike. A ball, a torus and an elliptic prism each fused
+  with its mirror image read back with a volume of 0, and now at their
+  own, unified or not (#323).
+
 - **A part fused with its mirror image builds where a face's chart closes
   in `v` along its boundary.** The bake a reflecting placement forces
   places an edge on the closure of a closed chart beside its face, but did

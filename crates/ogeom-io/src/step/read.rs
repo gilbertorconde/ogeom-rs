@@ -2714,10 +2714,16 @@ impl<'a> Reader<'a> {
             } else {
                 (range.0, range.1)
             };
-            let image =
+            let mut image =
                 crate::pcurves::shifted_to_meet(&image, start, previous, surface, self.tol)?;
-            previous = Some(image.point_at(end, self.tol)?);
             let walked = sides.entry(*edge_id).or_default();
+            let first = if backwards { &walked.0 } else { &walked.1 };
+            if edge_uses.get(edge_id).copied().unwrap_or(1) > 1
+                && let Some(first) = first
+            {
+                image = crate::pcurves::across_from(image, first, *range, surface, self.tol)?;
+            }
+            previous = Some(image.point_at(end, self.tol)?);
             if backwards {
                 walked.1 = Some(image);
             } else {

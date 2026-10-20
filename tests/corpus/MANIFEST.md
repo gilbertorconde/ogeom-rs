@@ -395,7 +395,8 @@ edges leaving the equator vertex, one up its meridian's parameter to
 the north pole and one against it to the south pole. The reproducer for
 offsetting a seam that runs against its iso-curve's parameter: the
 offset rebuilt the south seam three quarters of a turn round and meshed
-open, with no error (#325).
+open, with no error (#325). It is also the STEP round-trip case of a
+seam whose second use leaves a pole (#323).
 
 ## sphere_seam_offset_round_the_back.ogeom
 

@@ -408,6 +408,17 @@ impl Writer<'_> {
         self.entity(format!("AXIS2_PLACEMENT_3D('',#{origin},#{z},#{x})"))
     }
 
+    /// A conic's frame: its centre, its `x`, and the axis `x × y`. A conic
+    /// is its centre and its `x` and `y` axes, and a reader takes `y` as
+    /// `z × x`; a frame a mirror left-handed would hand it `-y` and run the
+    /// curve the other way round.
+    fn conic_frame(&mut self, frame: &Frame) -> u64 {
+        let origin = self.point(frame.origin());
+        let z = self.direction(frame.x().vector().cross(frame.y().vector()));
+        let x = self.direction(frame.x().vector());
+        self.entity(format!("AXIS2_PLACEMENT_3D('',#{origin},#{z},#{x})"))
+    }
+
     /// A rigid transform as the frame it carries the world onto.
     fn placement_frame(&mut self, at: &Transform) -> OgeomResult<u64> {
         let origin = at.apply(Point::ORIGIN);
@@ -869,12 +880,12 @@ impl Writer<'_> {
             // spelling: STEP's runs counter-clockwise about its axis.
             Curve::Circle(c) => {
                 let circle = c.forward(self.tol)?.circle();
-                let frame = self.frame(&circle.frame());
+                let frame = self.conic_frame(&circle.frame());
                 Ok(self.entity(format!("CIRCLE('',#{frame},{})", real(circle.radius()))))
             }
             Curve::Ellipse(el) => {
                 let ellipse = el.forward(self.tol)?.ellipse();
-                let frame = self.frame(&ellipse.frame());
+                let frame = self.conic_frame(&ellipse.frame());
                 Ok(self.entity(format!(
                     "ELLIPSE('',#{frame},{},{})",
                     real(ellipse.major_radius()),
@@ -886,7 +897,7 @@ impl Writer<'_> {
             // runs STEP's way; a reversed one is written as its spline.
             Curve::Hyperbola(h) if !h.is_reversed() => {
                 let hyperbola = h.hyperbola();
-                let frame = self.frame(&hyperbola.frame());
+                let frame = self.conic_frame(&hyperbola.frame());
                 Ok(self.entity(format!(
                     "HYPERBOLA('',#{frame},{},{})",
                     real(hyperbola.major_radius()),
@@ -895,7 +906,7 @@ impl Writer<'_> {
             }
             Curve::Parabola(p) if !p.is_reversed() => {
                 let parabola = p.parabola();
-                let frame = self.frame(&parabola.frame());
+                let frame = self.conic_frame(&parabola.frame());
                 Ok(self.entity(format!("PARABOLA('',#{frame},{})", real(parabola.focal()))))
             }
             Curve::Offset(o) => {
