@@ -77,6 +77,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A marched section finds crossings closer together than its stride.**
+  Where two crossings of a section stood within one step of the march, a
+  third could hide in a step unseen, and the pair was cut as traced. Both
+  charts are now cut into patches, a pair set aside where their boxes do
+  not meet or no normal of one can be parallel to a normal of the other,
+  and every crossing is solved from the pairs left at the chord's size;
+  where that search completes, each crossing's arms are joined to the next
+  crossing along the section or followed out, a stretch too shallow to
+  march held where it stays within the confusion distance of both
+  surfaces. On a saddle crossing a plane along three lines, of 640 sizes
+  and shapes, 455 came back cut as traced and wrong, and now 27 do. Where
+  the surfaces part so slowly that the search does not complete within
+  the points a branch may hold, as on a grid of lines crossing a tenth
+  apart, the pair is still cut as traced (#356).
+
 - **Two fillets of one `fillet_edges` call meet at an inside corner off
   square in plan, or between two walls that both lean (#342).** Each
   band carried on is widened past its wall, and the two widenings met
