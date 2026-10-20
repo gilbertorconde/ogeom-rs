@@ -1916,3 +1916,79 @@ fn a_bake_s_pcurve_round_the_back_of_its_chart_is_suspect() {
         .unwrap();
     assert!(edge.tolerance.get() > 2.4, "{diagnosis}");
 }
+
+/// What a ball of `radius` holds outside one octant: seven eighths of it.
+fn ball_less_an_octant(radius: f64) -> f64 {
+    7.0 / 6.0 * std::f64::consts::PI * radius.powi(3)
+}
+
+/// A ball of radius 5 about the x axis, one face whose seam is two edges
+/// running from the equator vertex to either pole, offset out and in: the
+/// seam toward the south pole runs against its meridian's parameter and
+/// was rebuilt three quarters of a turn the long way round, through rows
+/// the sphere's chart does not have, so the face meshed open. Each offset
+/// is the ball of the grown radius, closed, and an octant cut from it
+/// leaves seven eighths of it.
+#[test]
+fn a_ball_whose_seam_runs_both_ways_from_the_equator_offsets_closed() {
+    let deflection = ogeom::mesh::Deflection::default();
+    let (mut model, roots) =
+        ogeom::io::native::read(&corpus("sphere_seam_two_ways.ogeom")).unwrap();
+    let ball = roots[0].clone();
+    for d in [0.5, -0.5] {
+        let grown = ogeom::offset::offset_shape(&mut model, &ball, d, T)
+            .unwrap()
+            .shape;
+        let radius = 5.0 + d;
+        let (volume, _) = measured(&model, &grown);
+        let want = 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
+        assert!(
+            (volume - want).abs() <= want * 1e-6,
+            "offset {d}: {volume} against {want}"
+        );
+        assert!(
+            ogeom::mesh::triangulate(&model, &grown, deflection, T)
+                .unwrap()
+                .is_closed(),
+            "offset {d}: the mesh is open"
+        );
+        let octant =
+            ogeom::algo::make_box(&mut model, ogeom::math::Frame::WORLD, (6.0, 6.0, 6.0), T)
+                .unwrap()
+                .shape;
+        let cut = ogeom::boolean::cut(&mut model, &grown, &octant, T)
+            .unwrap()
+            .shape;
+        let (volume, _) = measured(&model, &cut);
+        let want = ball_less_an_octant(radius);
+        assert!(
+            (volume - want).abs() <= want * 1e-6,
+            "offset {d} cut: {volume} against {want}"
+        );
+        assert!(
+            ogeom::mesh::triangulate(&model, &cut, deflection, T)
+                .unwrap()
+                .is_closed(),
+            "offset {d} cut: the mesh is open"
+        );
+    }
+}
+
+/// The offset of the ball above by -0.5 as it was built with its south
+/// seam three quarters of a turn round: every edge lies on the sphere and
+/// every vertex on its edges, but the seam's pcurves run on past the
+/// south pole's row to rows the chart does not have. `check` lifted
+/// nothing it could not evaluate, and passed it; the face's boundary does
+/// not close in its chart.
+#[test]
+fn check_reads_a_seam_run_past_its_spheres_pole() {
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("sphere_seam_offset_round_the_back.ogeom")).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &roots[0], T).unwrap();
+    assert!(!diagnosis.is_valid());
+    assert!(
+        diagnosis.problems.iter().any(|p| p.kind == ShapeType::Face
+            && p.what.contains("does not close in its surface's chart")),
+        "{diagnosis}"
+    );
+}

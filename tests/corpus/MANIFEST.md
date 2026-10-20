@@ -386,3 +386,23 @@ unifying a part fused with its own mirror image: every face on a
 cylinder or an extrusion that the plane crosses stayed split in two,
 the image's half on a frame turned half round or swept the other way,
 and the two halves of the bore make a whole tube that needs a seam.
+
+## sphere_seam_two_ways.ogeom
+
+A ball of radius 5 about the x axis in this kernel's native format, one
+face built by fusing two hemispheres and unifying them: its seam is two
+edges leaving the equator vertex, one up its meridian's parameter to
+the north pole and one against it to the south pole. The reproducer for
+offsetting a seam that runs against its iso-curve's parameter: the
+offset rebuilt the south seam three quarters of a turn round and meshed
+open, with no error (#325).
+
+## sphere_seam_offset_round_the_back.ogeom
+
+The offset of `sphere_seam_two_ways.ogeom` by -0.5, in this kernel's
+native format, as `offset_shape` built it before #325 was fixed: the
+south seam runs from the equator three quarters of a turn round its
+meridian, its pcurves on to rows past the south pole's that the
+sphere's chart does not have. Every edge lies on the sphere and every
+vertex on its edges. The reproducer for `check` measuring a pcurve the
+surface cannot evaluate where it stands.

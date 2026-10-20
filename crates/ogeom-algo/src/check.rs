@@ -1509,8 +1509,9 @@ fn chart_ends(
 
 /// The length of the straight chart segment from `a` to `b`, lifted onto
 /// the surface: nothing where the two meet at a pole, a period's worth of
-/// surface where they stand on two columns of a seam. `None` where the
-/// surface cannot be evaluated along it.
+/// surface where they stand on two columns of a seam, and what lies past
+/// the end of a direction the surface stops in measured from that end.
+/// `None` where the surface cannot be evaluated along it.
 fn along_surface(
     surface: &ogeom_geom::SurfaceGeometry,
     a: Point2,
@@ -1521,7 +1522,7 @@ fn along_surface(
     if a.distance(b) <= tol.parametric() {
         return Some(0.0);
     }
-    let at = |t: f64| surface.point_at(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, tol);
+    let at = |t: f64| lifted_in_domain(surface, a + (b - a) * t, tol);
     let mut last = at(0.0).ok()?;
     let mut length = 0.0;
     for i in 1..=PIECES {
@@ -1530,6 +1531,35 @@ fn along_surface(
         last = next;
     }
     Some(length)
+}
+
+/// The surface's point at `uv`; where the surface refuses it, a parameter
+/// past the end of a direction that neither repeats nor closes taken back
+/// to that end: the point of the surface nearest in its chart. A joint
+/// between pcurve ends standing past a sphere's pole is then measured from
+/// where the surface stops, instead of going unread. A surface that
+/// evaluates past its stated domain (a plane, whose domain is a window
+/// onto it) is measured where the parameters stand.
+fn lifted_in_domain(
+    surface: &ogeom_geom::SurfaceGeometry,
+    uv: Point2,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_math::Point> {
+    if let Ok(point) = surface.point_at(uv.x, uv.y, tol) {
+        return Ok(point);
+    }
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let u = if surface.is_periodic_u() || surface.is_closed_u(tol) {
+        uv.x
+    } else {
+        uv.x.max(u0).min(u1)
+    };
+    let v = if surface.is_periodic_v() || surface.is_closed_v(tol) {
+        uv.y
+    } else {
+        uv.y.max(v0).min(v1)
+    };
+    surface.point_at(u, v, tol)
 }
 
 /// A shell is closed when every edge is used an even number of times.
@@ -2187,6 +2217,69 @@ mod tests {
         assert!(gap > 5e-8 && gap < 1e-7, "{gap}");
         let found = check(&model, &edge, T).unwrap();
         assert!(found.is_valid(), "got {found}");
+    }
+
+    #[test]
+    fn a_gap_on_a_plane_outside_its_window_is_measured_where_it_stands() {
+        // A unit square at x, y in [5, 6] on a plane whose stated domain is
+        // the window [-1, 1] squared: a plane evaluates anywhere, and one
+        // edge's pcurve moved 0.3 along x leaves the boundary open by that
+        // much at both its ends, however far outside the window it stands.
+        use ogeom_geom::{Curve2d as _, PlaneSurface};
+        let square = |shift: f64| {
+            let mut model = Model::new();
+            let corners = [(5.0, 5.0), (6.0, 5.0), (6.0, 6.0), (5.0, 6.0)]
+                .map(|(x, y)| Point::new(x, y, 0.0));
+            let wire = crate::make_polygon(&mut model, &corners, true, T)
+                .unwrap()
+                .shape;
+            let plane = PlaneSurface::over(
+                ogeom_math::Plane::new(Frame::WORLD),
+                (-1.0, 1.0),
+                (-1.0, 1.0),
+            )
+            .unwrap();
+            let surface = model.geometry_mut().add_surface(plane.into());
+            let edges = model.ordered_children_of(&wire).unwrap();
+            for (k, edge) in edges.iter().enumerate() {
+                let forward = edge.oriented(ogeom_topo::Orientation::Forward);
+                let (a, b) = crate::build::edge_vertices(&model, &forward)
+                    .unwrap()
+                    .unwrap();
+                let at = |v: &Shape| {
+                    let p = model
+                        .node(v)
+                        .and_then(|n| n.data().as_vertex())
+                        .unwrap()
+                        .point;
+                    let moved = if k == 0 { shift } else { 0.0 };
+                    Point2::new(p.x + moved, p.y)
+                };
+                let line: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::segment(at(&a), at(&b), T)
+                    .unwrap()
+                    .into();
+                let range = line.domain();
+                crate::attach_pcurve(
+                    &mut model,
+                    &forward,
+                    line,
+                    surface,
+                    ogeom_topo::Location::identity(),
+                    range,
+                )
+                .unwrap();
+            }
+            let face = crate::make_face_on(&mut model, surface, &[wire], T)
+                .unwrap()
+                .shape;
+            chart_breaks(&model, &face, &|_| false, T).unwrap()
+        };
+        assert!(square(0.0).is_empty(), "{:?}", square(0.0));
+        assert_eq!(
+            square(0.3).len(),
+            1,
+            "the moved pcurve leaves the square open"
+        );
     }
 
     #[test]

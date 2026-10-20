@@ -107,6 +107,23 @@ bump may break the API and a patch bump may not.
   crossing a plane along three lines, an arm ending 5.2e-2 short of the
   crossing it runs into now reaches it (#321).
 
+- **`offset_shape` builds a closed offset of a face whose seam is two
+  edges running opposite ways from a vertex.** A seam edge running
+  against its meridian's parameter (from a ball's equator down to its
+  south pole) was rebuilt from the angle its new ends stand at, taken in
+  the first turn: three quarters of a turn the long way round, through
+  rows the sphere's chart does not have. The offset passed `check`,
+  measured the exact volume and meshed open. The rebuilt seam now starts
+  in the turn the old one's rows stand in and runs the way they ran.
+  Every face the offset rebuilds is held to closing in its surface's
+  chart, and the offset fails by name where one does not (#325).
+
+- **`check` reports a face whose boundary jumps across rows its chart
+  does not have.** Where a pcurve ran past a sphere's pole, the gap to
+  the next edge's start was skipped because the surface refused to
+  evaluate it, and the face passed while meshing open. The gap is now
+  measured from where the surface stops in that direction (#325).
+
 ## [0.11.5] - 2026-10-19
 
 A patch release of fixes, with two changes in behaviour. A part fused

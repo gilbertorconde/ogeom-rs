@@ -1513,6 +1513,15 @@ pub(crate) fn rebuilt(
                 face
             }
         };
+        // A face whose boundary does not close in its surface's chart sews
+        // and passes the shell's edge count, yet meshes open and leaves a
+        // boolean through it a dangling strand.
+        if let Some(why) = ogeom_algo::chart_breaks(model, &built, &|_| false, tol)?.first() {
+            ogeom_bail!(
+                Construction,
+                "the offset cannot close a face it rebuilt: {why}"
+            );
+        }
         history.modify(&prep.shape, built.clone());
         rebuilt_faces.push(built);
     }
@@ -1641,13 +1650,24 @@ fn rebuilt_seam_edge(
                 // The pcurve states the column the seam sits at. The rows
                 // cannot come from it: the seam's ends are corner vertices,
                 // moved by the corner solve rather than by this face alone.
-                found = Some(pcurve.point_at(range.0, tol)?.x);
+                // They state the turn of the chart the seam stands in and
+                // the way it runs along the column.
+                let (from, to) = (
+                    pcurve.point_at(range.0, tol)?,
+                    pcurve.point_at(range.1, tol)?,
+                );
+                // A seam running along a row (a torus's tube seam) is no
+                // column, and the iso-u curve below is not its curve.
+                if (to.x - from.x).abs() >= (to.y - from.y).abs() {
+                    return Ok(None);
+                }
+                found = Some((from.x, (from.y, to.y)));
                 break;
             }
         }
         found
     };
-    let Some(column) = found else {
+    let Some((column, rows)) = found else {
         return Ok(None);
     };
     // Rebuilt edges are kept in their node's own direction, each wire
@@ -1695,6 +1715,26 @@ fn rebuilt_seam_edge(
         }
     };
     let (t_start, t_end) = (along(p_from)?, along(p_to)?);
+    // A circle's angle is its row only up to whole turns: the start is
+    // taken in the turn of the old start's row, and the end on the side
+    // the old seam ran, less than a turn on unless the seam closes on its
+    // own vertex. A sphere's meridian turns through rows the chart does not
+    // have, and a seam reaching its south pole ends below its start, not
+    // three quarters of a turn above it.
+    let (t_start, t_end) = if matches!(curve, Curve::Circle(_)) {
+        let tau = core::f64::consts::TAU;
+        let start = rows.0 + (t_start - rows.0 + core::f64::consts::PI).rem_euclid(tau)
+            - core::f64::consts::PI;
+        let sweep = match (sv.node() == ev.node(), rows.1 >= rows.0) {
+            (true, true) => tau,
+            (true, false) => -tau,
+            (false, true) => (t_end - t_start).rem_euclid(tau),
+            (false, false) => (t_end - t_start).rem_euclid(tau) - tau,
+        };
+        (start, start + sweep)
+    } else {
+        (t_start, t_end)
+    };
     // Self-validation instead of trusting the move: a turned support only
     // keeps its column when the turn was built to; the re-solved ends say
     // whether it was.
