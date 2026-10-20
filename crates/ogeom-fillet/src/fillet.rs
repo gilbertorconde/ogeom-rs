@@ -36,15 +36,13 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 ///
 /// The blend is the one [`fillet_edges`] builds on this one edge. Where a
 /// face cuts the corner away past an end (a floor giving way to a ramp
-/// under a wall that carries on), both run it out onto that face. Two
-/// things differ:
-///
-/// - Where the edge ends against a neighbouring blend, this blend stops
-///   flush there instead of running on through it. Three such flush blends
-///   and their vertex are what [`round_vertex`](crate::round_vertex)
-///   closes.
-/// - The ball need only fit somewhere along the edge, where
-///   [`fillet_edges`] wants it to fit at every station it checks.
+/// under a wall that carries on), both run it out onto that face. Where a
+/// host face narrows along the edge and the ball's contact runs off it
+/// out of the solid, both cut the band off on the face that follows. One
+/// thing differs: where the edge ends against a neighbouring blend, this
+/// blend stops flush there instead of running on through it. Three such
+/// flush blends and their vertex are what
+/// [`round_vertex`](crate::round_vertex) closes.
 ///
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
@@ -53,7 +51,8 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 ///
 /// [`OgeomError::Construction`] if the edge is
 /// neither of the seats above, is concave, or `radius` is not a usable
-/// length, or the ball sets back past the far side of a face.
+/// length, or the ball sets back past the far side of a face into the
+/// material, or past it all along the edge.
 pub fn fillet_edge(
     model: &mut Model,
     solid: &Shape,
@@ -81,8 +80,8 @@ fn fillet_edge_own(
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
     // The ball touches each face a setback back from the edge; set back
-    // past a face's far side all along it, the band would cut through the
-    // face.
+    // past a face's far side into the material, or all along the edge,
+    // the band would cut through the face.
     crate::support::ball_fits(model, solid, edge, radius, true, tol)?;
     fillet_edge_meeting(model, solid, edge, radius, None, tol)
 }
@@ -289,7 +288,10 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 ///
 /// As [`fillet_edge`] per edge, and additionally if an earlier blend
 /// consumed or split a later edge: a chain whose members interfere is
-/// refused rather than guessed at.
+/// refused rather than guessed at. A request of two or more edges also
+/// refuses a ball that sets back past the far side of a face anywhere
+/// along an edge, since each band's contacts are checked against the
+/// others' and a contact off its face holds none to check.
 pub fn fillet_edges(
     model: &mut Model,
     solid: &Shape,
@@ -391,9 +393,12 @@ fn fillet_edges_own(
     // back into another edge's band, the two balls overlap.
     let mut contacts = Vec::with_capacity(edges.len());
     crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
+        // A lone edge's band is checked against no other, and is held to
+        // what one edge alone is.
+        let alone = edges.len() == 1;
         for edge in edges {
             contacts.push(crate::support::ball_fits(
-                model, solid, edge, radius, false, tol,
+                model, solid, edge, radius, alone, tol,
             )?);
         }
         Ok(())

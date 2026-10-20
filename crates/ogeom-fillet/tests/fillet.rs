@@ -643,3 +643,83 @@ fn a_round_running_up_under_a_roof_stops_on_it() {
         }
     }
 }
+
+/// A round on the floor edge of a prism whose wall is a triangle, its apex
+/// low over the edge: the wall narrows to a tip at both ends of the edge,
+/// and the ball's contact runs off it there, out of the solid. The band
+/// is cut off on the faces the edge runs into at its ends, as a band
+/// running up under a roof is. Where the wall stands h <= r over the edge,
+/// the band's section is the part of the corner outside the quarter
+/// circle below h, of area r h - (F(r) - F(r - h)) with
+/// F(u) = (u sqrt(r^2 - u^2) + r^2 asin(u / r)) / 2. Over a tip rising at
+/// slope k that integrates to r^3 / (6 k), and over the rest of the edge
+/// the section is the whole (1 - pi/4) r^2. The ball fits at some stations
+/// and runs off at others, alone and as a request of one edge alike.
+#[test]
+fn a_round_on_a_narrowing_wall_is_cut_off_where_the_wall_ends() {
+    let (length, apex, height) = (10.0, 1.0, 1.0);
+    let rises = [height / apex, height / (length - apex)];
+    for radius in [0.3, 0.5, 0.7] {
+        let profile = [(0.0, 0.0), (length, 0.0), (apex, height)];
+        let want = (1.0 - core::f64::consts::FRAC_PI_4)
+            * radius
+            * radius
+            * (length - rises.iter().map(|k| radius / k).sum::<f64>())
+            + rises
+                .iter()
+                .map(|k| radius.powi(3) / (6.0 * k))
+                .sum::<f64>();
+        for (by, removed) in removed_by_round(&profile, Point::new(0.0, length / 2.0, 0.0), radius)
+        {
+            assert!(
+                (removed - want).abs() < 1e-6,
+                "radius {radius}: the round by {by} took {removed} against {want}"
+            );
+        }
+    }
+}
+
+/// A floor edge whose wall carries a boss along part of it, the boss's
+/// underside 0.2 over the floor: there the wall reaches no higher than
+/// that, and a ball of radius 0.5 touching the floor and the wall's plane
+/// touches it 0.3 inside the material, under the boss. No ball rolling on
+/// the floor and the wall rounds the edge there, and a band cut along it
+/// would groove the block under the boss. Alone and as a request of one
+/// edge, the round is refused by name.
+#[test]
+fn a_round_whose_ball_would_touch_the_wall_inside_a_boss_is_refused() {
+    use ogeom_math::Direction;
+    let mut model = ogeom_topo::Model::new();
+    let block = ogeom_algo::make_box(
+        &mut model,
+        Frame::new(Point::new(-4.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+        (4.0, 10.0, 4.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let boss = ogeom_algo::make_box(
+        &mut model,
+        Frame::new(Point::new(0.0, 6.0, 0.2), Direction::Z, Direction::X, T).unwrap(),
+        (2.0, 3.0, 2.8),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let part = ogeom_bool::fuse(&mut model, &block, &boss, T)
+        .unwrap()
+        .shape;
+    let edge = edge_with_midpoint(&model, &part, Point::new(0.0, 5.0, 0.0));
+    let alone = ogeom_fillet::fillet_edge(&mut model, &part, &edge, 0.5, T);
+    let together = ogeom_fillet::fillet_edges(&mut model, &part, &[edge], 0.5, T);
+    for (by, outcome) in [("fillet_edge", alone), ("fillet_edges", together)] {
+        let Err(ogeom_core::OgeomError::Construction(why)) = outcome else {
+            panic!("{by} rounded an edge whose ball touches the wall inside the boss");
+        };
+        assert!(
+            why.to_string()
+                .contains("across a face that does not reach so far"),
+            "{by}: {why}"
+        );
+    }
+}

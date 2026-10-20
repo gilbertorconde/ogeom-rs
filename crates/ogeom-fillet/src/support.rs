@@ -1457,17 +1457,23 @@ pub(crate) fn face_reach(
 /// its face and its setback, for a chain to check its bands against each
 /// other.
 ///
-/// `anywhere` asks only that the ball sit somewhere along the edge: a face
-/// narrowing toward one end (a pyramid's side under a rounded apex) holds
-/// the ball along most of the edge and lets it run off near that end,
-/// where the blend stops flush. Only a ball that fits at no station is
-/// refused then.
+/// `anywhere` asks only that the ball sit somewhere along the edge, for a
+/// band no other band of the request is checked against. A face
+/// narrowing along the edge (a triangle's side running down to its tip, a
+/// pyramid's side toward its base) holds the ball along part of the edge
+/// and lets the contact run off it elsewhere. Where the contact then
+/// stands outside the solid, the face it ran off ended at the solid's
+/// boundary, and the band is cut off there by the face that follows, as
+/// a band running up under a roof is. Where it stands in the material,
+/// the face ended against more material (a boss on the wall), and a band
+/// there would cut under it, touching no face: that station refuses. A
+/// ball that fits at no station is refused too.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-/// where a contact falls outside its face (at every station, for
-/// `anywhere`).
+/// where a contact falls outside its face (for `anywhere`, in the
+/// material, or at every station).
 pub(crate) fn ball_fits(
     model: &Model,
     solid: &Shape,
@@ -1553,6 +1559,7 @@ pub(crate) fn ball_fits(
     // where a neighbouring face in a chain carries the band on.
     let mut missed: Option<String> = None;
     let mut held = false;
+    let mut probe = LazyProbe::default();
     'stations: for fraction in [0.25, 0.5, 0.75] {
         let t = range.0 + (range.1 - range.0) * fraction;
         let p = curve.point_at(t, tol)?;
@@ -1634,7 +1641,15 @@ pub(crate) fn ball_fits(
                     "a blend of radius {radius} on the edge through {p:?} sets back {setback} \
                      across a face that does not reach so far"
                 );
-                if !anywhere {
+                // A solid that bounds no inside says nothing of where the
+                // contact stands, and the station is let run off.
+                let cut_off = match probe.get(model, solid, tol)? {
+                    Some(probe) => {
+                        probe.holds(model, found.point, tol)? == ogeom_algo::Containment::Out
+                    }
+                    None => true,
+                };
+                if !anywhere || !cut_off {
                     ogeom_bail!(Construction, "{refusal}");
                 }
                 missed = Some(refusal);

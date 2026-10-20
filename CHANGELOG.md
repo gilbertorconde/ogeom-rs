@@ -48,6 +48,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A lone edge is held to one ball-fit check through either entry
+  point.** `fillet_edge` let a ball's contact run off a host face
+  anywhere, as long as it fit somewhere along the edge, while
+  `fillet_edges` refused any station where it ran off, even for one
+  edge. On a wall that carries a boss with its underside 0.2 over the
+  floor, `fillet_edge` cut a radius-0.5 band along the whole edge. There
+  the ball touched the wall's plane 0.3 inside the material, so the band
+  grooved the block under the boss. On a wall that narrows to a tip,
+  `fillet_edges` refused a band that `fillet_edge` cut off correctly on
+  the faces the edge runs into. A station may now let the contact run
+  off its face only where the contact stands outside the solid, through
+  either entry point for one edge. The boss is refused by both, and the
+  tip is rounded by both to the closed form. A request of two or more
+  edges keeps the check at every station (#316).
+
 - **A part fused with its mirror image builds where a face's chart closes
   in `v` along its boundary.** The bake a reflecting placement forces
   places an edge on the closure of a closed chart beside its face, but did
