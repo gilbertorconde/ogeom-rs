@@ -822,3 +822,365 @@ fn a_plane_beside_a_ball_s_pole_turns_its_chart() {
         "{c} + {k} against {whole}"
     );
 }
+
+/// A sector of a cone of radius 3 and height 4 turning `turn` about its
+/// axis, apex down at the origin, its curved face bounded by the rim arc
+/// and the two rulings to the apex and by no edge at the apex: the rulings
+/// meet there at a vertex, as a file that states no degenerate edge leaves
+/// them.
+fn cone_sector(model: &mut Model, turn: f64) -> Shape {
+    use ogeom::geom::{BSpline2d, CircleCurve, ConeSurface, Curve, LineCurve, PlaneSurface};
+    use ogeom::math::{Circle, Cone, KnotVector, Plane, Point2};
+    use ogeom::topo::Location;
+    let (radius, height): (f64, f64) = (3.0, 4.0);
+    let slant = radius.hypot(height);
+    let cone = Cone::new(Frame::WORLD, 0.0, (radius / height).atan(), T).unwrap();
+    let surface = model
+        .geometry_mut()
+        .add_surface(ConeSurface::new(cone, (0.0, height)).unwrap().into());
+    let rim = |u: f64| Point::new(radius * u.cos(), radius * u.sin(), height);
+    let (apex, centre) = (Point::ORIGIN, Point::new(0.0, 0.0, height));
+    let vertex = |model: &mut Model, p: Point| ogeom::algo::make_vertex(model, p).shape;
+    let (a, o) = (vertex(model, apex), vertex(model, centre));
+    let (b0, b1) = (vertex(model, rim(0.0)), vertex(model, rim(turn)));
+    let line = |model: &mut Model, from: (&Shape, Point), to: (&Shape, Point)| {
+        let curve: Curve = LineCurve::segment(from.1, to.1, T).unwrap().into();
+        let length = from.1.distance(to.1);
+        ogeom::algo::make_edge_between(model, curve, (0.0, length), from.0, to.0, T)
+            .unwrap()
+            .shape
+    };
+    let rim_circle = Circle::new(
+        Frame::new(centre, Direction::Z, Direction::X, T).unwrap(),
+        radius,
+        T,
+    )
+    .unwrap();
+    let arc = ogeom::algo::make_edge_between(
+        model,
+        CircleCurve::new(rim_circle).into(),
+        (0.0, turn),
+        &b0,
+        &b1,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let r0 = line(model, (&b0, rim(0.0)), (&a, apex));
+    let r1 = line(model, (&b1, rim(turn)), (&a, apex));
+    let l0 = line(model, (&o, centre), (&b0, rim(0.0)));
+    let l1 = line(model, (&o, centre), (&b1, rim(turn)));
+    let axis = line(model, (&o, centre), (&a, apex));
+    // The cone's trims: the arc along the rim row, each ruling down its
+    // column from the rim row to the apex row, paced as its line is.
+    let here = Location::identity();
+    let row: ogeom::geom::PlanarCurve =
+        ogeom::geom::Line2d::segment(Point2::new(0.0, height), Point2::new(turn, height), T)
+            .unwrap()
+            .into();
+    ogeom::algo::attach_pcurve(model, &arc, row, surface, here.clone(), (0.0, turn)).unwrap();
+    for (edge, u) in [(&r0, 0.0), (&r1, turn)] {
+        let column = BSpline2d::new(
+            KnotVector::new(vec![0.0, 0.0, slant, slant], 1).unwrap(),
+            vec![Point2::new(u, height), Point2::new(u, 0.0)],
+            T,
+        )
+        .unwrap();
+        ogeom::algo::attach_pcurve(
+            model,
+            edge,
+            column.into(),
+            surface,
+            here.clone(),
+            (0.0, slant),
+        )
+        .unwrap();
+    }
+    let wire = ogeom::algo::make_wire(model, &[arc.reversed(), r0.clone(), r1.reversed()], T)
+        .unwrap()
+        .shape;
+    let curved = ogeom::algo::make_face_on(model, surface, &[wire], T)
+        .unwrap()
+        .shape;
+    let plane = |origin: Point, normal: Direction, x: Direction| -> ogeom::geom::SurfaceGeometry {
+        PlaneSurface::new(Plane::new(Frame::new(origin, normal, x, T).unwrap())).into()
+    };
+    let flat = |model: &mut Model, on: ogeom::geom::SurfaceGeometry, ring: Vec<Shape>| {
+        ogeom::algo::make_face_with_pcurves(model, on, &[ring], T)
+            .unwrap()
+            .shape
+    };
+    let cap = flat(
+        model,
+        plane(centre, Direction::Z, Direction::X),
+        vec![l0.clone(), arc, l1.reversed()],
+    );
+    let wall0 = flat(
+        model,
+        plane(apex, -Direction::Y, Direction::X),
+        vec![r0.reversed(), l0.reversed(), axis.clone()],
+    );
+    let outward = Direction::new(Vector::new(-turn.sin(), turn.cos(), 0.0), T).unwrap();
+    let wall1 = flat(
+        model,
+        plane(apex, outward, Direction::Z),
+        vec![l1, r1, axis.reversed()],
+    );
+    let shell = ogeom::algo::make_shell(model, &[curved, cap, wall0, wall1])
+        .unwrap()
+        .shape;
+    ogeom::algo::make_solid(model, &[shell]).unwrap().shape
+}
+
+/// The cone sector, three quarters of a turn, cut and kept by a slab
+/// below its rim holding the apex and by a band clear of the apex. The
+/// curved face's ring reaches the apex along its two rulings with no edge
+/// there, so its chart stands open along the apex row between them: the
+/// boolean closes it as a degenerate edge would. Each result checks, and
+/// measures what the sector holds below height h, 9π (h / 4)³.
+#[test]
+fn a_cone_sector_with_no_apex_edge_is_cut_through_its_apex_and_beside_it() {
+    let pi = core::f64::consts::PI;
+    let below = |h: f64| 9.0 * pi * (h / 4.0).powi(3);
+    for (low, high) in [(-1.0, 2.0), (1.0, 3.0)] {
+        let mut model = Model::new();
+        let sector = cone_sector(&mut model, 1.5 * pi);
+        assert!(check(&model, &sector, T).unwrap().is_valid());
+        let tool = make_box(
+            &mut model,
+            Frame::new(Point::new(-5.0, -5.0, low), Direction::Z, Direction::X, T).unwrap(),
+            (10.0, 10.0, high - low),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let inside = below(high.min(4.0)) - below(low.max(0.0));
+        for (name, kept, want) in [
+            (
+                "cut",
+                ogeom::boolean::cut(&mut model, &sector, &tool, T),
+                below(4.0) - inside,
+            ),
+            (
+                "common",
+                ogeom::boolean::common(&mut model, &sector, &tool, T),
+                inside,
+            ),
+        ] {
+            let kept = kept
+                .unwrap_or_else(|e| panic!("slab {low}..{high} {name}: {e}"))
+                .shape;
+            let diagnosis = check(&model, &kept, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "slab {low}..{high} {name}: {diagnosis}"
+            );
+            let got = volume(&model, &kept);
+            assert!(
+                (got - want).abs() <= want * 1e-9,
+                "slab {low}..{high} {name}: {got} against {want}"
+            );
+        }
+    }
+}
+
+/// A quarter of a ball of radius 3, its chart's seam in the quarter cut
+/// away, as the boolean leaves it, poles and all.
+fn quarter_ball(model: &mut Model) -> Shape {
+    let away = Direction::new(Vector::new(-1.0, -1.0, 0.0), T).unwrap();
+    let frame = Frame::new(Point::ORIGIN, Direction::Z, away, T).unwrap();
+    let ball = make_sphere(model, frame, 3.0, T).unwrap().shape;
+    let quadrant = make_box(
+        model,
+        Frame::new(Point::new(0.0, 0.0, -5.0), Direction::Z, Direction::X, T).unwrap(),
+        (5.0, 5.0, 10.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom::boolean::common(model, &ball, &quadrant, T)
+        .unwrap()
+        .shape
+}
+
+/// The quarter ball with its curved face bounded by its two meridians
+/// alone: the poles stated by no edge, as a file that states no degenerate
+/// edge leaves them.
+fn wedge_with_no_pole_edges(model: &mut Model) -> Shape {
+    use ogeom::topo::{Orientation, ShapeType, explore_unique};
+    let wedge = quarter_ball(model);
+    let faces = explore_unique(model, &wedge, ShapeType::Face).unwrap();
+    let mut kept = Vec::with_capacity(faces.len());
+    for face in &faces {
+        let stored = face.oriented(Orientation::Forward);
+        let surface = model.node(face).unwrap().data().as_face().unwrap().surface;
+        let mut wires = Vec::new();
+        let mut stripped = false;
+        for wire in model.children_of(&stored).unwrap() {
+            let edges = model.ordered_children_of(&wire).unwrap();
+            let solid_edges: Vec<Shape> = edges
+                .iter()
+                .filter(|e| !model.node(e).unwrap().data().as_edge().unwrap().degenerate)
+                .cloned()
+                .collect();
+            stripped |= solid_edges.len() != edges.len();
+            wires.push(
+                ogeom::algo::make_wire(model, &solid_edges, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+        if !stripped {
+            kept.push(face.clone());
+            continue;
+        }
+        let rebuilt = ogeom::algo::make_face_on(model, surface, &wires, T)
+            .unwrap()
+            .shape;
+        kept.push(if face.orientation() == Orientation::Reversed {
+            rebuilt.reversed()
+        } else {
+            rebuilt
+        });
+    }
+    let shell = ogeom::algo::make_shell(model, &kept).unwrap().shape;
+    ogeom::algo::make_solid(model, &[shell]).unwrap().shape
+}
+
+/// `solid` with one meridian of its ball face stated `turns` whole periods
+/// along the chart's `u`.
+fn meridian_moved(model: &mut Model, solid: &Shape, turns: f64) {
+    use ogeom::geom::{Curve2d as _, Surface as _};
+    use ogeom::topo::{EdgeRepr, NodeData, ShapeType, explore_unique};
+    let face = explore_unique(model, solid, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let s = model.node(f).unwrap().data().as_face().unwrap().surface;
+            model.geometry().surface(s).unwrap().is_closed_u(T)
+                || model.geometry().surface(s).unwrap().is_periodic_u()
+        })
+        .unwrap();
+    let surface = model.node(&face).unwrap().data().as_face().unwrap().surface;
+    let ((u0, u1), _) = model.geometry().surface(surface).unwrap().domain();
+    for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::PCurve {
+            curve,
+            range,
+            location,
+            ..
+        }) = data.pcurve_for(surface, edge.location()).cloned()
+        else {
+            continue;
+        };
+        let stated = model.geometry().pcurve(curve).unwrap().clone();
+        let (a, b) = (
+            stated.point_at(range.0, T).unwrap(),
+            stated.point_at(range.1, T).unwrap(),
+        );
+        // A meridian: one column, pole to pole.
+        if (a.x - b.x).abs() > 1e-9 {
+            continue;
+        }
+        let shift =
+            ogeom::math::Transform2::translation(ogeom::math::Vector2::new(turns * (u1 - u0), 0.0));
+        let moved = model
+            .geometry_mut()
+            .add_pcurve(stated.transformed(&shift, T).unwrap());
+        if let Some(NodeData::Edge(data)) = model.node_mut(&edge).map(|n| n.data_mut()) {
+            data.representations
+                .retain(|r| r.surface() != Some(surface));
+            data.representations.push(EdgeRepr::PCurve {
+                curve: moved,
+                range,
+                surface,
+                location,
+            });
+        }
+        return;
+    }
+    panic!("the ball face has no meridian");
+}
+
+/// The quarter ball with no pole edges, exact and converted to splines,
+/// as stated and with a meridian stated a period off either way, cut and
+/// kept by half spaces through it. Each result is the quarter ball's own,
+/// the poles closed along their rows, or a refusal: a meridian a period
+/// off leaves the ring more than a period wide along the pole rows, which
+/// no pole line closes. Never a solid that is not the quarter ball's.
+#[test]
+fn a_quarter_ball_with_no_pole_edges_cuts_as_stated_or_refuses() {
+    let mut reference = Model::new();
+    let stated = quarter_ball(&mut reference);
+    // Half spaces y > 0.113 and x > 0.137, each through the quarter ball.
+    let slabs = [(-10.0, 0.113), (0.137, -10.0)];
+    let slab = |model: &mut Model, (x, y): (f64, f64)| {
+        make_box(
+            model,
+            Frame::new(Point::new(x, y, -10.0), Direction::Z, Direction::X, T).unwrap(),
+            (20.0, 20.0, 20.0),
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let whole = volume(&reference, &stated);
+    let mut want = Vec::new();
+    for at in slabs {
+        let tool = slab(&mut reference, at);
+        for keep in [false, true] {
+            let built = if keep {
+                ogeom::boolean::common(&mut reference, &stated, &tool, T)
+            } else {
+                ogeom::boolean::cut(&mut reference, &stated, &tool, T)
+            }
+            .unwrap_or_else(|e| panic!("the stated quarter ball: {e}"))
+            .shape;
+            assert!(check(&reference, &built, T).unwrap().is_valid());
+            want.push(volume(&reference, &built));
+        }
+    }
+    for nurbs in [false, true] {
+        for turns in [0.0, 1.0, -1.0] {
+            let mut model = Model::new();
+            let mut solid = wedge_with_no_pole_edges(&mut model);
+            if nurbs {
+                solid = ogeom::algo::to_nurbs(&mut model, &solid, T).unwrap().shape;
+            }
+            if turns != 0.0 {
+                meridian_moved(&mut model, &solid, turns);
+            }
+            assert!(check(&model, &solid, T).unwrap().is_valid());
+            // A chart stated a period off is measured by its mesh, as
+            // closely as the solid itself is.
+            let band = (volume(&model, &solid) - whole).abs();
+            let mut k = 0;
+            for at in slabs {
+                let tool = slab(&mut model, at);
+                for keep in [false, true] {
+                    let built = if keep {
+                        ogeom::boolean::common(&mut model, &solid, &tool, T)
+                    } else {
+                        ogeom::boolean::cut(&mut model, &solid, &tool, T)
+                    };
+                    let case = format!("nurbs {nurbs} turns {turns} slab {at:?} common {keep}");
+                    match built {
+                        Ok(built) => {
+                            let diagnosis = check(&model, &built.shape, T).unwrap();
+                            assert!(diagnosis.is_valid(), "{case}: {diagnosis}");
+                            let got = volume(&model, &built.shape);
+                            assert!(
+                                (got - want[k]).abs() <= band + want[k] * 1e-6,
+                                "{case}: {got} against {}",
+                                want[k]
+                            );
+                        }
+                        Err(e) => assert!(turns != 0.0, "{case}: {e}"),
+                    }
+                    k += 1;
+                }
+            }
+        }
+    }
+}

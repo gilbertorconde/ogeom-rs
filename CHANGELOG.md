@@ -75,6 +75,18 @@ bump may break the API and a patch bump may not.
   past an oblique far end no longer counts against the corner. Every
   case measured matches the material above both bands to within 1e-6.
 
+- **A boolean through a cone or ball face whose ring reaches the apex or a
+  pole with no edge there builds.** Two rulings or meridians meeting at
+  the apex stand apart in the chart, at the columns they arrive along,
+  and with no degenerate edge nothing drew the apex row between them: the
+  boolean refused with "a face boundary strand dangles". Such a joint now
+  closes along the row as a degenerate edge would, where both ends lift to
+  the joint's vertex, the surface collapses that row to it within the
+  vertex's radius, the row is shorter than a period, and the face lies on
+  its left; any other joint still refuses. Eighteen of the twenty box cuts through
+  such faces in two printer assemblies now build, each cut and its common
+  adding up to the solid (#343).
+
 - **`apply_draft` gives a drafted planar wall a window that holds it.**
   The leaned plane's chart has its origin on the hinge and its `u` along
   it, but its window was the old plane's numbers grown: on a prism's wall

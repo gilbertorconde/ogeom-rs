@@ -895,6 +895,7 @@ fn gather(
             )?;
         }
         let moved = bring_trim_home(&surface, &mut edges, &mut poles, tol)?;
+        close_pole_joints(model, &face, &surface, &edges, &mut poles, &pole_keys, tol)?;
         // Rebuilt around edges it shares with faces set aside, the face
         // stays on its own surface, where those edges' pcurves are, in the
         // chart they are stated in.
@@ -1389,6 +1390,168 @@ fn fold_rings(
         }
         for (i, pcurve) in moved {
             edges[i].pcurve = pcurve;
+        }
+    }
+    Ok(())
+}
+
+/// The stretches of a pole row a face's ring crosses with no edge there:
+/// two edges meeting at a cone's apex or a sphere's pole stand apart in the
+/// chart, at the columns they arrive along, and the row between them is
+/// one point in space. Each such joint becomes a pole of the face, the
+/// chart line from one edge's end to the next one's start, as a degenerate
+/// edge there would state it.
+///
+/// A joint closes this way only where that line is the pole row the face
+/// itself bounds:
+/// - both ends lift to one point, within the joint vertex's radius;
+/// - the row is that point: the surface's rate along it, read at its ends
+///   and middle, times the chart's whole width that way, and its rate
+///   across times the line's offset, stay within that radius;
+/// - the line is shorter than the chart's period that way, and the face
+///   lies on its left, as every ring of a face stored forward keeps it:
+///   towards the middle of the face's own trim.
+///
+/// Any other joint is left for the arrangement to snap or refuse by name.
+/// A ring that walks a seam both ways is left as it is: which side of the
+/// seam it walks is not read here.
+fn close_pole_joints(
+    model: &Model,
+    face: &Shape,
+    surface: &SurfaceGeometry,
+    edges: &[BoundaryEdge],
+    poles: &mut Vec<PoleEdge>,
+    pole_keys: &[EdgeKey],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let index: ogeom_core::FastMap<EdgeKey, usize> =
+        edges.iter().enumerate().map(|(i, e)| (e.node, i)).collect();
+    // The middle of the face's trim in the chart.
+    let (mut low, mut high) = (
+        Point2::new(f64::INFINITY, f64::INFINITY),
+        Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for e in edges {
+        for k in 0..=4 {
+            let p = e.pcurve.point_at(
+                e.prange.0 + (e.prange.1 - e.prange.0) * f64::from(k) / 4.0,
+                tol,
+            )?;
+            low = Point2::new(low.x.min(p.x), low.y.min(p.y));
+            high = Point2::new(high.x.max(p.x), high.y.max(p.y));
+        }
+    }
+    let centre = Point2::new(f64::midpoint(low.x, high.x), f64::midpoint(low.y, high.y));
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let closes = [
+        surface.is_periodic_u() || surface.is_closed_u(tol),
+        surface.is_periodic_v() || surface.is_closed_v(tol),
+    ];
+    let stored = face.oriented(ogeom_topo::Orientation::Forward);
+    for wire in model.children_of(&stored)? {
+        let ring = model.ordered_children_of(&wire)?;
+        // Each occurrence's edge and whether the ring walks it backwards;
+        // `None` for a degenerate edge, which stands between its
+        // neighbours already.
+        let mut walk: Vec<Option<(usize, bool)>> = Vec::with_capacity(ring.len());
+        for edge in &ring {
+            let key = EdgeKey::of(edge);
+            if pole_keys.contains(&key) {
+                walk.push(None);
+                continue;
+            }
+            let Some(&i) = index.get(&key) else {
+                walk.clear();
+                break;
+            };
+            if edges[i].other_side.is_some() {
+                walk.clear();
+                break;
+            }
+            walk.push(Some((
+                i,
+                edge.orientation() == ogeom_topo::Orientation::Reversed,
+            )));
+        }
+        let n = walk.len();
+        for k in 0..n {
+            let (Some((a, a_back)), Some((b, b_back))) = (walk[k], walk[(k + 1) % n]) else {
+                continue;
+            };
+            // The joint: where the ring leaves one edge and takes up the
+            // next, in the chart and in space, with the joint vertex's
+            // radius as each edge states it.
+            let end = |i: usize, back: bool, last: bool| -> OgeomResult<(Point2, (Point, f64))> {
+                let e = &edges[i];
+                let at_start = back == last;
+                let t = if at_start { e.prange.0 } else { e.prange.1 };
+                Ok((e.pcurve.point_at(t, tol)?, e.ends[usize::from(!at_start)]))
+            };
+            let ((from, (pa, ra)), (to, (pb, rb))) =
+                (end(a, a_back, true)?, end(b, b_back, false)?);
+            if from.distance(to) <= PARAM_SNAP {
+                continue;
+            }
+            let reach = ra.max(rb).max(tol.confusion());
+            if pa.distance(pb) > reach {
+                continue;
+            }
+            let along_u = (to.x - from.x).abs() >= (to.y - from.y).abs();
+            let (length, offset, width, closing) = if along_u {
+                (
+                    (to.x - from.x).abs(),
+                    (to.y - from.y).abs(),
+                    (u1 - u0).abs(),
+                    closes[0],
+                )
+            } else {
+                (
+                    (to.y - from.y).abs(),
+                    (to.x - from.x).abs(),
+                    (v1 - v0).abs(),
+                    closes[1],
+                )
+            };
+            if closing && length >= width - PARAM_SNAP {
+                continue;
+            }
+            let mut collapses = true;
+            for s in [0.0, 0.5, 1.0] {
+                let q = Point2::new(from.x + (to.x - from.x) * s, from.y + (to.y - from.y) * s);
+                let Ok((du, dv)) = surface.d1_at(q.x, q.y, tol) else {
+                    collapses = false;
+                    break;
+                };
+                let (rate, across) = if along_u {
+                    (du.magnitude(), dv.magnitude())
+                } else {
+                    (dv.magnitude(), du.magnitude())
+                };
+                if !(rate * width <= reach && across * offset <= reach) {
+                    collapses = false;
+                    break;
+                }
+            }
+            if !collapses {
+                continue;
+            }
+            // The face on the line's left.
+            let run = to - from;
+            let middle = Point2::midpoint(from, to);
+            let towards = centre - middle;
+            if run.x * towards.y - run.y * towards.x <= 0.0 {
+                continue;
+            }
+            let Ok(at) = surface.point_at(from.x, from.y, tol) else {
+                continue;
+            };
+            let line = ogeom_geom::Line2d::segment(from, to, tol)?;
+            let prange = ogeom_geom::Curve2d::domain(&line);
+            poles.push(PoleEdge {
+                point: at,
+                pcurve: line.into(),
+                prange,
+            });
         }
     }
     Ok(())
