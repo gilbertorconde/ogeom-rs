@@ -102,6 +102,21 @@ bump may break the API and a patch bump may not.
   solids of two printer assemblies read from STEP change volume by 0.1
   to 0.3 %, each a face on a closed spline patch that had lost a strip
   (#336).
+- **A boolean through a face whose ring folds across its closed chart's
+  join builds (#333).** An edge on the closure of a closed chart may state
+  its pcurve on the other branch from the edges it meets: a quarter-round
+  wall's straight edge at `u = 0` while its arcs end at `u = 2 pi`. The
+  ring is one closed curve on the surface, and the mesher folds it back,
+  but the boolean read each pcurve where it was stated and failed with "a
+  face boundary strand dangles". Each edge is now moved by whole periods
+  onto the branch that continues its ring, anchored on the ring's pole or
+  apex edge where it has one, and each hole onto its outer ring's branch.
+  A cone sector, a sphere lune and a drilled wall with any edge restated
+  a period off now cut and intersect exactly as when stated on one
+  branch, and 62 of 140 box cuts through folded faces of two real-world
+  assemblies that failed now build. Rings holding a seam are left as
+  stated (#344), as are apex joints with no degenerate edge (#343) and
+  tiny cylinders whose period jumps read as apex joints (#345).
 
 - **A lone edge is held to one ball-fit check through either entry
   point.** `fillet_edge` let a ball's contact run off a host face

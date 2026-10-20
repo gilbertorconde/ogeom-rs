@@ -654,6 +654,7 @@ fn gather(
         let mut edges = Vec::new();
         let mut samples: Vec<(ogeom_math::Aabb, ogeom_math::Aabb, f64)> = Vec::new();
         let mut poles = Vec::new();
+        let mut pole_keys = Vec::new();
         for edge in face_edges {
             if let Some(aside) = aside
                 && aside.edges.contains(&EdgeKey::of(&edge))
@@ -695,6 +696,7 @@ fn gather(
                         pcurve: planar.clone(),
                         prange: *range,
                     });
+                    pole_keys.push(EdgeKey::of(&edge));
                 }
                 continue;
             };
@@ -877,6 +879,17 @@ fn gather(
                 // refusal names the failure.
                 (false, false) => {}
             }
+        }
+        // A face rebuilt on its own surface keeps its pcurves as stated.
+        if aside.is_none() || !(shares || !holes_aside.is_empty()) {
+            fold_rings(
+                model,
+                &face,
+                &surface,
+                &mut edges,
+                (&poles, &pole_keys),
+                tol,
+            )?;
         }
         let moved = bring_trim_home(&surface, &mut edges, &mut poles, tol)?;
         // Rebuilt around edges it shares with faces set aside, the face
@@ -1093,6 +1106,283 @@ fn kept_filter(
     }
     let filter = bound.intersection(&kept.expanded(margin));
     if filter.is_empty() { bound } else { filter }
+}
+
+/// Each of a face's rings walked in its chart, every edge's pcurve moved by
+/// whole periods onto the branch that continues the ring, along each
+/// direction the chart closes in, and each hole brought onto its outer
+/// ring's branch.
+///
+/// Two faces sharing an edge share its pcurve, and on a periodic surface
+/// it is stated on one branch: a quarter-round wall's straight edge on the
+/// chart's closure may stand at `u = 0` while the arcs it meets end at
+/// `u = 2 pi`. The ring is one closed curve on the surface, and in the
+/// chart it jumps a period at one joint and back at another; the
+/// arrangement reads two strands that end where nothing begins. The
+/// mesher folds the same jumps back, edge by edge.
+///
+/// The walk starts on a ring's degenerate edge where it has one: a pole's
+/// or an apex's chart line is the strand the arrangement draws there, and
+/// is never moved, so the edges either side of it are carried onto its
+/// branch, met in the chart, since every point of the line is the same
+/// point of the surface. Elsewhere an edge is moved only where its start
+/// stands apart on the surface from the end walked to, measured through
+/// the middle of the chart segment between them, and moved stands within
+/// both edges' radii of it. A ring with no degenerate edge starts just
+/// after a joint across an apex (two rulings meeting at one point stand
+/// apart in the chart, and meet from any branch), and its first edge never
+/// moves.
+///
+/// A ring is folded only where, folded, it closes where it began: one
+/// winding round the surface keeps its jump. A ring holding a seam or an edge it walks twice is left as stated. A hole whose chart extent lies
+/// wholly beside its outer ring's is moved by the whole periods that put
+/// it inside. On a chart that closes without repeating, a pcurve moves
+/// only onto a stretch the chart covers.
+fn fold_rings(
+    model: &Model,
+    face: &Shape,
+    surface: &SurfaceGeometry,
+    edges: &mut [BoundaryEdge],
+    (poles, pole_keys): (&[PoleEdge], &[EdgeKey]),
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    /// One edge as a ring walks it: a boundary edge, which may move, or a
+    /// degenerate one, which anchors the ring; and whether the walk runs
+    /// against its pcurve.
+    #[derive(Clone, Copy)]
+    enum Step {
+        Edge(usize, bool),
+        Pole(usize, bool),
+    }
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let periods = [
+        ((surface.is_periodic_u() || surface.is_closed_u(tol)) && ub > ua).then_some(ub - ua),
+        ((surface.is_periodic_v() || surface.is_closed_v(tol)) && vb > va).then_some(vb - va),
+    ];
+    if periods.iter().all(Option::is_none) {
+        return Ok(());
+    }
+    let periodic = [surface.is_periodic_u(), surface.is_periodic_v()];
+    // On a chart that closes without repeating, a pcurve is moved only onto
+    // a stretch the chart covers: an edge on the closure, from one of its
+    // two lines to the other.
+    let inside = |pc: &PlanarCurve, range: (f64, f64)| -> OgeomResult<bool> {
+        for k in 0..=2 {
+            let p = pc.point_at(range.0 + (range.1 - range.0) * f64::from(k) / 2.0, tol)?;
+            if (!periodic[0] && (p.x < ua - PARAM_SNAP || p.x > ub + PARAM_SNAP))
+                || (!periodic[1] && (p.y < va - PARAM_SNAP || p.y > vb + PARAM_SNAP))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    // The whole periods that bring `from` nearest `to`, along each closing
+    // direction.
+    let whole = |to: Point2, from: Point2| -> ogeom_math::Vector2 {
+        let mut shift = ogeom_math::Vector2::new(0.0, 0.0);
+        if let Some(period) = periods[0] {
+            shift.x = ((to.x - from.x) / period).round() * period;
+        }
+        if let Some(period) = periods[1] {
+            shift.y = ((to.y - from.y) / period).round() * period;
+        }
+        shift
+    };
+    let mut index: ogeom_core::FastMap<EdgeKey, (usize, usize)> = ogeom_core::FastMap::default();
+    for (i, e) in edges.iter().enumerate() {
+        index.insert(e.node, (i, 0));
+    }
+    let wires: Vec<Vec<Shape>> = model
+        .children_of(face)?
+        .iter()
+        .map(|wire| model.ordered_children_of(wire))
+        .collect::<OgeomResult<_>>()?;
+    for edge in wires.iter().flatten() {
+        if let Some(slot) = index.get_mut(&EdgeKey::of(edge)) {
+            slot.1 += 1;
+        }
+    }
+    // How far apart two chart points stand on the surface, read through
+    // the middle of the segment between them.
+    let apart = |a: Point2, b: Point2| -> Option<f64> {
+        let mid = Point2::new(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
+        let (p, m, q) = (
+            surface.point_at(a.x, a.y, tol).ok()?,
+            surface.point_at(mid.x, mid.y, tol).ok()?,
+            surface.point_at(b.x, b.y, tol).ok()?,
+        );
+        Some(p.distance(m).max(m.distance(q)))
+    };
+    // Each ring's boundary edges where it was walked: the rings a hole may
+    // be brought home among.
+    let mut walked: Vec<Option<Vec<usize>>> = Vec::with_capacity(wires.len());
+    for ring in &wires {
+        let mut walk = Vec::with_capacity(ring.len());
+        let mut kept = false;
+        for edge in ring {
+            let back = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let key = EdgeKey::of(edge);
+            if let Some(&(i, uses)) = index.get(&key) {
+                let e = &edges[i];
+                kept |= uses > 1 || e.seam.is_some() || e.other_side.is_some();
+                walk.push(Step::Edge(i, back));
+            } else if let Some(j) = pole_keys.iter().position(|k| *k == key) {
+                walk.push(Step::Pole(j, back));
+            }
+        }
+        let moving: Vec<usize> = walk
+            .iter()
+            .filter_map(|s| match s {
+                Step::Edge(i, _) => Some(*i),
+                Step::Pole(..) => None,
+            })
+            .collect();
+        if kept || moving.is_empty() || walk.len() < 2 {
+            walked.push(None);
+            continue;
+        }
+        let ends_of = |step: Step| -> OgeomResult<(Point2, Point2)> {
+            let (pc, range, back) = match step {
+                Step::Edge(i, back) => (&edges[i].pcurve, edges[i].prange, back),
+                Step::Pole(j, back) => (&poles[j].pcurve, poles[j].prange, back),
+            };
+            let (a, b) = (pc.point_at(range.0, tol)?, pc.point_at(range.1, tol)?);
+            Ok(if back { (b, a) } else { (a, b) })
+        };
+        let radius = |step: Step| match step {
+            Step::Edge(i, _) => edges[i].tolerance.max(edges[i].ends_tolerance),
+            Step::Pole(..) => 0.0,
+        };
+        let is_pole = |step: Step| matches!(step, Step::Pole(..));
+        // Whether a joint meets: in the chart beside a degenerate edge,
+        // whose line stands for one point, and on the surface elsewhere.
+        let meets = |a: Point2, b: Point2, step: Step, prev: Step, within: f64| -> bool {
+            if is_pole(step) || is_pole(prev) {
+                a.distance(b) <= SEAM_HAIR
+            } else {
+                apart(a, b).is_some_and(|d| d <= within)
+            }
+        };
+        let start = if let Some(k) = walk.iter().position(|s| is_pole(*s)) {
+            k
+        } else {
+            let mut start = 0;
+            for k in 0..walk.len() {
+                let (step, prev) = (walk[k], walk[(k + walk.len() - 1) % walk.len()]);
+                let (end, from) = (ends_of(prev)?.1, ends_of(step)?.0);
+                let within = 2.0 * (radius(step) + radius(prev)) + tol.confusion();
+                if end.distance(from) > PARAM_SNAP && apart(end, from).is_some_and(|d| d <= within)
+                {
+                    start = k;
+                    break;
+                }
+            }
+            start
+        };
+        walk.rotate_left(start);
+        let (begin, mut last) = ends_of(walk[0])?;
+        let mut moves: Vec<(usize, PlanarCurve)> = Vec::new();
+        let mut broken = false;
+        for k in 1..walk.len() {
+            let (step, prev) = (walk[k], walk[k - 1]);
+            let (from, to) = ends_of(step)?;
+            let within = 2.0 * (radius(step) + radius(prev)) + tol.confusion();
+            let Step::Edge(i, _) = step else {
+                // A degenerate edge stays where it is stated: the ring must
+                // reach it there.
+                broken |= !meets(last, from, step, prev, within);
+                last = to;
+                continue;
+            };
+            let shift = whole(last, from);
+            let moved = Point2::new(from.x + shift.x, from.y + shift.y);
+            let fold = (shift.x != 0.0 || shift.y != 0.0)
+                && !meets(last, from, step, prev, within)
+                && meets(last, moved, step, prev, within);
+            last = to;
+            if fold {
+                let by = ogeom_math::Transform2::translation(shift);
+                let pcurve = edges[i].pcurve.transformed(&by, tol)?;
+                if inside(&pcurve, edges[i].prange)? {
+                    moves.push((i, pcurve));
+                    last = Point2::new(to.x + shift.x, to.y + shift.y);
+                }
+            }
+        }
+        // Folded, the ring closes where it began, or it winds round the
+        // surface and stays as stated.
+        let (first, closing) = (walk[0], walk[walk.len() - 1]);
+        let within = 2.0 * (radius(first) + radius(closing)) + tol.confusion();
+        if !broken && !moves.is_empty() && meets(last, begin, first, closing, within) {
+            for (i, pcurve) in moves {
+                edges[i].pcurve = pcurve;
+            }
+        }
+        walked.push((!walk.iter().any(|s| is_pole(*s))).then_some(moving));
+    }
+    // A hole on another branch from its outer ring is brought onto it.
+    let extent = |edges: &[BoundaryEdge], ring: &[usize]| -> OgeomResult<(Point2, Point2)> {
+        let mut low = Point2::new(f64::INFINITY, f64::INFINITY);
+        let mut high = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for &i in ring {
+            let e = &edges[i];
+            for k in 0..=4 {
+                let t = e.prange.0 + (e.prange.1 - e.prange.0) * f64::from(k) / 4.0;
+                let p = e.pcurve.point_at(t, tol)?;
+                low = Point2::new(low.x.min(p.x), low.y.min(p.y));
+                high = Point2::new(high.x.max(p.x), high.y.max(p.y));
+            }
+        }
+        Ok((low, high))
+    };
+    let Some(outer) = wires.first() else {
+        return Ok(());
+    };
+    let outer: Vec<usize> = outer
+        .iter()
+        .filter_map(|e| index.get(&EdgeKey::of(e)).map(|&(i, _)| i))
+        .collect();
+    if outer.is_empty() {
+        return Ok(());
+    }
+    let (olow, ohigh) = extent(edges, &outer)?;
+    for hole in walked.iter().skip(1).flatten() {
+        let (low, high) = extent(edges, hole)?;
+        let centre = Point2::new(f64::midpoint(low.x, high.x), f64::midpoint(low.y, high.y));
+        let ocentre = Point2::new(
+            f64::midpoint(olow.x, ohigh.x),
+            f64::midpoint(olow.y, ohigh.y),
+        );
+        let shift = whole(ocentre, centre);
+        let beside =
+            |lo: f64, hi: f64, olo: f64, ohi: f64| hi < olo - PARAM_SNAP || lo > ohi + PARAM_SNAP;
+        let within =
+            |lo: f64, hi: f64, olo: f64, ohi: f64| lo >= olo - PARAM_SNAP && hi <= ohi + PARAM_SNAP;
+        let along = |s: f64, lo: f64, hi: f64, olo: f64, ohi: f64| {
+            s == 0.0 || (beside(lo, hi, olo, ohi) && within(lo + s, hi + s, olo, ohi))
+        };
+        if (shift.x == 0.0 && shift.y == 0.0)
+            || !along(shift.x, low.x, high.x, olow.x, ohigh.x)
+            || !along(shift.y, low.y, high.y, olow.y, ohigh.y)
+        {
+            continue;
+        }
+        let by = ogeom_math::Transform2::translation(shift);
+        let mut moved = Vec::with_capacity(hole.len());
+        for &i in hole {
+            let pcurve = edges[i].pcurve.transformed(&by, tol)?;
+            if !inside(&pcurve, edges[i].prange)? {
+                moved.clear();
+                break;
+            }
+            moved.push((i, pcurve));
+        }
+        for (i, pcurve) in moved {
+            edges[i].pcurve = pcurve;
+        }
+    }
+    Ok(())
 }
 
 /// A face's pcurves moved by whole periods, all alike, so the middle of
