@@ -26,8 +26,12 @@ use crate::shape::rebuilt;
 /// narrows the solid in the `pull` direction (the way the part leaves its
 /// mould), and a negative one widens it. Leaning inwards tilts the face's
 /// outward normal *towards* the pull, which is how the sense is picked, by
-/// measurement. A face parallel to the neutral plane has no line to turn
-/// about and is refused by name, as is a face the rebuild cannot re-meet.
+/// measurement. A face the neutral plane does not reach turns about where
+/// its surface, run on beyond the face, meets the plane. A face parallel
+/// to the neutral plane has no line to turn about and is refused by name,
+/// as is a face the plane crosses in two runs (a region beside both would
+/// turn about two hinges), a patch that stops short of the plane, and a
+/// face the rebuild cannot re-meet.
 ///
 /// # Errors
 ///
@@ -591,12 +595,113 @@ fn extruded_draft(
 /// How many stations a general draft's hinge is sampled at, all round.
 const HINGE_STATIONS: usize = 256;
 
+/// `surface` with its window run on to where it meets `neutral`, where it
+/// runs on at all: a drum's or a cone's rulings are straight lines in `v`,
+/// each meeting the plane at one closed-form `v`, and the window grows to
+/// hold them all (by a tenth of its span either way, so the crossing stands
+/// clear of its rows), short of a cone's apex. Anything else is its stored
+/// window, which a patch does not run past.
+fn reaching(
+    surface: &SurfaceGeometry,
+    neutral: Plane,
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let apex = match surface {
+        SurfaceGeometry::Cylinder(_) => None,
+        SurfaceGeometry::Cone(c) => {
+            let cone = c.cone();
+            Some(-cone.reference_radius() / cone.half_angle().tan())
+        }
+        _ => return Ok(surface.clone()),
+    };
+    let n = neutral.normal().vector();
+    let o = neutral.origin().to_vector();
+    let (mut lo, mut hi) = (va, vb);
+    for k in 0..HINGE_STATIONS {
+        #[allow(clippy::cast_precision_loss)]
+        let u = (ub - ua).mul_add(k as f64 / HINGE_STATIONS as f64, ua);
+        let foot = surface.point_at(u, 0.0, tol)?;
+        let ruling = surface.point_at(u, 1.0, tol)? - foot;
+        let along = n.dot(ruling);
+        if along.abs() <= tol.angular() {
+            continue;
+        }
+        let v = n.dot(o - foot.to_vector()) / along;
+        (lo, hi) = (lo.min(v), hi.max(v));
+    }
+    let margin = (hi - lo) * 0.1;
+    let (lo, hi) = (lo - margin, hi + margin);
+    // A cone runs on only to its apex: past it is the other nappe.
+    if let Some(apex) = apex
+        && ((va >= apex && lo < apex) || (vb <= apex && hi > apex))
+    {
+        return Ok(surface.clone());
+    }
+    Ok(match surface {
+        SurfaceGeometry::Cylinder(c) => {
+            ogeom_geom::CylinderSurface::new(c.cylinder(), (lo, hi))?.into()
+        }
+        SurfaceGeometry::Cone(c) => ogeom_geom::ConeSurface::new(c.cone(), (lo, hi))?.into(),
+        _ => surface.clone(),
+    })
+}
+
+/// The segments a plane cuts from a face's mesh, one per triangle it
+/// crosses, each end in the face's chart and in space. A vertex the plane
+/// passes through (the hinge running along a rim, as a draft about a base
+/// does) is a crossing in itself, not a sign to read; read as one, rounding
+/// gives every rim triangle a hair of a segment pointing anywhere. `on` is
+/// how near the plane a point counts as on it.
+fn crossing_segments(
+    mesh: &ogeom_topo::Triangulation,
+    neutral: Plane,
+    on: f64,
+) -> Vec<[((f64, f64), Point); 2]> {
+    let side: Vec<f64> = mesh
+        .positions
+        .iter()
+        .map(|p| neutral.signed_distance_to(*p))
+        .collect();
+    let mut segments: Vec<[((f64, f64), Point); 2]> = Vec::new();
+    for t in &mesh.triangles {
+        let mut ends: Vec<((f64, f64), Point)> = Vec::with_capacity(2);
+        for &corner in t {
+            let i = corner as usize;
+            if side[i].abs() <= on {
+                ends.push((mesh.parameters[i], mesh.positions[i]));
+            }
+        }
+        for k in 0..3 {
+            let (i, j) = (t[k] as usize, t[(k + 1) % 3] as usize);
+            let (a, b) = (side[i], side[j]);
+            if a.abs() <= on || b.abs() <= on || (a < 0.0) == (b < 0.0) {
+                continue;
+            }
+            let f = a / (a - b);
+            let (pa, pb) = (mesh.parameters[i], mesh.parameters[j]);
+            let (qa, qb) = (mesh.positions[i], mesh.positions[j]);
+            ends.push((
+                (pa.0 + (pb.0 - pa.0) * f, pa.1 + (pb.1 - pa.1) * f),
+                qa + (qb - qa) * f,
+            ));
+        }
+        ends.dedup_by(|a, b| a.1.distance(b.1) <= on);
+        if ends.len() == 2 && ends[0].1.distance(ends[1].1) > on {
+            segments.push([ends[0], ends[1]]);
+        }
+    }
+    segments
+}
+
 /// The turned support for any face: the ruled surface through the face's
 /// crossing with the neutral plane, its rulings the pull direction turned
 /// about the crossing's tangent by the draft: what a mould-maker means by
 /// a draft, and what the planar and revolved paths are the closed forms
 /// of. The crossing is read off the face's own mesh and corrected onto the
-/// surface, so it lies inside the face whatever the surface's chart does.
+/// surface, so it lies inside the face whatever the surface's chart does;
+/// a face the plane misses is read off its surface beyond it instead (see
+/// [`reaching`]), as the closed forms read their extensions.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 fn general_draft(
     model: &Model,
@@ -634,49 +739,42 @@ fn general_draft(
     }
 
     // The crossing, one segment per triangle the plane cuts, in the chart
-    // with its ends in space. A vertex the plane passes through (the hinge
-    // running along a rim, as a draft about a base does) is a crossing in
-    // itself, not a sign to read; read as one, rounding gives every rim
-    // triangle a hair of a segment pointing anywhere.
+    // with its ends in space. A face the plane misses is drafted about the
+    // plane's crossing with its surface beyond it, as a planar face turns
+    // about the line its plane's extension meets the neutral one in: the
+    // same surface, meshed whole on a face of its own.
     let on = tol.confusion() * 10.0;
-    let side: Vec<f64> = mesh
-        .positions
-        .iter()
-        .map(|p| neutral.signed_distance_to(*p))
-        .collect();
-    let mut segments: Vec<[((f64, f64), Point); 2]> = Vec::new();
-    for t in &mesh.triangles {
-        let mut ends: Vec<((f64, f64), Point)> = Vec::with_capacity(2);
-        for &corner in t {
-            let i = corner as usize;
-            if side[i].abs() <= on {
-                ends.push((mesh.parameters[i], mesh.positions[i]));
-            }
-        }
-        for k in 0..3 {
-            let (i, j) = (t[k] as usize, t[(k + 1) % 3] as usize);
-            let (a, b) = (side[i], side[j]);
-            if a.abs() <= on || b.abs() <= on || (a < 0.0) == (b < 0.0) {
-                continue;
-            }
-            let f = a / (a - b);
-            let (pa, pb) = (mesh.parameters[i], mesh.parameters[j]);
-            let (qa, qb) = (mesh.positions[i], mesh.positions[j]);
-            ends.push((
-                (pa.0 + (pb.0 - pa.0) * f, pa.1 + (pb.1 - pa.1) * f),
-                qa + (qb - qa) * f,
-            ));
-        }
-        ends.dedup_by(|a, b| a.1.distance(b.1) <= on);
-        if ends.len() == 2 && ends[0].1.distance(ends[1].1) > on {
-            segments.push([ends[0], ends[1]]);
-        }
+    let mut segments = crossing_segments(&mesh, neutral, on);
+    let beyond = segments.is_empty();
+    // The surface the hinge is read on: the face's own, or where the face
+    // misses the plane, the same surface run on to meet it.
+    let reached;
+    let surface: &SurfaceGeometry = if beyond {
+        reached = reaching(surface, neutral, tol)?;
+        &reached
+    } else {
+        surface
+    };
+    if beyond {
+        let mut scratch = Model::new();
+        let whole = ogeom_algo::make_natural_face(&mut scratch, surface.clone())?.shape;
+        let whole_mesh = ogeom_mesh::triangulate_face(
+            &scratch,
+            &whole,
+            ogeom_mesh::Deflection {
+                chord: 0.05,
+                angular: 0.2,
+                ..ogeom_mesh::Deflection::default()
+            },
+            tol,
+        )?;
+        segments = crossing_segments(&whole_mesh, neutral, on);
     }
     if segments.is_empty() {
         ogeom_bail!(
             Construction,
-            "the neutral plane does not cross the drafted face; there is no \
-             hinge to turn about"
+            "the neutral plane meets neither the drafted face nor its surface; \
+             there is no hinge to turn about"
         );
     }
     // Chained end to end into one run, closed or open, by where the ends
@@ -733,10 +831,19 @@ fn general_draft(
         }
     }
     if used.iter().any(|u| !u) {
+        // Each run would hinge the part of the face beside it, and a part
+        // lying beside two runs would turn about both: the face would split
+        // where the two turned supports meet, which a draft (the same faces
+        // on turned supports) does not do.
+        let what = if beyond {
+            "the drafted face's surface"
+        } else {
+            "the drafted face"
+        };
         ogeom_bail!(
             Construction,
-            "the neutral plane crosses the drafted face more than once; \
-             there is no one hinge to turn about"
+            "the neutral plane crosses {what} more than once; there is no one \
+             hinge to turn about"
         );
     }
     let closed = chain.len() > 3 && same(chain[0].1, chain[chain.len() - 1].1);

@@ -1387,15 +1387,24 @@ with the drafted angle held along the height. Every other face (a raw \
 fitted patch, a wall of revolution about an oblique neutral) is drafted \
 the way a mould-maker drafts: the ruled surface through the face's \
 crossing with the neutral plane, rulings the pull turned by the angle, \
-read off the face's own mesh and corrected onto the surface. A draft \
-whose turned rulings cross inside the drafted window (a profile curled \
-tighter than the draft's reach) is refused by name, as is a face the \
-neutral plane crosses twice or not at all."""
+read off the face's own mesh and corrected onto the surface. A face the \
+neutral plane does not reach turns about where its own surface, run on \
+beyond the face, meets the plane: the planes' line, the neutral circle, \
+the ruling's closed-form height, a drum's or cone's rulings run on to the \
+plane, or a patch's crossing within its own extent; a patch that stops \
+short of the plane has no extension to carry the hinge and is refused by \
+name. A draft whose turned rulings cross inside the drafted window (a \
+profile curled tighter than the draft's reach) is refused by name, as is \
+a face the neutral plane crosses in two runs: a region beside both would \
+turn about two hinges, and the face would split where the two turned \
+supports meet, which a draft (the same faces on turned supports) does \
+not do."""
 claims = ["BRepOffsetAPI_DraftAngle", "BRepOffsetAPI_MakeDraft", "Draft", "Draft_*"]
 symbols = ["ogeom_offset::apply_draft"]
 tests = [
     "crates/ogeom/tests/features.rs::four_walls_drafted_about_the_base_make_a_frustum",
     "crates/ogeom-offset/tests/draft.rs",
+    "crates/ogeom-offset/tests/draft.rs::walls_below_an_oblique_neutral_turn_about_their_surfaces_crossing",
 ]
 
 [[capability]]

@@ -1148,3 +1148,170 @@ fn a_drafted_drums_edges_state_their_pcurves_gaps() {
         }
     }
 }
+
+/// A drum of radius ten from z = 0 to `height`, its wall skinned through
+/// circles at each of `levels` and so a raw fitted patch, and that wall.
+fn skinned_drum(
+    model: &mut ogeom_topo::Model,
+    levels: &[f64],
+) -> (ogeom_topo::Shape, ogeom_topo::Shape) {
+    let ring = |model: &mut ogeom_topo::Model, z: f64| {
+        let frame = Frame::new(
+            Point::new(0.0, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = ogeom_math::Circle::new(frame, 10.0, T).unwrap();
+        let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+        let edge = ogeom_algo::make_edge(model, curve, (0.0, core::f64::consts::TAU), T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let sections: Vec<_> = levels.iter().map(|z| ring(model, *z)).collect();
+    let hints: Vec<Point> = levels.iter().map(|z| Point::new(10.0, 0.0, *z)).collect();
+    let solid = ogeom_offset::make_loft_skinned_aligned(model, &sections, &hints, 1e-2, T)
+        .unwrap()
+        .shape;
+    let wall = fitted_wall_of(model, &solid);
+    (solid, wall)
+}
+
+/// The face of `solid` on a fitted patch.
+fn fitted_wall_of(model: &ogeom_topo::Model, solid: &ogeom_topo::Shape) -> ogeom_topo::Shape {
+    explore(model, solid, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            model
+                .node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| model.geometry().surface(d.surface))
+                .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)))
+        })
+        .expect("the solid has a fitted wall")
+}
+
+/// A drum, and a cone narrowing from radius 10 to 6 over its height of 20,
+/// each drafted about a plane tilted off its axis that passes wholly above
+/// it: the wall never meets the plane, its surface's extension does, in a
+/// closed curve short of the cone's apex at z = 50. The drafted wall turns
+/// about that curve: every ruling leans the draft off the pull, and the
+/// curve lies on the drafted support, which runs on to it beyond the face,
+/// to the fit's target.
+#[test]
+fn walls_below_an_oblique_neutral_turn_about_their_surfaces_crossing() {
+    use ogeom_geom::Surface as _;
+    let tilt = 0.35_f64;
+    let normal =
+        ogeom_math::Direction::new(ogeom_math::Vector::new(tilt.sin(), 0.0, tilt.cos()), T)
+            .unwrap();
+    // Through the axis 40 above the base: the plane runs from z = 40 - 10
+    // tan(tilt) to 40 + 10 tan(tilt) across the walls, clear of their tops.
+    let neutral = Plane::through(Point::new(0.0, 0.0, 40.0), normal);
+    // Each wall's radius at its base and its top, 20 above.
+    for (name, base, top) in [("drum", 10.0_f64, 10.0_f64), ("cone", 10.0, 6.0)] {
+        let radius = |z: f64| (top - base).mul_add(z / 20.0, base);
+        let mut model = ogeom_topo::Model::new();
+        let solid = if name == "drum" {
+            ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+        } else {
+            ogeom_algo::make_cone(&mut model, Frame::WORLD, 10.0, 6.0, 20.0, T)
+        }
+        .unwrap()
+        .shape;
+        let wall = explore(&model, &solid, Filter::OfType(ShapeType::Face))
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                model
+                    .node(f)
+                    .and_then(|n| n.data().as_face())
+                    .and_then(|d| model.geometry().surface(d.surface))
+                    .is_some_and(|s| {
+                        matches!(
+                            s,
+                            ogeom_geom::SurfaceGeometry::Cylinder(_)
+                                | ogeom_geom::SurfaceGeometry::Cone(_)
+                        )
+                    })
+            })
+            .expect("the solid has a wall of revolution");
+        let angle = 0.1_f64;
+        let drafted = ogeom_offset::apply_draft(
+            &mut model,
+            &solid,
+            std::slice::from_ref(&wall),
+            neutral,
+            ogeom_math::Direction::Z,
+            angle,
+            T,
+        )
+        .unwrap();
+        let diagnosis = ogeom_algo::check(&model, &drafted.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {:?}", diagnosis.problems);
+        for lean in leans_of(
+            &model,
+            &drafted.shape,
+            ogeom_math::Vector::new(0.0, 0.0, 1.0),
+        ) {
+            assert!(
+                (lean - angle).abs() < 2e-3,
+                "{name}: the wall leans {lean} off the pull, wanted {angle}"
+            );
+        }
+        let support = {
+            let face = fitted_wall_of(&model, &drafted.shape);
+            let d = model.node(&face).unwrap().data().as_face().unwrap().clone();
+            model.geometry().surface(d.surface).unwrap().clone()
+        };
+        // Each ruling of the drafted support (its `v` lines, as the leans
+        // read them), run on to the neutral plane, meets it on the wall's
+        // own surface: at the radius r(z) the wall has at that height. The
+        // support is windowed to the face's reach along the pull, and its
+        // hinge lies on its rulings' extension beyond that window.
+        let ((u0, u1), (v0, v1)) = support.domain();
+        for k in 0..12 {
+            let u = (u1 - u0).mul_add(f64::from(k) / 12.0, u0);
+            let (a, b) = (
+                support.point_at(u, v0, T).unwrap(),
+                support.point_at(u, v1, T).unwrap(),
+            );
+            let run = b - a;
+            let reach = -neutral.signed_distance_to(a) / neutral.normal().vector().dot(run);
+            let q = a + run * reach;
+            let off = (q.x.hypot(q.y) - radius(q.z)).abs();
+            // The drafted wall is fitted to 1e-4 of its stations, and a
+            // ruling run on some twenty past the window carries that error
+            // with it, turned by at most the draft.
+            assert!(
+                off < 1e-3,
+                "{name}: a ruling meets the plane {off} off the wall"
+            );
+        }
+    }
+}
+
+/// A skinned drum whose patch ends at z = 10, drafted about z = 20: neither
+/// the wall nor its patch meets the plane, and a patch has no extension to
+/// carry the hinge further. Refused by name.
+#[test]
+fn a_patch_short_of_the_neutral_plane_is_refused_by_name() {
+    let mut model = ogeom_topo::Model::new();
+    let (drum, wall) = skinned_drum(&mut model, &[0.0, 5.0, 10.0]);
+    let err = ogeom_offset::apply_draft(
+        &mut model,
+        &drum,
+        std::slice::from_ref(&wall),
+        Plane::through(Point::new(0.0, 0.0, 20.0), ogeom_math::Direction::Z),
+        ogeom_math::Direction::Z,
+        0.1,
+        T,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("meets neither"), "{err}");
+}

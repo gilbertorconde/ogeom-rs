@@ -11,6 +11,22 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`apply_draft` drafts a face the neutral plane does not reach.** A
+  fitted patch, or a wall of revolution about an oblique neutral plane,
+  that the plane missed was refused: "the neutral plane does not cross the
+  drafted face". It now turns about where its surface, run on beyond the
+  face, meets the plane, as a planar wall, an axial wall of revolution and
+  an extruded wall already did: a drum's or a cone's rulings run on to the
+  plane, a patch's crossing within its own extent. A drum and a cone
+  below a neutral plane tilted 0.35 rad off their axis now draft, every
+  ruling leaning the draft off the pull and meeting the plane on the wall's
+  own surface. A patch that stops short of the plane is refused by name
+  ("meets neither the drafted face nor its surface"), and a face the plane
+  crosses in two runs stays refused, its reason now stated: a region beside
+  both runs would turn about two hinges (#352).
+
 ### Changed
 
 - **`unify_same_domain` merges the curved faces it still left split.**
