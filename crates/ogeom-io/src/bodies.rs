@@ -55,3 +55,36 @@ pub(crate) fn bodies_of(model: &Model, shape: &Shape, format: &str) -> OgeomResu
     }
     Ok(bodies)
 }
+
+/// Whether a writer restates `surface`'s normal: a plane, drum, cone, ball
+/// or torus goes out about its axis, and a reader takes the right-handed
+/// frame on that axis, so where the frame is left-handed the file's normal
+/// is the surface's chart normal (`Su × Sv`) turned back. With `through`,
+/// a trimmed or offset surface goes out as one over its basis, which says
+/// for it (STEP's spelling); without, as a spline patch, chart and all.
+/// Anything else keeps its chart.
+pub(crate) fn restates(surface: &ogeom_geom::SurfaceGeometry, through: bool) -> bool {
+    use ogeom_geom::SurfaceGeometry as S;
+    use ogeom_math::Handedness;
+    let frame = match surface {
+        S::Plane(s) => s.plane().frame(),
+        S::Cylinder(s) => s.cylinder().frame(),
+        S::Cone(s) => s.cone().frame(),
+        S::Sphere(s) => s.sphere().frame(),
+        S::Torus(s) => s.torus().frame(),
+        S::Trimmed(t) if through => return restates(t.basis(), through),
+        S::Offset(o) if through => return restates(o.basis(), through),
+        _ => return false,
+    };
+    frame.handedness() == Handedness::Left
+}
+
+/// Whether a face faces against its surface as the file states it. The
+/// side a face faces is its placement applied to its own chart's normal,
+/// which a mirroring placement turns against the placed chart's; a
+/// `restated` surface (see [`restates`]) turns the file's normal against
+/// the placed chart's. Where exactly one of the two holds, the face's
+/// sense in the file is its orientation turned.
+pub(crate) fn turned_in_file(placement: &ogeom_math::Transform, restated: bool) -> bool {
+    !placement.preserves_handedness() != restated
+}

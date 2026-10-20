@@ -1926,6 +1926,7 @@ impl<'a> Reader<'a> {
         > = FastMap::default();
         let mut order: Vec<ogeom_topo::TShapeId> = Vec::new();
         let mut previous: Option<ogeom_math::Point2> = None;
+        let mut opening: Option<(ogeom_topo::TShapeId, bool, f64)> = None;
         for edge in edges {
             let (curve, range) = {
                 let Some(data) = self.model.node(edge).and_then(|n| n.data().as_edge()) else {
@@ -1958,6 +1959,9 @@ impl<'a> Reader<'a> {
             } else {
                 (range.0, range.1)
             };
+            if previous.is_none() && counts.get(&edge.node()).copied().unwrap_or(0) == 1 {
+                opening = Some((edge.node(), backwards, start));
+            }
             let mut image =
                 crate::pcurves::shifted_to_meet(&image, start, previous, surface, self.tol)?;
             let walked = sides.entry(edge.node()).or_default();
@@ -1972,6 +1976,22 @@ impl<'a> Reader<'a> {
                 walked.1 = Some(image);
             } else {
                 walked.0 = Some(image);
+            }
+        }
+        // The first image, which no edge before it placed, meets the last
+        // across a closing line it lies on.
+        if let (Some((node, backwards, start)), Some(end)) = (opening, previous)
+            && let Some(walked) = sides.get_mut(&node)
+        {
+            let side = if backwards {
+                &mut walked.1
+            } else {
+                &mut walked.0
+            };
+            if let Some(image) = side.as_ref() {
+                *side = Some(crate::pcurves::onto_closing_side(
+                    image, start, end, surface, self.tol,
+                )?);
             }
         }
         for node in order {

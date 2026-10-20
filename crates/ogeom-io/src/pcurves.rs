@@ -31,12 +31,44 @@ pub(crate) fn over_range(pcurve: &PlanarCurve, range: (f64, f64)) -> PlanarCurve
 /// An image slid by whole periods until its start meets `previous`.
 ///
 /// The only freedom a periodic chart leaves: every branch describes the
-/// same points, and only continuity with the edge before it chooses.
+/// same points, and only continuity with the edge before it chooses. A
+/// chart closed in a direction without being periodic (a closed spline
+/// wall) leaves the same freedom to an image lying wholly on the line it
+/// closes along, whose two sides name the same points: such an image moves
+/// a span across to meet `previous`, and nothing else does.
 pub(crate) fn shifted_to_meet(
     image: &PlanarCurve,
     start: f64,
     previous: Option<ogeom_math::Point2>,
     surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<PlanarCurve> {
+    slid_to_meet(image, start, previous, surface, true, tol)
+}
+
+/// [`shifted_to_meet`] across the closing lines alone: a wire's first
+/// image, which nothing before it placed, moved to meet where the wire's
+/// last one ends when it lies wholly on a line a closed chart closes
+/// along, and left on its branch of a periodic chart, which the rest of
+/// the wire was walked from.
+pub(crate) fn onto_closing_side(
+    image: &PlanarCurve,
+    start: f64,
+    previous: ogeom_math::Point2,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<PlanarCurve> {
+    slid_to_meet(image, start, Some(previous), surface, false, tol)
+}
+
+/// [`shifted_to_meet`], sliding by a periodic chart's periods only where
+/// `periodic` asks.
+fn slid_to_meet(
+    image: &PlanarCurve,
+    start: f64,
+    previous: Option<ogeom_math::Point2>,
+    surface: &SurfaceGeometry,
+    periodic: bool,
     tol: Tolerances,
 ) -> OgeomResult<PlanarCurve> {
     use ogeom_geom::Curve2d as _;
@@ -45,8 +77,22 @@ pub(crate) fn shifted_to_meet(
         return Ok(image.clone());
     };
     let ((ua, ub), (va, vb)) = surface.domain();
-    let u_period = surface.is_periodic_u().then_some(ub - ua);
-    let v_period = surface.is_periodic_v().then_some(vb - va);
+    let closure = |repeats: bool, closed: bool, (lo, hi): (f64, f64), along_v: bool| {
+        let across = !repeats && closed && on_closure(image, along_v, (lo, hi), tol);
+        (repeats && periodic || across).then_some(hi - lo)
+    };
+    let u_period = closure(
+        surface.is_periodic_u(),
+        surface.is_closed_u(tol),
+        (ua, ub),
+        false,
+    );
+    let v_period = closure(
+        surface.is_periodic_v(),
+        surface.is_closed_v(tol),
+        (va, vb),
+        true,
+    );
     if u_period.is_none() && v_period.is_none() {
         return Ok(image.clone());
     }
@@ -74,6 +120,42 @@ pub(crate) fn shifted_to_meet(
         return Ok(image.clone());
     }
     image.transformed(&ogeom_math::Transform2::translation(shift), tol)
+}
+
+/// Whether `image` lies wholly on one side of a chart closed along `u`
+/// (the line `u = lo` or `u = hi`), or along `v` where `along_v`: a line
+/// running square to that parameter, or a spline whose control points all
+/// stand on the side, which holds the whole curve there.
+fn on_closure(image: &PlanarCurve, along_v: bool, (lo, hi): (f64, f64), tol: Tolerances) -> bool {
+    let coordinate = |p: ogeom_math::Point2| if along_v { p.y } else { p.x };
+    let side = |x: f64| {
+        if (x - lo).abs() <= tol.parametric() {
+            Some(false)
+        } else if (x - hi).abs() <= tol.parametric() {
+            Some(true)
+        } else {
+            None
+        }
+    };
+    match image {
+        PlanarCurve::Line(line) => {
+            let axis = line.axis();
+            let d = axis.direction.vector();
+            let across = if along_v { d.y } else { d.x };
+            across.abs() <= tol.angular() && side(coordinate(axis.location)).is_some()
+        }
+        PlanarCurve::BSpline(spline) => {
+            let mut sides = spline
+                .control_points()
+                .iter()
+                .map(|w| side(coordinate(w.point())));
+            let Some(Some(first)) = sides.next() else {
+                return false;
+            };
+            sides.all(|s| s == Some(first))
+        }
+        _ => false,
+    }
 }
 
 /// The points a surface's chart collapses a whole row of parameters to: a

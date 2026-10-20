@@ -70,6 +70,39 @@ bump may break the API and a patch bump may not.
   names another stretch of the surface, which a face reading the edge by
   its orientation can take (#331).
 
+- **A solid fused with its mirror image, or placed by a mirror, reads
+  back from IGES, and from STEP with every face facing out.**
+  - A ball went out of IGES with its centre and radius alone, and a
+    reader takes such a ball's axis as z: one about any other axis came
+    back with its poles, and its seam with them, where its edges were
+    not. It now goes out with its axis and the direction its angle
+    starts from.
+  - A wall swept round a closed curve goes out of IGES as a spline
+    patch closed where the curve starts; other systems' STEP files hold
+    such patches too. An edge on that closing line was read on the wrong
+    side of it, and a wall lost a strip. Such an edge now meets the edge
+    before it across the line, or, opening its loop, the loop's last.
+  - A mirror turns every face's chart over. A face written as a spline
+    patch or a swept surface, chart and all, was flagged as facing the
+    way its orientation says, against the face's own side; in IGES a
+    plane or other analytic surface restated about its axis kept loops
+    running about the chart's normal rather than the file's. Both
+    writers now flag such a face turned, including a STEP face on a
+    trimmed or offset analytic surface, IGES writes its loops about the
+    file's normal, and STEP bounds a mirrored face with its interior on
+    their left.
+  - STEP states an offset of a mirrored analytic surface along the
+    normal its basis is read with, which a mirror turned: a mirrored
+    drum wall stated as an offset had come back moved twice its
+    distance.
+
+  A ball about x fused with its mirror image read back from IGES at
+  496.7 of 523.6, a mirrored elliptic prism from STEP with its wall
+  facing into the material; both now read back as they were. Eleven
+  solids of two printer assemblies read from STEP change volume by 0.1
+  to 0.3 %, each a face on a closed spline patch that had lost a strip
+  (#336).
+
 - **A lone edge is held to one ball-fit check through either entry
   point.** `fillet_edge` let a ball's contact run off a host face
   anywhere, as long as it fit somewhere along the edge, while

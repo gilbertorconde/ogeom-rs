@@ -539,7 +539,14 @@ impl Writer<'_> {
 
         // Each loop walked under the face's sense, in the order the face
         // stores them: the outer one first, which the walk of a reversed
-        // face lists last.
+        // face lists last. A loop keeps the face's interior on its left
+        // about the side the face faces, and a mirroring placement walks it
+        // the other way round: its bound then says so.
+        let along = if placement.preserves_handedness() {
+            ".T."
+        } else {
+            ".F."
+        };
         let mut bounds = Vec::new();
         for (index, wire) in self.model.children_of(face)?.iter().enumerate() {
             let keyword = if index == 0 {
@@ -548,18 +555,20 @@ impl Writer<'_> {
                 "FACE_BOUND"
             };
             let loop_id = self.wire(wire, chart)?;
-            bounds.push(self.entity(format!("{keyword}('',#{loop_id},.T.)")));
+            bounds.push(self.entity(format!("{keyword}('',#{loop_id},{along})")));
         }
         let list = bounds
             .iter()
             .map(|i| format!("#{i}"))
             .collect::<Vec<_>>()
             .join(",");
-        let sense = if face.orientation() == ogeom_topo::Orientation::Reversed {
-            ".F."
-        } else {
-            ".T."
-        };
+        // The face faces its surface's normal as the file states it, unless
+        // the placement or the file turned that normal against the face's
+        // own (see `turned_in_file`).
+        let forward = face.orientation() != ogeom_topo::Orientation::Reversed;
+        let turned =
+            crate::bodies::turned_in_file(&placement, crate::bodies::restates(&surface, true));
+        let sense = if forward == turned { ".F." } else { ".T." };
         let id = self.entity(format!("ADVANCED_FACE('',({list}),#{surface_id},{sense})"));
         self.written_nodes.push((face.node(), id));
         Ok(id)
@@ -1035,11 +1044,18 @@ impl Writer<'_> {
                     "SURFACE_OF_LINEAR_EXTRUSION('',#{swept},#{vector})"
                 )))
             }
+            // The offset runs along the basis's normal, which the file
+            // states turned back where it restates the basis.
             SurfaceGeometry::Offset(o) => {
                 let basis = self.surface(o.basis())?;
+                let distance = if crate::bodies::restates(o.basis(), true) {
+                    -o.distance()
+                } else {
+                    o.distance()
+                };
                 Ok(self.entity(format!(
                     "OFFSET_SURFACE('',#{basis},{},.F.)",
-                    real(o.distance())
+                    real(distance)
                 )))
             }
         }

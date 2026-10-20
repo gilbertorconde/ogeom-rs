@@ -2695,6 +2695,7 @@ impl<'a> Reader<'a> {
             FastMap::default();
         let mut order: Vec<u64> = Vec::new();
         let mut previous: Option<ogeom_math::Point2> = None;
+        let mut opening: Option<(u64, bool, f64)> = None;
         for (placed, shape, edge_id, curve, range) in uses {
             if !images.contains_key(edge_id) {
                 let Some(image) =
@@ -2714,6 +2715,9 @@ impl<'a> Reader<'a> {
             } else {
                 (range.0, range.1)
             };
+            if previous.is_none() && edge_uses.get(edge_id).copied().unwrap_or(1) == 1 {
+                opening = Some((*edge_id, backwards, start));
+            }
             let mut image =
                 crate::pcurves::shifted_to_meet(&image, start, previous, surface, self.tol)?;
             let walked = sides.entry(*edge_id).or_default();
@@ -2728,6 +2732,22 @@ impl<'a> Reader<'a> {
                 walked.1 = Some(image);
             } else {
                 walked.0 = Some(image);
+            }
+        }
+        // The first image, which no edge before it placed, meets the last
+        // across a closing line it lies on.
+        if let (Some((edge_id, backwards, start)), Some(end)) = (opening, previous)
+            && let Some(walked) = sides.get_mut(&edge_id)
+        {
+            let side = if backwards {
+                &mut walked.1
+            } else {
+                &mut walked.0
+            };
+            if let Some(image) = side.as_ref() {
+                *side = Some(crate::pcurves::onto_closing_side(
+                    image, start, end, surface, self.tol,
+                )?);
             }
         }
         for edge_id in order {

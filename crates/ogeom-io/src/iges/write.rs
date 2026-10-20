@@ -138,7 +138,9 @@ impl Writer<'_> {
             let mut face_entities = Vec::new();
             for face in self.model.ordered_children_of(shell)? {
                 let face = if k == 0 { face } else { face.reversed() };
-                face_entities.push((self.face(&face)?, face.orientation()));
+                let (entity, turned) = self.face(&face)?;
+                let forward = face.orientation() != ogeom_topo::Orientation::Reversed;
+                face_entities.push((entity, forward != turned));
             }
             shell_faces.push(face_entities);
         }
@@ -189,8 +191,8 @@ impl Writer<'_> {
         let mut shell_des = Vec::with_capacity(shell_faces.len());
         for face_entities in &shell_faces {
             let mut params = format!("{}", face_entities.len());
-            for (face, orientation) in face_entities {
-                let flag = i32::from(*orientation != ogeom_topo::Orientation::Reversed);
+            for (face, forward) in face_entities {
+                let flag = i32::from(*forward);
                 params.push_str(&format!(",{},{flag}", self.de(*face)));
             }
             let shell_entity = self.push(Pending {
@@ -218,7 +220,11 @@ impl Writer<'_> {
         Ok(())
     }
 
-    fn face(&mut self, face: &Shape) -> OgeomResult<usize> {
+    /// A face (510) over its surface written in model space, its loops
+    /// running about the file's surface normal, and whether the face faces
+    /// against that normal (see [`crate::bodies::turned_in_file`]): the shell's flag for the
+    /// face is its orientation, turned once more where it does.
+    fn face(&mut self, face: &Shape) -> OgeomResult<(usize, bool)> {
         let placement = face.transform(self.model.datums())?;
         let surface = {
             let Some(node) = self.model.node(face) else {
@@ -232,13 +238,19 @@ impl Writer<'_> {
             };
             surface.clone().transformed(&placement, self.tol)?
         };
+        let restated = crate::bodies::restates(&surface, false);
+        let turned = crate::bodies::turned_in_file(&placement, restated);
         let surface_entity = self.surface(&surface)?;
         // A face's loops keep it on their left about its surface's normal,
-        // as the face stores them; the shell's flag says which side of the
-        // surface the face faces.
-        let wires = self
-            .model
-            .ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))?;
+        // as the face stores them, and run the other way about a normal the
+        // file restates; the shell's flag says which side of the surface the
+        // face faces. The outer loop stays first.
+        let walked = if restated {
+            ogeom_topo::Orientation::Reversed
+        } else {
+            ogeom_topo::Orientation::Forward
+        };
+        let wires = self.model.children_of(&face.oriented(walked))?;
         let mut loop_entities = Vec::new();
         for wire in &wires {
             if let Some(entity) = self.wire(wire)? {
@@ -256,14 +268,15 @@ impl Writer<'_> {
         for entity in &loop_entities {
             params.push_str(&format!(",{}", self.de(*entity)));
         }
-        Ok(self.push(Pending {
+        let entity = self.push(Pending {
             kind: 510,
             form: 1,
             transform: None,
             independent: false,
             label: String::new(),
             params,
-        }))
+        });
+        Ok((entity, turned))
     }
 
     /// A face as an independent trimmed surface (144): its surface, and one
@@ -769,13 +782,25 @@ impl Writer<'_> {
                     params,
                 }))
             }
+            // Form 1, with the axis and the direction `u` starts from: a
+            // sphere's poles are on its axis, and the face's poles and seam
+            // with them.
             S::Sphere(s) => {
                 let sphere = s.sphere();
+                let frame = sphere.frame();
                 let point = self.point_entity(sphere.centre());
-                let params = format!("{},{}", self.de(point), fmt(sphere.radius()));
+                let axis = self.direction_entity(frame.z());
+                let reference = self.direction_entity(frame.x());
+                let params = format!(
+                    "{},{},{},{}",
+                    self.de(point),
+                    fmt(sphere.radius()),
+                    self.de(axis),
+                    self.de(reference)
+                );
                 Ok(self.push(Pending {
                     kind: 196,
-                    form: 0,
+                    form: 1,
                     transform: None,
                     independent: false,
                     label: String::new(),
