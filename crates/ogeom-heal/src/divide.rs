@@ -25,8 +25,8 @@ use ogeom_geom::{
 use ogeom_math::{Axis, Circle, Direction, Frame, KnotVector, Point, Point2, Transform};
 use ogeom_mesh::Deflection;
 use ogeom_topo::{
-    EdgeData, EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, SurfaceId,
-    TShapeId, VertexData, explore_unique,
+    EdgeData, EdgeRepr, Filter, Location, Model, NodeData, Orientation, Shape, ShapeType,
+    SurfaceId, TShapeId, VertexData, explore, explore_unique,
 };
 
 use crate::Reshape;
@@ -301,11 +301,52 @@ fn to_bezier_own(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         let id = model
             .geometry_mut()
             .add_surface(SurfaceGeometry::BSpline(patch));
+        // A seam of the whole surface that a cut left bounding this patch
+        // once is no seam of the patch, which does not close across it: it
+        // keeps only the side the face's ring walks, the one inside the
+        // ring's bounds.
+        let walked = explore(model, &forward(&face), Filter::OfType(ShapeType::Edge))?;
+        let outside = |p: Point2| {
+            (u0 - p.x)
+                .max(p.x - u1)
+                .max(0.0)
+                .hypot((v0 - p.y).max(p.y - v1).max(0.0))
+        };
         for edge in explore_unique(model, &face, ShapeType::Edge)? {
             let repr = edge_data(model, &edge)?
                 .pcurve_for(data.surface, edge.location())
                 .cloned();
             let Some(mut repr) = repr else { continue };
+            let once = walked.iter().filter(|e| e.node() == edge.node()).count() == 1;
+            if let (
+                true,
+                EdgeRepr::Seam {
+                    forward: ahead,
+                    reversed: back,
+                    range,
+                    location,
+                    ..
+                },
+            ) = (once, &repr)
+            {
+                let middle = |id| -> OgeomResult<Point2> {
+                    let Some(pcurve) = model.geometry().pcurve(id) else {
+                        ogeom_bail!(Dangling, "pcurve is not in this model");
+                    };
+                    pcurve.point_at(0.5 * (range.0 + range.1), tol)
+                };
+                let curve = if outside(middle(*back)?) < outside(middle(*ahead)?) {
+                    *back
+                } else {
+                    *ahead
+                };
+                repr = EdgeRepr::PCurve {
+                    curve,
+                    range: *range,
+                    surface: data.surface,
+                    location: location.clone(),
+                };
+            }
             match &mut repr {
                 EdgeRepr::PCurve { surface, .. } | EdgeRepr::Seam { surface, .. } => *surface = id,
                 _ => continue,

@@ -137,6 +137,77 @@ fn every_piece_of_a_bezier_drum_is_one_span() {
     holds(&model, &bezier, core::f64::consts::PI * 4.0 * 5.0, 1e-3);
 }
 
+/// A drum's seam, once the drum is cut into quarter patches, bounds the
+/// first and the last patch once each, and neither patch closes across it:
+/// on each it is a plain pcurve on the column that patch walks, inside the
+/// patch, not a seam whose other column stands a whole turn outside it. A
+/// torus cut into sixteen patches leaves both its seams so on the patches
+/// along them. Every edge of every patch has its pcurve inside the patch's
+/// domain, and each solid checks and measures as it did.
+#[test]
+fn a_bezier_solids_old_seams_are_plain_trims_of_each_patch() {
+    let pi = core::f64::consts::PI;
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+        .unwrap()
+        .shape;
+    for (solid, volume) in [(drum, pi * 4.0 * 5.0), (ring, 2.0 * pi * pi * 10.0 * 9.0)] {
+        let bezier = ogeom::heal::to_bezier(&mut model, &solid, T).unwrap().shape;
+        patches_trim_inside(&model, &bezier);
+        holds(&model, &bezier, volume, 1e-3);
+    }
+}
+
+/// Every edge of every face of `shape` trims it inside its surface's
+/// domain, and a seam is walked twice by each face holding it as one.
+fn patches_trim_inside(model: &Model, shape: &Shape) {
+    use ogeom::geom::{Curve2d as _, Surface as _};
+    use ogeom::topo::{EdgeRepr, Filter, explore};
+    for face in faces(model, shape) {
+        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+            panic!("not a face");
+        };
+        let surface = model.geometry().surface(data.surface).unwrap();
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let slack = T.parametric();
+        let walked = explore(model, &face, Filter::OfType(ShapeType::Edge)).unwrap();
+        for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
+            let uses = walked.iter().filter(|e| e.node() == edge.node()).count();
+            let edge_data = model.node(&edge).and_then(|n| n.data().as_edge()).unwrap();
+            let sides = match edge_data.pcurve_for(data.surface, edge.location()) {
+                Some(EdgeRepr::PCurve { curve, range, .. }) => vec![(*curve, *range)],
+                Some(EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    ..
+                }) => {
+                    assert_eq!(uses, 2, "a seam of a patch that walks it once");
+                    vec![(*forward, *range), (*reversed, *range)]
+                }
+                _ => continue,
+            };
+            for (id, range) in sides {
+                let pcurve = model.geometry().pcurve(id).unwrap();
+                for t in [range.0, range.1] {
+                    let p = pcurve.point_at(t, T).unwrap();
+                    assert!(
+                        p.x >= u0 - slack
+                            && p.x <= u1 + slack
+                            && p.y >= v0 - slack
+                            && p.y <= v1 + slack,
+                        "{p:?} outside {:?}",
+                        surface.domain()
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn a_box_divides_until_no_face_is_larger_than_asked() {
     let mut model = Model::new();

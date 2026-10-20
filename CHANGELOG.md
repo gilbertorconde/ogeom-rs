@@ -57,6 +57,18 @@ bump may break the API and a patch bump may not.
   its curve by 0.517"), its walls meeting the leaned one beside its
   trim; it is now valid and measures its grown planes' volume exactly
   (#332).
+- **`to_bezier` leaves a cylinder's or a torus's old seam a plain trim of
+  each patch it bounds.** Cut into patches, a closed surface's seam bounds
+  the first and the last patch once each, and neither patch closes across
+  it, but the edge kept a seam on each with both columns, one a whole
+  turn outside the patch. The patch now keeps only the column its
+  boundary walks, as a plain pcurve (#331).
+
+- **`check` reports a seam on a surface that does not close across it.**
+  A seam's two sides stand a period apart across a direction its surface
+  closes in; on a surface that does not, the side a face does not walk
+  names another stretch of the surface, which a face reading the edge by
+  its orientation can take (#331).
 
 - **A lone edge is held to one ball-fit check through either entry
   point.** `fillet_edge` let a ball's contact run off a host face

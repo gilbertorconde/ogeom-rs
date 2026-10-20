@@ -1008,6 +1008,16 @@ fn check_pcurves(
         let Some(surface) = model.geometry().surface(surface_id) else {
             ogeom_bail!(Dangling, "an edge names geometry not in this model");
         };
+        if let [Some(ahead), Some(back)] = sides {
+            check_seam_closes(
+                model,
+                edge,
+                (ahead, back, pcurve_range),
+                surface,
+                tol,
+                found,
+            )?;
+        }
         for pcurve_id in sides.into_iter().flatten() {
             let Some(pcurve) = model.geometry().pcurve(pcurve_id) else {
                 ogeom_bail!(Dangling, "an edge names geometry not in this model");
@@ -1037,6 +1047,49 @@ fn check_pcurves(
             };
             found.note(Severity::Broken, edge, ShapeType::Edge, what);
         }
+    }
+    Ok(())
+}
+
+/// A seam's two sides stand a period apart across a direction its surface
+/// closes in, so that the face walking both reads one place twice. On a
+/// surface that does not close across them, the side a face does not walk
+/// names another stretch of the surface, or none, and a face reading the
+/// edge by its orientation alone can read that one.
+fn check_seam_closes(
+    model: &Model,
+    edge: &Shape,
+    (ahead, back, range): (ogeom_topo::PCurveId, ogeom_topo::PCurveId, (f64, f64)),
+    surface: &ogeom_geom::SurfaceGeometry,
+    tol: Tolerances,
+    found: &mut Diagnosis,
+) -> OgeomResult<()> {
+    let (Some(ahead), Some(back)) = (
+        model.geometry().pcurve(ahead),
+        model.geometry().pcurve(back),
+    ) else {
+        ogeom_bail!(Dangling, "an edge names geometry not in this model");
+    };
+    let middle = 0.5 * (range.0 + range.1);
+    let apart = ahead.point_at(middle, tol)? - back.point_at(middle, tol)?;
+    let (across_u, closes) = if apart.x.abs() >= apart.y.abs() {
+        (true, surface.is_periodic_u() || surface.is_closed_u(tol))
+    } else {
+        (false, surface.is_periodic_v() || surface.is_closed_v(tol))
+    };
+    if !closes && apart.x.hypot(apart.y) > tol.parametric() {
+        found.note(
+            Severity::Broken,
+            edge,
+            ShapeType::Edge,
+            format!(
+                "carries a seam on a surface that does not close in {}: its two sides \
+                 stand {} apart, and the side a face does not walk names another \
+                 stretch of the surface",
+                if across_u { "u" } else { "v" },
+                apart.x.hypot(apart.y)
+            ),
+        );
     }
     Ok(())
 }
@@ -2279,6 +2332,53 @@ mod tests {
             square(0.3).len(),
             1,
             "the moved pcurve leaves the square open"
+        );
+    }
+
+    #[test]
+    fn a_seam_on_a_plane_is_reported() {
+        // An edge on the x axis carrying a seam on the plane z = 0, its
+        // two sides one unit apart in v: a plane closes in neither
+        // direction, so the second side is another line of it. The same
+        // edge with one side as a plain pcurve is sound.
+        use ogeom_geom::{Curve, Curve3d as _, LineCurve, PlaneSurface};
+        let seamed = |second: Option<f64>| {
+            let mut model = Model::new();
+            let line = LineCurve::segment(Point::ORIGIN, Point::new(1.0, 0.0, 0.0), T).unwrap();
+            let range = line.domain();
+            let edge = crate::make_edge(&mut model, Curve::Line(line), range, T)
+                .unwrap()
+                .shape;
+            let plane = PlaneSurface::over(
+                ogeom_math::Plane::new(Frame::WORLD),
+                (-2.0, 2.0),
+                (-2.0, 2.0),
+            )
+            .unwrap();
+            let surface = model.geometry_mut().add_surface(plane.into());
+            let at = |v: f64| -> ogeom_geom::PlanarCurve {
+                ogeom_geom::Line2d::segment(Point2::new(0.0, v), Point2::new(1.0, v), T)
+                    .unwrap()
+                    .into()
+            };
+            let here = ogeom_topo::Location::identity();
+            match second {
+                Some(v) => {
+                    crate::attach_seam(&mut model, &edge, at(0.0), at(v), surface, here, range)
+                }
+                None => crate::attach_pcurve(&mut model, &edge, at(0.0), surface, here, range),
+            }
+            .unwrap();
+            check(&model, &edge, T).unwrap()
+        };
+        assert!(seamed(None).is_valid());
+        let found = seamed(Some(1.0));
+        assert!(
+            found
+                .problems
+                .iter()
+                .any(|p| p.what.contains("seam on a surface that does not close")),
+            "got {found}"
         );
     }
 
