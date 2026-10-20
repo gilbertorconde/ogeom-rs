@@ -1264,11 +1264,16 @@ fn fold_rings(
             Step::Pole(..) => 0.0,
         };
         let is_pole = |step: Step| matches!(step, Step::Pole(..));
-        // Whether a joint meets: in the chart beside a degenerate edge,
-        // whose line stands for one point, and on the surface elsewhere.
+        // Whether a joint meets: on the surface, within both edges' radii,
+        // or beside a degenerate edge, whose line stands for one point, in
+        // the chart within the same reach. There the chart shrinks to
+        // nothing along the line, and the arrangement welds a strand's end
+        // there at its length in space, unscaled, no finer than its own
+        // node snap: the fold carries an edge onto the pole's line only
+        // where that weld then meets it.
         let meets = |a: Point2, b: Point2, step: Step, prev: Step, within: f64| -> bool {
             if is_pole(step) || is_pole(prev) {
-                a.distance(b) <= SEAM_HAIR
+                a.distance(b) <= within.max(PARAM_SNAP)
             } else {
                 apart(a, b).is_some_and(|d| d <= within)
             }

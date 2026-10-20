@@ -87,6 +87,15 @@ bump may break the API and a patch bump may not.
   corner is now taken out of the two widenings, a wedge's own run-out
   past an oblique far end no longer counts against the corner. Every
   case measured matches the material above both bands to within 1e-6.
+- **A boolean folds a ring onto its pole's branch of a closed chart at
+  any chart scale (#349).** Beside a pole or apex edge the fold matched a
+  ring's ends within a fixed chart distance of 0.001, which a chart
+  closing over less than that period reads as no jump at all: a cone
+  sector on a patch closing in 0.0005 of `u`, its ruling on the closure
+  stated on the other line from the apex's, failed with "a face boundary
+  strand dangles". The ends now meet within the edges' radii, the reach
+  the arrangement's weld has there, where the chart shrinks along the
+  pole's line.
 
 - **`apply_draft` gives a drafted planar wall a window that holds it.**
   The leaned plane's chart has its origin on the hinge and its `u` along

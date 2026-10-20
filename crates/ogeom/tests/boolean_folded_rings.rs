@@ -480,3 +480,247 @@ fn a_single_edge_hole_is_read_on_its_outer_ring_s_branch() {
         }
     }
 }
+
+/// A cone of radius 3 and height 4 cut down to the sector between the
+/// angles `from` and `from + pi / 2` of its chart, its wall then carried
+/// onto the same surface as an exact rational patch whose closed `u` runs
+/// over `[0, period]`: every pcurve of the wall restated in the patch's
+/// chart, its rulings at the patch's `u` for their angle, its arc and its
+/// apex line at the patch's `v` for their height. A ruling on the chart's
+/// closure is stated at `u = 0`.
+fn cone_sector_on_a_patch(model: &mut Model, from: f64, period: f64, closure: f64) -> Shape {
+    use ogeom::geom::{Surface as _, SurfaceGeometry};
+    use ogeom::math::Point2;
+    let along = |x: f64, y: f64, z: f64| Direction::new(Vector::new(x, y, z), T).unwrap();
+    let cone = make_cone(
+        model,
+        Frame::new(Point::ORIGIN, Direction::Z, along(1.0, 0.0, 0.0), T).unwrap(),
+        3.0,
+        0.0,
+        4.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    // The sector the half-planes at `from` and `from + pi / 2` bound.
+    let (c, s) = (from.cos(), from.sin());
+    let side = |model: &mut Model, x: (f64, f64)| {
+        let at = Frame::new(
+            Point::new(0.0, 0.0, -1.0),
+            Direction::Z,
+            along(x.0, x.1, 0.0),
+            T,
+        )
+        .unwrap();
+        make_box(model, at, (10.0, 10.0, 10.0), T).unwrap().shape
+    };
+    let quadrant = side(model, (c, s));
+    let sector = ogeom::boolean::common(model, &cone, &quadrant, T)
+        .unwrap()
+        .shape;
+    let face = explore_unique(model, &sector, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let id = model.node(f).unwrap().data().as_face().unwrap().surface;
+            matches!(model.geometry().surface(id), Some(SurfaceGeometry::Cone(_)))
+        })
+        .unwrap();
+    let old_id = model.node(&face).unwrap().data().as_face().unwrap().surface;
+    let old = model.geometry().surface(old_id).unwrap().clone();
+    let exact = old.to_bspline(T).unwrap();
+    let patch = ogeom::geom::BSplineSurface::rational(
+        exact.u_knots().reparameterized(0.0, period).unwrap(),
+        exact.v_knots().clone(),
+        exact.grid().clone(),
+    )
+    .unwrap();
+    let patch: SurfaceGeometry = patch.into();
+    // Old chart points into the patch's. The patch runs from the apex at
+    // `v = 0` to the base at `v = 1`, a quarter of the old height to each of
+    // its own; round the axis, its `u` runs on with the angle, and the
+    // angle's own is found on the patch by bisection.
+    let ((_, _), (va, vb)) = old.domain();
+    let v_of = |v: f64| (v - va) / (vb - va);
+    // The old chart's angle, which turns as the cone's frame does.
+    let quarter = old.point_at(core::f64::consts::FRAC_PI_2, vb, T).unwrap();
+    let turn = if quarter.y > 0.0 { 1.0 } else { -1.0 };
+    let angle_at = |u: f64| -> f64 {
+        let p = patch.point_at(u, 0.5, T).unwrap();
+        (turn * p.y).atan2(p.x).rem_euclid(TAU)
+    };
+    let u_of = |angle: f64| -> f64 {
+        if angle <= 0.0 {
+            return 0.0;
+        }
+        if angle >= TAU {
+            return period;
+        }
+        let (mut lo, mut hi) = (0.0, period);
+        for _ in 0..80 {
+            let mid = f64::midpoint(lo, hi);
+            if angle_at(mid) < angle {
+                lo = mid
+            } else {
+                hi = mid
+            }
+        }
+        f64::midpoint(lo, hi)
+    };
+    let patch_id = model.geometry_mut().add_surface(patch.clone());
+    if let Some(node) = model.node_mut(&face)
+        && let NodeData::Face(data) = node.data_mut()
+    {
+        data.surface = patch_id;
+    }
+    for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap().clone();
+        let (curve, range, location, on_closure) =
+            match data.pcurve_for(old_id, edge.location()).cloned() {
+                Some(EdgeRepr::PCurve {
+                    curve,
+                    range,
+                    location,
+                    ..
+                }) => (curve, range, location, false),
+                Some(EdgeRepr::Seam {
+                    forward,
+                    range,
+                    location,
+                    ..
+                }) => (forward, range, location, true),
+                _ => unreachable!("a pcurve on the wall"),
+            };
+        let stated = model.geometry().pcurve(curve).unwrap().clone();
+        let (a, b) = (
+            stated.point_at(range.0, T).unwrap(),
+            stated.point_at(range.1, T).unwrap(),
+        );
+        let map = |p: Point2| {
+            Point2::new(
+                if on_closure {
+                    closure
+                } else {
+                    u_of(p.x.rem_euclid(TAU))
+                },
+                v_of(p.y),
+            )
+        };
+        let (mut a, mut b) = (map(a), map(b));
+        // An end on the closure stands on the line beside the other end.
+        if (a.x - b.x).abs() > 0.5 * period {
+            if a.x < b.x {
+                a.x += period
+            } else {
+                b.x += period
+            }
+        }
+        // The base arc is carried onto the patch's own circle there, paced
+        // by the patch's `u`, and its pcurve on the base plane with it.
+        let arc = data.curve3d().is_some() && !on_closure && (a.y - b.y).abs() < 1e-12;
+        let range = if arc {
+            (a.x.min(b.x), a.x.max(b.x))
+        } else {
+            range
+        };
+        let (a, b) = if arc && a.x > b.x { (b, a) } else { (a, b) };
+        if arc {
+            let ogeom::geom::SurfaceGeometry::BSpline(spline) = &patch else {
+                unreachable!("a patch")
+            };
+            let circle = spline.iso_v_curve(1.0, T).unwrap();
+            let base = data
+                .representations
+                .iter()
+                .find_map(|r| match r {
+                    EdgeRepr::PCurve { surface, .. } if *surface != old_id => Some(*surface),
+                    _ => None,
+                })
+                .unwrap();
+            let plane = model.geometry().surface(base).unwrap().clone();
+            let in_plane: Vec<_> = circle
+                .control_points()
+                .iter()
+                .map(|w| {
+                    let uv = ogeom::algo::project_on_surface(&plane, w.point(), 8, T)
+                        .unwrap()
+                        .parameters;
+                    ogeom::math::Weighted::new(Point2::new(uv.0, uv.1), w.weight, T).unwrap()
+                })
+                .collect();
+            let flat: PlanarCurve =
+                ogeom::geom::BSpline2d::rational(circle.knots().clone(), in_plane)
+                    .unwrap()
+                    .into();
+            let flat = model.geometry_mut().add_pcurve(flat);
+            let circle = model
+                .geometry_mut()
+                .add_curve(ogeom::geom::Curve::BSpline(circle));
+            if let Some(node) = model.node_mut(&edge)
+                && let NodeData::Edge(data) = node.data_mut()
+            {
+                data.representations.retain(|r| r.surface() == Some(old_id));
+                data.representations.push(EdgeRepr::Curve3d {
+                    curve: circle,
+                    location: location.clone(),
+                    range,
+                });
+                data.representations.push(EdgeRepr::PCurve {
+                    curve: flat,
+                    range,
+                    surface: base,
+                    location: location.clone(),
+                });
+            }
+        }
+        // A straight chart line paced as the edge is, over its range.
+        let line: PlanarCurve = ogeom::geom::BSpline2d::new(
+            ogeom::math::KnotVector::new(vec![range.0, range.0, range.1, range.1], 1).unwrap(),
+            vec![a, b],
+            T,
+        )
+        .unwrap()
+        .into();
+        let line = model.geometry_mut().add_pcurve(line);
+        if let Some(node) = model.node_mut(&edge)
+            && let NodeData::Edge(data) = node.data_mut()
+        {
+            data.representations.retain(|r| r.surface() != Some(old_id));
+            data.representations.push(EdgeRepr::PCurve {
+                curve: line,
+                range,
+                surface: patch_id,
+                location,
+            });
+        }
+    }
+    sector
+}
+
+#[test]
+fn a_ruling_on_a_tiny_chart_s_closure_meets_the_apex_line() {
+    // A cone sector whose wall stands on a patch closing over a period of
+    // 0.0005 in u, a hundredth of a millimetre's worth of chart for every
+    // degree of the turn: its ruling on the closure, stated on the other
+    // line of it from the apex's chart line, cuts and is kept by two
+    // half-spaces as the sector stating it beside that line does. The
+    // apex line's end and the ruling's stand a period apart, under the
+    // chart reach a fixed bound would grant them.
+    let period = 5e-4;
+    for (from, own) in [(0.0, period), (-core::f64::consts::FRAC_PI_2, 0.0)] {
+        let mut model = Model::with_tolerances(T);
+        let sector = cone_sector_on_a_patch(&mut model, from, period, own);
+        assert!(check(&model, &sector, T).unwrap().is_valid(), "{from}");
+        let want = halves(&mut model, &sector);
+        let mut model = Model::with_tolerances(T);
+        let sector = cone_sector_on_a_patch(&mut model, from, period, period - own);
+        assert!(check(&model, &sector, T).unwrap().is_valid(), "{from}");
+        let got = halves(&mut model, &sector);
+        for (g, w) in got.iter().zip(&want) {
+            assert!(
+                (g - w).abs() <= 1e-9 * w.max(1.0),
+                "sector from {from}: {got:?} against {want:?}"
+            );
+        }
+    }
+}
