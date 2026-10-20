@@ -217,6 +217,28 @@ bump may break the API and a patch bump may not.
   with its mirror image read back with a volume of 0, and now at their
   own, unified or not (#323).
 
+- **Marched sections through a point where two surfaces touch come back
+  as the curves' pieces, not round its corners, where the touches stand
+  apart.** Where two surfaces touch at a point and bend apart differently
+  across it, the section crosses itself there along two arms. A walk
+  coming in along one arm could turn onto the other, or wander there, and
+  the section came back running round corners, over itself and short of
+  the touch; an arm no walk took was lost. The two arms are now solved at
+  each touch, from the difference of the surfaces' second fundamental
+  forms, and a branch is cut at a touch unless it comes in along one arm
+  and goes on along the same one, however far off the touch a step
+  turning the corner runs. An arm no section runs along is followed out
+  from the touch, and a stretch traced twice is kept once. A point where
+  the surfaces only pass within the confusion distance of each other is
+  no touch to cut at. Where two touches stand within a stride of the
+  march of each other, a touch between them may go unfound, and the pair
+  is cut as before. Equal cylinders crossed square come back as four
+  halves at every radius tried, a sphere cut by a cylinder through its
+  centre (Viviani's curve) no longer comes back with a whole lobe twice,
+  and on a saddle crossing a plane along three lines 38 of the 493 sizes
+  and shapes that came back wrong now do not (#327; touches a stride
+  apart: #356).
+
 - **A part fused with its mirror image builds where a face's chart closes
   in `v` along its boundary.** The bake a reflecting placement forces
   places an edge on the closure of a closed chart beside its face, but did
