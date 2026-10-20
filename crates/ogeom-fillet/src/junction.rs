@@ -738,12 +738,12 @@ fn in_plane(model: &Model, face: &Shape, at: Point, normal: Vector, gap: f64) ->
 /// what stands above the other carried on, and past both caps the two
 /// continuations keep the cell above both.
 ///
-/// The corner is taken only where the material holds all of it (a turn
-/// folding back past the solid's far side, or widenings that meet past
-/// both walls in the open, leave it), and where it holds all that each
-/// band carried on keeps past the other's wall, which lies above both.
-/// Elsewhere this refuses, and the request rounds without crossed
-/// junctions.
+/// What stands past both walls' planes is the open corner, taken out of
+/// the result. The corner is taken only where the material holds all of
+/// it but the wedges' own run-outs (a turn folding back past the solid's
+/// far side leaves it), and where it holds all that each band carried on
+/// keeps past the other's wall, which lies above both. Elsewhere this
+/// refuses, and the request rounds without crossed junctions.
 pub(crate) fn corner(
     model: &mut Model,
     wedges: [&Shape; 2],
@@ -847,6 +847,7 @@ pub(crate) fn corner(
     }
     let mut carried = Vec::with_capacity(2);
     let mut ahead = [0.0; 2];
+    let mut spans = [0.0; 2];
     for slot in 0..2 {
         let along = junction.outward[slot];
         let others: Vec<Point> = hulls[1 - slot]
@@ -876,6 +877,7 @@ pub(crate) fn corner(
             .map(|p| p.distance(at))
             .fold(0.0_f64, f64::max)
             + reach[slot];
+        spans[slot] = span;
         let (wedge, cap) = if behind > near {
             let start = at - along * behind;
             let trimmed = crate::support::trimmed_wedge(
@@ -914,12 +916,30 @@ pub(crate) fn corner(
             .is_some_and(core::cmp::Ordering::is_gt),
     );
     let common = ogeom_bool::common(model, &carried[first], &carried[1 - first], tol)?;
-    let taken = common.shape;
+    // What stands past both walls' planes is the open corner: the material
+    // lies behind one wall or the other there. The widenings, each reaching
+    // past its own wall, meet in it, and are taken out of it, so neither
+    // need stop at the other's wall.
+    let size = ahead[0] + ahead[1] + spans[0] + spans[1];
+    let past_first = half_space(model, (at, junction.sides[0]), size, tol)?;
+    let past_second = half_space(model, (at, junction.sides[1]), size, tol)?;
+    let open = ogeom_bool::common(model, &past_first, &past_second, tol)?.shape;
+    let cleared = ogeom_bool::cut(model, &common.shape, &open, tol)?;
+    let history = common.history.then(&cleared.history);
+    let taken = cleared.shape;
     if explore_unique(model, &taken, ShapeType::Face)?.is_empty() {
         ogeom_core::ogeom_bail!(Construction, "two bands carried on take no corner");
     }
-    // The corner must lie in the material: nothing of it outside the solid.
-    let outside = ogeom_bool::cut(model, &taken, solid, tol)?;
+    // The corner must lie in the material: nothing of it outside the solid
+    // but what the two wedges themselves take there (a band run out past an
+    // oblique end face at its far end).
+    let mut outside = ogeom_bool::cut(model, &taken, solid, tol)?;
+    for wedge in wedges {
+        if explore_unique(model, &outside.shape, ShapeType::Face)?.is_empty() {
+            break;
+        }
+        outside = ogeom_bool::cut(model, &outside.shape, wedge, tol)?;
+    }
     if !explore_unique(model, &outside.shape, ShapeType::Face)?.is_empty() {
         ogeom_core::ogeom_bail!(
             Construction,
@@ -967,9 +987,13 @@ pub(crate) fn corner(
             );
         }
     }
+    // What both bands carried on hold needs no check of its own: each band
+    // carried on lies within its widening, which reaches as far back and
+    // as far on, and behind its own wall, out of the open corner past both,
+    // so the corner holds it.
     let mut of_second = Vec::new();
     for face in explore_unique(model, &carried[1], ShapeType::Face)? {
-        of_second.extend(common.history.trace(&face).iter().cloned());
+        of_second.extend(history.trace(&face).iter().cloned());
     }
     Ok((taken, of_second))
 }

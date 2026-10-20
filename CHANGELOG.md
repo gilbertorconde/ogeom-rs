@@ -48,6 +48,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Two fillets of one `fillet_edges` call meet at an inside corner off
+  square in plan, or between two walls that both lean (#342).** Each
+  band carried on is widened past its wall, and the two widenings met
+  past both walls' planes, in the open corner, so the corner was refused
+  and the bands capped at the vertex. Inside a 2.4 mm box round the
+  corner, r = 0.5 and one wall leaning at a slope of 0.1, that left
+  0.0136 to 0.0445 mm³ standing at plan angles of 120° to 170°. The open
+  corner is now taken out of the two widenings, a wedge's own run-out
+  past an oblique far end no longer counts against the corner. Every
+  case measured matches the material above both bands to within 1e-6.
+
 - **`apply_draft` gives a drafted planar wall a window that holds it.**
   The leaned plane's chart has its origin on the hinge and its `u` along
   it, but its window was the old plane's numbers grown: on a prism's wall

@@ -1110,10 +1110,11 @@ boolean, so the corner takes what lies above both bands, bounded by their \
 own intersection, where the material holds it all; across a convex turn \
 each band runs out as it does alone and the cuts take their union. \
 A crossed junction is taken only between two edges that meet no other \
-edge of the request. Elsewhere (a crossed corner in a loop or chain of \
-the request's edges, a turn folding back past the solid, two walls whose widened \
-continuations meet past both walls, as unequally drafted walls or walls \
-meeting off square in plan do, a wider convex turn of curved bands) the \
+edge of the request; inside corners off square in plan and corners whose \
+walls both lean are taken, the open corner past both walls' planes taken \
+out of the two widenings. Elsewhere (a crossed corner in a loop or chain \
+of the request's edges, a turn folding back past the solid, a wider \
+convex turn of curved bands) the \
 later seat runs on through the earlier band or the caps stand, as \
 without a junction, and so wherever the meeting does not close. An L-bracket's end rim blends over its \
 re-entrant band as one tangent chain (line, the band's own end arc, line), \
