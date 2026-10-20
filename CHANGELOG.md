@@ -48,6 +48,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`apply_draft` gives a drafted planar wall a window that holds it.**
+  The leaned plane's chart has its origin on the hinge and its `u` along
+  it, but its window was the old plane's numbers grown: on a prism's wall
+  the face stood at u in [-8, 0] and the window at [-0.8, 8.8]. The old
+  window is now turned with the face and read in the leaned plane's own
+  chart. Offsetting the drafted prism was invalid ("a pcurve that leaves
+  its curve by 0.517"), its walls meeting the leaned one beside its
+  trim; it is now valid and measures its grown planes' volume exactly
+  (#332).
+
 - **A lone edge is held to one ball-fit check through either entry
   point.** `fillet_edge` let a ball's contact run off a host face
   anywhere, as long as it fit somewhere along the edge, while

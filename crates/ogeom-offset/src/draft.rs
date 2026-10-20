@@ -211,6 +211,25 @@ pub fn apply_draft(
             Direction::new(along, tol)?,
             tol,
         )?);
+        // The old window turned with the face, read in the tilted plane's
+        // own chart: its origin is the hinge and its `u` runs along it, so
+        // the old window's numbers name another stretch of it.
+        let ((u0, u1), (v0, v1)) = if [u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
+            let (mut lo, mut hi) = (
+                (f64::INFINITY, f64::INFINITY),
+                (f64::NEG_INFINITY, f64::NEG_INFINITY),
+            );
+            for (u, v) in [(u0, v0), (u1, v0), (u1, v1), (u0, v1)] {
+                let corner = tilted
+                    .frame()
+                    .to_local(turn.apply(surface.point_at(u, v, tol)?));
+                lo = (lo.0.min(corner.x), lo.1.min(corner.y));
+                hi = (hi.0.max(corner.x), hi.1.max(corner.y));
+            }
+            ((lo.0, hi.0), (lo.1, hi.1))
+        } else {
+            ((u0, u1), (v0, v1))
+        };
         // The window grows with the turn: a tilted plane reaches further
         // across the same solid than the one it replaces.
         let grow = (u1 - u0).abs().max((v1 - v0).abs()).mul_add(0.5, 1.0) * angle.abs().tan()

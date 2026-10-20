@@ -158,3 +158,74 @@ fn a_prism_wall_takes_a_draft() {
         "drafted prism volume {measured} against {expected}"
     );
 }
+
+/// The prism's wall drafted 2 degrees, then offset out and in: every face
+/// a plane moved by the offset, the drafted wall's plane along its own
+/// leaned normal, so the solid is the box grown by `d` on five sides with
+/// the leaned wall `d` out from where it stood. The drafted wall's window
+/// stands where its face does in the leaned plane's own chart; read in the
+/// old plane's numbers it missed the face, and the offset's walls met the
+/// leaned one beside its trim, 0.5 off their curves.
+#[test]
+fn a_drafted_prism_offsets_to_its_grown_planes() {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    let mut model = ogeom_topo::Model::new();
+    let solid = rect_prism(&mut model);
+    let wall = face_where(&model, &solid, |_, n| {
+        n.z.abs() < 1e-9 && (n.y.abs() - 1.0).abs() < 1e-9
+    });
+    let neutral = Plane::through(Point::new(0.0, 0.0, 0.0), ogeom_math::Direction::Z);
+    let angle = 2.0_f64.to_radians();
+    let drafted = ogeom_offset::apply_draft(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&wall),
+        neutral,
+        ogeom_math::Direction::Z,
+        angle,
+        T,
+    )
+    .unwrap()
+    .shape;
+    // Every pcurve of every face inside its surface's window.
+    for face in ogeom_topo::explore_unique(&model, &drafted, ShapeType::Face).unwrap() {
+        let data = model.node(&face).and_then(|n| n.data().as_face()).unwrap();
+        let surface = model.geometry().surface(data.surface).unwrap();
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        for edge in ogeom_topo::explore_unique(&model, &face, ShapeType::Edge).unwrap() {
+            let edge_data = model.node(&edge).and_then(|n| n.data().as_edge()).unwrap();
+            let Some(ogeom_topo::EdgeRepr::PCurve { curve, range, .. }) =
+                edge_data.pcurve_for(data.surface, edge.location())
+            else {
+                panic!("a prism edge has a pcurve on each face");
+            };
+            let pcurve = model.geometry().pcurve(*curve).unwrap();
+            for t in [range.0, range.1] {
+                let p = pcurve.point_at(t, T).unwrap();
+                assert!(
+                    (u0..=u1).contains(&p.x) && (v0..=v1).contains(&p.y),
+                    "{p:?} outside {:?}",
+                    surface.domain()
+                );
+            }
+        }
+    }
+    let (cos, tan) = (angle.cos(), angle.tan());
+    for d in [0.5, -0.5] {
+        let grown = ogeom_offset::offset_shape(&mut model, &drafted, d, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom_algo::check(&model, &grown, T).unwrap();
+        assert!(diagnosis.is_valid(), "offset {d}: {:?}", diagnosis.problems);
+        // x over 8 + 2d, z over 4 + 2d, y from the leaned wall (moved d
+        // along its normal, d / cos further along y) to 6 + d: the mean
+        // width at the mean height z = 2.
+        let height = 2.0f64.mul_add(d, 4.0);
+        let expected = 2.0f64.mul_add(d, 8.0) * height * (6.0 + d + d / cos - 2.0 * tan);
+        let measured = volume(&model, &grown);
+        assert!(
+            (measured - expected).abs() < 1e-6,
+            "offset {d}: {measured} against {expected}"
+        );
+    }
+}
