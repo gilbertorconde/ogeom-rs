@@ -49,6 +49,9 @@ mod half_space;
 mod seam_join;
 mod section_face;
 mod sub_shapes;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub mod work;
 
 pub use defeature::remove_faces;
 pub use section_face::section_face;
@@ -3285,6 +3288,8 @@ fn fill(
         }
         pairs
     };
+    #[cfg(feature = "test-hooks")]
+    work::add(|w| w.face_pairs += pairs.len());
     // Each surface is marched over its faces' parameter boxes, not over
     // its whole stored domain, and a pair of surfaces is intersected once
     // for every pair of faces standing on them at the same chord.
@@ -7982,6 +7987,8 @@ fn general_fuse_classified(
     tol: Tolerances,
 ) -> OgeomResult<GeneralFused> {
     let fused = general_fuse(model, a, b, aside, tol)?;
+    #[cfg(feature = "test-hooks")]
+    work::add(|w| w.pieces += fused.pieces.len());
     if !fused.sections.is_empty()
         && fused.pieces.iter().all(|p| p.state == PieceState::Out)
         && !apart(model, a, b, tol)?
@@ -8026,6 +8033,8 @@ fn general_fuse_as(
         aside.map(|aside| &aside[1]),
         tol,
     )?;
+    #[cfg(feature = "test-hooks")]
+    work::add(|w| w.faces_gathered += ga.faces.len() + gb.faces.len());
     ogeom_core::progress::stage("boolean: intersect");
     let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b, hugs) =
         fill(&ga, &gb, false, tol)?;

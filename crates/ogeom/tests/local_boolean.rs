@@ -49,50 +49,56 @@ fn plate_and_corner(rows: u32, faces: usize) -> (Model, Shape, Shape) {
     (model, plate, corner)
 }
 
-/// The corner hole into a plate of 582 faces costs within twice what the
-/// same hole costs in a plate of 22: the faces it does not reach are set
-/// aside, not split, classified or rebuilt, and what a boolean reads of the
-/// whole plate (each face's edges and boxes, the classifier's preparation)
-/// is kept in the model and read back while the plate stands unchanged.
-/// The bound covers what the large plate still pays for every face it
-/// passes through (`side`, the history copies, the shells put back
-/// together), linear and memory-bound, on top of the work the cut reaches.
+/// The corner hole into a plate of 582 faces does the work the same hole
+/// does in a plate of 22: the faces it does not reach are set aside, not
+/// gathered, intersected, split or classified, so the faces gathered, the
+/// face pairs asked for sections and the pieces classified are the same
+/// counts for both plates.
+#[test]
+fn a_corner_hole_does_the_work_it_touches_not_what_the_plate_holds() {
+    let work = |(model, plate, corner): &mut (Model, Shape, Shape)| {
+        let before = explore_unique(model, plate, ShapeType::Face).unwrap().len();
+        let (cut, work) =
+            ogeom_bool::work::counted(|| ogeom::boolean::cut(model, plate, corner, T));
+        let after = explore_unique(model, &cut.unwrap().shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(after, before + 1);
+        work
+    };
+    let small = work(&mut plate_and_corner(4, 22));
+    let large = work(&mut plate_and_corner(24, 582));
+    assert!(small.faces_gathered > 0 && small.face_pairs > 0 && small.pieces > 0);
+    assert_eq!(large, small, "582 faces against 22");
+}
+
+/// The processor time of the corner hole into the plate of 582 faces
+/// against the plate of 22, reported: the least of many runs each, taken
+/// in turns, the cut made again each time in the model holding its plate.
+/// What the large plate still pays for every face it passes through
+/// (`side`, the history copies, the shells put back together) is linear
+/// and memory-bound, and moves with the machine.
 #[test]
 #[ignore = "heavy"]
-fn a_corner_hole_costs_what_it_touches_not_what_the_plate_holds() {
+fn a_corner_hole_s_time_against_the_plate_it_cuts_is_reported() {
     let mut small = plate_and_corner(4, 22);
     let mut large = plate_and_corner(24, 582);
-    // The least processor time of many runs each, taken in turns of a few
-    // runs, the cut made again each time in the model holding its plate
-    // and its stages run on this thread.
     let least = |(model, plate, corner): &mut (Model, Shape, Shape)| {
-        let before = explore_unique(model, plate, ShapeType::Face).unwrap().len();
         (0..6).fold(f64::INFINITY, |least, _| {
             let (cut, took) = cpu_time(|| ogeom::boolean::cut(model, plate, corner, T));
-            let after = explore_unique(model, &cut.unwrap().shape, ShapeType::Face)
-                .unwrap()
-                .len();
-            assert_eq!(after, before + 1);
+            cut.unwrap();
             least.min(took.as_secs_f64())
         })
     };
-    // Other work on the machine still slows a thread through the caches
-    // and cores it shares; the least of each side over a round reads past
-    // that, and a round is measured again, up to four, while the bound is
-    // not met.
-    let mut ratios = Vec::new();
-    for _ in 0..4 {
-        let (mut least_small, mut least_large) = (f64::INFINITY, f64::INFINITY);
-        for _ in 0..12 {
-            least_small = least_small.min(least(&mut small));
-            least_large = least_large.min(least(&mut large));
-        }
-        ratios.push((least_large, least_small));
-        if least_large <= 2.0 * least_small {
-            return;
-        }
+    let (mut least_small, mut least_large) = (f64::INFINITY, f64::INFINITY);
+    for _ in 0..12 {
+        least_small = least_small.min(least(&mut small));
+        least_large = least_large.min(least(&mut large));
     }
-    panic!("582 faces against 22, (large s, small s) per round: {ratios:?}");
+    eprintln!(
+        "corner hole: {least_large:.5} s into 582 faces, {least_small:.5} s into 22, ratio {:.2}",
+        least_large / least_small
+    );
 }
 
 /// How many faces of `result` are faces of `plate` passed through as they
