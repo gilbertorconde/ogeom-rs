@@ -1129,10 +1129,14 @@ fn kept_filter(
 /// or an apex's chart line is the strand the arrangement draws there, and
 /// is never moved, so the edges either side of it are carried onto its
 /// branch, met in the chart, since every point of the line is the same
-/// point of the surface. Elsewhere an edge is moved only where its start
-/// stands apart on the surface from the end walked to, measured through
-/// the middle of the chart segment between them, and moved stands within
-/// both edges' radii of it. A ring with no degenerate edge starts just
+/// point of the surface. Elsewhere an edge is moved where its start stands
+/// whole periods from the end walked to, unless the joint stands across a
+/// degenerate row, and moved stands within both edges' radii of it on the
+/// surface, measured through the middle of the chart segment between them.
+/// A joint stands across a degenerate row where the surface's derivative
+/// along the chart segment between its ends vanishes, not where the ends
+/// merely lie close: a cylinder smaller than its edges' radii has ends a
+/// period apart that close. A ring with no degenerate edge starts just
 /// after a joint across an apex (two rulings meeting at one point stand
 /// apart in the chart, and meet from any branch), and its first edge never
 /// moves.
@@ -1279,6 +1283,26 @@ fn fold_rings(
                 apart(a, b).is_some_and(|d| d <= within)
             }
         };
+        // Whether a joint's two ends, apart in the chart, stand across a
+        // degenerate row: the surface does not move along the chart segment
+        // between them, its derivative along it vanishing at both ends and
+        // in the middle, so that the whole gap moves it by under the
+        // confusion distance. A small surface's ends a period apart lie
+        // within the edges' radii without its derivative vanishing, and are
+        // not such a joint.
+        let across_a_degenerate_row = |a: Point2, b: Point2| -> bool {
+            let gap = b - a;
+            let length = gap.magnitude();
+            if length <= PARAM_SNAP {
+                return false;
+            }
+            let middle = Point2::new(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
+            [a, middle, b].iter().all(|p| {
+                surface
+                    .d1_at(p.x, p.y, tol)
+                    .is_ok_and(|(du, dv)| (du * gap.x + dv * gap.y).magnitude() <= tol.confusion())
+            })
+        };
         let start = if let Some(k) = walk.iter().position(|s| is_pole(*s)) {
             k
         } else {
@@ -1286,9 +1310,7 @@ fn fold_rings(
             for k in 0..walk.len() {
                 let (step, prev) = (walk[k], walk[(k + walk.len() - 1) % walk.len()]);
                 let (end, from) = (ends_of(prev)?.1, ends_of(step)?.0);
-                let within = 2.0 * (radius(step) + radius(prev)) + tol.confusion();
-                if end.distance(from) > PARAM_SNAP && apart(end, from).is_some_and(|d| d <= within)
-                {
+                if across_a_degenerate_row(end, from) {
                     start = k;
                     break;
                 }
@@ -1312,8 +1334,16 @@ fn fold_rings(
             };
             let shift = whole(last, from);
             let moved = Point2::new(from.x + shift.x, from.y + shift.y);
+            // A whole period between two ends is a jump of branch, unless
+            // the joint stands across a degenerate row; beside a degenerate
+            // edge it is read in the chart.
+            let jumps = if is_pole(step) || is_pole(prev) {
+                !meets(last, from, step, prev, within)
+            } else {
+                !across_a_degenerate_row(last, from)
+            };
             let fold = (shift.x != 0.0 || shift.y != 0.0)
-                && !meets(last, from, step, prev, within)
+                && jumps
                 && meets(last, moved, step, prev, within);
             last = to;
             if fold {
@@ -13450,6 +13480,112 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    /// A quarter of a cylinder wall of radius 0.002, its edges and vertices
+    /// widened to 0.003, its seam turned away from the quarter, one of its
+    /// rulings restated a period off. Where that ruling meets the arcs, its
+    /// ends stand a period from theirs, and that whole turn lifts within
+    /// the edges' radii, yet the surface moves along it: the joint is a
+    /// jump of branch, not one across an apex. Gathered, every pcurve of
+    /// the wall stands where it stands when the ruling is not restated.
+    #[test]
+    fn a_period_jump_on_a_wall_smaller_than_its_radii_is_folded_back() {
+        let wall = |restate: f64| -> (Model, Vec<(EdgeKey, Point2)>) {
+            let mut model = Model::new();
+            let x = Direction::new(ogeom_math::Vector::new(-1.0, -1.0, 0.0), T).unwrap();
+            let whole = make_cylinder(
+                &mut model,
+                Frame::new(Point::ORIGIN, Direction::Z, x, T).unwrap(),
+                0.002,
+                0.01,
+                T,
+            )
+            .unwrap()
+            .shape;
+            let quadrant = make_box(
+                &mut model,
+                Frame::new(Point::new(0.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap(),
+                (1.0, 1.0, 2.0),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let part = common(&mut model, &whole, &quadrant, T).unwrap().shape;
+            let face = explore_unique(&model, &part, ShapeType::Face).unwrap()[0].clone();
+            let surface = model.node(&face).unwrap().data().as_face().unwrap().surface;
+            let mut restated = false;
+            for edge in explore_unique(&model, &face, ShapeType::Edge).unwrap() {
+                model
+                    .widen(&edge, ogeom_core::Tolerance::new(0.003).unwrap())
+                    .unwrap();
+                let Some(EdgeRepr::PCurve { curve, range, .. }) = model
+                    .node(&edge)
+                    .unwrap()
+                    .data()
+                    .as_edge()
+                    .unwrap()
+                    .pcurve_for(surface, edge.location())
+                    .cloned()
+                else {
+                    continue;
+                };
+                let stated = model.geometry().pcurve(curve).unwrap().clone();
+                let (a, b) = (
+                    stated.point_at(range.0, T).unwrap(),
+                    stated.point_at(range.1, T).unwrap(),
+                );
+                if restate == 0.0 || restated || (a.x - b.x).abs() > 1e-9 {
+                    continue;
+                }
+                let moved = stated
+                    .transformed(
+                        &ogeom_math::Transform2::translation(ogeom_math::Vector2::new(
+                            restate, 0.0,
+                        )),
+                        T,
+                    )
+                    .unwrap();
+                let moved = model.geometry_mut().add_pcurve(moved);
+                if let Some(node) = model.node_mut(&edge)
+                    && let NodeData::Edge(data) = node.data_mut()
+                {
+                    for repr in &mut data.representations {
+                        if let EdgeRepr::PCurve {
+                            curve, surface: s, ..
+                        } = repr
+                            && *s == surface
+                        {
+                            *curve = moved;
+                        }
+                    }
+                }
+                restated = true;
+            }
+            assert!(restate == 0.0 || restated);
+            let gathered = gather(&model, &part, false, None, T).unwrap();
+            let starts = gathered
+                .faces
+                .iter()
+                .find(|f| matches!(f.surface, SurfaceGeometry::Cylinder(_)))
+                .unwrap()
+                .edges
+                .iter()
+                .map(|e| (e.node, e.pcurve.point_at(e.prange.0, T).unwrap()))
+                .collect();
+            (model, starts)
+        };
+        let (_, want) = wall(0.0);
+        for by in [core::f64::consts::TAU, -core::f64::consts::TAU] {
+            let (_, got) = wall(by);
+            assert_eq!(got.len(), want.len());
+            for ((_, g), (_, w)) in got.iter().zip(&want) {
+                assert!(
+                    g.distance(*w) < 1e-9,
+                    "moved {by}: {got:?} against {want:?}"
+                );
+            }
+        }
+    }
 
     /// An edge passing under a drill of radius 23.6 at right angles,
     /// tangent to it a few microns off at the middle of the edge, is

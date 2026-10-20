@@ -108,6 +108,13 @@ bump may break the API and a patch bump may not.
   its left; any other joint still refuses. Eighteen of the twenty box cuts through
   such faces in two printer assemblies now build, each cut and its common
   adding up to the solid (#343).
+- **A boolean reads a period jump on a surface smaller than its edges'
+  radii as a jump (#345).** The fold took a joint whose ends lie a period
+  apart in the chart but close on the surface for one across an apex, and
+  a ring on a cylinder smaller round than its edges' radii was left
+  unfolded. A joint now stands across an apex only where the surface's
+  derivative along the chart between its ends vanishes, and a whole
+  period across any other joint is a jump of branch.
 
 - **`apply_draft` gives a drafted planar wall a window that holds it.**
   The leaned plane's chart has its origin on the hinge and its `u` along
