@@ -1241,8 +1241,14 @@ fn fold_rings(
                 Step::Pole(..) => None,
             })
             .collect();
-        if kept || moving.is_empty() || walk.len() < 2 {
+        if kept || moving.is_empty() {
             walked.push(None);
+            continue;
+        }
+        // A ring of one edge has no joint to fold, and as a hole may still
+        // stand on another branch from its outer ring.
+        if walk.len() < 2 {
+            walked.push(Some(moving));
             continue;
         }
         let ends_of = |step: Step| -> OgeomResult<(Point2, Point2)> {

@@ -102,6 +102,15 @@ bump may break the API and a patch bump may not.
   solids of two printer assemblies read from STEP change volume by 0.1
   to 0.3 %, each a face on a closed spline patch that had lost a strip
   (#336).
+
+- **A boolean brings a hole of one edge onto its outer ring's branch of
+  a closed chart (#348).** A hole whose single closed edge states its
+  pcurve a period away from the face's outer ring was left there, and the
+  boolean read the face without its hole: a quarter wall's sheet cut
+  through such a hole kept the hole's area as face. It is now moved the
+  whole periods that put it inside the outer ring's extent, as a hole of
+  several edges is.
+
 - **A boolean through a face whose ring folds across its closed chart's
   join builds (#333).** An edge on the closure of a closed chart may state
   its pcurve on the other branch from the edges it meets: a quarter-round
