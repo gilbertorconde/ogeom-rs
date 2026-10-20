@@ -1318,7 +1318,7 @@ fn cut(
     for (edge, mut list) in fractions {
         list.sort_by(f64::total_cmp);
         list.dedup_by(|b, a| (*a - *b).abs() <= 1e-12);
-        let (pieces, vertices) = split_edge(model, &edge, &list, tol)?;
+        let (pieces, vertices) = split_edge(model, &edge, &list, Some(data.surface), tol)?;
         for (s, v) in list.iter().zip(&vertices) {
             vertex_at.push(((edge.node(), s.to_bits()), v.clone()));
         }

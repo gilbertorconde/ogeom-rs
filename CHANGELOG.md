@@ -103,6 +103,27 @@ bump may break the API and a patch bump may not.
   to 0.3 %, each a face on a closed spline patch that had lost a strip
   (#336).
 
+- **`to_nurbs` and `to_bezier` convert solids divided off their knots
+  exactly.** A drum, ball, ring or frustum cut by `divide_by_angle` into
+  pieces that do not end on its spline form's knots converted wrong:
+  - Cutting an edge cut every description at the same fraction of its
+    own range, though a pcurve paced its own way reaches that fraction
+    elsewhere: `to_bezier` of the drum and the frustum left trims 0.012
+    and 0.006 off their curves. Each description is now cut where it
+    passes the cut's point.
+  - The divided pieces' iso trims, stated as linear splines, were refitted
+    rather than restated as iso lines, and a fitted end on a pole or a
+    closure took any column: the ball read a face both ways, the ring had
+    trims 18.4 off. Any trim whose points share one coordinate is now an
+    iso line, placed where a polished projection puts it rather than to
+    the confusion distance along the surface (a thin tube's volume was
+    1.8e-5 off); a fit's pole samples and pole corners take the column
+    they arrive along; and a seam on an iso line is that line exactly.
+  - A pole row spanned the whole chart whatever part of it the face held.
+  Each conversion now checks valid, draws closed and keeps the solid's
+  volume; `to_bezier` of the ball and the ring, refused before, builds
+  (#339).
+
 - **A lone edge is held to one ball-fit check through either entry
   point.** `fillet_edge` let a ball's contact run off a host face
   anywhere, as long as it fit somewhere along the edge, while

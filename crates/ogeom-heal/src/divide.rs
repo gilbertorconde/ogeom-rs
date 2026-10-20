@@ -672,7 +672,7 @@ fn divide_edges(
             .iter()
             .map(|t| (t - range.0) / (range.1 - range.0))
             .collect();
-        let (pieces, _) = split_edge(model, &edge, &fractions, tol)?;
+        let (pieces, _) = split_edge(model, &edge, &fractions, None, tol)?;
         reshape.split(&edge, pieces);
     }
     if reshape.is_empty() {
@@ -1062,7 +1062,7 @@ fn cut_face(
         let mut fractions = fractions.clone();
         fractions.sort_by(f64::total_cmp);
         fractions.dedup_by(|b, a| (*a - *b).abs() <= 1e-12);
-        let (pieces, vertices) = split_edge(model, &edge, &fractions, tol)?;
+        let (pieces, vertices) = split_edge(model, &edge, &fractions, Some(data.surface), tol)?;
         for (s, v) in fractions.iter().zip(&vertices) {
             vertex_at.insert((edge.node(), s.to_bits()), v.clone());
         }
@@ -1327,26 +1327,140 @@ fn chain(mut items: Vec<Item>, snap: f64) -> OgeomResult<Vec<(Vec<Shape>, Vec<Po
 }
 
 /// Split `edge` (forward) at fractions of its range, in order: the pieces
-/// in order, and the new vertex at each fraction. Every description the
-/// edge has is cut at the same fraction of its own range.
+/// in order, and the new vertex at each fraction.
+///
+/// The fractions are measured along one description: the edge's pcurve on
+/// `along` where one is named (a cut found in a face's chart), its curve
+/// otherwise. Every other description is cut where it passes the same
+/// point, which is the same fraction of its own range only where the edge
+/// states its descriptions run at one parameter over one range: a pcurve
+/// paced its own way (an arc's rational spline against its patch's chart)
+/// reaches the same fraction somewhere else along the edge.
 pub(crate) fn split_edge(
     model: &mut Model,
     edge: &Shape,
     fractions: &[f64],
+    along: Option<SurfaceId>,
     tol: Tolerances,
 ) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
     let data = edge_data(model, edge)?;
     let Some((start, end)) = edge_vertices(model, edge)? else {
         ogeom_bail!(Construction, "an edge with no vertices cannot be cut");
     };
+    let measured =
+        along.and_then(
+            |surface| match data.pcurve_for(surface, &Location::identity()) {
+                Some(
+                    EdgeRepr::PCurve { curve, range, .. }
+                    | EdgeRepr::Seam {
+                        forward: curve,
+                        range,
+                        ..
+                    },
+                ) => Some((surface, *curve, *range)),
+                _ => None,
+            },
+        );
+    let curve = match data.curve3d() {
+        Some(EdgeRepr::Curve3d { curve, range, .. }) if !data.degenerate => {
+            let Some(geometry) = model.geometry().curve(*curve) else {
+                ogeom_bail!(Dangling, "curve is not in this model");
+            };
+            Some((geometry.clone(), *range))
+        }
+        _ => None,
+    };
+    // Whether a description runs at the measured one's parameters over
+    // its range, as the edge states, so the same fractions cut it.
+    let same = |range: (f64, f64)| {
+        let reference = match (measured, &curve) {
+            (Some((_, _, r)), _) => Some(r),
+            (None, Some((_, r))) => Some(*r),
+            (None, None) => None,
+        };
+        data.same_parameter() && reference == Some(range)
+    };
+    let points: Vec<Option<Point>> = fractions
+        .iter()
+        .map(|&s| -> OgeomResult<Option<Point>> {
+            Ok(match (measured, &curve) {
+                (Some((surface, pcurve, range)), _) => {
+                    let (Some(surface), Some(pcurve)) = (
+                        model.geometry().surface(surface),
+                        model.geometry().pcurve(pcurve),
+                    ) else {
+                        ogeom_bail!(Dangling, "an edge names geometry not in this model");
+                    };
+                    let uv = pcurve.point_at(range.0 + (range.1 - range.0) * s, tol)?;
+                    Some(surface.point_at(uv.x, uv.y, tol)?)
+                }
+                (None, Some((c, range))) => {
+                    Some(c.point_at(range.0 + (range.1 - range.0) * s, tol)?)
+                }
+                (None, None) => None,
+            })
+        })
+        .collect::<OgeomResult<_>>()?;
+    // Each description's own fractions, in the order the edge holds them.
+    let mut own: Vec<Vec<f64>> = Vec::with_capacity(data.representations.len());
+    for repr in &data.representations {
+        let cut = match (repr, &curve) {
+            (EdgeRepr::Curve3d { range, .. }, Some((c, _)))
+                if measured.is_some() && !same(*range) =>
+            {
+                passing(fractions, &points, |s| {
+                    c.point_at(range.0 + (range.1 - range.0) * s, tol).ok()
+                })?
+            }
+            (
+                EdgeRepr::PCurve {
+                    curve: id,
+                    range,
+                    surface,
+                    location,
+                }
+                | EdgeRepr::Seam {
+                    forward: id,
+                    range,
+                    surface,
+                    location,
+                    ..
+                },
+                _,
+            ) => {
+                let measuring = measured.is_some_and(|(on, _, _)| on == *surface);
+                if measuring || same(*range) || !location.is_identity() {
+                    fractions.to_vec()
+                } else {
+                    let (Some(surface), Some(pcurve)) = (
+                        model.geometry().surface(*surface),
+                        model.geometry().pcurve(*id),
+                    ) else {
+                        ogeom_bail!(Dangling, "an edge names geometry not in this model");
+                    };
+                    passing(fractions, &points, |s| {
+                        let uv = pcurve
+                            .point_at(range.0 + (range.1 - range.0) * s, tol)
+                            .ok()?;
+                        surface.point_at(uv.x, uv.y, tol).ok()
+                    })?
+                }
+            }
+            _ => fractions.to_vec(),
+        };
+        own.push(cut);
+    }
+    // The new vertices stand on the curve, where it is cut.
+    let curve_cut = data
+        .representations
+        .iter()
+        .position(|r| matches!(r, EdgeRepr::Curve3d { .. }))
+        .map_or_else(|| fractions.to_vec(), |k| own[k].clone());
     let mut vertices = Vec::with_capacity(fractions.len());
-    for &s in fractions {
-        let vertex = match data.curve3d() {
-            Some(EdgeRepr::Curve3d { curve, range, .. }) if !data.degenerate => {
-                let Some(curve) = model.geometry().curve(*curve) else {
-                    ogeom_bail!(Dangling, "curve is not in this model");
-                };
-                let p = curve.point_at(range.0 + (range.1 - range.0) * s, tol)?;
+    for &s in &curve_cut {
+        let vertex = match &curve {
+            Some((c, range)) => {
+                let p = c.point_at(range.0 + (range.1 - range.0) * s, tol)?;
                 model.add_vertex(VertexData::with_tolerance(p, data.tolerance.get())?)
             }
             // A degenerate edge is one point, however it is cut.
@@ -1354,39 +1468,71 @@ pub(crate) fn split_edge(
         };
         vertices.push(vertex);
     }
-    let mut bounds = vec![0.0];
-    bounds.extend(fractions);
-    bounds.push(1.0);
     let mut ends = vec![start];
     ends.extend(vertices.iter().cloned());
     ends.push(end);
-    let mut pieces = Vec::with_capacity(bounds.len() - 1);
-    for k in 0..bounds.len() - 1 {
-        let (a, b) = (bounds[k], bounds[k + 1]);
-        let sub = |range: (f64, f64)| {
-            (
-                range.0 + (range.1 - range.0) * a,
-                range.0 + (range.1 - range.0) * b,
-            )
-        };
+    let mut pieces = Vec::with_capacity(fractions.len() + 1);
+    for k in 0..=fractions.len() {
         let mut piece = data.clone();
+        for (repr, cut) in piece.representations.iter_mut().zip(&own) {
+            let (a, b) = (
+                if k == 0 { 0.0 } else { cut[k - 1] },
+                cut.get(k).copied().unwrap_or(1.0),
+            );
+            match repr {
+                EdgeRepr::Curve3d { range, .. }
+                | EdgeRepr::PCurve { range, .. }
+                | EdgeRepr::Seam { range, .. } => {
+                    *range = (
+                        range.0 + (range.1 - range.0) * a,
+                        range.0 + (range.1 - range.0) * b,
+                    );
+                }
+                _ => {}
+            }
+        }
         piece.representations.retain(|r| {
             matches!(
                 r,
                 EdgeRepr::Curve3d { .. } | EdgeRepr::PCurve { .. } | EdgeRepr::Seam { .. }
             )
         });
-        for repr in &mut piece.representations {
-            match repr {
-                EdgeRepr::Curve3d { range, .. }
-                | EdgeRepr::PCurve { range, .. }
-                | EdgeRepr::Seam { range, .. } => *range = sub(*range),
-                _ => {}
-            }
-        }
         pieces.push(model.add_edge(piece, &[ends[k].clone(), ends[k + 1].clone()])?);
     }
     Ok((pieces, vertices))
+}
+
+/// The fractions at which a description, read through `at`, passes each
+/// of `points`: for each, the nearest of evenly spaced samples, refined
+/// between its neighbours. The fraction given stands where there is no
+/// point (a degenerate edge) or the description cannot be read.
+fn passing(
+    fractions: &[f64],
+    points: &[Option<Point>],
+    at: impl Fn(f64) -> Option<Point>,
+) -> OgeomResult<Vec<f64>> {
+    const SAMPLES: u32 = 64;
+    let mut out = Vec::with_capacity(fractions.len());
+    for (&s, p) in fractions.iter().zip(points) {
+        let Some(p) = p else {
+            out.push(s);
+            continue;
+        };
+        let off = |t: f64| at(t).map_or(f64::INFINITY, |q| q.distance(*p));
+        let nearest = (0..=SAMPLES)
+            .map(|i| (i, off(f64::from(i) / f64::from(SAMPLES))))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let Some((i, _)) = nearest.filter(|(_, d)| d.is_finite()) else {
+            out.push(s);
+            continue;
+        };
+        let (lo, hi) = (
+            f64::from(i.saturating_sub(1)) / f64::from(SAMPLES),
+            f64::from((i + 1).min(SAMPLES)) / f64::from(SAMPLES),
+        );
+        out.push(ogeom_math::solve::minimize(off, lo, hi, ogeom_math::Criteria::default())?.value);
+    }
+    Ok(out)
 }
 
 /// The surface's iso-curve along `line`, and the map from the line's free

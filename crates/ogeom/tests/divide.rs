@@ -208,6 +208,83 @@ fn patches_trim_inside(model: &Model, shape: &Shape) {
     }
 }
 
+/// A drum, a ball, a ring and a frustum, each divided into pieces turning
+/// 0.9 of a quarter, off the knots of their spline forms, then converted
+/// whole to splines and to single spans. Every conversion checks valid,
+/// draws closed and keeps the solid's closed-form volume. Before, the
+/// divided drum's and frustum's edges were cut at the same fraction of
+/// every description and their trims left their curves; the ball's and
+/// ring's iso trims, cut as linear splines, were refitted, their ends on a
+/// pole or across a closure taking any column, and their pole rows spanned
+/// the whole chart; a ring's tube seam was fitted as a column.
+#[test]
+fn solids_divided_off_their_knots_convert_to_splines_exactly() {
+    let pi = core::f64::consts::PI;
+    let mut model = Model::new();
+    let solids = [
+        (
+            ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+                .unwrap()
+                .shape,
+            pi * 4.0 * 5.0,
+        ),
+        (
+            ogeom::algo::make_sphere(&mut model, Frame::WORLD, 3.0, T)
+                .unwrap()
+                .shape,
+            4.0 / 3.0 * pi * 27.0,
+        ),
+        (
+            ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 3.0, T)
+                .unwrap()
+                .shape,
+            2.0 * pi * pi * 10.0 * 9.0,
+        ),
+        (
+            ogeom::algo::make_torus(&mut model, Frame::WORLD, 10.0, 0.01, T)
+                .unwrap()
+                .shape,
+            2.0 * pi * pi * 10.0 * 1e-4,
+        ),
+        (
+            ogeom::algo::make_cone(&mut model, Frame::WORLD, 3.0, 1.0, 4.0, T)
+                .unwrap()
+                .shape,
+            pi * 4.0 / 3.0 * (9.0 + 3.0 + 1.0),
+        ),
+    ];
+    for (k, (solid, volume)) in solids.iter().enumerate() {
+        let divided =
+            ogeom::heal::divide_by_angle(&mut model, solid, 0.9 * core::f64::consts::FRAC_PI_2, T)
+                .unwrap()
+                .shape;
+        let nurbs = ogeom::algo::to_nurbs(&mut model, &divided, T)
+            .unwrap()
+            .shape;
+        let bezier = ogeom::heal::to_bezier(&mut model, &divided, T)
+            .unwrap()
+            .shape;
+        for (name, converted) in [("to_nurbs", nurbs), ("to_bezier", bezier)] {
+            let diagnosis = ogeom::algo::check(&model, &converted, T).unwrap();
+            assert!(diagnosis.is_valid(), "solid {k} {name}: {diagnosis}");
+            let measured =
+                ogeom::algo::volume_properties(&model, &converted, Deflection::default(), T)
+                    .unwrap()
+                    .mass;
+            assert!(
+                (measured - volume).abs() <= volume * 1e-9,
+                "solid {k} {name}: {measured} against {volume}"
+            );
+            assert!(
+                ogeom::mesh::triangulate(&model, &converted, Deflection::default(), T)
+                    .unwrap()
+                    .is_closed(),
+                "solid {k} {name}: the mesh is open"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_box_divides_until_no_face_is_larger_than_asked() {
     let mut model = Model::new();

@@ -554,20 +554,32 @@ impl Rebuild<'_> {
                 if was_seam {
                     if !seams_done.contains(&new_edge.node()) {
                         seams_done.push(new_edge.node());
-                        let (forward, reversed) =
-                            exact_seam_columns(&new_curve, new_range, &patch_surface, tol)
-                                .map_or_else(
-                                    || {
-                                        seam_pcurves(
-                                            &new_curve,
-                                            new_range,
-                                            &patch_surface,
-                                            target,
-                                            tol,
-                                        )
-                                    },
-                                    Ok,
-                                )?;
+                        // Whether the old seam ran along a row or a column.
+                        let old_iso = match &old_repr {
+                            Some(EdgeRepr::Seam { forward, range, .. }) => {
+                                match model.geometry().pcurve(*forward) {
+                                    Some(side) => iso_direction(side, *range, tol)?,
+                                    None => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        let exact =
+                            match exact_seam_columns(&new_curve, new_range, &patch_surface, tol) {
+                                Some(sides) => Some(sides),
+                                None => match old_iso {
+                                    Some(row) => {
+                                        seam_lines(&new_curve, new_range, &patch_surface, row, tol)?
+                                    }
+                                    None => None,
+                                },
+                            };
+                        let (forward, reversed) = match exact {
+                            Some(sides) => sides,
+                            None => {
+                                seam_pcurves(&new_curve, new_range, &patch_surface, target, tol)?
+                            }
+                        };
                         let seam_range = forward.domain();
                         rederived.push(new_edge.clone());
                         attach_seam(
@@ -949,7 +961,8 @@ fn convert_edge(
 }
 
 /// A pcurve refit at the edge's own parameters, optionally biased toward one
-/// side of the chart's `u` seam: sampled more densely until its image lies
+/// side of the chart's seam (`side`: whether the seam is a `u` column, and
+/// the column or row): sampled more densely until its image lies
 /// within `target` of the edge halfway between the samples too, which a fit
 /// held only at them need not.
 #[allow(clippy::too_many_arguments)]
@@ -957,7 +970,7 @@ fn fit_pcurve(
     curve: &Curve,
     range: (f64, f64),
     surface: &SurfaceGeometry,
-    side: Option<f64>,
+    side: Option<(bool, f64)>,
     ends: (Option<Point2>, Option<Point2>),
     target: f64,
     tol: Tolerances,
@@ -997,13 +1010,13 @@ fn fit_pcurve_at(
     curve: &Curve,
     range: (f64, f64),
     surface: &SurfaceGeometry,
-    side: Option<f64>,
+    side: Option<(bool, f64)>,
     ends: (Option<Point2>, Option<Point2>),
     target: f64,
     samples: usize,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_geom::PlanarCurve> {
-    let ((u0, u1), _) = surface.domain();
+    let ((u0, u1), (v0, v1)) = surface.domain();
     let mut parameters = Vec::with_capacity(samples + 1);
     let mut trace = Vec::with_capacity(samples + 1);
     for i in 0..=samples {
@@ -1011,16 +1024,51 @@ fn fit_pcurve_at(
         let t = range.0 + (range.1 - range.0) * i as f64 / samples as f64;
         let p = curve.point_at(t, tol)?;
         let projection = crate::measure::project_on_surface(surface, p, 24, tol)?;
-        let (mut u, v) = projection.parameters;
-        if let Some(bias) = side {
-            // A point exactly on the seam projects to either side; the bias
-            // names which column this pcurve is.
-            if (u - u0).abs() < (u1 - u0) * 0.25 || (u - u1).abs() < (u1 - u0) * 0.25 {
+        let (mut u, mut v) = projection.parameters;
+        // A point exactly on the seam projects to either side; the bias
+        // names which column, or row, this pcurve is.
+        match side {
+            Some((true, bias))
+                if (u - u0).abs() < (u1 - u0) * 0.25 || (u - u1).abs() < (u1 - u0) * 0.25 =>
+            {
                 u = bias;
             }
+            Some((false, bias))
+                if (v - v0).abs() < (v1 - v0) * 0.25 || (v - v1).abs() < (v1 - v0) * 0.25 =>
+            {
+                v = bias;
+            }
+            _ => {}
         }
         parameters.push(t);
         trace.push(Point2::new(u, v));
+    }
+    // A sample on a pole images to every column there, and the projection
+    // answers with any of them; the trace reaches the pole along the column
+    // of the sample beside it, which is where it stands in the chart. A
+    // pole is where the chart's whole width of columns spans no more than
+    // the confusion distance: the rate across columns times the width.
+    let on_pole: Vec<bool> = trace
+        .iter()
+        .map(|p| {
+            surface
+                .d1_at(p.x, p.y, tol)
+                .is_ok_and(|(du, _)| du.magnitude() * (u1 - u0).abs() <= tol.confusion())
+        })
+        .collect();
+    if on_pole.iter().any(|&p| p) && !on_pole.iter().all(|&p| p) {
+        for i in 0..trace.len() {
+            if !on_pole[i] {
+                continue;
+            }
+            let beside = (1..trace.len())
+                .flat_map(|k| [i.checked_sub(k), (i + k < trace.len()).then_some(i + k)])
+                .flatten()
+                .find(|&j| !on_pole[j]);
+            if let Some(j) = beside {
+                trace[i].x = trace[j].x;
+            }
+        }
     }
     // A closed patch is clamped, not periodic, but its geometry still closes:
     // a trace crossing the closure jumps by the whole u span. Unwrapped, the
@@ -1051,15 +1099,27 @@ fn fit_pcurve_at(
         let turns = ((at.x - corner.x) / span).round();
         Point2::new(turns.mul_add(span, corner.x), corner.y)
     };
+    // A corner on a pole names its row only: the column stays the one the
+    // trace arrives along.
+    let at_pole = |k: usize| on_pole.get(k).copied().unwrap_or(false);
+    let last_index = trace.len().saturating_sub(1);
     if let Some(start) = ends.0
         && let Some(first) = trace.first_mut()
     {
-        *first = beside(start, *first);
+        *first = if at_pole(0) {
+            Point2::new(first.x, start.y)
+        } else {
+            beside(start, *first)
+        };
     }
     if let Some(end) = ends.1
         && let Some(last) = trace.last_mut()
     {
-        *last = beside(end, *last);
+        *last = if at_pole(last_index) {
+            Point2::new(last.x, end.y)
+        } else {
+            beside(end, *last)
+        };
     }
     // The target holds in space, where the edge is compared with its
     // pcurve's image; the chart stretches a step in `u` or `v` by up to its
@@ -1094,33 +1154,31 @@ fn exact_iso_pcurve(
     along: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<ogeom_geom::PlanarCurve>> {
-    let Some(EdgeRepr::PCurve { curve: old_pc, .. }) = old_repr else {
+    let Some(EdgeRepr::PCurve {
+        curve: old_pc,
+        range: old_range,
+        ..
+    }) = old_repr
+    else {
         return Ok(None);
     };
-    let Some(ogeom_geom::PlanarCurve::Line(old_line)) = model.geometry().pcurve(*old_pc) else {
+    let Some(old_pcurve) = model.geometry().pcurve(*old_pc) else {
         return Ok(None);
     };
-    let d = old_line.axis().direction;
-    let axis_aligned = d.vector().x.abs() <= 1e-12 || d.vector().y.abs() <= 1e-12;
-    if !axis_aligned {
+    // An iso line however it is stated: a line, or a spline (a divided
+    // face's cut is a linear one), whose points all share one coordinate.
+    let Some(row) = iso_direction(old_pcurve, *old_range, tol)? else {
         return Ok(None);
-    }
+    };
     let ((nu0, nu1), (nv0, nv1)) = surface.domain();
     let start = curve.point_at(range.0, tol)?;
     let end = curve.point_at(range.1, tol)?;
-    let a = crate::measure::project_on_surface(surface, start, 24, tol)?;
-    let b = crate::measure::project_on_surface(surface, end, 24, tol)?;
-    let mut a = Point2::new(a.parameters.0, a.parameters.1);
-    let mut b = Point2::new(b.parameters.0, b.parameters.1);
-    let row = d.vector().y.abs() <= 1e-12;
+    let mut a = foot(surface, start, tol)?;
+    let mut b = foot(surface, end, tol)?;
     let closed_u = surface.is_periodic_u() || surface.is_closed_u(tol);
     let closed_v = surface.is_periodic_v() || surface.is_closed_v(tol);
     // The image of the edge's point at `t`.
-    let inside = |t: f64| -> OgeomResult<Point2> {
-        let p = curve.point_at(t, tol)?;
-        let at = crate::measure::project_on_surface(surface, p, 24, tol)?.parameters;
-        Ok(Point2::new(at.0, at.1))
-    };
+    let inside = |t: f64| -> OgeomResult<Point2> { foot(surface, curve.point_at(t, tol)?, tol) };
     if row {
         // A row's v is one value; the endpoints agree up to projection noise.
         let mut v = f64::midpoint(a.y, b.y);
@@ -1159,6 +1217,86 @@ fn exact_iso_pcurve(
         b.x = u;
     }
     Ok(Some(ogeom_geom::Line2d::segment(a, b, tol)?.into()))
+}
+
+/// Where `p` stands in `surface`'s chart: its projection, polished by
+/// Newton steps on the foot conditions until a step moves the parameters
+/// less than the parametric tolerance. The projection stops once the gap
+/// along the surface is under the confusion distance, which on a surface
+/// curving tightly (a thin tube) is a sizeable part of the chart; an iso
+/// line placed there stands that far off the line it images.
+fn foot(surface: &SurfaceGeometry, p: Point, tol: Tolerances) -> OgeomResult<Point2> {
+    use ogeom_geom::Surface as _;
+    let (mut u, mut v) = crate::measure::project_on_surface(surface, p, 24, tol)?.parameters;
+    for _ in 0..8 {
+        let Ok(jet) = surface.jet_at(u, v, tol) else {
+            break;
+        };
+        let gap = jet.point - p;
+        let r = [gap.dot(jet.du), gap.dot(jet.dv)];
+        let j = [
+            [
+                jet.du.dot(jet.du) + gap.dot(jet.d2u),
+                jet.du.dot(jet.dv) + gap.dot(jet.duv),
+            ],
+            [
+                jet.du.dot(jet.dv) + gap.dot(jet.duv),
+                jet.dv.dot(jet.dv) + gap.dot(jet.d2v),
+            ],
+        ];
+        let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+        // Singular on a pole, where the column is free and the row is the
+        // projection's.
+        if !det.is_finite() || det.abs() <= f64::EPSILON * j[0][0].abs() * j[1][1].abs() {
+            break;
+        }
+        let (du, dv) = (
+            (r[0] * j[1][1] - r[1] * j[0][1]) / det,
+            (r[1] * j[0][0] - r[0] * j[1][0]) / det,
+        );
+        let (nu, nv) = (u - du, v - dv);
+        let closer = surface
+            .point_at(nu, nv, tol)
+            .is_ok_and(|q| q.distance(p) <= jet.point.distance(p));
+        if !closer {
+            break;
+        }
+        (u, v) = (nu, nv);
+        if du.hypot(dv) <= tol.parametric() {
+            break;
+        }
+    }
+    Ok(Point2::new(u, v))
+}
+
+/// Whether `pcurve` over `range` is a row (`Some(true)`: every point at one
+/// `v`) or a column (`Some(false)`: at one `u`), read at evenly spaced
+/// points; `None` where it is neither, or does not move.
+fn iso_direction(
+    pcurve: &ogeom_geom::PlanarCurve,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<bool>> {
+    const SAMPLES: u32 = 8;
+    let mut points = Vec::with_capacity(SAMPLES as usize + 1);
+    for i in 0..=SAMPLES {
+        let t = range.0 + (range.1 - range.0) * f64::from(i) / f64::from(SAMPLES);
+        points.push(pcurve.point_at(t, tol)?);
+    }
+    let first = points[0];
+    let spread = |coordinate: fn(Point2) -> f64| {
+        points
+            .iter()
+            .map(|p| (coordinate(*p) - coordinate(first)).abs())
+            .fold(0.0, f64::max)
+    };
+    let (across_u, across_v) = (spread(|p| p.x), spread(|p| p.y));
+    let still = tol.parametric();
+    Ok(match (across_u <= still, across_v <= still) {
+        (false, true) => Some(true),
+        (true, false) => Some(false),
+        _ => None,
+    })
 }
 
 /// The ends of an iso line in the coordinate it runs along, `ends` as its
@@ -1311,8 +1449,83 @@ fn exact_seam_columns(
     Some((side(hi)?, side(lo)?))
 }
 
+/// The two sides of a seam that runs along an iso line of the new chart, a
+/// row (`row`) or a column: the chart's last and first line that way, each
+/// straight between where the edge's ends stand along it. The line is the
+/// seam's own image, so the sides are exact whatever pace the edge's curve
+/// keeps along it. `None` where the ends do not stand apart along it, or
+/// the chart does not close across it.
+fn seam_lines(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    row: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<(ogeom_geom::PlanarCurve, ogeom_geom::PlanarCurve)>> {
+    use ogeom_geom::Surface as _;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let (across, along, closes_across, closes_along) = if row {
+        (
+            (v0, v1),
+            (u0, u1),
+            surface.is_periodic_v() || surface.is_closed_v(tol),
+            surface.is_periodic_u() || surface.is_closed_u(tol),
+        )
+    } else {
+        (
+            (u0, u1),
+            (v0, v1),
+            surface.is_periodic_u() || surface.is_closed_u(tol),
+            surface.is_periodic_v() || surface.is_closed_v(tol),
+        )
+    };
+    if !closes_across {
+        return Ok(None);
+    }
+    // The seam stands on the closure across it, as `exact_seam_columns`
+    // reads a seam's samples; a chart whose closure lies elsewhere (a
+    // surface restated about a turned frame) has its seam fitted.
+    let middle = foot(
+        surface,
+        curve.point_at(f64::midpoint(range.0, range.1), tol)?,
+        tol,
+    )?;
+    let fixed = if row { middle.y } else { middle.x };
+    let reach = (across.1 - across.0).abs() * 1e-6;
+    if (fixed - across.0).abs() > reach && (fixed - across.1).abs() > reach {
+        return Ok(None);
+    }
+    let free = |t: f64| -> OgeomResult<f64> {
+        let at = foot(surface, curve.point_at(t, tol)?, tol)?;
+        Ok(if row { at.x } else { at.y })
+    };
+    let (a, b) = run_ends(
+        (free(range.0)?, free(range.1)?),
+        along,
+        closes_along,
+        range,
+        free,
+    )?;
+    if (b - a).abs() <= tol.parametric() {
+        return Ok(None);
+    }
+    let side = |at: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        let (from, to) = if row {
+            (Point2::new(a, at), Point2::new(b, at))
+        } else {
+            (Point2::new(at, a), Point2::new(at, b))
+        };
+        let knots = ogeom_math::KnotVector::new(vec![range.0, range.0, range.1, range.1], 1)?;
+        Ok(ogeom_geom::BSpline2d::new(knots, vec![from, to], tol)?.into())
+    };
+    Ok(Some((side(across.1)?, side(across.0)?)))
+}
+
 /// The two seam-side pcurves of a closed patch: the chart's first and last
-/// `u` columns, each fitted at the edge's own parameters.
+/// `u` columns, or its first and last `v` rows where the seam runs along
+/// the closure in `v` (a torus's tube seam), each fitted at the edge's own
+/// parameters. Which closure the seam runs on is read at its middle, where
+/// it stands on one of them and on no pole.
 fn seam_pcurves(
     curve: &Curve,
     range: (f64, f64),
@@ -1320,9 +1533,36 @@ fn seam_pcurves(
     target: f64,
     tol: Tolerances,
 ) -> OgeomResult<(ogeom_geom::PlanarCurve, ogeom_geom::PlanarCurve)> {
-    let ((u0, u1), _) = surface.domain();
-    let forward = fit_pcurve(curve, range, surface, Some(u1), (None, None), target, tol)?;
-    let reversed = fit_pcurve(curve, range, surface, Some(u0), (None, None), target, tol)?;
+    use ogeom_geom::Surface as _;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let middle = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
+    let (u, v) = crate::measure::project_on_surface(surface, middle, 24, tol)?.parameters;
+    let off = |x: f64, a: f64, b: f64| (x - a).abs().min((x - b).abs()) / (b - a).abs();
+    let on_rows =
+        (surface.is_periodic_v() || surface.is_closed_v(tol)) && off(v, v0, v1) < off(u, u0, u1);
+    let (column, lo, hi) = if on_rows {
+        (false, v0, v1)
+    } else {
+        (true, u0, u1)
+    };
+    let forward = fit_pcurve(
+        curve,
+        range,
+        surface,
+        Some((column, hi)),
+        (None, None),
+        target,
+        tol,
+    )?;
+    let reversed = fit_pcurve(
+        curve,
+        range,
+        surface,
+        Some((column, lo)),
+        (None, None),
+        target,
+        tol,
+    )?;
     Ok((forward, reversed))
 }
 
@@ -1347,16 +1587,22 @@ fn degenerate_row(
 ) -> OgeomResult<ogeom_geom::Line2d> {
     // Which end of the old chart the pole row sat at decides which end of
     // the new chart it sits at: conversion preserves ends.
-    let Some(EdgeRepr::PCurve { curve, .. }) = data.pcurve_for(old_surface, edge.location()) else {
+    let Some(EdgeRepr::PCurve {
+        curve,
+        range: row_range,
+        ..
+    }) = data.pcurve_for(old_surface, edge.location())
+    else {
         ogeom_bail!(Construction, "a degenerate edge has no pcurve to restate");
     };
+    let row_range = *row_range;
     let Some(row) = model.geometry().pcurve(*curve) else {
         ogeom_bail!(Dangling, "pcurve is not in this model");
     };
     let (lo, hi) = row.domain();
     let at = row.point_at(f64::midpoint(lo, hi), tol)?;
     let v_old = at.y;
-    let (_, (va_old, vb_old)) = old.domain();
+    let ((ua_old, ub_old), (va_old, vb_old)) = old.domain();
     let ((nu0, nu1), (nv0, nv1)) = new.domain();
     // The row where the new surface reaches the pole: a profile running
     // past its pole (a whole circle revolved) puts the pole inside the
@@ -1368,6 +1614,33 @@ fn degenerate_row(
         } else {
             nv1
         });
+    // A pole row spanning only part of the old chart's width (a face cut
+    // from a ball) spans the columns its ends stand on: each read off the
+    // old surface's middle row, away from the pole where every column
+    // meets, and imaged onto the new surface, an end on the chart's
+    // closure placed by a point a little way in, as an iso line's ends are.
+    let (row_u0, row_u1) = (
+        row.point_at(row_range.0, tol)?.x,
+        row.point_at(row_range.1, tol)?.x,
+    );
+    let partial = (row_u1 - row_u0).abs() < (ub_old - ua_old).abs() - tol.parametric();
+    let middle = f64::midpoint(va_old, vb_old);
+    if partial && middle.is_finite() {
+        let column = |t: f64| -> OgeomResult<f64> {
+            let u = row.point_at(t, tol)?.x;
+            let p = old.point_at(u, middle, tol)?;
+            Ok(foot(new, p, tol)?.x)
+        };
+        let closed_u = new.is_periodic_u() || new.is_closed_u(tol);
+        let (a, b) = run_ends(
+            (column(row_range.0)?, column(row_range.1)?),
+            (nu0, nu1),
+            closed_u,
+            row_range,
+            column,
+        )?;
+        return ogeom_geom::Line2d::segment(Point2::new(a, v_new), Point2::new(b, v_new), tol);
+    }
     let (from, to) = (Point2::new(nu0, v_new), Point2::new(nu1, v_new));
     if walked_back {
         ogeom_geom::Line2d::segment(to, from, tol)
