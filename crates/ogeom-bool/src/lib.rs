@@ -5752,8 +5752,9 @@ fn fill(
                             if c.target_from_a != side_from_a || c.target_face != side_face {
                                 continue;
                             }
-                            if distance_to_edge_curve(&c.curve, c.crange, at, tol)?
-                                <= held_to(width.max(c.tolerance * 2.0), c.tolerance * 2.0)
+                            let held = held_to(width.max(c.tolerance * 2.0), c.tolerance * 2.0);
+                            if c.bound.expanded(held).contains(at)
+                                && distance_to_edge_curve(&c.curve, c.crange, at, tol)? <= held
                             {
                                 near = true;
                                 contact_votes[ci] += 1;

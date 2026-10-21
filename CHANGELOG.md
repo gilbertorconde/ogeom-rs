@@ -54,6 +54,12 @@ bump may break the API and a patch bump may not.
   distance clears the gap. Near-tangent lines that miss or cross, and
   touches the sampling path would read as overlap, still go to it. The
   cube now rounds in 124 ms, to the same 26 faces and volume.
+- **A section piece's hug test screens contact edges by their boxes.**
+  Whether a piece runs along an edge was measured against every contact
+  edge of the face, though own edges were already screened by their
+  boxes; a contact edge's box now screens it the same way, with the same
+  answer. The four outer edges of a plate with 256 holes fillet in 49 ms
+  where they took 72.
 - **A rim whose blend's rail passes a sphere's pole closer than a stride
   of the march refuses by name (#365).** The rail's chart turns half
   round within that stride, which no fit through the stations follows;
