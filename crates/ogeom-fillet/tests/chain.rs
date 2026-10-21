@@ -1334,15 +1334,12 @@ fn drafted_pocket(
 /// corner what the drafted inside corner of the block above takes beyond
 /// its sections, its draft over its height twice the pocket's per unit.
 /// Capped at the drafted corners instead, the request left them standing.
-/// With the pocket's drafted wall overhanging, the loop's wedge is not cut
-/// from the block, and the request rounds as without crossed junctions:
-/// the flush corners taken and the drafted ones capped, the figures what
-/// that rounding takes in each order.
+/// With the pocket's drafted wall overhanging, the same holds.
 #[test]
 fn a_drafted_pocket_s_rim_meets_at_every_corner() {
     let r: f64 = 0.5;
     let cell = 2.0 * (5.0 / 6.0 - core::f64::consts::PI / 4.0) * r.powi(3);
-    for (draft, without) in [(0.1_f64, None), (-0.1, Some([0.937_528, 0.938_727]))] {
+    for draft in [0.1_f64, -0.1] {
         let mut model = ogeom_topo::Model::new();
         let (block, edges) = drafted_pocket(&mut model, draft);
         // The pocket's wall leans `draft` per unit of depth; the block's
@@ -1355,12 +1352,174 @@ fn a_drafted_pocket_s_rim_meets_at_every_corner() {
             3.0f64.mul_add(square.area, drafted.area),
             2.0f64.mul_add(cell, 2.0 * gain),
         );
-        let removed = removed_both_ways(&model, &block, &edges, r);
-        for (k, got) in removed.into_iter().enumerate() {
-            let capped = without.is_some_and(|w: [f64; 2]| (got - w[k]).abs() < 2e-6);
+        for got in removed_both_ways(&model, &block, &edges, r) {
             assert!(
-                (got - want).abs() < 3e-6 || capped,
-                "draft {draft}: {got} against {want}, or {without:?} capped"
+                (got - want).abs() < 3e-6,
+                "draft {draft}: {got} against {want}"
+            );
+        }
+    }
+}
+
+/// The runs two lists of disjoint runs share.
+fn meet(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for &(p, q) in a {
+        for &(r, t) in b {
+            let (lo, hi) = (p.max(r), q.min(t));
+            if hi > lo {
+                out.push((lo, hi));
+            }
+        }
+    }
+    out
+}
+
+/// A block eight square and two high notched at the top corner `(4, 3, 2)`
+/// past two walls: one through the crease `y = 3` (the first edge, along
+/// `x` from the corner), and one along the second edge, which leaves the
+/// corner at `plan` from the first in plan. Each wall leans from the
+/// vertical by its own angle, its foot in under the material for a
+/// positive lean. Returns the block and the two top creases leaving the
+/// corner, the one along `x` first.
+fn turned_corner(
+    model: &mut ogeom_topo::Model,
+    plan: f64,
+    [lean, leant]: [f64; 2],
+) -> (ogeom_topo::Shape, [ogeom_topo::Shape; 2]) {
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (8.0, 8.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let corner = Point::new(4.0, 3.0, 2.0);
+    let (s, c) = plan.sin_cos();
+    let past = |model: &mut ogeom_topo::Model, n: Vector, x: Vector| {
+        let y = n.cross(x);
+        let origin = corner - x * 20.0 - y * 20.0;
+        let frame = Frame::new(
+            origin,
+            Direction::new(n, T).unwrap(),
+            Direction::new(x, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, frame, (40.0, 40.0, 40.0), T)
+            .unwrap()
+            .shape
+    };
+    let first = past(model, Vector::new(0.0, lean.cos(), -lean.sin()), Vector::X);
+    let second = past(
+        model,
+        Vector::new(s * leant.cos(), -c * leant.cos(), -leant.sin()),
+        Vector::new(c, s, 0.0),
+    );
+    let notch = ogeom_bool::common(model, &first, &second, T).unwrap().shape;
+    let cut = ogeom_bool::cut(model, &block, &notch, T).unwrap().shape;
+    let block = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    let point = |v: &ogeom_topo::Shape| {
+        let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+        v.transform(model.datums()).unwrap().apply(p)
+    };
+    // The top creases leaving the corner, the one along `x` first.
+    let mut edges: Vec<ogeom_topo::Shape> = explore_unique(model, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+            let (p, q) = (point(&a), point(&b));
+            (p.z - 2.0).abs() < 1e-9
+                && (q.z - 2.0).abs() < 1e-9
+                && (p.distance(corner) < 1e-9 || q.distance(corner) < 1e-9)
+        })
+        .collect();
+    edges.sort_by_key(|e| {
+        let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+        (point(&a).y - 3.0).abs() + (point(&b).y - 3.0).abs() > 1e-9
+    });
+    let [first, second] = edges.as_slice() else {
+        panic!("two top creases at the corner");
+    };
+    (block, [first.clone(), second.clone()])
+}
+
+/// Two top creases rounded where they meet at an inside corner off square
+/// in plan, or with both walls leaning by different angles. The walls'
+/// meeting line leans, so material beside each band past the other wall's
+/// plane, before that band's cap, lies above both bands; and the two
+/// bands' widenings meet past both walls, where the corner is open. Each
+/// order takes what lies above both bands carried on, measured within a
+/// box round the corner a column at a time. Capped at the vertex instead,
+/// the bands left the corner standing.
+#[test]
+fn rounds_at_inside_corners_off_square_or_leaning_both_ways_take_all_above_both() {
+    let r = 0.5;
+    let lean = 0.1_f64.atan();
+    let (wx, wy, half) = (4.0, 3.0, 1.2);
+    for (degrees, leans) in [
+        (120.0_f64, [lean, 0.0]),
+        (150.0, [lean, 0.0]),
+        (170.0, [lean, 0.0]),
+        (90.0, [lean, 3.0_f64.to_radians()]),
+        (90.0, [-lean, (-2.0_f64).to_radians()]),
+        (120.0, [lean, 3.0_f64.to_radians()]),
+        (150.0, [-lean, 2.0_f64.to_radians()]),
+    ] {
+        let plan = degrees.to_radians();
+        let (s, c) = plan.sin_cos();
+        let first = Section::new(0.0, (leans[0].cos(), -leans[0].sin()), r);
+        let second = Section::new(0.0, (leans[1].cos(), -leans[1].sin()), r);
+        let want = integral(
+            (wx - half, wx + half),
+            (wy - half, wy + half),
+            2e3,
+            |x, y| {
+                let (px, py) = (x - wx, y - wy);
+                let (ua, ub) = (py, px * s - py * c);
+                let [a0, a1] = first.column(ua);
+                let [b0, b1] = second.column(ub);
+                let (pa, pb) = (first.past(ua, 0.0), second.past(ub, 0.0));
+                // Under the top, out of the open corner past both walls.
+                let above = meet(&[a0, a1, pa], &[b0, b1, pb]);
+                let runs: Vec<(f64, f64)> = above
+                    .iter()
+                    .map(|&(p, q)| (p.max(0.0), q.min(2.0)))
+                    .collect();
+                span(&runs) - overlap(&runs, &meet(&[pa], &[pb]))
+            },
+        );
+        let mut model = ogeom_topo::Model::new();
+        let (block, edges) = turned_corner(&mut model, plan, leans);
+        for named in [edges.clone(), [edges[1].clone(), edges[0].clone()]] {
+            let mut model = model.clone();
+            let rounded = ogeom_fillet::fillet_edges(&mut model, &block, &named, r, T).unwrap();
+            assert!(
+                ogeom_algo::check(&model, &rounded.shape, T)
+                    .unwrap()
+                    .is_valid()
+            );
+            let gone = ogeom_bool::cut(&mut model, &block, &rounded.shape, T)
+                .unwrap()
+                .shape;
+            let window = ogeom_algo::make_box(
+                &mut model,
+                Frame::new(
+                    Point::new(wx - half, wy - half, -1.0),
+                    Direction::Z,
+                    Direction::X,
+                    T,
+                )
+                .unwrap(),
+                (half * 2.0, half * 2.0, 4.0),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let near = ogeom_bool::common(&mut model, &gone, &window, T)
+                .unwrap()
+                .shape;
+            let got = volume(&model, &near, 1e-4);
+            assert!(
+                (got - want).abs() < 5e-6,
+                "{degrees} degrees, leaning {leans:?}: {got} against {want}"
             );
         }
     }
@@ -1659,4 +1818,110 @@ fn a_leaning_pocket_s_rim_rounds_alike_however_turned() {
     }
     // Taken crossed, past what the corners capped leave.
     assert!(removed[0] > 0.83, "{removed:?}");
+}
+
+/// What a square inside corner between two walls leaning by `leans` (as
+/// [`turned_corner`] leans them) takes beyond its two creases' sections
+/// along their lengths: what lies above both bands carried on within a
+/// box round the corner, a column at a time, less the two sections along
+/// the box's reach.
+fn leaning_corner_gain(leans: [f64; 2], r: f64) -> f64 {
+    let half = 1.2;
+    let first = Section::new(0.0, (leans[0].cos(), -leans[0].sin()), r);
+    let second = Section::new(0.0, (leans[1].cos(), -leans[1].sin()), r);
+    let window = integral((-half, half), (-half, half), 2e3, |x, y| {
+        let [a0, a1] = first.column(y);
+        let [b0, b1] = second.column(x);
+        let (pa, pb) = (first.past(y, 0.0), second.past(x, 0.0));
+        let above = meet(&[a0, a1, pa], &[b0, b1, pb]);
+        let runs: Vec<(f64, f64)> = above
+            .iter()
+            .map(|&(p, q)| (p.max(0.0), q.min(2.0)))
+            .collect();
+        span(&runs) - overlap(&runs, &meet(&[pa], &[pb]))
+    });
+    half.mul_add(-(first.area + second.area), window)
+}
+
+/// A block eight square and two high with a pocket over `[x0, x1]` by
+/// `[y0, y1]`, one deep, each wall leaning `d` per unit of depth in turn
+/// round from `y = y0` (a positive draft narrowing the pocket's floor):
+/// the block and the pocket's four rim creases in that order.
+fn pocket_of(
+    model: &mut ogeom_topo::Model,
+    [x0, y0, x1, y1]: [f64; 4],
+    d: [f64; 4],
+) -> (ogeom_topo::Shape, Vec<ogeom_topo::Shape>) {
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (8.0, 8.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let past = |model: &mut ogeom_topo::Model, on: Point, n: Vector| {
+        let n = n / n.magnitude();
+        let seed = if n.x.abs() < 0.9 {
+            Vector::X
+        } else {
+            Vector::Y
+        };
+        let x = seed - n * seed.dot(n);
+        let x = x / x.magnitude();
+        let y = n.cross(x);
+        let frame = Frame::new(
+            on - x * 20.0 - y * 20.0,
+            Direction::new(n, T).unwrap(),
+            Direction::new(x, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, frame, (40.0, 40.0, 40.0), T)
+            .unwrap()
+            .shape
+    };
+    let (xm, ym) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let top = |x: f64, y: f64| Point::new(x, y, 2.0);
+    let sides = [
+        past(model, top(xm, y0), Vector::new(0.0, 1.0, d[0])),
+        past(model, top(x1, ym), Vector::new(-1.0, 0.0, d[1])),
+        past(model, top(xm, y1), Vector::new(0.0, -1.0, d[2])),
+        past(model, top(x0, ym), Vector::new(1.0, 0.0, d[3])),
+        past(model, Point::new(xm, ym, 1.0), Vector::Z),
+    ];
+    let mut pocket = sides[0].clone();
+    for s in &sides[1..] {
+        pocket = ogeom_bool::common(model, &pocket, s, T).unwrap().shape;
+    }
+    let cut = ogeom_bool::cut(model, &block, &pocket, T).unwrap().shape;
+    let block = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    let edges = [(xm, y0), (x1, ym), (xm, y1), (x0, ym)]
+        .map(|(x, y)| placed_edge_through(model, &block, top(x, y)))
+        .to_vec();
+    (block, edges)
+}
+
+/// Pockets whose walls lean by different drafts rounded round their
+/// rims: four walls each its own way, and a pocket a millimetre and a half
+/// wide whose two long walls lean. Every corner is crossed or flush, each
+/// band crossed at both ends cut in two, and each crease takes its section
+/// along its length and each corner what lies above both its bands beyond
+/// those sections, in either order.
+#[test]
+fn pockets_whose_walls_lean_their_own_ways_meet_at_every_corner() {
+    let r = 0.5;
+    let lean = |d: f64| -d.atan();
+    let area = |d: f64| Section::new(0.0, (lean(d).cos(), -lean(d).sin()), r).area;
+    for (rect, d) in [
+        ([2.0, 2.0, 6.0, 6.0], [0.1, 0.05, -0.05, 0.08]),
+        ([2.0, 3.25, 6.0, 4.75], [0.1, 0.0, 0.05, 0.0]),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let (block, edges) = pocket_of(&mut model, rect, d);
+        let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
+        let mut want = w.mul_add(area(d[0]) + area(d[2]), h * (area(d[1]) + area(d[3])));
+        for (a, b) in [(0, 3), (0, 1), (2, 1), (2, 3)] {
+            want += leaning_corner_gain([lean(d[a]), lean(d[b])], r);
+        }
+        // Each corner's box is integrated to about a micron cubed.
+        for got in removed_both_ways(&model, &block, &edges, r) {
+            assert!((got - want).abs() < 1e-5, "{d:?}: {got} against {want}");
+        }
+    }
 }
