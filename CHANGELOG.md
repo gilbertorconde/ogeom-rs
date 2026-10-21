@@ -42,6 +42,18 @@ bump may break the API and a patch bump may not.
   1e-9, and a square of four edges lofted to one of eight is the prism.
   With guide curves the walls are the guided Gordon sheet, capped: circles
   on a cone along two of its rulings are the frustum (#394).
+- **`solids_from_shells` builds solids from closed shells, and tells
+  outer shells from voids by which shell holds which.** Shells handed
+  over in any order are each classified against every other, at all of
+  their vertices that lie off it. A shell that no other holds, or that an
+  even number of shells hold, is a part's outer boundary. A shell held by
+  an odd number is a void of the deepest shell that holds it. For
+  example, a block, a cavity in it, an island in the cavity and a block
+  apart give three solids: the block with its void, the island, and the
+  block apart. Each solid faces out, and its void faces into the cavity.
+  Shells whose vertices fall on both sides of another cross each other
+  and are refused (#397).
+
 - **`fix_shape` states the slop an imported boundary carries.** An edge
   whose pcurve stands off its curve farther than the edge states, and a
   vertex a curve ends away from farther than either states, stayed

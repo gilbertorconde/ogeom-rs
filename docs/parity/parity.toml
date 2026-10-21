@@ -646,7 +646,8 @@ displacement recorded in widened tolerances, both measured on community \
 assemblies with boundaries millimetres off. fix_small_faces collapses \
 a spot face to a point and a strip face to one long side, rebuilding its \
 neighbours so the shell stays closed; remove_small_solids drops debris \
-solids under a volume. A STEP grid of patches reads as one spline \
+solids under a volume; solids_from_shells makes solids of closed shells, \
+outer boundaries told from voids by which shell holds which vertex. A STEP grid of patches reads as one spline \
 surface. Healing here is measured by the imported corpus rather than \
 claimed in general."""
 claims = [

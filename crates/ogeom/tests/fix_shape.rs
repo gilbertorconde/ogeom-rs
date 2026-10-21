@@ -930,3 +930,71 @@ fn faces_misread_on_a_boundary_crossing_itself_are_not_turned() {
     );
     assert_eq!(fixed.report.after, fixed.report.before);
 }
+
+/// The shell of an axis-aligned box from `low` to `high`.
+fn box_shell(model: &mut Model, low: Point, high: Point) -> Shape {
+    let solid = make_box(
+        model,
+        Frame::WORLD.with_origin(low),
+        (high.x - low.x, high.y - low.y, high.z - low.z),
+        T,
+    )
+    .unwrap()
+    .shape;
+    explore_unique(model, &solid, ShapeType::Shell).unwrap()[0].clone()
+}
+
+/// Four closed shells handed over in no order: a block, a cavity inside
+/// it, an island inside the cavity, and a block apart. Three solids come
+/// back: the block with its cavity a void, the island, the block apart.
+/// Every shell faces out as given; the cavity's is turned to face into it.
+#[test]
+fn solids_are_made_of_closed_shells_by_which_holds_which() {
+    let mut model = Model::new();
+    let p = Point::new;
+    let block = box_shell(&mut model, p(0.0, 0.0, 0.0), p(10.0, 10.0, 10.0));
+    let cavity = box_shell(&mut model, p(2.0, 2.0, 2.0), p(8.0, 8.0, 8.0));
+    let island = box_shell(&mut model, p(4.0, 4.0, 4.0), p(6.0, 6.0, 6.0));
+    let apart = box_shell(&mut model, p(20.0, 0.0, 0.0), p(25.0, 5.0, 5.0));
+    let built = ogeom::heal::solids_from_shells(
+        &mut model,
+        &[island, cavity.clone(), apart, block.clone()],
+        T,
+    )
+    .unwrap();
+    let solids = explore_unique(&model, &built.shape, ShapeType::Solid).unwrap();
+    let mut volumes: Vec<f64> = solids
+        .iter()
+        .map(|s| {
+            assert!(check(&model, s, T).unwrap().is_valid());
+            ogeom::algo::volume_properties(&model, s, Deflection::default(), T)
+                .unwrap()
+                .mass
+        })
+        .collect();
+    volumes.sort_by(f64::total_cmp);
+    let expected = [8.0, 125.0, 1000.0 - 216.0];
+    assert_eq!(volumes.len(), 3, "{volumes:?}");
+    for (v, e) in volumes.iter().zip(expected) {
+        assert!((v - e).abs() < 1e-9, "{volumes:?}");
+    }
+    let held = built.history.generated(&cavity);
+    assert_eq!(
+        held,
+        built.history.generated(&block),
+        "the cavity is the block's void"
+    );
+}
+
+/// Two blocks that overlap: a corner of each inside the other, the rest
+/// outside. Neither holds the other, nor do they stand apart, and no
+/// solid is made of them.
+#[test]
+fn crossing_shells_make_no_solid() {
+    let mut model = Model::new();
+    let p = Point::new;
+    let a = box_shell(&mut model, p(0.0, 0.0, 0.0), p(10.0, 10.0, 10.0));
+    let b = box_shell(&mut model, p(5.0, 5.0, 5.0), p(15.0, 15.0, 15.0));
+    let refused = ogeom::heal::solids_from_shells(&mut model, &[a, b], T).unwrap_err();
+    assert!(refused.to_string().contains("cross"), "{refused}");
+}
