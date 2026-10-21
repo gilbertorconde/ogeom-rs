@@ -116,6 +116,31 @@ bump may break the API and a patch bump may not.
     and a copious-data triangle each read to their closed-form areas and
     survive a round trip through the writer (#404).
 
+- **`fix_shape` gives a boundary that crosses a pole its degenerate edge
+  back.** Take a sphere whose wire walks its seam up and down with no edge
+  at either pole, or a cone with none at its apex. In space the boundary
+  closes, so `check` passes it, but its chart crosses the pole's row by a
+  whole turn. The shortest-way reading of that crossing is wrong: the
+  sphere meshed to nothing and measured no volume, and the cone measured
+  12.532 where πr²h/3 is 12.566.
+
+  A joint is at a pole where its two pcurve ends stand apart along one
+  parameter direction and the whole row through them, sampled across the
+  surface's domain, lifts onto the joint vertex within that vertex's
+  tolerance. At each such joint the crossing may be the shortest way or
+  a turn either way more. The wire is solved for the one choice under
+  which its unrolled chart closes and encloses area the right way round.
+  Where that choice is not the shortest way, each pole gets a degenerate
+  edge spanning its crossing. The step runs after short edges collapse,
+  so it also closes the gap a collapsed edge at a pole leaves.
+
+  Both synthetic shapes then measure their closed forms. In the DoomCube
+  350 assembly, three spherical caps imported this way (solids 709 and
+  711) measured about 3% short: 13.115 against 2πR²(1 − sin v₀) =
+  13.525, and 12.188 against πR² = 12.566. Each now measures its closed
+  form. The report counts the edges (`pole_edges_made`). This is #397's
+  degenerated-edges item.
+
 - **`make_loft_solid` lofts a solid through sections of different edge
   counts, and along guide curves.** `make_loft` refused a square to a
   circle, a slot to a hexagon, or any section mixing lines with arcs, and

@@ -7,6 +7,7 @@
 pub mod divide;
 pub mod fix;
 pub mod fix_shape;
+mod pole;
 pub mod reanchor;
 pub mod remodel;
 pub mod same_parameter;

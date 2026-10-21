@@ -15,6 +15,9 @@
 //! - an edge shorter than its own vertices' tolerances (the two ends
 //!   the same point by the model's own admission) is collapsed, its two
 //!   vertices made one;
+//! - a boundary that crosses a pole of its surface (a sphere's, a cone's
+//!   apex) with no edge spanning the pole's row of the chart is given a
+//!   degenerate edge there;
 //! - an edge holding its column on a closed surface as plain pcurves,
 //!   walked once each way on two columns a period apart, is made a seam
 //!   of the surface ([`join_seam_columns`](ogeom_algo::join_seam_columns));
@@ -64,6 +67,8 @@ pub struct FixReport {
     pub wires_reordered: usize,
     /// Edges collapsed to a vertex.
     pub edges_collapsed: usize,
+    /// Degenerate edges made where a boundary crosses a pole.
+    pub pole_edges_made: usize,
     /// Edges given a pcurve on a face they bound.
     pub edges_trimmed: usize,
     /// Edge pairs sewn, and edges still free after, when sewing ran.
@@ -122,6 +127,16 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     let edges_collapsed = collapse_small_edges(model, &current, &mut reshape, tol)?;
     if !reshape.is_empty() {
         let built = reshape.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
+
+    // Degenerate edges where a boundary crosses a pole, on the wires as
+    // reordered and collapsed: a collapsed edge at a pole leaves the gap.
+    let mut poles = Reshape::new();
+    let pole_edges_made = crate::pole::stage_pole_edges(model, &current, &mut poles, tol)?;
+    if !poles.is_empty() {
+        let built = poles.apply(model, &current)?;
         history = history.then(&built.history);
         current = built.shape;
     }
@@ -212,6 +227,7 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             after,
             wires_reordered,
             edges_collapsed,
+            pole_edges_made,
             edges_trimmed,
             sewn,
             tolerances_reduced,

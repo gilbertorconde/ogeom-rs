@@ -998,3 +998,72 @@ fn crossing_shells_make_no_solid() {
     let refused = ogeom::heal::solids_from_shells(&mut model, &[a, b], T).unwrap_err();
     assert!(refused.to_string().contains("cross"), "{refused}");
 }
+
+/// `solid` with every degenerate edge taken out of its wires: the
+/// boundary still meets itself in space at each pole, and its chart is
+/// open along the pole's row.
+fn without_degenerate_edges(model: &mut Model, solid: &Shape) -> Shape {
+    let degenerate: Vec<Shape> = explore_unique(model, solid, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| model.node(e).unwrap().data().as_edge().unwrap().degenerate)
+        .collect();
+    assert!(!degenerate.is_empty());
+    let mut reshape = ogeom::heal::Reshape::new();
+    for edge in &degenerate {
+        reshape.remove(edge);
+    }
+    reshape.apply(model, solid).unwrap().shape
+}
+
+fn volume_of_solid(model: &Model, solid: &Shape) -> f64 {
+    ogeom::algo::volume_properties(model, solid, Deflection::default(), T)
+        .unwrap()
+        .mass
+}
+
+/// A sphere whose boundary walks its seam up and down with no edge at
+/// either pole: `check` passes it, since both joints meet at a pole, but
+/// it meshes to nothing and measures no volume. Each pole gets its
+/// degenerate edge back, and the sphere measures its closed form.
+#[test]
+fn a_sphere_missing_its_pole_edges_gets_them_back() {
+    let mut model = Model::new();
+    let radius = 2.0;
+    let sphere = ogeom::algo::make_sphere(&mut model, Frame::WORLD, radius, T)
+        .unwrap()
+        .shape;
+    let stripped = without_degenerate_edges(&mut model, &sphere);
+    assert!(volume_of_solid(&model, &stripped).abs() < 1e-9);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &stripped, T).unwrap();
+    assert_eq!(fixed.report.pole_edges_made, 2);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let exact = 4.0 / 3.0 * core::f64::consts::PI * radius.powi(3);
+    let v = volume_of_solid(&model, &fixed.shape);
+    assert!((v - exact).abs() < 1e-9 * exact, "{v} against {exact}");
+
+    let intact = ogeom::heal::fix_shape(&mut model, &sphere, T).unwrap();
+    assert_eq!(intact.report.pole_edges_made, 0, "a sphere with its poles");
+}
+
+/// A cone with no edge at its apex: it still meshes, but measures only
+/// approximately. The apex gets its degenerate edge back, and the cone
+/// measures a third of its base times its height.
+#[test]
+fn a_cone_missing_its_apex_edge_gets_it_back() {
+    let mut model = Model::new();
+    let (radius, height) = (2.0, 3.0);
+    let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, radius, 0.0, height, T)
+        .unwrap()
+        .shape;
+    let exact = core::f64::consts::PI * radius * radius * height / 3.0;
+    let stripped = without_degenerate_edges(&mut model, &cone);
+    assert!((volume_of_solid(&model, &stripped) - exact).abs() > 1e-6);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &stripped, T).unwrap();
+    assert_eq!(fixed.report.pole_edges_made, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let v = volume_of_solid(&model, &fixed.shape);
+    assert!((v - exact).abs() < 1e-9 * exact, "{v} against {exact}");
+}
