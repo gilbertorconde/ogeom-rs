@@ -132,6 +132,18 @@ apex row is boundary the ring needs; dropping its far end cuts the corner
 through the face and loses the triangle at the apex. The reproducer for a
 degenerate row that a quarter-period test read as no row at all.
 
+## sphere_cap_seam_to_pole.step
+
+One face extracted standalone from a community printer assembly (the
+DoomCube 350 of the real-world check), with a shell and a solid wrapped
+round it so the reader yields something: a spherical cap bounded by its
+rim circle and by one meridian arc from the rim up to the pole, walked up
+and back down, with no edge at the pole. In the chart the arc's two walks
+cross the pole row a whole turn apart, and the rim joins them a whole
+period off. The reproducer for a pole crossed the wrong way round: read
+the shortest way across, the face measured 3% short of its zone of the
+sphere.
+
 ## closed_tube_face_crosses_its_join.step
 
 One face extracted standalone from a community printer assembly, with a

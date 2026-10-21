@@ -86,7 +86,7 @@ pub struct StepReport {
 #[derive(Debug, Clone)]
 pub struct WarningSummary {
     /// The kind, stable across runs: `"vertex-miss"`, `"boundary-slop"`,
-    /// `"fit-short"`, `"untrimmed"`.
+    /// `"fit-short"`, `"untrimmed"`, `"pole-crossed"`.
     pub kind: &'static str,
     /// How many times it happened.
     pub count: usize,
@@ -2534,7 +2534,24 @@ impl<'a> Reader<'a> {
         if !face_forward {
             wires = walked_back(&mut self.model, &wires, self.tol)?;
         }
-        let built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
+        let mut built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
+        // A pole crossed a whole turn round, beside a joint a whole period
+        // apart where `closed_at_poles` lays no run: the crossing solved
+        // for the face as built, and its wires rebuilt with the runs in.
+        let crossed = ogeom_algo::pole_crossings(&mut self.model, &built, self.tol)?;
+        if !crossed.is_empty() {
+            for wire in &mut wires {
+                if let Some((_, new)) = crossed.iter().find(|(old, _)| old.node() == wire.node()) {
+                    *wire = new.clone();
+                }
+            }
+            built = make_face_on(&mut self.model, surface_id, &wires, self.tol)?.shape;
+            self.report.warnings.push(format!(
+                "#{id}: the boundary crosses a pole of its surface a whole turn \
+                 round; a degenerate edge was laid across it"
+            ));
+            self.tally("pole-crossed", 0.0, id);
+        }
         let shape = if face_forward {
             built
         } else {

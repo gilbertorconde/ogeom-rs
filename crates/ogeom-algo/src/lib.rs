@@ -25,6 +25,7 @@ pub mod mesh_solid;
 pub mod pcurve_fit;
 pub mod pcurve_gap;
 pub mod place;
+pub mod pole;
 pub mod primitive;
 pub mod project_plane;
 pub mod proximity;
@@ -80,6 +81,7 @@ pub use mesh_solid::{
 };
 pub use pcurve_gap::{edge_pcurve_gap, pcurve_gap, state_pcurve_gaps, state_pcurve_gaps_of};
 pub use place::{copied, transformed};
+pub use pole::pole_crossings;
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_half_space, make_hexahedron, make_parallelepiped,
     make_polyhedron, make_sphere, make_torus, make_wedge, torus_face_seamed_at,

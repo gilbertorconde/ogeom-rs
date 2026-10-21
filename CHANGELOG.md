@@ -325,6 +325,36 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The STEP reader closes a spherical cap across its pole the right way
+  round.** An exporter writes a cap as its rim circle plus a meridian arc
+  from the rim up to the pole, walked up and back down, with no edge at
+  the pole. In the chart, the arc's two walks cross the pole row a whole
+  turn apart, and the rim joins them a whole period off. The reader's
+  pole closing laid no run where a joint stood a period off, so the
+  crossing was read the shortest way. Each such cap then measured short:
+  - its area by 3% (13.115 against 2πR²(1 − sin v₀) = 13.525);
+  - its volume by 0.0395 and 0.0353 for the two caps of the DoomCube 350
+    assembly, each checked by closing the cap with its rim's disc
+    (5.8486 against πh²(3R − h)/3 = 5.8881, and 5.2007 against 5π/3);
+  - booleans through the cap refused ("a face boundary strand dangles").
+
+  Each face is now solved as it is built, by the new
+  `ogeom_algo::pole_crossings`. A joint is at a pole where the whole row
+  of the chart through it collapses onto the joint vertex within that
+  vertex's tolerance. Each crossing there is the shortest way or a turn
+  either way more, and the reader keeps the single choice under which the
+  wire's unrolled chart closes and encloses area the right way round. It
+  lays a degenerate edge only where that choice is not the shortest way.
+  `fix_shape`'s pole step is the same solver, now called from there.
+
+  In the real-world check exactly two solids change, DoomCube 709 and 711,
+  by the cap corrections: −0.0395 and +2 × 0.0353. A common and a cut of
+  709 with a box round its cap now succeed. The common's volume equals
+  its fine mesh to 4e-5. The solid's remaining 0.045 gap to its mesh lies
+  in the cut, away from the cap; on main it was hidden by the cap's error
+  of the opposite sign. The reader counts each face it closed this way
+  (`pole-crossed`).
+
 - **`fix_shape` orients a shell's faces along their shared edges, and no
   longer turns a solid's faces against their neighbours.** Two cases.
 

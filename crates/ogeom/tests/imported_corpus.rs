@@ -2037,3 +2037,40 @@ fn a_pocket_turned_by_its_placement_rounds_as_it_does_square() {
     );
     assert!((square - 0.830_051_763).abs() < 1e-8, "{square}");
 }
+
+/// A spherical cap from a community printer assembly, written as the
+/// file's exporter writes such caps: its rim circle and a meridian arc
+/// from the rim up to the pole, walked up and back down, and no edge at
+/// the pole. In the chart the meridian's two walks stand a whole turn
+/// apart at the pole, and the rim joins them a whole period off as well.
+/// Read the shortest way across the pole, the face lost 3% of its area;
+/// crossed a whole turn round, it is the zone of its sphere above the rim:
+/// 2πR² (1 - sin v₀), where cos v₀ is the rim's radius over the sphere's.
+#[test]
+fn a_sphere_cap_walked_up_its_seam_is_closed_across_the_pole() {
+    let text = corpus("sphere_cap_seam_to_pole.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let faces = explore_unique(model, &import.solids[0], ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 1, "the fixture is the one face");
+    let degenerate = explore_unique(model, &faces[0], ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .filter(|e| model.node(e).unwrap().data().as_edge().unwrap().degenerate)
+        .count();
+    assert_eq!(degenerate, 1, "an edge across the pole");
+    let (sphere, rim) = (2.05_f64, 1.789_553_016_817_33_f64);
+    let exact = 2.0
+        * core::f64::consts::PI
+        * sphere
+        * sphere
+        * (1.0 - (1.0 - (rim / sphere).powi(2)).sqrt());
+    let area =
+        ogeom::algo::surface_properties(model, &faces[0], ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    assert!(
+        (area - exact).abs() < 1e-9 * exact,
+        "the cap's area {area}, against {exact}"
+    );
+}
