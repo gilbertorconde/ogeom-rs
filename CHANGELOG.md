@@ -13,6 +13,25 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Pipe shells turn sharp corners against curved legs, round closed
+  spines, and under the binormal and auxiliary laws.**
+  - Before, extended and round corners were built only for a face down an
+    open spine of straight legs with the rotation-minimizing frame. The
+    binormal and auxiliary laws swept only an open spine with no sharp
+    corner.
+  - Now the spine is cut at its sharp corners and each smooth run is swept
+    on its own. The runs are joined at each corner: mitred on the halving
+    plane, extended, or rounded.
+  - A rectangle under a tilted binormal, down an L and round a square
+    ring, mitres to its legs' volume to 1e-15. An arc into a sharp turn
+    rounds and extends to its closed forms to 1e-15, and so does a square
+    ring.
+  - A binormal along a circle's axis gives the torus by Pappus.
+  - Refused by name:
+    - a tilted binormal round a circle;
+    - a round corner where the law sets a different next section;
+    - the Frenet frame round a sharp corner other than mitred (#394).
+
 - **`make_pipe_shell_evolving` scales and twists a pipe's section along
   its spine.** A `PipeEvolution` gives the scale and the twist reached at the
   spine's end, each growing linearly with the length run. Scaled without a

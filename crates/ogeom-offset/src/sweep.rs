@@ -25,6 +25,7 @@ use ogeom_geom::{
 use ogeom_math::{Circle, Direction, Frame, Plane, Point, Point2, Torus, Transform, Vector};
 use ogeom_topo::{EdgeData, EdgeRepr, Filter, Model, Shape, ShapeType, VertexData, explore};
 
+mod corners;
 mod evolving;
 
 pub use evolving::{PipeEvolution, make_pipe_shell_evolving};
@@ -4945,7 +4946,7 @@ fn mitred_lines(
         let (d0, d1) = (unit(pair[0].1), unit(pair[1].1));
         // A corner turning past a right angle and a half reaches too far
         // along its legs for the mitre to stay on them.
-        if d0.dot(d1) < -0.7 {
+        if d0.dot(d1) < DOUBLED_BACK {
             return Ok(None);
         }
         mitres.push((pair[1].0, unit(d0 + d1)));
@@ -5156,20 +5157,38 @@ pub fn make_pipe_shell_law(
 
 /// [`make_pipe_shell`] with a frame law and a way of turning corners.
 ///
-/// The auxiliary and binormal laws sweep an open spine with no sharp
-/// corner. Extended and round corners are built for a face swept down an
-/// open spine of straight legs with the rotation-minimizing frame, each
-/// leg a prism of the section and each round corner the section revolved
-/// about the corner; on a spine with no sharp corner every way of turning
-/// corners is the same solid.
+/// Extended and round corners, and the auxiliary and binormal laws round
+/// a sharp corner, sweep a face run by run: the spine is cut at its sharp
+/// corners, each smooth run swept on its own (a straight run whose section
+/// keeps its frame as the prism of it), and the runs joined at each corner,
+/// open spine or closed. A mitre runs each side on straight past the
+/// corner and trims it by the plane halving the corner; an extended corner
+/// runs each side on until its section clears the other's far side; a
+/// round corner turns the half of the section outside the corner about the
+/// corner's axis. The rotation-minimizing frame carries the section across
+/// a corner by that turn; the auxiliary and binormal laws place it
+/// themselves, so their runs may meet a mitre with different sections, the
+/// difference standing as a face of the mitre plane. Between straight legs
+/// with the rotation-minimizing frame on an open spine, every corner is
+/// built as before: each leg a prism and each round corner the section
+/// revolved. An auxiliary or binormal law round a closed spine with no
+/// sharp corner sweeps where its frames are the rotation-minimizing ones
+/// turned by a fixed angle, as those do. On a spine with no sharp corner
+/// every way of turning corners is the same solid.
 ///
 /// # Errors
 ///
 /// As [`make_pipe_shell`], and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
-/// the law or the corners are asked of a spine they do not serve, the guide
-/// does not cross a station's plane, or the spine's tangent runs along the
-/// binormal or toward the guide.
+/// the law or the corners are asked of a spine they do not serve: a wire
+/// swept round a corner run by run, the Frenet frame round a sharp corner
+/// other than mitred, a round corner where the law sets the next run's
+/// section other than the first's turned about the corner (or the frame
+/// comes home turned round a closed spine), and an auxiliary or binormal
+/// law round a smooth closed spine whose frames turn against the
+/// rotation-minimizing ones; where the guide does not cross a station's
+/// plane, or the spine's tangent runs along the binormal or toward the
+/// guide.
 #[allow(clippy::too_many_arguments)]
 pub fn make_pipe_shell_with(
     model: &mut Model,
@@ -5186,30 +5205,58 @@ pub fn make_pipe_shell_with(
         return crate::fixed::fixed_pipe(model, profile, spine, tol);
     }
     if corners != PipeCorners::Mitre
+        && matches!(law, PipeLaw::RotationMinimizing)
+        && model.kind_of(profile)? == ShapeType::Face
         && let Some(legs) = straight_legs(model, spine, tol)?
         && legs.len() > 1
+        && !spine_closes(model, spine, tol)?
     {
-        if !matches!(law, PipeLaw::RotationMinimizing) {
-            ogeom_bail!(
-                Construction,
-                "extended and round corners turn the section with the \
-                 rotation-minimizing frame"
-            );
-        }
-        if model.kind_of(profile)? != ShapeType::Face {
-            ogeom_bail!(Construction, "extended and round corners sweep a face");
-        }
         return cornered_lines(model, profile, spine, &legs, corners, tol);
     }
-    if corners != PipeCorners::Mitre && has_sharp_corner(model, spine, tol)? {
-        ogeom_bail!(
-            Construction,
-            "extended and round corners are built along a spine of straight legs"
+    let classic = matches!(law, PipeLaw::RotationMinimizing | PipeLaw::Frenet);
+    let sharp = has_sharp_corner(model, spine, tol)? || closes_on_a_corner(model, spine, tol)?;
+    if sharp && (corners != PipeCorners::Mitre || !classic) {
+        return corners::law_cornered(model, profile, spine, law, corners, tolerance, tol);
+    }
+    if !classic && !sharp && spine_closes(model, spine, tol)? {
+        // A law round a smooth closed spine whose frames are the
+        // rotation-minimizing ones sweeps as that frame does.
+        if !corners::law_is_rotation_minimizing(model, spine, law, tolerance, tol)? {
+            ogeom_bail!(
+                Construction,
+                "an auxiliary or binormal law round a closed spine is swept only where its \
+                 frames are the rotation-minimizing ones"
+            );
+        }
+        return make_pipe_shell_with(
+            model,
+            profile,
+            spine,
+            &PipeLaw::RotationMinimizing,
+            corners,
+            tolerance,
+            tol,
         );
     }
     let built = pipe_shell_law(model, profile, spine, law, tolerance, tol)?;
     state_new_gaps(model, &[profile.clone(), spine.clone()], &built.shape, tol)?;
     Ok(built)
+}
+
+/// Whether the spine comes back to where it starts.
+fn spine_closes(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    let stations = shell_stations(model, spine, tol)?;
+    Ok(stations[0].at.distance(stations[stations.len() - 1].at) <= tol.confusion() * 10.0)
+}
+
+/// Whether a closed spine turns sharply where it comes back to its start.
+fn closes_on_a_corner(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    if !spine_closes(model, spine, tol)? {
+        return Ok(false);
+    }
+    let stations = shell_stations(model, spine, tol)?;
+    let (a, b) = (stations[stations.len() - 1].tangent, stations[0].tangent);
+    Ok(a.cross(b).magnitude() > tol.angular() || a.dot(b) < 0.0)
 }
 
 /// Refuse a profile on `plane` that does not stand square to the spine at
@@ -5334,7 +5381,7 @@ fn cornered_lines(
         let turn = match legs.get(i + 1) {
             Some(&(corner, next)) => {
                 let (d, n) = (unit(v), unit(next));
-                if d.dot(n) < -0.7 {
+                if d.dot(n) < DOUBLED_BACK {
                     ogeom_bail!(
                         Construction,
                         "the spine all but doubles back at a corner; no corner \
@@ -5365,7 +5412,7 @@ fn cornered_lines(
             .iter()
             .map(|p| (section.apply(*p) - corner).dot(along))
             .fold(0.0_f64, f64::max);
-        far / turn.sin().max(1e-3)
+        far / turn.sin().max(LEAST_TURN_SINE)
     };
     let mut joined: Vec<Shape> = Vec::new();
     for (i, &(_, v)) in legs.iter().enumerate() {
@@ -5551,6 +5598,14 @@ fn densified(
     }
     Ok(stations)
 }
+
+/// The cosine between two legs' headings below which the spine all but
+/// doubles back at their corner, which no corner turns.
+const DOUBLED_BACK: f64 = -0.7;
+
+/// The least sine of a corner's turn an extended corner's reach is divided
+/// by: a corner turning less runs on as one turning this much.
+const LEAST_TURN_SINE: f64 = 1e-3;
 
 /// The most a law's frame turns, in radians, between two neighbouring
 /// stations of a law pipe.
