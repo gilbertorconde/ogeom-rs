@@ -1433,6 +1433,18 @@ fn closed_wedge(
         trimmed_on_its_surface(model, &face, near, tol)?;
     }
     ogeom_algo::state_pcurve_gaps(model, shell, tol)?;
+    // A vertex is held at least as loosely as every edge it bounds, which
+    // the gaps just stated may have widened.
+    for edge in explore_unique(model, shell, ShapeType::Edge)? {
+        let Some(held) = model.tolerance_of(&edge)? else {
+            continue;
+        };
+        if let Some((a, b)) = ogeom_algo::edge_vertices(model, &edge)? {
+            for vertex in [a, b] {
+                model.widen(&vertex, held)?;
+            }
+        }
+    }
     Ok(ogeom_algo::make_solid(model, std::slice::from_ref(shell))?.shape)
 }
 
@@ -1550,4 +1562,58 @@ fn plane_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<
     };
     let plane = placed.plane();
     Ok(Some((plane.origin(), plane.normal().vector())))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use super::*;
+
+    /// A box's top edge's wedge carried on past its cap: every vertex of
+    /// the band carried on is held at least as loosely as the edges it
+    /// bounds, so the solid passes `check`.
+    #[test]
+    fn a_band_carried_on_past_its_cap_checks_valid() {
+        let tol = Tolerances::millimetres();
+        let mut model = Model::new();
+        let block =
+            ogeom_algo::make_box(&mut model, ogeom_math::Frame::WORLD, (4.0, 4.0, 2.0), tol)
+                .unwrap()
+                .shape;
+        let edge = explore_unique(&model, &block, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let b = ogeom_algo::shape_bounds(&model, e, tol).unwrap();
+                let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+                (lo.z - 2.0).abs() < 1e-6
+                    && (hi.z - 2.0).abs() < 1e-6
+                    && lo.y.abs() < 1e-6
+                    && hi.y.abs() < 1e-6
+            })
+            .unwrap();
+        let (built, wedges) = crate::support::collecting_wedges(|| {
+            crate::fillet::fillet_edge(&mut model, &block, &edge, 0.5, tol)
+        });
+        built.unwrap();
+        let [wedge] = wedges.as_slice() else {
+            panic!("one wedge");
+        };
+        let at = Point::new(4.0, 0.0, 2.0);
+        let along = Vector::new(1.0, 0.0, 0.0);
+        let cap = cap_at(&model, &wedge.solid, at, along, tol)
+            .unwrap()
+            .unwrap();
+        let carried = carried_to(
+            &mut model,
+            &wedge.solid,
+            &cap,
+            along,
+            (at + along * 1.5, Vector::new(0.6, 0.8, 0.0)),
+            tol,
+        )
+        .unwrap();
+        let diagnosis = ogeom_algo::check(&model, &carried, tol).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    }
 }

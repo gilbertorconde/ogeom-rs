@@ -116,6 +116,12 @@ bump may break the API and a patch bump may not.
   whose band's end arc the boolean returned in two pieces, at its
   circle's seam (which follows the part's placement), is read as the one
   arc it is, so a pocket turned in space rounds as it does built square.
+- **A fillet band carried on past its cap holds every vertex at least as
+  loosely as the edges it bounds.** Sewing the band carried on to its
+  wedge, and stating its pcurves' gaps, could widen an edge past its
+  vertices' tolerance, leaving a tool solid `check` calls broken for the
+  boolean that crossed junctions cut with. Each vertex is now widened to
+  its edges' tolerance.
 
 - **Crossed junctions of `fillet_edges` stand in a loop or chain of the
   request's edges (#342).** A drafted wall's corners in a pocket rim
