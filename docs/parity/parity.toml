@@ -1332,7 +1332,16 @@ so every wall is the plane, drum, cone, ball or torus its profile edge \
 sweeps. `make_helical_sweep` is the screw motion of a profile in a plane \
 through the axis, cylindrical or tapered, either hand: every point runs \
 its own helix and the walls are fitted through those images in quarter \
-turns."""
+turns. `make_pipe_shell_evolving` scales and twists the section linearly \
+with the length run along the spine: scaled without a twist down one \
+straight edge it is the ruled loft to the scaled image, exact (a \
+pyramid's or cone's frustum, the pyramid or cone at a scale of zero); \
+otherwise each loop is skinned through the placed sections and held to \
+the tolerance against the law, along an open spine with no sharp corner, \
+each hole a solid of its own cut from the outer. Scale and twist follow \
+linear laws only. The multisection pipe takes faces with holes, as many \
+in every section, each hole swept through the sections and cut from the \
+outer solid."""
 claims = [
     "BRepOffsetAPI_MakePipe", "BRepOffsetAPI_MakePipeShell",
     "BRepOffsetAPI_MakeEvolved", "BRepSweep_*", "BRepFill", "BRepFill_*",
@@ -1341,11 +1350,13 @@ claims = [
 symbols = [
     "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
     "ogeom_offset::make_pipe_shell", "ogeom_offset::make_evolved",
-    "ogeom_offset::make_helical_sweep",
+    "ogeom_offset::make_helical_sweep", "ogeom_offset::make_pipe_shell_evolving",
+    "ogeom_offset::PipeEvolution",
 ]
 tests = [
     "crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs",
     "crates/ogeom/tests/pipe_shell_exact.rs", "crates/ogeom/tests/helical_sweep.rs",
+    "crates/ogeom/tests/pipe_evolving.rs", "crates/ogeom/tests/pipe_laws.rs",
 ]
 
 [[capability]]

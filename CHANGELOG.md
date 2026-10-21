@@ -13,6 +13,24 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`make_pipe_shell_evolving` scales and twists a pipe's section along
+  its spine.** A `PipeEvolution` gives the scale and the twist reached at the
+  spine's end, each growing linearly with the length run. Scaled without a
+  twist down one straight edge, the result is the exact ruled loft to the
+  scaled image. A square scaled to 0.4 is the pyramid's frustum, and its
+  volume is exact to 1e-15. A disc gives the cone's frustum, and a scale of
+  zero gives the pyramid or the cone. Twisted or curved sweeps are skinned
+  and held to the tolerance against the law. A square twisted a quarter
+  turn holds the prism's volume to 2.4e-6. A square scaled round a quarter
+  arc holds Pappus's volume to 9e-6. Holes are swept as their own solids
+  and cut out (#394).
+
+- **`make_pipe_sections` takes sections with holes.** A face with a hole
+  was refused. Each hole is now swept through the sections like the outer
+  loop and cut from it; every section must have the same number of holes.
+  Two holed squares, the second half the size, give the pyramid's frustum
+  minus the cone's, to 1.2e-6 (#394).
+
 - **`make_loft_solid` lofts a solid through sections of different edge
   counts, and along guide curves.** `make_loft` refused a square to a
   circle, a slot to a hexagon, or any section mixing lines with arcs, and
