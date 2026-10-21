@@ -127,6 +127,16 @@ bump may break the API and a patch bump may not.
   the boolean to melt it with, their old seam and pole edges dropped. Both
   round, through `fillet_edge` and `fillet_edges`, to the volumes of the
   same bore turned onto another axis (4048.121147 and 4048.127658) (#365).
+- **A boolean through a face whose ring runs out along an edge and
+  straight back builds.** Such an edge is a slit: the face lies on both
+  sides of it, and its tip is a vertex no other edge of the ring reaches.
+  The arrangement read the slit as boundary and refused, "a face boundary
+  strand dangles" (Voron 2.4's solid 977, five cylinder faces whose rings
+  hold such slits stated as seams, 20 cuts). A slit is now left out of the
+  face's boundary, peeled one turnaround at a time, and the pieces of the
+  face are rebuilt without it. A seam walked out to a pole and back is not
+  a slit: there the chart's whole row is one point, and the ring is left
+  as stated (#344).
 
 - **A boolean through a wall far shorter than its face's outline weld
   builds.** A face's outline in its chart was welded end to end within a

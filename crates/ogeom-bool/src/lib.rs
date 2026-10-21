@@ -413,6 +413,9 @@ struct GFace {
     tolerance: f64,
     edges: Vec<BoundaryEdge>,
     poles: Vec<PoleEdge>,
+    /// The edges its rings walk out along and straight back ([`slits`]),
+    /// left out of `edges`.
+    slits: ogeom_core::FastSet<EdgeKey>,
     /// The face's boundary polylined in its chart, both seam columns, ends
     /// welded: the trim [`chart_point_within`] tests against. Built the first
     /// time a probe asks and kept, since the same face is asked about once
@@ -643,7 +646,8 @@ fn gather(
             .and_then(|aside| aside.holes.get(&ogeom_topo::SameKey(face.clone())))
             .cloned()
             .unwrap_or_else(|| std::sync::Arc::from(Vec::new()));
-        let face_edges = if holes_aside.is_empty() {
+        let slits = slits(model, &face, &surface, surface_id, tol)?;
+        let mut face_edges = if holes_aside.is_empty() {
             explore_unique(model, &face, ShapeType::Edge)?
         } else {
             let wires = model.children_of(&face)?;
@@ -662,6 +666,7 @@ fn gather(
             }
             edges
         };
+        face_edges.retain(|edge| !slits.contains(&EdgeKey::of(edge)));
         let mut shares = false;
 
         let mut edges = Vec::new();
@@ -808,6 +813,7 @@ fn gather(
                 &surface,
                 &mut edges,
                 (&poles, &pole_keys),
+                &slits,
                 tol,
             )?;
         }
@@ -930,6 +936,7 @@ fn gather(
             &surface,
             &mut edges,
             (&poles, &pole_keys),
+            &slits,
             tol,
         )?;
         let repeats = [surface.is_periodic_u(), surface.is_periodic_v()];
@@ -949,7 +956,15 @@ fn gather(
             }
         }
         let moved = bring_trim_home(&surface, &mut edges, &mut poles, tol)?;
-        close_pole_joints(model, &face, &surface, &edges, &mut poles, &pole_keys, tol)?;
+        close_pole_joints(
+            model,
+            &face,
+            &surface,
+            (&edges, &slits),
+            &mut poles,
+            &pole_keys,
+            tol,
+        )?;
         // Rebuilt around edges it shares with faces set aside, the face
         // stays on its own surface, where those edges' pcurves are, in the
         // chart they are stated in.
@@ -1026,6 +1041,7 @@ fn gather(
         let carrier = (surface_id, face.location().clone());
         faces.push(GFace {
             poles,
+            slits,
             face,
             surface,
             bound,
@@ -1166,6 +1182,135 @@ fn kept_filter(
     if filter.is_empty() { bound } else { filter }
 }
 
+/// The slits of a face: edges a ring walks out along and straight back, the
+/// face on both sides, ending at a vertex no other edge of the ring reaches.
+///
+/// Such an edge bounds no material. The arrangement reads each strand as a
+/// stretch of a cycle between nodes, and a slit's tip is a node of one
+/// strand only. Left out of the face's boundary, the ring closes round the
+/// region the face covers, and the pieces of it are rebuilt without it.
+///
+/// A ring is peeled at a joint where it takes the same edge, of two
+/// distinct vertices, once each way, and where the joint is an ordinary
+/// point of the chart. Peeling one slit may leave the edge it hangs from
+/// walked out and back, and that edge is peeled in turn.
+///
+/// A seam to a pole is walked the same way, out along one column and back
+/// along the other: at the pole the whole chart row is one point, and the
+/// face wraps round it between the two columns. A joint is such a pole
+/// where the surface's rate along a row through it, read at the row's ends
+/// and middle, times the chart's whole width that way, stays within the
+/// joint vertex's radius. A ring is never peeled there.
+fn slits(
+    model: &Model,
+    face: &Shape,
+    surface: &SurfaceGeometry,
+    surface_id: ogeom_topo::SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_core::FastSet<EdgeKey>> {
+    let mut slits = ogeom_core::FastSet::default();
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    // Whether the joint where `edge` ends, as its ring walks it, is an
+    // ordinary point of the chart, not on a row the surface collapses.
+    let ordinary = |edge: &Shape| -> OgeomResult<bool> {
+        let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+            return Ok(false);
+        };
+        if !matches!(data.curve3d(), Some(EdgeRepr::Curve3d { .. })) {
+            return Ok(false);
+        }
+        let Some((start, end)) = ogeom_algo::edge_vertices(model, edge)? else {
+            return Ok(false);
+        };
+        if start.is_same(&end) {
+            return Ok(false);
+        }
+        let Some(tip) = model.node(&end).and_then(|n| n.data().as_vertex()) else {
+            return Ok(false);
+        };
+        let reach = tip.tolerance.get().max(tol.confusion());
+        let (pcurve, range) = match data.pcurve_for(surface_id, edge.location()) {
+            Some(EdgeRepr::PCurve { curve, range, .. }) => (curve, range),
+            Some(EdgeRepr::Seam { forward, range, .. }) => (forward, range),
+            _ => return Ok(false),
+        };
+        let Some(pcurve) = model.geometry().pcurve(*pcurve) else {
+            return Ok(false);
+        };
+        let back = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        let at = pcurve.point_at(if back { range.0 } else { range.1 }, tol)?;
+        for along_u in [true, false] {
+            let (lo, hi) = if along_u { (u0, u1) } else { (v0, v1) };
+            let width = hi - lo;
+            let mut collapses = width.is_finite();
+            for s in [0.0, 0.5, 1.0] {
+                if !collapses {
+                    break;
+                }
+                let q = if along_u {
+                    Point2::new(lo + width * s, at.y)
+                } else {
+                    Point2::new(at.x, lo + width * s)
+                };
+                let Ok((du, dv)) = surface.d1_at(q.x, q.y, tol) else {
+                    return Ok(false);
+                };
+                let rate = if along_u {
+                    du.magnitude()
+                } else {
+                    dv.magnitude()
+                };
+                collapses = rate * width <= reach;
+            }
+            if collapses {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    let stored = face.oriented(ogeom_topo::Orientation::Forward);
+    for wire in model.children_of(&stored)? {
+        let mut ring = model.ordered_children_of(&wire)?;
+        'peel: loop {
+            let n = ring.len();
+            for k in 0..n {
+                let (out, back) = (&ring[k], &ring[(k + 1) % n]);
+                if n < 2
+                    || EdgeKey::of(out) != EdgeKey::of(back)
+                    || out.orientation() == back.orientation()
+                    || !ordinary(out)?
+                {
+                    continue;
+                }
+                slits.insert(EdgeKey::of(out));
+                let (first, second) = (k.min((k + 1) % n), k.max((k + 1) % n));
+                ring.remove(second);
+                ring.remove(first);
+                continue 'peel;
+            }
+            break;
+        }
+    }
+    Ok(slits)
+}
+
+/// The rings of `face`, as it orients them, each without its slits.
+fn rings_without(
+    model: &Model,
+    face: &Shape,
+    slits: &ogeom_core::FastSet<EdgeKey>,
+) -> OgeomResult<Vec<Vec<Shape>>> {
+    model
+        .children_of(face)?
+        .iter()
+        .map(|wire| {
+            let mut ring = model.ordered_children_of(wire)?;
+            ring.retain(|edge| !slits.contains(&EdgeKey::of(edge)));
+            Ok(ring)
+        })
+        .collect()
+}
+
 /// Each of a face's rings walked in its chart, every edge's pcurve moved by
 /// whole periods onto the branch that continues the ring, along each
 /// direction the chart closes in, and each hole brought onto its outer
@@ -1206,6 +1351,7 @@ fn fold_rings(
     surface: &SurfaceGeometry,
     edges: &mut [BoundaryEdge],
     (poles, pole_keys): (&[PoleEdge], &[EdgeKey]),
+    slits: &ogeom_core::FastSet<EdgeKey>,
     tol: Tolerances,
 ) -> OgeomResult<()> {
     /// One edge as a ring walks it: a boundary edge, which may move, or a
@@ -1255,11 +1401,7 @@ fn fold_rings(
     for (i, e) in edges.iter().enumerate() {
         index.insert(e.node, (i, 0));
     }
-    let wires: Vec<Vec<Shape>> = model
-        .children_of(face)?
-        .iter()
-        .map(|wire| model.ordered_children_of(wire))
-        .collect::<OgeomResult<_>>()?;
+    let wires = rings_without(model, face, slits)?;
     for edge in wires.iter().flatten() {
         if let Some(slot) = index.get_mut(&EdgeKey::of(edge)) {
             slot.1 += 1;
@@ -1533,6 +1675,7 @@ fn fold_seamed_rings(
     surface: &SurfaceGeometry,
     edges: &mut [BoundaryEdge],
     (poles, pole_keys): (&[PoleEdge], &[EdgeKey]),
+    slits: &ogeom_core::FastSet<EdgeKey>,
     tol: Tolerances,
 ) -> OgeomResult<()> {
     #[derive(Clone)]
@@ -1631,12 +1774,11 @@ fn fold_seamed_rings(
     for (i, e) in edges.iter().enumerate() {
         uses.insert(e.node, (i, 0));
     }
-    let stored = face.oriented(ogeom_topo::Orientation::Forward);
-    let wires: Vec<Vec<Shape>> = model
-        .children_of(&stored)?
-        .iter()
-        .map(|wire| model.ordered_children_of(wire))
-        .collect::<OgeomResult<_>>()?;
+    let wires = rings_without(
+        model,
+        &face.oriented(ogeom_topo::Orientation::Forward),
+        slits,
+    )?;
     for edge in wires.iter().flatten() {
         if let Some(slot) = uses.get_mut(&EdgeKey::of(edge)) {
             slot.1 += 1;
@@ -1783,7 +1925,7 @@ fn close_pole_joints(
     model: &Model,
     face: &Shape,
     surface: &SurfaceGeometry,
-    edges: &[BoundaryEdge],
+    (edges, slits): (&[BoundaryEdge], &ogeom_core::FastSet<EdgeKey>),
     poles: &mut Vec<PoleEdge>,
     pole_keys: &[EdgeKey],
     tol: Tolerances,
@@ -1811,9 +1953,11 @@ fn close_pole_joints(
         surface.is_periodic_u() || surface.is_closed_u(tol),
         surface.is_periodic_v() || surface.is_closed_v(tol),
     ];
-    let stored = face.oriented(ogeom_topo::Orientation::Forward);
-    for wire in model.children_of(&stored)? {
-        let ring = model.ordered_children_of(&wire)?;
+    for ring in rings_without(
+        model,
+        &face.oriented(ogeom_topo::Orientation::Forward),
+        slits,
+    )? {
         // Each occurrence's edge, whether the ring walks it backwards and,
         // for a seam the ring walks both ways, the side it walks; `None`
         // for a degenerate edge, which stands between its neighbours
@@ -7748,6 +7892,9 @@ fn quiet_piece(
         let mut ring = Vec::new();
         for edge in model.ordered_children_of(&wire)? {
             let key = EdgeKey::of(&edge);
+            if face.slits.contains(&key) {
+                continue;
+            }
             let found = match &indexed {
                 Some(first) => first.get(&key).copied(),
                 None => face.edges.iter().position(|e| e.node == key),
