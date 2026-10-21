@@ -107,6 +107,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Crossed junctions of `fillet_edges` stand in a loop or chain of the
+  request's edges (#342).** A drafted wall's corners in a pocket rim
+  were left capped: a crossed corner was taken only between two edges
+  meeting no other. Flush junctions are now taken first and crossed ones
+  beside them, and a band crossed at both ends is cut in two halfway
+  along, each half joined into its own corner and the two joined again
+  in the band's own section. A pocket four square with one wall drafted a
+  tenth over its depth now loses 0.856067 mm³ in either order, its
+  sections, square cells and drafted corners exactly, where it lost
+  0.837197 or 0.835998.
+
 - **A boolean through a wall far shorter than its face's outline weld
   builds.** A face's outline in its chart was welded end to end within a
   length meant in space but read in the chart, so a wall a micron tall on

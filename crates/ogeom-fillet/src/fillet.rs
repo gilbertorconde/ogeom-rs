@@ -257,12 +257,13 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 /// two are built from the solid as it stands and joined across the plane
 /// into one wedge, each band's faces credited to its own edge. Where the
 /// end sections differ (a drafted wall beside a square one) and both
-/// creases are straight, and the two meet no other edge of the request,
-/// across a re-entrant turn the corner takes what
+/// creases are straight, across a re-entrant turn the corner takes what
 /// lies above both bands carried on, bounded by the boolean's own
 /// intersection of the two, where the material holds it all; across a
 /// convex turn each band runs out past the vertex as it does alone and the
-/// cuts take their union. Elsewhere (a wider convex turn of curved bands)
+/// cuts take their union. Such junctions stand beside flush ones in a
+/// loop or chain, a band crossed at both ends cut in two halfway along.
+/// Elsewhere (a wider convex turn of curved bands)
 /// and wherever the meeting does not close, the later seat runs on
 /// through the earlier blend's band and the cut trims the two bands
 /// against each other along their own intersection, or the caps stand, as
@@ -708,7 +709,7 @@ fn fillet_edges_own(
     };
     let mut order: Vec<usize> = (0..edges.len()).collect();
     order.sort_by_key(|&i| (round_of[i], rank[i]));
-    let mut set_aside: Vec<(usize, Shape, crate::support::Wedge)> = Vec::new();
+    let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
     let mut this_round = 0;
     for index in order {
         let edge = &edges[index];
@@ -716,8 +717,14 @@ fn fillet_edges_own(
         if round_of[index] != this_round {
             this_round = round_of[index];
             if let Some(b) = built.take() {
-                with_corners(model, &mut set_aside, &junctions, &b.shape, tol)?;
-                let joined = join_flush(model, core::mem::take(&mut set_aside), &junctions, tol)?;
+                let halves = with_corners(model, &mut set_aside, &junctions, &b.shape, tol)?;
+                let joined = join_flush(
+                    model,
+                    core::mem::take(&mut set_aside),
+                    &junctions,
+                    &halves,
+                    tol,
+                )?;
                 built = Some(apply_set_aside(model, b, joined, tol)?);
             }
         }
@@ -854,7 +861,7 @@ fn fillet_edges_own(
                             }
                         }
                     }
-                    set_aside.push((index, edge.clone(), wedge));
+                    set_aside.push((vec![index], edge.clone(), wedge));
                 }
                 step
             };
@@ -881,8 +888,8 @@ fn fillet_edges_own(
         }
     }
     let built = built.unwrap_or_else(|| unreachable!());
-    with_corners(model, &mut set_aside, &junctions, &built.shape, tol)?;
-    let joined = join_flush(model, set_aside, &junctions, tol)?;
+    let halves = with_corners(model, &mut set_aside, &junctions, &built.shape, tol)?;
+    let joined = join_flush(model, set_aside, &junctions, &halves, tol)?;
     apply_set_aside(model, built, joined, tol)
 }
 
@@ -904,40 +911,38 @@ fn joinable(
                 .unwrap_or_default(),
         );
     }
-    // A crossed junction is taken only between two edges that meet each
-    // other at its vertex alone and no other edge of the request anywhere:
-    // its two bands are then built in a round of their own and joined into
-    // one wedge, and no other junction, corner or round order is changed.
-    let found: Vec<crate::junction::Junction> = found
-        .into_iter()
-        .filter(|junction| {
-            if !junction.crossed {
-                return true;
-            }
-            let [a, b] = junction.pair;
-            let shared = ends[a]
-                .iter()
-                .filter(|v| ends[b].iter().any(|w| w.is_same(v)))
-                .count();
-            let alone = (0..edges.len()).filter(|&k| k != a && k != b).all(|k| {
-                !ends[k]
-                    .iter()
-                    .any(|v| ends[a].iter().chain(&ends[b]).any(|w| w.is_same(v)))
-            });
-            shared == 1 && alone
-        })
-        .collect();
+    // Flush junctions are taken first: a crossed junction joins its two
+    // bands only where that leaves every flush one standing.
+    let (flush, crossed): (Vec<_>, Vec<_>) = found.into_iter().partition(|j| !j.crossed);
+    let mut found = flush.clone();
+    found.extend(crossed);
+    let pending: Vec<[usize; 2]> = found.iter().filter(|j| j.crossed).map(|j| j.pair).collect();
     let mut group: Vec<usize> = (0..edges.len()).collect();
     let mut kept: Vec<crate::junction::Junction> = Vec::new();
     for junction in found {
         let [a, b] = junction.pair;
         if group[a] == group[b] {
+            // A crossed junction closing a loop of joined bands joins no
+            // groups, and is taken for its corner.
+            if junction.crossed
+                && !kept
+                    .iter()
+                    .any(|j| j.slot(a).is_some() && j.slot(b).is_some())
+            {
+                kept.push(junction);
+            }
             continue;
         }
+        // Two edges of the groups this joins that meet elsewhere must meet
+        // there in a junction of their own: one taken, this one, or a
+        // crossed one still to come.
         let joined = |m: usize, n: usize| {
             kept.iter()
                 .chain(std::iter::once(&junction))
                 .any(|j| j.slot(m).is_some() && j.slot(n).is_some())
+                || pending
+                    .iter()
+                    .any(|pair| pair.contains(&m) && pair.contains(&n))
         };
         let of_a: Vec<usize> = (0..edges.len()).filter(|&m| group[m] == group[a]).collect();
         let of_b: Vec<usize> = (0..edges.len()).filter(|&m| group[m] == group[b]).collect();
@@ -957,6 +962,21 @@ fn joinable(
         }
         kept.push(junction);
     }
+    // Every two edges of one joined group that share a vertex meet there
+    // in a kept junction; where one was dropped, the request is taken with
+    // its flush junctions alone.
+    let meets_unjoined = (0..edges.len()).any(|m| {
+        (m + 1..edges.len()).any(|n| {
+            group[m] == group[n]
+                && ends[m].iter().any(|v| ends[n].iter().any(|w| w.is_same(v)))
+                && !kept
+                    .iter()
+                    .any(|j| j.slot(m).is_some() && j.slot(n).is_some())
+        })
+    });
+    if meets_unjoined && kept.iter().any(|j| j.crossed) {
+        return joinable(model, edges, flush);
+    }
     Ok(kept)
 }
 
@@ -965,33 +985,116 @@ fn joinable(
 /// their corner, in the material of `solid`, the solid the round's wedges
 /// apply to. The joined wedge is set aside with the first band's edge, its
 /// faces from the second band credited to the second's.
+///
+/// A band with a crossed junction at each end is first cut in two in the
+/// plane square to its crease halfway along: each half is the straight
+/// band of its own end section, joined into its own corner, and the two
+/// corners' wedges are joined again across that plane, where both hold the
+/// band's one section. Returns those planes, each with the band's index.
 fn with_corners(
     model: &mut Model,
-    set_aside: &mut Vec<(usize, Shape, crate::support::Wedge)>,
+    set_aside: &mut Vec<(Vec<usize>, Shape, crate::support::Wedge)>,
     junctions: &[crate::junction::Junction],
     solid: &Shape,
     tol: Tolerances,
-) -> OgeomResult<()> {
-    for junction in junctions.iter().filter(|j| j.crossed && j.reentrant) {
-        let bands = |slot: usize| -> Vec<usize> {
-            (0..set_aside.len())
-                .filter(|&k| set_aside[k].0 == junction.pair[slot])
-                .collect()
-        };
-        let (first, second) = (bands(0), bands(1));
-        // Built in the same round, or not yet.
-        if first.is_empty() && second.is_empty() {
+) -> OgeomResult<Vec<(usize, (Point, Vector))>> {
+    let crossed: Vec<&crate::junction::Junction> = junctions
+        .iter()
+        .filter(|j| j.crossed && j.reentrant)
+        .collect();
+    let holding = |set_aside: &[(Vec<usize>, Shape, crate::support::Wedge)], index: usize| {
+        (0..set_aside.len())
+            .filter(|&k| set_aside[k].0.contains(&index))
+            .collect::<Vec<usize>>()
+    };
+    let mut halves = Vec::new();
+    let indices: Vec<usize> = crossed.iter().flat_map(|j| j.pair).collect();
+    for &index in &indices {
+        let ends: Vec<Point> = crossed
+            .iter()
+            .filter(|j| j.slot(index).is_some())
+            .map(|j| j.at)
+            .collect();
+        if ends.len() != 2 || halves.iter().any(|(i, _)| *i == index) {
             continue;
         }
-        let ([a], [b]) = (first.as_slice(), second.as_slice()) else {
-            ogeom_bail!(
+        let held = holding(set_aside, index);
+        let [k] = held.as_slice() else {
+            continue;
+        };
+        let k = *k;
+        let along = ends[1] - ends[0];
+        let length = along.magnitude();
+        if length <= tol.confusion() {
+            ogeom_bail!(Construction, "a band crossed at both ends has no length");
+        }
+        let toward = along / length;
+        let middle = ends[0].midpoint(ends[1]);
+        let span = length + crate::marched::band_fit_target(tol).max(length);
+        let (indices_k, edge, wedge) = set_aside.remove(k);
+        for keep in [-toward, toward] {
+            let half =
+                crate::support::trimmed_wedge(model, &wedge.solid, (middle, keep), span, tol)?;
+            set_aside.push((
+                indices_k.clone(),
+                edge.clone(),
+                crate::support::Wedge {
+                    solid: half,
+                    additive: wedge.additive,
+                    edges: wedge.edges.clone(),
+                    melt_refusal: wedge.melt_refusal,
+                    credit: Vec::new(),
+                },
+            ));
+        }
+        halves.push((index, (middle, toward)));
+    }
+    for junction in crossed {
+        // Each side's band: the one wedge holding it, or of a band cut in
+        // two, the half ending at this junction's vertex.
+        let mut sides = [None, None];
+        for (slot, side) in sides.iter_mut().enumerate() {
+            // A band not yet joined into another corner holds no other.
+            let held = holding(set_aside, junction.pair[slot])
+                .into_iter()
+                .filter(|&k| set_aside[k].0.len() == 1);
+            let mut here = Vec::new();
+            for k in held {
+                if crate::junction::cap_at(
+                    model,
+                    &set_aside[k].2.solid,
+                    junction.at,
+                    junction.outward[slot],
+                    tol,
+                )?
+                .is_some()
+                {
+                    here.push(k);
+                }
+            }
+            *side = match here.as_slice() {
+                [] => None,
+                [k] => Some(*k),
+                _ => ogeom_bail!(
+                    Construction,
+                    "a crossed junction's band is more than one cut wedge in its round"
+                ),
+            };
+        }
+        // Built in the same round, or not yet.
+        let (a, b) = match sides {
+            [None, None] => continue,
+            [Some(a), Some(b)] if a != b => (a, b),
+            _ => ogeom_bail!(
                 Construction,
                 "a crossed junction's bands are not one cut wedge each in their round"
-            );
+            ),
         };
-        let (a, b) = (*a, *b);
         if set_aside[a].2.additive || set_aside[b].2.additive {
             ogeom_bail!(Construction, "a crossed junction's band is a fill");
+        }
+        if !set_aside[a].2.credit.is_empty() || !set_aside[b].2.credit.is_empty() {
+            ogeom_bail!(Construction, "a crossed junction's band is already joined");
         }
         let (taken, of_second) = crate::junction::corner(
             model,
@@ -1003,16 +1106,17 @@ fn with_corners(
         let second = set_aside[b].1.clone();
         let later = set_aside.remove(a.max(b));
         let earlier = set_aside.remove(a.min(b));
-        let ((index, edge, first), (_, other, last)) = if a < b {
+        let ((mut indices, edge, first), (others, other, last)) = if a < b {
             (earlier, later)
         } else {
             (later, earlier)
         };
+        indices.extend(others);
         let mut rounded = first.edges;
         rounded.extend(last.edges);
         rounded.push(other);
         set_aside.push((
-            index,
+            indices,
             edge,
             crate::support::Wedge {
                 solid: taken,
@@ -1026,7 +1130,7 @@ fn with_corners(
             },
         ));
     }
-    Ok(())
+    Ok(halves)
 }
 
 /// The wedges a round set aside, those of two bands meeting in a
@@ -1034,37 +1138,45 @@ fn with_corners(
 /// rounds.
 fn join_flush(
     model: &mut Model,
-    set_aside: Vec<(usize, Shape, crate::support::Wedge)>,
+    set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)>,
     junctions: &[crate::junction::Junction],
+    halves: &[(usize, (Point, Vector))],
     tol: Tolerances,
 ) -> OgeomResult<Vec<(Shape, crate::support::Wedge)>> {
     // Each entry with every edge of the request whose band it holds.
-    let mut held: Vec<Option<(Vec<usize>, Shape, crate::support::Wedge)>> = set_aside
-        .into_iter()
-        .map(|(index, edge, wedge)| Some((vec![index], edge, wedge)))
+    let mut held: Vec<Option<(Vec<usize>, Shape, crate::support::Wedge)>> =
+        set_aside.into_iter().map(Some).collect();
+    // The flush junctions, and the planes a band crossed at both ends was
+    // cut in, each as the plane, a point of it the meeting stands at, and
+    // the edges on either side.
+    let meetings: Vec<((Point, Vector), Point, [usize; 2])> = junctions
+        .iter()
+        .filter(|j| !j.crossed)
+        .map(|j| (j.flush, j.at, j.pair))
+        .chain(
+            halves
+                .iter()
+                .map(|&(index, (on, normal))| ((on, normal), on, [index, index])),
+        )
         .collect();
-    for junction in junctions.iter().filter(|j| !j.crossed) {
-        let (on, normal) = junction.flush;
-        // The wedge holding each side's piece that ends in the plane.
+    for ((on, normal), at, pair) in meetings {
+        // The wedge holding each side's piece that ends in the plane, the
+        // two sides two wedges.
         let mut sides = [None, None];
-        for (slot, side) in sides.iter_mut().enumerate() {
+        for slot in 0..2 {
             for (k, entry) in held.iter().enumerate() {
                 let Some((indices, _, wedge)) = entry else {
                     continue;
                 };
-                if !indices.contains(&junction.pair[slot]) {
+                if !indices.contains(&pair[slot]) || (slot == 1 && sides[0] == Some(k)) {
                     continue;
                 }
                 let gap = crate::marched::band_fit_target(tol) * 2.0;
-                if crate::junction::ends_in(
-                    model,
-                    &wedge.solid,
-                    (on, normal),
-                    junction.at,
-                    gap,
-                    tol,
-                )? {
-                    *side = Some(k);
+                if crate::junction::ends_in(model, &wedge.solid, (on, normal), at, gap, tol)? {
+                    sides[slot] = Some(k);
+                    if slot == 0 {
+                        break;
+                    }
                 }
             }
         }
@@ -1083,7 +1195,7 @@ fn join_flush(
             model,
             [&first.solid, &second.solid],
             (on, normal),
-            junction.at,
+            at,
             crate::marched::band_fit_target(tol) * 2.0,
             tol,
         )?;
@@ -1105,9 +1217,12 @@ fn join_flush(
             }
         }
         indices.extend(others);
+        indices.dedup();
         let mut rounded: Vec<Shape> = first.edges;
         rounded.extend(second.edges);
-        rounded.push(other);
+        if !other.is_same(&edge) {
+            rounded.push(other);
+        }
         held[a] = Some((
             indices,
             edge,

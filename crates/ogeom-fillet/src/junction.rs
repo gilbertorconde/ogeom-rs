@@ -53,6 +53,7 @@ use ogeom_topo::{Model, Orientation, Shape, ShapeType, explore_unique};
 use crate::fillet::Mate;
 
 /// Two edges of a request meeting at a vertex where their creases turn.
+#[derive(Clone)]
 pub(crate) struct Junction {
     /// Where the creases meet: their shared vertex, or where their end
     /// tangents meet within that vertex's tolerance of it.
@@ -778,13 +779,18 @@ pub(crate) fn corner(
                 .node(&face)
                 .and_then(|n| n.data().as_face())
                 .and_then(|d| model.geometry().surface(d.surface));
-            if !matches!(
-                surface,
+            let along = junction.outward[slot];
+            let straight = match surface {
                 Some(
                     ogeom_geom::SurfaceGeometry::Plane(_)
-                        | ogeom_geom::SurfaceGeometry::Cylinder(_)
-                )
-            ) {
+                    | ogeom_geom::SurfaceGeometry::Cylinder(_),
+                ) => true,
+                Some(ogeom_geom::SurfaceGeometry::Extrusion(e)) => {
+                    e.direction().vector().cross(along).magnitude() <= tol.angular()
+                }
+                _ => false,
+            };
+            if !straight {
                 ogeom_core::ogeom_bail!(
                     Construction,
                     "a crossed junction's band is not a straight band between planes"
