@@ -1992,3 +1992,48 @@ fn check_reads_a_seam_run_past_its_spheres_pole() {
         "{diagnosis}"
     );
 }
+
+/// The drafted pocket of `drafted_pocket_turned_by_placement.ogeom`,
+/// turned by a placement on the shape, rounded round its rim in one call:
+/// it takes what the same pocket takes with the placement undone, its
+/// crossed corners meeting along the bands' own intersections. Turned,
+/// the boolean joining two carried bands classified a probe whose every
+/// fixed ray met a tangency or ran along a coplanar face and refused, and
+/// the request fell back to capped corners. A ray from the probe to a
+/// point inside one face, missing every other face before it, decides
+/// the probe exactly.
+#[test]
+fn a_pocket_turned_by_its_placement_rounds_as_it_does_square() {
+    use ogeom::topo::{ShapeType, explore_unique};
+    let fine = ogeom::mesh::Deflection::with_chord(1e-4).unwrap();
+    let removed = |undo: bool| {
+        let (mut model, roots) =
+            ogeom::io::native::read(&corpus("drafted_pocket_turned_by_placement.ogeom")).unwrap();
+        let mut solid = roots[0].clone();
+        if undo {
+            let turn = solid.transform(model.datums()).unwrap();
+            solid = ogeom::algo::transformed(&mut model, &solid, turn.inverse().unwrap())
+                .unwrap()
+                .shape;
+        }
+        let all = explore_unique(&model, &solid, ShapeType::Edge).unwrap();
+        let edges: Vec<_> = [8, 11, 10, 9].iter().map(|&k| all[k].clone()).collect();
+        let before = ogeom::algo::volume_properties(&model, &solid, fine, T)
+            .unwrap()
+            .mass;
+        let rounded = ogeom::fillet::fillet_edges(&mut model, &solid, &edges, 0.5, T)
+            .unwrap()
+            .shape;
+        assert!(ogeom::algo::check(&model, &rounded, T).unwrap().is_valid());
+        before
+            - ogeom::algo::volume_properties(&model, &rounded, fine, T)
+                .unwrap()
+                .mass
+    };
+    let (turned, square) = (removed(false), removed(true));
+    assert!(
+        (turned - square).abs() < 1e-8,
+        "{turned} turned, {square} square"
+    );
+    assert!((square - 0.830_051_763).abs() < 1e-8, "{square}");
+}

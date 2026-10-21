@@ -1042,6 +1042,9 @@ impl SolidBoundary {
         if let Some(read) = self.cast(model, point, tol)? {
             return Ok(read);
         }
+        if let Some(read) = self.reached(model, point, tol)? {
+            return Ok(read);
+        }
         if let Some(read) = self.wound(model, point, tol) {
             return Ok(read);
         }
@@ -1258,6 +1261,176 @@ impl SolidBoundary {
         Ok(None)
     }
 
+    /// Where `point`, off every face, stands by the segment to a face's own
+    /// point nearest it: where that segment meets no face before its end,
+    /// and meets the face there transversally and clear of its trim, the
+    /// point lies on the side of that face the segment comes from, In when
+    /// the segment runs out through the face along its outward normal.
+    ///
+    /// No ray direction is guessed: each segment ends inside one face, and
+    /// is taken only where every other face it passes is shown to be
+    /// missed. `None` where no face offers such a segment.
+    fn reached(
+        &self,
+        model: &Model,
+        point: Point,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<Containment>> {
+        use ogeom_geom::Surface as _;
+        let Prepared {
+            faces, ring_chord, ..
+        } = &*self.prepared;
+        let ring_chord = *ring_chord;
+        let ring_deflection = Deflection {
+            chord: ring_chord,
+            angular: 0.05,
+            ..Deflection::default()
+        };
+        let reach = tol.confusion();
+        // Each face's own nearest point, inside its trim and clear of it,
+        // nearest first: the face's index, the distance, the point in
+        // world space, the face's chart point and its normal there.
+        let mut feet = Vec::new();
+        for (k, prepared) in faces.iter().enumerate() {
+            let (surface, inverse) = prepared.placed(model)?;
+            let local = inverse.apply(point);
+            let forward = inverse.inverse()?;
+            // The face's point nearest the probe, and where that falls on
+            // or past its trim, the middles of its mesh's triangles nearest
+            // the probe: points a ray can aim at inside the face.
+            let mut aims: Vec<(f64, f64)> = Vec::new();
+            if let Ok(found) = project_on_surface(surface, local, 16, tol) {
+                aims.push(found.parameters);
+            }
+            if let Ok(mesh) =
+                ogeom_mesh::triangulate_face(model, &prepared.face, ring_deflection, tol)
+                && mesh.parameters.len() == mesh.positions.len()
+            {
+                let mut middles: Vec<(f64, (f64, f64))> = mesh
+                    .triangles
+                    .iter()
+                    .map(|t| {
+                        let [a, b, c] = t.map(|i| i as usize);
+                        let (pa, pb, pc) =
+                            (mesh.parameters[a], mesh.parameters[b], mesh.parameters[c]);
+                        let uv = ((pa.0 + pb.0 + pc.0) / 3.0, (pa.1 + pb.1 + pc.1) / 3.0);
+                        let at = Point::new(
+                            (mesh.positions[a].x + mesh.positions[b].x + mesh.positions[c].x) / 3.0,
+                            (mesh.positions[a].y + mesh.positions[b].y + mesh.positions[c].y) / 3.0,
+                            (mesh.positions[a].z + mesh.positions[b].z + mesh.positions[c].z) / 3.0,
+                        );
+                        (at.distance(point), uv)
+                    })
+                    .collect();
+                middles.sort_by(|a, b| a.0.total_cmp(&b.0));
+                aims.extend(middles.into_iter().take(AIMS_PER_FACE).map(|(_, uv)| uv));
+            }
+            let rings = prepared.rings(model, ring_deflection, tol)?;
+            for (u, v) in aims {
+                let Ok((du, dv)) = surface.d1_at(u, v, tol) else {
+                    continue;
+                };
+                let normal = du.cross(dv);
+                if normal.magnitude() <= tol.confusion() {
+                    continue;
+                }
+                let at = rings.place(surface, Point2::new(u, v), tol);
+                let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
+                let face = &prepared.face;
+                if rings.within(model, face, ring_deflection, at, band, tol)?
+                    || !rings.inside(model, face, ring_deflection, at, tol)?
+                {
+                    continue;
+                }
+                let foot = forward.apply(surface.point_at(u, v, tol)?);
+                feet.push((point.distance(foot), k, foot, (u, v), normal));
+            }
+        }
+        feet.sort_by(|a, b| a.0.total_cmp(&b.0));
+        'feet: for (length, k, foot, _, normal) in feet {
+            if length <= reach {
+                continue;
+            }
+            // Past the foot by half the segment again, so the face's own
+            // crossing stands inside the segment rather than at its end.
+            let along = (foot - point) / length;
+            let far = point + along * (length * 1.5);
+            let margin = reach + ring_chord;
+            for (j, prepared) in faces.iter().enumerate() {
+                if !segment_meets(&prepared.bound, point, far) {
+                    continue;
+                }
+                let (surface, inverse) = prepared.placed(model)?;
+                let (from, to) = (inverse.apply(point), inverse.apply(far));
+                let ray: ogeom_geom::Curve = ogeom_geom::LineCurve::segment(from, to, tol)?.into();
+                let found = ogeom_intersect::intersect_curve_surface(
+                    &ray,
+                    surface,
+                    ogeom_intersect::CurveSurfaceOptions::default(),
+                    tol,
+                )?;
+                if !found.lying.is_empty() {
+                    continue 'feet;
+                }
+                // The segment's parameter runs with distance in the face's
+                // frame; the foot stands `length` along it in world space,
+                // which a scaling placement stretches alike.
+                let scale = (to - from).magnitude() / (length * 1.5);
+                let at_foot = length * scale;
+                for hit in &found.crossings {
+                    let (hu, hv) = hit.on_surface;
+                    if j == k && (hit.on_curve - at_foot).abs() <= margin * scale {
+                        // The segment's own end on this face: it crosses
+                        // there, not along it.
+                        let Ok((du, dv)) = surface.d1_at(hu, hv, tol) else {
+                            continue 'feet;
+                        };
+                        let n = du.cross(dv);
+                        let d = (to - from) / (to - from).magnitude();
+                        if n.dot(d).abs() <= GRAZING * n.magnitude() {
+                            continue 'feet;
+                        }
+                        continue;
+                    }
+                    if hit.on_curve > at_foot + margin * scale {
+                        continue;
+                    }
+                    // Any other face met before the foot, or at it, must be
+                    // met outside its trim and clear of it.
+                    let rings = prepared.rings(model, ring_deflection, tol)?;
+                    let at = rings.place(surface, Point2::new(hu, hv), tol);
+                    let band = parametric_band(surface, (hu, hv), margin, tol);
+                    let face = &prepared.face;
+                    if rings.within(model, face, ring_deflection, at, band, tol)?
+                        || rings.inside(model, face, ring_deflection, at, tol)?
+                    {
+                        continue 'feet;
+                    }
+                }
+            }
+            // Out through the face along its outward normal: inside. The
+            // face's own frame reads the sign alike under a reflecting
+            // placement, which turns the normal and the segment together.
+            let prepared = &faces[k];
+            let (_, inverse) = prepared.placed(model)?;
+            let side = normal.dot(inverse.apply(foot) - inverse.apply(point));
+            let outward = if prepared.face.orientation() == ogeom_topo::Orientation::Reversed {
+                -side
+            } else {
+                side
+            };
+            if outward.abs() <= GRAZING * normal.magnitude() * length {
+                continue;
+            }
+            return Ok(Some(if outward > 0.0 {
+                Containment::In
+            } else {
+                Containment::Out
+            }));
+        }
+        Ok(None)
+    }
+
     /// Where `point`, off every face, stands by its winding number against
     /// the faces' meshes, or `None` where that reads neither in nor out.
     ///
@@ -1443,6 +1616,11 @@ impl KeptSurface {
 /// a microradian, rounding in the evaluated normal can no longer tell a
 /// crossing from a touch.
 const GRAZING: f64 = 1e-6;
+
+/// How many of a face's mesh triangles, nearest the probe first, offer
+/// their middles for a segment to aim at when the face's own nearest
+/// point lies on or past its trim.
+const AIMS_PER_FACE: usize = 3;
 
 /// Directions to cast rays along, tried in order.
 ///

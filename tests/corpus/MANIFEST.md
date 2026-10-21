@@ -407,3 +407,15 @@ meridian, its pcurves on to rows past the south pole's that the
 sphere's chart does not have. Every edge lies on the sphere and every
 vertex on its edges. The reproducer for `check` measuring a pcurve the
 surface cannot evaluate where it stands.
+
+## drafted_pocket_turned_by_placement.ogeom
+
+A block 10 by 10 by 3 with a pocket whose two adjacent walls are drafted
+unequally, in this kernel's native format, turned 0.7 rad about the axis
+through (1, -2, 0.5) along (1, 1, 1) by a placement stored on the shape
+(`ogeom_algo::transformed`), not baked into its geometry. Its four rim
+edges are edges 8, 11, 10 and 9 of the solid in exploration order. The
+reproducer for a point the classifier's fixed rays reach only through
+tangencies and coplanar faces (#390): the boolean joining the crossed
+corner's two carried bands refused there, where the same pocket placed
+square rounds exactly.

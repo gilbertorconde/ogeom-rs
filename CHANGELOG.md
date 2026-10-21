@@ -122,6 +122,18 @@ bump may break the API and a patch bump may not.
   vertices' tolerance, leaving a tool solid `check` calls broken for the
   boolean that crossed junctions cut with. Each vertex is now widened to
   its edges' tolerance.
+- **A point every fixed ray reaches only through a tangency or along a
+  coplanar face is classified exactly (#390).** The classifier cast six
+  rays in fixed world directions and, where each met a tangency, an edge
+  or a face it ran along, fell back on a mesh's winding number, which
+  can read neither in nor out; the boolean then refused. Which rays
+  graze depends on the part's placement, so a fillet that rounded a
+  drafted pocket square (0.830051763 mm³) fell back to capped corners
+  (0.800339681) once the pocket was turned by a placement. A probe is now
+  also decided by a segment to a point inside one face (its own nearest
+  point, or the middle of one of its mesh's triangles nearest the
+  probe), taken only where it meets that face transversally clear of its
+  trim and is shown to miss every other face before it.
 
 - **Crossed junctions of `fillet_edges` stand in a loop or chain of the
   request's edges (#342).** A drafted wall's corners in a pocket rim
