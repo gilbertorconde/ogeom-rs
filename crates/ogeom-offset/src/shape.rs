@@ -1421,12 +1421,35 @@ pub(crate) fn rebuilt(
                             ogeom_bail!(Construction, "the offset collapses an edge");
                         }
                         (moved, ta, tb)
-                    } else if ta <= tb {
-                        (moved, ta, tb)
                     } else {
-                        use ogeom_geom::Reversible as _;
+                        // A section that closes without repeating (a
+                        // march round a drafted drum) has one point at both
+                        // ends of its domain, and an end there projects to
+                        // either: the old edge's direction picks the run,
+                        // and an end on the closure is read at the end of
+                        // the domain that run reaches.
                         let (lo, hi) = moved.domain();
-                        (moved.reversed(), lo + hi - ta, lo + hi - tb)
+                        let (ta, tb) = if moved.is_closed(tol) {
+                            let along =
+                                moved.d1_at(ta, tol)?.dot(curve.d1_at(range.0, tol)?) >= 0.0;
+                            let at = |t: f64, end: f64| (t - end).abs() <= tol.parametric();
+                            let (start, finish) = if along { (lo, hi) } else { (hi, lo) };
+                            (
+                                if at(ta, finish) { start } else { ta },
+                                if at(tb, start) { finish } else { tb },
+                            )
+                        } else {
+                            (ta, tb)
+                        };
+                        if (tb - ta).abs() <= tol.parametric() {
+                            ogeom_bail!(Construction, "the offset collapses an edge");
+                        }
+                        if ta <= tb {
+                            (moved, ta, tb)
+                        } else {
+                            use ogeom_geom::Reversible as _;
+                            (moved.reversed(), lo + hi - ta, lo + hi - tb)
+                        }
                     };
                     make_edge_between(model, moved, (ta, tb), &v_from, &v_to, tol)?.shape
                 };

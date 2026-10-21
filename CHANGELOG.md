@@ -109,6 +109,15 @@ bump may break the API and a patch bump may not.
   would not convert again ("cannot normalize a vector"). A cut line that
   crosses an edge within an end vertex's radius of it now meets that
   vertex (#350).
+- **`apply_draft` drafts a fitted wall a boolean cut out of its patch.**
+  The cut wall's rims are split in halves, each rebuilt on the section
+  marched round the drafted wall, a curve that closes without repeating.
+  A half ending on the section's closure read that end at the start of
+  the curve and ran back over the other half, and the drafted half of a
+  skinned drum broke its chart ("its boundary does not close in its
+  surface's chart"). The old edge's direction now picks which end of the
+  section the closure end is read at, as it does on a periodic section;
+  the half drafts as the whole drum drafted and then cut does (#359).
 
 - **A marched section finds crossings closer together than its stride.**
   Where two crossings of a section stood within one step of the march, a

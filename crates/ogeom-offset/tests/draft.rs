@@ -1315,3 +1315,88 @@ fn a_patch_short_of_the_neutral_plane_is_refused_by_name() {
     .unwrap_err();
     assert!(err.to_string().contains("meets neither"), "{err}");
 }
+
+/// A skinned drum's lower half, cut out of it by a boolean, so its wall
+/// covers half its closed patch in height and the whole turn round, its
+/// rims each split in two halves where the cut's seam meets them. Drafted
+/// about a level plane through it, each half rim is rebuilt on the march
+/// round the drafted wall, a section that closes without repeating: the
+/// half ending on the march's closure ran back over the other half. The
+/// half drafts as the whole drum drafted and then cut does.
+#[test]
+fn a_skinned_drum_cut_in_half_drafts_as_the_whole_one_cut() {
+    let ring = |model: &mut ogeom_topo::Model, z: f64| {
+        let frame = Frame::new(
+            Point::new(0.0, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = ogeom_math::Circle::new(frame, 10.0, T).unwrap();
+        let curve = ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+        let edge = ogeom_algo::make_edge(model, curve, (0.0, core::f64::consts::TAU), T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_wire(model, std::slice::from_ref(&edge), T)
+            .unwrap()
+            .shape
+    };
+    let drum = |model: &mut ogeom_topo::Model| {
+        let sections: Vec<_> = [0.0, 5.0, 10.0].iter().map(|z| ring(model, *z)).collect();
+        let hints: Vec<Point> = [0.0_f64, 5.0, 10.0]
+            .iter()
+            .map(|z| Point::new(10.0, 0.0, *z))
+            .collect();
+        ogeom_offset::make_loft_skinned_aligned(model, &sections, &hints, 1e-2, T)
+            .unwrap()
+            .shape
+    };
+    let lower = |model: &mut ogeom_topo::Model| {
+        let corner = Frame::new(
+            Point::new(-20.0, -20.0, -1.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, corner, (40.0, 40.0, 6.0), T)
+            .unwrap()
+            .shape
+    };
+    let draft = |model: &mut ogeom_topo::Model, solid: &ogeom_topo::Shape| {
+        let (wall, _) = bspline_surface_of(model, solid);
+        ogeom_offset::apply_draft(
+            model,
+            solid,
+            std::slice::from_ref(&wall),
+            Plane::through(Point::new(0.0, 0.0, 4.0), ogeom_math::Direction::Z),
+            ogeom_math::Direction::Z,
+            0.1,
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    // The whole drum drafted, then cut.
+    let mut model = ogeom_topo::Model::new();
+    let whole = drum(&mut model);
+    let drafted = draft(&mut model, &whole);
+    let keep = lower(&mut model);
+    let want = ogeom_bool::common(&mut model, &drafted, &keep, T)
+        .unwrap()
+        .shape;
+    let want = volume(&model, &want);
+    // The drum cut, then drafted.
+    let mut model = ogeom_topo::Model::new();
+    let whole = drum(&mut model);
+    let keep = lower(&mut model);
+    let half = ogeom_bool::common(&mut model, &whole, &keep, T)
+        .unwrap()
+        .shape;
+    let drafted = draft(&mut model, &half);
+    let diagnosis = ogeom_algo::check(&model, &drafted, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let got = volume(&model, &drafted);
+    assert!((got - want).abs() <= want * 1e-6, "{got} against {want}");
+}
