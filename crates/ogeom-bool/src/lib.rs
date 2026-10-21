@@ -83,14 +83,16 @@ const STRAND_SAG: f64 = 1e-4;
 
 /// Samples enough that a curve's chords stand within [`STRAND_SAG`] of it in
 /// the chart: from `count`, raised as the measured sag at the chords'
-/// middles asks, up to 512.
+/// middles asks, up to 512. With the count, the sag measured at it, or
+/// infinity where the count was raised past the last measure.
 fn sag_count(
     at: &dyn Fn(f64) -> OgeomResult<Point2>,
     lo: f64,
     hi: f64,
     mut count: usize,
-) -> OgeomResult<usize> {
+) -> OgeomResult<(usize, f64)> {
     const MOST: usize = 512;
+    let mut measured = f64::INFINITY;
     for _ in 0..3 {
         if count >= MOST {
             break;
@@ -108,6 +110,7 @@ fn sag_count(
             previous = here;
         }
         if sag <= STRAND_SAG {
+            measured = sag;
             break;
         }
         // Sag falls as the square of the step.
@@ -119,7 +122,7 @@ fn sag_count(
         let raised = ((count as f64) * (sag / STRAND_SAG).sqrt()).ceil() as usize;
         count = raised.clamp(count + 1, MOST);
     }
-    Ok(count)
+    Ok((count, measured))
 }
 
 /// [`sag_count`] for a circle, whose chords' sag is known: `r(1 - cos(θ/2))`
@@ -141,6 +144,18 @@ fn circle_sag_count(pcurve: &PlanarCurve, lo: f64, hi: f64, count: usize) -> Opt
     )]
     let needed = ((hi - lo).abs() / step).ceil().min(MOST as f64) as usize;
     Some(count.max(needed))
+}
+
+/// How far the chords of a circle sampled in `count` equal steps over
+/// `lo..hi` stand off it: `r(1 - cos(θ/2))` over a step of `θ`. `None` for
+/// any other curve.
+fn circle_sag(pcurve: &PlanarCurve, lo: f64, hi: f64, count: usize) -> Option<f64> {
+    let PlanarCurve::Circle(circle) = pcurve else {
+        return None;
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let step = (hi - lo).abs() / count.max(1) as f64;
+    Some(circle.circle().radius() * (1.0 - (step / 2.0).cos()))
 }
 
 /// Parameter-space node snap for the arrangement.
@@ -2450,7 +2465,7 @@ fn pcurve_polyline(
     if matches!(surface, SurfaceGeometry::Plane(_)) && !matches!(pcurve, PlanarCurve::Line(_)) {
         count = match circle_sag_count(pcurve, lo, hi, count) {
             Some(count) => count,
-            None => sag_count(&|t| pcurve.point_at(t, tol), lo, hi, count)?,
+            None => sag_count(&|t| pcurve.point_at(t, tol), lo, hi, count)?.0,
         };
     }
     let mut out = Vec::with_capacity(count + 1);
@@ -9278,6 +9293,7 @@ fn general_fuse_as(
                         range: sub,
                     },
                     boundary: true,
+                    sag: f64::INFINITY,
                 });
                 if let Some((other_pc, orange)) = &e.other_side {
                     strands.push(Strand {
@@ -9294,6 +9310,7 @@ fn general_fuse_as(
                             range: sub,
                         },
                         boundary: true,
+                        sag: f64::INFINITY,
                     });
                 }
             }
@@ -9323,13 +9340,18 @@ fn general_fuse_as(
             // The pcurve shares the curve's parameterization. Sampling
             // uses folded parameters for periodic curves.
             let fold_at = |t: f64| if section.closed { fold(t, domain) } else { t };
-            let count = if !matches!(face.surface, SurfaceGeometry::Plane(_))
-                || matches!(pcurve, PlanarCurve::Line(_))
-            {
-                32
+            // A section's sampling on a plane holds its chords to a sag,
+            // which the arrangement can read it to.
+            let (count, sag) = if !matches!(face.surface, SurfaceGeometry::Plane(_)) {
+                (32, f64::INFINITY)
+            } else if matches!(pcurve, PlanarCurve::Line(_)) {
+                (32, 0.0)
             } else {
                 match circle_sag_count(pcurve, sub.0, sub.1, 32) {
-                    Some(count) => count,
+                    Some(count) => (
+                        count,
+                        circle_sag(pcurve, sub.0, sub.1, count).unwrap_or(f64::INFINITY),
+                    ),
                     None => sag_count(&|t| pcurve.point_at(fold_at(t), tol), sub.0, sub.1, 32)?,
                 }
             };
@@ -9361,6 +9383,7 @@ fn general_fuse_as(
                     range: sp.range,
                 },
                 boundary: false,
+                sag,
             });
         }
         // The poles, after the sections, because a section can end *on*
@@ -9408,6 +9431,7 @@ fn general_fuse_as(
                         range: sub,
                     },
                     boundary: true,
+                    sag: f64::INFINITY,
                 });
             }
         }
@@ -9496,6 +9520,7 @@ fn general_fuse_as(
                         range: sub,
                     },
                     boundary: false,
+                    sag: f64::INFINITY,
                 });
             }
         }
@@ -14467,7 +14492,7 @@ mod tests {
                     count == 512
                         || radius * (1.0 - (step / 2.0).cos()) <= STRAND_SAG * (1.0 + 1e-9)
                 );
-                let measured = sag_count(&|t| pcurve.point_at(t, T), lo, hi, 8).unwrap();
+                let (measured, _) = sag_count(&|t| pcurve.point_at(t, T), lo, hi, 8).unwrap();
                 assert!(count <= measured, "{count} against {measured}");
             }
         }

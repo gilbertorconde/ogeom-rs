@@ -138,6 +138,17 @@ bump may break the API and a patch bump may not.
   a slit: there the chart's whole row is one point, and the ring is left
   as stated (#344).
 
+- **Two sections leaving a node along one tangent are arranged in the
+  order they leave it.** The sections of two faces that touch along a line,
+  a thin void between them, part at second order, and the arrangement read
+  their order from their first chords, which can lean either way. On a
+  plane, where sections are sampled to a known sag, two neighbouring
+  sections are read again on a wider circle where they stand apart by
+  more than that sag; two curves that meet only at their ends keep their
+  order out to there. A box cut through solid 977's void, between a
+  cylinder and a spline wall within 0.00065 of it, built faces walking
+  an edge the same way (#344).
+
 - **A boolean through a wall far shorter than its face's outline weld
   builds.** A face's outline in its chart was welded end to end within a
   length meant in space but read in the chart, so a wall a micron tall on

@@ -27,6 +27,9 @@ pub(crate) struct Strand<T> {
     /// section. Boundary strands define the material. A dangling boundary is
     /// an error where a dangling section is a pruning.
     pub boundary: bool,
+    /// How far the polyline's chords may stand off the curve, as sampled;
+    /// infinite where the sampling holds them to no bound.
+    pub sag: f64,
 }
 
 /// One directed traversal of a strand inside a piece's ring.
@@ -551,9 +554,10 @@ fn walk<'s, T>(
     for d in 0..dart_count {
         radius[tail(d)] = radius[tail(d)].min(reach(d) * 0.5);
     }
-    let leaving = |d: usize| -> Point2 {
+    // Where a dart first leaves the circle of radius `r` about its node,
+    // along the step that crosses it.
+    let crossing = |d: usize, r: f64| -> Point2 {
         let at = nodes[tail(d)];
-        let r = radius[tail(d)];
         let count = live[d / 2].polyline.len();
         let mut previous = point(d, 0);
         for i in 1..count {
@@ -577,7 +581,7 @@ fn walk<'s, T>(
     };
     // Each dart's angle once, not once per comparison.
     let mut heading: Vec<f64> = (0..dart_count)
-        .map(|d| angle(nodes[tail(d)], leaving(d)))
+        .map(|d| angle(nodes[tail(d)], crossing(d, radius[tail(d)])))
         .collect();
     // A section lies in its face, so round a node of the boundary it
     // leaves into the face's material, between the boundary darts that
@@ -662,6 +666,103 @@ fn walk<'s, T>(
                 .partial_cmp(&heading[y])
                 .unwrap_or(core::cmp::Ordering::Equal)
         });
+    }
+    // Two sections leaving a node along one tangent (the sections of two
+    // faces that touch along a line, a thin lens between them) leave the
+    // small circle in the order their first chords happen to take, since the
+    // curves part only at second order. Each pair of neighbouring sections
+    // is read again on a circle half as wide as both run steadily away from
+    // the node: half, so two that meet again at their far ends are read
+    // short of it. Out to there each curve crosses every circle about the
+    // node once, and two curves that meet only at their ends keep the second
+    // counter-clockwise of the first by more than nothing and less than a
+    // whole turn. Between two circles that angle changes by no more than the
+    // two curves turn about the node. So where the wide circle has the
+    // second clockwise of the first, further apart than their chords' sag
+    // allows, and the two readings and both turns sum to under half a turn,
+    // the small reading is not the curves' order, and the two swap.
+    let steady = |d: usize| -> f64 {
+        let at = nodes[tail(d)];
+        let mut reached = 0.0_f64;
+        for i in 1..live[d / 2].polyline.len() {
+            let r = point(d, i).distance(at);
+            if r <= reached {
+                break;
+            }
+            reached = r;
+        }
+        reached
+    };
+    let wrap = |a: f64| -> f64 {
+        (a + core::f64::consts::PI).rem_euclid(core::f64::consts::TAU) - core::f64::consts::PI
+    };
+    // Where a dart crosses the circle of radius `wide`, how far along the
+    // circle its chords allow its curve to cross (the sag over the sine of
+    // the angle the crossing chord makes with the circle), and how far it
+    // turns about the node from the small circle `r` out to there.
+    let read = |d: usize, r: f64, wide: f64| -> Option<(Point2, f64, f64)> {
+        let at = nodes[tail(d)];
+        let p = crossing(d, wide);
+        let mut travel = 0.0;
+        let mut last = angle(at, crossing(d, r));
+        for i in 1..live[d / 2].polyline.len() {
+            let (a, b) = (point(d, i - 1), point(d, i));
+            if b.distance(at) >= wide {
+                travel += wrap(angle(at, p) - last).abs();
+                let (chord, radial) = (b - a, p - at);
+                let steep = (chord.x * radial.x + chord.y * radial.y)
+                    / (chord.magnitude() * radial.magnitude());
+                return (steep > 0.0).then(|| (p, live[d / 2].sag / steep.min(1.0), travel));
+            }
+            if b.distance(at) > r {
+                let here = angle(at, b);
+                travel += wrap(here - last).abs();
+                last = here;
+            }
+        }
+        None
+    };
+    for (n, ring) in around.iter_mut().enumerate() {
+        let count = ring.len();
+        if count < 2 {
+            continue;
+        }
+        let at = nodes[n];
+        let mut settled = false;
+        let mut passes = 0;
+        while !settled && passes < count {
+            settled = true;
+            passes += 1;
+            for i in 0..count {
+                let (x, y) = (ring[i], ring[(i + 1) % count]);
+                if x == y
+                    || live[x / 2].boundary
+                    || live[y / 2].boundary
+                    || !(live[x / 2].sag + live[y / 2].sag).is_finite()
+                {
+                    continue;
+                }
+                let wide = steady(x).min(steady(y)) * 0.5;
+                if wide <= radius[n] {
+                    continue;
+                }
+                let (Some((px, ox, tx)), Some((py, oy, ty))) =
+                    (read(x, radius[n], wide), read(y, radius[n], wide))
+                else {
+                    continue;
+                };
+                let small = (heading[y] - heading[x]).rem_euclid(core::f64::consts::TAU);
+                let apart = wrap(angle(at, py) - angle(at, px));
+                if apart < 0.0
+                    && px.distance(py) > ox + oy
+                    && small + tx + ty - apart < core::f64::consts::PI
+                {
+                    heading.swap(x, y);
+                    ring.swap(i, (i + 1) % count);
+                    settled = false;
+                }
+            }
+        }
     }
     let mut position = vec![0_usize; dart_count];
     for ring in &around {
@@ -1596,6 +1697,67 @@ mod tests {
         ));
     }
 
+    /// Two sections from (0, 0) to (4, 0) across the strip 4 by 2 about
+    /// them, both level at their ends: `y = a x^2 (4 - x)^2` and twice that,
+    /// a thin lens between them. Each is sampled to the sag it states, the
+    /// lower one in steps of 1, the upper in steps of 1/4. Their first
+    /// chords leave the node the wrong way round: the lower one's at a
+    /// slope of `9a`, the upper one's at `7a`. Read on a wide circle they
+    /// keep their order, and the strip splits into the region below, the
+    /// lens and the region above, of areas `4 + I`, `I` and `4 - 2I`, with
+    /// `I = 1024 a / 30` the lower curve's integral.
+    #[test]
+    fn two_sections_leaving_a_node_along_one_tangent_keep_their_order() {
+        let a = 0.01;
+        let lower = |x: f64| a * x * x * (4.0 - x) * (4.0 - x);
+        let sampled = |height: f64, steps: u32| -> Vec<Point2> {
+            (0..=steps)
+                .map(|i| {
+                    let x = 4.0 * f64::from(i) / f64::from(steps);
+                    Point2::new(x, height * lower(x))
+                })
+                .collect()
+        };
+        // The sag of `h y` sampled in steps of `s` is at most its greatest
+        // second derivative, `32 h a`, times `s^2 / 8`.
+        let section = |height: f64, steps: u32, tag: usize| Strand {
+            polyline: sampled(height, steps),
+            tag,
+            boundary: false,
+            sag: 32.0 * height * a * (4.0 / f64::from(steps)).powi(2) / 8.0,
+        };
+        let p = Point2::new;
+        let side = |from: Point2, to: Point2, tag: usize| Strand {
+            polyline: vec![from, to],
+            tag,
+            boundary: true,
+            sag: 0.0,
+        };
+        let strands = vec![
+            side(p(0.0, -1.0), p(4.0, -1.0), 0),
+            side(p(4.0, -1.0), p(4.0, 0.0), 1),
+            side(p(4.0, 0.0), p(4.0, 1.0), 2),
+            side(p(4.0, 1.0), p(0.0, 1.0), 3),
+            side(p(0.0, 1.0), p(0.0, 0.0), 4),
+            side(p(0.0, 0.0), p(0.0, -1.0), 5),
+            section(1.0, 4, 6),
+            section(2.0, 16, 7),
+        ];
+        let pieces = assemble(&strands, 1e-7).unwrap();
+        let integral = 1024.0 * a / 30.0;
+        let mut areas: Vec<f64> = pieces.iter().map(|p| area(&p.outlines[0])).collect();
+        areas.sort_by(f64::total_cmp);
+        let want = [integral, 4.0 - 2.0 * integral, 4.0 + integral];
+        assert_eq!(areas.len(), 3, "{areas:?}");
+        for (got, want) in areas.iter().zip(want) {
+            // Each outline's chords stand within their sag of the curves.
+            assert!(
+                (got - want).abs() < 4.0 * 32.0 * a / 8.0,
+                "{areas:?} against {want}"
+            );
+        }
+    }
+
     /// A square's four sides as boundary strands, pre-split at the corners.
     fn square(side: f64) -> Vec<Strand<usize>> {
         let c = [
@@ -1609,6 +1771,7 @@ mod tests {
                 polyline: vec![c[i], c[(i + 1) % 4]],
                 tag: i,
                 boundary: true,
+                sag: f64::INFINITY,
             })
             .collect()
     }
@@ -1618,6 +1781,7 @@ mod tests {
             polyline: vec![from, to],
             tag,
             boundary: false,
+            sag: f64::INFINITY,
         }
     }
 
@@ -1663,6 +1827,7 @@ mod tests {
             polyline: vec![a, b],
             tag,
             boundary: true,
+            sag: f64::INFINITY,
         };
         let strands = vec![
             boundary(p(0.0, 0.0), p(0.5, 0.0), 0),
@@ -1682,6 +1847,7 @@ mod tests {
                 ],
                 tag: 6,
                 boundary: false,
+                sag: f64::INFINITY,
             },
         ];
         let pieces = assemble(&strands, 1e-3).unwrap();
@@ -1702,6 +1868,7 @@ mod tests {
             polyline: vec![a, b],
             tag,
             boundary: true,
+            sag: f64::INFINITY,
         };
         let strands = vec![
             boundary(p(0.0, 0.0), p(0.5, 0.0), 0),
@@ -1714,6 +1881,7 @@ mod tests {
                 polyline: vec![p(0.5, 0.0), p(0.6, -1e-7), p(0.8, 0.5), p(0.5, 1.0)],
                 tag: 6,
                 boundary: false,
+                sag: f64::INFINITY,
             },
         ];
         let pieces = assemble(&strands, 1e-6).unwrap();
@@ -1736,6 +1904,7 @@ mod tests {
             polyline: vec![a, b],
             tag,
             boundary: true,
+            sag: f64::INFINITY,
         };
         let strands = vec![
             boundary(p(0.0, 0.0), p(20.0, -5.0), 0),
@@ -1765,31 +1934,37 @@ mod tests {
                 polyline: vec![Point2::new(0.0, 0.0), Point2::new(2.0, 0.0)],
                 tag: 0,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(2.0, 0.0), Point2::new(2.0, 1.0)],
                 tag: 1,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(2.0, 1.0), Point2::new(2.0, 2.0)],
                 tag: 2,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(2.0, 2.0), Point2::new(0.0, 2.0)],
                 tag: 3,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(0.0, 2.0), Point2::new(0.0, 1.0)],
                 tag: 4,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(0.0, 1.0), Point2::new(0.0, 0.0)],
                 tag: 5,
                 boundary: true,
+                sag: f64::INFINITY,
             },
         ];
         strands.push(strand(Point2::new(0.0, 1.0), Point2::new(2.0, 1.0), 6));
@@ -1834,11 +2009,13 @@ mod tests {
             polyline: vec![bottom, Point2::new(3.0, 2.0), top],
             tag: 10,
             boundary: false,
+            sag: f64::INFINITY,
         });
         strands.push(Strand {
             polyline: vec![top, Point2::new(1.0, 2.0), bottom],
             tag: 11,
             boundary: false,
+            sag: f64::INFINITY,
         });
         let pieces = assemble(&strands, 1e-7).unwrap();
         assert_eq!(pieces.len(), 2);
@@ -1861,31 +2038,37 @@ mod tests {
                 polyline: vec![Point2::new(0.0, 0.0), Point2::new(4.0, 0.0)],
                 tag: 0,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(4.0, 0.0), Point2::new(4.0, 2.0)],
                 tag: 1,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(4.0, 2.0), Point2::new(4.0, 4.0)],
                 tag: 2,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(4.0, 4.0), Point2::new(0.0, 4.0)],
                 tag: 3,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(0.0, 4.0), Point2::new(0.0, 2.0)],
                 tag: 4,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![Point2::new(0.0, 2.0), Point2::new(0.0, 0.0)],
                 tag: 5,
                 boundary: true,
+                sag: f64::INFINITY,
             },
             Strand {
                 polyline: vec![
@@ -1897,6 +2080,7 @@ mod tests {
                 ],
                 tag: 6,
                 boundary: false,
+                sag: f64::INFINITY,
             },
         ];
         let pieces = assemble(&strands, 1e-7).unwrap();
