@@ -202,6 +202,18 @@ bump may break the API and a patch bump may not.
   in. The boxes that were turned before are still turned. The Voron part
   comes back as it went in. Its findings name the crossing itself, which
   no orientation mends (#397).
+- **A saddle crossing a plane along two lines a few thousandths apart
+  comes back with both.** Where the march found one of the two crossings,
+  the other was never looked for, and where it was, the search cut the
+  patch into squares: across the strip between the lines the patch stays
+  within `d²` of the plane, so no square could be set aside until it was
+  `d` across, along the whole length of both lines, and the search ran out.
+  A single crossing now starts the search too, and a patch is halved
+  across the way its normals turn most, a strip along the lines parting
+  from its neighbours without being cut along its length. Where halving
+  does not complete, as about many crossings close together, the search
+  runs again quartering. Of 56 such saddles with the lines 1e-3 to 6e-3
+  apart, 55 come back whole, against none (#356).
 
 - **A square pocket's rim rounded in one `fillet_edges` call meets at
   every corner (#387).** The flush junction closing the loop was dropped,

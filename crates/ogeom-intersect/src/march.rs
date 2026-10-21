@@ -2379,6 +2379,9 @@ struct Patch {
     /// Whether the patch is a piece of a plane: its samples in one plane
     /// and its normals one direction, so no quarter of it says more.
     flat: bool,
+    /// Across `u` and across `v`: how far the samples run, and how far the
+    /// normals turn.
+    across: [(f64, f64); 2],
 }
 
 impl Patch {
@@ -2431,6 +2434,25 @@ impl Patch {
         for (k, n) in normals.iter().flatten().enumerate() {
             flat[k] = *n;
         }
+        let angle = |m: Vector, n: Vector| m.dot(n).clamp(-1.0, 1.0).acos();
+        // Taken through the middle sample, as a patch over a whole closed
+        // chart ends where it starts.
+        let mut across = [(0.0_f64, 0.0_f64); 2];
+        for k in 0..3 {
+            let (p, n) = (&points, &normals);
+            across[0].0 = across[0]
+                .0
+                .max(p[0][k].distance(p[1][k]) + p[1][k].distance(p[2][k]));
+            across[0].1 = across[0]
+                .1
+                .max(angle(n[0][k], n[1][k]) + angle(n[1][k], n[2][k]));
+            across[1].0 = across[1]
+                .0
+                .max(p[k][0].distance(p[k][1]) + p[k][1].distance(p[k][2]));
+            across[1].1 = across[1]
+                .1
+                .max(angle(n[k][0], n[k][1]) + angle(n[k][1], n[k][2]));
+        }
         Some(Self {
             u,
             v,
@@ -2441,24 +2463,59 @@ impl Patch {
             size: (high - low).magnitude(),
             normals: flat,
             flat: grow == 0.0 && turn == 0.0,
+            across,
         })
     }
 
-    /// The four quarters of the patch.
-    fn quarters(&self, surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Self> {
-        let (um, vm) = (
-            f64::midpoint(self.u.0, self.u.1),
-            f64::midpoint(self.v.0, self.v.1),
-        );
-        [
-            ((self.u.0, um), (self.v.0, vm)),
-            ((um, self.u.1), (self.v.0, vm)),
-            ((self.u.0, um), (vm, self.v.1)),
-            ((um, self.u.1), (vm, self.v.1)),
-        ]
-        .into_iter()
-        .filter_map(|(u, v)| Self::over(surface, u, v, tol))
-        .collect()
+    /// The way the patch is halved next, if it still runs further than
+    /// `near` any way, and how much that says: whether the normals turn
+    /// that way, and by how much, or else how far it runs. Where two
+    /// patches could touch, the normals that turn across a patch are what
+    /// must part for the pair to be set aside, so the patch is halved
+    /// across the way they turn most, a thin strip along a line of
+    /// near-tangency parting from its neighbours without being cut along
+    /// its length; the ways the normals do not turn are halved once those
+    /// that do run within `near`.
+    fn cut(&self, near: f64) -> Option<(usize, (bool, f64))> {
+        if self.flat {
+            return None;
+        }
+        let open = |k: usize| self.across[k].0 > near;
+        // Halved across the way that says most, or quartered where the
+        // other says at least half as much.
+        let pick = |says: &dyn Fn(usize) -> f64| {
+            let k = (0..2)
+                .filter(|&k| open(k) && says(k) > 0.0)
+                .max_by(|&x, &y| says(x).total_cmp(&says(y)))?;
+            let other = 1 - k;
+            let way = if open(other) && says(other) * 2.0 >= says(k) {
+                2
+            } else {
+                k
+            };
+            Some((way, says(k)))
+        };
+        if let Some((way, turn)) = pick(&|k| self.across[k].1) {
+            return Some((way, (true, turn)));
+        }
+        pick(&|k| self.across[k].0).map(|(way, run)| (way, (false, run)))
+    }
+
+    /// The two halves of the patch across `u` (`way` 0) or `v` (1), or its
+    /// four quarters (2).
+    fn halves(&self, way: usize, surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Self> {
+        let (um, vm) = self.middle();
+        let (u0, u1) = ((self.u.0, um), (um, self.u.1));
+        let (v0, v1) = ((self.v.0, vm), (vm, self.v.1));
+        let parts = match way {
+            0 => vec![(u0, self.v), (u1, self.v)],
+            1 => vec![(self.u, v0), (self.u, v1)],
+            _ => vec![(u0, v0), (u1, v0), (u0, v1), (u1, v1)],
+        };
+        parts
+            .into_iter()
+            .filter_map(|(u, v)| Self::over(surface, u, v, tol))
+            .collect()
     }
 
     /// The middle of the patch in its chart.
@@ -2492,16 +2549,16 @@ fn normals_part(pa: &Patch, pb: &Patch) -> bool {
         .any(|(m, d)| m.abs() > BOW * d)
 }
 
-/// A surface's patches, and for each the indices of its quarters once cut.
+/// A surface's patches, and for each the indices of its halves once cut.
 type PatchTree = (Vec<Patch>, Vec<Option<Vec<usize>>>);
 
 /// The crossings where the two surfaces touch, found whatever the march's
 /// stride: both charts are cut into patches, and each pair is set aside
 /// where their boxes do not meet, or where no normal of one can be
 /// parallel to a normal of the other, their normal cones apart; every
-/// other pair is quartered, the larger patch first, until both stand
-/// within the chord, and the touch is solved from the middles of what is
-/// left. Only touches the section crosses itself at, with two arms, are
+/// other pair is halved, across the way the normals turn most (see
+/// [`Patch::cut`]), until both stand within the chord, and the touch is
+/// solved from the middles of what is left. Only touches the section crosses itself at, with two arms, are
 /// kept. `None` where the charts are not bounded or the pairs to weigh
 /// would outnumber the points a branch may hold, so the search is not
 /// complete.
@@ -2510,6 +2567,24 @@ fn subdivided_touches(
     b: &SurfaceGeometry,
     options: Marching,
     tol: Tolerances,
+) -> Option<Vec<Touch>> {
+    search_touches(a, b, options, tol, true).or_else(|| search_touches(a, b, options, tol, false))
+}
+
+/// The search of [`subdivided_touches`], each patch halved across the way
+/// its normals turn most where `across` holds (see [`Patch::cut`]), and
+/// otherwise quartered, the larger first, until it stands within the
+/// chord. Halving parts a strip along a line of near-tangency from its
+/// neighbours without cutting it along its length; where the normals turn
+/// alike every way, as about many crossings close together, quartering
+/// weighs fewer pairs, and the search is run so where halving does not
+/// complete.
+fn search_touches(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    options: Marching,
+    tol: Tolerances,
+    across: bool,
 ) -> Option<Vec<Touch>> {
     let near = options.chord.max(tol.confusion());
     let reach = near * 60.0;
@@ -2521,17 +2596,27 @@ fn subdivided_touches(
             .then(|| Patch::over(surface, u, v, tol))
             .flatten()
     };
-    // Each surface's patches as a tree, each quartered once however many
+    let cut_of = |p: &Patch| {
+        if across {
+            p.cut(near)
+        } else {
+            (!p.flat && p.size > near).then_some((2, (false, p.size)))
+        }
+    };
+    // Each surface's patches as a tree, each halved once however many
     // patches of the other it is weighed against.
     let mut trees: [PatchTree; 2] = [(vec![whole(a)?], vec![None]), (vec![whole(b)?], vec![None])];
-    let quarter = |tree: &mut PatchTree, surface: &SurfaceGeometry, k: usize| -> Vec<usize> {
+    let halve = |tree: &mut PatchTree, surface: &SurfaceGeometry, k: usize| -> Vec<usize> {
         if let Some(children) = &tree.1[k] {
             return children.clone();
         }
         let start = tree.0.len();
-        let quarters = tree.0[k].quarters(surface, tol);
-        let count = quarters.len();
-        tree.0.extend(quarters);
+        let Some((way, _)) = cut_of(&tree.0[k]) else {
+            return Vec::new();
+        };
+        let halves = tree.0[k].halves(way, surface, tol);
+        let count = halves.len();
+        tree.0.extend(halves);
         tree.1.extend(core::iter::repeat_with(|| None).take(count));
         let children: Vec<usize> = (start..start + count).collect();
         tree.1[k] = Some(children.clone());
@@ -2559,8 +2644,8 @@ fn subdivided_touches(
         if facing > pa.spread + pb.spread || normals_part(&pa, &pb) {
             continue;
         }
-        let small = |p: &Patch| p.flat || p.size <= near;
-        if small(&pa) && small(&pb) {
+        let (cut_a, cut_b) = (cut_of(&pa), cut_of(&pb));
+        if cut_a.is_none() && cut_b.is_none() {
             // A touch already found within the pair is the one there:
             // touches stand further apart than the chord.
             let held = touches.iter().any(|t| {
@@ -2604,15 +2689,15 @@ fn subdivided_touches(
             }
             continue;
         }
-        // The patch that still says more is quartered: the larger, or the
-        // one that is not flat.
-        let weight = |p: &Patch| if p.flat { 0.0 } else { p.size };
-        if weight(&pa) >= weight(&pb) {
-            for q in quarter(&mut trees[0], a, ia) {
+        // The patch whose cut says more is halved: one across which the
+        // normals turn most, or else the longest.
+        let says = |c: Option<(usize, (bool, f64))>| c.map(|(_, w)| w);
+        if says(cut_a) >= says(cut_b) {
+            for q in halve(&mut trees[0], a, ia) {
                 pairs.push((q, ib));
             }
         } else {
-            for q in quarter(&mut trees[1], b, ib) {
+            for q in halve(&mut trees[1], b, ib) {
                 pairs.push((ia, q));
             }
         }
@@ -2708,10 +2793,13 @@ fn split_at_touches(
                 .enumerate()
                 .any(|(j, u)| j != i && t.point.distance(u.point) <= stride)
     });
-    // There every crossing of the pair is found by cutting both charts into
-    // patches, whatever the march's stride; where that search does not
-    // complete, the branches are cut as they were traced.
-    let complete = crowded
+    // Every crossing of the pair is then found by cutting both charts into
+    // patches, whatever the march's stride: a crossing found alone may
+    // have another within a stride of it just the same. Where crossings
+    // crowd and that search does not complete, the branches are cut as
+    // they were traced.
+    let crossing = touches.iter().any(|t| t.arms.is_some());
+    let complete = crossing
         && subdivided_touches(a, b, options, tol).is_some_and(|crossings| {
             for touch in crossings {
                 if !touches.iter().any(|t| same_touch(t, &touch, near)) {

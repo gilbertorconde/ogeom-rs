@@ -304,10 +304,22 @@ fn grid_of_lines(s: f64, k: f64, chord: f64, within: f64, placed: bool) {
 /// `z = x·y·(y − d)` over a box, a patch linear in `x` and quadratic in
 /// `y`, cut by `z = 0`: the lines `x = 0`, `y = 0` and `y = d`, crossing
 /// at two touches closer together than the march strides along `x = 0`.
+/// With `d` a few thousandths, the patch stays within `d²` of the plane
+/// across the strip between `y = 0` and `y = d`, and a march found one
+/// crossing of the two and lost the other line whole.
 #[test]
 fn a_saddle_crossing_a_plane_along_three_lines() {
-    let (d, chord) = (0.05, 1e-4);
-    let ((x0, x1), (y0, y1)) = ((-1.0, 1.0), (-1.1, 0.9));
+    for (d, (x0, x1), (y0, y1), chord) in [
+        (0.05, (-1.0, 1.0), (-1.1, 0.9), 1e-4),
+        (0.002, (-1.0, 1.3), (-0.6, 1.2), 1e-4),
+        (0.001, (-1.0, 1.0), (-1.1, 1.2), 1e-5),
+        (0.003, (-0.7, 1.0), (-1.1, 0.9), 1e-5),
+    ] {
+        saddle_along_three_lines(d, (x0, x1), (y0, y1), chord);
+    }
+}
+
+fn saddle_along_three_lines(d: f64, (x0, x1): (f64, f64), (y0, y1): (f64, f64), chord: f64) {
     let blossom = |s: f64, t: f64| s * t - d * (s + t) / 2.0;
     let mut net = Vec::new();
     for x in [x0, x1] {
@@ -342,7 +354,13 @@ fn a_saddle_crossing_a_plane_along_three_lines() {
         ],
         ends: vec![Point::ORIGIN, Point::new(0.0, d, 0.0)],
     };
-    check("saddle", (&patch, &plane), chord, &truth, (10.0 * chord, 0));
+    check(
+        &format!("saddle d={d} chord={chord:e}"),
+        (&patch, &plane),
+        chord,
+        &truth,
+        (10.0 * chord, 0),
+    );
 }
 
 /// `z = x·y·((x − a)² + (y − a)² − ρ²)` cut by `z = 0`: the axes, crossing
