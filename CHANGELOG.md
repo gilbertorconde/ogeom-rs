@@ -29,6 +29,32 @@ bump may break the API and a patch bump may not.
   - Every removal that worked before takes the same path. Same-surface
     merging is tried only after both existing closures refuse.
 
+- **A solid whose boundary passes through itself resolves to the union of
+  its material: `ogeom_bool::self_union`.** (#401)
+  - Before, such a solid had no mend: `check` reported its faces passing
+    through each other, and orientation findings the crossing causes.
+    `fix_shape` left it as it came.
+  - Now the solid is fused with itself. Each face is split by every face
+    it shares no edge or corner with. A piece is kept where the winding
+    number just beyond it is zero and just behind it one or more. It is
+    read a step off each side, along a segment that meets no other face.
+    Faces lying over one patch facing the same way keep it once, and a
+    wall lying twice facing either way goes.
+  - Opt-in. A solid `self_crossings` finds nothing in comes back as it
+    is. Refused by name: a face crossing a face it shares an edge or
+    corner with, or crossing itself, and a piece whose sides no step reads.
+  - Two boxes joined as one solid come out as their union, crossing and
+    sharing a floor and roof, to 1e-9 of 10.5 and 10. So does a strip
+    wound back through itself in one shell, to 1e-9 of 9.8, with or
+    without its sewn joint wall left inside twice.
+  - Voron 2.4 solid #907 checks valid after, with no problems found; it
+    had 15. Its volume falls by 0.014676 from 168.018836. Sampling its
+    winding number on a 2-micron grid finds the region enclosed twice to
+    be 0.014672.
+  - `SolidBoundary::winding` reads a point's winding number by signed ray
+    crossings. `self_crossings` returns what `check` reports as the
+    boundary crossing itself.
+
 - **The IGES writer keeps surfaces of revolution, extrusions and offsets
   in their own forms.**
   - These used to be written as B-spline patches (128), exact in geometry

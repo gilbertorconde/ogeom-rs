@@ -1075,6 +1075,42 @@ impl SolidBoundary {
         except: &Shape,
         tol: Tolerances,
     ) -> OgeomResult<bool> {
+        self.clear_of(model, (from, to), std::slice::from_ref(except), false, tol)
+    }
+
+    /// Whether the segment from `from` to `to` meets no face of the boundary
+    /// past the faces `from` lies on, `on`: it crosses none inside its trim
+    /// but those at its start, comes within the rings' band of none's
+    /// boundary, and lies in none's surface.
+    ///
+    /// A step off faces lying together reads their two sides only along
+    /// such a segment. A face of `on` met again further along (the far
+    /// wall of a drum stepped across) is met.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_in_solid_exact`].
+    pub fn clear_from(
+        &self,
+        model: &Model,
+        from: Point,
+        to: Point,
+        on: &[Shape],
+        tol: Tolerances,
+    ) -> OgeomResult<bool> {
+        self.clear_of(model, (from, to), on, true, tol)
+    }
+
+    /// [`SolidBoundary::clear_between`] past `except`: wholly, or only at
+    /// the segment's start where `at_start`.
+    fn clear_of(
+        &self,
+        model: &Model,
+        (from, to): (Point, Point),
+        except: &[Shape],
+        at_start: bool,
+        tol: Tolerances,
+    ) -> OgeomResult<bool> {
         let Prepared {
             faces, ring_chord, ..
         } = &*self.prepared;
@@ -1086,11 +1122,15 @@ impl SolidBoundary {
         };
         let reach = tol.confusion();
         for (prepared, rays) in faces.iter().zip(&self.rays) {
-            if prepared.face.is_same(except) || !segment_meets(&prepared.bound, from, to) {
+            let excepted = except.iter().any(|face| prepared.face.is_same(face));
+            if (excepted && !at_start) || !segment_meets(&prepared.bound, from, to) {
                 continue;
             }
             let (surface, inverse) = prepared.placed(model)?;
             let (start, end) = (inverse.apply(from), inverse.apply(to));
+            // The segment's parameter runs with distance in the face's
+            // frame, which a scaling placement stretches.
+            let scale = (end - start).magnitude() / (to - from).magnitude();
             let found = match rays.get_or_init(|| {
                 self.kept
                     .surface(prepared.surface, surface, self.prepared.tol)
@@ -1111,6 +1151,9 @@ impl SolidBoundary {
                 return Ok(false);
             }
             for hit in &found.crossings {
+                if excepted && hit.on_curve <= (reach + ring_chord) * scale {
+                    continue;
+                }
                 let (u, v) = hit.on_surface;
                 let rings = prepared.rings(model, ring_deflection, tol)?;
                 let at = rings.place(surface, Point2::new(u, v), tol);
@@ -1135,6 +1178,78 @@ impl SolidBoundary {
         point: Point,
         tol: Tolerances,
     ) -> OgeomResult<Option<Containment>> {
+        Ok(self.crossed(model, point, tol)?.map(|(crossings, _)| {
+            if crossings % 2 == 1 {
+                Containment::In
+            } else {
+                Containment::Out
+            }
+        }))
+    }
+
+    /// The winding number of the boundary about `point`: how many times
+    /// more a ray from it leaves through a face, along the face's outward
+    /// normal, than it enters through one. One inside a solid and zero
+    /// outside; past one where a boundary passing through itself encloses
+    /// a region twice. `None` where `point` lies on a face, or where every
+    /// ray met a tangency, a face's boundary or a degenerate point.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_in_solid_exact`].
+    pub fn winding(
+        &self,
+        model: &Model,
+        point: Point,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<i64>> {
+        if !self.faces_at(model, point, tol)?.is_empty() {
+            return Ok(None);
+        }
+        Ok(self.crossed(model, point, tol)?.map(|(_, winding)| winding))
+    }
+
+    /// The faces `point` lies on, within each one's own reach.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_in_solid_exact`].
+    pub fn faces_at(
+        &self,
+        model: &Model,
+        point: Point,
+        tol: Tolerances,
+    ) -> OgeomResult<Vec<Shape>> {
+        let Prepared {
+            faces, ring_chord, ..
+        } = &*self.prepared;
+        let ring_deflection = Deflection {
+            chord: *ring_chord,
+            angular: 0.05,
+            ..Deflection::default()
+        };
+        let mut on = Vec::new();
+        for prepared in faces {
+            if prepared.bound.contains(point)
+                && prepared.holds(model, point, ring_deflection, tol)? != Containment::Out
+            {
+                on.push(prepared.face.clone());
+            }
+        }
+        Ok(on)
+    }
+
+    /// The first ray from `point` that crosses every face it meets
+    /// transversally and clear of its trim: how many faces it crosses, and
+    /// how many more of those it leaves through along their outward normal
+    /// than it enters through. `None` where every ray met a tangency, a
+    /// face's boundary or a degenerate point.
+    fn crossed(
+        &self,
+        model: &Model,
+        point: Point,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<(usize, i64)>> {
         let Prepared {
             faces,
             centre,
@@ -1154,6 +1269,7 @@ impl SolidBoundary {
             let along = Vector::new(direction[0], direction[1], direction[2]);
             let far = point + along * length;
             let mut crossings = 0_usize;
+            let mut winding = 0_i64;
 
             for (prepared, rays) in faces.iter().zip(&self.rays) {
                 if !segment_meets(&prepared.bound, point, far) {
@@ -1249,14 +1365,16 @@ impl SolidBoundary {
                     }
                     if rings.inside(model, face, ring_deflection, at, tol)? {
                         crossings += 1;
+                        // The face's own frame reads the sign alike under a
+                        // reflecting placement, which turns the normal and
+                        // the ray together.
+                        let leaves = (normal.dot(ray_direction) > 0.0)
+                            != (face.orientation() == ogeom_topo::Orientation::Reversed);
+                        winding += if leaves { 1 } else { -1 };
                     }
                 }
             }
-            return Ok(Some(if crossings % 2 == 1 {
-                Containment::In
-            } else {
-                Containment::Out
-            }));
+            return Ok(Some((crossings, winding)));
         }
         Ok(None)
     }

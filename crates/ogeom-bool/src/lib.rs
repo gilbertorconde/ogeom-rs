@@ -46,6 +46,7 @@ mod defeature;
 mod half_space;
 mod seam_join;
 mod section_face;
+mod self_union;
 mod sub_shapes;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
@@ -53,6 +54,7 @@ pub mod work;
 
 pub use defeature::remove_faces;
 pub use section_face::section_face;
+pub use self_union::self_union;
 
 use ogeom_algo::{
     Built, Containment, History, is_shell_closed, make_edge_between, make_face_on, make_vertex,
@@ -584,6 +586,10 @@ enum Operands {
     /// Two sheets: the first one's faces split by the second's and left
     /// unclassified. The second one's faces only cut.
     SheetBySheet,
+    /// A solid and itself: each face split by every face of the solid but
+    /// itself and the faces it shares an edge or a corner with, and left
+    /// unclassified. Only the first argument's pieces are made.
+    Itself,
 }
 
 fn gather(
@@ -4231,6 +4237,7 @@ fn fill(
     ga: &GSolid,
     gb: &GSolid,
     admit_all: bool,
+    neighbours: Option<&[ogeom_core::FastSet<usize>]>,
     tol: Tolerances,
 ) -> OgeomResult<(
     Vec<SectionRec>,
@@ -4266,7 +4273,7 @@ fn fill(
         tangents: Vec<TangentRec>,
         same_pairs: Vec<(usize, usize)>,
     }
-    let pairs: Vec<(usize, usize)> = if admit_all {
+    let mut pairs: Vec<(usize, usize)> = if admit_all {
         (0..ga.faces.len())
             .flat_map(|ia| (0..gb.faces.len()).map(move |ib| (ia, ib)))
             .collect()
@@ -4284,6 +4291,11 @@ fn fill(
         }
         pairs
     };
+    // A solid against itself: a face meets its neighbours along the edges
+    // and corners they share, which are no crossing, and itself everywhere.
+    if let Some(neighbours) = neighbours {
+        pairs.retain(|(ia, ib)| !neighbours[*ia].contains(ib));
+    }
     #[cfg(feature = "test-hooks")]
     work::add(|w| w.face_pairs += pairs.len());
     // Each surface is marched over its faces' parameter boxes, not over
@@ -9043,6 +9055,34 @@ fn general_fuse_classified(
     Ok(fused)
 }
 
+/// For each gathered face, the faces of the same solid it shares a vertex
+/// with, itself among them, by their places in `solid.faces`.
+fn neighbouring_faces(
+    model: &Model,
+    solid: &GSolid,
+) -> OgeomResult<Vec<ogeom_core::FastSet<usize>>> {
+    // A vertex is its node where it is placed, as an edge is (see
+    // [`EdgeKey`]): one node placed twice is two corners in space.
+    let mut by_vertex: ogeom_core::FastMap<EdgeKey, Vec<usize>> = ogeom_core::FastMap::default();
+    for (index, face) in solid.faces.iter().enumerate() {
+        for vertex in explore_unique(model, &face.face, ShapeType::Vertex)? {
+            by_vertex
+                .entry(EdgeKey::of(&vertex))
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut neighbours: Vec<ogeom_core::FastSet<usize>> = (0..solid.faces.len())
+        .map(|index| std::iter::once(index).collect())
+        .collect();
+    for faces in by_vertex.values() {
+        for &i in faces {
+            neighbours[i].extend(faces.iter().copied());
+        }
+    }
+    Ok(neighbours)
+}
+
 /// The general fuse of `a` and `b` taken as `operands` says. Where `a` is a
 /// sheet only its pieces are made, and the pieces of `b` are not. The
 /// faces `aside` names are left out.
@@ -9062,7 +9102,7 @@ fn general_fuse_as(
     let ga = gather(
         model,
         a,
-        operands != Operands::Solids,
+        matches!(operands, Operands::SheetBySolid | Operands::SheetBySheet),
         aside.map(|aside| &aside[0]),
         tol,
     )?;
@@ -9075,9 +9115,14 @@ fn general_fuse_as(
     )?;
     #[cfg(feature = "test-hooks")]
     work::add(|w| w.faces_gathered += ga.faces.len() + gb.faces.len());
+    let neighbours = if operands == Operands::Itself {
+        Some(neighbouring_faces(model, &ga)?)
+    } else {
+        None
+    };
     ogeom_core::progress::stage("boolean: intersect");
     let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b, hugs) =
-        fill(&ga, &gb, false, tol)?;
+        fill(&ga, &gb, false, neighbours.as_deref(), tol)?;
     if operands == Operands::SheetBySheet && same_a.iter().any(|partners| !partners.is_empty()) {
         ogeom_bail!(
             NotDone,
@@ -9211,7 +9256,7 @@ fn general_fuse_as(
         // A pair only the unfiltered fill tries may refuse (a march beside a
         // pole the filter never sends it), which says nothing of the
         // filter. The audit says so and compares nothing.
-        match fill(&ga, &gb, true, tol) {
+        match fill(&ga, &gb, true, neighbours.as_deref(), tol) {
             Ok((audit_sections, audit_pieces, ..)) => audit_fill_equivalence(
                 (&sections, &section_pieces),
                 (&audit_sections, &audit_pieces),
@@ -10105,7 +10150,7 @@ fn general_fuse_as(
     // question.
     // A sheet bounds nothing, so nothing is classified against one.
     let boundaries = [
-        if operands == Operands::SheetBySheet {
+        if matches!(operands, Operands::SheetBySheet | Operands::Itself) {
             None
         } else {
             Some(ogeom_algo::SolidBoundary::of_kept(

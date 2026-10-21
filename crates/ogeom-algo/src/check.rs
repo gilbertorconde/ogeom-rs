@@ -342,7 +342,7 @@ impl Readings {
 /// Report every place where a solid's boundary passes through itself: a
 /// face folded through itself, or two faces crossing away from the edges
 /// they share.
-fn note_crossings(crossings: Vec<crate::self_cross::Crossing>, found: &mut Diagnosis) {
+fn note_crossings(crossings: Vec<crate::self_cross::SelfCrossing>, found: &mut Diagnosis) {
     for crossing in crossings {
         let at = crossing.at;
         let whom = if crossing.face.is_same(&crossing.other) {

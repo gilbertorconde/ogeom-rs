@@ -88,6 +88,7 @@ pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
 pub use recognize::{Canonical, Recognized, recognize_points};
 pub use seam_columns::join_seam_columns;
+pub use self_cross::{SelfCrossing, self_crossings};
 pub use sew::{
     Agreement, Sewn, agreeing_orientation, make_wire_unordered, order_edges, sew, sew_around,
     sew_within,

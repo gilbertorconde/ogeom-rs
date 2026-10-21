@@ -56,14 +56,31 @@ struct Facet {
 /// Two crossing triangles, by index, and a point where their meshes cross.
 type Guess = (usize, usize, Point);
 
-/// A point where the boundary passes through itself.
-pub(crate) struct Crossing {
+/// A point where a solid's boundary passes through itself.
+#[derive(Debug, Clone)]
+pub struct SelfCrossing {
     /// The face crossing.
-    pub(crate) face: Shape,
+    pub face: Shape,
     /// The face it crosses: the same one where a face folds through itself.
-    pub(crate) other: Shape,
+    pub other: Shape,
     /// Where, on both surfaces.
-    pub(crate) at: Point,
+    pub at: Point,
+}
+
+/// The pairs of faces of `solid` that pass through each other, a face
+/// folding through itself among them, one point for each: what
+/// [`check`](crate::check()) reports as a boundary crossing itself.
+///
+/// # Errors
+///
+/// [`OgeomError::Cancelled`](ogeom_core::OgeomError::Cancelled) and
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) only.
+pub fn self_crossings(
+    model: &Model,
+    solid: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Vec<SelfCrossing>> {
+    crossings(model, solid, &crate::ProbeCache::new(), tol)
 }
 
 /// The pairs of faces of `solid` (a face with itself among them) that
@@ -81,7 +98,7 @@ pub(crate) fn crossings(
     solid: &Shape,
     kept: &crate::ProbeCache,
     tol: Tolerances,
-) -> OgeomResult<Vec<Crossing>> {
+) -> OgeomResult<Vec<SelfCrossing>> {
     let faces = explore_unique(model, solid, ShapeType::Face)?;
     let meshed = ogeom_core::parallel::map_ordered(&faces, |_, face| {
         ogeom_mesh::triangulate_face_kept(model, face, Deflection::default(), kept.meshes(), tol)
@@ -202,7 +219,7 @@ pub(crate) fn crossings(
         for &(i, j, guess) in asked {
             ogeom_core::progress::checkpoint()?;
             if let Some(at) = settle(model, &sheets, &facets[i], &facets[j], guess, tol)? {
-                return Ok(Some(Crossing {
+                return Ok(Some(SelfCrossing {
                     face: sheets[*a].face.clone(),
                     other: sheets[*b].face.clone(),
                     at,
