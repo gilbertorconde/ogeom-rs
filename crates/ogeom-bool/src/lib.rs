@@ -477,7 +477,7 @@ impl GFace {
                         );
                     }
                 }
-                weld_outline_ends(&mut lines, outline_snap(self, tol));
+                weld_outline_ends(&mut lines, self, tol);
                 bridge_outline_gaps(&mut lines);
                 Some(lines)
             })
@@ -4875,7 +4875,7 @@ fn fill(
                 )?);
             }
         }
-        weld_outline_ends(&mut lines, outline_snap(face, tol));
+        weld_outline_ends(&mut lines, face, tol);
         bridge_outline_gaps(&mut lines);
         Ok(lines)
     };
@@ -8073,13 +8073,48 @@ fn bridge_outline_gaps(lines: &mut Vec<Vec<Point2>>) {
 /// edge it hugged, a few dozen microns off), their polylines stop that far
 /// apart. A ray cast for containment slips through such a gap, and a probe
 /// standing inside the face within a hug's width of the seam reads as
-/// outside. Ends within `snap` of another polyline's end are made one
-/// point, so the outline is closed exactly as the topology says it is.
-fn weld_outline_ends(lines: &mut [Vec<Point2>], snap: f64) {
+/// outside. Ends within the face's snap ([`outline_snap`]) of another
+/// edge's end are made one point, so the outline is closed exactly as the
+/// topology says it is.
+///
+/// The snap is a length in space, and so is every gap it is held against:
+/// two ends meet only where their points on the surface do too. A chart
+/// stretched along one direction (a wall a micron tall charted over a
+/// tenth of a unit) holds a whole edge within a chart distance the snap
+/// would read as a gap. Nor does the weld reach as far as half the face's
+/// shortest edge, measured the same way: the two ends of that edge would
+/// then read as one point, and the outline would close over nothing. Two
+/// ends of one edge are never joined.
+fn weld_outline_ends(lines: &mut [Vec<Point2>], face: &GFace, tol: Tolerances) {
+    let snap = outline_snap(face, tol);
     if snap <= 0.0 {
         return;
     }
-    // Every polyline end, as (line, is its last point, where).
+    // Which edge drew each line: a seam draws two, one per column.
+    let owner: Vec<usize> = face
+        .edges
+        .iter()
+        .enumerate()
+        .flat_map(|(i, e)| std::iter::repeat_n(i, 1 + usize::from(e.other_side.is_some())))
+        .collect();
+    if owner.len() != lines.len() {
+        return;
+    }
+    let lift = |p: Point2| face.surface.point_at(p.x, p.y, tol).ok();
+    // How far apart in space two ends may be welded: the snap, and no
+    // further than half the face's shortest edge there. A line with no
+    // length in space (a pole's or an apex's row) has no ends to tell
+    // apart.
+    let mut within = snap;
+    for line in lines.iter() {
+        let points: Vec<Point> = line.iter().filter_map(|p| lift(*p)).collect();
+        let length: f64 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
+        if points.len() == line.len() && length > tol.confusion() {
+            within = within.min(length / 2.0);
+        }
+    }
+    // Every polyline end, as (line, is its last point, where), and its
+    // point on the surface.
     let ends: Vec<(usize, bool, Point2)> = lines
         .iter()
         .enumerate()
@@ -8089,29 +8124,34 @@ fn weld_outline_ends(lines: &mut [Vec<Point2>], snap: f64) {
             first.into_iter().chain(last)
         })
         .collect();
+    let lifted: Vec<Option<Point>> = ends.iter().map(|&(_, _, p)| lift(p)).collect();
     // Each end moves onto the nearest other end within reach that sorts
     // before it, so a matched pair lands on one point rather than trading
-    // places.
+    // places. Within reach in the chart, as a gap the snap is read across
+    // there, and on the surface.
     let by_x = EndsByX::new(&ends);
     let mut moves: Vec<(usize, bool, Point2)> = Vec::new();
-    for &(i, end_i, p) in &ends {
+    for (k, &(i, end_i, p)) in ends.iter().enumerate() {
+        let Some(at) = lifted[k] else {
+            continue;
+        };
         let nearest = by_x
             .near(p, snap)
             .into_iter()
-            .map(|m| &ends[m])
-            // Ends closer than the parametric snap already meet for every
-            // purpose here, and moving one by rounding noise takes a probe
-            // that stands exactly on a chart's seam off it.
-            .filter(|&&(j, end_j, q)| {
+            .filter_map(|m| {
+                let (j, end_j, q) = ends[m];
                 let d = p.distance(q);
-                (j, end_j) < (i, end_i) && j != i && d > PARAM_SNAP && d <= snap
+                // Ends closer than the parametric snap already meet for
+                // every purpose here, and moving one by rounding noise
+                // takes a probe that stands exactly on a chart's seam off
+                // it.
+                if (j, end_j) >= (i, end_i) || owner[j] == owner[i] || d <= PARAM_SNAP || d > snap {
+                    return None;
+                }
+                (lifted[m]?.distance(at) <= within).then_some((d, q))
             })
-            .min_by(|a, b| {
-                p.distance(a.2)
-                    .partial_cmp(&p.distance(b.2))
-                    .unwrap_or(core::cmp::Ordering::Equal)
-            });
-        if let Some(&(_, _, q)) = nearest {
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, q)) = nearest {
             moves.push((i, end_i, q));
         }
     }

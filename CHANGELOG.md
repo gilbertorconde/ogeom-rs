@@ -89,6 +89,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean through a wall far shorter than its face's outline weld
+  builds.** A face's outline in its chart was welded end to end within a
+  length meant in space but read in the chart, so a wall a micron tall on
+  a chart stretched tenfold, or a step 50 nm deep, read its two long sides
+  as one and every point of it as outside: its section was dropped and the
+  shell did not close (Voron 2.4's screws, 14 cuts). The weld now measures
+  each gap on the surface, never joins the two ends of one edge, and
+  reaches no further than half the face's shortest edge (#380).
+
 - **The volume of a solid holding a sliver narrower than its vertex, or
   pcurves stated whole turns off a chart that closes without repeating, is
   measured right.** The chart integration refused a loop whose two rulings
