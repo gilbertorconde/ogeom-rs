@@ -43,6 +43,11 @@ const SURFACE_EXTENT: f64 = 1e5;
 /// The constructive solid entities: the primitives, the solids of revolution
 /// and extrusion, the ellipsoid, the boolean tree, the solid assembly and
 /// the solid instance.
+/// The surfaces that bound themselves, and so stand as faces with no trim:
+/// parametric spline, ruled, revolved, tabulated, B-spline and offset
+/// surfaces (an offset only of one of the others).
+const UNTRIMMED_KINDS: [i64; 6] = [114, 118, 120, 122, 128, 140];
+
 const CSG_KINDS: [i64; 12] = [150, 152, 154, 156, 158, 160, 162, 164, 168, 180, 184, 430];
 
 /// What an import brought in, and what it left behind.
@@ -166,6 +171,31 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
                 .push(format!("D{de}: trimmed surface failed to build: {e}")),
         }
     }
+    // Untrimmed surfaces: every independent bounded surface no trimmed
+    // surface or solid took is the face its own bounds enclose, sewn with
+    // the rest.
+    let bare_des: Vec<i64> = file
+        .entities
+        .iter()
+        .filter(|(de, e)| {
+            UNTRIMMED_KINDS.contains(&e.kind)
+                && (e.status / 10_000) % 100 == 0
+                && !reader.visited.contains_key(de)
+        })
+        .map(|(de, _)| *de)
+        .collect();
+    for de in bare_des {
+        match reader.untrimmed_face(de) {
+            Ok(face) => {
+                built_from.push((de, face.clone()));
+                faces.push(face);
+            }
+            Err(e) => reader
+                .report
+                .warnings
+                .push(format!("D{de}: untrimmed surface failed to build: {e}")),
+        }
+    }
     let mut sheets = Vec::new();
     if !faces.is_empty() {
         let sewn = sew(&mut reader.model, &faces, tol)?;
@@ -223,7 +253,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
             ogeom_bail!(
                 Construction,
                 "the IGES file contains no manifold solid and no independent \
-                 trimmed surface this reader translates"
+                 trimmed or untrimmed surface this reader translates"
             );
         }
         ogeom_bail!(
@@ -442,6 +472,7 @@ impl<'a> Reader<'a> {
             112 => self.spline_curve(de, entity)?,
             126 => self.nurbs_curve(de, entity)?,
             130 => self.offset_curve(de, entity)?,
+            106 => self.copious_path(de, entity)?,
             102 => ogeom_bail!(
                 Construction,
                 "D{de}: a composite curve is a sequence, not a curve; the \
@@ -461,6 +492,77 @@ impl<'a> Reader<'a> {
         } else {
             Ok((curve.transformed(&placement, self.tol)?, range))
         }
+    }
+
+    /// Copious data drawn as a path (106, forms 11, 12, 13 and 63): its
+    /// points joined by straight segments, as the degree-one B-spline
+    /// through them, exact, one span per segment and the parameter the
+    /// point's index. The interpretation flag says how the points are
+    /// listed: pairs in a plane at a common height, triples, or triples
+    /// each followed by a vector, which the path does not use. Form 63 is
+    /// a closed planar path, its last point the first again. A point
+    /// repeating the one before it adds no segment.
+    fn copious_path(&mut self, de: i64, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
+        if !matches!(entity.form, 11 | 12 | 13 | 63) {
+            ogeom_bail!(
+                Construction,
+                "D{de}: copious data form {} is a set of points, not a curve",
+                entity.form
+            );
+        }
+        let scale = self.report.scale_mm;
+        let flag = entity.at(0).int();
+        let count = entity.count(1);
+        let (first, stride) = match flag {
+            1 => (3, 2),
+            2 => (2, 3),
+            3 => (2, 6),
+            other => ogeom_bail!(
+                Construction,
+                "D{de}: copious data interpretation flag {other} is not 1, 2 or 3"
+            ),
+        };
+        let height = if flag == 1 { entity.at(2).real() } else { 0.0 };
+        let mut points: Vec<Point> = Vec::with_capacity(count + 1);
+        for i in 0..count {
+            let at = first + i * stride;
+            let z = if flag == 1 {
+                height
+            } else {
+                entity.at(at + 2).real()
+            };
+            let p = Point::new(
+                entity.at(at).real() * scale,
+                entity.at(at + 1).real() * scale,
+                z * scale,
+            );
+            if points
+                .last()
+                .is_none_or(|q| q.distance(p) > self.tol.confusion())
+            {
+                points.push(p);
+            }
+        }
+        if entity.form == 63
+            && let (Some(&head), Some(&tail)) = (points.first(), points.last())
+            && head.distance(tail) > self.tol.confusion()
+        {
+            points.push(head);
+        }
+        if points.len() < 2 {
+            ogeom_bail!(Construction, "D{de}: copious data draws no segment");
+        }
+        let n = points.len();
+        let mut knots = Vec::with_capacity(n + 2);
+        knots.push(0.0);
+        #[allow(clippy::cast_precision_loss, reason = "point counts")]
+        knots.extend((0..n).map(|i| i as f64));
+        #[allow(clippy::cast_precision_loss, reason = "point counts")]
+        knots.push((n - 1) as f64);
+        let curve = BSplineCurve::new(KnotVector::new(knots, 1)?, points, self.tol)?;
+        #[allow(clippy::cast_precision_loss, reason = "point counts")]
+        let range = (0.0, (n - 1) as f64);
+        Ok((Curve::from(curve), range))
     }
 
     /// Conic arc: `A x² + B xy + C y² + D x + E y + F = 0` in the definition
@@ -1438,7 +1540,8 @@ impl<'a> Reader<'a> {
         // A tabulated cylinder's parameters are both fractions: of its
         // directrix's run and of the generator. A surface of revolution's
         // are its generatrix's own parameter and the angle turned from the
-        // start angle; a line's own runs over [0, 1], a spline's is its own.
+        // start angle; a line's own runs over [0, 1], a spline's is its own,
+        // an arc's is its angle.
         let swept = match (kind, &surface) {
             (122, SurfaceGeometry::Extrusion(e)) => {
                 let (lo, hi) = ogeom_geom::Curve3d::domain(e.curve());
@@ -1448,9 +1551,20 @@ impl<'a> Reader<'a> {
             (120, SurfaceGeometry::Revolution(r)) => {
                 let generatrix = self.entity(surface_de)?.at(1).int();
                 let (lo, hi) = ogeom_geom::Curve3d::domain(r.curve());
-                match self.entity(generatrix)?.kind {
+                let generatrix = self.entity(generatrix)?;
+                match generatrix.kind {
                     110 => Some(((lo, hi - lo), (0.0, 1.0), true)),
                     126 => Some(((0.0, 1.0), (0.0, 1.0), true)),
+                    // An arc's parameter is the angle in its definition
+                    // plane, from the start angle the format puts in
+                    // [0, 2 pi); this reader's runs from naught at the
+                    // start, in the same sense.
+                    100 => {
+                        let start = (generatrix.at(4).real() - generatrix.at(2).real())
+                            .atan2(generatrix.at(3).real() - generatrix.at(1).real())
+                            .rem_euclid(core::f64::consts::TAU);
+                        Some(((lo - start, 1.0), (0.0, 1.0), true))
+                    }
                     _ => None,
                 }
             }
@@ -1600,7 +1714,23 @@ impl<'a> Reader<'a> {
             }
             return Ok(out);
         }
-        Ok(vec![self.curve(de)?])
+        let path = entity.kind == 106;
+        let (curve, range) = self.curve(de)?;
+        // A copious-data path is its segments, each its own straight piece:
+        // a trim's corners are where its edges meet, not kinks inside one.
+        if path && let Curve::BSpline(polyline) = &curve {
+            let mut out = Vec::new();
+            for pair in polyline.control_points().windows(2) {
+                let piece = BSplineCurve::new(
+                    KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1)?,
+                    vec![pair[0].point(), pair[1].point()],
+                    self.tol,
+                )?;
+                out.push((Curve::from(piece), (0.0, 1.0)));
+            }
+            return Ok(out);
+        }
+        Ok(vec![(curve, range)])
     }
 
     /// A trimmed (144) or bounded (143) surface as a face.
@@ -1642,6 +1772,33 @@ impl<'a> Reader<'a> {
             wires.push(edges);
         }
         self.assemble_face(surface, wires)
+    }
+
+    /// An untrimmed surface as a face: the whole of the surface its own
+    /// bounds enclose. An offset surface stands alone only over a base
+    /// that does.
+    fn untrimmed_face(&mut self, de: i64) -> OgeomResult<Shape> {
+        let mut entity = self.entity(de)?;
+        let mut depth = 0;
+        while entity.kind == 140 {
+            depth += 1;
+            if depth > MOST_NESTING {
+                ogeom_bail!(
+                    Construction,
+                    "D{de}: offset surfaces refer to one another more than {MOST_NESTING} deep"
+                );
+            }
+            entity = self.entity(entity.at(4).int())?;
+            if !UNTRIMMED_KINDS.contains(&entity.kind) {
+                ogeom_bail!(
+                    Construction,
+                    "D{de}: an offset of a type {} surface has no bounds of its own",
+                    entity.kind
+                );
+            }
+        }
+        let surface = self.surface(de)?;
+        Ok(ogeom_algo::make_natural_face(&mut self.model, surface)?.shape)
     }
 
     /// The chart poles of the surfaces of these trimmed (144) and bounded
@@ -4219,6 +4376,44 @@ mod tests {
             assert!(a.distance(at_from) < 1e-6, "{a:?} against {at_from:?}");
             assert!(b.distance(at_to) < 1e-6, "{b:?} against {at_to:?}");
         }
+    }
+
+    /// Copious data drawn as a path is the polyline through its points,
+    /// pairs at a common height or triples, a repeated point adding no
+    /// segment and form 63 closing on its first point; a set of points
+    /// (forms 1 to 3) is no curve, and is refused by name.
+    #[test]
+    fn copious_data_paths_read_as_their_polylines() {
+        let path = |flag: i64, count: i64, values: &[f64]| -> Vec<Value> {
+            let mut out = vec![Value::Int(flag), Value::Int(count)];
+            out.extend(reals(values));
+            out
+        };
+        let pairs = [2.0, 0.0, 0.0, 3.0, 0.0, 3.0, 4.0];
+        let cases = [
+            (11, path(1, 3, &pairs), 7.0, 3),
+            (63, path(1, 3, &pairs), 12.0, 4),
+            (
+                12,
+                path(2, 3, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0]),
+                5.0,
+                2,
+            ),
+        ];
+        for (form, params, length, points) in cases {
+            let deck = file(vec![(1, entity(106, form, params))]);
+            let mut r = reader(&deck);
+            let (curve, range) = r.curve(1).unwrap();
+            let Curve::BSpline(polyline) = &curve else {
+                panic!("form {form}: a polyline");
+            };
+            assert_eq!(polyline.control_points().len(), points, "form {form}");
+            let walked = ogeom_algo::curve_length(&curve, range, T).unwrap();
+            assert!((walked - length).abs() < 1e-12, "form {form}: {walked}");
+        }
+        let deck = file(vec![(1, entity(106, 2, path(2, 1, &[0.0, 0.0, 0.0])))]);
+        let err = reader(&deck).curve(1).unwrap_err();
+        assert!(err.to_string().contains("a set of points"), "{err}");
     }
 
     /// A tabulated cylinder's trim is in fractions of its directrix and

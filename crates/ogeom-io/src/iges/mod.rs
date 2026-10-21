@@ -20,6 +20,7 @@ pub const SUPPORTED_ENTITIES: &[(i64, &str)] = &[
     (100, "CIRCULAR_ARC"),
     (102, "COMPOSITE_CURVE"),
     (104, "CONIC_ARC"),
+    (106, "COPIOUS_DATA"),
     (108, "PLANE"),
     (110, "LINE"),
     (112, "SPLINE_CURVE"),

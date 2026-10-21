@@ -49,6 +49,22 @@ bump may break the API and a patch bump may not.
   loop and cut from it; every section must have the same number of holes.
   Two holed squares, the second half the size, give the pyramid's frustum
   minus the cone's, to 1.2e-6 (#394).
+- **IGES reads untrimmed surfaces, copious-data paths, and trims on a
+  revolved circular arc.**
+  - An independent B-spline, ruled, revolved, tabulated, parametric spline
+    or offset surface with no trim was dropped and counted as skipped. It
+    now reads as the face its own extent bounds, sewn with the rest.
+  - Copious data drawn as a path (106, forms 11, 12, 13 and 63) reads as
+    the exact polyline through its points, as a model-space curve or as a
+    trim.
+  - A trim given only in the parameters of a surface of revolution whose
+    generatrix is a circular arc was refused. It now lifts through the
+    arc's angle, measured from the start angle IGES specifies.
+  - The writer writes a face with no boundary as the trimmed surface its
+    whole surface bounds, where it refused before.
+  - A torus patch trimmed in its parameters, an untrimmed patch and drum,
+    and a copious-data triangle each read to their closed-form areas and
+    survive a round trip through the writer (#404).
 
 - **`make_loft_solid` lofts a solid through sections of different edge
   counts, and along guide curves.** `make_loft` refused a square to a

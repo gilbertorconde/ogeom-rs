@@ -324,6 +324,19 @@ impl Writer<'_> {
                 }));
             }
         }
+        // A face with no wire at all is its whole surface: the trimmed
+        // surface whose outer boundary is the surface's own.
+        if self.model.children_of(face)?.is_empty() {
+            self.push(Pending {
+                kind: 144,
+                form: 0,
+                transform: None,
+                independent: true,
+                label: label.chars().take(8).collect(),
+                params: format!("{},0,0,0", self.de(surface_entity)),
+            });
+            return Ok(());
+        }
         let Some((outer, inner)) = boundaries.split_first() else {
             ogeom_bail!(
                 Construction,

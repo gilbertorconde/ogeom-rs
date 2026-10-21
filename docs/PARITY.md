@@ -161,8 +161,9 @@ and a gap the recovered edges do not bridge.
 - **io.exchange-framework**: The exchange session framework: interface models, transfer processes, selections, work sessions · `divergent` · 215 headers claimed
   - *reasoning:* The reference decouples file model from transfer through a session framework (Interface models, Transfer processes and actors, IFSelect work sessions), largely so many formats and an interactive shell can share one machinery. Readers here parse the file model and build the document directly; what a session would report lives in the returned reports, and there is no interactive shell to serve. The capability the framework delivers to an application (read the file, know what happened) is the readers' contract.
 - **io.iges**: IGES, both directions: solids as manifold B-rep, sheets as trimmed surfaces, surface files sewn, units converted · `partial` · 128 headers claimed
-  - *restriction:* The core entity set reads and writes (30 entity types, the
-figure `tools/parity.py exchange` regenerates from the module's own table),
+  - *restriction:* The core entity set reads and writes (54 of the format's 191
+entity types, the figure `tools/parity.py exchange` regenerates from the
+module's own table),
 and eight round-trip cases hold it to measured volumes: planes, a periodic
 cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
 boolean result, a spline-walled prism through 126/128, and inch-unit
@@ -189,11 +190,20 @@ booleans, solid assemblies (184) and solid instances (430). A trim given only
 in the parameters of a plane, cylinder, cone, sphere or torus is lifted
 through the format's parameterization, each surface framed by the reference
 direction it names; on a tabulated cylinder (fractions of its directrix and
-generator) and a surface of revolution whose generatrix is a line or a
-spline (the generatrix's own parameter and the angle turned). Refused by
-name: a trim on a surface of revolution of another generatrix, whose own
-IGES parameter this reader does not carry; a drawing's own annotation stays
-on the sheet and is counted as skipped.
+generator) and a surface of revolution whose generatrix is a line, a
+spline or a circular arc (the generatrix's own parameter, an arc's its
+angle from the format's start angle, and the angle turned). Independent
+untrimmed surfaces (parametric spline, ruled, revolved, tabulated,
+B-spline, and offsets of those) read as faces bounded by their own extent
+and sew with the rest; the writer writes a face with no boundary as the
+trimmed surface whose outer boundary is its surface's. Copious data drawn
+as a path (106, forms 11 to 13 and 63) reads as the exact polyline through
+its points, a trim taking each segment as an edge; a point set (forms 1
+to 3) is no curve and is refused by name. Refused by name: a trim on a
+surface of revolution of a conic, composite, parametric-spline or offset
+generatrix, whose own IGES parameter this reader does not carry; a
+drawing's own annotation stays on the sheet and is counted as skipped.
+Independent wireframe curves are not read.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered` · 69 headers claimed
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered` · 24 headers claimed
 - **io.step**: STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI · `covered` · 211 headers claimed
