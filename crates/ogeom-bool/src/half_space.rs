@@ -23,7 +23,7 @@
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Surface as _, SurfaceGeometry, Transformable as _};
 use ogeom_math::{Direction, Frame, Point, Vector};
-use ogeom_topo::{Model, Shape, ShapeType};
+use ogeom_topo::{Model, Orientation, Shape, ShapeType};
 
 /// The face bounding a half space, where `shape` is one: a solid of one
 /// shell of one face, whose shell is open (the face does not close on
@@ -58,10 +58,75 @@ pub(crate) fn half_space_face(
         return Ok(Some(faces[0].clone()));
     }
     // Closed on itself: a half space only if it encloses the outside, which
-    // its drawn volume says by its sign.
+    // a whole sphere or torus says by its orientation, and any other face by
+    // the sign of its drawn volume.
+    if let Some(inside_out) = whole_inside_out(model, &faces[0], tol)? {
+        return Ok(inside_out.then(|| faces[0].clone()));
+    }
     let coarse = ogeom_mesh::Deflection::default();
     let mesh = ogeom_mesh::triangulate(model, shape, coarse, tol)?;
     Ok((mesh.volume() < 0.0).then(|| faces[0].clone()))
+}
+
+/// Whether a face covering the whole of a sphere or a torus faces into
+/// it: whether its drawn volume is negative, read from the surface. `None`
+/// for any other face.
+///
+/// A sphere's parametric normal leads away from its centre at every point
+/// where its frame is right-handed, and towards it at every point where
+/// the frame is left-handed; a torus's leads the same way from its core
+/// circle everywhere. So one point decides which way the surface faces.
+/// The face's mesh winds with that normal, against it where the face is
+/// reversed; a reflecting placement turns the normal and the points
+/// together, and the mesh's winding with them, so the volume's sign does
+/// not depend on the placement. The face covers its surface once, so its
+/// volume is the enclosed one or its negative.
+fn whole_inside_out(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<bool>> {
+    let reversed = match face.orientation() {
+        Orientation::Forward => false,
+        Orientation::Reversed => true,
+        Orientation::Internal | Orientation::External => return Ok(None),
+    };
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+        return Ok(None);
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        return Ok(None);
+    };
+    if !matches!(
+        surface,
+        SurfaceGeometry::Sphere(_) | SurfaceGeometry::Torus(_)
+    ) || !ogeom_algo::covers_whole_surface(model, face)?
+    {
+        return Ok(None);
+    }
+    let (Ok(normal), Ok(at)) = (
+        surface.normal_at(0.0, 0.0, tol),
+        surface.point_at(0.0, 0.0, tol),
+    ) else {
+        return Ok(None);
+    };
+    let away = match surface {
+        SurfaceGeometry::Sphere(s) => at - s.sphere().centre(),
+        SurfaceGeometry::Torus(t) => {
+            let ring = t.torus();
+            let frame = ring.frame();
+            let local = frame.to_local(at);
+            let flat = Vector::new(local.x, local.y, 0.0);
+            let reach = flat.magnitude();
+            if reach == 0.0 {
+                return Ok(None);
+            }
+            let core = flat * (ring.major_radius() / reach);
+            world_vector(&frame, Vector::new(local.x, local.y, local.z) - core)
+        }
+        _ => return Ok(None),
+    };
+    let along = normal.vector().dot(away);
+    if along == 0.0 || !along.is_finite() {
+        return Ok(None);
+    }
+    Ok(Some((along < 0.0) != reversed))
 }
 
 /// The surface a face lies on, in world space, with trims and offsets of
@@ -532,4 +597,152 @@ fn crosses(p: Point, d: Vector, a: Point, b: Point, c: Point) -> bool {
     let q = s.cross(e1);
     let v = d.dot(q) / det;
     v >= 0.0 && u + v <= 1.0
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use ogeom_math::{Axis, Handedness, Transform};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn tilted() -> Frame {
+        let z = Direction::new(Vector::new(0.3, -0.5, 0.8), T).unwrap();
+        let x = Direction::new(Vector::new(0.8, 0.6, 0.0), T).unwrap();
+        Frame::new(Point::new(1.0, -2.0, 3.0), z, x, T).unwrap()
+    }
+
+    fn face_of(model: &Model, solid: &Shape) -> Shape {
+        ogeom_topo::explore_unique(model, solid, ShapeType::Face).unwrap()[0].clone()
+    }
+
+    /// The solid's one face read from its surface, and whether its drawn
+    /// volume is negative.
+    fn signs(model: &Model, solid: &Shape) -> (Option<bool>, bool) {
+        let face = face_of(model, solid);
+        let read = whole_inside_out(model, &face, T).unwrap();
+        let mesh =
+            ogeom_mesh::triangulate(model, solid, ogeom_mesh::Deflection::default(), T).unwrap();
+        (read, mesh.volume() < 0.0)
+    }
+
+    /// `solid` with its face reversed, its shell reversed, and itself
+    /// reversed: each a solid of one shell of one face.
+    fn turned_over(model: &mut Model, solid: &Shape) -> Vec<Shape> {
+        let face = face_of(model, solid);
+        let shell = model.add_shell(&[face.reversed()]).unwrap();
+        let face_reversed = model.add_solid(&[shell]).unwrap();
+        let shell = model.add_shell(&[face]).unwrap();
+        let shell_reversed = model.add_solid(&[shell.reversed()]).unwrap();
+        vec![
+            solid.clone(),
+            face_reversed,
+            shell_reversed,
+            solid.reversed(),
+        ]
+    }
+
+    /// `solid` placed by each of a rotation, a reflection in a plane, a
+    /// reflection in a point, a scaling up and down, and a reflection with
+    /// a scaling.
+    fn placed(model: &mut Model, solid: &Shape) -> Vec<Shape> {
+        let c = Point::new(0.5, 1.5, -2.0);
+        let d = Direction::new(Vector::new(-0.2, 0.9, 0.4), T).unwrap();
+        [
+            Transform::rotation(
+                Axis {
+                    location: c,
+                    direction: d,
+                },
+                1.1,
+            ),
+            Transform::plane_mirror(c, d),
+            Transform::point_mirror(c),
+            Transform::scaling(c, 2.5, T).unwrap(),
+            Transform::scaling(c, 0.4, T).unwrap(),
+            Transform::plane_mirror(c, d) * Transform::scaling(c, 1.7, T).unwrap(),
+        ]
+        .into_iter()
+        .map(|t| ogeom_algo::transformed(model, solid, t).unwrap().shape)
+        .collect()
+    }
+
+    /// A ball whose surface's own frame is left-handed: `make_sphere`'s,
+    /// its `y` reversed. The seam at longitude zero and the poles are the
+    /// same points on either surface, so its edges bound it as they are.
+    fn left_handed_ball(model: &mut Model) -> Shape {
+        let ball = ogeom_algo::make_sphere(model, tilted(), 4.0, T)
+            .unwrap()
+            .shape;
+        let face = face_of(model, &ball);
+        let id = model.node(&face).unwrap().data().as_face().unwrap().surface;
+        let mirrored = ogeom_math::Sphere::new(tilted().mirrored(), 4.0, T).unwrap();
+        assert_eq!(mirrored.frame().handedness(), Handedness::Left);
+        *model.geometry_mut().surface_mut(id).unwrap() =
+            ogeom_geom::SphereSurface::new(mirrored).into();
+        ball
+    }
+
+    #[test]
+    fn a_whole_ball_or_ring_reads_inside_out_as_its_drawn_volume_does() {
+        let mut model = Model::new();
+        let ball = ogeom_algo::make_sphere(&mut model, tilted(), 4.0, T)
+            .unwrap()
+            .shape;
+        let ring = ogeom_algo::make_torus(&mut model, tilted(), 5.0, 1.5, T)
+            .unwrap()
+            .shape;
+        let left = left_handed_ball(&mut model);
+        // Its normal leads in, so as built it draws inside out.
+        assert_eq!(signs(&model, &left), (Some(true), true));
+        let mut seen = [false; 2];
+        for solid in [ball, ring, left] {
+            for moved in std::iter::once(solid.clone()).chain(placed(&mut model, &solid)) {
+                for turned in turned_over(&mut model, &moved) {
+                    let (read, drawn) = signs(&model, &turned);
+                    assert_eq!(read, Some(drawn), "{turned:?}");
+                    seen[usize::from(drawn)] = true;
+                    assert_eq!(
+                        half_space_face(&model, &turned, T).unwrap().is_some(),
+                        drawn
+                    );
+                }
+            }
+        }
+        assert_eq!(seen, [true, true]);
+    }
+
+    #[test]
+    fn a_face_short_of_its_whole_surface_is_left_to_its_drawn_volume() {
+        let mut model = Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut model, tilted(), 2.0, 5.0, T)
+            .unwrap()
+            .shape;
+        for face in ogeom_topo::explore_unique(&model, &drum, ShapeType::Face).unwrap() {
+            assert_eq!(whole_inside_out(&model, &face, T).unwrap(), None);
+        }
+        let ball = ogeom_algo::make_sphere(&mut model, tilted(), 4.0, T)
+            .unwrap()
+            .shape;
+        let block = ogeom_algo::make_box(&mut model, tilted(), (9.0, 9.0, 9.0), T)
+            .unwrap()
+            .shape;
+        let cut = crate::cut(&mut model, &ball, &block, T).unwrap().shape;
+        let curved: Vec<Shape> = ogeom_topo::explore_unique(&model, &cut, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .filter(|f| {
+                let data = model.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    model.geometry().surface(data.surface),
+                    Some(SurfaceGeometry::Sphere(_))
+                )
+            })
+            .collect();
+        assert!(!curved.is_empty());
+        for face in curved {
+            assert_eq!(whole_inside_out(&model, &face, T).unwrap(), None);
+        }
+    }
 }

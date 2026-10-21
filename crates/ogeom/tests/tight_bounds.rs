@@ -6,8 +6,8 @@ mod cpu_time;
 use cpu_time::cpu_time;
 
 use ogeom::algo::{
-    face_bounds, make_box, make_cylinder, make_face, make_polygon, make_revolution, make_sphere,
-    tight_bounds,
+    covers_whole_surface, face_bounds, make_box, make_cylinder, make_face, make_polygon,
+    make_revolution, make_sphere, make_torus, tight_bounds,
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::PlaneSurface;
@@ -61,6 +61,96 @@ fn a_ball_and_a_box_are_as_big_as_they_are() {
     let b = tight_bounds(&model, &block, T).unwrap();
     near(b.low().unwrap(), Point::ORIGIN);
     near(b.high().unwrap(), Point::new(3.0, 4.0, 5.0));
+}
+
+/// A tilted frame about `origin`.
+fn tilted(origin: Point) -> Frame {
+    let z = Direction::new(Vector::new(0.3, -0.5, 0.8), T).unwrap();
+    let x = Direction::new(Vector::new(0.8, 0.6, 0.0), T).unwrap();
+    Frame::new(origin, z, x, T).unwrap()
+}
+
+#[test]
+fn a_whole_ball_or_ring_is_as_big_as_its_closed_form_however_placed() {
+    let c = Point::new(0.5, 1.5, -2.0);
+    let d = Direction::new(Vector::new(-0.2, 0.9, 0.4), T).unwrap();
+    let moves = [
+        Transform::translation(Vector::ZERO),
+        Transform::rotation(
+            Axis {
+                location: c,
+                direction: d,
+            },
+            1.1,
+        ),
+        Transform::plane_mirror(c, d),
+        Transform::point_mirror(c),
+        Transform::scaling(c, 2.5, T).unwrap(),
+        Transform::plane_mirror(c, d) * Transform::scaling(c, 0.4, T).unwrap(),
+    ];
+    let frame = tilted(Point::new(1.0, -2.0, 3.0));
+    let (radius, major, minor) = (4.0, 5.0, 1.5);
+    for t in moves {
+        let mut model = Model::new();
+        let ball = make_sphere(&mut model, frame, radius, T).unwrap().shape;
+        let ring = make_torus(&mut model, frame, major, minor, T)
+            .unwrap()
+            .shape;
+        let centre = t.apply(frame.origin());
+        let axis = t.apply_vector(frame.z().vector()).normalized(T).unwrap();
+        let scale = t.scale_factor().abs();
+        for (solid, reach) in [
+            (ball, [radius * scale; 3]),
+            (
+                ring,
+                [Vector::X, Vector::Y, Vector::Z].map(|e| {
+                    let along = axis.dot(e);
+                    major * scale * (1.0 - along * along).max(0.0).sqrt() + minor * scale
+                }),
+            ),
+        ] {
+            let placed = model.placed(&solid, t);
+            let face = explore_unique(&model, &placed, ShapeType::Face).unwrap()[0].clone();
+            assert!(covers_whole_surface(&model, &face).unwrap());
+            let b = tight_bounds(&model, &placed, T).unwrap();
+            let reach = Vector::new(reach[0], reach[1], reach[2]);
+            near(b.low().unwrap(), centre - reach);
+            near(b.high().unwrap(), centre + reach);
+        }
+    }
+}
+
+#[test]
+fn a_ball_with_a_corner_cut_away_reaches_only_where_it_is_left() {
+    let mut model = Model::new();
+    let ball = make_sphere(&mut model, Frame::WORLD, 5.0, T).unwrap().shape;
+    let corner = Frame::new(Point::new(1.0, 1.0, 1.0), Direction::Z, Direction::X, T).unwrap();
+    let block = make_box(&mut model, corner, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &ball, &block, T)
+        .unwrap()
+        .shape;
+    for face in explore_unique(&model, &cut, ShapeType::Face).unwrap() {
+        assert!(!covers_whole_surface(&model, &face).unwrap());
+    }
+    // Every extreme of the ball stands clear of the corner taken.
+    let b = tight_bounds(&model, &cut, T).unwrap();
+    near(b.low().unwrap(), Point::new(-5.0, -5.0, -5.0));
+    near(b.high().unwrap(), Point::new(5.0, 5.0, 5.0));
+    // The corner of a ball, the eighth past (1, 1, 1), reaches no further
+    // than the ball does along each axis there.
+    let piece = ogeom::boolean::common(&mut model, &ball, &block, T)
+        .unwrap()
+        .shape;
+    for face in explore_unique(&model, &piece, ShapeType::Face).unwrap() {
+        assert!(!covers_whole_surface(&model, &face).unwrap());
+    }
+    let b = tight_bounds(&model, &piece, T).unwrap();
+    let far = (25.0_f64 - 2.0).sqrt();
+    near(b.low().unwrap(), Point::new(1.0, 1.0, 1.0));
+    near(b.high().unwrap(), Point::new(far, far, far));
+    holds_its_faces(&model, &piece);
 }
 
 /// A square plate drilled through with a grid of holes of radius 1.5,

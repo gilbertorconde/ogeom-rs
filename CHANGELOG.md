@@ -459,6 +459,22 @@ bump may break the API and a patch bump may not.
   ideal; a corner the construction does not close rounds with its flush
   junctions alone, as before.
 
+### Performance
+
+- **A whole ball or ring is read without meshing it before a boolean.**
+  Whether a solid of one closed face is inside out, a half space, was
+  read from the sign of its mesh's volume; and a face's box meshed the
+  face to decide which of a sphere's or a torus's closed-form extremes it
+  holds. A face covering the whole of its sphere or torus (every edge a
+  seam walked once each way, or a pole) is now read from its surface: it
+  holds every extreme, and faces in or out as its surface's normal and its
+  orientation say, whatever its placement. New `covers_whole_surface`
+  answers whether a face is one. Every boolean answer is unchanged; a
+  whole ball's or ring's box is now the closed-form one, where the mesh's
+  points could stand a few units in the last place past it. Fusing two
+  balls takes 1.35 ms instead of 6.0 ms, cutting a ball from a box 0.91 ms
+  instead of 3.3 ms, and fusing two rings 49 ms instead of 59 ms.
+
 ## [0.11.5] - 2026-10-19
 
 A patch release of fixes, with two changes in behaviour. A part fused

@@ -1514,6 +1514,56 @@ pub fn is_shell_closed(model: &Model, shell: &Shape) -> OgeomResult<bool> {
     Ok(counted && uses.iter().all(|(id, n)| n % 2 == 0 || degenerate(*id)))
 }
 
+/// Whether a face covers the whole of its surface: it has a wire, and
+/// every edge its wires walk has no length or is a seam of that surface
+/// walked once each way.
+///
+/// Such a face has no boundary on the surface: a seam's two walks run
+/// along one line in opposite senses and cancel, and an edge of no length
+/// bounds nothing. On a connected closed surface (a sphere, a torus) a
+/// face without boundary is the whole surface. Any other edge, or a seam
+/// walked otherwise, and the answer is `false`.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the face,
+/// a wire or an edge is not in this model.
+pub fn covers_whole_surface(model: &Model, face: &Shape) -> OgeomResult<bool> {
+    use ogeom_topo::Orientation;
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+        ogeom_bail!(Dangling, "face is not in this model");
+    };
+    let wires = model.children_of(face)?;
+    if wires.is_empty() {
+        return Ok(false);
+    }
+    // Each seam's walks, forward and reversed.
+    let mut walks: FastMap<ogeom_topo::TShapeId, (u32, u32)> = FastMap::default();
+    for wire in &wires {
+        for edge in model.children_of(wire)? {
+            let Some(edge_data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                ogeom_bail!(Dangling, "edge is not in this model");
+            };
+            if edge_data.degenerate {
+                continue;
+            }
+            if !matches!(
+                edge_data.pcurve_for(data.surface, edge.location()),
+                Some(EdgeRepr::Seam { .. })
+            ) {
+                return Ok(false);
+            }
+            let walked = walks.entry(edge.node()).or_default();
+            match edge.orientation() {
+                Orientation::Forward => walked.0 += 1,
+                Orientation::Reversed => walked.1 += 1,
+                Orientation::Internal | Orientation::External => return Ok(false),
+            }
+        }
+    }
+    Ok(walks.values().all(|&w| w == (1, 1)))
+}
+
 /// Give every edge of `face` that has no trim on the face's surface its
 /// exact one, where a closed form exists: a profile built from bare
 /// curves becomes a face a sweep can keep as an end.

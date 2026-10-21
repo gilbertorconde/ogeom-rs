@@ -293,6 +293,20 @@ fn face_extremes(
         return Ok(());
     }
     let placement = face.transform(model.datums())?;
+    // A sphere's and a torus's extreme along each side is closed form,
+    // and where it falls inside the face it is the face's extreme; the
+    // descent below can stall short of it in a general frame.
+    use ogeom_geom::Transformable as _;
+    let placed = surface.transformed(&placement, tol);
+    let extremes = placed
+        .as_ref()
+        .map_or([None; 6], |placed| closed_form_extremes(placed, tol));
+    // A face covering its whole surface holds every one of them, and no
+    // point of it leads past them: the mesh has nothing to add.
+    if extremes.iter().all(Option::is_some) && crate::covers_whole_surface(model, face)? {
+        points.extend(extremes.iter().flatten().map(|e| e.0));
+        return Ok(());
+    }
     let mesh = ogeom_mesh::triangulate_face(model, face, Deflection::default(), tol)?;
     if mesh.positions.is_empty() {
         return Ok(());
@@ -350,12 +364,9 @@ fn face_extremes(
             .iter()
             .any(|(a, b)| distance_to_segment(p, *a, *b) <= against)
     };
-    // A sphere's and a torus's extreme along each side is closed form,
-    // and where it falls inside the face it is the face's extreme; the
-    // descent below can stall short of it in a general frame. Angles
-    // are tried a whole turn either way, as the chart may run them.
-    use ogeom_geom::Transformable as _;
-    let placed = surface.transformed(&placement, tol)?;
+    // A surface its placement cannot carry is refused.
+    placed?;
+    // Angles are tried a whole turn either way, as the chart may run them.
     let tau = core::f64::consts::TAU;
     let inside_turned = |u: f64, v: f64, periodic_v: bool| {
         let turns: &[f64] = &[0.0, 1.0, -1.0];
@@ -366,46 +377,9 @@ fn face_extremes(
                 .any(|&b| inside(Point2::new(u + a * tau, v + b * tau)))
         })
     };
-    for axis in AXES {
-        for sense in [1.0, -1.0] {
-            let toward = axis * sense;
-            let extreme = match &placed {
-                ogeom_geom::SurfaceGeometry::Sphere(s) => {
-                    let sphere = s.sphere();
-                    let p = sphere.centre() + toward * sphere.radius();
-                    ogeom_math::elementary::sphere_parameters(&sphere, p, tol)
-                        .ok()
-                        .map(|(u, v)| (p, u, v, false))
-                }
-                ogeom_geom::SurfaceGeometry::Torus(t) => {
-                    let torus = t.torus();
-                    let frame = torus.frame();
-                    let z = frame.z().vector();
-                    let along = toward.dot(z);
-                    let across = toward - z * along;
-                    let reach = across.magnitude();
-                    // Facing straight along the axis every parallel
-                    // leads equally; any one of them will do.
-                    let out = if reach > 1e-12 {
-                        across / reach
-                    } else {
-                        frame.x().vector()
-                    };
-                    let lean = along.hypot(reach);
-                    let tilt = (out * reach + z * along) / lean;
-                    let p =
-                        frame.origin() + out * torus.major_radius() + tilt * torus.minor_radius();
-                    ogeom_math::elementary::torus_parameters(&torus, p, tol)
-                        .ok()
-                        .map(|(u, v)| (p, u, v, true))
-                }
-                _ => None,
-            };
-            if let Some((p, u, v, periodic_v)) = extreme
-                && inside_turned(u, v, periodic_v)
-            {
-                points.push(p);
-            }
+    for (p, u, v, periodic_v) in extremes.into_iter().flatten() {
+        if inside_turned(u, v, periodic_v) {
+            points.push(p);
         }
     }
     for axis in AXES {
@@ -440,6 +414,54 @@ fn face_extremes(
         }
     }
     Ok(())
+}
+
+/// A sphere's or a torus's extreme along each side of [`AXES`], each way:
+/// the point, its parameters, and whether `v` is periodic. `None` for
+/// every other surface, and where the point's parameters are not found.
+fn closed_form_extremes(
+    placed: &ogeom_geom::SurfaceGeometry,
+    tol: Tolerances,
+) -> [Option<(Point, f64, f64, bool)>; 6] {
+    let mut found = [None; 6];
+    for (k, toward) in AXES
+        .iter()
+        .flat_map(|axis| [*axis, *axis * -1.0])
+        .enumerate()
+    {
+        found[k] = match placed {
+            ogeom_geom::SurfaceGeometry::Sphere(s) => {
+                let sphere = s.sphere();
+                let p = sphere.centre() + toward * sphere.radius();
+                ogeom_math::elementary::sphere_parameters(&sphere, p, tol)
+                    .ok()
+                    .map(|(u, v)| (p, u, v, false))
+            }
+            ogeom_geom::SurfaceGeometry::Torus(t) => {
+                let torus = t.torus();
+                let frame = torus.frame();
+                let z = frame.z().vector();
+                let along = toward.dot(z);
+                let across = toward - z * along;
+                let reach = across.magnitude();
+                // Facing straight along the axis every parallel
+                // leads equally; any one of them will do.
+                let out = if reach > 1e-12 {
+                    across / reach
+                } else {
+                    frame.x().vector()
+                };
+                let lean = along.hypot(reach);
+                let tilt = (out * reach + z * along) / lean;
+                let p = frame.origin() + out * torus.major_radius() + tilt * torus.minor_radius();
+                ogeom_math::elementary::torus_parameters(&torus, p, tol)
+                    .ok()
+                    .map(|(u, v)| (p, u, v, true))
+            }
+            _ => None,
+        };
+    }
+    found
 }
 
 /// A local descent from `start` inside the chart window; `None` where it
