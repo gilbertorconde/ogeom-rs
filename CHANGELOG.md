@@ -89,6 +89,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean through a face whose edges stop either side of their vertex
+  builds.** A file may close two curves on one vertex with each curve's end
+  within the vertex's radius but further apart than either radius, as Doom
+  350 solid 709 does. The arrangement welded an end only within its own
+  radius, so the joint stayed open and the cut refused with "a face boundary
+  strand dangles". Two ends that both lie within one vertex's radius are now
+  welded within both their reaches (#373).
+
 - **A wall swept from a whole circle or ellipse goes out of IGES as a
   tabulated cylinder (122) over it.** It went out as a spline patch closed
   where the conic starts, which no face can run across. An elliptic wall

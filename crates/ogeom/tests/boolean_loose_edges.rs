@@ -144,3 +144,106 @@ fn a_drill_beside_the_vertex_of_a_tight_edge_cuts_valid_by_a_loose_edge() {
         }
     }
 }
+
+/// A 20 x 20 x 10 box whose front top edge (y = 0, z = 10) stops `short`
+/// before the corner (20, 0, 10) where the right top and front right edges
+/// meet it, and whose vertex there stands midway between the two ends with
+/// `radius`: the curves a file closes on one vertex stop either side of it,
+/// each within its radius, as a fitted export's may.
+fn box_whose_top_edge_stops_short(model: &mut Model, short: f64, radius: f64) -> Shape {
+    use ogeom::geom::Curve3d as _;
+    use ogeom::topo::EdgeRepr;
+    let solid = ogeom::algo::make_box(model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let corner = Point::new(20.0, 0.0, 10.0);
+    let mut moved = 0;
+    for edge in explore_unique(model, &solid, ShapeType::Edge).unwrap() {
+        let ends = explore_unique(model, &edge, ShapeType::Vertex).unwrap();
+        if !ends.iter().all(|v| {
+            let p = point_of(model, v);
+            p.y.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9
+        }) {
+            continue;
+        }
+        let NodeData::Edge(data) = model.node(&edge).unwrap().data() else {
+            unreachable!("an edge")
+        };
+        let Some(&EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            unreachable!("a box edge has a curve")
+        };
+        let line = model.geometry().curve(curve).unwrap();
+        let (from, to) = (
+            line.point_at(range.0, T).unwrap(),
+            line.point_at(range.1, T).unwrap(),
+        );
+        let by = (range.1 - range.0) * short / from.distance(to);
+        let at_end = to.distance(corner) < 1e-9;
+        assert!(at_end || from.distance(corner) < 1e-9);
+        let shorten = |r: (f64, f64)| {
+            if at_end {
+                (r.0, r.1 - by)
+            } else {
+                (r.0 + by, r.1)
+            }
+        };
+        let Some(node) = model.node_mut(&edge) else {
+            unreachable!("the edge")
+        };
+        let NodeData::Edge(data) = node.data_mut() else {
+            unreachable!("an edge")
+        };
+        for repr in &mut data.representations {
+            match repr {
+                EdgeRepr::Curve3d { range, .. }
+                | EdgeRepr::PCurve { range, .. }
+                | EdgeRepr::Seam { range, .. } => *range = shorten(*range),
+                _ => {}
+            }
+        }
+        moved += 1;
+        for v in ends {
+            if point_of(model, &v).distance(corner) < 1e-9
+                && let Some(node) = model.node_mut(&v)
+                && let NodeData::Vertex(data) = node.data_mut()
+            {
+                data.point = Point::new(20.0 - short / 2.0, 0.0, 10.0);
+                data.tolerance = Tolerance::new(radius).unwrap();
+            }
+        }
+    }
+    assert_eq!(moved, 1);
+    solid
+}
+
+/// The top edge stops 0.3 µm short of a corner whose vertex, midway,
+/// holds 0.2 µm: each end lies within the vertex, but they lie further
+/// apart than either end's own radius reaches. A pocket cut from the top
+/// face far from that corner sections the face, and its boundary closes
+/// at the vertex as the topology says. Cut and common hold the box less the
+/// pocket and the pocket.
+#[test]
+fn a_joint_whose_curves_stop_either_side_of_its_vertex_closes_within_the_vertex() {
+    let mut model = Model::with_tolerances(T);
+    let solid = box_whose_top_edge_stops_short(&mut model, 3e-4, 2e-4);
+    let at = Frame::new(Point::new(2.0, 2.0, 8.0), Direction::Z, Direction::X, T).unwrap();
+    let pocket = ogeom::algo::make_box(&mut model, at, (4.0, 4.0, 4.0), T)
+        .unwrap()
+        .shape;
+    for (name, want) in [("cut", 4000.0 - 32.0), ("common", 32.0)] {
+        let made = if name == "cut" {
+            ogeom::boolean::cut(&mut model, &solid, &pocket, T)
+        } else {
+            ogeom::boolean::common(&mut model, &solid, &pocket, T)
+        }
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+        .shape;
+        let diagnosis = ogeom::algo::check(&model, &made, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        let got = volume(&model, &made);
+        assert!(
+            (got - want).abs() < 1e-6 * 4000.0,
+            "{name}: {got} against {want}"
+        );
+    }
+}

@@ -200,6 +200,10 @@ struct Occurrence {
     /// order and its curve's direction need not agree once the edge is
     /// reversed in its wire.
     ends: [(Point, f64); 2],
+    /// Each end's vertex where the vertex stands, which a file may put
+    /// between the ends of the curves it closes, each within its radius;
+    /// the curve's end where it has none.
+    vertices: [Point; 2],
     /// The loosest tolerance either of its vertices states.
     ends_tolerance: f64,
     /// The box of seventeen points along the curve, the box of the chord
@@ -223,11 +227,13 @@ impl Occurrence {
             .fold(0.0_f64, |acc, d| acc.max(d.tolerance.get()));
         let (a, b) = (curve.point_at(range.0, tol)?, curve.point_at(range.1, tol)?);
         let mut ends = [(a, tol.confusion()), (b, tol.confusion())];
+        let mut at_vertex = [a, b];
         for v in &vertices {
             if let Some(d) = model.node(v).and_then(|n| n.data().as_vertex()) {
                 let at = v.transform(model.datums())?.apply(d.point);
                 let k = usize::from(at.distance(b) < at.distance(a));
                 ends[k].1 = ends[k].1.max(d.tolerance.get());
+                at_vertex[k] = at;
             }
         }
         let mut previous: Option<Point> = None;
@@ -250,6 +256,7 @@ impl Occurrence {
             key: EdgeKey::of(edge),
             curve: std::sync::Arc::new(curve),
             ends,
+            vertices: at_vertex,
             ends_tolerance,
             sampled: (points, mids, sag),
         })
@@ -306,6 +313,9 @@ struct BoundaryEdge {
     /// owns a span is a junction of this boolean too, and every strand end
     /// inside it names it.
     ends: [(Point, f64); 2],
+    /// Each end's vertex where the vertex itself stands (see
+    /// [`Occurrence::vertices`]).
+    vertices: [Point; 2],
     /// A conservative box round the edge: its samples, grown by twice the
     /// sag measured between them and by its own radius.
     bound: ogeom_math::Aabb,
@@ -783,6 +793,7 @@ fn gather(
                 image: None,
                 ends_tolerance: occurrence.ends_tolerance,
                 ends: occurrence.ends,
+                vertices: occurrence.vertices,
                 bound: ogeom_math::Aabb::EMPTY,
             });
         }
@@ -9442,12 +9453,31 @@ fn general_fuse_as(
         }
         let mut welds: Vec<Junction> = Vec::new();
         let mut welded = false;
+        // Two ends that each stand within a vertex's radius (its own and
+        // its edge's) of the same vertex are that vertex, and may stand as
+        // far apart as both their reaches: the curves a file closes on one
+        // vertex can stop either side of it, each within the radius. Two
+        // ends at one point in space are no such gap: apart in the chart,
+        // they stand on a pole's line, whose ends the pole keeps apart.
+        let one_vertex = |a: Point, b: Point| -> bool {
+            a.distance(b) > tol.confusion()
+                && face.edges.iter().any(|e| {
+                    e.vertices.iter().zip(e.ends).any(|(&v, (_, radius))| {
+                        let within = radius + e.tolerance;
+                        a.distance(v) <= within && b.distance(v) <= within
+                    })
+                })
+        };
         for i in 0..ends.len() {
             if reach[i] <= face_snap {
                 continue;
             }
             for j in 0..ends.len() {
-                if j != i && ends[i].2.distance(ends[j].2) <= reach[i] {
+                let apart = ends[i].2.distance(ends[j].2);
+                if j != i
+                    && (apart <= reach[i]
+                        || (apart <= reach[i] + reach[j] && one_vertex(ends[i].3, ends[j].3)))
+                {
                     let (ri, rj) = (root(&mut class, i), root(&mut class, j));
                     if ri != rj {
                         class[ri.max(rj)] = ri.min(rj);
