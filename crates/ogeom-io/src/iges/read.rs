@@ -17,7 +17,7 @@
 //! where, and points at the parity ledger's `io.iges` row for the whole
 //! picture.
 
-use super::parse::{Entity, File};
+use super::parse::{Entity, File, Value};
 use ogeom_algo::{make_edge_between, make_solid, make_vertex, sew};
 use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -43,6 +43,30 @@ const SURFACE_EXTENT: f64 = 1e5;
 /// The constructive solid entities: the primitives, the solids of revolution
 /// and extrusion, the ellipsoid, the boolean tree, the solid assembly and
 /// the solid instance.
+/// The format's parameter at the start of a conic arc (104) that is an
+/// ellipse with its axes along its definition plane's: the angle `t` of the
+/// start `(cx + a cos t, cy + b sin t)`, in [0, 2 pi). `None` for a conic
+/// whose axes turn, or that is not an ellipse, for which the format states
+/// no parameter this reader carries.
+fn ellipse_start_angle(conic: &Entity) -> Option<f64> {
+    let [a, b, c, d, e, f] = [0, 1, 2, 3, 4, 5].map(|i| conic.at(i).real());
+    if b != 0.0 || a == 0.0 || c == 0.0 || (a > 0.0) != (c > 0.0) {
+        return None;
+    }
+    let (cx, cy) = (-d / (2.0 * a), -e / (2.0 * c));
+    let rhs = a * cx * cx + c * cy * cy - f;
+    let (ra2, rb2) = (rhs / a, rhs / c);
+    if ra2 <= 0.0 || rb2 <= 0.0 {
+        return None;
+    }
+    let (sx, sy) = (conic.at(7).real(), conic.at(8).real());
+    Some(
+        ((sy - cy) / rb2.sqrt())
+            .atan2((sx - cx) / ra2.sqrt())
+            .rem_euclid(core::f64::consts::TAU),
+    )
+}
+
 /// The surfaces that bound themselves, and so stand as faces with no trim:
 /// parametric spline, ruled, revolved, tabulated, B-spline and offset
 /// surfaces (an offset only of one of the others).
@@ -279,6 +303,9 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
             reader.visited.insert(*de, ());
         }
     }
+    // The solids' long names, read before the count below so their Name
+    // properties count as read.
+    let names: Vec<Option<String>> = solids.iter().map(|(de, _)| reader.long_name(*de)).collect();
     // Everything never visited, counted by type and form.
     for (de, entity) in &file.entities {
         if !reader.visited.contains_key(de) {
@@ -290,7 +317,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
             *reader.report.skipped.entry(key).or_default() += 1;
         }
     }
-    let mut document = reader.document(&solids, &sheets);
+    let mut document = reader.document(&solids, &names, &sheets);
     {
         let pmi = document.pmi_mut();
         let base = pmi.dimensions.len();
@@ -1541,7 +1568,7 @@ impl<'a> Reader<'a> {
         // directrix's run and of the generator. A surface of revolution's
         // are its generatrix's own parameter and the angle turned from the
         // start angle; a line's own runs over [0, 1], a spline's is its own,
-        // an arc's is its angle.
+        // an arc's and an axis-aligned ellipse's is its angle.
         let swept = match (kind, &surface) {
             (122, SurfaceGeometry::Extrusion(e)) => {
                 let (lo, hi) = ogeom_geom::Curve3d::domain(e.curve());
@@ -1565,6 +1592,15 @@ impl<'a> Reader<'a> {
                             .rem_euclid(core::f64::consts::TAU);
                         Some(((lo - start, 1.0), (0.0, 1.0), true))
                     }
+                    // An ellipse with its axes along the definition
+                    // plane's: the format's parameter is the angle `t` of
+                    // `(cx + a cos t, cy + b sin t)`, `a` along x and `b`
+                    // along y whichever is longer, from the start's in
+                    // [0, 2 pi). This reader's runs the same way from its
+                    // start (its frame a quarter turn on where `b` is the
+                    // longer), so the two differ by a constant.
+                    104 => ellipse_start_angle(generatrix)
+                        .map(|start| ((lo - start, 1.0), (0.0, 1.0), true)),
                     _ => None,
                 }
             }
@@ -3318,18 +3354,60 @@ impl<'a> Reader<'a> {
             .collect()
     }
 
-    fn document(&mut self, solids: &[(i64, Shape)], sheets: &[Shape]) -> ogeom_doc::Document {
+    /// The name a manifold solid (186) carries in a Name property (406 form
+    /// 15), past the eight columns of its label: the property pointers
+    /// follow the solid's parameters (its shell, its flag, and a pointer and
+    /// flag per void) and its back pointers.
+    fn long_name(&mut self, de: i64) -> Option<String> {
+        let entity = self.file.entity(de)?;
+        if entity.kind != 186 {
+            return None;
+        }
+        let voids = entity.count(2);
+        let back_at = 3 + 2 * voids;
+        let back = usize::try_from(entity.params.get(back_at)?.int()).ok()?;
+        let count_at = back_at + 1 + back;
+        let properties = usize::try_from(entity.params.get(count_at)?.int()).ok()?;
+        for i in 0..properties {
+            let pointer = entity.params.get(count_at + 1 + i)?.int();
+            let Some(property) = self.file.entity(pointer) else {
+                continue;
+            };
+            if property.kind == 406 && property.form == 15 {
+                self.visited.insert(pointer, ());
+                if let Some(Value::Text(name)) = property.params.get(1) {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        return Some(name.to_owned());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn document(
+        &mut self,
+        solids: &[(i64, Shape)],
+        names: &[Option<String>],
+        sheets: &[Shape],
+    ) -> ogeom_doc::Document {
         let colours: Vec<(Shape, ogeom_doc::Colour)> = solids
             .iter()
             .filter_map(|(de, s)| self.colour_of(*de).map(|c| (s.clone(), c)))
             .collect();
         let mut document = ogeom_doc::Document::over(std::mem::take(&mut self.model));
         for (i, (de, solid)) in solids.iter().enumerate() {
-            let label = self
-                .file
-                .entity(*de)
-                .map(|e| e.label.clone())
-                .filter(|l| !l.is_empty())
+            let label = names
+                .get(i)
+                .cloned()
+                .flatten()
+                .or_else(|| {
+                    self.file
+                        .entity(*de)
+                        .map(|e| e.label.clone())
+                        .filter(|l| !l.is_empty())
+                })
                 .unwrap_or_else(|| format!("solid-{i}"));
             document.add_part(label, solid.clone());
         }
@@ -4414,6 +4492,100 @@ mod tests {
         let deck = file(vec![(1, entity(106, 2, path(2, 1, &[0.0, 0.0, 0.0])))]);
         let err = reader(&deck).curve(1).unwrap_err();
         assert!(err.to_string().contains("a set of points"), "{err}");
+    }
+
+    /// A trim on a surface of revolution of an axis-aligned ellipse is in
+    /// the ellipse's own angle `t` of `(cx + a cos t, cy + b sin t)` and the
+    /// angle turned, whichever of `a` and `b` is the longer and wherever
+    /// the arc starts; a hyperbola's parameter is not carried, and its trim
+    /// is refused by name.
+    #[test]
+    fn a_parameter_space_trim_lifts_through_a_revolved_ellipse() {
+        let big = 10.0;
+        // `sign` one for the ellipse `(x / rx)² + ((y - R) / ry)² = 1`, minus
+        // one for the hyperbola `(x / rx)² - ((y - R) / ry)² = 1`.
+        let lifted = |rx: f64, ry: f64, t_s: f64, t_e: f64, sign: f64| {
+            let at = |t: f64| {
+                if sign > 0.0 {
+                    (rx * t.cos(), big + ry * t.sin())
+                } else {
+                    (rx * t.cosh(), big + ry * t.sinh())
+                }
+            };
+            let (s, e) = (at(t_s), at(t_e));
+            let ellipse = entity(
+                104,
+                if sign > 0.0 { 1 } else { 2 },
+                reals(&[
+                    1.0 / (rx * rx),
+                    0.0,
+                    sign / (ry * ry),
+                    0.0,
+                    -2.0 * big * sign / (ry * ry),
+                    big * big * sign / (ry * ry) - 1.0,
+                    0.0,
+                    s.0,
+                    s.1,
+                    e.0,
+                    e.1,
+                ]),
+            );
+            let revolved = entity(
+                120,
+                0,
+                vec![
+                    Value::Int(9),
+                    Value::Int(7),
+                    Value::Real(0.0),
+                    Value::Real(core::f64::consts::FRAC_PI_2),
+                ],
+            );
+            let on_surface = entity(
+                142,
+                0,
+                vec![
+                    Value::Int(0),
+                    Value::Int(1),
+                    Value::Int(3),
+                    Value::Int(0),
+                    Value::Int(0),
+                ],
+            );
+            let (from, to) = ([t_s + 0.2, 0.1], [t_e - 0.3, 1.2]);
+            let deck = file(vec![
+                (1, revolved),
+                (3, line([from[0], from[1], 0.0], [to[0], to[1], 0.0])),
+                (5, on_surface),
+                (7, ellipse),
+                (9, line([0.0, 0.0, 0.0], [1.0, 0.0, 0.0])),
+            ]);
+            let mut reader = reader(&deck);
+            let segments = reader.boundary_segments(5)?;
+            let [(curve, (t0, t1))] = segments.as_slice() else {
+                panic!("one segment");
+            };
+            let ends = (curve.point_at(*t0, T)?, curve.point_at(*t1, T)?);
+            // (x, y) turned about x through phi.
+            let expect = |t: f64, phi: f64| {
+                let (x, y) = at(t);
+                Point::new(x, y * phi.cos(), y * phi.sin())
+            };
+            Ok::<_, ogeom_core::OgeomError>((
+                ends,
+                (expect(from[0], from[1]), expect(to[0], to[1])),
+            ))
+        };
+        for (rx, ry, t_s, t_e) in [(3.0, 2.0, 0.5, 2.0), (2.0, 3.0, 4.0, 5.5)] {
+            let ((a, b), (want_a, want_b)) = lifted(rx, ry, t_s, t_e, 1.0).unwrap();
+            assert!(
+                a.distance(want_a) < 1e-9,
+                "{rx} x {ry}: {a:?} against {want_a:?}"
+            );
+            assert!(
+                b.distance(want_b) < 1e-9,
+                "{rx} x {ry}: {b:?} against {want_b:?}"
+            );
+        }
     }
 
     /// A tabulated cylinder's trim is in fractions of its directrix and

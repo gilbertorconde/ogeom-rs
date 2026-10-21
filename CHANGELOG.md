@@ -13,6 +13,21 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **The IGES writer keeps surfaces of revolution, extrusions and offsets
+  in their own forms.**
+  - These used to be written as B-spline patches (128), exact in geometry
+    but losing their kind. They now go out as 120, 122 and 140, and the
+    reader brings each back as the same kind of surface.
+  - An offset with an analytic form is written as that form. One over
+    another basis is still written as a spline patch.
+  - A revolved spline profile and a spline-walled prism round-trip with
+    their surface kinds kept. An offset sheet comes back as an offset, the
+    same way up.
+  - A trim on a surface of revolution of an ellipse whose axes lie along
+    its plane's now lifts through the ellipse's angle.
+  - A solid's whole name, past the eight-column label, is written and read
+    as its Name property (406 form 15) (#404).
+
 - **Pipe shells turn sharp corners against curved legs, round closed
   spines, and under the binormal and auxiliary laws.**
   - Before, extended and round corners were built only for a face down an

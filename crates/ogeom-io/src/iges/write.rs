@@ -209,6 +209,12 @@ impl Writer<'_> {
         for void in &shell_des[1..] {
             params.push_str(&format!(",{void},0"));
         }
+        // The part's whole name, past the label's eight columns, as the
+        // solid's Name property (406 form 15): no back pointers, one
+        // property.
+        if let Some(name) = self.name_property(label) {
+            params.push_str(&format!(",0,1,{}", self.de(name)));
+        }
         self.push(Pending {
             kind: 186,
             form: 0,
@@ -218,6 +224,26 @@ impl Writer<'_> {
             params,
         });
         Ok(())
+    }
+
+    /// A Name property (406 form 15) holding `name`, or `None` for an empty
+    /// name or one a string parameter cannot carry whole here: past ASCII,
+    /// or holding a delimiter, which a record break could fall beside.
+    fn name_property(&mut self, name: &str) -> Option<usize> {
+        let plain = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| (c.is_ascii_graphic() || c == ' ') && c != ',' && c != ';');
+        plain.then(|| {
+            self.push(Pending {
+                kind: 406,
+                form: 15,
+                transform: None,
+                independent: false,
+                label: String::new(),
+                params: format!("1,{}H{name}", name.len()),
+            })
+        })
     }
 
     /// A face (510) over its surface written in model space, its loops
@@ -238,7 +264,7 @@ impl Writer<'_> {
             };
             surface.clone().transformed(&placement, self.tol)?
         };
-        let restated = crate::bodies::restates(&surface, false);
+        let restated = self.restates(&surface)?;
         let turned = crate::bodies::turned_in_file(&placement, restated);
         let surface_entity = self.surface(&surface)?;
         // A face's loops keep it on their left about its surface's normal,
@@ -431,10 +457,152 @@ impl Writer<'_> {
             }
             SurfaceGeometry::BSpline(b) => Ok(self.nurbs_surface(b, true)),
             other => {
+                if let Some(entity) = self.swept_surface(other, false)? {
+                    return Ok(entity);
+                }
                 let bspline = other.to_bspline(self.tol)?;
                 Ok(self.nurbs_surface(&bspline, true))
             }
         }
+    }
+
+    /// Whether this writer restates `surface`'s normal (see
+    /// [`crate::bodies::restates`]): an offset goes out as its analytic
+    /// form where it has one, or over its plane or spline basis, and either
+    /// says for it; any other offset goes out as a spline patch.
+    fn restates(&self, surface: &SurfaceGeometry) -> OgeomResult<bool> {
+        if let SurfaceGeometry::Offset(o) = surface {
+            if let Some(analytic) = o.analytic(self.tol)? {
+                return Ok(crate::bodies::restates(&analytic, false));
+            }
+            if matches!(
+                o.basis(),
+                SurfaceGeometry::Plane(_) | SurfaceGeometry::BSpline(_)
+            ) {
+                return Ok(crate::bodies::restates(o.basis(), false));
+            }
+        }
+        Ok(crate::bodies::restates(surface, false))
+    }
+
+    /// A surface of revolution (120), tabulated cylinder (122) or offset
+    /// surface (140) in its own spelling, its normal turned over where not
+    /// `forward`: a revolution's generatrix and a tabulated cylinder's
+    /// directrix written the other way round, an offset over its basis
+    /// turned over. `None` for an offset whose basis is not a plane or a
+    /// B-spline patch and has no analytic form, and for any other surface.
+    fn swept_surface(
+        &mut self,
+        surface: &SurfaceGeometry,
+        forward: bool,
+    ) -> OgeomResult<Option<usize>> {
+        use SurfaceGeometry as S;
+        let (kind, params) = match surface {
+            // The axis as a line, the generatrix over its whole range, and
+            // the turn as the start and terminate angles.
+            S::Revolution(r) => {
+                let ((a0, a1), (c0, c1)) = r.domain();
+                let axis = r.axis();
+                let (from, to) = (axis.location, axis.location + axis.direction.vector());
+                let line = self.push(Pending {
+                    kind: 110,
+                    form: 0,
+                    transform: None,
+                    independent: false,
+                    label: String::new(),
+                    params: format!(
+                        "{},{},{},{},{},{}",
+                        fmt(from.x),
+                        fmt(from.y),
+                        fmt(from.z),
+                        fmt(to.x),
+                        fmt(to.y),
+                        fmt(to.z)
+                    ),
+                });
+                let generatrix = self.curve(r.curve(), (c0, c1), forward)?;
+                (
+                    120,
+                    format!(
+                        "{},{},{},{}",
+                        self.de(line),
+                        self.de(generatrix),
+                        fmt(a0),
+                        fmt(a1)
+                    ),
+                )
+            }
+            // The directrix at the start of the sweep's window, and the far
+            // end of the generator through the directrix's first point.
+            S::Extrusion(e) => {
+                let ((u0, u1), (v0, v1)) = e.domain();
+                let along = e.direction().vector();
+                let directrix = e
+                    .curve()
+                    .transformed(&Transform::translation(along * v0), self.tol)?;
+                let start = directrix.point_at(if forward { u0 } else { u1 }, self.tol)?;
+                let far = start + along * (v1 - v0);
+                let curve = self.curve(&directrix, (u0, u1), forward)?;
+                (
+                    122,
+                    format!(
+                        "{},{},{},{}",
+                        self.de(curve),
+                        fmt(far.x),
+                        fmt(far.y),
+                        fmt(far.z)
+                    ),
+                )
+            }
+            S::Offset(o) => {
+                if let Some(analytic) = o.analytic(self.tol)? {
+                    let entity = if forward {
+                        self.surface(&analytic)?
+                    } else {
+                        self.turned_surface(&analytic)?
+                    };
+                    return Ok(Some(entity));
+                }
+                let basis = o.basis();
+                if !matches!(basis, S::Plane(_) | S::BSpline(_)) {
+                    return Ok(None);
+                }
+                // The reader takes the offset's side from the basis normal
+                // at the middle of its domain, which a plane and a written
+                // B-spline patch keep (a patch written turned over swaps its
+                // parameters, the middle staying where it was).
+                let ((ua, ub), (va, vb)) = basis.domain();
+                let normal = basis
+                    .normal_at(f64::midpoint(ua, ub), f64::midpoint(va, vb), self.tol)?
+                    .vector();
+                let (written, normal, distance) = if forward {
+                    (self.surface(basis)?, normal, o.distance())
+                } else {
+                    (self.turned_surface(basis)?, -normal, -o.distance())
+                };
+                let indicator = if distance < 0.0 { -normal } else { normal };
+                (
+                    140,
+                    format!(
+                        "{},{},{},{},{}",
+                        fmt(indicator.x),
+                        fmt(indicator.y),
+                        fmt(indicator.z),
+                        fmt(distance.abs()),
+                        self.de(written)
+                    ),
+                )
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(self.push(Pending {
+            kind,
+            form: 0,
+            transform: None,
+            independent: false,
+            label: String::new(),
+            params,
+        })))
     }
 
     /// A wire as a loop (508), or `None` when every edge in it is degenerate:
@@ -841,36 +1009,14 @@ impl Writer<'_> {
                     params,
                 }))
             }
-            // A wall swept from a whole circle or ellipse goes out as a
-            // tabulated cylinder over that conic: read back as the same
-            // extrusion, its chart repeats round the conic, and a face may
-            // run across the conic's start, as no face on a spline patch
-            // closed there can.
-            S::Extrusion(e) if closed_conic(e.curve()) => {
-                use ogeom_geom::Curve3d as _;
-                let ((u0, u1), (v0, v1)) = e.domain();
-                let along = e.direction().vector();
-                let directrix = e
-                    .curve()
-                    .transformed(&Transform::translation(along * v0), self.tol)?;
-                let start = directrix.point_at(u0, self.tol)?;
-                let far = start + along * (v1 - v0);
-                let curve = self.curve(&directrix, (u0, u1), true)?;
-                let params = format!(
-                    "{},{},{},{}",
-                    self.de(curve),
-                    fmt(far.x),
-                    fmt(far.y),
-                    fmt(far.z)
-                );
-                Ok(self.push(Pending {
-                    kind: 122,
-                    form: 0,
-                    transform: None,
-                    independent: false,
-                    label: String::new(),
-                    params,
-                }))
+            S::Revolution(_) | S::Extrusion(_) | S::Offset(_) => {
+                match self.swept_surface(surface, true)? {
+                    Some(entity) => Ok(entity),
+                    None => {
+                        let bspline = surface.to_bspline(self.tol)?;
+                        self.surface(&SurfaceGeometry::BSpline(bspline))
+                    }
+                }
             }
             S::BSpline(b) => Ok(self.nurbs_surface(b, false)),
             other => {
@@ -1043,11 +1189,6 @@ impl Writer<'_> {
         push_record(&mut s, &tail, 'T', 1);
         s
     }
-}
-
-/// Whether `curve` is a whole circle or ellipse, its domain one full turn.
-fn closed_conic(curve: &Curve) -> bool {
-    matches!(curve, Curve::Circle(_) | Curve::Ellipse(_))
 }
 
 /// The same B-spline traversed the other way, over the same domain.

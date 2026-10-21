@@ -10,6 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
+use ogeom::geom::SurfaceKind;
 use ogeom::math::{Direction, Frame, Point};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape};
@@ -109,11 +110,12 @@ fn a_drilled_block_round_trips_through_its_boolean_faces() {
 }
 
 #[test]
-fn a_spline_walled_prism_round_trips_through_126_and_128() {
+fn a_spline_walled_prism_round_trips_through_its_tabulated_cylinders() {
     // A lens-shaped profile from two fitted open B-spline arcs, extruded:
     // the walls are extrusion surfaces over B-spline curves, which the
-    // writer spells as rational B-spline surfaces (128) bounded by rational
-    // B-spline curves (126), and the fitted-pcurve path carries back in.
+    // writer spells as tabulated cylinders (122) over rational B-spline
+    // curves (126), read back as the same extrusions, and the fitted-pcurve
+    // path carries back in.
     //
     // The walls are open here. The closed-wall case has its own test below,
     // for both formats at once.
@@ -165,10 +167,118 @@ fn a_spline_walled_prism_round_trips_through_126_and_128() {
     )
     .unwrap()
     .shape;
-    let (original, recovered, _) = round_trip(model, solid);
+    let (original, recovered, import) = round_trip(model, solid);
     assert!(
         (recovered - original).abs() < original * 1e-6,
         "{recovered} against {original}"
+    );
+    assert_eq!(
+        surface_kinds(import.document.model(), &import.solids[0])
+            .iter()
+            .filter(|k| **k == SurfaceKind::Extrusion)
+            .count(),
+        2,
+        "both walls come back as extrusions"
+    );
+}
+
+/// The surface kinds of a shape's faces.
+fn surface_kinds(model: &Model, shape: &Shape) -> Vec<SurfaceKind> {
+    ogeom::topo::explore_unique(model, shape, ogeom::topo::ShapeType::Face)
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let Some(ogeom::topo::NodeData::Face(d)) = model.node(f).map(|n| n.data()) else {
+                panic!("a face holds no face data");
+            };
+            ogeom::geom::Surface::kind(model.geometry().surface(d.surface).unwrap())
+        })
+        .collect()
+}
+
+/// A profile in the xz plane with a B-spline side, turned three quarters
+/// of the way round the z axis: its curved wall a
+/// surface of revolution of the spline, which goes out as one (120) over
+/// the spline (126) with its start and terminate angles, and comes back
+/// as one with the solid's volume.
+#[test]
+fn a_revolved_spline_profile_round_trips_through_its_surface_of_revolution() {
+    let mut model = Model::new();
+    let pts: Vec<Point> = (0..=8)
+        .map(|i| {
+            let t = f64::from(i) / 8.0;
+            Point::new(4.0 + 1.5 * (core::f64::consts::PI * t).sin(), 0.0, 6.0 * t)
+        })
+        .collect();
+    let side = ogeom::geom::Curve::from(
+        ogeom::geom::fit::fit_points(&pts, 3, 1e-9, T)
+            .unwrap()
+            .curve,
+    );
+    let corners = [
+        Point::new(4.0, 0.0, 0.0),
+        Point::new(4.0, 0.0, 6.0),
+        Point::new(1.0, 0.0, 6.0),
+        Point::new(1.0, 0.0, 0.0),
+    ];
+    let v: Vec<Shape> = corners
+        .iter()
+        .map(|p| ogeom::algo::make_vertex(&mut model, *p).shape)
+        .collect();
+    let (s0, s1) = ogeom::geom::Curve3d::domain(&side);
+    let wall = ogeom::algo::make_edge_between(&mut model, side, (s0, s1), &v[0], &v[1], T)
+        .unwrap()
+        .shape;
+    let segment = |model: &mut Model, a: usize, b: usize| {
+        let line = ogeom::geom::LineCurve::segment(corners[a], corners[b], T).unwrap();
+        let range = ogeom::geom::Curve3d::domain(&line);
+        ogeom::algo::make_edge_between(model, line.into(), range, &v[a], &v[b], T)
+            .unwrap()
+            .shape
+    };
+    let top = segment(&mut model, 1, 2);
+    let inner = segment(&mut model, 2, 3);
+    let bottom = segment(&mut model, 3, 0);
+    let plane =
+        ogeom::math::Plane::new(Frame::new(Point::ORIGIN, -Direction::Y, Direction::X, T).unwrap());
+    let face = ogeom::algo::make_face_with_pcurves(
+        &mut model,
+        ogeom::geom::SurfaceGeometry::Plane(ogeom::geom::PlaneSurface::new(plane)),
+        &[vec![wall, top, inner, bottom]],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let solid = ogeom::algo::make_revolution(
+        &mut model,
+        &face,
+        ogeom::math::Axis {
+            location: Point::ORIGIN,
+            direction: Direction::Z,
+        },
+        1.5 * core::f64::consts::PI,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let before = surface_kinds(&model, &solid);
+    assert!(before.contains(&SurfaceKind::Revolution), "{before:?}");
+    let (original, recovered, import) = round_trip(model, solid);
+    assert!(
+        (recovered - original).abs() < original * 1e-6,
+        "{recovered} against {original}"
+    );
+    let after = surface_kinds(import.document.model(), &import.solids[0]);
+    assert_eq!(
+        after
+            .iter()
+            .filter(|k| **k == SurfaceKind::Revolution)
+            .count(),
+        before
+            .iter()
+            .filter(|k| **k == SurfaceKind::Revolution)
+            .count(),
+        "{before:?} against {after:?}"
     );
 }
 
@@ -419,5 +529,119 @@ fn a_recovered_wire_closes_in_its_own_chart() {
             }
         }
         assert_eq!(walls, 1, "{format}: the bore's wall came back");
+    }
+}
+
+/// A sheet on an offset of a bicubic bump, which has no analytic form, as
+/// it stands and turned over: each goes out as an offset surface (140)
+/// over the patch (128) and comes back as an offset surface with the
+/// same area and facing the same way.
+#[test]
+fn an_offset_sheet_round_trips_as_an_offset_surface_either_way_up() {
+    use ogeom::geom::{BSplineSurface, OffsetSurface, Surface as _, SurfaceGeometry};
+    use ogeom::math::{ControlGrid, KnotVector};
+    let mut points = Vec::new();
+    for i in 0..4 {
+        for j in 0..4 {
+            let bump = if (1..3).contains(&i) && (1..3).contains(&j) {
+                1.5
+            } else {
+                0.0
+            };
+            points.push(Point::new(f64::from(i) * 3.0, f64::from(j) * 3.0, bump));
+        }
+    }
+    let patch = BSplineSurface::new(
+        KnotVector::clamped_uniform(3, 4).unwrap(),
+        KnotVector::clamped_uniform(3, 4).unwrap(),
+        &ControlGrid::new(points, 4, 4).unwrap(),
+        T,
+    )
+    .unwrap();
+    let offset = OffsetSurface::new(SurfaceGeometry::BSpline(patch), 0.5).unwrap();
+    assert!(offset.analytic(T).unwrap().is_none(), "the premise");
+    let fine = Deflection {
+        chord: 1e-4,
+        ..Deflection::default()
+    };
+    for turned in [false, true] {
+        let mut model = Model::new();
+        let face = ogeom::algo::make_natural_face(
+            &mut model,
+            SurfaceGeometry::Offset(Box::new(offset.clone())),
+        )
+        .unwrap()
+        .shape;
+        let face = if turned { face.reversed() } else { face };
+        let area = ogeom::algo::surface_properties(&model, &face, fine, T)
+            .unwrap()
+            .mass;
+        let (_, facing) = ogeom::algo::face_normal(&model, &face, T).unwrap();
+        let mut document = ogeom::doc::Document::over(model);
+        document.add_part("sheet", face);
+        let text = ogeom::io::write_iges(&document, T).unwrap();
+        assert!(
+            text.lines().any(|l| l.starts_with("     140")),
+            "turned {turned}"
+        );
+        let import = ogeom::io::read_iges(&text, T).unwrap();
+        let back = import.document.model();
+        assert_eq!(import.sheets.len(), 1, "turned {turned}");
+        let faces =
+            ogeom::topo::explore_unique(back, &import.sheets[0], ogeom::topo::ShapeType::Face)
+                .unwrap();
+        assert_eq!(faces.len(), 1);
+        let Some(ogeom::topo::NodeData::Face(d)) = back.node(&faces[0]).map(|n| n.data()) else {
+            panic!("a face holds no face data");
+        };
+        assert_eq!(
+            back.geometry().surface(d.surface).unwrap().kind(),
+            SurfaceKind::Offset,
+            "turned {turned}"
+        );
+        let again = ogeom::algo::surface_properties(back, &faces[0], fine, T)
+            .unwrap()
+            .mass;
+        assert!(
+            (again - area).abs() < area * 1e-9,
+            "turned {turned}: {again} against {area}"
+        );
+        let (_, facing_back) = ogeom::algo::face_normal(back, &faces[0], T).unwrap();
+        assert!(
+            facing.z * facing_back.z > 0.0,
+            "turned {turned}: {facing:?} against {facing_back:?}"
+        );
+    }
+}
+
+/// A part named past the eight columns of an entity label goes out with
+/// its whole name as the solid's Name property (406 form 15) and comes
+/// back under it; a name a string parameter cannot carry whole keeps to
+/// the label.
+#[test]
+fn a_long_part_name_round_trips_through_its_name_property() {
+    for (name, back) in [
+        ("bracket_mount_left", "bracket_mount_left"),
+        ("left, upper", "left, up"),
+    ] {
+        let mut model = Model::new();
+        let solid = ogeom::algo::make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), T)
+            .unwrap()
+            .shape;
+        let mut document = ogeom::doc::Document::over(model);
+        document.add_part(name, solid);
+        let text = ogeom::io::write_iges(&document, T).unwrap();
+        let import = ogeom::io::read_iges(&text, T).unwrap();
+        let names: Vec<&str> = import
+            .document
+            .products()
+            .map(|(_, p)| p.name.as_str())
+            .collect();
+        assert_eq!(names, vec![back], "{name}");
+        assert!(
+            import.report.skipped.is_empty(),
+            "{name}: {:?}",
+            import.report.skipped
+        );
     }
 }

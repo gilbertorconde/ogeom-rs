@@ -166,8 +166,14 @@ entity types, the figure `tools/parity.py exchange` regenerates from the
 module's own table),
 and eight round-trip cases hold it to measured volumes: planes, a periodic
 cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
-boolean result, a spline-walled prism through 126/128, and inch-unit
-scaling. The reader also takes every axis-aligned conic arc (104: ellipse,
+boolean result, a spline-walled prism through its tabulated cylinders
+(122 over 126), a revolved spline profile through its surface of
+revolution (120), and inch-unit scaling. The writer writes surfaces of
+revolution, extrusions and offsets in their own spellings (120, 122, 140;
+an offset as its analytic form where it has one, over a plane or spline
+basis otherwise, any other offset as a spline patch), and the reader
+reads each back as the same surface; a solid's whole name goes out and
+comes back as its Name property (406 form 15). The reader also takes every axis-aligned conic arc (104: ellipse,
 hyperbola, parabola, each as its own curve), ruled surfaces (118) as the
 degree-one patch between the two curves' exact spline forms, and constant
 offset curves and offset surfaces (130, 140). A conic whose axes turn is
@@ -191,8 +197,9 @@ in the parameters of a plane, cylinder, cone, sphere or torus is lifted
 through the format's parameterization, each surface framed by the reference
 direction it names; on a tabulated cylinder (fractions of its directrix and
 generator) and a surface of revolution whose generatrix is a line, a
-spline or a circular arc (the generatrix's own parameter, an arc's its
-angle from the format's start angle, and the angle turned). Independent
+spline, a circular arc or an ellipse with its axes along its plane's (the
+generatrix's own parameter, an arc's or ellipse's its angle from the
+format's start angle, and the angle turned). Independent
 untrimmed surfaces (parametric spline, ruled, revolved, tabulated,
 B-spline, and offsets of those) read as faces bounded by their own extent
 and sew with the rest; the writer writes a face with no boundary as the
@@ -200,8 +207,8 @@ trimmed surface whose outer boundary is its surface's. Copious data drawn
 as a path (106, forms 11 to 13 and 63) reads as the exact polyline through
 its points, a trim taking each segment as an edge; a point set (forms 1
 to 3) is no curve and is refused by name. Refused by name: a trim on a
-surface of revolution of a conic, composite, parametric-spline or offset
-generatrix, whose own IGES parameter this reader does not carry; a
+surface of revolution of a hyperbola, parabola, turned ellipse,
+composite, parametric-spline or offset generatrix, whose own IGES parameter this reader does not carry; a
 drawing's own annotation stays on the sheet and is counted as skipped.
 Independent wireframe curves are not read.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered` · 69 headers claimed
