@@ -723,3 +723,36 @@ fn a_round_whose_ball_would_touch_the_wall_inside_a_boss_is_refused() {
         );
     }
 }
+
+/// A 10 mm cube with all twelve edges rounded at radius 1 is the 8 mm cube
+/// swept by the ball: twelve quarter cylinders, eight sphere octants and the
+/// six trimmed faces. Each blend's sections meet its neighbours' arc edges
+/// tangentially, so every one of those meetings is a line touching a circle.
+#[test]
+fn a_cube_rounded_on_every_edge_is_the_cube_swept_by_the_ball() {
+    let mut model = ogeom_topo::Model::new();
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = ogeom_topo::explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let result = ogeom_fillet::fillet_edges(&mut model, &block, &edges, 1.0, T).unwrap();
+
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let faces = ogeom_topo::explore_unique(&model, &result.shape, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 6 + 12 + 8);
+
+    let (side, r, pi) = (8.0, 1.0, core::f64::consts::PI);
+    let exact = side * side * side
+        + 6.0 * side * side * r
+        + 3.0 * pi * side * r * r
+        + 4.0 / 3.0 * pi * r * r * r;
+    let props =
+        ogeom_algo::volume_properties(&model, &result.shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap();
+    assert!(
+        (props.mass - exact).abs() < 1e-6,
+        "rounded cube volume {} against {exact}",
+        props.mass
+    );
+}

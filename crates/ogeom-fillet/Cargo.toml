@@ -24,6 +24,7 @@ ogeom-mesh.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+ogeom-bool = { workspace = true, features = ["test-hooks"] }
 proptest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

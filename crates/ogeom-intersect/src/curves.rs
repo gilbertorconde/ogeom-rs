@@ -228,6 +228,9 @@ pub fn intersect_curves(
             tol,
         ));
     }
+    if let Some(found) = tangent_line_conic_3d(a, b, options, tol) {
+        return Ok(found);
+    }
     general_3d(a, b, options, tol)
 }
 
@@ -288,29 +291,32 @@ fn conic_of(
     ogeom_math::Vector,
     ogeom_math::Vector,
 )> {
-    match curve {
+    let (centre, [x, y, z], [ra, rb]) = conic_axes(curve)?;
+    Some((centre, x * ra, y * rb, z))
+}
+
+/// A circle or ellipse as its centre, its frame's three unit axes and the
+/// radii along the first two; `None` as for [`conic_of`].
+fn conic_axes(curve: &Curve) -> Option<(Point, [ogeom_math::Vector; 3], [f64; 2])> {
+    let (frame, radii) = match curve {
         Curve::Circle(c) if !c.is_reversed() => {
             let circle = c.circle();
-            let f = circle.frame();
-            Some((
-                f.origin(),
-                f.x().vector() * circle.radius(),
-                f.y().vector() * circle.radius(),
-                f.z().vector(),
-            ))
+            (circle.frame(), [circle.radius(); 2])
         }
         Curve::Ellipse(e) if !e.is_reversed() => {
             let ellipse = e.ellipse();
-            let f = ellipse.frame();
-            Some((
-                f.origin(),
-                f.x().vector() * ellipse.major_radius(),
-                f.y().vector() * ellipse.minor_radius(),
-                f.z().vector(),
-            ))
+            (
+                ellipse.frame(),
+                [ellipse.major_radius(), ellipse.minor_radius()],
+            )
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some((
+        frame.origin(),
+        [frame.x().vector(), frame.y().vector(), frame.z().vector()],
+        radii,
+    ))
 }
 
 /// Two circles or ellipses in planes that are not one plane, in closed
@@ -502,6 +508,341 @@ fn conic_parameter(conic: &Curve, point: Point, tol: Tolerances) -> Option<f64> 
             ogeom_math::elementary::ellipse_parameter(&e.ellipse(), point, tol).ok()
         }
         _ => None,
+    }
+}
+
+/// A line touching a circle or ellipse in its plane, in closed form, with
+/// the answer the sampling path gives for it: one crossing at the touch,
+/// owning the valley around it as its reach.
+///
+/// In the conic's frame, scaled by its radii, the conic is `F = x^2 + y^2 -
+/// 1 = 0`, and along the line `F` is a quadratic `qa (t - t_v)^2 + F_min`
+/// whose roots are the crossings. Its value `f` and slope `g` are evaluated
+/// at the computed vertex, each with a rounding bound (see
+/// [`ScaledConic::at`]). Then `F_min` lies in `[f - err_f - G, f + err_f]`,
+/// where `G = (|g| + err_g)^2 / 4 qa` is how far below `f` the true vertex
+/// can sit. A line whose interval holds zero has a double root to the
+/// root's own precision: it touches the conic, or crosses or misses it by
+/// less than rounding can tell, and every true root lies within `(|g| +
+/// err_g) / 2 qa + sqrt((err_f + G - f) / qa)` of the computed vertex along
+/// the line. That is the tangent point, answered as one contact at the
+/// measured gap.
+///
+/// Its reach is the sampling path's own measure, walked the same way along
+/// the first curve with the exact distance to the second in place of the
+/// sampled one. A tangent line stays within the gap of a convex conic only
+/// around the touch (the conic's other tangent parallel to the line is a
+/// full width away, more than the gap), so that valley is the only contact,
+/// and the roots inside it are what it speaks for. A valley no longer than
+/// eight gaps owns no reach there either, and is one crossing as long as
+/// any two points in it are one crossing to the sampling path.
+///
+/// A touch outside a trim leaves the curves apart when a lower bound on
+/// their distance clears the gap: the line's window, short of the vertex,
+/// is nearest the conic at its end nearer the vertex, and no nearer to it
+/// than the smaller radius times that end's scaled distance from the unit
+/// circle; the conic's window is no nearer the line than its signed
+/// in-plane distance from the line's shadow on the plane, a sinusoid in the
+/// conic's parameter whose least magnitude on the window is at an end or a
+/// stationary point unless it changes sign.
+///
+/// Everything else is left to the sampling path: an interval clear of zero
+/// (a plain miss or a secant, which [`line_conic_3d`] answered), a touch
+/// outside a trim with the curves within the gap, a valley holding two
+/// samples of the first curve (an overlap there) or too long to be a
+/// reach, or roots spread wider than it.
+fn tangent_line_conic_3d(
+    a: &Curve,
+    b: &Curve,
+    options: CurveCurveOptions,
+    tol: Tolerances,
+) -> Option<CurveIntersection<Point>> {
+    let (basis_a, window_a) = through_trim(a);
+    let (basis_b, window_b) = through_trim(b);
+    let (line, conic, line_first) = match (basis_a, basis_b) {
+        (Curve::Line(l), c) => (l, c, true),
+        (c, Curve::Line(l)) => (l, c, false),
+        _ => return None,
+    };
+    let (line_side, conic_side) = if line_first { (a, b) } else { (b, a) };
+    let (centre, [x_axis, y_axis, normal], [ra, rb]) = conic_axes(conic)?;
+    let reach_gap = options.gap.max(tol.confusion());
+    if reach_gap >= ra.min(rb) {
+        return None;
+    }
+    let (origin, along) = (line.axis().location, line.axis().direction.vector());
+    let offset = origin - centre;
+    if along.dot(normal).abs() > tol.angular() || offset.dot(normal).abs() > reach_gap {
+        return None;
+    }
+    let scaled = ScaledConic {
+        centre,
+        axes: [x_axis, y_axis],
+        radii: [ra, rb],
+        origin,
+        along,
+    };
+    let [dx, dy] = scaled.slope();
+    let qa = dx.mul_add(dx, dy * dy);
+    let t = -(offset.dot(x_axis) / ra).mul_add(dx, offset.dot(y_axis) / rb * dy) / qa;
+    let vertex = scaled.at(t);
+    let slope_error = scaled.slope_error();
+    let qa_low =
+        qa - slope_error * (2.0 * (dx.abs() + dy.abs()) + slope_error) - 3.0 * f64::EPSILON * qa;
+    if !(qa_low > 0.0 && vertex.f.is_finite() && vertex.g.is_finite()) {
+        return None;
+    }
+    let slope = vertex.g.abs() + vertex.g_error;
+    let below = slope * slope / (4.0 * qa_low);
+    if vertex.f + vertex.f_error < 0.0 || vertex.f - vertex.f_error - below > 0.0 {
+        return None;
+    }
+    let spread =
+        slope / (2.0 * qa_low) + ((vertex.f_error + below - vertex.f).max(0.0) / qa_low).sqrt();
+
+    let p = origin + along * t;
+    let (c_lo, c_hi) = conic.domain();
+    let s = conic_parameter(conic, p, tol)?;
+    let s = c_lo + (s - c_lo).rem_euclid(core::f64::consts::TAU);
+    let on_conic = conic.point_at(s, tol).ok()?;
+    let gap = on_conic.distance(p);
+    let (lo, hi) = line.domain();
+    let on_basis =
+        t >= lo - tol.parametric() && t <= hi + tol.parametric() && s <= c_hi + tol.parametric();
+    let touch = if line_first {
+        Crossing {
+            on_a: t,
+            on_b: s,
+            point: p,
+            gap,
+            reach: 0.0,
+        }
+    } else {
+        Crossing {
+            on_a: s,
+            on_b: t,
+            point: on_conic,
+            gap,
+            reach: 0.0,
+        }
+    };
+    let kept = on_basis
+        .then(|| {
+            clipped_to_windows(
+                CurveIntersection {
+                    crossings: vec![touch],
+                    overlaps: Vec::new(),
+                },
+                Side::of(basis_a, window_a),
+                Side::of(basis_b, window_b),
+                tol,
+            )
+            .crossings
+            .first()
+            .copied()
+        })
+        .flatten();
+    let Some(mut touch) = kept else {
+        let line_apart = {
+            let (lo, hi) = line_side.domain();
+            if t + spread < lo || t - spread > hi {
+                let end = scaled.at(if t < lo { lo } else { hi });
+                let radius = (1.0 + end.f - end.f_error).max(0.0).sqrt();
+                ra.min(rb) * (radius - 1.0)
+            } else {
+                0.0
+            }
+        };
+        let conic_apart = {
+            let shadow = along - normal * along.dot(normal);
+            let across = normal.cross(shadow) / shadow.magnitude();
+            let (sa, sb, sc) = (
+                ra * across.dot(x_axis),
+                rb * across.dot(y_axis),
+                across.dot(centre - origin),
+            );
+            let at = |u: f64| sa.mul_add(u.cos(), sb.mul_add(u.sin(), sc));
+            let (lo, hi) = conic_side.domain();
+            // The sinusoid is stationary at its phase and every half turn
+            // on.
+            let pi = core::f64::consts::PI;
+            let mut values = vec![at(lo), at(hi)];
+            let mut u = lo + (sb.atan2(sa) - lo).rem_euclid(pi);
+            while u < hi {
+                values.push(at(u));
+                u += pi;
+            }
+            let least = values.iter().copied().fold(f64::INFINITY, f64::min);
+            let most = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let rounding = 16.0 * f64::EPSILON * (sa.abs() + sb.abs() + sc.abs());
+            if least > 0.0 {
+                least - rounding
+            } else if most < 0.0 {
+                -most - rounding
+            } else {
+                0.0
+            }
+        };
+        return (line_apart.max(conic_apart) > options.gap).then(CurveIntersection::empty);
+    };
+    if gap > options.gap {
+        return None;
+    }
+
+    let distance = |q: Point| -> f64 {
+        if line_first {
+            distance_to_conic_3d(b, conic, touch.on_b, q, tol)
+        } else {
+            let (lo, hi) = b.domain();
+            let foot = (q - origin).dot(along).clamp(lo, hi);
+            q.distance(origin + along * foot)
+        }
+    };
+    let ends = valley_ends_3d(a, touch.on_a, reach_gap, tol, &distance);
+    let valley = valley_span_3d(a, &touch, &ends, tol);
+    let extent =
+        sampled_length_3d(a, options.samples, tol).min(sampled_length_3d(b, options.samples, tol));
+    let cap = 4.0 * (reach_gap * extent).sqrt();
+    if valley > cap || spread > valley {
+        return None;
+    }
+    let owned = valley > reach_gap * 8.0;
+    if !owned && 2.0 * valley > one_crossing_radius(tol) {
+        return None;
+    }
+    // Two samples of the first curve inside the valley read as a stretch of
+    // shared support there.
+    let (a_lo, a_hi) = a.domain();
+    let n = options.samples;
+    let (from, to) = order(
+        ends[0].1.unwrap_or(ends[0].0),
+        ends[1].1.unwrap_or(ends[1].0),
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let held = (0..=n)
+        .map(|i| a_lo + (a_hi - a_lo) * i as f64 / n as f64)
+        .filter(|&u| u >= from && u <= to)
+        .count();
+    if held >= 2 {
+        return None;
+    }
+    if owned {
+        touch.reach = valley;
+    }
+    Some(CurveIntersection {
+        crossings: vec![touch],
+        overlaps: Vec::new(),
+    })
+}
+
+/// A line read in a conic's frame scaled by its radii, where the conic is
+/// the unit circle.
+struct ScaledConic {
+    centre: Point,
+    axes: [ogeom_math::Vector; 2],
+    radii: [f64; 2],
+    origin: Point,
+    along: ogeom_math::Vector,
+}
+
+/// `F = x^2 + y^2 - 1` at a point of the line, its slope along the line,
+/// and how far rounding can have moved each.
+struct ScaledValue {
+    f: f64,
+    f_error: f64,
+    g: f64,
+    g_error: f64,
+}
+
+impl ScaledConic {
+    /// The line's direction in scaled coordinates.
+    fn slope(&self) -> [f64; 2] {
+        [
+            self.along.dot(self.axes[0]) / self.radii[0],
+            self.along.dot(self.axes[1]) / self.radii[1],
+        ]
+    }
+
+    /// How far rounding can move each scaled slope component: a three-term
+    /// dot product, the division, and axes unit to within their
+    /// normalisation, over the smaller radius.
+    fn slope_error(&self) -> f64 {
+        8.0 * f64::EPSILON * self.along.magnitude() / self.radii[0].min(self.radii[1])
+    }
+
+    /// `F` and its slope at the line's point `t`. Each scaled coordinate is
+    /// off by at most `e`: the point's two roundings and the subtraction of
+    /// the centre on the magnitudes involved, then the dot product, the
+    /// division and the axes' own normalisation on the offset, all over the
+    /// smaller radius. `F` inherits `2 e` per unit of each coordinate and
+    /// three roundings of its own, its slope likewise from the coordinates
+    /// and the scaled direction.
+    fn at(&self, t: f64) -> ScaledValue {
+        let gamma = |n: f64| n * f64::EPSILON;
+        let magnitude = |q: Point| (q - Point::ORIGIN).magnitude();
+        let smaller = self.radii[0].min(self.radii[1]);
+        let w = (self.origin + self.along * t) - self.centre;
+        let (x, y) = (
+            w.dot(self.axes[0]) / self.radii[0],
+            w.dot(self.axes[1]) / self.radii[1],
+        );
+        let [dx, dy] = self.slope();
+        let e = gamma(3.0)
+            * (magnitude(self.origin) + self.along.magnitude() * t.abs() + magnitude(self.centre))
+            / smaller
+            + gamma(8.0) * w.magnitude() / smaller;
+        let e_d = self.slope_error();
+        let (sum_xy, sum_d) = (x.abs() + y.abs(), dx.abs() + dy.abs());
+        ScaledValue {
+            f: x.mul_add(x, y * y) - 1.0,
+            f_error: 2.0 * e * (sum_xy + e) + gamma(3.0) * x.mul_add(x, y.mul_add(y, 1.0)),
+            g: 2.0 * x.mul_add(dx, y * dy),
+            g_error: 2.0 * (e * sum_d + e_d * sum_xy + 2.0 * e * e_d)
+                + gamma(8.0) * ((x * dx).abs() + (y * dy).abs()),
+        }
+    }
+}
+
+/// The distance from `q` to a trimmed circle or ellipse: for a circle, to
+/// its radial foot if the trim holds it and to the nearer end if not; for an
+/// ellipse, the nearest of its foot polished from `seed` and its two ends.
+fn distance_to_conic_3d(curve: &Curve, basis: &Curve, seed: f64, q: Point, tol: Tolerances) -> f64 {
+    let (lo, hi) = curve.domain();
+    let at = |u: f64| {
+        curve
+            .point_at(u, tol)
+            .map_or(f64::INFINITY, |c| c.distance(q))
+    };
+    let ends = at(lo).min(at(hi));
+    match basis {
+        Curve::Circle(c) => {
+            let Ok(u) = ogeom_math::elementary::circle_parameter(&c.circle(), q, tol) else {
+                return ends;
+            };
+            let tau = core::f64::consts::TAU;
+            let u = lo + (u - lo).rem_euclid(tau);
+            if u <= hi { at(u) } else { ends }
+        }
+        _ => foot_on_3d(curve, q, seed, tol).map_or(ends, |(_, d)| d.min(ends)),
+    }
+}
+
+/// The length of a curve's sampled polyline, as the sampling path measures
+/// it: exact for a line, the chord sum in closed form for a circle.
+fn sampled_length_3d(curve: &Curve, n: usize, tol: Tolerances) -> f64 {
+    let (lo, hi) = curve.domain();
+    #[allow(clippy::cast_precision_loss)]
+    let segments = n as f64;
+    match through_trim(curve).0 {
+        Curve::Line(l) => l.axis().direction.vector().magnitude() * (hi - lo),
+        Curve::Circle(c) => {
+            segments * 2.0 * c.circle().radius() * ((hi - lo) / (2.0 * segments)).sin()
+        }
+        _ => sample_3d(curve, n, tol)
+            .points
+            .windows(2)
+            .map(|w| w[0].distance(w[1]))
+            .sum(),
     }
 }
 
@@ -1453,7 +1794,10 @@ fn general_3d(
     };
     let cap = 4.0 * (gap * extent).sqrt();
     for c in &mut crossings {
-        let valley = valley_extent_3d(a, b, &sb, c, gap, tol);
+        let ends = valley_ends_3d(a, c.on_a, gap, tol, &|q| {
+            distance_to_curve_3d(b, &sb, q, tol)
+        });
+        let valley = valley_span_3d(a, c, &ends, tol);
         if valley > gap * 8.0 && valley <= cap {
             c.reach = c.reach.max(valley);
         }
@@ -1905,35 +2249,35 @@ fn distance_to_curve_3d(b: &Curve, sb: &Sampled<Point>, p: Point, tol: Tolerance
     f1.min(f2).min(best.1)
 }
 
-/// How far from a crossing, along the first curve, the second curve stays
-/// within `gap`: the larger of the two directions, in space.
-fn valley_extent_3d(
+/// How far from `on_a`, along the first curve, a point stays within `gap`
+/// of the second by `distance`: in each direction, the last parameter found
+/// inside and the first found outside, if the walk left the valley before
+/// the curve's end.
+fn valley_ends_3d(
     a: &Curve,
-    b: &Curve,
-    sb: &Sampled<Point>,
-    crossing: &Crossing<Point>,
+    on_a: f64,
     gap: f64,
     tol: Tolerances,
-) -> f64 {
+    distance: &dyn Fn(Point) -> f64,
+) -> [(f64, Option<f64>); 2] {
     let (lo, hi) = a.domain();
     let span = hi - lo;
+    let mut ends = [(on_a, None); 2];
     if span <= 0.0 {
-        return 0.0;
+        return ends;
     }
-    let mut extent = 0.0_f64;
-    for direction in [-1.0, 1.0] {
-        let inside = |t: f64| -> bool {
-            if t < lo || t > hi {
-                return false;
-            }
-            a.point_at(t, tol)
-                .is_ok_and(|q| distance_to_curve_3d(b, sb, q, tol) <= gap)
-        };
+    let inside = |t: f64| -> bool {
+        if t < lo || t > hi {
+            return false;
+        }
+        a.point_at(t, tol).is_ok_and(|q| distance(q) <= gap)
+    };
+    for (end, direction) in ends.iter_mut().zip([-1.0, 1.0]) {
         let mut step = span * 1e-6;
-        let mut last_in = crossing.on_a;
+        let mut last_in = on_a;
         let mut first_out: Option<f64> = None;
         while step <= span {
-            let t = crossing.on_a + direction * step;
+            let t = on_a + direction * step;
             if inside(t) {
                 last_in = t;
                 step *= 2.0;
@@ -1942,7 +2286,7 @@ fn valley_extent_3d(
                 break;
             }
         }
-        let edge = match first_out {
+        *end = match first_out {
             Some(mut out) => {
                 let mut r#in = last_in;
                 for _ in 0..30 {
@@ -1953,15 +2297,30 @@ fn valley_extent_3d(
                         out = mid;
                     }
                 }
-                r#in
+                (r#in, Some(out))
             }
-            None => last_in,
+            None => (last_in, None),
         };
-        if let Ok(q) = a.point_at(edge, tol) {
-            extent = extent.max(q.distance(crossing.point));
-        }
     }
-    extent
+    ends
+}
+
+/// How far a crossing's valley reaches in space: the larger of the distances
+/// from the crossing to the valley's two ends on the first curve.
+fn valley_span_3d(
+    a: &Curve,
+    crossing: &Crossing<Point>,
+    ends: &[(f64, Option<f64>); 2],
+    tol: Tolerances,
+) -> f64 {
+    let (lo, hi) = a.domain();
+    if hi - lo <= 0.0 {
+        return 0.0;
+    }
+    ends.iter()
+        .filter_map(|(edge, _)| a.point_at(*edge, tol).ok())
+        .map(|q| q.distance(crossing.point))
+        .fold(0.0, f64::max)
 }
 
 /// The closest approach of two spatial segments, as fractions and a distance.
@@ -2024,6 +2383,12 @@ fn push_unique_2d(crossings: &mut Vec<Crossing<Point2>>, found: Crossing<Point2>
     crossings.push(found);
 }
 
+/// How close two polished crossings stand, with the first curve staying
+/// there between them, to be one root found from two seeds.
+fn one_crossing_radius(tol: Tolerances) -> f64 {
+    tol.confusion() * 100.0
+}
+
 /// Keep `found` unless it is a crossing already held: one standing at the
 /// same point with the first curve staying there between the two, which is
 /// one root polished from two seeds. A curve passing the same point twice
@@ -2036,7 +2401,7 @@ fn push_unique_3d(
     found: Crossing<Point>,
     tol: Tolerances,
 ) {
-    let reach = tol.confusion() * 100.0;
+    let reach = one_crossing_radius(tol);
     let (lo, hi) = a.domain();
     let period = hi - lo;
     let closed = a.is_periodic()
@@ -2503,6 +2868,167 @@ mod tests {
         );
         assert!(touch.reach < 5e-2, "the valley is short: {touch:?}");
         assert!(found.overlaps.is_empty());
+    }
+
+    /// Lines touching circles and ellipses in their plane, whole and
+    /// trimmed, in either order, and passing beside a trim that leaves the
+    /// touch out: the closed form answers what the sampling path does, the
+    /// same crossings at the same parameters and gaps owning the same
+    /// reach. A line a hair beside the touch, missing or crossing, is no
+    /// double root and stays the sampling path's.
+    #[test]
+    fn a_tangent_line_meets_a_conic_as_the_sampling_path_says() {
+        use ogeom_geom::{EllipseCurve, TrimmedCurve};
+        use ogeom_math::{Direction, Ellipse, Vector};
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let tilted = Frame::new(
+            Point::new(3.0, -2.0, 7.0),
+            Direction::new(Vector::new(1.0, 2.0, 2.0), T).unwrap(),
+            Direction::new(Vector::new(2.0, -1.0, 0.0), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let circle: Curve = CircleCurve::new(Circle::new(Frame::WORLD, 4.0, T).unwrap()).into();
+        let tilted_circle: Curve = CircleCurve::new(Circle::new(tilted, 1.0, T).unwrap()).into();
+        let ellipse: Curve =
+            EllipseCurve::new(Ellipse::new(Frame::WORLD, 3.0, 2.0, T).unwrap()).into();
+        let arc = |from: f64, to: f64| -> Curve {
+            TrimmedCurve::new(circle.clone(), from, to, T)
+                .unwrap()
+                .into()
+        };
+        let segment =
+            |from: Point, to: Point| -> Curve { LineCurve::segment(from, to, T).unwrap().into() };
+        let (ox, oy) = (tilted.x().vector(), tilted.y().vector());
+        let (eu, ev) = (3.0 * 2.5_f64.cos(), 2.0 * 2.5_f64.sin());
+        let ellipse_tangent = Vector::new(-3.0 * 2.5_f64.sin(), 2.0 * 2.5_f64.cos(), 0.0);
+        let along_top = segment(Point::new(-5.0, 4.0, 0.0), Point::new(1.0, 4.0, 0.0));
+        let cases: Vec<(&str, Curve, Curve, bool)> = vec![
+            ("circle", circle.clone(), along_top.clone(), true),
+            (
+                "tilted",
+                tilted_circle,
+                segment(
+                    tilted.origin() + oy - ox * 2.0,
+                    tilted.origin() + oy + ox * 5.0,
+                ),
+                true,
+            ),
+            (
+                "ellipse's end",
+                ellipse.clone(),
+                segment(Point::new(-3.0, -1.0, 0.0), Point::new(-3.0, 4.0, 0.0)),
+                true,
+            ),
+            (
+                "ellipse's side",
+                ellipse.clone(),
+                segment(Point::new(-6.0, -2.0, 0.0), Point::new(2.0, -2.0, 0.0)),
+                true,
+            ),
+            (
+                "ellipse aslant",
+                ellipse,
+                segment(
+                    Point::new(eu, ev, 0.0) - ellipse_tangent,
+                    Point::new(eu, ev, 0.0) + ellipse_tangent * 2.0,
+                ),
+                true,
+            ),
+            (
+                "arc ending at the touch",
+                arc(0.0, FRAC_PI_2),
+                along_top.clone(),
+                true,
+            ),
+            (
+                "arc starting at the touch",
+                arc(FRAC_PI_2, PI),
+                along_top.clone(),
+                true,
+            ),
+            (
+                "line ending at the touch",
+                circle.clone(),
+                segment(Point::new(-3.0, 4.0, 0.0), Point::new(0.0, 4.0, 0.0)),
+                true,
+            ),
+            (
+                "lifted",
+                circle.clone(),
+                segment(Point::new(-5.0, 4.0, 2e-8), Point::new(1.0, 4.0, 2e-8)),
+                true,
+            ),
+            (
+                "arc away from the touch",
+                arc(PI, 2.0 * PI),
+                along_top,
+                true,
+            ),
+            (
+                "line short of the touch",
+                circle.clone(),
+                segment(Point::new(1.0, 4.0, 0.0), Point::new(3.0, 4.0, 0.0)),
+                true,
+            ),
+            (
+                "missing by a hair",
+                circle.clone(),
+                segment(
+                    Point::new(-5.0, 4.0 + 1e-9, 0.0),
+                    Point::new(1.0, 4.0 + 1e-9, 0.0),
+                ),
+                false,
+            ),
+            (
+                "crossing a hair inside",
+                circle,
+                segment(
+                    Point::new(-5.0, 4.0 - 1e-9, 0.0),
+                    Point::new(1.0, 4.0 - 1e-9, 0.0),
+                ),
+                false,
+            ),
+        ];
+        for gap in [1e-7, 1e-5] {
+            let options = CurveCurveOptions {
+                gap,
+                ..CurveCurveOptions::default()
+            };
+            for (name, conic, line, touches) in &cases {
+                for (a, b) in [(conic, line), (line, conic)] {
+                    let closed = tangent_line_conic_3d(a, b, options, T);
+                    let Some(closed) = closed else {
+                        assert!(!touches, "{name}, gap {gap}: no closed form");
+                        continue;
+                    };
+                    assert!(touches, "{name}, gap {gap}: {closed:?}");
+                    let sampled = general_3d(a, b, options, T).unwrap();
+                    let context = format!("{name}, gap {gap}: {closed:?} against {sampled:?}");
+                    assert!(closed.overlaps.is_empty() && sampled.overlaps.is_empty());
+                    assert_eq!(closed.crossings.len(), sampled.crossings.len(), "{context}");
+                    // The polish lands anywhere in the valley, and the
+                    // sampling path measures the valley from where it
+                    // landed: the two crossings stand within its reach, and
+                    // their reaches differ by no more than they stand apart.
+                    for (x, y) in closed.crossings.iter().zip(&sampled.crossings) {
+                        let apart = x.point.distance(y.point);
+                        let (p, q) = (
+                            b.point_at(x.on_b, T).unwrap(),
+                            a.point_at(x.on_a, T).unwrap(),
+                        );
+                        assert!(p.distance(q) <= x.gap + 1e-15, "{context}");
+                        assert!(apart <= y.reach.max(gap), "{context}");
+                        assert!(x.gap <= y.gap + 1e-15, "{context}");
+                        assert_eq!(x.reach > 0.0, y.reach > 0.0, "{context}");
+                        assert!(
+                            (x.reach - y.reach).abs() <= apart + 1e-6 * y.reach,
+                            "{context}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

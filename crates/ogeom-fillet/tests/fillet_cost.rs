@@ -172,36 +172,55 @@ fn the_outer_edges_of_a_holed_plate_meet_at_mitres() {
     assert_eq!(faces, 10 + 4);
 }
 
-/// The outer edges of a holed plate's top face fillet within twice the
-/// time they take on the plain plate: the run-out probes at the corners
-/// read the faces near the corners, and each pass's boolean sets aside
-/// every face clear of each of its wedges, the holes among them.
+/// The outer edges of a plate's top face fillet with the same boolean
+/// work whether the plate is plain or drilled with 256 holes: the run-out
+/// probes at the corners read the faces near the corners, and each pass's
+/// boolean sets aside every face clear of each of its wedges, the holes
+/// among them. So the faces gathered, the face pairs asked for sections
+/// and the pieces classified are the same counts for both plates.
 #[test]
-#[ignore = "heavy"]
-fn a_plate_with_holes_fillets_its_outer_edges_at_about_the_plain_plates_cost() {
+fn the_holes_a_plate_s_outer_fillets_do_not_touch_add_no_boolean_work() {
     let (area, centroid) = corner(1.0);
     // Each blend runs to the mitres with its neighbours: its centroid's
     // line is the edge less the centroid's offset at either end.
     let want = 4.0 * area * 2.0f64.mul_add(-centroid, 100.0);
-    let mut plates = Vec::new();
-    for n in [0, 4, 8, 16] {
+    let work = |n: u32| {
         let mut model = Model::new();
         let solid = plate(&mut model, 100.0, n, 80.0 / f64::from(n.max(1)));
         let edges = top_edges(&model, &solid, false);
         assert_eq!(edges.len(), 4);
-        let (took, removed, faces) = fillet(&mut model, &solid, &edges, 1.0);
-        eprintln!("{n} x {n} holes: {took:?}, removed {removed}, {faces} faces");
+        let ((_, removed, faces), work) =
+            ogeom_bool::work::counted(|| fillet(&mut model, &solid, &edges, 1.0));
         assert!(
             (removed - want).abs() < want * 1e-4,
             "{removed} against {want}"
         );
         assert_eq!(faces, 10 + (n * n) as usize);
-        plates.push((model, solid, edges));
-    }
-    // The least processor time of several runs of each side, taken in
-    // turns, reads past what other work on the machine costs a thread
-    // through the caches and cores it shares; a round is measured again,
-    // up to four, while the bound is not met.
+        work
+    };
+    let plain = work(0);
+    let holed = work(16);
+    assert!(plain.faces_gathered > 0 && plain.face_pairs > 0 && plain.pieces > 0);
+    assert_eq!(holed, plain, "256 holes against the plain plate");
+}
+
+/// The processor time of the outer edges' fillet on the plate with 256
+/// holes against the plain plate, reported: the least of several runs of
+/// each side, taken in turns. What the holed plate still pays for its
+/// holes outside the booleans (meshing its top face for the ball's fit,
+/// walking its faces) is linear in them and moves with the machine.
+#[test]
+#[ignore = "heavy"]
+fn a_holed_plate_s_outer_fillet_time_against_the_plain_plate_s_is_reported() {
+    let mut plates: Vec<(Model, Shape, Vec<Shape>)> = [0, 16]
+        .into_iter()
+        .map(|n| {
+            let mut model = Model::new();
+            let solid = plate(&mut model, 100.0, n, 80.0 / f64::from(n.max(1)));
+            let edges = top_edges(&model, &solid, false);
+            (model, solid, edges)
+        })
+        .collect();
     let least = |(model, solid, edges): &mut (Model, Shape, Vec<Shape>)| {
         (0..3).fold(Duration::MAX, |least, _| {
             let (rounded, took) =
@@ -210,19 +229,15 @@ fn a_plate_with_holes_fillets_its_outer_edges_at_about_the_plain_plates_cost() {
             least.min(took)
         })
     };
-    let mut rounds = Vec::new();
+    let (mut plain, mut holed) = (Duration::MAX, Duration::MAX);
     for _ in 0..4 {
-        let (mut plain, mut holed) = (Duration::MAX, Duration::MAX);
-        for _ in 0..4 {
-            plain = plain.min(least(&mut plates[0]));
-            holed = holed.min(least(&mut plates[3]));
-        }
-        rounds.push((holed, plain));
-        if holed <= plain * 2 {
-            return;
-        }
+        plain = plain.min(least(&mut plates[0]));
+        holed = holed.min(least(&mut plates[1]));
     }
-    panic!("256 holes against the plain plate, (holed, plain) per round: {rounds:?}");
+    eprintln!(
+        "outer fillet: {holed:?} with 256 holes, {plain:?} plain, ratio {:.2}",
+        holed.as_secs_f64() / plain.as_secs_f64()
+    );
 }
 
 /// Every hole rim on a plate's top face fillets in time that grows about

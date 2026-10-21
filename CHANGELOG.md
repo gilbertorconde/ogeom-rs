@@ -42,6 +42,18 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A line touching a circle or ellipse in its plane meets it in closed
+  form.** The closed form left every tangent line/conic pair to the
+  sampling path, at about a millisecond a pair, and a rolling-ball blend
+  is tangent to its faces by construction: rounding all twelve edges of a
+  10 mm cube at radius 1 ran 992 such pairs and took 796 ms. A line whose
+  quadratic along the conic has a double root to within that root's own
+  rounding bound is now answered as the one touch the sampling path
+  reports, its reach the same valley measured with the exact distance; a
+  touch outside a trim answers empty where a lower bound on the curves'
+  distance clears the gap. Near-tangent lines that miss or cross, and
+  touches the sampling path would read as overlap, still go to it. The
+  cube now rounds in 124 ms, to the same 26 faces and volume.
 - **A rim whose blend's rail passes a sphere's pole closer than a stride
   of the march refuses by name (#365).** The rail's chart turns half
   round within that stride, which no fit through the stations follows;
