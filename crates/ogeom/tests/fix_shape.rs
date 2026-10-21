@@ -6,7 +6,7 @@ use ogeom::algo::{
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{PlaneSurface, SurfaceGeometry};
-use ogeom::math::{Direction, Frame, Plane, Point};
+use ogeom::math::{Direction, Frame, Plane, Point, Point2};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{FaceData, Location, Model, NodeData, Shape, ShapeType, explore_unique};
 
@@ -167,6 +167,8 @@ fn a_sound_shape_is_left_alone() {
     assert_eq!(fixed.report.edges_collapsed, 0);
     assert_eq!(fixed.report.edges_trimmed, 0);
     assert!(fixed.report.sewn.is_none(), "a solid is not sewn");
+    assert_eq!(fixed.report.pcurve_gaps_stated, 0);
+    assert_eq!(fixed.report.curve_ends_stated, 0);
     assert!(fixed.report.after.is_valid());
     let _ = make_vertex(&mut model, Point::ORIGIN);
 }
@@ -691,4 +693,161 @@ fn joining_seam_columns_leaves_an_operand_as_it_was() {
         .count();
     assert_eq!(plain, 2, "the drum's own edge keeps both pcurves");
     assert!(!check(&model, &drum, T).unwrap().is_valid());
+}
+
+/// A box with one straight pcurve moved `off` across its plane, parallel
+/// to where it was: lifted, it runs `off` beside its edge's curve.
+fn box_with_a_pcurve_off(model: &mut Model, off: f64) -> Shape {
+    use ogeom::geom::{Line2d, PlanarCurve};
+    use ogeom::topo::EdgeRepr;
+    let block = make_box(model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edge = explore_unique(model, &block, ShapeType::Edge).unwrap()[0].clone();
+    let NodeData::Edge(data) = model.node(&edge).unwrap().data().clone() else {
+        panic!("an edge");
+    };
+    let (slot, id) = data
+        .representations
+        .iter()
+        .enumerate()
+        .find_map(|(i, repr)| match repr {
+            EdgeRepr::PCurve { curve, .. } => Some((i, *curve)),
+            _ => None,
+        })
+        .expect("a box edge has a pcurve on each plane");
+    let Some(PlanarCurve::Line(line)) = model.geometry().pcurve(id).cloned() else {
+        panic!("a box's pcurves are lines");
+    };
+    let mut axis = line.axis();
+    let d = axis.direction;
+    axis.location = Point2::new(axis.location.x - d.y() * off, axis.location.y + d.x() * off);
+    let (start, end) = ogeom::geom::Curve2d::domain(&line);
+    let moved = model
+        .geometry_mut()
+        .add_pcurve(Line2d::over(axis, start, end).unwrap().into());
+    if let NodeData::Edge(data) = model.node_mut(&edge).unwrap().data_mut()
+        && let EdgeRepr::PCurve { curve, .. } = &mut data.representations[slot]
+    {
+        *curve = moved;
+    }
+    block
+}
+
+/// A pcurve a hundredth of a millimetre beside its curve, farther than the
+/// edge states: the edge widens to the gap, as a reader records the same
+/// slop, and the box checks clean and measures what it did.
+#[test]
+fn a_pcurve_off_its_curve_within_reach_widens_its_edge() {
+    let mut model = Model::new();
+    let off = 0.01;
+    let block = box_with_a_pcurve_off(&mut model, off);
+    let before = check(&model, &block, T).unwrap();
+    assert!(
+        before
+            .problems
+            .iter()
+            .any(|p| p.what.contains("leaves its curve")),
+        "{before}"
+    );
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &block, T).unwrap();
+    assert_eq!(fixed.report.pcurve_gaps_stated, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let widened = explore_unique(&model, &fixed.shape, ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .map(|e| model.tolerance_of(e).unwrap().unwrap().get())
+        .fold(0.0, f64::max);
+    assert!(
+        widened >= off && widened < off * (1.0 + 1e-3),
+        "the widest edge states the gap: {widened}"
+    );
+    let v = ogeom::algo::volume_properties(&model, &fixed.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 1000.0).abs() < 1e-6, "{v}");
+}
+
+/// A pcurve five millimetres off its curve is no slop: widening the edge
+/// that far would call two places five millimetres apart one. It is left
+/// as it is and still reported.
+#[test]
+fn a_pcurve_off_its_curve_past_reach_is_left_reported() {
+    let mut model = Model::new();
+    let block = box_with_a_pcurve_off(&mut model, 5.0);
+    let fixed = ogeom::heal::fix_shape(&mut model, &block, T).unwrap();
+    assert_eq!(fixed.report.pcurve_gaps_stated, 0);
+    assert!(
+        fixed
+            .report
+            .after
+            .problems
+            .iter()
+            .any(|p| p.what.contains("leaves its curve")),
+        "{}",
+        fixed.report.after
+    );
+}
+
+/// A box corner moved two hundredths of a millimetre off the three lines
+/// that end at it, farther than any of them or the corner states: the
+/// corner widens to the gap and the box checks clean.
+#[test]
+fn a_vertex_its_curves_miss_within_reach_widens() {
+    let mut model = Model::new();
+    let block = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let corner = explore_unique(&model, &block, ShapeType::Vertex).unwrap()[0].clone();
+    let miss = 0.02;
+    if let NodeData::Vertex(data) = model.node_mut(&corner).unwrap().data_mut() {
+        data.point = Point::new(data.point.x, data.point.y, data.point.z + miss);
+    }
+    let before = check(&model, &block, T).unwrap();
+    let stops = before
+        .problems
+        .iter()
+        .filter(|p| p.what.starts_with("curve stops"))
+        .count();
+    assert_eq!(stops, 3, "{before}");
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &block, T).unwrap();
+    assert_eq!(fixed.report.curve_ends_stated, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let reach = explore_unique(&model, &fixed.shape, ShapeType::Vertex)
+        .unwrap()
+        .iter()
+        .map(|v| model.tolerance_of(v).unwrap().unwrap().get())
+        .fold(0.0, f64::max);
+    assert!(
+        reach >= miss && reach < miss * (1.0 + 1e-9),
+        "the corner states the gap: {reach}"
+    );
+}
+
+/// A corner five millimetres off its lines is a missing piece, not slop:
+/// it stays as it is and reported.
+#[test]
+fn a_vertex_its_curves_miss_past_reach_is_left_reported() {
+    let mut model = Model::new();
+    let block = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let corner = explore_unique(&model, &block, ShapeType::Vertex).unwrap()[0].clone();
+    if let NodeData::Vertex(data) = model.node_mut(&corner).unwrap().data_mut() {
+        data.point = Point::new(data.point.x, data.point.y, data.point.z + 5.0);
+    }
+    let fixed = ogeom::heal::fix_shape(&mut model, &block, T).unwrap();
+    assert_eq!(fixed.report.curve_ends_stated, 0);
+    assert!(
+        fixed
+            .report
+            .after
+            .problems
+            .iter()
+            .any(|p| p.what.starts_with("curve stops")),
+        "{}",
+        fixed.report.after
+    );
 }

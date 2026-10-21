@@ -42,6 +42,21 @@ bump may break the API and a patch bump may not.
   1e-9, and a square of four edges lofted to one of eight is the prism.
   With guide curves the walls are the guided Gordon sheet, capped: circles
   on a cone along two of its rulings are the frustum (#394).
+- **`fix_shape` states the slop an imported boundary carries.** An edge
+  whose pcurve stands off its curve farther than the edge states, and a
+  vertex a curve ends away from farther than either states, stayed
+  broken: `check` reported "has a pcurve that leaves its curve" and
+  "curve stops … from the vertex it should meet" after the fix as
+  before. These are the two most frequent defects the STEP reader meets
+  (some 27 000 and 23 000 in the two real-world assemblies), and the
+  reader records them by widening; `fix_shape` now does the same for a
+  shape no reader built. The edge widens to its pcurves' gap, measured
+  at least as densely as `check` samples, and the vertex to the widest
+  gap of the curves ending at it, each only where the gap is within the
+  reach a fitted trim is allowed (a millimetre at unit scale). A wider
+  gap is a missing piece, not slop, and stays reported. The report counts
+  both (`pcurve_gaps_stated`, `curve_ends_stated`). The remaining
+  ShapeFix gaps are ranked in #397.
 
 - **`apply_draft` drafts a face the neutral plane does not reach.** A
   fitted patch, or a wall of revolution about an oblique neutral plane,

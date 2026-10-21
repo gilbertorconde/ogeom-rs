@@ -23,7 +23,12 @@
 //! - loose faces (a compound of them, or an open shell) are sewn where
 //!   they share edges;
 //! - a face facing into its solid's material is turned;
-//! - tolerances are tightened to what the geometry needs.
+//! - tolerances are tightened to what the geometry needs;
+//! - an edge whose pcurves stand off its curve by more than it states, and
+//!   a vertex a curve it bounds ends away from by more than either states,
+//!   widen to the gap measured, where that gap is within the reach a
+//!   fitted trim is allowed: slop a reader would have recorded the same
+//!   way. A gap past that reach is no slop and stays reported.
 //!
 //! What is not, and where it lives: small faces and small solids stay
 //! (removing a face opens the shell it is in; that is defeaturing, and
@@ -33,8 +38,8 @@
 use ogeom_core::FastMap;
 
 use ogeom_algo::{
-    Diagnosis, History, ProbeCache, check_kept, edge_vertices, linear_properties, make_wire,
-    order_edges, sew,
+    Diagnosis, History, ProbeCache, check_kept, edge_pcurve_gap, edge_vertices, linear_properties,
+    make_wire, order_edges, sew,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_mesh::Deflection;
@@ -66,6 +71,10 @@ pub struct FixReport {
     /// Faces turned the right way out: each faced into its solid's
     /// material.
     pub faces_turned: usize,
+    /// Edges widened to how far their pcurves stand off their curves.
+    pub pcurve_gaps_stated: usize,
+    /// Vertices widened to how far the curves they bound end from them.
+    pub curve_ends_stated: usize,
 }
 
 /// A fixed shape: the result, its history, and the report.
@@ -171,6 +180,10 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     }
 
     let tolerances_reduced = reduce_tolerances(model, &current, tol)?;
+    // After the reduction, which measures more coarsely than the checker
+    // and may leave an edge tighter than its pcurves' gap.
+    let pcurve_gaps_stated = state_pcurve_gaps(model, &current, tol)?;
+    let curve_ends_stated = state_curve_ends(model, &current, tol)?;
     // Last, because every step above may leave a vertex tighter than an
     // edge it bounds (a reduction tightens edges and faces, never below
     // what they bound, but a shape can arrive broken), and containment is
@@ -190,8 +203,80 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             tolerances_reduced,
             tolerances_widened,
             faces_turned,
+            pcurve_gaps_stated,
+            curve_ends_stated,
         },
     })
+}
+
+/// Widen every edge whose pcurves stand off its curve farther than it
+/// states, by no more than a fitted trim may stand off its surface, to the
+/// gap, measured as densely as the checker samples and more. Returns how
+/// many edges widened.
+fn state_pcurve_gaps(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<usize> {
+    let cap = tol.confusion() * TRIM_CAP;
+    let edges = explore_unique(model, shape, ShapeType::Edge)?;
+    let gaps = {
+        let model = &*model;
+        ogeom_core::parallel::map_ordered(&edges, |_, edge| edge_pcurve_gap(model, edge, tol))
+    };
+    let mut slack = Vec::new();
+    for (edge, gap) in edges.into_iter().zip(gaps) {
+        let Some(gap) = gap? else { continue };
+        let stated = model.tolerance_of(&edge)?.map_or(0.0, |t| t.get());
+        if gap > stated && gap <= cap {
+            slack.push(edge);
+        }
+    }
+    ogeom_algo::state_pcurve_gaps_of(model, &slack, tol)?;
+    Ok(slack.len())
+}
+
+/// Widen every vertex that a curve it bounds ends away from, farther than
+/// both the vertex and the edge state and by no more than a fitted trim
+/// may stand off its surface, to the widest such gap. Measured as the
+/// checker measures it: the curve's point at the end of its range, placed
+/// as the edge is, against the vertex placed as it is. Returns how many
+/// vertices widened.
+fn state_curve_ends(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResult<usize> {
+    let cap = tol.confusion() * TRIM_CAP;
+    let mut widest: FastMap<TShapeId, usize> = FastMap::default();
+    let mut widened: Vec<(Shape, f64)> = Vec::new();
+    for edge in explore_unique(model, shape, ShapeType::Edge)? {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let reach = data.tolerance.get().max(tol.confusion());
+        let placement = edge.transform(model.datums())?;
+        let bounds = model.children_of(&edge)?;
+        for (parameter, vertex) in [(range.0, bounds.first()), (range.1, bounds.last())] {
+            let Some(vertex) = vertex else { continue };
+            let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+                continue;
+            };
+            let placed = vertex.transform(model.datums())?.apply(data.point);
+            let on_curve =
+                placement.apply(ogeom_geom::Curve3d::point_at(geometry, parameter, tol)?);
+            let gap = on_curve.distance(placed);
+            if gap > reach.max(data.tolerance.get()) && gap <= cap {
+                let at = *widest.entry(vertex.node()).or_insert_with(|| {
+                    widened.push((vertex.clone(), gap));
+                    widened.len() - 1
+                });
+                widened[at].1 = widened[at].1.max(gap);
+            }
+        }
+    }
+    for (vertex, gap) in &widened {
+        model.widen(vertex, ogeom_core::Tolerance::new(*gap)?)?;
+    }
+    Ok(widened.len())
 }
 
 /// Stage a rebuilt wire for every wire whose edges do not walk end to end
