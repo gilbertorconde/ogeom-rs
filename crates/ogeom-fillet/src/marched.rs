@@ -2941,6 +2941,36 @@ fn rail_image(
     let chart_target = if steepest > 0.0 { aim / steepest } else { aim };
     let fitted = ogeom_geom::fit::fit_points_2d_at_closed(&params, &chart, 3, chart_target, tol)?;
     if !fitted.met && fitted.error * steepest > fit_target {
+        // A rail passing a sphere's pole closer than one stride between its
+        // stations turns half the chart round within that stride, a turn no
+        // fit through the stations' samples follows.
+        if let SurfaceGeometry::Sphere(sphere) = host {
+            let sphere = sphere.sphere();
+            let axis = sphere.frame().z().vector() * sphere.radius();
+            let centre = sphere.frame().origin();
+            let mut nearest = f64::INFINITY;
+            for &t in &params {
+                let p = curve.point_at(t, tol)?;
+                nearest = nearest.min(p.distance(centre + axis).min(p.distance(centre - axis)));
+            }
+            let mut stride: f64 = 0.0;
+            for w in u_params.windows(2) {
+                stride = stride.max(
+                    curve
+                        .point_at(w[0], tol)?
+                        .distance(curve.point_at(w[1], tol)?),
+                );
+            }
+            if nearest < stride {
+                ogeom_bail!(
+                    NotDone,
+                    "the blend's rail passes the sphere's pole {nearest} away, within a \
+                     stride of the march, where its chart turns faster than the \
+                     stations follow; a rail within a hair of the pole is still owed; \
+                     see docs/PARITY.md, fillet.edge-blends"
+                );
+            }
+        }
         ogeom_bail!(
             NotDone,
             "a rail's chart image reached {} against a target of {chart_target}",

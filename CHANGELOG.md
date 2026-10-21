@@ -42,6 +42,13 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A rim whose blend's rail passes a sphere's pole closer than a stride
+  of the march refuses by name (#365).** The rail's chart turns half
+  round within that stride, which no fit through the stations follows;
+  the refusal now says so rather than reporting the fit's error. A bore
+  whose wall toward the pole is thinner than the ball blends as a wider
+  wall does, which a test now holds.
+
 - **`unify_same_domain` merges the curved faces it still left split.**
   - Faces that already walk a seam merge. Two cylinder bands stacked end
     to end become one band, its seam running on from one band's into the

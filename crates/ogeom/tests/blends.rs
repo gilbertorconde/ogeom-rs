@@ -3303,6 +3303,101 @@ fn a_rim_whose_rail_rounds_the_sphere_s_pole_blends() {
     );
 }
 
+/// The bore of [`a_rim_whose_rail_rounds_the_sphere_s_pole_blends`] down
+/// the ball's axis `offset` off it, `radius` wide, rounded at the rim on
+/// the pole's side at radius 1: the blend, or why it refused.
+fn bore_beside_the_pole(offset: f64, radius: f64) -> (Model, ogeom::core::OgeomResult<Shape>) {
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(
+        Point::new(offset, 0.0, -20.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let bore = ogeom::algo::make_cylinder(&mut model, frame, radius, 40.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &ball, &bore, T)
+        .unwrap()
+        .shape;
+    let near = Point::new(offset + radius, 0.0, 0.0);
+    let top = (100.0 - (near - Point::ORIGIN).magnitude().powi(2)).sqrt();
+    let rim = edge_near(&model, &drilled, near + Vector::new(0.0, 0.0, top));
+    let blended = ogeom::fillet::fillet_edge(&mut model, &drilled, &rim, 1.0, T).map(|b| b.shape);
+    (model, blended)
+}
+
+/// A bore beside the pole whose wall toward the pole is thinner than the
+/// ball (a tenth of a millimetre against a ball two across): the ball's
+/// rail still passes over the pole, and the blend agrees with the same
+/// bore turned onto another axis, which keeps the pole out of the leg.
+#[test]
+#[ignore = "heavy"]
+fn a_bore_whose_wall_toward_the_pole_is_thinner_than_the_ball_blends() {
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    for (offset, radius) in [(2.0, 1.9), (1.0, 0.9)] {
+        let (model, blended) = bore_beside_the_pole(offset, radius);
+        let blended = blended.unwrap();
+        let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let volume = ogeom::algo::volume_properties(&model, &blended, fine, T)
+            .unwrap()
+            .mass;
+        // The same bore along x, its rim on the ball's equator side.
+        let mut model = Model::new();
+        let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(
+            Point::new(-20.0, 0.0, offset),
+            Direction::X,
+            Direction::Z,
+            T,
+        )
+        .unwrap();
+        let bore = ogeom::algo::make_cylinder(&mut model, frame, radius, 40.0, T)
+            .unwrap()
+            .shape;
+        let drilled = ogeom::boolean::cut(&mut model, &ball, &bore, T)
+            .unwrap()
+            .shape;
+        let near = Point::new(0.0, 0.0, offset + radius);
+        let reach = (100.0 - (near - Point::ORIGIN).magnitude().powi(2)).sqrt();
+        let rim = edge_near(&model, &drilled, near + Vector::new(reach, 0.0, 0.0));
+        let turned = ogeom::fillet::fillet_edge(&mut model, &drilled, &rim, 1.0, T)
+            .unwrap()
+            .shape;
+        let other = ogeom::algo::volume_properties(&model, &turned, fine, T)
+            .unwrap()
+            .mass;
+        // Each blend is fitted to its own tolerance, as in the bore of
+        // `a_rim_whose_rail_rounds_the_sphere_s_pole_blends`.
+        assert!(
+            (volume - other).abs() < 5e-5 * volume,
+            "offset {offset}: {volume} against {other}"
+        );
+    }
+}
+
+/// A bore whose ball's rail passes the pole closer than a stride of the
+/// march: the rail's chart turns half round within that stride, which no
+/// fit through the stations follows, and the blend refuses saying so.
+#[test]
+fn a_rim_whose_rail_passes_within_a_stride_of_the_pole_refuses_by_name() {
+    let (_, blended) = bore_beside_the_pole(2.499, 1.5);
+    let refusal = blended
+        .expect_err("a rail within a hair of the pole")
+        .to_string();
+    assert!(
+        refusal.contains("within a stride of the march"),
+        "{refusal}"
+    );
+}
+
 /// A ring drilled through its tube: the seat runs round the drill on the
 /// torus, a host whose seat has no closed form.
 #[test]
