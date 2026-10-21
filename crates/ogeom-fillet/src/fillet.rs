@@ -2024,7 +2024,7 @@ pub(crate) fn seated_fillet(
     };
 
     let faces = [leg_a, leg_b, cap0, cap1, blend.reversed()];
-    let mut wedge = wedge_solid(model, &faces, tol)?;
+    let mut wedge = wedge_solid(model, &faces, false, tol)?;
     // Wide and deep enough to hold all of the wedge behind each plane.
     let span = length + (centre.distance(apex0) + radius) * 4.0;
     for &plane in trims {

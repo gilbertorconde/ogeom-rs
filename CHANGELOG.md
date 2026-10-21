@@ -134,6 +134,14 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A straight-seat fillet's wedge is built without measuring its
+  pcurves.** Every pcurve of the wedge a fillet between two planes takes
+  away or adds is its edge's closed-form image, lines and arcs on the legs
+  and caps and rulings and circles on the blend cylinder, so it stands
+  within rounding of its edge and stating the gaps widened nothing. The
+  measurement sampled each pcurve some 580 times, about 5% of rounding all
+  twelve edges of a 10 mm cube. Wedges that may carry a fitted pcurve
+  still measure theirs. The cube rounds to the same 26 faces and volume.
 - **A line touching a circle or ellipse in its plane meets it in closed
   form.** The closed form left every tangent line/conic pair to the
   sampling path, at about a millisecond a pair, and a rolling-ball blend
