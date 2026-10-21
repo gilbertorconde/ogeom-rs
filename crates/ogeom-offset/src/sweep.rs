@@ -25,6 +25,10 @@ use ogeom_geom::{
 use ogeom_math::{Circle, Direction, Frame, Plane, Point, Point2, Torus, Transform, Vector};
 use ogeom_topo::{EdgeData, EdgeRepr, Filter, Model, Shape, ShapeType, VertexData, explore};
 
+mod evolving;
+
+pub use evolving::{PipeEvolution, make_pipe_shell_evolving};
+
 /// Sweep a circular profile of `radius` along a spine edge.
 ///
 /// A straight spine gives a cylinder, a full circular spine a torus, an arc
@@ -4020,6 +4024,23 @@ struct CornerJoin {
 }
 
 impl SpineWalk<'_> {
+    /// The spine edge and its parameter a fraction `f` of the way from
+    /// station `j` to the next: the next station's edge, walked from the
+    /// station on it or from the edge's start.
+    fn place_between(&self, j: usize, f: f64) -> (usize, f64) {
+        let st = self.stations;
+        let edge = st[j + 1].edge;
+        let (_, range, reversed) = &self.curves[edge];
+        let t_from = if st[j].edge == edge {
+            st[j].t
+        } else if *reversed {
+            range.1
+        } else {
+            range.0
+        };
+        (edge, t_from + (st[j + 1].t - t_from) * f)
+    }
+
     /// The spine point, unit tangent and frame normal at `s` within the run
     /// `(rs, re)`.
     fn frame_at(
@@ -4049,15 +4070,8 @@ impl SpineWalk<'_> {
         if f <= 0.0 {
             return Ok(at(j));
         }
-        let (curve, range, reversed) = &self.curves[st[j + 1].edge];
-        let t_from = if st[j].edge == st[j + 1].edge {
-            st[j].t
-        } else if *reversed {
-            range.1
-        } else {
-            range.0
-        };
-        let t = t_from + (st[j + 1].t - t_from) * f;
+        let (edge, t) = self.place_between(j, f);
+        let (curve, _, reversed) = &self.curves[edge];
         let p = curve.point_at(t, tol)?;
         let d = curve.d1_at(t, tol)?;
         let m = d.magnitude();
@@ -5198,6 +5212,43 @@ pub fn make_pipe_shell_with(
     Ok(built)
 }
 
+/// Refuse a profile on `plane` that does not stand square to the spine at
+/// its start `at`: square to the start tangent, read exactly off the first
+/// edge, to an angle's tolerance, and through the start point.
+pub(crate) fn profile_square_at_start(
+    model: &Model,
+    plane: &Plane,
+    spine: &Shape,
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let exact_t0 = {
+        let first = match model.kind_of(spine)? {
+            ShapeType::Edge => spine.clone(),
+            _ => model.ordered_children_of(spine)?[0].clone(),
+        };
+        let (curve, range) = spine_curve_of(model, &first)?;
+        let reversed = first.orientation() == ogeom_topo::Orientation::Reversed;
+        let d = curve.d1_at(if reversed { range.1 } else { range.0 }, tol)?;
+        let d = if reversed { -d } else { d };
+        d / d.magnitude()
+    };
+    if plane.normal().vector().cross(exact_t0).magnitude() > tol.angular() {
+        ogeom_bail!(
+            Construction,
+            "the profile leans along its spine; a pipe shell runs square to \
+             the start"
+        );
+    }
+    if plane.distance_to(at) > tol.confusion() * 100.0 {
+        ogeom_bail!(
+            Construction,
+            "the profile does not sit at the spine's start"
+        );
+    }
+    Ok(())
+}
+
 /// The legs of a spine made only of straight edges, in order, each as its
 /// start and its displacement; `None` where any edge is curved.
 fn straight_legs(
@@ -5440,7 +5491,6 @@ fn densified(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<SpineStation>> {
-    const MOST: f64 = 0.05;
     let edges: Vec<Shape> = match model.kind_of(spine)? {
         ShapeType::Edge => vec![spine.clone()],
         ShapeType::Wire => model.ordered_children_of(spine)?,
@@ -5465,7 +5515,7 @@ fn densified(
                 continue;
             }
             let turn = normals[i].dot(normals[i + 1]).clamp(-1.0, 1.0).acos();
-            if turn <= MOST {
+            if turn <= MOST_TURN {
                 continue;
             }
             let curve = &curves[here.edge];
@@ -5502,6 +5552,10 @@ fn densified(
     Ok(stations)
 }
 
+/// The most a law's frame turns, in radians, between two neighbouring
+/// stations of a law pipe.
+const MOST_TURN: f64 = 0.05;
+
 /// The most sections a law pipe's skin is built through.
 const MOST_STATIONS: usize = 2048;
 
@@ -5517,6 +5571,43 @@ pub(crate) fn station_frame(
         Direction::new(station.tangent, tol)?,
         Direction::new(normal, tol)?,
         tol,
+    )
+}
+
+/// The range over which `curve` moved by `motion` runs between the moved
+/// ends of `range`. A rigid motion keeps every parameter; under a scaling
+/// a parameter that is a length scales with it, and an angle or a
+/// spline's parameter stays.
+fn moved_range(
+    curve: &ogeom_geom::Curve,
+    range: (f64, f64),
+    motion: &Transform,
+    tol: Tolerances,
+) -> OgeomResult<(f64, f64)> {
+    let k = motion.scale_factor().abs();
+    if k == 1.0 {
+        return Ok(range);
+    }
+    let ends = (
+        motion.apply(curve.point_at(range.0, tol)?),
+        motion.apply(curve.point_at(range.1, tol)?),
+    );
+    let moved = curve.transformed(motion, tol)?;
+    for candidate in [range, (range.0 * k, range.1 * k)] {
+        // A candidate outside the moved curve's domain is not its range.
+        let (Ok(a), Ok(b)) = (
+            moved.point_at(candidate.0, tol),
+            moved.point_at(candidate.1, tol),
+        ) else {
+            continue;
+        };
+        if a.distance(ends.0) <= tol.confusion() && b.distance(ends.1) <= tol.confusion() {
+            return Ok(candidate);
+        }
+    }
+    ogeom_bail!(
+        Construction,
+        "a scaled ring's edge parameter is neither a length nor kept"
     )
 }
 
@@ -5546,7 +5637,9 @@ fn moved_ring(
     for edge in &edges {
         let (curve, range) = spine_curve_of(model, edge)?;
         let placement = edge.transform(model.datums())?;
-        let curve = curve.transformed(&(*motion * placement), tol)?;
+        let whole = *motion * placement;
+        let range = moved_range(&curve, range, &whole, tol)?;
+        let curve = curve.transformed(&whole, tol)?;
         let (a, b) = (curve.point_at(range.0, tol)?, curve.point_at(range.1, tol)?);
         let (va, vb) = (vertex(model, a), vertex(model, b));
         let built = ogeom_algo::make_edge_between(model, curve, range, &va, &vb, tol)?.shape;
@@ -5561,7 +5654,9 @@ fn moved_ring(
 
 /// A profile swept under a law that turns it about the spine, as the loft
 /// through its outer ring placed at every station by the law's frame: the
-/// section keeps the place it has in the frame at the spine's start.
+/// section keeps the place it has in the frame at the spine's start, and
+/// where `evolution` is given it is also scaled and twisted there by the
+/// share of the spine's length run.
 #[allow(clippy::too_many_arguments)]
 fn law_loft(
     model: &mut Model,
@@ -5569,6 +5664,7 @@ fn law_loft(
     spine: &Shape,
     stations: &[SpineStation],
     law: &PipeLaw<'_>,
+    evolution: Option<evolving::PipeEvolution>,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -5587,7 +5683,6 @@ fn law_loft(
     let start = station_frame(&stations[0], normals[0], tol)?;
     let mut kept: Vec<SpineStation> = Vec::with_capacity(stations.len());
     let mut kept_normals: Vec<Vector> = Vec::with_capacity(stations.len());
-    let mut sections: Vec<Shape> = Vec::with_capacity(stations.len());
     for (station, normal) in stations.iter().zip(&normals) {
         if kept
             .last()
@@ -5597,17 +5692,47 @@ fn law_loft(
         }
         kept.push(*station);
         kept_normals.push(*normal);
-        let frame = station_frame(station, *normal, tol)?;
-        let motion = Transform::from_frame(&frame) * Transform::to_frame(&start);
-        sections.push(moved_ring(model, &rings[0], &motion, tol)?);
     }
     // Between two stations the spine is read off its curve and the law
-    // asked for its normal there, as at a station.
+    // asked for its normal there, as at a station; the rotation-minimizing
+    // and Frenet laws carry it from the station before.
     let walk = SpineWalk {
         curves: walk_curves(model, spine)?,
         stations: &kept,
         normals: &kept_normals,
     };
+    let lengths = match evolution {
+        Some(_) => Some(evolving::SpineLengths::of(&walk.curves, tol)?),
+        None => None,
+    };
+    // The scale and twist at `s`, in the start frame's coordinates.
+    let evolved = |s: f64| -> OgeomResult<Transform> {
+        let (Some(evolution), Some(lengths)) = (evolution, &lengths) else {
+            return Ok(Transform::IDENTITY);
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let last = (kept.len() - 1) as f64;
+        let s = s.clamp(0.0, last);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let j = s.floor() as usize;
+        #[allow(clippy::cast_precision_loss)]
+        let f = s - j as f64;
+        let (edge, t) = if f <= 0.0 {
+            (kept[j].edge, kept[j].t)
+        } else {
+            walk.place_between(j, f)
+        };
+        evolution.local(lengths.fraction(&walk.curves, edge, t, tol)?, tol)
+    };
+    let mut sections: Vec<Shape> = Vec::with_capacity(kept.len());
+    for (i, (station, normal)) in kept.iter().zip(&kept_normals).enumerate() {
+        let frame = station_frame(station, *normal, tol)?;
+        #[allow(clippy::cast_precision_loss)]
+        let local = evolved(i as f64)?;
+        let motion = Transform::from_frame(&frame) * local * Transform::to_frame(&start);
+        sections.push(moved_ring(model, &rings[0], &motion, tol)?);
+    }
+    let carried = matches!(law, PipeLaw::RotationMinimizing | PipeLaw::Frenet);
     let held: std::cell::RefCell<ogeom_core::FastMap<u64, Transform>> =
         std::cell::RefCell::default();
     let guide = guide_curves(model, law)?;
@@ -5615,15 +5740,19 @@ fn law_loft(
         if let Some(m) = held.borrow().get(&s.to_bits()) {
             return Ok(*m);
         }
-        let (at, tangent, _) = walk.frame_at(s, (0, kept.len() - 1), tol)?;
+        let (at, tangent, carried_normal) = walk.frame_at(s, (0, kept.len() - 1), tol)?;
         let here = SpineStation {
             at,
             tangent,
             ..kept[0]
         };
-        let normal = law_normals_on(&guide, &[here], law, tolerance, tol)?[0];
+        let normal = if carried {
+            carried_normal
+        } else {
+            law_normals_on(&guide, &[here], law, tolerance, tol)?[0]
+        };
         let frame = station_frame(&here, normal, tol)?;
-        let m = Transform::from_frame(&frame) * Transform::to_frame(&start);
+        let m = Transform::from_frame(&frame) * evolved(s)? * Transform::to_frame(&start);
         held.borrow_mut().insert(s.to_bits(), m);
         Ok(m)
     };
@@ -5641,17 +5770,20 @@ fn law_loft(
 /// `frenet` asks). Between two sections the section is blended in that
 /// frame by the length run along the spine, matched point to point from
 /// each section's own start, so the result follows the spine rather than
-/// the chord between the sections. The sections are closed wires, or
-/// faces without holes; the ends are capped. The first or last section may
-/// be a vertex where the spine starts or ends: the pipe closes to that
-/// point, uncapped there.
+/// the chord between the sections. The sections are closed wires or
+/// faces; the ends are capped. Faces may have holes, as many in every
+/// section: each hole, the `k`th of every section in turn, is swept the
+/// same way as a solid of its own and cut from the outer loop's. The first
+/// or last section may be a vertex where the spine starts or ends, where
+/// no section has a hole: the pipe closes to that point, uncapped there.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// there are fewer than two sections, a section is not planar or has a
-/// hole, the spine does not cross a section's plane, or the sections stand
-/// out of order along the spine;
+/// there are fewer than two sections, a section is not planar, the
+/// sections have holes and differ in their count or one is a point, the
+/// spine does not cross a section's plane, or the sections stand out of
+/// order along the spine;
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the skin
 /// cannot reach `tolerance`.
 pub fn make_pipe_sections(
@@ -5668,6 +5800,27 @@ pub fn make_pipe_sections(
             Construction,
             "a multisection pipe needs at least two sections"
         );
+    }
+    if let Some(loops) = holed_sections(model, sections)? {
+        // Each loop through the sections swept on its own, every hole's
+        // solid cut from the outer one.
+        let mut shape: Option<Shape> = None;
+        for rings in &loops {
+            let swept = make_pipe_sections(model, rings, spine, frenet, tolerance, tol)?.shape;
+            shape = Some(match shape {
+                None => swept,
+                Some(outer) => ogeom_bool::cut(model, &outer, &swept, tol)?.shape,
+            });
+        }
+        let Some(shape) = shape else {
+            ogeom_bail!(Construction, "a multisection pipe's sections have no loop");
+        };
+        let mut history = History::new();
+        history.generate(spine, shape.clone());
+        for section in sections {
+            history.generate(section, shape.clone());
+        }
+        return Ok(Built::new(shape, history));
     }
     let law = if frenet {
         PipeLaw::Frenet
@@ -5727,9 +5880,6 @@ pub fn make_pipe_sections(
         let ring = match model.kind_of(section)? {
             ShapeType::Face => {
                 let rings = model.ordered_children_of(section)?;
-                if rings.len() != 1 {
-                    ogeom_bail!(Construction, "a multisection pipe's section has no hole");
-                }
                 rings[0].clone()
             }
             ShapeType::Wire => section.clone(),
@@ -5899,6 +6049,46 @@ pub fn make_pipe_sections(
         built.history.generate(section, built.shape.clone());
     }
     Ok(built)
+}
+
+/// A multisection pipe's sections read loop by loop where any has a hole:
+/// the outer loops first, then each hole's loops, the `k`th hole of every
+/// section together. `None` where no section has a hole.
+fn holed_sections(model: &Model, sections: &[Shape]) -> OgeomResult<Option<Vec<Vec<Shape>>>> {
+    let mut read: Vec<Vec<Shape>> = Vec::with_capacity(sections.len());
+    for section in sections {
+        read.push(match model.kind_of(section)? {
+            ShapeType::Face => model.ordered_children_of(section)?,
+            _ => vec![section.clone()],
+        });
+    }
+    if read.iter().all(|rings| rings.len() == 1) {
+        return Ok(None);
+    }
+    for section in sections {
+        if model.kind_of(section)? == ShapeType::Vertex {
+            ogeom_bail!(
+                Construction,
+                "a multisection pipe with holes runs between faces; a point section \
+                 closes no hole"
+            );
+        }
+    }
+    let count = read[0].len();
+    if let Some(k) = read.iter().position(|rings| rings.len() != count) {
+        ogeom_bail!(
+            Construction,
+            "every section of a multisection pipe has as many holes; section {k} has {} \
+             and section 0 has {}",
+            read[k].len() - 1,
+            count - 1
+        );
+    }
+    Ok(Some(
+        (0..count)
+            .map(|j| read.iter().map(|rings| rings[j].clone()).collect())
+            .collect(),
+    ))
 }
 
 /// Stations added so every edge of the spine holds at least `count`
@@ -6216,7 +6406,7 @@ fn pipe_shell_law(
         );
     }
     if !classic {
-        return law_loft(model, profile, spine, &stations, law, tolerance, tol);
+        return law_loft(model, profile, spine, &stations, law, None, tolerance, tol);
     }
     if ring && kinks.is_empty() {
         return closed_pipe_shell(model, profile, spine, stations, frenet, tolerance, tol);
@@ -6421,32 +6611,7 @@ fn pipe_shell_law(
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
     let t0 = stations[0].tangent;
-    // Square to the spine's own start tangent, read exactly off its first
-    // edge, to an angle's tolerance.
-    let exact_t0 = {
-        let first = match model.kind_of(spine)? {
-            ShapeType::Edge => spine.clone(),
-            _ => model.ordered_children_of(spine)?[0].clone(),
-        };
-        let (curve, range) = spine_curve_of(model, &first)?;
-        let reversed = first.orientation() == ogeom_topo::Orientation::Reversed;
-        let d = curve.d1_at(if reversed { range.1 } else { range.0 }, tol)?;
-        let d = if reversed { -d } else { d };
-        d / d.magnitude()
-    };
-    if plane.normal().vector().cross(exact_t0).magnitude() > tol.angular() {
-        ogeom_bail!(
-            Construction,
-            "the profile leans along its spine; a pipe shell runs square to \
-             the start"
-        );
-    }
-    if plane.distance_to(stations[0].at) > tol.confusion() * 100.0 {
-        ogeom_bail!(
-            Construction,
-            "the profile does not sit at the spine's start"
-        );
-    }
+    profile_square_at_start(model, &plane, spine, stations[0].at, tol)?;
 
     // Transport: each loop expressed in the start frame's own 2D
     // coordinates, then re-expressed in every station's frame. A loop of one
@@ -7571,32 +7736,7 @@ fn closed_pipe_shell(
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
     let t0 = stations[0].tangent;
-    // Square to the spine's own start tangent, read exactly off its first
-    // edge, to an angle's tolerance.
-    let exact_t0 = {
-        let first = match model.kind_of(spine)? {
-            ShapeType::Edge => spine.clone(),
-            _ => model.ordered_children_of(spine)?[0].clone(),
-        };
-        let (curve, range) = spine_curve_of(model, &first)?;
-        let reversed = first.orientation() == ogeom_topo::Orientation::Reversed;
-        let d = curve.d1_at(if reversed { range.1 } else { range.0 }, tol)?;
-        let d = if reversed { -d } else { d };
-        d / d.magnitude()
-    };
-    if plane.normal().vector().cross(exact_t0).magnitude() > tol.angular() {
-        ogeom_bail!(
-            Construction,
-            "the profile leans along its spine; a pipe shell runs square to \
-             the start"
-        );
-    }
-    if plane.distance_to(stations[0].at) > tol.confusion() * 100.0 {
-        ogeom_bail!(
-            Construction,
-            "the profile does not sit at the spine's start"
-        );
-    }
+    profile_square_at_start(model, &plane, spine, stations[0].at, tol)?;
 
     // Frames with the loop's mismatch paid off: carry once more back to the
     // start, read the twist between departure and return, and spread it

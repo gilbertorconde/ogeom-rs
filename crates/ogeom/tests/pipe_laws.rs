@@ -540,3 +540,72 @@ fn a_fixed_section_far_from_the_origin_sweeps_its_prism() {
         assert!((v - 2.5).abs() < 2.5 * 1e-6, "o {o:e}: volume {v}");
     }
 }
+
+/// A square of side `2 half` with a circular hole of `radius`, both about
+/// `(0, y, 0)` in the plane square to Y there.
+fn holed_square(model: &mut Model, y: f64, half: f64, radius: f64) -> Shape {
+    let pts = [(-half, -half), (half, -half), (half, half), (-half, half)]
+        .map(|(x, z)| Point::new(x, y, z));
+    let outer = make_polygon(model, &pts, true, T).unwrap().shape;
+    let frame = Frame::new(Point::new(0.0, y, 0.0), Direction::Y, Direction::X, T).unwrap();
+    let hole = circle_wire(model, frame, radius);
+    let plane = Plane::new(frame);
+    make_face(model, PlaneSurface::new(plane).into(), &[outer, hole], T)
+        .unwrap()
+        .shape
+}
+
+/// Two holed squares down a line, the second half the size: the outer
+/// loops blend into the pyramid's frustum and the holes into the cone's,
+/// cut from it. Each solid's volume is `h (A₀ + √(A₀ A₁) + A₁) / 3`; the
+/// measured volume strays from the difference by at most the skin's
+/// tolerance and the mesh's chord over the walls' area, bounded by each
+/// loop's larger perimeter times the slant run.
+#[test]
+fn a_pipe_through_holed_sections_keeps_its_hole_down_the_path() {
+    let (h, skin, chord) = (20.0, 1e-3, 1e-3);
+    let mut model = Model::new();
+    let first = holed_square(&mut model, 0.0, 2.0, 1.0);
+    let last = holed_square(&mut model, h, 1.0, 0.5);
+    let spine = make_polygon(
+        &mut model,
+        &[Point::ORIGIN, Point::new(0.0, h, 0.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let pipe =
+        ogeom::offset::make_pipe_sections(&mut model, &[first, last], &spine, false, skin, T)
+            .unwrap()
+            .shape;
+    let found = ogeom::algo::check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let frustum = |a0: f64, a1: f64| h * (a0 + (a0 * a1).sqrt() + a1) / 3.0;
+    let want = frustum(16.0, 4.0) - frustum(PI, PI * 0.25);
+    let area = 16.0 * h.hypot(1.0) + 2.0 * PI * h.hypot(0.5);
+    let bound = (skin + chord) * area;
+    let v = volume(&model, &pipe);
+    assert!(
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
+    );
+}
+
+#[test]
+fn a_pipe_through_sections_with_different_hole_counts_is_refused_by_name() {
+    let mut model = Model::new();
+    let first = holed_square(&mut model, 0.0, 2.0, 1.0);
+    let last = square(&mut model);
+    let spine = make_polygon(
+        &mut model,
+        &[Point::ORIGIN, Point::new(0.0, -20.0, 0.0)],
+        false,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let err = ogeom::offset::make_pipe_sections(&mut model, &[first, last], &spine, false, 1e-3, T)
+        .unwrap_err();
+    assert!(err.to_string().contains("as many holes"), "{err}");
+}
