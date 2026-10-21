@@ -580,3 +580,105 @@ fn a_drum_wall_with_its_rim_a_period_off_its_seam_is_cut_as_at_home() {
         }
     }
 }
+
+/// A drum converted to a closed spline, its wall's seam stating its far
+/// side two periods from its near one rather than one, as a file may:
+/// both sides read the same points, but the window they bound is two
+/// periods wide and the rims meet neither. The far side is read a period
+/// from the near one, the one copy the chart covers, and every boolean is
+/// the drum's as stated at home.
+#[test]
+fn a_spline_drum_whose_seam_states_its_far_side_two_periods_off_is_cut_as_at_home() {
+    let cut_through = |away: bool, home: Option<f64>| -> f64 {
+        let mut model = Model::new();
+        let drum = make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let drum = ogeom::algo::to_nurbs(&mut model, &drum, T).unwrap().shape;
+        if away {
+            use ogeom::geom::{Curve2d as _, Surface as _};
+            let wall = explore_unique(&model, &drum, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|f| {
+                    let s = model.node(f).unwrap().data().as_face().unwrap().surface;
+                    model.geometry().surface(s).unwrap().is_closed_u(T)
+                })
+                .unwrap();
+            let surface = model.node(&wall).unwrap().data().as_face().unwrap().surface;
+            let ((u0, u1), _) = model.geometry().surface(surface).unwrap().domain();
+            let seam = explore_unique(&model, &wall, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .find_map(|e| {
+                    match model
+                        .node(&e)
+                        .unwrap()
+                        .data()
+                        .as_edge()
+                        .unwrap()
+                        .pcurve_for(surface, e.location())
+                    {
+                        Some(EdgeRepr::Seam {
+                            forward,
+                            reversed,
+                            range,
+                            ..
+                        }) => Some((*forward, *reversed, *range)),
+                        _ => None,
+                    }
+                })
+                .unwrap();
+            let (forward, reversed, range) = seam;
+            let near = model
+                .geometry()
+                .pcurve(forward)
+                .unwrap()
+                .point_at(range.0, T)
+                .unwrap()
+                .x;
+            let far = model
+                .geometry()
+                .pcurve(reversed)
+                .unwrap()
+                .point_at(range.0, T)
+                .unwrap()
+                .x;
+            let period = u1 - u0;
+            let off = ogeom::math::Transform2::translation(ogeom::math::Vector2::new(
+                (far - near).signum() * period,
+                0.0,
+            ));
+            let restated = model
+                .geometry()
+                .pcurve(reversed)
+                .unwrap()
+                .transformed(&off, T)
+                .unwrap();
+            *model.geometry_mut().pcurve_mut(reversed).unwrap() = restated;
+        }
+        let whole = home.unwrap_or_else(|| volume(&model, &drum));
+        let mut shared = 0.0;
+        for (x, y, radius) in [(2.0, 0.0, 0.5), (-1.0, 1.5, 0.8)] {
+            let tool = make_cylinder(
+                &mut model,
+                Frame::WORLD.with_origin(Point::new(x, y, -1.0)),
+                radius,
+                7.0,
+                T,
+            )
+            .unwrap()
+            .shape;
+            shared += all_three(&mut model, &drum, &tool, whole);
+        }
+        shared
+    };
+    let mut model = Model::new();
+    let home_drum = make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let home_volume = volume(&model, &home_drum);
+    let home = cut_through(false, None);
+    let away = cut_through(true, Some(home_volume));
+    assert!((away - home).abs() <= 1e-6 * home, "{away} against {home}");
+}

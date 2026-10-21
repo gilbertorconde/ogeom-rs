@@ -1536,6 +1536,53 @@ fn fold_seamed_rings(
         );
         Some(p.distance(m).max(m.distance(q)))
     };
+    // A seam's two sides stand one period apart across the direction its
+    // chart closes in; a file may state the far side whole periods
+    // further. On a chart that closes without repeating, only one of the
+    // two copies a period from the near side lies in the window: the far
+    // side is moved there, exactly, by whole periods.
+    for e in edges.iter_mut() {
+        let Some((other, orange)) = &e.other_side else {
+            continue;
+        };
+        let mid = |pc: &PlanarCurve, r: (f64, f64)| pc.point_at(f64::midpoint(r.0, r.1), tol);
+        let (near, far) = (mid(&e.pcurve, e.prange)?, mid(other, *orange)?);
+        let mut shift = ogeom_math::Vector2::new(0.0, 0.0);
+        for (axis, period) in periods.iter().enumerate() {
+            let Some(period) = *period else { continue };
+            if periodic[axis] {
+                continue;
+            }
+            let (from, to, lo, hi) = if axis == 0 {
+                (near.x, far.x, ua, ub)
+            } else {
+                (near.y, far.y, va, vb)
+            };
+            let turns = ((to - from) / period).round();
+            if turns.abs() < 2.0 || ((to - from) - turns * period).abs() > PARAM_SNAP {
+                continue;
+            }
+            let inside = |x: f64| x >= lo - PARAM_SNAP && x <= hi + PARAM_SNAP;
+            let copies: Vec<f64> = [-1.0, 1.0]
+                .into_iter()
+                .filter(|s| inside(from + s * period))
+                .collect();
+            if let [s] = copies.as_slice() {
+                let by = (from + s * period) - (from + turns * period);
+                if axis == 0 {
+                    shift.x = by;
+                } else {
+                    shift.y = by;
+                }
+            }
+        }
+        if shift.x != 0.0 || shift.y != 0.0 {
+            let by = ogeom_math::Transform2::translation(shift);
+            let moved = other.transformed(&by, tol)?;
+            let range = *orange;
+            e.other_side = Some((moved, range));
+        }
+    }
     let mut uses: ogeom_core::FastMap<EdgeKey, (usize, usize)> = ogeom_core::FastMap::default();
     for (i, e) in edges.iter().enumerate() {
         uses.insert(e.node, (i, 0));

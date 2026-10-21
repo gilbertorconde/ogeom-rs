@@ -94,6 +94,11 @@ bump may break the API and a patch bump may not.
   where the conic starts, which no face can run across. An elliptic wall
   fused with its mirror image and unified, its seam on the mirror plane,
   read back at 125.332 of 125.664; it now reads back exactly (#346).
+- **A boolean through a closed spline whose seam states its far side two
+  periods off builds.** Both sides read the same points, but the window
+  they bounded was two periods wide and the rims met neither column. On a
+  chart that closes without repeating, the far side is now read a period
+  from the near one, the one copy the chart covers (#344).
 
 - **A boolean through a face whose ring walks a seam both ways and states
   its rims on another branch of the chart builds.** A drum wall or a
