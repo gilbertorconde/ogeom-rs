@@ -1,8 +1,5 @@
 //! Value-semantics geometric primitives and the numerical machinery under them.
 //!
-//! *Elsewhere:* the `gp` primitives, the B-spline basis libraries, elementary
-//! curve/surface parameterization, and the solver half of a `math` package.
-//!
 //! Two things here are load-bearing and easy to get wrong:
 //!
 //! - `Direction` enforces its unit-length invariant in the type, not by

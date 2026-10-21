@@ -12,7 +12,7 @@ branch. Stop and report when only human gates remain.
 
 | Workflow | Job | Local equivalent | Gating |
 |---|---|---|---|
-| `ci.yml` | `check` (fmt, comment rot, clippy, tests twice, docs, book, parity) | `tools/check.sh` | yes |
+| `ci.yml` | `check` (fmt, comment rot, clippy, tests twice, docs, book, capabilities) | `tools/check.sh` | yes |
 | `ci.yml` | `msrv` | `cargo +<rust-version> check --workspace --all-targets` (`check.sh` runs it when the toolchain is installed) | yes |
 | `ci.yml` | `deny` | `cargo deny check` | yes |
 | `ci.yml` | `outside` | `cargo test` in `outside/` | no: information, never a reason to block a kernel change |
@@ -86,8 +86,8 @@ it into `tail` reports the pipe's status, not the script's.
      the case to the regression file or as a named test, then fix the owner.
      The suite runs twice in `check.sh` for exactly this reason: one green
      run is not proof.
-   - **The parity gate.** A verdict in `docs/parity/parity.toml` cites a
-     symbol or test that no longer exists, or `docs/PARITY.md` is stale. Fix
+   - **The capabilities gate.** A verdict in `docs/capabilities.toml` cites a
+     symbol or test that no longer exists, or `docs/CAPABILITIES.md` is stale. Fix
      the citation or regenerate the ledger; never delete the verdict to pass.
    - **The comment-rot lint.** The comment narrates a change or cites an
      issue. Rewrite it to describe present behaviour.

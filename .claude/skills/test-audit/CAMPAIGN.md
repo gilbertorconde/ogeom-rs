@@ -19,7 +19,7 @@ Done when every in-scope test file has a recorded baseline result.
 Split the surface into lanes along production owner boundaries, not file
 prefixes. For `ogeom-io` these could be the STEP reader, the STEP writer,
 IGES, the mesh formats, and the corpus suites. Include the crate's cases in
-`crates/ogeom/tests` and its citations in `docs/parity/parity.toml`.
+`crates/ogeom/tests` and its citations in `docs/capabilities.toml`.
 
 Done when every test file belongs to exactly one lane.
 
@@ -54,11 +54,11 @@ the assertions to carry into keepers, and the test-only items unlocked.
 ## 5. Cutover
 
 Edit lane by lane. With each lane, remove the test-only items it unlocks.
-Re-evidence any parity verdict that cited a retired test before retiring
+Re-evidence any capability verdict that cited a retired test before retiring
 it. Keep book anchors intact.
 
 Done when every lane plan is applied, each lane's keepers pass, and
-`tools/parity.py check` passes.
+`tools/capabilities.py check` passes.
 
 ## 6. Preservation review
 

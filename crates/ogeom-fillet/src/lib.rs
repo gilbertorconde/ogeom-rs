@@ -1,8 +1,5 @@
 //! Blending: constant- and variable-radius edge fillets, vertex blends, chamfers,
 //! and their 2D counterparts.
-//!
-//! *Elsewhere:* `ChFi2d`, `ChFi3d`, `ChFiDS`, `Blend`, `BlendFunc`, `BRepBlend`
-//! and `BRepFilletAPI`.
 
 pub mod analyse;
 pub mod bridge;

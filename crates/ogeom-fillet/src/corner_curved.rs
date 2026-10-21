@@ -100,7 +100,7 @@ pub(crate) fn curved_corner(
         ogeom_bail!(
             Construction,
             "a curved corner rounds where three faces meet; {} surfaces pass \
-             through this vertex; see docs/PARITY.md, fillet.edge-blends",
+             through this vertex; see docs/CAPABILITIES.md, fillet.edge-blends",
             hosts.len()
         );
     }

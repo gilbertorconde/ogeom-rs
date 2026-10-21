@@ -21,7 +21,7 @@
 # The kernel itself
 
 - [Scope](kernel/scope.md)
-- [The parity audit](kernel/parity.md)
-- [The parity ledger](kernel/parity-ledger.md)
+- [Capabilities](kernel/capabilities.md)
 - [Integration and bindings](kernel/integration.md)
 - [Contributing](kernel/contributing.md)
+- [Provenance](kernel/provenance.md)

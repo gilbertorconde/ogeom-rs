@@ -1,8 +1,5 @@
 //! Foundation layer: everything else in the workspace is shaped by this crate.
 //!
-//! *Elsewhere:* the `Standard` package, `Precision`, and the parts of a
-//! collections library that carry semantics rather than just storage.
-//!
 //! Four responsibilities:
 //!
 //! - **Arenas.** [`Arena`] and [`Key`]: typed generational index arenas in

@@ -21,14 +21,15 @@ or link any other CAD kernel.
 
 ## Scope and completeness
 
-The target is parity with the modelling modules of the established reference
-kernel, plus turning meshes into solids. [`docs/SCOPE.md`](docs/SCOPE.md)
-defines the boundary.
+The target is a complete solid-modelling kernel with its data exchange, plus
+turning meshes into solids. [`docs/SCOPE.md`](docs/SCOPE.md) defines the
+boundary.
 
-[`docs/PARITY.md`](docs/PARITY.md) checks every public class of those modules
-against 98 named capabilities. Each verdict cites the code and tests that back
-it, and the build fails if the two drift apart. Rows marked `partial` state
-their limits.
+[`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) records 90 named capabilities.
+Each verdict cites the code and tests that back it, and the build fails if the
+two drift apart. Rows marked `partial` state their limits.
+
+[`PROVENANCE.md`](PROVENANCE.md) records where the code and design came from.
 
 When the kernel cannot do something, it returns an error that says so. It does
 not return a guessed result.
@@ -54,7 +55,7 @@ not return a guessed result.
 | `ogeom-doc` | assemblies, colours, names, PMI |
 
 `tools/` holds a command-line tool, a software renderer, benchmarks and the
-parity scripts. `outside/` holds working code that is out of scope (constraint
+capability-ledger scripts. `outside/` holds working code that is out of scope (constraint
 solving, feature recognition, picking) in a separate workspace.
 
 ## Design
@@ -75,7 +76,7 @@ cargo test --workspace
 ```
 
 The full check that CI runs (formatting, lints, tests, docs, the guide and the
-parity audit):
+capability ledger):
 
 ```sh
 bash tools/check.sh   # needs mdbook: cargo install mdbook --locked

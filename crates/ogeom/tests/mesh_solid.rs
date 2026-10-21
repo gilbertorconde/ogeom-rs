@@ -742,7 +742,7 @@ fn a_fillet_beside_a_floor_drawn_in_strips_stays_a_cylinder() {
     assert_eq!(kinds(&back, &out.shape)[1..], [2, 0, 2, 0]);
 }
 
-/// The rounded block drawn the way OpenCascade and truck draw a drum, each
+/// The rounded block drawn the way other kernels commonly draw a drum, each
 /// fillet four flat strips from rim to rim, no row between, kept as a file
 /// so the converter sees the same triangles whatever the mesher draws. The
 /// innermost strips of the four bottom fillets have their sixteen corners

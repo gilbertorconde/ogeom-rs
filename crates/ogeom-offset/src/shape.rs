@@ -488,7 +488,7 @@ pub fn make_thick_solid_with(
             ogeom_bail!(
                 Construction,
                 "a tangent opening must be planar; a curved opening needs \
-                 the general rebuild; see docs/PARITY.md, offset.shell-thicken"
+                 the general rebuild; see docs/CAPABILITIES.md, offset.shell-thicken"
             );
         };
         let mut normal = p.plane().normal().vector();
@@ -794,7 +794,7 @@ pub(crate) fn rebuilt(
                 _ => ogeom_bail!(
                     Construction,
                     "offsetting a face on this surface needs a construction \
-                     the rebuild does not yet speak; see docs/PARITY.md, offset.shell-thicken"
+                     the rebuild does not yet speak; see docs/CAPABILITIES.md, offset.shell-thicken"
                 ),
             }
         };

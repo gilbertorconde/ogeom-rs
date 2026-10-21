@@ -15,10 +15,10 @@ edits, commits, pushes, PR comments or issue writes unless the user asks.
    is seen. Require a clean tree, or name the uncommitted changes you
    reviewed.
 2. State the protected outcome, the acceptance criteria and the non-goals
-   from the PR body, the linked issue, the parity row or the request. Mark a
+   from the PR body, the linked issue, the capability row or the request. Mark a
    guess `UNKNOWN`.
-3. Drop diff noise (`Cargo.lock`, a regenerated `docs/PARITY.md`, corpus
-   files) but keep `docs/parity/parity.toml`, `deny.toml`, the baselines
+3. Drop diff noise (`Cargo.lock`, a regenerated `docs/CAPABILITIES.md`, corpus
+   files) but keep `docs/capabilities.toml`, `deny.toml`, the baselines
    under `tools/`, and anything under `.github/`.
 4. Pick the tier:
 
@@ -78,7 +78,7 @@ the errors returned. Then check every item for every file:
 - units: a scale assumed to be millimetres;
 - errors: a failure turned into an empty shape or a flag; a refusal without
   a name, or without a test that pins its text;
-- superseded code, aliases and dual paths removed; the parity row and
+- superseded code, aliases and dual paths removed; the capability row and
   `CHANGELOG.md` updated when behaviour changes.
 
 Trace each critical scenario from input through the algorithm to the

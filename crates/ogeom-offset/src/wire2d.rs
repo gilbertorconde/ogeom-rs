@@ -242,7 +242,7 @@ pub fn offset_wire(
             _ => ogeom_bail!(
                 Construction,
                 "offsetting an edge that is neither straight nor circular \
-                 needs the offset-curve machinery; see docs/PARITY.md, offset.wire-offset"
+                 needs the offset-curve machinery; see docs/CAPABILITIES.md, offset.wire-offset"
             ),
         }
     }

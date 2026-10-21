@@ -72,12 +72,11 @@ echo "== book =="
 # an absent mdbook fails here on purpose, because a skipped gate is a silent one.
 mdbook build docs/book
 
-echo "== parity =="
-# The audit gate: every verdict in docs/parity/parity.toml cites evidence that
+echo "== capabilities =="
+# The ledger gate: every verdict in docs/capabilities.toml cites evidence that
 # still exists (symbols against the rustdoc just built, tests against the
-# tree), and docs/PARITY.md matches the committed index. Runs entirely against
-# committed files; no reference checkout is consulted here or in CI.
-python3 tools/parity.py check
+# tree), and docs/CAPABILITIES.md matches the ledger.
+python3 tools/capabilities.py check
 
 passing=$(grep -E '^test result:' "$log" \
     | awk -F'ok\\. ' '{split($2,a," "); s+=a[1]} END {print s}')

@@ -18,7 +18,7 @@ mean vendoring one. Every oracle below can be computed here.
 | Drawings | The closed form of the outline | an edge drawn once; the silhouette of an analytic solid against its formula |
 | Robustness at the placements nobody wrote down | The stress harness | `tools/ogeom-stress`, seeded, judged per case by an oracle, gated against `baseline.json` nightly |
 | Performance | Watched, not gated | `tools/ogeom-bench` ratios against `baseline.json` |
-| Parity | The ledger's evidence | `docs/parity/parity.toml` cites the symbol and the test; `tools/parity.py check` holds it to them |
+| Capabilities | The ledger's evidence | `docs/capabilities.toml` cites the symbol and the test; `tools/capabilities.py check` holds it to them |
 | The guide | The book's own code | `crates/ogeom/tests/book.rs` includes the examples by anchor; a book that builds is a book whose examples passed |
 
 ## Rules

@@ -1,9 +1,8 @@
 //! Where a curve pierces a surface.
 //!
-//! *Elsewhere* this is `GeomAPI_IntCS` and the line/quadric half of `IntAna`.
-//! Two consumers drive it: edge/face interference in the boolean's pave
-//! filler, and the exact point-in-solid classifier, which is a ray/surface
-//! query per face.
+//! Two consumers drive it: where an edge crosses a face in the boolean, and
+//! the exact point-in-solid classifier, which is a ray/surface query per
+//! face.
 //!
 //! # Well-posed
 //!

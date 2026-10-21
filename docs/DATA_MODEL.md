@@ -31,12 +31,6 @@ of any implementation. Each invariant is:
 In two places the conventional design is wrong and we deliberately differ:
 stable identity (§8) and predicate abstraction (§9).
 
-Notes marked *Elsewhere* give the conventional name for a concept, because that
-is how the field talks about it. They are a glossary, not a dependency: ogeom
-links against no existing CAD kernel. Where a note cites usage counts, they come
-from `api_surface.json`, a profile of one large application. The counts show a
-requirement is real; they do not define scope. See `SCOPE.md`.
-
 ---
 
 ## 1. A shape is a triple
@@ -65,8 +59,6 @@ locations with many orientations without copying any geometry.
 
 An explorer that yields sub-shapes without composing both is wrong. It produces
 plausible-looking garbage, not a crash.
-
-> *Elsewhere:* `TopoDS_Shape` = `{Handle(TopoDS_TShape), TopLoc_Location, TopAbs_Orientation}`.
 
 ---
 
@@ -97,8 +89,6 @@ of `(datum, integer power)` pairs.
 The composed `Trsf` is computed lazily and cached. Nothing outside `ogeom-topo`
 should ever need to read the chain itself.
 
-> *Elsewhere:* `TopLoc_Location`, a linked list of `(datum, power)` pairs.
-
 ---
 
 ## 3. Orientation composes multiplicatively
@@ -128,8 +118,6 @@ An edge's orientation *within a face* depends on that face's orientation
 *within its shell*, which depends on the shell's orientation within the solid.
 Reversing a solid must not require touching any child.
 
-> *Elsewhere:* `TopAbs_Orientation` and `TopAbs::Compose`.
-
 ---
 
 ## 4. Identity has three levels
@@ -146,10 +134,6 @@ There are three distinct equivalences, with three distinct hashers. They are
 Every map and set type names the equivalence it uses and enforces it in its
 hasher. A `HashMap` keyed on `is_equal` semantics that hashes only the tshape is
 a silent correctness bug.
-
-> *Elsewhere:* `IsPartner` / `IsSame` / `IsEqual` and the `ShapeMapHasher`
-> family. Mixing them up is a common, well-documented source of bugs in
-> applications built on kernels that expose all three.
 
 ---
 
@@ -172,10 +156,6 @@ intersection curve of two NURBS surfaces (it is transcendental). A
 tolerance-carrying topology is the only known way to build a kernel whose
 models close. Every production kernel works this way. See §9 for what exact
 predicates *can* do.
-
-> *Elsewhere:* a per-entity `Tolerance` on the vertex, edge and face records; a
-> validity checker that enforces the rule; and a boolean post-pass that
-> increases tolerances until the rule holds.
 
 ---
 
@@ -213,8 +193,6 @@ One edge holds, at the same time:
 parameterization: for the same `t`, `curve3d(t)` and `surface(pcurve(t))` are
 the same point within tolerance. The claim can be false. A repair routine
 re-establishes it, possibly by increasing the edge's tolerance.
-
-> *Elsewhere:* `BRep_CurveRepresentation` and its subclasses; `SameParameter`.
 
 ---
 
@@ -274,9 +252,6 @@ the input's own nodes under a further placement and record nothing. A
 sub-shape `s` stands in the placed shape as `s.moved(by)`, with `by` the
 placed shape's location with the input's own taken off. A caller composing a
 move with other operations' history uses `transformed`.
-
-> *Elsewhere:* `Generated` / `Modified` / `IsDeleted` on the operation base
-> class, plus a standalone history object.
 
 ---
 
@@ -374,9 +349,6 @@ are the same thing.
 intersection should not go through a marching intersector). The general path
 never needs to know what it is looking at.
 
-> *Elsewhere:* the `Adaptor` family. This is the best idea in the conventional
-> design, and we adopt it as is.
-
 ---
 
 ## 11. Memory: arenas, not reference counting
@@ -419,9 +391,6 @@ Absorption:
 - refuses, by name, a document at a different unit scale. Rescaling is a
   feature, not a default.
 
-> *Elsewhere:* a transient base class with intrusive reference counting, plus a
-> custom small-block allocator. We need none of it.
-
 ---
 
 ## 12. Errors are values
@@ -437,9 +406,6 @@ throwable objects.
 
 An algorithm that "did not converge" returns that fact. It does not return a
 null shape and set a flag that the caller may forget to check.
-
-> *Elsewhere:* a thrown `Failure` hierarchy and, in at least one kernel, a
-> facility that turns SIGSEGV into a catchable exception. We do neither.
 
 ---
 

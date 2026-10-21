@@ -112,13 +112,13 @@ speculative inventory.
 
 Keep a test when it independently enforces a public API, a format
 (STEP, IGES, the native format, the mesh formats), a law, a tolerance
-contract, a refusal by name, a parity verdict's evidence, a book example,
+contract, a refusal by name, a capability verdict's evidence, a book example,
 or a documented default. Also keep:
 
 - a regression with a credible failure mode, especially one that reproduced
   a wrong shape passing `check`;
-- a test cited as evidence in `docs/parity/parity.toml`; deleting it fails
-  the parity gate, and the verdict must be re-evidenced first;
+- a test cited as evidence in `docs/capabilities.toml`; deleting it fails
+  the capabilities gate, and the verdict must be re-evidenced first;
 - a test included by anchor into the book (`crates/ogeom/tests/book.rs`);
 - a retained test that fails on the baseline: treat it as a possible kernel
   bug, reproduce it, and repair the owner rather than deleting it.
@@ -135,7 +135,7 @@ candidate is not ready for deletion:
 - what failure it can actually detect;
 - non-test callers of the covered production or support item;
 - stronger remaining owner-boundary proof, or why no proof is needed;
-- the parity verdicts and book anchors that cite it;
+- the capability verdicts and book anchors that cite it;
 - relevant history and the reason the test exists;
 - production or test-support deletion unlocked;
 - risk and the focused validation command.
@@ -158,7 +158,7 @@ Never edit source or tests while a test runner is running in the checkout.
 1. Run the smallest owner and sibling tests: `cargo test -p <crate> --test
    <file>` or `cargo test -p <crate> <filter>`.
 2. Run `cargo fmt --all -- --check` and `git diff --check`.
-3. Run `python3 tools/parity.py check` when a cited test moved or went.
+3. Run `python3 tools/capabilities.py check` when a cited test moved or went.
 4. Run `tools/check.sh` before handing off: it repeats the unit suites so
    a property that fails only on some seeds is seen.
 5. Inspect `git diff --numstat`; report production and tooling separately

@@ -1,8 +1,6 @@
 //! Solids from closed shells, outer boundaries told from voids by which
 //! shell lies inside which.
 //!
-//! *Elsewhere:* `ShapeFix_Solid::SolidFromShell`.
-//!
 //! A file or a sewing hands over closed shells with nothing saying which
 //! bounds a part and which a cavity in one. Nesting says it: a shell inside
 //! no other is a part's outer boundary, a shell inside one is a void of

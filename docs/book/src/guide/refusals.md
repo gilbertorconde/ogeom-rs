@@ -18,7 +18,7 @@ Where this applies:
   medial axis supports convex polygonal faces only. Given a reflex corner,
   a hole or an arc, it returns an error saying which one it found, instead
   of a wrong axis. Every `partial` row in
-  [the parity ledger](../kernel/parity-ledger.md) states its restriction,
+  [the capability ledger](../kernel/capabilities.md) states its restriction,
   and the code refuses at that same limit.
 - **Exchange readers report what they skip.** An unsupported entity appears
   in the import report by name and number. Everything that was translated
@@ -27,5 +27,5 @@ Where this applies:
   deviations. A repair that cannot reach tolerance says so.
 
 For callers: **treat every `Err` as information.** The message says which
-input, which limit and which capability boundary you hit. The parity
+input, which limit and which capability boundary you hit. The capability
 ledger tells you whether that boundary is a known, scoped restriction.

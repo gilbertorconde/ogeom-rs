@@ -1,7 +1,5 @@
 //! Boolean operations.
 //!
-//! *Elsewhere:* `BOPDS`, `BOPAlgo`, `BOPTools`, `IntTools` and `BRepAlgoAPI`.
-//!
 //! Fuse, common, cut, section and split are one algorithm (general fuse)
 //! plus a selection predicate: every face of each solid is split by the
 //! other solid's faces, the pieces are classified against the other solid,
@@ -4822,7 +4820,7 @@ fn fill(
                                     NotDone,
                                     "a marched section of length {length} runs beyond a turn \
                                  round the faces it cuts ({turn}); its trace wandered \
-                                 beside a chart's pole; see docs/PARITY.md, bool.booleans"
+                                 beside a chart's pole; see docs/CAPABILITIES.md, bool.booleans"
                                 );
                             }
                         }
@@ -4933,7 +4931,7 @@ fn fill(
                                             NotDone,
                                             "a marched section's fit misses its trace by {} \
                                          against a chord of {}; a branch passing beside a \
-                                         chart's pole fits nothing yet; see docs/PARITY.md, \
+                                         chart's pole fits nothing yet; see docs/CAPABILITIES.md, \
                                          boolean.general",
                                             fitted.fit_error,
                                             options.marching.chord
@@ -4948,7 +4946,7 @@ fn fill(
                                             NotDone,
                                             "a marched section of length {length} runs beyond a \
                                          turn round the faces it cuts ({turn}); its trace \
-                                         wandered beside a chart's pole; see docs/PARITY.md, \
+                                         wandered beside a chart's pole; see docs/CAPABILITIES.md, \
                                          boolean.general"
                                         );
                                     }

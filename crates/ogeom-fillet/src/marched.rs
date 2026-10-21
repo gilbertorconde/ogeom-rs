@@ -188,7 +188,7 @@ pub(crate) fn marched_fillet(
             ogeom_bail!(
                 Construction,
                 "a marched fillet's hosts must carry their own chart; a trimmed \
-                 or offset host is refused; see docs/PARITY.md, fillet.edge-blends"
+                 or offset host is refused; see docs/CAPABILITIES.md, fillet.edge-blends"
             );
         }
         let sign = if face.orientation() == Orientation::Reversed {
@@ -344,7 +344,7 @@ pub(crate) fn marched_fillet(
                     "the seat passes through a point where its two hosts are \
                      tangent inside the crease; the ball's section collapses \
                      at that pole and the pinched seam is refused; see \
-                     docs/PARITY.md, fillet.edge-blends"
+                     docs/CAPABILITIES.md, fillet.edge-blends"
                 );
             }
         }
@@ -476,7 +476,7 @@ pub(crate) fn marched_fillet(
         ogeom_bail!(
             Construction,
             "the blend neither closed on itself nor ran off its supports \
-             ({:?}); this stop has no construction yet; see docs/PARITY.md, \
+             ({:?}); this stop has no construction yet; see docs/CAPABILITIES.md, \
              fillet.edge-blends",
             blend.stopped
         );
@@ -606,7 +606,7 @@ pub(crate) fn closed_band_wedge(
             ogeom_bail!(
                 Construction,
                 "the seat winds its two hosts in opposite senses; that \
-                 configuration is still owed; see docs/PARITY.md, \
+                 configuration is still owed; see docs/CAPABILITIES.md, \
                  fillet.edge-blends"
             );
         }
@@ -1059,7 +1059,7 @@ pub(crate) fn closed_band_wedge(
             NotDone,
             "the blend marched and its wedge was built, but the melt against a \
              fitted host is beyond what the boolean resolves ({e}); see \
-             docs/PARITY.md, fillet.edge-blends"
+             docs/CAPABILITIES.md, fillet.edge-blends"
         ),
         other => other?,
     };
@@ -1570,7 +1570,7 @@ fn open_runout_wedge(
     // touches it within the fit's tolerance along a stretch, a contact the
     // melt does not resolve.
     const RUNS_OUT_ON_A_FACE: &str = "the marched band's end where its crease runs out on \
-         another face does not melt with that face; see docs/PARITY.md, \
+         another face does not melt with that face; see docs/CAPABILITIES.md, \
          fillet.edge-blends";
     match build_open_band(
         model,
@@ -2890,7 +2890,7 @@ fn host_leg(
             ogeom_bail!(
                 Construction,
                 "the seat winds against its host's chart; reversing the \
-                 guide is still owed; see docs/PARITY.md, fillet.edge-blends"
+                 guide is still owed; see docs/CAPABILITIES.md, fillet.edge-blends"
             );
         }
         Ok(Ok((
@@ -3030,7 +3030,7 @@ fn rail_image(
                     NotDone,
                     "the blend's rail passes the sphere's pole {nearest} away, within a \
                      stride of the march, where its chart turns faster than the \
-                     stations follow; see docs/PARITY.md, fillet.edge-blends"
+                     stations follow; see docs/CAPABILITIES.md, fillet.edge-blends"
                 );
             }
         }
@@ -3088,7 +3088,7 @@ fn pole_leg(
         ogeom_bail!(
             Construction,
             "the seat winds against its host's chart; reversing the \
-             guide is still owed; see docs/PARITY.md, fillet.edge-blends"
+             guide is still owed; see docs/CAPABILITIES.md, fillet.edge-blends"
         );
     }
     let mean = |chart: &[Point2]| {

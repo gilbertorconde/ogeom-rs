@@ -1,8 +1,5 @@
 //! Data exchange.
 //!
-//! *Elsewhere:* the shape serialization, STEP, IGES, glTF and transfer-framework
-//! packages.
-//!
 //! The native format is what the test suite round-trips through. STEP is the
 //! exchange format with external value, and reading it is mostly not parsing:
 //! the Part 21 syntax is the small part, and the rest is the semantic mapping

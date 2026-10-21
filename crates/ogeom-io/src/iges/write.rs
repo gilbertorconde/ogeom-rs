@@ -36,7 +36,7 @@ use ogeom_topo::{EdgeRepr, Filter, NodeData, Shape, ShapeType, explore};
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// document holds no part, a part holds wireframe (a wire, edge or vertex
 /// outside every face) or nothing at all, or a body carries geometry with
-/// no IGES spelling here; the error names the entity and the parity row.
+/// no IGES spelling here; the error names the entity and the capability row.
 pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResult<String> {
     let mut writer = Writer {
         model: document.model(),
@@ -287,7 +287,7 @@ impl Writer<'_> {
             ogeom_bail!(
                 Construction,
                 "a face whose every boundary is degenerate cannot be written \
-                 as IGES; see docs/PARITY.md, io.iges"
+                 as IGES; see docs/CAPABILITIES.md, io.iges"
             );
         }
         let mut params = format!("{},{},1", self.de(surface_entity), loop_entities.len());
@@ -367,7 +367,7 @@ impl Writer<'_> {
             ogeom_bail!(
                 Construction,
                 "a face whose every boundary is degenerate cannot be written \
-                 as IGES; see docs/PARITY.md, io.iges"
+                 as IGES; see docs/CAPABILITIES.md, io.iges"
             );
         };
         let mut params = format!(

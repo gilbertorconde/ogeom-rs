@@ -11,68 +11,67 @@ else: no C compiler, no system libraries, no submodules. Keep it that way.
 vendored subtree, a file, or a fragment pasted into a function. Nothing in
 `crates/` may be part of someone else's build.
 
-**Do not build a copy of another kernel.** This is the rule the others serve.
-A kernel that mirrors another's class hierarchy, decomposition, call graph and
-file layout is a translation with different identifiers. That structure is
-what we avoid, not the field's vocabulary. What you may take from a reference
-implementation is *understanding*: what an algorithm must handle, which cases
-exist, what a format's records mean. The design itself is worked out here.
+**Do not read another kernel's implementation source to work on this one.**
+Not its `.cxx`, `.cpp`, `.c`, `.lxx` or `.gxx` files, and not the bodies of
+its headers. Do not keep a checkout of one next to this repository. The same
+rule binds tools: never give an AI assistant, a script or a search index
+another kernel's implementation source as context for work here, and never
+ask one to explain or summarise how another kernel's code does something.
+
+**Do not build a copy of another kernel.** A kernel that mirrors another's
+class hierarchy, decomposition, call graph and file layout is a translation
+with different identifiers. The design is worked out here, from the sources
+below.
 
 **Use the field's vocabulary.** A boundary representation is a b-rep, a point
 in the plane is a `Point2`, a curve in a surface's parameters is a pcurve, a
 blend is a fillet. Private jargon would make the kernel harder to read for no
-gain. `docs/DATA_MODEL.md` uses conventional names on purpose. Naming a *concept* is not naming a dependency.
+gain. Naming a *concept* is not naming a dependency.
 
 **Do not name another kernel in anything committed.** The vocabulary belongs to
-the field; product names do not belong to us. Where a format needs its own
-magic bytes to be readable, those bytes are data and are committed as data.
+the field; product names do not belong to us. Two exceptions: `PROVENANCE.md`,
+which records where the kernel's design came from, and data a format needs
+to be readable (magic bytes, a writer's name in a file header), committed as
+data.
 
 ### The legal side
 
 - Most existing kernels are copyleft. ogeom is MIT OR Apache-2.0.
 - Renaming identifiers does not stop a work being derived from another.
-  Copyright follows the expression, not the names. That is why the rule above is
-  about *structure*, not words.
+  Copyright follows the expression, not the names. That is why the rules above
+  cover reading, not only copying.
 - File formats are the safe case. A file format is not copyrightable, and
   implementing one from its published description is interoperation. The STEP
   and `.brep` support were both built this way.
 
-### Sources, in order of preference
+### Sources
 
 1. Published algorithm specifications and papers: Shewchuk on robust
    predicates, Piegl & Tiller on NURBS, the marching-intersection and
-   surface-surface literature, the published specifications for boolean
+   surface-surface literature, the published descriptions of boolean
    pipelines.
 2. Format standards: ISO 10303 for STEP, and the rest.
-3. First principles, and your own tests.
-
-A local reference checkout goes under `vendor/` or `reference/`. Both are
-gitignored. A checkout is never a build or test dependency, and it is never
-named in anything committed.
+3. A kernel's public user documentation, for what an operation is expected to
+   do. Not its source.
+4. First principles, and your own tests.
 
 If you have contributed to another CAD kernel's source, say so in your pull
 request, so we can be careful about which areas you work on.
 
+`PROVENANCE.md` states how these rules have been applied over the project's
+history.
+
 ## Scope
 
-**Parity with the reference kernel's modelling modules (FoundationClasses,
-ModelingData, ModelingAlgorithms, DataExchange) and nothing else.**
-Visualization, the application framework and the test harness are out.
+**A complete solid-modelling kernel and its data exchange, and nothing else.**
+Rendering, application document frameworks and scripting harnesses are out.
 
-`docs/SCOPE.md` is normative. It states the rule, how to decide a case
-mechanically from the reference tree's own module and toolkit files, and what
-the rule does not mean.
+`docs/SCOPE.md` is normative. It states the rule, how to decide a case, and
+what the rule does not mean. `docs/CAPABILITIES.md` records, capability by
+capability, where the kernel stands.
 
-Two points are repeated here because both have been misread before:
-
-- **Parity is about capability, not structure.** It does not allow mirroring
-  another kernel's class hierarchy or decomposition; *Independence* above still
-  holds in full. Where we deliberately do a job differently, the parity record
-  says `divergent` and gives the reasoning. That is an answer, not a gap.
-- **Usage data sets the order of work, never the scope.**
-  `docs/api_surface.json` profiles how one application uses the reference
-  kernel, which tells us what to get right first. A capability inside the four
-  modules is in scope whether or not that application ever calls it.
+Where we deliberately do a job differently from the usual way, the capability
+record says `divergent` and gives the reasoning. That is an answer, not a gap.
 
 ## Invariants cannot be changed in a pull request
 

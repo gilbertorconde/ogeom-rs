@@ -1,8 +1,5 @@
 //! Shape healing: analysis, fixing and upgrading.
 //!
-//! *Elsewhere:* `ShapeFix`, `ShapeAnalysis`, `ShapeUpgrade`, `ShapeBuild`,
-//! `ShapeConstruct` and `ShapeExtend`.
-//!
 //! Imported STEP and IGES geometry carries boundary slop, missing trims and
 //! false same-parameter claims. Healing repairs those before the shape is
 //! modelled with.

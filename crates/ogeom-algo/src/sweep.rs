@@ -273,7 +273,7 @@ pub fn make_prism_tapered(
                 ogeom_bail!(
                     Construction,
                     "a tapered wall over an edge that is neither straight nor \
-                     a full circle needs a fitted ruling; see docs/PARITY.md, \
+                     a full circle needs a fitted ruling; see docs/CAPABILITIES.md, \
                      offset.sweeps"
                 );
             };

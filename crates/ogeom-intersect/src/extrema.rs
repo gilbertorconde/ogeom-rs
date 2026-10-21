@@ -1,9 +1,8 @@
 //! The stationary approaches between two geometries.
 //!
-//! *Elsewhere* this is `Extrema` and the `GeomAPI_Extrema*` family. The
-//! consumer that drives it is minimum distance between shapes, which lives
-//! in `ogeom-algo`: this module answers for the geometry, and the shape layer
-//! assembles the answer for topology.
+//! The consumer that drives it is minimum distance between shapes, which
+//! lives in `ogeom-algo`: this module answers for the geometry, and the
+//! shape layer assembles the answer for topology.
 //!
 //! # What an extremum is, and what it is not
 //!

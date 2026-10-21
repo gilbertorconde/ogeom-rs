@@ -6,9 +6,6 @@
 //! with the analytic path taken where it exists and the marched-and-fitted
 //! path where it does not. The caller does not choose; the pair does.
 //!
-//! *Elsewhere* this is `GeomAPI_IntSS` over `IntPatch`/`GeomInt`: one entry
-//! point hiding an analytic dispatch and a walking intersector.
-//!
 //! # What a section curve carries
 //!
 //! Three descriptions, because three consumers: the curve in space for the

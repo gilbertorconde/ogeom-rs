@@ -29,7 +29,7 @@ Before any edit, write down:
 - the hard constraints: every result identical to the last ulp, or the
   difference stated and bounded; tolerances unchanged; no `unsafe`; no new
   dependency without the `deny.toml` check; the stress baseline and the
-  parity ledger unchanged.
+  capability ledger unchanged.
 
 Stop with `BLOCKED` when the problem does not reproduce.
 

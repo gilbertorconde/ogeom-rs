@@ -5,9 +5,8 @@ What is left to build, and the rules the work follows.
 ## Where the remaining work is tracked
 
 - **GitHub issues** hold bugs and requests, one per issue.
-- **The parity ledger** (`docs/PARITY.md`, generated from
-  `docs/parity/parity.toml`) audits the reference kernel's modelling modules
-  against named capabilities. The restriction on each `partial` row is the
+- **The capability ledger** (`docs/CAPABILITIES.md`, generated from
+  `docs/capabilities.toml`) records the kernel's named capabilities. The restriction on each `partial` row is the
   list of what that capability does not do yet. `tools/check.sh` holds the
   ledger to its evidence.
 - **This file** holds the open items that are neither: known limits of the
@@ -232,7 +231,7 @@ aspect naming its file id lands on every piece.
 surfaces of revolution and fitted B-spline patches, and leaves every other
 region faceted; `MeshSolidReport::fallbacks` names each curved region it
 faceted and why. It reads meshes drawn in strips along rulings, as
-OpenCascade and truck draw drums and cones, as it reads ogeom's own. Each
+other kernels commonly draw drums and cones, as it reads ogeom's own. Each
 change is held to the converter's standard (verified against every sample,
 edges placed on both surfaces, facets as the fallback) and measured on
 `mesh_corpus` and the truth bench before and after.
@@ -535,11 +534,11 @@ These rules are enforced. Every one of them has caused a patch to be rejected.
   silent wrong answer is the only unacceptable outcome.
 - **No stubs.** A thing is implemented, or it is refused by name and tracked
   as above.
-- **Scope is parity with the reference kernel's modelling modules, plus what
-  `docs/SCOPE.md` admits.** `docs/SCOPE.md` is normative and says how to
-  decide a case. Parity is about capability, not structure.
+- **Scope is what `docs/SCOPE.md` admits.** It is normative and says how
+  to decide a case. Scope is about capability, not structure.
 - **Independence.** See `CONTRIBUTING.md`. Nothing here links against,
-  bundles or imports another kernel, and the design is worked out here, not
+  bundles or imports another kernel, no one working here reads another
+  kernel's implementation source, and the design is worked out here, not
   mirrored. The field's vocabulary is used throughout.
 
 ## Decisions, not gaps

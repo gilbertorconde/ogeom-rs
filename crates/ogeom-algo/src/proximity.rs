@@ -1,10 +1,9 @@
 //! Minimum distance between shapes.
 //!
-//! *Elsewhere* this is `BRepExtrema_DistShapeShape`. The geometry-level
-//! extrema in `ogeom-intersect` answer where two curves or surfaces come
-//! nearest; this module assembles those answers for topology, where a shape
-//! is vertices, edges and faces and the nearest approach may land on any of
-//! them.
+//! The geometry-level extrema in `ogeom-intersect` answer where two curves
+//! or surfaces come nearest; this module assembles those answers for
+//! topology, where a shape is vertices, edges and faces and the nearest
+//! approach may land on any of them.
 //!
 //! # The assembly argument
 //!

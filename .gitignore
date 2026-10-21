@@ -9,15 +9,6 @@ Cargo.lock.orig
 # `outside/` is its own workspace and so builds into its own target directory.
 /outside/target
 
-# Reference material a developer may keep locally. Never committed: the kernel
-# has no dependency on any existing CAD kernel, and nothing in this repo pulls
-# one in. See CONTRIBUTING.md.
-/vendor/
-/reference/
-
-# Generated analysis artifacts. Derived from other projects' sources and
-# regenerable on demand; see docs/SCOPE.md.
-/docs/api_surface.json
 /docs/*.json.tmp
 
 .DS_Store
@@ -34,3 +25,6 @@ WARNS.txt
 # Agent harness state. Only the skills are tracked.
 /.claude/*
 !/.claude/skills/
+
+# Python bytecode from the tools/ scripts.
+__pycache__/

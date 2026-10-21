@@ -68,7 +68,7 @@ A comment earns its place when it states what the code cannot:
      anything but `docs/DATA_MODEL.md` (the plan has no numbered sections),
      "milestone", "phase", "the deferred entry", "owed", "comes first
      because"; the plan is `docs/PLAN.md` and the ledger is
-     `docs/parity/parity.toml`, and a comment cites neither as a reason;
+     `docs/capabilities.toml`, and a comment cites neither as a reason;
    - **war stories**: the case that found the bug told as a story, with
      its numbers ("three descriptions arrived a tenth of a micron apart in
      turn, and the wire had two vertices where it needed one"). Rewrite as
@@ -81,11 +81,9 @@ A comment earns its place when it states what the code cannot:
      preserving", "critically", "there is no X today", why the design is
      clever. A module doc states what the module does and the design it
      follows, not its case for existing;
-   - **another kernel's name**, product or project, anywhere. The one
-     sanctioned place for a reference *package* name is a module doc's
-     `*Elsewhere:*` line, which maps the module to the reference packages
-     it answers for, the way the parity ledger does; it never names a
-     product, and nothing below the module doc names a reference class;
+   - **another kernel's name**, product, project, package or class,
+     anywhere in code or comments. `PROVENANCE.md` is the only file that
+     names another kernel;
    - banners and dividers that restate the next symbol;
    - doc comments on small private functions that restate the name;
    - promises the code does not keep, and names or types restated as

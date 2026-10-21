@@ -24,11 +24,10 @@ scratch in Rust. It does not wrap, vendor or link any existing CAD kernel.
   [a test file](https://github.com/gilbertorconde/ogeom-rs/blob/main/crates/ogeom/tests/book.rs)
   that runs in CI, so a broken or false example fails the build. The test
   suite checks every numeric claim against a closed form or a round trip.
-- **Completeness is audited.** [Scope](kernel/scope.md) sets the target:
-  parity with the reference kernel's four modelling modules, plus meshes
-  into solids. [The parity ledger](kernel/parity-ledger.md) is committed
-  and machine-checked: it maps every public header of those modules to a
-  named capability, and each verdict cites symbols and tests the build
+- **Completeness is recorded.** [Scope](kernel/scope.md) sets the target:
+  a complete solid-modelling kernel with its data exchange, plus meshes
+  into solids. [The capability ledger](kernel/capabilities.md) is committed
+  and machine-checked: each verdict cites symbols and tests the build
   verifies.
 
 ## Where things are

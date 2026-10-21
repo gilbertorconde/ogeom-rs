@@ -282,7 +282,7 @@ fn revolved_draft(
             Construction,
             "a wall of revolution drafts about a neutral plane square to \
              its axis; the oblique neutral needs the general machinery (see \
-             docs/PARITY.md, offset.draft)"
+             docs/CAPABILITIES.md, offset.draft)"
         );
     }
     // The neutral circle: where the axis meets the plane, and the radius
@@ -526,7 +526,7 @@ fn extruded_draft(
                 ogeom_bail!(
                     Construction,
                     "the draft folds the wall onto itself inside the drafted \
-                     window; refused; see docs/PARITY.md, offset.draft"
+                     window; refused; see docs/CAPABILITIES.md, offset.draft"
                 );
             }
         }
@@ -1121,7 +1121,7 @@ fn general_draft(
                 ogeom_bail!(
                     Construction,
                     "the draft folds the wall onto itself inside the drafted \
-                     window; refused; see docs/PARITY.md, offset.draft"
+                     window; refused; see docs/CAPABILITIES.md, offset.draft"
                 );
             }
         }

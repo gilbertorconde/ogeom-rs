@@ -1,8 +1,5 @@
 //! Intersection: where curves and surfaces meet.
 //!
-//! *Elsewhere:* `IntPatch`, `GeomInt`, `IntAna`, `IntCurve`, `IntCurveSurface`,
-//! `IntWalk`, `IntSurf`, `ApproxInt` and `Extrema`.
-//!
 //! The entry points, by what is being intersected:
 //!
 //! - [`intersect_surfaces`]: surface/surface, the one `ogeom-bool` builds on.

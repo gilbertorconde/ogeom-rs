@@ -1,8 +1,7 @@
 //! IGES exchange.
 //!
-//! *Elsewhere:* the IGES half of the exchange layer. The format is ANSI
-//! Y14.26M / IGES 5.3, a fixed-column deck from the 1980s, read and written
-//! here from the published specification.
+//! The format is ANSI Y14.26M / IGES 5.3, a fixed-column deck from the
+//! 1980s, read and written here from the published specification.
 
 mod parse;
 mod read;
@@ -12,10 +11,7 @@ pub use read::{IgesImport, IgesReport, read_iges};
 pub use write::write_iges;
 
 /// The entity types the reader and writer translate, by number and by the
-/// name the specification gives each. The names are load-bearing twice over:
-/// refusal messages quote them, and `tools/parity.py exchange` greps them to
-/// keep the parity ledger's IGES coverage figure regenerable from this file
-/// rather than asserted.
+/// name the specification gives each. Refusal messages quote the names.
 pub const SUPPORTED_ENTITIES: &[(i64, &str)] = &[
     (100, "CIRCULAR_ARC"),
     (102, "COMPOSITE_CURVE"),

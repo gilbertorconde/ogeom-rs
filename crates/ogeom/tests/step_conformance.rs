@@ -332,7 +332,8 @@ fn shop_parts_mesh_closed_and_measure_what_they_did() {
 /// A face curved one way only (a drum, a cone) is meshed in strips along
 /// its rulings, held apart by its columns, with no rows it does not need:
 /// at the finest chord a cone and a shop part full of drums mesh in at
-/// most a quarter more triangles than OpenCascade draws for them.
+/// most a quarter more triangles than the conformance suite's reference
+/// reader draws for them.
 #[test]
 fn ruled_faces_mesh_in_strips_along_their_rulings() {
     let chord = CHORDS[0];
@@ -455,8 +456,8 @@ fn a_cone_to_its_apex_meshes_within_its_chord_in_every_triangle() {
 /// A drum or a cone is drawn between its two ends, its rulings held as
 /// constraints, with no row through its middle that asks nothing of the
 /// chord. door_handle_guide and rail_guide, mostly drums and cones, mesh at
-/// 0.0125 in at most 1.25 times OpenCascade's triangles (1,948 and 6,484),
-/// and every triangle of their curved faces, at its middle and the middles
+/// 0.0125 in at most 1.25 times the reference reader's triangles (1,948 and
+/// 6,484), and every triangle of their curved faces, at its middle and the middles
 /// of its sides, stands within the chord of its face.
 #[test]
 fn drums_and_cones_mesh_between_their_rims_within_their_chord() {

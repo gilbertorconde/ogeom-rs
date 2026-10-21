@@ -2,9 +2,8 @@
 
 Code that was written here but is not part of the kernel.
 
-`docs/SCOPE.md` sets the kernel's bounds: parity with the reference kernel's
-modelling modules (FoundationClasses, ModelingData, ModelingAlgorithms,
-DataExchange) and nothing else. Everything in this directory is a real
+`docs/SCOPE.md` sets the kernel's bounds: a complete solid-modelling kernel
+with its data exchange, and nothing else. Everything in this directory is a real
 capability outside those bounds. It works and it is tested. It is kept rather
 than deleted, because deleting working code to make a point is a bad trade.
 
@@ -24,8 +23,8 @@ cd outside && cargo test --workspace
 | Crate | Why it is outside |
 |---|---|
 | `ogeom-sketch` | 2D geometric constraint solving. No conventional CAD kernel ships this; each application built on one supplies its own. Its module doc said so before it moved. |
-| `ogeom-recognize` | Feature recognition (reading design intent back out of raw topology) and machining process planning. Recognition has no counterpart in the reference kernel; process planning is not geometry at all. |
-| `ogeom-select` | BVH picking, marquee selection, and the draft and thickness analyses built on them. Selection belongs to the reference kernel's Visualization module, which is out of scope. |
+| `ogeom-recognize` | Feature recognition (reading design intent back out of raw topology) and machining process planning. Recognition is a discipline of its own; process planning is not geometry at all. |
+| `ogeom-select` | BVH picking, marquee selection, and the draft and thickness analyses built on them. Selection belongs to visualization, which is out of scope. |
 
 ## Maintenance
 

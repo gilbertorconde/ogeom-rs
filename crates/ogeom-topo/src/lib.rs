@@ -1,8 +1,6 @@
 //! The boundary-representation data model. What this model can express is what
 //! the kernel can do, so its invariants are normative; see `docs/DATA_MODEL.md`.
 //!
-//! *Elsewhere:* `TopoDS`, `TopAbs`, `TopExp`, `TopTools`, `TopLoc` and `BRep`.
-//!
 //! Non-negotiable invariants:
 //!
 //! - A shape is a **(TShape, Location, Orientation) triple**: a positionless,

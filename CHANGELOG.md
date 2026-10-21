@@ -184,6 +184,17 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **The kernel's scope and its capability ledger are stated in its own
+  terms.** The parity audit against another kernel's public headers is
+  gone: `docs/PARITY.md`, `docs/parity/` and the header-profiling tool are
+  removed. `docs/capabilities.toml` lists the kernel's 90 capabilities with
+  the evidence for each, and `docs/CAPABILITIES.md` is its rendered form,
+  held to the code by `tools/capabilities.py check`. Refusal messages that
+  pointed at `docs/PARITY.md` point at `docs/CAPABILITIES.md`. Module
+  docs no longer map modules to another kernel's packages.
+- **`PROVENANCE.md` records where the code and design came from.**
+  `CONTRIBUTING.md` now forbids reading another kernel's implementation
+  source for work here, by people or tools.
 - **A line touching a circle or ellipse in its plane meets it in closed
   form.** The closed form left every tangent line/conic pair to the
   sampling path, at about a millisecond a pair, and a rolling-ball blend

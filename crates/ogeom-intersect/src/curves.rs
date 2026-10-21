@@ -1,10 +1,10 @@
 //! Where two curves meet, in the plane and in space.
 //!
-//! *Elsewhere* these are `Geom2dAPI_InterCurveCurve` and `IntCurve` for the
-//! plane, and extrema-based crossing for space. The planar case is the
-//! load-bearing one: boolean face splitting happens in a surface's parameter
-//! space, and the curves it splits with are pcurves, so 2D curve/curve is the
-//! operation the whole boolean pipeline stands on.
+//! Crossings in the plane are solved directly; crossings in space go through
+//! extrema. The planar case is the load-bearing one: boolean face splitting
+//! happens in a surface's parameter space, and the curves it splits with are
+//! pcurves, so 2D curve/curve is the operation the whole boolean pipeline
+//! stands on.
 //!
 //! # Two curves in space generically miss
 //!

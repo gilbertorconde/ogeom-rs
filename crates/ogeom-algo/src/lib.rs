@@ -1,9 +1,6 @@
 //! Shape construction and query: everything that does not require surface/surface
 //! intersection.
 //!
-//! *Elsewhere:* the `BRepBuilderAPI`, `BRepPrimAPI`, `BRepTools`,
-//! `BRepLib`, `BRepGProp`, `BRepCheck`, `BRepClass3d`, `BRepExtrema`, `GeomAPI`,
-//! `GCPnts` and `GProp` families, plus the classical curve constructors.
 //! The adaptor layer is `ogeom-geom`'s: evaluating topology as geometry
 //! belongs with the geometry traits.
 //!

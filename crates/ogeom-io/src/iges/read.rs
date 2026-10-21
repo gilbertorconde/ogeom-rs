@@ -14,7 +14,7 @@
 //! visited lands in the report's skipped table under its type number, and
 //! every compromise is a warning naming the directory entry. Refusals are by
 //! name: a conic form this reader does not translate says which form and
-//! where, and points at the parity ledger's `io.iges` row for the whole
+//! where, and points at the capability ledger's `io.iges` row for the whole
 //! picture.
 
 use super::parse::{Entity, File, Value};
@@ -508,7 +508,7 @@ impl<'a> Reader<'a> {
             kind => ogeom_bail!(
                 Construction,
                 "D{de}: curve entity type {kind}{} is not translated; see \
-                 docs/PARITY.md, io.iges",
+                 docs/CAPABILITIES.md, io.iges",
                 super::entity_name(kind).map_or_else(String::new, |n| format!(" ({n})"))
             ),
         };
@@ -1217,7 +1217,7 @@ impl<'a> Reader<'a> {
             kind => ogeom_bail!(
                 Construction,
                 "D{de}: surface entity type {kind}{} is not translated; see \
-                 docs/PARITY.md, io.iges",
+                 docs/CAPABILITIES.md, io.iges",
                 super::entity_name(kind).map_or_else(String::new, |n| format!(" ({n})"))
             ),
         };
@@ -1635,7 +1635,7 @@ impl<'a> Reader<'a> {
                 Construction,
                 "D{de}: a curve-on-surface carries no model-space curve, and \
                  its surface's parameters are the file's convention for a \
-                 kind this reader does not translate; see docs/PARITY.md, io.iges"
+                 kind this reader does not translate; see docs/CAPABILITIES.md, io.iges"
             );
         }
         let mut out = Vec::new();

@@ -90,7 +90,7 @@ pub fn make_pipe(
         _ => ogeom_bail!(
             Construction,
             "a pipe along a free-form spine needs the sweep-surface \
-             machinery; see docs/PARITY.md, offset.sweeps"
+             machinery; see docs/CAPABILITIES.md, offset.sweeps"
         ),
     };
     built.history.generate(spine, built.shape.clone());
@@ -408,7 +408,7 @@ pub fn make_loft(
                 ogeom_bail!(
                     Construction,
                     "a mixed or curved section needs the skinning machinery; see \
-                     docs/PARITY.md, offset.sweeps"
+                     docs/CAPABILITIES.md, offset.sweeps"
                 );
             };
             let Some((sv, _)) = edge_vertices(model, &edge)? else {
@@ -2175,7 +2175,7 @@ fn loft_to_point(
             ogeom_bail!(
                 Construction,
                 "a circle lofts to a point on its own axis; the oblique cone \
-                 needs the skinned machinery; see docs/PARITY.md, offset.loft"
+                 needs the skinned machinery; see docs/CAPABILITIES.md, offset.loft"
             );
         }
         if height.abs() <= tol.confusion() {
@@ -2211,7 +2211,7 @@ fn loft_to_point(
             ogeom_bail!(
                 Construction,
                 "a mixed or curved section lofts to a point through the \
-                 skinned machinery; see docs/PARITY.md, offset.loft"
+                 skinned machinery; see docs/CAPABILITIES.md, offset.loft"
             );
         };
         let t = if edge.orientation() == ogeom_topo::Orientation::Reversed {
@@ -6620,7 +6620,7 @@ fn pipe_shell_law(
             ogeom_bail!(
                 Construction,
                 "a skew corner against a curved leg is still owed its frame \
-                 law: the legs' generators miss by {}; see docs/PARITY.md, \
+                 law: the legs' generators miss by {}; see docs/CAPABILITIES.md, \
                  offset.sweeps",
                 join.gap
             );
@@ -7004,7 +7004,7 @@ fn pipe_shell_law(
                         Construction,
                         "a skew-cornered ring's sections do not meet on \
                          their mitres; the out-of-plane corner's frame law \
-                         is still owed; see docs/PARITY.md, offset.sweeps"
+                         is still owed; see docs/CAPABILITIES.md, offset.sweeps"
                     );
                 }
                 let set = make_corners(model, 0)?;

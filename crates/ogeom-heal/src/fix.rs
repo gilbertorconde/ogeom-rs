@@ -1,7 +1,4 @@
 //! Fixing faces: recomputing the trims a face is missing.
-//!
-//! *Elsewhere:* the `ShapeFix_Face` / `ShapeFix_Edge` corner of the fixing
-//! family.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Transformable as _;

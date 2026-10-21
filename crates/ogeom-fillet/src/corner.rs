@@ -7,8 +7,6 @@
 //! rounded corner is a sphere at each and a cylinder along each ridge:
 //! the exact envelope of the rolling ball, where the setback family fits
 //! a plate through the bands' ends instead.
-//!
-//! *Elsewhere:* the vertex blend of `ChFi3d`'s setback family.
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
