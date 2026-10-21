@@ -2376,6 +2376,9 @@ struct Patch {
     size: f64,
     /// The normals at the samples.
     normals: [Vector; 9],
+    /// Whether the patch is a piece of a plane: its samples in one plane
+    /// and its normals one direction, so no quarter of it says more.
+    flat: bool,
 }
 
 impl Patch {
@@ -2437,6 +2440,7 @@ impl Patch {
             spread: BOW * turn,
             size: (high - low).magnitude(),
             normals: flat,
+            flat: grow == 0.0 && turn == 0.0,
         })
     }
 
@@ -2555,7 +2559,8 @@ fn subdivided_touches(
         if facing > pa.spread + pb.spread || normals_part(&pa, &pb) {
             continue;
         }
-        if pa.size <= near && pb.size <= near {
+        let small = |p: &Patch| p.flat || p.size <= near;
+        if small(&pa) && small(&pb) {
             // A touch already found within the pair is the one there:
             // touches stand further apart than the chord.
             let held = touches.iter().any(|t| {
@@ -2569,7 +2574,21 @@ fn subdivided_touches(
             if held {
                 continue;
             }
-            let Some(mut touch) = touching_point(a, b, pa.middle(), pb.middle(), tol) else {
+            // A flat patch is started from beside the other's middle.
+            let (start_a, start_b) = match (pa.flat, pb.flat) {
+                (true, false) => {
+                    let at = b.point_at(pb.middle().0, pb.middle().1, tol).ok();
+                    let on = at.and_then(|p| nearest_on(a, pa.middle(), p, tol));
+                    (on.map_or(pa.middle(), |(uv, _)| uv), pb.middle())
+                }
+                (false, true) => {
+                    let at = a.point_at(pa.middle().0, pa.middle().1, tol).ok();
+                    let on = at.and_then(|p| nearest_on(b, pb.middle(), p, tol));
+                    (pa.middle(), on.map_or(pb.middle(), |(uv, _)| uv))
+                }
+                _ => (pa.middle(), pb.middle()),
+            };
+            let Some(mut touch) = touching_point(a, b, start_a, start_b, tol) else {
                 continue;
             };
             let Some(form) = touch_arms(a, b, touch.on_a, touch.on_b, tol) else {
@@ -2585,7 +2604,10 @@ fn subdivided_touches(
             }
             continue;
         }
-        if pa.size >= pb.size {
+        // The patch that still says more is quartered: the larger, or the
+        // one that is not flat.
+        let weight = |p: &Patch| if p.flat { 0.0 } else { p.size };
+        if weight(&pa) >= weight(&pb) {
             for q in quarter(&mut trees[0], a, ia) {
                 pairs.push((q, ib));
             }
@@ -2719,7 +2741,7 @@ fn split_at_touches(
             kept.extend(cut.pieces);
         }
     }
-    let (joins, walked_out) = join_arms(&touches, &mut covered, (a, b), options, tol);
+    let (joins, walked_out) = join_arms(&touches, &mut covered, &[], (a, b), options, tol);
     arcs.extend(joins);
     if walked_out.is_empty() && arcs.is_empty() {
         return kept;
@@ -2739,17 +2761,18 @@ fn split_at_touches(
     // is kept only if some sample of it lies off everything kept so far,
     // and cut back where its ends run along what is kept. A branch no
     // touch cut is weighed too where arms were followed out, as one may
-    // run along it.
+    // run along it. Two arcs between the same two touches, leaving each
+    // along the same arm, are one stretch: near the touches neither may
+    // have a sample clear of them to weigh.
     let mut weighed = arcs;
     if walked_any {
         weighed.append(&mut kept);
     }
     weighed.sort_by(|x, y| arc_length(y).total_cmp(&arc_length(x)));
     for arc in weighed {
-        if kept
-            .iter()
-            .any(|other| lies_on(&arc, other, near, &touches))
-        {
+        if kept.iter().any(|other| {
+            lies_on(&arc, other, near, &touches) || same_stretch(&arc, other, near, &touches)
+        }) {
             continue;
         }
         if let Some(arc) = trimmed(arc, &kept, near, &touches) {
@@ -2760,17 +2783,17 @@ fn split_at_touches(
     // section left out: joined or walked out once more from what is kept.
     if complete {
         let mut covered = arms_covered(&kept, &touches);
-        let (joins, walks) = join_arms(&touches, &mut covered, (a, b), options, tol);
+        let ends = loose_ends(&kept, &touches, near);
+        let (joins, walks) = join_arms(&touches, &mut covered, &ends, (a, b), options, tol);
         let mut more = joins;
         for arm in walks {
             more.extend(cut_at_touches(arm, [None, None], &touches, (a, b), options, tol).pieces);
         }
         more.sort_by(|x, y| arc_length(y).total_cmp(&arc_length(x)));
         for arc in more {
-            if kept
-                .iter()
-                .any(|other| lies_on(&arc, other, near, &touches))
-            {
+            if kept.iter().any(|other| {
+                lies_on(&arc, other, near, &touches) || same_stretch(&arc, other, near, &touches)
+            }) {
                 continue;
             }
             if let Some(arc) = trimmed(arc, &kept, near, &touches) {
@@ -2787,6 +2810,7 @@ fn split_at_touches(
 fn join_arms(
     touches: &[Touch],
     covered: &mut Vec<(usize, usize)>,
+    ends: &[(Contact, Vector)],
     (a, b): (&SurfaceGeometry, &SurfaceGeometry),
     options: Marching,
     tol: Tolerances,
@@ -2823,8 +2847,39 @@ fn join_arms(
                     let d = |u: usize| touches[u].point.distance(touches[t].point);
                     d(x).total_cmp(&d(y))
                 });
-            let Some((u, back)) = facing else { continue };
-            let (p, q) = (touch_contact(&touches[t]), touch_contact(&touches[u]));
+            let from = touches[t].point;
+            let ahead = |q: Point| {
+                touches.iter().enumerate().any(|(v, w)| {
+                    v != t
+                        && half_arm(&touches[t], w.point) == Some(h)
+                        && w.point.distance(from) < q.distance(from)
+                })
+            };
+            // An arc that stopped short of the touch, heading at it with no
+            // other touch on the way, is joined to it the same way.
+            let loose = ends
+                .iter()
+                .filter(|(e, heading)| {
+                    half_arm(&touches[t], e.point) == Some(h)
+                        && heading.dot(from - e.point) > 0.0
+                        && !ahead(e.point)
+                })
+                .min_by(|x, y| {
+                    x.0.point
+                        .distance(from)
+                        .total_cmp(&y.0.point.distance(from))
+                });
+            let target = match (facing, loose) {
+                (Some((u, _)), Some((e, _)))
+                    if e.point.distance(from) < touches[u].point.distance(from) =>
+                {
+                    (*e, None)
+                }
+                (Some((u, back)), _) => (touch_contact(&touches[u]), Some((u, back))),
+                (None, Some((e, _))) => (*e, None),
+                (None, None) => continue,
+            };
+            let (p, q) = (touch_contact(&touches[t]), target.0);
             let q = Contact {
                 on_a: beside(a, q.on_a, p.on_a),
                 on_b: beside(b, q.on_b, p.on_b),
@@ -2837,9 +2892,11 @@ fn join_arms(
             let leaves = between
                 .first()
                 .is_none_or(|c| half_arm(&touches[t], c.point) == Some(h))
-                && between
-                    .last()
-                    .is_none_or(|c| half_arm(&touches[u], c.point) == Some(back));
+                && target.1.is_none_or(|(u, back)| {
+                    between
+                        .last()
+                        .is_none_or(|c| half_arm(&touches[u], c.point) == Some(back))
+                });
             if !leaves {
                 continue;
             }
@@ -2855,7 +2912,7 @@ fn join_arms(
                 stretch.on_b.push(c.on_b);
             }
             covered.push((t, h));
-            covered.push((u, back));
+            covered.extend(target.1);
             arcs.push(stretch);
         }
     }
@@ -2932,6 +2989,46 @@ fn arms_covered(arcs: &[Traced], touches: &[Touch]) -> Vec<(usize, usize)> {
         }
     }
     covered
+}
+
+/// The ends of arcs that stop on no touch and meet no other end, each with
+/// the way the arc runs out there.
+fn loose_ends(arcs: &[Traced], touches: &[Touch], near: f64) -> Vec<(Contact, Vector)> {
+    let mut ends = Vec::new();
+    let all: Vec<(usize, Point)> = arcs
+        .iter()
+        .enumerate()
+        .filter(|(_, arc)| !arc.points.is_empty())
+        .flat_map(|(i, arc)| {
+            [
+                (2 * i, arc.points[0]),
+                (2 * i + 1, arc.points[arc.points.len() - 1]),
+            ]
+        })
+        .collect();
+    for (i, arc) in arcs.iter().enumerate() {
+        let m = arc.points.len();
+        if m < 2 {
+            continue;
+        }
+        for (end, (k, before)) in [(0, 1), (m - 1, m - 2)].into_iter().enumerate() {
+            let p = arc.points[k];
+            if touches.iter().any(|t| p.distance(t.point) <= t.radius)
+                || all
+                    .iter()
+                    .any(|&(j, q)| j != 2 * i + end && q.distance(p) <= near)
+            {
+                continue;
+            }
+            let contact = Contact {
+                on_a: arc.on_a[k],
+                on_b: arc.on_b[k],
+                point: p,
+            };
+            ends.push((contact, p - arc.points[before]));
+        }
+    }
+    ends
 }
 
 /// Branches cut at the touches as they were traced, where the touches stand
@@ -3312,6 +3409,28 @@ fn lies_on(arc: &Traced, other: &Traced, near: f64, touches: &[Touch]) -> bool {
         weighed = true;
     }
     weighed
+}
+
+/// Whether two arcs are one stretch between the same two touches: each
+/// runs from one touch to the other, leaving each along the same half arm.
+fn same_stretch(arc: &Traced, other: &Traced, near: f64, touches: &[Touch]) -> bool {
+    let ends = |t: &Traced| -> Option<[(usize, usize); 2]> {
+        let m = t.points.len();
+        if m < 2 {
+            return None;
+        }
+        let at = |end: usize, beside: usize| {
+            let k = touches
+                .iter()
+                .position(|u| u.point.distance(t.points[end]) <= near.max(u.blur))?;
+            Some((k, half_arm(&touches[k], t.points[beside])?))
+        };
+        Some([at(0, 1)?, at(m - 1, m - 2)?])
+    };
+    match (ends(arc), ends(other)) {
+        (Some(x), Some(y)) => x == y || x == [y[1], y[0]],
+        _ => false,
+    }
 }
 
 /// Whether a point lies within `near` of a polyline, searched outward from
@@ -4223,14 +4342,21 @@ fn fill(
         return Some(Vec::new());
     }
     let middle = p.point + chord * 0.5;
-    let start = [p.on_a.0, p.on_a.1, p.on_b.0, p.on_b.1];
+    // The solve starts from the points of both surfaces nearest the middle
+    // of the chord, so it lands on the stretch of section beside it: from
+    // an end standing on a touch, where the surfaces are tangent and the
+    // solve is singular, it may land on another stretch crossing there.
+    let feet = nearest_on(a, p.on_a, middle, tol).zip(nearest_on(b, p.on_b, middle, tol));
+    let start = feet.map_or(
+        [p.on_a.0, p.on_a.1, p.on_b.0, p.on_b.1],
+        |((ua, _), (ub, _))| [ua.0, ua.1, ub.0, ub.1],
+    );
     // Where the solve gives out, as it does where the surfaces part too
     // slowly to tell apart, the middle of the chord lying within the
     // confusion distance of both surfaces is on the section as far as
     // anything can be.
     let on_both = || -> Option<Contact> {
-        let (on_a, pa) = nearest_on(a, p.on_a, middle, tol)?;
-        let (on_b, pb) = nearest_on(b, p.on_b, middle, tol)?;
+        let ((on_a, pa), (on_b, pb)) = feet?;
         (pa.distance(middle) <= tol.confusion() && pb.distance(middle) <= tol.confusion())
             .then_some(Contact {
                 on_a,

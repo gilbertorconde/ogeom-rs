@@ -193,7 +193,7 @@ fn check(
     chord: f64,
     truth: &Truth,
     (within, free_ends): (f64, usize),
-) {
+) -> Vec<Traced> {
     let marching = Marching {
         chord,
         ..Marching::default()
@@ -213,13 +213,36 @@ fn check(
         free <= free_ends,
         "{name}: {free} ends lie on neither a touch nor an edge"
     );
+    found
 }
 
 /// `z = K·(x³ − s²x)(y³ − s²y)` over a box, cut by `z = 0`: three lines
-/// each way crossing at nine touches.
+/// each way crossing at nine touches. At `s = 0.1` a straight stride of the
+/// march spans two crossings. Where the stretches between crossings are
+/// joined, each is traced once: the length traced exceeds the exact one by
+/// no more than a hundred chords. At `K = 1`, `s = 0.03` the plane and the
+/// patch part by less than the confusion distance well away from the lines,
+/// and only coverage is asked: every line is traced, wherever between the
+/// crossings it is placed. Where the patch crosses the plane at a slope
+/// `t`, a section is placed only to within the confusion distance over `t`:
+/// near a crossing `t` is `4K·s⁴·r` at `r` from it, about 1e-4 a few chords
+/// out at `K = 10`, `s = 0.1`, and between the crossings at `s = 0.03` it
+/// stays under `K·s⁵`.
 #[test]
 fn a_grid_of_lines_crossing_at_nine_touches() {
-    let (s, k, chord) = (0.3, 100.0, 1e-4);
+    for (s, k, chord, within, placed) in [
+        (0.3, 100.0, 1e-4, 1e-3, true),
+        (0.1, 100.0, 1e-4, 1e-3, true),
+        (0.1, 100.0, 1e-7, 1e-6, true),
+        (0.1, 10.0, 1e-6, 2e-4, true),
+        (0.03, 100.0, 1e-7, 1e-4, true),
+        (0.03, 1.0, 1e-7, 1e-4, false),
+    ] {
+        grid_of_lines(s, k, chord, within, placed);
+    }
+}
+
+fn grid_of_lines(s: f64, k: f64, chord: f64, within: f64, placed: bool) {
     let ((x0, x1), (y0, y1)) = ((-0.5, 0.6), (-0.45, 0.55));
     let s2 = s * s;
     let patch = polynomial(
@@ -250,12 +273,31 @@ fn a_grid_of_lines_crossing_at_nine_touches() {
         }
     }
     let truth = Truth { curves, ends };
-    check(
-        "line grid",
-        (&patch, &ground()),
-        chord,
-        &truth,
-        (10.0 * chord, 0),
+    let name = format!("line grid s={s} K={k} chord={chord:e}");
+    let plane = ground();
+    if !placed {
+        let marching = Marching {
+            chord,
+            ..Marching::default()
+        };
+        let found = branches(&patch, &plane, marching, T).unwrap();
+        let (_, missed, _) = score(&found, &truth, (&patch, &plane), within);
+        assert!(
+            missed <= within,
+            "{name}: the exact section is missed by {missed:e}"
+        );
+        return;
+    }
+    let found = check(&name, (&patch, &plane), chord, &truth, (within, 0));
+    let traced: f64 = found
+        .iter()
+        .flat_map(|f| f.points.windows(2).map(|w| w[0].distance(w[1])))
+        .sum();
+    let exact = 3.0 * (x1 - x0) + 3.0 * (y1 - y0);
+    assert!(
+        traced - exact <= 100.0 * chord,
+        "{name}: {:e} of the section is traced twice",
+        traced - exact
     );
 }
 
