@@ -89,6 +89,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face whose ring crosses its periodic chart's join is folded beside
+  faces set aside too.** The fuse first sets aside the faces the other
+  solid cannot reach. A face sharing edges with them was read as stated, so
+  its ring did not close, and the fuse fell back to gathering every face.
+  Doom 350 solid 709 has a countersink cone whose ring crosses the join. A
+  sphere cap elsewhere on that solid refuses when every face is gathered,
+  so a cut through the cone refused. The ring is now folded there as
+  everywhere else; along a direction the chart only closes in, the fuse
+  still gathers every face (#344).
+
 - **A boolean through a face whose edges stop either side of their vertex
   builds.** A file may close two curves on one vertex with each curve's end
   within the vertex's radius but further apart than either radius, as Doom

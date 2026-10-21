@@ -157,6 +157,49 @@ fn a_bar_with_a_folded_wall_ring_cuts_through_the_wall() {
     }
 }
 
+#[test]
+fn a_folded_wall_ring_beside_faces_set_aside_cuts_through_the_wall() {
+    // A block 1 long across the bar, over the wall's corner only: the
+    // bar's ends and its faces at y = 0 and z = 0 lie beyond the block's
+    // reach and are set aside, and the wall shares its edges with them.
+    // The block takes the square from 0.5 to 2 each way less the quarter
+    // disc, over its length. The cut keeps the four faces set aside as
+    // they were: the fuse took the wall's folded ring with them aside,
+    // rather than falling back to gathering every face.
+    let profile = 4.0 - core::f64::consts::FRAC_PI_4;
+    let taken = 2.25 - core::f64::consts::FRAC_PI_4;
+    for axis in [Direction::X, -Direction::X] {
+        let mut model = Model::with_tolerances(T);
+        let bar = folded_notched_bar(&mut model, axis);
+        let corner = block(&mut model, (1.5, 0.5, 0.5), (1.0, 2.0, 2.0));
+        for (name, want) in [("cut", 4.0 * profile - taken), ("common", taken)] {
+            let made = if name == "cut" {
+                ogeom::boolean::cut(&mut model, &bar, &corner, T)
+            } else {
+                ogeom::boolean::common(&mut model, &bar, &corner, T)
+            }
+            .unwrap_or_else(|e| panic!("{name} {axis:?}: {e}"))
+            .shape;
+            let found = check(&model, &made, T).unwrap();
+            assert!(found.is_valid(), "{name} {axis:?}: {found}");
+            let got = volume(&model, &made);
+            assert!(
+                (got - want).abs() <= 1e-6,
+                "{name} {axis:?}: {got} against {want}"
+            );
+            let kept = explore_unique(&model, &made, ShapeType::Face).unwrap();
+            let untouched = explore_unique(&model, &bar, ShapeType::Face)
+                .unwrap()
+                .iter()
+                .filter(|f| kept.iter().any(|k| k.node() == f.node()))
+                .count();
+            if name == "cut" {
+                assert_eq!(untouched, 4, "cut {axis:?}: the faces set aside");
+            }
+        }
+    }
+}
+
 /// A solid with its closed charts' seams turned to 225 degrees, cut down
 /// to the quadrant x > 0, y > 0, where no seam reaches: every face on a
 /// closed chart is seam-free, its rings stated on the chart's own branch.

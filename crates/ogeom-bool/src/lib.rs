@@ -904,16 +904,49 @@ fn gather(
                 (false, false) => {}
             }
         }
-        // A face rebuilt on its own surface keeps its pcurves as stated.
-        if aside.is_none() || !(shares || !holes_aside.is_empty()) {
-            fold_rings(
-                model,
-                &face,
-                &surface,
-                &mut edges,
-                (&poles, &pole_keys),
-                tol,
-            )?;
+        // Every ring is folded onto one branch of its chart, a face rebuilt
+        // on its own surface beside faces set aside too. Such a face keeps
+        // the pcurves of the edges it shares with them as stated. Along a
+        // direction the surface repeats in, a stated pcurve whole periods
+        // from where the fold reads it names the same curve, as it did in
+        // the face given. Along one the chart only closes in, the two lie on
+        // different lines of the closure, and the fuse gathers every face
+        // instead.
+        let stated: Vec<Option<Point2>> = edges
+            .iter()
+            .map(|e| {
+                aside
+                    .is_some_and(|aside| aside.edges.contains(&e.node))
+                    .then(|| {
+                        e.pcurve
+                            .point_at(f64::midpoint(e.prange.0, e.prange.1), tol)
+                    })
+                    .transpose()
+            })
+            .collect::<OgeomResult<_>>()?;
+        fold_rings(
+            model,
+            &face,
+            &surface,
+            &mut edges,
+            (&poles, &pole_keys),
+            tol,
+        )?;
+        let repeats = [surface.is_periodic_u(), surface.is_periodic_v()];
+        for (e, at) in edges.iter().zip(&stated) {
+            let Some(at) = at else { continue };
+            let now = e
+                .pcurve
+                .point_at(f64::midpoint(e.prange.0, e.prange.1), tol)?;
+            if ((now.x - at.x).abs() > PARAM_SNAP && !repeats[0])
+                || ((now.y - at.y).abs() > PARAM_SNAP && !repeats[1])
+            {
+                ogeom_bail!(
+                    NotDone,
+                    "a face sharing edges with faces set aside has its ring stated \
+                     across its chart's join on one of them"
+                );
+            }
         }
         let moved = bring_trim_home(&surface, &mut edges, &mut poles, tol)?;
         close_pole_joints(model, &face, &surface, &edges, &mut poles, &pole_keys, tol)?;
