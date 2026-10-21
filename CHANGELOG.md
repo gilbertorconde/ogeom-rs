@@ -77,6 +77,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean through a face whose ring walks a seam both ways and states
+  its rims on another branch of the chart builds.** A drum wall or a
+  closed spline with its rim stated a period or more off the window its
+  seam bounds left the rim's ends where no seam column began, and every
+  boolean through it refused: "a face boundary strand dangles". Such a
+  ring is now walked onto the seam's branch: each seam occurrence on the
+  side that keeps the face on the ring's left, every other edge moved by
+  whole periods to start where the ring has reached, and only where the
+  ring then closes. A pole joint between a seam's two sides is read on
+  the sides walked. Eight box cuts through such faces in a printer
+  assembly now build, each cut and its common adding up to the solid
+  (#344).
+
 - **A marched section finds crossings closer together than its stride.**
   Where two crossings of a section stood within one step of the march, a
   third could hide in a step unseen, and the pair was cut as traced. Both

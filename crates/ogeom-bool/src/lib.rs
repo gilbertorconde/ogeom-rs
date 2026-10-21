@@ -790,6 +790,16 @@ fn gather(
             ogeom_bail!(Construction, "a face with no boundary bounds nothing");
         }
 
+        if aside.is_none() || !(shares || !holes_aside.is_empty()) {
+            fold_seamed_rings(
+                model,
+                &face,
+                &surface,
+                &mut edges,
+                (&poles, &pole_keys),
+                tol,
+            )?;
+        }
         // A seam edge bounds the chart twice *only when this face wraps*:
         // when its other boundary reaches both columns, as a full drum's
         // rims do. A face that merely sits against the meridian (a sphere
@@ -1430,6 +1440,234 @@ fn fold_rings(
     Ok(())
 }
 
+/// Which side of a seam an occurrence walks: the one that keeps the face
+/// on the ring's left, as every ring of a face stored forward keeps it. A
+/// seam's two sides bound the window the face wraps, so the face lies
+/// towards the other side, and the occurrence runs along the side from
+/// which that lies on its left. `None` where the sides do not stand apart
+/// across the occurrence's run.
+fn walked_seam_side(
+    e: &BoundaryEdge,
+    back: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<(PlanarCurve, (f64, f64))>> {
+    let Some((other, orange)) = &e.other_side else {
+        return Ok(None);
+    };
+    let (a, b) = (
+        e.pcurve.point_at(e.prange.0, tol)?,
+        e.pcurve.point_at(e.prange.1, tol)?,
+    );
+    let run = if back { a - b } else { b - a };
+    let mid = |pc: &PlanarCurve, r: (f64, f64)| pc.point_at(f64::midpoint(r.0, r.1), tol);
+    let towards = mid(other, *orange)? - mid(&e.pcurve, e.prange)?;
+    let left = run.x * towards.y - run.y * towards.x;
+    Ok(if left > 0.0 {
+        Some((e.pcurve.clone(), e.prange))
+    } else if left < 0.0 {
+        Some((other.clone(), *orange))
+    } else {
+        None
+    })
+}
+
+/// A ring walking a seam both ways brought onto the seam's branch of a
+/// closed chart: each seam occurrence on the side the ring walks (see
+/// [`walked_seam_side`]), and every other edge moved by the whole periods
+/// that make it start where the ring has reached. A file may state a rim
+/// a period or more off the window its seam bounds; the arrangement
+/// draws both seam columns and needs the rims between them.
+///
+/// The ring is moved only where, so walked, every joint meets and it
+/// closes where it began, and every moved pcurve stays on a stretch the
+/// chart covers. Consecutive occurrences of one seam meet across the
+/// closure, a whole period apart, where the ring crosses the join. A ring
+/// with any other edge walked twice is left as stated.
+fn fold_seamed_rings(
+    model: &Model,
+    face: &Shape,
+    surface: &SurfaceGeometry,
+    edges: &mut [BoundaryEdge],
+    (poles, pole_keys): (&[PoleEdge], &[EdgeKey]),
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    #[derive(Clone)]
+    enum Step {
+        Seam(usize, Point2, Point2),
+        Edge(usize, Point2, Point2),
+        Pole(Point2, Point2),
+    }
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let periods = [
+        ((surface.is_periodic_u() || surface.is_closed_u(tol)) && ub > ua).then_some(ub - ua),
+        ((surface.is_periodic_v() || surface.is_closed_v(tol)) && vb > va).then_some(vb - va),
+    ];
+    if periods.iter().all(Option::is_none) {
+        return Ok(());
+    }
+    let periodic = [surface.is_periodic_u(), surface.is_periodic_v()];
+    let whole = |to: Point2, from: Point2| -> ogeom_math::Vector2 {
+        let mut shift = ogeom_math::Vector2::new(0.0, 0.0);
+        if let Some(period) = periods[0] {
+            shift.x = ((to.x - from.x) / period).round() * period;
+        }
+        if let Some(period) = periods[1] {
+            shift.y = ((to.y - from.y) / period).round() * period;
+        }
+        shift
+    };
+    let inside = |pc: &PlanarCurve, range: (f64, f64)| -> OgeomResult<bool> {
+        for k in 0..=2 {
+            let p = pc.point_at(range.0 + (range.1 - range.0) * f64::from(k) / 2.0, tol)?;
+            if (!periodic[0] && (p.x < ua - PARAM_SNAP || p.x > ub + PARAM_SNAP))
+                || (!periodic[1] && (p.y < va - PARAM_SNAP || p.y > vb + PARAM_SNAP))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    let apart = |a: Point2, b: Point2| -> Option<f64> {
+        let mid = Point2::new(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
+        let (p, m, q) = (
+            surface.point_at(a.x, a.y, tol).ok()?,
+            surface.point_at(mid.x, mid.y, tol).ok()?,
+            surface.point_at(b.x, b.y, tol).ok()?,
+        );
+        Some(p.distance(m).max(m.distance(q)))
+    };
+    let mut uses: ogeom_core::FastMap<EdgeKey, (usize, usize)> = ogeom_core::FastMap::default();
+    for (i, e) in edges.iter().enumerate() {
+        uses.insert(e.node, (i, 0));
+    }
+    let stored = face.oriented(ogeom_topo::Orientation::Forward);
+    let wires: Vec<Vec<Shape>> = model
+        .children_of(&stored)?
+        .iter()
+        .map(|wire| model.ordered_children_of(wire))
+        .collect::<OgeomResult<_>>()?;
+    for edge in wires.iter().flatten() {
+        if let Some(slot) = uses.get_mut(&EdgeKey::of(edge)) {
+            slot.1 += 1;
+        }
+    }
+    'rings: for ring in &wires {
+        let mut walk: Vec<Step> = Vec::with_capacity(ring.len());
+        for edge in ring {
+            let back = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let key = EdgeKey::of(edge);
+            let ends = |pc: &PlanarCurve, r: (f64, f64)| -> OgeomResult<(Point2, Point2)> {
+                let (a, b) = (pc.point_at(r.0, tol)?, pc.point_at(r.1, tol)?);
+                Ok(if back { (b, a) } else { (a, b) })
+            };
+            if let Some(&(i, n)) = uses.get(&key) {
+                let e = &edges[i];
+                if e.other_side.is_some() && n == 2 {
+                    let Some((side, range)) = walked_seam_side(e, back, tol)? else {
+                        continue 'rings;
+                    };
+                    let (a, b) = ends(&side, range)?;
+                    walk.push(Step::Seam(i, a, b));
+                } else if n == 1 && e.other_side.is_none() && e.seam.is_none() {
+                    let (a, b) = ends(&e.pcurve, e.prange)?;
+                    walk.push(Step::Edge(i, a, b));
+                } else {
+                    continue 'rings;
+                }
+            } else if let Some(j) = pole_keys.iter().position(|k| *k == key) {
+                let (a, b) = ends(&poles[j].pcurve, poles[j].prange)?;
+                walk.push(Step::Pole(a, b));
+            } else {
+                continue 'rings;
+            }
+        }
+        let Some(start) = walk.iter().position(|s| matches!(s, Step::Seam(..))) else {
+            continue;
+        };
+        walk.rotate_left(start);
+        let radius = |s: &Step| match s {
+            Step::Seam(i, ..) | Step::Edge(i, ..) => {
+                edges[*i].tolerance.max(edges[*i].ends_tolerance)
+            }
+            Step::Pole(..) => 0.0,
+        };
+        let meets = |a: Point2, b: Point2, step: &Step, prev: &Step| -> bool {
+            if matches!(step, Step::Pole(..)) || matches!(prev, Step::Pole(..)) {
+                a.distance(b) <= SEAM_HAIR
+            } else {
+                let within = 2.0 * (radius(step) + radius(prev)) + tol.confusion();
+                a.distance(b) <= PARAM_SNAP || apart(a, b).is_some_and(|d| d <= within)
+            }
+        };
+        let Step::Seam(_, begin, mut last) = walk[0] else {
+            continue;
+        };
+        let mut moves: Vec<(usize, PlanarCurve)> = Vec::new();
+        for k in 1..walk.len() {
+            let (step, prev) = (&walk[k], &walk[k - 1]);
+            match step {
+                Step::Edge(i, from, to) => {
+                    let shift = whole(last, *from);
+                    let moved = Point2::new(from.x + shift.x, from.y + shift.y);
+                    if !meets(last, moved, step, prev) {
+                        continue 'rings;
+                    }
+                    if shift.x != 0.0 || shift.y != 0.0 {
+                        let by = ogeom_math::Transform2::translation(shift);
+                        let pcurve = edges[*i].pcurve.transformed(&by, tol)?;
+                        if !inside(&pcurve, edges[*i].prange)? {
+                            continue 'rings;
+                        }
+                        moves.push((*i, pcurve));
+                    }
+                    last = Point2::new(to.x + shift.x, to.y + shift.y);
+                }
+                Step::Seam(i, from, to) => {
+                    let across = matches!(prev, Step::Seam(j, ..) if j == i) && {
+                        let shift = whole(last, *from);
+                        (shift.x != 0.0 || shift.y != 0.0)
+                            && meets(
+                                last,
+                                Point2::new(from.x + shift.x, from.y + shift.y),
+                                step,
+                                prev,
+                            )
+                    };
+                    if !across && !meets(last, *from, step, prev) {
+                        continue 'rings;
+                    }
+                    last = *to;
+                }
+                Step::Pole(from, to) => {
+                    if !meets(last, *from, step, prev) {
+                        continue 'rings;
+                    }
+                    last = *to;
+                }
+            }
+        }
+        let closing = &walk[walk.len() - 1];
+        let across = matches!((&walk[0], closing), (Step::Seam(i, ..), Step::Seam(j, ..)) if i == j)
+            && {
+                let shift = whole(last, begin);
+                (shift.x != 0.0 || shift.y != 0.0)
+                    && meets(
+                        last,
+                        Point2::new(begin.x + shift.x, begin.y + shift.y),
+                        &walk[0],
+                        closing,
+                    )
+            };
+        if !across && !meets(last, begin, &walk[0], closing) {
+            continue;
+        }
+        for (i, pcurve) in moves {
+            edges[i].pcurve = pcurve;
+        }
+    }
+    Ok(())
+}
+
 /// The stretches of a pole row a face's ring crosses with no edge there:
 /// two edges meeting at a cone's apex or a sphere's pole stand apart in the
 /// chart, at the columns they arrive along, and the row between them is
@@ -1448,8 +1686,8 @@ fn fold_rings(
 ///   towards the middle of the face's own trim.
 ///
 /// Any other joint is left for the arrangement to snap or refuse by name.
-/// A ring that walks a seam both ways is left as it is: which side of the
-/// seam it walks is not read here.
+/// A ring that walks a seam both ways reads each occurrence on the side it
+/// walks ([`walked_seam_side`]).
 fn close_pole_joints(
     model: &Model,
     face: &Shape,
@@ -1485,10 +1723,12 @@ fn close_pole_joints(
     let stored = face.oriented(ogeom_topo::Orientation::Forward);
     for wire in model.children_of(&stored)? {
         let ring = model.ordered_children_of(&wire)?;
-        // Each occurrence's edge and whether the ring walks it backwards;
-        // `None` for a degenerate edge, which stands between its
-        // neighbours already.
-        let mut walk: Vec<Option<(usize, bool)>> = Vec::with_capacity(ring.len());
+        // Each occurrence's edge, whether the ring walks it backwards and,
+        // for a seam the ring walks both ways, the side it walks; `None`
+        // for a degenerate edge, which stands between its neighbours
+        // already.
+        type Walked = (usize, bool, Option<(PlanarCurve, (f64, f64))>);
+        let mut walk: Vec<Option<Walked>> = Vec::with_capacity(ring.len());
         for edge in &ring {
             let key = EdgeKey::of(edge);
             if pole_keys.contains(&key) {
@@ -1499,31 +1739,45 @@ fn close_pole_joints(
                 walk.clear();
                 break;
             };
-            if edges[i].other_side.is_some() {
-                walk.clear();
-                break;
-            }
-            walk.push(Some((
-                i,
-                edge.orientation() == ogeom_topo::Orientation::Reversed,
-            )));
+            let back = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let side = if edges[i].other_side.is_some() {
+                let Some(side) = walked_seam_side(&edges[i], back, tol)? else {
+                    walk.clear();
+                    break;
+                };
+                Some(side)
+            } else {
+                None
+            };
+            walk.push(Some((i, back, side)));
         }
         let n = walk.len();
         for k in 0..n {
-            let (Some((a, a_back)), Some((b, b_back))) = (walk[k], walk[(k + 1) % n]) else {
+            let (Some((a, a_back, a_side)), Some((b, b_back, b_side))) =
+                (&walk[k], &walk[(k + 1) % n])
+            else {
                 continue;
             };
             // The joint: where the ring leaves one edge and takes up the
             // next, in the chart and in space, with the joint vertex's
             // radius as each edge states it.
-            let end = |i: usize, back: bool, last: bool| -> OgeomResult<(Point2, (Point, f64))> {
+            let end = |i: usize,
+                       back: bool,
+                       side: &Option<(PlanarCurve, (f64, f64))>,
+                       last: bool|
+             -> OgeomResult<(Point2, (Point, f64))> {
                 let e = &edges[i];
+                let (pcurve, range) = side
+                    .as_ref()
+                    .map_or((&e.pcurve, e.prange), |(c, r)| (c, *r));
                 let at_start = back == last;
-                let t = if at_start { e.prange.0 } else { e.prange.1 };
-                Ok((e.pcurve.point_at(t, tol)?, e.ends[usize::from(!at_start)]))
+                let t = if at_start { range.0 } else { range.1 };
+                Ok((pcurve.point_at(t, tol)?, e.ends[usize::from(!at_start)]))
             };
-            let ((from, (pa, ra)), (to, (pb, rb))) =
-                (end(a, a_back, true)?, end(b, b_back, false)?);
+            let ((from, (pa, ra)), (to, (pb, rb))) = (
+                end(*a, *a_back, a_side, true)?,
+                end(*b, *b_back, b_side, false)?,
+            );
             if from.distance(to) <= PARAM_SNAP {
                 continue;
             }

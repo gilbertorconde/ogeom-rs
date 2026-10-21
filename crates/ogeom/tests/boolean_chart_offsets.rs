@@ -486,3 +486,97 @@ fn a_tool_in_a_loose_part_s_hole_leaves_it_whole() {
     .shape;
     assert!(all_three(&mut model, &frame, &post, whole).abs() <= 1e-9);
 }
+
+/// A drum's wall, its seam walked both ways, with its top rim stated a
+/// period off the window the seam bounds, as a file may state it: exact,
+/// and converted to a closed spline. The ring is walked onto the seam's
+/// branch, each seam occurrence on the side that keeps the wall on the
+/// ring's left, and every boolean is the drum's as stated at home.
+#[test]
+fn a_drum_wall_with_its_rim_a_period_off_its_seam_is_cut_as_at_home() {
+    // The volume each boolean is held to: the drum's as stated at home,
+    // which a chart a period off measures only by its mesh.
+    let cut_through = |spline: bool, turns: f64, home: Option<f64>| -> (f64, f64) {
+        let mut model = Model::new();
+        let mut drum = make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+            .unwrap()
+            .shape;
+        if spline {
+            drum = ogeom::algo::to_nurbs(&mut model, &drum, T).unwrap().shape;
+        }
+        if turns != 0.0 {
+            use ogeom::geom::{Curve2d as _, Surface as _};
+            let wall = explore_unique(&model, &drum, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|f| {
+                    let s = model.node(f).unwrap().data().as_face().unwrap().surface;
+                    let g = model.geometry().surface(s).unwrap();
+                    g.is_periodic_u() || g.is_closed_u(T)
+                })
+                .unwrap();
+            let surface = model.node(&wall).unwrap().data().as_face().unwrap().surface;
+            let ((u0, u1), _) = model.geometry().surface(surface).unwrap().domain();
+            let away = ogeom::math::Transform2::translation(ogeom::math::Vector2::new(
+                turns * (u1 - u0),
+                0.0,
+            ));
+            // The top rim: the row the wall's plain trims reach highest.
+            let mut top: Option<(ogeom::topo::PCurveId, f64)> = None;
+            for edge in explore_unique(&model, &wall, ShapeType::Edge).unwrap() {
+                let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                let Some(EdgeRepr::PCurve { curve, range, .. }) =
+                    data.pcurve_for(surface, edge.location()).cloned()
+                else {
+                    continue;
+                };
+                let row = model
+                    .geometry()
+                    .pcurve(curve)
+                    .unwrap()
+                    .point_at(range.0, T)
+                    .unwrap()
+                    .y;
+                if top.is_none_or(|(_, y)| row > y) {
+                    top = Some((curve, row));
+                }
+            }
+            let (curve, _) = top.unwrap();
+            let restated = model
+                .geometry()
+                .pcurve(curve)
+                .unwrap()
+                .transformed(&away, T)
+                .unwrap();
+            *model.geometry_mut().pcurve_mut(curve).unwrap() = restated;
+            let moved = true;
+            assert!(moved);
+            assert!(check(&model, &drum, T).unwrap().problems.is_empty());
+        }
+        let whole = home.unwrap_or_else(|| volume(&model, &drum));
+        let mut shared = 0.0;
+        for (x, y, radius) in [(2.0, 0.0, 0.5), (-1.0, 1.5, 0.8)] {
+            let tool = make_cylinder(
+                &mut model,
+                Frame::WORLD.with_origin(Point::new(x, y, -1.0)),
+                radius,
+                7.0,
+                T,
+            )
+            .unwrap()
+            .shape;
+            shared += all_three(&mut model, &drum, &tool, whole);
+        }
+        (whole, shared)
+    };
+    for spline in [false, true] {
+        let (home, home_shared) = cut_through(spline, 0.0, None);
+        for turns in [1.0, -1.0] {
+            let (_, away_shared) = cut_through(spline, turns, Some(home));
+            assert!(
+                (away_shared - home_shared).abs() <= 1e-6 * home_shared,
+                "spline {spline} turns {turns}: {away_shared} against {home_shared}"
+            );
+        }
+    }
+}
