@@ -59,16 +59,25 @@
 //! on), that edge runs on to where a third neighbour pierces the curve or
 //! to the other half's end.
 //!
+//! Two neighbours the wound left on one surface, facing one way (a slot
+//! across a top leaves the top in two halves on one plane), come back as
+//! one face, its boundary running through both halves' surviving edges.
+//! A curve two neighbours meet along that no other face stops (a rebate
+//! round a drum's rim, its cap and wall meeting again along the rim's
+//! whole circle) is taken whole, closing on itself, cut where a side's
+//! seam reaches it.
+//!
 //! What this does not yet close is refused by name: a wound whose sides
-//! do not meet in a curve (a slot across a top, whose two halves lie on
-//! one plane), a removal that would leave a face with no boundary and no
-//! edge to grow to, and a gap the recovered edges do not bridge.
+//! do not meet in a curve and lie on no one surface, a removal that would
+//! leave a face with no boundary and no edge to grow to, and a gap the
+//! recovered edges do not bridge.
 
 use crate::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_algo::{Built, History, make_edge_between, make_solid, make_vertex, sew};
 use ogeom_core::ogeom_err;
 use ogeom_core::{FastMap, FastSet};
 use ogeom_geom::Curve3d as _;
+use ogeom_geom::Surface as _;
 use ogeom_geom::Transformable as _;
 use ogeom_geom::{Curve, SurfaceGeometry};
 use ogeom_intersect::{
@@ -273,12 +282,23 @@ fn remove_faces_own(
         // where that does not close it either, the band's refusal stands.
         let band = match close_wound(model, faces, &interrupted, &removed, &users, &is_ring, tol) {
             Ok(band) => band,
-            Err(refused) => close_by_extension(model, faces, &interrupted, &users, &is_ring, tol)
-                .map_err(|_| refused)?,
+            // Halves of one face left on either side of the wound (a
+            // slot across a top) close as one face, tried only where
+            // closing them apart does not.
+            Err(refused) => {
+                close_by_extension(model, faces, &interrupted, &users, &is_ring, false, tol)
+                    .or_else(|_| {
+                        close_by_extension(model, faces, &interrupted, &users, &is_ring, true, tol)
+                    })
+                    .map_err(|_| refused)?
+            }
         };
         for (old, new) in band {
             history.modify(&old, new.clone());
-            rebuilt.push(new);
+            // Faces closed as one come back as one face, once.
+            if !rebuilt.iter().any(|f| f.is_same(&new)) {
+                rebuilt.push(new);
+            }
         }
     }
 
@@ -645,148 +665,16 @@ fn close_wound(
         match (below, above) {
             (None, None) if piercings.is_empty() => {
                 // No ends: the band wraps, and the recovered edge closes on
-                // itself, but not always as one edge. A chart's seam
-                // reaches the recovered curve too: a cylinder wall's wire
-                // runs up its seam, round the rim and back down, and a
-                // closed edge carrying a vertex of its own leaves that wire
-                // two chains that never meet. So each side's own dangling
-                // boundary names a corner where it reaches the curve, the
-                // curve is cut there, and the dangling edge then extends to
-                // it like any other.
-                let (lo, hi) = crease.curve.domain();
-                if !crease.curve.is_periodic() {
-                    ogeom_bail!(
-                        Construction,
-                        "a wrapping band recovered an open curve; the closure is \
-                         not constructible from it"
-                    );
-                }
-                let period = hi - lo;
-                let mut stops: Vec<f64> = Vec::new();
-                for side in &crease.sides {
-                    let mut rim_vertices: FastSet<TShapeId> = FastSet::default();
-                    for edge in explore(model, side, Filter::OfType(ShapeType::Edge))? {
-                        if is_ring(&edge) {
-                            for v in model.ordered_children_of(&edge)? {
-                                rim_vertices.insert(v.node());
-                            }
-                        }
-                    }
-                    for edge in explore(model, side, Filter::OfType(ShapeType::Edge))? {
-                        if is_ring(&edge) {
-                            continue;
-                        }
-                        let free: Vec<Point> = model
-                            .ordered_children_of(&edge)?
-                            .iter()
-                            .filter(|v| rim_vertices.contains(&v.node()))
-                            .filter_map(|v| {
-                                model
-                                    .node(v)
-                                    .and_then(|n| n.data().as_vertex())
-                                    .map(|d| d.point)
-                            })
-                            .collect();
-                        if free.is_empty() {
-                            continue;
-                        }
-                        let Some(geometry) = edge_geometry(model, &edge, tol)? else {
-                            continue;
-                        };
-                        for start in free {
-                            // The two curves' closest approach, from the
-                            // dangling end: each in turn answers where the
-                            // other's nearest point is, and an edge that
-                            // genuinely reaches the curve settles on it.
-                            let mut point = start;
-                            for _ in 0..8 {
-                                let on_curve =
-                                    ogeom_algo::project_on_curve(&crease.curve, point, 64, tol)?;
-                                let t = parameter_near(&geometry, on_curve.point, tol)?;
-                                let Ok(on_edge) = geometry.point_at(t, tol) else {
-                                    break;
-                                };
-                                if on_edge.distance(on_curve.point) <= tol.confusion() * 10.0 {
-                                    stops.push(lo + (on_curve.parameter - lo).rem_euclid(period));
-                                    break;
-                                }
-                                point = on_edge;
-                            }
-                        }
-                    }
-                }
-                // Re-anchored at the first corner, so the whole turn stands
-                // inside the curve's own domain: a rim written from a corner
-                // right round to itself would otherwise end a turn past the
-                // end of it. One corner then leaves the rim one closed edge,
-                // which is the shape it had before the feature was cut,
-                // and the shape the exact volume integrator reads as a disc.
-                let (curve, stops) = match (&crease.curve, stops.first().copied()) {
-                    (Curve::Circle(circle), Some(first)) => {
-                        let at = crease.curve.point_at(first, tol)?;
-                        let held = circle.circle();
-                        let anchored = ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(
-                            ogeom_math::Frame::new(
-                                held.centre(),
-                                held.frame().z(),
-                                ogeom_math::Direction::new(at - held.centre(), tol)?,
-                                tol,
-                            )?,
-                            held.radius(),
-                            tol,
-                        )?);
-                        let mut anchored = Curve::Circle(anchored);
-                        // The same circle, and the same way round it: the
-                        // re-anchoring moves where the parameter starts and
-                        // must not turn the rim over.
-                        if anchored
-                            .d1_at(0.0, tol)?
-                            .dot(crease.curve.d1_at(first, tol)?)
-                            < 0.0
-                        {
-                            anchored = ogeom_geom::Reversible::reversed(&anchored);
-                        }
-                        let shifted = stops
-                            .iter()
-                            .map(|t| (t - first).rem_euclid(period))
-                            .collect::<Vec<f64>>();
-                        (anchored, shifted)
-                    }
-                    // A rim that is not a circle cannot be re-anchored, so
-                    // it is cut at the chart's start as well and the turn
-                    // stays inside the domain in pieces instead.
-                    _ => {
-                        let mut kept = stops;
-                        kept.push(lo);
-                        (crease.curve.clone(), kept)
-                    }
-                };
-                let mut cuts = stops;
-                cuts.sort_by(f64::total_cmp);
-                cuts.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric().max(1e-9));
-                if cuts.is_empty() {
-                    cuts.push(lo);
-                }
-                let mut cut: Vec<Shape> = Vec::with_capacity(cuts.len());
-                for t in &cuts {
-                    let at = curve.point_at(*t, tol)?;
-                    cut.push(vertex_at(model, at));
-                }
-                for (index, t) in cuts.iter().enumerate() {
-                    let next = if index + 1 == cuts.len() {
-                        cuts[0] + period
-                    } else {
-                        cuts[index + 1]
-                    };
-                    let edge = make_edge_between(
-                        model,
-                        curve.clone(),
-                        (*t, next),
-                        &cut[index],
-                        &cut[(index + 1) % cuts.len()],
-                        tol,
-                    )?
-                    .shape;
+                // itself.
+                let (edges, cut) = wrap_round(
+                    model,
+                    &crease.curve,
+                    &crease.sides,
+                    is_ring,
+                    &mut vertex_at,
+                    tol,
+                )?;
+                for edge in edges {
                     new_edges.push((edge, [crease.sides[0].node(), crease.sides[1].node()]));
                 }
                 corners.extend(cut);
@@ -831,11 +719,172 @@ fn close_wound(
             .filter(|(_, sides)| sides.contains(&face.node()))
             .map(|(e, _)| e.clone())
             .collect();
-        let new_face =
-            rebuild_interrupted(model, face, &rims, &borders, &corners, &mut extended, tol)?;
+        let new_face = rebuild_interrupted(
+            model,
+            face,
+            &[],
+            &rims,
+            &borders,
+            &corners,
+            &mut extended,
+            tol,
+        )?;
         out.push((face.clone(), new_face));
     }
     Ok(out)
+}
+
+/// A curve the wound took whole, closed on itself: a periodic curve no
+/// other face stops, cut where a side's dangling boundary reaches it.
+///
+/// It closes, but not always as one edge. A chart's seam reaches the
+/// recovered curve too: a cylinder wall's wire runs up its seam, round the
+/// rim and back down, and a closed edge carrying a vertex of its own leaves
+/// that wire two chains that never meet. So each side's own dangling
+/// boundary names a corner where it reaches the curve, the curve is cut
+/// there, and the dangling edge then extends to it like any other. The
+/// edges are returned with the vertices they were cut at.
+fn wrap_round(
+    model: &mut Model,
+    curve: &Curve,
+    sides: &[Shape; 2],
+    is_ring: &dyn Fn(&Shape) -> bool,
+    vertex_at: &mut dyn FnMut(&mut Model, Point) -> Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
+    let (lo, hi) = curve.domain();
+    if !curve.is_periodic() {
+        ogeom_bail!(
+            Construction,
+            "a wrapping band recovered an open curve; the closure is \
+             not constructible from it"
+        );
+    }
+    let period = hi - lo;
+    let mut stops: Vec<f64> = Vec::new();
+    for side in sides {
+        let mut rim_vertices: FastSet<TShapeId> = FastSet::default();
+        for edge in explore(model, side, Filter::OfType(ShapeType::Edge))? {
+            if is_ring(&edge) {
+                for v in model.ordered_children_of(&edge)? {
+                    rim_vertices.insert(v.node());
+                }
+            }
+        }
+        for edge in explore(model, side, Filter::OfType(ShapeType::Edge))? {
+            if is_ring(&edge) {
+                continue;
+            }
+            let free: Vec<Point> = model
+                .ordered_children_of(&edge)?
+                .iter()
+                .filter(|v| rim_vertices.contains(&v.node()))
+                .filter_map(|v| {
+                    model
+                        .node(v)
+                        .and_then(|n| n.data().as_vertex())
+                        .map(|d| d.point)
+                })
+                .collect();
+            if free.is_empty() {
+                continue;
+            }
+            let Some(geometry) = edge_geometry(model, &edge, tol)? else {
+                continue;
+            };
+            for start in free {
+                // The two curves' closest approach, from the
+                // dangling end: each in turn answers where the
+                // other's nearest point is, and an edge that
+                // genuinely reaches the curve settles on it.
+                let mut point = start;
+                for _ in 0..8 {
+                    let on_curve = ogeom_algo::project_on_curve(curve, point, 64, tol)?;
+                    let t = parameter_near(&geometry, on_curve.point, tol)?;
+                    let Ok(on_edge) = geometry.point_at(t, tol) else {
+                        break;
+                    };
+                    if on_edge.distance(on_curve.point) <= tol.confusion() * 10.0 {
+                        stops.push(lo + (on_curve.parameter - lo).rem_euclid(period));
+                        break;
+                    }
+                    point = on_edge;
+                }
+            }
+        }
+    }
+    // Re-anchored at the first corner, so the whole turn stands
+    // inside the curve's own domain: a rim written from a corner
+    // right round to itself would otherwise end a turn past the
+    // end of it. One corner then leaves the rim one closed edge,
+    // which is the shape it had before the feature was cut,
+    // and the shape the exact volume integrator reads as a disc.
+    let (curve, stops) = match (&curve, stops.first().copied()) {
+        (Curve::Circle(circle), Some(first)) => {
+            let at = curve.point_at(first, tol)?;
+            let held = circle.circle();
+            let anchored = ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(
+                ogeom_math::Frame::new(
+                    held.centre(),
+                    held.frame().z(),
+                    ogeom_math::Direction::new(at - held.centre(), tol)?,
+                    tol,
+                )?,
+                held.radius(),
+                tol,
+            )?);
+            let mut anchored = Curve::Circle(anchored);
+            // The same circle, and the same way round it: the
+            // re-anchoring moves where the parameter starts and
+            // must not turn the rim over.
+            if anchored.d1_at(0.0, tol)?.dot(curve.d1_at(first, tol)?) < 0.0 {
+                anchored = ogeom_geom::Reversible::reversed(&anchored);
+            }
+            let shifted = stops
+                .iter()
+                .map(|t| (t - first).rem_euclid(period))
+                .collect::<Vec<f64>>();
+            (anchored, shifted)
+        }
+        // A rim that is not a circle cannot be re-anchored, so
+        // it is cut at the chart's start as well and the turn
+        // stays inside the domain in pieces instead.
+        _ => {
+            let mut kept = stops;
+            kept.push(lo);
+            (curve.clone(), kept)
+        }
+    };
+    let mut cuts = stops;
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric().max(1e-9));
+    if cuts.is_empty() {
+        cuts.push(lo);
+    }
+    let mut cut: Vec<Shape> = Vec::with_capacity(cuts.len());
+    let mut edges: Vec<Shape> = Vec::with_capacity(cuts.len());
+    for t in &cuts {
+        let at = curve.point_at(*t, tol)?;
+        cut.push(vertex_at(model, at));
+    }
+    for (index, t) in cuts.iter().enumerate() {
+        let next = if index + 1 == cuts.len() {
+            cuts[0] + period
+        } else {
+            cuts[index + 1]
+        };
+        let edge = make_edge_between(
+            model,
+            curve.clone(),
+            (*t, next),
+            &cut[index],
+            &cut[(index + 1) % cuts.len()],
+            tol,
+        )?
+        .shape;
+        edges.push(edge);
+    }
+    Ok((edges, cut))
 }
 
 /// Close a wound by extension alone: every pair of interrupted faces whose
@@ -847,13 +896,23 @@ fn close_wound(
 /// crease, from the end face it leaves to the one it reaches). Against a
 /// dangling end the other stop is the corner that edge extends to (a
 /// notch's three edges, each run on to where the three faces meet, or a
-/// pocket open at an edge, its rim's two halves joined across it).
+/// pocket open at an edge, its rim's two halves joined across it). A
+/// periodic curve with no stop at all is taken whole, closing on itself
+/// (a rebate round a drum's rim, its cap and wall meeting again along the
+/// rim's circle), cut where a side's seam reaches it.
+///
+/// With `merge`, interrupted faces on one surface, facing one way, are one
+/// face (a slot across a top leaves the top in two halves on one plane):
+/// they close as one, and come back as one face whose boundary runs
+/// through all their surviving edges.
+#[allow(clippy::too_many_lines, reason = "one wound, one narrative")]
 fn close_by_extension(
     model: &mut Model,
     removed_faces: &[Shape],
     interrupted: &[Shape],
     users: &FastMap<TShapeId, Vec<Shape>>,
     is_ring: &dyn Fn(&Shape) -> bool,
+    merge: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(Shape, Shape)>> {
     let mut room = ogeom_math::Aabb::default();
@@ -873,6 +932,49 @@ fn close_by_extension(
             .map(|d| placement.apply(d.point))
             .ok_or_else(|| ogeom_err!(Construction, "a vertex holds no point"))
     };
+
+    // Each interrupted face's representative: itself, or with `merge` the
+    // first interrupted face on the same surface facing the same way.
+    let mut rep: FastMap<TShapeId, Shape> = FastMap::default();
+    for (i, face) in interrupted.iter().enumerate() {
+        let mut found = face.clone();
+        if merge {
+            let surface = placed_surface(model, face, tol)?;
+            let sense = if face.orientation() == ogeom_topo::Orientation::Reversed {
+                -1.0
+            } else {
+                1.0
+            };
+            for earlier in &interrupted[..i] {
+                let other = placed_surface(model, earlier, tol)?;
+                let same = matches!(
+                    intersect_surfaces(&surface, &other, IntersectOptions::default(), tol),
+                    Ok(SurfaceIntersection::Same)
+                );
+                if !same {
+                    continue;
+                }
+                // The two faces' normals compared at one point of their
+                // shared surface: the earlier face's own, read on this
+                // face's chart.
+                let (at, theirs) = ogeom_algo::face_normal(model, earlier, tol)?;
+                let foot = ogeom_algo::project_on_surface(&surface, at, 16, tol)?;
+                let (u, v) = foot.parameters;
+                let ours = surface.normal_at(u, v, tol)?.vector() * sense;
+                if theirs.dot(ours) > 0.0 {
+                    found = rep[&earlier.node()].clone();
+                    break;
+                }
+            }
+        }
+        rep.insert(face.node(), found);
+    }
+    let rep_of = |id: TShapeId| rep.get(&id).map_or(id, Shape::node);
+    let leaders: Vec<Shape> = interrupted
+        .iter()
+        .filter(|f| rep_of(f.node()) == f.node())
+        .cloned()
+        .collect();
 
     // The ends the removal leaves dangling: each interrupted face's edges
     // that survive and reach a vertex the rim owned.
@@ -903,7 +1005,7 @@ fn close_by_extension(
                 if rim_vertices.contains(&v.node()) {
                     let p = point_of(model, &v)?;
                     if !dangling.iter().any(|(q, _)| q.distance(p) <= near) {
-                        dangling.push((p, [*a, *b]));
+                        dangling.push((p, [rep_of(*a), rep_of(*b)]));
                     }
                 }
             }
@@ -921,9 +1023,9 @@ fn close_by_extension(
     };
     let mut new_edges: Vec<(Shape, [TShapeId; 2])> = Vec::new();
     let mut corners: Vec<Shape> = Vec::new();
-    for (i, first) in interrupted.iter().enumerate() {
+    for (i, first) in leaders.iter().enumerate() {
         let sa = placed_surface(model, first, tol)?;
-        for second in &interrupted[i + 1..] {
+        for second in &leaders[i + 1..] {
             let sb = placed_surface(model, second, tol)?;
             let Ok(SurfaceIntersection::Along(sections)) =
                 intersect_surfaces(&sa, &sb, IntersectOptions::default(), tol)
@@ -941,7 +1043,7 @@ fn close_by_extension(
                 // The stops along the curve: piercings by the other
                 // interrupted faces, and this pair's dangling ends on it.
                 let mut stops: Vec<(f64, Point, bool)> = Vec::new();
-                for face in interrupted {
+                for face in &leaders {
                     if pair.contains(&face.node()) {
                         continue;
                     }
@@ -970,6 +1072,16 @@ fn close_by_extension(
                     .filter(|s| s.0 > anchor)
                     .min_by(|a, b| a.0.total_cmp(&b.0))
                     .copied();
+                if stops.is_empty() {
+                    let sides = [first.clone(), second.clone()];
+                    let (edges, cut) =
+                        wrap_round(model, &curve, &sides, is_ring, &mut vertex_at, tol)?;
+                    for edge in edges {
+                        new_edges.push((edge, pair));
+                    }
+                    corners.extend(cut);
+                    continue;
+                }
                 let (Some(lo), Some(hi)) = (below, above) else {
                     ogeom_bail!(
                         Construction,
@@ -1005,18 +1117,40 @@ fn close_by_extension(
 
     let mut out = Vec::new();
     let mut extended: FastMap<TShapeId, Shape> = FastMap::default();
-    for face in interrupted {
-        let rims: Vec<Shape> = explore(model, face, Filter::OfType(ShapeType::Edge))?
+    let rims_of = |model: &Model, face: &Shape| -> OgeomResult<Vec<Shape>> {
+        Ok(explore(model, face, Filter::OfType(ShapeType::Edge))?
             .into_iter()
             .filter(|e| is_ring(e))
-            .collect();
+            .collect())
+    };
+    for face in &leaders {
+        let mut rims = rims_of(model, face)?;
         let borders: Vec<Shape> = new_edges
             .iter()
             .filter(|(_, sides)| sides.contains(&face.node()))
             .map(|(e, _)| e.clone())
             .collect();
-        let new_face =
-            rebuild_interrupted(model, face, &rims, &borders, &corners, &mut extended, tol)?;
+        let absorbed: Vec<Shape> = interrupted
+            .iter()
+            .filter(|f| f.node() != face.node() && rep_of(f.node()) == face.node())
+            .cloned()
+            .collect();
+        for other in &absorbed {
+            rims.extend(rims_of(model, other)?);
+        }
+        let new_face = rebuild_interrupted(
+            model,
+            face,
+            &absorbed,
+            &rims,
+            &borders,
+            &corners,
+            &mut extended,
+            tol,
+        )?;
+        for other in &absorbed {
+            out.push((other.clone(), new_face.clone()));
+        }
         out.push((face.clone(), new_face));
     }
     Ok(out)
@@ -1067,9 +1201,20 @@ fn feature_groups(model: &Model, faces: &[Shape]) -> OgeomResult<Vec<Vec<Shape>>
 /// Rebuild one interrupted face: drop its ring edges, extend the edges that
 /// now dangle to the corner vertex standing on their own curve, add the
 /// recovered edges this face borders, and rechain.
+///
+/// `absorbed` are faces on the same surface, facing the same way, that
+/// come back as part of this one: their wires the wound did not touch are
+/// kept as this face's, turned to its surface, and the edges that survive
+/// of the wires it did touch join the recovered ones in bridging this
+/// face's own wound, which must then be in one wire.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one face, everything it is rebuilt from"
+)]
 fn rebuild_interrupted(
     model: &mut Model,
     face: &Shape,
+    absorbed: &[Shape],
     rims: &[Shape],
     borders: &[Shape],
     corners: &[Shape],
@@ -1092,6 +1237,61 @@ fn rebuild_interrupted(
     // The wires as the face stores them: the rebuilt face takes the old
     // one's sense on top of them.
     let mut wires: Vec<Vec<Shape>> = Vec::new();
+    // What the absorbed faces bring: their untouched wires, and the edges
+    // that survive of their touched ones.
+    let mut carried: Vec<Shape> = Vec::new();
+    for other in absorbed {
+        // An absorbed face stored the other way round its surface walks its
+        // wires the other way round this face's.
+        let turned = other.orientation() != face.orientation();
+        for wire in model.ordered_children_of(&other.oriented(ogeom_topo::Orientation::Forward))? {
+            let mut edges = model.ordered_children_of(&wire)?;
+            if !edges.iter().any(|e| rim_nodes.contains(&e.node())) {
+                if turned {
+                    edges.reverse();
+                    edges = edges.into_iter().map(|e| e.reversed()).collect();
+                }
+                wires.push(edges);
+                continue;
+            }
+            let mut rim_vertices: FastSet<TShapeId> = FastSet::default();
+            for edge in &edges {
+                if rim_nodes.contains(&edge.node()) {
+                    for v in model.ordered_children_of(edge)? {
+                        rim_vertices.insert(v.node());
+                    }
+                }
+            }
+            for edge in &edges {
+                if rim_nodes.contains(&edge.node()) {
+                    continue;
+                }
+                carried.push(survivor(
+                    model,
+                    edge,
+                    &rim_vertices,
+                    corners,
+                    extended,
+                    tol,
+                )?);
+            }
+        }
+    }
+    let own_touched = model
+        .ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))?
+        .iter()
+        .map(|wire| model.ordered_children_of(wire))
+        .collect::<OgeomResult<Vec<_>>>()?
+        .iter()
+        .filter(|edges| edges.iter().any(|e| rim_nodes.contains(&e.node())))
+        .count();
+    if !carried.is_empty() && own_touched != 1 {
+        ogeom_bail!(
+            Construction,
+            "faces on one surface close as one only through a single wire of \
+             the face they join"
+        );
+    }
     for wire in model.ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))? {
         let edges = model.ordered_children_of(&wire)?;
         let touched = edges.iter().any(|e| rim_nodes.contains(&e.node()));
@@ -1121,34 +1321,16 @@ fn rebuild_interrupted(
                 ring.push((edge.clone(), None));
                 continue;
             }
-            // A face that has already extended this edge decided for
-            // everyone. Sewing rejoins on the shared node.
-            let replaced = match extended.get(&edge.node()) {
-                Some(found) => Some(found.clone()),
-                None => {
-                    let dangles = model
-                        .ordered_children_of(edge)?
-                        .iter()
-                        .any(|v| rim_vertices.contains(&v.node()));
-                    match (dangles, corner_on_edge(model, edge, corners, tol)?) {
-                        (true, Some(corner)) => {
-                            Some(extend_to_corner(model, edge, &corner, extended, tol)?)
-                        }
-                        _ => None,
-                    }
-                }
-            };
-            // A replacement is built forward. The wire's own use decides
-            // which way it runs here.
             ring.push((
                 edge.clone(),
-                Some(match replaced {
-                    Some(fresh) if edge.orientation() == ogeom_topo::Orientation::Reversed => {
-                        fresh.reversed()
-                    }
-                    Some(fresh) => fresh,
-                    None => edge.clone(),
-                }),
+                Some(survivor(
+                    model,
+                    edge,
+                    &rim_vertices,
+                    corners,
+                    extended,
+                    tol,
+                )?),
             ));
         }
         if std::env::var_os("OGEOM_DEBUG_DEFEATURE").is_some() {
@@ -1170,6 +1352,7 @@ fn rebuild_interrupted(
             }
         }
         let mut pool: Vec<Shape> = borders.to_vec();
+        pool.append(&mut carried);
         let mut chained: Vec<Shape> = Vec::new();
         if ring.iter().all(|(_, spliced)| spliced.is_none()) {
             // The whole wire was the wound's rim: the recovered edges are
@@ -1247,6 +1430,43 @@ fn rebuild_interrupted(
     // winding and forgives it, but the exact integrator reads the flag and
     // hands back the bore as material.
     Ok(orient_like(face, built))
+}
+
+/// An edge that survives a wound, as its wire uses it after: extended along
+/// its own curve to the corner standing on it where the rim it shared a
+/// vertex with is gone, and as it was otherwise. A face that has already
+/// extended this edge decided for everyone, and sewing rejoins on the
+/// shared node.
+fn survivor(
+    model: &mut Model,
+    edge: &Shape,
+    rim_vertices: &FastSet<TShapeId>,
+    corners: &[Shape],
+    extended: &mut FastMap<TShapeId, Shape>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let replaced = match extended.get(&edge.node()) {
+        Some(found) => Some(found.clone()),
+        None => {
+            let dangles = model
+                .ordered_children_of(edge)?
+                .iter()
+                .any(|v| rim_vertices.contains(&v.node()));
+            match (dangles, corner_on_edge(model, edge, corners, tol)?) {
+                (true, Some(corner)) => {
+                    Some(extend_to_corner(model, edge, &corner, extended, tol)?)
+                }
+                _ => None,
+            }
+        }
+    };
+    // A replacement is built forward. The wire's own use decides which way
+    // it runs here.
+    Ok(match replaced {
+        Some(fresh) if edge.orientation() == ogeom_topo::Orientation::Reversed => fresh.reversed(),
+        Some(fresh) => fresh,
+        None => edge.clone(),
+    })
 }
 
 /// A rebuilt face put back on the side of its surface the old one was on.

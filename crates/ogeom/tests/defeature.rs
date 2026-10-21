@@ -853,3 +853,63 @@ fn removing_a_corner_notch_restores_the_box() {
 fn removing_a_pocket_open_at_an_edge_restores_the_box() {
     removing_the_cut_restores_the_box((Point::new(5.0, -1.0, 6.0), (6.0, 6.0, 5.0)), 4);
 }
+
+/// A slot cut right across a box's top, through its front and back: the
+/// top is left in two halves on one plane, which come back as one face,
+/// and the top's front and back edges run on across the slot's mouths.
+#[test]
+fn removing_a_slot_across_the_top_restores_the_box() {
+    removing_the_cut_restores_the_box((Point::new(5.0, -1.0, 6.0), (6.0, 17.0, 5.0)), 3);
+}
+
+/// A rebate cut round a drum's top rim: the cap shrinks to a smaller disc
+/// and the wall stops short of the top. With the rebate's wall and ledge
+/// removed, the cap and the wall meet again along the rim's whole circle,
+/// which no other face stops, and the drum comes back: three faces on its
+/// own surfaces and its exact volume.
+#[test]
+fn removing_a_rebate_round_a_drums_rim_restores_the_drum() {
+    let (radius, height) = (5.0, 10.0);
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, radius, height, T)
+        .unwrap()
+        .shape;
+    let seat = Frame::new(Point::new(0.0, 0.0, 8.0), Direction::Z, Direction::X, T).unwrap();
+    let outer = ogeom::algo::make_cylinder(&mut model, seat, 6.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let inner = ogeom::algo::make_cylinder(&mut model, seat, 4.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let ring = ogeom::boolean::cut(&mut model, &outer, &inner, T)
+        .unwrap()
+        .shape;
+    let rebated = ogeom::boolean::cut(&mut model, &drum, &ring, T)
+        .unwrap()
+        .shape;
+    let on_the_drum = |s: &SurfaceGeometry| match s {
+        SurfaceGeometry::Cylinder(c) => (c.cylinder().radius() - radius).abs() <= 1e-9,
+        SurfaceGeometry::Plane(p) => {
+            let z = p.plane().frame().origin().z;
+            z.abs() <= 1e-9 || (z - height).abs() <= 1e-9
+        }
+        _ => false,
+    };
+    let feature = faces_where(&model, &rebated, |s| !on_the_drum(s));
+    assert_eq!(feature.len(), 2, "the rebate's wall and ledge");
+    let healed = ogeom::boolean::remove_faces(&mut model, &rebated, &feature, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &healed, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(walks::edges_walked_one_way(&model, &healed), 0);
+    let faces = explore_unique(&model, &healed, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 3, "a wall and two discs");
+    assert!(faces_where(&model, &healed, |s| !on_the_drum(s)).is_empty());
+    let want = core::f64::consts::PI * radius * radius * height;
+    let measured = volume(&model, &healed);
+    assert!(
+        (measured - want).abs() < want * 1e-12,
+        "the drum, exactly: {measured} against {want}"
+    );
+}

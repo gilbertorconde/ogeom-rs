@@ -78,11 +78,15 @@ from a corner, a pocket open at an edge) closes by extension: every two
 neighbours whose surfaces meet across the wound close the stretch of that
 curve it took, as a new edge between the faces it pierces where they share
 none there, or by running on an edge they share, cut short or split, to
-where a third neighbour pierces the curve or to the other half's end. What
-stays refused by name: a wound whose sides meet in no curve (a slot right
-across a top, whose two halves lie on one plane and would have to merge),
-a removal that would leave a face with no boundary and no edge to grow to,
-and a gap the recovered edges do not bridge.
+where a third neighbour pierces the curve or to the other half's end.
+Neighbours the wound left on one surface facing one way (a slot right
+across a top, its two halves on one plane) come back as one face through
+both halves' surviving edges, and a curve two neighbours meet along that
+no other face stops (a rebate round a drum's rim) is taken whole, closing
+on itself at the wall's seam: the box and the drum come back exactly. What
+stays refused by name: a wound whose sides meet in no curve and lie on no
+one surface, a removal that would leave a face with no boundary and no
+edge to grow to, and a gap the recovered edges do not bridge.
 - **bool.glue**: Gluing shapes along known-coincident boundaries · `divergent` · 1 header claimed
   - *reasoning:* Subsumed, and recorded as a settled decision in docs/PLAN.md: the boolean's same-domain unification already skips nothing it needs and unifies what glue would, so a separate glue mode would be a second spelling of the fuse with a faster wrong answer available. MakeConnected's job (conformal multi-body assembly) falls out of the fuse plus history.
 - **bool.make-periodic**: Making a shape periodic so instances tile without seam duplication · `covered` · 1 header claimed

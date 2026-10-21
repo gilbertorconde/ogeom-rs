@@ -13,6 +13,22 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`remove_faces` removes a slot cut right across a face, and a rebate
+  round a drum's rim.**
+  - Removing a slot across a box's top was refused: the top's two halves
+    lie on one plane and meet in no curve. They now come back as one face
+    through both halves' surviving edges, and the top's front and back
+    edges run on across the slot's mouths.
+  - Removing a rebate round a drum's rim was refused, because the cap and
+    wall meet along a circle no other face stops. The circle is now taken
+    whole, cut where the wall's seam reaches it, and the cap grows back to
+    the rim.
+  - Both give back the original exactly: the box (3000 to 1e-12, six
+    faces on its own planes, twelve edges once merged) and the drum (its
+    volume to 1e-12, three faces on its own surfaces), each valid.
+  - Every removal that worked before takes the same path. Same-surface
+    merging is tried only after both existing closures refuse.
+
 - **The IGES writer keeps surfaces of revolution, extrusions and offsets
   in their own forms.**
   - These used to be written as B-spline patches (128), exact in geometry
