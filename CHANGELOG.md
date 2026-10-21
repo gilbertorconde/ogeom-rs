@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`make_loft_solid` lofts a solid through sections of different edge
+  counts, and along guide curves.** `make_loft` refused a square to a
+  circle, a slot to a hexagon, or any section mixing lines with arcs, and
+  `make_loft_skinned` could only fit such sections, approximately and to a
+  tolerance. `make_loft_solid` closes the loft sheet (`make_loft_surface`)
+  through N closed sections with the first and last sections' planes. It is
+  ruled or smooth, the sections split to match by arc length, every piece
+  exact. A ruled square to a circle measures its closed-form volume to
+  1e-9, and a square of four edges lofted to one of eight is the prism.
+  With guide curves the walls are the guided Gordon sheet, capped: circles
+  on a cone along two of its rulings are the frustum (#394).
+
 - **`apply_draft` drafts a face the neutral plane does not reach.** A
   fitted patch, or a wall of revolution about an oblique neutral plane,
   that the plane missed was refused: "the neutral plane does not cross the

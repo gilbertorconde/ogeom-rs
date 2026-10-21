@@ -1361,8 +1361,14 @@ sections, planar or not (a planar end is capped by its plane, a wavy end \
 by a patch skinned from the rim to a point inside it), ends at a point on \
 request, loops back on itself, and takes per-section alignment hints. A ruled wall between two segments that \
 are not coplanar is the bilinear patch through its four corners, exact, so \
-polygon sections may be turned against each other; mixed edge counts are \
-authorship, not geometry, and stay with the skinned resampling. The skinned \
+polygon sections may be turned against each other. `make_loft_solid` \
+closes the loft sheet into a solid through N closed sections with planar \
+ends, ruled or smooth: sections of different edge counts, lines, arcs and \
+splines mixed, are split to match by arc length, every piece exact, so a \
+ruled square to circle is exact; with guide curves the walls are the \
+guided Gordon sheet (sections of one edge each), capped by the end \
+sections' planes. A guided loft through multi-edge sections is not built. \
+The skinned \
 loft holds its sections exactly where they are exact: through two sections \
 it is the ruled loft; through more with matching corners, one strip per \
 edge meeting along seams through the corners, a plane wherever its rows \
@@ -1374,12 +1380,14 @@ symbols = [
     "ogeom_offset::make_loft_skinned_closed", "ogeom_offset::make_loft_skinned_aligned",
     "ogeom_offset::make_ruled", "ogeom_offset::make_loft_surface",
     "ogeom_offset::make_sweep_surface", "ogeom_offset::make_sweep_two_rails",
+    "ogeom_offset::make_loft_solid",
 ]
 tests = [
     "crates/ogeom/tests/surface_lofts.rs",
     "crates/ogeom/tests/loft_exact.rs",
     "crates/ogeom/tests/mechanical_part.rs",
     "crates/ogeom/tests/loft.rs",
+    "crates/ogeom/tests/loft_solid.rs",
     "crates/ogeom-offset/tests/sweep.rs",
 ]
 
