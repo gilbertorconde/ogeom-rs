@@ -633,7 +633,9 @@ wire's edges end to end where an order exists, collapse edges shorter than \
 their own vertices' tolerances, fit missing pcurves, sew loose faces, \
 tighten tolerances, widen an edge to how far its pcurves stand off its \
 curve and a vertex to how far its curves end from it (within the trim \
-cap, as the readers record the same slop), restore tolerance containment by widening what is \
+cap, as the readers record the same slop), orient each run of a \
+shell's or solid's faces along their shared edges, turn a solid's run \
+facing into its material as a whole, restore tolerance containment by widening what is \
 bounded (`restore_containment`, which the STEP and IGES readers run on \
 every body they build), diagnose again, and report what it did and \
 what remains. Beneath it: reanchoring periodic rings, sewing, validity \

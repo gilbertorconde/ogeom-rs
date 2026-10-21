@@ -152,6 +152,26 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fix_shape` orients a shell's faces along their shared edges, and no
+  longer turns a solid's faces against their neighbours.** Two cases.
+
+  A shell whose faces already shared their edges, with one face flagged
+  the wrong way, came back unchanged. Sewing had turned that face, but
+  its result was kept only when sewing joined an edge. The face is now
+  turned back.
+
+  In a solid, each face that the material probe read as facing in was
+  turned on its own. On a boundary that passes through itself, the probe
+  misreads a few faces. A Voron 2.4 part has a thin zigzag wall whose two
+  sides cross each other. `fix_shape` turned 6 of its 270 faces, which
+  left 20 edges walked the same way by both their faces. Now the faces
+  are first oriented by the topology: each run of faces joined across
+  shared edges keeps the orientation most of its faces have. A run then
+  turns as a whole, and only where more than half its faces read facing
+  in. The boxes that were turned before are still turned. The Voron part
+  comes back as it went in. Its findings name the crossing itself, which
+  no orientation mends (#397).
+
 - **A square pocket's rim rounded in one `fillet_edges` call meets at
   every corner (#387).** The flush junction closing the loop was dropped,
   so two of the four inside corners kept their cells: a 4 by 4 pocket at

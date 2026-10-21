@@ -851,3 +851,82 @@ fn a_vertex_its_curves_miss_past_reach_is_left_reported() {
         fixed.report.after
     );
 }
+
+/// A box's shell, not a solid, with one face flagged the wrong way: its
+/// four edges are walked the same way by it and the face beside each.
+/// Nothing is left to sew, and the face is still turned back, as sewing
+/// turns it.
+#[test]
+fn a_shell_s_face_walking_its_edges_against_its_neighbours_is_turned() {
+    let mut model = Model::new();
+    let block = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let shell = explore_unique(&model, &block, ShapeType::Shell).unwrap()[0].clone();
+    let face = explore_unique(&model, &shell, ShapeType::Face).unwrap()[2].clone();
+    let data = model.node(&face).unwrap().data().as_face().unwrap().clone();
+    let wires = model.children_of(&Shape::of(face.node())).unwrap();
+    let copy = model.add_face(data, &wires).unwrap();
+    let mut reshape = ogeom::heal::Reshape::new();
+    reshape.replace(&face, copy.reversed());
+    let turned = reshape.apply(&mut model, &shell).unwrap().shape;
+    let same_way = |d: &ogeom::algo::Diagnosis| {
+        d.problems
+            .iter()
+            .filter(|p| p.what.starts_with("walked the same way"))
+            .count()
+    };
+    assert_eq!(same_way(&check(&model, &turned, T).unwrap()), 4);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &turned, T).unwrap();
+    assert_eq!(fixed.report.sewn, Some((0, 0)), "nothing to join");
+    assert_eq!(model.kind_of(&fixed.shape).unwrap(), ShapeType::Shell);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let solid = model.add_solid(std::slice::from_ref(&fixed.shape)).unwrap();
+    let v = ogeom::algo::volume_properties(&model, &solid, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 1000.0).abs() < 1e-9, "{v}");
+}
+
+/// Two boxes overlapping, as two shells of one solid: the boundary passes
+/// through itself, and a face of each box inside the other reads facing
+/// into material. Each box's faces agree along every edge, and most of
+/// them read facing out, so no face is turned: turning the faces that
+/// misread alone would set them against every neighbour.
+#[test]
+fn faces_misread_on_a_boundary_crossing_itself_are_not_turned() {
+    let mut model = Model::new();
+    let a = make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let b = make_box(
+        &mut model,
+        Frame::WORLD.with_origin(Point::new(5.0, -1.0, -1.0)),
+        (10.0, 12.0, 12.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let shells: Vec<Shape> = [a, b]
+        .iter()
+        .map(|s| explore_unique(&model, s, ShapeType::Shell).unwrap()[0].clone())
+        .collect();
+    let solid = model.add_solid(&shells).unwrap();
+    let inward = ogeom::algo::inside_out_faces(&model, &solid, T).unwrap();
+    assert!(!inward.is_empty(), "a face inside the other box reads in");
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &solid, T).unwrap();
+    assert_eq!(fixed.report.faces_turned, 0);
+    assert!(
+        !fixed
+            .report
+            .after
+            .problems
+            .iter()
+            .any(|p| p.what.starts_with("walked the same way")),
+        "{}",
+        fixed.report.after
+    );
+    assert_eq!(fixed.report.after, fixed.report.before);
+}

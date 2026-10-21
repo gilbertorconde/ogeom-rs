@@ -709,39 +709,42 @@ fn sew_faces(
     }))
 }
 
-/// Turn the faces of one group (indices into `faces`) so that every edge
-/// two of them share is walked once each way; whether any was turned.
+/// How `faces` turn so that every edge two of them walk is walked once
+/// each way, and the runs of faces that edges join.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Agreement {
+    /// Whether each face, by position, is to be turned.
+    pub turn: Vec<bool>,
+    /// The faces, by position, joined across edges with exactly two of
+    /// them: each run, turned as [`Agreement::turn`] says, faces one way
+    /// throughout.
+    pub runs: Vec<Vec<usize>>,
+}
+
+/// Which of `faces` to turn so that every edge two of them share is walked
+/// once each way, or `None` where no turning does (a band with a half
+/// twist).
 ///
 /// Each face keeps its material on the left of its rings, so two faces
 /// sharing an edge agree where they walk it opposite ways, and a face
 /// that walks it the way its neighbour does is turned against it. The
 /// faces are oriented breadth first over their shared edges from a seed,
-/// and each connected run of them keeps the orientation most of its faces
-/// already have (its first face's on a tie). A closed group whose faces
-/// were turned is then made to face out of what it bounds: where its
-/// meshed volume comes out negative, every face is turned. An edge with
-/// one face or more than two, a degenerate edge and a seam walked both
-/// ways by its one face constrain nothing. Where the faces admit no
-/// consistent orientation (a band with a half twist), every face is left
-/// as given, and [`Sewn::edges_walked_one_way`] names the edges that say
-/// so.
-fn orient_group(
-    model: &mut Model,
-    faces: &mut [Shape],
-    group: &[usize],
-    tol: Tolerances,
-) -> OgeomResult<bool> {
-    let uses = walks(model, group.iter().map(|&i| &faces[i]))?;
-    if walked_each_way(&uses) {
-        return Ok(false);
-    }
-    let closed = uses.values().all(|(count, _)| *count >= 2);
-    // Each edge's walks, by position in the group: which faces walk it and
-    // whether forward.
+/// and each run of them keeps the orientation most of its faces already
+/// have (its first face's on a tie). An edge with one face or more than
+/// two, a degenerate edge and a seam walked both ways by its one face
+/// constrain nothing. Nothing is measured: the answer is the topology's.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if a face is
+/// not in `model`.
+pub fn agreeing_orientation(model: &Model, faces: &[Shape]) -> OgeomResult<Option<Agreement>> {
+    // Each edge's walks, by position: which faces walk it and whether
+    // forward.
     let mut walkers: FastMap<(TShapeId, ogeom_topo::Location), Vec<(usize, bool)>> =
         FastMap::default();
-    for (k, &i) in group.iter().enumerate() {
-        for edge in explore(model, &faces[i], Filter::OfType(ShapeType::Edge))? {
+    for (k, face) in faces.iter().enumerate() {
+        for edge in explore(model, face, Filter::OfType(ShapeType::Edge))? {
             if model
                 .node(&edge)
                 .and_then(|n| n.data().as_edge())
@@ -758,7 +761,7 @@ fn orient_group(
     // Each face's neighbours across an edge with exactly two faces, and
     // whether the two must differ in sense to walk it opposite ways (they
     // must where they now walk it the same way).
-    let mut across: Vec<Vec<(usize, bool)>> = vec![Vec::new(); group.len()];
+    let mut across: Vec<Vec<(usize, bool)>> = vec![Vec::new(); faces.len()];
     for walks in walkers.values() {
         if let [(a, a_forward), (b, b_forward)] = walks[..]
             && a != b
@@ -768,8 +771,9 @@ fn orient_group(
             across[b].push((a, differ));
         }
     }
-    let mut turn: Vec<Option<bool>> = vec![None; group.len()];
-    for seed in 0..group.len() {
+    let mut turn: Vec<Option<bool>> = vec![None; faces.len()];
+    let mut runs = Vec::new();
+    for seed in 0..faces.len() {
         if turn[seed].is_some() {
             continue;
         }
@@ -786,7 +790,7 @@ fn orient_group(
                         run.push(n);
                         queue.push_back(n);
                     }
-                    Some(has) if has != want => return Ok(false),
+                    Some(has) if has != want => return Ok(None),
                     Some(_) => {}
                 }
             }
@@ -798,15 +802,44 @@ fn orient_group(
                 turn[k] = turn[k].map(|t| !t);
             }
         }
+        runs.push(run);
     }
-    if turn.iter().all(|t| *t != Some(true)) {
+    Ok(Some(Agreement {
+        turn: turn.into_iter().map(|t| t == Some(true)).collect(),
+        runs,
+    }))
+}
+
+/// Turn the faces of one group (indices into `faces`) as
+/// [`agreeing_orientation`] says; whether any was turned. A closed group
+/// whose faces were turned is then made to face out of what it bounds:
+/// where its meshed volume comes out negative, every face is turned.
+/// Where the faces admit no consistent orientation, every face is left
+/// as given, and [`Sewn::edges_walked_one_way`] names the edges that say
+/// so.
+fn orient_group(
+    model: &mut Model,
+    faces: &mut [Shape],
+    group: &[usize],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let uses = walks(model, group.iter().map(|&i| &faces[i]))?;
+    if walked_each_way(&uses) {
+        return Ok(false);
+    }
+    let closed = uses.values().all(|(count, _)| *count >= 2);
+    let members: Vec<Shape> = group.iter().map(|&i| faces[i].clone()).collect();
+    let Some(agreement) = agreeing_orientation(model, &members)? else {
+        return Ok(false);
+    };
+    if !agreement.turn.contains(&true) {
         return Ok(false);
     }
     let mut turned: Vec<Shape> = group
         .iter()
-        .zip(&turn)
+        .zip(&agreement.turn)
         .map(|(&i, t)| {
-            if *t == Some(true) {
+            if *t {
                 faces[i].reversed()
             } else {
                 faces[i].clone()

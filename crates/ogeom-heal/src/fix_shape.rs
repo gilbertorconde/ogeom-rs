@@ -22,7 +22,12 @@
 //!   projection can honestly fit, as the readers do;
 //! - loose faces (a compound of them, or an open shell) are sewn where
 //!   they share edges;
-//! - a face facing into its solid's material is turned;
+//! - faces two of which walk an edge they share the same way are turned
+//!   until each such edge is walked once each way, a shell's as sewing
+//!   turns them, a solid's keeping the orientation most of each run of
+//!   them has;
+//! - a run of a solid's faces facing into its material is turned, where
+//!   most of its faces read that way;
 //! - tolerances are tightened to what the geometry needs;
 //! - an edge whose pcurves stand off its curve by more than it states, and
 //!   a vertex a curve it bounds ends away from by more than either states,
@@ -146,10 +151,18 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         if !faces.is_empty() {
             let result = sew(model, &faces, tol)?;
             sewn = Some((result.joined, result.free_edges.len()));
-            // Rebuilt when sewing joined anything, or when the faces
-            // already closed among themselves and only the container said
-            // otherwise: a compound of faces that is a shell becomes one.
-            if result.joined > 0 || (kind == ShapeType::Compound && result.free_edges.is_empty()) {
+            // Rebuilt when sewing joined anything, when the faces already
+            // closed among themselves and only the container said
+            // otherwise (a compound of faces that is a shell becomes one),
+            // or when sewing turned faces two of which walked an edge they
+            // share the same way, where no solid holds them.
+            let turned = explore_unique(model, &current, ShapeType::Solid)?.is_empty()
+                && ogeom_algo::agreeing_orientation(model, &faces)?
+                    .is_some_and(|agreement| agreement.turn.contains(&true));
+            if result.joined > 0
+                || (kind == ShapeType::Compound && result.free_edges.is_empty())
+                || turned
+            {
                 let rebuilt = match (kind, result.shells.len()) {
                     (ShapeType::Shell, 1) => result.shells[0].clone(),
                     _ => ogeom_algo::make_compound(model, &result.shells)?.shape,
@@ -162,21 +175,22 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         }
     }
 
-    // Faces facing into their solid's material, turned: their loops and
-    // their neighbours already agree about which way is out, and the flag
-    // is the one that says otherwise.
+    // The faces of each solid turned, first by the topology alone, then
+    // by the material. See `solid_turns`.
     let mut faces_turned = 0;
-    let mut turn = Reshape::new();
-    for solid in explore_unique(model, &current, ShapeType::Solid)? {
-        for face in ogeom_algo::inside_out_faces_kept(model, &solid, tol, &kept)? {
-            turn.replace(&face, turned_face(model, &face)?.reversed());
-            faces_turned += 1;
+    for by_material in [false, true] {
+        let mut turn = Reshape::new();
+        for solid in explore_unique(model, &current, ShapeType::Solid)? {
+            for face in solid_turns(model, &solid, by_material, tol, &kept)? {
+                turn.replace(&face, turned_face(model, &face)?.reversed());
+                faces_turned += 1;
+            }
         }
-    }
-    if !turn.is_empty() {
-        let built = turn.apply(model, &current)?;
-        history = history.then(&built.history);
-        current = built.shape;
+        if !turn.is_empty() {
+            let built = turn.apply(model, &current)?;
+            history = history.then(&built.history);
+            current = built.shape;
+        }
     }
 
     let tolerances_reduced = reduce_tolerances(model, &current, tol)?;
@@ -277,6 +291,54 @@ fn state_curve_ends(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomR
         model.widen(vertex, ogeom_core::Tolerance::new(*gap)?)?;
     }
     Ok(widened.len())
+}
+
+/// The faces of `solid` to turn: by the topology alone when not
+/// `by_material`, else by the material.
+///
+/// By the topology: where two faces walk an edge they share the same way,
+/// the faces of each run joined by such edges turn until every one is
+/// walked once each way, the run keeping the orientation most of its faces
+/// have ([`agreeing_orientation`](ogeom_algo::agreeing_orientation)).
+///
+/// By the material: a run whose faces agree faces one way throughout, so
+/// it turns as a whole, and only where more than half its faces read
+/// facing into the material. A minority reading in is a misreading, as on
+/// a boundary that passes through itself, and turning those faces alone
+/// would set them against every neighbour. Where the topology admits no
+/// agreement (a band with a half twist), each face reading in is turned on
+/// its own.
+fn solid_turns(
+    model: &Model,
+    solid: &Shape,
+    by_material: bool,
+    tol: Tolerances,
+    kept: &ProbeCache,
+) -> OgeomResult<Vec<Shape>> {
+    let faces = explore_unique(model, solid, ShapeType::Face)?;
+    let agreement = ogeom_algo::agreeing_orientation(model, &faces)?;
+    if !by_material {
+        return Ok(agreement.map_or_else(Vec::new, |agreement| {
+            faces
+                .iter()
+                .zip(&agreement.turn)
+                .filter(|(_, turn)| **turn)
+                .map(|(face, _)| face.clone())
+                .collect()
+        }));
+    }
+    let inward = ogeom_algo::inside_out_faces_kept(model, solid, tol, kept)?;
+    let Some(agreement) = agreement else {
+        return Ok(inward);
+    };
+    let reads_in = |k: &usize| inward.iter().any(|face| face.is_same(&faces[*k]));
+    let mut out = Vec::new();
+    for run in &agreement.runs {
+        if 2 * run.iter().filter(|k| reads_in(k)).count() > run.len() {
+            out.extend(run.iter().map(|&k| faces[k].clone()));
+        }
+    }
+    Ok(out)
 }
 
 /// Stage a rebuilt wire for every wire whose edges do not walk end to end
