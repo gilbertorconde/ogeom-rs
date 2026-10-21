@@ -285,6 +285,37 @@ fn solids_divided_off_their_knots_convert_to_splines_exactly() {
     }
 }
 
+/// A frustum and a cone to its apex, converted to splines and divided by
+/// area. The disc's chart, measured from its sampled trims, puts its
+/// middle line a hair off the wall's knot line through the same rim
+/// point: the rim was cut there twice, 1.5e-7 apart, a sliver with a
+/// pcurve twice its length off, and the divided solid would not convert.
+/// The second cut meets the vertex the first left. Each divides valid,
+/// keeps its volume, and converts.
+#[test]
+fn a_converted_cone_divides_by_area_without_a_sliver() {
+    let pi = core::f64::consts::PI;
+    for (top, volume) in [(1.0, pi * 4.0 / 3.0 * 13.0), (0.0, pi * 4.0 / 3.0 * 9.0)] {
+        let mut model = Model::new();
+        let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, 3.0, top, 4.0, T)
+            .unwrap()
+            .shape;
+        let nurbs = ogeom::algo::to_nurbs(&mut model, &cone, T).unwrap().shape;
+        let divided = ogeom::heal::divide_by_area(&mut model, &nurbs, 10.0, T)
+            .unwrap()
+            .shape;
+        holds(&model, &divided, volume, 1e-6);
+        let again = ogeom::algo::to_nurbs(&mut model, &divided, T)
+            .unwrap()
+            .shape;
+        holds(&model, &again, volume, 1e-6);
+        let spans = ogeom::heal::to_bezier(&mut model, &divided, T)
+            .unwrap()
+            .shape;
+        holds(&model, &spans, volume, 1e-6);
+    }
+}
+
 #[test]
 fn a_box_divides_until_no_face_is_larger_than_asked() {
     let mut model = Model::new();

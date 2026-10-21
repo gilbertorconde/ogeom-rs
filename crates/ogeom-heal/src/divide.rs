@@ -976,7 +976,16 @@ fn cut_face(
                 {
                     #[allow(clippy::cast_precision_loss)]
                     let s = (i + 1) as f64 / N as f64;
-                    record(occurrence, s, line, &mut cuts, &mut meetings, tol)?;
+                    record(
+                        model,
+                        &surface,
+                        occurrence,
+                        s,
+                        line,
+                        &mut cuts,
+                        &mut meetings,
+                        tol,
+                    )?;
                 }
                 continue;
             }
@@ -993,6 +1002,8 @@ fn cut_face(
                 }
             }
             record(
+                model,
+                &surface,
                 occurrence,
                 0.5 * (lo + hi),
                 line,
@@ -1258,8 +1269,16 @@ fn cut_face(
     Ok(Some(reshape))
 }
 
-/// Record a crossing a fraction `s` along `occurrence`.
+/// Record a crossing a fraction `s` along `occurrence`. A crossing that
+/// lands within an end vertex's radius of it, lifted through the face's
+/// surface, meets that vertex: the line passes through it as the face
+/// states it, and cutting the edge there would leave a sliver shorter
+/// than the vertex is wide. A degenerate edge, every point of which is its
+/// vertex, is cut where the line crosses its row.
+#[allow(clippy::too_many_arguments)]
 fn record(
+    model: &Model,
+    surface: &SurfaceGeometry,
     occurrence: &Occurrence,
     s: f64,
     line: IsoLine,
@@ -1268,6 +1287,24 @@ fn record(
     tol: Tolerances,
 ) -> OgeomResult<()> {
     let at = occurrence.at(s, tol)?;
+    let degenerate = model
+        .node(&occurrence.edge)
+        .and_then(|n| n.data().as_edge())
+        .is_none_or(|d| d.degenerate);
+    if !degenerate && let Some((first, last)) = edge_vertices(model, &occurrence.edge)? {
+        let lifted = surface.point_at(at.x, at.y, tol)?;
+        for (end, vertex) in [(0.0, first), (1.0, last)] {
+            let held = model
+                .node(&vertex)
+                .and_then(|n| n.data().as_vertex())
+                .map_or(0.0, |d| d.tolerance.get());
+            if vertex_point(model, &vertex)?.distance(lifted) <= held + tol.confusion() {
+                let corner = occurrence.at(end, tol)?;
+                meetings.push((line.free(corner), Meeting::Vertex(vertex.node())));
+                return Ok(());
+            }
+        }
+    }
     // As a fraction of the forward edge, rounded so two traversals of one
     // seam name the same point.
     let forward_s = if occurrence.reversed() { 1.0 - s } else { s };

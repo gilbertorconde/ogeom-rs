@@ -101,6 +101,14 @@ bump may break the API and a patch bump may not.
   the sides walked. Eight box cuts through such faces in a printer
   assembly now build, each cut and its common adding up to the solid
   (#344).
+- **`divide_by_area` cuts a converted cone without leaving a sliver.** The
+  disc of a frustum or apex cone converted to splines has its middle line
+  read from its sampled trims, a hair off the wall's knot line through
+  the same rim point: the rim was cut at both, 1.5e-7 apart, leaving an
+  edge whose pcurve stood twice its length off, and the divided solid
+  would not convert again ("cannot normalize a vector"). A cut line that
+  crosses an edge within an end vertex's radius of it now meets that
+  vertex (#350).
 
 - **A marched section finds crossings closer together than its stride.**
   Where two crossings of a section stood within one step of the march, a
