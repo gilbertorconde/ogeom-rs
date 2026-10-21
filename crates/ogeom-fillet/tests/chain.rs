@@ -1547,3 +1547,116 @@ fn rounds_at_a_curved_crease_turning_nearly_back_on_itself() {
         }
     }
 }
+
+/// A block eight square and two high with a pocket `[2, 6]` square and one
+/// deep whose wall `y = 2` leans `drafts[0]` per unit of depth into the
+/// pocket's floor and whose wall `x = 6` leans `drafts[1]`, all turned by
+/// `turn`: the block and the pocket's four rim creases, along `y = 2`
+/// first, then round the rim.
+fn leaning_pocket(
+    model: &mut ogeom_topo::Model,
+    drafts: [f64; 2],
+    turn: &ogeom_math::Transform,
+) -> (ogeom_topo::Shape, Vec<ogeom_topo::Shape>) {
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (8.0, 8.0, 2.0), T)
+        .unwrap()
+        .shape;
+    // The half-space past the plane through `on` with unit normal `n`.
+    let past = |model: &mut ogeom_topo::Model, on: Point, n: Vector| {
+        let seed = if n.x.abs() < 0.9 {
+            Vector::X
+        } else {
+            Vector::Y
+        };
+        let x = seed - n * seed.dot(n);
+        let x = x / x.magnitude();
+        let y = n.cross(x);
+        let frame = Frame::new(
+            on - x * 20.0 - y * 20.0,
+            Direction::new(n, T).unwrap(),
+            Direction::new(x, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, frame, (40.0, 40.0, 40.0), T)
+            .unwrap()
+            .shape
+    };
+    let unit = |v: Vector| v / v.magnitude();
+    let top = |x: f64, y: f64| Point::new(x, y, 2.0);
+    let sides = [
+        past(model, top(4.0, 2.0), unit(Vector::new(0.0, 1.0, drafts[0]))),
+        past(
+            model,
+            top(6.0, 4.0),
+            unit(Vector::new(-1.0, 0.0, drafts[1])),
+        ),
+        past(model, top(4.0, 6.0), Vector::new(0.0, -1.0, 0.0)),
+        past(model, top(2.0, 4.0), Vector::X),
+        past(model, Point::new(4.0, 4.0, 1.0), Vector::Z),
+    ];
+    let mut pocket = sides[0].clone();
+    for side in &sides[1..] {
+        pocket = ogeom_bool::common(model, &pocket, side, T).unwrap().shape;
+    }
+    let cut = ogeom_bool::cut(model, &block, &pocket, T).unwrap().shape;
+    let block = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    let block = model.placed(&block, *turn);
+    let edges = [(4.0, 2.0), (6.0, 4.0), (4.0, 6.0), (2.0, 4.0)]
+        .map(|(x, y)| placed_edge_through(model, &block, turn.apply(top(x, y))))
+        .to_vec();
+    (block, edges)
+}
+
+/// A square pocket's four rim creases rounded together: each inside corner
+/// meets flush in its bisecting plane, the junction closing the loop as
+/// well as the three before it, so the four bands join into one ring.
+/// Each crease takes its section along its four, and each corner the cell
+/// of its two quarter rounds, 2 r^3 (5/6 - pi/4), in any order the edges
+/// are named in. The junction closing the loop was dropped, and two of
+/// the corners kept their cells.
+#[test]
+fn a_square_pocket_s_rim_meets_at_every_corner_in_any_order() {
+    let r: f64 = 0.5;
+    let pi = core::f64::consts::PI;
+    let want = 4.0f64.mul_add(
+        4.0 * (1.0 - pi / 4.0) * r * r,
+        8.0 * (5.0 / 6.0 - pi / 4.0) * r.powi(3),
+    );
+    let mut model = ogeom_topo::Model::new();
+    let (block, edges) = drafted_pocket(&mut model, 0.0);
+    for order in [[0, 1, 2, 3], [2, 0, 3, 1], [1, 3, 0, 2]] {
+        let named: Vec<ogeom_topo::Shape> = order.iter().map(|&k| edges[k].clone()).collect();
+        for got in removed_both_ways(&model, &block, &named, r) {
+            assert!((got - want).abs() < 2e-6, "{order:?}: {got} against {want}");
+        }
+    }
+}
+
+/// A pocket whose two adjacent walls lean by different drafts, rounded
+/// round its rim, as built and turned 0.7 about (1, 1, 1): its two drafted
+/// corners and the one between the drafted walls are crossed, and the part
+/// turned takes what it takes as built, in either order. Turned, a band's
+/// end arc came out of the boolean in two pieces at its circle's seam,
+/// which follows the placement, and the corner was refused.
+#[test]
+fn a_leaning_pocket_s_rim_rounds_alike_however_turned() {
+    let spin = ogeom_math::Transform::rotation(
+        ogeom_math::Axis::new(
+            Point::ORIGIN,
+            Direction::new(Vector::new(1.0, 1.0, 1.0), T).unwrap(),
+        ),
+        0.7,
+    );
+    let mut removed = Vec::new();
+    for turn in [ogeom_math::Transform::IDENTITY, spin] {
+        let mut model = ogeom_topo::Model::new();
+        let (block, edges) = leaning_pocket(&mut model, [0.1, 0.05], &turn);
+        removed.extend(removed_both_ways(&model, &block, &edges, 0.5));
+    }
+    for got in &removed {
+        assert!((got - removed[0]).abs() < 1e-6, "{removed:?}");
+    }
+    // Taken crossed, past what the corners capped leave.
+    assert!(removed[0] > 0.83, "{removed:?}");
+}

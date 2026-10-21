@@ -107,6 +107,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A square pocket's rim rounded in one `fillet_edges` call meets at
+  every corner (#387).** The flush junction closing the loop was dropped,
+  so two of the four inside corners kept their cells: a 4 by 4 pocket at
+  r = 0.5 lost 0.882375 mm³ where its sections and four cells come to
+  0.906342. A junction closing a loop of joined bands is now taken, and
+  the ring's wedge is sewn to itself across that plane. A crossed corner
+  whose band's end arc the boolean returned in two pieces, at its
+  circle's seam (which follows the part's placement), is read as the one
+  arc it is, so a pocket turned in space rounds as it does built square.
+
 - **Crossed junctions of `fillet_edges` stand in a loop or chain of the
   request's edges (#342).** A drafted wall's corners in a pocket rim
   were left capped: a crossed corner was taken only between two edges

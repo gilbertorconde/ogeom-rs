@@ -916,18 +916,17 @@ fn joinable(
     let (flush, crossed): (Vec<_>, Vec<_>) = found.into_iter().partition(|j| !j.crossed);
     let mut found = flush.clone();
     found.extend(crossed);
-    let pending: Vec<[usize; 2]> = found.iter().filter(|j| j.crossed).map(|j| j.pair).collect();
+    let pending: Vec<[usize; 2]> = found.iter().map(|j| j.pair).collect();
     let mut group: Vec<usize> = (0..edges.len()).collect();
     let mut kept: Vec<crate::junction::Junction> = Vec::new();
     for junction in found {
         let [a, b] = junction.pair;
         if group[a] == group[b] {
-            // A crossed junction closing a loop of joined bands joins no
-            // groups, and is taken for its corner.
-            if junction.crossed
-                && !kept
-                    .iter()
-                    .any(|j| j.slot(a).is_some() && j.slot(b).is_some())
+            // A junction closing a loop of joined bands joins no groups,
+            // and is taken for its corner.
+            if !kept
+                .iter()
+                .any(|j| j.slot(a).is_some() && j.slot(b).is_some())
             {
                 kept.push(junction);
             }
@@ -1184,6 +1183,37 @@ fn join_flush(
             continue;
         };
         if a == b {
+            // A loop closing on itself: its wedge's two ends in the plane
+            // are sewn to each other.
+            let Some((indices, edge, ring)) = held[a].take() else {
+                continue;
+            };
+            let (solid, traced) = crate::junction::joined(
+                model,
+                [&ring.solid, &ring.solid],
+                (on, normal),
+                at,
+                crate::marched::band_fit_target(tol) * 2.0,
+                tol,
+            )?;
+            let mut credit = Vec::new();
+            for (given, image) in &traced {
+                let owner = ring
+                    .credit
+                    .iter()
+                    .find(|(f, _)| f.is_same(given))
+                    .map_or_else(|| edge.clone(), |(_, e)| e.clone());
+                credit.push((image.clone(), owner));
+            }
+            held[a] = Some((
+                indices,
+                edge,
+                crate::support::Wedge {
+                    solid,
+                    credit,
+                    ..ring
+                },
+            ));
             continue;
         }
         let (Some((mut indices, edge, first)), Some((others, other, second))) =

@@ -630,7 +630,9 @@ pub(crate) fn joined(
         wedges
     };
     let mut faces = Vec::new();
-    for wedge in wedges {
+    // A loop closing on itself is one wedge, both its ends in the plane.
+    let count = if wedges[0].is_same(wedges[1]) { 1 } else { 2 };
+    for wedge in &wedges[..count] {
         for face in explore_unique(model, wedge, ShapeType::Face)? {
             if !end_face(model, &face, (on, normal), at, gap, tol)? {
                 faces.push(face);
@@ -1030,6 +1032,9 @@ fn half_space(
     .shape)
 }
 
+/// A curved side of a cap: its curve, its range, its ends and its middle.
+type ArcPiece = (ogeom_geom::Curve, (f64, f64), (Point, Point), Point);
+
 /// A band's end section on its planar cap: its two straight legs, the
 /// ball's arc between their far ends, and the cap's plane.
 struct Section {
@@ -1042,26 +1047,76 @@ impl Section {
     /// The section on `cap`, its legs told from its arc within `near`.
     fn of(model: &Model, cap: &Shape, near: f64, tol: Tolerances) -> OgeomResult<Self> {
         let mut lines: Vec<(Point, Point)> = Vec::new();
-        let mut arc = None;
+        let mut pieces = Vec::new();
         for edge in explore_unique(model, cap, ShapeType::Edge)? {
             let (curve, range) = crate::support::edge_curve(model, &edge, tol)?;
             let ends = (curve.point_at(range.0, tol)?, curve.point_at(range.1, tol)?);
             let middle = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
             if middle.distance(ends.0.midpoint(ends.1)) <= near {
                 lines.push(ends);
-            } else if arc.is_none() {
-                arc = Some(curve.to_bspline_over(range, tol)?);
             } else {
-                ogeom_core::ogeom_bail!(Construction, "a band's end cap has two curved sides");
+                pieces.push((curve, range, ends, middle));
             }
         }
-        let Some(arc) = arc else {
-            ogeom_core::ogeom_bail!(Construction, "a band's end cap has no arc");
+        let arc = match pieces.as_slice() {
+            [] => ogeom_core::ogeom_bail!(Construction, "a band's end cap has no arc"),
+            [(curve, range, _, _)] => curve.to_bspline_over(*range, tol)?,
+            // The ball's arc split in pieces (at its circle's own seam, which
+            // follows the part's placement): one circle through them all,
+            // from the end no other piece meets to the other.
+            _ => Self::one_arc(&pieces, near, tol)?,
         };
         let Some(plane) = plane_of(model, cap, tol)? else {
             ogeom_core::ogeom_bail!(Construction, "a band's end cap is not planar");
         };
         Ok(Self { lines, arc, plane })
+    }
+
+    /// The arc the circular `pieces` (each a curve, its range, its ends and
+    /// its middle) make end to end, as one circle's arc.
+    fn one_arc(
+        pieces: &[ArcPiece],
+        near: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<ogeom_geom::BSplineCurve> {
+        let ends: Vec<Point> = pieces
+            .iter()
+            .flat_map(|(_, _, (a, b), _)| [*a, *b])
+            .collect();
+        let lone: Vec<Point> = ends
+            .iter()
+            .copied()
+            .filter(|p| ends.iter().filter(|q| q.distance(*p) <= near).count() == 1)
+            .collect();
+        let [start, end] = lone.as_slice() else {
+            ogeom_core::ogeom_bail!(Construction, "a band's end cap's arc pieces do not chain");
+        };
+        let circle = ogeom_math::Circle::through(*start, pieces[0].3, *end, tol)?;
+        for (curve, range, _, middle) in pieces {
+            if !matches!(curve, ogeom_geom::Curve::Circle(_)) {
+                ogeom_core::ogeom_bail!(Construction, "a band's end cap has two curved sides");
+            }
+            for p in [*middle, curve.point_at(range.0, tol)?] {
+                if (p.distance(circle.centre()) - circle.radius()).abs() > near {
+                    ogeom_core::ogeom_bail!(
+                        Construction,
+                        "a band's end cap's arc pieces lie on no one circle"
+                    );
+                }
+            }
+        }
+        let frame = circle.frame();
+        let angle = |p: Point| {
+            let d = p - frame.origin();
+            d.dot(frame.y().vector()).atan2(d.dot(frame.x().vector()))
+        };
+        let turn = core::f64::consts::TAU;
+        let a0 = angle(*start);
+        let lift = |a: f64| a0 + (a - a0).rem_euclid(turn);
+        let (am, a1) = (lift(angle(pieces[0].3)), lift(angle(*end)));
+        // The arc through the pieces, one way round or the other.
+        let range = if am <= a1 { (a0, a1) } else { (a1 - turn, a0) };
+        ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle)).to_bspline_over(range, tol)
     }
 
     /// Points whose hull holds the section: its legs' ends and its arc's

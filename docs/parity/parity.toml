@@ -1117,8 +1117,10 @@ on with what stands past its wall and the two are intersected in one \
 boolean, so the corner takes what lies above both bands, bounded by their \
 own intersection, where the material holds it all; across a convex turn \
 each band runs out as it does alone and the cuts take their union. \
-Crossed junctions stand beside flush ones in a loop or chain of the \
-request's edges, the flush ones taken first; a band crossed at both ends \
+A loop of junctions closes, its last junction taken and the ring's wedge \
+sewn to itself (a square pocket's rim meets at all four corners). Crossed \
+junctions stand beside flush ones in a loop or chain of the request's \
+edges, the flush ones taken first; a band crossed at both ends \
 is cut in two halfway along, each half joined into its own corner and the \
 two joined again where both hold the band's one section. Inside corners \
 off square in plan and corners whose walls both lean are taken, the open \
