@@ -849,3 +849,90 @@ fn a_face_no_closed_form_speaks_for_leaves_only_itself_to_the_mesh() {
         found.mass
     );
 }
+
+/// A drum of radius 2 and height 5 converted to splines, its wall's chart
+/// closing over a turn without repeating, with every pcurve of the wall
+/// that `restate` picks moved `turns` whole turns along `u`. A file may
+/// state a pcurve so: the points are the same.
+fn spline_drum_restated(model: &mut Model, restate: impl Fn(bool) -> Option<f64>) -> Shape {
+    use ogeom::geom::Surface as _;
+    use ogeom::math::{Transform2, Vector2};
+    use ogeom::topo::{EdgeRepr, ShapeType, explore_unique};
+    let drum = ogeom::algo::make_cylinder(model, Frame::WORLD, 2.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let drum = ogeom::algo::to_nurbs(model, &drum, T).unwrap().shape;
+    let wall = explore_unique(model, &drum, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let s = model.node(f).unwrap().data().as_face().unwrap().surface;
+            model.geometry().surface(s).unwrap().is_closed_u(T)
+        })
+        .unwrap();
+    let surface = model.node(&wall).unwrap().data().as_face().unwrap().surface;
+    let ((u0, u1), _) = model.geometry().surface(surface).unwrap().domain();
+    let period = u1 - u0;
+    for edge in explore_unique(model, &wall, ShapeType::Edge).unwrap() {
+        let repr = model
+            .node(&edge)
+            .unwrap()
+            .data()
+            .as_edge()
+            .unwrap()
+            .pcurve_for(surface, edge.location())
+            .cloned();
+        let (curve, seam) = match repr {
+            Some(EdgeRepr::Seam { reversed, .. }) => (reversed, true),
+            Some(EdgeRepr::PCurve { curve, .. }) => (curve, false),
+            _ => continue,
+        };
+        let Some(turns) = restate(seam) else { continue };
+        let off = Transform2::translation(Vector2::new(turns * period, 0.0));
+        let moved = model
+            .geometry()
+            .pcurve(curve)
+            .unwrap()
+            .transformed(&off, T)
+            .unwrap();
+        *model.geometry_mut().pcurve_mut(curve).unwrap() = moved;
+    }
+    drum
+}
+
+/// The spline drum measures the same whether its wall's pcurves are stated
+/// on the chart's own window or whole turns off it: its seam's far side two
+/// turns from its near side, or a rim a turn off. The chart closes without
+/// repeating, so each is read a period from where the walk round the wall
+/// reaches it, on the stretch the window covers.
+#[test]
+fn a_spline_drum_stated_whole_turns_off_its_window_measures_as_at_home() {
+    let mut model = Model::with_tolerances(T);
+    let home = spline_drum_restated(&mut model, |_| None);
+    let want = volume_properties(&model, &home, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((want - PI * 4.0 * 5.0).abs() < 1e-9 * want, "{want}");
+    for (name, restate) in [
+        (
+            "far side two turns off",
+            (|seam: bool| seam.then_some(-2.0)) as fn(bool) -> Option<f64>,
+        ),
+        ("a rim a turn off", |seam: bool| (!seam).then_some(-1.0)),
+        ("both", |seam: bool| Some(if seam { -2.0 } else { -1.0 })),
+    ] {
+        let mut model = Model::with_tolerances(T);
+        let drum = spline_drum_restated(&mut model, restate);
+        assert!(
+            ogeom::algo::check(&model, &drum, T).unwrap().is_valid(),
+            "{name}"
+        );
+        let got = volume_properties(&model, &drum, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!(
+            (got - want).abs() < 1e-9 * want,
+            "{name}: {got} against {want}"
+        );
+    }
+}

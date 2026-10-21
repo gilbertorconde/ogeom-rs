@@ -344,6 +344,12 @@ fn rulings_a_quarter_turn_apart_close_within_their_vertex() {
     let diagnosis = ogeom::algo::check(&model, &solid, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
     let notch = radius * radius * core::f64::consts::FRAC_PI_4;
+    let whole = volume(&model, &solid);
+    assert!(
+        (whole - (1.0 - notch)).abs() < 1e-9,
+        "the solid itself: {whole} against {}",
+        1.0 - notch
+    );
     let at = Frame::new(Point::new(-0.5, 0.5, 0.5), Direction::Z, Direction::X, T).unwrap();
     let corner = ogeom::algo::make_box(&mut model, at, (1.0, 1.0, 1.0), T)
         .unwrap()

@@ -89,6 +89,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The volume of a solid holding a sliver narrower than its vertex, or
+  pcurves stated whole turns off a chart that closes without repeating, is
+  measured right.** The chart integration refused a loop whose two rulings
+  meet only within their vertex a quarter turn apart in a narrow
+  cylinder's chart, and read a seam's far side or a rim stated whole
+  periods off its spline chart's window where it was stated; the mesh that
+  measured those faces instead read the same loops wrong. Voron 151 measured
+  62.29 for 63.08, and the screws holding such slivers 0.5624 for 0.5663.
+  The loop now closes through the vertex where the chart between the ends
+  lies within it, and is folded onto the window by whole periods (#378).
+
 - **A boolean through a sliver of a narrow cylinder whose rulings meet
   within one vertex builds.** On the Voron 2.4 screws, a quarter turn of
   a cylinder 0.005 mm across has two rulings that end at one vertex whose

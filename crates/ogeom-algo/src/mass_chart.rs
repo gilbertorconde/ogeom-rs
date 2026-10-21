@@ -968,7 +968,16 @@ fn walked(
             let stretch = placed.d1_at(end.x, end.y, tol).map_or(1.0, |(du, dv)| {
                 du.magnitude().min(dv.magnitude()).max(tol.confusion())
             });
-            if end.distance(start) > reach + slack / stretch {
+            if end.distance(start) > reach + slack / stretch
+                && !within_one_vertex(
+                    model,
+                    face,
+                    surface,
+                    (&segment.edge, &next.edge),
+                    (end, start),
+                    tol,
+                )?
+            {
                 return Ok(None);
             }
         }
@@ -1029,6 +1038,65 @@ fn walked(
     }))
 }
 
+/// Whether a joint's two chart ends, `ends`, are the one vertex the two
+/// edges share, where the chart stretches past what the vertex's radius
+/// reads as there: each end lies within the vertex's radius (its own and
+/// the looser edge's) on the surface, and so does the straight stretch of
+/// chart between them, read as an edge is at seventeen points. The curves a
+/// file closes on one vertex can stop either side of it, each within the
+/// radius, and on a cylinder narrower than the radius they stand a quarter
+/// turn apart in the chart. Nothing of the face between them leaves the
+/// vertex, and the stretch closes the loop there.
+fn within_one_vertex(
+    model: &Model,
+    face: &Shape,
+    surface: &SurfaceGeometry,
+    (one, other): (&Shape, &Shape),
+    (end, start): (Point2, Point2),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let (Some((a0, a1)), Some((b0, b1))) = (
+        crate::edge_vertices(model, one)?,
+        crate::edge_vertices(model, other)?,
+    ) else {
+        return Ok(false);
+    };
+    let edge_tolerance = |e: &Shape| {
+        model
+            .node(e)
+            .and_then(|n| n.data().as_edge())
+            .map_or(0.0, |d| d.tolerance.get())
+    };
+    let placement = face.transform(model.datums())?;
+    // Two edges may share both their vertices (a sliver of two rulings and
+    // an arc closing on one of them): each shared one is asked.
+    for shared in [a0, a1]
+        .into_iter()
+        .filter(|a| a.node() == b0.node() || a.node() == b1.node())
+    {
+        let Some(vertex) = model.node(&shared).and_then(|n| n.data().as_vertex()) else {
+            continue;
+        };
+        let at = shared.transform(model.datums())?.apply(vertex.point);
+        let within = vertex.tolerance.get() + edge_tolerance(one).max(edge_tolerance(other));
+        let mut inside = true;
+        for k in 0..=16 {
+            let t = f64::from(k) / 16.0;
+            let p = Point2::new(end.x + (start.x - end.x) * t, end.y + (start.y - end.y) * t);
+            inside &= surface
+                .point_at(p.x, p.y, tol)
+                .is_ok_and(|on| placement.apply(on).distance(at) <= within);
+            if !inside {
+                break;
+            }
+        }
+        if inside {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// A wire's pcurve pieces in walking order, or `None` where one is missing.
 ///
 /// A seam bounds its face twice, once down each side of the chart; which
@@ -1037,6 +1105,87 @@ fn walked(
 /// whole period from where the last one ended is moved by that period.
 #[allow(clippy::too_many_arguments)]
 fn walk(
+    model: &Model,
+    surface: ogeom_topo::SurfaceId,
+    placed: &SurfaceGeometry,
+    split: &Split,
+    wire: &Shape,
+    period: Vector2,
+    strict: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Segment>>> {
+    // The periods the chart closes over, whether or not it repeats.
+    let ((u0, u1), (v0, v1)) = placed.domain();
+    let closure = Vector2::new(
+        if period.x > 0.0 || placed.is_closed_u(tol) {
+            u1 - u0
+        } else {
+            0.0
+        },
+        if period.y > 0.0 || placed.is_closed_v(tol) {
+            v1 - v0
+        } else {
+            0.0
+        },
+    );
+    if closure == period {
+        return walk_folding(model, surface, placed, split, wire, period, strict, tol);
+    }
+    // On a chart that closes without repeating, a file may state a piece
+    // whole periods off the window, or a seam's far side whole periods
+    // further than the one it stands from its near side: the same points.
+    // The loop is walked folding every piece by whole periods onto it, as
+    // on a chart that repeats, and then moved whole periods onto the
+    // window; it is read so where every piece then lies on a stretch the
+    // window covers, and as stated otherwise.
+    let Some(mut segments) =
+        walk_folding(model, surface, placed, split, wire, closure, strict, tol)?
+    else {
+        return walk_folding(model, surface, placed, split, wire, period, strict, tol);
+    };
+    let mut lo = Point2::new(f64::INFINITY, f64::INFINITY);
+    for sg in &segments {
+        for t in [sg.t0, sg.t1] {
+            let p = sg.at(t, tol)?.0;
+            lo = Point2::new(lo.x.min(p.x), lo.y.min(p.y));
+        }
+    }
+    let slack = tol.parametric();
+    let by = fold(
+        Vector2::new(
+            if period.x == 0.0 {
+                u0 - lo.x + slack
+            } else {
+                0.0
+            },
+            if period.y == 0.0 {
+                v0 - lo.y + slack
+            } else {
+                0.0
+            },
+        ),
+        closure,
+    );
+    let mut home = true;
+    for sg in &mut segments {
+        sg.shift += by;
+        for k in 0..=4 {
+            let t = sg.t0 + (sg.t1 - sg.t0) * f64::from(k) / 4.0;
+            let p = sg.at(t, tol)?.0;
+            home &= (period.x > 0.0 || (p.x >= u0 - slack && p.x <= u1 + slack))
+                && (period.y > 0.0 || (p.y >= v0 - slack && p.y <= v1 + slack));
+        }
+    }
+    if home {
+        return Ok(Some(segments));
+    }
+    walk_folding(model, surface, placed, split, wire, period, strict, tol)
+}
+
+/// [`walk`] folding each piece by whole multiples of `period` onto the
+/// point walked to.
+#[allow(clippy::too_many_arguments)]
+fn walk_folding(
     model: &Model,
     surface: ogeom_topo::SurfaceId,
     placed: &SurfaceGeometry,
