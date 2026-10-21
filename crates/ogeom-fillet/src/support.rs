@@ -1268,25 +1268,31 @@ pub(crate) fn apply_wedge(
     additive: bool,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_algo::Built> {
-    let wedge = wedge_solid(model, faces, tol)?;
+    let wedge = wedge_solid(model, faces, true, tol)?;
     apply_wedge_solid(model, solid, edge, &wedge, additive, tol)
 }
 
 /// Sew the wedge's faces into a solid, demanding a closed shell.
+///
+/// `fitted` says whether any of the faces' pcurves may be fitted, which
+/// stands off its edge between its samples: every edge of such a wedge
+/// states what its pcurves measure along it before the boolean reads it.
+/// A wedge whose every pcurve is its edge's closed-form image stands
+/// within rounding of its edges, under any tolerance an edge states, and
+/// has nothing to measure.
 pub(crate) fn wedge_solid(
     model: &mut Model,
     faces: &[Shape],
+    fitted: bool,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let sewn = ogeom_algo::sew(model, faces, tol)?;
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the blend wedge did not close");
     }
-    // A marched band's rails and legs carry fitted pcurves on the hosts and
-    // the band, which stand off their edges between their samples; every
-    // edge of the wedge states what its pcurves measure along it before
-    // the boolean reads it.
-    ogeom_algo::state_pcurve_gaps(model, &sewn.shells[0], tol)?;
+    if fitted {
+        ogeom_algo::state_pcurve_gaps(model, &sewn.shells[0], tol)?;
+    }
     // Put together raw: a wedge is oriented by construction, and asks no
     // mesh to say which way it faces.
     model.add_solid(std::slice::from_ref(&sewn.shells[0]))
@@ -1993,6 +1999,49 @@ mod tests {
                 (volume - removed).abs() < removed * 1e-6,
                 "bevel {bevel}: {volume} against {removed}"
             );
+        }
+    }
+
+    /// A straight seat's wedge, on a convex edge and a concave one, has
+    /// every pcurve its edge's closed-form image: each edge's pcurves stand
+    /// within the tolerance it states, so the wedge is built without
+    /// measuring them.
+    #[test]
+    fn straight_seat_wedges_hold_their_pcurves_within_their_edges() {
+        let mut model = Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 6.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let step = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 3.0, 8.0), T)
+            .unwrap()
+            .shape;
+        let ell = ogeom_bool::fuse(&mut model, &block, &step, T)
+            .unwrap()
+            .shape;
+        let ridge = edge_at(&model, &block, Point::new(5.0, 0.0, 4.0));
+        let crease = edge_at(&model, &ell, Point::new(5.0, 3.0, 4.0));
+        for (solid, edge) in [(&block, &ridge), (&ell, &crease)] {
+            let (made, wedges) =
+                super::collecting_wedges(|| crate::fillet_edge(&mut model, solid, edge, 1.0, T));
+            made.unwrap();
+            let [wedge] = &wedges[..] else {
+                panic!("one wedge, not {}", wedges.len());
+            };
+            for e in explore_unique(&model, &wedge.solid, ShapeType::Edge).unwrap() {
+                let stated = model
+                    .node(&e)
+                    .unwrap()
+                    .data()
+                    .as_edge()
+                    .unwrap()
+                    .tolerance
+                    .get();
+                let gap = ogeom_algo::edge_pcurve_gap(&model, &e, T).unwrap().unwrap();
+                assert!(
+                    gap <= stated,
+                    "a pcurve stands {gap} off an edge stating {stated}"
+                );
+            }
         }
     }
 
