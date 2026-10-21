@@ -117,6 +117,16 @@ bump may break the API and a patch bump may not.
   tenth over its depth now loses 0.856067 mm³ in either order, its
   sections, square cells and drafted corners exactly, where it lost
   0.837197 or 0.835998.
+- **A rim whose blend's rail passes a sphere's pole within a stride of the
+  march rounds.** On a ball of radius 10 drilled parallel to its axis
+  with a bore of radius 1.5 at offset 2.499 or 2.501, rounded at r = 1,
+  the ball's rail passes about 1.1e-3 from the pole, where its chart turns
+  half round within one stride; the blend refused by name. The leg is now
+  built on the same sphere charted with its pole on another axis of its
+  frame, and the ball's faces on the sphere are rebuilt on that chart for
+  the boolean to melt it with, their old seam and pole edges dropped. Both
+  round, through `fillet_edge` and `fillet_edges`, to the volumes of the
+  same bore turned onto another axis (4048.121147 and 4048.127658) (#365).
 
 - **A boolean through a wall far shorter than its face's outline weld
   builds.** A face's outline in its chart was welded end to end within a

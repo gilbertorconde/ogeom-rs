@@ -21,6 +21,7 @@ mod ruled;
 pub mod sheet;
 mod sheet_curved;
 mod support;
+mod turned_pole;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
 pub use bridge::{End, make_blend_curve, make_blend_surface};

@@ -29,6 +29,10 @@ use ogeom_topo::{Filter, Model, NodeData, Orientation, Shape, ShapeType, explore
 /// How many samples cross each blend arc.
 const ACROSS: usize = 17;
 
+/// How many samples along an edge's guide its seat is read at, as the apex
+/// ring's image is.
+const GUIDE_SAMPLES: u32 = 256;
+
 /// How far, in radii, an open spline crease is continued past each end:
 /// the march runs on into the continuation, and a run-out's caps and its
 /// crease stand on it.
@@ -912,29 +916,77 @@ pub(crate) fn closed_band_wedge(
         u_dom,
     )?;
     // The legs: one per host, the exact host surface bounded by the fitted
-    // rail and a fresh ring on the edge's own curve.
-    let (leg_first, pieces_first) = host_leg(
-        model,
-        first,
-        &blend.on_first,
-        &u_params,
-        &rail_first,
-        guide,
-        guide_range,
-        fit_target,
-        tol,
-    )?;
-    let (leg_second, pieces_second) = host_leg(
-        model,
-        second,
-        &blend.on_second,
-        &u_params,
-        &rail_second,
-        guide,
-        guide_range,
-        fit_target,
-        tol,
-    )?;
+    // rail and a fresh ring on the edge's own curve. A rail whose image on
+    // a sphere the fit refuses is taken on the same sphere charted with its
+    // pole turned away from the seat, the solid's faces on it rebuilt on
+    // that chart for the boolean to melt the leg with (a caller collecting
+    // the wedges melts them against the rebuilt solid it is handed back);
+    // where the solid cannot be, the refusal stands.
+    let mut solid = solid.clone();
+    let mut turned_history: Option<ogeom_algo::History> = None;
+    let mut legs = Vec::with_capacity(2);
+    for (host, on_host, touches, rail) in [
+        (first, &blend.on_first, &blend.touch_first, &rail_first),
+        (second, &blend.on_second, &blend.touch_second, &rail_second),
+    ] {
+        let leg = host_leg(
+            model,
+            host,
+            on_host,
+            &u_params,
+            rail,
+            guide,
+            guide_range,
+            fit_target,
+            tol,
+        )?;
+        let refused = match leg {
+            Ok(leg) => {
+                legs.push(leg);
+                continue;
+            }
+            Err(refused) => refused,
+        };
+        let mut seat = touches.clone();
+        for k in 0..=GUIDE_SAMPLES {
+            let t = guide_range.0
+                + (guide_range.1 - guide_range.0) * f64::from(k) / f64::from(GUIDE_SAMPLES);
+            seat.push(guide.point_at(t, tol)?);
+        }
+        let Ok(Some(turned)) =
+            crate::turned_pole::turned_from_pole(model, &solid, host, &seat, tol)
+        else {
+            return Err(refused);
+        };
+        let mut on_turned = Vec::with_capacity(on_host.len());
+        for &(u, v) in on_host.iter() {
+            let uv = chart_of(&turned.host, host.point_at(u, v, tol)?, None, tol)?;
+            on_turned.push((uv.x, uv.y));
+        }
+        let Ok(leg) = host_leg(
+            model,
+            &turned.host,
+            &on_turned,
+            &u_params,
+            rail,
+            guide,
+            guide_range,
+            fit_target,
+            tol,
+        )?
+        else {
+            return Err(refused);
+        };
+        legs.push(leg);
+        solid = turned.solid;
+        turned_history = Some(match turned_history {
+            Some(earlier) => earlier.then(&turned.history),
+            None => turned.history,
+        });
+    }
+    let [(leg_first, pieces_first), (leg_second, pieces_second)]: [(Shape, RailPieces); 2] = legs
+        .try_into()
+        .map_err(|_| ogeom_core::ogeom_err!(Construction, "a blend of other than two legs"))?;
     // A leg that split its rail hands back the pieces, which the band walks
     // in the rail's place on the rail's own column.
     let mut rail_walk =
@@ -1002,15 +1054,19 @@ pub(crate) fn closed_band_wedge(
     ];
     let fitted_host = matches!(first, SurfaceGeometry::BSpline(_))
         || matches!(second, SurfaceGeometry::BSpline(_));
-    match apply_wedge(model, solid, edge, &faces, additive, tol) {
+    let applied = match apply_wedge(model, &solid, edge, &faces, additive, tol) {
         Err(e) if fitted_host => ogeom_bail!(
             NotDone,
             "the blend marched and its wedge was built, but the melt against a \
              fitted host is beyond what the boolean resolves ({e}); see \
              docs/PARITY.md, fillet.edge-blends"
         ),
-        other => other,
-    }
+        other => other?,
+    };
+    Ok(match turned_history {
+        Some(turned) => Built::new(applied.shape, turned.then(&applied.history)),
+        None => applied,
+    })
 }
 
 /// The open seat's wedge: a marched band that ran off its supports, capped
@@ -2624,6 +2680,9 @@ type RailPieces = Option<Vec<(Shape, (f64, f64))>>;
 /// One leg: the host's own surface bounded by the marched rail and the
 /// edge's ring. A rail that winds the chart's period takes the band with its
 /// connector seam; a contractible one takes the annular two-wire face.
+///
+/// A rail whose chart image the fit refuses comes back as the inner error,
+/// the model untouched.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 fn host_leg(
     model: &mut Model,
@@ -2635,7 +2694,7 @@ fn host_leg(
     guide_range: (f64, f64),
     fit_target: f64,
     tol: Tolerances,
-) -> OgeomResult<(Shape, RailPieces)> {
+) -> OgeomResult<Result<(Shape, RailPieces), ogeom_core::OgeomError>> {
     let n = on_host.len();
     // The rail's chart image, closed: the marcher solved these parameters,
     // so the fit through them at the grid's own u-parameters is
@@ -2694,7 +2753,7 @@ fn host_leg(
     }
     rail_chart.push(Point2::new(rail_chart[0].x + winding, rail_chart[0].y));
     let rail_pcurve = {
-        let (pcurve, deviation) = rail_image(
+        let image = rail_image(
             model,
             host,
             rail,
@@ -2703,7 +2762,11 @@ fn host_leg(
             winding,
             fit_target,
             tol,
-        )?;
+        );
+        let (pcurve, deviation) = match image {
+            Ok(image) => image,
+            Err(refused) => return Ok(Err(refused)),
+        };
         widen_edge(model, rail, deviation)?;
         pcurve
     };
@@ -2817,7 +2880,8 @@ fn host_leg(
             contractible,
             !apex_winds,
             tol,
-        );
+        )
+        .map(Ok);
     }
     if winding.abs() > 1e-6 {
         // Both loops wind the period; the band with its connector closes the
@@ -2829,7 +2893,7 @@ fn host_leg(
                  guide is still owed; see docs/PARITY.md, fillet.edge-blends"
             );
         }
-        Ok((
+        Ok(Ok((
             ogeom_algo::make_band_between(
                 model,
                 host,
@@ -2837,7 +2901,7 @@ fn host_leg(
                 tol,
             )?,
             None,
-        ))
+        )))
     } else {
         // Contractible loops: an annular patch, outer wire first.
         let apex_area = chart_area(&apex_chart);
@@ -2882,10 +2946,10 @@ fn host_leg(
         // window, the ring's wherever its inversion answers) and can lie a
         // period apart; the patch between them is one chart's.
         ogeom_algo::chain_wire_branches(model, surface_id, &wires, tol)?;
-        Ok((
+        Ok(Ok((
             ogeom_algo::make_face_on(model, surface_id, &wires, tol)?.shape,
             None,
-        ))
+        )))
     }
 }
 
@@ -2966,8 +3030,7 @@ fn rail_image(
                     NotDone,
                     "the blend's rail passes the sphere's pole {nearest} away, within a \
                      stride of the march, where its chart turns faster than the \
-                     stations follow; a rail within a hair of the pole is still owed; \
-                     see docs/PARITY.md, fillet.edge-blends"
+                     stations follow; see docs/PARITY.md, fillet.edge-blends"
                 );
             }
         }
