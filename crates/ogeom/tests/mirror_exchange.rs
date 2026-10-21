@@ -109,9 +109,7 @@ fn round_trips(format: Format, name: &str, model: &Model, solid: &Shape, closed_
 /// axis, each fused with its mirror image, then unified: every one, split
 /// and unified, reads back from STEP and from IGES as the solid it was. The
 /// unified prism's wall closes round the ellipse with its seam on the
-/// mirror plane, and IGES carries that wall as a spline patch closed where
-/// the ellipse starts, not periodic: no face on that patch can run across
-/// its closing line, so it goes through STEP alone.
+/// mirror plane, across where the ellipse starts.
 #[test]
 fn solids_fused_with_their_mirror_image_round_trip() {
     use core::f64::consts::PI;
@@ -158,12 +156,7 @@ fn solids_fused_with_their_mirror_image_round_trip() {
             .unwrap()
             .0
             .shape;
-        let formats: &[Format] = if name == "elliptic prism" {
-            &[Format::Step]
-        } else {
-            &[Format::Step, Format::Iges]
-        };
-        for &format in formats {
+        for format in [Format::Step, Format::Iges] {
             round_trips(
                 format,
                 &format!("{name}, unified"),

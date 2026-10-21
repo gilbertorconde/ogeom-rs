@@ -89,6 +89,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A wall swept from a whole circle or ellipse goes out of IGES as a
+  tabulated cylinder (122) over it.** It went out as a spline patch closed
+  where the conic starts, which no face can run across. An elliptic wall
+  fused with its mirror image and unified, its seam on the mirror plane,
+  read back at 125.332 of 125.664; it now reads back exactly (#346).
+
 - **A boolean through a face whose ring walks a seam both ways and states
   its rims on another branch of the chart builds.** A drum wall or a
   closed spline with its rim stated a period or more off the window its

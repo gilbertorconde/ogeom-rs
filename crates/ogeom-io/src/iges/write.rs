@@ -828,6 +828,37 @@ impl Writer<'_> {
                     params,
                 }))
             }
+            // A wall swept from a whole circle or ellipse goes out as a
+            // tabulated cylinder over that conic: read back as the same
+            // extrusion, its chart repeats round the conic, and a face may
+            // run across the conic's start, as no face on a spline patch
+            // closed there can.
+            S::Extrusion(e) if closed_conic(e.curve()) => {
+                use ogeom_geom::Curve3d as _;
+                let ((u0, u1), (v0, v1)) = e.domain();
+                let along = e.direction().vector();
+                let directrix = e
+                    .curve()
+                    .transformed(&Transform::translation(along * v0), self.tol)?;
+                let start = directrix.point_at(u0, self.tol)?;
+                let far = start + along * (v1 - v0);
+                let curve = self.curve(&directrix, (u0, u1), true)?;
+                let params = format!(
+                    "{},{},{},{}",
+                    self.de(curve),
+                    fmt(far.x),
+                    fmt(far.y),
+                    fmt(far.z)
+                );
+                Ok(self.push(Pending {
+                    kind: 122,
+                    form: 0,
+                    transform: None,
+                    independent: false,
+                    label: String::new(),
+                    params,
+                }))
+            }
             S::BSpline(b) => Ok(self.nurbs_surface(b, false)),
             other => {
                 // Swept, offset and trimmed carriers convert exactly where a
@@ -999,6 +1030,11 @@ impl Writer<'_> {
         push_record(&mut s, &tail, 'T', 1);
         s
     }
+}
+
+/// Whether `curve` is a whole circle or ellipse, its domain one full turn.
+fn closed_conic(curve: &Curve) -> bool {
+    matches!(curve, Curve::Circle(_) | Curve::Ellipse(_))
 }
 
 /// The same B-spline traversed the other way, over the same domain.
