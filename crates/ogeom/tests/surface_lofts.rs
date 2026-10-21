@@ -876,7 +876,7 @@ fn a_guided_loft_surface_refuses_what_it_does_not_build_by_name() {
         false,
     );
     assert!(
-        err.contains("takes sections of one edge each; section 1 has 2"),
+        err.contains("takes sections of one edge count; section 1 has 2 and section 0 has 1"),
         "{err}"
     );
     // Two guides crossing each other between the sections.
@@ -1450,4 +1450,47 @@ fn a_sweep_surface_follows_a_line_into_a_tangent_arc() {
             .mass;
     let want = 20.0 + 5.0 * PI;
     assert!((area - want).abs() < want * 1e-6, "{area} against {want}");
+}
+
+/// An open L lofted to itself moved `d` along `x` and `h` up, along
+/// straight guides through its corner and its far end: one face per leg,
+/// the two parallelograms the legs sweep, `2 h + 3 √(d² + h²)` of area.
+#[test]
+fn a_guided_loft_through_open_ls_is_a_face_per_leg_meeting_on_the_corner_guide() {
+    let (d, h) = (1.5, 4.0);
+    let mut model = Model::new();
+    let l = |model: &mut Model, x: f64, z: f64| {
+        make_polygon(
+            model,
+            &[
+                Point::new(x + 2.0, 0.0, z),
+                Point::new(x, 0.0, z),
+                Point::new(x, 3.0, z),
+            ],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let sections = [l(&mut model, 0.0, 0.0), l(&mut model, d, h)];
+    let guide = |model: &mut Model, x: f64, y: f64| {
+        let curve = Curve::Line(
+            LineCurve::segment(Point::new(x, y, 0.0), Point::new(x + d, y, h), T).unwrap(),
+        );
+        let domain = curve.domain();
+        make_edge(model, curve, domain, T).unwrap().shape
+    };
+    let guides = [guide(&mut model, 0.0, 0.0), guide(&mut model, 0.0, 3.0)];
+    let sheet = make_loft_surface(&mut model, &sections, false, &guides, false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(faces(&model, &sheet).len(), 2, "one face per leg");
+    sound_sheet(&model, &sheet, 6);
+    let area =
+        ogeom::algo::surface_properties(&model, &sheet, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let want = 2.0 * h + 3.0 * d.hypot(h);
+    assert!((area - want).abs() < want * 1e-9, "{area} against {want}");
 }

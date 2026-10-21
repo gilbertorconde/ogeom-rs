@@ -25,7 +25,9 @@ use crate::sheet::make_loft_surface;
 /// The walls are [`make_loft_surface`] through the sections, open in the
 /// loft direction: with `ruled` straight between each pair of neighbouring
 /// sections, otherwise the smooth skin through them all, and with `guides`
-/// the Gordon surface that also follows each guide. Sections of different
+/// the Gordon surface that also follows each guide (through sections of
+/// several edges, a guide through every corner, one wall per edge between
+/// the guides through its corners). Sections of different
 /// edge counts, lines and arcs and splines mixed, are first split to match
 /// by arc length from each section's own start, every piece keeping its
 /// exact form, and the pieces pair point to point at one fraction of their
@@ -40,7 +42,8 @@ use crate::sheet::make_loft_surface;
 /// section is not a closed edge or wire, if the first or last section is
 /// not planar, if the walls and caps do not close into one shell, and as
 /// [`make_loft_surface`] refuses the sections or the guides (fewer than two
-/// sections; with guides, a ruled loft or sections of more than one edge).
+/// sections; with guides, a ruled loft, or sections of several edges with
+/// a corner no guide runs through).
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) as
 /// [`make_loft_surface`].
 pub fn make_loft_solid(

@@ -5158,7 +5158,8 @@ pub fn make_pipe_shell_law(
 /// [`make_pipe_shell`] with a frame law and a way of turning corners.
 ///
 /// Extended and round corners, and the auxiliary and binormal laws round
-/// a sharp corner, sweep a face run by run: the spine is cut at its sharp
+/// a sharp corner, sweep a face run by run (as do extended and round
+/// corners under the Frenet frame): the spine is cut at its sharp
 /// corners, each smooth run swept on its own (a straight run whose section
 /// keeps its frame as the prism of it), and the runs joined at each corner,
 /// open spine or closed. A mitre runs each side on straight past the
@@ -5166,8 +5167,8 @@ pub fn make_pipe_shell_law(
 /// runs each side on until its section clears the other's far side; a
 /// round corner turns the half of the section outside the corner about the
 /// corner's axis. The rotation-minimizing frame carries the section across
-/// a corner by that turn; the auxiliary and binormal laws place it
-/// themselves, so their runs may meet a mitre with different sections, the
+/// a corner by that turn; the Frenet, auxiliary and binormal laws place it
+/// themselves (the Frenet frame by each run's own curvature), so their runs may meet a mitre with different sections, the
 /// difference standing as a face of the mitre plane. Between straight legs
 /// with the rotation-minimizing frame on an open spine, every corner is
 /// built as before: each leg a prism and each round corner the section
@@ -5181,8 +5182,8 @@ pub fn make_pipe_shell_law(
 /// As [`make_pipe_shell`], and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
 /// the law or the corners are asked of a spine they do not serve: a wire
-/// swept round a corner run by run, the Frenet frame round a sharp corner
-/// other than mitred, a round corner where the law sets the next run's
+/// swept round a corner run by run, the Frenet frame along a straight run
+/// between sharp corners, a round corner where the law sets the next run's
 /// section other than the first's turned about the corner (or the frame
 /// comes home turned round a closed spine), and an auxiliary or binormal
 /// law round a smooth closed spine whose frames turn against the

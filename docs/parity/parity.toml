@@ -1353,8 +1353,9 @@ the halving plane, extended or rounded, along open or closed spines and \
 against curved legs. The auxiliary and binormal laws turn sharp corners \
 this way too, their runs meeting a mitre with the sections the law sets; \
 a round corner is refused where the law's next section is not the last \
-turned about the corner, and the Frenet frame turns sharp corners only \
-mitred. Round a smooth closed spine those laws sweep where their frames \
+turned about the corner. The Frenet frame turns sharp corners extended or \
+rounded the same way, each run's section set by the run's own Frenet \
+frame, and is refused along a straight run, which has none. Round a smooth closed spine those laws sweep where their frames \
 are the rotation-minimizing ones turned by a fixed angle, and are refused \
 by name otherwise. Extended and round corners sweep faces, not wires."""
 claims = [
@@ -1393,8 +1394,11 @@ closes the loft sheet into a solid through N closed sections with planar \
 ends, ruled or smooth: sections of different edge counts, lines, arcs and \
 splines mixed, are split to match by arc length, every piece exact, so a \
 ruled square to circle is exact; with guide curves the walls are the \
-guided Gordon sheet (sections of one edge each), capped by the end \
-sections' planes. A guided loft through multi-edge sections is not built. \
+guided Gordon sheet, capped by the end sections' planes, holding every \
+section exactly and every guide to ten confusions. Guided sections of \
+several edges share one edge count and a guide runs through every corner \
+where two edges meet; each edge's wall is the Gordon patch between the \
+guides through its two corners. \
 The skinned \
 loft holds its sections exactly where they are exact: through two sections \
 it is the ruled loft; through more with matching corners, one strip per \

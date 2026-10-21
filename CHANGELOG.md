@@ -27,6 +27,26 @@ bump may break the API and a patch bump may not.
     its plane's now lifts through the ellipse's angle.
   - A solid's whole name, past the eight-column label, is written and read
     as its Name property (406 form 15) (#404).
+- **Guided lofts take sections of several edges.** `make_loft_surface`
+  and `make_loft_solid` with guide curves refused any section of more
+  than one edge, so a guided loft through rectangles was not built. Now
+  the sections share one edge count and a guide runs through every corner
+  where two edges meet. Each edge's wall is the Gordon patch through that
+  edge of every section, following the guides through its two corners and
+  any guide crossing it inside; neighbouring walls meet along their
+  corner's guide. A rectangle along four bowed corner arcs, through two
+  sections or three, measures its closed-form volume to 1.2e-15, and
+  along straight corner guides it is the pyramid's frustum. A corner with
+  no guide, two guides through one corner, a guide changing corners, and
+  sections of different edge counts are refused by name (#394).
+
+- **The Frenet frame turns sharp corners extended or rounded.** It was
+  refused round any sharp corner other than mitred. Now each run between
+  corners places the section by its own Frenet frame and the runs are
+  joined as under the binormal and auxiliary laws. A square down two arcs
+  bending the same way, meeting at a sharp quarter turn, rounds and
+  extends to its closed forms to 6e-16. A straight run between sharp
+  corners has no Frenet frame and is refused by name (#394).
 
 - **Pipe shells turn sharp corners against curved legs, round closed
   spines, and under the binormal and auxiliary laws.**
@@ -44,8 +64,7 @@ bump may break the API and a patch bump may not.
   - A binormal along a circle's axis gives the torus by Pappus.
   - Refused by name:
     - a tilted binormal round a circle;
-    - a round corner where the law sets a different next section;
-    - the Frenet frame round a sharp corner other than mitred (#394).
+    - a round corner where the law sets a different next section (#394).
 
 - **`make_pipe_shell_evolving` scales and twists a pipe's section along
   its spine.** A `PipeEvolution` gives the scale and the twist reached at the

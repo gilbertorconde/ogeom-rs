@@ -291,6 +291,182 @@ fn a_guided_solid_follows_a_bowed_guide_between_its_caps() {
     );
 }
 
+/// The circular arc in the half-plane through the `z` axis and `(x, y)`,
+/// from `(x, y, 0)` out to `bow` farther from the axis at `h / 2` and back
+/// to `(x, y, h)`.
+fn bowed(model: &mut Model, x: f64, y: f64, bow: f64, h: f64) -> Shape {
+    let rho = x.hypot(y);
+    let out = (rho + bow) / rho;
+    let arc = Circle::through(
+        Point::new(x, y, 0.0),
+        Point::new(x * out, y * out, h / 2.0),
+        Point::new(x, y, h),
+        T,
+    )
+    .unwrap();
+    let f = arc.frame();
+    let d = Point::new(x, y, h) - f.origin();
+    let end = d.dot(f.y().vector()).atan2(d.dot(f.x().vector()));
+    let end = if end < 0.0 { end + 2.0 * PI } else { end };
+    make_edge(model, CircleCurve::new(arc).into(), (0.0, end), T)
+        .unwrap()
+        .shape
+}
+
+/// The rectangle `2 a` by `2 b` about the `z` axis at height `z`, scaled
+/// by `s`, from its corner at `(a, -b)` counter-clockwise.
+fn rectangle(model: &mut Model, a: f64, b: f64, s: f64, z: f64) -> Shape {
+    let (a, b) = (a * s, b * s);
+    polygon(model, &[(a, -b), (a, b), (-a, b), (-a, -b)], z)
+}
+
+/// A rectangle lofted along four guides through its corners, each the arc
+/// bowed `bow` out from the axis in its corner's half-plane, through two
+/// sections or three (the third the rectangle scaled to the arcs' middle).
+///
+/// Each wall is the Gordon patch between two guides that are one arc
+/// turned about the axis, over sections that are straight: the skin and
+/// the corner interpolation cancel, and the wall is `(1 - u) g₀ + u g₁`,
+/// so the section at height `z` is the rectangle scaled by `ρ(z) / ρ₀`,
+/// `ρ` the arc's distance from the axis and `ρ₀ = √(a² + b²)`. The volume
+/// is `4 a b ∫ ρ² dz / ρ₀²`, with `ρ = c + √(R² - w²)` about the arc's
+/// centre `c` at `w = z - h / 2`.
+#[test]
+fn a_guided_solid_through_rectangles_follows_a_guide_at_every_corner() {
+    let (a, b, h, bow): (f64, f64, f64, f64) = (2.0, 1.0, 6.0, 0.75);
+    let rho0 = a.hypot(b);
+    let radius = (bow * bow + h * h / 4.0) / (2.0 * bow);
+    let centre = rho0 + bow - radius;
+    let root = (h / 2.0) * (radius * radius - h * h / 4.0).sqrt()
+        + radius * radius * (h / (2.0 * radius)).asin();
+    let squared = (centre * centre + radius * radius) * h - h.powi(3) / 12.0 + 2.0 * centre * root;
+    let expected = 4.0 * a * b * squared / (rho0 * rho0);
+    for middle in [false, true] {
+        let mut model = Model::new();
+        let mut sections = vec![rectangle(&mut model, a, b, 1.0, 0.0)];
+        if middle {
+            let s = (rho0 + bow) / rho0;
+            sections.push(rectangle(&mut model, a, b, s, h / 2.0));
+        }
+        sections.push(rectangle(&mut model, a, b, 1.0, h));
+        let guides: Vec<Shape> = [(a, -b), (a, b), (-a, b), (-a, -b)]
+            .iter()
+            .map(|&(x, y)| bowed(&mut model, x, y, bow, h))
+            .collect();
+        let solid = make_loft_solid(&mut model, &sections, &guides, false, T)
+            .unwrap()
+            .shape;
+        let found = check(&model, &solid, T).unwrap();
+        assert!(found.is_valid(), "middle {middle}: {found}");
+        assert_eq!(
+            surfaces(&model, &solid).len(),
+            6,
+            "middle {middle}: four walls and two caps"
+        );
+        let measured = volume(&model, &solid);
+        assert!(
+            (measured - expected).abs() < expected * 1e-9,
+            "middle {middle}: {measured} against {expected}"
+        );
+    }
+}
+
+/// A rectangle lofted to a smaller one along straight guides through the
+/// corners, past a third section on the guides: the pyramid's frustum,
+/// `h (A₀ + A₁ + √(A₀ A₁)) / 3`.
+#[test]
+fn a_guided_solid_along_straight_corner_guides_is_the_frustum() {
+    let (a, b, h, s) = (3.0, 2.0, 4.0, 0.5);
+    let mut model = Model::new();
+    let sections = [
+        rectangle(&mut model, a, b, 1.0, 0.0),
+        rectangle(&mut model, a, b, 0.5 * (1.0 + s), h / 2.0),
+        rectangle(&mut model, a, b, s, h),
+    ];
+    let guides: Vec<Shape> = [(a, -b), (a, b), (-a, b), (-a, -b)]
+        .iter()
+        .map(|&(x, y)| {
+            segment(
+                &mut model,
+                Point::new(x, y, 0.0),
+                Point::new(x * s, y * s, h),
+            )
+        })
+        .collect();
+    let solid = make_loft_solid(&mut model, &sections, &guides, false, T)
+        .unwrap()
+        .shape;
+    let found = check(&model, &solid, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let (low, high) = (4.0 * a * b, 4.0 * a * b * s * s);
+    let expected = h * (low + high + (low * high).sqrt()) / 3.0;
+    let measured = volume(&model, &solid);
+    assert!(
+        (measured - expected).abs() < expected * 1e-9,
+        "{measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_guided_solid_through_multi_edge_sections_refuses_by_name() {
+    let (a, b, h) = (2.0, 1.0, 5.0);
+    let mut model = Model::new();
+    let sections = [
+        rectangle(&mut model, a, b, 1.0, 0.0),
+        rectangle(&mut model, a, b, 1.0, h),
+    ];
+    let corners = [(a, -b), (a, b), (-a, b), (-a, -b)];
+    let mut guides: Vec<Shape> = corners
+        .iter()
+        .map(|&(x, y)| segment(&mut model, Point::new(x, y, 0.0), Point::new(x, y, h)))
+        .collect();
+    let refused = |model: &mut Model, sections: &[Shape], guides: &[Shape]| {
+        make_loft_solid(model, sections, guides, false, T)
+            .unwrap_err()
+            .to_string()
+    };
+    let err = refused(&mut model, &sections, &guides[..3]);
+    assert!(
+        err.contains("needs a guide through every corner where two edges meet; corner 3 has none"),
+        "{err}"
+    );
+    let twice = segment(&mut model, Point::new(a, b, 0.0), Point::new(a, b, h));
+    guides.push(twice);
+    let err = refused(&mut model, &sections, &guides);
+    assert!(
+        err.contains("guides 1 and 4 both run through corner 1"),
+        "{err}"
+    );
+    guides.pop();
+    let eight = polygon(
+        &mut model,
+        &[
+            (a, -b),
+            (a, 0.0),
+            (a, b),
+            (0.0, b),
+            (-a, b),
+            (-a, 0.0),
+            (-a, -b),
+            (0.0, -b),
+        ],
+        h,
+    );
+    let err = refused(&mut model, &[sections[0].clone(), eight], &guides);
+    assert!(
+        err.contains("takes sections of one edge count; section 1 has 8 and section 0 has 4"),
+        "{err}"
+    );
+    // A guide from one corner of the bottom to another of the top.
+    let skew = segment(&mut model, Point::new(a, -b, 0.0), Point::new(-a, -b, h));
+    guides[0] = skew;
+    let err = refused(&mut model, &sections, &guides);
+    assert!(
+        err.contains("guide 0 crosses section 1 at another corner or edge than section 0"),
+        "{err}"
+    );
+}
+
 #[test]
 fn a_solid_loft_refuses_an_open_section_and_a_wavy_end_by_name() {
     let mut model = Model::new();

@@ -21,14 +21,14 @@
 
 use ogeom_algo::{Built, History};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::BSplineCurve;
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Surface as _;
+use ogeom_geom::{BSplineCurve, BSplineSurface};
 use ogeom_math::bspline::{self, Spline};
 use ogeom_math::{Blend, KnotVector, Point, Weighted};
 use ogeom_topo::{Model, Shape};
 
-use super::{KNOT_SAME, Section, inverted, read_section, sheet, standard, surface_of};
+use super::{KNOT_SAME, Section, SectionEdge, inverted, read_section, sheet, standard, surface_of};
 
 /// Parameters closer than this to each other, or to an end of the unit
 /// domain, are one parameter.
@@ -44,7 +44,6 @@ type Homogeneous = Spline<Weighted<Point>>;
 
 /// The guided loft through `sections` following `guides`; see
 /// [`make_loft_surface`](super::make_loft_surface).
-#[allow(clippy::too_many_lines, reason = "one construction, spelled out")]
 pub(super) fn guided_loft(
     model: &mut Model,
     sections: &[Shape],
@@ -73,16 +72,8 @@ pub(super) fn guided_loft(
         );
     }
     let mut read: Vec<Section> = Vec::with_capacity(sections.len());
-    for (k, shape) in sections.iter().enumerate() {
-        let section = read_section(model, shape, "loft section", tol)?;
-        if section.edges.len() != 1 {
-            ogeom_bail!(
-                Construction,
-                "a guided loft surface takes sections of one edge each; section {k} has {}",
-                section.edges.len()
-            );
-        }
-        read.push(section);
+    for shape in sections {
+        read.push(read_section(model, shape, "loft section", tol)?);
     }
     let closed_u = read[0].closed;
     for (k, s) in read.iter().enumerate() {
@@ -102,6 +93,26 @@ pub(super) fn guided_loft(
             tol,
         )?);
     }
+    let shape = if read.iter().all(|s| s.edges.len() == 1) {
+        one_face(model, read, rails, tol)?
+    } else {
+        walls(model, read, rails, tol)?
+    };
+    let mut history = History::new();
+    for input in sections.iter().chain(guides) {
+        history.generate(input, shape.clone());
+    }
+    Ok(Built { shape, history })
+}
+
+/// The guided sheet through sections of one edge each: one Gordon face.
+fn one_face(
+    model: &mut Model,
+    mut read: Vec<Section>,
+    mut rails: Vec<BSplineCurve>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let closed_u = read[0].closed;
     let near = tol.confusion() * 10.0;
     let (m, n) = (rails.len(), read.len());
 
@@ -138,21 +149,7 @@ pub(super) fn guided_loft(
         }
     }
     for j in 0..m {
-        if cross[j][n - 1].1 < cross[j][0].1 {
-            rails[j] = reversed(&rails[j])?;
-            for c in &mut cross[j] {
-                c.1 = 1.0 - c.1;
-            }
-        }
-        if cross[j]
-            .windows(2)
-            .any(|w| w[1].1 <= w[0].1 + ONE_PARAMETER)
-        {
-            ogeom_bail!(
-                Construction,
-                "guide {j} does not cross the sections in their order"
-            );
-        }
+        along_sections(j, &mut rails[j], &mut cross[j])?;
         let at_start = cross[j].iter().filter(|c| c.0 == 0.0).count();
         let at_end = cross[j].iter().filter(|c| c.0 == 1.0).count();
         if (at_start != 0 && at_start != n) || (at_end != 0 && at_end != n) {
@@ -162,37 +159,235 @@ pub(super) fn guided_loft(
             );
         }
     }
-    let mut order: Vec<usize> = (0..m).collect();
-    order.sort_by(|&a, &b| cross[a][0].0.total_cmp(&cross[b][0].0));
-    for w in order.windows(2) {
-        let (before, after) = (&cross[w[0]], &cross[w[1]]);
-        if let Some(k) = (0..n).find(|&k| after[k].0 <= before[k].0 + ONE_PARAMETER) {
+    let names: Vec<usize> = (0..m).collect();
+    let order = ordered(&names, &cross)?;
+    let v_at = common_v(&cross);
+    let crossed: Vec<Crossed> = order
+        .iter()
+        .map(|&j| {
+            Ok(Crossed {
+                u: cross[j].iter().map(|c| c.0).collect(),
+                rail: paced_guide(&rails[j], &cross[j], &v_at, tol)?,
+                name: j,
+            })
+        })
+        .collect::<OgeomResult<_>>()?;
+    let mut edges: Vec<SectionEdge> = read.iter().map(|s| s.edges[0].clone()).collect();
+    let surface = gordon(&mut edges, &crossed, &v_at, closed_u, tol)?;
+    for (s, e) in read.iter_mut().zip(edges) {
+        s.edges[0] = e;
+    }
+    sheet(
+        model,
+        &read,
+        &[vec![surface]],
+        &[(0, n - 1)],
+        false,
+        false,
+        tol,
+    )
+}
+
+/// Where a guide crosses a section of several edges.
+#[derive(Clone, Copy, PartialEq)]
+enum Place {
+    /// Through the corner where edge `.0` starts (on an open section, the
+    /// section's end when it is the edge count).
+    Corner(usize),
+    /// Inside edge `.0`, at its parameter `.1`.
+    Inside(usize, f64),
+}
+
+/// The guided sheet through sections of several edges: one Gordon face
+/// per edge, each following the guides through its two corners and those
+/// that cross it inside. A guide runs through every corner where two
+/// edges meet, so each face's sides along the guides are those guides,
+/// shared with its neighbours.
+#[allow(clippy::too_many_lines, reason = "one construction, spelled out")]
+fn walls(
+    model: &mut Model,
+    mut read: Vec<Section>,
+    mut rails: Vec<BSplineCurve>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let closed_u = read[0].closed;
+    let count = read[0].edges.len();
+    if let Some(k) = read.iter().position(|s| s.edges.len() != count) {
+        ogeom_bail!(
+            Construction,
+            "a guided loft surface takes sections of one edge count; section {k} has {} and \
+             section 0 has {count}",
+            read[k].edges.len()
+        );
+    }
+    let near = tol.confusion() * 10.0;
+    let (m, n) = (rails.len(), read.len());
+    let corner = |e: usize| if closed_u { e % count } else { e };
+
+    // Where each guide crosses each section: the edge it crosses, or the
+    // corner it runs through, and the guide's parameter.
+    let mut places = vec![vec![Place::Corner(0); n]; m];
+    let mut cross = vec![vec![(0.0, 0.0); n]; m];
+    for (j, rail) in rails.iter().enumerate() {
+        for (k, s) in read.iter().enumerate() {
+            let mut best = (0, 0.0, 0.0, f64::INFINITY);
+            for (e, edge) in s.edges.iter().enumerate() {
+                let (u, t, off) = crossing(&edge.curve, rail, tol)?;
+                if off < best.3 {
+                    best = (e, u, t, off);
+                }
+            }
+            let (e, u, t, off) = best;
+            if off > near {
+                ogeom_bail!(
+                    Construction,
+                    "guide {j} misses section {k} by {off:.3e}; a guide must cross every \
+                     section within {near:.1e}"
+                );
+            }
+            let u = at_ends(u);
+            places[j][k] = if u == 0.0 {
+                Place::Corner(e)
+            } else if u == 1.0 {
+                Place::Corner(corner(e + 1))
+            } else {
+                Place::Inside(e, u)
+            };
+            cross[j][k] = (u, at_ends(t));
+        }
+    }
+    let mut through: Vec<Option<usize>> = vec![None; if closed_u { count } else { count + 1 }];
+    for j in 0..m {
+        along_sections(j, &mut rails[j], &mut cross[j])?;
+        let first = places[j][0];
+        for (k, &place) in places[j].iter().enumerate().skip(1) {
+            let same = match (first, place) {
+                (Place::Corner(a), Place::Corner(b)) => a == b,
+                (Place::Inside(a, _), Place::Inside(b, _)) => a == b,
+                _ => false,
+            };
+            if !same {
+                ogeom_bail!(
+                    Construction,
+                    "guide {j} crosses section {k} at another corner or edge than section 0"
+                );
+            }
+        }
+        if let Place::Corner(c) = first {
+            if let Some(other) = through[c] {
+                ogeom_bail!(
+                    Construction,
+                    "guides {other} and {j} both run through corner {c} of the sections"
+                );
+            }
+            through[c] = Some(j);
+        }
+    }
+    let inner = if closed_u { 0..count } else { 1..count };
+    for c in inner {
+        if through[c].is_none() {
             ogeom_bail!(
                 Construction,
-                "guides {} and {} cross section {k} in another order than section 0, or at one \
-                 point",
-                w[0],
-                w[1]
+                "a guided loft through sections of {count} edges needs a guide through every \
+                 corner where two edges meet; corner {c} has none"
             );
         }
     }
 
-    // The common parameters: each guide's mean along the sections, each
-    // section's mean along the guides (each guide's run between the first
-    // section and the last taken as the unit).
-    #[allow(clippy::cast_precision_loss)]
-    let (sections_count, guides_count) = (n as f64, m as f64);
-    let mut u_at: Vec<f64> = order
+    let v_at = common_v(&cross);
+    let paced: Vec<BSplineCurve> = rails
         .iter()
-        .map(|&j| {
-            let c0 = cross[j][0].0;
-            if c0 == 0.0 || c0 == 1.0 {
-                c0
-            } else {
-                cross[j].iter().map(|c| c.0).sum::<f64>() / sections_count
-            }
-        })
-        .collect();
+        .zip(&cross)
+        .map(|(rail, c)| paced_guide(rail, c, &v_at, tol))
+        .collect::<OgeomResult<_>>()?;
+    let mut surfaces = Vec::with_capacity(count);
+    for e in 0..count {
+        // The guides this edge's face follows, with where they cross it.
+        let mut names = Vec::new();
+        let mut on_edge = Vec::new();
+        for (j, place) in places.iter().enumerate() {
+            let u: Vec<f64> = match place[0] {
+                Place::Corner(c) if c == e => vec![0.0; n],
+                Place::Corner(c) if c == corner(e + 1) => vec![1.0; n],
+                Place::Inside(f, _) if f == e => place
+                    .iter()
+                    .map(|p| match p {
+                        Place::Inside(_, u) => *u,
+                        Place::Corner(_) => 0.0,
+                    })
+                    .collect(),
+                _ => continue,
+            };
+            names.push(j);
+            on_edge.push(u.into_iter().map(|u| (u, 0.0)).collect::<Vec<_>>());
+        }
+        let order = ordered(&names, &on_edge)?;
+        let crossed: Vec<Crossed> = order
+            .iter()
+            .map(|&i| Crossed {
+                u: on_edge[i].iter().map(|c| c.0).collect(),
+                rail: paced[names[i]].clone(),
+                name: names[i],
+            })
+            .collect();
+        let mut edges: Vec<SectionEdge> = read.iter().map(|s| s.edges[e].clone()).collect();
+        let surface = gordon(&mut edges, &crossed, &v_at, false, tol)?;
+        for (s, edge) in read.iter_mut().zip(edges) {
+            s.edges[e] = edge;
+        }
+        surfaces.push(vec![surface]);
+    }
+    sheet(model, &read, &surfaces, &[(0, n - 1)], false, false, tol)
+}
+
+/// A guide turned to run from the first section to the last, refused
+/// unless it then crosses the sections in their order. `cross` holds its
+/// crossings, `(section parameter, guide parameter)` per section.
+fn along_sections(j: usize, rail: &mut BSplineCurve, cross: &mut [(f64, f64)]) -> OgeomResult<()> {
+    let n = cross.len();
+    if cross[n - 1].1 < cross[0].1 {
+        *rail = reversed(rail)?;
+        for c in cross.iter_mut() {
+            c.1 = 1.0 - c.1;
+        }
+    }
+    if cross.windows(2).any(|w| w[1].1 <= w[0].1 + ONE_PARAMETER) {
+        ogeom_bail!(
+            Construction,
+            "guide {j} does not cross the sections in their order"
+        );
+    }
+    Ok(())
+}
+
+/// The guides, by index into `cross`, in their order along section 0,
+/// refused unless every section has them in that order, apart. `names`
+/// are the caller's indices of the guides.
+fn ordered(names: &[usize], cross: &[Vec<(f64, f64)>]) -> OgeomResult<Vec<usize>> {
+    let mut order: Vec<usize> = (0..cross.len()).collect();
+    order.sort_by(|&a, &b| cross[a][0].0.total_cmp(&cross[b][0].0));
+    for w in order.windows(2) {
+        let (before, after) = (&cross[w[0]], &cross[w[1]]);
+        if let Some(k) = (0..before.len()).find(|&k| after[k].0 <= before[k].0 + ONE_PARAMETER) {
+            ogeom_bail!(
+                Construction,
+                "guides {} and {} cross section {k} in another order than section 0, or at one \
+                 point",
+                names[w[0]],
+                names[w[1]]
+            );
+        }
+    }
+    Ok(order)
+}
+
+/// Each section's common parameter across the sections: its mean along
+/// the guides, each guide's run between the first section and the last
+/// taken as the unit.
+fn common_v(cross: &[Vec<(f64, f64)>]) -> Vec<f64> {
+    let n = cross[0].len();
+    #[allow(clippy::cast_precision_loss)]
+    let guides_count = cross.len() as f64;
     let mut v_at: Vec<f64> = (0..n)
         .map(|k| {
             cross
@@ -204,46 +399,89 @@ pub(super) fn guided_loft(
         .collect();
     v_at[0] = 0.0;
     v_at[n - 1] = 1.0;
+    v_at
+}
 
-    // Sections paced so guide `order[i]` crosses each at `u_at[i]`.
-    for (k, s) in read.iter_mut().enumerate() {
+/// A guide paced so it crosses section `k` at `v_at[k]`, trimmed to the
+/// run between the first section and the last.
+fn paced_guide(
+    rail: &BSplineCurve,
+    cross: &[(f64, f64)],
+    v_at: &[f64],
+    tol: Tolerances,
+) -> OgeomResult<BSplineCurve> {
+    let pairs: Vec<(f64, f64)> = cross.iter().zip(v_at).map(|(c, v)| (c.1, *v)).collect();
+    repaced(rail, &pairs, tol)
+}
+
+/// A guide as a Gordon patch reads it: the section parameter where it
+/// crosses each section, its curve paced to cross section `k` at the
+/// common `v_at[k]`, and its index among the caller's guides.
+struct Crossed {
+    u: Vec<f64>,
+    rail: BSplineCurve,
+    name: usize,
+}
+
+/// The Gordon patch through `edges`, one per section, following `guides`
+/// in their order along the edges, the sections at `v_at` across. Each
+/// edge is paced in place so every guide crosses it at one common
+/// parameter. With `closed_u` the edges close on themselves and the first
+/// guide stands at both ends. The patch is measured against every edge
+/// and every guide.
+#[allow(clippy::too_many_lines, reason = "one construction, spelled out")]
+fn gordon(
+    edges: &mut [SectionEdge],
+    guides: &[Crossed],
+    v_at: &[f64],
+    closed_u: bool,
+    tol: Tolerances,
+) -> OgeomResult<BSplineSurface> {
+    let n = edges.len();
+    // The common parameters along the sections: each guide's mean.
+    #[allow(clippy::cast_precision_loss)]
+    let sections_count = n as f64;
+    let mut u_at: Vec<f64> = guides
+        .iter()
+        .map(|g| {
+            let c0 = g.u[0];
+            if c0 == 0.0 || c0 == 1.0 {
+                c0
+            } else {
+                g.u.iter().sum::<f64>() / sections_count
+            }
+        })
+        .collect();
+
+    // Sections paced so guide `i` crosses each at `u_at[i]`.
+    for (k, edge) in edges.iter_mut().enumerate() {
         let mut pairs = vec![(0.0, 0.0)];
-        for (i, &j) in order.iter().enumerate() {
-            let u = cross[j][k].0;
+        for (g, &at) in guides.iter().zip(&u_at) {
+            let u = g.u[k];
             if u > 0.0 && u < 1.0 {
-                pairs.push((u, u_at[i]));
+                pairs.push((u, at));
             }
         }
         pairs.push((1.0, 1.0));
-        let edge = &mut s.edges[0];
         if pairs.iter().any(|(a, b)| (a - b).abs() > KNOT_SAME) {
             edge.curve = repaced(&edge.curve, &pairs, tol)?;
             edge.paced = false;
         }
     }
-    // Guides paced so each crosses section `k` at `v_at[k]`, trimmed to
-    // the run between the first section and the last.
-    let mut paced_rails: Vec<BSplineCurve> = Vec::with_capacity(m);
-    for &j in &order {
-        let pairs: Vec<(f64, f64)> = cross[j].iter().zip(&v_at).map(|(c, v)| (c.1, *v)).collect();
-        paced_rails.push(repaced(&rails[j], &pairs, tol)?);
-    }
+    let mut paced_rails: Vec<BSplineCurve> = guides.iter().map(|g| g.rail.clone()).collect();
+    let mut names: Vec<usize> = guides.iter().map(|g| g.name).collect();
     // Through closed sections the seam's guide stands at both ends.
-    let mut names: Vec<usize> = order.clone();
     if closed_u {
         u_at.push(1.0);
         paced_rails.push(paced_rails[0].clone());
-        names.push(order[0]);
+        names.push(names[0]);
     }
 
     let (u_knots, u_cardinals) = cardinals(&u_at, tol)?;
-    let (v_knots, v_cardinals) = cardinals(&v_at, tol)?;
-    let curves: Vec<Homogeneous> = read
+    let (v_knots, v_cardinals) = cardinals(v_at, tol)?;
+    let curves: Vec<Homogeneous> = edges
         .iter()
-        .map(|s| {
-            let c = &s.edges[0].curve;
-            (c.knots().clone(), c.control_points().to_vec())
-        })
+        .map(|e| (e.curve.knots().clone(), e.curve.control_points().to_vec()))
         .collect();
 
     // Each guide weighted as the sections are where it crosses them, and
@@ -254,7 +492,7 @@ pub(super) fn guided_loft(
         let own: Homogeneous = (rail.knots().clone(), rail.control_points().to_vec());
         let mut ratios = Vec::with_capacity(n);
         let mut at = Vec::with_capacity(n);
-        for (curve, &v) in curves.iter().zip(&v_at) {
+        for (curve, &v) in curves.iter().zip(v_at) {
             let on_section = bspline::evaluate(&curve.0, &curve.1, u, tol)?;
             let on_guide = bspline::evaluate(&own.0, &own.1, v, tol)?;
             let ratio = on_section.weight / on_guide.weight;
@@ -349,11 +587,11 @@ pub(super) fn guided_loft(
 
     // Measured: every section on its row, every guide on its column.
     let target = tol.confusion() * 10.0;
-    for (k, (s, &v)) in read.iter().zip(&v_at).enumerate() {
+    for (k, (e, &v)) in edges.iter().zip(v_at).enumerate() {
         let worst = strays(|f| {
             Ok(surface
                 .point_at(f, v, tol)?
-                .distance(s.edges[0].curve.point_at(f, tol)?))
+                .distance(e.curve.point_at(f, tol)?))
         })?;
         if worst > target {
             ogeom_bail!(
@@ -375,21 +613,7 @@ pub(super) fn guided_loft(
             );
         }
     }
-
-    let shape = sheet(
-        model,
-        &read,
-        &[vec![surface]],
-        &[(0, n - 1)],
-        false,
-        false,
-        tol,
-    )?;
-    let mut history = History::new();
-    for input in sections.iter().chain(guides) {
-        history.generate(input, shape.clone());
-    }
-    Ok(Built { shape, history })
+    Ok(surface)
 }
 
 /// A parameter on the unit domain, an end where it is within

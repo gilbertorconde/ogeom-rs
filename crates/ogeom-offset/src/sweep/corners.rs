@@ -17,8 +17,9 @@
 //!
 //! The rotation-minimizing law carries the section across a corner by
 //! that turn: the next run starts with the section the last one ended
-//! with, turned about the corner. The binormal and auxiliary laws place the
-//! section at every point of the spine themselves. The pieces are prisms,
+//! with, turned about the corner. The Frenet, binormal and auxiliary laws
+//! place the section at every point of the spine themselves; the Frenet
+//! frame of a run is its own curvature's, so a straight run has none. The pieces are prisms,
 //! revolutions, the pipe shells of smooth runs and the planes trimming
 //! them, so the solid is exact wherever the runs are swept exactly.
 
@@ -80,13 +81,6 @@ pub(super) fn law_cornered(
             "a pipe turned round a sharp corner run by run sweeps a face"
         );
     }
-    if matches!(law, PipeLaw::Frenet) {
-        ogeom_bail!(
-            Construction,
-            "the Frenet frame is not defined along a straight run, nor carried across a \
-             sharp corner"
-        );
-    }
     let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
@@ -108,6 +102,16 @@ pub(super) fn law_cornered(
             legs: starts[r]..starts.get(r + 1).copied().unwrap_or(n),
         })
         .collect();
+    if matches!(law, PipeLaw::Frenet)
+        && runs
+            .iter()
+            .any(|run| legs[run.legs.clone()].iter().all(|l| l.straight))
+    {
+        ogeom_bail!(
+            Construction,
+            "the Frenet frame is not defined along a straight run between sharp corners"
+        );
+    }
     let wrap_sharp = closed && sharp(legs[n - 1].heading_out, legs[0].heading_in, tol);
     if runs.len() == 1 && !wrap_sharp {
         ogeom_bail!(

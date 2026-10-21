@@ -313,6 +313,141 @@ fn a_square_round_a_corner_after_an_arc_turns_each_way_to_its_closed_form() {
     }
 }
 
+/// The spine: the quarter arc of [`arc_then_line`], then a sharp quarter
+/// turn left into a quarter arc of radius `r2` about (-r2, 0), from the
+/// origin heading +y to (-r2, r2). Both arcs bend left, so their Frenet
+/// frames both have the binormal +z.
+fn arc_then_arc(model: &mut Model, r: f64, r2: f64) -> Shape {
+    let first = Frame::new(
+        Point::new(0.0, r, 0.0),
+        Direction::Z,
+        Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let arc = make_edge(
+        model,
+        CircleCurve::new(Circle::new(first, r, T).unwrap()).into(),
+        (1.5 * PI, 2.0 * PI),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let (_, joint) = edge_vertices(model, &arc).unwrap().unwrap();
+    let second = Frame::new(Point::new(-r2, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let end = make_vertex(model, Point::new(-r2, r2, 0.0)).shape;
+    let turn = make_edge_between(
+        model,
+        CircleCurve::new(Circle::new(second, r2, T).unwrap()).into(),
+        (0.0, 0.5 * PI),
+        &joint,
+        &end,
+        T,
+    )
+    .unwrap()
+    .shape;
+    make_wire(model, &[arc, turn], T).unwrap().shape
+}
+
+/// The area the two arcs' bands share inside the corner: the region over
+/// `y > 0` and left of `x = 0` between the two inner circles, the first
+/// about (0, r) of radius `r - a` and the second about (-r2, 0) of radius
+/// `r2 - a`. Its corners are the origin, (0, a), the circles' crossing `p`
+/// and (-a, 0); it is that quadrilateral less the two circular segments the
+/// circles cut off it, `ρ² (θ - sin θ) / 2` each.
+fn inner_overlap(r: f64, r2: f64, a: f64) -> f64 {
+    let (c1, rho1) = (Point::new(0.0, r, 0.0), r - a);
+    let (c2, rho2) = (Point::new(-r2, 0.0, 0.0), r2 - a);
+    let d = c1.distance(c2);
+    let along = (d * d + rho1 * rho1 - rho2 * rho2) / (2.0 * d);
+    let off = (rho1 * rho1 - along * along).sqrt();
+    let u = (c2 - c1) / d;
+    let w = Vector::new(-u.y, u.x, 0.0);
+    let p = [c1 + u * along + w * off, c1 + u * along - w * off]
+        .into_iter()
+        .min_by(|x, y| {
+            x.distance(Point::ORIGIN)
+                .total_cmp(&y.distance(Point::ORIGIN))
+        })
+        .unwrap();
+    let quad = [
+        Point::ORIGIN,
+        Point::new(0.0, a, 0.0),
+        p,
+        Point::new(-a, 0.0, 0.0),
+    ];
+    let area = (0..4)
+        .map(|i| {
+            let (s, t) = (quad[i], quad[(i + 1) % 4]);
+            s.x * t.y - t.x * s.y
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let segment = |rho: f64, chord: f64| {
+        let theta = 2.0 * (chord / (2.0 * rho)).asin();
+        rho * rho * (theta - theta.sin()) / 2.0
+    };
+    area - segment(rho1, quad[1].distance(p)) - segment(rho2, p.distance(quad[3]))
+}
+
+/// A square down [`arc_then_arc`] under the Frenet frame. The arcs' bands
+/// are annular sectors of area `π r a` and `π r2 a`, sharing
+/// [`inner_overlap`] inside the corner.
+///
+/// Round: the outer half of the section turned about the corner adds a
+/// quarter disc of radius `a` in `x > 0, y < 0`, which neither band
+/// reaches.
+///
+/// Extended: the first arc runs on along +x over `[0, a] × [-a, a]` and the
+/// second back along -y over `[-a, a] × [-a, 0]`, the two sharing `a²`.
+/// The first run-on overlaps the second band where `x < √((r2 + a)² - y²) -
+/// r2`, `∫₀ᵃ √((r2 + a)² - y²) dy - r2 a`, and the second the first band
+/// likewise with `r`.
+#[test]
+fn a_square_under_the_frenet_frame_turns_a_corner_between_arcs_each_way() {
+    let (a, r, r2) = (1.0, 8.0, 5.0);
+    let bands = PI * r * a + PI * r2 * a - inner_overlap(r, r2, a);
+    let round = 2.0 * a * (bands + PI * a * a / 4.0);
+    let extended = 2.0
+        * a
+        * (bands + 4.0 * a * a
+            - a * a
+            - (under_circle(r2 + a, a) - r2 * a)
+            - (under_circle(r + a, a) - r * a));
+    for (corners, want) in [
+        (PipeCorners::Round, round),
+        (PipeCorners::Extended, extended),
+    ] {
+        let mut model = Model::new();
+        let spine = arc_then_arc(&mut model, r, r2);
+        let profile = square_section(
+            &mut model,
+            Point::new(-r, r, 0.0),
+            Vector::new(0.0, -1.0, 0.0),
+            a,
+        );
+        let pipe = make_pipe_shell_with(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::Frenet,
+            corners,
+            1e-3,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{corners:?}: {e}"))
+        .shape;
+        let found = check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{corners:?}: {found}");
+        let (v, _) = measure(&model, &pipe);
+        assert!(
+            (v - want).abs() < want * 1e-9,
+            "{corners:?}: {v} against {want}"
+        );
+    }
+}
+
 /// The square ring of side `l` under the rotation-minimizing frame, which
 /// comes home untwisted round a plane ring. Extended, every corner's
 /// square `[-a, a]²` is covered whole and the bands meet nowhere else: the
@@ -482,5 +617,9 @@ fn corners_the_law_cannot_turn_are_refused_by_name() {
         T,
     )
     .unwrap_err();
-    assert!(err.to_string().contains("Frenet"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("the Frenet frame is not defined along a straight run"),
+        "{err}"
+    );
 }

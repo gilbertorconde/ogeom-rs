@@ -101,15 +101,20 @@ pub fn make_ruled(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
 ///
 /// With `guides` the sheet also follows each guide, an edge or a wire
 /// crossing every section once, in the same order along every section and
-/// in the sections' order along itself. The guided sheet is one face (the
-/// sections are single edges) built as a Gordon surface: each section is
-/// paced so every guide crosses it at one parameter, each guide so it
-/// crosses every section at one parameter, and the skin across the
-/// sections is corrected along each guide by the guide's departure from
-/// it. The sheet passes through every section exactly and through every
-/// guide to within the distance by which the guide misses the sections;
-/// both are measured on the built skin and held to ten confusions. Through
-/// closed sections the seam runs along the first guide.
+/// in the sections' order along itself. The guided sheet is built as a
+/// Gordon surface: each section is paced so every guide crosses it at one
+/// parameter, each guide so it crosses every section at one parameter, and
+/// the skin across the sections is corrected along each guide by the
+/// guide's departure from it. Through sections of one edge it is one face,
+/// and through closed sections its seam runs along the first guide.
+/// Sections of several edges have one edge count, and a guide runs
+/// through every corner where two edges meet, at the same corner of every
+/// section: the sheet has one face per edge, the Gordon surface following
+/// the guides through its two corners and those crossing the edge inside,
+/// and neighbouring faces meet along the guide through their corner. The
+/// sheet passes through every section exactly and through every guide to
+/// within the distance by which the guide misses the sections; both are
+/// measured on the built skin and held to ten confusions.
 ///
 /// # Errors
 ///
@@ -120,11 +125,14 @@ pub fn make_ruled(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
 /// differ in edge count and one has no length or their breaks fall too
 /// close together to match; if two neighbouring sections coincide; or if
 /// neighbouring edges of the sections carry weights at their shared corner
-/// that would part their faces. With guides, also if the loft is ruled or closed, a section
-/// has more than one edge, a guide misses a section by more than ten
+/// that would part their faces. With guides, also if the loft is ruled or closed, the
+/// sections differ in edge count, a guide misses a section by more than ten
 /// confusions, crosses the sections out of their order, or crosses some
 /// sections at an end and others inside, or two guides cross the sections
-/// in different orders.
+/// in different orders; through sections of several edges, also if a
+/// guide crosses the sections at different corners or edges, a corner
+/// where two edges meet has no guide, or two guides run through one
+/// corner.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the guided
 /// skin strays more than ten confusions from a section or a guide.
 pub fn make_loft_surface(
