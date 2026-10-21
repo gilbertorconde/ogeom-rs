@@ -9534,30 +9534,52 @@ fn general_fuse_as(
         let mut welds: Vec<Junction> = Vec::new();
         let mut welded = false;
         // Two ends that each stand within a vertex's radius (its own and
-        // its edge's) of the same vertex are that vertex, and may stand as
-        // far apart as both their reaches: the curves a file closes on one
-        // vertex can stop either side of it, each within the radius. Two
-        // ends at one point in space are no such gap: apart in the chart,
-        // they stand on a pole's line, whose ends the pole keeps apart.
-        let one_vertex = |a: Point, b: Point| -> bool {
-            a.distance(b) > tol.confusion()
-                && face.edges.iter().any(|e| {
-                    e.vertices.iter().zip(e.ends).any(|(&v, (_, radius))| {
-                        let within = radius + e.tolerance;
-                        a.distance(v) <= within && b.distance(v) <= within
-                    })
+        // its edge's) of the same vertex are that vertex: the curves a file
+        // closes on one vertex can stop either side of it, each within the
+        // radius. In the chart they stand as far apart as both their
+        // reaches, or further where the chart stretches more than the
+        // reaches allow for (a cylinder narrower than the radius turns a
+        // quarter within it); there the stretch between them, read as an
+        // edge is at seventeen points, lies within the vertex too, on a
+        // chart with no pole's line: about a pole the whole chart may lie
+        // within one vertex, and the pole's line is what joins the ends
+        // there. Two ends at one point in space are no such gap: apart in
+        // the chart, they stand on a pole's line, whose ends the pole keeps
+        // apart.
+        let poled = strands.iter().any(|st| matches!(st.tag, Tag::Pole { .. }));
+        let one_vertex = |i: usize, j: usize| -> bool {
+            let (a, b) = (ends[i].3, ends[j].3);
+            let (from, to) = (ends[i].2, ends[j].2);
+            if a.distance(b) <= tol.confusion() {
+                return false;
+            }
+            let close = from.distance(to) <= reach[i] + reach[j];
+            face.edges.iter().any(|e| {
+                e.vertices.iter().zip(e.ends).any(|(&v, (_, radius))| {
+                    let within = radius + e.tolerance;
+                    a.distance(v) <= within
+                        && b.distance(v) <= within
+                        && (close
+                            || !poled
+                                && (1..16).all(|k| {
+                                    let t = f64::from(k) / 16.0;
+                                    let at = Point2::new(
+                                        from.x + (to.x - from.x) * t,
+                                        from.y + (to.y - from.y) * t,
+                                    );
+                                    face.surface
+                                        .point_at(at.x, at.y, tol)
+                                        .is_ok_and(|q| q.distance(v) <= within)
+                                }))
                 })
+            })
         };
         for i in 0..ends.len() {
             if reach[i] <= face_snap {
                 continue;
             }
             for j in 0..ends.len() {
-                let apart = ends[i].2.distance(ends[j].2);
-                if j != i
-                    && (apart <= reach[i]
-                        || (apart <= reach[i] + reach[j] && one_vertex(ends[i].3, ends[j].3)))
-                {
+                if j != i && (ends[i].2.distance(ends[j].2) <= reach[i] || one_vertex(i, j)) {
                     let (ri, rj) = (root(&mut class, i), root(&mut class, j));
                     if ri != rj {
                         class[ri.max(rj)] = ri.min(rj);

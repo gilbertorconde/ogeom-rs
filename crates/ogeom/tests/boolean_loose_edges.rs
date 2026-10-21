@@ -247,3 +247,119 @@ fn a_joint_whose_curves_stop_either_side_of_its_vertex_closes_within_the_vertex(
         );
     }
 }
+
+/// The solid `solid` built anew with the edge `dropped` left out and its
+/// two vertices made one at their midpoint, holding both within its radius.
+fn with_edge_collapsed(model: &mut Model, solid: &Shape, dropped: &Shape) -> Shape {
+    use ogeom::core::FastMap;
+    use ogeom::topo::{TShapeId, VertexData};
+    let ends = explore_unique(model, dropped, ShapeType::Vertex).unwrap();
+    let (a, b) = (point_of(model, &ends[0]), point_of(model, &ends[1]));
+    let joined = model.add_vertex(
+        VertexData::with_tolerance(Point::midpoint(a, b), a.distance(b) / 2.0 + T.confusion())
+            .unwrap(),
+    );
+    let mut made: FastMap<TShapeId, Shape> = FastMap::default();
+    for end in &ends {
+        made.insert(end.node(), joined.clone());
+    }
+    fn rebuild(
+        model: &mut Model,
+        shape: &Shape,
+        dropped: TShapeId,
+        made: &mut FastMap<TShapeId, Shape>,
+    ) -> Shape {
+        if let Some(done) = made.get(&shape.node()) {
+            return done.clone();
+        }
+        let node = model.node(shape).unwrap();
+        let data = node.data().clone();
+        let children: Vec<Shape> = node.children().to_vec();
+        let mut kept = Vec::new();
+        for child in children.iter().filter(|c| c.node() != dropped) {
+            let bare = child
+                .located(ogeom::topo::Location::identity())
+                .oriented(ogeom::topo::Orientation::Forward);
+            let new = rebuild(model, &bare, dropped, made);
+            kept.push(
+                new.located(child.location().clone())
+                    .oriented(child.orientation()),
+            );
+        }
+        let new = match (data, model.kind_of(shape).unwrap()) {
+            (NodeData::Vertex(v), _) => model.add_vertex(v),
+            (NodeData::Edge(e), _) => model.add_edge(*e, &kept).unwrap(),
+            (NodeData::Face(f), _) => model.add_face(*f, &kept).unwrap(),
+            (_, ShapeType::Wire) => model.add_wire(&kept).unwrap(),
+            (_, ShapeType::Shell) => model.add_shell(&kept).unwrap(),
+            (_, ShapeType::Solid) => model.add_solid(&kept).unwrap(),
+            _ => unreachable!("a solid's own kinds"),
+        };
+        made.insert(shape.node(), new.clone());
+        new
+    }
+    let bare = solid
+        .located(ogeom::topo::Location::identity())
+        .oriented(ogeom::topo::Orientation::Forward);
+    rebuild(model, &bare, dropped.node(), &mut made)
+        .located(solid.location().clone())
+        .oriented(solid.orientation())
+}
+
+/// A unit cube notched along its edge at y = z = 1 by a pin of radius
+/// 0.002, which takes a quarter of its disc: the notch's wall is a quarter
+/// turn of a cylinder far narrower than a millimetre. Its arc at x = 0 is collapsed into one vertex whose
+/// radius holds both its ends, as a file drops an edge shorter than its
+/// tolerance: the wall's two rulings meet at that vertex a quarter turn
+/// apart in its chart, and in space within the vertex. A box over that end
+/// cuts the wall, and its boundary closes at the vertex as the topology
+/// says.
+#[test]
+fn rulings_a_quarter_turn_apart_close_within_their_vertex() {
+    let mut model = Model::with_tolerances(T);
+    let radius = 0.002;
+    let cube = ogeom::algo::make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let along = Frame::new(Point::new(-1.0, 1.0, 1.0), Direction::X, Direction::Y, T).unwrap();
+    let pin = ogeom::algo::make_cylinder(&mut model, along, radius, 3.0, T)
+        .unwrap()
+        .shape;
+    let notched = ogeom::boolean::cut(&mut model, &cube, &pin, T)
+        .unwrap()
+        .shape;
+    let arc = explore_unique(&model, &notched, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let ends = explore_unique(&model, e, ShapeType::Vertex).unwrap();
+            ends.len() == 2
+                && ends.iter().all(|v| {
+                    let p = point_of(&model, v);
+                    p.x.abs() < 1e-9 && p.y > 0.99 && p.z > 0.99
+                })
+        })
+        .expect("the notch's arc at x = 0");
+    let solid = with_edge_collapsed(&mut model, &notched, &arc);
+    let diagnosis = ogeom::algo::check(&model, &solid, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let notch = radius * radius * core::f64::consts::FRAC_PI_4;
+    let at = Frame::new(Point::new(-0.5, 0.5, 0.5), Direction::Z, Direction::X, T).unwrap();
+    let corner = ogeom::algo::make_box(&mut model, at, (1.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let taken = 0.125 - notch / 2.0;
+    for (name, want) in [("cut", 1.0 - notch - taken), ("common", taken)] {
+        let made = if name == "cut" {
+            ogeom::boolean::cut(&mut model, &solid, &corner, T)
+        } else {
+            ogeom::boolean::common(&mut model, &solid, &corner, T)
+        }
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+        .shape;
+        let diagnosis = ogeom::algo::check(&model, &made, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        let got = volume(&model, &made);
+        assert!((got - want).abs() < 1e-9, "{name}: {got} against {want}");
+    }
+}

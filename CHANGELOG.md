@@ -89,6 +89,13 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean through a sliver of a narrow cylinder whose rulings meet
+  within one vertex builds.** On the Voron 2.4 screws, a quarter turn of
+  a cylinder 0.005 mm across has two rulings that end at one vertex whose
+  radius holds both ends: a quarter turn apart in the chart, a few microns
+  in space. Two ends of one vertex are now also welded where the chart
+  between them lies within that vertex on the surface (#345).
+
 - **A face whose ring crosses its periodic chart's join is folded beside
   faces set aside too.** The fuse first sets aside the faces the other
   solid cannot reach. A face sharing edges with them was read as stated, so
