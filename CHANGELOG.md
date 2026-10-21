@@ -48,6 +48,11 @@ bump may break the API and a patch bump may not.
   the refusal now says so rather than reporting the fit's error. A bore
   whose wall toward the pole is thinner than the ball blends as a wider
   wall does, which a test now holds.
+- **PARITY no longer lists the curved corner's straight-band-first order
+  as owed (#367).** Rounding the shaved cube's corner with the straight
+  band, then the ruling's, then the rim arc's, and the corner tool after,
+  leaves no stub: it closes the corner the ruling-first order does, to a
+  part in ten million, which the test now holds where it held 1e-4.
 
 - **`unify_same_domain` merges the curved faces it still left split.**
   - Faces that already walk a seam merge. Two cylinder bands stacked end

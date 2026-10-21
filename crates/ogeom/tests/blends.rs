@@ -2503,9 +2503,10 @@ fn a_curved_corner_closes_with_the_rim_s_band_first() {
 /// on top where the cap, the band and the torus all touch, and is fitted
 /// there as closely as elsewhere. There the corner's block meets the
 /// band's rail and the block's own vertical edge a nanometre apart along
-/// one section, and both crossings split their edges at the one stop. A
-/// few faces are measured from a mesh, so the volumes agree with another
-/// order's to the mesh's resolution.
+/// one section, and both crossings split their edges at the one stop. The
+/// ruling's band before the rim arc's leaves no stub there either: every
+/// order closes the corner the ruling-first order does, to a part in ten
+/// million.
 #[test]
 #[ignore = "heavy"]
 fn a_curved_corner_closes_with_the_straight_band_first() {
@@ -2534,7 +2535,7 @@ fn a_curved_corner_closes_with_the_straight_band_first() {
         );
     }
     for v in &measured {
-        assert!((v - measured[0]).abs() < 1e-4 * measured[0], "{measured:?}");
+        assert!((v - measured[0]).abs() < 1e-7 * measured[0], "{measured:?}");
     }
 }
 
