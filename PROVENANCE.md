@@ -1,11 +1,35 @@
 # Provenance
 
 This file records where ogeom's code and design came from, so that users and
-contributors can judge its licence for themselves. ogeom is MIT OR Apache-2.0.
-It contains no code from another CAD kernel, translated or otherwise.
+contributors can judge its licence for themselves. ogeom is LGPL-2.1-only,
+and it is a derivative work of Open CASCADE Technology (OCCT) in the
+licensing sense. It contains no code from OCCT's implementation, translated
+or otherwise; the audit below is the evidence. What makes it derivative is
+the reference-driven development recorded here.
 
-It is the one file in the repository that names another kernel on purpose
-(see `CONTRIBUTING.md`).
+`CONTRIBUTING.md` states the naming rule that goes with this: the licence
+and the provenance name OCCT plainly, and the rest of the repository
+writes in the field's vocabulary.
+
+## The licence
+
+ogeom is licensed under the GNU Lesser General Public License, version 2.1,
+and no other version: the same licence OCCT itself carries. The reason is
+the relationship this file records. The public API vocabulary, the
+data-model conventions and the default tolerances follow OCCT; the
+project's first goal was a kernel that could take OCCT's place in
+OCCT-based software; and for one day its implementation source was read.
+Reference-driven development makes the kernel a derivative work in the
+licensing sense even where the audit below finds no translated code, and
+no audit can bound what the AI assistants that wrote most of this code
+learned from before this project began. LGPL-2.1 states that position
+honestly, and it keeps the work usable: a library under it may be linked
+from software under any licence, which is what an application kernel has
+to allow.
+
+Copies of releases published before the change were distributed under
+MIT OR Apache-2.0 and remain under those terms; the licence above applies
+to releases published after it.
 
 ## The rule, from the first commit
 
@@ -111,5 +135,7 @@ graph.
 
 ## Reporting a concern
 
-If a function or file looks derived from another kernel's code, open an issue
-naming it. It will be compared in public and, if it is derived, rewritten.
+If a function or file looks like a translation of another kernel's code,
+open an issue naming it. It will be compared in public and, if it is
+derived, either rewritten or recorded here with the rest of the
+provenance: under the LGPL, a derivation in the open is compliance.

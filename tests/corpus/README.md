@@ -42,14 +42,15 @@ it: check the statement on the actual download page before committing files.
 
 - What: assorted STEP files in the `stepcode` project's test data.
 - Legal basis: the project is BSD-3-Clause; files inside the repo are
-  presumptively under it, which is compatible with MIT OR Apache-2.0.
+  presumptively under it, which is compatible with the LGPL-2.1-only
+  licence this repository carries.
   Verify no per-file notices say otherwise.
 
 ## Sources considered and rejected
 
 - **ABC dataset** (NYU, ~1M models scraped from Onshape): each model's
   copyright belongs to its Onshape author; the platform terms that made them
-  public do not clearly grant redistribution in a permissively licensed
+  public do not clearly grant redistribution in an open-source-licensed
   repository. Widely used in academic ML work, which is a different legal
   posture from vendoring. Rejected as murky.
 - **Fusion 360 Gallery dataset** (Autodesk): research licence with

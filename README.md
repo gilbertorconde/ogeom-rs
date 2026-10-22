@@ -84,4 +84,12 @@ bash tools/check.sh   # needs mdbook: cargo install mdbook --locked
 
 ## License
 
-MIT or Apache-2.0, at your option.
+The GNU Lesser General Public License, version 2.1, and no other version:
+`LGPL-2.1-only`. The licence text is [`COPYING.LESSER`](COPYING.LESSER) and
+the GPL it refers to is [`COPYING`](COPYING).
+
+ogeom is a derivative work of Open CASCADE Technology in the licensing
+sense: it was built with OCCT as its reference kernel, and it follows
+OCCT's public API vocabulary, data-model conventions and default
+tolerances. [`PROVENANCE.md`](PROVENANCE.md) records the full provenance
+and the audit behind that statement.

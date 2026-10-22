@@ -28,18 +28,22 @@ in the plane is a `Point2`, a curve in a surface's parameters is a pcurve, a
 blend is a fillet. Private jargon would make the kernel harder to read for no
 gain. Naming a *concept* is not naming a dependency.
 
-**Do not name another kernel in anything committed.** The vocabulary belongs to
-the field; product names do not belong to us. Two exceptions: `PROVENANCE.md`,
-which records where the kernel's design came from, and data a format needs
-to be readable (magic bytes, a writer's name in a file header), committed as
-data.
+**Name other kernels by their names.** The licence is a fact about the
+kernel, not a secret: the README's licence statement and `PROVENANCE.md`
+name Open CASCADE Technology, because ogeom derives from it in the
+licensing sense and the LGPL-2.1 licence is that statement. Elsewhere the
+field's vocabulary carries the writing — a b-rep, a pcurve, a fillet —
+because product names add no precision to code, tests or docs.
 
 ### The legal side
 
-- Most existing kernels are copyleft. ogeom is MIT OR Apache-2.0.
+- ogeom is LGPL-2.1-only. It is a derivative of Open CASCADE Technology, in
+  the licensing sense: reference-driven development does that, whatever the
+  rules below forbid afterwards (see `PROVENANCE.md`). LGPL-2.1, the same
+  licence OCCT itself carries, is the honest answer to the derivation.
 - Renaming identifiers does not stop a work being derived from another.
-  Copyright follows the expression, not the names. That is why the rules above
-  cover reading, not only copying.
+  Copyright follows the expression, not the names. That is why the rules
+  above cover reading, not only copying.
 - File formats are the safe case. A file format is not copyrightable, and
   implementing one from its published description is interoperation. The STEP
   and `.brep` support were both built this way.

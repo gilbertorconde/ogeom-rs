@@ -13,7 +13,7 @@ members = [
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.90"
-license = "MIT OR Apache-2.0"
+license = "LGPL-2.1-only"
 repository = "https://github.com/gilbertorconde/ogeom-rs"
 
 [workspace.lints.rust]
