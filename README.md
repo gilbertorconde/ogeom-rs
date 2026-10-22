@@ -1,7 +1,9 @@
 # ogeom
 
-A B-rep solid modelling kernel written from scratch in Rust. It does not wrap
-or link any other CAD kernel.
+A B-rep solid modelling kernel in Rust. It does not wrap or link any other
+CAD kernel, and it is licensed LGPL-2.1 as a derivative work of Open
+CASCADE Technology, its reference kernel: see
+[`PROVENANCE.md`](PROVENANCE.md).
 
 - Guide: <https://gilbertorconde.github.io/ogeom-rs/>
 - API reference: <https://gilbertorconde.github.io/ogeom-rs/api/ogeom/>

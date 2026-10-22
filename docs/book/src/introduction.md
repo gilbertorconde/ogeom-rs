@@ -1,7 +1,9 @@
 # Introduction
 
-**ogeom** is a boundary-representation (B-rep) CAD kernel written from
-scratch in Rust. It does not wrap, vendor or link any existing CAD kernel.
+**ogeom** is a boundary-representation (B-rep) CAD kernel in Rust. It does
+not wrap, vendor or link any existing CAD kernel, and it is licensed
+LGPL-2.1 as a derivative work of Open CASCADE Technology, its reference
+kernel ([provenance](kernel/provenance.md)).
 
 ## What it covers
 
