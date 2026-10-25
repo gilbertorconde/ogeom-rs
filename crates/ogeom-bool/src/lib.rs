@@ -52,6 +52,7 @@ mod sub_shapes;
 #[doc(hidden)]
 pub mod work;
 
+pub use ball_chart::TOUCHING as POLE_TOUCHING;
 pub use defeature::remove_faces;
 pub use section_face::section_face;
 pub use self_union::self_union;

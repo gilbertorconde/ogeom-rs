@@ -102,6 +102,73 @@ pub(crate) fn round_vertex_with(
     forced: Option<usize>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    match corner_at(model, solid, vertex, radius, tol)? {
+        Corner::Curved(corner) => {
+            crate::corner_curved::curved_corner(model, solid, vertex, corner, radius, tol)
+        }
+        Corner::Setback(corner, m) => setback_corner(model, solid, vertex, corner, &m, radius, tol),
+        Corner::OneBall(one) => one_ball_corner(model, solid, vertex, &one, radius, forced, tol),
+    }
+}
+
+/// The kind of corner a vertex of a solid is to a ball of some radius.
+enum Corner {
+    /// Fewer than three planes pass through the corner: a curved face
+    /// meets there.
+    Curved(Point),
+    /// No one ball touches every plane through the corner, whose inward
+    /// normals these are.
+    Setback(Point, Vec<Vector>),
+    /// One ball touches every plane through a convex corner.
+    OneBall(OneBall),
+}
+
+/// A convex planar corner one ball touches every face of.
+struct OneBall {
+    /// The vertex where it stands.
+    corner: Point,
+    /// The ball's centre.
+    far: Point,
+    /// The inward normal of each plane through the corner.
+    m: Vec<Vector>,
+    /// The planes in their order round the vertex.
+    ring: Vec<usize>,
+    /// Edge `k`, from the vertex into the solid, where plane `ring[k]` and
+    /// plane `ring[k + 1]` meet.
+    d: Vec<Direction>,
+    /// The points whose containment in the solid told the corner convex.
+    probes: Vec<Point>,
+}
+
+impl OneBall {
+    /// The box round the corner's block: the vertex, the foot of each edge
+    /// on its plane through the ball's centre, the point where the ball
+    /// touches each plane, and the centre.
+    fn block_bounds(&self, radius: f64) -> ogeom_math::Aabb {
+        let mut points = vec![self.corner, self.far];
+        for (dk, mk) in self.d.iter().zip(&self.m) {
+            points.push(self.foot(dk.vector()));
+            points.push(self.far - *mk * radius);
+        }
+        ogeom_math::Aabb::of_points(&points)
+    }
+
+    /// Where the plane through the ball's centre square to `along` meets
+    /// the edge leaving the vertex along it.
+    fn foot(&self, along: Vector) -> Point {
+        self.corner + along * (self.far - self.corner).dot(along)
+    }
+}
+
+/// The corner `vertex` of `solid` is to a ball of `radius`, and every check
+/// that the tool speaks it.
+fn corner_at(
+    model: &Model,
+    solid: &Shape,
+    vertex: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Corner> {
     if model.kind_of(vertex)? != ShapeType::Vertex {
         ogeom_bail!(Construction, "round_vertex rounds a vertex");
     }
@@ -155,7 +222,7 @@ pub(crate) fn round_vertex_with(
     if n < 3 {
         // A curved face meets here: the one-ball corner on whatever
         // surfaces pass through the vertex.
-        return crate::corner_curved::curved_corner(model, solid, vertex, corner, radius, tol);
+        return Ok(Corner::Curved(corner));
     }
     // The ball's centre: the point a radius in from every plane. Three
     // planes that span always hold one; more only when they share a
@@ -225,12 +292,13 @@ pub(crate) fn round_vertex_with(
         // envelope of every ball a radius in from all of them, which is
         // more than one sphere. Its pieces are read off the region the
         // ball's centre may occupy.
-        return setback_corner(model, solid, vertex, corner, &m, radius, tol);
+        return Ok(Corner::Setback(corner, m));
     }
     // A concave vertex puts the ball's centre outside the material: a ball
     // there adds material instead of shedding it, and a tool built from a
     // cut cannot say so.
     let boundary = ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
+    let mut probes = vec![far];
     if boundary.holds(model, far, tol)? != ogeom_algo::Containment::In {
         ogeom_bail!(
             Construction,
@@ -283,6 +351,7 @@ pub(crate) fn round_vertex_with(
         for &(i, j, d) in &edges {
             for (k, other) in [(i, j), (j, i)] {
                 let off = corner + (d.vector() - m[k] + m[other]) * step;
+                probes.push(off);
                 if boundary.holds(model, off, tol)? == ogeom_algo::Containment::In {
                     ogeom_bail!(
                         Construction,
@@ -345,7 +414,35 @@ pub(crate) fn round_vertex_with(
         .ok_or_else(|| {
             ogeom_core::ogeom_err!(Construction, "the corner's edges lost their ring")
         })?;
-    let inward_of = |k: usize| m[ring[k % n]];
+    Ok(Corner::OneBall(OneBall {
+        corner,
+        far,
+        m,
+        ring,
+        d,
+        probes,
+    }))
+}
+
+/// [`round_vertex_with`] at a corner one ball touches every face of.
+fn one_ball_corner(
+    model: &mut Model,
+    solid: &Shape,
+    vertex: &Shape,
+    one: &OneBall,
+    radius: f64,
+    forced: Option<usize>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let OneBall {
+        corner,
+        far,
+        ref m,
+        ref ring,
+        ref d,
+        ..
+    } = *one;
+    let n = m.len();
 
     // A band left short of the block by another band's run-out is carried
     // back to it first, so the block's cut ends it as it ends a flush one.
@@ -361,7 +458,7 @@ pub(crate) fn round_vertex_with(
                 &carried.shape,
                 corner,
                 far,
-                &d,
+                d,
                 k,
                 planes,
                 radius,
@@ -377,100 +474,14 @@ pub(crate) fn round_vertex_with(
         Ok(carried)
     };
 
-    // The block: the corner bounded by its N host planes and, through the
-    // ball's centre, the N planes square to its edges, where each band's
-    // circle and the ball's own rim coincide, so the cut ends the band and
-    // starts the patch on one curve. On a square corner it is the box of
-    // side `radius`; on an oblique one a hexahedron; at a pyramid's apex a
-    // polyhedron of eight faces. Its corners: the vertex, the foot of each
-    // edge on its cutting plane, on each host plane the point where the
-    // ball touches it, and the centre itself.
-    //
-    // The ball on the corner's axes: a pole at one corner of the patch it
-    // leaves and its seam meridian out past the block through the first
-    // edge: the pole axis is the inward normal of the host plane holding
-    // the first two edges, the third edge itself on a square corner.
-    //
     // Which edge is first and which way the ring runs is the tool's
-    // labelling, and the solid it builds is the same for all 2N. The
-    // charts the block's faces and the ball wear differ between them (where
-    // a rim is exact and where fitted, where a seam falls against a patch
-    // arc). The tool offers each labelling in turn and the first that
+    // labelling ([`one_ball_tool`]), and the solid it builds is the same
+    // for all 2N. The tool offers each labelling in turn and the first that
     // closes stands, so a corner no labelling closes is refused by name. A
     // failed attempt's nodes stay in the model unreferenced, under their
     // own operation.
     let attempt = |model: &mut Model, held: &Built, start: usize, reverse| -> OgeomResult<Built> {
-        // Edge t of the labelling and the host plane holding edges t and t+1.
-        let edge_at = |t: usize| -> usize {
-            if reverse {
-                (start + n - t % n) % n
-            } else {
-                (start + t) % n
-            }
-        };
-        let dl: Vec<Direction> = (0..n).map(|t| d[edge_at(t)]).collect();
-        let ml: Vec<Vector> = (0..n)
-            .map(|t| {
-                // Forward: edges t, t+1 are E_s+t, E_s+t+1, both on plane
-                // ring[s+t+1]. Reverse: E_s−t, E_s−t−1, both on ring[s−t].
-                if reverse {
-                    inward_of((start + n - t % n) % n)
-                } else {
-                    inward_of(edge_at(t) + 1)
-                }
-            })
-            .collect();
-        let along =
-            |t: usize| -> Point { corner + dl[t].vector() * (far - corner).dot(dl[t].vector()) };
-        let touch = |t: usize| -> Point { far - ml[t] * radius };
-        if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
-            eprintln!(
-                "CORNER attempt start {start} reverse {reverse} far {far:?} d {:?} m {ml:?}",
-                dl.iter().map(|x| x.vector()).collect::<Vec<_>>()
-            );
-        }
-        model.begin_operation();
-        let mut points: Vec<Point> = vec![corner];
-        points.extend((0..n).map(along));
-        points.extend((0..n).map(touch));
-        points.push(far);
-        let mut rings: Vec<Vec<usize>> = Vec::with_capacity(2 * n);
-        for t in 0..n {
-            // The host face on plane t: vertex, edge t's foot, the touch
-            // point, edge t+1's foot.
-            rings.push(vec![0, 1 + t, 1 + n + t, 1 + (t + 1) % n]);
-            // The face square to edge t: its foot, the touch points either
-            // side, the centre.
-            rings.push(vec![1 + t, 1 + n + (t + n - 1) % n, 1 + 2 * n, 1 + n + t]);
-        }
-        let block = ogeom_algo::make_polyhedron(model, &points, &rings, tol)?.shape;
-        let ball_frame = Frame::new(far, Direction::new(ml[0], tol)?, dl[0], tol)?;
-        let ball = ogeom_algo::make_sphere(model, ball_frame, radius, tol)?.shape;
-        let tool = ogeom_bool::cut(model, &block, &ball, tol)?;
-        if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
-            let faces = ogeom_topo::explore_unique(model, &tool.shape, ShapeType::Face)?;
-            let kinds: Vec<String> = faces
-                .iter()
-                .map(|f| {
-                    let kind = model
-                        .node(f)
-                        .and_then(|n| n.data().as_face())
-                        .and_then(|d| model.geometry().surface(d.surface))
-                        .map_or("?", |sg| match sg {
-                            ogeom_geom::SurfaceGeometry::Plane(_) => "plane",
-                            ogeom_geom::SurfaceGeometry::Sphere(_) => "sphere",
-                            _ => "other",
-                        });
-                    let edges = ogeom_topo::explore_unique(model, f, ShapeType::Edge)
-                        .map_or(0, |e| e.len());
-                    format!("{kind}/{edges}")
-                })
-                .collect();
-            eprintln!(
-                "CORNER tool for start {start} reverse {reverse}: {} faces {kinds:?}",
-                faces.len()
-            );
-        }
+        let tool = one_ball_tool(model, one, radius, start, reverse, tol)?;
         let rounded = ogeom_bool::cut(model, &held.shape, &tool.shape, tol)?;
         Ok(Built {
             shape: rounded.shape,
@@ -523,6 +534,275 @@ pub(crate) fn round_vertex_with(
     let mut built = rounded;
     built.history.modify(vertex, built.shape.clone());
     Ok(built)
+}
+
+/// The corners at `vertices` of `solid` rounded in one cut, each as
+/// [`round_vertex_with`] rounds it alone; `None` where that is not shown
+/// to round them as rounding them one after another would, and the caller
+/// rounds them so.
+///
+/// Every face of the solid must be planar, every corner one a single ball
+/// touches every face of, and every corner's tool clear of every other
+/// corner. With no curved face no band stands to be carried back to a
+/// block. A tool lies within its block, and a corner whose block keeps a
+/// margin from every other corner's leaves what that corner is read from
+/// as it found it: the faces through its vertex keep their pieces round
+/// it, the points its convexity was probed at stay as far inside or
+/// outside, and no plane square to an edge of it passes through another
+/// vertex to add a face there. A face of the solid on a plane through the
+/// vertex that no face at the vertex lies on could be cut away whole; such
+/// a corner is left to the caller. Each corner is then the same corner,
+/// and its tool the same solid, before and after the others are cut, and
+/// cutting the solid by every tool at once takes away the union of the
+/// tools, as cutting by them in turn does. The margin is the chord the
+/// convexity probes' classifier draws trims at, which also stands well
+/// clear of the band in which a plane counts as passing through a vertex.
+///
+/// Cut in turn, a corner's patch meets the balls of the corners cut
+/// before it, and a patch whose pole comes within the boolean's touching
+/// distance of another ball is recharted, seams and all, which one cut of
+/// a solid with no curved face never does. Every two balls therefore
+/// stand further apart than that: no point of one comes that close to the
+/// other.
+///
+/// The tool of each corner is built under the first labelling that builds
+/// one; which labelling holds decides only the charts of the patch, as it
+/// does when the corners are rounded in turn. Where the one cut does not
+/// close, the tolerances it widened are put back.
+pub(crate) fn round_vertices_together(
+    model: &mut Model,
+    solid: &Shape,
+    vertices: &[Shape],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let mark = model.note_widened();
+    match vertices_together(model, solid, vertices, radius, tol) {
+        Ok(Some(built)) => {
+            model.keep_widened(mark);
+            Ok(Some(built))
+        }
+        Err(OgeomError::Cancelled) => {
+            model.keep_widened(mark);
+            Err(OgeomError::Cancelled)
+        }
+        Ok(None) | Err(_) => {
+            model.undo_widened(mark);
+            Ok(None)
+        }
+    }
+}
+
+/// [`round_vertices_together`], before what a cut that does not close
+/// widened is put back.
+fn vertices_together(
+    model: &mut Model,
+    solid: &Shape,
+    vertices: &[Shape],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let margin = tol.confusion() * 1e4;
+    let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
+    let planar = |face: &Shape| {
+        model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .is_some_and(|data| {
+                matches!(
+                    model.geometry().surface(data.surface),
+                    Some(ogeom_geom::SurfaceGeometry::Plane(_))
+                )
+            })
+    };
+    if !faces.iter().all(planar) {
+        return Ok(None);
+    }
+    let mut corners: Vec<OneBall> = Vec::with_capacity(vertices.len());
+    for vertex in vertices {
+        let Corner::OneBall(one) = corner_at(model, solid, vertex, radius, tol)? else {
+            return Ok(None);
+        };
+        // Every plane through the vertex is one a face at the vertex lies on.
+        let mut at_vertex: Vec<Vector> = Vec::new();
+        for face in &faces {
+            let holds = ogeom_topo::explore_unique(model, face, ShapeType::Vertex)?
+                .iter()
+                .any(|v| v.is_same(vertex));
+            if holds {
+                at_vertex.push(ogeom_algo::face_normal(model, face, tol)?.1);
+            }
+        }
+        let held = one.m.iter().all(|mk| {
+            at_vertex
+                .iter()
+                .any(|n| n.cross(*mk).magnitude() < tol.angular() * 10.0)
+        });
+        if !held {
+            return Ok(None);
+        }
+        corners.push(one);
+    }
+    let bounds: Vec<ogeom_math::Aabb> = corners.iter().map(|c| c.block_bounds(radius)).collect();
+    for (i, one) in corners.iter().enumerate() {
+        for (j, other) in corners.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let apart = one.far.distance(other.far) - radius * 2.0;
+            let clear = apart > radius * ogeom_bool::POLE_TOUCHING + margin
+                && bounds[i].distance_to_box(&bounds[j]) > margin
+                && other
+                    .probes
+                    .iter()
+                    .all(|p| bounds[i].distance_to(*p) > margin)
+                && one.d.iter().all(|dk| {
+                    let along = dk.vector();
+                    (other.corner - one.foot(along)).dot(along).abs() > margin
+                });
+            if !clear {
+                return Ok(None);
+            }
+        }
+    }
+    let mut tools = Vec::with_capacity(corners.len());
+    let mut history = ogeom_algo::History::new();
+    for one in &corners {
+        let n = one.m.len();
+        let tool = (0..2 * n).find_map(|index| {
+            match one_ball_tool(model, one, radius, index % n, index >= n, tol) {
+                Ok(tool) => Some(Ok(tool)),
+                Err(OgeomError::Cancelled) => Some(Err(OgeomError::Cancelled)),
+                Err(_) => None,
+            }
+        });
+        let Some(tool) = tool.transpose()? else {
+            return Ok(None);
+        };
+        history = history.then(&tool.history);
+        tools.push(tool.shape);
+    }
+    let compound = model.add_compound(&tools)?;
+    let rounded = ogeom_bool::cut(model, solid, &compound, tol)?;
+    let mut history = history.then(&rounded.history);
+    for vertex in vertices {
+        history.modify(vertex, rounded.shape.clone());
+    }
+    Ok(Some(Built {
+        shape: rounded.shape,
+        history,
+    }))
+}
+
+/// The tool that rounds a one-ball corner: its block less its ball, under
+/// the labelling whose first edge is `start` and whose ring runs backwards
+/// where `reverse`.
+///
+/// The block: the corner bounded by its N host planes and, through the
+/// ball's centre, the N planes square to its edges, where each band's
+/// circle and the ball's own rim coincide, so the cut ends the band and
+/// starts the patch on one curve. On a square corner it is the box of
+/// side `radius`; on an oblique one a hexahedron; at a pyramid's apex a
+/// polyhedron of eight faces. Its corners: the vertex, the foot of each
+/// edge on its cutting plane, on each host plane the point where the
+/// ball touches it, and the centre itself.
+///
+/// The ball on the corner's axes: a pole at one corner of the patch it
+/// leaves and its seam meridian out past the block through the first
+/// edge: the pole axis is the inward normal of the host plane holding
+/// the first two edges, the third edge itself on a square corner. The
+/// charts the block's faces and the ball wear differ between labellings
+/// (where a rim is exact and where fitted, where a seam falls against a
+/// patch arc); the solid does not.
+fn one_ball_tool(
+    model: &mut Model,
+    one: &OneBall,
+    radius: f64,
+    start: usize,
+    reverse: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let OneBall {
+        corner,
+        far,
+        ref m,
+        ref ring,
+        ref d,
+        ..
+    } = *one;
+    let n = m.len();
+    let inward_of = |k: usize| m[ring[k % n]];
+    // Edge t of the labelling and the host plane holding edges t and t+1.
+    let edge_at = |t: usize| -> usize {
+        if reverse {
+            (start + n - t % n) % n
+        } else {
+            (start + t) % n
+        }
+    };
+    let dl: Vec<Direction> = (0..n).map(|t| d[edge_at(t)]).collect();
+    let ml: Vec<Vector> = (0..n)
+        .map(|t| {
+            // Forward: edges t, t+1 are E_s+t, E_s+t+1, both on plane
+            // ring[s+t+1]. Reverse: E_s−t, E_s−t−1, both on ring[s−t].
+            if reverse {
+                inward_of((start + n - t % n) % n)
+            } else {
+                inward_of(edge_at(t) + 1)
+            }
+        })
+        .collect();
+    let along = |t: usize| -> Point { one.foot(dl[t].vector()) };
+    let touch = |t: usize| -> Point { far - ml[t] * radius };
+    if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
+        eprintln!(
+            "CORNER attempt start {start} reverse {reverse} far {far:?} d {:?} m {ml:?}",
+            dl.iter().map(|x| x.vector()).collect::<Vec<_>>()
+        );
+    }
+    model.begin_operation();
+    let mut points: Vec<Point> = vec![corner];
+    points.extend((0..n).map(along));
+    points.extend((0..n).map(touch));
+    points.push(far);
+    let mut rings: Vec<Vec<usize>> = Vec::with_capacity(2 * n);
+    for t in 0..n {
+        // The host face on plane t: vertex, edge t's foot, the touch
+        // point, edge t+1's foot.
+        rings.push(vec![0, 1 + t, 1 + n + t, 1 + (t + 1) % n]);
+        // The face square to edge t: its foot, the touch points either
+        // side, the centre.
+        rings.push(vec![1 + t, 1 + n + (t + n - 1) % n, 1 + 2 * n, 1 + n + t]);
+    }
+    let block = ogeom_algo::make_polyhedron(model, &points, &rings, tol)?.shape;
+    let ball_frame = Frame::new(far, Direction::new(ml[0], tol)?, dl[0], tol)?;
+    let ball = ogeom_algo::make_sphere(model, ball_frame, radius, tol)?.shape;
+    let tool = ogeom_bool::cut(model, &block, &ball, tol)?;
+    if std::env::var_os("OGEOM_DEBUG_CORNER").is_some() {
+        let faces = ogeom_topo::explore_unique(model, &tool.shape, ShapeType::Face)?;
+        let kinds: Vec<String> = faces
+            .iter()
+            .map(|f| {
+                let kind = model
+                    .node(f)
+                    .and_then(|n| n.data().as_face())
+                    .and_then(|d| model.geometry().surface(d.surface))
+                    .map_or("?", |sg| match sg {
+                        ogeom_geom::SurfaceGeometry::Plane(_) => "plane",
+                        ogeom_geom::SurfaceGeometry::Sphere(_) => "sphere",
+                        _ => "other",
+                    });
+                let edges =
+                    ogeom_topo::explore_unique(model, f, ShapeType::Edge).map_or(0, |e| e.len());
+                format!("{kind}/{edges}")
+            })
+            .collect();
+        eprintln!(
+            "CORNER tool for start {start} reverse {reverse}: {} faces {kinds:?}",
+            faces.len()
+        );
+    }
+    Ok(tool)
 }
 
 /// The band along edge `k` of a one-ball corner carried back to the
@@ -1323,7 +1603,7 @@ fn ball_block(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
-    use super::round_vertex_with;
+    use super::{round_vertex_with, round_vertices_together};
     use ogeom_core::Tolerances;
     use ogeom_math::{Point, Vector};
     use ogeom_topo::{Model, Shape, ShapeType};
@@ -1375,6 +1655,82 @@ mod tests {
                 volumes[0]
             );
         }
+    }
+
+    /// The box's eight corners and the solid each rounds to, the corners
+    /// rounded one after another.
+    fn box_corners_in_turn(model: &mut Model, radius: f64) -> (Shape, Vec<Shape>, Shape) {
+        let solid = ogeom_algo::make_box(model, ogeom_math::Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let vertices = ogeom_topo::explore_unique(model, &solid, ShapeType::Vertex).unwrap();
+        let mut rounded = solid.clone();
+        for vertex in &vertices {
+            rounded = round_vertex_with(model, &rounded, vertex, radius, None, T)
+                .unwrap()
+                .shape;
+        }
+        (solid, vertices, rounded)
+    }
+
+    fn counts(model: &Model, shape: &Shape) -> [usize; 3] {
+        [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex].map(|kind| {
+            ogeom_topo::explore_unique(model, shape, kind)
+                .unwrap()
+                .len()
+        })
+    }
+
+    /// Corners whose tools and balls stand clear of each other are cut in
+    /// one boolean, which gathers fewer faces than cutting them in turn and
+    /// builds the same solid.
+    #[test]
+    fn corners_clear_of_each_other_round_in_one_cut_as_in_turn() {
+        for radius in [1.0, 2.0] {
+            let mut model = Model::new();
+            let ((solid, vertices, in_turn), one_by_one) =
+                ogeom_bool::work::counted(|| box_corners_in_turn(&mut model, radius));
+            let (together, at_once) = ogeom_bool::work::counted(|| {
+                round_vertices_together(&mut model, &solid, &vertices, radius, T).unwrap()
+            });
+            let together = together.unwrap();
+            assert!(
+                ogeom_algo::check(&model, &together.shape, T)
+                    .unwrap()
+                    .is_valid()
+            );
+            let (want, got) = (volume(&model, &in_turn), volume(&model, &together.shape));
+            assert!(
+                (got - want).abs() <= want * 1e-9,
+                "r {radius}: {got} against {want}"
+            );
+            assert_eq!(counts(&model, &together.shape), counts(&model, &in_turn));
+            assert!(
+                at_once.faces_gathered < one_by_one.faces_gathered,
+                "r {radius}: {at_once:?} at once against {one_by_one:?} in turn"
+            );
+            for vertex in &vertices {
+                assert_eq!(
+                    together.history.modified(vertex),
+                    core::slice::from_ref(&together.shape)
+                );
+            }
+        }
+    }
+
+    /// Balls within the boolean's touching distance of each other are left
+    /// to be cut in turn: there a patch cut later is recharted against the
+    /// ball of one cut before it, which one cut never does.
+    #[test]
+    fn corners_whose_balls_come_close_round_in_turn() {
+        let mut model = Model::new();
+        let solid =
+            ogeom_algo::make_box(&mut model, ogeom_math::Frame::WORLD, (10.0, 10.0, 10.0), T)
+                .unwrap()
+                .shape;
+        let vertices = ogeom_topo::explore_unique(&model, &solid, ShapeType::Vertex).unwrap();
+        let together = round_vertices_together(&mut model, &solid, &vertices, 4.9, T).unwrap();
+        assert!(together.is_none());
     }
 
     #[test]

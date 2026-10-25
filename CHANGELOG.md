@@ -330,6 +330,19 @@ bump may break the API and a patch bump may not.
   fit come in order, so each span's are one run. The knots chosen, and so
   every fit, are unchanged. Rounding all twelve edges of a 10 mm cube
   fits 24 such images, in 12.4 ms rather than 18.6.
+- **The corners a fillet request rounds are cut in one boolean where
+  they stand clear of each other (#384).** `fillet_edges` rounded each
+  corner where three or more of its edges meet with its own cut. On a
+  solid of planar faces whose corners each take one ball, every corner's
+  tool is now built first and the tools are cut together, where each
+  tool's block keeps clear of every other corner and every two balls stand
+  further apart than the boolean's touching distance for a pole: each
+  corner is then read, and its tool built, as it would be after the others
+  were cut, and the one cut takes away what the cuts in turn do. Elsewhere,
+  and wherever the one cut does not close, the corners are cut in turn as
+  before. New `ogeom_bool::POLE_TOUCHING` states that distance. Rounding
+  all twelve edges of a 10 mm cube takes 101 ms rather than 105.5, to the
+  same 26 faces, 48 edges and volume.
 - **A line touching a circle or ellipse in its plane meets it in closed
   form.** The closed form left every tangent line/conic pair to the
   sampling path, at about a millisecond a pair, and a rolling-ball blend

@@ -459,10 +459,30 @@ fn fillet_edges_own(
     };
     // The corner first, the bands after it: bands built first crash into
     // each other at an apex, and the corner tool wants the sharp vertex's
-    // planes, not the bands' mitre.
+    // planes, not the bands' mitre. Corners that stand clear of each other
+    // are cut in one boolean, the rest one after another.
     let mut built: Option<Built> = None;
     let mut rounded: Vec<Point> = Vec::new();
-    for (vertex, _) in &corners {
+    let together = if corners.len() > 1 {
+        let vertices: Vec<Shape> = corners.iter().map(|(v, _)| v.clone()).collect();
+        crate::corner::round_vertices_together(model, solid, &vertices, radius, tol)?
+    } else {
+        None
+    };
+    let one_by_one: &[(Shape, usize)] = if together.is_some() { &[] } else { &corners };
+    if let Some(all) = together {
+        for (vertex, _) in &corners {
+            if let Some(point) = model
+                .node(vertex)
+                .and_then(|n| n.data().as_vertex())
+                .map(|d| d.point)
+            {
+                rounded.push(vertex.transform(model.datums())?.apply(point));
+            }
+        }
+        built = Some(all);
+    }
+    for (vertex, _) in one_by_one {
         let start = built
             .take()
             .unwrap_or_else(|| Built::from_nothing(solid.clone()));
