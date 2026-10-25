@@ -105,7 +105,7 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         let written_before = (writer.written_nodes.len(), writer.written_edges.len());
         let sr = match &product.kind {
             ProductKind::Part { shape } => {
-                let bodies = crate::bodies::bodies_of(writer.model, shape, "STEP")?;
+                let bodies = crate::bodies::bodies_of(writer.model, shape, "STEP", false)?;
                 let mut solids = vec![world];
                 for solid in &bodies.solids {
                     solids.push(writer.solid(solid)?);

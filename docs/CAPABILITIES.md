@@ -173,8 +173,12 @@ surface. Model-space annotation (notes, leaders, labels, symbols and the
 linear, radial, diametral, angular and ordinate dimensions) reads as PMI
 callouts of the lines the file draws, a dimension whose text states a
 number carrying that value as a semantic dimension. Subfigure instances
-(408) place their definition (308), built once and shared under each
-instance's placement, translation and scale; levels (with 406 level lists)
+place their definition (308) or base, built once and shared under each
+placement: a singular instance (408) by its scale, matrix and translation
+in the specification's order, a rectangular (412) or circular (414) array
+at each position its DO or DON'T list keeps; a definition's solids,
+trimmed and untrimmed surfaces, constructive solids and curves are placed
+with it; levels (with 406 level lists)
 and groups (402) read as the document's layers. Constructive solids read
 as the solids they describe: the block, wedge, cylinder, cone frustum,
 sphere, torus and ellipsoid primitives (150 to 168), solids of revolution
@@ -197,7 +201,12 @@ to 3) is no curve and is refused by name. Refused by name: a trim on a
 surface of revolution of a hyperbola, parabola, turned ellipse,
 composite, parametric-spline or offset generatrix, whose own IGES parameter this reader does not carry; a
 drawing's own annotation stays on the sheet and is counted as skipped.
-Independent wireframe curves are not read.
+Independent curves that are geometry
+(100, 102, 104, 106, 110, 112, 126, 130) read as wires, a composite
+curve's matrix carrying its pieces and its points passed over, and the
+writer writes a free wire or edge as an independent curve (a free vertex
+is refused). Network subfigures (320, 420) and external references (416)
+are not read.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered`
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered`
 - **io.step**: STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI · `covered`
@@ -247,4 +256,4 @@ Independent wireframe curves are not read.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 5aff906bc74265a0 -->
+<!-- ledger-checksum: 8e1118d411009011 -->

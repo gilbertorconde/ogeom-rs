@@ -94,6 +94,28 @@ bump may break the API and a patch bump may not.
     its plane's now lifts through the ellipse's angle.
   - A solid's whole name, past the eight-column label, is written and read
     as its Name property (406 form 15) (#404).
+- **IGES reads and writes wireframe, and places array subfigures.** (#404)
+  - An independent curve (100, 102, 104, 106, 110, 112, 126, 130) that is
+    geometry was counted as skipped, and a deck of curves only was
+    refused. Each now reads as a wire in `IgesImport::wires`. Its pieces
+    are chained, and a chain that comes back to its start closes. A
+    parameter-space curve, a construction curve and a drawing's own curve
+    are not wireframe.
+  - The writer refused a part holding a free wire or edge. It now writes
+    each as an independent curve, a wire's edges as a composite curve
+    (102). A free vertex is still refused, and STEP still refuses
+    wireframe.
+  - Rectangular (412) and circular (414) array instances place their base
+    at each position their pattern keeps, with the DO and DON'T lists.
+  - A subfigure definition's untrimmed surfaces, constructive solids and
+    curves are placed with it. Before, only its manifold solids, trimmed
+    surfaces and nested instances were.
+  - A composite curve skips the points and connect points among its
+    pieces, which it used to refuse.
+  - Measured: wire lengths 10, 7 and 7 to 1e-12 and a circle's `6π` within
+    its mesh bound, the same after a round trip. Five patches of area 4
+    and three cubes of volume 8, each at its closed-form centre to 1e-9.
+
 - **Guided lofts take sections of several edges.** `make_loft_surface`
   and `make_loft_solid` with guide curves refused any section of more
   than one edge, so a guided loft through rectangles was not built. Now
@@ -386,6 +408,17 @@ bump may break the API and a patch bump may not.
   field's vocabulary.
 
 ### Fixed
+
+- **IGES applies an instance's matrix and a composite curve's matrix in
+  the specification's order.** (#404)
+  - A singular subfigure instance (408) applied its matrix to its own
+    translation as well. IGES 5.3, section 3.6.2, applies the scale, then
+    the matrix, then the translation, which the matrix does not move. A
+    cube placed by a quarter turn and `(0, −100, 0)` now centres at
+    `(−1, −99, 1)`, not `(99, 1, 1)`.
+  - A composite curve's matrix was ignored. Per section 3.2.3, it carries
+    its physically dependent pieces on after their own matrices.
+  - Files whose instances and composites have no matrix read as before.
 
 - **Two fillets meet at an inside corner whose walls lean alike, their
   feet out under the corner as a moulded pocket's are.** The two bands'

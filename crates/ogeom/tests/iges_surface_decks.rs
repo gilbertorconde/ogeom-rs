@@ -1,7 +1,8 @@
 //! IGES decks the way surface exporters write them: untrimmed patches
 //! standing alone, trims given only in a surface of revolution's
-//! parameters over a circular-arc generatrix, and copious data (106) drawn
-//! as paths. Each reads to the area its closed form gives.
+//! parameters over a circular-arc generatrix, copious data (106) drawn as
+//! paths, wireframe curves, and subfigures placed singly and in arrays.
+//! Each reads to the length, area or volume its closed form gives.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::surface_properties;
@@ -17,6 +18,11 @@ struct Item {
     kind: i64,
     form: i64,
     owned: bool,
+    /// The directory entry of the transformation matrix (124) placing it,
+    /// or 0.
+    placed: usize,
+    /// The entity use flag: 0 geometry, 5 a parameter-space curve.
+    used: u8,
     params: String,
 }
 
@@ -25,7 +31,21 @@ fn item(kind: i64, form: i64, owned: bool, params: &str) -> Item {
         kind,
         form,
         owned,
+        placed: 0,
+        used: 0,
         params: params.to_owned(),
+    }
+}
+
+impl Item {
+    fn placed_by(mut self, de: usize) -> Self {
+        self.placed = de;
+        self
+    }
+
+    fn used_as(mut self, flag: u8) -> Self {
+        self.used = flag;
+        self
     }
 }
 
@@ -65,7 +85,7 @@ fn deck(items: &[Item]) -> String {
             current += piece;
         }
         lines.push(current);
-        let status = if it.owned { "00010000" } else { "00000000" };
+        let status = format!("00{:02}{:02}00", u8::from(it.owned), it.used);
         let field = |s: &str| format!("{s:>8}");
         let first: String = [
             it.kind.to_string(),
@@ -74,9 +94,9 @@ fn deck(items: &[Item]) -> String {
             "0".into(),
             "0".into(),
             "0".into(),
+            it.placed.to_string(),
             "0".into(),
-            "0".into(),
-            status.into(),
+            status,
         ]
         .iter()
         .map(|s| field(s))
@@ -273,4 +293,212 @@ fn a_copious_data_path_bounds_a_trimmed_surface() {
         (again - 24.0).abs() < 24.0 * 1e-12,
         "written and read back: {again}"
     );
+}
+
+fn length(model: &ogeom::topo::Model, shape: &ogeom::topo::Shape) -> (f64, ogeom::math::Point) {
+    let fine = Deflection {
+        chord: CHORD,
+        ..Deflection::default()
+    };
+    let props = ogeom::algo::linear_properties(model, shape, fine, T).unwrap();
+    (props.mass, props.centre)
+}
+
+fn count(
+    model: &ogeom::topo::Model,
+    shape: &ogeom::topo::Shape,
+    kind: ogeom::topo::ShapeType,
+) -> usize {
+    ogeom::topo::explore(model, shape, ogeom::topo::Filter::OfType(kind))
+        .unwrap()
+        .into_iter()
+        .map(|s| s.node())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+/// Independent curves read as wires: a line, a whole circle closing on
+/// one vertex, a polyline, and a composite curve whose matrix lifts its
+/// pieces 5 off the plane (the pieces' own matrices first, then the
+/// composite's) with a point marking its start. A parameter-space curve
+/// and a curve another entity owns are not wireframe. Each wire is its
+/// curve's length, and comes back the same through the writer.
+#[test]
+fn independent_curves_read_as_wireframe() {
+    let items = [
+        // D1: a line of length 10.
+        item(110, 0, false, "0.,0.,0.,10.,0.,0."),
+        // D3: a whole circle of radius 3 about (0, 20).
+        item(100, 0, false, "0.,0.,20.,3.,20.,3.,20."),
+        // D5: the composite of D9, D11 and D13, placed by D7.
+        item(102, 0, false, "3,9,11,13").placed_by(7),
+        // D7: a translation by 5 along z.
+        item(124, 0, true, "1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,5."),
+        // D9: the point the composite starts at.
+        item(116, 0, true, "0.,0.,0.,0"),
+        item(110, 0, true, "0.,0.,0.,4.,0.,0."),
+        item(110, 0, true, "4.,0.,0.,4.,3.,0."),
+        // D15: a path of two segments, 3 and 4 long.
+        item(106, 12, false, "2,3,0.,-10.,0.,3.,-10.,0.,3.,-6.,0."),
+        // D17: a curve in some surface's parameters, standing alone.
+        item(110, 0, false, "0.,0.,0.,1.,1.,0.").used_as(5),
+        // D19: a curve another entity owns.
+        item(110, 0, true, "0.,0.,0.,0.,0.,1."),
+    ];
+    let import = ogeom::io::read_iges(&deck(&items), T).unwrap();
+    assert!(import.report.warnings.is_empty(), "{:?}", import.report);
+    assert_eq!(
+        import.report.skipped,
+        [("type 110".to_owned(), 2)].into_iter().collect()
+    );
+    assert!(import.solids.is_empty() && import.sheets.is_empty());
+    let model = import.document.model();
+    let mut measured: Vec<(f64, ogeom::math::Point, usize, usize)> = import
+        .wires
+        .iter()
+        .map(|w| {
+            let (l, c) = length(model, w);
+            let edges = count(model, w, ogeom::topo::ShapeType::Edge);
+            let vertices = count(model, w, ogeom::topo::ShapeType::Vertex);
+            (l, c, edges, vertices)
+        })
+        .collect();
+    measured.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.z.total_cmp(&b.1.z)));
+    assert_eq!(measured.len(), 4, "{measured:?}");
+    let circle = 6.0 * PI;
+    let wants = [(7.0, 2, 3), (7.0, 2, 3), (10.0, 1, 2), (circle, 1, 1)];
+    for (got, want) in measured.iter().zip(wants) {
+        let bound = if want.0 == circle {
+            mesh_bound(circle, 3.0)
+        } else {
+            1e-12
+        };
+        assert!((got.0 - want.0).abs() <= bound, "{got:?} against {want:?}");
+        assert_eq!((got.2, got.3), (want.1, want.2), "{got:?}");
+    }
+    // The polyline lies in z = 0; the composite stands 5 above it, its
+    // centre the length-weighted middle of its pieces.
+    assert!(
+        measured[0]
+            .1
+            .distance(ogeom::math::Point::new(16.5 / 7.0, -62.0 / 7.0, 0.0))
+            < 1e-12
+    );
+    assert!(
+        measured[1]
+            .1
+            .distance(ogeom::math::Point::new(20.0 / 7.0, 4.5 / 7.0, 5.0))
+            < 1e-12
+    );
+
+    // Written as parts and read back, each wire is the same length.
+    let mut lengths: Vec<f64> = measured.iter().map(|m| m.0).collect();
+    let mut document = import.document;
+    for (i, wire) in import.wires.iter().enumerate() {
+        document.add_part(format!("wire-{i}"), wire.clone());
+    }
+    let again = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+    assert!(again.report.skipped.is_empty(), "{:?}", again.report);
+    let mut back: Vec<f64> = again
+        .wires
+        .iter()
+        .map(|w| length(again.document.model(), w).0)
+        .collect();
+    lengths.sort_by(f64::total_cmp);
+    back.sort_by(f64::total_cmp);
+    assert_eq!(back.len(), 4);
+    for (a, b) in lengths.iter().zip(&back) {
+        assert!(
+            (a - b).abs() <= mesh_bound(circle, 3.0),
+            "{lengths:?} against {back:?}"
+        );
+    }
+}
+
+/// Subfigures placed singly and in arrays. A rectangular array (412) of a
+/// definition holding an untrimmed unit patch, doubled, three columns 10
+/// apart by two rows 20 apart, the grid turned a quarter about its corner
+/// at (100, 0) and position 2 left out: five patches of area 4, counted up
+/// each column. A circular array (414) of a definition holding a 2-cube
+/// (150), four positions round a circle of radius 10 about (0, 50) of
+/// which it keeps 1 and 3. A singular instance (408) of the same cube
+/// under a quarter turn about z with its translation (0, -100, 0), which
+/// the turn does not move.
+#[test]
+fn subfigure_arrays_place_their_base_at_each_kept_position() {
+    let items = [
+        // D1: the definition holding the patch D3.
+        item(308, 0, true, "0,4HTILE,1,3"),
+        flat_patch(1.0, 0.0, true),
+        // D5: the definition holding the block D7.
+        item(308, 0, true, "0,4HCUBE,1,7"),
+        item(150, 0, true, "2.,2.,2.,0.,0.,0.,1.,0.,0.,0.,0.,1."),
+        // D9: the rectangular array, leaving out position 2.
+        item(
+            412,
+            0,
+            false,
+            &format!("1,2.,100.,0.,0.,3,2,10.,20.,{},1,1,2", PI / 2.0),
+        ),
+        // D11: the circular array, keeping positions 1 and 3.
+        item(
+            414,
+            0,
+            false,
+            &format!("5,4,0.,50.,0.,10.,0.,{},2,0,1,3", PI / 2.0),
+        ),
+        // D13: the singular instance, turned by D15.
+        item(408, 0, false, "5,0.,-100.,0.,1.").placed_by(15),
+        item(124, 0, true, "0.,-1.,0.,0.,1.,0.,0.,0.,0.,0.,1.,0."),
+    ];
+    let import = ogeom::io::read_iges(&deck(&items), T).unwrap();
+    assert!(import.report.warnings.is_empty(), "{:?}", import.report);
+    assert!(import.report.skipped.is_empty(), "{:?}", import.report);
+    let model = import.document.model();
+    let fine = Deflection::default();
+    let close = |a: ogeom::math::Point, b: [f64; 3]| {
+        a.distance(ogeom::math::Point::new(b[0], b[1], b[2])) < 1e-9
+    };
+
+    let mut patches: Vec<(f64, ogeom::math::Point)> = import
+        .sheets
+        .iter()
+        .map(|s| {
+            let props = surface_properties(model, s, fine, T).unwrap();
+            (props.mass, props.centre)
+        })
+        .collect();
+    patches.sort_by(|a, b| a.1.x.total_cmp(&b.1.x).then(a.1.y.total_cmp(&b.1.y)));
+    let want = [
+        [81.0, 11.0, 0.0],
+        [81.0, 21.0, 0.0],
+        [101.0, 1.0, 0.0],
+        [101.0, 11.0, 0.0],
+        [101.0, 21.0, 0.0],
+    ];
+    assert_eq!(patches.len(), want.len(), "{patches:?}");
+    for ((area, centre), want) in patches.iter().zip(want) {
+        assert!(
+            (area - 4.0).abs() < 1e-9 && close(*centre, want),
+            "{patches:?}"
+        );
+    }
+
+    let mut cubes: Vec<(f64, ogeom::math::Point)> = import
+        .solids
+        .iter()
+        .map(|s| {
+            let props = ogeom::algo::volume_properties(model, s, fine, T).unwrap();
+            (props.mass, props.centre)
+        })
+        .collect();
+    cubes.sort_by(|a, b| a.1.y.total_cmp(&b.1.y).then(a.1.x.total_cmp(&b.1.x)));
+    let want = [[-1.0, -99.0, 1.0], [-9.0, 51.0, 1.0], [11.0, 51.0, 1.0]];
+    assert_eq!(cubes.len(), want.len(), "{cubes:?}");
+    for ((volume, centre), want) in cubes.iter().zip(want) {
+        assert!(
+            (volume - 8.0).abs() < 1e-9 && close(*centre, want),
+            "{cubes:?}"
+        );
+    }
 }

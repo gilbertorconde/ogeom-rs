@@ -74,6 +74,30 @@ const UNTRIMMED_KINDS: [i64; 6] = [114, 118, 120, 122, 128, 140];
 
 const CSG_KINDS: [i64; 12] = [150, 152, 154, 156, 158, 160, 162, 164, 168, 180, 184, 430];
 
+/// The curves that stand as wireframe: circular arc, composite curve, conic
+/// arc, copious data, line, parametric spline, rational B-spline and offset
+/// curve.
+const WIRE_KINDS: [i64; 8] = [100, 102, 104, 106, 110, 112, 126, 130];
+
+/// Whether an entity is a curve that stands as wireframe: one of
+/// [`WIRE_KINDS`], copious data only where it draws a path (forms 11 to 13
+/// and 63), not a point set or a drafting form.
+fn is_wire(entity: &Entity) -> bool {
+    WIRE_KINDS.contains(&entity.kind)
+        && (entity.kind != 106 || matches!(entity.form, 11 | 12 | 13 | 63))
+}
+
+/// The subfigure instances: singular (408), rectangular array (412) and
+/// circular array (414).
+const INSTANCE_KINDS: [i64; 3] = [408, 412, 414];
+
+/// How many shapes one instance may place, counting each position's copy
+/// of every shape its base holds. An array is a pattern of holes or
+/// fasteners; a million placed shapes is past any real file, and arrays
+/// nested in arrays multiply, so a file past it is refused as hostile
+/// before it exhausts memory.
+const MOST_PLACED: usize = 1 << 20;
+
 /// What an import brought in, and what it left behind.
 #[derive(Debug, Default)]
 pub struct IgesReport {
@@ -97,8 +121,86 @@ pub struct IgesImport {
     pub solids: Vec<Shape>,
     /// Sewn shells and loose faces that do not enclose a volume.
     pub sheets: Vec<Shape>,
+    /// Wireframe: one wire per independent curve, and one per curve in
+    /// each subfigure placement. Wires live in the document's model but
+    /// are no part of it, so a document read here writes wherever it did.
+    pub wires: Vec<Shape>,
     /// What happened along the way.
     pub report: IgesReport,
+}
+
+/// What a subfigure definition, an array's base or any member of either
+/// holds at its own coordinates.
+#[derive(Clone, Default)]
+struct Content {
+    solids: Vec<Shape>,
+    /// Faces, sewn once placed.
+    faces: Vec<Shape>,
+    wires: Vec<Shape>,
+}
+
+impl Content {
+    fn moved(&self, location: &ogeom_topo::Location) -> Self {
+        let moved = |shapes: &[Shape]| shapes.iter().map(|x| x.moved(location)).collect();
+        Self {
+            solids: moved(&self.solids),
+            faces: moved(&self.faces),
+            wires: moved(&self.wires),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.solids.len() + self.faces.len() + self.wires.len()
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.solids.extend(other.solids);
+        self.faces.extend(other.faces);
+        self.wires.extend(other.wires);
+    }
+}
+
+/// What the independent subfigure instances placed.
+#[derive(Default)]
+struct Placed {
+    solids: Vec<Shape>,
+    /// Each placement's faces, sewn, whose shells did not close.
+    sheets: Vec<Shape>,
+    wires: Vec<Shape>,
+    /// Which instance placed each solid and face, for levels and groups.
+    from: Vec<(i64, Shape)>,
+}
+
+/// An array's number of positions, refused where it is not positive or
+/// is past [`MOST_PLACED`].
+fn array_count(de: i64, count: Option<i64>) -> OgeomResult<usize> {
+    match count.and_then(|c| usize::try_from(c).ok()) {
+        Some(c) if (1..=MOST_PLACED).contains(&c) => Ok(c),
+        _ => ogeom_bail!(
+            Construction,
+            "D{de}: an array of {count:?} positions; it needs 1 to {MOST_PLACED}"
+        ),
+    }
+}
+
+/// The 1-based positions of `count` an array keeps: all of them when its
+/// list count (at parameter `at`) is zero; otherwise those its list names
+/// when the flag after the count says DO (0), and all but those when it
+/// says DON'T (1). Numbers outside the array name no position.
+fn kept_positions(array: &Entity, at: usize, count: usize) -> Vec<usize> {
+    let listed = array.count(at);
+    if listed == 0 {
+        return (1..=count).collect();
+    }
+    let named: std::collections::BTreeSet<usize> = (0..listed)
+        .filter_map(|i| usize::try_from(array.at(at + 2 + i).int()).ok())
+        .filter(|k| (1..=count).contains(k))
+        .collect();
+    if array.at(at + 1).int() == 1 {
+        (1..=count).filter(|k| !named.contains(k)).collect()
+    } else {
+        named.into_iter().collect()
+    }
 }
 
 /// The pieces an edge-list entry resolves to.
@@ -263,21 +365,50 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         }
     }
 
-    // Subfigure instances: each independent 408 places its definition's
-    // solids and trimmed surfaces, built once and shared by every instance.
-    let (placed_solids, placed_sheets, placed_from) = reader.subfigure_instances(tol)?;
-    solids.extend(placed_solids.into_iter().map(|s| (0, s)));
-    sheets.extend(placed_sheets);
-    built_from.extend(placed_from);
+    // Subfigure instances: each independent 408 places its definition, and
+    // each 412 and 414 its base at every position its pattern keeps, built
+    // once and shared by every placement.
+    let placed = reader.subfigure_instances(tol)?;
+    solids.extend(placed.solids.into_iter().map(|s| (0, s)));
+    sheets.extend(placed.sheets);
+    built_from.extend(placed.from);
+    let mut wires = placed.wires;
 
-    if solids.is_empty() && sheets.is_empty() {
+    // Wireframe: every independent curve that is geometry (use flag 00, so
+    // not a parameter-space curve, construction or annotation), that no
+    // drawing lists and that nothing above took, as a wire.
+    let on_sheets = on_sheets(&file);
+    let curve_des: Vec<i64> = file
+        .entities
+        .iter()
+        .filter(|(de, e)| {
+            is_wire(e)
+                && (e.status / 10_000) % 100 == 0
+                && (e.status / 100) % 100 == 0
+                && !on_sheets.contains(de)
+                && !reader.visited.contains_key(de)
+        })
+        .map(|(de, _)| *de)
+        .collect();
+    for de in curve_des {
+        match reader.wireframe(de) {
+            Ok(wire) => wires.push(wire),
+            Err(e) => reader
+                .report
+                .warnings
+                .push(format!("D{de}: curve failed to build: {e}")),
+        }
+    }
+
+    if solids.is_empty() && sheets.is_empty() && wires.is_empty() {
         // A deck that *had* candidates which all failed is a different
         // refusal from one with nothing to try, and the warnings say why.
         if reader.report.warnings.is_empty() {
             ogeom_bail!(
                 Construction,
-                "the IGES file contains no manifold solid and no independent \
-                 trimmed or untrimmed surface this reader translates"
+                "the IGES file contains no manifold solid, no independent \
+                 trimmed or untrimmed surface and no independent curve this \
+                 reader translates"
             );
         }
         ogeom_bail!(
@@ -336,6 +467,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         document,
         solids,
         sheets,
+        wires,
         report: reader.report,
     })
 }
@@ -1743,10 +1875,28 @@ impl<'a> Reader<'a> {
     fn curve_segments_at(&mut self, de: i64) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
         let entity = self.entity(de)?;
         if entity.kind == 102 {
+            // The composite's matrix carries its physically dependent
+            // constituents on into model space after their own (IGES 5.3,
+            // section 3.2.3); a point or connect point among them marks
+            // where two pieces meet and adds no segment.
+            let placement = self.placement(entity)?;
             let n = entity.count(0);
             let mut out = Vec::new();
             for i in 0..n {
-                out.extend(self.curve_segments(entity.at(1 + i).int())?);
+                let member = entity.at(1 + i).int();
+                let child = self.entity(member)?;
+                if matches!(child.kind, 116 | 132) {
+                    continue;
+                }
+                let physical = matches!((child.status / 10_000) % 100, 1 | 3);
+                let segments = self.curve_segments(member)?;
+                if physical && placement != Transform::IDENTITY {
+                    for (curve, range) in segments {
+                        out.push((curve.transformed(&placement, self.tol)?, range));
+                    }
+                } else {
+                    out.extend(segments);
+                }
             }
             return Ok(out);
         }
@@ -1767,6 +1917,89 @@ impl<'a> Reader<'a> {
             return Ok(out);
         }
         Ok(vec![(curve, range)])
+    }
+
+    /// An independent curve as a wire: its segments in the file's order,
+    /// each run the way the chain goes, consecutive segments sharing the
+    /// vertex where they meet, and a chain that comes back to its start
+    /// closing on its first vertex.
+    fn wireframe(&mut self, de: i64) -> OgeomResult<Shape> {
+        let segments = self.curve_segments(de)?;
+        if segments.is_empty() {
+            ogeom_bail!(Construction, "D{de}: a composite curve with no curves");
+        }
+        let ends: Vec<(Point, Point)> = segments
+            .iter()
+            .map(|(c, r)| Ok((c.point_at(r.0, self.tol)?, c.point_at(r.1, self.tol)?)))
+            .collect::<OgeomResult<_>>()?;
+        let weld = self.tol.confusion() * 100.0;
+        // Each segment's sense along the chain from `start`, or how many
+        // segments the chain reaches before a gap.
+        let walk = |start: Point| -> Result<Vec<bool>, usize> {
+            let mut at = start;
+            let mut senses = Vec::with_capacity(ends.len());
+            for (i, &(s, e)) in ends.iter().enumerate() {
+                let forward = at.distance(s) <= at.distance(e);
+                if at.distance(if forward { s } else { e }) > weld {
+                    return Err(i);
+                }
+                senses.push(forward);
+                at = if forward { e } else { s };
+            }
+            Ok(senses)
+        };
+        let (start, senses) = match (walk(ends[0].0), walk(ends[0].1)) {
+            (Ok(senses), _) => (ends[0].0, senses),
+            (_, Ok(senses)) => (ends[0].1, senses),
+            (Err(a), Err(b)) => ogeom_bail!(
+                Construction,
+                "D{de}: curve segment {} starts away from where the previous one ended",
+                a.max(b)
+            ),
+        };
+        let finish = match senses.last() {
+            Some(true) => ends[ends.len() - 1].1,
+            _ => ends[ends.len() - 1].0,
+        };
+        let closed = finish.distance(start) <= weld;
+        let head = make_vertex(&mut self.model, start).shape;
+        let mut at_vertex = head.clone();
+        let mut edges = Vec::with_capacity(segments.len());
+        let n = segments.len();
+        for (i, (((curve, range), (s, e)), forward)) in
+            segments.into_iter().zip(ends).zip(senses).enumerate()
+        {
+            let next_vertex = if i + 1 == n && closed {
+                head.clone()
+            } else {
+                make_vertex(&mut self.model, if forward { e } else { s }).shape
+            };
+            let edge = if forward {
+                make_edge_between(
+                    &mut self.model,
+                    curve,
+                    range,
+                    &at_vertex,
+                    &next_vertex,
+                    self.tol,
+                )?
+                .shape
+            } else {
+                make_edge_between(
+                    &mut self.model,
+                    curve,
+                    range,
+                    &next_vertex,
+                    &at_vertex,
+                    self.tol,
+                )?
+                .shape
+                .reversed()
+            };
+            edges.push(edge);
+            at_vertex = next_vertex;
+        }
+        Ok(ogeom_algo::make_wire(&mut self.model, &edges, self.tol)?.shape)
     }
 
     /// A trimmed (144) or bounded (143) surface as a face.
@@ -2966,30 +3199,25 @@ impl<'a> Reader<'a> {
         Ok(ogeom_algo::make_face_with_pcurves(&mut self.model, surface, &[edges], self.tol)?.shape)
     }
 
-    /// Every independent singular subfigure instance (408) placed: its
-    /// definition's (308) solids moved into place, and its trimmed surfaces
-    /// moved and sewn, closed shells becoming solids as a surface file's
-    /// do. A definition is built once, however many instances place it:
-    /// the instances share its topology under their own placements.
-    #[allow(
-        clippy::type_complexity,
-        reason = "the solids, the sheets, and what built what"
-    )]
-    fn subfigure_instances(
-        &mut self,
-        tol: Tolerances,
-    ) -> OgeomResult<(Vec<Shape>, Vec<Shape>, Vec<(i64, Shape)>)> {
+    /// Every independent subfigure instance placed: a singular instance
+    /// (408) its definition (308), an array (412, 414) its base at each
+    /// position it keeps. Solids are moved into place; each placement's
+    /// faces are moved and sewn, closed shells becoming solids as a surface
+    /// file's do; its curves are moved wires. What an instance places is
+    /// built once, however many place it: the placements share its
+    /// topology under their own locations.
+    fn subfigure_instances(&mut self, tol: Tolerances) -> OgeomResult<Placed> {
         let instances: Vec<i64> = self
             .file
             .entities
             .iter()
-            .filter(|(_, e)| e.kind == 408 && (e.status / 10_000) % 100 == 0)
+            .filter(|(_, e)| INSTANCE_KINDS.contains(&e.kind) && (e.status / 10_000) % 100 == 0)
             .map(|(de, _)| *de)
             .collect();
-        let mut built: FastMap<i64, (Vec<Shape>, Vec<Shape>)> = FastMap::default();
-        let (mut solids, mut sheets, mut from) = (Vec::new(), Vec::new(), Vec::new());
+        let mut built: FastMap<i64, Content> = FastMap::default();
+        let mut placed = Placed::default();
         for de in instances {
-            let (placed_solids, faces) = match self.instance(de, &mut built, 0) {
+            let copies = match self.instance(de, &mut built, 0) {
                 Ok(found) => found,
                 Err(e) => {
                     self.report
@@ -2998,85 +3226,193 @@ impl<'a> Reader<'a> {
                     continue;
                 }
             };
-            from.extend(placed_solids.iter().map(|s| (de, s.clone())));
-            from.extend(faces.iter().map(|f| (de, f.clone())));
-            solids.extend(placed_solids);
-            if faces.is_empty() {
-                continue;
-            }
-            let sewn = sew(&mut self.model, &faces, tol)?;
-            for shell in &sewn.shells {
-                ogeom_algo::join_seam_columns(&mut self.model, shell, tol)?;
-                if ogeom_algo::is_shell_closed(&self.model, shell)? {
-                    solids.push(make_solid(&mut self.model, std::slice::from_ref(shell))?.shape);
-                } else {
-                    sheets.push(shell.clone());
+            for copy in copies {
+                placed
+                    .from
+                    .extend(copy.solids.iter().map(|s| (de, s.clone())));
+                placed
+                    .from
+                    .extend(copy.faces.iter().map(|f| (de, f.clone())));
+                placed.solids.extend(copy.solids);
+                placed.wires.extend(copy.wires);
+                if copy.faces.is_empty() {
+                    continue;
+                }
+                let sewn = sew(&mut self.model, &copy.faces, tol)?;
+                for shell in &sewn.shells {
+                    ogeom_algo::join_seam_columns(&mut self.model, shell, tol)?;
+                    if ogeom_algo::is_shell_closed(&self.model, shell)? {
+                        placed
+                            .solids
+                            .push(make_solid(&mut self.model, std::slice::from_ref(shell))?.shape);
+                    } else {
+                        placed.sheets.push(shell.clone());
+                    }
                 }
             }
         }
-        Ok((solids, sheets, from))
+        Ok(placed)
     }
 
-    /// One instance's solids and faces, placed: its own placement, then
-    /// the translation and uniform scale it states.
+    /// One instance's placements of what it instances, one per position.
+    ///
+    /// The order is the format's (IGES 5.3, section 3.6.2): the scale about
+    /// the instanced definition space's origin, then the instance's own
+    /// matrix, then the position, which that matrix does not move. A
+    /// singular instance (408) has one position, its translation. A
+    /// rectangular array (412) counts its positions up the first column,
+    /// then up the next, the grid turned about its corner; a circular
+    /// array (414) counts them counter-clockwise round its circle from the
+    /// start angle. Neither turns the copies themselves. A list keeps only
+    /// the positions it names (DO) or all but those (DON'T).
     fn instance(
         &mut self,
         de: i64,
-        built: &mut FastMap<i64, (Vec<Shape>, Vec<Shape>)>,
+        built: &mut FastMap<i64, Content>,
         depth: usize,
-    ) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
+    ) -> OgeomResult<Vec<Content>> {
+        let entity = self.entity(de)?;
+        let s = self.report.scale_mm;
+        let at = |i: usize| entity.at(i).real() * s;
+        let scale_at = |i: usize| match entity.at(i).real() {
+            f if f > 0.0 => f,
+            _ => 1.0,
+        };
+        // The base, the scale, and each kept position in definition space.
+        let (base, factor, positions): (i64, f64, Vec<Vector>) = match entity.kind {
+            408 => {
+                let definition = entity.at(0).int();
+                if let Some(e) = self.file.entity(definition)
+                    && e.kind != 308
+                {
+                    ogeom_bail!(
+                        Construction,
+                        "D{de}: an instance names a type {} entity, not a subfigure \
+                         definition",
+                        e.kind
+                    );
+                }
+                (
+                    definition,
+                    scale_at(4),
+                    vec![Vector::new(at(1), at(2), at(3))],
+                )
+            }
+            412 => {
+                let (columns, rows) = (entity.at(5).int(), entity.at(6).int());
+                let grid = (columns >= 1 && rows >= 1)
+                    .then(|| columns.checked_mul(rows))
+                    .flatten();
+                let count = array_count(de, grid)?;
+                let kept = kept_positions(entity, 10, count);
+                let corner = Vector::new(at(2), at(3), at(4));
+                let (dx, dy) = (at(7), at(8));
+                let (sin, cos) = entity.at(9).real().sin_cos();
+                let rows = usize::try_from(rows).unwrap_or(1);
+                let positions = kept
+                    .into_iter()
+                    .map(|k| {
+                        let (column, row) = ((k - 1) / rows, (k - 1) % rows);
+                        #[allow(clippy::cast_precision_loss, reason = "array sizes are small")]
+                        let (x, y) = (column as f64 * dx, row as f64 * dy);
+                        corner + Vector::new(cos * x - sin * y, sin * x + cos * y, 0.0)
+                    })
+                    .collect();
+                (entity.at(0).int(), scale_at(1), positions)
+            }
+            414 => {
+                let count = array_count(de, Some(entity.at(1).int()))?;
+                let kept = kept_positions(entity, 8, count);
+                let centre = Vector::new(at(2), at(3), at(4));
+                let radius = at(5);
+                let (start, delta) = (entity.at(6).real(), entity.at(7).real());
+                let positions = kept
+                    .into_iter()
+                    .map(|k| {
+                        #[allow(clippy::cast_precision_loss, reason = "array sizes are small")]
+                        let (sin, cos) = (start + (k - 1) as f64 * delta).sin_cos();
+                        centre + Vector::new(radius * cos, radius * sin, 0.0)
+                    })
+                    .collect();
+                (entity.at(0).int(), 1.0, positions)
+            }
+            kind => ogeom_bail!(
+                Construction,
+                "D{de}: type {kind} is not a subfigure instance"
+            ),
+        };
+        let content = self.member(base, built, depth + 1)?;
+        if positions.len().saturating_mul(content.len()) > MOST_PLACED {
+            ogeom_bail!(
+                Construction,
+                "D{de}: places {} copies of {} shapes, past {MOST_PLACED}",
+                positions.len(),
+                content.len()
+            );
+        }
+        let within = self.placement(entity)? * Transform::scaling(Point::ORIGIN, factor, self.tol)?;
+        let mut copies = Vec::with_capacity(positions.len());
+        for position in positions {
+            let motion = Transform::translation(position) * within;
+            let location = ogeom_topo::Location::of(self.model.add_datum(motion));
+            copies.push(content.moved(&location));
+        }
+        Ok(copies)
+    }
+
+    /// What an entity holds at its own coordinates, as an instance places
+    /// it: a subfigure definition's (308) members, an instance's placements
+    /// within it, a solid, a face, or a curve's wire. Anything else holds
+    /// nothing and is left for the skipped table. Built once per entity.
+    fn member(
+        &mut self,
+        de: i64,
+        built: &mut FastMap<i64, Content>,
+        depth: usize,
+    ) -> OgeomResult<Content> {
+        if let Some(found) = built.get(&de) {
+            return Ok(found.clone());
+        }
         if depth > 32 {
             ogeom_bail!(
                 Construction,
                 "D{de}: subfigures nest past any sensible depth"
             );
         }
-        let entity = self.entity(de)?;
-        let definition = entity.at(0).int();
-        let s = self.report.scale_mm;
-        let offset = Vector::new(
-            entity.at(1).real() * s,
-            entity.at(2).real() * s,
-            entity.at(3).real() * s,
-        );
-        let factor = match entity.at(4).real() {
-            f if f > 0.0 => f,
-            _ => 1.0,
+        let Some(entity) = self.file.entity(de) else {
+            ogeom_bail!(Construction, "IGES pointer D{de} names no entity");
         };
-        let (solids, faces) = self.subfigure(definition, built, depth)?;
-        let motion = self.placement(entity)?
-            * Transform::translation(offset)
-            * Transform::scaling(Point::ORIGIN, factor, self.tol)?;
-        let location = ogeom_topo::Location::of(self.model.add_datum(motion));
-        Ok((
-            solids.iter().map(|x| x.moved(&location)).collect(),
-            faces.iter().map(|x| x.moved(&location)).collect(),
-        ))
+        let (kind, wire) = (entity.kind, is_wire(entity));
+        let mut content = Content::default();
+        match kind {
+            308 => content = self.subfigure(de, built, depth)?,
+            408 | 412 | 414 => {
+                for copy in self.instance(de, built, depth)? {
+                    content.extend(copy);
+                }
+            }
+            186 => content.solids.push(self.manifold_solid(de)?),
+            143 | 144 => content.faces.push(self.face(de)?),
+            k if UNTRIMMED_KINDS.contains(&k) => content.faces.push(self.untrimmed_face(de)?),
+            k if CSG_KINDS.contains(&k) => content.solids.extend(self.csg_solids(de)?),
+            _ if wire => content.wires.push(self.wireframe(de)?),
+            _ => {}
+        }
+        built.insert(de, content.clone());
+        Ok(content)
     }
 
-    /// A subfigure definition's (308) solids and trimmed surfaces, at the
-    /// definition's own coordinates, nested instances placed within it.
+    /// A subfigure definition's (308) members at the definition's own
+    /// coordinates, nested instances placed within it.
     fn subfigure(
         &mut self,
         de: i64,
-        built: &mut FastMap<i64, (Vec<Shape>, Vec<Shape>)>,
+        built: &mut FastMap<i64, Content>,
         depth: usize,
-    ) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
-        if let Some(found) = built.get(&de) {
-            return Ok(found.clone());
-        }
+    ) -> OgeomResult<Content> {
         let entity = self.entity(de)?;
-        if entity.kind != 308 {
-            ogeom_bail!(
-                Construction,
-                "D{de}: an instance names a type {} entity, not a subfigure \
-                 definition",
-                entity.kind
-            );
-        }
         let count = entity.count(2);
         let members: Vec<i64> = (0..count).map(|i| entity.at(3 + i).int()).collect();
-        let (mut solids, mut faces) = (Vec::new(), Vec::new());
         let trims: Vec<i64> = members
             .iter()
             .copied()
@@ -3090,20 +3426,22 @@ impl<'a> Reader<'a> {
         // A nested definition reads its own trims against its own poles,
         // and the enclosing ones are back in force once it is read.
         let outer_poles = core::mem::replace(&mut self.trim_poles, poles);
+        let mut content = Content::default();
         let mut read_members = || -> OgeomResult<()> {
             for &member in &members {
-                let Some(kind) = self.file.entity(member).map(|m| m.kind) else {
+                let Some(kind) = self.file.entity(member).map(|e| e.kind) else {
                     continue;
                 };
-                match kind {
-                    186 => solids.push(self.manifold_solid(member)?),
-                    143 | 144 => faces.push(self.face(member)?),
-                    408 => {
-                        let (s, f) = self.instance(member, built, depth + 1)?;
-                        solids.extend(s);
-                        faces.extend(f);
-                    }
-                    _ => {}
+                // A solid, a trimmed surface or an instance that fails
+                // fails the definition; a surface, constructive solid or
+                // curve beside them that fails is reported and passed over.
+                match self.member(member, built, depth + 1) {
+                    Ok(found) => content.extend(found),
+                    Err(e) if !matches!(kind, 143 | 144 | 186 | 408) => self
+                        .report
+                        .warnings
+                        .push(format!("D{member}: subfigure member not read: {e}")),
+                    Err(e) => return Err(e),
                 }
             }
             Ok(())
@@ -3111,8 +3449,7 @@ impl<'a> Reader<'a> {
         let read = read_members();
         self.trim_poles = outer_poles;
         read?;
-        built.insert(de, (solids.clone(), faces.clone()));
-        Ok((solids, faces))
+        Ok(content)
     }
 
     /// The model-space annotation: every independent drafting entity a
@@ -3129,15 +3466,7 @@ impl<'a> Reader<'a> {
         Vec<ogeom_doc::Callout>,
         Vec<(ogeom_doc::Callout, ogeom_doc::Dimension)>,
     ) {
-        let mut on_sheets: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
-        for entity in self.file.entities.values().filter(|e| e.kind == 404) {
-            let views = entity.count(0);
-            let at = 1 + 3 * views;
-            let count = entity.count(at);
-            for i in 0..count {
-                on_sheets.insert(entity.at(at + 1 + i).int().abs());
-            }
-        }
+        let on_sheets = on_sheets(self.file);
         let drafting: Vec<i64> = self
             .file
             .entities
@@ -3454,6 +3783,21 @@ impl<'a> Reader<'a> {
             .get(index)
             .map(|&(r, g, b)| ogeom_doc::Colour::rgb(r, g, b))
     }
+}
+
+/// The entities a drawing (404) lists as its own annotation: they live on
+/// the sheet, not on the part.
+fn on_sheets(file: &File) -> std::collections::BTreeSet<i64> {
+    let mut on_sheets = std::collections::BTreeSet::new();
+    for entity in file.entities.values().filter(|e| e.kind == 404) {
+        let views = entity.count(0);
+        let at = 1 + 3 * views;
+        let count = entity.count(at);
+        for i in 0..count {
+            on_sheets.insert(entity.at(at + 1 + i).int().abs());
+        }
+    }
+    on_sheets
 }
 
 /// The file's levels and groups as the document's layers: every shape on
@@ -4830,7 +5174,7 @@ mod tests {
         ));
         let deck = file(entities);
         let mut reader = reader(&deck);
-        let (solids, sheets, _) = reader.subfigure_instances(T).unwrap();
+        let Placed { solids, sheets, .. } = reader.subfigure_instances(T).unwrap();
         assert!(solids.is_empty());
         assert_eq!(sheets.len(), 2);
         let deflection = ogeom_mesh::Deflection::default();

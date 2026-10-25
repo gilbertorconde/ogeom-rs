@@ -13,6 +13,8 @@ pub(crate) struct Bodies {
     pub shells: Vec<Shape>,
     /// Every face no shell owns.
     pub faces: Vec<Shape>,
+    /// Every wire and edge no face owns, where the caller writes wireframe.
+    pub wires: Vec<Shape>,
 }
 
 /// Split a part's shape into its solids, free shells and free faces,
@@ -21,13 +23,20 @@ pub(crate) struct Bodies {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// shape holds a wire, edge or vertex outside every face (wireframe, which
-/// `format` is not written with here), or holds nothing to write at all.
-pub(crate) fn bodies_of(model: &Model, shape: &Shape, format: &str) -> OgeomResult<Bodies> {
+/// shape holds a vertex outside every face, or a wire or edge outside every
+/// face where `wireframe` is false (wireframe, which `format` is not written
+/// with here), or holds nothing to write at all.
+pub(crate) fn bodies_of(
+    model: &Model,
+    shape: &Shape,
+    format: &str,
+    wireframe: bool,
+) -> OgeomResult<Bodies> {
     let mut bodies = Bodies {
         solids: Vec::new(),
         shells: Vec::new(),
         faces: Vec::new(),
+        wires: Vec::new(),
     };
     let mut stack = vec![shape.clone()];
     while let Some(shape) = stack.pop() {
@@ -39,18 +48,29 @@ pub(crate) fn bodies_of(model: &Model, shape: &Shape, format: &str) -> OgeomResu
             ShapeType::Solid => bodies.solids.push(shape),
             ShapeType::Shell => bodies.shells.push(shape),
             ShapeType::Face => bodies.faces.push(shape),
+            ShapeType::Wire | ShapeType::Edge if wireframe => bodies.wires.push(shape),
             kind @ (ShapeType::Wire | ShapeType::Edge | ShapeType::Vertex) => ogeom_bail!(
                 Construction,
                 "a part's shape holds a free {}, which {format} export does not write: \
-                 it writes solids, shells and faces, not wireframe",
-                format!("{kind:?}").to_lowercase()
+                 it writes solids, shells and faces{}",
+                format!("{kind:?}").to_lowercase(),
+                if wireframe {
+                    " and wires, not points"
+                } else {
+                    ", not wireframe"
+                }
             ),
         }
     }
-    if bodies.solids.is_empty() && bodies.shells.is_empty() && bodies.faces.is_empty() {
+    if bodies.solids.is_empty()
+        && bodies.shells.is_empty()
+        && bodies.faces.is_empty()
+        && bodies.wires.is_empty()
+    {
         ogeom_bail!(
             Construction,
-            "a part's shape holds no solid, shell or face to write as {format}"
+            "a part's shape holds no solid, shell, face{} to write as {format}",
+            if wireframe { " or wire" } else { "" }
         );
     }
     Ok(bodies)

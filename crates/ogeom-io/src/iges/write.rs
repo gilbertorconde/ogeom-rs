@@ -4,7 +4,8 @@
 //! (514), faces (510), loops (508), one edge list (504) and one vertex list
 //! (502) per solid), and sheets (shells no solid owns, faces no shell owns)
 //! as trimmed surfaces (144), one per face, each bounded by curves on the
-//! surface (142) over its model-space edges. Surfaces go out in their
+//! surface (142) over its model-space edges, and wireframe (wires and edges
+//! outside every face) as independent curves. Surfaces go out in their
 //! analytic spellings where IGES has one and as rational B-splines (128)
 //! where it does not. Curves defined in a
 //! plane of their own, arcs and ellipses, are written in definition space
@@ -30,13 +31,17 @@ use ogeom_topo::{EdgeRepr, Filter, NodeData, Shape, ShapeType, explore};
 /// A solid becomes a manifold solid B-rep object (186). A sheet's faces
 /// become independent trimmed surfaces (144), which a reader sews back into
 /// the sheet they were; a sheet that closes reads back as a solid.
+/// A wire or edge outside every face is wireframe, written as its curve
+/// (an edge's own, a composite curve (102) of a wire's edges in the order
+/// the wire walks them) standing independent.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// document holds no part, a part holds wireframe (a wire, edge or vertex
-/// outside every face) or nothing at all, or a body carries geometry with
-/// no IGES spelling here; the error names the entity and the capability row.
+/// document holds no part, a part holds a vertex outside every edge or
+/// nothing at all, a wire holds only degenerate edges, or a body carries
+/// geometry with no IGES spelling here; the error names the entity and the
+/// capability row.
 pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResult<String> {
     let mut writer = Writer {
         model: document.model(),
@@ -53,7 +58,7 @@ pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResul
         let ogeom_doc::ProductKind::Part { shape } = &product.kind else {
             continue;
         };
-        let bodies = crate::bodies::bodies_of(writer.model, shape, "IGES")?;
+        let bodies = crate::bodies::bodies_of(writer.model, shape, "IGES", true)?;
         parts.push((product.name.clone(), bodies));
     }
     if parts.is_empty() {
@@ -70,6 +75,9 @@ pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResul
         }
         for face in &bodies.faces {
             writer.trimmed_surface(face, &label)?;
+        }
+        for wire in &bodies.wires {
+            writer.wireframe(wire, &label)?;
         }
     }
     Ok(writer.serialize())
@@ -397,11 +405,37 @@ impl Writer<'_> {
     /// for its pieces, so an edge the wire uses reversed goes out as its
     /// curve reversed.
     fn boundary_curve(&mut self, wire: &Shape) -> OgeomResult<Option<usize>> {
+        let edges = self.model.ordered_children_of(wire)?;
+        self.chained_curve(&edges)
+    }
+
+    /// Wireframe, a free wire or edge, as its curve standing independent.
+    fn wireframe(&mut self, shape: &Shape, label: &str) -> OgeomResult<()> {
+        let edges = if self.model.kind_of(shape)? == ShapeType::Edge {
+            vec![shape.clone()]
+        } else {
+            self.model.ordered_children_of(shape)?
+        };
+        let Some(curve) = self.chained_curve(&edges)? else {
+            ogeom_bail!(
+                Construction,
+                "a free wire whose every edge is degenerate cannot be written as IGES"
+            );
+        };
+        let entity = &mut self.entities[curve];
+        entity.independent = true;
+        entity.label = label.chars().take(8).collect();
+        Ok(())
+    }
+
+    /// Edges as one model-space curve, as [`Self::boundary_curve`] writes a
+    /// wire's.
+    fn chained_curve(&mut self, edges: &[Shape]) -> OgeomResult<Option<usize>> {
         let mut pieces = Vec::new();
-        for edge in self.model.ordered_children_of(wire)? {
+        for edge in edges {
             let forward = edge.orientation() != ogeom_topo::Orientation::Reversed;
             let (curve, range) = {
-                let Some(data) = self.model.node(&edge).and_then(|n| n.data().as_edge()) else {
+                let Some(data) = self.model.node(edge).and_then(|n| n.data().as_edge()) else {
                     ogeom_bail!(Construction, "edge node holds no edge data");
                 };
                 if data.degenerate {

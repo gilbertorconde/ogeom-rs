@@ -289,19 +289,29 @@ fn wireframe_and_empty_parts_are_refused_by_name() {
         let compound = ogeom_algo::make_compound(&mut model, &[solid, wire])
             .unwrap()
             .shape;
-        let error = write(&document_of(model, compound))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("free wire") && error.contains("wireframe"),
-            "{error}"
-        );
+        let written = write(&document_of(model, compound));
+        if format == "step" {
+            let error = written.unwrap_err().to_string();
+            assert!(
+                error.contains("free wire") && error.contains("wireframe"),
+                "{error}"
+            );
+        } else {
+            // IGES writes wireframe as independent curves.
+            written.unwrap();
+        }
 
         // A compound of nothing.
         let mut model = Model::new();
         let empty = ogeom_algo::make_compound(&mut model, &[]).unwrap().shape;
         let error = write(&document_of(model, empty)).unwrap_err().to_string();
-        assert!(error.contains("no solid, shell or face"), "{error}");
+        assert!(error.contains("no solid, shell"), "{error}");
+
+        // A free point: IGES writes curves, not points.
+        let mut model = Model::new();
+        let point = ogeom_algo::make_vertex(&mut model, Point::new(1.0, 2.0, 3.0)).shape;
+        let error = write(&document_of(model, point)).unwrap_err().to_string();
+        assert!(error.contains("free vertex"), "{error}");
     }
 }
 
