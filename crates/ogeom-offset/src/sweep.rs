@@ -3779,37 +3779,29 @@ pub(crate) struct SpineStation {
 
 /// One profile wire's closed shell round the spine: smooth wires skin as a
 /// single closed face, faceted ones as one ring strip per facet.
+///
+/// `carried(s, (a, b))` is the point `(a, b)` of the profile, in the start
+/// frame, at `s` along the way round `stations`: the first station's frame
+/// again at the last.
 #[allow(clippy::too_many_arguments, reason = "one frame, spelled out")]
 fn closed_loop_shell(
     model: &mut Model,
     profile_loop: &Shape,
     edges: &[Shape],
     smooth: bool,
-    walk: &SpineWalk<'_>,
+    stations: &[SpineStation],
+    carried: &dyn Fn(f64, (f64, f64)) -> OgeomResult<Point>,
     frame0: (Point, Vector),
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     const AROUND: usize = 40;
     let (origin, x0) = frame0;
-    let stations = walk.stations;
     let t0 = stations[0].tangent;
     let y0 = t0.cross(x0);
     // The way round runs from the first station to its return home, the
     // last of the walk's stations.
     let home = stations.len() - 1;
-    // A point of the profile, in the start frame, at `s` along the way
-    // round: a station's own frame at a station, the home station the
-    // first again, the frame carried between them anywhere else.
-    let carried = |s: f64, (a, b): (f64, f64)| -> OgeomResult<Point> {
-        if s.fract() == 0.0 {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let i = (s as usize) % home;
-            let (station, x) = (&stations[i], walk.normals[i]);
-            return Ok(station.at + x * a + station.tangent.cross(x) * b);
-        }
-        walk.generator(s, (0, home), (a, b), tol)
-    };
     if !smooth {
         // A faceted profile: one ring strip per profile edge; a fit cannot
         // speak a corner, so each facet gets its own v-closed skin and the
@@ -5173,8 +5165,12 @@ pub fn make_pipe_shell_law(
 /// with the rotation-minimizing frame on an open spine, every corner is
 /// built as before: each leg a prism and each round corner the section
 /// revolved. An auxiliary or binormal law round a closed spine with no
-/// sharp corner sweeps where its frames are the rotation-minimizing ones
-/// turned by a fixed angle, as those do. On a spine with no sharp corner
+/// sharp corner sweeps as the rotation-minimizing frame does where its
+/// frames are those turned by a fixed angle; elsewhere its own frames,
+/// single-valued round the spine, are skinned round it and held to
+/// `tolerance` against the law, each hole a void tunnel of its own shell.
+/// Under those laws each hole of a face swept along an open spine sweeps
+/// its own solid, cut from the outer one. On a spine with no sharp corner
 /// every way of turning corners is the same solid.
 ///
 /// # Errors
@@ -5185,9 +5181,7 @@ pub fn make_pipe_shell_law(
 /// swept round a corner run by run, the Frenet frame along a straight run
 /// between sharp corners, a round corner where the law sets the next run's
 /// section other than the first's turned about the corner (or the frame
-/// comes home turned round a closed spine), and an auxiliary or binormal
-/// law round a smooth closed spine whose frames turn against the
-/// rotation-minimizing ones; where the guide does not cross a station's
+/// comes home turned round a closed spine); where the guide does not cross a station's
 /// plane, or the spine's tangent runs along the binormal or toward the
 /// guide.
 #[allow(clippy::too_many_arguments)]
@@ -5223,11 +5217,11 @@ pub fn make_pipe_shell_with(
         // A law round a smooth closed spine whose frames are the
         // rotation-minimizing ones sweeps as that frame does.
         if !corners::law_is_rotation_minimizing(model, spine, law, tolerance, tol)? {
-            ogeom_bail!(
-                Construction,
-                "an auxiliary or binormal law round a closed spine is swept only where its \
-                 frames are the rotation-minimizing ones"
-            );
+            // Any other law's frames are its own, single-valued round the
+            // spine: the skin closes on them.
+            let built = evolving::closed_law_pipe(model, profile, spine, law, 0.0, tolerance, tol)?;
+            state_new_gaps(model, &[profile.clone(), spine.clone()], &built.shape, tol)?;
+            return Ok(built);
         }
         return make_pipe_shell_with(
             model,
@@ -5729,11 +5723,23 @@ fn law_loft(
         ShapeType::Wire => vec![profile.clone()],
         _ => ogeom_bail!(Construction, "a pipe sweeps a planar face or wire"),
     };
-    if rings.len() != 1 {
-        ogeom_bail!(
-            Construction,
-            "an auxiliary or binormal law sweeps a profile with no hole"
-        );
+    if rings.len() > 1 {
+        // Each hole sweeps its own solid under the same frames, cut from
+        // the outer one.
+        let mut solids = Vec::with_capacity(rings.len());
+        for ring in &rings {
+            solids.push(
+                law_loft(model, ring, spine, stations, law, evolution, tolerance, tol)?.shape,
+            );
+        }
+        let mut shape = solids[0].clone();
+        for hole in &solids[1..] {
+            shape = ogeom_bool::cut(model, &shape, hole, tol)?.shape;
+        }
+        let mut history = History::new();
+        history.generate(spine, shape.clone());
+        history.generate(profile, shape.clone());
+        return Ok(Built::new(shape, history));
     }
     let normals = law_normals(model, stations, law, tolerance, tol)?;
     let start = station_frame(&stations[0], normals[0], tol)?;
@@ -6465,7 +6471,7 @@ fn pipe_shell_law(
         return law_loft(model, profile, spine, &stations, law, None, tolerance, tol);
     }
     if ring && kinks.is_empty() {
-        return closed_pipe_shell(model, profile, spine, stations, frenet, tolerance, tol);
+        return closed_pipe_shell(model, profile, spine, stations, law, 0.0, tolerance, tol);
     }
     // The cornered ring closes at its own wrap. Seamed on a corner, the
     // wrap is one more mitre; seamed mid-leg, the wrap's "mitre" plane is
@@ -7746,15 +7752,25 @@ pub(crate) fn spine_curve_of(
 /// frame *is* the first's; without it the closed fit fights a helical
 /// grid. The profile may be smooth or faceted, and each hole sweeps a void
 /// tunnel of its own shell; the Frenet law rides the loop as well.
+///
+/// The auxiliary and binormal laws set a frame at each point of the spine,
+/// single-valued round it, so theirs need no reconciling: the law gives
+/// the normal at each station and between them, and the skin is held to
+/// `tolerance` against it. A `twist` (whole turns, the caller's to check)
+/// turns the section about the spine in proportion to the length run.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn closed_pipe_shell(
     model: &mut Model,
     profile: &Shape,
     spine: &Shape,
     mut stations: Vec<SpineStation>,
-    frenet: bool,
+    law: &PipeLaw<'_>,
+    twist: f64,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let frenet = matches!(law, PipeLaw::Frenet);
+    let classic = matches!(law, PipeLaw::RotationMinimizing | PipeLaw::Frenet);
     // The walk visits the join twice; the loop owns it once.
     let Some(home) = stations.pop() else {
         ogeom_bail!(Construction, "a closed spine needs room to turn");
@@ -7800,7 +7816,9 @@ fn closed_pipe_shell(
     // holonomy; the Frenet law owes it too, because straight stretches
     // carry the frame through by continuation and the continuation is
     // path-dependent. One reconciliation serves both.
-    let mut normals: Vec<Vector> = if frenet {
+    let mut normals: Vec<Vector> = if !classic {
+        law_normals(model, &stations, law, tolerance, tol)?
+    } else if frenet {
         // The Frenet frame is the spine's own, single-valued round a loop:
         // read with wrapped neighbours it closes on itself and owes no
         // reconciliation. Read from a walk that visits the join twice it
@@ -7856,6 +7874,58 @@ fn closed_pipe_shell(
         stations: &round,
         normals: &round_normals,
     };
+    let guide = guide_curves(model, law)?;
+    let lengths = if twist == 0.0 {
+        None
+    } else {
+        Some(evolving::SpineLengths::of(&walk.curves, tol)?)
+    };
+    let home = round.len() - 1;
+    // A station's own frame at a station, the home station the first
+    // again; between them the frame carried, or the law's own; then the
+    // twist the length run to there turns the section by.
+    let carried = |s: f64, (a, b): (f64, f64)| -> OgeomResult<Point> {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let station = (s.fract() == 0.0).then(|| (s as usize) % home);
+        let (p, t, x, (edge, at_t)) = if let Some(i) = station {
+            let station = &round[i];
+            (
+                station.at,
+                station.tangent,
+                round_normals[i],
+                (station.edge, station.t),
+            )
+        } else {
+            let (p, t, x) = walk.frame_at(s, (0, home), tol)?;
+            let x = if classic {
+                x
+            } else {
+                let here = SpineStation {
+                    at: p,
+                    tangent: t,
+                    ..round[0]
+                };
+                law_normals_on(&guide, &[here], law, tolerance, tol)?[0]
+            };
+            let j = s.floor();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let place = walk.place_between(j as usize, s - j);
+            (p, t, x, place)
+        };
+        let (a, b) = match &lengths {
+            None => (a, b),
+            Some(lengths) => {
+                let lambda = if station == Some(0) {
+                    0.0
+                } else {
+                    lengths.fraction(&walk.curves, edge, at_t, tol)?
+                };
+                let (sin, cos) = (twist * lambda).sin_cos();
+                (a * cos - b * sin, a * sin + b * cos)
+            }
+        };
+        Ok(p + x * a + t.cross(x) * b)
+    };
     let mut shells: Vec<Shape> = Vec::with_capacity(loops.len());
     for (li, wire) in loops.iter().enumerate() {
         let wire_edges = model.ordered_children_of(wire)?;
@@ -7867,7 +7937,8 @@ fn closed_pipe_shell(
             wire,
             &wire_edges,
             wire_smooth,
-            &walk,
+            &round,
+            &carried,
             (origin, x0),
             tolerance,
             tol,

@@ -500,9 +500,11 @@ fn a_square_round_a_square_ring_turns_its_corners_each_way() {
 
 /// A disc round a circle under the binormal along the circle's axis: the
 /// rotation-minimizing frame, so the torus, `2 π R π r²` by Pappus. Tilted
-/// off the axis, the binormal's frames are not, and the ring is refused.
+/// off the axis, the binormal's frames are not, and the disc is skinned
+/// round them: the same torus, held to the skin's tolerance and the mesh's
+/// chord over the wall's area.
 #[test]
-fn a_binormal_round_a_circle_is_the_torus_and_tilted_is_refused_by_name() {
+fn a_binormal_round_a_circle_is_the_torus_tilted_or_not() {
     let (big, small) = (10.0, 1.0);
     let mut model = Model::new();
     let ring_frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
@@ -552,7 +554,7 @@ fn a_binormal_round_a_circle_is_the_torus_and_tilted_is_refused_by_name() {
     let want = 2.0 * PI * big * PI * small * small;
     assert!((v - want).abs() < want * 1e-6, "{v} against {want}");
 
-    let err = make_pipe_shell_with(
+    let skinned = make_pipe_shell_with(
         &mut model,
         &disc,
         &spine,
@@ -561,10 +563,14 @@ fn a_binormal_round_a_circle_is_the_torus_and_tilted_is_refused_by_name() {
         1e-3,
         T,
     )
-    .unwrap_err();
+    .unwrap()
+    .shape;
+    assert!(check(&model, &skinned, T).unwrap().is_valid());
+    let (v, _) = measure(&model, &skinned);
+    let bound = (1e-3 + 1e-4) * 2.0 * PI * small * 2.0 * PI * (big + small);
     assert!(
-        err.to_string().contains("rotation-minimizing ones"),
-        "{err}"
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
     );
 }
 

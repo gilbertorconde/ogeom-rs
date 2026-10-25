@@ -20,9 +20,9 @@ use ogeom_math::{Axis, Direction, Point, Transform};
 use ogeom_topo::{Filter, Model, Shape, ShapeType, VertexData, explore};
 
 use super::{
-    PipeCorners, PipeLaw, WalkCurve, densified, evenly_by, has_sharp_corner, law_loft, make_loft,
-    make_pipe_shell_with, moved_ring, profile_square_at_start, shell_stations, spine_curve_of,
-    straight_legs,
+    PipeCorners, PipeLaw, SpineStation, WalkCurve, closed_pipe_shell, closes_on_a_corner,
+    densified, evenly_by, has_sharp_corner, law_loft, make_loft, make_pipe_shell_with, moved_ring,
+    profile_square_at_start, shell_stations, spine_closes, spine_curve_of, straight_legs,
 };
 
 /// How a pipe's section scales and twists along its spine, each in
@@ -110,18 +110,22 @@ impl SpineLengths {
 /// its scaled image, exact; a scale of zero closes it on the spine's end,
 /// the exact pyramid or cone. Otherwise each loop of the profile is
 /// skinned through its placed sections and held to `tolerance` between
-/// them against the law, along an open spine with no sharp corner.
+/// them against the law, along an open spine with no sharp corner. Round
+/// a smooth closed spine the section comes home to itself only unscaled
+/// and twisted whole turns: the skin is closed round the spine, each hole
+/// a void tunnel of its own shell.
 ///
-/// Each hole sweeps its own solid under the same law, cut from the outer
-/// one.
+/// Along an open spine each hole sweeps its own solid under the same law,
+/// cut from the outer one.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
 /// `scale` is negative or `twist` not finite; if the profile is not a
 /// closed planar wire or face standing square to the spine at its start;
-/// if a skinned sweep is asked along a closed spine or round a sharp
-/// corner, of the fixed law, or to a scale of zero; and as
+/// if a skinned sweep is asked round a sharp corner, of the fixed law, or
+/// to a scale of zero; if a section is scaled, or twisted other than whole
+/// turns, round a closed spine; and as
 /// [`make_pipe_shell_with`] or the law refuses the spine.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the skin
 /// cannot reach `tolerance`.
@@ -177,6 +181,30 @@ pub fn make_pipe_shell_evolving(
             Construction,
             "a profile with holes cannot close on a point; its holes would meet"
         );
+    }
+    if spine_closes(model, spine, tol)?
+        && !has_sharp_corner(model, spine, tol)?
+        && !closes_on_a_corner(model, spine, tol)?
+        && !matches!(law, PipeLaw::Fixed)
+    {
+        if evolution.scale != 1.0 {
+            ogeom_bail!(
+                Construction,
+                "a section scaling round a closed spine would not come home to itself; \
+                 it scales along an open one"
+            );
+        }
+        let turns = evolution.twist / core::f64::consts::TAU;
+        if (turns - turns.round()).abs() * core::f64::consts::TAU > tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "a twist round a closed spine is a whole number of turns, so the section \
+                 comes home to itself; {} turns is not",
+                turns
+            );
+        }
+        let twist = turns.round() * core::f64::consts::TAU;
+        return closed_law_pipe(model, profile, spine, law, twist, tolerance, tol);
     }
     let mut solids = Vec::with_capacity(rings.len());
     for ring in &rings {
@@ -280,6 +308,51 @@ fn evolving_ring(
         tol,
     )?
     .shape)
+}
+
+/// A planar profile swept round a smooth closed spine under `law`, turned
+/// about the spine by `twist` (whole turns) in proportion to the length
+/// run: stations as many as the law's turning or the twist asks, each edge
+/// its share by length, and the skin closed on itself.
+pub(super) fn closed_law_pipe(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    law: &PipeLaw<'_>,
+    twist: f64,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let stations = shell_stations(model, spine, tol)?;
+    let turned = densified(model, spine, stations.clone(), law, tolerance, tol)?.len();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let twisted = (twist.abs() / super::MOST_TURN).ceil() as usize + 1;
+    let wanted = turned.max(twisted);
+    let lengths = edge_lengths(model, spine, tol)?;
+    let total: f64 = lengths.iter().sum();
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let share = |e: usize| -> u32 {
+        let length = lengths.get(e).copied().unwrap_or(0.0);
+        ((wanted as f64 * length / total).ceil() as u32).max(2)
+    };
+    let stations = evenly_by(model, spine, stations, &share, false, tol)?;
+    // Where two edges meet the walk stands twice; the loop takes it once,
+    // the frame between it and the next station read off the next edge.
+    let mut kept: Vec<SpineStation> = Vec::with_capacity(stations.len());
+    for station in stations {
+        if kept
+            .last()
+            .is_some_and(|p| p.at.distance(station.at) <= tol.confusion())
+        {
+            continue;
+        }
+        kept.push(station);
+    }
+    closed_pipe_shell(model, profile, spine, kept, law, twist, tolerance, tol)
 }
 
 /// Whether a ring is all straight edges, or one circle about `axis_at`:

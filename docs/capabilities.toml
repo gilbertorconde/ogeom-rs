@@ -1002,8 +1002,11 @@ straight edge it is the ruled loft to the scaled image, exact (a \
 pyramid's or cone's frustum, the pyramid or cone at a scale of zero); \
 otherwise each loop is skinned through the placed sections and held to \
 the tolerance against the law, along an open spine with no sharp corner, \
-each hole a solid of its own cut from the outer. Scale and twist follow \
-linear laws only. The multisection pipe takes faces with holes, as many \
+each hole a solid of its own cut from the outer. Round a smooth closed \
+spine the section twists whole turns, unscaled, the skin closed on \
+itself; a scale, or a twist of part of a turn, is refused there by name, \
+as the section would not come home to itself. Scale and twist follow \
+linear laws only, and a scaled or twisted section turns no sharp corner. The multisection pipe takes faces with holes, as many \
 in every section, each hole swept through the sections and cut from the \
 outer solid. Round sharp corners a face is also swept run by run: the \
 spine cut at its corners, each smooth run swept on its own (a straight \
@@ -1014,9 +1017,14 @@ this way too, their runs meeting a mitre with the sections the law sets; \
 a round corner is refused where the law's next section is not the last \
 turned about the corner. The Frenet frame turns sharp corners extended or \
 rounded the same way, each run's section set by the run's own Frenet \
-frame, and is refused along a straight run, which has none. Round a smooth closed spine those laws sweep where their frames \
-are the rotation-minimizing ones turned by a fixed angle, and are refused \
-by name otherwise. Extended and round corners sweep faces, not wires."""
+frame, and is refused along a straight run, which has none. Round a \
+smooth closed spine the auxiliary and binormal laws sweep as the \
+rotation-minimizing frame where their frames are its frames turned by a \
+fixed angle; otherwise their own frames, single-valued round the spine, \
+are skinned round it, closed on themselves and held to the tolerance \
+against the law, holes as void tunnels. Along an open spine those laws \
+sweep a face with holes, each hole a solid of its own cut from the outer. \
+Extended and round corners sweep faces, not wires."""
 symbols = [
     "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
     "ogeom_offset::make_pipe_shell", "ogeom_offset::make_evolved",
@@ -1027,6 +1035,7 @@ tests = [
     "crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs",
     "crates/ogeom/tests/pipe_shell_exact.rs", "crates/ogeom/tests/helical_sweep.rs",
     "crates/ogeom/tests/pipe_evolving.rs", "crates/ogeom/tests/pipe_laws.rs",
+    "crates/ogeom/tests/pipe_rings.rs",
     "crates/ogeom/tests/pipe_corners.rs",
 ]
 

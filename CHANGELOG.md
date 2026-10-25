@@ -13,6 +13,31 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Pipe shells under the auxiliary and binormal laws round smooth closed
+  spines, with holes along open ones, and twisted whole turns round
+  closed spines.** (#394)
+  - `make_pipe_shell_with` refused an auxiliary or binormal law round a
+    smooth closed spine unless its frames were the rotation-minimizing
+    ones turned by a fixed angle. Those laws set a frame at every point of
+    the spine, single-valued round it, so the skin now closes on the
+    law's own frames and is held to the tolerance against the law there,
+    each hole a void tunnel. A circle and a stadium of arcs and lines are
+    both swept.
+  - Those laws refused a face with holes along an open spine. Each hole
+    now sweeps its own solid under the same frames and is cut from the
+    outer one.
+  - `make_pipe_shell_evolving` refused every closed spine. Unscaled and
+    twisted whole turns, the section comes home to itself, and the skin
+    is closed round the spine. A scale, or a twist of part of a turn, is
+    refused there by name.
+  - Measured against Pappus's `A L`: a rectangle round a circle under a
+    leaning binormal (1e-7 relative) and toward an off-centre auxiliary
+    circle (1e-8), round a stadium (2e-8), and twisted one and two whole
+    turns (8e-8, 2e-6). Each reaches its half diagonal in `z`, as only a
+    turned section does.
+  - Every sweep built before takes the same path and builds the same
+    solid.
+
 - **`remove_faces` removes a slot cut right across a face, and a rebate
   round a drum's rim.**
   - Removing a slot across a box's top was refused: the top's two halves

@@ -592,6 +592,44 @@ fn a_pipe_through_holed_sections_keeps_its_hole_down_the_path() {
     );
 }
 
+/// A holed square round the quarter arc under the leaning binormal: the
+/// hole sweeps its own solid under the same frames and is cut from the
+/// outer one. Both centroids ride the spine, so Pappus gives the holed
+/// area times the arc's length; the measured volume strays from it by at
+/// most the skin's tolerance and the mesh's chord over each wall's area,
+/// its loop's perimeter times its longest path round the arc.
+#[test]
+fn a_holed_square_under_a_leaning_binormal_keeps_its_hole() {
+    let (half, radius, big, skin, chord) = (1.0, 0.5, 20.0, 1e-3, 1e-3);
+    let mut model = Model::new();
+    let profile = holed_square(&mut model, 0.0, half, radius);
+    let spine = quarter_arc(&mut model);
+    let law = PipeLaw::Binormal(Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap());
+    let pipe = make_pipe_shell_with(
+        &mut model,
+        &profile,
+        &spine,
+        &law,
+        PipeCorners::Mitre,
+        skin,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let found = ogeom::algo::check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let length = big * PI / 2.0;
+    let want = (4.0 * half * half - PI * radius * radius) * length;
+    let path = |reach: f64| length * (1.0 + reach / big);
+    let area = 8.0 * half * path(half * 2.0_f64.sqrt()) + 2.0 * PI * radius * path(radius);
+    let bound = (skin + chord) * area;
+    let v = volume(&model, &pipe);
+    assert!(
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
+    );
+}
+
 #[test]
 fn a_pipe_through_sections_with_different_hole_counts_is_refused_by_name() {
     let mut model = Model::new();
@@ -608,4 +646,87 @@ fn a_pipe_through_sections_with_different_hole_counts_is_refused_by_name() {
     let err = ogeom::offset::make_pipe_sections(&mut model, &[first, last], &spine, false, 1e-3, T)
         .unwrap_err();
     assert!(err.to_string().contains("as many holes"), "{err}");
+}
+
+/// The spine in the `xy` plane: the quarter arc of radius `big` about
+/// `(-big, 0, 0)` from the origin, heading `+y`, to `(-big, big, 0)`,
+/// heading `-x`; then a sharp quarter turn up the line to
+/// `(-big, big + run, 0)`.
+fn arc_then_turn(model: &mut Model, big: f64, run: f64) -> Shape {
+    use ogeom::geom::Curve3d as _;
+    let frame = Frame::new(Point::new(-big, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = Circle::new(frame, big, T).unwrap();
+    let arc = make_edge(model, CircleCurve::new(circle).into(), (0.0, 0.5 * PI), T)
+        .unwrap()
+        .shape;
+    let (_, joint) = ogeom::algo::edge_vertices(model, &arc).unwrap().unwrap();
+    let (from, to) = (Point::new(-big, big, 0.0), Point::new(-big, big + run, 0.0));
+    let end = ogeom::algo::make_vertex(model, to).shape;
+    let segment = ogeom::geom::LineCurve::segment(from, to, T).unwrap();
+    let range = segment.domain();
+    let line = ogeom::algo::make_edge_between(model, segment.into(), range, &joint, &end, T)
+        .unwrap()
+        .shape;
+    make_wire(model, &[arc, line], T).unwrap().shape
+}
+
+fn face_count(model: &Model, shape: &Shape) -> usize {
+    ogeom::topo::explore_unique(model, shape, ogeom::topo::ShapeType::Face)
+        .unwrap()
+        .len()
+}
+
+/// A holed square down an arc into a sharp quarter turn, in the `xy`
+/// plane, under the binormal `z`: on a planar spine that law's frames are
+/// the rotation-minimizing ones, so each corner it builds is the
+/// rotation-minimizing sweep's. The arc's run is skinned under the law
+/// where the rotation-minimizing frame sweeps it exactly; every other
+/// piece (the line's prism, the corner's extensions, the holes cut) is
+/// built alike from the same sections. So the two solids differ by at
+/// most the skin's tolerance over the arc run's walls, and each strays
+/// from its own integral by at most the mesh's chord over its walls: the
+/// bound is their sum over a bound on the walls' area, the perimeters
+/// times the longest path a profile point runs, round the arc, up the
+/// line and past the corner by the section's reach either way.
+///
+/// The extended corner matches in volume, face count and validity. The
+/// round corner stays refused, its check that the next run starts on the
+/// arc run's end section turned failing on the skinned run's holed end;
+/// and the mitred corner stays refused, its trimmed pieces not closing
+/// into a shell.
+#[test]
+fn a_holed_square_under_a_level_binormal_turns_a_corner_as_the_rotation_minimizing_sweep() {
+    let (big, run, half, radius, skin, chord) = (20.0, 10.0, 1.0, 0.5, 1e-3, 1e-3);
+    let sweep = |law: &PipeLaw<'_>, corners: PipeCorners| {
+        let mut model = Model::new();
+        let profile = holed_square(&mut model, 0.0, half, radius);
+        let spine = arc_then_turn(&mut model, big, run);
+        let built = make_pipe_shell_with(&mut model, &profile, &spine, law, corners, skin, T)
+            .map(|b| b.shape);
+        (model, built)
+    };
+    let level = PipeLaw::Binormal(Direction::Z);
+
+    let (rmf_model, rmf) = sweep(&PipeLaw::RotationMinimizing, PipeCorners::Extended);
+    let rmf = rmf.unwrap();
+    let (law_model, swept) = sweep(&level, PipeCorners::Extended);
+    let swept = swept.unwrap();
+    let found = ogeom::algo::check(&law_model, &swept, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    assert!(ogeom::algo::check(&rmf_model, &rmf, T).unwrap().is_valid());
+    assert_eq!(face_count(&law_model, &swept), face_count(&rmf_model, &rmf));
+    let reach = half * 2.0_f64.sqrt();
+    let path = big * PI / 2.0 * (1.0 + reach / big) + run + 2.0 * reach;
+    let perimeter = 8.0 * half + 2.0 * PI * radius;
+    let bound = (skin + 2.0 * chord) * perimeter * path;
+    let (v, want) = (volume(&law_model, &swept), volume(&rmf_model, &rmf));
+    assert!(
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
+    );
+
+    for corners in [PipeCorners::Round, PipeCorners::Mitre] {
+        let (_, built) = sweep(&level, corners);
+        assert!(built.is_err(), "{corners:?} built");
+    }
 }
