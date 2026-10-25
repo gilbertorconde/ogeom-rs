@@ -3301,12 +3301,12 @@ fn least_squares<const D: usize>(
     let mut normal = NormalMatrix::new(unknown_count, degree, ratio.is_some());
     let mut rhs = vec![vec![0.0; unknown_count]; D];
 
-    let mut rows: Vec<(usize, Vec<(usize, f64)>)> = Vec::with_capacity(m);
+    let mut rows: Vec<(usize, Row)> = Vec::with_capacity(m);
     for (k, &u) in parameters.iter().enumerate() {
         let span = knots.span_unchecked(u);
         let basis = knots.basis(span, u);
         let first = span - degree;
-        let mut row: Vec<(usize, f64)> = basis
+        let mut row: Row = basis
             .iter()
             .enumerate()
             .map(|(j, b)| (first + j, *b))
@@ -3377,6 +3377,10 @@ fn least_squares<const D: usize>(
     }
     Ok(control)
 }
+
+/// A collocation row's columns and basis values: the `degree + 1` of the
+/// span and, on a loop, two more for the eliminated column.
+type Row = smallvec::SmallVec<[(usize, f64); 8]>;
 
 /// A least-squares normal matrix, `BᵀB`, symmetric and positive definite
 /// where the fit is well posed: held as its lower band where every row of
@@ -3647,6 +3651,10 @@ fn wandering<const D: usize>(
 ///
 /// `None` when no span can be split further: every bad span holds fewer than
 /// two parameters, and a knot needs data on both sides to be supported.
+///
+/// Errors in strictly increasing parameter order, as a fit at fixed
+/// parameters gives them, hold each span's samples as one run, found by
+/// bisection; others are sifted span by span, in the order given.
 fn refined_where_bad(
     knots: &KnotVector,
     errors: &[(f64, f64)],
@@ -3655,25 +3663,30 @@ fn refined_where_bad(
     let distinct = knots.distinct();
     let mut refined = knots.clone();
     let mut changed = false;
+    let ordered = errors.windows(2).all(|w| w[0].0 < w[1].0);
     for window in distinct.windows(2) {
         let (lo, hi) = (window[0].0, window[1].0);
-        let inside: Vec<f64> = errors
-            .iter()
-            .filter(|(u, _)| *u >= lo && *u < hi)
-            .map(|(u, _)| *u)
-            .collect();
-        let bad = errors
-            .iter()
-            .any(|(u, e)| *u >= lo && *u < hi && *e > tolerance);
+        let inside: std::borrow::Cow<'_, [(f64, f64)]> = if ordered {
+            let from = errors.partition_point(|(u, _)| *u < lo);
+            let to = errors.partition_point(|(u, _)| *u < hi);
+            std::borrow::Cow::Borrowed(&errors[from..to])
+        } else {
+            errors
+                .iter()
+                .filter(|(u, _)| *u >= lo && *u < hi)
+                .copied()
+                .collect()
+        };
+        let bad = inside.iter().any(|(_, e)| *e > tolerance);
         if !bad || inside.len() < 2 {
             continue;
         }
         // The knot between the two middle parameters, kept strictly interior.
-        let at = f64::midpoint(inside[inside.len() / 2 - 1], inside[inside.len() / 2])
+        let at = f64::midpoint(inside[inside.len() / 2 - 1].0, inside[inside.len() / 2].0)
             .clamp(lo + (hi - lo) * 1e-6, hi - (hi - lo) * 1e-6);
         // Both sides must keep data, or the new span is unsupported.
-        let left = inside.iter().any(|u| *u < at);
-        let right = inside.iter().any(|u| *u >= at);
+        let left = inside.iter().any(|(u, _)| *u < at);
+        let right = inside.iter().any(|(u, _)| *u >= at);
         if left && right {
             refined = refined.with_knot_inserted(at, 1)?;
             changed = true;

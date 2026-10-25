@@ -254,6 +254,13 @@ bump may break the API and a patch bump may not.
   measurement sampled each pcurve some 580 times, about 5% of rounding all
   twelve edges of a 10 mm cube. Wedges that may carry a fitted pcurve
   still measure theirs. The cube rounds to the same 26 faces and volume.
+- **A fit at fixed parameters finds each knot span's samples by
+  bisection.** Refining a fit sifted every sample for every span, which
+  was about half the cost of each fitted pcurve a sphere face takes when a
+  boolean recharts it about a clear pole; the samples of a fixed-parameter
+  fit come in order, so each span's are one run. The knots chosen, and so
+  every fit, are unchanged. Rounding all twelve edges of a 10 mm cube
+  fits 24 such images, in 12.4 ms rather than 18.6.
 - **A line touching a circle or ellipse in its plane meets it in closed
   form.** The closed form left every tangent line/conic pair to the
   sampling path, at about a millisecond a pair, and a rolling-ball blend
