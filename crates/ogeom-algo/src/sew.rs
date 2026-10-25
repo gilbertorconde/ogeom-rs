@@ -642,6 +642,45 @@ fn sew_faces(
     for (dropped, kept) in &merged {
         substitution.entry(*dropped).or_insert(*kept);
     }
+    // An edge whose two ends were merged into one vertex, all of it within
+    // the reach of that vertex, has shrunk to the point: no ring walks it.
+    let mut collapsed: FastSet<TShapeId> = FastSet::default();
+    for (original, rebuilt) in &rebuilt_edges {
+        let ends = |id: TShapeId| -> Option<(TShapeId, TShapeId)> {
+            let children = model.node_by_id(id)?.children();
+            Some((children.first()?.node(), children.last()?.node()))
+        };
+        let (Some((a, b)), Some((c, d))) = (ends(*original), ends(*rebuilt)) else {
+            continue;
+        };
+        if a == b || c != d {
+            continue;
+        }
+        let Some(print) = fingerprint(model, &Shape::of(*rebuilt), tol)? else {
+            continue;
+        };
+        let at = placed(model, &Shape::of(c))?;
+        let held = model
+            .node_by_id(c)
+            .and_then(|n| n.data().as_vertex())
+            .map_or(0.0, |v| v.tolerance.get())
+            .max(reach);
+        let points = [
+            print.start,
+            print.middle,
+            print.end,
+            print.quarters[0],
+            print.quarters[1],
+        ];
+        if points.iter().all(|p| p.distance(at) <= held) {
+            let (id, _) = substitution
+                .get(original)
+                .copied()
+                .unwrap_or((*rebuilt, false));
+            collapsed.insert(id);
+        }
+    }
+
     let mut history = History::new();
     let mut rebuilt = Vec::with_capacity(all.len());
     // Each rebuilt face's original, and whether it is that original's copy.
@@ -659,7 +698,7 @@ fn sew_faces(
         let Some((face, original)) = sewing.next() else {
             ogeom_bail!(Construction, "a face to sew was lost");
         };
-        let Some((sewn, whole)) = rebuild_face(model, face, &substitution, tol)? else {
+        let Some((sewn, whole)) = rebuild_face(model, face, &substitution, &collapsed, tol)? else {
             history.delete(original);
             continue;
         };
@@ -2054,6 +2093,7 @@ fn rebuild_face(
     model: &mut Model,
     face: &Shape,
     merged: &FastMap<TShapeId, (TShapeId, bool)>,
+    collapsed: &FastSet<TShapeId>,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, bool)>> {
     let mut whole = true;
@@ -2071,10 +2111,15 @@ fn rebuild_face(
     let mut wires = Vec::new();
     for wire in model.ordered_children_of(&stored)? {
         let mut ring = Vec::new();
+        let mut shrunk = false;
         for edge in model.ordered_children_of(&wire)? {
             match merged.get(&edge.node()) {
                 Some((kept, flipped)) => {
                     touched = true;
+                    if collapsed.contains(kept) {
+                        shrunk = true;
+                        continue;
+                    }
                     let mut replacement =
                         Shape::new(*kept, edge.location().clone(), edge.orientation());
                     if *flipped {
@@ -2087,10 +2132,21 @@ fn rebuild_face(
         }
         // A ring that merging collapsed onto one edge, walked out and back,
         // bounds no area: the sliver between two coincident strands that the
-        // sew has just found to be one edge. Such a ring is dropped, and a
-        // face whose outer ring it was with it.
+        // sew has just found to be one edge. So does one that, the edges
+        // shrunk to a point left out, walks each of its edges once each way:
+        // a sliver whose sides were found to be one edge piece by piece.
+        // Such a ring is dropped, and a face whose outer ring it was with it.
         let one_edge = !ring.is_empty() && ring.iter().all(|e| e.node() == ring[0].node());
-        if one_edge && ring.len() >= 2 {
+        let out_and_back = shrunk
+            && ring.iter().all(|e| {
+                let walks = |o: Orientation| {
+                    ring.iter()
+                        .filter(|f| f.node() == e.node() && f.orientation() == o)
+                        .count()
+                };
+                walks(Orientation::Forward) == 1 && walks(Orientation::Reversed) == 1
+            });
+        if (one_edge && ring.len() >= 2) || out_and_back {
             if wires.is_empty() {
                 return Ok(None);
             }
@@ -2372,6 +2428,74 @@ mod tests {
                 assert!(d.is_usable(), "{d}");
             }
         }
+    }
+
+    /// A strip a twentieth wide between two unit squares, its sides each in
+    /// two pieces and its end standing on a third square's side, all four
+    /// loose, sewn across a tenth: the strip's end shrinks to a point and
+    /// its sides are found to be the squares' edges piece by piece, so it
+    /// bounds nothing and goes, and the third square walks no edge where
+    /// the strip's end was. Kept, the strip walked each of its sides out
+    /// and back, and the edge shrunk to a point.
+    #[test]
+    fn a_strip_narrower_than_the_gap_between_faces_goes() {
+        let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+        let mut model = Model::new();
+        let below = loose_polygon(
+            &mut model,
+            [
+                at(1.0, -1.0),
+                at(1.0, 0.0),
+                at(0.5, 0.0),
+                at(0.0, 0.0),
+                at(0.0, -1.0),
+            ],
+        );
+        let strip = loose_polygon(
+            &mut model,
+            [
+                at(1.0, 0.0),
+                at(1.0, 0.05),
+                at(0.5, 0.05),
+                at(0.0, 0.05),
+                at(0.0, 0.0),
+                at(0.5, 0.0),
+            ],
+        );
+        let above = loose_polygon(
+            &mut model,
+            [
+                at(1.0, 0.05),
+                at(1.0, 1.05),
+                at(0.0, 1.05),
+                at(0.0, 0.05),
+                at(0.5, 0.05),
+            ],
+        );
+        let beside = loose_polygon(
+            &mut model,
+            [
+                at(2.0, -1.0),
+                at(2.0, 1.05),
+                at(1.0, 1.05),
+                at(1.0, 0.05),
+                at(1.0, 0.0),
+                at(1.0, -1.0),
+            ],
+        );
+        let sewn = sew_within(&mut model, &[below, strip, above, beside], 0.1, T).unwrap();
+        assert_eq!(sewn.shells.len(), 1);
+        let shell = &sewn.shells[0];
+        let faces = explore_unique(&model, shell, ShapeType::Face).unwrap();
+        assert_eq!(faces.len(), 3);
+        for face in &faces {
+            for edge in explore_unique(&model, face, ShapeType::Edge).unwrap() {
+                let (a, b) = crate::edge_vertices(&model, &edge).unwrap().unwrap();
+                assert!(!a.is_same(&b), "an edge shrunk to a point is walked");
+            }
+        }
+        let d = crate::check(&model, shell, T).unwrap();
+        assert!(d.is_usable(), "{d}");
     }
 
     /// A unit square whose top is an arc bowing a twentieth of a millimetre
