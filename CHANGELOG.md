@@ -432,6 +432,20 @@ bump may break the API and a patch bump may not.
   - A composite curve's matrix was ignored. Per section 3.2.3, it carries
     its physically dependent pieces on after their own matrices.
   - Files whose instances and composites have no matrix read as before.
+- **A stretch of section marched twice where the surfaces cross shallowly
+  comes back once.** Two tracings of one stretch were told apart by the
+  chord alone. But a marched sample is held to both surfaces only within
+  the confusion distance `ε`, so across the section it is placed only to
+  within `ε / sin θ`, `θ` the angle the surfaces cross at. Near a touch,
+  where `θ` falls toward zero, a stretch walked twice wandered further off
+  the first tracing than the chord, and both were kept. A sample now
+  counts as on another tracing within the chord along the section and
+  within `2ε / sin θ` across it. An arc whose loose end runs along an arc
+  kept after it is also cut back. On a saddle crossing a plane along lines
+  4e-3 apart, a 0.0115 stub of `x = 0` no longer comes back beside the
+  whole line. On Viviani's curve with a radius of 30 and a chord of 1e-6, a
+  0.012 stretch is no longer traced twice. Eight swept cases of Viviani's
+  curve lose their overlap, and no swept case gets worse (#356, #327).
 
 - **Two fillets meet at an inside corner whose walls lean alike, their
   feet out under the corner as a moulded pocket's are.** The two bands'

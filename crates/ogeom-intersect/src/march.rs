@@ -2857,15 +2857,19 @@ fn split_at_touches(
         weighed.append(&mut kept);
     }
     weighed.sort_by(|x, y| arc_length(y).total_cmp(&arc_length(x)));
-    for arc in weighed {
+    let weigh = |arc: Traced, kept: &mut Vec<Traced>, touches: &[Touch]| {
+        let across = across_section(&arc, touches, near, (a, b), tol);
         if kept.iter().any(|other| {
-            lies_on(&arc, other, near, &touches) || same_stretch(&arc, other, near, &touches)
+            lies_on(&arc, other, near, &across, touches) || same_stretch(&arc, other, near, touches)
         }) {
-            continue;
+            return;
         }
-        if let Some(arc) = trimmed(arc, &kept, near, &touches) {
+        if let Some(arc) = trimmed(arc, kept, near, &across, touches) {
             kept.push(arc);
         }
+    };
+    for arc in weighed {
+        weigh(arc, &mut kept, &touches);
     }
     // With every touch found, an arm the arcs still do not run along is
     // section left out: joined or walked out once more from what is kept.
@@ -2879,14 +2883,20 @@ fn split_at_touches(
         }
         more.sort_by(|x, y| arc_length(y).total_cmp(&arc_length(x)));
         for arc in more {
-            if kept.iter().any(|other| {
-                lies_on(&arc, other, near, &touches) || same_stretch(&arc, other, near, &touches)
-            }) {
-                continue;
-            }
-            if let Some(arc) = trimmed(arc, &kept, near, &touches) {
-                kept.push(arc);
-            }
+            weigh(arc, &mut kept, &touches);
+        }
+    }
+    // An arc is cut back only against those kept before it, and an end on
+    // a touch is never cut back: where a loose end of one runs along an arc
+    // kept after it that ends on a touch, the stretch between is traced
+    // twice. Each is cut back once more against all the others.
+    let mut k = 0;
+    while k < kept.len() {
+        let arc = kept.remove(k);
+        let across = across_section(&arc, &touches, near, (a, b), tol);
+        if let Some(arc) = trimmed(arc, &kept, near, &across, &touches) {
+            kept.insert(k, arc);
+            k += 1;
         }
     }
     kept
@@ -3475,29 +3485,82 @@ fn carry_onto_straight(
 /// `other`, the middles of its chords within twice that: the samples of
 /// both lie on the section, and the chords of a march stand within its
 /// chord of it, so a stretch traced twice holds each of its samples within
-/// the chord of the other tracing. Round a
+/// the chord of the other tracing. Across the section that is widened to
+/// where the confusion distance leaves it: see [`across_section`]. Round a
 /// touch the samples are cut and carried, not marched, and are not
 /// weighed.
-fn lies_on(arc: &Traced, other: &Traced, near: f64, touches: &[Touch]) -> bool {
+fn lies_on(arc: &Traced, other: &Traced, near: f64, across: &[Across], touches: &[Touch]) -> bool {
     let mut last = 0;
     let mut weighed = false;
     // The samples, and the middle of each chord: an arc joining two touches
     // may have no sample clear of them.
-    let middles = arc
-        .points
-        .windows(2)
-        .map(|w| (w[0] + (w[1] - w[0]) * 0.5, 2.0 * near));
-    for (p, within) in arc.points.iter().map(|p| (*p, near)).chain(middles) {
+    let middles = arc.points.windows(2).zip(across.windows(2)).map(|(w, r)| {
+        let step = w[1] - w[0];
+        let length = step.magnitude();
+        let way = (length > f64::MIN_POSITIVE).then(|| step * (1.0 / length));
+        (
+            w[0] + step * 0.5,
+            2.0 * near,
+            (2.0 * r[0].0.min(r[1].0), way),
+        )
+    });
+    let samples = arc.points.iter().zip(across).map(|(p, r)| (*p, near, *r));
+    for (p, within, wide) in samples.chain(middles) {
         if touches.iter().any(|t| t.point.distance(p) <= t.radius) {
             continue;
         }
-        if !holds(other, p, within, &mut last) {
+        if !holds(other, p, within, wide, &mut last) {
             return false;
         }
         weighed = true;
     }
     weighed
 }
+
+/// How far across the section two tracings of it may stand apart at each
+/// sample of `arc`, and the way the section runs there: a sample is held
+/// to both surfaces within the confusion distance `ε`, and a step `δ`
+/// across the section opens a gap of `δ · sin θ`, `θ` the angle the
+/// surfaces cross at, so each tracing lies within `ε / sin θ` of the
+/// section across it, and two within twice that of each other. Round a
+/// touch, where the surfaces cross at no angle, and where the angle is not
+/// known, no further than `near`.
+fn across_section(
+    arc: &Traced,
+    touches: &[Touch],
+    near: f64,
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    tol: Tolerances,
+) -> Vec<Across> {
+    (0..arc.points.len())
+        .map(|k| {
+            let p = arc.points[k];
+            let none = (near, None);
+            if touches.iter().any(|t| t.point.distance(p) <= t.radius) {
+                return none;
+            }
+            let (Some(na), Some(nb)) = (
+                normal_at(a, arc.on_a[k], tol),
+                normal_at(b, arc.on_b[k], tol),
+            ) else {
+                return none;
+            };
+            let cross = na.cross(nb);
+            let sine = cross.magnitude();
+            if sine <= f64::MIN_POSITIVE {
+                return none;
+            }
+            (
+                near.max(2.0 * tol.confusion() / sine),
+                Some(cross * (1.0 / sine)),
+            )
+        })
+        .collect()
+}
+
+/// How far across the section a point may stand off another tracing of
+/// it, and the way the section runs there: see [`across_section`].
+type Across = (f64, Option<Vector>);
 
 /// Whether two arcs are one stretch between the same two touches: each
 /// runs from one touch to the other, leaving each along the same half arm.
@@ -3521,12 +3584,13 @@ fn same_stretch(arc: &Traced, other: &Traced, near: f64, touches: &[Touch]) -> b
     }
 }
 
-/// Whether a point lies within `near` of a polyline, searched outward from
-/// the segment `last` a point beside it was found on, which it is left
-/// at: points taken in order along one curve are found at once.
-fn holds(other: &Traced, p: Point, near: f64, last: &mut usize) -> bool {
+/// Whether a point lies within `near` of a polyline, or beside a segment
+/// of it within `across` (see [`beside_segment`]), searched outward from
+/// the segment `last` a point beside it was found on, which it is left at:
+/// points taken in order along one curve are found at once.
+fn holds(other: &Traced, p: Point, near: f64, across: Across, last: &mut usize) -> bool {
     let segments = other.points.len().saturating_sub(1);
-    let on = |k: usize| distance_to_segment(p, other.points[k], other.points[k + 1]) <= near;
+    let on = |k: usize| beside_segment(p, other.points[k], other.points[k + 1], near, across);
     let from = (*last).min(segments.saturating_sub(1));
     let found = (0..segments).find_map(|step| {
         let ahead = from + step;
@@ -3542,11 +3606,41 @@ fn holds(other: &Traced, p: Point, near: f64, last: &mut usize) -> bool {
     })
 }
 
+/// Whether a point lies within `near` of the segment `from`–`to`, or, with
+/// the way `along` the section runs at the point, stands off a point of the
+/// segment within `near` along the section and within `across` across it.
+fn beside_segment(p: Point, from: Point, to: Point, near: f64, (across, along): Across) -> bool {
+    if distance_to_segment(p, from, to) <= near {
+        return true;
+    }
+    let Some(along) = along else {
+        return false;
+    };
+    let step = to - from;
+    let length = step.square_magnitude();
+    if across <= near || length <= f64::MIN_POSITIVE {
+        return false;
+    }
+    let t = (p - from).dot(step) / length;
+    if !(0.0..=1.0).contains(&t) {
+        return false;
+    }
+    let off = p - (from + step * t);
+    let ahead = off.dot(along);
+    ahead.abs() <= near && (off - along * ahead).magnitude() <= across
+}
+
 /// An arc with the samples at either end that lie on arcs already kept cut
 /// back, so a stretch traced twice where two tracings overlap at their
 /// ends is kept once. Each cut end keeps the last sample on the other
 /// tracing, so the two still meet; an end on a touch is kept.
-fn trimmed(arc: Traced, kept: &[Traced], near: f64, touches: &[Touch]) -> Option<Traced> {
+fn trimmed(
+    arc: Traced,
+    kept: &[Traced],
+    near: f64,
+    across: &[Across],
+    touches: &[Touch],
+) -> Option<Traced> {
     let n = arc.points.len();
     // How many samples from one end run along arcs already kept, and the
     // arc the last of them lies on: each sample is looked for first on the
@@ -3559,12 +3653,13 @@ fn trimmed(arc: Traced, kept: &[Traced], near: f64, touches: &[Touch]) -> Option
             if touches.iter().any(|t| t.point.distance(p) <= t.radius) {
                 break;
             }
-            let on_holder = holder
-                .and_then(|(o, mut last)| holds(&kept[o], p, near, &mut last).then_some((o, last)));
+            let on_holder = holder.and_then(|(o, mut last)| {
+                holds(&kept[o], p, near, across[k], &mut last).then_some((o, last))
+            });
             let found = on_holder.or_else(|| {
                 kept.iter().enumerate().find_map(|(o, other)| {
                     let mut last = 0;
-                    holds(other, p, near, &mut last).then_some((o, last))
+                    holds(other, p, near, across[k], &mut last).then_some((o, last))
                 })
             });
             if found.is_none() {
@@ -3597,7 +3692,10 @@ fn trimmed(arc: Traced, kept: &[Traced], near: f64, touches: &[Touch]) -> Option
                 let m = other.points.len();
                 [0, m - 1]
                     .into_iter()
-                    .filter(|&e| distance_to_segment(other.points[e], u, h) <= near)
+                    .filter(|&e| {
+                        let wide = (across[cut].0.min(across[kept_at].0), across[cut].1);
+                        beside_segment(other.points[e], u, h, near, wide)
+                    })
                     .min_by(|&x, &y| {
                         other.points[x]
                             .distance(u)

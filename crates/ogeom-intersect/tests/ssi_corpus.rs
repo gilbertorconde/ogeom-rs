@@ -306,7 +306,11 @@ fn grid_of_lines(s: f64, k: f64, chord: f64, within: f64, placed: bool) {
 /// at two touches closer together than the march strides along `x = 0`.
 /// With `d` a few thousandths, the patch stays within `d²` of the plane
 /// across the strip between `y = 0` and `y = d`, and a march found one
-/// crossing of the two and lost the other line whole.
+/// crossing of the two and lost the other line whole. Each line is traced
+/// once: along `x = 0` near the touches the patch crosses the plane at a
+/// slope of `|y·(y − d)|`, and a stretch walked a second time there wanders
+/// further off the first tracing than the chord, though within the
+/// confusion distance over that slope.
 #[test]
 fn a_saddle_crossing_a_plane_along_three_lines() {
     for (d, (x0, x1), (y0, y1), chord) in [
@@ -314,6 +318,7 @@ fn a_saddle_crossing_a_plane_along_three_lines() {
         (0.002, (-1.0, 1.3), (-0.6, 1.2), 1e-4),
         (0.001, (-1.0, 1.0), (-1.1, 1.2), 1e-5),
         (0.003, (-0.7, 1.0), (-1.1, 0.9), 1e-5),
+        (0.004, (-1.0, 1.3), (-0.6, 1.2), 1e-5),
     ] {
         saddle_along_three_lines(d, (x0, x1), (y0, y1), chord);
     }
@@ -354,12 +359,17 @@ fn saddle_along_three_lines(d: f64, (x0, x1): (f64, f64), (y0, y1): (f64, f64), 
         ],
         ends: vec![Point::ORIGIN, Point::new(0.0, d, 0.0)],
     };
-    check(
-        &format!("saddle d={d} chord={chord:e}"),
-        (&patch, &plane),
-        chord,
-        &truth,
-        (10.0 * chord, 0),
+    let name = format!("saddle d={d} chord={chord:e}");
+    let found = check(&name, (&patch, &plane), chord, &truth, (10.0 * chord, 0));
+    let traced: f64 = found
+        .iter()
+        .flat_map(|f| f.points.windows(2).map(|w| w[0].distance(w[1])))
+        .sum();
+    let exact = (y1 - y0) + 2.0 * (x1 - x0);
+    assert!(
+        (traced - exact).abs() <= 10.0 * chord,
+        "{name}: {:e} more of the section is traced than there is",
+        traced - exact
     );
 }
 
@@ -437,10 +447,18 @@ fn equal_cylinders_crossed_square() {
 
 /// A sphere of radius `2r` cut by a cylinder of radius `r` through its
 /// centre: Viviani's curve, a figure eight crossing itself where the
-/// cylinder touches the sphere.
+/// cylinder touches the sphere. Near the touch the two cross at a slope
+/// small enough that a stretch traced twice wanders further off the other
+/// tracing than the chord, and is still traced once: the length traced is
+/// the curve's own within ten chords.
 #[test]
 fn vivianis_curve() {
-    let (r, chord) = (10.0, 1e-6);
+    for (r, chord) in [(10.0, 1e-6), (10.0, 1e-7)] {
+        viviani(r, chord);
+    }
+}
+
+fn viviani(r: f64, chord: f64) {
     let sphere: SurfaceGeometry =
         SphereSurface::new(Sphere::centred(Point::ORIGIN, 2.0 * r, T).unwrap()).into();
     let frame = Frame::new(Point::new(r, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
@@ -448,7 +466,8 @@ fn vivianis_curve() {
         CylinderSurface::new(Cylinder::new(frame, r, T).unwrap(), (-3.0 * r, 3.0 * r))
             .unwrap()
             .into();
-    let curve = closed(20_000, 2.0 * core::f64::consts::TAU, |t| {
+    let turn = 2.0 * core::f64::consts::TAU;
+    let curve = closed(20_000, turn, |t| {
         Point::new(r * (1.0 + t.cos()), r * t.sin(), 2.0 * r * (t / 2.0).sin())
     });
     let truth = Truth {
@@ -457,11 +476,34 @@ fn vivianis_curve() {
     };
     // Two walks stall where they meet halfway round a lobe, each end
     // beside the other.
-    check(
-        "Viviani",
-        (&sphere, &drum),
-        chord,
-        &truth,
-        (10.0 * chord, 2),
+    let name = format!("Viviani r={r} chord={chord:e}");
+    let found = check(&name, (&sphere, &drum), chord, &truth, (10.0 * chord, 2));
+    // The curve's length, `r·√(1 + cos²(t/2))` integrated over `t` by
+    // Simpson's rule, far within a chord.
+    let speed = |t: f64| r * (1.0 + (t / 2.0).cos().powi(2)).sqrt();
+    let steps = 20_000_u32;
+    let h = turn / f64::from(steps);
+    let exact = (0..=steps)
+        .map(|k| {
+            let weight = if k == 0 || k == steps {
+                1.0
+            } else if k % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            weight * speed(h * f64::from(k))
+        })
+        .sum::<f64>()
+        * h
+        / 3.0;
+    let traced: f64 = found
+        .iter()
+        .flat_map(|f| f.points.windows(2).map(|w| w[0].distance(w[1])))
+        .sum();
+    assert!(
+        (traced - exact).abs() <= 10.0 * chord,
+        "{name}: {:e} more of the section is traced than there is",
+        traced - exact
     );
 }
