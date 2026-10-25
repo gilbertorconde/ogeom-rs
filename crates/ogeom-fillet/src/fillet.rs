@@ -842,10 +842,11 @@ fn fillet_edges_own(
                                          no cap at the vertex to carry on from"
                                     );
                                 };
-                                wedge.solid = crate::junction::carried_to(
+                                wedge.solid = crate::junction::carried_into(
                                     model,
                                     &wedge.solid,
                                     &cap,
+                                    (edge, &hosts),
                                     junction.outward[slot],
                                     plane,
                                     tol,

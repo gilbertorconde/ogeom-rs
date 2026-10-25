@@ -779,7 +779,10 @@ plane bisecting their centre lines, exactly where the reflection in it \
 carries one end section onto the other (a flat shared host, walls whose \
 tangent planes at the vertex reflect into each other). There, across a \
 re-entrant turn both run on to that plane and take the corner cell both \
-hold, where the material holds it; across a convex turn both stop in it \
+hold, where the material holds it (a straight band between planes whose \
+end section reaches past that plane, its wall drafted out under the \
+corner as a moulded pocket's are, is carried on past it and cut back to \
+it); across a convex turn both stop in it \
 where the bands' curvature keeps their sections there within a marched \
 band's fit; either way the two are joined across it into one wedge. \
 Where the end sections differ and both creases are straight (a drafted \

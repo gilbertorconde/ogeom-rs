@@ -362,6 +362,27 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Two fillets meet at an inside corner whose walls lean alike, their
+  feet out under the corner as a moulded pocket's are.** The two bands'
+  end sections reflect into each other in the plane bisecting the corner,
+  so they meet flush there. But each section reaches past that plane down
+  its wall, and a band carried on from its cap cannot slide those points
+  back onto the plane. The corner was refused, and both bands were capped
+  at the vertex.
+  - Along a straight crease between planes, the band is now the straight
+    band of its end section on both sides of its cap. It is carried on past
+    the plane and cut back to it. The two halves then join across the plane
+    as before.
+  - Every pocket with all its walls drafted alike fell back this way. A
+    4 x 4 pocket, one deep, every wall at 0.1, r = 0.5: 0.676015 mm³ on
+    main against 0.708103, the sum of the creases' sections and each
+    corner's gain above both bands. A trapezoid pocket with acute and
+    obtuse corners: 0.578745 against 0.614621. Both orders now give the
+    ideal within 1e-5.
+  - Corners that rounded before take the same path. The new path runs only
+    where the old one refused; curved creases or curved hosts still
+    refuse there, as before.
+
 - **The STEP reader closes a spherical cap across its pole the right way
   round.** An exporter writes a cap as its rim circle plus a meridian arc
   from the rim up to the pole, walked up and back down, with no edge at

@@ -1072,6 +1072,19 @@ impl Section {
         Ok(Self { lines, arc, plane })
     }
 
+    /// The section's corners and seventeen points along its arc, where it
+    /// is placed against a plane.
+    fn points(&self, tol: Tolerances) -> OgeomResult<Vec<Point>> {
+        use ogeom_geom::Curve3d as _;
+        let arc: ogeom_geom::Curve = self.arc.clone().into();
+        let (lo, hi) = arc.domain();
+        let mut points: Vec<Point> = self.lines.iter().flat_map(|&(p, q)| [p, q]).collect();
+        for k in 0..=16 {
+            points.push(arc.point_at((hi - lo).mul_add(f64::from(k) / 16.0, lo), tol)?);
+        }
+        Ok(points)
+    }
+
     /// The arc the circular `pieces` (each a curve, its range, its ends and
     /// its middle) make end to end, as one circle's arc.
     fn one_arc(
@@ -1237,6 +1250,67 @@ pub(crate) fn carried_to(
     closed_wedge(model, &faces, rings.near, tol)
 }
 
+/// `wedge` carried on past its planar end face `cap` along `along` to the
+/// plane through `on` with unit `normal`, the band kept on the normal's
+/// side: [`carried_to`] where the whole cap stands before the plane.
+///
+/// A wall drafted so its foot runs out under the corner (two walls leaning
+/// alike at a re-entrant turn) puts part of the cap past the plane, which
+/// no point of it slides forwards onto. Along a straight `edge` between
+/// two planar `hosts` the band is the straight band of its cap's section
+/// on either side of the cap, so it is carried on past every point's
+/// meeting with the plane, to a plane square to the crease, and cut back
+/// to the plane: what stands of it on the normal's side, however far past
+/// the plane it was carried. Every point of it past the plane lies within
+/// the reach of the section's points from `on`, where the cut takes it.
+/// Elsewhere the band before its cap is no straight band, and this refuses
+/// as [`carried_to`] does.
+pub(crate) fn carried_into(
+    model: &mut Model,
+    wedge: &Shape,
+    cap: &Shape,
+    (edge, hosts): (&Shape, &[Shape]),
+    along: Vector,
+    (on, normal): (Point, Vector),
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let near = tol.confusion() * 1e3;
+    let section = Section::of(model, cap, near, tol)?;
+    let rate = along.dot(normal);
+    let points = section.points(tol)?;
+    let slide = |q: Point| -> f64 { (on - q).dot(normal) / rate };
+    let behind = rate.abs() > tol.angular() && points.iter().any(|&q| slide(q) < -near);
+    let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
+    let mut straight = matches!(curve, ogeom_geom::Curve::Line(_)) && hosts.len() == 2;
+    for host in hosts {
+        straight = straight && plane_of(model, host, tol)?.is_some();
+    }
+    if !behind || !straight {
+        return carried_to(model, wedge, cap, along, (on, normal), tol);
+    }
+    let back = points.iter().map(|&q| slide(q)).fold(0.0_f64, f64::min);
+    let reach = points.iter().map(|&q| slide(q)).fold(0.0_f64, f64::max);
+    if reach <= near {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "a band's end section stands wholly past the plane its junction meets in"
+        );
+    }
+    // Any reach past the farthest meeting gives the same band once cut
+    // back; twice it keeps the band's far end clear of the plane.
+    let far = section.plane.0 + along * (reach * 2.0);
+    let carried = carried_to(model, wedge, cap, along, (far, along), tol)?;
+    // What of a straight band stands past the plane is what the cut is
+    // to take, so any box holding it takes the same: twice the farthest
+    // the section's points stand from `on`, wherever along the band, holds
+    // the arc's bulge between them too.
+    let span = points
+        .iter()
+        .flat_map(|&q| [back, 0.0, reach * 2.0].map(|s| (q + along * s).distance(on)))
+        .fold(near, f64::max);
+    crate::support::trimmed_wedge(model, &carried, (on, normal), span * 2.0, tol)
+}
+
 /// `wedge` carried on past its planar end face `cap` as [`carried_to`]
 /// carries it, its section widened past the wall under the shared host
 /// with outward unit normal `top` within `span`: the wedge and what stands
@@ -1323,11 +1397,7 @@ fn swept_past(
     let near = rings.near;
     let arc: Curve = section.arc.clone().into();
     let (lo, hi) = arc.domain();
-    let mut corners: Vec<Point> = section.lines.iter().flat_map(|&(p, q)| [p, q]).collect();
-    for k in 0..=16 {
-        corners.push(arc.point_at((hi - lo).mul_add(f64::from(k) / 16.0, lo), tol)?);
-    }
-    if corners.iter().any(|&q| slide(q) < -near) {
+    if section.points(tol)?.iter().any(|&q| slide(q) < -near) {
         ogeom_core::ogeom_bail!(
             Construction,
             "a band's end section stands past the plane its junction meets in"
