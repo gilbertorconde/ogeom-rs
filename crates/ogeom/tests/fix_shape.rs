@@ -1067,3 +1067,170 @@ fn a_cone_missing_its_apex_edge_gets_it_back() {
     let v = volume_of_solid(&model, &fixed.shape);
     assert!((v - exact).abs() < 1e-9 * exact, "{v} against {exact}");
 }
+
+/// A 10 mm box with one edge cut short by `gap` at its start and given a
+/// vertex of its own there: the two faces that walk the edge each have a
+/// gap of `gap` in their boundary, along the edge's own line, so closing
+/// it leaves the box as it was.
+fn box_with_a_wire_gap(model: &mut Model, gap: f64) -> Shape {
+    use ogeom::topo::EdgeRepr;
+    let block = make_box(model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edge = explore_unique(model, &block, ShapeType::Edge).unwrap()[0].clone();
+    let stored = Shape::of(edge.node());
+    let bounds = model.children_of(&stored).unwrap();
+    let point = |model: &Model, v: &Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+    let (from, to) = (point(model, &bounds[0]), point(model, &bounds[1]));
+    let NodeData::Edge(mut data) = model.node(&stored).unwrap().data().clone() else {
+        panic!("an edge");
+    };
+    // A box's curves and pcurves are lines, parameterized alike.
+    for repr in &mut data.representations {
+        if let EdgeRepr::Curve3d { range, .. } | EdgeRepr::PCurve { range, .. } = repr {
+            range.0 += gap / from.distance(to) * (range.1 - range.0);
+        }
+    }
+    let along = from + (to - from) * (gap / from.distance(to));
+    let start = make_vertex(model, along).shape;
+    let cut = model.add_edge(*data, &[start, bounds[1].clone()]).unwrap();
+    let mut reshape = ogeom::heal::Reshape::new();
+    reshape.replace(&stored, cut);
+    reshape.apply(model, &block).unwrap().shape
+}
+
+fn wire_gaps(diagnosis: &ogeom::algo::Diagnosis) -> usize {
+    diagnosis
+        .problems
+        .iter()
+        .filter(|p| p.what.contains("does not begin"))
+        .count()
+}
+
+fn widest_vertex(model: &Model, shape: &Shape) -> f64 {
+    explore_unique(model, shape, ShapeType::Vertex)
+        .unwrap()
+        .iter()
+        .map(|v| model.tolerance_of(v).unwrap().unwrap().get())
+        .fold(0.0, f64::max)
+}
+
+/// A box whose boundary gapes a hundredth of a millimetre where one edge
+/// begins, at a vertex of its own: the two vertices become one, wide
+/// enough to reach both, and the box checks clean and measures 1000.
+#[test]
+fn a_wire_gap_within_reach_is_closed() {
+    let mut model = Model::new();
+    let gap = 0.01;
+    let block = box_with_a_wire_gap(&mut model, gap);
+    let before = check(&model, &block, T).unwrap();
+    assert_eq!(wire_gaps(&before), 2, "{before}");
+    assert_eq!(
+        explore_unique(&model, &block, ShapeType::Vertex)
+            .unwrap()
+            .len(),
+        9
+    );
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &block, T).unwrap();
+    assert_eq!(fixed.report.gap_vertices_merged, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    assert_eq!(
+        explore_unique(&model, &fixed.shape, ShapeType::Vertex)
+            .unwrap()
+            .len(),
+        8
+    );
+    let reach = widest_vertex(&model, &fixed.shape);
+    // As far as the absorbed vertex stood, plus its own tolerance.
+    assert!((reach - (gap + T.confusion())).abs() < 1e-12, "{reach}");
+    let v = volume_of_solid(&model, &fixed.shape);
+    assert!((v - 1000.0).abs() < 1e-9, "{v}");
+}
+
+/// Two vertices at one place, one per edge, as edges built apart carry
+/// them: they become one, and nothing widens past what they stated.
+#[test]
+fn a_wire_meeting_at_two_coincident_vertices_shares_one() {
+    let mut model = Model::new();
+    let block = box_with_a_wire_gap(&mut model, 0.0);
+    assert_eq!(wire_gaps(&check(&model, &block, T).unwrap()), 2);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &block, T).unwrap();
+    assert_eq!(fixed.report.gap_vertices_merged, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    assert!(widest_vertex(&model, &fixed.shape) <= T.confusion() * 2.0);
+    let v = volume_of_solid(&model, &fixed.shape);
+    assert!((v - 1000.0).abs() < 1e-9, "{v}");
+}
+
+/// A gap of five millimetres is a missing piece of boundary, not slop: no
+/// vertices merge and the gap stays reported.
+#[test]
+fn a_wire_gap_past_reach_is_left_reported() {
+    let mut model = Model::new();
+    let block = box_with_a_wire_gap(&mut model, 5.0);
+    let fixed = ogeom::heal::fix_shape(&mut model, &block, T).unwrap();
+    assert_eq!(fixed.report.gap_vertices_merged, 0);
+    assert_eq!(wire_gaps(&fixed.report.after), 2, "{}", fixed.report.after);
+}
+
+/// A square face gaping a hundredth of a millimetre at one corner, beside
+/// a triangle with an edge across that same gap: merging the two corners
+/// would close the triangle's edge on itself and pinch its boundary to a
+/// point, so neither merges.
+#[test]
+fn a_wire_gap_spanned_by_an_edge_elsewhere_is_left() {
+    let mut model = Model::new();
+    let gap = 0.01;
+    let corner =
+        |model: &mut Model, x: f64, y: f64| make_vertex(model, Point::new(x, y, 0.0)).shape;
+    let a = corner(&mut model, 0.0, 0.0);
+    let b = corner(&mut model, 4.0, 0.0);
+    let c = corner(&mut model, 4.0, 4.0);
+    let d = corner(&mut model, 0.0, 4.0);
+    let a2 = corner(&mut model, 0.0, -gap);
+    let e = corner(&mut model, -3.0, 0.0);
+    let line = |model: &mut Model, p: &Shape, q: &Shape| {
+        let at = |v: &Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+        let (from, to) = (at(p), at(q));
+        let curve = ogeom::geom::LineCurve::segment(from, to, T).unwrap().into();
+        ogeom::algo::make_edge_between(model, curve, (0.0, from.distance(to)), p, q, T)
+            .unwrap()
+            .shape
+    };
+    let square = [
+        line(&mut model, &a, &b),
+        line(&mut model, &b, &c),
+        line(&mut model, &c, &d),
+        line(&mut model, &d, &a2),
+    ];
+    let triangle = [
+        line(&mut model, &a2, &a),
+        line(&mut model, &a, &e),
+        line(&mut model, &e, &a2),
+    ];
+    let plane = || SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(Frame::WORLD)));
+    let mut faces = Vec::new();
+    for edges in [&square[..], &triangle[..]] {
+        let wire = model.add_wire(edges).unwrap();
+        let surface = model.geometry_mut().add_surface(plane());
+        faces.push(
+            model
+                .add_face(FaceData::new(surface, Location::default()), &[wire])
+                .unwrap(),
+        );
+    }
+    let both = make_compound(&mut model, &faces).unwrap().shape;
+    assert_eq!(wire_gaps(&check(&model, &both, T).unwrap()), 1);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &both, T).unwrap();
+    assert_eq!(fixed.report.gap_vertices_merged, 0);
+    assert_eq!(wire_gaps(&fixed.report.after), 1, "{}", fixed.report.after);
+    assert_eq!(
+        explore_unique(&model, &fixed.shape, ShapeType::Vertex)
+            .unwrap()
+            .len(),
+        6
+    );
+}

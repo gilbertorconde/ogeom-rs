@@ -410,8 +410,9 @@ crate = "ogeom-heal"
 verdict = "partial"
 restriction = """`fix_shape` is the standalone entry point: diagnose, put a \
 wire's edges end to end where an order exists, collapse edges shorter than \
-their own vertices' tolerances, give a boundary crossing a pole its \
-degenerate edge, fit missing pcurves, sew loose faces, \
+their own vertices' tolerances, make one of two vertices a wire's edges \
+meet at within the trim cap (no edge is made across a wider gap), give a \
+boundary crossing a pole its degenerate edge, fit missing pcurves, sew loose faces, \
 tighten tolerances, widen an edge to how far its pcurves stand off its \
 curve and a vertex to how far its curves end from it (within the trim \
 cap, as the readers record the same slop), orient each run of a \

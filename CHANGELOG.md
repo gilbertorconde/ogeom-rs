@@ -167,6 +167,28 @@ bump may break the API and a patch bump may not.
   form. The report counts the edges (`pole_edges_made`). This is #397's
   degenerated-edges item.
 
+- **`fix_shape` closes a gap in a wire where two edges meet at two
+  vertices.** One edge ending at a vertex and the next beginning at
+  another, as edges built apart carry them, is a gap: `check` reports it
+  Broken however close the two stand, and `fix_shape` left it. A wire in
+  order whose vertices only coincided made `fix_shape` fail outright,
+  since putting it in order rebuilt it through `make_wire`, which refuses
+  the gap.
+
+  Now the two vertices become one where they stand no farther apart than
+  a fitted trim may stand off its surface, the reach within which a
+  curve ending away from its vertex is stated as slop. The vertex kept
+  widens to reach the one it absorbs, plus that one's own tolerance. A
+  class of vertices joined this way is left as it is where merging would
+  close an edge on itself or pinch a face's boundary at a point, and a
+  gap past the reach stays reported: no edge is made to fill it. A box
+  with an edge cut a hundredth of a millimetre short at a vertex of its
+  own, and one whose edge begins at a coincident vertex of its own, both
+  check clean after and measure 1000. Neither real-world assembly has
+  such a gap after the read, since STEP shares vertices by reference;
+  both are unchanged. The report counts the vertices merged
+  (`gap_vertices_merged`). This is #397's wire-gaps item.
+
 - **`make_loft_solid` lofts a solid through sections of different edge
   counts, and along guide curves.** `make_loft` refused a square to a
   circle, a slot to a hexagon, or any section mixing lines with arcs, and

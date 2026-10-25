@@ -15,6 +15,12 @@
 //! - an edge shorter than its own vertices' tolerances (the two ends
 //!   the same point by the model's own admission) is collapsed, its two
 //!   vertices made one;
+//! - where one edge of a wire ends at a vertex and the next begins at
+//!   another, no farther apart than a fitted trim may stand off its
+//!   surface, the two vertices are made one, wide enough to reach both:
+//!   the same slop as a curve ending away from its vertex, and stated the
+//!   same way. A gap past that reach is a missing piece of boundary, and
+//!   no edge is made to fill it;
 //! - a boundary that crosses a pole of its surface (a sphere's, a cone's
 //!   apex) with no edge spanning the pole's row of the chart is given a
 //!   degenerate edge there;
@@ -47,7 +53,7 @@ use ogeom_core::FastMap;
 
 use ogeom_algo::{
     Diagnosis, History, ProbeCache, check_kept, edge_pcurve_gap, edge_vertices, linear_properties,
-    make_wire, order_edges, sew,
+    order_edges, sew,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_mesh::Deflection;
@@ -67,6 +73,8 @@ pub struct FixReport {
     pub wires_reordered: usize,
     /// Edges collapsed to a vertex.
     pub edges_collapsed: usize,
+    /// Vertices merged into the vertex beside them across a gap in a wire.
+    pub gap_vertices_merged: usize,
     /// Degenerate edges made where a boundary crosses a pole.
     pub pole_edges_made: usize,
     /// Edges given a pcurve on a face they bound.
@@ -131,8 +139,19 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         current = built.shape;
     }
 
+    // Gaps between consecutive edges, on the wires as reordered: a wire
+    // out of order has no consecutive edges to speak of.
+    let mut gaps = Reshape::new();
+    let gap_vertices_merged = merge_wire_gaps(model, &current, &mut gaps, tol)?;
+    if !gaps.is_empty() {
+        let built = gaps.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
+
     // Degenerate edges where a boundary crosses a pole, on the wires as
-    // reordered and collapsed: a collapsed edge at a pole leaves the gap.
+    // reordered, collapsed and closed: a collapsed edge at a pole leaves
+    // the gap.
     let mut poles = Reshape::new();
     let pole_edges_made = crate::pole::stage_pole_edges(model, &current, &mut poles, tol)?;
     if !poles.is_empty() {
@@ -227,6 +246,7 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             after,
             wires_reordered,
             edges_collapsed,
+            gap_vertices_merged,
             pole_edges_made,
             edges_trimmed,
             sewn,
@@ -376,14 +396,19 @@ fn reorder_wires(
         let Ok(ordered) = order_edges(model, &edges, tol) else {
             continue;
         };
-        let rebuilt = make_wire(model, &ordered, tol)?.shape;
+        // Built as the bag it is: consecutive ends that meet at two
+        // vertices rather than one are no order problem, and are made one
+        // with the other gaps.
+        let rebuilt = model.add_wire(&ordered)?;
         reshape.replace(&wire, rebuilt);
         count += 1;
     }
     Ok(count)
 }
 
-/// Whether consecutive edges meet, the last back at the first.
+/// Whether consecutive edges meet, the last back at the first: at one
+/// vertex, or at two the model's tolerances call one place, which the gap
+/// step makes one.
 fn walks_end_to_end(model: &Model, edges: &[Shape], tol: Tolerances) -> OgeomResult<bool> {
     for i in 0..edges.len() {
         let (Some((_, end)), Some((next, _))) = (
@@ -392,11 +417,28 @@ fn walks_end_to_end(model: &Model, edges: &[Shape], tol: Tolerances) -> OgeomRes
         ) else {
             return Ok(false);
         };
-        if !end.is_same(&next) && !model.same_position(&end, &next, tol)? {
+        if !end.is_same(&next)
+            && !model.same_position(&end, &next, tol)?
+            && !one_place(model, &end, &next, tol)?
+        {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// Whether two vertices stand within the wider of their tolerances.
+fn one_place(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    let mut reach = tol.confusion();
+    let mut points = Vec::with_capacity(2);
+    for v in [a, b] {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+            return Ok(false);
+        };
+        reach = reach.max(data.tolerance.get());
+        points.push(v.transform(model.datums())?.apply(data.point));
+    }
+    Ok(points[0].distance(points[1]) <= reach)
 }
 
 /// Stage the collapse of every edge shorter than its vertices' tolerances:
@@ -491,6 +533,179 @@ fn collapse_small_edges(
     }
     if count > 0 && reshape.is_empty() {
         ogeom_bail!(Construction, "a collapse staged nothing");
+    }
+    Ok(count)
+}
+
+/// Stage the merge of the two vertices at every joint of a wire where one
+/// edge ends at a vertex and the next begins at another no farther away
+/// than a fitted trim may stand off its surface. Returns how many vertices
+/// are merged into another.
+///
+/// Merges chain: vertices joined through joints are one class, kept as the
+/// first met. A class is not merged where merging would change more than
+/// the joints it closes: where two of its vertices bound one edge (the
+/// edge would close on itself), where it would make two joints of one
+/// face meet that share no vertex now (the boundary would pinch), where a
+/// vertex of it is held by an edge under a placement of its own (its point
+/// is not in the edge's frame), or where a vertex of it lies past the reach
+/// from the one kept. What is not merged stays reported.
+///
+/// The vertex kept widens to reach every vertex it absorbs, as far as that
+/// vertex stood plus that vertex's own tolerance, so the curves that ended
+/// within each still end within it.
+fn merge_wire_gaps(
+    model: &mut Model,
+    shape: &Shape,
+    reshape: &mut Reshape,
+    tol: Tolerances,
+) -> OgeomResult<usize> {
+    fn find(parent: &FastMap<TShapeId, TShapeId>, id: TShapeId) -> TShapeId {
+        let mut current = id;
+        while let Some(&up) = parent.get(&current) {
+            if up == current {
+                break;
+            }
+            current = up;
+        }
+        current
+    }
+    let cap = tol.confusion() * TRIM_CAP;
+    // The joints of each face's wires together, and of each wire no face
+    // holds on its own: the vertex the edge before ends at and the one the
+    // edge after begins at.
+    let mut boundaries: Vec<Vec<Shape>> = Vec::new();
+    let mut held = ogeom_core::FastSet::default();
+    for face in explore_unique(model, shape, ShapeType::Face)? {
+        let wires = model.children_of(&face)?;
+        held.extend(wires.iter().map(Shape::node));
+        boundaries.push(wires);
+    }
+    for wire in explore_unique(model, shape, ShapeType::Wire)? {
+        if !held.contains(&wire.node()) {
+            boundaries.push(vec![wire]);
+        }
+    }
+    let point = |model: &Model, v: &Shape| -> OgeomResult<Option<ogeom_math::Point>> {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+            return Ok(None);
+        };
+        Ok(Some(v.transform(model.datums())?.apply(data.point)))
+    };
+    let mut joints: Vec<Vec<[TShapeId; 2]>> = Vec::with_capacity(boundaries.len());
+    let mut parent: FastMap<TShapeId, TShapeId> = FastMap::default();
+    let mut order: Vec<TShapeId> = Vec::new();
+    for wires in &boundaries {
+        let mut at = Vec::new();
+        for wire in wires {
+            let edges = model.ordered_children_of(wire)?;
+            for i in 0..edges.len() {
+                let (Some((_, end)), Some((next, _))) = (
+                    edge_vertices(model, &edges[i])?,
+                    edge_vertices(model, &edges[(i + 1) % edges.len()])?,
+                ) else {
+                    continue;
+                };
+                at.push([end.node(), next.node()]);
+                if end.node() == next.node()
+                    || !end
+                        .location()
+                        .is_same_placement(next.location(), model.datums(), tol)?
+                {
+                    continue;
+                }
+                let (Some(p), Some(q)) = (point(model, &end)?, point(model, &next)?) else {
+                    continue;
+                };
+                if p.distance(q) > cap {
+                    continue;
+                }
+                for id in [end.node(), next.node()] {
+                    if !parent.contains_key(&id) {
+                        parent.insert(id, id);
+                        order.push(id);
+                    }
+                }
+                let (keep, absorb) = (find(&parent, end.node()), find(&parent, next.node()));
+                if keep != absorb {
+                    parent.insert(absorb, keep);
+                }
+            }
+        }
+        joints.push(at);
+    }
+    if order.is_empty() {
+        return Ok(0);
+    }
+    let mut refused = ogeom_core::FastSet::default();
+    for edge in explore_unique(model, shape, ShapeType::Edge)? {
+        let bounds = model.children_of(&Shape::of(edge.node()))?;
+        for vertex in &bounds {
+            if !vertex.location().is_identity() && parent.contains_key(&vertex.node()) {
+                refused.insert(find(&parent, vertex.node()));
+            }
+        }
+        if let [first, .., last] = &bounds[..]
+            && first.node() != last.node()
+            && parent.contains_key(&first.node())
+            && find(&parent, first.node()) == find(&parent, last.node())
+        {
+            refused.insert(find(&parent, first.node()));
+        }
+    }
+    let class = |id: TShapeId| parent.contains_key(&id).then(|| find(&parent, id));
+    for at in &joints {
+        let touched: Vec<&[TShapeId; 2]> = at
+            .iter()
+            .filter(|joint| joint.iter().any(|id| class(*id).is_some()))
+            .collect();
+        for (j, a) in touched.iter().enumerate() {
+            for b in &touched[j + 1..] {
+                if a.iter().any(|id| b.contains(id)) {
+                    continue;
+                }
+                for x in a.iter().filter_map(|id| class(*id)) {
+                    if b.iter().any(|id| class(*id) == Some(x)) {
+                        refused.insert(x);
+                    }
+                }
+            }
+        }
+    }
+    let mut need: FastMap<TShapeId, f64> = FastMap::default();
+    let mut absorbed = Vec::new();
+    for &id in &order {
+        let keep = find(&parent, id);
+        if keep == id {
+            continue;
+        }
+        let (Some(from), Some(to)) = (
+            point(model, &Shape::of(id))?,
+            point(model, &Shape::of(keep))?,
+        ) else {
+            refused.insert(keep);
+            continue;
+        };
+        let reach = model.tolerance_of(&Shape::of(id))?.map_or(0.0, |t| t.get());
+        if from.distance(to) > cap {
+            refused.insert(keep);
+        }
+        let wide = need.entry(keep).or_insert(tol.confusion());
+        *wide = wide.max(from.distance(to) + reach);
+        absorbed.push((id, keep));
+    }
+    let mut count = 0;
+    for (id, keep) in absorbed {
+        if refused.contains(&keep) {
+            continue;
+        }
+        reshape.replace(&Shape::of(id), Shape::of(keep));
+        count += 1;
+    }
+    for (keep, wide) in need {
+        if !refused.contains(&keep) {
+            model.widen(&Shape::of(keep), ogeom_core::Tolerance::new(wide)?)?;
+        }
     }
     Ok(count)
 }
