@@ -798,7 +798,9 @@ edges, the flush ones taken first; a band crossed at both ends \
 is cut in two halfway along, each half joined into its own corner and the \
 two joined again where both hold the band's one section. Inside corners \
 off square in plan and corners whose walls both lean are taken, the open \
-corner past both walls' planes taken out of the two widenings. Elsewhere \
+corner past both walls' planes taken out of the two widenings, and so is \
+every corner of a pocket off square in plan whose walls each lean their \
+own way. Elsewhere \
 (a crossed junction that would leave two joined bands meeting without \
 one, a turn folding back past the solid, a wider \
 convex turn of curved bands) the \

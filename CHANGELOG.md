@@ -422,6 +422,37 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pocket off square in plan with every wall drafted its own way meets
+  at every corner.** (#342) A trapezoid with corners at 63 and 117
+  degrees, walls at 0.1, 0.05, -0.05 and 0.08, r = 0.5, fell back to
+  capped corners: 0.635925 and 0.640714 mm³ against 0.681475, the sum of
+  the creases' sections and each corner's gain above both bands. A pentagon fell back
+  the same way, 0.809829 and 0.806727 against 0.856168. Both orders now
+  give the ideal within 1e-7. Three defects stood in the way.
+  - At the acute corners the ring's wedge holds faces a tenth of a micron
+    wide, narrower than the gap the halves of the band are sewn across.
+    `sew_within` took both sides of such a face for one edge and the
+    short edge across its end for a point, yet kept the face, walking
+    each side out and back, and the point as a closed edge. A ring that,
+    with the edges shrunk to a point left out, walks each edge once each
+    way now bounds nothing and goes with its face, as a ring collapsed
+    onto one edge already did, and an edge shrunk to a point is walked by
+    no ring.
+  - Sewing across a gap widened the edge it kept to reach the one it
+    dropped, but not that edge's vertices, so `check` called the ring's
+    wedge broken. The vertices now widen with it.
+  - The boolean measures whether a contact edge runs along a fitted edge
+    of the face it lies in at 48 samples along the contact. A fitted edge
+    shorter than three of those spacings, along the pocket's corner, was
+    never along it, so the contact split the face again back along its
+    own boundary and the face kept no piece. Where the samples find no
+    stretch, the edge is now measured from its own side: where all of it
+    lies within the width of the contact, it runs along it between the
+    feet of its ends. A cube less a prism whose foot ends in a fitted edge
+    0.0005 or 0.005 long along the cube's edge was refused and now keeps
+    its closed-form volume.
+  - Pockets that rounded before give the same figures.
+
 - **IGES applies an instance's matrix and a composite curve's matrix in
   the specification's order.** (#404)
   - A singular subfigure instance (408) applied its matrix to its own

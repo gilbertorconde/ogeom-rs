@@ -1971,26 +1971,42 @@ fn pocket_rounding(outline: &[(f64, f64)], d: &[f64], r: f64) -> f64 {
 }
 
 /// Pockets whose walls lean by different drafts rounded round their
-/// rims: four walls each its own way, and a pocket a millimetre and a half
-/// wide whose two long walls lean. Every corner is crossed or flush, each
-/// band crossed at both ends cut in two, and each crease takes its section
-/// along its length and each corner what lies above both its bands beyond
-/// those sections, in either order.
+/// rims: four walls each its own way, square in plan, as a trapezoid with
+/// corners at 63 and 117 degrees, and as a pentagon; and a pocket a
+/// millimetre and a half wide whose two long walls lean. Every corner is
+/// crossed or flush, each band crossed at both ends cut in two, and each
+/// crease takes its section along its length and each corner what lies
+/// above both its bands beyond those sections, in either order. Off square,
+/// the ring's wedge holds faces at the acute corners narrower than the gap
+/// its halves are sewn across, which the sewing took for slits, and the
+/// boolean read a short fitted edge along the pocket's corner as a section
+/// of its own: both refused, and every corner was left capped.
 #[test]
 fn pockets_whose_walls_lean_their_own_ways_meet_at_every_corner() {
-    for (outline, d) in [
+    // Each pocket's outline and its walls' drafts.
+    type Pocket<'a> = (&'a [(f64, f64)], &'a [f64]);
+    let cases: [Pocket; 4] = [
         (
-            [(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)],
-            [0.1, 0.05, -0.05, 0.08],
+            &[(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)],
+            &[0.1, 0.05, -0.05, 0.08],
         ),
         (
-            [(2.0, 3.25), (6.0, 3.25), (6.0, 4.75), (2.0, 4.75)],
-            [0.1, 0.0, 0.05, 0.0],
+            &[(1.5, 2.0), (6.5, 2.0), (5.0, 5.0), (3.0, 5.0)],
+            &[0.1, 0.05, -0.05, 0.08],
         ),
-    ] {
+        (
+            &[(2.0, 2.0), (6.0, 2.0), (7.0, 4.5), (4.0, 6.5), (1.0, 4.5)],
+            &[0.1, 0.05, -0.05, 0.08, 0.0],
+        ),
+        (
+            &[(2.0, 3.25), (6.0, 3.25), (6.0, 4.75), (2.0, 4.75)],
+            &[0.1, 0.0, 0.05, 0.0],
+        ),
+    ];
+    for (outline, d) in cases {
         let mut model = ogeom_topo::Model::new();
-        let (block, edges) = polygon_pocket(&mut model, &outline, &d);
-        let want = pocket_rounding(&outline, &d, 0.5);
+        let (block, edges) = polygon_pocket(&mut model, outline, d);
+        let want = pocket_rounding(outline, d, 0.5);
         // Each corner's box is integrated to about a micron cubed.
         for got in removed_both_ways(&model, &block, &edges, 0.5) {
             assert!((got - want).abs() < 1e-5, "{d:?}: {got} against {want}");
