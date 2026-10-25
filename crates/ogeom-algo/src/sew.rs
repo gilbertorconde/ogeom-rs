@@ -530,12 +530,9 @@ fn sew_faces(
                         need = need.max(kept_fp.off(p, tol)?);
                     }
                     let need = need + tol.confusion();
-                    if let Some(node) = model.node_mut(&survivor)
-                        && let NodeData::Edge(e) = node.data_mut()
-                        && need > e.tolerance.get()
-                    {
-                        e.tolerance = e.tolerance.widen_to(need);
-                    }
+                    // Its vertices with it: none is held tighter than an
+                    // edge it bounds.
+                    model.widen(&survivor, ogeom_core::Tolerance::new(need)?)?;
                 }
                 merged.insert(catalogue[j].0, (catalogue[i].0, flipped));
                 joined += 1;
@@ -645,7 +642,6 @@ fn sew_faces(
     for (dropped, kept) in &merged {
         substitution.entry(*dropped).or_insert(*kept);
     }
-
     let mut history = History::new();
     let mut rebuilt = Vec::with_capacity(all.len());
     // Each rebuilt face's original, and whether it is that original's copy.
@@ -2376,6 +2372,81 @@ mod tests {
                 assert!(d.is_usable(), "{d}");
             }
         }
+    }
+
+    /// A unit square whose top is an arc bowing a twentieth of a millimetre
+    /// up, and the square above it on the chord: sewn across a tenth, arc
+    /// and chord are one edge, which states how far the chord stands off
+    /// the arc, and the vertices it ends on reach as far.
+    #[test]
+    fn an_edge_sewn_across_a_bow_widens_its_vertices_with_it() {
+        let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+        let mut model = Model::new();
+        let circle =
+            ogeom_math::Circle::through(at(1.0, 0.0), at(0.5, 0.05), at(0.0, 0.0), T).unwrap();
+        let param = |p: Point| ogeom_math::elementary::circle_parameter(&circle, p, T).unwrap();
+        let (from, middle) = (param(at(1.0, 0.0)), param(at(0.5, 0.05)));
+        let to = param(at(0.0, 0.0));
+        let span = |a: f64, b: f64| (b - a).rem_euclid(core::f64::consts::TAU);
+        let (lo, hi) = if span(from, middle) < span(from, to) {
+            (from, from + span(from, to))
+        } else {
+            (to, to + span(to, from))
+        };
+        let corners = [at(0.0, -1.0), at(1.0, -1.0), at(1.0, 0.0), at(0.0, 0.0)];
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|&p| crate::make_vertex(&mut model, p).shape)
+            .collect();
+        let mut edges = Vec::new();
+        for k in [0, 1, 3] {
+            let (a, b) = (corners[k], corners[(k + 1) % 4]);
+            let line = ogeom_geom::LineCurve::segment(a, b, T).unwrap();
+            edges.push(
+                crate::make_edge_between(
+                    &mut model,
+                    line.into(),
+                    (0.0, a.distance(b)),
+                    &vertices[k],
+                    &vertices[(k + 1) % 4],
+                    T,
+                )
+                .unwrap()
+                .shape,
+            );
+        }
+        let (start, end) = if lo == from { (2, 3) } else { (3, 2) };
+        let arc = crate::make_edge_between(
+            &mut model,
+            ogeom_geom::CircleCurve::new(circle).into(),
+            (lo, hi),
+            &vertices[start],
+            &vertices[end],
+            T,
+        )
+        .unwrap()
+        .shape;
+        edges.insert(2, if start == 2 { arc } else { arc.reversed() });
+        let plane = || PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+        let below = crate::make_face_with_pcurves(&mut model, plane(), &[edges], T)
+            .unwrap()
+            .shape;
+        let wire = make_polygon(
+            &mut model,
+            &[at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)],
+            true,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let ring = model.ordered_children_of(&wire).unwrap();
+        let above = crate::make_face_with_pcurves(&mut model, plane(), &[ring], T)
+            .unwrap()
+            .shape;
+        let sewn = sew_within(&mut model, &[below, above], 0.1, T).unwrap();
+        assert_eq!((sewn.shells.len(), sewn.joined), (1, 1));
+        let d = crate::check(&model, &sewn.shells[0], T).unwrap();
+        assert!(d.is_usable(), "{d}");
     }
 
     /// A 10 mm edge against two 5 mm edges along it: the long edge is split
