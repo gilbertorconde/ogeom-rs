@@ -2420,7 +2420,56 @@ fn measured_overlaps(
             on_b: (on_edge(lo)?, on_edge(hi)?),
         });
     }
+    // The samples are spaced along the whole curve, and an edge lying
+    // along it over less than three spacings gives no stretch. Measured
+    // from the edge's side instead: where every sample of the edge lies
+    // within the width of the curve, the edge runs along it end to end,
+    // and the stretch is the curve's between the feet of its two ends.
+    if out.is_empty()
+        && let Some(overlap) = edge_along_curve(curve, crange, e, width, tol)?
+    {
+        out.push(overlap);
+    }
     Ok(out)
+}
+
+/// The stretch of `curve` over `crange` that the edge `e` runs along end to
+/// end within `width`, as an overlap with the edge's own parameters at its
+/// ends; `None` where some point of the edge stands farther off.
+fn edge_along_curve(
+    curve: &Curve,
+    crange: (f64, f64),
+    e: &BoundaryEdge,
+    width: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<ogeom_intersect::Overlap>> {
+    const SAMPLES: u32 = 48;
+    let at =
+        |i: u32| (e.crange.1 - e.crange.0).mul_add(f64::from(i) / f64::from(SAMPLES), e.crange.0);
+    // Its ends and middle first: an edge that only crosses the curve
+    // leaves it at one of them.
+    let order = [0, SAMPLES, SAMPLES / 2]
+        .into_iter()
+        .chain((1..SAMPLES).filter(|&i| i != SAMPLES / 2));
+    let mut feet = [0.0; 2];
+    for i in order {
+        let p = e.curve.point_at(at(i), tol)?;
+        let (off, t) = nearest_on_edge_curve(curve, crange, p, tol)?;
+        if off > width {
+            return Ok(None);
+        }
+        if i == 0 {
+            feet[0] = t;
+        } else if i == SAMPLES {
+            feet[1] = t;
+        }
+    }
+    let (on_a, on_b) = if feet[0] <= feet[1] {
+        ((feet[0], feet[1]), e.crange)
+    } else {
+        ((feet[1], feet[0]), (e.crange.1, e.crange.0))
+    };
+    Ok((on_a.1 - on_a.0 > tol.parametric()).then_some(ogeom_intersect::Overlap { on_a, on_b }))
 }
 
 /// The pcurve's course over a sub-range of the *curve's* parameters.
@@ -8706,6 +8755,16 @@ fn distance_to_edge_curve(
     p: Point,
     tol: Tolerances,
 ) -> OgeomResult<f64> {
+    Ok(nearest_on_edge_curve(curve, crange, p, tol)?.0)
+}
+
+/// [`distance_to_edge_curve`], with the parameter of the nearest point.
+fn nearest_on_edge_curve(
+    curve: &Curve,
+    crange: (f64, f64),
+    p: Point,
+    tol: Tolerances,
+) -> OgeomResult<(f64, f64)> {
     // Coarse bracket, then two rounds of local refinement: the answer feeds
     // the hug filters, whose widths are fractions of a millimetre, and a
     // long arc's 48-segment polyline sags by more than that on its own.
@@ -8739,8 +8798,7 @@ fn distance_to_edge_curve(
     let step = span / 48.0;
     let (_, t2) = scan((t1 - step).max(crange.0), (t1 + step).min(crange.1), 16)?;
     let fine = span / (48.0 * 8.0);
-    let (best, _) = scan((t2 - fine).max(crange.0), (t2 + fine).min(crange.1), 16)?;
-    Ok(best)
+    scan((t2 - fine).max(crange.0), (t2 + fine).min(crange.1), 16)
 }
 
 /// Pair up the pieces two coincident faces contribute for the same patch of
