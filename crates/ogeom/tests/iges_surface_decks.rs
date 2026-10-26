@@ -66,15 +66,24 @@ fn record(body: &str, section: char, seq: usize) -> String {
 
 /// A millimetre deck of `items`, the `i`th at directory entry `2 i + 1`.
 fn deck(items: &[Item]) -> String {
+    deck_as("test.igs", "2,2HMM", items)
+}
+
+/// A deck of `items` naming itself `name` in its global section, in the
+/// units `units` states (the units flag and name).
+fn deck_as(name: &str, units: &str, items: &[Item]) -> String {
     let mut out = String::new();
     out += &record("surface deck", 'S', 1);
     out += &record(
-        "1H,,1H;,4Htest,8Htest.igs,6Hogeom,6Hogeom,32,38,6,308,15,4Htest,",
+        &format!(
+            "1H,,1H;,4Htest,{}H{name},6Hogeom,6Hogeom,32,38,6,308,15,4Htest,",
+            name.len()
+        ),
         'G',
         1,
     );
     out += &record(
-        "1.0,2,2HMM,1,0.01,15H20261021.120000,1D-06,10.0,2Hme,",
+        &format!("1.0,{units},1,0.01,15H20261021.120000,1D-06,10.0,2Hme,"),
         'G',
         2,
     );
@@ -781,4 +790,133 @@ fn parents_matrices_carry_what_they_own_physically() {
             "{faces:?}"
         );
     }
+}
+
+/// External references (416) resolved against the files beside the deck.
+/// An inch library's index (402, form 12) lists the definition TILE, a
+/// unit patch: instanced at (100, 0, 0) through a reference to it, it is
+/// the 25.4 mm square about (112.7, 12.7, 0). A whole millimetre file,
+/// a 2-cube and a point at (3, 4, 5), instanced 50 up through a
+/// reference to all of it, is the cube about (1, 1, 51) and the point at
+/// (3, 4, 55). A missing file, a name the library's index does not list,
+/// a file that names itself otherwise and a file that instances itself
+/// are each refused by name, and the instance with them. Read as text, the
+/// deck has no files to find.
+#[test]
+fn external_references_resolve_against_the_files_beside_the_deck() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("iges-external-references");
+    std::fs::create_dir_all(&dir).unwrap();
+    let library = [
+        item(308, 0, true, "0,4HTILE,1,3"),
+        flat_patch(1.0, 0.0, true),
+        item(402, 12, false, "1,4HTILE,1"),
+    ];
+    std::fs::write(
+        dir.join("lib.igs"),
+        deck_as("lib.igs", "1,4HINCH", &library),
+    )
+    .unwrap();
+    let whole = [
+        item(150, 0, false, "2.,2.,2.,0.,0.,0.,1.,0.,0.,0.,0.,1."),
+        item(116, 0, false, "3.,4.,5.,0"),
+    ];
+    std::fs::write(
+        dir.join("whole.igs"),
+        deck_as("whole.igs", "2,2HMM", &whole),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("renamed.igs"),
+        deck_as("other.igs", "2,2HMM", &whole),
+    )
+    .unwrap();
+    let looped = [
+        item(416, 1, true, "8Hloop.igs"),
+        item(408, 0, false, "1,0.,0.,1.,1."),
+    ];
+    std::fs::write(dir.join("loop.igs"), deck_as("loop.igs", "2,2HMM", &looped)).unwrap();
+    let items = [
+        // D1, D3: TILE from the library, placed at (100, 0, 0).
+        item(416, 0, true, "7Hlib.igs,4HTILE"),
+        item(408, 0, false, "1,100.,0.,0.,1."),
+        // D5, D7: the whole of whole.igs, placed 50 up; its identifier
+        // carries the sending system's directories.
+        item(416, 1, true, "20HC:\\parts\\x\\whole.igs"),
+        item(408, 0, false, "5,0.,0.,50.,1."),
+        // D9, D11: a file that is not there.
+        item(416, 0, true, "11Hmissing.igs,4HPART"),
+        item(408, 0, false, "9,0.,0.,0.,1."),
+        // D13, D15: a name the library does not list.
+        item(416, 0, true, "7Hlib.igs,5HOTHER"),
+        item(408, 0, false, "13,0.,0.,0.,1."),
+        // D17, D19: a file that names itself otherwise.
+        item(416, 1, true, "11Hrenamed.igs"),
+        item(408, 0, false, "17,0.,0.,0.,1."),
+        // D21, D23: a file that instances itself.
+        item(416, 1, true, "8Hloop.igs"),
+        item(408, 0, false, "21,0.,0.,0.,1."),
+        // D25: the list of files referred to.
+        item(
+            406,
+            12,
+            false,
+            "5,7Hlib.igs,9Hwhole.igs,11Hmissing.igs,11Hrenamed.igs,8Hloop.igs",
+        ),
+    ];
+    let text = deck(&items);
+    let path = dir.join("assembly.igs");
+    std::fs::write(&path, &text).unwrap();
+    let import = ogeom::io::read_iges_file(&path, T).unwrap();
+    let warnings = &import.report.warnings;
+    assert_eq!(warnings.len(), 4, "{:?}", import.report);
+    assert!(
+        warnings[0].starts_with("D11:")
+            && warnings[0].contains("\"missing.igs\"")
+            && warnings[0].contains("is not there"),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[1].starts_with("D15:") && warnings[1].contains("no definition named \"OTHER\""),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[2].starts_with("D19:") && warnings[2].contains("names itself \"other.igs\""),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[3].starts_with("D23:") && warnings[3].contains("nest past"),
+        "{warnings:?}"
+    );
+    assert_eq!(
+        import.report.skipped,
+        [("type 406 form 12".to_owned(), 1)].into_iter().collect()
+    );
+    let model = import.document.model();
+    let fine = Deflection::default();
+    let close = |a: ogeom::math::Point, b: [f64; 3]| {
+        a.distance(ogeom::math::Point::new(b[0], b[1], b[2])) < 1e-9
+    };
+    let [sheet] = import.sheets.as_slice() else {
+        panic!("{:?}", import.sheets);
+    };
+    let props = surface_properties(model, sheet, fine, T).unwrap();
+    assert!(
+        (props.mass - 25.4 * 25.4).abs() < 1e-9 && close(props.centre, [112.7, 12.7, 0.0]),
+        "{props:?}"
+    );
+    let [solid] = import.solids.as_slice() else {
+        panic!("{:?}", import.solids);
+    };
+    let props = ogeom::algo::volume_properties(model, solid, fine, T).unwrap();
+    assert!(
+        (props.mass - 8.0).abs() < 1e-9 && close(props.centre, [1.0, 1.0, 51.0]),
+        "{props:?}"
+    );
+    assert_eq!(positions(model, &import.points), vec![[3.0, 4.0, 55.0]]);
+
+    let error = ogeom::io::read_iges(&text, T).unwrap_err().to_string();
+    assert!(
+        error.contains("read as text") && error.contains("read_iges_file"),
+        "{error}"
+    );
 }

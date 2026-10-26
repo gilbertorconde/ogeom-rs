@@ -219,7 +219,13 @@ a drafting entity's leaders and witness lines, a composite curve's pieces,
 and the curves and surfaces the swept, ruled and offset entities are built
 from; a child owned only logically stands where its own matrix puts it. An
 independent bounded plane (108, form 1) reads as the face its curve
-encloses. External references (416) are not read.
+encloses. External references (416) to a definition or a whole file
+resolve, through `read_iges_file`, against the files in the deck's own
+directory, each file identified by the name its global section gives it
+and a definition by the symbol its index (402, form 12) lists; a missing
+file, a misnamed file, an unlisted symbol, a logical reference and a
+reference to a natively kept definition are refused by name, as is every
+reference in a deck read from text.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered`
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered`
 - **io.step**: STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI · `covered`
@@ -269,4 +275,4 @@ encloses. External references (416) are not read.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 6e6125bbd0b89cba -->
+<!-- ledger-checksum: d6193fb3d46b6be0 -->

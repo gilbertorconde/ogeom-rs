@@ -7,7 +7,7 @@ mod parse;
 mod read;
 mod write;
 
-pub use read::{IgesImport, IgesReport, read_iges};
+pub use read::{IgesImport, IgesReport, read_iges, read_iges_file};
 pub use write::write_iges;
 
 /// The entity types the reader and writer translate, by number and by the
@@ -70,6 +70,7 @@ pub const SUPPORTED_ENTITIES: &[(i64, &str)] = &[
     (408, "SINGULAR_SUBFIGURE"),
     (412, "RECTANGULAR_ARRAY_SUBFIGURE"),
     (414, "CIRCULAR_ARRAY_SUBFIGURE"),
+    (416, "EXTERNAL_REFERENCE"),
     (430, "SOLID_INSTANCE"),
     (502, "VERTEX_LIST"),
     (504, "EDGE_LIST"),

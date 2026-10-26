@@ -34,7 +34,7 @@ pub mod threemf;
 pub mod vrml;
 pub(crate) mod xml;
 
-pub use iges::{IgesImport, IgesReport, read_iges, write_iges};
+pub use iges::{IgesImport, IgesReport, read_iges, read_iges_file, write_iges};
 pub use mesh_formats::{
     ExportMesh, ImportedMesh, read_glb, read_gltf, write_glb, write_obj, write_ply,
 };

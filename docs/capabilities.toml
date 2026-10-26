@@ -1458,8 +1458,14 @@ a drafting entity's leaders and witness lines, a composite curve's pieces,
 and the curves and surfaces the swept, ruled and offset entities are built
 from; a child owned only logically stands where its own matrix puts it. An
 independent bounded plane (108, form 1) reads as the face its curve
-encloses. External references (416) are not read."""
-symbols = ["ogeom_io::read_iges", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
+encloses. External references (416) to a definition or a whole file
+resolve, through `read_iges_file`, against the files in the deck's own
+directory, each file identified by the name its global section gives it
+and a definition by the symbol its index (402, form 12) lists; a missing
+file, a misnamed file, an unlisted symbol, a logical reference and a
+reference to a natively kept definition are refused by name, as is every
+reference in a deck read from text."""
+symbols = ["ogeom_io::read_iges", "ogeom_io::read_iges_file", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
 tests = ["crates/ogeom/tests/iges_roundtrip.rs",
     "crates/ogeom-io/tests/sheet_export.rs",
     "crates/ogeom-io/src/iges/read.rs::hyperbola_and_parabola_conic_arcs_read_as_their_curves",

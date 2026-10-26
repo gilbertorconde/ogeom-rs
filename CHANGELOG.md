@@ -13,6 +13,27 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **IGES external references resolve against the files beside the
+  deck.** (#404)
+  - `read_iges_file` reads a deck from disk and resolves its external
+    references (416) in the same directory. A file is looked for under
+    the last component of the identifier the reference gives, and must
+    name itself so in its own global section (IGES 5.3, section 3.6.4).
+  - A reference to a definition (form 0) takes the entity the referenced
+    file's index (402, form 12) lists under its symbolic name. A
+    reference to a whole file (form 1) takes every shape that file reads
+    as. Either is built at that file's own coordinates and units, for the
+    instance naming the reference to place. Files may refer on to files.
+  - Refused by name, with the instance placing it: a missing file, a
+    file that names itself otherwise, a symbol the index does not list, a
+    logical reference (form 2), a definition kept natively by the
+    receiving system (forms 3 and 4), and a file that instances itself.
+    `read_iges`, handed text, has no directory to look in and refuses
+    every reference so.
+  - Measured on synthetic decks: an inch library's unit patch placed at
+    (100, 0, 0) reads area 645.16 about (112.7, 12.7, 0), and a whole
+    file's 2-cube and point placed 50 up read volume 8 about (1, 1, 51)
+    and the point at (3, 4, 55).
 - **IGES reads and writes stand-alone points.** (#404)
   - An independent point (116) that is geometry was counted as skipped.
     It now reads as a vertex in `IgesImport::points`, carried by its

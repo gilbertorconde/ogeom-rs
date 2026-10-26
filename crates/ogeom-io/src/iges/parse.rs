@@ -49,6 +49,14 @@ impl Value {
         }
     }
 
+    /// The value as a string, where it is one.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text(t) => Some(t),
+            _ => None,
+        }
+    }
+
     /// The value as an integer, with defaults zero.
     pub fn int(&self) -> i64 {
         match self {

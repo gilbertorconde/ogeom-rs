@@ -245,7 +245,114 @@ fn kept_positions(array: &Entity, at: usize, count: usize) -> Vec<usize> {
 /// The pieces an edge-list entry resolves to.
 type BuiltEdge = (Shape, Curve, (f64, f64));
 
+/// The files a deck's external references (416) name, read from the
+/// directory the deck was read from: each by the file name it is referred
+/// to by, or why it could not be read.
+struct Library {
+    /// Where the files are looked for; `None` for a deck handed in as text.
+    dir: Option<std::path::PathBuf>,
+    files: BTreeMap<String, Result<File, String>>,
+}
+
+/// The library of a deck handed in as text, which looks for no files.
+static NO_LIBRARY: Library = Library {
+    dir: None,
+    files: BTreeMap::new(),
+};
+
+impl Library {
+    /// Every file `root`'s external references name, and every file those
+    /// name in turn, each read once.
+    fn gather(dir: &std::path::Path, root: &File) -> Self {
+        let mut library = Self {
+            dir: Some(dir.to_path_buf()),
+            files: BTreeMap::new(),
+        };
+        let mut wanted = referenced_files(root);
+        while let Some(name) = wanted.pop() {
+            if library.files.contains_key(&name) {
+                continue;
+            }
+            let read = library.read(&name);
+            if let Ok(file) = &read {
+                wanted.extend(referenced_files(file));
+            }
+            library.files.insert(name, read);
+        }
+        library
+    }
+
+    /// The file named `name` beside the deck, parsed, and refused where
+    /// its global section names it otherwise: the format identifies a
+    /// referenced file by the name it gives itself there (IGES 5.3,
+    /// section 3.6.4).
+    fn read(&self, name: &str) -> Result<File, String> {
+        let Some(dir) = &self.dir else {
+            return Err("the deck was read as text, with no directory to look in; \
+                 read_iges_file looks beside the file"
+                .to_owned());
+        };
+        let path = dir.join(name);
+        if !path.is_file() {
+            return Err(format!("{} is not there", path.display()));
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("{} could not be read: {e}", path.display()))?;
+        let file = super::parse::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let own = file
+            .global
+            .get(3)
+            .and_then(Value::text)
+            .map_or("", file_name);
+        if own != name {
+            return Err(format!(
+                "{} names itself \"{own}\" in its global section, not \"{name}\"",
+                path.display()
+            ));
+        }
+        Ok(file)
+    }
+
+    /// The file an external reference names by `id`.
+    fn file(&self, id: &str) -> Result<&File, String> {
+        let name = file_name(id);
+        match self.files.get(name) {
+            Some(Ok(file)) => Ok(file),
+            Some(Err(why)) => Err(why.clone()),
+            None => Err(self
+                .read(name)
+                .err()
+                .unwrap_or_else(|| format!("\"{name}\" was not gathered with the deck"))),
+        }
+    }
+}
+
+/// The last component of a file identifier, which may carry the sending
+/// system's directories in its own spelling (`/`, `\`, a drive's `:` or
+/// a bracketed directory's `]`): the name the file is looked for by,
+/// beside the deck that refers to it.
+fn file_name(id: &str) -> &str {
+    id.rsplit(['/', '\\', ':', ']']).next().unwrap_or(id).trim()
+}
+
+/// The names of the files `file`'s external references (416) to a
+/// definition or a whole file (forms 0 and 1) refer to.
+fn referenced_files(file: &File) -> Vec<String> {
+    file.entities
+        .values()
+        .filter(|e| e.kind == 416 && matches!(e.form, 0 | 1))
+        .filter_map(|e| e.at(0).text())
+        .map(|id| file_name(id).to_owned())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
 /// Read an IGES file's geometry.
+///
+/// An external reference (416) needs the file it names, which a deck
+/// handed in as text cannot reach; [`read_iges_file`] reads a deck from
+/// disk and finds them beside it. Here every instance of one is refused
+/// by name.
 ///
 /// # Errors
 ///
@@ -256,31 +363,52 @@ type BuiltEdge = (Shape, Curve, (f64, f64));
 /// exactly what was compromised.
 pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
     let file = super::parse::parse(text)?;
+    read_parsed(&file, &NO_LIBRARY, tol)
+}
+
+/// Read an IGES file's geometry from disk, as [`read_iges`] reads a deck,
+/// with its external references (416) resolved against the files in the
+/// same directory.
+///
+/// A reference names its file by the identifier the file gives itself as
+/// its fourth global parameter (IGES 5.3, section 3.6.4); the file is
+/// looked for under that identifier's last component, in the directory
+/// `path` is in, and nowhere else. A reference to a definition (form 0)
+/// takes the entity the referenced file's index (402, form 12) lists under
+/// its symbolic name, and a reference to a whole file (form 1) takes every
+/// shape that file reads as, both at that file's own coordinates and units,
+/// for the instance that names the reference to place. Files refer on to
+/// files the same way. A missing file, one that names itself otherwise,
+/// a name its index does not list, a logical reference (form 2) and a
+/// reference to a definition the receiving system keeps natively (forms 3
+/// and 4) are each refused by name, and the instance placing it with
+/// them.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `path` cannot be read as text, and as [`read_iges`].
+pub fn read_iges_file(path: &std::path::Path, tol: Tolerances) -> OgeomResult<IgesImport> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) => ogeom_bail!(Construction, "{} could not be read: {e}", path.display()),
+    };
+    let file = super::parse::parse(&text)?;
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new(""));
+    let library = Library::gather(dir, &file);
+    read_parsed(&file, &library, tol)
+}
+
+/// [`read_iges`] of a parsed deck, its external references resolved in
+/// `library`.
+fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<IgesImport> {
     let Some(scale_mm) = file.scale_mm() else {
         ogeom_bail!(
             Construction,
             "IGES global section names units this reader cannot convert to millimetres"
         );
     };
-    let mut reader = Reader {
-        file: &file,
-        model: Model::new(),
-        report: IgesReport {
-            scale_mm,
-            ..IgesReport::default()
-        },
-        visited: BTreeMap::new(),
-        vertices: FastMap::default(),
-        edges: FastMap::default(),
-        pieces: FastMap::default(),
-        pole_vertices: Vec::new(),
-        trim_poles: Vec::new(),
-        vertex_misses: (0, 0.0),
-        images: FastMap::default(),
-        face_de: None,
-        depth: 0,
-        tol,
-    };
+    let mut reader = Reader::new(file, Model::new(), scale_mm, library, tol);
 
     // Solids first: every 186, in directory order.
     let mut solids: Vec<(i64, Shape)> = Vec::new();
@@ -418,7 +546,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
     // Wireframe: every independent curve that is geometry (use flag 00, so
     // not a parameter-space curve, construction or annotation), that no
     // drawing lists and that nothing above took, as a wire.
-    let on_sheets = on_sheets(&file);
+    let on_sheets = on_sheets(file);
     let curve_des: Vec<i64> = file
         .entities
         .iter()
@@ -526,7 +654,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         }
         pmi.callouts.extend(callouts);
     }
-    layers(&file, &mut document, &built_from, &mut reader.report);
+    layers(file, &mut document, &built_from, &mut reader.report);
     let solids = solids.into_iter().map(|(_, s)| s).collect();
     Ok(IgesImport {
         document,
@@ -540,6 +668,8 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
 
 struct Reader<'a> {
     file: &'a File,
+    /// The files the deck's external references name.
+    library: &'a Library,
     model: Model,
     report: IgesReport,
     /// Every directory entry the reader consumed, for the skipped table.
@@ -581,6 +711,35 @@ struct Reader<'a> {
 const MOST_NESTING: u32 = 64;
 
 impl<'a> Reader<'a> {
+    fn new(
+        file: &'a File,
+        model: Model,
+        scale_mm: f64,
+        library: &'a Library,
+        tol: Tolerances,
+    ) -> Self {
+        Reader {
+            file,
+            library,
+            model,
+            report: IgesReport {
+                scale_mm,
+                ..IgesReport::default()
+            },
+            visited: BTreeMap::new(),
+            vertices: FastMap::default(),
+            edges: FastMap::default(),
+            pieces: FastMap::default(),
+            pole_vertices: Vec::new(),
+            trim_poles: Vec::new(),
+            vertex_misses: (0, 0.0),
+            images: FastMap::default(),
+            face_de: None,
+            depth: 0,
+            tol,
+        }
+    }
+
     /// Run a builder one level deeper, refusing past [`MOST_NESTING`].
     fn nested<T>(&mut self, build: impl FnOnce(&mut Self) -> OgeomResult<T>) -> OgeomResult<T> {
         if self.depth >= MOST_NESTING {
@@ -3461,12 +3620,12 @@ impl<'a> Reader<'a> {
             408 => {
                 let definition = entity.at(0).int();
                 if let Some(e) = self.file.entity(definition)
-                    && e.kind != 308
+                    && !matches!(e.kind, 308 | 416)
                 {
                     ogeom_bail!(
                         Construction,
                         "D{de}: an instance names a type {} entity, not a subfigure \
-                         definition",
+                         definition or an external reference to one",
                         e.kind
                     );
                 }
@@ -3500,22 +3659,31 @@ impl<'a> Reader<'a> {
             }
             420 => {
                 let definition = entity.at(0).int();
-                let defined = self.file.entity(definition);
-                if let Some(e) = defined
-                    && e.kind != 320
+                if let Some(e) = self.file.entity(definition)
+                    && !matches!(e.kind, 320 | 416)
                 {
                     ogeom_bail!(
                         Construction,
                         "D{de}: a network instance names a type {} entity, not a network \
-                         subfigure definition",
+                         subfigure definition or an external reference to one",
                         e.kind
                     );
                 }
+                // The definition itself, in the file that holds it.
+                let defined = match self.file.entity(definition) {
+                    Some(e) if e.kind == 416 => self
+                        .referenced(definition, e)
+                        .ok()
+                        .and_then(|(file, target)| file.entity(target?)),
+                    found => found,
+                };
                 // The type flag: the instance's own, or where it leaves it
                 // unspecified, its definition's (after its members, at
                 // 3 + NA).
                 let flag = match entity.at(7).int() {
-                    0 => defined.map_or(0, |e| e.at(3 + e.count(2)).int()),
+                    0 => defined
+                        .filter(|e| e.kind == 320)
+                        .map_or(0, |e| e.at(3 + e.count(2)).int()),
                     flag => flag,
                 };
                 if flag == 1 {
@@ -3610,6 +3778,7 @@ impl<'a> Reader<'a> {
         let mut content = Content::default();
         match kind {
             308 | 320 => content = self.subfigure(de, built, depth)?,
+            416 => content = self.external(de, depth)?,
             402 if matches!(entity.form, 1 | 7 | 14 | 15) => {
                 content = self.group(de, built, depth)?;
             }
@@ -3671,6 +3840,148 @@ impl<'a> Reader<'a> {
         let count = entity.count(0);
         let members: Vec<i64> = (0..count).map(|i| entity.at(1 + i).int().abs()).collect();
         self.members(&members, built, depth)
+    }
+
+    /// The file an external reference (416) names, and the definition in
+    /// it the reference stands for: the entity the file's index (402,
+    /// form 12) lists under the reference's symbolic name (form 0), or
+    /// `None` for the whole file (form 1).
+    fn referenced(&self, de: i64, reference: &Entity) -> OgeomResult<(&'a File, Option<i64>)> {
+        let symbol = match reference.form {
+            0 => match reference.at(1).text() {
+                Some(name) => Some(name),
+                None => ogeom_bail!(
+                    Construction,
+                    "D{de}: an external reference to a definition names no symbol"
+                ),
+            },
+            1 => None,
+            2 => ogeom_bail!(
+                Construction,
+                "D{de}: a logical external reference (416 form 2) relates two entities; \
+                 it defines nothing to place"
+            ),
+            3 | 4 => ogeom_bail!(
+                Construction,
+                "D{de}: an external reference (416 form {}) to a definition the receiving \
+                 system keeps natively names nothing any file holds",
+                reference.form
+            ),
+            form => ogeom_bail!(
+                Construction,
+                "D{de}: external reference form {form} is not defined"
+            ),
+        };
+        let id = reference.at(0).text().unwrap_or("");
+        if file_name(id).is_empty() {
+            ogeom_bail!(Construction, "D{de}: an external reference names no file");
+        }
+        let library = self.library;
+        let file = match library.file(id) {
+            Ok(file) => file,
+            Err(why) => ogeom_bail!(
+                Construction,
+                "D{de}: an external reference names the file \"{id}\", which is not \
+                 to be had: {why}"
+            ),
+        };
+        let Some(symbol) = symbol else {
+            return Ok((file, None));
+        };
+        let target = file
+            .entities
+            .values()
+            .filter(|e| e.kind == 402 && e.form == 12)
+            .find_map(|index| {
+                (0..index.count(0)).find_map(|i| {
+                    (index.at(1 + 2 * i).text() == Some(symbol)).then(|| index.at(2 + 2 * i).int())
+                })
+            });
+        match target {
+            Some(target) if file.entity(target).is_some() => Ok((file, Some(target.abs()))),
+            _ => ogeom_bail!(
+                Construction,
+                "D{de}: \"{}\" lists no definition named \"{symbol}\" in its index",
+                file_name(id)
+            ),
+        }
+    }
+
+    /// What an external reference (416) stands for, at its file's own
+    /// coordinates and in millimetres, built into this model: the
+    /// definition it names, or the whole file as one definition. Its
+    /// file's warnings join this one's, named by the file.
+    fn external(&mut self, de: i64, depth: usize) -> OgeomResult<Content> {
+        let reference = self.entity(de)?;
+        let (file, target) = self.referenced(de, reference)?;
+        let name = file_name(reference.at(0).text().unwrap_or("")).to_owned();
+        let Some(scale_mm) = file.scale_mm() else {
+            ogeom_bail!(
+                Construction,
+                "D{de}: \"{name}\" names units this reader cannot convert to millimetres"
+            );
+        };
+        let model = core::mem::take(&mut self.model);
+        let mut there = Reader::new(file, model, scale_mm, self.library, self.tol);
+        there.depth = self.depth;
+        let mut built = FastMap::default();
+        let content = match target {
+            Some(target) => there.member(target, &mut built, depth + 1),
+            None => there.whole_file(&mut built, depth + 1),
+        };
+        self.model = core::mem::take(&mut there.model);
+        self.report.warnings.extend(
+            there
+                .report
+                .warnings
+                .into_iter()
+                .map(|w| format!("{name}: {w}")),
+        );
+        self.vertex_misses.0 += there.vertex_misses.0;
+        self.vertex_misses.1 = self.vertex_misses.1.max(there.vertex_misses.1);
+        content
+    }
+
+    /// The whole file as one definition, at its own coordinates: the
+    /// independent shapes [`read_iges`] reads from it, in its order (solids,
+    /// trimmed surfaces, untrimmed surfaces and bounded planes, constructive
+    /// solids, subfigure instances, then the curves and points that are
+    /// geometry, no drawing lists, and nothing before took), its faces left
+    /// to sew where they are placed.
+    fn whole_file(
+        &mut self,
+        built: &mut FastMap<i64, Content>,
+        depth: usize,
+    ) -> OgeomResult<Content> {
+        let file = self.file;
+        let on_sheets = on_sheets(file);
+        let stage = |de: i64, e: &Entity| -> Option<u8> {
+            if (e.status / 10_000) % 100 != 0 {
+                return None;
+            }
+            let loose = (e.status / 100) % 100 == 0 && !on_sheets.contains(&de);
+            match e.kind {
+                186 => Some(0),
+                143 | 144 => Some(1),
+                k if UNTRIMMED_KINDS.contains(&k) || is_bounded_plane(e) => Some(2),
+                k if CSG_KINDS.contains(&k) => Some(3),
+                k if INSTANCE_KINDS.contains(&k) => Some(4),
+                _ if is_wire(e) && loose => Some(5),
+                116 if loose => Some(6),
+                _ => None,
+            }
+        };
+        let mut content = Content::default();
+        for step in 0..=6 {
+            let des: Vec<i64> = file
+                .entities
+                .iter()
+                .filter(|(de, e)| stage(**de, e) == Some(step) && !self.visited.contains_key(de))
+                .map(|(de, _)| *de)
+                .collect();
+            content.extend(self.members(&des, built, depth)?);
+        }
+        Ok(content)
     }
 
     /// What `members` hold together, at their own coordinates.
@@ -4301,25 +4612,7 @@ mod tests {
     }
 
     fn reader(file: &File) -> Reader<'_> {
-        Reader {
-            file,
-            model: Model::new(),
-            report: IgesReport {
-                scale_mm: 1.0,
-                ..IgesReport::default()
-            },
-            visited: BTreeMap::new(),
-            vertices: FastMap::default(),
-            edges: FastMap::default(),
-            pieces: FastMap::default(),
-            pole_vertices: Vec::new(),
-            trim_poles: Vec::new(),
-            vertex_misses: (0, 0.0),
-            images: FastMap::default(),
-            face_de: None,
-            depth: 0,
-            tol: T,
-        }
+        Reader::new(file, Model::new(), 1.0, &NO_LIBRARY, T)
     }
 
     /// A transform placed by itself, and a composite curve made of itself:
