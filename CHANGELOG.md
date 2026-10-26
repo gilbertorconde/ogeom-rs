@@ -61,6 +61,23 @@ bump may break the API and a patch bump may not.
     minimizing sweep (bound 1.6).
   - Every sweep built before takes the same path and builds the same
     solid.
+- **IGES network subfigures, and a group as an array's base.** (#404)
+  - A network subfigure definition (320) and its instances (420) were
+    skipped. A network definition now reads as a subfigure definition
+    does, its members built once, and each physical instance places it
+    by its scale, matrix and translation in the order IGES 5.3, section
+    3.6.2 gives. Connect points (132) are not geometry and are not read.
+  - Refused by name: an instance flagged logical, by itself or, where it
+    leaves its type unspecified, by its definition (a schematic's, not
+    the model's), and an instance whose axes scale unlike, which would
+    distort what it places.
+  - A group (402, forms 1, 7, 14 and 15) as the base of a rectangular or
+    circular array placed nothing. Each of its members is now placed at
+    every position the array keeps.
+  - Measured on a synthetic deck: a unit patch instanced at three times
+    its size reads area 9 centred at (101.5, 1.5); an array of a group of
+    a unit patch and a 2-cube places both at each of its two positions.
+  - Decks without these entities read as before.
 
 - **Pipe shells under the auxiliary and binormal laws round smooth closed
   spines, with holes along open ones, and twisted whole turns round

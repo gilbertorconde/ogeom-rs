@@ -502,3 +502,84 @@ fn subfigure_arrays_place_their_base_at_each_kept_position() {
         );
     }
 }
+
+/// Network subfigures and a group as an array's base. A network
+/// definition (320) holds an untrimmed unit patch; its physical instance
+/// (420) places it at (100, 0, 0) scaled by 3 on every axis (y's and z's
+/// scale defaulted to x's): one patch of area 9 centred at (101.5, 1.5).
+/// A logical instance (a schematic's) and one scaling its axes unlike
+/// place nothing and say why. A rectangular array (412) of a group (402,
+/// form 7) holding a unit patch and a 2-cube (150), two columns 10 apart
+/// from (0, -50, 0), places both members at each position.
+#[test]
+fn network_subfigures_and_grouped_array_bases_place_their_members() {
+    let items = [
+        // D1: the network definition holding the patch D3, physical, with
+        // no connect points.
+        item(320, 0, true, "0,4HPIPE,1,3,2,3HP01,0,0"),
+        flat_patch(1.0, 0.0, true),
+        // D5: its instance, scaled by 3.
+        item(420, 0, false, "1,100.,0.,0.,3.,,,0,3HP01,0,0"),
+        // D7: a logical instance.
+        item(420, 0, false, "1,0.,0.,0.,1.,1.,1.,1,3HP02,0,0"),
+        // D9: an instance scaling y twice x.
+        item(420, 0, false, "1,0.,200.,0.,1.,2.,1.,0,3HP03,0,0"),
+        // D11: the group of the patch D13 and the block D15.
+        item(402, 7, true, "2,13,15"),
+        flat_patch(1.0, 0.0, true),
+        item(150, 0, true, "2.,2.,2.,0.,0.,0.,1.,0.,0.,0.,0.,1."),
+        // D17: the array of the group, every position kept.
+        item(412, 0, false, "11,1.,0.,-50.,0.,2,1,10.,0.,0.,0"),
+    ];
+    let import = ogeom::io::read_iges(&deck(&items), T).unwrap();
+    let warnings = &import.report.warnings;
+    assert_eq!(warnings.len(), 2, "{:?}", import.report);
+    assert!(warnings[0].starts_with("D7:") && warnings[0].contains("logical"));
+    assert!(warnings[1].starts_with("D9:") && warnings[1].contains("unlike"));
+    assert!(import.report.skipped.is_empty(), "{:?}", import.report);
+    let model = import.document.model();
+    let fine = Deflection::default();
+    let close = |a: ogeom::math::Point, b: [f64; 3]| {
+        a.distance(ogeom::math::Point::new(b[0], b[1], b[2])) < 1e-9
+    };
+
+    let mut patches: Vec<(f64, ogeom::math::Point)> = import
+        .sheets
+        .iter()
+        .map(|s| {
+            let props = surface_properties(model, s, fine, T).unwrap();
+            (props.mass, props.centre)
+        })
+        .collect();
+    patches.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+    let want = [
+        (1.0, [0.5, -49.5, 0.0]),
+        (1.0, [10.5, -49.5, 0.0]),
+        (9.0, [101.5, 1.5, 0.0]),
+    ];
+    assert_eq!(patches.len(), want.len(), "{patches:?}");
+    for ((area, centre), (want_area, want_centre)) in patches.iter().zip(want) {
+        assert!(
+            (area - want_area).abs() < 1e-9 && close(*centre, want_centre),
+            "{patches:?}"
+        );
+    }
+
+    let mut cubes: Vec<(f64, ogeom::math::Point)> = import
+        .solids
+        .iter()
+        .map(|s| {
+            let props = ogeom::algo::volume_properties(model, s, fine, T).unwrap();
+            (props.mass, props.centre)
+        })
+        .collect();
+    cubes.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+    let want = [[1.0, -49.0, 1.0], [11.0, -49.0, 1.0]];
+    assert_eq!(cubes.len(), want.len(), "{cubes:?}");
+    for ((volume, centre), want) in cubes.iter().zip(want) {
+        assert!(
+            (volume - 8.0).abs() < 1e-9 && close(*centre, want),
+            "{cubes:?}"
+        );
+    }
+}

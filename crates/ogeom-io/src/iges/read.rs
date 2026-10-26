@@ -87,9 +87,9 @@ fn is_wire(entity: &Entity) -> bool {
         && (entity.kind != 106 || matches!(entity.form, 11 | 12 | 13 | 63))
 }
 
-/// The subfigure instances: singular (408), rectangular array (412) and
-/// circular array (414).
-const INSTANCE_KINDS: [i64; 3] = [408, 412, 414];
+/// The subfigure instances: singular (408), rectangular array (412),
+/// circular array (414) and network (420).
+const INSTANCE_KINDS: [i64; 4] = [408, 412, 414, 420];
 
 /// How many shapes one instance may place, counting each position's copy
 /// of every shape its base holds. An array is a pattern of holes or
@@ -3200,8 +3200,9 @@ impl<'a> Reader<'a> {
     }
 
     /// Every independent subfigure instance placed: a singular instance
-    /// (408) its definition (308), an array (412, 414) its base at each
-    /// position it keeps. Solids are moved into place; each placement's
+    /// (408) its definition (308), a network instance (420) its network
+    /// definition (320), an array (412, 414) its base at each position it
+    /// keeps. Solids are moved into place; each placement's
     /// faces are moved and sewn, closed shells becoming solids as a surface
     /// file's do; its curves are moved wires. What an instance places is
     /// built once, however many place it: the placements share its
@@ -3259,7 +3260,10 @@ impl<'a> Reader<'a> {
     /// The order is the format's (IGES 5.3, section 3.6.2): the scale about
     /// the instanced definition space's origin, then the instance's own
     /// matrix, then the position, which that matrix does not move. A
-    /// singular instance (408) has one position, its translation. A
+    /// singular instance (408) has one position, its translation, and so
+    /// has a network instance (420), whose scale must be alike on every
+    /// axis and which places nothing where it, or its definition where it
+    /// leaves its type unspecified, is flagged logical (a schematic's). A
     /// rectangular array (412) counts its positions up the first column,
     /// then up the next, the grid turned about its corner; a circular
     /// array (414) counts them counter-clockwise round its circle from the
@@ -3320,6 +3324,51 @@ impl<'a> Reader<'a> {
                     .collect();
                 (entity.at(0).int(), scale_at(1), positions)
             }
+            420 => {
+                let definition = entity.at(0).int();
+                let defined = self.file.entity(definition);
+                if let Some(e) = defined
+                    && e.kind != 320
+                {
+                    ogeom_bail!(
+                        Construction,
+                        "D{de}: a network instance names a type {} entity, not a network \
+                         subfigure definition",
+                        e.kind
+                    );
+                }
+                // The type flag: the instance's own, or where it leaves it
+                // unspecified, its definition's (after its members, at
+                // 3 + NA).
+                let flag = match entity.at(7).int() {
+                    0 => defined.map_or(0, |e| e.at(3 + e.count(2)).int()),
+                    flag => flag,
+                };
+                if flag == 1 {
+                    ogeom_bail!(
+                        Construction,
+                        "D{de}: a logical network instance is a schematic's, not the \
+                         model's geometry"
+                    );
+                }
+                // Each axis's scale: x's one where defaulted, y's and z's
+                // x's. Only a scale alike on every axis places a shape
+                // rigidly.
+                let x = scale_at(4);
+                let or_x = |i: usize| match entity.at(i).real() {
+                    f if f > 0.0 => f,
+                    _ => x,
+                };
+                let (y, z) = (or_x(5), or_x(6));
+                if y != x || z != x {
+                    ogeom_bail!(
+                        Construction,
+                        "D{de}: a network instance scales its axes unlike ({x}, {y}, {z}), \
+                         which distorts what it places"
+                    );
+                }
+                (definition, x, vec![Vector::new(at(1), at(2), at(3))])
+            }
             414 => {
                 let count = array_count(de, Some(entity.at(1).int()))?;
                 let kept = kept_positions(entity, 8, count);
@@ -3361,8 +3410,9 @@ impl<'a> Reader<'a> {
     }
 
     /// What an entity holds at its own coordinates, as an instance places
-    /// it: a subfigure definition's (308) members, an instance's placements
-    /// within it, a solid, a face, or a curve's wire. Anything else holds
+    /// it: a subfigure definition's (308, 320) or a group's (402) members,
+    /// an instance's placements within it, a solid, a face, or a curve's
+    /// wire. Anything else holds
     /// nothing and is left for the skipped table. Built once per entity.
     fn member(
         &mut self,
@@ -3385,8 +3435,11 @@ impl<'a> Reader<'a> {
         let (kind, wire) = (entity.kind, is_wire(entity));
         let mut content = Content::default();
         match kind {
-            308 => content = self.subfigure(de, built, depth)?,
-            408 | 412 | 414 => {
+            308 | 320 => content = self.subfigure(de, built, depth)?,
+            402 if matches!(entity.form, 1 | 7 | 14 | 15) => {
+                content = self.group(de, built, depth)?;
+            }
+            408 | 412 | 414 | 420 => {
                 for copy in self.instance(de, built, depth)? {
                     content.extend(copy);
                 }
@@ -3402,8 +3455,11 @@ impl<'a> Reader<'a> {
         Ok(content)
     }
 
-    /// A subfigure definition's (308) members at the definition's own
-    /// coordinates, nested instances placed within it.
+    /// A subfigure definition's (308) or network subfigure definition's
+    /// (320) members at the definition's own coordinates, nested instances
+    /// placed within it. Both list their members after a depth, a name and
+    /// a count; a network definition's connect points, after, are not
+    /// geometry.
     fn subfigure(
         &mut self,
         de: i64,
@@ -3413,6 +3469,30 @@ impl<'a> Reader<'a> {
         let entity = self.entity(de)?;
         let count = entity.count(2);
         let members: Vec<i64> = (0..count).map(|i| entity.at(3 + i).int()).collect();
+        self.members(&members, built, depth)
+    }
+
+    /// A group's (402, forms 1, 7, 14 and 15) members where it stands as an
+    /// array's base: each at its own coordinates, as a definition's are.
+    fn group(
+        &mut self,
+        de: i64,
+        built: &mut FastMap<i64, Content>,
+        depth: usize,
+    ) -> OgeomResult<Content> {
+        let entity = self.entity(de)?;
+        let count = entity.count(0);
+        let members: Vec<i64> = (0..count).map(|i| entity.at(1 + i).int().abs()).collect();
+        self.members(&members, built, depth)
+    }
+
+    /// What `members` hold together, at their own coordinates.
+    fn members(
+        &mut self,
+        members: &[i64],
+        built: &mut FastMap<i64, Content>,
+        depth: usize,
+    ) -> OgeomResult<Content> {
         let trims: Vec<i64> = members
             .iter()
             .copied()
@@ -3428,7 +3508,7 @@ impl<'a> Reader<'a> {
         let outer_poles = core::mem::replace(&mut self.trim_poles, poles);
         let mut content = Content::default();
         let mut read_members = || -> OgeomResult<()> {
-            for &member in &members {
+            for &member in members {
                 let Some(kind) = self.file.entity(member).map(|e| e.kind) else {
                     continue;
                 };
