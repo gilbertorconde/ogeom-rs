@@ -622,6 +622,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face with no wires is measured in closed form.** Its area was
+  read off its mesh: a sphere of radius 2 measured 48.60 at the default
+  deflection against 4πr² = 50.27. Where its surface's domain is
+  bounded, `surface_properties` now integrates it over that whole
+  domain, as the mesh draws it, and reports a deflection of zero.
+  Volume still meshes such a face, since no edge of it says its shell
+  closes.
+
 - **IGES parents' matrices carry what they own, as IGES 5.3, section
   3.2.3, table 4 says.** (#404)
   - A trimmed or bounded surface (144, 143) ignored its own matrix. It

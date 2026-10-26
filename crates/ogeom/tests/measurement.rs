@@ -624,3 +624,42 @@ fn a_face_whose_boundary_middle_lies_outside_it_is_turned_back() {
     let want = angle / 2.0 * (outer * outer - inner * inner) * height;
     each_face_turned_weighs(&mut model, &sector, want);
 }
+
+/// A face with no wires covers its surface's whole domain. On a sphere and
+/// a torus that domain is the whole closed surface, and the face measures
+/// the closed forms `4πr²` and `4π²Rr`, read off no mesh.
+#[test]
+fn a_face_with_no_wires_measures_its_whole_surface_in_closed_form() {
+    use ogeom::geom::{SphereSurface, TorusSurface};
+    use ogeom::math::{Sphere, Torus};
+    use std::f64::consts::PI;
+    let mut model = Model::new();
+    let r = 2.0;
+    let ball = SphereSurface::new(Sphere::new(Frame::WORLD, r, T).unwrap());
+    let ball = ogeom::algo::make_natural_face(&mut model, ball.into())
+        .unwrap()
+        .shape;
+    let (big, small) = (5.0, 1.5);
+    let ring = TorusSurface::new(Torus::new(Frame::WORLD, big, small, T).unwrap());
+    let ring = ogeom::algo::make_natural_face(&mut model, ring.into())
+        .unwrap()
+        .shape;
+    for (face, area) in [
+        (ball, 4.0 * PI * r * r),
+        (ring, 4.0 * PI * PI * big * small),
+    ] {
+        let props =
+            ogeom::algo::surface_properties(&model, &face, Deflection::default(), T).unwrap();
+        assert_eq!(props.deflection, 0.0, "read off a mesh: {}", props.mass);
+        assert!(
+            (props.mass - area).abs() < 1e-9 * area,
+            "{} against {area}",
+            props.mass
+        );
+        assert!(
+            props.centre.distance(Point::ORIGIN) < 1e-9,
+            "{:?}",
+            props.centre
+        );
+    }
+}

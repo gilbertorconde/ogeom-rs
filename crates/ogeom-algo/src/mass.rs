@@ -566,9 +566,15 @@ fn exact_volume_properties(
     let mut region_of: Vec<usize> = Vec::with_capacity(faces.len());
     // The faces no closed form speaks for, measured on their own meshes.
     let mut unspoken: Vec<usize> = Vec::new();
-    // Each face prepared on its own, and taken in the faces' order.
-    let prepared =
-        ogeom_core::parallel::map_ordered(&faces, |_, face| integrable_face(model, face, tol));
+    // Each face prepared on its own, and taken in the faces' order. A face
+    // with no wires has no edge for the shell's closure to be read off, so
+    // the divergence theorem is not told its boundary closes: its mesh is.
+    let prepared = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+        if model.children_of(face)?.is_empty() {
+            return Ok(None);
+        }
+        integrable_face(model, face, tol)
+    });
     for (at, (face, found)) in faces.iter().zip(prepared).enumerate() {
         // A face the closed forms cannot evaluate (a chart point a hair off
         // its surface's domain) is left to its mesh, like one they do not
@@ -1372,6 +1378,23 @@ fn exact_face(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
         };
 
     let wires = model.ordered_children_of(face)?;
+    // A face with no wires covers its surface's whole domain, as the mesh
+    // draws it: the domain rectangle where the domain is bounded, and
+    // nothing to integrate where it is not.
+    if wires.is_empty() {
+        use ogeom_geom::Surface as _;
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        if ![u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
+            return Ok(None);
+        }
+        return Ok(Some(vec![ExactFace::ChartRectangle {
+            surface: placed,
+            rect: (u0, u1, v0, v1),
+            sign,
+            share: 1.0,
+            split,
+        }]));
+    }
     // One region per wire, and the integral is their sum: a face's outer
     // boundary carries its own sign and every inner one the opposite, which
     // is what a hole *is* under the divergence theorem. So a plate with a
