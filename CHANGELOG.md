@@ -647,6 +647,34 @@ bump may break the API and a patch bump may not.
     owned curves area `12π` about (0, 0, 1.5), a turned definition's unit
     patch about (-0.5, 0.5, 50), and a bounded disc area `4π` about
     (0, 0, 12).
+- **Where two surfaces cross at a shallow angle, the march places each
+  sample within its chord of the section.** (#356)
+  - The correction onto both surfaces stopped at a residual of a
+    hundredth of the confusion distance. Across a section the surfaces
+    part only by the distance times the sine of their angle, so a sample
+    could stand that residual over the sine across it: up to 3e-4 off a
+    line where a patch crosses a plane at a slope of a few millionths,
+    with chords of 1e-6. The samples zigzagged and some doubled back.
+  - Where the next Newton step from a landing would move it by more than
+    the chord, the correction now settles to the residual that leaves the
+    point within the chord, read off Newton's linear model at the landing
+    (the chord over the norm of the position gradient times the inverse
+    Jacobian), and keeps the further solve only where the Jacobian
+    changes over the move by at most half of itself, as seen through its
+    inverse. Beside a touch, where two stretches cross within that move,
+    the landing stays as it was. Every walk, seed, carry and join takes
+    its march's chord; silhouettes and rolling-ball blends walked through
+    the same walker take theirs.
+  - Over the 36 configurations of the line grid of #356 (s 0.3 to 0.03,
+    K 1 to 100, chords 1e-4 to 1e-7), samples clear of the crossings stand
+    at most 0.99 chord off their line against up to 110 chords, no section
+    doubles back where two did, and the length traced beyond the exact one
+    falls from up to 4.6e-4 to at most 1.9e-7, all of it within a crossing's
+    tolerance band.
+  - A chord whose middle lies within the confusion distance of both
+    surfaces is joined straight, as the join's own fallback already took
+    it, so a stretch between two touches settled off their exact
+    crossings by their own tolerance is still joined.
 
 - **A drum's rim meets a leaning straight crease, and a disc's pocket up
   to a chord meets at both corners.** (#342)

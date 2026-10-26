@@ -218,7 +218,7 @@ pub fn seeds(
             };
             crossed[i / 2] = true;
             let start = [cell_a.at.0, cell_a.at.1, cell_b.at.0, cell_b.at.1];
-            let Some(contact) = correct(a, b, start, guess, None, tol) else {
+            let Some(contact) = correct(a, b, start, guess, None, options.chord, tol) else {
                 continue;
             };
             // One seed per branch, not one per cell it passes through. The
@@ -268,7 +268,8 @@ pub fn seeds(
                         on_border.1,
                     ]
                 };
-                let Some(contact) = correct(a, b, start, piercing.point, None, tol) else {
+                let Some(contact) = correct(a, b, start, piercing.point, None, options.chord, tol)
+                else {
                     continue;
                 };
                 if merges(&found, contact, apart) {
@@ -481,6 +482,7 @@ fn extremum_seeds(
             [from_a.0, from_a.1, from_b.0, from_b.1],
             guess,
             None,
+            options.chord,
             tol,
         ) {
             if passes_through(a, b, contact, tol) {
@@ -529,7 +531,9 @@ fn extremum_seeds(
             // over seeds; a touch has nothing to follow.
             if !passes_through(a, b, at, tol) {
                 settled.push(at.on_a);
-            } else if let Some(contact) = correct(a, b, [ua, va, ub, vb], at.point, None, tol) {
+            } else if let Some(contact) =
+                correct(a, b, [ua, va, ub, vb], at.point, None, options.chord, tol)
+            {
                 out.push(contact);
             }
             continue;
@@ -542,7 +546,7 @@ fn extremum_seeds(
             continue;
         }
         let size = cell_size(cell_a).max(cell_size(cell_b));
-        if let Some(contact) = loop_around(a, b, at, size, tol) {
+        if let Some(contact) = loop_around(a, b, at, size, options.chord, tol) {
             out.push(contact);
         }
     }
@@ -639,6 +643,7 @@ fn loop_around(
     b: &SurfaceGeometry,
     at: Contact,
     size: f64,
+    within: f64,
     tol: Tolerances,
 ) -> Option<Contact> {
     const DIRECTIONS: u32 = 8;
@@ -699,7 +704,8 @@ fn loop_around(
         let Ok(guess) = a.point_at(uv.0, uv.1, tol) else {
             continue;
         };
-        if let Some(contact) = correct(a, b, [uv.0, uv.1, near.0, near.1], guess, None, tol) {
+        if let Some(contact) = correct(a, b, [uv.0, uv.1, near.0, near.1], guess, None, within, tol)
+        {
             return Some(contact);
         }
     }
@@ -1413,6 +1419,10 @@ fn unit_normal(du: Vector, dv: Vector, tol: Tolerances) -> Option<Vector> {
     Some(cross * (1.0 / length))
 }
 
+/// A state [`correct`] measured, the system's Jacobian and residual there,
+/// and the first surface's two derivatives.
+type Measured = ([f64; 4], [[f64; 4]; 4], [f64; 4], [Vector; 2]);
+
 /// Bring a parameter guess onto both surfaces.
 ///
 /// Three equations say the two surface points coincide; the fourth says how far
@@ -1422,13 +1432,17 @@ fn unit_normal(du: Vector, dv: Vector, tol: Tolerances) -> Option<Vector> {
 ///
 /// `constraint` is `(anchor, direction, distance)`. Without one, the guess
 /// itself is used as the anchor and the direction is the intersection tangent,
-/// which is what seeding wants: land anywhere on the curve near here.
+/// which is what seeding wants: land anywhere on the curve near here. The
+/// point it lands on stands within `within` of the section as far as the
+/// solve can tell, as [`crate::walk::settling_residual`] sets out: where the
+/// surfaces cross at a shallow angle the residual is taken further down.
 fn correct(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     start: [f64; 4],
     guess: Point,
     constraint: Option<(Point, Vector, f64)>,
+    within: f64,
     tol: Tolerances,
 ) -> Option<Contact> {
     let (anchor, along, reach) = match constraint {
@@ -1446,7 +1460,11 @@ fn correct(
         }
     };
 
+    // The state and Jacobian last measured, and the first surface's
+    // derivatives there: what the point moves by with each unknown.
+    let last: core::cell::Cell<Option<Measured>> = core::cell::Cell::new(None);
     let system = |x: &[f64; 4]| {
+        last.set(None);
         let (ua, va) = clamp(a, x[0], x[1]);
         let (ub, vb) = clamp(b, x[2], x[3]);
         // Where either surface cannot be evaluated the residual is
@@ -1466,6 +1484,7 @@ fn correct(
             [au.z, av.z, -bu.z, -bv.z],
             [au.dot(along), av.dot(along), 0.0, 0.0],
         ];
+        last.set(Some((*x, jacobian, residual, [au, av])));
         (residual, jacobian)
     };
 
@@ -1474,9 +1493,24 @@ fn correct(
         step: tol.parametric(),
         max_iterations: 40,
     };
-    let found = solve::newton_system_fixed(system, start, criteria).ok()?;
+    let mut found = solve::newton_system_fixed(system, start, criteria).ok()?;
     if found.1 > tol.confusion() {
         return None;
+    }
+    if last.get().is_none_or(|(x, _, _, _)| x != found.0) {
+        system(&found.0);
+    }
+    if let Some((_, jacobian, residual, [au, av])) = last.get() {
+        let gradient = [au, av, Vector::ZERO, Vector::ZERO];
+        if let Some(settled) = crate::walk::settle(
+            system,
+            (found.0, &residual),
+            (&jacobian, &gradient),
+            within,
+            criteria,
+        ) {
+            found.0 = settled;
+        }
     }
     let (ua, va) = clamp(a, found.0[0], found.0[1]);
     let (ub, vb) = clamp(b, found.0[2], found.0[3]);
@@ -3042,7 +3076,7 @@ fn join_arms(
                 Some(r * 2.0).filter(|&r| r <= carry)
             })
             .find_map(|out| {
-                let start = along_arm(a, b, touch, half, (out, arms), tol)?;
+                let start = along_arm(a, b, touch, half, (out, arms), options.chord, tol)?;
                 Some((start, tangent_at(a, b, start, tol)?))
             }) else {
                 continue;
@@ -3448,8 +3482,16 @@ fn carry_onto_straight(
             let s = distance - remaining;
             let guess = from + along * s;
             let start = [on_a.0, on_a.1, on_b.0, on_b.1];
-            let settled = correct(a, b, start, guess, Some((from, along, s)), tol)
-                .filter(|c| c.point.distance(guess) <= remaining * 0.5);
+            let settled = correct(
+                a,
+                b,
+                start,
+                guess,
+                Some((from, along, s)),
+                options.chord,
+                tol,
+            )
+            .filter(|c| c.point.distance(guess) <= remaining * 0.5);
             let Some(c) = settled else {
                 // Beside the touch a sample that will not settle is left
                 // out; further off, the arm is not there to follow.
@@ -3760,8 +3802,16 @@ fn off_the_section(
         branch.on_b[i - 1].0,
         branch.on_b[i - 1].1,
     ];
-    correct(a, b, start, middle, Some((p, along, length * 0.5)), tol)
-        .is_some_and(|landed| landed.point.distance(middle) > near)
+    correct(
+        a,
+        b,
+        start,
+        middle,
+        Some((p, along, length * 0.5)),
+        near,
+        tol,
+    )
+    .is_some_and(|landed| landed.point.distance(middle) > near)
 }
 
 /// The four halves of a touch's two arms, each pointing away from it.
@@ -3808,7 +3858,7 @@ fn on_arm(
         0.0
     };
     along > 0.0
-        && along_arm(a, b, touch, direction, (along, arms), tol)
+        && along_arm(a, b, touch, direction, (along, arms), near, tol)
             .is_some_and(|landed| landed.point.distance(p) <= near.max(band))
 }
 
@@ -3867,6 +3917,7 @@ fn along_arm(
     touch: &Touch,
     half: Vector,
     (reach, arms): (f64, [Vector; 2]),
+    within: f64,
     tol: Tolerances,
 ) -> Option<Contact> {
     let moved = |surface: &SurfaceGeometry, (u, v): (f64, f64)| -> Option<(f64, f64)> {
@@ -3891,6 +3942,7 @@ fn along_arm(
         [ua, va, ub, vb],
         guess,
         Some((touch.point, half, reach)),
+        within,
         tol,
     )?;
     // The other arm crosses that plane `reach · tan α` off this one.
@@ -4576,6 +4628,7 @@ fn fill(
         start,
         middle,
         Some((p.point, chord / length, length * 0.5)),
+        near,
         tol,
     )
     .filter(|c| c.point.distance(middle) <= length * 0.5)
@@ -4584,7 +4637,11 @@ fn fill(
     if off > length * 0.5 {
         return None;
     }
-    if off <= near {
+    // A chord whose middle lies within the confusion distance of both
+    // surfaces is on the section to tolerance, though the section solved
+    // through it lands further off: an end settled onto a touch stands off
+    // the exact crossing by up to the touch's own tolerance.
+    if off <= near || on_both().is_some() {
         return Some(Vec::new());
     }
     *budget = budget.checked_sub(1)?;
@@ -4697,8 +4754,16 @@ fn carry_onto(
             let s = distance - remaining;
             let guess = from + along * s;
             let start = [on_a.0, on_a.1, on_b.0, on_b.1];
-            let settled = correct(a, b, start, guess, Some((from, along, s)), tol)
-                .filter(|c| c.point.distance(guess) <= remaining * 0.5);
+            let settled = correct(
+                a,
+                b,
+                start,
+                guess,
+                Some((from, along, s)),
+                options.chord,
+                tol,
+            )
+            .filter(|c| c.point.distance(guess) <= remaining * 0.5);
             let Some(c) = settled else {
                 // Beside the touch a sample that will not settle is left
                 // out; further off, the arm is not there to follow.

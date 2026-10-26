@@ -293,7 +293,7 @@ pub fn walk_one_way<C: Condition + ?Sized>(
         let mut taken = None;
         for _ in 0..40 {
             let Some((state, point, evaluated)) =
-                correct(condition, &at, (here, direction, step), tol)
+                correct(condition, &at, (here, direction, step), options.chord, tol)
             else {
                 step *= 0.5;
                 if step <= tol.confusion() {
@@ -409,13 +409,14 @@ fn closes<C: Condition + ?Sized>(
         return false;
     }
     let near = chord.max(tol.confusion());
-    let Some((_, landed, _)) = correct(condition, at, (here, direction, reach), tol) else {
+    let Some((_, landed, _)) = correct(condition, at, (here, direction, reach), chord, tol) else {
         return false;
     };
     if landed.distance(from) > near {
         return false;
     }
-    let Some((_, middle, _)) = correct(condition, at, (here, direction, reach * 0.5), tol) else {
+    let Some((_, middle, _)) = correct(condition, at, (here, direction, reach * 0.5), chord, tol)
+    else {
         return false;
     };
     distance_to_segment(middle, here, from) <= near
@@ -478,20 +479,23 @@ type Landed = (Vec<f64>, Point, Option<(Vec<Vec<f64>>, Vec<Vector>)>);
 /// The condition's own `n − 1` equations say *on the curve*; the walker's one
 /// more says *this far along it*. Without that row the system would be
 /// underdetermined and Newton would wander along the curve instead of
-/// converging to a point on it.
+/// converging to a point on it. The point it lands on stands within
+/// `within` of the curve as far as the solve can tell: see
+/// [`settling_residual`].
 ///
 /// The sizes walked here (two to five unknowns) solve on the stack.
 fn correct<C: Condition + ?Sized>(
     condition: &C,
     from: &[f64],
     travel: (Point, Vector, f64),
+    within: f64,
     tol: Tolerances,
 ) -> Option<Landed> {
     match condition.unknowns() {
-        2 => correct_fixed::<C, 2>(condition, from, travel, tol),
-        3 => correct_fixed::<C, 3>(condition, from, travel, tol),
-        4 => correct_fixed::<C, 4>(condition, from, travel, tol),
-        5 => correct_fixed::<C, 5>(condition, from, travel, tol),
+        2 => correct_fixed::<C, 2>(condition, from, travel, within, tol),
+        3 => correct_fixed::<C, 3>(condition, from, travel, within, tol),
+        4 => correct_fixed::<C, 4>(condition, from, travel, within, tol),
+        5 => correct_fixed::<C, 5>(condition, from, travel, within, tol),
         _ => correct_any(condition, from, travel, tol),
     }
 }
@@ -506,9 +510,114 @@ fn correction_criteria(tol: Tolerances) -> solve::Criteria {
     }
 }
 
+/// The residual a correction landing at a state settles to: the stopping
+/// rule's own, or less where that would leave the point further than
+/// `within` from the curve.
+///
+/// With the travel row held, a residual `r` in the condition's rows is
+/// what one more Newton step would take out, and that step moves the point
+/// by `G·J⁻¹·r`: `J` the system's Jacobian with the travel row, `G` the
+/// position gradient. So a residual of at most `within` over the Frobenius
+/// norm of `G·J⁻¹`, restricted to the condition's rows, leaves the point
+/// within `within` of where the curve crosses the travel plane. Where the
+/// condition's rows are well conditioned that norm is about one and the
+/// stopping rule's residual is far tighter already. Where they are nearly
+/// dependent it is not: two surfaces crossing at an angle `θ` part by
+/// `d·sin θ` at `d` across the section, so the norm is about `1 / sin θ`,
+/// and a residual of a hundredth of the confusion leaves the point
+/// `ε / (100·sin θ)` across, far outside the chord at a near tangency.
+pub(crate) fn settling_residual<const N: usize>(
+    jacobian: &[[f64; N]; N],
+    gradient: &[Vector],
+    within: f64,
+    stop: f64,
+) -> f64 {
+    let mut spread = 0.0;
+    for row in 0..N - 1 {
+        let mut unit = [0.0; N];
+        unit[row] = 1.0;
+        let Some(column) = solve::linear_fixed(*jacobian, unit) else {
+            return stop;
+        };
+        let moved = gradient
+            .iter()
+            .zip(&column)
+            .fold(Vector::ZERO, |sum, (g, c)| sum + *g * *c);
+        spread += moved.square_magnitude();
+    }
+    let spread = spread.sqrt();
+    if spread.is_finite() && spread * stop > within {
+        within / spread
+    } else {
+        stop
+    }
+}
+
+/// A landing solved further, down to its [`settling_residual`]: the state
+/// the solve settles on, or `None` to keep the landing as it is. A landing
+/// whose next Newton step, `J⁻¹·r` for its residual `r`, would move the
+/// point by no more than `within` is kept without measuring the rest.
+///
+/// The settling residual reads the distance left to the curve off Newton's
+/// linear model at the landing, and that reading holds only as far as the
+/// model does. Kantorovich's condition for Newton's iteration from the
+/// landing to converge to the one root beside it asks that the Jacobian's
+/// change over the move, seen through the landing's inverse, stay within a
+/// half. So the further solve is kept only where `‖J₀⁻¹·(J₁ − J₀)‖ ≤ ½`
+/// over the move it made, in the Frobenius norm, which is never less than
+/// the operator norm. Beside a touch, where two stretches of the curve
+/// cross within the distance a further solve would move, the Jacobian
+/// turns faster than that and the landing is kept.
+pub(crate) fn settle<const N: usize>(
+    mut system: impl FnMut(&[f64; N]) -> ([f64; N], [[f64; N]; N]),
+    (found, residual): ([f64; N], &[f64; N]),
+    (jacobian, gradient): (&[[f64; N]; N], &[Vector]),
+    within: f64,
+    criteria: solve::Criteria,
+) -> Option<[f64; N]> {
+    let step = solve::linear_fixed(*jacobian, *residual)?;
+    let moved = gradient
+        .iter()
+        .zip(&step)
+        .fold(Vector::ZERO, |sum, (g, c)| sum + *g * *c);
+    if moved.magnitude() <= within {
+        return None;
+    }
+    let norm = residual.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let residual = settling_residual(jacobian, gradient, within, criteria.residual);
+    if norm <= residual {
+        return None;
+    }
+    let tighter = solve::Criteria {
+        residual,
+        ..criteria
+    };
+    let (settled, left, _, _) = solve::newton_system_fixed(&mut system, found, tighter).ok()?;
+    if left > norm {
+        return None;
+    }
+    let (_, after) = system(&settled);
+    let mut drift = 0.0;
+    for column in 0..N {
+        let change: [f64; N] =
+            core::array::from_fn(|row| after[row][column] - jacobian[row][column]);
+        let moved = solve::linear_fixed(*jacobian, change)?;
+        drift += moved.iter().map(|v| v * v).sum::<f64>();
+    }
+    (drift.sqrt() <= 0.5).then_some(settled)
+}
+
 /// One evaluation of a correction: the clamped state, its point, the
-/// condition's Jacobian rows and the position gradient.
-type Evaluated<const N: usize> = ([f64; N], Point, Vec<Vec<f64>>, Vec<Vector>);
+/// condition's Jacobian rows, the position gradient, and the whole
+/// system's Jacobian and residual.
+type Evaluated<const N: usize> = (
+    [f64; N],
+    Point,
+    Vec<Vec<f64>>,
+    Vec<Vector>,
+    [[f64; N]; N],
+    [f64; N],
+);
 
 /// [`correct`] for `N` unknowns, allocation-free in the solve, keeping the
 /// last evaluation so the landing hands back its Jacobian.
@@ -516,14 +625,15 @@ fn correct_fixed<C: Condition + ?Sized, const N: usize>(
     condition: &C,
     from: &[f64],
     (anchor, along, reach): (Point, Vector, f64),
+    within: f64,
     tol: Tolerances,
 ) -> Option<Landed> {
     let start: [f64; N] = from.try_into().ok()?;
-    let mut last: Option<Evaluated<N>> = None;
+    let last: core::cell::Cell<Option<Evaluated<N>>> = core::cell::Cell::new(None);
     let system = |x: &[f64; N]| {
         let mut at = *x;
         condition.clamp(&mut at);
-        last = None;
+        last.set(None);
         // Where the condition cannot be evaluated the residual is infinite,
         // so the damped step backs off; a zero there would read as a root.
         let mut residual = [f64::INFINITY; N];
@@ -546,17 +656,38 @@ fn correct_fixed<C: Condition + ?Sized, const N: usize>(
         for (entry, g) in jacobian[N - 1].iter_mut().zip(&gradient) {
             *entry = g.dot(along);
         }
-        last = Some((at, point, matrix, gradient));
+        last.set(Some((at, point, matrix, gradient, jacobian, residual)));
         (residual, jacobian)
     };
-    let (found, norm, _, _) =
-        solve::newton_system_fixed(system, start, correction_criteria(tol)).ok()?;
+    let criteria = correction_criteria(tol);
+    let (mut found, norm, _, _) = solve::newton_system_fixed(system, start, criteria).ok()?;
     if norm > tol.confusion() {
         return None;
     }
-    let mut at = found;
-    condition.clamp(&mut at);
-    if let Some((evaluated, point, matrix, gradient)) = last
+    let landed_at = |found: &[f64; N]| {
+        let mut at = *found;
+        condition.clamp(&mut at);
+        at
+    };
+    let mut evaluated = last.take();
+    if evaluated.as_ref().is_none_or(|e| e.0 != landed_at(&found)) {
+        system(&found);
+        evaluated = last.take();
+    }
+    if let Some((_, _, _, gradient, jacobian, residual)) = &evaluated
+        && let Some(settled) = settle(
+            system,
+            (found, residual),
+            (jacobian, gradient),
+            within,
+            criteria,
+        )
+    {
+        found = settled;
+        evaluated = last.take();
+    }
+    let at = landed_at(&found);
+    if let Some((evaluated, point, matrix, gradient, _, _)) = evaluated
         && evaluated == at
     {
         return Some((at.to_vec(), point, Some((matrix, gradient))));
@@ -565,7 +696,9 @@ fn correct_fixed<C: Condition + ?Sized, const N: usize>(
     Some((at.to_vec(), point, None))
 }
 
-/// [`correct`] for any number of unknowns, on the general solver.
+/// [`correct`] for any number of unknowns, on the general solver, to the
+/// stopping rule alone: the conditions walked here are posed in two to five
+/// unknowns and settle on the fixed path.
 fn correct_any<C: Condition + ?Sized>(
     condition: &C,
     from: &[f64],

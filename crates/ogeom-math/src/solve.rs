@@ -1079,6 +1079,13 @@ where
     Ok((x, norm, Convergence::Exhausted, criteria.max_iterations))
 }
 
+/// `A x = b` for an `N × N` system, by LU with partial pivoting: the step
+/// [`newton_system_fixed`] solves. `None` at a zero pivot.
+#[must_use]
+pub fn linear_fixed<const N: usize>(a: [[f64; N]; N], b: [f64; N]) -> Option<[f64; N]> {
+    solve_fixed(a, b)
+}
+
 /// `A x = b` by LU with partial pivoting, `None` at a zero pivot.
 ///
 /// The arithmetic is the general solver's LU step for step: the first

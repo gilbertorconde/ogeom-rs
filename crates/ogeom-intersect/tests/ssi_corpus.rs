@@ -260,18 +260,9 @@ fn grid_of_lines(
     (placed, settled): (bool, bool),
     plane: &SurfaceGeometry,
 ) {
-    let ((x0, x1), (y0, y1)) = ((-0.5, 0.6), (-0.45, 0.55));
+    let ((x0, x1), (y0, y1)) = LINE_GRID_BOX;
     let s2 = s * s;
-    let patch = polynomial(
-        &[
-            (3, 3, k),
-            (3, 1, -s2 * k),
-            (1, 3, -s2 * k),
-            (1, 1, s2 * s2 * k),
-        ],
-        (x0, x1),
-        (y0, y1),
-    );
+    let patch = line_grid(s, k);
     let mut curves = Vec::new();
     let mut ends = Vec::new();
     for c in [-s, 0.0, s] {
@@ -330,6 +321,84 @@ fn grid_of_lines(
         "{name}: {:e} of the section is traced twice",
         traced - exact
     );
+}
+
+/// The box the line grid's patch is charted over.
+const LINE_GRID_BOX: ((f64, f64), (f64, f64)) = ((-0.5, 0.6), (-0.45, 0.55));
+
+/// The patch `z = K·(x³ − s²x)(y³ − s²y)` over [`LINE_GRID_BOX`].
+fn line_grid(s: f64, k: f64) -> SurfaceGeometry {
+    let s2 = s * s;
+    let (x, y) = LINE_GRID_BOX;
+    polynomial(
+        &[
+            (3, 3, k),
+            (3, 1, -s2 * k),
+            (1, 3, -s2 * k),
+            (1, 1, s2 * s2 * k),
+        ],
+        x,
+        y,
+    )
+}
+
+/// The line grid where the patch crosses the plane at a slope of a few
+/// millionths between the crossings: along `x = 0` it is
+/// `K·s²·|y³ − s²y|`. A sample corrected onto both surfaces to a residual
+/// `r` may stand `r` over that slope across its line: up to 3e-4 at a
+/// residual of a hundredth of the confusion distance, enough for the
+/// samples to zigzag and double back. Each sample clear of the crossings stands
+/// within the chord of its line, and no chord turns back on the one
+/// before. Round a crossing the patch is `λ·u·v`, `u` and `v` the offsets
+/// from it and `λ` at least `K·s⁴`, at the middle one: it stays within the
+/// confusion distance `ε` of the plane where `|u·v| ≤ ε / λ`, a band that
+/// takes in both lines within `√(ε / λ)` of the crossing. There the two
+/// are one section to tolerance and no sample is weighed.
+#[test]
+fn a_grid_of_lines_crossing_shallowly_is_placed_within_the_chord() {
+    for (s, k, chord, half) in [
+        (0.1, 1.0, 1e-6, 50.0),
+        (0.1, 10.0, 1e-7, 2.0),
+        (0.03, 1.0, 1e-7, 2.0),
+        (0.03, 100.0, 1e-6, 2.0),
+    ] {
+        let name = format!("line grid s={s} K={k} chord={chord:e}");
+        let marching = Marching {
+            chord,
+            ..Marching::default()
+        };
+        let found = branches(&line_grid(s, k), &ground(half), marching, T).unwrap();
+        let lines = [-s, 0.0, s];
+        let neck = (T.confusion() / (k * s.powi(4))).sqrt();
+        let clear = |p: Point| {
+            lines
+                .iter()
+                .all(|&c| lines.iter().all(|&d| (p.x - c).hypot(p.y - d) > neck))
+        };
+        let across = |p: Point| {
+            lines
+                .iter()
+                .map(|&c| (p.x - c).abs().min((p.y - c).abs()))
+                .fold(f64::INFINITY, f64::min)
+                .hypot(p.z)
+        };
+        for section in &found {
+            for &p in section.points.iter().filter(|&&p| clear(p)) {
+                assert!(
+                    across(p) <= chord,
+                    "{name}: a sample stands {:e} across its line at {p:?}",
+                    across(p)
+                );
+            }
+            for w in section.points.windows(3) {
+                assert!(
+                    (w[1] - w[0]).dot(w[2] - w[1]) >= 0.0,
+                    "{name}: the section doubles back at {:?}",
+                    w[1]
+                );
+            }
+        }
+    }
 }
 
 /// `z = x·y·(y − d)` over a box, a patch linear in `x` and quadratic in
