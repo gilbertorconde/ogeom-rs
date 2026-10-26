@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **IGES reads and writes stand-alone points.** (#404)
+  - An independent point (116) that is geometry was counted as skipped.
+    It now reads as a vertex in `IgesImport::points`, carried by its
+    matrix, and a point a subfigure definition holds is placed with it.
+    A point that is annotation, or that another entity owns, is not one.
+  - The writer refused a part holding a free vertex. It now writes it as
+    an independent point. STEP still refuses it.
+  - Measured on a synthetic deck: the three points stand exactly where
+    the file, its matrix and its instance put them, and again after a
+    round trip.
 - **`fix_shape` makes the edge a wire lacks where a straight one provably
   fills the gap.** (#397)
   - A gap between two edges of a wire wider than the trim cap, within

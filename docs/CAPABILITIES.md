@@ -207,8 +207,9 @@ drawing's own annotation stays on the sheet and is counted as skipped.
 Independent curves that are geometry
 (100, 102, 104, 106, 110, 112, 126, 130) read as wires, a composite
 curve's matrix carrying its pieces and its points passed over, and the
-writer writes a free wire or edge as an independent curve (a free vertex
-is refused). External references (416) are not read.
+writer writes a free wire or edge as an independent curve. Stand-alone
+points (116) that are geometry read as vertices, and the writer writes a
+free vertex as an independent point. External references (416) are not read.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered`
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered`
 - **io.step**: STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI · `covered`
@@ -258,4 +259,4 @@ is refused). External references (416) are not read.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: c19986762e65ab12 -->
+<!-- ledger-checksum: c5a20b2401394ec4 -->

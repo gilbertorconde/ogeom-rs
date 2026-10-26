@@ -125,6 +125,10 @@ pub struct IgesImport {
     /// each subfigure placement. Wires live in the document's model but
     /// are no part of it, so a document read here writes wherever it did.
     pub wires: Vec<Shape>,
+    /// Stand-alone points: one vertex per independent point (116) that is
+    /// geometry, and one per point in each subfigure placement. They live
+    /// in the document's model as the wires do.
+    pub points: Vec<Shape>,
     /// What happened along the way.
     pub report: IgesReport,
 }
@@ -137,6 +141,7 @@ struct Content {
     /// Faces, sewn once placed.
     faces: Vec<Shape>,
     wires: Vec<Shape>,
+    points: Vec<Shape>,
 }
 
 impl Content {
@@ -146,17 +151,19 @@ impl Content {
             solids: moved(&self.solids),
             faces: moved(&self.faces),
             wires: moved(&self.wires),
+            points: moved(&self.points),
         }
     }
 
     fn len(&self) -> usize {
-        self.solids.len() + self.faces.len() + self.wires.len()
+        self.solids.len() + self.faces.len() + self.wires.len() + self.points.len()
     }
 
     fn extend(&mut self, other: Self) {
         self.solids.extend(other.solids);
         self.faces.extend(other.faces);
         self.wires.extend(other.wires);
+        self.points.extend(other.points);
     }
 }
 
@@ -167,6 +174,7 @@ struct Placed {
     /// Each placement's faces, sewn, whose shells did not close.
     sheets: Vec<Shape>,
     wires: Vec<Shape>,
+    points: Vec<Shape>,
     /// Which instance placed each solid and face, for levels and groups.
     from: Vec<(i64, Shape)>,
 }
@@ -373,6 +381,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
     sheets.extend(placed.sheets);
     built_from.extend(placed.from);
     let mut wires = placed.wires;
+    let mut points = placed.points;
 
     // Wireframe: every independent curve that is geometry (use flag 00, so
     // not a parameter-space curve, construction or annotation), that no
@@ -400,15 +409,39 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         }
     }
 
-    if solids.is_empty() && sheets.is_empty() && wires.is_empty() {
+    // Stand-alone points: every independent point that is geometry, that
+    // no drawing lists and that nothing above took, as a vertex.
+    let point_des: Vec<i64> = file
+        .entities
+        .iter()
+        .filter(|(de, e)| {
+            e.kind == 116
+                && (e.status / 10_000) % 100 == 0
+                && (e.status / 100) % 100 == 0
+                && !on_sheets.contains(de)
+                && !reader.visited.contains_key(de)
+        })
+        .map(|(de, _)| *de)
+        .collect();
+    for de in point_des {
+        match reader.point(de) {
+            Ok(point) => points.push(point),
+            Err(e) => reader
+                .report
+                .warnings
+                .push(format!("D{de}: point failed to build: {e}")),
+        }
+    }
+
+    if solids.is_empty() && sheets.is_empty() && wires.is_empty() && points.is_empty() {
         // A deck that *had* candidates which all failed is a different
         // refusal from one with nothing to try, and the warnings say why.
         if reader.report.warnings.is_empty() {
             ogeom_bail!(
                 Construction,
                 "the IGES file contains no manifold solid, no independent \
-                 trimmed or untrimmed surface and no independent curve this \
-                 reader translates"
+                 trimmed or untrimmed surface and no independent curve or \
+                 point this reader translates"
             );
         }
         ogeom_bail!(
@@ -468,6 +501,7 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         solids,
         sheets,
         wires,
+        points,
         report: reader.report,
     })
 }
@@ -2002,6 +2036,14 @@ impl<'a> Reader<'a> {
         Ok(ogeom_algo::make_wire(&mut self.model, &edges, self.tol)?.shape)
     }
 
+    /// A point (116) as a vertex where its placement puts it. The display
+    /// symbol it may name is no part of the geometry.
+    fn point(&mut self, de: i64) -> OgeomResult<Shape> {
+        let entity = self.entity(de)?;
+        let at = self.placement(entity)?.apply(self.point3(entity, 0));
+        Ok(make_vertex(&mut self.model, at).shape)
+    }
+
     /// A trimmed (144) or bounded (143) surface as a face.
     fn face(&mut self, de: i64) -> OgeomResult<Shape> {
         let entity = self.entity(de)?;
@@ -3236,6 +3278,7 @@ impl<'a> Reader<'a> {
                     .extend(copy.faces.iter().map(|f| (de, f.clone())));
                 placed.solids.extend(copy.solids);
                 placed.wires.extend(copy.wires);
+                placed.points.extend(copy.points);
                 if copy.faces.is_empty() {
                     continue;
                 }
@@ -3411,9 +3454,9 @@ impl<'a> Reader<'a> {
 
     /// What an entity holds at its own coordinates, as an instance places
     /// it: a subfigure definition's (308, 320) or a group's (402) members,
-    /// an instance's placements within it, a solid, a face, or a curve's
-    /// wire. Anything else holds
-    /// nothing and is left for the skipped table. Built once per entity.
+    /// an instance's placements within it, a solid, a face, a curve's wire
+    /// or a point's vertex. Anything else holds nothing and is left for the
+    /// skipped table. Built once per entity.
     fn member(
         &mut self,
         de: i64,
@@ -3449,6 +3492,7 @@ impl<'a> Reader<'a> {
             k if UNTRIMMED_KINDS.contains(&k) => content.faces.push(self.untrimmed_face(de)?),
             k if CSG_KINDS.contains(&k) => content.solids.extend(self.csg_solids(de)?),
             _ if wire => content.wires.push(self.wireframe(de)?),
+            116 => content.points.push(self.point(de)?),
             _ => {}
         }
         built.insert(de, content.clone());

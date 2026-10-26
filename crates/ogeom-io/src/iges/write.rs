@@ -4,8 +4,9 @@
 //! (514), faces (510), loops (508), one edge list (504) and one vertex list
 //! (502) per solid), and sheets (shells no solid owns, faces no shell owns)
 //! as trimmed surfaces (144), one per face, each bounded by curves on the
-//! surface (142) over its model-space edges, and wireframe (wires and edges
-//! outside every face) as independent curves. Surfaces go out in their
+//! surface (142) over its model-space edges, wireframe (wires and edges
+//! outside every face) as independent curves, and vertices outside every
+//! edge as independent points (116). Surfaces go out in their
 //! analytic spellings where IGES has one and as rational B-splines (128)
 //! where it does not. Curves defined in a
 //! plane of their own, arcs and ellipses, are written in definition space
@@ -33,15 +34,15 @@ use ogeom_topo::{EdgeRepr, Filter, NodeData, Shape, ShapeType, explore};
 /// the sheet they were; a sheet that closes reads back as a solid.
 /// A wire or edge outside every face is wireframe, written as its curve
 /// (an edge's own, a composite curve (102) of a wire's edges in the order
-/// the wire walks them) standing independent.
+/// the wire walks them) standing independent. A vertex outside every edge
+/// is a point (116) standing independent.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// document holds no part, a part holds a vertex outside every edge or
-/// nothing at all, a wire holds only degenerate edges, or a body carries
-/// geometry with no IGES spelling here; the error names the entity and the
-/// capability row.
+/// document holds no part, a part holds nothing at all, a wire holds only
+/// degenerate edges, or a body carries geometry with no IGES spelling here;
+/// the error names the entity and the capability row.
 pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResult<String> {
     let mut writer = Writer {
         model: document.model(),
@@ -78,6 +79,9 @@ pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResul
         }
         for wire in &bodies.wires {
             writer.wireframe(wire, &label)?;
+        }
+        for vertex in &bodies.vertices {
+            writer.free_point(vertex, &label)?;
         }
     }
     Ok(writer.serialize())
@@ -423,6 +427,20 @@ impl Writer<'_> {
             );
         };
         let entity = &mut self.entities[curve];
+        entity.independent = true;
+        entity.label = label.chars().take(8).collect();
+        Ok(())
+    }
+
+    /// A free vertex as a point (116) standing independent, where its
+    /// placement puts it.
+    fn free_point(&mut self, vertex: &Shape, label: &str) -> OgeomResult<()> {
+        let Some(data) = self.model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Construction, "vertex node holds no vertex data");
+        };
+        let at = vertex.transform(self.model.datums())?.apply(data.point);
+        let point = self.point_entity(at);
+        let entity = &mut self.entities[point];
         entity.independent = true;
         entity.label = label.chars().take(8).collect();
         Ok(())

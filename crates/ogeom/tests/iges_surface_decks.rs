@@ -583,3 +583,58 @@ fn network_subfigures_and_grouped_array_bases_place_their_members() {
         );
     }
 }
+
+/// Where each of `points` stands, sorted.
+fn positions(model: &ogeom::topo::Model, points: &[ogeom::topo::Shape]) -> Vec<[f64; 3]> {
+    let mut at: Vec<[f64; 3]> = points
+        .iter()
+        .map(|p| {
+            let own = model.node(p).unwrap().data().as_vertex().unwrap().point;
+            let q = p.transform(model.datums()).unwrap().apply(own);
+            [q.x, q.y, q.z]
+        })
+        .collect();
+    at.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    at
+}
+
+/// Stand-alone points read as vertices: one where the file puts it, one
+/// carried by its matrix, and one a subfigure definition holds, placed by
+/// its instance. A point that is annotation, or that another entity owns,
+/// is not one. Written as parts and read back, each stands where it did.
+#[test]
+fn stand_alone_points_read_and_write_as_vertices() {
+    let items = [
+        // D1: a point at (1, 2, 3).
+        item(116, 0, false, "1.,2.,3.,0"),
+        // D3: a point at the origin, moved by D5 to (10, 0, -4).
+        item(116, 0, false, "0.,0.,0.,0").placed_by(5),
+        item(124, 0, true, "1.,0.,0.,10.,0.,1.,0.,0.,0.,0.,1.,-4."),
+        // D7: a point drawn as annotation.
+        item(116, 0, false, "5.,5.,5.,0").used_as(1),
+        // D9: a point another entity owns.
+        item(116, 0, true, "6.,6.,6.,0"),
+        // D11: a definition holding the point D13, instanced by D15 at
+        // (0, 0, 100) scaled by 2.
+        item(308, 0, true, "0,4HMARK,1,13"),
+        item(116, 0, true, "1.,1.,1.,0"),
+        item(408, 0, false, "11,0.,0.,100.,2."),
+    ];
+    let import = ogeom::io::read_iges(&deck(&items), T).unwrap();
+    assert!(import.report.warnings.is_empty(), "{:?}", import.report);
+    assert_eq!(
+        import.report.skipped,
+        [("type 116".to_owned(), 2)].into_iter().collect()
+    );
+    assert!(import.solids.is_empty() && import.sheets.is_empty() && import.wires.is_empty());
+    let want = vec![[1.0, 2.0, 3.0], [2.0, 2.0, 102.0], [10.0, 0.0, -4.0]];
+    assert_eq!(positions(import.document.model(), &import.points), want);
+
+    let mut document = import.document;
+    for (i, point) in import.points.iter().enumerate() {
+        document.add_part(format!("point-{i}"), point.clone());
+    }
+    let again = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+    assert!(again.report.skipped.is_empty(), "{:?}", again.report);
+    assert_eq!(positions(again.document.model(), &again.points), want);
+}

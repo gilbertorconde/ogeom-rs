@@ -1446,8 +1446,9 @@ drawing's own annotation stays on the sheet and is counted as skipped.
 Independent curves that are geometry
 (100, 102, 104, 106, 110, 112, 126, 130) read as wires, a composite
 curve's matrix carrying its pieces and its points passed over, and the
-writer writes a free wire or edge as an independent curve (a free vertex
-is refused). External references (416) are not read."""
+writer writes a free wire or edge as an independent curve. Stand-alone
+points (116) that are geometry read as vertices, and the writer writes a
+free vertex as an independent point. External references (416) are not read."""
 symbols = ["ogeom_io::read_iges", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
 tests = ["crates/ogeom/tests/iges_roundtrip.rs",
     "crates/ogeom-io/tests/sheet_export.rs",

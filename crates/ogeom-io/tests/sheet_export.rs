@@ -307,11 +307,16 @@ fn wireframe_and_empty_parts_are_refused_by_name() {
         let error = write(&document_of(model, empty)).unwrap_err().to_string();
         assert!(error.contains("no solid, shell"), "{error}");
 
-        // A free point: IGES writes curves, not points.
+        // A free point: STEP refuses it, IGES writes it as a point.
         let mut model = Model::new();
         let point = ogeom_algo::make_vertex(&mut model, Point::new(1.0, 2.0, 3.0)).shape;
-        let error = write(&document_of(model, point)).unwrap_err().to_string();
-        assert!(error.contains("free vertex"), "{error}");
+        let written = write(&document_of(model, point));
+        if format == "step" {
+            let error = written.unwrap_err().to_string();
+            assert!(error.contains("free vertex"), "{error}");
+        } else {
+            written.unwrap();
+        }
     }
 }
 
