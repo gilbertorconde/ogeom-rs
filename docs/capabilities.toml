@@ -795,8 +795,17 @@ on with what stands past its wall and the two are intersected in one \
 boolean, so the corner takes what lies above both bands, bounded by their \
 own intersection, where the material holds it all; across a convex turn \
 each band runs out as it does alone and the cuts take their union. \
+Across a re-entrant turn one of the two may be a drum's rim beside a \
+straight crease, the material within the drum (a boss fused onto a block \
+whose wall leans in under it): the rim's torus band is taken from its cap \
+to where its section stands wholly past the other wall, intersected so, \
+and the rest joined back on, where the straight band carried on stands \
+nowhere off the drum before the rim's cap; a rim with the material \
+without it, or a straight band reaching off the drum there (that wall \
+drafted out from under the block), meets as without a junction. \
 A loop of junctions closes, its last junction taken and the ring's wedge \
-sewn to itself (a square pocket's rim meets at all four corners). Crossed \
+sewn to itself (a square pocket's rim meets at all four corners, and a \
+disc's pocket up to a chord at both). Crossed \
 junctions stand beside flush ones in a loop or chain of the request's \
 edges, the flush ones taken first; a band crossed at both ends \
 is cut in two halfway along, each half joined into its own corner and the \

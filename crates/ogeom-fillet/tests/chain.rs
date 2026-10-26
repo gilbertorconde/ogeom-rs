@@ -2043,3 +2043,304 @@ fn moulded_pockets_meet_at_every_corner() {
         }
     }
 }
+
+/// The top creases of `solid` at `z = 2` leaving `corner`, the circular
+/// one first.
+fn creases_at(
+    model: &ogeom_topo::Model,
+    solid: &ogeom_topo::Shape,
+    corner: Point,
+) -> [ogeom_topo::Shape; 2] {
+    let point = |v: &ogeom_topo::Shape| {
+        let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+        v.transform(model.datums()).unwrap().apply(p)
+    };
+    let mut edges: Vec<ogeom_topo::Shape> = explore_unique(model, solid, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+            let (p, q) = (point(&a), point(&b));
+            (p.z - 2.0).abs() < 1e-9
+                && (q.z - 2.0).abs() < 1e-9
+                && (p.distance(corner) < 1e-7 || q.distance(corner) < 1e-7)
+        })
+        .collect();
+    edges.sort_by_key(|e| {
+        let (curve, _) = edge_curve_of(model, e);
+        !matches!(curve, ogeom_geom::Curve::Circle(_))
+    });
+    let [first, second] = edges.as_slice() else {
+        panic!("two top creases at the corner");
+    };
+    [first.clone(), second.clone()]
+}
+
+/// The box past the plane through `on` with unit `normal`, forty a side.
+fn past_plane(model: &mut ogeom_topo::Model, on: Point, normal: Vector) -> ogeom_topo::Shape {
+    let seed = if normal.x.abs() < 0.9 {
+        Vector::X
+    } else {
+        Vector::Y
+    };
+    let x = seed - normal * seed.dot(normal);
+    let x = x / x.magnitude();
+    let y = normal.cross(x);
+    let frame = Frame::new(
+        on - x * 20.0 - y * 20.0,
+        Direction::new(normal, T).unwrap(),
+        Direction::new(x, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    ogeom_algo::make_box(model, frame, (40.0, 40.0, 40.0), T)
+        .unwrap()
+        .shape
+}
+
+/// A drum of radius 3 about the `z` axis, two high, fused with a block
+/// `x <= 0` whose top crease `y = b` meets the drum's rim at `(-sqrt(9 -
+/// b^2), b, 2)`, its wall leaning by `lean` from the vertical, its foot in
+/// under the block for a positive lean, the two tops unified into one
+/// face. Returns the solid, that corner, and the rim's and the block's
+/// top creases leaving it.
+fn drum_on_a_leaning_block(
+    model: &mut ogeom_topo::Model,
+    b: f64,
+    lean: f64,
+) -> (ogeom_topo::Shape, Point, [ogeom_topo::Shape; 2]) {
+    let drum = ogeom_algo::make_cylinder(
+        model,
+        Frame::new(Point::ORIGIN, Direction::Z, -Direction::X, T).unwrap(),
+        3.0,
+        2.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let block = ogeom_algo::make_box(
+        model,
+        Frame::new(Point::new(-7.0, -5.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+        (7.0, 6.0 + b, 2.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let past = past_plane(
+        model,
+        Point::new(0.0, b, 2.0),
+        Vector::new(0.0, lean.cos(), -lean.sin()),
+    );
+    let block = ogeom_bool::cut(model, &block, &past, T).unwrap().shape;
+    let fused = ogeom_bool::fuse(model, &drum, &block, T).unwrap().shape;
+    let fused = explore_unique(model, &fused, ShapeType::Solid).unwrap()[0].clone();
+    let unified = ogeom_heal::unify_same_domain(model, &fused, T)
+        .unwrap()
+        .0
+        .shape;
+    let solid = explore_unique(model, &unified, ShapeType::Solid).unwrap()[0].clone();
+    let corner = Point::new(-(9.0 - b * b).sqrt(), b, 2.0);
+    let edges = creases_at(model, &solid, corner);
+    (solid, corner, edges)
+}
+
+/// A block eight square and two high with a pocket one deep: the disc of
+/// radius 2.5 about `(4, 4)` up to its chord `y = 4 + c` at the top, that
+/// wall drafted by `d` over the depth so the floor narrows. Returns the
+/// block, the rim's corner `(4 + sqrt(2.5^2 - c^2), 4 + c, 2)`, and the
+/// arc's and the chord's rim creases leaving it.
+fn drafted_d_pocket(
+    model: &mut ogeom_topo::Model,
+    c: f64,
+    d: f64,
+) -> (ogeom_topo::Shape, Point, [ogeom_topo::Shape; 2]) {
+    let big = 2.5;
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (8.0, 8.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let disc = ogeom_algo::make_cylinder(
+        model,
+        Frame::new(Point::new(4.0, 4.0, 1.0), Direction::Z, Direction::Y, T).unwrap(),
+        big,
+        2.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let side = past_plane(
+        model,
+        Point::new(4.0, 4.0 + c, 2.0),
+        Vector::new(0.0, -1.0, d),
+    );
+    let pocket = ogeom_bool::common(model, &disc, &side, T).unwrap().shape;
+    let cut = ogeom_bool::cut(model, &block, &pocket, T).unwrap().shape;
+    let solid = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    let corner = Point::new(4.0 + big.mul_add(big, -c * c).sqrt(), 4.0 + c, 2.0);
+    let edges = creases_at(model, &solid, corner);
+    (solid, corner, edges)
+}
+
+/// A corner where a top crease on a vertical drum of radius `big` about
+/// `centre` meets a straight one at `at`, both under the top `z = 2`: the
+/// material within the drum where `within`, the drum's crease carried on
+/// past the vertex along `ahead`, the straight wall's outward normal in
+/// plan `side` and its lean `lean`. Within the square of half side `half`
+/// round the corner, what lies above both bands carried on and in the
+/// material, a column at a time: the drum's band its torus band before its
+/// cap and the straight band of its end section past it, out of the open
+/// corner off the drum and past the straight wall.
+#[allow(clippy::too_many_arguments, reason = "one corner, all its data")]
+fn turned_corner_removed(
+    at: (f64, f64),
+    (centre, big, within): ((f64, f64), f64, bool),
+    ahead: (f64, f64),
+    side: (f64, f64),
+    lean: f64,
+    r: f64,
+    half: f64,
+) -> f64 {
+    let towards = if within { 1.0 } else { -1.0 };
+    let normal = (
+        towards * (at.0 - centre.0) / big,
+        towards * (at.1 - centre.1) / big,
+    );
+    let turned = Section::new(0.0, (1.0, 0.0), r);
+    let straight = Section::new(0.0, (lean.cos(), -lean.sin()), r);
+    integral(
+        (at.0 - half, at.0 + half),
+        (at.1 - half, at.1 + half),
+        2e3,
+        |x, y| {
+            let (px, py) = (x - at.0, y - at.1);
+            let off = towards * ((x - centre.0).hypot(y - centre.1) - big);
+            let ua = if px.mul_add(ahead.0, py * ahead.1) > 0.0 {
+                px.mul_add(normal.0, py * normal.1)
+            } else {
+                off
+            };
+            let ub = px.mul_add(side.0, py * side.1);
+            let [a0, a1] = turned.column(ua);
+            let [b0, b1] = straight.column(ub);
+            let (pa, pb) = (turned.past(ua, 0.0), straight.past(ub, 0.0));
+            let above = meet(&[a0, a1, pa], &[b0, b1, pb]);
+            let runs: Vec<(f64, f64)> = above
+                .iter()
+                .map(|&(p, q)| (p.max(0.0), q.min(2.0)))
+                .collect();
+            let open = if off > 0.0 { (0.0, 2.0) } else { (0.0, 0.0) };
+            span(&runs) - overlap(&runs, &meet(&[open], &[pb]))
+        },
+    )
+}
+
+/// What rounding `edges` of `solid` at `r` takes within the square of half
+/// side `half` round `at`, in the order given and reversed, each result
+/// checked valid.
+fn removed_near(
+    model: &ogeom_topo::Model,
+    solid: &ogeom_topo::Shape,
+    edges: &[ogeom_topo::Shape; 2],
+    r: f64,
+    at: Point,
+    half: f64,
+) -> [f64; 2] {
+    [edges.clone(), [edges[1].clone(), edges[0].clone()]].map(|named| {
+        let mut model = model.clone();
+        let rounded = ogeom_fillet::fillet_edges(&mut model, solid, &named, r, T).unwrap();
+        assert!(
+            ogeom_algo::check(&model, &rounded.shape, T)
+                .unwrap()
+                .is_valid()
+        );
+        let window = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(
+                Point::new(at.x - half, at.y - half, -1.0),
+                Direction::Z,
+                Direction::X,
+                T,
+            )
+            .unwrap(),
+            (half * 2.0, half * 2.0, 4.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let before = ogeom_bool::common(&mut model, solid, &window, T)
+            .unwrap()
+            .shape;
+        let after = ogeom_bool::common(&mut model, &rounded.shape, &window, T)
+            .unwrap()
+            .shape;
+        volume(&model, &before, 1e-4) - volume(&model, &after, 1e-4)
+    })
+}
+
+/// Two top creases rounded where a drum fused onto a block meets the
+/// block's leaning wall: the rim's crease turns about the drum's axis, the
+/// block's is straight, and their end sections differ, so the junction is
+/// crossed. The rim's band is the torus band of its section before its cap
+/// and, carried on, the straight band of its end section past it; the
+/// corner takes what lies above both bands in the material, measured
+/// within a box round the corner a column at a time, in either order.
+/// Without the junction the two bands met as each was built, and left the
+/// corner standing.
+#[test]
+fn rounds_at_a_drum_meeting_a_leaning_wall_take_all_above_both() {
+    let r = 0.5;
+    let half = 1.2;
+    for (b, lean) in [(1.0_f64, 0.1_f64.atan()), (2.0, 0.1_f64.atan())] {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, at, edges) = drum_on_a_leaning_block(&mut model, b, lean);
+        let reach = (9.0 - b * b).sqrt();
+        let want = turned_corner_removed(
+            (at.x, at.y),
+            ((0.0, 0.0), 3.0, true),
+            (-b / 3.0, -reach / 3.0),
+            (0.0, 1.0),
+            lean,
+            r,
+            half,
+        );
+        for got in removed_near(&model, &solid, &edges, r, at, half) {
+            assert!(
+                (got - want).abs() < 5e-6,
+                "b {b}, leaning {lean}: {got} against {want}"
+            );
+        }
+    }
+}
+
+/// A pocket of a disc up to a chord, its two rim creases rounded: the arc
+/// and the chord meet at both their ends, a loop of two, each corner flush
+/// in its bisecting plane. With the chord off the centre and on it, where
+/// the arc's two caps lie in one plane through the axis, each corner takes
+/// what lies above both bands carried on, measured within a box round one
+/// corner a column at a time, in either order. The loop's second junction
+/// was dropped, and its corner kept its caps; on the centre, the cap at the
+/// far corner was read for the near one and neither corner met.
+#[test]
+fn a_pocket_of_a_disc_and_its_chord_meets_at_both_corners() {
+    let r = 0.5;
+    let half = 1.2;
+    for c in [0.5_f64, 0.0] {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, at, edges) = drafted_d_pocket(&mut model, c, 0.0);
+        let reach = 2.5_f64.mul_add(2.5, -c * c).sqrt();
+        let want = turned_corner_removed(
+            (at.x, at.y),
+            ((4.0, 4.0), 2.5, false),
+            (-c / 2.5, reach / 2.5),
+            (0.0, -1.0),
+            0.0,
+            r,
+            half,
+        );
+        for got in removed_near(&model, &solid, &edges, r, at, half) {
+            assert!(
+                (got - want).abs() < 5e-6,
+                "chord at {c}: {got} against {want}"
+            );
+        }
+    }
+}

@@ -261,8 +261,12 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 /// lies above both bands carried on, bounded by the boolean's own
 /// intersection of the two, where the material holds it all; across a
 /// convex turn each band runs out past the vertex as it does alone and the
-/// cuts take their union. Such junctions stand beside flush ones in a
-/// loop or chain, a band crossed at both ends cut in two halfway along.
+/// cuts take their union. Across a re-entrant turn one of the two may be a
+/// drum's rim, the material within the drum, where the straight band
+/// carried on stands nowhere off the drum before the rim's cap. Such
+/// junctions stand beside flush ones in a loop or chain, a band crossed at
+/// both ends cut in two halfway along, and two bands meeting at both their
+/// ends meet at each.
 /// Elsewhere (a wider convex turn of curved bands)
 /// and wherever the meeting does not close, the later seat runs on
 /// through the earlier blend's band and the cut trims the two bands
@@ -944,13 +948,10 @@ fn joinable(
         let [a, b] = junction.pair;
         if group[a] == group[b] {
             // A junction closing a loop of joined bands joins no groups,
-            // and is taken for its corner.
-            if !kept
-                .iter()
-                .any(|j| j.slot(a).is_some() && j.slot(b).is_some())
-            {
-                kept.push(junction);
-            }
+            // and is taken for its corner. Each junction stands at a vertex
+            // of its own, so two bands meeting at both their ends (a pocket
+            // of a chord and its arc) close a loop of two there.
+            kept.push(junction);
             continue;
         }
         // Two edges of the groups this joins that meet elsewhere must meet

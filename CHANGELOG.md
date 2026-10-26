@@ -488,6 +488,31 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drum's rim meets a leaning straight crease, and a disc's pocket up
+  to a chord meets at both corners.** (#342)
+  - Two top creases where a drum fused onto a block meets the block's
+    wall leaning in under it had end sections that differ, and the rim's
+    crease is a circle, so no junction was taken: the bands met as each was
+    built and left the corner standing. The rim's torus band is now taken
+    from its cap to where its section stands wholly past the block's wall,
+    carried on past its cap as the straight band of its end section, and
+    intersected with the block's band in one boolean; the rest is joined
+    back on. It is taken where the block's band carried on stands nowhere
+    off the drum before the rim's cap, which a closed polygon test in plan
+    decides. Within a box round the corner, r = 0.5, wall at 0.1: 0.162018
+    against 0.172312 mm³ with the block's crease at `y = 1` on a drum of
+    radius 3, and 0.154401 against 0.160586 at `y = 2`, what lies above both
+    bands in the material, a column at a time; both orders now take
+    0.172311 and 0.160586. A rim with the material without it, or a wall drafted out from
+    under the block, meets as before.
+  - The two creases of a pocket of a disc up to a chord meet at both their
+    ends. The second junction of that loop of two was dropped as though it
+    repeated the first, and its corner kept its caps: 0.130616 against
+    0.140398 mm³ round one corner, in one order. With the chord through the
+    centre the arc's two caps lie in one plane, and the far one was read
+    for the near one, so neither corner met: 0.131285 against 0.143268.
+    Both orders now take what lies above both bands at each corner.
+
 - **A pocket off square in plan with every wall drafted its own way meets
   at every corner.** (#342) A trapezoid with corners at 63 and 117
   degrees, walls at 0.1, 0.05, -0.05 and 0.08, r = 0.5, fell back to
