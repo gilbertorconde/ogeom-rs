@@ -1017,7 +1017,10 @@ sweeps. `make_helical_sweep` is the screw motion of a profile in a plane \
 through the axis, cylindrical or tapered, either hand: every point runs \
 its own helix and the walls are fitted through those images in quarter \
 turns. `make_pipe_shell_evolving` scales and twists the section linearly \
-with the length run along the spine: scaled without a twist down one \
+with the length run along the spine, and `make_pipe_shell_laws` by laws \
+of its own: linear, or the monotone cubic through given values, which \
+keeps between neighbouring values (a scale through positive values stays \
+positive). Scaled linearly without a twist down one \
 straight edge it is the ruled loft to the scaled image, exact (a \
 pyramid's or cone's frustum, the pyramid or cone at a scale of zero); \
 otherwise each loop is skinned through the placed sections and held to \
@@ -1030,8 +1033,15 @@ angle): a faceted loop's edges sweep strips open at both ends, each \
 closing on the strip that lands where it began, a smooth loop is read from \
 a point sliding round it as it turns; a scale, or a part turn the \
 section's symmetry does not close, is refused there by name, as the \
-section would not come home to itself. Scale and twist follow \
-linear laws only, and a scaled or twisted section turns no sharp corner. The multisection pipe takes faces with holes, as many \
+section would not come home to itself; a twist law of any shape closes \
+there where a linear one ending as it does would. Round sharp corners an \
+evolving face sweeps run by run, mitred, extended or rounded: each run \
+under the laws over its share of the length, from the section it starts \
+with, the stretches where the laws stand still swept exactly. A skinned \
+run meeting a corner whose pieces agree only to the skin's tolerance on \
+the mitre or turning plane (a section with a corner on the round \
+corner's axis, a scaled run into a curved leg's round or extended \
+corner) is beyond the boolean and refused there. The multisection pipe takes faces with holes, as many \
 in every section, each hole swept through the sections and cut from the \
 outer solid. Round sharp corners a face is also swept run by run: the \
 spine cut at its corners, each smooth run swept on its own (a straight \
@@ -1055,7 +1065,8 @@ symbols = [
     "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
     "ogeom_offset::make_pipe_shell", "ogeom_offset::make_evolved",
     "ogeom_offset::make_helical_sweep", "ogeom_offset::make_pipe_shell_evolving",
-    "ogeom_offset::PipeEvolution",
+    "ogeom_offset::PipeEvolution", "ogeom_offset::make_pipe_shell_laws",
+    "ogeom_offset::PipeLaws", "ogeom_offset::SpineLaw",
 ]
 tests = [
     "crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs",

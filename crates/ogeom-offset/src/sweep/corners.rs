@@ -24,13 +24,15 @@
 //! them, so the solid is exact wherever the runs are swept exactly.
 
 use ogeom_algo::{
-    Built, History, make_box, make_prism, make_revolution, project_on_curve, shape_bounds,
+    Built, History, curve_length, make_box, make_prism, make_revolution, parameter_at_length,
+    project_on_curve, shape_bounds,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve3d as _, SurfaceGeometry};
 use ogeom_math::{Axis, Direction, Frame, Point, Transform, Vector};
 use ogeom_topo::{Filter, Model, NodeData, Shape, ShapeType, explore};
 
+use super::evolving::{Evolution, evolved_run};
 use super::{
     DOUBLED_BACK, LEAST_TURN_SINE, PipeCorners, PipeLaw, fuse_in_order, law_normals,
     make_pipe_shell_with, outside_half, profile_square_at_start, realized_profile_wound,
@@ -65,13 +67,17 @@ fn sharp(a: Vector, b: Vector, tol: Tolerances) -> bool {
 
 /// Sweep a face along a spine with sharp corners (or round a closed one)
 /// under any frame law but the fixed one, each corner turned as `corners`
-/// asks; see the module documentation.
+/// asks; see the module documentation. Where `evolution` is given the
+/// section also scales and twists by it: each run by the laws over its
+/// share of the spine's length, from the section the run starts with.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn law_cornered(
     model: &mut Model,
     profile: &Shape,
     spine: &Shape,
     law: &PipeLaw<'_>,
     corners: PipeCorners,
+    evolution: Option<&Evolution>,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -120,6 +126,16 @@ pub(super) fn law_cornered(
         );
     }
 
+    // The share of the spine's length run to each leg's start, and to its
+    // end.
+    let mut run_to = Vec::with_capacity(n + 1);
+    run_to.push(0.0);
+    for leg in &legs {
+        let (curve, range) = spine_curve_of(model, &leg.edge)?;
+        run_to.push(run_to[run_to.len() - 1] + curve_length(&curve, range, tol)?);
+    }
+    let total = run_to[n];
+    let share = |k: usize| if k == n { 1.0 } else { run_to[k] / total };
     // The law's frame at the spine's start, which the profile stands in.
     let start_frame = law_frame_at(model, spine, law, tolerance, tol)?;
     let mut sections: Vec<Shape> = Vec::with_capacity(runs.len());
@@ -148,15 +164,36 @@ pub(super) fn law_cornered(
             )?,
             _ => {
                 let here = law_frame_at(model, &wire, law, tolerance, tol)?;
-                let motion = Transform::from_frame(&here) * Transform::to_frame(&start_frame);
+                let evolved = match evolution {
+                    Some(evolution) => evolution.local(share(run.legs.start), tol)?,
+                    None => Transform::IDENTITY,
+                };
+                let motion =
+                    Transform::from_frame(&here) * evolved * Transform::to_frame(&start_frame);
                 realized_profile_wound(model, profile, &motion, Some(first.heading_in), tol)?
             }
         };
-        let prism = run.legs.len() == 1
+        let window = evolution
+            .map(|e| e.window(share(run.legs.start), share(run.legs.end)))
+            .filter(|w| !w.is_still());
+        let prism = window.is_none()
+            && run.legs.len() == 1
             && first.straight
             && keeps_frame(model, &wire, law, tolerance, tol)?;
         held.push(if prism { 0.0 } else { tolerance });
-        let solid = if prism {
+        let solid = if let Some(window) = &window {
+            let lengths = &run_to[run.legs.start..=run.legs.end];
+            evolved_stretches(
+                model,
+                &section,
+                &legs[run.legs.clone()],
+                lengths,
+                law,
+                window,
+                tolerance,
+                tol,
+            )?
+        } else if prism {
             make_prism(model, &section, first.end - first.start, tol)?.shape
         } else {
             make_pipe_shell_with(
@@ -546,4 +583,166 @@ pub(super) fn law_is_rotation_minimizing(
         let d = (angle(i) - first).rem_euclid(2.0 * core::f64::consts::PI);
         d.min(2.0 * core::f64::consts::PI - d) <= tol.angular()
     }))
+}
+
+/// A run swept under the evolving laws `window`, read over the run: the
+/// stretches at either end where the laws stand still swept exactly (the
+/// prism of the section down a straight stretch the law keeps it level
+/// along, else the pipe shell), the stretch between under the laws, each
+/// from the section the one before ends with, the stretches fused in
+/// order. `run_to` holds the length run along the spine to each leg's
+/// start and to the run's end.
+#[allow(clippy::too_many_arguments)]
+fn evolved_stretches(
+    model: &mut Model,
+    section: &Shape,
+    legs: &[Leg],
+    run_to: &[f64],
+    law: &PipeLaw<'_>,
+    window: &Evolution,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let (lead, trail) = window.still_ends();
+    let (from, to) = (run_to[0], run_to[run_to.len() - 1]);
+    let at = |share: f64| {
+        if share == 1.0 {
+            to
+        } else {
+            from + (to - from) * share
+        }
+    };
+    let mut cuts = vec![0.0];
+    if lead > 0.0 && lead < trail {
+        cuts.push(lead);
+    }
+    if trail < 1.0 && lead < trail {
+        cuts.push(trail);
+    }
+    cuts.push(1.0);
+    let mut pieces = Vec::with_capacity(cuts.len() - 1);
+    let mut start = section.clone();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (wire, last) = stretch_wire(model, legs, run_to, (at(a), at(b)), tol)?;
+        let moving = a < trail && b > lead;
+        let solid = if moving {
+            let laws = if a == 0.0 && b == 1.0 {
+                window.clone()
+            } else {
+                window.window(a, b)
+            };
+            evolved_run(model, &start, &wire, law, &laws, tolerance, tol)?
+        } else if legs.len() == 1
+            && legs[0].straight
+            && keeps_frame(model, &wire, law, tolerance, tol)?
+        {
+            let (p, q) = (
+                point_along(model, legs, run_to, at(a), tol)?,
+                point_along(model, legs, run_to, at(b), tol)?,
+            );
+            make_prism(model, &start, q - p, tol)?.shape
+        } else {
+            make_pipe_shell_with(
+                model,
+                &start,
+                &wire,
+                law,
+                PipeCorners::Mitre,
+                tolerance,
+                tol,
+            )?
+            .shape
+        };
+        let (end, heading) = last;
+        start = end_section(model, &solid, end, heading, tol)?;
+        pieces.push(solid);
+    }
+    match fuse_in_order(model, pieces, tol)? {
+        Some(shape) => Ok(shape),
+        None => ogeom_bail!(Construction, "a run has no stretch"),
+    }
+}
+
+/// The point the spine reaches at length `along`, among the run's legs.
+fn point_along(
+    model: &Model,
+    legs: &[Leg],
+    run_to: &[f64],
+    along: f64,
+    tol: Tolerances,
+) -> OgeomResult<Point> {
+    let k = run_to[1..legs.len()].partition_point(|r| *r <= along);
+    let (curve, t) = leg_parameter(model, &legs[k], along - run_to[k], tol)?;
+    curve.point_at(t, tol)
+}
+
+/// A leg's curve, and the parameter a length `run` along it from its
+/// start in the direction of travel.
+fn leg_parameter(
+    model: &Model,
+    leg: &Leg,
+    run: f64,
+    tol: Tolerances,
+) -> OgeomResult<(ogeom_geom::Curve, f64)> {
+    let (curve, range) = spine_curve_of(model, &leg.edge)?;
+    let length = curve_length(&curve, range, tol)?;
+    let run = run.clamp(0.0, length);
+    let t = if leg.edge.orientation() == ogeom_topo::Orientation::Reversed {
+        parameter_at_length(&curve, range, length - run, tol)?
+    } else {
+        parameter_at_length(&curve, range, run, tol)?
+    };
+    Ok((curve, t))
+}
+
+/// The wire of the run's spine from length `span.0` to length `span.1`
+/// along it, each leg it crosses cut where the stretch ends, with the
+/// stretch's end point and its heading there.
+fn stretch_wire(
+    model: &mut Model,
+    legs: &[Leg],
+    run_to: &[f64],
+    span: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<(Shape, (Point, Vector))> {
+    let mut edges = Vec::new();
+    let mut joint: Option<Shape> = None;
+    let mut last = (legs[0].start, legs[0].heading_in);
+    for (k, leg) in legs.iter().enumerate() {
+        let (lo, hi) = (span.0.max(run_to[k]), span.1.min(run_to[k + 1]));
+        if hi <= lo {
+            continue;
+        }
+        let whole = lo == run_to[k] && hi == run_to[k + 1];
+        let (curve, t0) = leg_parameter(model, leg, lo - run_to[k], tol)?;
+        let (_, t1) = leg_parameter(model, leg, hi - run_to[k], tol)?;
+        let (a, b) = (curve.point_at(t0, tol)?, curve.point_at(t1, tol)?);
+        let edge = if whole {
+            leg.edge.clone()
+        } else {
+            let va = match &joint {
+                Some(v) => v.clone(),
+                None => ogeom_algo::make_vertex(model, a).shape,
+            };
+            let vb = ogeom_algo::make_vertex(model, b).shape;
+            if leg.edge.orientation() == ogeom_topo::Orientation::Reversed {
+                ogeom_algo::make_edge_between(model, curve.clone(), (t1, t0), &vb, &va, tol)?
+                    .shape
+                    .reversed()
+            } else {
+                ogeom_algo::make_edge_between(model, curve.clone(), (t0, t1), &va, &vb, tol)?.shape
+            }
+        };
+        joint = ogeom_algo::edge_vertices(model, &edge)?.map(|(_, end)| end);
+        let d = curve.d1_at(t1, tol)?;
+        let d = if leg.edge.orientation() == ogeom_topo::Orientation::Reversed {
+            -d
+        } else {
+            d
+        };
+        last = (b, d / d.magnitude());
+        edges.push(edge);
+    }
+    Ok((ogeom_algo::make_wire(model, &edges, tol)?.shape, last))
 }

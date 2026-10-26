@@ -2,8 +2,9 @@
 //!
 //! The section is the profile placed in the law's frame at each point of
 //! the spine, as for [`make_pipe_shell_with`](super::make_pipe_shell_with),
-//! and before that scaled about the spine and turned about it, both in
-//! proportion to the share of the spine's length run there.
+//! and before that scaled about the spine and turned about it, each by its
+//! own law of the share of the spine's length run there: linear, or a
+//! monotone cubic through given values.
 //!
 //! Scaled without a twist down a straight spine, every profile point runs
 //! along a straight line, at a constant speed, to its scaled image at the
@@ -19,6 +20,7 @@ use ogeom_geom::Curve;
 use ogeom_math::{Axis, Direction, Point, Transform};
 use ogeom_topo::{Filter, Model, Shape, ShapeType, VertexData, explore};
 
+use super::corners::law_cornered;
 use super::{
     PipeCorners, PipeLaw, SpineStation, WalkCurve, closed_pipe_shell, closes_on_a_corner,
     densified, evenly_by, has_sharp_corner, law_loft, make_loft, make_pipe_shell_with, moved_ring,
@@ -38,7 +40,304 @@ pub struct PipeEvolution {
     pub twist: f64,
 }
 
-impl PipeEvolution {
+/// How a quantity runs along a pipe's spine, against the share of the
+/// spine's length run: from its value at the start (one for a scale,
+/// naught for a twist) at a share of naught.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpineLaw {
+    /// Linearly to this value at the spine's end.
+    Linear(f64),
+    /// Through these `(share, value)` points, the shares rising strictly
+    /// and the last of them one, the spine's end. Between two neighbouring
+    /// points the law is the cubic that keeps between their values, and it
+    /// runs on through each point with one slope (the monotone cubic
+    /// Hermite interpolant): a value the points never leave, the law never
+    /// leaves either.
+    Through(Vec<(f64, f64)>),
+}
+
+/// How a pipe's section scales and twists along its spine, each by its
+/// own law of the share of the spine's length run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipeLaws {
+    /// The section's scale about the spine; one at the start.
+    pub scale: SpineLaw,
+    /// The angle in radians the section has turned through about the
+    /// spine, counter-clockwise about the direction of travel; naught at
+    /// the start.
+    pub twist: SpineLaw,
+}
+
+impl From<PipeEvolution> for PipeLaws {
+    fn from(evolution: PipeEvolution) -> Self {
+        Self {
+            scale: SpineLaw::Linear(evolution.scale),
+            twist: SpineLaw::Linear(evolution.twist),
+        }
+    }
+}
+
+/// A [`SpineLaw`] read for evaluation: its values at rising shares from
+/// naught to one, and the slope the law runs through each with.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Ramp {
+    shares: Vec<f64>,
+    values: Vec<f64>,
+    slopes: Vec<f64>,
+    /// Whether the law runs straight from its start value to its end one.
+    linear: bool,
+}
+
+impl Ramp {
+    /// The law that holds `value` all along.
+    pub(super) fn level(value: f64) -> Self {
+        Self {
+            shares: vec![0.0, 1.0],
+            values: vec![value, value],
+            slopes: vec![0.0, 0.0],
+            linear: true,
+        }
+    }
+
+    /// `law` read from `start` at the spine's start; `what` names it in a
+    /// refusal.
+    fn of(law: &SpineLaw, start: f64, what: &str) -> OgeomResult<Self> {
+        let mut shares = vec![0.0];
+        let mut values = vec![start];
+        match law {
+            SpineLaw::Linear(end) => {
+                shares.push(1.0);
+                values.push(*end);
+            }
+            SpineLaw::Through(points) => {
+                for &(share, value) in points {
+                    shares.push(share);
+                    values.push(value);
+                }
+            }
+        }
+        if values.iter().any(|v| !v.is_finite()) {
+            ogeom_bail!(Construction, "a {what} law takes finite values");
+        }
+        if shares
+            .windows(2)
+            .any(|w| w[1].partial_cmp(&w[0]) != Some(core::cmp::Ordering::Greater))
+            || shares[shares.len() - 1] != 1.0
+        {
+            ogeom_bail!(
+                Construction,
+                "a {what} law's shares of the spine rise strictly from naught to one, \
+                 the last of them one"
+            );
+        }
+        // Fritsch and Carlson's slopes: each span's secant, the mean of two
+        // where they agree in sign and none where they do not, each pair
+        // then drawn in onto the circle of radius three about the secant,
+        // inside which the span's cubic keeps between its ends.
+        let n = shares.len();
+        let secants: Vec<f64> = (0..n - 1)
+            .map(|k| (values[k + 1] - values[k]) / (shares[k + 1] - shares[k]))
+            .collect();
+        let mut slopes = vec![0.0; n];
+        slopes[0] = secants[0];
+        slopes[n - 1] = secants[n - 2];
+        for k in 1..n - 1 {
+            if secants[k - 1] * secants[k] > 0.0 {
+                slopes[k] = f64::midpoint(secants[k - 1], secants[k]);
+            }
+        }
+        for k in 0..n - 1 {
+            if secants[k] == 0.0 {
+                slopes[k] = 0.0;
+                slopes[k + 1] = 0.0;
+                continue;
+            }
+            let (a, b) = (slopes[k] / secants[k], slopes[k + 1] / secants[k]);
+            let reach = a.hypot(b);
+            if reach > 3.0 {
+                slopes[k] = 3.0 * a / reach * secants[k];
+                slopes[k + 1] = 3.0 * b / reach * secants[k];
+            }
+        }
+        Ok(Self {
+            linear: matches!(law, SpineLaw::Linear(_)),
+            shares,
+            values,
+            slopes,
+        })
+    }
+
+    /// The span of the law `lambda` falls in, and how far along it.
+    fn span(&self, lambda: f64) -> (usize, f64) {
+        let k = self.shares[1..self.shares.len() - 1].partition_point(|s| *s < lambda);
+        let t = (lambda - self.shares[k]) / (self.shares[k + 1] - self.shares[k]);
+        (k, t)
+    }
+
+    /// The law's value a share `lambda` of the way along.
+    pub(super) fn at(&self, lambda: f64) -> f64 {
+        let lambda = lambda.clamp(0.0, 1.0);
+        if self.linear {
+            return self.values[0] + (self.values[1] - self.values[0]) * lambda;
+        }
+        let (k, t) = self.span(lambda);
+        if self.values[k] == self.values[k + 1]
+            && self.slopes[k] == 0.0
+            && self.slopes[k + 1] == 0.0
+        {
+            return self.values[k];
+        }
+        let h = self.shares[k + 1] - self.shares[k];
+        let (t2, t3) = (t * t, t * t * t);
+        (2.0 * t3 - 3.0 * t2 + 1.0) * self.values[k]
+            + (t3 - 2.0 * t2 + t) * h * self.slopes[k]
+            + (3.0 * t2 - 2.0 * t3) * self.values[k + 1]
+            + (t3 - t2) * h * self.slopes[k + 1]
+    }
+
+    /// The law's rate of change with the share a share `lambda` of the way
+    /// along.
+    fn slope_at(&self, lambda: f64) -> f64 {
+        let lambda = lambda.clamp(0.0, 1.0);
+        if self.linear {
+            return self.values[1] - self.values[0];
+        }
+        let (k, t) = self.span(lambda);
+        let h = self.shares[k + 1] - self.shares[k];
+        let t2 = t * t;
+        ((6.0 * t2 - 6.0 * t) * (self.values[k] - self.values[k + 1])) / h
+            + (3.0 * t2 - 4.0 * t + 1.0) * self.slopes[k]
+            + (3.0 * t2 - 2.0 * t) * self.slopes[k + 1]
+    }
+
+    /// The law over the stretch from share `from` to share `to`, read
+    /// against the share of that stretch: the same cubics, cut where the
+    /// stretch ends.
+    fn window(&self, from: f64, to: f64) -> Self {
+        let width = to - from;
+        if self.linear {
+            return Self {
+                shares: vec![0.0, 1.0],
+                values: vec![self.at(from), self.at(to)],
+                slopes: vec![0.0, 0.0],
+                linear: true,
+            };
+        }
+        let mut shares = vec![0.0];
+        let mut values = vec![self.at(from)];
+        let mut slopes = vec![self.slope_at(from) * width];
+        for k in 0..self.shares.len() {
+            if self.shares[k] > from && self.shares[k] < to {
+                shares.push((self.shares[k] - from) / width);
+                values.push(self.values[k]);
+                slopes.push(self.slopes[k] * width);
+            }
+        }
+        shares.push(1.0);
+        values.push(self.at(to));
+        slopes.push(self.slope_at(to) * width);
+        Self {
+            shares,
+            values,
+            slopes,
+            linear: false,
+        }
+    }
+
+    /// The law with every value taken through `f`, an affine map whose
+    /// rate is `rate`.
+    fn mapped(mut self, f: impl Fn(f64) -> f64, rate: f64) -> Self {
+        for v in &mut self.values {
+            *v = f(*v);
+        }
+        for m in &mut self.slopes {
+            *m *= rate;
+        }
+        self
+    }
+
+    /// The value at the spine's end.
+    pub(super) fn end(&self) -> f64 {
+        self.values[self.values.len() - 1]
+    }
+
+    /// How far from the start the law holds its start value, and from how
+    /// far it holds its end value to the end: the shares bounding its
+    /// level spans at either end, where its values and slopes stand still.
+    fn still_ends(&self) -> (f64, f64) {
+        let n = self.shares.len();
+        if self.linear {
+            return if self.values[0] == self.values[1] {
+                (1.0, 0.0)
+            } else {
+                (0.0, 1.0)
+            };
+        }
+        let flat = |k: usize| {
+            self.values[k] == self.values[k + 1]
+                && self.slopes[k] == 0.0
+                && self.slopes[k + 1] == 0.0
+        };
+        let mut lead = 0;
+        while lead + 1 < n && flat(lead) {
+            lead += 1;
+        }
+        let mut trail = n - 1;
+        while trail > 0 && flat(trail - 1) {
+            trail -= 1;
+        }
+        (self.shares[lead], self.shares[trail])
+    }
+
+    /// Whether the law holds `value` all along.
+    pub(super) fn is_level(&self, value: f64) -> bool {
+        self.values.iter().all(|v| *v == value)
+    }
+
+    /// Whether the law runs straight from its start value to its end one.
+    fn is_linear(&self) -> bool {
+        self.linear
+    }
+
+    /// The least value the law takes: each span keeps between its ends.
+    fn least(&self) -> f64 {
+        self.values.iter().copied().fold(f64::INFINITY, f64::min)
+    }
+
+    /// How far the law runs, up and down, from start to end: each span
+    /// runs one way only.
+    fn variation(&self) -> f64 {
+        self.values.windows(2).map(|w| (w[1] - w[0]).abs()).sum()
+    }
+
+    /// The same law ending at `end`.
+    fn ending_at(&self, end: f64) -> OgeomResult<Self> {
+        let points: Vec<(f64, f64)> = self.shares[1..]
+            .iter()
+            .zip(&self.values[1..])
+            .map(|(s, v)| (*s, *v))
+            .collect();
+        let mut points = points;
+        if let Some(last) = points.last_mut() {
+            last.1 = end;
+        }
+        let law = if self.linear {
+            SpineLaw::Linear(end)
+        } else {
+            SpineLaw::Through(points)
+        };
+        Self::of(&law, self.values[0], "twist")
+    }
+}
+
+/// A pipe's scale and twist laws, read for evaluation.
+#[derive(Debug, Clone)]
+pub(super) struct Evolution {
+    scale: Ramp,
+    twist: Ramp,
+}
+
+impl Evolution {
     /// The scale and turn a share `lambda` of the way along, in the start
     /// frame's coordinates: about its origin, the spine, and its `z`, the
     /// spine's tangent.
@@ -48,10 +347,35 @@ impl PipeEvolution {
                 location: Point::ORIGIN,
                 direction: Direction::Z,
             },
-            self.twist * lambda,
+            self.twist.at(lambda),
         );
-        let scale = 1.0 + (self.scale - 1.0) * lambda;
-        Ok(turn * Transform::scaling(Point::ORIGIN, scale, tol)?)
+        Ok(turn * Transform::scaling(Point::ORIGIN, self.scale.at(lambda), tol)?)
+    }
+
+    /// The shares of the way along bounding where the laws move the
+    /// section: before the first and after the second both stand still.
+    pub(super) fn still_ends(&self) -> (f64, f64) {
+        let (scale, twist) = (self.scale.still_ends(), self.twist.still_ends());
+        (scale.0.min(twist.0), scale.1.max(twist.1))
+    }
+
+    /// Whether the laws neither scale nor turn the section anywhere.
+    pub(super) fn is_still(&self) -> bool {
+        self.scale.is_level(1.0) && self.twist.is_level(0.0)
+    }
+
+    /// The laws over the stretch from share `from` to share `to`, against
+    /// the share of that stretch and from the section as it stands at
+    /// `from`: the scale over its value there, the twist less its value
+    /// there. About the spine a scale and a turn commute, so the section
+    /// at `from` carried on by these is the profile carried by the whole
+    /// laws.
+    pub(super) fn window(&self, from: f64, to: f64) -> Self {
+        let (s0, t0) = (self.scale.at(from), self.twist.at(from));
+        Self {
+            scale: self.scale.window(from, to).mapped(|v| v / s0, 1.0 / s0),
+            twist: self.twist.window(from, to).mapped(|v| v - t0, 1.0),
+        }
     }
 }
 
@@ -102,7 +426,8 @@ impl SpineLengths {
 /// the spine the section is the profile scaled about the spine by
 /// `1 + (scale - 1) λ` and turned about it by `twist λ`, `λ` the share of
 /// the spine's length run there, then carried by `law`. With no scale and
-/// no twist this is [`make_pipe_shell_with`] with mitred corners.
+/// no twist this is [`make_pipe_shell_with`] with mitred corners; it is
+/// [`make_pipe_shell_laws`] with linear laws.
 ///
 /// Scaled without a twist down one straight edge under the
 /// rotation-minimizing, binormal or fixed law (none of which turns the
@@ -142,30 +467,81 @@ pub fn make_pipe_shell_evolving(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    if !evolution.scale.is_finite() || evolution.scale < 0.0 {
+    make_pipe_shell_laws(
+        model,
+        profile,
+        spine,
+        law,
+        &evolution.into(),
+        PipeCorners::Mitre,
+        tolerance,
+        tol,
+    )
+}
+
+/// [`make_pipe_shell_evolving`] with a law of its own for the scale and
+/// for the twist: at each point of the spine the section is the profile
+/// scaled about the spine by `laws.scale` and turned about it by
+/// `laws.twist`, each read at the share of the spine's length run there,
+/// then carried by `law`.
+///
+/// Linear laws build as [`make_pipe_shell_evolving`] does. Any other law
+/// skins each loop through its placed sections, held to `tolerance`
+/// against the laws; round a smooth closed spine the twist may follow any
+/// law that ends where a linear one may, unscaled. A scale law through
+/// values is above naught all along: a cubic span keeps between its ends.
+///
+/// Round sharp corners a face sweeps run by run as
+/// [`make_pipe_shell_with`] does, each corner turned as `corners` asks:
+/// each smooth run is swept under the laws over its share of the spine's
+/// length, from the section it starts with (a run the laws neither scale
+/// nor turn is the prism or pipe shell of that section), and the runs
+/// meet at each corner on the section the laws give there.
+///
+/// # Errors
+///
+/// As [`make_pipe_shell_evolving`] and, round sharp corners, as
+/// [`make_pipe_shell_with`]; and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// law's shares do not rise strictly to one, a value is not finite, or a
+/// scale law through values reaches naught or below.
+#[allow(clippy::too_many_arguments)]
+pub fn make_pipe_shell_laws(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    law: &PipeLaw<'_>,
+    laws: &PipeLaws,
+    corners: PipeCorners,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if let SpineLaw::Linear(scale) = laws.scale
+        && (!scale.is_finite() || scale < 0.0)
+    {
         ogeom_bail!(
             Construction,
-            "a section scales to {} at the spine's end; a scale is naught or more",
-            evolution.scale
+            "a section scales to {scale} at the spine's end; a scale is naught or more"
         );
     }
-    if !evolution.twist.is_finite() {
+    if let SpineLaw::Linear(twist) = laws.twist
+        && !twist.is_finite()
+    {
+        ogeom_bail!(Construction, "a twist of {twist} is not an angle");
+    }
+    let evolution = Evolution {
+        scale: Ramp::of(&laws.scale, 1.0, "scale")?,
+        twist: Ramp::of(&laws.twist, 0.0, "twist")?,
+    };
+    if matches!(laws.scale, SpineLaw::Through(_)) && evolution.scale.least() <= 0.0 {
         ogeom_bail!(
             Construction,
-            "a twist of {} is not an angle",
-            evolution.twist
+            "a scale law through values stays above naught; a section shrinks to a point \
+             only linearly"
         );
     }
-    if evolution.scale == 1.0 && evolution.twist == 0.0 {
-        return make_pipe_shell_with(
-            model,
-            profile,
-            spine,
-            law,
-            PipeCorners::Mitre,
-            tolerance,
-            tol,
-        );
+    if evolution.is_still() {
+        return make_pipe_shell_with(model, profile, spine, law, corners, tolerance, tol);
     }
     let rings: Vec<Shape> = match model.kind_of(profile)? {
         ShapeType::Face => explore(model, profile, Filter::OfType(ShapeType::Wire))?,
@@ -180,7 +556,7 @@ pub fn make_pipe_shell_evolving(
     };
     let stations = shell_stations(model, spine, tol)?;
     profile_square_at_start(model, &plane, spine, stations[0].at, tol)?;
-    if rings.len() > 1 && evolution.scale == 0.0 {
+    if rings.len() > 1 && evolution.scale.end() == 0.0 {
         ogeom_bail!(
             Construction,
             "a profile with holes cannot close on a point; its holes would meet"
@@ -191,7 +567,7 @@ pub fn make_pipe_shell_evolving(
         && !closes_on_a_corner(model, spine, tol)?
         && !matches!(law, PipeLaw::Fixed)
     {
-        if evolution.scale != 1.0 {
+        if !evolution.scale.is_level(1.0) {
             ogeom_bail!(
                 Construction,
                 "a section scaling round a closed spine would not come home to itself; \
@@ -200,14 +576,53 @@ pub fn make_pipe_shell_evolving(
         }
         // Whole turns bring the section home to itself; a part of a turn
         // only where its symmetry does, which the closed shell checks.
-        let turns = evolution.twist / core::f64::consts::TAU;
+        let end = evolution.twist.end();
+        let turns = end / core::f64::consts::TAU;
         let twist = if (turns - turns.round()).abs() * core::f64::consts::TAU > tol.angular() {
             evolution.twist
         } else {
-            turns.round() * core::f64::consts::TAU
+            evolution
+                .twist
+                .ending_at(turns.round() * core::f64::consts::TAU)?
         };
-        return closed_law_pipe(model, profile, spine, law, twist, tolerance, tol);
+        return closed_law_pipe(model, profile, spine, law, &twist, tolerance, tol);
     }
+    if !matches!(law, PipeLaw::Fixed)
+        && (has_sharp_corner(model, spine, tol)? || closes_on_a_corner(model, spine, tol)?)
+    {
+        return law_cornered(
+            model,
+            profile,
+            spine,
+            law,
+            corners,
+            Some(&evolution),
+            tolerance,
+            tol,
+        );
+    }
+    let shape = evolved_run(model, profile, spine, law, &evolution, tolerance, tol)?;
+    let mut history = History::new();
+    history.generate(spine, shape.clone());
+    history.generate(profile, shape.clone());
+    Ok(Built::new(shape, history))
+}
+
+/// A planar profile swept along a spine with no sharp corner under the
+/// evolving laws: each loop its own solid, the holes' cut from the outer.
+pub(super) fn evolved_run(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    law: &PipeLaw<'_>,
+    evolution: &Evolution,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let rings: Vec<Shape> = match model.kind_of(profile)? {
+        ShapeType::Face => explore(model, profile, Filter::OfType(ShapeType::Wire))?,
+        _ => vec![profile.clone()],
+    };
     let mut solids = Vec::with_capacity(rings.len());
     for ring in &rings {
         solids.push(evolving_ring(
@@ -218,10 +633,7 @@ pub fn make_pipe_shell_evolving(
     for hole in &solids[1..] {
         shape = ogeom_bool::cut(model, &shape, hole, tol)?.shape;
     }
-    let mut history = History::new();
-    history.generate(spine, shape.clone());
-    history.generate(profile, shape.clone());
-    Ok(Built::new(shape, history))
+    Ok(shape)
 }
 
 /// One closed ring of the profile swept under the evolving law, as a solid.
@@ -230,7 +642,7 @@ fn evolving_ring(
     ring: &Shape,
     spine: &Shape,
     law: &PipeLaw<'_>,
-    evolution: PipeEvolution,
+    evolution: &Evolution,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
@@ -238,22 +650,23 @@ fn evolving_ring(
         law,
         PipeLaw::RotationMinimizing | PipeLaw::Binormal(_) | PipeLaw::Fixed
     );
-    if evolution.twist == 0.0
+    let scale = evolution.scale.end();
+    if evolution.twist.is_level(0.0)
+        && evolution.scale.is_linear()
         && level
         && let Some(legs) = straight_legs(model, spine, tol)?
         && legs.len() == 1
     {
         let (start, run) = legs[0];
-        let end = if evolution.scale == 0.0 {
+        let end = if scale == 0.0 {
             model.add_vertex(VertexData::new(start + run))
         } else {
-            let motion =
-                Transform::translation(run) * Transform::scaling(start, evolution.scale, tol)?;
+            let motion = Transform::translation(run) * Transform::scaling(start, scale, tol)?;
             moved_ring(model, ring, &motion, tol)?
         };
         // A polygon or a circle lofts to its image as planes or a cone;
         // any other ring as the ruled walls between matched edges.
-        let shape = if evolution.scale == 0.0 || analytic_ring(model, ring, start, tol)? {
+        let shape = if scale == 0.0 || analytic_ring(model, ring, start, tol)? {
             make_loft(model, ring, &end, tol)?.shape
         } else {
             crate::loft::make_loft_solid(model, &[ring.clone(), end], &[], true, tol)?.shape
@@ -266,7 +679,7 @@ fn evolving_ring(
             "a fixed section scales or twists only down one straight edge, unturned"
         );
     }
-    if evolution.scale == 0.0 {
+    if scale == 0.0 {
         ogeom_bail!(
             Construction,
             "a section shrinks to a point only down one straight edge, unturned"
@@ -285,7 +698,7 @@ fn evolving_ring(
     // its share by length.
     let turned = densified(model, spine, stations.clone(), law, tolerance, tol)?.len();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let twisted = (evolution.twist.abs() / super::MOST_TURN).ceil() as usize + 1;
+    let twisted = (evolution.twist.variation() / super::MOST_TURN).ceil() as usize + 1;
     let wanted = turned.max(twisted);
     let lengths = edge_lengths(model, spine, tol)?;
     let total: f64 = lengths.iter().sum();
@@ -313,23 +726,23 @@ fn evolving_ring(
 }
 
 /// A planar profile swept round a smooth closed spine under `law`, turned
-/// about the spine by `twist` (whole turns, or a part of one the section's
-/// symmetry closes) in proportion to the length
-/// run: stations as many as the law's turning or the twist asks, each edge
-/// its share by length, and the skin closed on itself.
+/// about the spine by the `twist` law of the length run (ending on whole
+/// turns, or a part of one the section's symmetry closes): stations as
+/// many as the law's turning or the twist asks, each edge its share by
+/// length, and the skin closed on itself.
 pub(super) fn closed_law_pipe(
     model: &mut Model,
     profile: &Shape,
     spine: &Shape,
     law: &PipeLaw<'_>,
-    twist: f64,
+    twist: &Ramp,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let stations = shell_stations(model, spine, tol)?;
     let turned = densified(model, spine, stations.clone(), law, tolerance, tol)?.len();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let twisted = (twist.abs() / super::MOST_TURN).ceil() as usize + 1;
+    let twisted = (twist.variation() / super::MOST_TURN).ceil() as usize + 1;
     let wanted = turned.max(twisted);
     let lengths = edge_lengths(model, spine, tol)?;
     let total: f64 = lengths.iter().sum();

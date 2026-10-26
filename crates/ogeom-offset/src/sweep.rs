@@ -28,7 +28,9 @@ use ogeom_topo::{EdgeData, EdgeRepr, Filter, Model, Shape, ShapeType, VertexData
 mod corners;
 mod evolving;
 
-pub use evolving::{PipeEvolution, make_pipe_shell_evolving};
+pub use evolving::{
+    PipeEvolution, PipeLaws, SpineLaw, make_pipe_shell_evolving, make_pipe_shell_laws,
+};
 
 /// Sweep a circular profile of `radius` along a spine edge.
 ///
@@ -5392,7 +5394,7 @@ pub fn make_pipe_shell_with(
     let classic = matches!(law, PipeLaw::RotationMinimizing | PipeLaw::Frenet);
     let sharp = has_sharp_corner(model, spine, tol)? || closes_on_a_corner(model, spine, tol)?;
     if sharp && (corners != PipeCorners::Mitre || !classic) {
-        return corners::law_cornered(model, profile, spine, law, corners, tolerance, tol);
+        return corners::law_cornered(model, profile, spine, law, corners, None, tolerance, tol);
     }
     if !classic && !sharp && spine_closes(model, spine, tol)? {
         // A law round a smooth closed spine whose frames are the
@@ -5400,7 +5402,9 @@ pub fn make_pipe_shell_with(
         if !corners::law_is_rotation_minimizing(model, spine, law, tolerance, tol)? {
             // Any other law's frames are its own, single-valued round the
             // spine: the skin closes on them.
-            let built = evolving::closed_law_pipe(model, profile, spine, law, 0.0, tolerance, tol)?;
+            let still = evolving::Ramp::level(0.0);
+            let built =
+                evolving::closed_law_pipe(model, profile, spine, law, &still, tolerance, tol)?;
             state_new_gaps(model, &[profile.clone(), spine.clone()], &built.shape, tol)?;
             return Ok(built);
         }
@@ -5895,7 +5899,7 @@ fn law_loft(
     spine: &Shape,
     stations: &[SpineStation],
     law: &PipeLaw<'_>,
-    evolution: Option<evolving::PipeEvolution>,
+    evolution: Option<&evolving::Evolution>,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -6652,7 +6656,8 @@ fn pipe_shell_law(
         return law_loft(model, profile, spine, &stations, law, None, tolerance, tol);
     }
     if ring && kinks.is_empty() {
-        return closed_pipe_shell(model, profile, spine, stations, law, 0.0, tolerance, tol);
+        let still = evolving::Ramp::level(0.0);
+        return closed_pipe_shell(model, profile, spine, stations, law, &still, tolerance, tol);
     }
     // The cornered ring closes at its own wrap. Seamed on a corner, the
     // wrap is one more mitre; seamed mid-leg, the wrap's "mitre" plane is
@@ -7937,8 +7942,8 @@ pub(crate) fn spine_curve_of(
 /// The auxiliary and binormal laws set a frame at each point of the spine,
 /// single-valued round it, so theirs need no reconciling: the law gives
 /// the normal at each station and between them, and the skin is held to
-/// `tolerance` against it. A `twist` turns the section about the spine in
-/// proportion to the length run: whole turns, or a part of one the
+/// `tolerance` against it. A `twist` law of the length run turns the
+/// section about the spine, ending on whole turns, or a part of one the
 /// section's symmetry brings home onto itself (see `turned_loop_shell`),
 /// refused by name otherwise.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -7948,7 +7953,7 @@ fn closed_pipe_shell(
     spine: &Shape,
     mut stations: Vec<SpineStation>,
     law: &PipeLaw<'_>,
-    twist: f64,
+    twist: &evolving::Ramp,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -8058,7 +8063,7 @@ fn closed_pipe_shell(
         normals: &round_normals,
     };
     let guide = guide_curves(model, law)?;
-    let lengths = if twist == 0.0 {
+    let lengths = if twist.is_level(0.0) {
         None
     } else {
         Some(evolving::SpineLengths::of(&walk.curves, tol)?)
@@ -8067,7 +8072,8 @@ fn closed_pipe_shell(
     // A twist of part of a turn brings the section home turned onto
     // itself only where its symmetry closes it; each loop's shell sees to
     // that, and the section reads the whole twist at home.
-    let turned = (twist - (twist / core::f64::consts::TAU).round() * core::f64::consts::TAU).abs()
+    let end = twist.end();
+    let turned = (end - (end / core::f64::consts::TAU).round() * core::f64::consts::TAU).abs()
         > tol.angular();
     // The share of the length run to `s`, which the twist turns the
     // section in proportion to.
@@ -8113,7 +8119,7 @@ fn closed_pipe_shell(
             (p, t, x)
         };
         let (a, b) = if lengths.is_some() {
-            let (sin, cos) = (twist * share(s)?).sin_cos();
+            let (sin, cos) = twist.at(share(s)?).sin_cos();
             (a * cos - b * sin, a * sin + b * cos)
         } else {
             (a, b)

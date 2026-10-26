@@ -73,6 +73,32 @@ bump may break the API and a patch bump may not.
     edge tolerances of 1e-7 and stay, as the tolerances say. DoomCube
     and Voron: no solid changed (0 tails, 0 wireless faces), and the 24
     open sheets' free edges chain into 72 closed contours, none open.
+- **Pipe shells: scale and twist laws beyond linear, and evolving
+  sections round sharp corners.** (#394)
+  - `make_pipe_shell_laws` takes a `PipeLaws`: a `SpineLaw` for the
+    scale and one for the twist, each `Linear` to an end value or
+    `Through` given `(share, value)` points along the monotone cubic
+    Hermite interpolant, which keeps between neighbouring values. A scale
+    law through values must stay above naught; shares must rise to one.
+    Linear laws build as `make_pipe_shell_evolving` does, which now
+    delegates to it.
+  - Round a smooth closed spine the twist may follow any law ending on a
+    whole turn, or on a part turn the section's symmetry closes.
+  - Round sharp corners an evolving face, which was refused, now sweeps
+    run by run with mitred, extended or round corners: each run under the
+    laws over its share of the length, from the section it starts with.
+    Where the laws stand still at a run's ends, that stretch is the exact
+    prism or pipe shell of the section.
+  - Measured against closed forms: a disc scaled 1, 2, 1 down a line
+    lands within 1.6e-3 of `π r² h · 274/105`; a square twisted out to
+    0.3 rad and back holds the prism's volume to 2.3e-4 and reaches
+    `cos 0.3 + sin 0.3` to 6.5e-5; a square scaled linearly to a half
+    round an L lands to 1e-9 of its mitred and rounded closed forms; a
+    square twisted 0.3 rad before an L's corner lands within the skin's
+    bound of its mitred and rounded closed forms.
+  - A skinned run whose corner pieces agree only to the skin's tolerance
+    (a section with a corner on the round corner's axis) is beyond the
+    boolean and stays refused.
 - **`fix_shape` makes the edge a wire lacks where a straight one provably
   fills the gap.** (#397)
   - A gap between two edges of a wire wider than the trim cap, within

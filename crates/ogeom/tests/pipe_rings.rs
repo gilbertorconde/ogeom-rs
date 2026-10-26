@@ -16,7 +16,8 @@ use ogeom::geom::{CircleCurve, Curve3d as _, LineCurve, PlaneSurface};
 use ogeom::math::{Circle, Direction, Frame, Plane, Point, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::offset::{
-    PipeCorners, PipeEvolution, PipeLaw, make_pipe_shell_evolving, make_pipe_shell_with,
+    PipeCorners, PipeEvolution, PipeLaw, PipeLaws, SpineLaw, make_pipe_shell_evolving,
+    make_pipe_shell_laws, make_pipe_shell_with,
 };
 use ogeom::topo::{Model, Shape};
 
@@ -461,5 +462,51 @@ fn a_circle_twisted_part_of_a_turn_round_a_circle_is_the_torus() {
     assert!(
         (v - want).abs() < bound,
         "{v} against {want}, bound {bound}"
+    );
+}
+
+/// A square twisted round a circle by a law that lingers, a fifth of a
+/// radian by half way round and a quarter turn by home: the quarter turn
+/// brings it home on itself as a linear one does. It passes an eighth of a
+/// turn on the way, its corner up at the half diagonal `a √2` in `z`, and
+/// Pappus gives `2 π big · 4 a²` however it turns.
+#[test]
+fn a_square_twisted_round_a_circle_by_a_law_closes_on_its_symmetry() {
+    let (big, a, lingered) = (10.0, 1.0, 0.2);
+    let mut model = Model::new();
+    let spine = ring(&mut model, big);
+    let profile = square(&mut model, big, a, None);
+    let laws = PipeLaws {
+        scale: SpineLaw::Linear(1.0),
+        twist: SpineLaw::Through(vec![(0.5, lingered), (1.0, PI / 2.0)]),
+    };
+    let pipe = make_pipe_shell_laws(
+        &mut model,
+        &profile,
+        &spine,
+        &PipeLaw::RotationMinimizing,
+        &laws,
+        PipeCorners::Mitre,
+        SKIN,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let found = check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let v = measure(&model, &pipe);
+    let want = 2.0 * PI * big * 4.0 * a * a;
+    let reach = a * 2.0_f64.sqrt();
+    let length = 2.0 * PI * big;
+    let path = length + 2.0 * PI * reach + PI / 2.0 * reach;
+    let bound = skin_bound(8.0 * a, path);
+    assert!(
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
+    );
+    let top = highest(&model, &pipe);
+    assert!(
+        (top - reach).abs() < SKIN + CHORD,
+        "reaches z {top}, not {reach}"
     );
 }
