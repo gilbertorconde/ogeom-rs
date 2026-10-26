@@ -284,6 +284,12 @@ pub fn sew(model: &mut Model, faces: &[Shape], tol: Tolerances) -> OgeomResult<S
 /// along two or more shorter edges of other faces is first split where
 /// their vertices meet it within `gap`, so each piece has a twin.
 ///
+/// The widening is done in place on the given faces' own edges and
+/// vertices; only what they share with other shapes is copied first. The
+/// faces given therefore carry the wider tolerances afterwards, and a later
+/// [`sew`] of the same faces joins what this one joined. To keep the faces
+/// as they were, sew a copy of them.
+///
 /// # Errors
 ///
 /// As [`sew`], and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
