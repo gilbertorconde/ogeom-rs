@@ -57,21 +57,24 @@ fn polynomial(
         .into()
 }
 
-fn ground() -> SurfaceGeometry {
+/// The plane `z = 0`, charted over a square of half side `half`.
+fn ground(half: f64) -> SurfaceGeometry {
     PlaneSurface::over(
         Plane::through(Point::ORIGIN, Direction::Z),
-        (-2.0, 2.0),
-        (-2.0, 2.0),
+        (-half, half),
+        (-half, half),
     )
     .unwrap()
     .into()
 }
 
 /// The exact section as polylines dense enough to stand within a chord of
-/// it, and the points it may end at.
+/// it, the points it may end at, and how far off one a section's end may
+/// stand: where the solve for a touch lands.
 struct Truth {
     curves: Vec<Vec<Point>>,
     ends: Vec<Point>,
+    settle: f64,
 }
 
 /// Samples of the segment from `p` to `q`.
@@ -178,7 +181,7 @@ fn score(
             let at_end = truth
                 .ends
                 .iter()
-                .any(|e| e.distance(s.points[k]) <= T.confusion());
+                .any(|e| e.distance(s.points[k]) <= truth.settle);
             if !at_end && !on_edge(a, s.on_a[k]) && !on_edge(b, s.on_b[k]) {
                 free += 1;
             }
@@ -227,22 +230,36 @@ fn check(
 /// `t`, a section is placed only to within the confusion distance over `t`:
 /// near a crossing `t` is `4K·s⁴·r` at `r` from it, about 1e-4 a few chords
 /// out at `K = 10`, `s = 0.1`, and between the crossings at `s = 0.03` it
-/// stays under `K·s⁵`.
+/// stays under `K·s⁵`. At `K = 1`, `s = 0.1`, with the plane charted wide,
+/// a branch strides past a crossing 1e-4 off it, where the patch stays
+/// within the confusion distance of the plane for 0.03 round it: it is cut
+/// there, not run on 0.003 along the stretch beyond.
 #[test]
 fn a_grid_of_lines_crossing_at_nine_touches() {
-    for (s, k, chord, within, placed) in [
-        (0.3, 100.0, 1e-4, 1e-3, true),
-        (0.1, 100.0, 1e-4, 1e-3, true),
-        (0.1, 100.0, 1e-7, 1e-6, true),
-        (0.1, 10.0, 1e-6, 2e-4, true),
-        (0.03, 100.0, 1e-7, 1e-4, true),
-        (0.03, 1.0, 1e-7, 1e-4, false),
+    for (s, k, chord, within, placed, half, settled) in [
+        (0.3, 100.0, 1e-4, 1e-3, true, 2.0, false),
+        (0.1, 100.0, 1e-4, 1e-3, true, 2.0, false),
+        (0.1, 100.0, 1e-7, 1e-6, true, 2.0, false),
+        (0.1, 10.0, 1e-6, 2e-4, true, 2.0, false),
+        (0.1, 1.0, 1e-6, 1e-3, true, 50.0, true),
+        (0.03, 100.0, 1e-7, 1e-4, true, 2.0, false),
+        (0.03, 1.0, 1e-7, 1e-4, false, 2.0, false),
     ] {
-        grid_of_lines(s, k, chord, within, placed);
+        grid_of_lines(s, k, chord, within, (placed, settled), &ground(half));
     }
 }
 
-fn grid_of_lines(s: f64, k: f64, chord: f64, within: f64, placed: bool) {
+/// `placed` asks that each section lie within `within` of the exact one,
+/// not only cover it; `settled` lets a section end where the solve for a
+/// touch lands rather than within the confusion distance of the touch.
+fn grid_of_lines(
+    s: f64,
+    k: f64,
+    chord: f64,
+    within: f64,
+    (placed, settled): (bool, bool),
+    plane: &SurfaceGeometry,
+) {
     let ((x0, x1), (y0, y1)) = ((-0.5, 0.6), (-0.45, 0.55));
     let s2 = s * s;
     let patch = polynomial(
@@ -272,23 +289,37 @@ fn grid_of_lines(s: f64, k: f64, chord: f64, within: f64, placed: bool) {
             ends.push(Point::new(c, d, 0.0));
         }
     }
-    let truth = Truth { curves, ends };
+    // A touch is solved to a residual of a thousandth of the confusion
+    // distance, so it lands within `√(2r / |λ|)` of the exact one, `λ` the
+    // least eigenvalue of the patch's Hessian there, `±K·s⁴` at the middle
+    // touch and larger at the others.
+    let settle = if settled {
+        (2e-3 * T.confusion() / (k * s2 * s2))
+            .sqrt()
+            .max(T.confusion())
+    } else {
+        T.confusion()
+    };
+    let truth = Truth {
+        curves,
+        ends,
+        settle,
+    };
     let name = format!("line grid s={s} K={k} chord={chord:e}");
-    let plane = ground();
     if !placed {
         let marching = Marching {
             chord,
             ..Marching::default()
         };
-        let found = branches(&patch, &plane, marching, T).unwrap();
-        let (_, missed, _) = score(&found, &truth, (&patch, &plane), within);
+        let found = branches(&patch, plane, marching, T).unwrap();
+        let (_, missed, _) = score(&found, &truth, (&patch, plane), within);
         assert!(
             missed <= within,
             "{name}: the exact section is missed by {missed:e}"
         );
         return;
     }
-    let found = check(&name, (&patch, &plane), chord, &truth, (within, 0));
+    let found = check(&name, (&patch, plane), chord, &truth, (within, 0));
     let traced: f64 = found
         .iter()
         .flat_map(|f| f.points.windows(2).map(|w| w[0].distance(w[1])))
@@ -358,6 +389,7 @@ fn saddle_along_three_lines(d: f64, (x0, x1): (f64, f64), (y0, y1): (f64, f64), 
             segment(Point::new(x0, d, 0.0), Point::new(x1, d, 0.0), 4000),
         ],
         ends: vec![Point::ORIGIN, Point::new(0.0, d, 0.0)],
+        settle: T.confusion(),
     };
     let name = format!("saddle d={d} chord={chord:e}");
     let found = check(&name, (&patch, &plane), chord, &truth, (10.0 * chord, 0));
@@ -401,10 +433,11 @@ fn two_axes_and_a_circle_beside_them() {
             circle,
         ],
         ends: vec![Point::ORIGIN],
+        settle: T.confusion(),
     };
     check(
         "axes and circle",
-        (&patch, &ground()),
+        (&patch, &ground(2.0)),
         chord,
         &truth,
         (10.0 * chord, 0),
@@ -435,6 +468,7 @@ fn equal_cylinders_crossed_square() {
     let truth = Truth {
         curves: vec![ellipse(1.0), ellipse(-1.0)],
         ends: vec![Point::new(0.0, r, 0.0), Point::new(0.0, -r, 0.0)],
+        settle: T.confusion(),
     };
     check(
         "crossed cylinders",
@@ -473,6 +507,7 @@ fn viviani(r: f64, chord: f64) {
     let truth = Truth {
         curves: vec![curve],
         ends: vec![Point::new(2.0 * r, 0.0, 0.0)],
+        settle: T.confusion(),
     };
     // Two walks stall where they meet halfway round a lobe, each end
     // beside the other.

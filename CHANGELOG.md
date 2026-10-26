@@ -529,6 +529,23 @@ bump may break the API and a patch bump may not.
   - A composite curve's matrix was ignored. Per section 3.2.3, it carries
     its physically dependent pieces on after their own matrices.
   - Files whose instances and composites have no matrix read as before.
+- **A marched branch striding past a touch it passes inside the
+  confusion band is cut there.** A branch was cut at a touch only where a
+  step passed within the touch's radius, sixty chords. Where the surfaces
+  stand within the confusion distance `ε` of each other for some way round
+  a touch, the walk places its samples across the section only that
+  loosely, and a straight stride along one arm can pass the touch further
+  off. The branch then ran on past the touch, alongside the arc beyond it.
+  A step now passes over a touch it passes within `√(2ε / k)` of it, `k`
+  the largest bend there: that is how far a straight chord to the touch
+  stays on both surfaces. The reach is held to half the way to the nearest
+  other touch. On
+  `z = (x³ − s²x)(y³ − s²y)` with `s = 0.1` and a chord of 1e-6, a branch
+  down `x = −0.1` passed the touch at (−0.1, 0) 1e-4 off. It ran on 0.003
+  beyond it, and one along `x = 0` ran 0.0026 past (0, 0.1). Both now end
+  on their touches. The section traced twice goes from 5.6e-3 to 0, and no
+  swept case gets worse (#356).
+
 - **A stretch of section marched twice where the surfaces cross shallowly
   comes back once.** Two tracings of one stretch were told apart by the
   chord alone. But a marched sample is held to both surfaces only within

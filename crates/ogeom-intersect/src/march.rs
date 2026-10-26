@@ -839,6 +839,16 @@ fn rims(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
 /// *number* of branches returned meaningful, and it is the number a boolean
 /// will act on.
 ///
+/// Where the surfaces stand within the confusion distance `ε` of each other
+/// across a band rather than along a curve, the section is that band to
+/// tolerance. Two curves of it in one band, with nowhere between them that
+/// the surfaces part by more than `ε`, may come back as one: each sample
+/// lies on both surfaces within `ε`, and each point of the curve left out
+/// joins one returned by a straight way that does too. A branch is placed
+/// across the section only to within `ε` over the sine of the angle the
+/// surfaces cross at, so where they cross shallowly its samples may zigzag
+/// within that band and its length exceed the curve's.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the settings are
@@ -3983,6 +3993,13 @@ struct Cut {
 /// A branch with each touch a step of it passes over, both ends of the
 /// step clear of the touch's radius, put in as a sample where the step
 /// passes it; with each sample, the touch it was put in for.
+///
+/// A step passes over a touch it passes within the touch's radius, or
+/// within its `snap`, held to its `around`: the straight way from the
+/// step to a touch that near lies on both surfaces within the confusion
+/// distance, so the walk, which places a sample across the section only
+/// to within that distance over the sine of the crossing angle, may stride
+/// past the touch that far off it.
 fn with_touches_on_steps(
     branch: Traced,
     touches: &[Touch],
@@ -4006,10 +4023,13 @@ fn with_touches_on_steps(
                 .iter()
                 .enumerate()
                 .filter(|(_, t)| {
+                    let over = (t.point - p).dot(step);
                     counts(t)
                         && t.point.distance(p) > t.radius
                         && t.point.distance(q) > t.radius
-                        && distance_to_segment(t.point, p, q) <= t.radius
+                        && over > 0.0
+                        && over < length2
+                        && distance_to_segment(t.point, p, q) <= t.radius.max(t.snap.min(t.around))
                 })
                 .map(|(k, t)| ((t.point - p).dot(step) / length2.max(f64::MIN_POSITIVE), k))
                 .collect();
