@@ -2388,20 +2388,56 @@ fn measured_overlaps(
         // does. One that ends inside both is two curves converging and
         // parting (lines meeting at a vertex at a tiny angle), near each
         // other there only by the measuring width, and is no overlap.
-        if exact(curve) && exact(&e.curve) {
-            let ends_there = |t: f64, own_end: bool| -> OgeomResult<bool> {
-                if own_end {
+        let ends_there = |t: f64, own_end: bool| -> OgeomResult<bool> {
+            if own_end {
+                return Ok(true);
+            }
+            let p = curve.point_at(t, tol)?;
+            for end in [e.crange.0, e.crange.1] {
+                if e.curve.point_at(end, tol)?.distance(p) <= width * 2.0 {
                     return Ok(true);
                 }
-                let p = curve.point_at(t, tol)?;
-                for end in [e.crange.0, e.crange.1] {
-                    if e.curve.point_at(end, tol)?.distance(p) <= width * 2.0 {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+            }
+            Ok(false)
+        };
+        let (ends_lo, ends_hi) = (ends_there(lo, start == 0)?, ends_there(hi, end == SAMPLES)?);
+        if exact(curve) && exact(&e.curve) {
+            if !(ends_lo && ends_hi) {
+                continue;
+            }
+        } else if !(ends_lo && ends_hi) {
+            // A fitted curve may come in along an edge tangentially and
+            // leave the loose width inside both, its distance growing as the
+            // square of the way from where they meet or slower. One that
+            // leaves it growing in proportion, the two crossing at an angle
+            // (a band's section across a drum, crossing the drum's own edge
+            // at a shallow one), is near it only by the width. Growing as
+            // the k-th power from the meeting, the distance halfway out
+            // stands at 2^-k of the distance at the end: past 2^-3/2, half
+            // way between the crossing's 1/2 and the tangent parting's 1/4,
+            // the stretch is a crossing and no overlap.
+            let off = |t: f64| -> OgeomResult<f64> {
+                distance_to_edge_curve(&e.curve, e.crange, curve.point_at(t, tol)?, tol)
             };
-            if !(ends_there(lo, start == 0)? && ends_there(hi, end == SAMPLES)?) {
+            let mut meet = (lo, off(lo)?);
+            for k in 1..=SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let t = lo + (hi - lo) * (k as f64) / (SAMPLES as f64);
+                let d = off(t)?;
+                if d < meet.1 {
+                    meet = (t, d);
+                }
+            }
+            let mut crossing = false;
+            for (t, ends) in [(lo, ends_lo), (hi, ends_hi)] {
+                if ends {
+                    continue;
+                }
+                let rise = off(t)? - meet.1;
+                let half = off(f64::midpoint(meet.0, t))? - meet.1;
+                crossing |= rise > 0.0 && half >= rise * core::f64::consts::FRAC_1_SQRT_2 / 2.0;
+            }
+            if crossing {
                 continue;
             }
         }
@@ -13512,8 +13548,10 @@ fn sampled_relation(
     // The boundary's samples, each on its face's exact surface: the face
     // mesh's vertices, and its triangles' middles taken in the chart and
     // lifted, since a middle taken in space stands off a curved face by the
-    // mesh's own sag.
-    let samples = |shape: &Shape| -> OgeomResult<Vec<Point>> {
+    // mesh's own sag. A triangle along a trim bending into the face reaches
+    // past it by its chord's sag, and so may its middle: a middle is kept
+    // only where it reads inside the trim drawn at `fine`.
+    let samples = |shape: &Shape, fine: f64| -> OgeomResult<Vec<Point>> {
         let mut out = Vec::new();
         for face in explore_unique(model, shape, ShapeType::Face)? {
             let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
@@ -13529,10 +13567,21 @@ fn sampled_relation(
             if mesh.parameters.len() != mesh.positions.len() {
                 continue;
             }
+            let trim = ogeom_algo::classify::FaceTrim::of(
+                model,
+                &face,
+                ogeom_mesh::Deflection {
+                    chord: fine,
+                    ..ogeom_mesh::Deflection::default()
+                },
+                tol,
+            )?;
             for t in &mesh.triangles {
                 let [p, q, r] = t.map(|i| mesh.parameters[i as usize]);
                 let (u, v) = ((p.0 + q.0 + r.0) / 3.0, (p.1 + q.1 + r.1) / 3.0);
-                out.push(placement.apply(surface.point_at(u, v, tol)?));
+                if trim.holds(model, (u, v), 0.0, tol)? == Containment::In {
+                    out.push(placement.apply(surface.point_at(u, v, tol)?));
+                }
             }
         }
         Ok(out)
@@ -13587,7 +13636,7 @@ fn sampled_relation(
         ogeom_algo::SolidBoundary::of(model, a, band, tol)?,
         ogeom_algo::SolidBoundary::of(model, b, band, tol)?,
     );
-    let (on_a, on_b) = (samples(a)?, samples(b)?);
+    let (on_a, on_b) = (samples(a, band)?, samples(b, band)?);
     if relation == Relation::Apart {
         let clear = all_read(&on_a, &of_b, &|c| c != Containment::In)?
             && all_read(&on_b, &of_a, &|c| c != Containment::In)?;

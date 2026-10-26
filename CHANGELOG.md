@@ -675,6 +675,38 @@ bump may break the API and a patch bump may not.
     surfaces is joined straight, as the join's own fallback already took
     it, so a stretch between two touches settled off their exact
     crossings by their own tolerance is still joined.
+- **A drum's rim meets a wall drafted out from under the block, and a
+  bore's rim meets a drafted chord.** (#342)
+  - Past a drum's rim cap the band the block's crease carried on stood off
+    the drum where the block's wall leans out from under it, and what
+    stands there lies above both bands. Taking it needs the rim's band
+    widened past the drum, a widening on the drum's own cylinder, which
+    the boolean refused; the request fell back to capped bands. The rim's
+    torus band is now widened by what stands off the drum over its part,
+    and the open corner is what stands off the drum past the block's wall.
+    Within a box round the corner, r = 0.5, wall at -0.1, drum of radius 3:
+    0.131918 against 0.138465 mm³ with the block's crease at `y = 1`, and
+    0.124301 against 0.128202 at `y = 2`; both orders now take 0.138463
+    and 0.128200.
+  - A bore, the material outside the cylinder, took no junction. Its open
+    corner bends away from the tangent plane into the material, so it is
+    cut by the bore's own cylinder. A disc of radius 2.5 up to a chord at
+    0.5 drafted by 0.1: 0.117063 against 0.124692 mm³; both orders now
+    take 0.124693. A chord wall that overhangs still meets as before.
+  - In the boolean, a fitted curve near an edge was read as running along
+    it wherever it stayed within the loose width fitted curves are
+    measured at, even where it crossed the edge at a shallow angle: a
+    band's section across a drum, crossing the drum's edge at 0.04 rad, ran
+    along it for a few microns and left the strand after it unattached,
+    and the kept pieces did not close. A stretch of a fitted curve that
+    ends inside both curves, its distance from the edge growing there in
+    proportion to the way from where they meet, is now no overlap; one
+    parting tangentially still is.
+  - In the boolean's check that an empty cut is right, a face's triangle
+    middles lifted from its chart were read as points of its boundary even
+    where a trim bending into the face put them off it, and the cut of a
+    solid lying wholly in the tool was refused. A middle is now sampled
+    only where it lies inside its face's trim.
 
 - **A drum's rim meets a leaning straight crease, and a disc's pocket up
   to a chord meets at both corners.** (#342)

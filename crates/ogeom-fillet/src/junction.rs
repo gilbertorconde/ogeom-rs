@@ -44,15 +44,18 @@
 //! the two cuts take their union.
 //!
 //! One crease of a re-entrant crossed junction may turn about an axis along
-//! the shared host's normal, on a drum about that axis with the material
-//! within it, beside a straight one. Its band is a torus band whose
-//! section is the same at every turn, and before its cap what lies above
-//! it is its band or off the drum. Where the straight band carried on
-//! stands nowhere off the drum before that cap, the corner is that band's
-//! part from its cap to where its section stands wholly past the other's
-//! wall, intersected as above, and the rest of it joined back on. Elsewhere
-//! (a curved shared host, a curved crease whose sections differ otherwise)
-//! no junction is taken: the bands meet as they did without one.
+//! the shared host's normal, on a drum about that axis, beside a straight
+//! one, the material within the drum (a boss) or outside it (a bore). Its
+//! band is a torus band whose section is the same at every turn, and
+//! before its cap what lies above it is its band or what stands off the
+//! drum. The corner is that band's part from its cap to where its section
+//! stands wholly past the other's wall, widened by what stands off the
+//! drum there and intersected as above, less the open corner off the drum
+//! past the other's wall; the rest of the band is joined back on. Where
+//! the straight band carried on stands off the drum before the cap beyond
+//! that part, no junction is taken, nor elsewhere (a curved shared host, a
+//! curved crease whose sections differ otherwise): the bands meet as they
+//! did without one.
 
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::Curve3d as _;
@@ -87,10 +90,24 @@ pub(crate) struct Junction {
     pub sides: [Vector; 2],
     /// Of a crossed re-entrant junction whose one crease is a circle about
     /// an axis along `top`, on the cylinder through it about that axis, and
-    /// whose other is straight: the circle's slot, its centre and its
-    /// radius. That band is a torus band, its section the same at every
-    /// turn about the axis.
-    pub turned: Option<(usize, Point, f64)>,
+    /// whose other is straight: that band, a torus band, its section the
+    /// same at every turn about the axis.
+    pub turned: Option<Turned>,
+}
+
+/// The turned band of a crossed junction: its crease a circle about an
+/// axis along the shared host's normal, on the cylinder through it.
+#[derive(Clone, Copy)]
+pub(crate) struct Turned {
+    /// The band's slot in the junction.
+    pub slot: usize,
+    /// The circle's centre.
+    pub centre: Point,
+    /// The circle's radius, the cylinder's.
+    pub big: f64,
+    /// The material lies within the cylinder (a boss), not outside it (a
+    /// bore).
+    pub within: bool,
 }
 
 impl Junction {
@@ -372,17 +389,21 @@ fn junction(
                     let wall = if k == 0 { &wall_0 } else { &wall_1 };
                     let (other, _) = crate::support::edge_curve(model, &edges[1 - k], tol)?;
                     if matches!(other, ogeom_geom::Curve::Line(_)) {
-                        turned = turned_about(model, edge, wall, top, tol)?
-                            .map(|(centre, big)| (k, centre, big));
+                        turned = turned_about(model, edge, wall, top, tol)?.map(|(centre, big)| {
+                            // The wall's outward normal points off the axis
+                            // where the material lies within the cylinder.
+                            let from_axis = at - centre;
+                            let side = if k == 0 { side_0 } else { side_1 };
+                            Turned {
+                                slot: k,
+                                centre,
+                                big,
+                                within: side.dot(from_axis - top * from_axis.dot(top)) > 0.0,
+                            }
+                        });
                     }
                 }
-                // The material within the turned wall: a boss, not a bore.
-                let within = turned.is_some_and(|(k, centre, _): (usize, Point, f64)| {
-                    let from_axis = at - centre;
-                    let side = if k == 0 { side_0 } else { side_1 };
-                    side.dot(from_axis - top * from_axis.dot(top)) > 0.0
-                });
-                if !within {
+                if turned.is_none() {
                     return Ok(None);
                 }
             }
@@ -853,10 +874,14 @@ pub(crate) fn corner(
     // stands wholly past the other's wall; the rest stands as built.
     let mut parts = [wedges[0].clone(), wedges[1].clone()];
     let mut rest = None;
-    if let Some((slot, centre, _)) = junction.turned {
-        let (part, far, plane) = turned_split(model, wedges[slot], junction, slot, centre, tol)?;
+    let mut sector = None;
+    if let Some(turned) = junction.turned {
+        let slot = turned.slot;
+        let (part, far, plane, quadrant) =
+            turned_split(model, wedges[slot], junction, slot, turned.centre, tol)?;
         parts[slot] = part;
         rest = Some((slot, far, plane));
+        sector = Some(quadrant);
     }
     let wedges = [&parts[0], &parts[1]];
     let mut caps = Vec::with_capacity(2);
@@ -881,7 +906,7 @@ pub(crate) fn corner(
     // within the corners of its own guaranteed bound.
     let mut hulls: Vec<Vec<Point>> = Vec::with_capacity(2);
     for (slot, wedge) in wedges.iter().enumerate() {
-        if junction.turned.is_some_and(|(k, _, _)| k == slot) {
+        if junction.turned.is_some_and(|t| t.slot == slot) {
             for face in explore_unique(model, wedge, ShapeType::Face)? {
                 let surface = model
                     .node(&face)
@@ -981,16 +1006,44 @@ pub(crate) fn corner(
                 .collect(),
         );
     }
-    let mut carried = Vec::with_capacity(2);
+    let mut carried: [Option<Shape>; 2] = [None, None];
     let mut ahead = [0.0; 2];
     let mut spans = [0.0; 2];
-    for slot in 0..2 {
+    // A turned band first: past its cap its widening holds material past
+    // the other's wall's plane (between its wall's tangent plane and the
+    // cylinder, a bore's material), which the other band carried on must
+    // reach. What stands off the cylinder past the other's wall is the
+    // open corner, which the corner leaves.
+    let order = junction.turned.map_or([0, 1], |t| [t.slot, 1 - t.slot]);
+    for slot in order {
         let along = junction.outward[slot];
-        let others: Vec<Point> = hulls[1 - slot]
+        let mut others: Vec<Point> = hulls[1 - slot]
             .iter()
             .chain(&crossing[1 - slot])
             .copied()
             .collect();
+        if let Some(turned) = junction.turned.filter(|t| t.slot != slot)
+            && let Some(widened) = &carried[turned.slot]
+        {
+            let bounds = ogeom_algo::shape_bounds(model, widened, tol)?;
+            let size = bounds
+                .corners()
+                .iter()
+                .map(|p| p.distance(at))
+                .fold(0.0_f64, f64::max);
+            let past = half_space(model, (at, junction.sides[slot]), size, tol)?;
+            let beyond = half_space(model, (at, junction.outward[turned.slot]), size, tol)?;
+            let past = ogeom_bool::common(model, &past, &beyond, tol)?.shape;
+            let past = ogeom_bool::common(model, widened, &past, tol)?.shape;
+            let mut held = ogeom_bool::common(model, &past, solid, tol)?.shape;
+            if !explore_unique(model, &held, ShapeType::Face)?.is_empty() {
+                let off = off_turned_wall(model, junction, turned, size, tol)?;
+                held = ogeom_bool::cut(model, &held, &off, tol)?.shape;
+            }
+            if !explore_unique(model, &held, ShapeType::Face)?.is_empty() {
+                others.extend(ogeom_algo::shape_bounds(model, &held, tol)?.corners());
+            }
+        }
         let own = crossing[slot]
             .iter()
             .map(|p| (*p - at).dot(along))
@@ -1014,10 +1067,9 @@ pub(crate) fn corner(
             .fold(0.0_f64, f64::max)
             + reach[slot];
         spans[slot] = span;
-        // A turned band is carried on from its cap: before it, what the
-        // other band carried on holds lies within the turned wall
-        // ([`beside_turned`]), above the turned band only where in its part.
-        let turned = junction.turned.is_some_and(|(k, _, _)| k == slot);
+        // A turned band is carried on from its cap, and widened before it
+        // over its part below.
+        let turned = junction.turned.is_some_and(|t| t.slot == slot);
         let (wedge, cap) = if behind > near && !turned {
             let start = at - along * behind;
             let trimmed = crate::support::trimmed_wedge(
@@ -1037,7 +1089,7 @@ pub(crate) fn corner(
         } else {
             (wedges[slot].clone(), caps[slot].clone())
         };
-        carried.push(carried_widened(
+        carried[slot] = Some(carried_widened(
             model,
             &wedge,
             &cap,
@@ -1047,8 +1099,23 @@ pub(crate) fn corner(
             tol,
         )?);
     }
-    if let Some((slot, centre, big)) = junction.turned {
-        let other = 1 - slot;
+    let [Some(first_carried), Some(second_carried)] = carried else {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "a band of a crossed junction was not carried on"
+        );
+    };
+    let mut carried = [first_carried, second_carried];
+    // Before its cap, what lies above a turned band is the band or what
+    // stands off its wall, the cylinder: the band widened past its wall
+    // turns with it. Over its part that widening is what stands off the
+    // cylinder within the part's sector, under the shared host and before
+    // the cap; past the part's sector the straight band carried on must
+    // stand nowhere off the cylinder before the cap ([`beside_turned`]),
+    // so nothing there lies above both.
+    let size = ahead[0] + ahead[1] + spans[0] + spans[1];
+    if let (Some(turned), Some(sector)) = (junction.turned, &sector) {
+        let other = 1 - turned.slot;
         let along = junction.outward[other];
         let back = hulls[other]
             .iter()
@@ -1057,16 +1124,26 @@ pub(crate) fn corner(
             .fold(0.0_f64, f64::min);
         if !beside_turned(
             junction,
-            slot,
-            (centre, big),
+            turned,
             &sections[other].hull(),
             (back, ahead[other]),
+            sector,
             near,
         ) {
             ogeom_core::ogeom_bail!(
                 Construction,
-                "a straight band carried on stands off a turned wall before that band's cap"
+                "a straight band carried on stands off a turned wall past its part's sector"
             );
+        }
+        let off = off_turned_wall(model, junction, turned, size, tol)?;
+        let before = half_space(model, (at, -junction.outward[turned.slot]), size, tol)?;
+        let under = half_space(model, (at, -junction.top), size, tol)?;
+        let held = ogeom_bool::common(model, &sector.solid, &before, tol)?.shape;
+        let held = ogeom_bool::common(model, &held, &under, tol)?.shape;
+        let widening = ogeom_bool::common(model, &held, &off, tol)?.shape;
+        if !explore_unique(model, &widening, ShapeType::Face)?.is_empty() {
+            let slot = turned.slot;
+            carried[slot] = ogeom_bool::fuse(model, &carried[slot], &widening, tol)?.shape;
         }
     }
     // Taken in an order of the bands' own directions, not the order the
@@ -1081,39 +1158,33 @@ pub(crate) fn corner(
     // What stands past both walls' planes is the open corner: the material
     // lies behind one wall or the other there. The widenings, each reaching
     // past its own wall, meet in it, and are taken out of it, so neither
-    // need stop at the other's wall.
-    let size = ahead[0] + ahead[1] + spans[0] + spans[1];
+    // need stop at the other's wall. Beside a turned band it is what stands
+    // off the cylinder past the other's wall's plane: the cylinder bends
+    // off its tangent plane, in towards the material of a bore.
     let past_first = half_space(model, (at, junction.sides[0]), size, tol)?;
     let past_second = half_space(model, (at, junction.sides[1]), size, tol)?;
-    let open = ogeom_bool::common(model, &past_first, &past_second, tol)?.shape;
+    let open = match junction.turned {
+        Some(turned) => {
+            let off = off_turned_wall(model, junction, turned, size, tol)?;
+            let other = if turned.slot == 0 {
+                &past_second
+            } else {
+                &past_first
+            };
+            ogeom_bool::common(model, &off, other, tol)?.shape
+        }
+        None => ogeom_bool::common(model, &past_first, &past_second, tol)?.shape,
+    };
     let cleared = ogeom_bool::cut(model, &common.shape, &open, tol)?;
     let history = common.history.then(&cleared.history);
     let taken = cleared.shape;
     if explore_unique(model, &taken, ShapeType::Face)?.is_empty() {
         ogeom_core::ogeom_bail!(Construction, "two bands carried on take no corner");
     }
-    // Past its cap a turned band carried on along its end tangent stands
-    // between its wall's tangent plane and the cylinder there where the
-    // material lies within the cylinder, which bends in off that plane:
-    // past the other's wall too, that is the open corner, no material. The
-    // checks below ask of the corner less that sliver, what stands off the
-    // cylinder past the other wall taken out.
-    let (checked, sliver) = match junction.turned {
-        Some((slot, centre, big)) => {
-            let off = off_turned_wall(model, junction, (centre, big), slot, size, tol)?;
-            let other = if slot == 0 { &past_second } else { &past_first };
-            let open = ogeom_bool::common(model, &off, other, tol)?.shape;
-            (
-                ogeom_bool::cut(model, &common.shape, &open, tol)?.shape,
-                Some(open),
-            )
-        }
-        None => (taken.clone(), None),
-    };
     // The corner must lie in the material: nothing of it outside the solid
     // but what the two wedges themselves take there (a band run out past an
     // oblique end face at its far end).
-    let mut outside = ogeom_bool::cut(model, &checked, solid, tol)?;
+    let mut outside = ogeom_bool::cut(model, &taken, solid, tol)?;
     for wedge in wedges {
         if explore_unique(model, &outside.shape, ShapeType::Face)?.is_empty() {
             break;
@@ -1141,7 +1212,7 @@ pub(crate) fn corner(
     // Nor may it leave behind what lies above both bands for certain: each
     // band carried on, its wedge with it, where it stands past the other's
     // wall's plane. That is above the band, and past the other's wall above
-    // the other, so the corner must hold it all.
+    // the other, so the corner must hold it all but the open corner.
     for slot in 0..2 {
         let along = junction.outward[slot];
         let band = carried_to(
@@ -1159,11 +1230,9 @@ pub(crate) fn corner(
             tol,
         )?;
         let above = ogeom_bool::common(model, &band, &past, tol)?.shape;
-        let mut left = ogeom_bool::cut(model, &above, &checked, tol)?.shape;
-        if let Some(open) = &sliver
-            && !explore_unique(model, &left, ShapeType::Face)?.is_empty()
-        {
-            left = ogeom_bool::cut(model, &left, open, tol)?.shape;
+        let mut left = ogeom_bool::cut(model, &above, &taken, tol)?.shape;
+        if junction.turned.is_some() && !explore_unique(model, &left, ShapeType::Face)?.is_empty() {
+            left = ogeom_bool::cut(model, &left, &open, tol)?.shape;
         }
         if !explore_unique(model, &left, ShapeType::Face)?.is_empty() {
             ogeom_core::ogeom_bail!(
@@ -1198,13 +1267,12 @@ pub(crate) fn corner(
 }
 
 /// What of a cube of side `2 size` round the vertex of `junction` stands
-/// off the turned wall in `slot`, the cylinder about the axis through
-/// `centre` at radius `big` with the material within it.
+/// off its turned wall, the cylinder about the turned band's axis: outside
+/// it round a boss, within it in a bore.
 fn off_turned_wall(
     model: &mut Model,
     junction: &Junction,
-    (centre, big): (Point, f64),
-    slot: usize,
+    turned: Turned,
     size: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
@@ -1215,29 +1283,43 @@ fn off_turned_wall(
         Vector::new(0.0, 1.0, 0.0)
     };
     let across = seed - axis * seed.dot(axis);
-    let reach = size + (junction.at - centre).magnitude();
+    let reach = size + (junction.at - turned.centre).magnitude();
     let frame = ogeom_math::Frame::new(
-        centre - axis * reach,
+        turned.centre - axis * reach,
         ogeom_math::Direction::new(axis, tol)?,
         ogeom_math::Direction::new(across, tol)?,
         tol,
     )?;
-    let drum = ogeom_algo::make_cylinder(model, frame, big, reach * 2.0, tol)?.shape;
-    let normal = junction.sides[slot];
+    let drum = ogeom_algo::make_cylinder(model, frame, turned.big, reach * 2.0, tol)?.shape;
+    let normal = junction.sides[turned.slot];
     let cube = half_space(model, (junction.at - normal * size, normal), size, tol)?;
-    Ok(ogeom_bool::cut(model, &cube, &drum, tol)?.shape)
+    Ok(if turned.within {
+        ogeom_bool::cut(model, &cube, &drum, tol)?.shape
+    } else {
+        ogeom_bool::common(model, &cube, &drum, tol)?.shape
+    })
+}
+
+/// The quarter turn about a turned band's axis its part stands in: a box
+/// on the half-plane the part was cut in, as a solid, the foot of the axis
+/// there, and the unit normals, square to the axis, of the box's two faces
+/// through it, each into the box.
+pub(crate) struct Sector {
+    solid: Shape,
+    foot: Point,
+    faces: [Vector; 2],
 }
 
 /// A turned band's wedge cut in two: its part at the vertex, the rest, and
 /// the plane of the cut, as a point and a unit normal, with a point of the
-/// cut on it.
-type Split = (Shape, Shape, ((Point, Vector), Point));
+/// cut on it, and the quarter turn the part stands in.
+type Split = (Shape, Shape, ((Point, Vector), Point), Sector);
 
 /// The turned band's wedge in `slot` of `junction`, its crease a circle
 /// about the axis through `centre` along the shared host's normal, cut in
 /// two in a half-plane from the axis: the part from its cap at the vertex
-/// back to that half-plane, the rest, and the plane with a point of the
-/// cut on it.
+/// back to that half-plane, the rest, the plane with a point of the cut
+/// on it, and the quarter turn the part stands in.
 ///
 /// The band's section turned back about the axis lies within the hull of
 /// its hull points turned alike. The cut stands at twice the first turn,
@@ -1326,25 +1408,32 @@ fn turned_split(
     let rest = ogeom_bool::cut(model, wedge, &sector, tol)?.shape;
     let rest = one(model, &rest)?;
     let normal = up.cross(outward);
-    Ok((part, rest, ((foot, normal), turn(at, angle))))
+    let quadrant = Sector {
+        solid: sector,
+        foot,
+        faces: [outward, normal],
+    };
+    Ok((part, rest, ((foot, normal), turn(at, angle)), quadrant))
 }
 
-/// Whether the straight band of `junction`, beside the turned one in
-/// `slot` about the axis through `centre` at radius `big`, carried on
-/// along its crease from `lo` to `hi` past the vertex, its section's
+/// Whether the straight band of `junction`, beside its turned one, carried
+/// on along its crease from `lo` to `hi` past the vertex, its section's
 /// `hull` points across it, stands nowhere before the turned band's cap
-/// off the turned wall, within `held`.
+/// and outside the part's `sector` off the turned wall, within `held`.
 ///
 /// Seen along the axis the band lies within a strip, and before the cap
-/// lies a half-plane, less `held`: their meeting is a convex polygon. The
-/// turned wall's cylinder, the material within it, holds a convex polygon
-/// wholly where it holds its corners.
+/// lies a half-plane, less `held`. Outside the sector lies the union of two
+/// half-planes, each less `held`. Each meeting of the strip with the
+/// half-plane before the cap and one of those is a convex polygon. A
+/// boss's cylinder, the material within it, holds a convex polygon wholly
+/// where it holds its corners; a bore's, the material outside it, where the
+/// polygon's nearest point to the axis lies outside it.
 fn beside_turned(
     junction: &Junction,
-    slot: usize,
-    (centre, big): (Point, f64),
+    turned: Turned,
     hull: &[Point],
     (lo, hi): (f64, f64),
+    sector: &Sector,
     held: f64,
 ) -> bool {
     let axis = junction.top;
@@ -1353,6 +1442,7 @@ fn beside_turned(
         let m = v.magnitude();
         (m > held).then(|| v / m)
     };
+    let slot = turned.slot;
     let (Some(d), Some(t)) = (
         unit(flat(junction.outward[1 - slot])),
         unit(flat(junction.outward[slot])),
@@ -1365,26 +1455,75 @@ fn beside_turned(
         let w = (*q - at).dot(m);
         (a.min(w), b.max(w))
     });
-    // The strip's rectangle, clipped to the half-plane before the cap.
-    let corners = [(lo, w_lo), (hi, w_lo), (hi, w_hi), (lo, w_hi)];
-    let before = |(s, w): (f64, f64)| s.mul_add(d.dot(t), w * m.dot(t)) + held;
-    let mut polygon: Vec<Vector> = Vec::new();
-    for k in 0..4 {
-        let (a, b) = (corners[k], corners[(k + 1) % 4]);
-        let (ga, gb) = (before(a), before(b));
+    // Plan positions from the vertex: the strip's rectangle, clipped to the
+    // half-plane before the cap.
+    let strip = [
+        d * lo + m * w_lo,
+        d * hi + m * w_lo,
+        d * hi + m * w_hi,
+        d * lo + m * w_hi,
+    ];
+    let before = clipped(&strip, |v| v.dot(t) + held);
+    let from_axis = flat(at - turned.centre);
+    let from_foot = flat(at - sector.foot);
+    sector.faces.iter().all(|&inward| {
+        let inward = flat(inward);
+        let polygon = clipped(&before, |v| (from_foot + v).dot(inward) + held);
+        let placed: Vec<Vector> = polygon.iter().map(|&v| from_axis + v).collect();
+        if turned.within {
+            placed.iter().all(|v| v.magnitude() <= turned.big + held)
+        } else {
+            nearest_to_origin(&placed, axis) >= turned.big - held
+        }
+    })
+}
+
+/// What of the convex `polygon` stands where `g` is at most zero, `g`
+/// affine: the polygon clipped to that half-plane.
+fn clipped(polygon: &[Vector], g: impl Fn(Vector) -> f64) -> Vec<Vector> {
+    let mut out = Vec::with_capacity(polygon.len() + 1);
+    for k in 0..polygon.len() {
+        let (a, b) = (polygon[k], polygon[(k + 1) % polygon.len()]);
+        let (ga, gb) = (g(a), g(b));
         if ga <= 0.0 {
-            polygon.push(d * a.0 + m * a.1);
+            out.push(a);
         }
         if (ga < 0.0) != (gb < 0.0) && ga != gb {
-            let f = ga / (ga - gb);
-            let (s, w) = (f.mul_add(b.0 - a.0, a.0), f.mul_add(b.1 - a.1, a.1));
-            polygon.push(d * s + m * w);
+            out.push(a + (b - a) * (ga / (ga - gb)));
         }
     }
-    let from_axis = flat(at - centre);
-    polygon
-        .iter()
-        .all(|&v| (from_axis + v).magnitude() <= big + held)
+    out
+}
+
+/// How far the convex `polygon`, its corners in order in a plane square to
+/// `axis` through the origin, stands from the origin: nothing if it holds
+/// the origin, infinitely far if it is empty.
+fn nearest_to_origin(polygon: &[Vector], axis: Vector) -> f64 {
+    let n = polygon.len();
+    if n == 0 {
+        return f64::INFINITY;
+    }
+    let mut nearest = f64::INFINITY;
+    let (mut left, mut right) = (false, false);
+    for k in 0..n {
+        let (a, b) = (polygon[k], polygon[(k + 1) % n]);
+        let edge = b - a;
+        let length = edge.dot(edge);
+        let f = if length > 0.0 {
+            (-a.dot(edge) / length).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        nearest = nearest.min((a + edge * f).magnitude());
+        // The origin's side of each edge: on one side of all, it is inside.
+        let side = edge.cross(-a).dot(axis);
+        left |= side > 0.0;
+        right |= side < 0.0;
+    }
+    if n >= 3 && !(left && right) {
+        return 0.0;
+    }
+    nearest
 }
 
 /// The half-space past the plane through `on` with unit `normal`, as a

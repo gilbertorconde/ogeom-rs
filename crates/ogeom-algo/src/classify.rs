@@ -130,11 +130,20 @@ pub fn classify_on_face(
 
 /// A face's trim drawn once, for asking where many chart points of it fall,
 /// as [`classify_on_face`] places a point it has projected.
-pub(crate) struct FaceTrim<'m> {
+pub struct FaceTrim<'m> {
     face: &'m Shape,
     surface: &'m ogeom_geom::SurfaceGeometry,
     rings: Rings,
     deflection: Deflection,
+}
+
+impl core::fmt::Debug for FaceTrim<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FaceTrim")
+            .field("face", self.face)
+            .field("deflection", &self.deflection)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'m> FaceTrim<'m> {
@@ -143,7 +152,7 @@ impl<'m> FaceTrim<'m> {
     /// # Errors
     ///
     /// As [`classify_on_face`].
-    pub(crate) fn of(
+    pub fn of(
         model: &'m Model,
         face: &'m Shape,
         deflection: Deflection,
@@ -171,7 +180,7 @@ impl<'m> FaceTrim<'m> {
     /// # Errors
     ///
     /// As [`classify_on_face`].
-    pub(crate) fn holds(
+    pub fn holds(
         &self,
         model: &Model,
         at: (f64, f64),
