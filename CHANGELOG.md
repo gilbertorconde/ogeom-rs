@@ -380,6 +380,21 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **An IGES curve on a surface (142) takes the representation its sender
+  preferred.** (#404)
+  - The model-space curve was always taken when present. Where the
+    preference flag says the parameter-space curve composed with the
+    surface is preferred (1), that composition is now lifted and builds
+    the trim, as it already did where no model-space curve is given.
+    Where the lift is refused or falls short of its target, the
+    model-space curve stands in and a warning says so. Any other
+    preference reads as before.
+  - Both curves now count as read, whichever one builds the trim.
+  - Measured on a synthetic deck: a patch trimmed by a parameter-space
+    circle whose model-space curve is the inscribed square reads the
+    disc's area `6.25π` within its lift and mesh bound when the circle
+    is preferred, and the square's 12.5 when the model-space curve is.
+
 - **The kernel's scope and its capability ledger are stated in its own
   terms.** The parity audit against another kernel's public headers is
   gone: `docs/PARITY.md`, `docs/parity/` and the header-profiling tool are

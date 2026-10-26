@@ -638,3 +638,63 @@ fn stand_alone_points_read_and_write_as_vertices() {
     assert!(again.report.skipped.is_empty(), "{:?}", again.report);
     assert_eq!(positions(again.document.model(), &again.points), want);
 }
+
+/// A curve on a surface (142) whose sending system preferred its
+/// parameter-space curve. The patch is the square `[0, 10]²` at z = 0 over
+/// the unit parameter square; the parameter-space curve is the circle of
+/// radius 0.25 about (0.5, 0.5), the disc of radius 2.5 about (5, 5) once
+/// lifted. The model-space curve beside it is the inscribed square, the
+/// sender's coarse stand-in through the same start. Preferred so, the trim
+/// is the circle; preferring the model-space curve (2), it is the square.
+/// Over a plane (108), whose parameters the format does not define, the
+/// preferred curve cannot lift, and the model-space curve stands in, said
+/// so.
+#[test]
+fn a_curve_on_surface_takes_the_representation_its_sender_preferred() {
+    let face = |preference: u8, surface: Item| {
+        let items = [
+            // D1: the trimmed surface over D3 bounded by D5.
+            item(144, 0, false, "3,1,0,5"),
+            surface,
+            // D5: the curve on surface: B is D7, C is D9.
+            item(142, 0, true, &format!("0,3,7,9,{preference}")),
+            item(100, 0, true, "0.,0.5,0.5,0.75,0.5,0.75,0.5").used_as(5),
+            item(
+                106,
+                12,
+                true,
+                "2,5,7.5,5.,0.,5.,7.5,0.,2.5,5.,0.,5.,2.5,0.,7.5,5.,0.",
+            ),
+        ];
+        let import = ogeom::io::read_iges(&deck(&items), T).unwrap();
+        assert!(import.report.skipped.is_empty(), "{:?}", import.report);
+        assert_eq!(import.sheets.len(), 1);
+        (
+            area(import.document.model(), &import.sheets[0]),
+            import.report.warnings,
+        )
+    };
+    let patch = || flat_patch(10.0, 0.0, true);
+    // The lift is held to a hundred confusions off the composition, which
+    // moves the disc's area by at most that times its perimeter.
+    let radius = 2.5;
+    let disc = PI * radius * radius;
+    let bound = 2.0 * PI * radius * 100.0 * T.confusion() + mesh_bound(disc, radius);
+    let (preferred, warnings) = face(1, patch());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(
+        (preferred - disc).abs() <= bound,
+        "{preferred} against {disc}"
+    );
+    let (model_space, warnings) = face(2, patch());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!((model_space - 12.5).abs() < 1e-9, "{model_space}");
+    let plane = item(108, 0, true, "0.,0.,1.,0.,0,0.,0.,0.,0.");
+    let (stand_in, warnings) = face(1, plane);
+    assert!((stand_in - 12.5).abs() < 1e-9, "{stand_in}");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with("D5:") && warnings[0].contains("stands in"),
+        "{warnings:?}"
+    );
+}

@@ -1448,7 +1448,10 @@ Independent curves that are geometry
 curve's matrix carrying its pieces and its points passed over, and the
 writer writes a free wire or edge as an independent curve. Stand-alone
 points (116) that are geometry read as vertices, and the writer writes a
-free vertex as an independent point. External references (416) are not read."""
+free vertex as an independent point. A curve on a surface (142) builds its
+trim from its model-space curve unless its preference flag prefers the
+parameter-space curve, which is then lifted, the model-space curve
+standing in where that lift fails. External references (416) are not read."""
 symbols = ["ogeom_io::read_iges", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
 tests = ["crates/ogeom/tests/iges_roundtrip.rs",
     "crates/ogeom-io/tests/sheet_export.rs",

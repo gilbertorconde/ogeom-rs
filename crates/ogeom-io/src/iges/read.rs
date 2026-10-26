@@ -1674,17 +1674,40 @@ impl<'a> Reader<'a> {
     fn boundary_segments(&mut self, de: i64) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
         let entity = self.entity(de)?;
         match entity.kind {
-            // Curve on surface: the model-space curve is the trim's truth;
-            // the file's pcurve is advisory, because faces recompute exact
-            // pcurves and say when they cannot.
-            // Creation, surface, parameter-space curve, model-space curve.
+            // Curve on surface: creation, surface, parameter-space curve,
+            // model-space curve, preference. The model-space curve is the
+            // trim's truth unless the sending system preferred the
+            // parameter-space one (preference 1), whose lift through the
+            // surface then stands, the model-space curve taking over where
+            // the lift fails or falls short of its target. Faces recompute
+            // exact pcurves either way and say when they cannot.
             142 => {
-                let c = entity.at(3).int();
-                if c != 0 {
+                let (surface_de, b, c) =
+                    (entity.at(1).int(), entity.at(2).int(), entity.at(3).int());
+                if c == 0 {
+                    return self.lifted_segments(de, surface_de, b);
+                }
+                // Both are the trim's, whichever one builds it.
+                for representation in [b, c] {
+                    if representation != 0 {
+                        self.visited.insert(representation.abs(), ());
+                    }
+                }
+                if entity.at(4).int() != 1 || b == 0 {
                     return self.curve_segments(c);
                 }
-                let (surface_de, b) = (entity.at(1).int(), entity.at(2).int());
-                self.lifted_segments(de, surface_de, b)
+                let before = self.report.warnings.len();
+                let why = match self.lifted_segments(de, surface_de, b) {
+                    Ok(lifted) if self.report.warnings.len() == before => return Ok(lifted),
+                    Ok(_) => "lifted short of its target".to_owned(),
+                    Err(e) => format!("did not lift: {e}"),
+                };
+                self.report.warnings.truncate(before);
+                self.report.warnings.push(format!(
+                    "D{de}: the preferred parameter-space trim {why}; the model-space \
+                     curve stands in"
+                ));
+                self.curve_segments(c)
             }
             141 => {
                 let n = entity.count(3);
