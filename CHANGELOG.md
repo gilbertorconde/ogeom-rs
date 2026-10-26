@@ -529,6 +529,32 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **IGES parents' matrices carry what they own, as IGES 5.3, section
+  3.2.3, table 4 says.** (#404)
+  - A trimmed or bounded surface (144, 143) ignored its own matrix. It
+    now carries its surface and its boundaries.
+  - A subfigure definition (308, 320) ignored its own matrix. It now
+    carries its members before an instance places them.
+  - A drafting entity's matrix placed only its callout's plane. It now
+    also carries the leaders, witness lines and symbol geometry it owns.
+  - A child owned only logically (subordinate switch 02) was carried by
+    its parent's matrix: a ruled surface's rails, a surface of
+    revolution's axis and generatrix, a tabulated cylinder's directrix,
+    an offset curve's or offset surface's base, and a composite curve's
+    pieces. Such a child now stands where its own matrix puts it. A
+    composite curve's piece flagged independent (00) is now carried, as
+    every other parent's is.
+  - An independent bounded plane (108, form 1) was counted as skipped. It
+    now reads as the face its bounding curve encloses, the curve carried
+    by the plane's matrix.
+  - Files whose parents carry no matrix, or whose children are owned
+    physically, read as before.
+  - Measured on a synthetic deck, each under a lift of 7 or a quarter
+    turn: a trimmed square area 16 about (4, 4, 7), a drum on logically
+    owned curves area `12π` about (0, 0, 1.5), a turned definition's unit
+    patch about (-0.5, 0.5, 50), and a bounded disc area `4π` about
+    (0, 0, 12).
+
 - **A drum's rim meets a leaning straight crease, and a disc's pocket up
   to a chord meets at both corners.** (#342)
   - Two top creases where a drum fused onto a block meets the block's

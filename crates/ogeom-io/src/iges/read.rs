@@ -40,6 +40,14 @@ use std::collections::BTreeMap;
 /// and the surface's domain is only a parameter window).
 const SURFACE_EXTENT: f64 = 1e5;
 
+/// Whether an entity is a bounded plane (108, form 1) that is geometry,
+/// the plane within its bounding curve. A negative bounded plane (form -1)
+/// is a hole only a parent entity could cut, and a view's clipping plane
+/// is annotation (use flag 01); neither stands as a face.
+fn is_bounded_plane(entity: &Entity) -> bool {
+    entity.kind == 108 && entity.form == 1 && (entity.status / 100) % 100 == 0
+}
+
 /// The constructive solid entities: the primitives, the solids of revolution
 /// and extrusion, the ellipsoid, the boolean tree, the solid assembly and
 /// the solid instance.
@@ -85,6 +93,29 @@ const WIRE_KINDS: [i64; 8] = [100, 102, 104, 106, 110, 112, 126, 130];
 fn is_wire(entity: &Entity) -> bool {
     WIRE_KINDS.contains(&entity.kind)
         && (entity.kind != 106 || matches!(entity.form, 11 | 12 | 13 | 63))
+}
+
+/// Curve segments moved by `motion`.
+fn moved_segments(
+    segments: Vec<(Curve, (f64, f64))>,
+    motion: &Transform,
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
+    if *motion == Transform::IDENTITY {
+        return Ok(segments);
+    }
+    segments
+        .into_iter()
+        .map(|(curve, range)| Ok((curve.transformed(motion, tol)?, range)))
+        .collect()
+}
+
+/// Whether a parent's matrix carries a child it points at (IGES 5.3,
+/// section 3.2.3): the child lies in the parent's definition space and
+/// moves with it, unless its subordinate switch says it is only logically
+/// dependent (02), which leaves it where its own matrix puts it.
+fn carried(child: &Entity) -> bool {
+    (child.status / 10_000) % 100 != 2
 }
 
 /// The subfigure instances: singular (408), rectangular array (412),
@@ -306,13 +337,14 @@ pub fn read_iges(text: &str, tol: Tolerances) -> OgeomResult<IgesImport> {
         }
     }
     // Untrimmed surfaces: every independent bounded surface no trimmed
-    // surface or solid took is the face its own bounds enclose, sewn with
-    // the rest.
+    // surface or solid took is the face its own bounds enclose, and every
+    // independent bounded plane the face its curve encloses, sewn with the
+    // rest.
     let bare_des: Vec<i64> = file
         .entities
         .iter()
         .filter(|(de, e)| {
-            UNTRIMMED_KINDS.contains(&e.kind)
+            (UNTRIMMED_KINDS.contains(&e.kind) || is_bounded_plane(e))
                 && (e.status / 10_000) % 100 == 0
                 && !reader.visited.contains_key(de)
         })
@@ -612,6 +644,51 @@ impl<'a> Reader<'a> {
             return Ok(outer * m);
         }
         Ok(m)
+    }
+
+    /// The motion that takes a child `parent` points at on from where its
+    /// own placement puts it into model space: the parent's placement
+    /// where the child is [`carried`], none where not.
+    fn parent_motion(&mut self, parent: &Entity, child: i64) -> OgeomResult<Transform> {
+        if self.file.entity(child).is_none_or(carried) {
+            self.placement(parent)
+        } else {
+            Ok(Transform::IDENTITY)
+        }
+    }
+
+    /// The motion that takes a child `parent` points at, once its own
+    /// placement has put it, into the parent's definition space: none for
+    /// a child [`carried`] by the parent's matrix, and the inverse of that
+    /// matrix for one that is not, so that the parent's placement of what
+    /// it builds leaves that child where it stands.
+    fn definition_motion(&mut self, parent: &Entity, child: i64) -> OgeomResult<Option<Transform>> {
+        if parent.transform == 0 || self.file.entity(child).is_none_or(carried) {
+            return Ok(None);
+        }
+        let placement = self.placement(parent)?;
+        if placement == Transform::IDENTITY {
+            return Ok(None);
+        }
+        Ok(Some(placement.inverse()?))
+    }
+
+    /// A curve `parent` points at, in the parent's definition space.
+    fn child_curve(&mut self, parent: &Entity, de: i64) -> OgeomResult<(Curve, (f64, f64))> {
+        let (curve, range) = self.curve(de)?;
+        match self.definition_motion(parent, de)? {
+            Some(motion) => Ok((curve.transformed(&motion, self.tol)?, range)),
+            None => Ok((curve, range)),
+        }
+    }
+
+    /// A surface `parent` points at, in the parent's definition space.
+    fn child_surface(&mut self, parent: &Entity, de: i64) -> OgeomResult<SurfaceGeometry> {
+        let surface = self.surface(de)?;
+        match self.definition_motion(parent, de)? {
+            Some(motion) => Ok(surface.transformed(&motion, self.tol)?),
+            None => Ok(surface),
+        }
     }
 
     fn point3(&self, e: &Entity, i: usize) -> Point {
@@ -1025,7 +1102,7 @@ impl<'a> Reader<'a> {
         if kind != 1 || (d1 - d2).abs() > 1e-12 {
             return self.varying_offset(de, entity, kind);
         }
-        let (basis, range) = self.curve(entity.at(0).int())?;
+        let (basis, range) = self.child_curve(entity, entity.at(0).int())?;
         let reference = Direction::from_coords(
             entity.at(9).real(),
             entity.at(10).real(),
@@ -1046,7 +1123,7 @@ impl<'a> Reader<'a> {
         kind: i64,
     ) -> OgeomResult<(Curve, (f64, f64))> {
         let scale = self.report.scale_mm;
-        let (basis, range) = self.curve(entity.at(0).int())?;
+        let (basis, range) = self.child_curve(entity, entity.at(0).int())?;
         let reference = Direction::from_coords(
             entity.at(9).real(),
             entity.at(10).real(),
@@ -1274,7 +1351,7 @@ impl<'a> Reader<'a> {
             120 => {
                 // Axis line, generatrix, start and terminate angles.
                 let axis = {
-                    let (line, _) = self.curve(entity.at(0).int())?;
+                    let (line, _) = self.child_curve(entity, entity.at(0).int())?;
                     let Curve::Line(l) = line else {
                         ogeom_bail!(
                             Construction,
@@ -1283,7 +1360,7 @@ impl<'a> Reader<'a> {
                     };
                     l.axis()
                 };
-                let (curve, range) = self.curve(entity.at(1).int())?;
+                let (curve, range) = self.child_curve(entity, entity.at(1).int())?;
                 let mut curve = trimmed_to(curve, range, self.tol)?;
                 let sa = entity.at(2).real();
                 let ta = entity.at(3).real();
@@ -1300,7 +1377,7 @@ impl<'a> Reader<'a> {
             122 => {
                 // Directrix, plus the far end of a generator drawn through
                 // the directrix's start point.
-                let (curve, range) = self.curve(entity.at(0).int())?;
+                let (curve, range) = self.child_curve(entity, entity.at(0).int())?;
                 let start = curve.point_at(range.0, self.tol)?;
                 let far = self.point3(entity, 1);
                 let vec = far - start;
@@ -1322,7 +1399,7 @@ impl<'a> Reader<'a> {
                     self.tol,
                 )?;
                 let distance = entity.at(3).real() * scale;
-                let basis = self.surface(entity.at(4).int())?;
+                let basis = self.child_surface(entity, entity.at(4).int())?;
                 let ((ua, ub), (va, vb)) = ogeom_geom::Surface::domain(&basis);
                 let own = ogeom_geom::Surface::normal_at(
                     &basis,
@@ -1404,8 +1481,8 @@ impl<'a> Reader<'a> {
     /// parameter, exact for the uniform-speed curves and a hair off for the
     /// rest.
     fn ruled_surface(&mut self, de: i64, entity: &Entity) -> OgeomResult<SurfaceGeometry> {
-        let (first, first_range) = self.curve(entity.at(0).int())?;
-        let (second, second_range) = self.curve(entity.at(1).int())?;
+        let (first, first_range) = self.child_curve(entity, entity.at(0).int())?;
+        let (second, second_range) = self.child_curve(entity, entity.at(1).int())?;
         let mut a = first.to_bspline_over(first_range, self.tol)?;
         let mut b = second.to_bspline_over(second_range, self.tol)?;
         if entity.at(2).int() == 1 {
@@ -1932,10 +2009,10 @@ impl<'a> Reader<'a> {
     fn curve_segments_at(&mut self, de: i64) -> OgeomResult<Vec<(Curve, (f64, f64))>> {
         let entity = self.entity(de)?;
         if entity.kind == 102 {
-            // The composite's matrix carries its physically dependent
-            // constituents on into model space after their own (IGES 5.3,
-            // section 3.2.3); a point or connect point among them marks
-            // where two pieces meet and adds no segment.
+            // The composite's matrix carries its constituents on into
+            // model space after their own, those it [`carried`]; a point or
+            // connect point among them marks where two pieces meet and adds
+            // no segment.
             let placement = self.placement(entity)?;
             let n = entity.count(0);
             let mut out = Vec::new();
@@ -1945,9 +2022,9 @@ impl<'a> Reader<'a> {
                 if matches!(child.kind, 116 | 132) {
                     continue;
                 }
-                let physical = matches!((child.status / 10_000) % 100, 1 | 3);
+                let moves = carried(child);
                 let segments = self.curve_segments(member)?;
-                if physical && placement != Transform::IDENTITY {
+                if moves && placement != Transform::IDENTITY {
                     for (curve, range) in segments {
                         out.push((curve.transformed(&placement, self.tol)?, range));
                     }
@@ -2091,7 +2168,7 @@ impl<'a> Reader<'a> {
             }
             kind => ogeom_bail!(Construction, "D{de}: type {kind} is not a trimmed surface"),
         };
-        let surface = self.surface(surface_de)?;
+        let surface = self.trimmed_basis(entity, surface_de)?;
         if boundaries.is_empty() {
             // The surface's own natural boundary: a closed or bounded
             // surface can stand alone as a face.
@@ -2100,6 +2177,8 @@ impl<'a> Reader<'a> {
         let mut wires = Vec::new();
         for boundary in boundaries {
             let segments = self.boundary_segments(boundary)?;
+            let motion = self.parent_motion(entity, boundary)?;
+            let segments = moved_segments(segments, &motion, self.tol)?;
             let segments = self.cut_at_trim_poles(segments);
             let edges = self.wire_edges(de, segments)?;
             self.cover_trim_poles(&edges)?;
@@ -2108,11 +2187,40 @@ impl<'a> Reader<'a> {
         self.assemble_face(surface, wires)
     }
 
+    /// A bounded plane (108, form 1) as a face: the plane within its closed
+    /// bounding curve, which the plane's matrix carries as it does the
+    /// plane.
+    fn bounded_plane(&mut self, de: i64) -> OgeomResult<Shape> {
+        let entity = self.entity(de)?;
+        let surface = self.surface(de)?;
+        let boundary = entity.at(4).int();
+        let segments = self.curve_segments(boundary)?;
+        let motion = self.parent_motion(entity, boundary)?;
+        let segments = moved_segments(segments, &motion, self.tol)?;
+        let edges = self.wire_edges(de, segments)?;
+        self.assemble_face(surface, vec![edges])
+    }
+
+    /// The surface a trimmed (144) or bounded (143) surface bounds, carried
+    /// by the trimmed surface's matrix as its boundaries are.
+    fn trimmed_basis(&mut self, trimmed: &Entity, de: i64) -> OgeomResult<SurfaceGeometry> {
+        let surface = self.surface(de)?;
+        let motion = self.parent_motion(trimmed, de)?;
+        if motion == Transform::IDENTITY {
+            Ok(surface)
+        } else {
+            Ok(surface.transformed(&motion, self.tol)?)
+        }
+    }
+
     /// An untrimmed surface as a face: the whole of the surface its own
     /// bounds enclose. An offset surface stands alone only over a base
     /// that does.
     fn untrimmed_face(&mut self, de: i64) -> OgeomResult<Shape> {
         let mut entity = self.entity(de)?;
+        if is_bounded_plane(entity) {
+            return self.bounded_plane(de);
+        }
         let mut depth = 0;
         while entity.kind == 140 {
             depth += 1;
@@ -2141,12 +2249,12 @@ impl<'a> Reader<'a> {
     fn poles_of_trims(&mut self, face_des: &[i64]) -> Vec<Point> {
         let mut out: Vec<Point> = Vec::new();
         for &de in face_des {
-            let surface_de = match self.entity(de) {
-                Ok(e) if e.kind == 144 => e.at(0).int(),
-                Ok(e) if e.kind == 143 => e.at(1).int(),
+            let (trimmed, surface_de) = match self.entity(de) {
+                Ok(e) if e.kind == 144 => (e, e.at(0).int()),
+                Ok(e) if e.kind == 143 => (e, e.at(1).int()),
                 _ => continue,
             };
-            let Ok(surface) = self.surface(surface_de) else {
+            let Ok(surface) = self.trimmed_basis(trimmed, surface_de) else {
                 continue;
             };
             for pole in crate::pcurves::chart_poles(&surface, self.tol) {
@@ -3512,7 +3620,9 @@ impl<'a> Reader<'a> {
             }
             186 => content.solids.push(self.manifold_solid(de)?),
             143 | 144 => content.faces.push(self.face(de)?),
-            k if UNTRIMMED_KINDS.contains(&k) => content.faces.push(self.untrimmed_face(de)?),
+            k if UNTRIMMED_KINDS.contains(&k) || is_bounded_plane(entity) => {
+                content.faces.push(self.untrimmed_face(de)?);
+            }
             k if CSG_KINDS.contains(&k) => content.solids.extend(self.csg_solids(de)?),
             _ if wire => content.wires.push(self.wireframe(de)?),
             116 => content.points.push(self.point(de)?),
@@ -3524,9 +3634,9 @@ impl<'a> Reader<'a> {
 
     /// A subfigure definition's (308) or network subfigure definition's
     /// (320) members at the definition's own coordinates, nested instances
-    /// placed within it. Both list their members after a depth, a name and
-    /// a count; a network definition's connect points, after, are not
-    /// geometry.
+    /// placed within it, and the members its matrix [`carried`] moved on
+    /// by it. Both list their members after a depth, a name and a count; a
+    /// network definition's connect points, after, are not geometry.
     fn subfigure(
         &mut self,
         de: i64,
@@ -3536,7 +3646,17 @@ impl<'a> Reader<'a> {
         let entity = self.entity(de)?;
         let count = entity.count(2);
         let members: Vec<i64> = (0..count).map(|i| entity.at(3 + i).int()).collect();
-        self.members(&members, built, depth)
+        let placement = self.placement(entity)?;
+        if placement == Transform::IDENTITY {
+            return self.members(&members, built, depth);
+        }
+        let (moved, left): (Vec<i64>, Vec<i64>) = members
+            .iter()
+            .partition(|&&m| self.file.entity(m).is_none_or(carried));
+        let location = ogeom_topo::Location::of(self.model.add_datum(placement));
+        let mut content = self.members(&moved, built, depth)?.moved(&location);
+        content.extend(self.members(&left, built, depth)?);
+        Ok(content)
     }
 
     /// A group's (402, forms 1, 7, 14 and 15) members where it stands as an
@@ -3650,18 +3770,21 @@ impl<'a> Reader<'a> {
     ) -> OgeomResult<(ogeom_doc::Callout, Option<ogeom_doc::Dimension>)> {
         let entity = self.entity(de)?;
         let pointer = |i: usize| entity.at(i).int();
-        let mut polylines: Vec<Vec<Point>> = Vec::new();
+        // Each line drawn, with the subordinate entity that draws it, or 0
+        // where the entity draws it itself.
+        let mut polylines: Vec<(i64, Vec<Point>)> = Vec::new();
         let mut text = String::new();
         let mut measure: Option<(&str, ogeom_doc::MeasureKind)> = None;
-        let draw = |reader: &mut Self, lines: &mut Vec<Vec<Point>>, de: i64| -> OgeomResult<()> {
-            if de != 0 {
-                lines.push(reader.drafted_line(de)?);
-            }
-            Ok(())
-        };
+        let draw =
+            |reader: &mut Self, lines: &mut Vec<(i64, Vec<Point>)>, de: i64| -> OgeomResult<()> {
+                if de != 0 {
+                    lines.push((de, reader.drafted_line(de)?));
+                }
+                Ok(())
+            };
         match entity.kind {
             212 => text = self.note_text(de)?,
-            214 => polylines.push(self.drafted_line(de)?),
+            214 => polylines.push((0, self.drafted_line(de)?)),
             216 => {
                 text = self.note_text(pointer(0))?;
                 for i in 1..=4 {
@@ -3714,7 +3837,7 @@ impl<'a> Reader<'a> {
                 text = self.note_text(pointer(0))?;
                 let ng = entity.count(1);
                 for i in 0..ng {
-                    polylines.push(self.sampled_curve(pointer(2 + i))?);
+                    polylines.push((pointer(2 + i), self.sampled_curve(pointer(2 + i))?));
                 }
                 let nl = entity.count(2 + ng);
                 for i in 0..nl {
@@ -3723,6 +3846,19 @@ impl<'a> Reader<'a> {
             }
             kind => ogeom_bail!(Construction, "type {kind} is not drafting"),
         }
+        // The entity's matrix carries the lines its subordinate entities
+        // draw on into the part's coordinates, after their own.
+        let polylines = polylines
+            .into_iter()
+            .map(|(child, line)| {
+                let motion = if child == 0 {
+                    Transform::IDENTITY
+                } else {
+                    self.parent_motion(entity, child)?
+                };
+                Ok(line.into_iter().map(|p| motion.apply(p)).collect())
+            })
+            .collect::<OgeomResult<Vec<Vec<Point>>>>()?;
         let placement = self.placement(entity)?;
         let plane = Frame::new(
             placement.apply(Point::ORIGIN),
@@ -5247,6 +5383,58 @@ mod tests {
         );
         assert!(dimension.location);
         assert!(!reader.visited.contains_key(&13));
+    }
+
+    /// A dimension's matrix carries the leaders it owns physically on after
+    /// their own (IGES 5.3, section 3.2.3, table 4): lifted 5 along z, its
+    /// physical leader draws at z = 5, and the leader it owns only
+    /// logically (02) where it stands, at z = 0.
+    #[test]
+    fn a_dimension_s_matrix_carries_its_leaders() {
+        let leader = |status: i64, head: [f64; 2], tail: [f64; 2]| {
+            let mut e = entity(
+                214,
+                1,
+                reals(&[1.0, 1.0, 0.5, 0.0, head[0], head[1], tail[0], tail[1]]),
+            );
+            e.status = status;
+            e
+        };
+        let mut dimension = entity(
+            216,
+            0,
+            vec![
+                Value::Int(0),
+                Value::Int(3),
+                Value::Int(5),
+                Value::Int(0),
+                Value::Int(0),
+            ],
+        );
+        dimension.transform = 7;
+        let mut lift = entity(
+            124,
+            0,
+            reals(&[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 5.0]),
+        );
+        lift.status = 10_000;
+        let deck = file(vec![
+            (1, dimension),
+            (3, leader(10_000, [0.0, 11.0], [8.0, 11.0])),
+            (5, leader(20_000, [25.4, 11.0], [17.0, 11.0])),
+            (7, lift),
+        ]);
+        let mut reader = reader(&deck);
+        let (callouts, dimensions) = reader.annotations();
+        assert!(dimensions.is_empty() && callouts.len() == 1);
+        let at = |x: f64, y: f64, z: f64| Point::new(x, y, z);
+        assert_eq!(
+            callouts[0].polylines,
+            vec![
+                vec![at(0.0, 11.0, 5.0), at(8.0, 11.0, 5.0)],
+                vec![at(25.4, 11.0, 0.0), at(17.0, 11.0, 0.0)],
+            ]
+        );
     }
 
     /// Two instances of one subfigure: a ten-square trimmed plane placed at

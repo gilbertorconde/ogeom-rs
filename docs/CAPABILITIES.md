@@ -212,7 +212,14 @@ points (116) that are geometry read as vertices, and the writer writes a
 free vertex as an independent point. A curve on a surface (142) builds its
 trim from its model-space curve unless its preference flag prefers the
 parameter-space curve, which is then lifted, the model-space curve
-standing in where that lift fails. External references (416) are not read.
+standing in where that lift fails. A parent's matrix carries the children
+it owns physically, as IGES 5.3, section 3.2.3, table 4 lists them: a
+trimmed surface's surface and boundaries, a subfigure definition's members,
+a drafting entity's leaders and witness lines, a composite curve's pieces,
+and the curves and surfaces the swept, ruled and offset entities are built
+from; a child owned only logically stands where its own matrix puts it. An
+independent bounded plane (108, form 1) reads as the face its curve
+encloses. External references (416) are not read.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered`
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered`
 - **io.step**: STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI · `covered`
@@ -262,4 +269,4 @@ standing in where that lift fails. External references (416) are not read.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: c3272a7a77dd5a7f -->
+<!-- ledger-checksum: 6e6125bbd0b89cba -->

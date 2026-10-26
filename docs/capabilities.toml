@@ -1451,7 +1451,14 @@ points (116) that are geometry read as vertices, and the writer writes a
 free vertex as an independent point. A curve on a surface (142) builds its
 trim from its model-space curve unless its preference flag prefers the
 parameter-space curve, which is then lifted, the model-space curve
-standing in where that lift fails. External references (416) are not read."""
+standing in where that lift fails. A parent's matrix carries the children
+it owns physically, as IGES 5.3, section 3.2.3, table 4 lists them: a
+trimmed surface's surface and boundaries, a subfigure definition's members,
+a drafting entity's leaders and witness lines, a composite curve's pieces,
+and the curves and surfaces the swept, ruled and offset entities are built
+from; a child owned only logically stands where its own matrix puts it. An
+independent bounded plane (108, form 1) reads as the face its curve
+encloses. External references (416) are not read."""
 symbols = ["ogeom_io::read_iges", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
 tests = ["crates/ogeom/tests/iges_roundtrip.rs",
     "crates/ogeom-io/tests/sheet_export.rs",

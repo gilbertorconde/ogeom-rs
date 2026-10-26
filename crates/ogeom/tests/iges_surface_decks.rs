@@ -23,6 +23,9 @@ struct Item {
     placed: usize,
     /// The entity use flag: 0 geometry, 5 a parameter-space curve.
     used: u8,
+    /// Whether the entity that owns it does so only logically (subordinate
+    /// switch 02), not physically (01).
+    logical: bool,
     params: String,
 }
 
@@ -33,6 +36,7 @@ fn item(kind: i64, form: i64, owned: bool, params: &str) -> Item {
         owned,
         placed: 0,
         used: 0,
+        logical: false,
         params: params.to_owned(),
     }
 }
@@ -45,6 +49,12 @@ impl Item {
 
     fn used_as(mut self, flag: u8) -> Self {
         self.used = flag;
+        self
+    }
+
+    fn logically_owned(mut self) -> Self {
+        self.owned = true;
+        self.logical = true;
         self
     }
 }
@@ -85,7 +95,8 @@ fn deck(items: &[Item]) -> String {
             current += piece;
         }
         lines.push(current);
-        let status = format!("00{:02}{:02}00", u8::from(it.owned), it.used);
+        let switch = u8::from(it.owned) + u8::from(it.logical);
+        let status = format!("00{switch:02}{:02}00", it.used);
         let field = |s: &str| format!("{s:>8}");
         let first: String = [
             it.kind.to_string(),
@@ -697,4 +708,77 @@ fn a_curve_on_surface_takes_the_representation_its_sender_preferred() {
         warnings[0].starts_with("D5:") && warnings[0].contains("stands in"),
         "{warnings:?}"
     );
+}
+
+/// The matrices of parents the format names in IGES 5.3, section 3.2.3,
+/// table 4, carrying their children. A trimmed surface (144) lifted 7 by
+/// its matrix carries its patch and the square that bounds it: area 16
+/// about (4, 4, 7). A surface of revolution (120) under the same matrix
+/// whose axis and generatrix it owns only logically (02) leaves them where
+/// they stand: the drum of radius 2 and height 3 about the z axis, area
+/// `12π` about (0, 0, 1.5). A subfigure definition (308) turned a quarter
+/// about z carries its unit patch before its instance lifts it 50: area 1
+/// about (-0.5, 0.5, 50). A bounded plane (108) at z = 5 under the matrix
+/// carries its bounding circle of radius 2: the disc of area `4π` about
+/// (0, 0, 12).
+#[test]
+fn parents_matrices_carry_what_they_own_physically() {
+    let items = [
+        // D1: the trimmed surface over D3 bounded by D5, lifted by D11.
+        item(144, 0, false, "3,1,0,5").placed_by(11),
+        flat_patch(10.0, 0.0, true),
+        item(142, 0, true, "0,3,0,7,0"),
+        item(
+            106,
+            12,
+            true,
+            "2,5,2.,2.,0.,6.,2.,0.,6.,6.,0.,2.,6.,0.,2.,2.,0.",
+        ),
+        // D9: the drum about D13 swept by D15, under D11.
+        item(120, 0, false, &format!("13,15,0.,{}", 2.0 * PI)).placed_by(11),
+        // D11: a lift of 7 along z.
+        item(124, 0, true, "1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,7."),
+        item(110, 0, true, "0.,0.,0.,0.,0.,1.").logically_owned(),
+        item(110, 0, true, "2.,0.,0.,2.,0.,3.").logically_owned(),
+        // D17: the definition of the patch D19, turned by D23, instanced
+        // by D21.
+        item(308, 0, true, "0,4HTILE,1,19").placed_by(23),
+        flat_patch(1.0, 0.0, true),
+        item(408, 0, false, "17,0.,0.,50.,1."),
+        item(124, 0, true, "0.,-1.,0.,0.,1.,0.,0.,0.,0.,0.,1.,0."),
+        // D25: the plane z = 5 bounded by the circle D27, under D11.
+        item(108, 1, false, "0.,0.,1.,5.,27,0.,0.,0.,0.").placed_by(11),
+        item(100, 0, true, "5.,0.,0.,2.,0.,2.,0."),
+    ];
+    let import = ogeom::io::read_iges(&deck(&items), T).unwrap();
+    assert!(import.report.warnings.is_empty(), "{:?}", import.report);
+    assert!(import.report.skipped.is_empty(), "{:?}", import.report);
+    let model = import.document.model();
+    let fine = Deflection {
+        chord: CHORD,
+        ..Deflection::default()
+    };
+    let mut faces: Vec<(f64, ogeom::math::Point)> = import
+        .sheets
+        .iter()
+        .map(|s| {
+            let props = surface_properties(model, s, fine, T).unwrap();
+            (props.mass, props.centre)
+        })
+        .collect();
+    faces.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let want = [
+        (1.0, [-0.5, 0.5, 50.0], 0.0),
+        (4.0 * PI, [0.0, 0.0, 12.0], mesh_bound(4.0 * PI, 2.0)),
+        (16.0, [4.0, 4.0, 7.0], 0.0),
+        (12.0 * PI, [0.0, 0.0, 1.5], mesh_bound(12.0 * PI, 2.0)),
+    ];
+    assert_eq!(faces.len(), want.len(), "{faces:?}");
+    for ((area, centre), (want_area, want_centre, bound)) in faces.iter().zip(want) {
+        let at = ogeom::math::Point::new(want_centre[0], want_centre[1], want_centre[2]);
+        assert!(
+            (area - want_area).abs() <= bound + 1e-9 && centre.distance(at) < 1e-6,
+            "{faces:?}"
+        );
+    }
 }
