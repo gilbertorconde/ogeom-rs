@@ -530,6 +530,23 @@ bump may break the API and a patch bump may not.
   sewn into. Everywhere else the cut is the general fuse's. Rounding all
   twelve edges of a 10 mm cube takes 58 ms rather than 103, to the same
   26 faces, 48 edges and volume.
+- **Rims seated on a plane and a cylinder about one axis are cut by
+  trimming those faces, not by the general fuse (#384).**
+  `ogeom_bool::cut_seated` now also takes a rim's wedge: an annulus of a
+  plane square to the axis, a band of the cylinder and the quarter of a
+  torus's tube between them. Where the annulus lies on a planar face of
+  the solid one of whose loops is the rim, the band on the one other face
+  walking the rim, a cylinder walking it between the two walks of one
+  seam, each facing the seat's way, every other edge of those two faces
+  stands clear of the seats, and every other face of the solid stands out
+  of the ring the wedge's cross-section sweeps, the two faces are trimmed
+  along the contact circles and the tube closes what is left. Closed edges
+  holding one vertex are cut at their middle and the contacts where the
+  seam and the meridian meet them, as the general fuse cuts them, and the
+  solid and its history are the same. Everywhere else the cut is the
+  general fuse's. Rounding a cylinder's top rim takes 1.2 ms rather than
+  4.1, and all four rims of a tube 5.3 ms rather than 75, to the same
+  faces, edges, volume and area.
 - **The corners a fillet request rounds are cut in one boolean where
   they stand clear of each other (#384).** `fillet_edges` rounded each
   corner where three or more of its edges meet with its own cut. On a

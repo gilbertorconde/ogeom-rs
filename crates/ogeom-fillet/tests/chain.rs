@@ -2456,6 +2456,197 @@ fn account(
     (valid, volume(model, &built.shape, 1e-3), counts, records)
 }
 
+/// The edges of `shape` on the circle of `radius` about `centre`, square to
+/// the `z` axis.
+fn circle_edges(
+    model: &ogeom_topo::Model,
+    shape: &ogeom_topo::Shape,
+    centre: Point,
+    radius: f64,
+) -> Vec<ogeom_topo::Shape> {
+    explore_unique(model, shape, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let data = model.node(e).unwrap().data().as_edge().unwrap();
+            let Some(ogeom_topo::EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+                return false;
+            };
+            let Some(ogeom_geom::Curve::Circle(c)) = model.geometry().curve(*curve) else {
+                return false;
+            };
+            let circle = c.circle();
+            circle.centre().distance(centre) < 1e-9 && (circle.radius() - radius).abs() < 1e-9
+        })
+        .collect()
+}
+
+/// What a rim's rounding at `r` takes from the solid, the section between
+/// the wall, the cap and the tube turned about the axis: its area
+/// `(1 - pi/4) r^2`, its centroid `r / (6 (1 - pi/4))` from the tube's
+/// centre toward the corner, which stands at `tube`, out from the axis or
+/// in toward it.
+fn rim_removed(tube: f64, r: f64, outward: bool) -> f64 {
+    let area = (1.0 - core::f64::consts::FRAC_PI_4) * r * r;
+    let offset = r / (6.0 * (1.0 - core::f64::consts::FRAC_PI_4));
+    let at = if outward {
+        tube + offset
+    } else {
+        tube - offset
+    };
+    core::f64::consts::TAU * at * area
+}
+
+/// Rims rounded where a plane meets a cylinder about one axis are cut from
+/// the solid by trimming the two faces each wedge sits on rather than by
+/// the general fuse, and come out as the general fuse makes them: the same
+/// solid, valid, with the same history, and the volume the section turned
+/// about the axis takes. The cases are a cylinder's rims, both on one wall,
+/// a bore's through a block, a tube's four (its outer and inner rims each
+/// on the one annulus), a wall with a cross hole well below its rim, and a
+/// cup's rim clear of its cavity. Where the rounding reaches the cylinder's
+/// far end, a hole in the wall comes up into the band the wedge takes, or a
+/// cavity into the ring it sweeps, the cut is left to the general fuse.
+#[test]
+fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
+    use core::f64::consts::PI;
+    type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64, Option<f64>);
+    type Case<'a> = &'a dyn Fn(&mut ogeom_topo::Model) -> Made;
+    let cylinder = |model: &mut ogeom_topo::Model, at: Point, axis: Direction, r: f64, h: f64| {
+        let frame = Frame::new(
+            at,
+            axis,
+            Direction::new(axis.vector().cross(Vector::new(0.3, 0.5, 0.7)), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_cylinder(model, frame, r, h, T)
+            .unwrap()
+            .shape
+    };
+    let drum = |model: &mut ogeom_topo::Model, h: f64, both: bool| -> Made {
+        let solid = cylinder(model, Point::ORIGIN, Direction::Z, 5.0, h);
+        let mut edges = circle_edges(model, &solid, Point::new(0.0, 0.0, h), 5.0);
+        if both {
+            edges.extend(circle_edges(model, &solid, Point::ORIGIN, 5.0));
+        }
+        let rims = if both { 2.0 } else { 1.0 };
+        let want = PI * 25.0 * h - rims * rim_removed(4.0, 1.0, true);
+        (solid, edges, 1.0, Some(want))
+    };
+    let bore = |model: &mut ogeom_topo::Model| -> Made {
+        let block = ogeom_algo::make_box(model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let drill = cylinder(model, Point::new(10.0, 10.0, -1.0), Direction::Z, 4.0, 12.0);
+        let solid = ogeom_bool::cut(model, &block, &drill, T).unwrap().shape;
+        let edges = circle_edges(model, &solid, Point::new(10.0, 10.0, 10.0), 4.0);
+        let want = 4000.0 - PI * 160.0 - rim_removed(5.0, 1.0, false);
+        (solid, edges, 1.0, Some(want))
+    };
+    let tube = |model: &mut ogeom_topo::Model| -> Made {
+        let outer = cylinder(model, Point::ORIGIN, Direction::Z, 5.0, 10.0);
+        let inner = cylinder(model, Point::new(0.0, 0.0, -1.0), Direction::Z, 3.0, 12.0);
+        let solid = ogeom_bool::cut(model, &outer, &inner, T).unwrap().shape;
+        let mut edges = Vec::new();
+        for z in [0.0, 10.0] {
+            for r in [3.0, 5.0] {
+                edges.extend(circle_edges(model, &solid, Point::new(0.0, 0.0, z), r));
+            }
+        }
+        let want = PI * 16.0 * 10.0
+            - 2.0 * rim_removed(4.5, 0.5, true)
+            - 2.0 * rim_removed(3.5, 0.5, false);
+        (solid, edges, 0.5, Some(want))
+    };
+    let crossed = |model: &mut ogeom_topo::Model, height: f64| -> Made {
+        let solid = cylinder(model, Point::ORIGIN, Direction::Z, 5.0, 10.0);
+        let drill = cylinder(
+            model,
+            Point::new(-6.0, 0.0, height),
+            Direction::X,
+            1.0,
+            12.0,
+        );
+        let solid = ogeom_bool::cut(model, &solid, &drill, T).unwrap().shape;
+        let edges = circle_edges(model, &solid, Point::new(0.0, 0.0, 10.0), 5.0);
+        (solid, edges, 1.0, None)
+    };
+    // A drum hollowed from below, its cavity coming up to `top` at `wall`
+    // from the axis.
+    let cup = |model: &mut ogeom_topo::Model, wall: f64, top: f64| -> Made {
+        let solid = cylinder(model, Point::ORIGIN, Direction::Z, 5.0, 10.0);
+        let cavity = cylinder(
+            model,
+            Point::new(0.0, 0.0, -1.0),
+            Direction::Z,
+            wall,
+            top + 1.0,
+        );
+        let solid = ogeom_bool::cut(model, &solid, &cavity, T).unwrap().shape;
+        let edges = circle_edges(model, &solid, Point::new(0.0, 0.0, 10.0), 5.0);
+        (solid, edges, 1.0, None)
+    };
+    let cases: [(&str, Case, bool); 9] = [
+        ("a drum's rim", &|m| drum(m, 10.0, false), true),
+        ("both rims of a short drum", &|m| drum(m, 2.5, true), true),
+        ("a bore's rim", &bore, true),
+        ("a tube's rims", &tube, true),
+        ("a wall with a cross hole below", &|m| crossed(m, 3.0), true),
+        (
+            "a drum as tall as the rounding",
+            &|m| drum(m, 1.0, false),
+            false,
+        ),
+        ("a cross hole into the band", &|m| crossed(m, 8.5), false),
+        (
+            "a cup's rim clear of its cavity",
+            &|m| cup(m, 3.5, 8.0),
+            true,
+        ),
+        (
+            "a cup's rim breaking into its cavity",
+            &|m| cup(m, 4.7, 9.7),
+            false,
+        ),
+    ];
+    for (name, case, trimmed) in cases {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, edges, radius, closed_form) = case(&mut model);
+        let mut general = model.clone();
+        let fused = ogeom_bool::work::unseated(|| {
+            ogeom_fillet::fillet_edges(&mut general, &solid, &edges, radius, T).unwrap()
+        });
+        let (seated, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::fillet_edges(&mut model, &solid, &edges, radius, T).unwrap()
+        });
+        assert_eq!(work.seated_cuts > 0, trimmed, "{name}: cut by trimming");
+        let (want, got) = (
+            account(&general, &solid, &edges, &fused),
+            account(&model, &solid, &edges, &seated),
+        );
+        assert!(got.0, "{name}: the rounding is valid");
+        assert!(
+            (got.1 - want.1).abs() <= want.1 * 1e-9,
+            "{name}: volume {} against {}",
+            got.1,
+            want.1
+        );
+        if let Some(exact) = closed_form {
+            assert!(
+                (got.1 - exact).abs() <= exact * 1e-7,
+                "{name}: volume {} against the closed form {exact}",
+                got.1
+            );
+        }
+        assert_eq!(
+            (got.0, &got.2, &got.3),
+            (want.0, &want.2, &want.3),
+            "{name}"
+        );
+    }
+}
+
 /// Bands whose wedges sit flush on planar faces, ending on a corner's ball
 /// or on a face across the band, are cut from the solid by trimming the
 /// faces they sit on rather than by the general fuse, and the rounding

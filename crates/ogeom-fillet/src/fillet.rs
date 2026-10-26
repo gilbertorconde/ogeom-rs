@@ -1299,7 +1299,7 @@ fn join_flush(
 /// the boolean's history. Wedges whose boxes meet go in different
 /// booleans, as a compound of lumps that overlap would count their overlap
 /// twice. A cut is [`ogeom_bool::cut_seated`], which trims the faces
-/// straight bands sit on where nothing else reaches into them.
+/// straight bands and rims sit on where nothing else reaches into them.
 fn apply_set_aside(
     model: &mut Model,
     mut built: Built,

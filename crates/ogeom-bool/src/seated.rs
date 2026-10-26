@@ -1,5 +1,6 @@
 //! A cut by blend wedges that sit flush on the solid, made by trimming the
-//! faces they sit on rather than by the general fuse.
+//! faces they sit on rather than by the general fuse. This module trims
+//! straight bands; [`ring`] trims rims.
 //!
 //! A straight blend's wedge is bounded by planar seats (its legs along the
 //! two faces it rounds, its caps) and by the blend, a strip of a cylinder
@@ -50,6 +51,8 @@ use ogeom_topo::{
     EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, SurfaceId, TShapeId,
 };
 use smallvec::SmallVec;
+
+mod ring;
 
 /// Samples taken along an edge of the solid to say whether it lies along an
 /// edge of the wedge.
@@ -132,6 +135,26 @@ struct Solid {
     boxes: Vec<Option<(Aabb, f64)>>,
 }
 
+impl Solid {
+    /// A face's conservative box and the widest tolerance it or any of its
+    /// edges and vertices states, read once.
+    fn face_box(&mut self, model: &Model, i: usize, tol: Tolerances) -> OgeomResult<(Aabb, f64)> {
+        if let Some(known) = self.boxes[i] {
+            return Ok(known);
+        }
+        let face = &self.faces[i];
+        let bounds = ogeom_algo::shape_bounds(model, face, tol)?;
+        let mut stated = model.tolerance_of(face)?.map_or(0.0, |t| t.get());
+        for kind in [ShapeType::Edge, ShapeType::Vertex] {
+            for sub in ogeom_topo::explore_unique(model, face, kind)? {
+                stated = stated.max(model.tolerance_of(&sub)?.map_or(0.0, |t| t.get()));
+            }
+        }
+        self.boxes[i] = Some((bounds, stated));
+        Ok((bounds, stated))
+    }
+}
+
 /// `a` with the wedges of `b` cut from it by trimming the faces they sit
 /// on, with the faces' history as the general fuse records it; `None` where
 /// a condition of the module's fails, and the cut is the general fuse's.
@@ -148,7 +171,12 @@ pub(crate) fn seated_cut(
     // What reading the wedges and making the result widen is put back
     // where the cut is not made here.
     let mark = model.note_widened();
-    match trimmed_cut(model, a, b, tol) {
+    let cut = if ring::is_ringed(model, b)? {
+        ring::ring_cut(model, a, b, tol)
+    } else {
+        trimmed_cut(model, a, b, tol)
+    };
+    match cut {
         Ok(Some(built)) => {
             model.keep_widened(mark);
             #[cfg(feature = "test-hooks")]
@@ -177,20 +205,9 @@ fn trimmed_cut(
     let Some(mut solid) = read_solid(model, a)? else {
         return Ok(None);
     };
-    let Some(wedges) = lumps(model, b)? else {
+    let Some(wedges) = lumps_apart(model, b, tol)? else {
         return Ok(None);
     };
-    let mut boxes = Vec::with_capacity(wedges.len());
-    for wedge in &wedges {
-        boxes.push(ogeom_algo::shape_bounds(model, wedge, tol)?);
-    }
-    for i in 0..boxes.len() {
-        for j in i + 1..boxes.len() {
-            if boxes[i].intersects(&boxes[j]) {
-                return Ok(None);
-            }
-        }
-    }
     // Every wedge's vertices found on the solid first: a vertex made on an
     // edge of it changes the loops of the faces walking that edge.
     let mut reads = Vec::with_capacity(wedges.len());
@@ -851,6 +868,25 @@ fn lumps(model: &Model, b: &Shape) -> OgeomResult<Option<Vec<Shape>>> {
     Ok((!lumps.is_empty()).then_some(lumps))
 }
 
+/// [`lumps`] where they stand apart, box from box.
+fn lumps_apart(model: &Model, b: &Shape, tol: Tolerances) -> OgeomResult<Option<Vec<Shape>>> {
+    let Some(wedges) = lumps(model, b)? else {
+        return Ok(None);
+    };
+    let mut boxes = Vec::with_capacity(wedges.len());
+    for wedge in &wedges {
+        boxes.push(ogeom_algo::shape_bounds(model, wedge, tol)?);
+    }
+    for i in 0..boxes.len() {
+        for j in i + 1..boxes.len() {
+            if boxes[i].intersects(&boxes[j]) {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(wedges))
+}
+
 /// A face's loops as it walks them, each edge with the vertices it runs
 /// between; `None` where the face or an edge stands at a placement, an edge
 /// has no vertices, or a loop does not run head to tail.
@@ -1177,21 +1213,7 @@ fn plan_wedge(
         if hosts.contains(&i) {
             continue;
         }
-        let (bounds, stated) = match solid.boxes[i] {
-            Some(known) => known,
-            None => {
-                let face = &solid.faces[i];
-                let bounds = ogeom_algo::shape_bounds(model, face, tol)?;
-                let mut stated = model.tolerance_of(face)?.map_or(0.0, |t| t.get());
-                for kind in [ShapeType::Edge, ShapeType::Vertex] {
-                    for sub in ogeom_topo::explore_unique(model, face, kind)? {
-                        stated = stated.max(model.tolerance_of(&sub)?.map_or(0.0, |t| t.get()));
-                    }
-                }
-                solid.boxes[i] = Some((bounds, stated));
-                (bounds, stated)
-            }
-        };
+        let (bounds, stated) = solid.face_box(model, i, tol)?;
         let margin = stated + tol.confusion();
         let corners = bounds.corners();
         let beyond = walls
