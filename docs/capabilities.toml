@@ -983,9 +983,16 @@ id = "offset.sweeps"
 title = "Sweeping profiles along spines: pipes, pipe shells, evolved shapes, the frame laws"
 crate = "ogeom-offset"
 verdict = "partial"
-restriction = """Pipes run a circular section along a single spine edge, \
+restriction = """Pipes run a circular section along a spine edge, \
 exactly for straight and circular spines and skinned for free-form and \
-helical ones. The evolved sweep runs a profile along a planar spine, \
+helical ones, and along a wire exactly where its legs are: an open wire \
+of lines and arcs meeting tangent, or lines with sharp corners, open or \
+closed, mitred; a wire with arcs that closes or turns a sharp corner is \
+refused by name, for the pipe shell to sweep to a stated tolerance. \
+`place_on_spine` brings a profile drawn elsewhere onto a spine's start \
+before a sweep, rigidly about its centroid: turned square to the start \
+tangent by the least rotation, moved so its centroid is the start point, \
+or both. The evolved sweep runs a profile along a planar spine, \
 exactly, by composition. The pipe shell sweeps an arbitrary planar profile, \
 holes and all, along an open spine wire under a rotation-minimizing or \
 Frenet frame law, and it also sweeps a profile round a closed spine, smooth or faceted, holes \
@@ -1067,13 +1074,14 @@ symbols = [
     "ogeom_offset::make_helical_sweep", "ogeom_offset::make_pipe_shell_evolving",
     "ogeom_offset::PipeEvolution", "ogeom_offset::make_pipe_shell_laws",
     "ogeom_offset::PipeLaws", "ogeom_offset::SpineLaw",
+    "ogeom_offset::place_on_spine", "ogeom_offset::PipePlacement",
 ]
 tests = [
     "crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs",
     "crates/ogeom/tests/pipe_shell_exact.rs", "crates/ogeom/tests/helical_sweep.rs",
     "crates/ogeom/tests/pipe_evolving.rs", "crates/ogeom/tests/pipe_laws.rs",
     "crates/ogeom/tests/pipe_rings.rs",
-    "crates/ogeom/tests/pipe_corners.rs",
+    "crates/ogeom/tests/pipe_corners.rs", "crates/ogeom/tests/pipe_placed.rs",
 ]
 
 [[capability]]

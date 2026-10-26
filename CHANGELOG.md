@@ -73,6 +73,23 @@ bump may break the API and a patch bump may not.
     edge tolerances of 1e-7 and stay, as the tolerances say. DoomCube
     and Voron: no solid changed (0 tails, 0 wireless faces), and the 24
     open sheets' free edges chain into 72 closed contours, none open.
+- **`make_pipe` along a wire, and profiles brought onto their spine.**
+  (#394)
+  - `make_pipe` read one spine edge. It now takes a wire as well, swept
+    exactly as the pipe shell of the disc square to its start: an open
+    wire of lines and arcs meeting tangent (cylinders and torus segments),
+    or lines with sharp corners, open or closed (cylinders mitred). A
+    wire with arcs that closes or turns a sharp corner is refused by name
+    for `make_pipe_shell`, which takes a tolerance. Measured: three
+    mitred legs 27 long and a line, quarter arc and line 10 + 3π/2 long
+    hold `π r²` times their length to 1e-12, every face a plane,
+    cylinder or torus.
+  - `place_on_spine` moves a planar profile rigidly onto a spine's start
+    as `PipePlacement` asks: `correction` turns it about its centroid by
+    the least rotation standing it square to the start tangent,
+    `contact` moves its centroid onto the start point. Measured: a square
+    drawn leaning off the spine, placed both ways, sweeps the prism of
+    volume 16 with its centroid at (0, 0, 2) to 1e-12.
 - **Pipe shells: scale and twist laws beyond linear, and evolving
   sections round sharp corners.** (#394)
   - `make_pipe_shell_laws` takes a `PipeLaws`: a `SpineLaw` for the

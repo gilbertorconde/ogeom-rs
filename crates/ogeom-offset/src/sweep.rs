@@ -27,21 +27,30 @@ use ogeom_topo::{EdgeData, EdgeRepr, Filter, Model, Shape, ShapeType, VertexData
 
 mod corners;
 mod evolving;
+mod placement;
 
 pub use evolving::{
     PipeEvolution, PipeLaws, SpineLaw, make_pipe_shell_evolving, make_pipe_shell_laws,
 };
+pub use placement::{PipePlacement, place_on_spine};
 
-/// Sweep a circular profile of `radius` along a spine edge.
+/// Sweep a circular profile of `radius` along a spine edge or wire.
 ///
 /// A straight spine gives a cylinder, a full circular spine a torus, an arc
-/// a torus segment. The history generates the solid from the spine.
+/// a torus segment. A wire of several edges is the pipe shell of the disc
+/// standing square to its start, exactly: an open wire of lines and arcs
+/// meeting tangent, its legs the cylinders and torus segments they sweep,
+/// or a wire of lines with sharp corners, open or closed, its legs
+/// cylinders mitred on the planes halving its corners. The history
+/// generates the solid from the spine.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the spine is
 /// not straight or circular, the profile radius is not usable, or the tube
-/// would swallow its own spine.
+/// would swallow its own spine; for a wire, if an edge is neither a line
+/// nor an arc, or the wire closes or turns a sharp corner with an arc in
+/// it, which [`make_pipe_shell`] sweeps to a stated tolerance.
 pub fn make_pipe(
     model: &mut Model,
     spine: &Shape,
@@ -50,6 +59,15 @@ pub fn make_pipe(
 ) -> OgeomResult<Built> {
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a pipe of radius {radius} holds nothing");
+    }
+    if model.kind_of(spine)? == ShapeType::Wire {
+        let edges = model.ordered_children_of(spine)?;
+        if let [edge] = edges.as_slice() {
+            let mut built = make_pipe(model, edge, radius, tol)?;
+            built.history.generate(spine, built.shape.clone());
+            return Ok(built);
+        }
+        return pipe_along_wire(model, spine, &edges, radius, tol);
     }
     let (curve, range) = {
         let Some(data) = model.node(spine).and_then(|n| n.data().as_edge()) else {
@@ -97,6 +115,94 @@ pub fn make_pipe(
     };
     built.history.generate(spine, built.shape.clone());
     Ok(built)
+}
+
+/// [`make_pipe`] along a wire of several edges: the disc square to the
+/// wire's start swept by the pipe shell, where that is exact.
+fn pipe_along_wire(
+    model: &mut Model,
+    spine: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let mut straight = true;
+    for edge in edges {
+        let (curve, _) = spine_curve_of(model, edge)?;
+        let basis = match &curve {
+            Curve::Trimmed(t) => t.basis().clone(),
+            other => other.clone(),
+        };
+        match basis {
+            Curve::Line(_) => {}
+            Curve::Circle(c) => {
+                straight = false;
+                if radius >= c.circle().radius() - tol.confusion() {
+                    ogeom_bail!(
+                        Construction,
+                        "a tube of radius {radius} swallows its spine of radius {}",
+                        c.circle().radius()
+                    );
+                }
+            }
+            _ => ogeom_bail!(
+                Construction,
+                "a pipe runs along lines and arcs; along a free-form spine it is \
+                 make_pipe_skinned's or make_pipe_shell's, to a stated tolerance"
+            ),
+        }
+    }
+    if !straight && (spine_closes(model, spine, tol)? || has_sharp_corner(model, spine, tol)?) {
+        ogeom_bail!(
+            Construction,
+            "a pipe along a wire with arcs runs open and turns no sharp corner; \
+             make_pipe_shell sweeps the rest to a stated tolerance"
+        );
+    }
+    let stations = shell_stations(model, spine, tol)?;
+    let (at, heading) = (stations[0].at, stations[0].tangent);
+    let frame = Frame::about(at, Direction::new(heading, tol)?);
+    let circle = Circle::new(frame, radius, tol)?;
+    let rim = make_edge(
+        model,
+        Curve::Circle(CircleCurve::new(circle)),
+        (0.0, core::f64::consts::TAU),
+        tol,
+    )?
+    .shape;
+    let ring = ogeom_algo::make_wire(model, &[rim], tol)?.shape;
+    let disc = ogeom_algo::make_face(
+        model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[ring],
+        tol,
+    )?
+    .shape;
+    // The exact legs ask nothing of the skin; one asked of it all the same
+    // is held to the model's own confusion, and refused below as fitted.
+    let built = make_pipe_shell(model, &disc, spine, false, tol.confusion(), tol)?;
+    for face in explore(model, &built.shape, Filter::OfType(ShapeType::Face))? {
+        let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+            continue;
+        };
+        if !matches!(
+            model.geometry().surface(data.surface),
+            Some(
+                SurfaceGeometry::Plane(_)
+                    | SurfaceGeometry::Cylinder(_)
+                    | SurfaceGeometry::Torus(_)
+            )
+        ) {
+            ogeom_bail!(
+                Construction,
+                "a pipe along this wire is not swept exactly; make_pipe_shell sweeps it \
+                 to a stated tolerance"
+            );
+        }
+    }
+    let mut history = History::new();
+    history.generate(spine, built.shape.clone());
+    Ok(Built::new(built.shape, history))
 }
 
 /// The torus segment: two half-tube patches and two meridian caps.
