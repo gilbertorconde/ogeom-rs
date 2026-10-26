@@ -208,7 +208,7 @@ fn record(history: &mut History, part: &Shape, images: &[Shape], copied: bool) {
 
 /// How far two descriptions of one point may stand apart past their own
 /// tolerances: the distance the boolean welds ends within.
-fn reach(tol: Tolerances) -> f64 {
+pub(crate) fn reach(tol: Tolerances) -> f64 {
     tol.confusion() * 1e2
 }
 

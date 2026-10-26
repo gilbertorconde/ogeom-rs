@@ -45,6 +45,7 @@ mod box_tree;
 mod defeature;
 mod half_space;
 mod seam_join;
+mod seated;
 mod section_face;
 mod self_union;
 mod sub_shapes;
@@ -8526,9 +8527,14 @@ fn chart_point_within(face: &GFace, p: Point, reach: f64, tol: Tolerances) -> Op
     None
 }
 
-/// Whether two curves meet tangentially at a crossing: the parallel-noise
-/// gate for pave placement. One degree is far below any deliberate crossing
-/// and far above the smear a tangency leaves in the general intersector.
+/// The sine of the turn under which two curves meet tangentially at a
+/// crossing: the parallel-noise gate for pave placement. One degree is far
+/// below any deliberate crossing and far above the smear a tangency leaves
+/// in the general intersector.
+pub(crate) const TANGENT_TURN: f64 = 2e-2;
+
+/// Whether two curves meet tangentially at a crossing: their tangents turn
+/// by less than [`TANGENT_TURN`].
 fn tangential(a: &Curve, ta: f64, b: &Curve, tb: f64, tol: Tolerances) -> OgeomResult<bool> {
     let da = a.d1_at(ta, tol)?;
     let db = b.d1_at(tb, tol)?;
@@ -8536,7 +8542,7 @@ fn tangential(a: &Curve, ta: f64, b: &Curve, tb: f64, tol: Tolerances) -> OgeomR
     if ma <= tol.confusion() || mb <= tol.confusion() {
         return Ok(true);
     }
-    Ok(da.cross(db).magnitude() / (ma * mb) < 2e-2)
+    Ok(da.cross(db).magnitude() / (ma * mb) < TANGENT_TURN)
 }
 
 /// The chart image of an exact curve on a surface, fitted at the curve's
@@ -13930,6 +13936,39 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
     }
     let built = noting_held(model, |model| {
         ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+            settled(model, tol, |model, tol| cut_once(model, a, b, tol))
+        })
+    })?;
+    sub_shapes::with_sub_shapes(model, [a, b], built, tol)
+}
+
+/// [`cut`], where `b` is a blend's wedge, or a compound of wedges standing
+/// apart, that sits flush on `a`: each wedge bounded by planar seats lying
+/// on faces of `a` and one strip of a cylinder, the blend. Where every
+/// seat lies within the face it is on, facing its way, and no other face of
+/// `a` reaches into the wedge, the faces the seats lie on are trimmed along
+/// the wedge's own edges and the blends close what is left: the general
+/// fuse is not run, and the result and its history are those it gives.
+/// Otherwise, and where `a` or `b` is anything else, this is [`cut`].
+///
+/// # Errors
+///
+/// As [`cut`].
+pub fn cut_seated(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    if is_sheet(model, a)? || is_sheet(model, b)? {
+        return cut(model, a, b, tol);
+    }
+    let built = noting_held(model, |model| {
+        ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+            match seated::seated_cut(model, a, b, tol) {
+                Ok(Some(built)) => return Ok(built),
+                Err(
+                    e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_)),
+                ) => {
+                    return Err(e);
+                }
+                Ok(None) | Err(_) => {}
+            }
             settled(model, tol, |model, tol| cut_once(model, a, b, tol))
         })
     })?;

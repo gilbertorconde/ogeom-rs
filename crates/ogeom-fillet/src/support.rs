@@ -2045,6 +2045,76 @@ mod tests {
         }
     }
 
+    /// The volume, validity and face, edge and vertex counts of a solid.
+    fn summary(model: &Model, shape: &Shape) -> (f64, bool, [usize; 3]) {
+        let volume =
+            ogeom_algo::volume_properties(model, shape, ogeom_mesh::Deflection::default(), T)
+                .unwrap()
+                .mass;
+        let valid = ogeom_algo::check(model, shape, T).unwrap().is_valid();
+        let count = |kind| explore_unique(model, shape, kind).unwrap().len();
+        (
+            volume,
+            valid,
+            [
+                count(ShapeType::Face),
+                count(ShapeType::Edge),
+                count(ShapeType::Vertex),
+            ],
+        )
+    }
+
+    /// A straight band's wedge cuts the block it was built for by trimming
+    /// the faces it sits on. The same wedge on the block with a blind hole
+    /// reaching up into it from below, whose wall its blend would cross, is
+    /// left to the general fuse. Either way the solid is the general fuse's.
+    #[test]
+    fn a_seated_wedge_is_cut_by_trimming_only_where_nothing_reaches_into_it() {
+        let mut model = Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 6.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let ridge = edge_at(&model, &block, Point::new(5.0, 0.0, 4.0));
+        let (made, wedges) =
+            super::collecting_wedges(|| crate::fillet_edge(&mut model, &block, &ridge, 1.0, T));
+        made.unwrap();
+        let [wedge] = &wedges[..] else {
+            panic!("one wedge, not {}", wedges.len());
+        };
+        // Up to a tenth below the ridge, a tenth in from the front: inside
+        // the corner the band rounds away.
+        let at = Frame::new(
+            Point::new(5.0, 0.1, -1.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let drill = ogeom_algo::make_cylinder(&mut model, at, 0.05, 4.9, T)
+            .unwrap()
+            .shape;
+        let drilled = ogeom_bool::cut(&mut model, &block, &drill, T)
+            .unwrap()
+            .shape;
+        for (solid, seated) in [(&block, 1), (&drilled, 0)] {
+            let mut general = model.clone();
+            let want = ogeom_bool::cut(&mut general, solid, &wedge.solid, T).unwrap();
+            let (got, work) = ogeom_bool::work::counted(|| {
+                ogeom_bool::cut_seated(&mut model, solid, &wedge.solid, T).unwrap()
+            });
+            assert_eq!(work.seated_cuts, seated);
+            let (want, got) = (summary(&general, &want.shape), summary(&model, &got.shape));
+            assert!(got.1, "the cut is valid");
+            assert_eq!((got.1, got.2), (want.1, want.2));
+            assert!(
+                (got.0 - want.0).abs() <= want.0 * 1e-9,
+                "{} against {}",
+                got.0,
+                want.0
+            );
+        }
+    }
+
     /// A stadium prism from `z0` up `height`: two runs of `length` along
     /// x joined by semicircles of radius `r`, centred on (0, 0) and
     /// (`length`, 0).

@@ -2344,3 +2344,192 @@ fn a_pocket_of_a_disc_and_its_chord_meets_at_both_corners() {
         }
     }
 }
+
+/// What a rounding made, as two ways of making it are compared: whether
+/// it checks valid, its volume, its face, edge and vertex counts, and for
+/// each face, edge and vertex of the solid as given and each edge asked
+/// for, what the history traces it to, how many shapes it was modified
+/// into, whether it was deleted or copied, and how many faces, edges and
+/// vertices of the result it generated.
+fn account(
+    model: &ogeom_topo::Model,
+    given: &ogeom_topo::Shape,
+    asked: &[ogeom_topo::Shape],
+    built: &ogeom_algo::Built,
+) -> (bool, f64, Vec<usize>, Vec<[usize; 5]>) {
+    let valid = ogeom_algo::check(model, &built.shape, T)
+        .unwrap()
+        .is_valid();
+    let kinds = [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex];
+    let held: Vec<ogeom_topo::Shape> = kinds
+        .iter()
+        .flat_map(|&kind| explore_unique(model, &built.shape, kind).unwrap())
+        .collect();
+    let counts = kinds
+        .iter()
+        .map(|&kind| explore_unique(model, &built.shape, kind).unwrap().len())
+        .collect();
+    let in_result = |images: &[ogeom_topo::Shape]| {
+        images
+            .iter()
+            .filter(|image| held.iter().any(|h| h.is_same(image)))
+            .count()
+    };
+    let mut records = Vec::new();
+    let parts = kinds
+        .iter()
+        .flat_map(|&kind| explore_unique(model, given, kind).unwrap())
+        .chain(asked.iter().cloned());
+    for part in parts {
+        let history = &built.history;
+        records.push([
+            in_result(history.trace(&part)),
+            history.modified(&part).len(),
+            usize::from(history.is_deleted(&part)),
+            usize::from(history.copy_of(&part).is_some()),
+            in_result(history.generated(&part)),
+        ]);
+    }
+    (valid, volume(model, &built.shape, 1e-3), counts, records)
+}
+
+/// Bands whose wedges sit flush on planar faces, ending on a corner's ball
+/// or on a face across the band, are cut from the solid by trimming the
+/// faces they sit on rather than by the general fuse, and the rounding
+/// comes out as the general fuse makes it: the same solid, valid, with the
+/// same history for every face, edge and vertex of the solid as given; a
+/// face trimmed keeps each hole it walks, a closed rim among them, walked
+/// the way it was. Where a band's rail leaves a vertex along another edge closely enough
+/// that the general fuse splits the two where they part (a corner rounded
+/// at a hundredth, a band ending on an edge stating a millimetre's
+/// thousandth), the cut is left to the general fuse.
+#[test]
+fn seated_bands_are_cut_by_trimming_to_the_general_fuse_s_solid() {
+    type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64);
+    type Case<'a> = &'a dyn Fn(&mut ogeom_topo::Model) -> Made;
+    let cube = |model: &mut ogeom_topo::Model| -> Made {
+        let solid = ogeom_algo::make_box(model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let edges = explore_unique(model, &solid, ShapeType::Edge).unwrap();
+        (solid, edges, 1.0)
+    };
+    let corner = |model: &mut ogeom_topo::Model, radius: f64| -> Made {
+        let solid = ogeom_algo::make_box(model, Frame::WORLD, (2.0, 2.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let edges = [
+            Point::new(2.0, 1.0, 1.0),
+            Point::new(2.0, 2.0, 0.5),
+            Point::new(1.0, 2.0, 1.0),
+        ]
+        .map(|at| edge_through(model, &solid, at))
+        .to_vec();
+        (solid, edges, radius)
+    };
+    let across = |model: &mut ogeom_topo::Model, loose: bool| -> Made {
+        let solid = ogeom_algo::make_box(model, Frame::WORLD, (10.0, 6.0, 4.0), T)
+            .unwrap()
+            .shape;
+        if loose {
+            // The upright edge one band ends on states a thousandth.
+            let upright = edge_through(model, &solid, Point::new(10.0, 0.0, 2.0));
+            model
+                .widen(&upright, ogeom_core::Tolerance::new(1e-3).unwrap())
+                .unwrap();
+        }
+        let edges = [Point::new(5.0, 0.0, 4.0), Point::new(5.0, 6.0, 0.0)]
+            .map(|at| edge_through(model, &solid, at))
+            .to_vec();
+        (solid, edges, 1.0)
+    };
+    // A 10 x 6 plate 4 thick through which a hole of radius 1 runs, its
+    // rims each one closed edge: the top the bands sit on walks one.
+    let holed = |model: &mut ogeom_topo::Model| -> Made {
+        let outline = ogeom_algo::make_polygon(
+            model,
+            &[
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(10.0, 0.0, 0.0),
+                Point::new(10.0, 6.0, 0.0),
+                Point::new(0.0, 6.0, 0.0),
+            ],
+            true,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let rim = Circle::new(
+            Frame::new(Point::new(5.0, 3.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+            1.0,
+            T,
+        )
+        .unwrap();
+        let rim = ogeom_algo::make_edge(
+            model,
+            ogeom_geom::Curve::Circle(CircleCurve::new(rim)),
+            (0.0, core::f64::consts::TAU),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let hole = ogeom_algo::make_wire(model, &[rim], T).unwrap().shape;
+        let plane = ogeom_geom::PlaneSurface::new(Plane::new(Frame::WORLD));
+        let face = ogeom_algo::make_face(model, plane.into(), &[outline, hole], T)
+            .unwrap()
+            .shape;
+        let prism = ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, 4.0), T)
+            .unwrap()
+            .shape;
+        // Stated in place, its top no copy of its bottom moved up.
+        let solid = ogeom_algo::baked_shape(model, &prism, T).unwrap().shape;
+        let edges = [Point::new(5.0, 0.0, 4.0), Point::new(5.0, 6.0, 4.0)]
+            .map(|at| edge_through(model, &solid, at))
+            .to_vec();
+        (solid, edges, 1.0)
+    };
+    let slab = |model: &mut ogeom_topo::Model| -> Made {
+        let solid = ogeom_algo::make_box(model, Frame::WORLD, (3.0, 2.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let edges = explore_unique(model, &solid, ShapeType::Edge).unwrap();
+        (solid, edges, 0.5)
+    };
+    let cases: [(&str, Case, bool); 7] = [
+        ("cube", &cube, true),
+        ("corner at a tenth", &|m| corner(m, 0.1), true),
+        ("corner at a hundredth", &|m| corner(m, 0.01), false),
+        ("across", &|m| across(m, false), true),
+        ("across a loose edge", &|m| across(m, true), false),
+        ("slab", &slab, true),
+        ("holed", &holed, true),
+    ];
+    for (name, case, trimmed) in cases {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, edges, radius) = case(&mut model);
+        let mut general = model.clone();
+        let fused = ogeom_bool::work::unseated(|| {
+            ogeom_fillet::fillet_edges(&mut general, &solid, &edges, radius, T).unwrap()
+        });
+        let (seated, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::fillet_edges(&mut model, &solid, &edges, radius, T).unwrap()
+        });
+        assert_eq!(work.seated_cuts > 0, trimmed, "{name}: cut by trimming");
+        let (want, got) = (
+            account(&general, &solid, &edges, &fused),
+            account(&model, &solid, &edges, &seated),
+        );
+        assert!(got.0, "{name}: the rounding is valid");
+        assert!(
+            (got.1 - want.1).abs() <= want.1 * 1e-9,
+            "{name}: volume {} against {}",
+            got.1,
+            want.1
+        );
+        assert_eq!(
+            (got.0, &got.2, &got.3),
+            (want.0, &want.2, &want.3),
+            "{name}"
+        );
+    }
+}

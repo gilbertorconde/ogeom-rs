@@ -396,6 +396,22 @@ bump may break the API and a patch bump may not.
   fit come in order, so each span's are one run. The knots chosen, and so
   every fit, are unchanged. Rounding all twelve edges of a 10 mm cube
   fits 24 such images, in 12.4 ms rather than 18.6.
+- **Straight bands seated flush on planar faces are cut by trimming those
+  faces, not by the general fuse (#384).** `fillet_edges` applies each
+  round's wedges through the new `ogeom_bool::cut_seated`. Where each
+  wedge is planar seats and one strip of a cylinder, every seat lies on a
+  face of the solid facing its way, the wedge's other edges cross those
+  faces from vertex to vertex (an edge of the solid is split where a
+  contact lands inside it), no other face of the solid reaches into the
+  region the seats' planes and the blend's chord bound, and no new edge
+  leaves a vertex along another closely enough that the general fuse
+  would split the two, the faces are trimmed along the wedge's own edges
+  and the blends close what is left. The result is assembled as the
+  general fuse assembles its own, and its solid and history are the
+  same, except that no face is recorded as generating the shell it is
+  sewn into. Everywhere else the cut is the general fuse's. Rounding all
+  twelve edges of a 10 mm cube takes 58 ms rather than 103, to the same
+  26 faces, 48 edges and volume.
 - **The corners a fillet request rounds are cut in one boolean where
   they stand clear of each other (#384).** `fillet_edges` rounded each
   corner where three or more of its edges meet with its own cut. On a

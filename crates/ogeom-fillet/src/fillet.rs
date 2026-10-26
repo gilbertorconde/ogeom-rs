@@ -1298,7 +1298,8 @@ fn join_flush(
 /// fused ones together, each blend's faces credited to its edge through
 /// the boolean's history. Wedges whose boxes meet go in different
 /// booleans, as a compound of lumps that overlap would count their overlap
-/// twice.
+/// twice. A cut is [`ogeom_bool::cut_seated`], which trims the faces
+/// straight bands sit on where nothing else reaches into them.
 fn apply_set_aside(
     model: &mut Model,
     mut built: Built,
@@ -1356,7 +1357,7 @@ fn apply_set_aside(
         let applied = if additive {
             ogeom_bool::fuse(model, &built.shape, &tool, tol)
         } else {
-            ogeom_bool::cut(model, &built.shape, &tool, tol)
+            ogeom_bool::cut_seated(model, &built.shape, &tool, tol)
         };
         // A group the boolean does not resolve at once is no refusal: the
         // wedges are then applied one at a time, in the order they were

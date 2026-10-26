@@ -14,12 +14,16 @@ pub struct Work {
     pub face_pairs: usize,
     /// Pieces the gathered faces were split into and classified.
     pub pieces: usize,
+    /// Cuts made by trimming the faces a tool's wedges sit on, with no
+    /// general fuse.
+    pub seated_cuts: usize,
 }
 
 thread_local! {
     static COUNTED: Cell<Work> = const {
-        Cell::new(Work { faces_gathered: 0, face_pairs: 0, pieces: 0 })
+        Cell::new(Work { faces_gathered: 0, face_pairs: 0, pieces: 0, seated_cuts: 0 })
     };
+    static UNSEATED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `f` and count the work the booleans it runs on this thread do.
@@ -34,4 +38,22 @@ pub(crate) fn add(f: impl FnOnce(&mut Work)) {
     let mut work = COUNTED.get();
     f(&mut work);
     COUNTED.set(work);
+}
+
+/// Run `f` with every cut [`cut_seated`](crate::cut_seated) is asked for
+/// made by the general fuse, as [`cut`](crate::cut) makes it.
+pub fn unseated<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNSEATED.set(self.0);
+        }
+    }
+    let _restore = Restore(UNSEATED.replace(true));
+    f()
+}
+
+/// Whether the cuts on this thread are left to the general fuse.
+pub(crate) fn is_unseated() -> bool {
+    UNSEATED.get()
 }
