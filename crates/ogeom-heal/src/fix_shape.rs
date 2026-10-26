@@ -19,8 +19,14 @@
 //!   another, no farther apart than a fitted trim may stand off its
 //!   surface, the two vertices are made one, wide enough to reach both:
 //!   the same slop as a curve ending away from its vertex, and stated the
-//!   same way. A gap past that reach is a missing piece of boundary, and
-//!   no edge is made to fill it;
+//!   same way. A gap past that reach is a missing piece of boundary;
+//! - such a gap is filled with a straight edge where that edge is provably
+//!   the one lacking: the gap is shorter than every edge of each face it
+//!   is in and no other vertex of those faces stands as near its ends, the
+//!   line lies on each face's surface within the face's tolerance along the
+//!   chart segment between the edges either side, and each face, filled,
+//!   checks clean. A gap two faces share gets one edge with a pcurve on
+//!   each. Any other gap stays reported;
 //! - a boundary that crosses a pole of its surface (a sphere's, a cone's
 //!   apex) with no edge spanning the pole's row of the chart is given a
 //!   degenerate edge there;
@@ -75,6 +81,9 @@ pub struct FixReport {
     pub edges_collapsed: usize,
     /// Vertices merged into the vertex beside them across a gap in a wire.
     pub gap_vertices_merged: usize,
+    /// Straight edges made across gaps in wires too wide for their
+    /// vertices to merge.
+    pub lacking_edges_made: usize,
     /// Degenerate edges made where a boundary crosses a pole.
     pub pole_edges_made: usize,
     /// Edges given a pcurve on a face they bound.
@@ -145,6 +154,22 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     let gap_vertices_merged = merge_wire_gaps(model, &current, &mut gaps, tol)?;
     if !gaps.is_empty() {
         let built = gaps.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
+
+    // Lacking edges across the gaps merging leaves, where a straight edge
+    // provably fills them.
+    let mut lacking = Reshape::new();
+    let lacking_edges_made = crate::lacking::stage_lacking_edges(
+        model,
+        &current,
+        &mut lacking,
+        tol.confusion() * TRIM_CAP,
+        tol,
+    )?;
+    if !lacking.is_empty() {
+        let built = lacking.apply(model, &current)?;
         history = history.then(&built.history);
         current = built.shape;
     }
@@ -247,6 +272,7 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             wires_reordered,
             edges_collapsed,
             gap_vertices_merged,
+            lacking_edges_made,
             pole_edges_made,
             edges_trimmed,
             sewn,

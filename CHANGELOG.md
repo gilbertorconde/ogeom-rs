@@ -13,6 +13,26 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fix_shape` makes the edge a wire lacks where a straight one provably
+  fills the gap.** (#397)
+  - A gap between two edges of a wire wider than the trim cap, within
+    which the two vertices merge, stayed reported, and no edge was made.
+  - Such a gap now gets a straight edge, with a pcurve on each face it
+    bounds, where that edge is beyond doubt the one missing: the gap is
+    shorter than every edge of each face it is in, no other vertex of
+    those faces stands as near either end as the other end does, the
+    line lies on each face's surface within the face's tolerance along
+    the chart segment between the edges either side, and each face,
+    filled, checks clean. A gap two faces share is filled by one edge on
+    both or not at all. Any other gap stays reported.
+  - `FixReport::lacking_edges_made` counts them.
+  - Measured: a 10 mm box gaping 2 mm along an edge closes and measures
+    1000 again; a 10 mm square missing a corner across √2 measures
+    99.5. A chord 2 mm across a 10 mm cylinder's rim, 0.05 mm off the
+    surface (its sagitta), is refused, as is a gap as long as an edge of
+    its face.
+  - A shape with no such gap takes the same path and comes out the same.
+
 - **Pipe shells under the auxiliary and binormal laws round smooth closed
   spines, with holes along open ones, and twisted whole turns round
   closed spines.** (#394)

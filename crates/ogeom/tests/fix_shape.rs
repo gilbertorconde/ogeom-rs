@@ -1234,3 +1234,172 @@ fn a_wire_gap_spanned_by_an_edge_elsewhere_is_left() {
         6
     );
 }
+
+/// A 10 mm box whose boundary gapes two millimetres where one edge
+/// begins, past the reach within which vertices merge: the gap lies along
+/// the cut edge's own line on both faces that walk it, so one straight
+/// edge with a pcurve on each fills it, and the box checks clean and
+/// measures 1000 again.
+#[test]
+fn a_wire_gap_past_reach_along_a_line_gets_its_edge() {
+    let mut model = Model::new();
+    let block = box_with_a_wire_gap(&mut model, 2.0);
+    let edges = |model: &Model, s: &Shape| explore_unique(model, s, ShapeType::Edge).unwrap().len();
+    assert_eq!(edges(&model, &block), 12);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &block, T).unwrap();
+    assert_eq!(fixed.report.gap_vertices_merged, 0);
+    assert_eq!(fixed.report.lacking_edges_made, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    assert_eq!(edges(&model, &fixed.shape), 13);
+    assert_eq!(
+        explore_unique(&model, &fixed.shape, ShapeType::Vertex)
+            .unwrap()
+            .len(),
+        9
+    );
+    let v = volume_of_solid(&model, &fixed.shape);
+    assert!((v - 1000.0).abs() < 1e-9, "{v}");
+}
+
+/// A 10 mm square face whose corner at the origin is missing: one edge
+/// stops at (0, 1), the next starts at (1, 0). The gap, √2 across, is
+/// shorter than every edge and no other corner is as near, so the
+/// straight edge across it is made, and the face, now chamfered, measures
+/// 100 − 1/2.
+#[test]
+fn a_gap_across_a_plane_face_s_corner_is_filled_straight() {
+    let mut model = Model::new();
+    let at = |model: &mut Model, x: f64, y: f64| make_vertex(model, Point::new(x, y, 0.0)).shape;
+    let corners = [
+        at(&mut model, 1.0, 0.0),
+        at(&mut model, 10.0, 0.0),
+        at(&mut model, 10.0, 10.0),
+        at(&mut model, 0.0, 10.0),
+        at(&mut model, 0.0, 1.0),
+    ];
+    let mut edges = Vec::new();
+    for pair in corners.windows(2) {
+        let point = |v: &Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+        let (from, to) = (point(&pair[0]), point(&pair[1]));
+        let curve = ogeom::geom::LineCurve::segment(from, to, T).unwrap().into();
+        let edge = ogeom::algo::make_edge_between(
+            &mut model,
+            curve,
+            (0.0, from.distance(to)),
+            &pair[0],
+            &pair[1],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let line =
+            ogeom::geom::Line2d::segment(Point2::new(from.x, from.y), Point2::new(to.x, to.y), T)
+                .unwrap();
+        edges.push((edge, line));
+    }
+    let surface = model
+        .geometry_mut()
+        .add_surface(SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(
+            Frame::WORLD,
+        ))));
+    for (edge, line) in &edges {
+        ogeom::algo::attach_pcurve(
+            &mut model,
+            edge,
+            (*line).into(),
+            surface,
+            Location::default(),
+            ogeom::geom::Curve2d::domain(line),
+        )
+        .unwrap();
+    }
+    let ring: Vec<Shape> = edges.into_iter().map(|(e, _)| e).collect();
+    let wire = model.add_wire(&ring).unwrap();
+    let face = model
+        .add_face(FaceData::new(surface, Location::default()), &[wire])
+        .unwrap();
+    assert_eq!(wire_gaps(&check(&model, &face, T).unwrap()), 1);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &face, T).unwrap();
+    assert_eq!(fixed.report.lacking_edges_made, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let area = surface_properties(&model, &fixed.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((area - 99.5).abs() < 1e-9, "{area}");
+}
+
+/// A 10 mm cylinder whose top rim is cut two millimetres of arc short at
+/// each end, so it stops either side of the seam's top vertex: each chord
+/// from that vertex to a cut end stands off the cylinder by its sagitta,
+/// 10 (1 − cos 0.1), about 0.05 mm, and the top's gap lies between the two
+/// ends of one edge, which no lacking edge joins. No edge is made and
+/// every gap stays reported.
+#[test]
+fn a_gap_whose_chord_leaves_the_surface_stays_reported() {
+    use ogeom::topo::EdgeRepr;
+    let mut model = Model::new();
+    let radius = 10.0;
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, radius, 10.0, T)
+        .unwrap()
+        .shape;
+    // The top rim: the closed edge whose vertex stands at the top.
+    let rim = explore_unique(&model, &drum, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let bounds = model.children_of(&Shape::of(e.node())).unwrap();
+            let p = model
+                .node(&bounds[0])
+                .unwrap()
+                .data()
+                .as_vertex()
+                .unwrap()
+                .point;
+            bounds.len() == 1 || (bounds[0].node() == bounds[1].node() && p.z > 5.0)
+        })
+        .unwrap();
+    let stored = Shape::of(rim.node());
+    let bounds = model.children_of(&stored).unwrap();
+    let NodeData::Edge(mut data) = model.node(&stored).unwrap().data().clone() else {
+        panic!("an edge");
+    };
+    let cut = 2.0 / radius;
+    let mut ends = None;
+    for repr in &mut data.representations {
+        if let EdgeRepr::Curve3d { range, curve, .. } = repr {
+            *range = (range.0 + cut, range.1 - cut);
+            let c = model.geometry().curve(*curve).unwrap();
+            use ogeom::geom::Curve3d as _;
+            ends = Some((
+                c.point_at(range.0, T).unwrap(),
+                c.point_at(range.1, T).unwrap(),
+            ));
+        }
+        if let EdgeRepr::PCurve { range, .. } | EdgeRepr::Seam { range, .. } = repr {
+            *range = (range.0 + cut, range.1 - cut);
+        }
+    }
+    let (from, to) = ends.unwrap();
+    let ends = [
+        make_vertex(&mut model, from).shape,
+        make_vertex(&mut model, to).shape,
+    ];
+    assert!(bounds.iter().all(|b| b.node() == bounds[0].node()));
+    let cut_rim = model.add_edge(*data, &ends).unwrap();
+    let mut reshape = ogeom::heal::Reshape::new();
+    reshape.replace(&stored, cut_rim);
+    let drum = reshape.apply(&mut model, &drum).unwrap().shape;
+    let before = wire_gaps(&check(&model, &drum, T).unwrap());
+    assert_eq!(before, 3);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &drum, T).unwrap();
+    assert_eq!(fixed.report.lacking_edges_made, 0);
+    assert_eq!(
+        wire_gaps(&fixed.report.after),
+        before,
+        "{}",
+        fixed.report.after
+    );
+}

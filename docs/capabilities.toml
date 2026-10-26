@@ -411,7 +411,11 @@ verdict = "partial"
 restriction = """`fix_shape` is the standalone entry point: diagnose, put a \
 wire's edges end to end where an order exists, collapse edges shorter than \
 their own vertices' tolerances, make one of two vertices a wire's edges \
-meet at within the trim cap (no edge is made across a wider gap), give a \
+meet at within the trim cap, fill a wider gap with a straight edge where \
+it is provably the one lacking (shorter than every edge of each face it is \
+in, no other vertex as near its ends, on each face's surface within the \
+face's tolerance, each face checking clean after; any other gap stays \
+reported), give a \
 boundary crossing a pole its degenerate edge, fit missing pcurves, sew loose faces, \
 tighten tolerances, widen an edge to how far its pcurves stand off its \
 curve and a vertex to how far its curves end from it (within the trim \
