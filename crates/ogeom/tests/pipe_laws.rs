@@ -690,10 +690,10 @@ fn face_count(model: &Model, shape: &Shape) -> usize {
 /// line and past the corner by the section's reach either way.
 ///
 /// The extended corner matches in volume, face count and validity. The
-/// round corner stays refused, its check that the next run starts on the
-/// arc run's end section turned failing on the skinned run's holed end;
-/// and the mitred corner stays refused, its trimmed pieces not closing
-/// into a shell.
+/// round corner matches in volume and validity: the next run starts on
+/// the arc run's end section turned within the skin's tolerance, which
+/// is what the skinned run is held to. The mitred corner stays refused,
+/// its trimmed pieces not closing into a shell.
 #[test]
 fn a_holed_square_under_a_level_binormal_turns_a_corner_as_the_rotation_minimizing_sweep() {
     let (big, run, half, radius, skin, chord) = (20.0, 10.0, 1.0, 0.5, 1e-3, 1e-3);
@@ -725,8 +725,18 @@ fn a_holed_square_under_a_level_binormal_turns_a_corner_as_the_rotation_minimizi
         "{v} against {want}, bound {bound}"
     );
 
-    for corners in [PipeCorners::Round, PipeCorners::Mitre] {
-        let (_, built) = sweep(&level, corners);
-        assert!(built.is_err(), "{corners:?} built");
-    }
+    let (rmf_model, rmf) = sweep(&PipeLaw::RotationMinimizing, PipeCorners::Round);
+    let rmf = rmf.unwrap();
+    let (law_model, swept) = sweep(&level, PipeCorners::Round);
+    let swept = swept.unwrap();
+    let found = ogeom::algo::check(&law_model, &swept, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let (v, want) = (volume(&law_model, &swept), volume(&rmf_model, &rmf));
+    assert!(
+        (v - want).abs() < bound,
+        "round: {v} against {want}, bound {bound}"
+    );
+
+    let (_, built) = sweep(&level, PipeCorners::Mitre);
+    assert!(built.is_err(), "the mitre built");
 }

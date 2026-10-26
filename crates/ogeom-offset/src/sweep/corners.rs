@@ -125,6 +125,10 @@ pub(super) fn law_cornered(
     let mut sections: Vec<Shape> = Vec::with_capacity(runs.len());
     let mut solids: Vec<Shape> = Vec::with_capacity(runs.len());
     let mut ends: Vec<Shape> = Vec::with_capacity(runs.len());
+    // How far each run's solid may stand off the law's placement of its
+    // sections: a prism places them exactly, a pipe shell holds its skin to
+    // `tolerance`.
+    let mut held: Vec<f64> = Vec::with_capacity(runs.len());
     for (r, run) in runs.iter().enumerate() {
         let first = &legs[run.legs.start];
         let last = &legs[run.legs.end - 1];
@@ -148,10 +152,11 @@ pub(super) fn law_cornered(
                 realized_profile_wound(model, profile, &motion, Some(first.heading_in), tol)?
             }
         };
-        let solid = if run.legs.len() == 1
+        let prism = run.legs.len() == 1
             && first.straight
-            && keeps_frame(model, &wire, law, tolerance, tol)?
-        {
+            && keeps_frame(model, &wire, law, tolerance, tol)?;
+        held.push(if prism { 0.0 } else { tolerance });
+        let solid = if prism {
             make_prism(model, &section, first.end - first.start, tol)?.shape
         } else {
             make_pipe_shell_with(
@@ -241,7 +246,13 @@ pub(super) fn law_cornered(
                 let rotation = Transform::rotation(about, turn);
                 if !matches!(law, PipeLaw::RotationMinimizing) || b == 0 {
                     let turned = realized_profile_wound(model, &ends[a], &rotation, Some(d2), tol)?;
-                    if !same_section(model, &turned, &sections[b], tol)? {
+                    // The two sections are one within what either run is
+                    // held to: a run's end stands off the law's placement
+                    // by as much as its skin may.
+                    let near = (tol.confusion() * 10.0).max(held[a]).max(held[b]);
+                    if !lies_on(model, &turned, &sections[b], near, tol)?
+                        || !lies_on(model, &sections[b], &turned, near, tol)?
+                    {
                         ogeom_bail!(
                             Construction,
                             "a round corner turns the section about the corner, and the law \

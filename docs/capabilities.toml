@@ -1010,8 +1010,13 @@ otherwise each loop is skinned through the placed sections and held to \
 the tolerance against the law, along an open spine with no sharp corner, \
 each hole a solid of its own cut from the outer. Round a smooth closed \
 spine the section twists whole turns, unscaled, the skin closed on \
-itself; a scale, or a twist of part of a turn, is refused there by name, \
-as the section would not come home to itself. Scale and twist follow \
+itself, or part of a turn where that brings each loop of the section home \
+onto itself (a square a quarter turn, a circle about its centre any \
+angle): a faceted loop's edges sweep strips open at both ends, each \
+closing on the strip that lands where it began, a smooth loop is read from \
+a point sliding round it as it turns; a scale, or a part turn the \
+section's symmetry does not close, is refused there by name, as the \
+section would not come home to itself. Scale and twist follow \
 linear laws only, and a scaled or twisted section turns no sharp corner. The multisection pipe takes faces with holes, as many \
 in every section, each hole swept through the sections and cut from the \
 outer solid. Round sharp corners a face is also swept run by run: the \
@@ -1021,7 +1026,8 @@ the halving plane, extended or rounded, along open or closed spines and \
 against curved legs. The auxiliary and binormal laws turn sharp corners \
 this way too, their runs meeting a mitre with the sections the law sets; \
 a round corner is refused where the law's next section is not the last \
-turned about the corner. The Frenet frame turns sharp corners extended or \
+turned about the corner, within what the runs are held to (a skinned \
+run's tolerance), so a holed section's skinned run turns round ones too. The Frenet frame turns sharp corners extended or \
 rounded the same way, each run's section set by the run's own Frenet \
 frame, and is refused along a straight run, which has none. Round a \
 smooth closed spine the auxiliary and binormal laws sweep as the \

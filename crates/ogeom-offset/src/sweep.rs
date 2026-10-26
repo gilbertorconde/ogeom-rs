@@ -3905,6 +3905,187 @@ fn closed_loop_shell(
     closed_skinned_shell(model, &skin, tolerance, tol)
 }
 
+/// One profile wire's closed shell round the spine where the twist brings
+/// the section home turned by part of a turn, onto itself by its own
+/// symmetry: `carried` at the last station reads the section turned by the
+/// whole twist, and `share(s)` is the share of the twist turned by `s`.
+///
+/// A faceted wire's edges each sweep a strip open at both ends, from the
+/// edge at the first station to where it comes home: on another edge of
+/// the wire, the next edge on the next, so the strips close on one
+/// another, each edge at the start the end of the strip that lands on it.
+/// A smooth wire (one closed edge) is read from a point that slides round
+/// it as the section turns, by the share of the turn that carries its
+/// start onto where its start comes home, so every column of the skin
+/// comes home to itself and the skin closes as an untwisted one does.
+///
+/// Where the wire's image at home is not the wire itself, edge onto edge
+/// (or for a smooth wire the curve onto itself, slid), the twist is
+/// refused by name.
+#[allow(clippy::too_many_arguments, reason = "one frame, spelled out")]
+fn turned_loop_shell(
+    model: &mut Model,
+    edges: &[Shape],
+    smooth: bool,
+    stations: &[SpineStation],
+    carried: &dyn Fn(f64, (f64, f64)) -> OgeomResult<Point>,
+    share: &dyn Fn(f64) -> OgeomResult<f64>,
+    frame0: (Point, Vector),
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    const ALONG_EDGE: usize = 8;
+    const AROUND: usize = 40;
+    // Samples each edge's image is checked at.
+    const CHECKED: usize = 32;
+    let refused = || -> OgeomResult<Shape> {
+        ogeom_bail!(
+            Construction,
+            "a twist round a closed spine is a whole number of turns, or a part of one \
+             the section's symmetry brings home onto itself; this section comes home \
+             turned off itself"
+        )
+    };
+    let (origin, x0) = frame0;
+    let y0 = stations[0].tangent.cross(x0);
+    let flat = |p: Point| ((p - origin).dot(x0), (p - origin).dot(y0));
+    let home = stations.len() - 1;
+    #[allow(clippy::cast_precision_loss, reason = "a station count")]
+    let end = home as f64;
+    let near = tol.confusion();
+    // Each edge read as the wire walks it, by a fraction of its range.
+    let mut walked: Vec<(Curve, (f64, f64), bool)> = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let (curve, range) = spine_curve_of(model, edge)?;
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        walked.push((curve, range, reversed));
+    }
+    let at = |e: usize, f: f64| -> OgeomResult<Point> {
+        let (curve, range, reversed) = &walked[e];
+        let t = if *reversed {
+            range.1 - (range.1 - range.0) * f
+        } else {
+            range.0 + (range.1 - range.0) * f
+        };
+        curve.point_at(t, tol)
+    };
+    let mid = stations[home / 2].at;
+    #[allow(clippy::cast_precision_loss, reason = "a small count")]
+    let checked = |k: usize| k as f64 / CHECKED as f64;
+
+    if smooth {
+        // The fraction round the curve its start comes home at.
+        let (curve, range, reversed) = &walked[0];
+        let span = range.1 - range.0;
+        let target = carried(end, flat(at(0, 0.0)?))?;
+        let found = ogeom_algo::project_on_curve(curve, target, 4 * CHECKED, tol)?;
+        if found.distance > near {
+            return refused();
+        }
+        let slide = if *reversed {
+            (range.1 - found.parameter) / span
+        } else {
+            (found.parameter - range.0) / span
+        }
+        .rem_euclid(1.0);
+        let round = |e: usize, f: f64| at(e, f.rem_euclid(1.0));
+        for k in 0..CHECKED {
+            let f = checked(k);
+            if carried(end, flat(round(0, f)?))?.distance(round(0, f + slide)?) > near {
+                return refused();
+            }
+        }
+        let skin = Skin::swept(
+            |f, s| carried(s, flat(round(0, f - slide * share(s)?)?)),
+            fractions(AROUND),
+            (0, home),
+            true,
+        )?;
+        return closed_skinned_shell(model, &skin, tolerance, tol);
+    }
+
+    // Where each edge comes home: on the edge whose start its start comes
+    // home at, each next edge on the next, the image lying on it.
+    let n = edges.len();
+    let starts: Vec<Point> = (0..n).map(|e| at(e, 0.0)).collect::<OgeomResult<_>>()?;
+    let first = carried(end, flat(starts[0]))?;
+    let Some(onto) = (0..n).find(|&j| starts[j].distance(first) <= near) else {
+        return refused();
+    };
+    let lands: Vec<usize> = (0..n).map(|i| (i + onto) % n).collect();
+    for i in 0..n {
+        if carried(end, flat(starts[i]))?.distance(starts[lands[i]]) > near {
+            return refused();
+        }
+        let (curve, range, _) = &walked[lands[i]];
+        let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+        for k in 0..=CHECKED {
+            let image = carried(end, flat(at(i, checked(k))?))?;
+            let found = ogeom_algo::project_on_curve(curve, image, CHECKED, tol)?;
+            let inside = found.parameter >= lo - tol.parametric()
+                && found.parameter <= hi + tol.parametric();
+            if !inside || found.distance > near {
+                return refused();
+            }
+        }
+    }
+    let corners: Vec<Shape> = starts
+        .iter()
+        .map(|p| -> OgeomResult<Shape> {
+            Ok(model.add_vertex(VertexData::new(carried(0.0, flat(*p))?)))
+        })
+        .collect::<OgeomResult<_>>()?;
+    // Each edge at the start is one edge, the bottom of its own strip and
+    // the top of the strip landing on it; each corner's path one rail, the
+    // end of one strip and the start of the next.
+    let mut bottoms: Vec<Option<Shape>> = vec![None; n];
+    let mut rails: Vec<Option<Shape>> = vec![None; n];
+    let mut faces = Vec::with_capacity(n);
+    for i in 0..n {
+        let next = (i + 1) % n;
+        let (j, j_next) = (lands[i], lands[next]);
+        let skin = Skin::swept(
+            |f, s| carried(s, flat(at(i, f)?)),
+            fractions(ALONG_EDGE),
+            (0, home),
+            false,
+        )?;
+        // A border is adopted by projecting it onto this strip from its
+        // start; where that start is a corner the strip holds twice (the
+        // strip landing beside the edge it left), the projection cannot
+        // tell the two apart, and the border is fitted afresh and sewn.
+        let at_corner = [i, next, j, j_next];
+        let twice = |c: usize| at_corner.iter().filter(|k| **k == c).count() > 1;
+        let shared = [
+            (bottoms[i].as_ref(), i),
+            (bottoms[j].as_ref(), j),
+            (rails[i].as_ref(), i),
+            (rails[next].as_ref(), next),
+        ]
+        .map(|(edge, start)| edge.filter(|_| !twice(start)));
+        let strip = skinned_strip(
+            model,
+            &skin,
+            (&corners[i], &corners[next], &corners[j], &corners[j_next]),
+            shared,
+            mid,
+            false,
+            tolerance,
+            tol,
+        )?;
+        bottoms[i].get_or_insert(strip.bottom);
+        bottoms[j].get_or_insert(strip.top);
+        rails[i].get_or_insert(strip.rail0);
+        rails[next].get_or_insert(strip.rail1);
+        faces.push(strip.face);
+    }
+    let sewn = sew(model, &faces, tol)?;
+    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+        ogeom_bail!(Construction, "the turned faceted ring did not close");
+    }
+    Ok(sewn.shells[0].clone())
+}
+
 /// Rotation-minimizing normals along the stations, by double reflection:
 /// reflect in each chord's plane, then in the plane bisecting the tangents.
 /// Self-contained (it needs only the station list) and shared by every
@@ -7756,8 +7937,10 @@ pub(crate) fn spine_curve_of(
 /// The auxiliary and binormal laws set a frame at each point of the spine,
 /// single-valued round it, so theirs need no reconciling: the law gives
 /// the normal at each station and between them, and the skin is held to
-/// `tolerance` against it. A `twist` (whole turns, the caller's to check)
-/// turns the section about the spine in proportion to the length run.
+/// `tolerance` against it. A `twist` turns the section about the spine in
+/// proportion to the length run: whole turns, or a part of one the
+/// section's symmetry brings home onto itself (see `turned_loop_shell`),
+/// refused by name otherwise.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn closed_pipe_shell(
     model: &mut Model,
@@ -7881,20 +8064,40 @@ fn closed_pipe_shell(
         Some(evolving::SpineLengths::of(&walk.curves, tol)?)
     };
     let home = round.len() - 1;
+    // A twist of part of a turn brings the section home turned onto
+    // itself only where its symmetry closes it; each loop's shell sees to
+    // that, and the section reads the whole twist at home.
+    let turned = (twist - (twist / core::f64::consts::TAU).round() * core::f64::consts::TAU).abs()
+        > tol.angular();
+    // The share of the length run to `s`, which the twist turns the
+    // section in proportion to.
+    let share = |s: f64| -> OgeomResult<f64> {
+        let Some(lengths) = &lengths else {
+            return Ok(0.0);
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let station = (s.fract() == 0.0).then(|| (s as usize) % home);
+        let (edge, at_t) = match station {
+            Some(0) => return Ok(if turned && s > 0.0 { 1.0 } else { 0.0 }),
+            Some(i) => (round[i].edge, round[i].t),
+            None => {
+                let j = s.floor();
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let place = walk.place_between(j as usize, s - j);
+                place
+            }
+        };
+        lengths.fraction(&walk.curves, edge, at_t, tol)
+    };
     // A station's own frame at a station, the home station the first
     // again; between them the frame carried, or the law's own; then the
     // twist the length run to there turns the section by.
     let carried = |s: f64, (a, b): (f64, f64)| -> OgeomResult<Point> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let station = (s.fract() == 0.0).then(|| (s as usize) % home);
-        let (p, t, x, (edge, at_t)) = if let Some(i) = station {
+        let (p, t, x) = if let Some(i) = station {
             let station = &round[i];
-            (
-                station.at,
-                station.tangent,
-                round_normals[i],
-                (station.edge, station.t),
-            )
+            (station.at, station.tangent, round_normals[i])
         } else {
             let (p, t, x) = walk.frame_at(s, (0, home), tol)?;
             let x = if classic {
@@ -7907,22 +8110,13 @@ fn closed_pipe_shell(
                 };
                 law_normals_on(&guide, &[here], law, tolerance, tol)?[0]
             };
-            let j = s.floor();
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let place = walk.place_between(j as usize, s - j);
-            (p, t, x, place)
+            (p, t, x)
         };
-        let (a, b) = match &lengths {
-            None => (a, b),
-            Some(lengths) => {
-                let lambda = if station == Some(0) {
-                    0.0
-                } else {
-                    lengths.fraction(&walk.curves, edge, at_t, tol)?
-                };
-                let (sin, cos) = (twist * lambda).sin_cos();
-                (a * cos - b * sin, a * sin + b * cos)
-            }
+        let (a, b) = if lengths.is_some() {
+            let (sin, cos) = (twist * share(s)?).sin_cos();
+            (a * cos - b * sin, a * sin + b * cos)
+        } else {
+            (a, b)
         };
         Ok(p + x * a + t.cross(x) * b)
     };
@@ -7932,17 +8126,31 @@ fn closed_pipe_shell(
         let wire_smooth = wire_edges.len() == 1
             && ogeom_algo::edge_vertices(model, &wire_edges[0])?
                 .is_some_and(|(a, b)| a.is_same(&b));
-        let shell = closed_loop_shell(
-            model,
-            wire,
-            &wire_edges,
-            wire_smooth,
-            &round,
-            &carried,
-            (origin, x0),
-            tolerance,
-            tol,
-        )?;
+        let shell = if turned {
+            turned_loop_shell(
+                model,
+                &wire_edges,
+                wire_smooth,
+                &round,
+                &carried,
+                &share,
+                (origin, x0),
+                tolerance,
+                tol,
+            )?
+        } else {
+            closed_loop_shell(
+                model,
+                wire,
+                &wire_edges,
+                wire_smooth,
+                &round,
+                &carried,
+                (origin, x0),
+                tolerance,
+                tol,
+            )?
+        };
         // The material side follows each loop's own winding, so it is
         // read off the shell itself: the outer shell faces out of what it
         // encloses, a void's faces toward its tunnel.

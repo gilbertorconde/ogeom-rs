@@ -111,9 +111,12 @@ impl SpineLengths {
 /// the exact pyramid or cone. Otherwise each loop of the profile is
 /// skinned through its placed sections and held to `tolerance` between
 /// them against the law, along an open spine with no sharp corner. Round
-/// a smooth closed spine the section comes home to itself only unscaled
-/// and twisted whole turns: the skin is closed round the spine, each hole
-/// a void tunnel of its own shell.
+/// a smooth closed spine the section comes home to itself only unscaled,
+/// and twisted whole turns or a part of one that turns it onto itself (a
+/// square a quarter turn, a regular hexagon a sixth, a circle about its
+/// centre any angle): the skin is closed round the spine, each hole a
+/// void tunnel of its own shell. Each loop of the profile must come home
+/// onto itself, a faceted one edge onto edge.
 ///
 /// Along an open spine each hole sweeps its own solid under the same law,
 /// cut from the outer one.
@@ -124,8 +127,9 @@ impl SpineLengths {
 /// `scale` is negative or `twist` not finite; if the profile is not a
 /// closed planar wire or face standing square to the spine at its start;
 /// if a skinned sweep is asked round a sharp corner, of the fixed law, or
-/// to a scale of zero; if a section is scaled, or twisted other than whole
-/// turns, round a closed spine; and as
+/// to a scale of zero; if a section is scaled, or twisted by a part of a
+/// turn that does not bring each of its loops home onto itself, round a
+/// closed spine; and as
 /// [`make_pipe_shell_with`] or the law refuses the spine.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the skin
 /// cannot reach `tolerance`.
@@ -194,16 +198,14 @@ pub fn make_pipe_shell_evolving(
                  it scales along an open one"
             );
         }
+        // Whole turns bring the section home to itself; a part of a turn
+        // only where its symmetry does, which the closed shell checks.
         let turns = evolution.twist / core::f64::consts::TAU;
-        if (turns - turns.round()).abs() * core::f64::consts::TAU > tol.angular() {
-            ogeom_bail!(
-                Construction,
-                "a twist round a closed spine is a whole number of turns, so the section \
-                 comes home to itself; {} turns is not",
-                turns
-            );
-        }
-        let twist = turns.round() * core::f64::consts::TAU;
+        let twist = if (turns - turns.round()).abs() * core::f64::consts::TAU > tol.angular() {
+            evolution.twist
+        } else {
+            turns.round() * core::f64::consts::TAU
+        };
         return closed_law_pipe(model, profile, spine, law, twist, tolerance, tol);
     }
     let mut solids = Vec::with_capacity(rings.len());
@@ -311,7 +313,8 @@ fn evolving_ring(
 }
 
 /// A planar profile swept round a smooth closed spine under `law`, turned
-/// about the spine by `twist` (whole turns) in proportion to the length
+/// about the spine by `twist` (whole turns, or a part of one the section's
+/// symmetry closes) in proportion to the length
 /// run: stations as many as the law's turning or the twist asks, each edge
 /// its share by length, and the skin closed on itself.
 pub(super) fn closed_law_pipe(

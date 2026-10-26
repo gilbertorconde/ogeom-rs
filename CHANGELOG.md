@@ -32,6 +32,35 @@ bump may break the API and a patch bump may not.
     surface (its sagitta), is refused, as is a gap as long as an edge of
     its face.
   - A shape with no such gap takes the same path and comes out the same.
+- **Pipe shells: part-turn twists that the section's symmetry closes
+  round a closed spine, and round corners for holed sweeps under the
+  auxiliary and binormal laws.** (#394)
+  - `make_pipe_shell_evolving` refused any twist round a smooth closed
+    spine that was not a whole number of turns. A part turn that brings
+    each loop of the section home onto itself is now built: a square a
+    quarter turn, a circle about its centre any angle. A faceted loop's
+    edges each sweep a strip open at both ends, from the edge at the start
+    to the edge it comes home on, and the strips close on one another. A
+    smooth loop is read from a point that slides round it as it turns, so
+    each column of the skin comes home to itself. A part turn the symmetry
+    does not close (a rectangle a quarter turn) is still refused by name.
+  - A round corner checks that the next run starts on the last run's end
+    section turned about the corner. That check compared within ten
+    confusions, but a skinned run is held to the skin tolerance, and a
+    holed section's end under the auxiliary and binormal laws stood off
+    the law's placement by up to that. The check now compares within what
+    either run is held to: the skin tolerance for a skinned run, ten
+    confusions between prisms.
+  - Measured against Pappus: a 2×2 square twisted a quarter turn round a
+    circle of radius 10 (4.3e-6 relative), three quarters back (1.9e-7),
+    and with a centred 0.8 square hole under the level binormal (6.9e-7);
+    each reaches the half diagonal √2 in `z` to 5e-7, as only a turned
+    square does. A circle twisted a radian is the torus (2.8e-6). The
+    holed square down an arc into a quarter turn, rounded under the level
+    binormal, is valid and measures within 5.2e-5 of the rotation-
+    minimizing sweep (bound 1.6).
+  - Every sweep built before takes the same path and builds the same
+    solid.
 
 - **Pipe shells under the auxiliary and binormal laws round smooth closed
   spines, with holes along open ones, and twisted whole turns round

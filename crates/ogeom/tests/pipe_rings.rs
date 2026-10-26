@@ -341,3 +341,125 @@ fn a_closed_spine_refuses_a_section_that_would_not_come_home_by_name() {
     .unwrap_err();
     assert!(err.to_string().contains("would not come home"), "{err}");
 }
+
+/// A `2a` square, with a centred square hole `2c` across where `c` is
+/// given, standing like [`rectangle`] at `(big, 0, 0)` square to `+y`.
+fn square(model: &mut Model, big: f64, a: f64, hole: Option<f64>) -> Shape {
+    let at = Point::new(big, 0.0, 0.0);
+    let corners =
+        |h: f64| [(-h, -h), (h, -h), (h, h), (-h, h)].map(|(x, z)| at + Vector::new(x, 0.0, z));
+    let mut wires = vec![make_polygon(model, &corners(a), true, T).unwrap().shape];
+    if let Some(c) = hole {
+        let mut inner = corners(c);
+        inner.reverse();
+        wires.push(make_polygon(model, &inner, true, T).unwrap().shape);
+    }
+    let frame = Frame::new(at, Direction::Y, Direction::X, T).unwrap();
+    make_face(
+        model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &wires,
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+/// A square twisted a quarter turn round a circle (or three quarters back)
+/// comes home on itself turned, each side where the next stood: its
+/// symmetry closes the ring. Half way round it has turned an eighth, its
+/// corner up at the half diagonal `a √2` in `z`, which the untwisted
+/// square's side at `a` never reaches. Pappus gives `2 π big · 4 a²`, less
+/// the hole's `2 π big · 4 c²` where a centred square hole turns with it.
+#[test]
+fn a_square_twisted_a_quarter_turn_round_a_circle_closes_on_its_symmetry() {
+    let (big, a, c) = (10.0, 1.0, 0.4);
+    for (hole, twist, law) in [
+        (None, PI / 2.0, PipeLaw::RotationMinimizing),
+        (None, -1.5 * PI, PipeLaw::RotationMinimizing),
+        (Some(c), PI / 2.0, PipeLaw::Binormal(Direction::Z)),
+    ] {
+        let name = format!("hole {hole:?}, twist {twist}");
+        let mut model = Model::new();
+        let spine = ring(&mut model, big);
+        let profile = square(&mut model, big, a, hole);
+        let pipe = make_pipe_shell_evolving(
+            &mut model,
+            &profile,
+            &spine,
+            &law,
+            PipeEvolution { scale: 1.0, twist },
+            SKIN,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+        .shape;
+        let found = check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{name}: {found}");
+        let v = measure(&model, &pipe);
+        let inner = hole.unwrap_or(0.0);
+        let want = 2.0 * PI * big * 4.0 * (a * a - inner * inner);
+        let reach = a * 2.0_f64.sqrt();
+        let length = 2.0 * PI * big;
+        let path = (length + 2.0 * PI * reach).hypot(twist.abs() * reach);
+        let bound = skin_bound(8.0 * (a + inner), path);
+        assert!(
+            (v - want).abs() < bound,
+            "{name}: {v} against {want}, bound {bound}"
+        );
+        let top = highest(&model, &pipe);
+        assert!(
+            (top - reach).abs() < SKIN + CHORD,
+            "{name}: reaches z {top}, not {reach}"
+        );
+    }
+}
+
+/// A circle about the spine twisted a radian round a circle: any turn
+/// brings it home onto itself, and the solid is the torus, `2 π² big r²`.
+#[test]
+fn a_circle_twisted_part_of_a_turn_round_a_circle_is_the_torus() {
+    let (big, r, twist) = (10.0, 1.0, 1.0);
+    let mut model = Model::new();
+    let spine = ring(&mut model, big);
+    let frame = Frame::new(Point::new(big, 0.0, 0.0), Direction::Y, Direction::X, T).unwrap();
+    let circle = Circle::new(frame, r, T).unwrap();
+    let edge = make_edge(
+        &mut model,
+        CircleCurve::new(circle).into(),
+        (0.0, 2.0 * PI),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wire = make_wire(&mut model, &[edge], T).unwrap().shape;
+    let profile = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let pipe = make_pipe_shell_evolving(
+        &mut model,
+        &profile,
+        &spine,
+        &PipeLaw::RotationMinimizing,
+        PipeEvolution { scale: 1.0, twist },
+        SKIN,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let found = check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let v = measure(&model, &pipe);
+    let want = 2.0 * PI * PI * big * r * r;
+    let length = 2.0 * PI * big;
+    let bound = skin_bound(2.0 * PI * r, (length + 2.0 * PI * r).hypot(twist * r));
+    assert!(
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
+    );
+}
