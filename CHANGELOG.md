@@ -44,6 +44,35 @@ bump may break the API and a patch bump may not.
   - Measured on a synthetic deck: the three points stand exactly where
     the file, its matrix and its instance put them, and again after a
     round trip.
+- **`fix_shape` strips tails, marks wireless faces natural, and chains
+  free edges into contours.** (#397)
+  - A wire that ran out along an edge and straight back along the same
+    curve kept the pair: a vertex bounding no corner, which every boolean
+    through the face meets as a strand and the mesher strips on its own.
+    The pair now goes where both edges lie within the wider of their
+    tolerances of each other, the chart walks back to the same copy (two
+    meridians a period apart bound the whole sphere and stay), neither is
+    a seam, and no other face walks either. A hole made of such pairs
+    alone goes; an outer wire is never stripped to nothing.
+    `FixReport::tails_stripped` counts the pairs.
+  - A face with no wires that had lost its natural-restriction mark is
+    marked again on a sphere, a torus or a patch, whose domain is the
+    whole surface; on a plane or another windowed surface it stays
+    reported. `FixReport::natural_bounds_marked` counts them.
+  - `ogeom_heal::free_bounds` chains a shape's free edges head to tail
+    into closed contours and open chains, and `FixReport::free_bounds`
+    holds them for the shape as mended. Nothing is sewn across a gap
+    wider than the edges state: on DoomCube's 24 open sheets, sewing at a
+    millimetre joins hundreds of edge pairs that are not twins.
+  - `ogeom_algo::edges_apart` measures how far two edges' curves stand
+    apart.
+  - Measured: the corpus spike (`a_spike_on_the_boundary.step`) loses its
+    two-edge tail, 13 free edges to 11, its area unchanged to 1e-9 and
+    its rim one closed contour. The five slit loops of
+    `slit_loops_are_not_holes.step` stand 0.2 to 0.6 µm apart against
+    edge tolerances of 1e-7 and stay, as the tolerances say. DoomCube
+    and Voron: no solid changed (0 tails, 0 wireless faces), and the 24
+    open sheets' free edges chain into 72 closed contours, none open.
 - **`fix_shape` makes the edge a wire lacks where a straight one provably
   fills the gap.** (#397)
   - A gap between two edges of a wire wider than the trim cap, within

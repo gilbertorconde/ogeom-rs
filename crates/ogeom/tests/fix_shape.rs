@@ -1403,3 +1403,95 @@ fn a_gap_whose_chord_leaves_the_surface_stays_reported() {
         fixed.report.after
     );
 }
+
+/// A face with no wires is a face of its whole surface; one that lost the
+/// mark saying so is marked again where the surface's domain is its whole
+/// extent (a sphere), and left reported where the domain is only a window
+/// on an unbounded sheet (a plane).
+#[test]
+fn a_face_with_no_wires_is_marked_natural_where_its_domain_is_its_extent() {
+    use ogeom::geom::SphereSurface;
+    use ogeom::math::Sphere;
+    let mut model = Model::new();
+    let unmark = |model: &mut Model, face: &Shape| {
+        if let Some(node) = model.node_mut(face)
+            && let NodeData::Face(data) = node.data_mut()
+        {
+            data.natural_restriction = false;
+        }
+    };
+    let no_wires = |d: &ogeom::algo::Diagnosis| {
+        d.problems
+            .iter()
+            .filter(|p| p.what.starts_with("has no wires"))
+            .count()
+    };
+    let sphere = SphereSurface::new(Sphere::new(Frame::WORLD, 2.0, T).unwrap());
+    let ball = ogeom::algo::make_natural_face(&mut model, sphere.into())
+        .unwrap()
+        .shape;
+    unmark(&mut model, &ball);
+    assert_eq!(no_wires(&check(&model, &ball, T).unwrap()), 1);
+    let fixed = ogeom::heal::fix_shape(&mut model, &ball, T).unwrap();
+    assert_eq!(fixed.report.natural_bounds_marked, 1);
+    assert_eq!(no_wires(&fixed.report.after), 0, "{}", fixed.report.after);
+
+    let plane = SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(Frame::WORLD)));
+    let sheet = ogeom::algo::make_natural_face(&mut model, plane)
+        .unwrap()
+        .shape;
+    unmark(&mut model, &sheet);
+    let fixed = ogeom::heal::fix_shape(&mut model, &sheet, T).unwrap();
+    assert_eq!(fixed.report.natural_bounds_marked, 0);
+    assert_eq!(no_wires(&fixed.report.after), 1);
+}
+
+/// A box's shell with its lid taken off is open round the lid's rim, and
+/// with its floor off too, round two rims: each a closed contour of four
+/// edges, walked as the faces beside it walk them. A closed shell has
+/// none.
+#[test]
+fn free_edges_chain_into_the_rims_of_each_opening() {
+    let mut model = Model::new();
+    let shell = box_shell(&mut model, Point::ORIGIN, Point::new(10.0, 10.0, 10.0));
+    assert!(ogeom::heal::free_bounds(&model, &shell).unwrap().is_empty());
+    let faces = explore_unique(&model, &shell, ShapeType::Face).unwrap();
+    let level = |model: &Model, face: &Shape| {
+        let props = surface_properties(model, face, Deflection::default(), T).unwrap();
+        props.centre.z
+    };
+    let lid = faces
+        .iter()
+        .find(|f| (level(&model, f) - 10.0).abs() < 1e-9)
+        .unwrap();
+    let floor = faces
+        .iter()
+        .find(|f| level(&model, f).abs() < 1e-9)
+        .unwrap();
+    for (open, rims) in [
+        (vec![lid.clone()], 1),
+        (vec![lid.clone(), floor.clone()], 2),
+    ] {
+        let kept: Vec<Shape> = faces
+            .iter()
+            .filter(|f| !open.iter().any(|o| o.is_same(f)))
+            .cloned()
+            .collect();
+        let tube = model.add_shell(&kept).unwrap();
+        let bounds = ogeom::heal::free_bounds(&model, &tube).unwrap();
+        assert!(bounds.open.is_empty());
+        assert_eq!(bounds.closed.len(), rims);
+        for rim in &bounds.closed {
+            assert_eq!(rim.len(), 4);
+            for pair in 0..4 {
+                let (_, end) = ogeom::algo::edge_vertices(&model, &rim[pair])
+                    .unwrap()
+                    .unwrap();
+                let (start, _) = ogeom::algo::edge_vertices(&model, &rim[(pair + 1) % 4])
+                    .unwrap()
+                    .unwrap();
+                assert!(end.is_same(&start), "head to tail");
+            }
+        }
+    }
+}

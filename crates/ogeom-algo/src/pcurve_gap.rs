@@ -239,6 +239,53 @@ pub fn edge_pcurve_gap(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomRes
     Ok(Some(widest))
 }
 
+/// How far apart two edges' curves stand: the farthest that any of many
+/// samples along either curve's stretch lies from the nearest point of the
+/// other's, each curve placed as its occurrence is. `None` where either
+/// edge has no curve.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if an edge or
+/// its curve is not in `model`; [`OgeomError::Domain`](ogeom_core::OgeomError::Domain)
+/// if a curve cannot be evaluated over its stretch.
+pub fn edges_apart(
+    model: &Model,
+    a: &Shape,
+    b: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    const SAMPLES: u32 = 64;
+    let mut placed = Vec::with_capacity(2);
+    for edge in [a, b] {
+        let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+            ogeom_core::ogeom_bail!(Dangling, "an edge is not in this model");
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            return Ok(None);
+        };
+        let Some(curve) = model.geometry().curve(*curve) else {
+            ogeom_core::ogeom_bail!(Dangling, "an edge names a curve not in this model");
+        };
+        placed.push((curve, *range, edge.transform(model.datums())?));
+    }
+    let mut widest: f64 = 0.0;
+    for (from, to) in [(0, 1), (1, 0)] {
+        let (curve, range, placement) = placed[from];
+        let (other, other_range, other_placement) = placed[to];
+        // The sample brought into the other curve's own frame, and the
+        // distance found there scaled back as that placement scales.
+        let back = other_placement.inverse()?;
+        let scale = other_placement.scale_factor().abs();
+        for i in 0..=SAMPLES {
+            let t = range.0 + (range.1 - range.0) * f64::from(i) / f64::from(SAMPLES);
+            let at = back.apply(placement.apply(curve.point_at(t, tol)?));
+            widest = widest.max(nearest_on_stretch(other, other_range, at, tol)? * scale);
+        }
+    }
+    Ok(Some(widest))
+}
+
 /// Raise each of `edges`' tolerance, and its vertices', to how far its
 /// pcurves stand off its curve, where that is wider than it states.
 ///

@@ -35,6 +35,12 @@
 //!   of the surface ([`join_seam_columns`](ogeom_algo::join_seam_columns));
 //! - an edge with no pcurve on a face it bounds is given the trim
 //!   projection can honestly fit, as the readers do;
+//! - a wire that runs out along an edge and straight back along the same
+//!   curve, within the tolerance either edge states and on one copy of
+//!   the chart, with no other face walking either edge, loses the pair (a
+//!   tail); a hole made of such pairs alone goes (see `tails`);
+//! - a face with no wires on a surface whose domain is its whole extent (a
+//!   sphere, a torus, a patch) is marked as covering it;
 //! - loose faces (a compound of them, or an open shell) are sewn where
 //!   they share edges;
 //! - faces two of which walk an edge they share the same way are turned
@@ -49,6 +55,10 @@
 //!   widen to the gap measured, where that gap is within the reach a
 //!   fitted trim is allowed: slop a reader would have recorded the same
 //!   way. A gap past that reach is no slop and stays reported.
+//!
+//! The free edges of the shape as mended come back chained into contours
+//! ([`free_bounds`](crate::free_bounds())); none is joined across a gap
+//! wider than the tolerances the edges state.
 //!
 //! What is not, and where it lives: small faces and small solids stay
 //! (removing a face opens the shell it is in; that is defeaturing, and
@@ -102,6 +112,13 @@ pub struct FixReport {
     pub pcurve_gaps_stated: usize,
     /// Vertices widened to how far the curves they bound end from them.
     pub curve_ends_stated: usize,
+    /// Pairs of edges stripped from wires that ran out along one and
+    /// straight back along the other.
+    pub tails_stripped: usize,
+    /// Faces with no wires marked as covering their whole surface.
+    pub natural_bounds_marked: usize,
+    /// The free edges of the shape as mended, chained into contours.
+    pub free_bounds: crate::FreeBounds,
 }
 
 /// A fixed shape: the result, its history, and the report.
@@ -202,6 +219,18 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     }
     let edges_trimmed = trims.fitted;
 
+    // Tails, on the wires as trimmed: a tail is told by its pcurves, and
+    // is stripped before sewing could join one of its edges to a
+    // neighbour's.
+    let mut tails = Reshape::new();
+    let tails_stripped = crate::tails::stage_tails(model, &current, &mut tails, tol)?;
+    if !tails.is_empty() {
+        let built = tails.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
+    let natural_bounds_marked = mark_natural_bounds(model, &current)?;
+
     // Loose faces sewn: a compound of faces, or an open shell.
     let mut sewn = None;
     let kind = model.kind_of(&current)?;
@@ -263,6 +292,7 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     // established only by widening what is bounded.
     let tolerances_widened = ogeom_algo::restore_containment(model, &current)?;
     let after = check_kept(model, &current, tol, &kept)?;
+    let free_bounds = crate::free_bounds::free_bounds(model, &current)?;
     Ok(Fixed {
         shape: current,
         history,
@@ -281,8 +311,50 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             faces_turned,
             pcurve_gaps_stated,
             curve_ends_stated,
+            tails_stripped,
+            natural_bounds_marked,
+            free_bounds,
         },
     })
+}
+
+/// Mark every face of `shape` with no wires as covering its whole surface,
+/// where the surface's parameter domain is its whole extent (a sphere, a
+/// torus, a Bézier or B-spline patch): what the face is a face of, and
+/// what the mesher and every other reader take a face with no wires to be.
+/// On any other surface the domain is a window standing in for an
+/// unbounded sheet (a plane's says where its face was built), and the face
+/// stays reported. Returns how many faces are marked.
+fn mark_natural_bounds(model: &mut Model, shape: &Shape) -> OgeomResult<usize> {
+    use ogeom_geom::{Surface as _, SurfaceKind};
+    let mut marked = 0;
+    for face in explore_unique(model, shape, ShapeType::Face)? {
+        if !model.children_of(&face)?.is_empty() {
+            continue;
+        }
+        let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+            continue;
+        };
+        if data.natural_restriction {
+            continue;
+        }
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            continue;
+        };
+        if !matches!(
+            surface.kind(),
+            SurfaceKind::Sphere | SurfaceKind::Torus | SurfaceKind::Bezier | SurfaceKind::BSpline
+        ) {
+            continue;
+        }
+        if let Some(node) = model.node_mut(&face)
+            && let ogeom_topo::NodeData::Face(data) = node.data_mut()
+        {
+            data.natural_restriction = true;
+            marked += 1;
+        }
+    }
+    Ok(marked)
 }
 
 /// Widen every edge whose pcurves stand off its curve farther than it

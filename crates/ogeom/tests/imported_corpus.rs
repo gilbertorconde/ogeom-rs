@@ -734,6 +734,52 @@ fn a_spike_on_the_boundary_is_stripped() {
     );
 }
 
+/// The spike healed out of the topology: `fix_shape` strips the two edges
+/// that run out to the tip and straight back over the same line, and the
+/// face keeps its area and its mesh. The fixture's one face stands alone
+/// in its shell, so every edge of its boundary is free, and the two the
+/// spike held are free no longer.
+#[test]
+fn a_spike_on_the_boundary_is_healed_away() {
+    let text = corpus("a_spike_on_the_boundary.step");
+    let mut import = ogeom::io::read_step(&text, T).unwrap();
+    let solid = import.solids[0].clone();
+    let model = import.document.model_mut();
+    let edges_of = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| {
+        let face = explore_unique(model, shape, ShapeType::Face).unwrap()[0].clone();
+        let wires = model.ordered_children_of(&face).unwrap();
+        assert_eq!(wires.len(), 1);
+        model.ordered_children_of(&wires[0]).unwrap().len()
+    };
+    let area = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| {
+        ogeom::algo::surface_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    assert_eq!(edges_of(model, &solid), 13, "the spike's two edges as read");
+    let before = area(model, &solid);
+
+    let fixed = ogeom::heal::fix_shape(model, &solid, T).unwrap();
+    assert_eq!(fixed.report.tails_stripped, 1);
+    assert_eq!(edges_of(model, &fixed.shape), 11);
+    let free = |d: &ogeom::algo::Diagnosis| {
+        d.problems
+            .iter()
+            .map(|p| p.what.clone())
+            .find(|w| w.contains("odd number"))
+            .unwrap_or_default()
+    };
+    assert!(free(&fixed.report.before).starts_with("13 edge(s)"));
+    assert!(free(&fixed.report.after).starts_with("11 edge(s)"));
+    assert_eq!(fixed.report.free_bounds.closed.len(), 1, "the rim, whole");
+    assert_eq!(fixed.report.free_bounds.closed[0].len(), 11);
+    let after = area(model, &fixed.shape);
+    assert!(
+        (after - before).abs() <= 1e-9 * before,
+        "{before} to {after}"
+    );
+}
+
 /// A face is drawn on its surface, not as a quilt of fins off it.
 ///
 /// A fillet strip a centimetre long and a couple of millimetres wide,

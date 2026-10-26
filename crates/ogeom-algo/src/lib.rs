@@ -79,7 +79,9 @@ pub use mesh_solid::{
     MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, refine_solid,
     single_precision_quantum, solid_from_mesh,
 };
-pub use pcurve_gap::{edge_pcurve_gap, pcurve_gap, state_pcurve_gaps, state_pcurve_gaps_of};
+pub use pcurve_gap::{
+    edge_pcurve_gap, edges_apart, pcurve_gap, state_pcurve_gaps, state_pcurve_gaps_of,
+};
 pub use place::{copied, transformed};
 pub use pole::pole_crossings;
 pub use primitive::{
