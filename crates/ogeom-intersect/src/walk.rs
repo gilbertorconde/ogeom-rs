@@ -248,15 +248,34 @@ pub fn walk_one_way<C: Condition + ?Sized>(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<Walked> {
+    Ok(walk_one_way_past(condition, start, sense, options, tol)?.0)
+}
+
+/// A step's landing outside the region: its state, held on the region's
+/// edge, and that state's point.
+pub(crate) type Past = (Vec<f64>, Point);
+
+/// [`walk_one_way`], with the step that ended it outside the region where
+/// one did. The step was solved and kept to the chord like any other, and
+/// only where it landed ends the walk.
+pub(crate) fn walk_one_way_past<C: Condition + ?Sized>(
+    condition: &C,
+    start: &[f64],
+    sense: f64,
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<(Walked, Option<Past>)> {
     let mut at: Vec<f64> = start.to_vec();
     condition.clamp(&mut at);
     let Some(from) = condition.position(&at, tol) else {
-        return Ok(Walked {
+        let walked = Walked {
             states: vec![at],
             points: Vec::new(),
             stopped: Stopped::Stalled,
-        });
+        };
+        return Ok((walked, None));
     };
+    let mut past = None;
     let mut states = vec![at.clone()];
     let mut points = vec![from];
     let mut stopped = Stopped::RanOut;
@@ -365,6 +384,7 @@ pub fn walk_one_way<C: Condition + ?Sized>(
         }
         if condition.outside(&next_state, tol) {
             stopped = Stopped::LeftTheDomain;
+            past = Some((next_state, next_point));
             break;
         }
 
@@ -376,11 +396,12 @@ pub fn walk_one_way<C: Condition + ?Sized>(
         ahead = Some(there);
     }
 
-    Ok(Walked {
+    let walked = Walked {
         states,
         points,
         stopped,
-    })
+    };
+    Ok((walked, past))
 }
 
 /// Whether the walk at `at` closes on its start: the step from `here` onto

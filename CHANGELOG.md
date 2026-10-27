@@ -783,6 +783,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section touching an edge of a surface ends on the touch.** (#457)
+  - Where the section of two surfaces touches an edge of one without
+    crossing it (a drum's rim in a plane tangent to a bore), the walk
+    either stopped where its step was held on the edge, 1e-5 to 1e-2
+    short of the touch, or stepped over the touch and ran on. A chord's
+    round capped tangent to a pocket's bore left its section's end that
+    far off the rim, and the cut was refused ("the kept pieces did not
+    close into a shell").
+  - The touch is now solved as one: where the edge, as a curve, touches
+    the other surface, from beside it and kept only where Newton's
+    linear model holds over the solve. A walk ends there, a branch run
+    over a touch is cut at it, and the arc beyond a touch ending one arc
+    alone is followed from it.
+  - Measured: a disc less a drum capped in a plane tangent to its wall
+    cuts and commons to the closed form in elliptic integrals within
+    5e-11, either way round. The chord's round capped tangent to the
+    bore, at drafts 0.05 and 0.1, cuts and commons either way with cut
+    plus common equal to the solid within 1.1e-9.
+
 - **A drum's section with another is found where it lies in a strip of
   the drum's height, both faces part of a turn.** (#456)
   - The boolean marches a pair of surfaces over windows of their faces.

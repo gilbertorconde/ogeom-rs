@@ -877,36 +877,334 @@ pub fn branches(
     let found = seeds(a, b, options, tol)?;
     let mut out: Vec<Traced> = Vec::new();
     let mut again: Vec<Traced> = Vec::new();
+    let reach = options.chord.max(tol.confusion()) * 8.0;
+    let follow = |seed: Contact, out: &mut Vec<Traced>, again: &mut Vec<Traced>| {
+        // A seed that will not trace (a tangency) is reported by being
+        // absent rather than by an error, since the other branches are still
+        // real answers.
+        let Ok(branch) = trace(a, b, seed, options, tol) else {
+            return;
+        };
+        if branch.points.len() < 2 || is_fragment(&branch, options) {
+            return;
+        }
+        for piece in cut_at_edge_touches(branch, a, b, tol) {
+            // A branch whose middle lies on one already traced is that
+            // branch again, reached from a seed its trace stopped short of,
+            // or one that turned a corner where the section crosses itself
+            // and ran on along another: held to find that crossing from.
+            let n = piece.points.len();
+            let middle = if n > 2 {
+                piece.points[n / 2]
+            } else {
+                piece.points[0].midpoint(piece.points[n - 1])
+            };
+            if out.iter().any(|other| passes_near(other, middle, reach)) {
+                again.push(piece);
+                continue;
+            }
+            out.push(piece);
+        }
+    };
     for seed in found {
         // Already on something followed.
-        let reach = options.chord.max(tol.confusion()) * 8.0;
         if out
             .iter()
             .any(|branch| passes_near(branch, seed.point, reach))
         {
             continue;
         }
-        // A seed that will not trace (a tangency) is reported by being
-        // absent rather than by an error, since the other branches are still
-        // real answers.
-        if let Ok(branch) = trace(a, b, seed, options, tol)
-            && branch.points.len() >= 2
-            && !is_fragment(&branch, options)
-        {
-            // A branch whose middle lies on one already traced is that
-            // branch again, reached from a seed its trace stopped short of,
-            // or one that turned a corner where the section crosses itself
-            // and ran on along another: held to find that crossing from.
-            let middle = branch.points[branch.points.len() / 2];
-            if out.iter().any(|other| passes_near(other, middle, reach)) {
-                again.push(branch);
-                continue;
-            }
-            out.push(branch);
+        follow(seed, &mut out, &mut again);
+    }
+    // A touch of an edge is where two arcs of the section end, one either
+    // side. A seed there lies on the arc already followed to it and is
+    // skipped, and the arc on the other side is found only if some seed lies
+    // on it: so each touch ending one arc alone is followed from, each way,
+    // and the arc it runs back along is that arc again.
+    let mut followed: Vec<Point> = Vec::new();
+    loop {
+        let alone: Vec<Contact> = lone_touches(&out, a, b, tol)
+            .into_iter()
+            .filter(|touch| {
+                followed
+                    .iter()
+                    .all(|p| p.distance(touch.point) > tol.confusion())
+            })
+            .collect();
+        if alone.is_empty() {
+            break;
+        }
+        for touch in alone {
+            followed.push(touch.point);
+            follow(touch, &mut out, &mut again);
         }
     }
     let stitched = stitch_stalled(out, a, b, options, tol);
     Ok(split_at_touches(stitched, again, a, b, options, tol))
+}
+
+/// The touches of an edge that end one branch alone, as contacts to follow
+/// the section from.
+fn lone_touches(
+    branches: &[Traced],
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Vec<Contact> {
+    let pair = SurfacePair { a, b };
+    let ends: Vec<(Point, [f64; 4])> = branches
+        .iter()
+        .filter(|branch| !branch.closed() && !branch.points.is_empty())
+        .flat_map(|branch| {
+            let last = branch.points.len() - 1;
+            [0, last].map(|i| {
+                let (on_a, on_b) = (branch.on_a[i], branch.on_b[i]);
+                (branch.points[i], [on_a.0, on_a.1, on_b.0, on_b.1])
+            })
+        })
+        .collect();
+    let mut alone: Vec<Contact> = Vec::new();
+    for &(point, state) in &ends {
+        let touch = [(a, 0_usize), (b, 2)]
+            .into_iter()
+            .find_map(|(surface, first)| {
+                let ((ua, ub), (va, vb)) = surface.domain();
+                [
+                    (first, (ua, ub), surface.is_periodic_u()),
+                    (first + 1, (va, vb), surface.is_periodic_v()),
+                ]
+                .into_iter()
+                .filter(|&(_, _, periodic)| !periodic)
+                .flat_map(|(k, (lo, hi), _)| [(k, lo), (k, hi)])
+                .filter(|&(k, bound)| (state[k] - bound).abs() <= tol.parametric())
+                .find_map(|(k, bound)| touch_on_edge(&pair, &state, k, bound, tol))
+            });
+        let Some(at) = touch else {
+            continue;
+        };
+        if a.point_at(at[0], at[1], tol)
+            .is_ok_and(|p| p.distance(point) > tol.confusion())
+        {
+            continue;
+        }
+        let meeting = ends
+            .iter()
+            .filter(|(other, _)| other.distance(point) <= tol.confusion())
+            .count();
+        if meeting == 1 {
+            alone.push(Contact {
+                on_a: (at[0], at[1]),
+                on_b: (at[2], at[3]),
+                point,
+            });
+        }
+    }
+    alone
+}
+
+/// A branch cut where it runs over a touch of either surface's edge: the
+/// pieces between the touches, each ending on the touch.
+///
+/// A walk ends at a touch of an edge where its step lands on the edge
+/// ([`end_at_touch`]). A step can as well land beyond the touch, back inside
+/// the domain, and the walk runs on over it. A section is then split at a
+/// touch or not by where the steps fell, and the same stretch comes back
+/// from two seeds as two different curves: one ending at the touch, one
+/// running over it. So a branch is cut at every touch it runs over.
+///
+/// A touch run over is beside a sample where one parameter turns back
+/// toward the edge it bounds. It is solved there by [`touch_on_edge`], and
+/// kept where it lies within the steps either side of the sample.
+fn cut_at_edge_touches(
+    branch: Traced,
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Vec<Traced> {
+    let pair = SurfacePair { a, b };
+    let closed = branch.closed();
+    let n = branch.points.len();
+    if n < 3 {
+        return vec![branch];
+    }
+    let state = |i: usize| {
+        [
+            branch.on_a[i].0,
+            branch.on_a[i].1,
+            branch.on_b[i].0,
+            branch.on_b[i].1,
+        ]
+    };
+    // A loop's last sample is its first.
+    let count = if closed { n - 1 } else { n };
+    let period = |surface: &SurfaceGeometry, along_u: bool| {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        if along_u {
+            surface.is_periodic_u().then_some(ub - ua)
+        } else {
+            surface.is_periodic_v().then_some(vb - va)
+        }
+    };
+    let periods = [
+        period(a, true),
+        period(a, false),
+        period(b, true),
+        period(b, false),
+    ];
+    let mut touches: Vec<(usize, [f64; 4], Point)> = Vec::new();
+    for i in 0..count {
+        let (before, after) = if closed {
+            ((i + count - 1) % count, (i + 1) % count)
+        } else if i == 0 || i + 1 == n {
+            continue;
+        } else {
+            (i - 1, i + 1)
+        };
+        let here = state(i);
+        let (back, ahead) = (
+            branch.points[i].distance(branch.points[before]),
+            branch.points[i].distance(branch.points[after]),
+        );
+        if back <= 0.0 || ahead <= 0.0 {
+            continue;
+        }
+        let stride = back.max(ahead);
+        // A periodic parameter is read on the turn of the middle sample's.
+        let unwrap = |x: [f64; 4]| -> [f64; 4] {
+            core::array::from_fn(|j| match periods[j] {
+                Some(period) => x[j] - ((x[j] - here[j]) / period).round() * period,
+                None => x[j],
+            })
+        };
+        let around = [unwrap(state(before)), here, unwrap(state(after))];
+        'bounds: for (surface, first) in [(a, 0_usize), (b, 2)] {
+            let ((ua, ub), (va, vb)) = surface.domain();
+            for (k, (lo, hi), periodic) in [
+                (first, (ua, ub), surface.is_periodic_u()),
+                (first + 1, (va, vb), surface.is_periodic_v()),
+            ] {
+                if periodic || !(hi - lo).is_finite() {
+                    continue;
+                }
+                for bound in [lo, hi] {
+                    let off = |x: &[f64; 4]| (x[k] - bound).abs();
+                    if off(&here) >= off(&around[0]) || off(&here) > off(&around[2]) {
+                        continue;
+                    }
+                    // A touch within the steps either side lies on an edge
+                    // passing within them.
+                    let mut on_edge = here;
+                    on_edge[k] = bound;
+                    let edge = surface.point_at(on_edge[first], on_edge[first + 1], tol);
+                    if edge.is_ok_and(|p| p.distance(branch.points[i]) > stride) {
+                        continue;
+                    }
+                    let start = turning(around, (back, ahead), k);
+                    let Some(at) = touch_on_edge(&pair, &start, k, bound, tol) else {
+                        continue;
+                    };
+                    let Ok(point) = a.point_at(at[0], at[1], tol) else {
+                        continue;
+                    };
+                    if point.distance(branch.points[i]) <= stride {
+                        touches.push((i, at, point));
+                        break 'bounds;
+                    }
+                }
+            }
+        }
+    }
+    if touches.is_empty() {
+        return vec![branch];
+    }
+    // The samples with each touch in its place, and where the touches are.
+    let mut samples: Vec<(Point, [f64; 4])> = Vec::with_capacity(n + touches.len());
+    let mut cuts: Vec<usize> = Vec::new();
+    let mut next = touches.iter().peekable();
+    for i in 0..count {
+        let Some(&(_, at, point)) = next.next_if(|t| t.0 == i) else {
+            samples.push((branch.points[i], state(i)));
+            continue;
+        };
+        let (before, after) = (
+            branch.points[if i == 0 { count - 1 } else { i - 1 }],
+            branch.points[(i + 1) % n],
+        );
+        if point.distance(branch.points[i]) <= tol.confusion() {
+            cuts.push(samples.len());
+            samples.push((point, at));
+        } else if (point - branch.points[i]).dot(after - before) > 0.0 {
+            samples.push((branch.points[i], state(i)));
+            cuts.push(samples.len());
+            samples.push((point, at));
+        } else {
+            cuts.push(samples.len());
+            samples.push((point, at));
+            samples.push((branch.points[i], state(i)));
+        }
+    }
+    let piece = |run: &[(Point, [f64; 4])], stopped: Stopped| Traced {
+        points: run.iter().map(|s| s.0).collect(),
+        on_a: run.iter().map(|s| (s.1[0], s.1[1])).collect(),
+        on_b: run.iter().map(|s| (s.1[2], s.1[3])).collect(),
+        stopped,
+    };
+    let mut pieces = Vec::new();
+    if closed {
+        // Round the loop from its first touch back to it.
+        let first = cuts[0];
+        let mut round: Vec<(Point, [f64; 4])> = samples[first..].to_vec();
+        round.extend_from_slice(&samples[..=first]);
+        let mut from = 0;
+        for cut in cuts
+            .iter()
+            .skip(1)
+            .map(|c| c - first)
+            .chain([round.len() - 1])
+        {
+            if cut > from {
+                pieces.push(piece(&round[from..=cut], Stopped::LeftTheDomain));
+            }
+            from = cut;
+        }
+    } else {
+        let mut from = 0;
+        for cut in cuts.iter().copied().chain([samples.len() - 1]) {
+            if cut > from {
+                pieces.push(piece(&samples[from..=cut], Stopped::LeftTheDomain));
+            }
+            from = cut;
+        }
+        // The ends the trace stopped at are its own: a branch truncated or
+        // stalled at either end is reported so in its first and last piece.
+        if let Some(first) = pieces.first_mut() {
+            first.stopped = branch.stopped;
+        }
+        if let Some(last) = pieces.last_mut() {
+            last.stopped = branch.stopped;
+        }
+    }
+    pieces
+}
+
+/// Where unknown `k` turns along three samples of a branch, to second
+/// order: the states of the quadratics through them, as functions of the
+/// length along their chords, `back` behind the middle one and `ahead`
+/// past it, at the quadratic's vertex in `k`, held between the outer two.
+fn turning(around: [[f64; 4]; 3], (back, ahead): (f64, f64), k: usize) -> [f64; 4] {
+    let [prior, here, next] = around;
+    let (rise, fall) = ((here[k] - prior[k]) / back, (next[k] - here[k]) / ahead);
+    let t = if fall == rise {
+        0.0
+    } else {
+        ((rise * (ahead + back) / (rise - fall) - back) / 2.0).clamp(-back, ahead)
+    };
+    let weights = [
+        t * (t - ahead) / (back * (back + ahead)),
+        (t + back) * (ahead - t) / (back * ahead),
+        (t + back) * t / (ahead * (ahead + back)),
+    ];
+    core::array::from_fn(|j| prior[j] * weights[0] + here[j] * weights[1] + next[j] * weights[2])
 }
 
 /// Below this sine the surfaces count as tangent at a point: the
@@ -1215,8 +1513,10 @@ fn walk(
 ) -> OgeomResult<Traced> {
     let pair = SurfacePair { a, b };
     let start = [from.on_a.0, from.on_a.1, from.on_b.0, from.on_b.1];
-    let mut walked = crate::walk::walk_one_way(&pair, &start, sense, options, tol)?;
-    if walked.stopped == Stopped::LeftTheDomain {
+    let (mut walked, past) = crate::walk::walk_one_way_past(&pair, &start, sense, options, tol)?;
+    if walked.stopped == Stopped::LeftTheDomain
+        && !past.is_some_and(|past| end_at_touch(&pair, &mut walked, &past, tol))
+    {
         land_on_edge(&pair, &mut walked, tol);
     }
     Ok(Traced {
@@ -1347,6 +1647,225 @@ fn land_on_edge(pair: &SurfacePair<'_>, walked: &mut crate::walk::Walked, tol: T
         }
         return;
     }
+}
+
+/// End a walk whose last step landed on a surface's edge it only touches,
+/// at the touch: whether it did.
+///
+/// A section touching an edge, a drum's rim lying in a plane tangent to the
+/// other surface, runs along the edge to second order: within the
+/// confusion distance of the other surface along a stretch of the edge
+/// about `√(2·ε·ρ)` long, `ρ` the radius their parting curves at. A step
+/// landing there is held on the edge with its residual within the
+/// correction's, and reads as having left. Solving the section onto the
+/// edge from there is singular, its root a double one: the solve stops
+/// where the residual, the square of the distance left, is small, short of
+/// the touch by the square root of the residual. The touch is solved as one
+/// instead, from the landing, by [`touch_on_edge`], and kept where it lies
+/// ahead of the walk's last point.
+fn end_at_touch(
+    pair: &SurfacePair<'_>,
+    walked: &mut crate::walk::Walked,
+    (landed, beyond): &crate::walk::Past,
+    tol: Tolerances,
+) -> bool {
+    let n = walked.points.len();
+    if n == 0 || landed.len() != 4 {
+        return false;
+    }
+    let heading = *beyond - walked.points[n - 1];
+    for (surface, first) in [(pair.a, 0_usize), (pair.b, 2)] {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        for (k, (lo, hi), periodic) in [
+            (first, (ua, ub), surface.is_periodic_u()),
+            (first + 1, (va, vb), surface.is_periodic_v()),
+        ] {
+            if periodic {
+                continue;
+            }
+            for bound in [lo, hi] {
+                if (landed[k] - bound).abs() > tol.parametric() {
+                    continue;
+                }
+                let Some(at) = touch_on_edge(pair, landed, k, bound, tol) else {
+                    continue;
+                };
+                let Ok(point) = pair.a.point_at(at[0], at[1], tol) else {
+                    continue;
+                };
+                let ahead = point - walked.points[n - 1];
+                if ahead.dot(heading) <= 0.0 {
+                    continue;
+                }
+                if ahead.magnitude() <= tol.confusion() {
+                    walked.states[n - 1] = at.to_vec();
+                    walked.points[n - 1] = point;
+                } else {
+                    walked.states.push(at.to_vec());
+                    walked.points.push(point);
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Where the section touches a surface's edge without crossing it, solved
+/// from a state beside it: the state there, or `None` if the edge has no
+/// such touch there.
+///
+/// `k` is the unknown the edge holds at `bound`. Along the edge the
+/// bordered surface's point runs as a curve of its free parameter, and the
+/// section touches the edge where that curve touches the other surface:
+/// where the other surface's foot of it is its closest point (two rows),
+/// and the curve runs in the other surface's tangent plane (one row). The
+/// three rows are regular where the curve and the surface part at second
+/// order. The gap along the normal is not a row, as it touches zero without
+/// crossing it: it is measured, and the touch is kept only within the
+/// confusion distance. It is kept, too, only where the section leaves the
+/// edge into the domain: a section outside it, touching the edge from
+/// there, meets the domain at the touch alone, and a walk along the edge
+/// beside it is the correction held on the edge, not the section.
+///
+/// The solve is kept only where its linear model holds over the move it
+/// made, by Kantorovich's condition as [`crate::walk::settle`] asks it:
+/// `‖J₀⁻¹·(J₁ − J₀)‖ ≤ ½` in the Frobenius norm, which is never less than
+/// the operator norm. A start further from the touch than that, or one
+/// beside an edge the section crosses, whose curve turns into the other
+/// surface's tangent plane only away from the crossing if at all, is not
+/// trusted to have found a touch beside it.
+fn touch_on_edge(
+    pair: &SurfacePair<'_>,
+    from: &[f64],
+    k: usize,
+    bound: f64,
+    tol: Tolerances,
+) -> Option<[f64; 4]> {
+    let (edged, other, first, rest) = if k < 2 {
+        (pair.a, pair.b, 0_usize, 2_usize)
+    } else {
+        (pair.b, pair.a, 2, 0)
+    };
+    let along_u = k == first + 1;
+    let free = if along_u { first } else { first + 1 };
+    let place = |s: f64| if along_u { (s, bound) } else { (bound, s) };
+    let system = |x: &[f64; 3]| -> Option<([f64; 3], [[f64; 3]; 3])> {
+        let (u, v) = place(x[0]);
+        let (p, su, sv) = edged.point_d1_at(u, v, tol).ok()?;
+        let (suu, _, svv) = edged.d2_at(u, v, tol).ok()?;
+        let (c, c2) = if along_u { (su, suu) } else { (sv, svv) };
+        let (q, ou, ov) = other.point_d1_at(x[1], x[2], tol).ok()?;
+        let (ouu, ouv, ovv) = other.d2_at(x[1], x[2], tol).ok()?;
+        let gap = p - q;
+        let normal = ou.cross(ov);
+        let residual = [gap.dot(ou), gap.dot(ov), c.dot(normal)];
+        let jacobian = [
+            [
+                c.dot(ou),
+                gap.dot(ouu) - ou.dot(ou),
+                gap.dot(ouv) - ov.dot(ou),
+            ],
+            [
+                c.dot(ov),
+                gap.dot(ouv) - ou.dot(ov),
+                gap.dot(ovv) - ov.dot(ov),
+            ],
+            [
+                c2.dot(normal),
+                c.dot(ouu.cross(ov) + ou.cross(ouv)),
+                c.dot(ouv.cross(ov) + ou.cross(ovv)),
+            ],
+        ];
+        Some((residual, jacobian))
+    };
+    let start = [from[free], from[rest], from[rest + 1]];
+    let (_, jacobian) = system(&start)?;
+    // The rows are products of derivatives with no common scale, so the
+    // solve is run until its steps stop moving the parameters, and what it
+    // found is a root where the step from there would not move them either:
+    // at the root the damped search cannot lower the residual further, and
+    // reports running out.
+    let criteria = solve::Criteria {
+        residual: 0.0,
+        step: tol.parametric(),
+        max_iterations: 40,
+    };
+    let (found, _, _, _) = solve::newton_system_fixed(
+        |x| system(x).unwrap_or(([f64::INFINITY; 3], [[0.0; 3]; 3])),
+        start,
+        criteria,
+    )
+    .ok()?;
+    let (left, after) = system(&found)?;
+    let step = solve::linear_fixed(after, left)?;
+    if step.iter().any(|d| d.abs() > tol.parametric()) {
+        return None;
+    }
+    let mut drift = 0.0;
+    for column in 0..3 {
+        let change: [f64; 3] =
+            core::array::from_fn(|row| after[row][column] - jacobian[row][column]);
+        let moved = solve::linear_fixed(jacobian, change)?;
+        drift += moved.iter().map(|v| v * v).sum::<f64>();
+    }
+    if drift.sqrt() > 0.5 {
+        return None;
+    }
+    let (u, v) = place(found[0]);
+    let within = |surface: &SurfaceGeometry, (u, v): (f64, f64)| {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        [
+            (u, ua, ub, surface.is_periodic_u()),
+            (v, va, vb, surface.is_periodic_v()),
+        ]
+        .iter()
+        .all(|&(x, lo, hi, periodic)| {
+            periodic || (x >= lo - tol.parametric() && x <= hi + tol.parametric())
+        })
+    };
+    if !within(edged, (u, v)) || !within(other, (found[1], found[2])) {
+        return None;
+    }
+    let (p, su, sv) = edged.point_d1_at(u, v, tol).ok()?;
+    let (suu, _, svv) = edged.d2_at(u, v, tol).ok()?;
+    let (q, ou, ov) = other.point_d1_at(found[1], found[2], tol).ok()?;
+    if p.distance(q) > tol.confusion() {
+        return None;
+    }
+    // Along the edge the gap to the other surface grows as `g·s²/2`, `g`
+    // the edge's normal curvature less the other surface's along it, and
+    // off the edge as `a·t`, `a` the edge's cross derivative along the
+    // normal. So the section stands `−g·s² / (2·a)` across the edge: inside
+    // where that has the sign of the way into the domain. Where `g` or `a`
+    // vanishes the contact is of higher order, and its side is not read.
+    let (c, c2, across) = if along_u {
+        (su, suu, sv)
+    } else {
+        (sv, svv, su)
+    };
+    let (ouu, ouv, ovv) = other.d2_at(found[1], found[2], tol).ok()?;
+    let normal = ou.cross(ov);
+    let metric = [[ou.dot(ou), ou.dot(ov)], [ou.dot(ov), ov.dot(ov)]];
+    let [cu, cv] = solve::linear_fixed(metric, [c.dot(ou), c.dot(ov)])?;
+    let bend = (c2 - (ouu * (cu * cu) + ouv * (2.0 * cu * cv) + ovv * (cv * cv))).dot(normal);
+    let ((ua, ub), (va, vb)) = edged.domain();
+    let (lo, hi) = if along_u { (va, vb) } else { (ua, ub) };
+    let inward = if (bound - hi).abs() <= (bound - lo).abs() {
+        -1.0
+    } else {
+        1.0
+    };
+    let side = -bend * across.dot(normal) * inward;
+    if side <= 0.0 || side.is_nan() {
+        return None;
+    }
+    let mut at = [0.0; 4];
+    at[first] = u;
+    at[first + 1] = v;
+    at[rest] = found[1];
+    at[rest + 1] = found[2];
+    Some(at)
 }
 
 /// The sine of the shallowest crossing angle the marcher will follow.
@@ -4875,6 +5394,57 @@ mod tests {
         CylinderSurface::new(Cylinder::new(frame, radius, T).unwrap(), height)
             .unwrap()
             .into()
+    }
+
+    /// A drum of radius 0.5 along x, its axis at y = `c` and z = 1.5,
+    /// ending in the plane x = 2.5 tangent to a bore of radius 2.5 along z.
+    /// The drum's wall meets the bore in a loop whose x is greatest, 2.5,
+    /// where it crosses y = 0: at z = 1.5 ± √(0.25 − c²), two points of the
+    /// drum's end rim, which the loop touches and turns back from. So the
+    /// loop is two arcs between the touches, each ending on both, with
+    /// either surface first and the rim at either end of the drum's height.
+    /// At c = 0.45 and 0.475 the arc below y = 0 stands within 0.0005 and
+    /// 0.00013 of the rim. A walk ending short of a touch or running over
+    /// it leaves an arc's end microns to millimetres off the rim's point,
+    /// or the loop whole.
+    #[test]
+    fn a_section_touching_a_drum_rim_ends_on_the_touch() {
+        let bore: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 2.5, T).unwrap(), (0.0, 3.0))
+                .unwrap()
+                .into();
+        for c in [0.2, 0.45, 0.475] {
+            let lift = (0.25_f64 - c * c).sqrt();
+            let touches = [
+                Point::new(2.5, 0.0, 1.5 - lift),
+                Point::new(2.5, 0.0, 1.5 + lift),
+            ];
+            for (origin, axis) in [
+                (Point::new(1.0, c, 1.5), Direction::X),
+                (
+                    Point::new(2.5, c, 1.5),
+                    Direction::new(-Vector::X, T).unwrap(),
+                ),
+            ] {
+                let frame = Frame::new(origin, axis, Direction::Z, T).unwrap();
+                let drum: SurfaceGeometry =
+                    CylinderSurface::new(Cylinder::new(frame, 0.5, T).unwrap(), (0.0, 1.5))
+                        .unwrap()
+                        .into();
+                for (a, b) in [(&bore, &drum), (&drum, &bore)] {
+                    let found = branches(a, b, Marching::default(), T).unwrap();
+                    assert_eq!(found.len(), 2, "{c}, {axis:?}: the loop's two arcs");
+                    for touch in touches {
+                        let ends = found
+                            .iter()
+                            .flat_map(|arc| [arc.points[0], arc.points[arc.points.len() - 1]])
+                            .filter(|end| end.distance(touch) <= T.confusion())
+                            .count();
+                        assert_eq!(ends, 2, "{c}, {axis:?}: the arcs ending on {touch:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// Two drums across each other, the second's foot a little above the

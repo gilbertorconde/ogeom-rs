@@ -206,3 +206,89 @@ fn a_half_drum_ending_a_hair_past_a_quarter_bore() {
         }
     }
 }
+
+/// The complete elliptic integrals of the first and second kinds, `K(k)`
+/// and `E(k)`, by the arithmetic-geometric mean.
+fn complete_elliptic(k: f64) -> (f64, f64) {
+    let (mut a, mut g) = (1.0_f64, (1.0 - k * k).sqrt());
+    let (mut sum, mut weight) = (k * k / 2.0, 0.5);
+    while (a - g).abs() > f64::EPSILON * a {
+        let c = (a - g) / 2.0;
+        (a, g) = (f64::midpoint(a, g), (a * g).sqrt());
+        weight *= 2.0;
+        sum += weight * c * c;
+    }
+    let first = core::f64::consts::FRAC_PI_2 / a;
+    (first, first * (1.0 - sum))
+}
+
+/// A disc of radius `R = 2.5` and height 3, and a drum of radius
+/// `r = 0.5` along x through the disc's axis at z = 1.5, from x = 1 to the
+/// plane x = 2.5 tangent to the disc's wall. The drum's end cap touches the
+/// wall along a line, and the drum's wall meets the disc's in a loop that
+/// touches the drum's end rim at z = 1 and z = 2 and turns back from it.
+/// The drum's seam stands 0.7 rad round from its top. A walk ending short
+/// of a touch, or running over it, leaves the section's arcs apart from
+/// the rim's points, and the kept pieces do not close into a shell.
+///
+/// The drum within the disc is `∫∫ (√(R² − y²) − 1) dy dz` over its
+/// section, which with `y = r·sin θ` is
+/// `4·r²·R·((1 + k²)·E(k) − (1 − k²)·K(k)) / (3·k²) − π·r²`, `k = r / R`.
+/// The checks run with either solid first, the rim at either end of the
+/// drum's height.
+#[test]
+fn a_drum_capped_in_a_plane_tangent_to_a_bore() {
+    let pi = core::f64::consts::PI;
+    let (big, small) = (2.5_f64, 0.5_f64);
+    let k = small / big;
+    let (first, second) = complete_elliptic(k);
+    let inside = 4.0 * small * small * big * ((1.0 + k * k) * second - (1.0 - k * k) * first)
+        / (3.0 * k * k)
+        - pi * small * small;
+    let seam = Direction::new(
+        ogeom::math::Vector::new(0.0, 0.7_f64.sin(), 0.7_f64.cos()),
+        T,
+    )
+    .unwrap();
+    for (foot, axis) in [
+        (Point::new(1.0, 0.0, 1.5), Direction::X),
+        (
+            Point::new(big, 0.0, 1.5),
+            Direction::new(-ogeom::math::Vector::X, T).unwrap(),
+        ),
+    ] {
+        let mut model = Model::new();
+        let disc = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, big, 3.0, T)
+            .unwrap()
+            .shape;
+        let drum = ogeom::algo::make_cylinder(
+            &mut model,
+            Frame::new(foot, axis, seam, T).unwrap(),
+            small,
+            big - 1.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        for (name, a, b, whole) in [
+            ("disc, drum", &disc, &drum, pi * big * big * 3.0),
+            ("drum, disc", &drum, &disc, pi * small * small * (big - 1.0)),
+        ] {
+            let cut = ogeom::boolean::cut(&mut model, a, b, T).unwrap().shape;
+            let common = ogeom::boolean::common(&mut model, a, b, T).unwrap().shape;
+            for (what, shape, want) in [("cut", &cut, whole - inside), ("common", &common, inside)]
+            {
+                let diagnosis = ogeom::algo::check(&model, shape, T).unwrap();
+                assert!(
+                    diagnosis.is_valid(),
+                    "{axis:?}, {name}, {what}: {diagnosis}"
+                );
+                let got = volume(&model, shape);
+                assert!(
+                    (got - want).abs() <= 1e-9,
+                    "{axis:?}, {name}, {what}: {got} against {want}"
+                );
+            }
+        }
+    }
+}

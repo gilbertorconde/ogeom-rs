@@ -431,3 +431,22 @@ reproducer for a point the classifier's fixed rays reach only through
 tangencies and coplanar faces (#390): the boolean joining the crossed
 corner's two carried bands refused there, where the same pocket placed
 square rounds exactly.
+
+## capped_round_tangent_to_a_bore.ogeom
+
+Two solids in this kernel's native format, as the capped-band fallback of
+#342 left them (#457): a block 8 by 8 by 2 holding a pocket of radius 2.5
+about (4, 4) up to a chord through the pocket's axis, its wall drafted
+0.05 and its top edge along the chord rounded at 0.5, the round capped by
+the planes x = 1.5 and x = 6.5, each tangent to the pocket's wall along a
+vertical line; and the band rounding the pocket's arc. The round's wall
+meets the arc band's bore in loops that touch the round's end rims in
+those planes. The reproducer for a section touching a rim: the walk
+stopped 1e-5 to 1.6e-3 short of the touch, and the cut of the band from
+the block was refused (the kept pieces did not close into a shell).
+
+## capped_round_tangent_to_a_bore_steeper.ogeom
+
+The same pocket as `capped_round_tangent_to_a_bore.ogeom`, its wall
+drafted 0.1, in this kernel's native format: the block with the arc's
+band already cut, and the chord's capped round. Refused the same way.

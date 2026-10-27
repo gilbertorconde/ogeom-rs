@@ -2120,3 +2120,62 @@ fn a_sphere_cap_walked_up_its_seam_is_closed_across_the_pole() {
         "the cap's area {area}, against {exact}"
     );
 }
+
+/// A pocket of radius 2.5 up to a chord through its axis, with the chord's
+/// round capped by planes tangent to the pocket's wall, and the band
+/// rounding the pocket's arc, each cut from or met with the other.
+/// The round's wall meets the bore in loops touching the round's end rims.
+/// Either way round, the cut and the common are valid and add up to the
+/// solid they were taken from, and the two commons agree. The arc's band
+/// stands outside the block in two slivers at the corners, between a cap's
+/// plane and the bore it is tangent to: there the bore stands
+/// `2.5 − √(6.25 − t²)` past the plane, `t = 4 − y`, less than `t² / 4.9`
+/// over the at most 0.1 the drafted wall leaves below y = 4, for a height
+/// of at most 0.5.
+#[test]
+fn a_round_capped_tangent_to_a_bore_cuts_either_way() {
+    for name in [
+        "capped_round_tangent_to_a_bore.ogeom",
+        "capped_round_tangent_to_a_bore_steeper.ogeom",
+    ] {
+        let (model, roots) = ogeom::io::native::read(&corpus(name)).unwrap();
+        let volume = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| {
+            let diagnosis = ogeom::algo::check(model, shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+            ogeom::algo::volume_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+                .unwrap()
+                .mass
+        };
+        let mut commons = Vec::new();
+        for (first, second) in [(&roots[0], &roots[1]), (&roots[1], &roots[0])] {
+            let mut model = model.clone();
+            let cut = ogeom::boolean::cut(&mut model, first, second, T)
+                .unwrap()
+                .shape;
+            let common = ogeom::boolean::common(&mut model, first, second, T)
+                .unwrap()
+                .shape;
+            let (whole, kept, shared) = (
+                volume(&model, first),
+                volume(&model, &cut),
+                volume(&model, &common),
+            );
+            assert!(
+                (whole - kept - shared).abs() <= 1e-8,
+                "{name}: cut {kept} and common {shared} against {whole}"
+            );
+            commons.push(shared);
+            if first == &roots[1] {
+                let past = 2.0 * 0.1_f64.powi(3) / (3.0 * 4.9) * 0.5;
+                assert!(
+                    kept > 0.0 && kept <= past,
+                    "{name}: the band's slivers past the block {kept}, at most {past}"
+                );
+            }
+        }
+        assert!(
+            (commons[0] - commons[1]).abs() <= 1e-8,
+            "{name}: the commons {commons:?}"
+        );
+    }
+}
