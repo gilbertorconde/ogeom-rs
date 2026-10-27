@@ -1333,9 +1333,10 @@ fn join_flush(
 /// fused ones together, each blend's faces credited to its edge through
 /// the boolean's history. Wedges whose boxes meet go in different
 /// booleans, as a compound of lumps that overlap would count their overlap
-/// twice. A cut is [`ogeom_bool::cut_seated`], which trims the faces
-/// straight bands and rims sit on where nothing else reaches into them, and
-/// a fill [`ogeom_bool::fuse_seated`], which does so for rims.
+/// twice. A cut is [`ogeom_bool::cut_seated`] and a fill
+/// [`ogeom_bool::fuse_seated`], which trim the faces straight bands, rims
+/// and the pieces of rims a tangent chain's arcs round sit on, where nothing
+/// else reaches into them.
 fn apply_set_aside(
     model: &mut Model,
     mut built: Built,

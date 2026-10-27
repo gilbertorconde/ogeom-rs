@@ -1,6 +1,7 @@
-//! A cut by blend wedges that sit flush on the solid, made by trimming the
-//! faces they sit on rather than by the general fuse. This module trims
-//! straight bands; [`ring`] trims rims, for a cut and for a fill.
+//! A cut or a fill by blend wedges that sit flush on the solid, made by
+//! trimming the faces they sit on rather than by the general fuse. This
+//! module trims straight bands, and pieces of rims as [`sector`] reads
+//! them; [`ring`] trims whole rims.
 //!
 //! A straight blend's wedge is bounded by planar seats (its legs along the
 //! two faces it rounds, its caps) and by the blend, a strip of a cylinder
@@ -19,16 +20,19 @@
 //!   two seats share is an edge of the solid, and every other edge of a seat
 //!   (one it shares with the blend) is an edge of the solid or crosses the
 //!   face the seat lies on from one of its vertices to another.
-//! - Each seat lies on one planar face of the solid with the same outward
-//!   normal, bounded by a run of that face's boundary walked the same way and
-//!   by the edges it shares with the blend, which meet no other edge of the
-//!   face and leave none of its holes inside the seat. The seat is then the
-//!   part of the face on its side of those edges.
+//! - Each seat lies on one face of the solid on the seat's surface (a plane,
+//!   or for a rim's piece its wall's cylinder) facing the same way, bounded
+//!   by a run of that face's boundary walked the same way and by the edges it
+//!   shares with the blend, which meet no other edge of the face and leave
+//!   none of its other loops inside the seat. The seat is then the part of
+//!   the face on its side of those edges.
 //! - The wedge lies in the convex region bounded by its seats' planes and by
 //!   the chord plane through the blend's two rulings, and the blend touches
 //!   those planes only along its own edges. Every face of the solid but the
 //!   ones the seats lie on stands on the far side of one of those planes,
-//!   within the tolerance it states, so none reaches into the wedge.
+//!   within the tolerance it states, so none reaches into the wedge. A rim's
+//!   piece lies in the sector of the ring its section sweeps between its
+//!   ends, which every other face stands out of in the same way.
 //! - Each new edge leaves its ends clear of every other edge there, as the
 //!   general fuse reads a meeting ([`ends_clear`]).
 //! - Lumps of a compound tool stand apart, box from box.
@@ -39,13 +43,22 @@
 //! crosses it, and beside each seat the solid's material is on the wedge's
 //! side. So the solid less the wedge is bounded by the solid's faces with
 //! the seats taken out, and by the blend turned to face out of the material.
+//!
+//! A fill, which rounds a concave crease, is the same trim with each face a
+//! seat lies on facing against it, so walking the seat's edges the other way.
+//! Beside each seat the solid's material is then on the far side, so the
+//! region lies outside the solid, the wedge with it, and the union is bounded
+//! by the solid's faces with the seats taken out and by the blend as the
+//! wedge faces it. A fill is not made where the general fuse would set any
+//! of the tool's faces aside, which a union keeps as they stand.
+//!
 //! The result is put together as the general fuse puts its own together,
 //! the faces it would set aside kept and the rest made again, so the two
 //! record the same history.
 
 use ogeom_algo::{Built, History, make_edge_between, make_face_with_pcurves, make_wire};
 use ogeom_core::{FastMap, FastSet, OgeomError, OgeomResult, Tolerance, Tolerances};
-use ogeom_geom::{Curve, Curve3d as _, SurfaceGeometry};
+use ogeom_geom::{Curve, Curve2d as _, Curve3d as _, SurfaceGeometry};
 use ogeom_math::{Aabb, Point, Vector};
 use ogeom_topo::{
     EdgeRepr, Location, Model, NodeData, Orientation, Shape, ShapeType, SurfaceId, TShapeId,
@@ -53,6 +66,7 @@ use ogeom_topo::{
 use smallvec::SmallVec;
 
 mod ring;
+mod sector;
 
 /// Samples taken along an edge of the solid to say whether it lies along an
 /// edge of the wedge.
@@ -158,8 +172,7 @@ impl Solid {
 /// `a` with the wedges of `b` cut from it, or fused on to it where `fill`
 /// is set, by trimming the faces they sit on, with the faces' history as
 /// the general fuse records it; `None` where a condition of the module's
-/// fails, and the boolean is the general fuse's. A fill is made for rims
-/// alone.
+/// fails, and the boolean is the general fuse's.
 pub(crate) fn seated_cut(
     model: &mut Model,
     a: &Shape,
@@ -172,16 +185,13 @@ pub(crate) fn seated_cut(
         return Ok(None);
     }
     let ringed = ring::is_ringed(model, b)?;
-    if fill && !ringed {
-        return Ok(None);
-    }
     // What reading the wedges and making the result widen is put back
     // where the cut is not made here.
     let mark = model.note_widened();
     let cut = if ringed {
         ring::ring_cut(model, a, b, fill, b, tol)
     } else {
-        trimmed_cut(model, a, b, tol)
+        trimmed_cut(model, a, b, fill, tol)
     };
     match cut {
         Ok(Some(built)) => {
@@ -319,6 +329,7 @@ fn trimmed_cut(
     model: &mut Model,
     a: &Shape,
     b: &Shape,
+    fill: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let Some(mut solid) = read_solid(model, a)? else {
@@ -339,7 +350,7 @@ fn trimmed_cut(
     let mut new_edges: Vec<NewEdge> = Vec::new();
     let mut plans = Vec::with_capacity(wedges.len());
     for read in reads {
-        let Some(plan) = plan_wedge(model, &mut solid, read, &mut new_edges, tol)? else {
+        let Some(plan) = plan_wedge(model, &mut solid, read, fill, &mut new_edges, tol)? else {
             return Ok(None);
         };
         plans.push(plan);
@@ -426,21 +437,29 @@ fn trimmed_cut(
             trimmed.insert(f, Some(loops));
         }
     }
-    // Each blend, turned to face out of the material, on what its edges
-    // stand for.
+    // Each blend, facing out of the material, on what its edges stand for:
+    // turned for a cut, as the wedge faces for a fill.
     let blends: Vec<Vec<Step>> = plans
         .iter()
         .map(|plan| {
-            plan.blend_loop
-                .iter()
-                .rev()
-                .map(|walked| Step {
+            let step = |walked: &Walked| {
+                let (from, to) = if fill {
+                    (walked.from, walked.to)
+                } else {
+                    (walked.to, walked.from)
+                };
+                Step {
                     target: plan.targets[&walked.edge.node()],
-                    from: plan.vertices[&walked.to].node(),
-                    to: plan.vertices[&walked.from].node(),
+                    from: plan.vertices[&from].node(),
+                    to: plan.vertices[&to].node(),
                     sense: None,
-                })
-                .collect()
+                }
+            };
+            if fill {
+                plan.blend_loop.iter().map(step).collect()
+            } else {
+                plan.blend_loop.iter().rev().map(step).collect()
+            }
         })
         .collect();
     if !ends_clear(model, &solid, &new_edges, tol)? {
@@ -450,9 +469,13 @@ fn trimmed_cut(
         return Ok(None);
     }
     // The faces the general fuse would set aside, which it passes through
-    // as they stand: none is one a seat lies on.
+    // as they stand: none is one a seat lies on, and for a fill, which keeps
+    // the tool's own, none is a face of `b`.
     let mut aside = vec![false; solid.faces.len()];
     if let Ok(Some(sides)) = crate::aside::set_aside(model, a, b, tol) {
+        if fill && !sides[1].faces.is_empty() {
+            return Ok(None);
+        }
         for (face, _) in &sides[0].faces {
             if let Some(i) = solid.faces.iter().position(|f| f.is_same(face)) {
                 aside[i] = true;
@@ -463,7 +486,7 @@ fn trimmed_cut(
         return Ok(None);
     }
     build(
-        model, &solid, &plans, &trimmed, &blends, &new_edges, &aside, a, b, tol,
+        model, &solid, &plans, &trimmed, &blends, &new_edges, &aside, fill, a, b, tol,
     )
 }
 
@@ -699,6 +722,7 @@ fn build(
     blends: &[Vec<Step>],
     new_edges: &[NewEdge],
     aside: &[bool],
+    fill: bool,
     a: &Shape,
     b: &Shape,
     tol: Tolerances,
@@ -795,7 +819,15 @@ fn build(
                 let Some(surface) = model.geometry().surface(surface_id).cloned() else {
                     return Ok(None);
                 };
-                // The new edges the face walks take their image on its plane.
+                // On a surface periodic across, the span the face's own
+                // edges' images run over, which a new image is turned into.
+                let span = match periodic_span(model, &surface, surface_id, &solid.loops[i], tol)? {
+                    Spanned::Plain => None,
+                    Spanned::Over(span) => Some(span),
+                    Spanned::Unread => return Ok(None),
+                };
+                // The new edges the face walks take their image on its
+                // surface.
                 for step in loops.iter().flatten() {
                     let Target::New(k) = step.target else {
                         continue;
@@ -807,7 +839,7 @@ fn build(
                     if imaged {
                         continue;
                     }
-                    let Some(pcurve) = ogeom_intersect::exact_pcurve_over(
+                    let Some(mut pcurve) = ogeom_intersect::exact_pcurve_over(
                         &new_edges[k].curve,
                         new_edges[k].range,
                         &surface,
@@ -815,6 +847,23 @@ fn build(
                     ) else {
                         return Ok(None);
                     };
+                    if let Some((lo, hi, period)) = span {
+                        let range = new_edges[k].range;
+                        let u = pcurve.point_at(f64::midpoint(range.0, range.1), tol)?.x;
+                        let turns = ((lo - u) / period).ceil();
+                        if u + turns * period > hi {
+                            return Ok(None);
+                        }
+                        if turns != 0.0 {
+                            pcurve = pcurve.transformed(
+                                &ogeom_math::Transform2::translation(ogeom_math::Vector2::new(
+                                    turns * period,
+                                    0.0,
+                                )),
+                                tol,
+                            )?;
+                        }
+                    }
                     ogeom_algo::attach_pcurve(
                         model,
                         &made[k],
@@ -853,11 +902,12 @@ fn build(
         let Some(surface) = model.geometry().surface(data.surface).cloned() else {
             return Ok(None);
         };
-        // The blend faces out of the material, the other way from the
-        // wedge's.
-        let turned = match plan.blend.orientation() {
-            Orientation::Forward => Orientation::Reversed,
-            _ => Orientation::Forward,
+        // The blend faces out of the material: the other way from the
+        // wedge's for a cut, as the wedge's for a fill.
+        let turned = match (plan.blend.orientation(), fill) {
+            (own, true) => own,
+            (Orientation::Forward, false) => Orientation::Reversed,
+            (_, false) => Orientation::Forward,
         };
         let mut edges = Vec::with_capacity(ring.len());
         for &step in ring {
@@ -886,6 +936,60 @@ fn build(
     history.modify(a, result.clone());
     history.modify(b, result.clone());
     Ok(Some(Built::new(result, history)))
+}
+
+/// How a face's surface runs across: not periodic, or periodic with the
+/// least and greatest parameter across its edges' images reach and the
+/// period, or periodic with an edge whose image is not read.
+enum Spanned {
+    Plain,
+    Over((f64, f64, f64)),
+    Unread,
+}
+
+/// The [`Spanned`] of a face on `surface`, read from the images on it of
+/// the edges its loops walk, each at its ends and middle.
+fn periodic_span(
+    model: &Model,
+    surface: &SurfaceGeometry,
+    id: SurfaceId,
+    loops: &[Vec<Walked>],
+    tol: Tolerances,
+) -> OgeomResult<Spanned> {
+    use ogeom_geom::Surface as _;
+    if !surface.is_periodic_u() {
+        return Ok(Spanned::Plain);
+    }
+    let (lo, hi) = surface.domain().0;
+    let mut span = (f64::INFINITY, f64::NEG_INFINITY);
+    for walked in loops.iter().flatten() {
+        let Some(data) = model.node(&walked.edge).and_then(|n| n.data().as_edge()) else {
+            return Ok(Spanned::Unread);
+        };
+        let (curves, range) = match data.pcurve_on(id) {
+            Some(EdgeRepr::PCurve { curve, range, .. }) => (vec![*curve], *range),
+            Some(EdgeRepr::Seam {
+                forward,
+                reversed,
+                range,
+                ..
+            }) => (vec![*forward, *reversed], *range),
+            _ => return Ok(Spanned::Unread),
+        };
+        for curve in curves {
+            let Some(image) = model.geometry().pcurve(curve) else {
+                return Ok(Spanned::Unread);
+            };
+            for t in [range.0, f64::midpoint(range.0, range.1), range.1] {
+                let u = image.point_at(t, tol)?.x;
+                span = (span.0.min(u), span.1.max(u));
+            }
+        }
+    }
+    if span.0 > span.1 {
+        return Ok(Spanned::Unread);
+    }
+    Ok(Spanned::Over((span.0, span.1, hi - lo)))
 }
 
 /// The solid as the trim reads it, where it is one shell at no placement
@@ -1091,12 +1195,53 @@ fn plane_of(model: &Model, face: &Shape) -> Option<(SurfaceId, Point, Vector)> {
     Some((data.surface, plane.plane().origin(), outward))
 }
 
-/// A wedge as the trim reads it: its planar faces, each with its loop, a
-/// point of its plane and its outward normal; its blend and the blend's
-/// loop; the vertex of the solid each of its vertices stands on, and where
-/// each stands with its tolerance; and the widest tolerance it states.
+/// The surface a seat lies on: a plane, by a point of it and its outward
+/// normal, or a cylinder, by a point of its axis, the axis's unit
+/// direction, its radius, and `+1` where the seat faces away from the axis,
+/// `-1` toward it.
+#[derive(Clone, Copy)]
+enum Lies {
+    Plane {
+        origin: Point,
+        outward: Vector,
+    },
+    Cylinder {
+        origin: Point,
+        axis: Vector,
+        radius: f64,
+        sense: f64,
+    },
+}
+
+impl Lies {
+    /// The surface facing the other way.
+    fn against(self) -> Self {
+        match self {
+            Lies::Plane { origin, outward } => Lies::Plane {
+                origin,
+                outward: -outward,
+            },
+            Lies::Cylinder {
+                origin,
+                axis,
+                radius,
+                sense,
+            } => Lies::Cylinder {
+                origin,
+                axis,
+                radius,
+                sense: -sense,
+            },
+        }
+    }
+}
+
+/// A wedge as the trim reads it: its seats, each with its loop and the
+/// surface it lies on; its blend and the blend's loop; the vertex of the
+/// solid each of its vertices stands on, and where each stands with its
+/// tolerance; and the widest tolerance it states.
 struct Read {
-    planar: Vec<(Shape, Vec<Walked>, Point, Vector)>,
+    seats: Vec<(Shape, Vec<Walked>, Lies)>,
     blend: Shape,
     blend_loop: Vec<Walked>,
     vertices: FastMap<TShapeId, Shape>,
@@ -1106,8 +1251,9 @@ struct Read {
 
 /// A wedge read, each of its vertices found among the solid's, or made on
 /// an edge of the solid it stands on inside ([`split_at`]); `None` where
-/// the wedge is not planar faces and one other, or a vertex stands on no
-/// vertex or edge of the solid alone.
+/// the wedge is not planar faces and one other, or planar faces, a
+/// cylinder and a torus (the blend), or a vertex stands on no vertex or
+/// edge of the solid alone.
 fn read_wedge(
     model: &mut Model,
     solid: &mut Solid,
@@ -1119,8 +1265,8 @@ fn read_wedge(
         return Ok(None);
     };
     let faces = model.children_of(shell)?;
-    let mut planar: Vec<(Shape, Vec<Walked>, Point, Vector)> = Vec::new();
-    let mut blend: Option<(Shape, Vec<Walked>)> = None;
+    let mut seats: Vec<(Shape, Vec<Walked>, Lies)> = Vec::new();
+    let mut curved: Vec<(Shape, Vec<Walked>)> = Vec::new();
     for face in &faces {
         let Some(mut rings) = walk_face(model, face)? else {
             return Ok(None);
@@ -1130,25 +1276,51 @@ fn read_wedge(
         }
         let ring = rings.remove(0);
         if let Some((_, origin, outward)) = plane_of(model, face) {
-            planar.push((face.clone(), ring, origin, outward));
-        } else if blend.is_none() {
-            blend = Some((face.clone(), ring));
+            seats.push((face.clone(), ring, Lies::Plane { origin, outward }));
         } else {
-            return Ok(None);
+            curved.push((face.clone(), ring));
         }
     }
-    let Some((blend, blend_loop)) = blend else {
-        return Ok(None);
-    };
-    if planar.is_empty() {
+    if seats.is_empty() {
         return Ok(None);
     }
+    // The blend: the one curved face, or a torus beside a cylinder seat.
+    let (blend, blend_loop) = match curved.len() {
+        1 => curved.remove(0),
+        2 => {
+            let torus = |face: &Shape| {
+                matches!(
+                    ring::surface_of(model, face),
+                    Some((_, SurfaceGeometry::Torus(_)))
+                )
+            };
+            let Some(at) = curved.iter().position(|(face, _)| torus(face)) else {
+                return Ok(None);
+            };
+            let blend = curved.remove(at);
+            let (wall, ring) = curved.remove(0);
+            let Some((_, SurfaceGeometry::Cylinder(c))) = ring::surface_of(model, &wall) else {
+                return Ok(None);
+            };
+            let cylinder = c.cylinder();
+            let frame = cylinder.frame();
+            let lies = Lies::Cylinder {
+                origin: frame.origin(),
+                axis: frame.z().vector(),
+                radius: cylinder.radius(),
+                sense: ring::facing(&wall, &frame),
+            };
+            seats.push((wall, ring, lies));
+            blend
+        }
+        _ => return Ok(None),
+    };
     // Every vertex of the wedge is one of the solid's: the one whose ball
     // meets its own, and no other.
     let mut vertices: FastMap<TShapeId, Shape> = FastMap::default();
     let mut points: FastMap<TShapeId, (Point, f64)> = FastMap::default();
     let mut wedge_tolerance = tol.confusion();
-    for ring in planar
+    for ring in seats
         .iter()
         .map(|p| &p.1)
         .chain(std::iter::once(&blend_loop))
@@ -1183,7 +1355,7 @@ fn read_wedge(
         }
     }
     Ok(Some(Read {
-        planar,
+        seats,
         blend,
         blend_loop,
         vertices,
@@ -1198,24 +1370,43 @@ fn plan_wedge(
     model: &Model,
     solid: &mut Solid,
     read: Read,
+    fill: bool,
     new_edges: &mut Vec<NewEdge>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Plan>> {
     let Read {
-        planar,
+        seats: faces,
         blend,
         blend_loop,
         vertices,
         points,
         tolerance: wedge_tolerance,
     } = read;
-    let Some(cylinder) = blend_cylinder(model, &blend, &blend_loop, tol)? else {
-        return Ok(None);
+    // A straight band's blend is a strip of a cylinder between planar
+    // seats; a piece of a rim's is a torus, with a cylinder seat.
+    let read = match ring::surface_of(model, &blend) {
+        Some((_, SurfaceGeometry::Torus(_))) => {
+            let Some(sector) =
+                sector::read_sector(model, &faces, &blend, &blend_loop, wedge_tolerance, tol)?
+            else {
+                return Ok(None);
+            };
+            Blend::Sector(sector)
+        }
+        _ => {
+            if faces.iter().any(|f| !matches!(f.2, Lies::Plane { .. })) {
+                return Ok(None);
+            }
+            let Some(strip) = blend_cylinder(model, &blend, &blend_loop, tol)? else {
+                return Ok(None);
+            };
+            Blend::Strip(strip)
+        }
     };
     // What each edge of the wedge stands for.
     let blend_edges: Vec<TShapeId> = blend_loop.iter().map(|w| w.edge.node()).collect();
     let mut targets: FastMap<TShapeId, Target> = FastMap::default();
-    for ring in planar.iter().map(|p| &p.1) {
+    for ring in faces.iter().map(|p| &p.1) {
         for walked in ring {
             let id = walked.edge.node();
             if targets.contains_key(&id) {
@@ -1281,18 +1472,58 @@ fn plan_wedge(
         return Ok(None);
     }
     // Each seat on the face of the solid it lies on.
-    let mut seats = Vec::with_capacity(planar.len());
-    for (seat, ring, _, outward) in &planar {
-        let Some(placed) = seat_on(model, solid, seat, ring, *outward, &targets, &vertices, tol)?
+    let reach = wedge_tolerance + tol.confusion();
+    let mut seats = Vec::with_capacity(faces.len());
+    for (seat, ring, lies) in &faces {
+        // A fill's seat lies on a face facing against it, which walks the
+        // seat's edges the other way: read as the seat turned.
+        let (ring, lies) = if fill {
+            let turned: Vec<Walked> = ring
+                .iter()
+                .rev()
+                .map(|w| Walked {
+                    edge: w.edge.reversed(),
+                    from: w.to,
+                    to: w.from,
+                })
+                .collect();
+            (turned, lies.against())
+        } else {
+            (ring.clone(), *lies)
+        };
+        let Some(placed) = seat_on(
+            model, solid, seat, &ring, lies, reach, &targets, &vertices, tol,
+        )?
         else {
             return Ok(None);
         };
         seats.push(placed);
     }
     let hosts: Vec<usize> = seats.iter().map(|s| s.host).collect();
+    let cylinder = match read {
+        Blend::Strip(strip) => strip,
+        Blend::Sector(sector) => {
+            if !sector.stands_clear(model, solid, &hosts, tol)? {
+                return Ok(None);
+            }
+            return Ok(Some(Plan {
+                seats,
+                blend,
+                blend_loop,
+                targets,
+                vertices,
+            }));
+        }
+    };
     // The convex region the wedge lies in: behind each seat's plane and the
     // chord plane through the blend's rulings.
-    let mut walls: Vec<(Point, Vector)> = planar.iter().map(|p| (p.2, p.3)).collect();
+    let mut walls: Vec<(Point, Vector)> = faces
+        .iter()
+        .filter_map(|f| match f.2 {
+            Lies::Plane { origin, outward } => Some((origin, outward)),
+            Lies::Cylinder { .. } => None,
+        })
+        .collect();
     let chord = {
         let [l0, l1] = cylinder.rulings;
         let normal = cylinder.axis.cross(l1 - l0);
@@ -1532,6 +1763,13 @@ fn split_at(
     Ok(Some(vertex))
 }
 
+/// A wedge's blend as the trim reads it: a straight band's, or a piece of
+/// a rim's.
+enum Blend {
+    Strip(Strip),
+    Sector(sector::Sector),
+}
+
 /// A blend that is a strip of a cylinder between two of its rulings and two
 /// of its cross-sections: the axis direction, a point of each ruling, and
 /// the two arcs.
@@ -1750,7 +1988,8 @@ fn seat_on(
     solid: &Solid,
     seat: &Shape,
     ring: &[Walked],
-    outward: Vector,
+    lies: Lies,
+    reach: f64,
     targets: &FastMap<TShapeId, Target>,
     vertices: &FastMap<TShapeId, Shape>,
     tol: Tolerances,
@@ -1776,18 +2015,15 @@ fn seat_on(
     if order[held_len..].iter().any(|&k| held_at[k].is_some()) {
         return Ok(None);
     }
-    // The face of the solid walking the first held edge in the seat's plane,
-    // facing the seat's way.
+    // The face of the solid walking the first held edge on the seat's
+    // surface, facing the seat's way.
     let mut hosts = solid
         .walkers
         .get(&any)
         .map_or(&[][..], |v| v.as_slice())
         .iter()
         .copied()
-        .filter(|&f| {
-            plane_of(model, &solid.faces[f])
-                .is_some_and(|(_, _, normal)| (normal - outward).magnitude() <= tol.angular())
-        });
+        .filter(|&f| lies_on(model, &solid.faces[f], lies, reach, tol));
     let (Some(host), None) = (hosts.next(), hosts.next()) else {
         return Ok(None);
     };
@@ -1834,18 +2070,29 @@ fn seat_on(
         }));
     }
     // The new edges cross the face: they meet no edge of it off the run but
-    // at their ends, and no hole of it stands inside the seat.
+    // at their ends, and no other loop of it stands inside the seat. Such a
+    // loop meets none of the seat's edges, so it stands inside the seat or
+    // out of it whole, and one inside has every vertex inside the seat's
+    // box: one with a vertex standing off that box by more than the
+    // vertex's tolerance stands out of the seat.
     let seat_box = ogeom_algo::shape_bounds(model, seat, tol)?;
     let run: Vec<TShapeId> = (0..held_len)
         .map(|k| face_ring[(p + k) % face_ring.len()].edge.node())
         .collect();
     for (other_l, other) in solid.loops[host].iter().enumerate() {
         if other_l != l {
-            let mut ring_box = Aabb::EMPTY;
+            let mut out = false;
             for walked in other {
-                ring_box = ring_box.union(&ogeom_algo::shape_bounds(model, &walked.edge, tol)?);
+                let Some((at, own)) = solid
+                    .vertex_shapes
+                    .get(&walked.from)
+                    .and_then(|v| vertex_at(model, v))
+                else {
+                    return Ok(None);
+                };
+                out |= seat_box.distance_to(at) > own + tol.confusion();
             }
-            if ring_box.intersects(&seat_box) {
+            if !out {
                 return Ok(None);
             }
         }
@@ -1866,6 +2113,33 @@ fn seat_on(
         run: Some((l, p, held_len)),
         free,
     }))
+}
+
+/// Whether a face of the solid lies on the surface a seat lies on, facing
+/// the seat's way: a plane with the seat's outward normal, or a cylinder
+/// about the seat's axis, of its radius, within `reach`.
+fn lies_on(model: &Model, face: &Shape, lies: Lies, reach: f64, tol: Tolerances) -> bool {
+    match lies {
+        Lies::Plane { outward, .. } => plane_of(model, face)
+            .is_some_and(|(_, _, normal)| (normal - outward).magnitude() <= tol.angular()),
+        Lies::Cylinder {
+            origin,
+            axis,
+            radius,
+            sense,
+        } => {
+            let Some((_, SurfaceGeometry::Cylinder(c))) = ring::surface_of(model, face) else {
+                return false;
+            };
+            let cylinder = c.cylinder();
+            let frame = cylinder.frame();
+            let off = frame.origin() - origin;
+            ring::parallel(frame.z().vector(), axis, tol)
+                && (off - axis * off.dot(axis)).magnitude() <= reach
+                && (cylinder.radius() - radius).abs() <= reach
+                && ring::facing(face, &frame) == sense
+        }
+    }
 }
 
 /// Whether an edge of a face and a new edge across it meet nowhere but at
@@ -1933,10 +2207,103 @@ fn apart(
             }
         }
         (Curve::Line(_), Curve::Circle(_)) => {
-            segment_clear_of_arc(&own, own_range, (&new, new_range), &shared, reach, tol)
+            line_clear_of_arc(&own, own_range, (&new, new_range), &shared, reach, tol)
         }
         (Curve::Circle(_), Curve::Line(_)) => {
-            segment_clear_of_arc(&new, new_range, (&own, own_range), &shared, reach, tol)
+            line_clear_of_arc(&new, new_range, (&own, own_range), &shared, reach, tol)
+        }
+        // Two circles in parallel planes standing apart.
+        (Curve::Circle(p), Curve::Circle(q)) => {
+            let (p, q) = (p.circle(), q.circle());
+            let normal = p.frame().z().vector();
+            Ok(ring::parallel(normal, q.frame().z().vector(), tol)
+                && (q.centre() - p.centre()).dot(normal).abs() > reach)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// [`segment_clear_of_arc`] for a segment in the arc's plane, and
+/// [`axial_clear_of_arc`] for one along the axis of the arc's circle.
+fn line_clear_of_arc(
+    line: &Curve,
+    range: (f64, f64),
+    (arc, arc_range): (&Curve, (f64, f64)),
+    shared: &[Point],
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Curve::Circle(c) = arc else {
+        return Ok(false);
+    };
+    let along = line.point_at(range.1, tol)? - line.point_at(range.0, tol)?;
+    if along.magnitude() > tol.confusion()
+        && ring::parallel(along, c.circle().frame().z().vector(), tol)
+    {
+        axial_clear_of_arc(line, range, (arc, arc_range), shared, reach, tol)
+    } else {
+        segment_clear_of_arc(line, range, (arc, arc_range), shared, reach, tol)
+    }
+}
+
+/// Whether a segment along the axis of an arc's circle and the arc have no
+/// common point but the vertices `shared` they end on together. The
+/// segment's points stand off the arc by no less than their distance from
+/// the circle's plane, nor than the distance in that plane from the
+/// segment's foot on it to the arc. With no shared vertex, either is past
+/// `reach`. With one, the segment runs from it off the plane past `reach`,
+/// and the arc's points stand off the foot, there, by the chord to them,
+/// which grows with the angle turned up to half a turn and shrinks after:
+/// past the points within `reach` of the vertex, it is least at the arc's
+/// other end, which stands off the foot past `reach`.
+fn axial_clear_of_arc(
+    line: &Curve,
+    range: (f64, f64),
+    (arc, arc_range): (&Curve, (f64, f64)),
+    shared: &[Point],
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Curve::Circle(c) = arc else {
+        return Ok(false);
+    };
+    let circle = c.circle();
+    let (centre, normal) = (circle.centre(), circle.frame().z().vector());
+    let (s, e) = (line.point_at(range.0, tol)?, line.point_at(range.1, tol)?);
+    let (hs, he) = ((s - centre).dot(normal), (e - centre).dot(normal));
+    let foot = s - normal * hs;
+    match shared {
+        [] => {
+            if hs.min(he) > reach || hs.max(he) < -reach {
+                return Ok(true);
+            }
+            let gap = if in_arc(arc, arc_range, foot, tol)? {
+                ((foot - centre).magnitude() - circle.radius()).abs()
+            } else {
+                let ends = [
+                    arc.point_at(arc_range.0, tol)?,
+                    arc.point_at(arc_range.1, tol)?,
+                ];
+                ends[0].distance(foot).min(ends[1].distance(foot))
+            };
+            Ok(gap > reach)
+        }
+        [at] => {
+            let far = if s.distance(*at) <= e.distance(*at) {
+                he
+            } else {
+                hs
+            };
+            let ends = [
+                arc.point_at(arc_range.0, tol)?,
+                arc.point_at(arc_range.1, tol)?,
+            ];
+            let other = if ends[0].distance(*at) <= ends[1].distance(*at) {
+                ends[1]
+            } else {
+                ends[0]
+            };
+            Ok(far.abs() > reach && other.distance(foot) > reach)
         }
         _ => Ok(false),
     }

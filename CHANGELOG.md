@@ -669,6 +669,28 @@ bump may break the API and a patch bump may not.
   bottom loop 17.5 ms rather than 27.7, a boss's top rim with one
   straight edge 1.9 ms rather than 6.1, and a boss's base with a rib's
   two base edges 4.8 ms rather than 7.7.
+- **The arcs of a tangent chain are rounded by trimming the faces their
+  wedges sit on, not by the general fuse (#384).** Rounding a chain of
+  straight edges and arcs, such as a block's top loop once its upright
+  edges are rounded or a slot's rim, cuts the straight bands' wedges and
+  then the arcs', or the other way round. An arc's wedge is a piece of a
+  rim's between two planar ends through its axis. Where the straight bands
+  went first, each end lies on the face a band's cut left, and the piece
+  went through the general fuse in full. `ogeom_bool::cut_seated` now
+  trims such a piece as it trims a straight band, at most half a turn,
+  with its wall on a cylinder face of the solid and every other face of
+  the solid standing out of the sector of the ring the piece lies in.
+  `ogeom_bool::fuse_seated` now trims the same wedges for a concave chain
+  (a rounded pocket's floor), and a straight band's where it is filled.
+  The seat a trim reads may now lie on any loop of its face: a face's other
+  loop is read as standing outside the seat where one of its vertices
+  stands off the seat's box, where it was declined where the loop's box met
+  the seat's. The solid and its history are the general fuse's; everywhere
+  else the boolean is the general fuse's. Single-threaded, rounding a
+  block's top loop once its upright edges are rounded takes 98 ms rather
+  than 495, a stadium slot's rim 10 ms rather than 220, and a rounded
+  pocket's floor loop 100 ms rather than 466, to the same faces, edges,
+  volume and area.
 - **The corners a fillet request rounds are cut in one boolean where
   they stand clear of each other (#384).** `fillet_edges` rounded each
   corner where three or more of its edges meet with its own cut. On a

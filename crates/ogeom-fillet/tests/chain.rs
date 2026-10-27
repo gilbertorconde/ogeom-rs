@@ -3333,3 +3333,203 @@ fn rounds_at_an_outside_corner_take_both_bands_run_out() {
         }
     }
 }
+
+/// A tangent chain of straight edges and arcs on a plane, the arcs where it
+/// meets a cylinder, rounded in one request: the arcs' wedges, pieces of a
+/// rim's between two ends through its axis, are cut after the straight
+/// bands' (or filled after them, for a concave chain) by trimming the faces
+/// each sits on, its ends on the faces the straight bands' cuts left, rather
+/// than by the general fuse. The rounding comes out as the general fuse
+/// makes it: the same solid, valid, with the same history, and the volume
+/// the section swept along the chain takes or adds. The cases are a block's
+/// top loop once its upright edges are rounded, a stadium prism's top loop,
+/// a stadium slot's top loop (the arcs on a concave wall), and for a union a
+/// rounded pocket's floor loop. Where a hole comes up into the sector a
+/// corner's wedge lies in, the cut is left to the general fuse.
+#[test]
+fn rims_pieces_in_a_tangent_chain_are_trimmed_to_the_general_fuse_s_solid() {
+    use core::f64::consts::{FRAC_PI_4, PI};
+    type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64, Option<f64>);
+    type Case<'a> = &'a dyn Fn(&mut ogeom_topo::Model) -> Made;
+    let section = 1.0 - FRAC_PI_4;
+    let block = |model: &mut ogeom_topo::Model, at: Point, size: (f64, f64, f64)| {
+        let frame = Frame::new(at, Direction::Z, Direction::X, T).unwrap();
+        ogeom_algo::make_box(model, frame, size, T).unwrap().shape
+    };
+    let drum = |model: &mut ogeom_topo::Model, at: Point, r: f64, h: f64| {
+        let frame = Frame::new(at, Direction::Z, Direction::X, T).unwrap();
+        ogeom_algo::make_cylinder(model, frame, r, h, T)
+            .unwrap()
+            .shape
+    };
+    // The edges of `shape` at height `z`, and those running upright.
+    let ends = |model: &ogeom_topo::Model, e: &ogeom_topo::Shape| {
+        let data = model.node(e).unwrap().data().as_edge().unwrap();
+        let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            unreachable!("an edge of a solid made here has a curve");
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        [range.0, f64::midpoint(range.0, range.1), range.1]
+            .map(|t| ogeom_geom::Curve3d::point_at(curve, t, T).unwrap())
+    };
+    let at_height = |model: &ogeom_topo::Model, shape: &ogeom_topo::Shape, z: f64| {
+        explore_unique(model, shape, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| ends(model, e).iter().all(|p| (p.z - z).abs() < 1e-9))
+            .collect::<Vec<_>>()
+    };
+    let upright = |model: &ogeom_topo::Model, shape: &ogeom_topo::Shape| {
+        explore_unique(model, shape, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let [p, _, q] = ends(model, e);
+                (p.x - q.x).abs() < 1e-9 && (p.y - q.y).abs() < 1e-9
+            })
+            .collect::<Vec<_>>()
+    };
+    // A 20 x 20 x 10 block with its upright edges rounded at 3, and a
+    // blind hole drilled up into it at `hole` where one is given, coming up
+    // to 0.3 under its top; its top loop.
+    let rounded_block = |model: &mut ogeom_topo::Model, hole: Option<Point>| -> Made {
+        let solid = block(model, Point::ORIGIN, (20.0, 20.0, 10.0));
+        let edges = upright(model, &solid);
+        let mut solid = ogeom_fillet::fillet_edges(model, &solid, &edges, 3.0, T)
+            .unwrap()
+            .shape;
+        let mut want = Some(
+            4000.0
+                - 4.0 * section * 9.0 * 10.0
+                - 4.0 * 14.0 * section
+                - rim_removed(2.0, 1.0, true),
+        );
+        if let Some(at) = hole {
+            let tool = drum(model, at, 0.2, 9.7 - at.z);
+            solid = ogeom_bool::cut(model, &solid, &tool, T).unwrap().shape;
+            want = None;
+        }
+        let edges = at_height(model, &solid, 10.0);
+        (solid, edges, 1.0, want)
+    };
+    let stadium_top = |model: &mut ogeom_topo::Model| -> Made {
+        let solid = stadium(model, 10.0, 5.0, 4.0);
+        let edges: Vec<_> = explore_unique(model, &solid, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                explore(model, e, Filter::OfType(ShapeType::Vertex))
+                    .unwrap()
+                    .iter()
+                    .all(|v| {
+                        let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+                        let placed = v.transform(model.datums()).unwrap().apply(p);
+                        (placed.z - 4.0).abs() < 1e-9
+                    })
+            })
+            .collect();
+        let want =
+            (10.0 * 10.0 + PI * 25.0) * 4.0 - 2.0 * 10.0 * section - rim_removed(4.0, 1.0, true);
+        (solid, edges, 1.0, Some(want))
+    };
+    // A plate with a stadium slot through it, its top loop.
+    let slot = |model: &mut ogeom_topo::Model| -> Made {
+        let plate = block(model, Point::new(-8.0, -6.0, -5.0), (26.0, 20.0, 10.0));
+        let mut tool = block(model, Point::ORIGIN, (10.0, 8.0, 6.0));
+        for x in [0.0, 10.0] {
+            let end = drum(model, Point::new(x, 4.0, 0.0), 4.0, 6.0);
+            tool = ogeom_bool::fuse(model, &tool, &end, T).unwrap().shape;
+        }
+        let solid = ogeom_bool::cut(model, &plate, &tool, T).unwrap().shape;
+        let edges = at_height(model, &solid, 5.0)
+            .into_iter()
+            .filter(|e| {
+                let [_, m, _] = ends(model, e);
+                m.x > -4.5 && m.x < 14.5 && m.y > -0.5 && m.y < 8.5
+            })
+            .collect();
+        let want = 26.0 * 20.0 * 10.0
+            - (10.0 * 8.0 + PI * 16.0) * 5.0
+            - 2.0 * 10.0 * section
+            - rim_removed(5.0, 1.0, false);
+        (solid, edges, 1.0, Some(want))
+    };
+    // A 10 x 10 pocket 5 deep in a 20 x 20 x 10 block, its upright edges
+    // rounded at 2; its floor loop.
+    let pocket = |model: &mut ogeom_topo::Model| -> Made {
+        let solid = block(model, Point::ORIGIN, (20.0, 20.0, 10.0));
+        let tool = block(model, Point::new(5.0, 5.0, 5.0), (10.0, 10.0, 6.0));
+        let solid = ogeom_bool::cut(model, &solid, &tool, T).unwrap().shape;
+        let edges: Vec<_> = upright(model, &solid)
+            .into_iter()
+            .filter(|e| {
+                let [p, _, _] = ends(model, e);
+                (4.0..16.0).contains(&p.x) && (4.0..16.0).contains(&p.y)
+            })
+            .collect();
+        let solid = ogeom_fillet::fillet_edges(model, &solid, &edges, 2.0, T)
+            .unwrap()
+            .shape;
+        let edges = at_height(model, &solid, 5.0);
+        let want = 4000.0 - 500.0
+            + 4.0 * section * 4.0 * 5.0
+            + 4.0 * 6.0 * section
+            + rim_removed(1.0, 1.0, true);
+        (solid, edges, 1.0, Some(want))
+    };
+    let cases: [(&str, Case, bool); 5] = [
+        (
+            "a rounded block's top loop",
+            &|m| rounded_block(m, None),
+            true,
+        ),
+        ("a stadium prism's top loop", &stadium_top, true),
+        ("a stadium slot's top loop", &slot, true),
+        ("a rounded pocket's floor loop", &pocket, true),
+        (
+            "a hole into a corner's sector",
+            &|m| rounded_block(m, Some(Point::new(18.5, 1.5, -1.0))),
+            false,
+        ),
+    ];
+    for (name, case, trimmed) in cases {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, edges, radius, closed_form) = case(&mut model);
+        let mut general = model.clone();
+        let fused = ogeom_bool::work::unseated(|| {
+            ogeom_fillet::fillet_edges(&mut general, &solid, &edges, radius, T)
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+        });
+        let (seated, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::fillet_edges(&mut model, &solid, &edges, radius, T).unwrap()
+        });
+        assert_eq!(
+            work.seated_cuts + work.seated_fills > 0,
+            trimmed,
+            "{name}: trimmed"
+        );
+        let (want, got) = (
+            account(&general, &solid, &edges, &fused),
+            account(&model, &solid, &edges, &seated),
+        );
+        assert!(got.0, "{name}: the rounding is valid");
+        assert!(
+            (got.1 - want.1).abs() <= want.1 * 1e-9,
+            "{name}: volume {} against {}",
+            got.1,
+            want.1
+        );
+        if let Some(exact) = closed_form {
+            assert!(
+                (got.1 - exact).abs() <= exact * 1e-7,
+                "{name}: volume {} against the closed form {exact}",
+                got.1
+            );
+        }
+        assert_eq!(
+            (got.0, &got.2, &got.3),
+            (want.0, &want.2, &want.3),
+            "{name}"
+        );
+    }
+}

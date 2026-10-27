@@ -14734,7 +14734,9 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
 /// apart, that sits flush on `a`: each wedge bounded by planar seats lying
 /// on faces of `a` and one strip of a cylinder, the blend; or each a rim's
 /// wedge, an annulus of a plane and a band of a cylinder about one axis
-/// lying on faces of `a`, and the quarter of a torus's tube between them.
+/// lying on faces of `a`, and the quarter of a torus's tube between them;
+/// or a piece of a rim's wedge between two planar ends through its axis,
+/// at most half a turn, each seat and end lying on a face of `a`.
 /// Where every seat lies within the face it is on, facing its way, and no
 /// other face of `a` reaches into the wedge, the faces the seats lie on are
 /// trimmed along the wedge's own edges and the blends close what is left:
@@ -14784,9 +14786,11 @@ pub fn cut_seated(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
 /// [`fuse`], where `b` is a concave rim's blend wedge, or a compound of
 /// such wedges standing apart, that sits flush on `a`: each an annulus of a
 /// plane and a band of a cylinder about one axis lying on faces of `a`,
-/// facing against them, and the quarter of a torus's tube between them.
+/// facing against them, and the quarter of a torus's tube between them; or
+/// a concave straight band's wedge or a piece of a rim's, as [`cut_seated`]
+/// reads them, its seats lying on faces of `a` facing against them.
 /// Where every seat lies within the face it is on and no other face of `a`
-/// reaches into the ring the wedge sweeps, the faces the seats lie on are
+/// reaches into the region the wedge lies in, the faces the seats lie on are
 /// trimmed along the wedge's own edges and the blends close what is left:
 /// the general fuse is not run, and the result and its history are those
 /// it gives. Where `b` mixes such wedges with other lumps, each rim's box

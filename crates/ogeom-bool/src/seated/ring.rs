@@ -75,8 +75,9 @@ use ogeom_topo::{
     TShapeId, VertexData,
 };
 
-/// Whether every lump of a tool holds a torus face: a tool for the ring
-/// trim, not the straight one.
+/// Whether every lump of a tool is three faces, one of them a torus: a
+/// tool for the ring trim, not the straight one, which trims a piece of a
+/// rim's wedge ([`super::sector`]) as it trims a straight band's.
 pub(super) fn is_ringed(model: &Model, b: &Shape) -> OgeomResult<bool> {
     let lumps = match model.kind_of(b)? {
         ShapeType::Solid => vec![b.clone()],
@@ -87,14 +88,14 @@ pub(super) fn is_ringed(model: &Model, b: &Shape) -> OgeomResult<bool> {
         return Ok(false);
     }
     for lump in &lumps {
-        let mut torus = false;
-        for face in ogeom_topo::explore_unique(model, lump, ShapeType::Face)? {
-            torus |= matches!(
-                surface_of(model, &face),
+        let faces = ogeom_topo::explore_unique(model, lump, ShapeType::Face)?;
+        let torus = faces.iter().any(|face| {
+            matches!(
+                surface_of(model, face),
                 Some((_, SurfaceGeometry::Torus(_)))
-            );
-        }
-        if !torus {
+            )
+        });
+        if !torus || faces.len() != 3 {
             return Ok(false);
         }
     }
@@ -104,19 +105,19 @@ pub(super) fn is_ringed(model: &Model, b: &Shape) -> OgeomResult<bool> {
 /// A rim's axis: a point of it at the tube's level and its unit direction
 /// toward the cap.
 #[derive(Clone, Copy)]
-struct Axis {
-    origin: Point,
-    up: Vector,
+pub(super) struct Axis {
+    pub(super) origin: Point,
+    pub(super) up: Vector,
 }
 
 impl Axis {
     /// How far along the axis `p` stands from the tube's level.
-    fn along(&self, p: Point) -> f64 {
+    pub(super) fn along(&self, p: Point) -> f64 {
         (p - self.origin).dot(self.up)
     }
 
     /// How far from the axis `p` stands.
-    fn off(&self, p: Point) -> f64 {
+    pub(super) fn off(&self, p: Point) -> f64 {
         let d = p - self.origin;
         (d - self.up * d.dot(self.up)).magnitude()
     }
@@ -206,7 +207,7 @@ fn edge_reach(
 /// the least and greatest of each: by its conservative box, narrowed to the
 /// plane's own height for a plane square to the axis, and to the radii a
 /// cylinder or a torus about the axis reaches over its whole turn.
-fn face_reach(
+pub(super) fn face_reach(
     model: &Model,
     axis: &Axis,
     face: &Shape,
@@ -334,7 +335,7 @@ struct Ring {
 }
 
 /// A face's surface id and geometry, where the face stands at no placement.
-fn surface_of(model: &Model, face: &Shape) -> Option<(SurfaceId, SurfaceGeometry)> {
+pub(super) fn surface_of(model: &Model, face: &Shape) -> Option<(SurfaceId, SurfaceGeometry)> {
     let NodeData::Face(data) = model.node(face)?.data() else {
         return None;
     };
@@ -350,7 +351,7 @@ fn surface_of(model: &Model, face: &Shape) -> Option<(SurfaceId, SurfaceGeometry
 /// The sign a face's orientation and its frame's handedness give the
 /// surface's normal: a chart's natural normal is `du x dv`, which a
 /// left-handed frame turns against its `z`.
-fn facing(face: &Shape, frame: &ogeom_math::Frame) -> f64 {
+pub(super) fn facing(face: &Shape, frame: &ogeom_math::Frame) -> f64 {
     let turned = face.orientation() == Orientation::Reversed;
     let mirrored = frame.handedness() == ogeom_math::Handedness::Left;
     if turned == mirrored { 1.0 } else { -1.0 }
@@ -358,7 +359,7 @@ fn facing(face: &Shape, frame: &ogeom_math::Frame) -> f64 {
 
 /// A planar face's outward unit normal and a point of its plane, where it
 /// stands at no placement.
-fn plane_out(model: &Model, face: &Shape) -> Option<(Point, Vector)> {
+pub(super) fn plane_out(model: &Model, face: &Shape) -> Option<(Point, Vector)> {
     let Some((_, SurfaceGeometry::Plane(p))) = surface_of(model, face) else {
         return None;
     };
@@ -367,7 +368,7 @@ fn plane_out(model: &Model, face: &Shape) -> Option<(Point, Vector)> {
 }
 
 /// Whether two vectors run within the angular tolerance of one line.
-fn parallel(a: Vector, b: Vector, tol: Tolerances) -> bool {
+pub(super) fn parallel(a: Vector, b: Vector, tol: Tolerances) -> bool {
     a.cross(b).magnitude() <= tol.angular() * a.magnitude() * b.magnitude()
 }
 
