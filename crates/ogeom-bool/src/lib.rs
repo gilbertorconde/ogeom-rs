@@ -314,6 +314,14 @@ struct BoundaryEdge {
     /// tolerance no face of the edge stands off by half of is owed to
     /// none, and is this too.
     standoff: f64,
+    /// The radius the edge holds to on this face as measured: its stated
+    /// tolerance, or the curve's distance from the face's own image of it
+    /// where that is wider.
+    residual: f64,
+    /// Whether the face walks the edge along its curve (`true`) or back,
+    /// keeping its material on the left about its outward normal; `None`
+    /// where it walks it both ways, a seam.
+    walked: Option<bool>,
     /// The edge as this face draws it, where it stands off the face by more
     /// than [`DRAWN_APART`]: the pcurve on the surface, over `prange`. A
     /// chord between a facet and the drum it was converted beside is drawn
@@ -668,6 +676,18 @@ fn gather(
             .cloned()
             .unwrap_or_else(|| std::sync::Arc::from(Vec::new()));
         let slits = slits(model, &face, &surface, surface_id, tol)?;
+        // How the face walks each of its edges, senses composed: forward
+        // along the curve, back, or both ways (a seam).
+        let mut walks: ogeom_core::FastMap<EdgeKey, (bool, bool)> = ogeom_core::FastMap::default();
+        for edge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
+            let forward = edge.orientation() == ogeom_topo::Orientation::Forward;
+            let walk = walks.entry(EdgeKey::of(&edge)).or_default();
+            if forward {
+                walk.0 = true;
+            } else {
+                walk.1 = true;
+            }
+        }
         let mut face_edges = if holes_aside.is_empty() {
             explore_unique(model, &face, ShapeType::Edge)?
         } else {
@@ -788,6 +808,7 @@ fn gather(
                 };
             let edge_tolerance = edge_data.tolerance.get();
             let mut standoff = edge_tolerance;
+            let mut residual = edge_tolerance;
             if edge_tolerance > tol.confusion() * 10.0 {
                 let gap = |pc: &PlanarCurve, pr: (f64, f64)| {
                     ogeom_algo::pcurve_fit::lifted_gap(
@@ -804,6 +825,7 @@ fn gather(
                     measured = measured.max(gap(other, *orange));
                 }
                 standoff = measured.min(edge_tolerance);
+                residual = measured.max(edge_tolerance);
             }
 
             edges.push(BoundaryEdge {
@@ -816,6 +838,12 @@ fn gather(
                 seam,
                 tolerance: edge_tolerance,
                 standoff,
+                residual,
+                walked: match walks.get(&occurrence.key) {
+                    Some((true, false)) => Some(true),
+                    Some((false, true)) => Some(false),
+                    _ => None,
+                },
                 image: None,
                 ends_tolerance: occurrence.ends_tolerance,
                 ends: occurrence.ends,
@@ -2266,43 +2294,128 @@ fn rescale(t: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
     to.0 + (to.1 - to.0) * (t - from.0) / span
 }
 
-/// The stretches of `curve` over `crange` that lie along the edge `e`
-/// within the pair's honesty, as overlaps with the edge's own parameters at
-/// their ends: the measured twin of the intersector's closed-form
-/// coincidence, for a fitted curve on an exact one.
-fn measured_overlaps(
-    curve: &Curve,
-    crange: (f64, f64),
-    tolerance: f64,
-    e: &BoundaryEdge,
-    tol: Tolerances,
-) -> OgeomResult<Vec<ogeom_intersect::Overlap>> {
-    const SAMPLES: usize = 48;
-    // A fitted curve wobbles about the edge it runs along by far more than
-    // its stated budget, and is measured loosely. Two exact curves are held
-    // to their own tolerances, as an exact section is: an edge that parts
-    // from another by a few microns over its length (a wall leaning off a
-    // pad's side) runs beside it, not along it, and read as along it the
-    // strands that meet it are left a few microns short.
-    // A trim of an exact curve (an arc stated as a stretch of its circle)
-    // is as exact as its basis.
-    fn exact(c: &Curve) -> bool {
-        match c {
-            Curve::Line(_)
-            | Curve::Circle(_)
-            | Curve::Ellipse(_)
-            | Curve::Hyperbola(_)
-            | Curve::Parabola(_) => true,
-            Curve::Trimmed(t) => exact(t.basis()),
-            _ => false,
-        }
+/// Whether a curve is exact: a line or a conic, or a trim of one (an arc
+/// stated as a stretch of its circle is as exact as its basis).
+fn exact(c: &Curve) -> bool {
+    match c {
+        Curve::Line(_)
+        | Curve::Circle(_)
+        | Curve::Ellipse(_)
+        | Curve::Hyperbola(_)
+        | Curve::Parabola(_) => true,
+        Curve::Trimmed(t) => exact(t.basis()),
+        _ => false,
     }
+}
+
+/// How far `curve`, held to `tolerance`, may stand off the edge `e` and
+/// still be read as running along it.
+///
+/// A fitted curve wobbles about the edge it runs along by far more than its
+/// stated budget, and is measured loosely. Two exact curves are held to
+/// their own tolerances, as an exact section is: an edge that parts from
+/// another by a few microns over its length (a wall leaning off a pad's
+/// side) runs beside it, not along it, and read as along it the strands
+/// that meet it are left a few microns short.
+fn measuring_width(curve: &Curve, tolerance: f64, e: &BoundaryEdge, tol: Tolerances) -> f64 {
     let floor = if exact(curve) && exact(&e.curve) {
         tol.confusion() * 10.0
     } else {
         tol.confusion() * 1e3
     };
-    let width = (tolerance.max(e.tolerance) * 2.0).max(floor);
+    (tolerance.max(e.tolerance) * 2.0).max(floor)
+}
+
+/// Whether the distance `off` grows in proportion from where two curves
+/// meet, at `meet` (a parameter and the distance there), out to `t`: the
+/// two crossing at an angle there, not parting tangentially.
+///
+/// Growing as the k-th power from the meeting, the distance halfway out
+/// stands at 2^-k of the distance at the end: past 2^-3/2, half way between
+/// the crossing's 1/2 and the tangent parting's 1/4, the two cross.
+fn grows_in_proportion(
+    off: impl Fn(f64) -> OgeomResult<f64>,
+    meet: (f64, f64),
+    t: f64,
+) -> OgeomResult<bool> {
+    let rise = off(t)? - meet.1;
+    let half = off(f64::midpoint(meet.0, t))? - meet.1;
+    Ok(rise > 0.0 && half >= rise * core::f64::consts::FRAC_1_SQRT_2 / 2.0)
+}
+
+/// Whether `curve`, over `crange` and held to `tolerance`, crosses the edge
+/// `e` at a shallow turn where the two meet at `on_a` on it, rather than
+/// touching it.
+///
+/// Crossing at a turn whose sine is `s`, the two stand within the measuring
+/// width `w` of each other for `w / s` either side of the crossing, and
+/// past it their distance grows in proportion on both sides. Touching, it
+/// grows as the square of the way from the touch, and a crossing found
+/// along the touch is noise in the valley between them: from there the
+/// distance grows on at most one side in proportion. Bending apart by `k`,
+/// the difference of their curvature vectors, the two part by `k x² / 2`
+/// over a way `x` besides the turn's `s x`, which over `w / s` stays below
+/// half the width only where `s² > k w`: a shallower turn is not told from
+/// a touch at the width, and reads as one.
+fn crosses_shallowly(
+    curve: &Curve,
+    crange: (f64, f64),
+    tolerance: f64,
+    e: &BoundaryEdge,
+    (on_a, on_b): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let bending =
+        |c: &Curve, t: f64| -> OgeomResult<Option<(ogeom_math::Vector, ogeom_math::Vector)>> {
+            let d = c.derivatives_at(t, 2, tol)?;
+            let speed = d[1].magnitude();
+            if speed <= tol.confusion() {
+                return Ok(None);
+            }
+            let unit = d[1] / speed;
+            let normal = d[2] - unit * unit.dot(d[2]);
+            Ok(Some((d[1], normal / (speed * speed))))
+        };
+    let (Some((da, ka)), Some((db, kb))) = (bending(curve, on_a)?, bending(&e.curve, on_b)?) else {
+        return Ok(false);
+    };
+    let (ma, mb) = (da.magnitude(), db.magnitude());
+    let turn = da.cross(db).magnitude() / (ma * mb);
+    let width = measuring_width(curve, tolerance, e, tol);
+    if turn * turn <= (ka - kb).magnitude() * width {
+        return Ok(false);
+    }
+    let step = width / turn / ma;
+    let off = |t: f64| -> OgeomResult<f64> {
+        distance_to_edge_curve(&e.curve, e.crange, curve.point_at(t, tol)?, tol)
+    };
+    let meet = (on_a, off(on_a)?);
+    for t in [(on_a - step).max(crange.0), (on_a + step).min(crange.1)] {
+        if (t - on_a).abs() <= tol.parametric() || !grows_in_proportion(off, meet, t)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The stretches of `curve` over `crange` that lie along the edge `e`
+/// within the pair's honesty, as overlaps with the edge's own parameters at
+/// their ends: the measured twin of the intersector's closed-form
+/// coincidence, for a fitted curve on an exact one.
+///
+/// With `parted`, the sum of the radii both curves hold to, a fitted
+/// stretch ends where the two part by it (see below); without, where they
+/// part by the measuring width.
+fn measured_overlaps(
+    curve: &Curve,
+    crange: (f64, f64),
+    tolerance: f64,
+    e: &BoundaryEdge,
+    parted: Option<f64>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<ogeom_intersect::Overlap>> {
+    const SAMPLES: usize = 48;
+    let width = measuring_width(curve, tolerance, e, tol);
     let mut near: Vec<bool> = Vec::with_capacity(SAMPLES + 1);
     for i in 0..=SAMPLES {
         #[allow(clippy::cast_precision_loss)]
@@ -2401,21 +2514,21 @@ fn measured_overlaps(
             Ok(false)
         };
         let (ends_lo, ends_hi) = (ends_there(lo, start == 0)?, ends_there(hi, end == SAMPLES)?);
-        if exact(curve) && exact(&e.curve) {
+        let (lo, hi) = if exact(curve) && exact(&e.curve) {
             if !(ends_lo && ends_hi) {
                 continue;
             }
-        } else if !(ends_lo && ends_hi) {
+            (lo, hi)
+        } else if ends_lo && ends_hi {
+            (lo, hi)
+        } else {
             // A fitted curve may come in along an edge tangentially and
             // leave the loose width inside both, its distance growing as the
             // square of the way from where they meet or slower. One that
             // leaves it growing in proportion, the two crossing at an angle
             // (a band's section across a drum, crossing the drum's own edge
-            // at a shallow one), is near it only by the width. Growing as
-            // the k-th power from the meeting, the distance halfway out
-            // stands at 2^-k of the distance at the end: past 2^-3/2, half
-            // way between the crossing's 1/2 and the tangent parting's 1/4,
-            // the stretch is a crossing and no overlap.
+            // at a shallow one), is near it only by the width: the stretch
+            // is a crossing and no overlap.
             let off = |t: f64| -> OgeomResult<f64> {
                 distance_to_edge_curve(&e.curve, e.crange, curve.point_at(t, tol)?, tol)
             };
@@ -2430,32 +2543,60 @@ fn measured_overlaps(
             }
             let mut crossing = false;
             for (t, ends) in [(lo, ends_lo), (hi, ends_hi)] {
-                if ends {
-                    continue;
+                if !ends {
+                    crossing |= grows_in_proportion(off, meet, t)?;
                 }
-                let rise = off(t)? - meet.1;
-                let half = off(f64::midpoint(meet.0, t))? - meet.1;
-                crossing |= rise > 0.0 && half >= rise * core::f64::consts::FRAC_1_SQRT_2 / 2.0;
             }
             if crossing {
                 continue;
             }
-        }
-        let on_edge = |t: f64| -> OgeomResult<f64> {
-            let p = curve.point_at(t, tol)?;
-            let foot = ogeom_algo::project_on_curve(&e.curve, p, 64, tol)?;
-            Ok(onto_range(foot.parameter, &e.curve, e.crange, tol))
+            (lo, hi)
         };
-        if *DEBUG_WIRE {
-            eprintln!(
-                "CONTACT along edge {} measured over ({lo:.6}, {hi:.6}) within {width:.2e}",
-                e.node.index()
-            );
+        if hi - lo <= tol.parametric() {
+            continue;
         }
-        out.push(ogeom_intersect::Overlap {
-            on_a: (lo, hi),
-            on_b: (on_edge(lo)?, on_edge(hi)?),
-        });
+        // A fitted curve near an edge within the loose width may still
+        // stand apart from it by more than the radii both hold to, and what
+        // lies between them there is geometry, a lune the outline must
+        // keep. Given those radii, the stretch is the runs along which the
+        // two stand within them, each ended where they part by them: the
+        // end on this curve lies within them of the other. A stretch that
+        // never comes that near keeps the width's ends.
+        let off = |t: f64| -> OgeomResult<f64> {
+            distance_to_edge_curve(&e.curve, e.crange, curve.point_at(t, tol)?, tol)
+        };
+        let runs = match parted {
+            Some(within) if !(exact(curve) && exact(&e.curve)) => {
+                runs_within(&off, (lo, hi), within, SAMPLES)?.unwrap_or_else(|| vec![(lo, hi)])
+            }
+            _ => vec![(lo, hi)],
+        };
+        for (lo, hi) in runs {
+            if hi - lo <= tol.parametric() {
+                continue;
+            }
+            // An end carried to the other side is carried within the edge's
+            // own window: a closed curve's two ends stand at one point, and the
+            // edge covering one end of it does not cover the other.
+            let on_edge = |t: f64| -> OgeomResult<f64> {
+                let p = curve.point_at(t, tol)?;
+                if parted.is_some() {
+                    return Ok(nearest_on_edge_curve(&e.curve, e.crange, p, tol)?.1);
+                }
+                let foot = ogeom_algo::project_on_curve(&e.curve, p, 64, tol)?;
+                Ok(onto_range(foot.parameter, &e.curve, e.crange, tol))
+            };
+            if *DEBUG_WIRE {
+                eprintln!(
+                    "CONTACT along edge {} measured over ({lo:.6}, {hi:.6}) within {width:.2e}",
+                    e.node.index()
+                );
+            }
+            out.push(ogeom_intersect::Overlap {
+                on_a: (lo, hi),
+                on_b: (on_edge(lo)?, on_edge(hi)?),
+            });
+        }
     }
     // The samples are spaced along the whole curve, and an edge lying
     // along it over less than three spacings gives no stretch. Measured
@@ -2468,6 +2609,223 @@ fn measured_overlaps(
         out.push(overlap);
     }
     Ok(out)
+}
+
+/// The radius an edge holds to where stretches end at it: its widest
+/// measured on any face of it, or its own tolerance.
+fn held_radius(
+    held: &ogeom_core::FastMap<EdgeKey, (f64, &BoundaryEdge)>,
+    node: EdgeKey,
+    tolerance: f64,
+) -> f64 {
+    held.get(&node)
+        .map_or(tolerance, |&(r, _)| r)
+        .max(tolerance)
+}
+
+/// A shallow crossing that stands at one curve's end vertex.
+enum End {
+    /// At an end of the edge: the contact splits at the vertex's foot on
+    /// it, the vertex standing `gap` off it, and the edge does not split.
+    OfEdge { on_contact: f64, gap: f64 },
+    /// At an end of the contact: the edge splits at its foot.
+    OfContact { on_edge: f64, gap: f64 },
+}
+
+/// Where a shallow crossing of the contact and the edge `e`, at `on` on
+/// each, stands at an end vertex of one of them.
+///
+/// Two curves crossing at a turn whose sine is `s` stand within `width`,
+/// the sum of the radii they hold to, of each other for `width / s` either
+/// side of the crossing, and the crossing is known along them only that
+/// far. A vertex of either curve within that way of it, which the other
+/// curve passes within `width` of, is where they cross: found once from
+/// each pair of edges the vertex parts, the crossing is two points either
+/// side of the vertex, and one curve would split twice where the other
+/// does once.
+fn shallow_at_end(
+    contact: &ContactRec,
+    e: &BoundaryEdge,
+    on: (f64, f64),
+    width: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<End>> {
+    let (da, db) = (contact.curve.d1_at(on.0, tol)?, e.curve.d1_at(on.1, tol)?);
+    let (ma, mb) = (da.magnitude(), db.magnitude());
+    if ma <= tol.confusion() || mb <= tol.confusion() {
+        return Ok(None);
+    }
+    let turn = da.cross(db).magnitude() / (ma * mb);
+    if turn <= f64::EPSILON {
+        return Ok(None);
+    }
+    let along = width / turn;
+    let at = contact.curve.point_at(on.0, tol)?;
+    let mut best: Option<(f64, End)> = None;
+    for end in [e.crange.0, e.crange.1] {
+        let vertex = e.curve.point_at(end, tol)?;
+        let away = vertex.distance(at);
+        if away > along {
+            continue;
+        }
+        let (gap, t) = nearest_on_edge_curve(&contact.curve, contact.crange, vertex, tol)?;
+        if gap <= width && best.as_ref().is_none_or(|b| away < b.0) {
+            best = Some((away, End::OfEdge { on_contact: t, gap }));
+        }
+    }
+    for end in [contact.crange.0, contact.crange.1] {
+        let vertex = contact.curve.point_at(end, tol)?;
+        let away = vertex.distance(at);
+        if away > along {
+            continue;
+        }
+        let (gap, t) = nearest_on_edge_curve(&e.curve, e.crange, vertex, tol)?;
+        if gap <= width && best.as_ref().is_none_or(|b| away < b.0) {
+            best = Some((away, End::OfContact { on_edge: t, gap }));
+        }
+    }
+    Ok(best.map(|(_, end)| end))
+}
+
+/// The runs of `span` along which `off` stays within `within`, each end
+/// bisected to where it rises past it, from `samples` even samples; `None`
+/// where no sample comes that near.
+fn runs_within(
+    off: &impl Fn(f64) -> OgeomResult<f64>,
+    span: (f64, f64),
+    within: f64,
+    samples: usize,
+) -> OgeomResult<Option<Vec<(f64, f64)>>> {
+    #[allow(clippy::cast_precision_loss)]
+    let at = |k: usize| span.0 + (span.1 - span.0) * (k as f64) / (samples as f64);
+    let near: Vec<bool> = (0..=samples)
+        .map(|k| off(at(k)).map(|d| d <= within))
+        .collect::<OgeomResult<_>>()?;
+    if !near.contains(&true) {
+        return Ok(None);
+    }
+    let parting = |inside: f64, outside: f64| -> OgeomResult<f64> {
+        let (mut a, mut b) = (inside, outside);
+        for _ in 0..24 {
+            let m = f64::midpoint(a, b);
+            if off(m)? <= within {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        Ok(a)
+    };
+    let mut runs = Vec::new();
+    let mut k = 0;
+    while k <= samples {
+        if !near[k] {
+            k += 1;
+            continue;
+        }
+        let first = k;
+        while k < samples && near[k + 1] {
+            k += 1;
+        }
+        let lo = if first == 0 {
+            span.0
+        } else {
+            parting(at(first), at(first - 1))?
+        };
+        let hi = if k == samples {
+            span.1
+        } else {
+            parting(at(k), at(k + 1))?
+        };
+        runs.push((lo, hi));
+        k += 1;
+    }
+    Ok(Some(runs))
+}
+
+/// The stretches the contact shares with the target edge `e`, each ended
+/// where the two curves part by the sum of the radii they hold to (within
+/// it, each could be the other), measured once for
+/// the pair and carried to whichever of the two is met as the contact
+/// later.
+///
+/// Measured from each curve's side, a tangential parting ends on that
+/// curve, and the two ends stand apart along the curves by as much as the
+/// curves stay within that radius over, a way no vertex weld reaches. So
+/// the end is measured once, on the curve held to the tighter radius
+/// (its points lie nearest the truth), and carried onto the other by
+/// projection: both sides split there.
+fn shared_overlaps(
+    contact: &ContactRec,
+    e: &BoundaryEdge,
+    held: &ogeom_core::FastMap<EdgeKey, (f64, &BoundaryEdge)>,
+    shared: &mut ogeom_core::FastMap<(EdgeKey, EdgeKey), Vec<ogeom_intersect::Overlap>>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<ogeom_intersect::Overlap>> {
+    if let Some(found) = shared.get(&(contact.node, e.node)) {
+        return Ok(found.clone());
+    }
+    let swap = |overlaps: &[ogeom_intersect::Overlap]| -> Vec<ogeom_intersect::Overlap> {
+        overlaps
+            .iter()
+            .map(|o| ogeom_intersect::Overlap {
+                on_a: o.on_b,
+                on_b: o.on_a,
+            })
+            .collect()
+    };
+    let own = held.get(&contact.node).copied();
+    let held_by_contact = held_radius(held, contact.node, contact.tolerance);
+    let held_by_edge = held_radius(held, e.node, e.tolerance);
+    let within = (held_by_contact + held_by_edge).max(tol.confusion());
+    // The contact's own record, where it covers just what the contact does,
+    // to be measured against from the edge's side.
+    let owner = own
+        .map(|(_, owner)| owner)
+        .filter(|owner| owner.crange == contact.crange && *owner.curve == contact.curve);
+    let from_contact = measured_overlaps(
+        &contact.curve,
+        contact.crange,
+        contact.tolerance,
+        e,
+        Some(within),
+        tol,
+    )?;
+    let from_edge = match owner {
+        Some(owner) => swap(&measured_overlaps(
+            &e.curve,
+            e.crange,
+            e.tolerance,
+            owner,
+            Some(within),
+            tol,
+        )?),
+        None => Vec::new(),
+    };
+    // Each side is sampled along its own curve, and a stretch shorter than
+    // three of one side's samples goes unseen from that side while the
+    // other's may see it. A stretch seen from both is kept as the tighter
+    // side measures it; one seen from one side only, as that side does.
+    let (mut found, other) = if held_by_edge < held_by_contact {
+        (from_edge, from_contact)
+    } else {
+        (from_contact, from_edge)
+    };
+    let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
+    let unseen: Vec<ogeom_intersect::Overlap> = other
+        .into_iter()
+        .filter(|o| {
+            let (lo, hi) = ordered(o.on_a);
+            found.iter().all(|f| {
+                let (flo, fhi) = ordered(f.on_a);
+                hi < flo || lo > fhi
+            })
+        })
+        .collect();
+    found.extend(unseen);
+    shared.insert((e.node, contact.node), swap(&found));
+    shared.insert((contact.node, e.node), found.clone());
+    Ok(found)
 }
 
 /// The stretch of `curve` over `crange` that the edge `e` runs along end to
@@ -6572,6 +6930,28 @@ fn fill(
     // and that crossing is a pave on *both* edges, so the owner's own face
     // splits its boundary consistently and the pieces sew back shared.
     let mut contact_along: Vec<Vec<(f64, f64)>> = vec![Vec::new(); contacts.len()];
+    // Where stretches end at the radii the curves hold to, each edge holds
+    // to the widest it is measured to on any face of it, and each edge's
+    // own record is kept to measure a stretch from its side.
+    let at_stated = AT_STATED.get();
+    let mut held: ogeom_core::FastMap<EdgeKey, (f64, &BoundaryEdge)> =
+        ogeom_core::FastMap::default();
+    if at_stated {
+        for e in ga
+            .faces
+            .iter()
+            .chain(&gb.faces)
+            .flat_map(|f| f.edges.iter())
+        {
+            held.entry(e.node)
+                .and_modify(|(most, _)| *most = most.max(e.residual))
+                .or_insert((e.residual, e));
+        }
+    }
+    // A stretch two edges share, as measured once for the pair: the
+    // contact's side of it on `on_a`.
+    let mut shared: ogeom_core::FastMap<(EdgeKey, EdgeKey), Vec<ogeom_intersect::Overlap>> =
+        ogeom_core::FastMap::default();
     for (ci, contact) in contacts.iter().enumerate() {
         let target = if contact.target_from_a {
             &ga.faces[contact.target_face]
@@ -6611,11 +6991,62 @@ fn fill(
                 // level: where the two curves run nearly parallel (a blend
                 // arc meeting the edge it is tangent to), the "crossing" is
                 // numerical noise smeared along the contact, and paving it
-                // would plant a vertex a hair off both curves.
+                // would plant a vertex a hair off both curves. A crossing at
+                // a shallow turn is no touch: the two part in proportion
+                // either side of it, and each side of it is a strand of its
+                // own. The two cross where they are found to, as at any
+                // turn, not anywhere along a touching run.
+                let mut reach = crossing.reach;
+                let mut onto_end = None;
                 if tangential(&contact.curve, crossing.on_a, &e.curve, crossing.on_b, tol)? {
-                    continue;
+                    if !at_stated
+                        || !crosses_shallowly(
+                            &contact.curve,
+                            contact.crange,
+                            contact.tolerance,
+                            e,
+                            (crossing.on_a, crossing.on_b),
+                            tol,
+                        )?
+                    {
+                        continue;
+                    }
+                    reach = 0.0;
+                    let width = held_radius(&held, contact.node, contact.tolerance)
+                        + held_radius(&held, e.node, e.tolerance);
+                    onto_end =
+                        shallow_at_end(contact, e, (crossing.on_a, crossing.on_b), width, tol)?;
                 }
-                let honesty = honest(contact.tolerance, tol).max(crossing.reach);
+                let honesty = honest(contact.tolerance, tol).max(reach);
+                match onto_end {
+                    Some(End::OfEdge { on_contact, gap }) => {
+                        if on_contact > contact.crange.0 + tol.parametric()
+                            && on_contact < contact.crange.1 - tol.parametric()
+                        {
+                            paves.entry(contact.node).or_default().push(Pave {
+                                t: on_contact,
+                                honesty: honesty.max(gap),
+                                across: None,
+                                spread: 0.0,
+                            });
+                        }
+                        continue;
+                    }
+                    Some(End::OfContact { on_edge, gap }) => {
+                        if on_edge > e.crange.0 + tol.parametric()
+                            && on_edge < e.crange.1 - tol.parametric()
+                        {
+                            paves.entry(e.node).or_default().push(Pave {
+                                t: on_edge,
+                                honesty: honesty.max(gap),
+                                across: None,
+                                spread: 0.0,
+                            });
+                        }
+                        continue;
+                    }
+                    None => {}
+                }
                 if !at_end {
                     paves.entry(contact.node).or_default().push(Pave {
                         t: crossing.on_a,
@@ -6709,11 +7140,29 @@ fn fill(
             };
             let straight_on_conic = (matches!(contact.curve, Curve::Line(_)) && conic(&e.curve))
                 || (conic(&contact.curve) && matches!(*e.curve, Curve::Line(_)));
+            // Where the two are held to their own radii, a fitted pair is
+            // measured, as the intersector's coincidence for it ends at its
+            // own width and from one side only.
+            let fitted = !(exact(&contact.curve) && exact(&e.curve));
+            let clipped = if at_stated && fitted {
+                Vec::new()
+            } else {
+                clipped
+            };
             let measured: Vec<ogeom_intersect::Overlap> =
                 if clipped.iter().any(survives) || straight_on_conic {
                     Vec::new()
+                } else if at_stated {
+                    shared_overlaps(contact, e, &held, &mut shared, tol)?
                 } else {
-                    measured_overlaps(&contact.curve, contact.crange, contact.tolerance, e, tol)?
+                    measured_overlaps(
+                        &contact.curve,
+                        contact.crange,
+                        contact.tolerance,
+                        e,
+                        None,
+                        tol,
+                    )?
                 };
             for overlap in clipped.iter().chain(measured.iter()) {
                 let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
@@ -6749,10 +7198,34 @@ fn fill(
                     if hi - lo <= tol.parametric() {
                         continue;
                     }
+                    let span = overlap.on_a.1 - overlap.on_a.0;
+                    let carry = |t: f64| -> f64 {
+                        if span.abs() <= f64::MIN_POSITIVE {
+                            overlap.on_b.0
+                        } else {
+                            overlap.on_b.0
+                                + (overlap.on_b.1 - overlap.on_b.0) * (t - overlap.on_a.0) / span
+                        }
+                    };
+                    // A stretch ended where the two curves part by the radii
+                    // they hold to has one end on each curve, that far apart
+                    // or less: one vertex holds both, and the split on
+                    // either curve owns the distance there.
+                    let honesty = |t: f64| -> OgeomResult<f64> {
+                        let own = honest(contact.tolerance, tol);
+                        if !at_stated {
+                            return Ok(own);
+                        }
+                        let gap = contact
+                            .curve
+                            .point_at(t, tol)?
+                            .distance(e.curve.point_at(carry(t), tol)?);
+                        Ok(own.max(gap))
+                    };
                     for t in [lo, hi] {
                         paves.entry(contact.node).or_default().push(Pave {
                             t,
-                            honesty: honest(contact.tolerance, tol),
+                            honesty: honesty(t)?,
                             across: None,
                             spread: 0.0,
                         });
@@ -6774,22 +7247,13 @@ fn fill(
                     // edges whole) can pair it with neither. The clamped ends are
                     // carried across by the correspondence the overlap itself
                     // states, which is affine over the shared stretch.
-                    let span = overlap.on_a.1 - overlap.on_a.0;
-                    let carry = |t: f64| -> f64 {
-                        if span.abs() <= f64::MIN_POSITIVE {
-                            overlap.on_b.0
-                        } else {
-                            overlap.on_b.0
-                                + (overlap.on_b.1 - overlap.on_b.0) * (t - overlap.on_a.0) / span
-                        }
-                    };
-                    let (mut tlo, mut thi) = (carry(lo), carry(hi));
-                    if tlo > thi {
+                    let (mut tlo, mut thi) = ((carry(lo), honesty(lo)?), (carry(hi), honesty(hi)?));
+                    if tlo.0 > thi.0 {
                         core::mem::swap(&mut tlo, &mut thi);
                     }
                     let target_domain = e.curve.domain();
                     let periodic = e.curve.is_periodic();
-                    for t in [tlo, thi] {
+                    for (t, honesty) in [tlo, thi] {
                         // A correspondence across a full turn can run the
                         // parameter past the domain. The pave belongs where the
                         // edge actually is.
@@ -6797,7 +7261,7 @@ fn fill(
                         if t > e.crange.0 + tol.parametric() && t < e.crange.1 - tol.parametric() {
                             paves.entry(e.node).or_default().push(Pave {
                                 t,
-                                honesty: honest(contact.tolerance, tol),
+                                honesty,
                                 across: None,
                                 spread: 0.0,
                             });
@@ -8563,6 +9027,197 @@ fn chart_point_within(face: &GFace, p: Point, reach: f64, tol: Tolerances) -> Op
     None
 }
 
+/// Whether `p`, on the face's surface, stands inside the face, read at
+/// the face's edge nearest it: where the nearest point of the boundary is
+/// inside an edge, `p` stands off it square to it, and is inside just
+/// where it stands on the side the face keeps its material on, the left
+/// of the edge as the face walks it about its outward normal. `None`
+/// where the nearest point is an edge's end (a corner reads both sides),
+/// a seam's, or within the edge's own radius of it.
+fn inside_beside_edge(face: &GFace, p: Point, tol: Tolerances) -> OgeomResult<Option<bool>> {
+    let mut nearest: Option<(f64, usize, f64)> = None;
+    for (k, e) in face.edges.iter().enumerate() {
+        let (off, t) = nearest_on_edge_curve(&e.curve, e.crange, p, tol)?;
+        if nearest.is_none_or(|n| off < n.0) {
+            nearest = Some((off, k, t));
+        }
+    }
+    let Some((off, k, t)) = nearest else {
+        return Ok(None);
+    };
+    let e = &face.edges[k];
+    let (lo, hi) = (e.crange.0.min(e.crange.1), e.crange.0.max(e.crange.1));
+    let Some(forward) = e.walked else {
+        return Ok(None);
+    };
+    if off <= e.tolerance.max(tol.confusion())
+        || t <= lo + tol.parametric()
+        || t >= hi - tol.parametric()
+    {
+        return Ok(None);
+    }
+    let at = e.pcurve.point_at(rescale(t, e.crange, e.prange), tol)?;
+    let tangent = e.curve.d1_at(t, tol)?;
+    let walked = if forward { tangent } else { -tangent };
+    let left = outward_normal(face, at, tol)?.cross(walked);
+    Ok(Some((p - e.curve.point_at(t, tol)?).dot(left) > 0.0))
+}
+
+/// What the strands bounding a piece say of it, where its probes cannot.
+enum Thin {
+    /// The piece is no thinner than the band, or not planar: its probes
+    /// stand.
+    Wide,
+    /// Thin, but some strand bounding it says nothing.
+    Undecided,
+    /// Thin, and every strand the other solid draws round it agrees.
+    Reads(PieceState),
+    /// Thin, and the strands disagree.
+    Disagree,
+}
+
+/// A thin planar piece read by the other solid's edges it is bounded by.
+///
+/// A piece whose area is at most the classification band times half its
+/// perimeter is on average narrower than the band, and no probe of it can
+/// stand outside the band: each reads it on the other solid's boundary. A
+/// strand that is the image of the other solid's edge `E`, between its
+/// faces `g` on this face's surface and `h`, separates "on `g`" from
+/// "beyond `g`". Which side the piece lies on is the arrangement's: its
+/// rings keep it on their left about the chart's normal, as `g` keeps its
+/// material on the left of its own rings about its outward normal. Beyond
+/// `g` the other solid's wedge at `E` answers: past a convex edge (where
+/// `h` turns away behind `g`) the plane beyond `g` is outside it, past a
+/// concave one inside. Neither answer depends on how thin the piece is.
+///
+/// Only contact strands speak: a piece a section bounds is left to its
+/// probes, as is one beside an edge whose two faces run on tangentially,
+/// one it lies on `g`'s side of (a coincidence, which the partner reads),
+/// or one whose faces are not both gathered.
+fn thin_by_strands(
+    face: &GFace,
+    rings: &[Vec<Traversal<Tag>>],
+    outlines: &[Vec<Point2>],
+    contacts: &[ContactRec],
+    theirs: &GSolid,
+    tol: Tolerances,
+) -> OgeomResult<Thin> {
+    if !matches!(face.surface, SurfaceGeometry::Plane(_)) {
+        return Ok(Thin::Wide);
+    }
+    // A plane's chart is its own frame, so lengths and areas in it are
+    // the plane's.
+    let (mut area, mut perimeter) = (0.0, 0.0);
+    for (k, ring) in outlines.iter().enumerate() {
+        let n = ring.len();
+        let mut twice = 0.0;
+        for i in 0..n {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            twice += a.x * b.y - b.x * a.y;
+            perimeter += (b - a).magnitude();
+        }
+        area += if k == 0 { twice.abs() } else { -twice.abs() } / 2.0;
+    }
+    if area > tol.confusion() * 1e4 * perimeter / 2.0 {
+        return Ok(Thin::Wide);
+    }
+    let mut read: Option<PieceState> = None;
+    let mut spoke = false;
+    for traversal in rings.iter().flatten() {
+        let (contact, range) = match &traversal.tag {
+            Tag::Contact { contact, range } => (&contacts[*contact], *range),
+            Tag::Section { .. } => return Ok(Thin::Undecided),
+            Tag::Boundary { .. } | Tag::Pole { .. } => continue,
+        };
+        let Some(state) = beyond_edge(face, contact, range, traversal.reversed, theirs, tol)?
+        else {
+            return Ok(Thin::Undecided);
+        };
+        spoke = true;
+        match read {
+            Some(said) if said != state => return Ok(Thin::Disagree),
+            _ => read = Some(state),
+        }
+    }
+    Ok(match read {
+        Some(state) if spoke => Thin::Reads(state),
+        _ => Thin::Undecided,
+    })
+}
+
+/// Where the piece on the left of the contact strand over `range`, walked
+/// back where `reversed`, stands against the solid whose edge the contact
+/// is: `None` where the strand says nothing (see [`thin_by_strands`]).
+fn beyond_edge(
+    face: &GFace,
+    contact: &ContactRec,
+    range: (f64, f64),
+    reversed: bool,
+    theirs: &GSolid,
+    tol: Tolerances,
+) -> OgeomResult<Option<PieceState>> {
+    let t = f64::midpoint(range.0, range.1);
+    let p = contact.curve.point_at(t, tol)?;
+    let along = contact.curve.d1_at(t, tol)?;
+    let walked = if (range.1 < range.0) != reversed {
+        -along
+    } else {
+        along
+    };
+    let uv = contact
+        .pcurve
+        .point_at(rescale(t, contact.crange, contact.prange), tol)?;
+    let chart = face.surface.normal_at(uv.x, uv.y, tol)?.vector();
+    let Ok(left) = chart.cross(walked).normalized(tol) else {
+        return Ok(None);
+    };
+    // The edge's two faces, each with the way into its material from the
+    // edge and its outward normal there.
+    let mut sides = Vec::with_capacity(2);
+    for other in &theirs.faces {
+        for e in other.edges.iter().filter(|e| e.node == contact.node) {
+            let Some(forward) = e.walked else {
+                return Ok(None);
+            };
+            let (_, te) = nearest_on_edge_curve(&e.curve, e.crange, p, tol)?;
+            let at = e.pcurve.point_at(rescale(te, e.crange, e.prange), tol)?;
+            let normal = outward_normal(other, at, tol)?;
+            let tangent = e.curve.d1_at(te, tol)?;
+            let tangent = if forward { tangent } else { -tangent };
+            let Ok(into) = normal.cross(tangent).normalized(tol) else {
+                return Ok(None);
+            };
+            let Ok(normal) = normal.normalized(tol) else {
+                return Ok(None);
+            };
+            sides.push((into, normal));
+        }
+    }
+    let [(into_a, normal_a), (into_b, normal_b)] = sides[..] else {
+        return Ok(None);
+    };
+    // `g` is the face lying along this one: its way in runs along the
+    // piece's, one way or the other.
+    let along_this = |into: ogeom_math::Vector| into.cross(left).magnitude() < TANGENT_TURN;
+    let ((into_g, normal_g), into_h) = match (along_this(into_a), along_this(into_b)) {
+        (true, false) => ((into_a, normal_a), into_b),
+        (false, true) => ((into_b, normal_b), into_a),
+        _ => return Ok(None),
+    };
+    if into_g.dot(left) > 0.0 {
+        return Ok(None);
+    }
+    let turn = into_h.dot(normal_g);
+    if turn.abs() < TANGENT_TURN {
+        return Ok(None);
+    }
+    Ok(Some(if turn < 0.0 {
+        PieceState::Out
+    } else {
+        PieceState::In
+    }))
+}
+
 /// The sine of the turn under which two curves meet tangentially at a
 /// crossing: the parallel-noise gate for pave placement. One degree is far
 /// below any deliberate crossing and far above the smear a tangency leaves
@@ -8938,6 +9593,10 @@ thread_local! {
     /// its area. Off but for the attempt after kept pieces fail to close.
     /// Read once per boolean on the calling thread.
     static PROBE_AT_CENTRE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether contacts are read at the radii their curves hold to (see
+    /// [`settled`]). Off but for the last attempt. Read once per boolean
+    /// on the calling thread.
+    static AT_STATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// An operation run once, and where it refuses, again in three steps. Where
@@ -8955,6 +9614,18 @@ thread_local! {
 /// a tolerance past the weld distance, a hundred confusion distances (and
 /// the ten the welding run states its own vertices to), so a sliver any
 /// thicker is never lost to the retry.
+///
+/// Last, at the given confusion, with contacts read at the radii their
+/// curves hold to rather than at the loose width a fitted curve is
+/// measured within: a fitted curve leaving an exact one tangentially
+/// leaves a lune between them wider than those radii, which is geometry.
+/// Each stretch the two share ends where they part by those radii,
+/// measured once for the pair so both sides split at one vertex; a shallow
+/// crossing splits both curves, at a vertex of either it cannot be told
+/// from; a contact stretch near an edge is read inside or out at that
+/// edge; a fitted section's hug width welds only a face it leaves a strand
+/// on; and a piece thinner than the classification band is read by the
+/// other solid's edges bounding it ([`thin_by_strands`]).
 fn settled(
     model: &mut Model,
     tol: Tolerances,
@@ -9014,6 +9685,25 @@ fn settled(
                 return Err(ogeom_core::OgeomError::Cancelled);
             }
             _ => {}
+        }
+    }
+    {
+        struct Off;
+        impl Drop for Off {
+            fn drop(&mut self) {
+                AT_STATED.set(false);
+            }
+        }
+        AT_STATED.set(true);
+        let _off = Off;
+        #[cfg(feature = "test-hooks")]
+        work::add(|w| w.stated_retries += 1);
+        match attempt(model, tol) {
+            Ok(built) => return Ok(built),
+            Err(ogeom_core::OgeomError::Cancelled) => {
+                return Err(ogeom_core::OgeomError::Cancelled);
+            }
+            Err(_) => {}
         }
     }
     Err(refusal)
@@ -9199,6 +9889,7 @@ fn general_fuse_as(
     // worker threads, which do not share it.
     let settle = SETTLE_FROM_BOTH_SIDES.get();
     let read_at_centre = PROBE_AT_CENTRE.get();
+    let read_thin = AT_STATED.get();
     ogeom_core::progress::stage("boolean: gather");
     let ga = gather(
         model,
@@ -9649,7 +10340,16 @@ fn general_fuse_as(
                 });
                 fold_line_inside(&mut line, &face.surface, trim);
                 let mid = interior_of(&line);
-                if !trim.inside_slanted(mid) {
+                // On the last attempt, where the stretch stands nearest an
+                // edge's inside, it is inside the face just where it stands
+                // on the side the face keeps its material on: the edge's
+                // own curve says so where the outline's chords sag past it.
+                let beside = if read_thin {
+                    inside_beside_edge(face, contact.curve.point_at(mid_t, tol)?, tol)?
+                } else {
+                    None
+                };
+                if !beside.unwrap_or_else(|| trim.inside_slanted(mid)) {
                     if *DEBUG_STRANDS {
                         eprintln!(
                             "CONTACT c{ci} {sub:?} on fi={fi}: outside the trim at {mid:?}, skipped"
@@ -9728,6 +10428,12 @@ fn general_fuse_as(
                 .fold(face.tolerance, |acc, hole| acc.max(hole.doubt))
                 .min(doubt_of(face))
         };
+        // On the last attempt only a fitted section with a strand on this
+        // face leaves an edge at a hug's far end; one whose every stretch
+        // ran along the boundary left nothing to weld.
+        let hugging_strand = strands.iter().any(|st| {
+            matches!(st.tag, Tag::Section { section, .. } if sections[section].tolerance > 0.0)
+        });
         let near = contacts
             .iter()
             .filter(|c| c.target_from_a == from_a && c.target_face == fi)
@@ -9743,7 +10449,8 @@ fn general_fuse_as(
                         } else {
                             s.face_b == fi
                         }
-                }) {
+                }) && (!read_thin || hugging_strand)
+                {
                     tol.confusion() * 1e3
                 } else {
                     0.0
@@ -10681,6 +11388,38 @@ fn general_fuse_as(
                         "a piece of a face has no interior point to classify at"
                     );
                 };
+                // On the last attempt, a piece thinner than the band the
+                // other solid is read within, every probe of it on that
+                // solid's boundary, is read by the strands bounding it.
+                let thin = if read_thin && matches!(said, Containment::On) {
+                    let theirs = if from_a { &gb } else { &ga };
+                    thin_by_strands(face, &piece.rings, &piece.outlines, &contacts, theirs, tol)?
+                } else {
+                    Thin::Wide
+                };
+                match thin {
+                    Thin::Reads(state) => {
+                        pieces.push(FacePiece {
+                            from_a,
+                            face: fi,
+                            rings: piece.rings,
+                            outlines: piece.outlines,
+                            probe,
+                            state,
+                            covered: false,
+                            whole: false,
+                        });
+                        continue;
+                    }
+                    Thin::Disagree => ogeom_bail!(
+                        NotDone,
+                        "a piece thinner than the boolean reads the other solid \
+                         within lies beside that solid's edges on sides that \
+                         disagree on whether it is inside: it is dust the \
+                         boolean does not resolve"
+                    ),
+                    Thin::Wide | Thin::Undecided => {}
+                }
                 let state = match said {
                     Containment::In => PieceState::In,
                     Containment::Out => PieceState::Out,
@@ -14272,6 +15011,141 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    /// An L-shaped prism across `y` whose step's underside lies on
+    /// `z = 0` over `1 <= x <= 2`: past its edge at `x = 1` the plane runs
+    /// into the leg below (a concave edge), past its edge at `x = 2` out of
+    /// the solid (a convex one). A thin piece of a face on that plane,
+    /// lying past each edge, reads inside past the first, outside past the
+    /// second, and between both it is dust whose strands disagree.
+    #[test]
+    fn a_thin_piece_reads_the_other_solid_s_wedge_at_its_edges() {
+        let mut model = Model::new();
+        let profile = [
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 1.0),
+            (0.0, 1.0),
+        ]
+        .map(|(x, z)| Point::new(x, 0.0, z));
+        let wire = ogeom_algo::make_polygon(&mut model, &profile, true, T)
+            .unwrap()
+            .shape;
+        let plane = ogeom_geom::PlaneSurface::over(
+            ogeom_math::Plane::new(
+                Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap(),
+            ),
+            (-5.0, 5.0),
+            (-5.0, 5.0),
+        )
+        .unwrap();
+        let section = ogeom_algo::make_face(&mut model, plane.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let step = ogeom_algo::make_prism(
+            &mut model,
+            &section,
+            ogeom_math::Vector::new(0.0, 1.0, 0.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let floor = make_box(
+            &mut model,
+            Frame::new(Point::new(-1.0, -1.0, -3.0), Direction::Z, Direction::X, T).unwrap(),
+            (4.0, 3.0, 3.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let theirs = gather(&model, &step, false, None, T).unwrap();
+        let ours = gather(&model, &floor, false, None, T).unwrap();
+        let top = ours
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(f.surface, SurfaceGeometry::Plane(_))
+                    && f.edges
+                        .iter()
+                        .all(|e| e.curve.point_at(e.crange.0, T).unwrap().z.abs() < 1e-9)
+            })
+            .unwrap();
+        // The step's edge along `y` at `x`, on `z = 0`, as a contact on
+        // the floor's top, with the way the ring walks it so the piece lies
+        // on the side `x` grows towards when `beyond` is positive.
+        let contact = |x: f64, beyond: f64| -> (ContactRec, (f64, f64), bool) {
+            let e = theirs
+                .faces
+                .iter()
+                .flat_map(|f| f.edges.iter())
+                .find(|e| {
+                    [e.crange.0, e.crange.1].iter().all(|&t| {
+                        let p = e.curve.point_at(t, T).unwrap();
+                        (p.x - x).abs() < 1e-9 && p.z.abs() < 1e-9
+                    })
+                })
+                .unwrap();
+            let ends = [e.crange.0, e.crange.1].map(|t| {
+                chart_point_within(top, e.curve.point_at(t, T).unwrap(), 1e-6, T).unwrap()
+            });
+            let line = ogeom_geom::Line2d::segment(ends[0], ends[1], T).unwrap();
+            let prange = ogeom_geom::Curve2d::domain(&line);
+            let rec = ContactRec {
+                curve: (*e.curve).clone(),
+                crange: e.crange,
+                pcurve: line.into(),
+                prange,
+                node: e.node,
+                tolerance: e.tolerance,
+                target_from_a: true,
+                target_face: 0,
+                bound: ogeom_math::Aabb::EMPTY,
+            };
+            // The piece is on the left of its ring about the chart's
+            // normal, which is `+z` or `-z`.
+            let t = f64::midpoint(e.crange.0, e.crange.1);
+            let along = e.curve.d1_at(t, T).unwrap();
+            let uv = ends[0];
+            let normal = top.surface.normal_at(uv.x, uv.y, T).unwrap().vector();
+            let left = normal.cross(along);
+            (rec, e.crange, left.x * beyond < 0.0)
+        };
+        let thin = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(1.0, 1e-6),
+            Point2::new(0.0, 1e-6),
+        ];
+        let read = |strands: &[(f64, f64)]| -> Thin {
+            let mut contacts = Vec::new();
+            let mut ring = Vec::new();
+            for (k, &(x, beyond)) in strands.iter().enumerate() {
+                let (rec, range, reversed) = contact(x, beyond);
+                contacts.push(rec);
+                ring.push(Traversal {
+                    tag: Tag::Contact { contact: k, range },
+                    reversed,
+                });
+            }
+            thin_by_strands(
+                top,
+                &[ring],
+                std::slice::from_ref(&thin),
+                &contacts,
+                &theirs,
+                T,
+            )
+            .unwrap()
+        };
+        assert!(matches!(read(&[(1.0, -1.0)]), Thin::Reads(PieceState::In)));
+        assert!(matches!(read(&[(2.0, 1.0)]), Thin::Reads(PieceState::Out)));
+        assert!(matches!(read(&[(1.0, -1.0), (2.0, 1.0)]), Thin::Disagree));
+        // On the step's side of either edge the piece lies on its face: a
+        // coincidence the partner reads, and the strand says nothing.
+        assert!(matches!(read(&[(2.0, -1.0)]), Thin::Undecided));
+    }
 
     /// A quarter of a cylinder wall of radius 0.002, its edges and vertices
     /// widened to 0.003, its seam turned away from the quarter, one of its

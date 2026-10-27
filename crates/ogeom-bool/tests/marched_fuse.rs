@@ -107,3 +107,126 @@ fn two_equal_drums_cross_in_their_two_exact_ellipses() {
         "Steinmetz union {measured} against {expected}"
     );
 }
+
+/// A torus elbow fused onto a drum, cut at a mitre plane, and a second
+/// drum cut at the same plane, fused face to face. Each mitre cap is
+/// bounded by an exact ellipse on one side and the torus's fitted section
+/// on the other, and the two leave each other tangentially, parting into
+/// lunes from about a micron to a millimetre wide, the fitted one crossing
+/// the ellipse at a shallow turn in some directions. The two pieces only
+/// touch, so the fuse holds their volumes' sum. In all but one direction
+/// the fuse refused.
+#[test]
+fn mitred_pieces_whose_caps_part_tangentially_fuse() {
+    use ogeom_geom::{CircleCurve, PlaneSurface};
+    use ogeom_math::{Axis, Circle, Direction, Plane, Vector};
+    let disc = |model: &mut ogeom_topo::Model, frame: Frame, r: f64| {
+        let circle = Circle::new(frame, r, T).unwrap();
+        let edge = ogeom_algo::make_edge(
+            model,
+            CircleCurve::new(circle).into(),
+            (0.0, 2.0 * core::f64::consts::PI),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let wire = ogeom_algo::make_wire(model, &[edge], T).unwrap().shape;
+        ogeom_algo::make_face(
+            model,
+            PlaneSurface::new(Plane::new(frame)).into(),
+            &[wire],
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let (big, r, half) = (10.0_f64, 1.0_f64, 0.5_f64);
+    for (sx, sz) in [
+        (0.0, 0.6),
+        (0.0, 0.3),
+        (0.0, -0.6),
+        (0.6, 0.0),
+        (-0.6, 0.0),
+        (0.4, 0.4),
+        (0.0, 0.05),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let corner = Point::new(big, 0.0, 0.0);
+        let c0 = Point::new(big * half.cos(), -big * half.sin(), 0.0);
+        let tangent = Vector::new(half.sin(), half.cos(), 0.0);
+        let radial = Vector::new(half.cos(), -half.sin(), 0.0);
+        let f0 = Frame::new(
+            c0,
+            Direction::new(tangent, T).unwrap(),
+            Direction::new(radial, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let d0 = disc(&mut model, f0, r);
+        let axis = Axis {
+            location: Point::ORIGIN,
+            direction: Direction::Z,
+        };
+        let arc = ogeom_algo::make_revolution(&mut model, &d0, axis, half, T)
+            .unwrap()
+            .shape;
+        let fy = Frame::new(corner, Direction::Y, Direction::X, T).unwrap();
+        let on = ogeom_algo::make_cylinder(&mut model, fy, r, 3.0, T)
+            .unwrap()
+            .shape;
+        let torus = ogeom_bool::fuse(&mut model, &arc, &on, T).unwrap().shape;
+        let d = Vector::new(sx, 1.0, sz).normalized(T).unwrap();
+        let side = Vector::new(0.0, 1.0, 0.0).cross(d).normalized(T).unwrap();
+        let fc = Frame::new(
+            corner - d * 3.0,
+            Direction::new(d, T).unwrap(),
+            Direction::new(side, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let drum = ogeom_algo::make_cylinder(&mut model, fc, r, 6.0, T)
+            .unwrap()
+            .shape;
+        let n = (Vector::new(0.0, 1.0, 0.0) + d).normalized(T).unwrap();
+        let pf = Frame::new(
+            corner,
+            Direction::new(n, T).unwrap(),
+            Direction::new(side, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let plane = PlaneSurface::over(Plane::new(pf), (-50.0, 50.0), (-50.0, 50.0)).unwrap();
+        let corners: Vec<Point> = [(-20.0, -20.0), (20.0, -20.0), (20.0, 20.0), (-20.0, 20.0)]
+            .iter()
+            .map(|&(a, b)| pf.to_world(Point::new(a, b, 0.0)))
+            .collect();
+        let wire = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let face = ogeom_algo::make_face(&mut model, plane.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let after = ogeom_algo::make_half_space(&mut model, &face, corner + n * 5.0, T)
+            .unwrap()
+            .shape;
+        let before = ogeom_bool::cut(&mut model, &torus, &after, T)
+            .unwrap()
+            .shape;
+        let beyond = ogeom_bool::common(&mut model, &drum, &after, T)
+            .unwrap()
+            .shape;
+        let pieces = volume(&model, &before, 1e-3) + volume(&model, &beyond, 1e-3);
+        let fused = ogeom_bool::fuse(&mut model, &before, &beyond, T)
+            .unwrap_or_else(|e| panic!("direction ({sx}, {sz}): {e}"))
+            .shape;
+        assert!(
+            ogeom_algo::check(&model, &fused, T).unwrap().is_valid(),
+            "direction ({sx}, {sz})"
+        );
+        let got = volume(&model, &fused, 1e-3);
+        assert!(
+            (got - pieces).abs() < 1e-8,
+            "direction ({sx}, {sz}): {got} against the pieces' {pieces}"
+        );
+    }
+}

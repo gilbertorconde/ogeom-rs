@@ -2317,6 +2317,8 @@ fn rounds_at_a_drum_meeting_a_leaning_wall_take_all_above_both() {
 /// where the material lies above both bands: the rim's band widened past
 /// the drum takes it, a widening on the drum's own cylinder. Without it
 /// the request fell back to capped bands and left that material standing.
+/// Its junction's booleans build without the boolean's last retry, which
+/// ends contacts where their curves part by their own radii.
 #[test]
 fn rounds_at_a_drum_meeting_a_wall_leaning_out_take_all_above_both() {
     let r = 0.5;
@@ -2335,7 +2337,10 @@ fn rounds_at_a_drum_meeting_a_wall_leaning_out_take_all_above_both() {
             r,
             half,
         );
-        for got in removed_near(&model, &solid, &edges, r, at, half) {
+        let (removed, work) =
+            ogeom_bool::work::counted(|| removed_near(&model, &solid, &edges, r, at, half));
+        assert_eq!(work.stated_retries, 0, "b {b}: the last retry was entered");
+        for got in removed {
             assert!(
                 (got - want).abs() < 5e-6,
                 "b {b}, leaning {lean}: {got} against {want}"

@@ -639,6 +639,28 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Booleans whose fitted and exact edges part tangentially, leaving a
+  lune between them, build.** (#433)
+  - A boolean that refuses is now tried once more, last, reading every
+    contact at the radii its curves hold to (their stated tolerances, or
+    the measured distance from their faces where wider) instead of the
+    1e-4 width a fitted curve was measured within. A stretch two edges
+    share ends where they part by those radii, measured once for the pair
+    so both sides split at one vertex; a shallow crossing that cannot be
+    told from a vertex of either edge is placed at it; a contact near an
+    edge is read inside or out at that edge's own curve.
+  - A piece thinner than the band the other solid is classified within
+    (area at most the band times half its perimeter) is read from the
+    other solid's edges that bound it: past a convex edge it lies
+    outside, past a concave one inside. Edges that disagree still refuse.
+  - The attempt runs only where every earlier one refused, so no boolean
+    that built before changes.
+  - Measured: a torus elbow and a drum mitred and fused face to face
+    built in one direction of seven; all seven now build valid, each
+    within 1.9e-9 of its pieces' volume sum. Pads on the unit circle and
+    on an ellipse 2e-5 and 3e-5 longer, stacked, fuse to π(2 + w) within
+    1e-14, in both orders.
+
 - **A face with no wires is measured in closed form.** Its area was
   read off its mesh: a sphere of radius 2 measured 48.60 at the default
   deflection against 4πr² = 50.27. Where its surface's domain is

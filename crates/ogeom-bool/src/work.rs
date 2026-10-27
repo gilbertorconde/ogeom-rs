@@ -17,11 +17,20 @@ pub struct Work {
     /// Cuts made by trimming the faces a tool's wedges sit on, with no
     /// general fuse.
     pub seated_cuts: usize,
+    /// Attempts made with contacts ended where their curves part by the
+    /// radius they hold to, the last a refused boolean is retried with.
+    pub stated_retries: usize,
 }
 
 thread_local! {
     static COUNTED: Cell<Work> = const {
-        Cell::new(Work { faces_gathered: 0, face_pairs: 0, pieces: 0, seated_cuts: 0 })
+        Cell::new(Work {
+            faces_gathered: 0,
+            face_pairs: 0,
+            pieces: 0,
+            seated_cuts: 0,
+            stated_retries: 0,
+        })
     };
     static UNSEATED: Cell<bool> = const { Cell::new(false) };
 }
