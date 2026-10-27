@@ -783,6 +783,31 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Rounds at a bore meeting a drafted chord through its axis or past it
+  take the corner in either order.** (#342)
+  - In a disc's pocket up to a chord whose wall is drafted, the corner of
+    the arc and the chord is a crossed junction. Before the arc's cap, the
+    arc's band was widened by what stands off the bore only over its own
+    part, a few degrees round the axis. With the chord through the axis
+    or past it, the drafted wall leans inside the bore's cylinder along
+    the whole chord, beside the chord's own band. The junction refused
+    there, and the request fell back to capped bands. Those bands fell
+    short, and with the arc named first, or at a 0.05 draft, the boolean
+    refused them ("the kept pieces did not close into a shell").
+  - The widening now covers everything off the bore before the arc's cap.
+    The corner takes the chord band's run beside it, which lies above
+    both bands. A widening that misses what stands past the chord's wall
+    and beyond the cap is now read as holding nothing there, where before
+    the next boolean refused it.
+  - Measured within a 2.4 box round one corner at r = 0.5, against a
+    column-integrated reference, in both orders. Chord through the centre:
+    draft 0.1 gives 0.127166 (reference 0.127167; main refused, or
+    0.117731), and draft 0.05 gives 0.134830 (0.134829; main refused).
+    Chord at −0.5: draft 0.1 gives 0.133610 (0.133610; main 0.121966),
+    and draft 0.05 gives 0.141499 (0.141499; main refused). A chord at
+    0.5, a square chord wall, and an overhanging one, which still falls
+    back by convention, keep their figures.
+
 - **A plane through a spline-sided prism's side edges cuts it.** (#450)
   - A plane holding an extrusion's direction and passing through the
     edge where a side face ends met that face nowhere: the extrusion of

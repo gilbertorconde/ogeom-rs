@@ -2355,27 +2355,37 @@ fn rounds_at_a_drum_meeting_a_wall_leaning_out_take_all_above_both() {
 /// the junction is crossed. The open corner past the chord's wall is what
 /// stands within the bore, which bends away from its tangent plane into
 /// the material, so the corner is cut by the bore's own cylinder. Both
-/// orders take what lies above both bands in the material. A bore took no
-/// junction, and the request fell back to capped bands.
+/// orders take what lies above both bands in the material, with the chord
+/// off the centre either way and through it. A bore took no junction, and
+/// the request fell back to capped bands. With the chord through the centre
+/// or past it, the drafted wall leans under the host off the bore's
+/// cylinder, within it, beside the chord's own band before the arc's cap,
+/// where the arc's band was widened only round its own part: the junction
+/// was refused, and the capped bands fell short or refused in the boolean
+/// in one naming order or both.
 #[test]
 fn rounds_at_a_bore_meeting_a_drafted_chord_take_all_above_both() {
     let r = 0.5;
     let half = 1.2;
-    let (c, d) = (0.5_f64, 0.1_f64);
-    let mut model = ogeom_topo::Model::new();
-    let (solid, at, edges) = drafted_d_pocket(&mut model, c, d);
-    let reach = 2.5_f64.mul_add(2.5, -c * c).sqrt();
-    let want = turned_corner_removed(
-        (at.x, at.y),
-        ((4.0, 4.0), 2.5, false),
-        (-c / 2.5, reach / 2.5),
-        (0.0, -1.0),
-        -d.atan(),
-        r,
-        half,
-    );
-    for got in removed_near(&model, &solid, &edges, r, at, half) {
-        assert!((got - want).abs() < 5e-6, "draft {d}: {got} against {want}");
+    for (c, d) in [(0.5_f64, 0.1_f64), (0.0, 0.1), (0.0, 0.05), (-0.5, 0.1)] {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, at, edges) = drafted_d_pocket(&mut model, c, d);
+        let reach = 2.5_f64.mul_add(2.5, -c * c).sqrt();
+        let want = turned_corner_removed(
+            (at.x, at.y),
+            ((4.0, 4.0), 2.5, false),
+            (-c / 2.5, reach / 2.5),
+            (0.0, -1.0),
+            -d.atan(),
+            r,
+            half,
+        );
+        for got in removed_near(&model, &solid, &edges, r, at, half) {
+            assert!(
+                (got - want).abs() < 5e-6,
+                "chord at {c}, draft {d}: {got} against {want}"
+            );
+        }
     }
 }
 
