@@ -179,7 +179,7 @@ pub(crate) fn seated_cut(
     // where the cut is not made here.
     let mark = model.note_widened();
     let cut = if ringed {
-        ring::ring_cut(model, a, b, fill, tol)
+        ring::ring_cut(model, a, b, fill, b, tol)
     } else {
         trimmed_cut(model, a, b, tol)
     };
@@ -201,6 +201,112 @@ pub(crate) fn seated_cut(
             Err(e)
         }
         Ok(None) | Err(_) => {
+            model.undo_widened(mark);
+            Ok(None)
+        }
+    }
+}
+
+/// `a` less the lumps of `b`, or with them fused on where `fill` is set,
+/// where `b` mixes rim wedges with lumps of another kind: the rims trimmed
+/// first, as [`seated_cut`] trims them, and the other lumps applied to what
+/// is left, by [`seated_cut`] where it makes the boolean and by `rest`
+/// otherwise. Made only where every rim's box stands further from every
+/// other lump's than the boolean welds past the two lumps' tolerances, so
+/// that applying all of `b` at once relates nothing of a rim's to the other
+/// lumps; `None` otherwise, and where the trim is not made or `rest` fails.
+pub(crate) fn rings_first(
+    model: &mut Model,
+    a: &Shape,
+    b: &Shape,
+    fill: bool,
+    tol: Tolerances,
+    rest: impl FnOnce(&mut Model, &Shape, &Shape) -> OgeomResult<Built>,
+) -> OgeomResult<Option<Built>> {
+    #[cfg(feature = "test-hooks")]
+    if crate::work::is_unseated() {
+        return Ok(None);
+    }
+    let Some(all) = lumps(model, b)? else {
+        return Ok(None);
+    };
+    let (mut rings, mut others) = (Vec::new(), Vec::new());
+    for lump in all {
+        let kind = if ring::is_ringed(model, &lump)? {
+            &mut rings
+        } else {
+            &mut others
+        };
+        let bounds = ogeom_algo::shape_bounds(model, &lump, tol)?;
+        let mut stated = 0.0_f64;
+        for sub_kind in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
+            for sub in ogeom_topo::explore_unique(model, &lump, sub_kind)? {
+                stated = stated.max(model.tolerance_of(&sub)?.map_or(0.0, |t| t.get()));
+            }
+        }
+        kind.push((lump, bounds, stated));
+    }
+    if rings.is_empty() || others.is_empty() {
+        return Ok(None);
+    }
+    let weld = crate::sub_shapes::reach(tol);
+    for (_, ring_box, ring_stated) in &rings {
+        for (_, other_box, other_stated) in &others {
+            if ring_box.distance_to_box(other_box) <= weld + ring_stated + other_stated {
+                return Ok(None);
+            }
+        }
+    }
+    let tool = |model: &mut Model, lumps: &[(Shape, Aabb, f64)]| -> OgeomResult<Shape> {
+        match lumps {
+            [(one, _, _)] => Ok(one.clone()),
+            _ => {
+                let shapes: Vec<Shape> = lumps.iter().map(|(lump, _, _)| lump.clone()).collect();
+                model.add_compound(&shapes)
+            }
+        }
+    };
+    let ringed = tool(model, &rings)?;
+    let other = tool(model, &others)?;
+    // What the trim widens is put back where the rest is not applied.
+    let mark = model.note_widened();
+    let trimmed = match ring::ring_cut(model, a, &ringed, fill, b, tol) {
+        Ok(Some(trimmed)) => trimmed,
+        Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => {
+            model.keep_widened(mark);
+            return Err(e);
+        }
+        Ok(None) | Err(_) => {
+            model.undo_widened(mark);
+            return Ok(None);
+        }
+    };
+    #[cfg(feature = "test-hooks")]
+    crate::work::add(|w| {
+        if fill {
+            w.seated_fills += 1;
+        } else {
+            w.seated_cuts += 1;
+        }
+    });
+    let cut = match seated_cut(model, &trimmed.shape, &other, fill, tol) {
+        Ok(Some(cut)) => Ok(cut),
+        Ok(None) => rest(model, &trimmed.shape, &other),
+        Err(e) => Err(e),
+    };
+    match cut {
+        Ok(cut) => {
+            model.keep_widened(mark);
+            let mut history = trimmed.history.then(&cut.history);
+            history.modify(a, cut.shape.clone());
+            history.modify(b, cut.shape.clone());
+            Ok(Some(Built::new(cut.shape, history)))
+        }
+        Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => {
+            model.keep_widened(mark);
+            Err(e)
+        }
+        Err(_) => {
             model.undo_widened(mark);
             Ok(None)
         }

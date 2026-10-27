@@ -973,13 +973,16 @@ struct Made {
 }
 
 /// `a` with the rim wedges of `b` cut from it, or fused on to it where
-/// `fill` is set, by trimming the faces they sit on; `None` where a
-/// condition of the module's fails.
+/// `fill` is set, by trimming the faces they sit on, keeping as they stand
+/// the faces the general fuse sets aside when it applies `whole` (`b`
+/// itself, or a tool `b`'s lumps are part of); `None` where a condition of
+/// the module's fails.
 pub(super) fn ring_cut(
     model: &mut Model,
     a: &Shape,
     b: &Shape,
     fill: bool,
+    whole: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let Some(mut solid) = read_solid(model, a)? else {
@@ -1022,13 +1025,20 @@ pub(super) fn ring_cut(
         };
         splits.push(vertex);
     }
-    // The faces the general fuse would set aside, which it passes through
-    // as they stand: none is one a seat lies on, and for a fill, which
-    // keeps the tool's own, none is the tool's.
+    // The faces the general fuse would set aside applying the whole tool,
+    // which it passes through as they stand: none is one a seat lies on,
+    // and for a fill, which keeps the tool's own, none is a face of `b`.
     let mut aside = vec![false; solid.faces.len()];
-    if let Ok(Some(sides)) = crate::aside::set_aside(model, a, b, tol) {
-        if fill && !sides[1].faces.is_empty() {
-            return Ok(None);
+    if let Ok(Some(sides)) = crate::aside::set_aside(model, a, whole, tol) {
+        if fill {
+            let own = ogeom_topo::explore_unique(model, b, ShapeType::Face)?;
+            if sides[1]
+                .faces
+                .iter()
+                .any(|(face, _)| own.iter().any(|f| f.is_same(face)))
+            {
+                return Ok(None);
+            }
         }
         for (face, _) in &sides[0].faces {
             if let Some(i) = solid.faces.iter().position(|f| f.is_same(face)) {

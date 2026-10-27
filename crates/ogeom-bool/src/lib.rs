@@ -14739,8 +14739,11 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
 /// other face of `a` reaches into the wedge, the faces the seats lie on are
 /// trimmed along the wedge's own edges and the blends close what is left:
 /// the general fuse is not run, and the result and its history are those
-/// it gives. Otherwise, and where `a` or `b` is anything else, this is
-/// [`cut`].
+/// it gives. Where `b` mixes rims' wedges with other lumps, each rim's box
+/// standing further from every other lump's than the boolean welds, the
+/// rims are trimmed out so and the other lumps cut from what is left, to
+/// the solid and history the general fuse gives cutting all of `b`.
+/// Otherwise, and where `a` or `b` is anything else, this is [`cut`].
 ///
 /// # Errors
 ///
@@ -14752,6 +14755,18 @@ pub fn cut_seated(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
     let built = noting_held(model, |model| {
         ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
             match seated::seated_cut(model, a, b, false, tol) {
+                Ok(Some(built)) => return Ok(built),
+                Err(
+                    e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_)),
+                ) => {
+                    return Err(e);
+                }
+                Ok(None) | Err(_) => {}
+            }
+            let rest = |model: &mut Model, a: &Shape, b: &Shape| {
+                settled(model, tol, |model, tol| cut_once(model, a, b, tol))
+            };
+            match seated::rings_first(model, a, b, false, tol, rest) {
                 Ok(Some(built)) => return Ok(built),
                 Err(
                     e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_)),
@@ -14774,8 +14789,11 @@ pub fn cut_seated(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
 /// reaches into the ring the wedge sweeps, the faces the seats lie on are
 /// trimmed along the wedge's own edges and the blends close what is left:
 /// the general fuse is not run, and the result and its history are those
-/// it gives. Otherwise, and where `a` or `b` is anything else, this is
-/// [`fuse`].
+/// it gives. Where `b` mixes such wedges with other lumps, each rim's box
+/// standing further from every other lump's than the boolean welds, the
+/// rims are filled so and the other lumps fused on to what is left, to the
+/// solid and history the general fuse gives fusing all of `b`. Otherwise,
+/// and where `a` or `b` is anything else, this is [`fuse`].
 ///
 /// # Errors
 ///
@@ -14787,6 +14805,18 @@ pub fn fuse_seated(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> 
     let built = noting_held(model, |model| {
         ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
             match seated::seated_cut(model, a, b, true, tol) {
+                Ok(Some(built)) => return Ok(built),
+                Err(
+                    e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_)),
+                ) => {
+                    return Err(e);
+                }
+                Ok(None) | Err(_) => {}
+            }
+            let rest = |model: &mut Model, a: &Shape, b: &Shape| {
+                settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
+            };
+            match seated::rings_first(model, a, b, true, tol, rest) {
                 Ok(Some(built)) => return Ok(built),
                 Err(
                     e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_)),

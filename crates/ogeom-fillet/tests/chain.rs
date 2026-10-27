@@ -2886,6 +2886,172 @@ fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
     }
 }
 
+/// A rim rounded in one request with straight edges whose wedges stand
+/// apart from its own, and so are cut in one boolean with it, has its wedge
+/// trimmed out first and the rest cut from what is left. The rounding comes
+/// out as the general fuse makes it in one cut: the same solid, valid, with
+/// the same history, the trim keeping only the faces that cut sets aside. The cases are a boss's top rim with the plate's top
+/// loop, with its bottom loop and with one bottom edge, and a tube boss's
+/// two top rims with the plate's bottom loop; and for a union, a boss's
+/// base fused on with a rib's concave base edges.
+#[test]
+fn rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut() {
+    type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64);
+    type Case<'a> = &'a dyn Fn(&mut ogeom_topo::Model) -> Made;
+    // A 20 x 20 plate 5 thick with a boss of radius `r` and height 5 on it,
+    // bored through at radius `bore` where one is given, the seams off the
+    // plate's axes.
+    let seam = Direction::new(Vector::new(-0.5, 0.3, 0.0), T).unwrap();
+    let boss = |model: &mut ogeom_topo::Model, r: f64, bore: Option<f64>| {
+        let plate = ogeom_algo::make_box(model, Frame::WORLD, (20.0, 20.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(Point::new(10.0, 10.0, 5.0), Direction::Z, seam, T).unwrap();
+        let post = ogeom_algo::make_cylinder(model, frame, r, 5.0, T)
+            .unwrap()
+            .shape;
+        let mut solid = ogeom_bool::fuse(model, &plate, &post, T).unwrap().shape;
+        if let Some(bore) = bore {
+            let frame = Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, seam, T).unwrap();
+            let drill = ogeom_algo::make_cylinder(model, frame, bore, 12.0, T)
+                .unwrap()
+                .shape;
+            solid = ogeom_bool::cut(model, &solid, &drill, T).unwrap().shape;
+        }
+        solid
+    };
+    // The plate's sides at height `z`: its edges between two of its corners.
+    let loop_at = |model: &ogeom_topo::Model, solid: &ogeom_topo::Shape, z: f64| {
+        let corner = |v: &ogeom_topo::Shape| {
+            let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+            [p.x, p.y]
+                .iter()
+                .all(|c| c.abs() < 1e-9 || (c - 20.0).abs() < 1e-9)
+                && (p.z - z).abs() < 1e-9
+        };
+        explore_unique(model, solid, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                ogeom_algo::edge_vertices(model, e)
+                    .unwrap()
+                    .is_some_and(|(a, b)| corner(&a) && corner(&b))
+            })
+            .collect::<Vec<_>>()
+    };
+    let top = |model: &mut ogeom_topo::Model, z: f64, all: bool| -> Made {
+        let solid = boss(model, 3.0, None);
+        let mut edges = circle_edges(model, &solid, Point::new(10.0, 10.0, 10.0), 3.0);
+        let straight = loop_at(model, &solid, z);
+        let take = if all { straight.len() } else { 1 };
+        edges.extend(straight.into_iter().take(take));
+        (solid, edges, 1.0)
+    };
+    let tube = |model: &mut ogeom_topo::Model| -> Made {
+        let solid = boss(model, 4.0, Some(2.0));
+        let mut edges = Vec::new();
+        for r in [4.0, 2.0] {
+            edges.extend(circle_edges(model, &solid, Point::new(10.0, 10.0, 10.0), r));
+        }
+        edges.extend(loop_at(model, &solid, 0.0));
+        (solid, edges, 0.5)
+    };
+    // A boss of radius 3 at (8, 10) on a 30 x 20 plate and a rib 2 wide
+    // standing on it from x = 20, the boss's base and the rib's long base
+    // edges rounded: concave, fused on in one union.
+    let ribbed = |model: &mut ogeom_topo::Model| -> Made {
+        let plate = ogeom_algo::make_box(model, Frame::WORLD, (30.0, 20.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(Point::new(8.0, 10.0, 5.0), Direction::Z, seam, T).unwrap();
+        let post = ogeom_algo::make_cylinder(model, frame, 3.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(Point::new(20.0, 2.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+        let rib = ogeom_algo::make_box(model, frame, (2.0, 16.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let solid = ogeom_bool::fuse(model, &plate, &post, T).unwrap().shape;
+        let solid = ogeom_bool::fuse(model, &solid, &rib, T).unwrap().shape;
+        let mut edges = circle_edges(model, &solid, Point::new(8.0, 10.0, 5.0), 3.0);
+        for x in [20.0, 22.0] {
+            edges.extend(
+                explore_unique(model, &solid, ShapeType::Edge)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|e| {
+                        ogeom_algo::edge_vertices(model, e)
+                            .unwrap()
+                            .is_some_and(|(a, b)| {
+                                [a, b].iter().all(|v| {
+                                    let p =
+                                        model.node(v).unwrap().data().as_vertex().unwrap().point;
+                                    (p.x - x).abs() < 1e-9 && (p.z - 5.0).abs() < 1e-9
+                                })
+                            })
+                    }),
+            );
+        }
+        (solid, edges, 1.0)
+    };
+    let cases: [(&str, Case, bool); 5] = [
+        (
+            "a boss's top rim and the plate's top loop",
+            &|m| top(m, 5.0, true),
+            false,
+        ),
+        (
+            "a boss's top rim and the plate's bottom loop",
+            &|m| top(m, 0.0, true),
+            false,
+        ),
+        (
+            "a boss's top rim and one bottom edge",
+            &|m| top(m, 0.0, false),
+            false,
+        ),
+        (
+            "a tube boss's top rims and the plate's bottom loop",
+            &tube,
+            false,
+        ),
+        ("a boss's base and a rib's base edges", &ribbed, true),
+    ];
+    for (name, case, fill) in cases {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, edges, radius) = case(&mut model);
+        let mut general = model.clone();
+        let fused = ogeom_bool::work::unseated(|| {
+            ogeom_fillet::fillet_edges(&mut general, &solid, &edges, radius, T).unwrap()
+        });
+        let (seated, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::fillet_edges(&mut model, &solid, &edges, radius, T).unwrap()
+        });
+        let trimmed = if fill {
+            work.seated_fills
+        } else {
+            work.seated_cuts
+        };
+        assert!(trimmed > 0, "{name}: the rims are trimmed");
+        let (want, got) = (
+            account(&general, &solid, &edges, &fused),
+            account(&model, &solid, &edges, &seated),
+        );
+        assert!(got.0, "{name}: the rounding is valid");
+        assert!(
+            (got.1 - want.1).abs() <= want.1 * 1e-9,
+            "{name}: volume {} against {}",
+            got.1,
+            want.1
+        );
+        assert_eq!(
+            (got.0, &got.2, &got.3),
+            (want.0, &want.2, &want.3),
+            "{name}"
+        );
+    }
+}
+
 /// Bands whose wedges sit flush on planar faces, ending on a corner's ball
 /// or on a face across the band, are cut from the solid by trimming the
 /// faces they sit on rather than by the general fuse, and the rounding

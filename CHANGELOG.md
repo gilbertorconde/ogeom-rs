@@ -594,6 +594,22 @@ bump may break the API and a patch bump may not.
   shoulder 1.40 ms rather than 11.7, and a pin's base and its blind
   hole's floor 3.2 ms rather than 21.9, to the same faces, edges, volume
   and area.
+- **A rim's wedge applied in one boolean with other wedges is trimmed,
+  and only the rest goes to the general fuse (#384).** `fillet_edges` cuts
+  wedges whose boxes stand apart in one boolean, and a group mixing a
+  rim's wedge with a straight band's or a junction's went to the general
+  fuse whole. `ogeom_bool::cut_seated` now splits such a tool where every
+  rim's box stands further from every other lump's than the boolean welds
+  past the two lumps' tolerances: the rims are trimmed out, keeping the
+  faces the general fuse would set aside for the whole tool, and the
+  other lumps are cut from what is left, by trimming where they qualify.
+  `ogeom_bool::fuse_seated` splits a union of concave rims' wedges with
+  other wedges the same way. The solid and its history are the general
+  fuse's. Rounding a boss's top rim with the plate's top loop takes
+  15.7 ms rather than 18.6, a tube boss's two rims with the plate's
+  bottom loop 17.5 ms rather than 27.7, a boss's top rim with one
+  straight edge 1.9 ms rather than 6.1, and a boss's base with a rib's
+  two base edges 4.8 ms rather than 7.7.
 - **The corners a fillet request rounds are cut in one boolean where
   they stand clear of each other (#384).** `fillet_edges` rounded each
   corner where three or more of its edges meet with its own cut. On a
