@@ -2740,6 +2740,152 @@ fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
     }
 }
 
+/// Concave rims, where a plane meets a cylinder about one axis with the
+/// corner between them empty, are filled by trimming the two faces each
+/// wedge sits on rather than by the general fuse, and come out as the
+/// general fuse makes them: the same solid, valid, with the same history,
+/// and the volume the section turned about the axis adds. The cases are a
+/// boss's base on a plate, a blind hole's floor, a stepped shaft's shoulder,
+/// two bosses' bases in one union, and a bored boss's base. Where the ring
+/// the wedge sweeps reaches a side of the plate, a shelf hangs over it, or
+/// the rounding reaches the boss's top, the fill is left to the general
+/// fuse.
+#[test]
+fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
+    use core::f64::consts::PI;
+    type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, Option<f64>);
+    type Case<'a> = &'a dyn Fn(&mut ogeom_topo::Model) -> Made;
+    let cylinder = |model: &mut ogeom_topo::Model, at: Point, r: f64, h: f64| {
+        let frame = Frame::new(at, Direction::Z, Direction::X, T).unwrap();
+        ogeom_algo::make_cylinder(model, frame, r, h, T)
+            .unwrap()
+            .shape
+    };
+    let plate = |model: &mut ogeom_topo::Model, x: f64| {
+        ogeom_algo::make_box(model, Frame::WORLD, (x, 20.0, 5.0), T)
+            .unwrap()
+            .shape
+    };
+    // A boss of radius 3 and height `h` at `(x, 10)` on a 20 x 20 plate 5
+    // thick, its base rounded at 1.
+    let boss = |model: &mut ogeom_topo::Model, x: f64, h: f64| -> Made {
+        let base = plate(model, 20.0);
+        let post = cylinder(model, Point::new(x, 10.0, 5.0), 3.0, h);
+        let solid = ogeom_bool::fuse(model, &base, &post, T).unwrap().shape;
+        let edges = circle_edges(model, &solid, Point::new(x, 10.0, 5.0), 3.0);
+        let want = 2000.0 + PI * 9.0 * h + rim_removed(4.0, 1.0, false);
+        (solid, edges, Some(want))
+    };
+    let blind = |model: &mut ogeom_topo::Model| -> Made {
+        let block = ogeom_algo::make_box(model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let drill = cylinder(model, Point::new(10.0, 10.0, 5.0), 3.0, 6.0);
+        let solid = ogeom_bool::cut(model, &block, &drill, T).unwrap().shape;
+        let edges = circle_edges(model, &solid, Point::new(10.0, 10.0, 5.0), 3.0);
+        let want = 4000.0 - PI * 45.0 + rim_removed(2.0, 1.0, true);
+        (solid, edges, Some(want))
+    };
+    let shaft = |model: &mut ogeom_topo::Model| -> Made {
+        let wide = cylinder(model, Point::ORIGIN, 5.0, 5.0);
+        let narrow = cylinder(model, Point::new(0.0, 0.0, 5.0), 3.0, 5.0);
+        let solid = ogeom_bool::fuse(model, &wide, &narrow, T).unwrap().shape;
+        let edges = circle_edges(model, &solid, Point::new(0.0, 0.0, 5.0), 3.0);
+        let want = PI * 125.0 + PI * 45.0 + rim_removed(4.0, 1.0, false);
+        (solid, edges, Some(want))
+    };
+    let bosses = |model: &mut ogeom_topo::Model| -> Made {
+        let mut solid = plate(model, 30.0);
+        let mut edges = Vec::new();
+        for x in [8.0, 22.0] {
+            let post = cylinder(model, Point::new(x, 10.0, 5.0), 3.0, 5.0);
+            solid = ogeom_bool::fuse(model, &solid, &post, T).unwrap().shape;
+        }
+        for x in [8.0, 22.0] {
+            edges.extend(circle_edges(model, &solid, Point::new(x, 10.0, 5.0), 3.0));
+        }
+        let want = 3000.0 + 2.0 * (PI * 45.0 + rim_removed(4.0, 1.0, false));
+        (solid, edges, Some(want))
+    };
+    let bored = |model: &mut ogeom_topo::Model| -> Made {
+        let (solid, _, _) = boss(model, 10.0, 5.0);
+        let drill = cylinder(model, Point::new(10.0, 10.0, -1.0), 1.5, 12.0);
+        let solid = ogeom_bool::cut(model, &solid, &drill, T).unwrap().shape;
+        let edges = circle_edges(model, &solid, Point::new(10.0, 10.0, 5.0), 3.0);
+        let want = 2000.0 + PI * 45.0 - PI * 2.25 * 10.0 + rim_removed(4.0, 1.0, false);
+        (solid, edges, Some(want))
+    };
+    // A boss with a shelf on a post beside it, the shelf's underside `at`
+    // over the plate.
+    let shelved = |model: &mut ogeom_topo::Model, at: f64| -> Made {
+        let (mut solid, _, _) = boss(model, 10.0, 5.0);
+        for (corner, size) in [
+            (Point::new(16.0, 8.0, 5.0), (2.0, 4.0, 3.0)),
+            (Point::new(13.5, 8.0, 5.0 + at), (4.5, 4.0, 1.0)),
+        ] {
+            let frame = Frame::new(corner, Direction::Z, Direction::X, T).unwrap();
+            let part = ogeom_algo::make_box(model, frame, size, T).unwrap().shape;
+            solid = ogeom_bool::fuse(model, &solid, &part, T).unwrap().shape;
+        }
+        let edges = circle_edges(model, &solid, Point::new(10.0, 10.0, 5.0), 3.0);
+        (solid, edges, None)
+    };
+    let cases: [(&str, Case, bool); 9] = [
+        ("a boss's base", &|m| boss(m, 10.0, 5.0), true),
+        ("a blind hole's floor", &blind, true),
+        ("a shaft's shoulder", &shaft, true),
+        ("two bosses' bases", &bosses, true),
+        ("a bored boss's base", &bored, true),
+        ("a shelf over the ring's top", &|m| shelved(m, 2.0), true),
+        (
+            "a boss whose ring meets the plate's side",
+            &|m| boss(m, 4.0, 5.0),
+            false,
+        ),
+        ("a shelf into the ring", &|m| shelved(m, 0.5), false),
+        (
+            "a boss as tall as the rounding",
+            &|m| boss(m, 10.0, 1.0),
+            false,
+        ),
+    ];
+    for (name, case, trimmed) in cases {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, edges, closed_form) = case(&mut model);
+        let mut general = model.clone();
+        let fused = ogeom_bool::work::unseated(|| {
+            ogeom_fillet::fillet_edges(&mut general, &solid, &edges, 1.0, T).unwrap()
+        });
+        let (seated, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::fillet_edges(&mut model, &solid, &edges, 1.0, T).unwrap()
+        });
+        assert_eq!(work.seated_fills > 0, trimmed, "{name}: filled by trimming");
+        let (want, got) = (
+            account(&general, &solid, &edges, &fused),
+            account(&model, &solid, &edges, &seated),
+        );
+        assert!(got.0, "{name}: the rounding is valid");
+        assert!(
+            (got.1 - want.1).abs() <= want.1 * 1e-9,
+            "{name}: volume {} against {}",
+            got.1,
+            want.1
+        );
+        if let Some(exact) = closed_form {
+            assert!(
+                (got.1 - exact).abs() <= exact * 1e-7,
+                "{name}: volume {} against the closed form {exact}",
+                got.1
+            );
+        }
+        assert_eq!(
+            (got.0, &got.2, &got.3),
+            (want.0, &want.2, &want.3),
+            "{name}"
+        );
+    }
+}
+
 /// Bands whose wedges sit flush on planar faces, ending on a corner's ball
 /// or on a face across the band, are cut from the solid by trimming the
 /// faces they sit on rather than by the general fuse, and the rounding

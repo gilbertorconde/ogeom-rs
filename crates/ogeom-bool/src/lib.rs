@@ -14751,7 +14751,7 @@ pub fn cut_seated(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
     }
     let built = noting_held(model, |model| {
         ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
-            match seated::seated_cut(model, a, b, tol) {
+            match seated::seated_cut(model, a, b, false, tol) {
                 Ok(Some(built)) => return Ok(built),
                 Err(
                     e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_)),
@@ -14761,6 +14761,41 @@ pub fn cut_seated(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> O
                 Ok(None) | Err(_) => {}
             }
             settled(model, tol, |model, tol| cut_once(model, a, b, tol))
+        })
+    })?;
+    sub_shapes::with_sub_shapes(model, [a, b], built, tol)
+}
+
+/// [`fuse`], where `b` is a concave rim's blend wedge, or a compound of
+/// such wedges standing apart, that sits flush on `a`: each an annulus of a
+/// plane and a band of a cylinder about one axis lying on faces of `a`,
+/// facing against them, and the quarter of a torus's tube between them.
+/// Where every seat lies within the face it is on and no other face of `a`
+/// reaches into the ring the wedge sweeps, the faces the seats lie on are
+/// trimmed along the wedge's own edges and the blends close what is left:
+/// the general fuse is not run, and the result and its history are those
+/// it gives. Otherwise, and where `a` or `b` is anything else, this is
+/// [`fuse`].
+///
+/// # Errors
+///
+/// As [`fuse`].
+pub fn fuse_seated(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<Built> {
+    if is_sheet(model, a)? || is_sheet(model, b)? {
+        return fuse(model, a, b, tol);
+    }
+    let built = noting_held(model, |model| {
+        ball_chart::with_poles_clear(model, a, b, tol, |model, a, b| {
+            match seated::seated_cut(model, a, b, true, tol) {
+                Ok(Some(built)) => return Ok(built),
+                Err(
+                    e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_)),
+                ) => {
+                    return Err(e);
+                }
+                Ok(None) | Err(_) => {}
+            }
+            settled(model, tol, |model, tol| fuse_once(model, a, b, tol))
         })
     })?;
     sub_shapes::with_sub_shapes(model, [a, b], built, tol)

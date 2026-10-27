@@ -581,6 +581,19 @@ bump may break the API and a patch bump may not.
   general fuse's. Rounding a cylinder's top rim takes 1.2 ms rather than
   4.1, and all four rims of a tube 5.3 ms rather than 75, to the same
   faces, edges, volume and area.
+- **Concave rims are filled by trimming the plane and cylinder they sit
+  on, not by the general fuse (#384).** `fillet_edges` applies the wedges
+  it fuses on through the new `ogeom_bool::fuse_seated`, which takes a
+  concave rim's wedge (a boss's base, a blind hole's floor, a shaft's
+  shoulder) under the conditions `cut_seated` takes a convex one's, with
+  the two faces facing against the seats. The ring the wedge sweeps then
+  lies outside the solid, and the union is the solid with the seats taken
+  out and the tube as the wedge faces it. The solid and its history are
+  the general fuse's; everywhere else the union is the general fuse's.
+  Rounding a boss's base takes 1.35 ms rather than 4.7, a stepped shaft's
+  shoulder 1.40 ms rather than 11.7, and a pin's base and its blind
+  hole's floor 3.2 ms rather than 21.9, to the same faces, edges, volume
+  and area.
 - **The corners a fillet request rounds are cut in one boolean where
   they stand clear of each other (#384).** `fillet_edges` rounded each
   corner where three or more of its edges meet with its own cut. On a

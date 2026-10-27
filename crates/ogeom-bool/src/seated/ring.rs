@@ -1,5 +1,5 @@
-//! A cut by revolved blend wedges sitting on a rim, made by trimming the
-//! two faces each sits on rather than by the general fuse.
+//! A cut or a fill by revolved blend wedges sitting on a rim, made by
+//! trimming the two faces each sits on rather than by the general fuse.
 //!
 //! A rim's blend wedge is three faces, each a whole turn about one axis: a
 //! band of a cylinder (the wall seat), an annulus of a plane square to the
@@ -11,6 +11,8 @@
 //! comes into the ring that square sweeps, the cut is known without
 //! intersecting anything: the cap face loses the annulus, the wall face the
 //! band, and the blend closes what is left along the two contact circles.
+//! A fill, which rounds a concave rim (a boss's base, a blind hole's
+//! floor), is the same trim with the two faces facing against the seats.
 //!
 //! Each condition is checked, and where one fails the cut is not made here:
 //!
@@ -24,11 +26,12 @@
 //!   closed circle on the axis. The wall's seam is a line from its contact
 //!   to the rim, and the blend's a meridian of the tube, a quarter turn
 //!   about the tube's centre between the two contacts, through the square.
-//! - The cap seat lies on a planar face of the solid facing the same way, one
-//!   of whose loops is the rim: every edge on the rim's circle, a whole turn.
-//!   The one other face walking those edges lies on the wall seat's cylinder,
-//!   facing the same way, and walks the rim between the two walks of one seam
-//!   line, which runs on past the tube's level.
+//! - The cap seat lies on a planar face of the solid facing the same way (the
+//!   other way for a fill), one of whose loops is the rim: every edge on the
+//!   rim's circle, a whole turn. The one other face walking those edges lies
+//!   on the wall seat's cylinder, facing as the cap face does against its
+//!   seat, and walks the rim between the two walks of one seam line, which
+//!   runs on past the tube's level.
 //! - Every other edge of the wall's face stands past the tube's level, on the
 //!   side away from the cap, and every other edge of the cap's face past the
 //!   cap's contact circle, on the side away from the wall, each by more than
@@ -40,16 +43,21 @@
 //!   radius.
 //! - The wall's seam meets the wall's contact either at the meridian's end,
 //!   within both tolerances, or further from it than the boolean welds.
-//! - Lumps of a compound tool stand apart, box from box.
+//! - Lumps of a compound tool stand apart, box from box. For a fill, the
+//!   general fuse sets none of the tool's faces aside.
 //! - The faces made, with the solid's other faces, walk every edge twice,
 //!   once each way.
 //!
 //! The ring's inside then meets no face of the solid: the two the seats lie
 //! on bound it, on the cap's plane and the wall's cylinder, and every other
 //! stands out of it. It is one connected region, beside each seat on the
-//! solid's material side, so it lies inside the solid, and the wedge with
-//! it. The solid less the wedge is bounded by the solid's faces with the
-//! seats taken out, and by the blend turned to face out of the material.
+//! solid's material side for a cut, so it lies inside the solid, and the
+//! wedge with it. The solid less the wedge is bounded by the solid's faces
+//! with the seats taken out, and by the blend turned to face out of the
+//! material. For a fill each seat has the solid's material on its far side,
+//! so the ring lies outside the solid, the wedge with it, and the union is
+//! bounded by the solid's faces with the seats taken out and by the blend
+//! as the wedge faces it.
 //!
 //! The result is put together as the general fuse puts its own together:
 //! the faces it would set aside kept, every other face made again, a closed
@@ -594,24 +602,28 @@ struct Placed {
 }
 
 /// Find the faces a ring's seats lie on and check the module's conditions
-/// on them; `None` where one fails.
+/// on them; `None` where one fails. The faces face the seats' way for a cut
+/// and against it for a fill.
 fn place(
     model: &Model,
     solid: &mut Solid,
     ring: Ring,
+    fill: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Placed>> {
     let reach = ring.tolerance + tol.confusion();
     let axis = ring.axis;
-    // The cap face: a plane facing the way the cap seat faces, through the
-    // rim, one of whose loops runs on the rim's circle alone.
+    let host_sense = if fill { -1.0 } else { 1.0 };
+    // The cap face: a plane facing the way the cap seat faces, or against it
+    // for a fill, through the rim, one of whose loops runs on the rim's
+    // circle alone.
     let mut found: Option<(usize, usize)> = None;
     for (i, face) in solid.faces.iter().enumerate() {
         let Some((origin, outward)) = plane_out(model, face) else {
             continue;
         };
         if !parallel(outward, axis.up, tol)
-            || outward.dot(axis.up) <= 0.0
+            || outward.dot(axis.up) * host_sense <= 0.0
             || (axis.along(origin) - ring.height).abs() > reach
         {
             continue;
@@ -671,7 +683,7 @@ fn place(
         return Ok(None);
     };
     let cylinder = c.cylinder();
-    if facing(wall_face, &cylinder.frame()) != ring.wall_sense
+    if facing(wall_face, &cylinder.frame()) != ring.wall_sense * host_sense
         || (cylinder.radius() - ring.wall_radius).abs() > reach
         || !parallel(cylinder.frame().z().vector(), axis.up, tol)
         || axis.off(cylinder.frame().origin()) > reach
@@ -960,12 +972,14 @@ struct Made {
     meridian: Shape,
 }
 
-/// `a` with the rim wedges of `b` cut from it by trimming the faces they
-/// sit on; `None` where a condition of the module's fails.
+/// `a` with the rim wedges of `b` cut from it, or fused on to it where
+/// `fill` is set, by trimming the faces they sit on; `None` where a
+/// condition of the module's fails.
 pub(super) fn ring_cut(
     model: &mut Model,
     a: &Shape,
     b: &Shape,
+    fill: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let Some(mut solid) = read_solid(model, a)? else {
@@ -979,7 +993,7 @@ pub(super) fn ring_cut(
         let Some(ring) = read_ring(model, wedge, tol)? else {
             return Ok(None);
         };
-        let Some(on) = place(model, &mut solid, ring, tol)? else {
+        let Some(on) = place(model, &mut solid, ring, fill, tol)? else {
             return Ok(None);
         };
         placed.push(on);
@@ -1009,9 +1023,13 @@ pub(super) fn ring_cut(
         splits.push(vertex);
     }
     // The faces the general fuse would set aside, which it passes through
-    // as they stand: none is one a seat lies on.
+    // as they stand: none is one a seat lies on, and for a fill, which
+    // keeps the tool's own, none is the tool's.
     let mut aside = vec![false; solid.faces.len()];
     if let Ok(Some(sides)) = crate::aside::set_aside(model, a, b, tol) {
+        if fill && !sides[1].faces.is_empty() {
+            return Ok(None);
+        }
         for (face, _) in &sides[0].faces {
             if let Some(i) = solid.faces.iter().position(|f| f.is_same(face)) {
                 aside[i] = true;
@@ -1024,7 +1042,7 @@ pub(super) fn ring_cut(
     {
         return Ok(None);
     }
-    build(model, &solid, &placed, &splits, &aside, a, b, tol)
+    build(model, &solid, &placed, &splits, &aside, fill, a, b, tol)
 }
 
 /// The loop of the wall face the ring's run lies in, where the run starts
@@ -1057,6 +1075,7 @@ fn build(
     placed: &[Placed],
     splits: &[Shape],
     aside: &[bool],
+    fill: bool,
     a: &Shape,
     b: &Shape,
     tol: Tolerances,
@@ -1207,9 +1226,10 @@ fn build(
         }
         faces.push(image);
     }
-    // Each blend, its rings in pieces, turned to face out of the material.
+    // Each blend, its rings in pieces, facing out of the material: turned
+    // for a cut.
     for (p, m) in placed.iter().zip(&made) {
-        let Some(face) = blend_face(model, p, m, tol)? else {
+        let Some(face) = blend_face(model, p, m, fill, tol)? else {
             return Ok(None);
         };
         history.modify(&p.ring.blend, face.clone());
@@ -1512,12 +1532,13 @@ fn image_contacts(
     Ok(true)
 }
 
-/// A ring's blend with its rings in pieces, turned to face out of the
-/// material.
+/// A ring's blend with its rings in pieces, facing out of the material:
+/// turned for a cut, as the wedge faces for a fill.
 fn blend_face(
     model: &mut Model,
     p: &Placed,
     m: &Made,
+    fill: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Shape>> {
     let ring = &p.ring;
@@ -1547,17 +1568,18 @@ fn blend_face(
         }
     }
     // The node holds the loop as the wedge's face walks it where that
-    // face is used forward, and the blend is then used reversed, facing
-    // the other way.
+    // face is used forward; for a cut the blend is then used the other way
+    // round, facing the other way.
     if ring.blend.orientation() == Orientation::Reversed {
         edges = edges.iter().rev().map(Shape::reversed).collect();
     }
-    let turned = match ring.blend.orientation() {
-        Orientation::Forward => Orientation::Reversed,
-        _ => Orientation::Forward,
+    let used = match (ring.blend.orientation(), fill) {
+        (own, true) => own,
+        (Orientation::Forward, false) => Orientation::Reversed,
+        (_, false) => Orientation::Forward,
     };
     let wire = make_wire(model, &edges, tol)?.shape;
-    let face = model.add_face(data, &[wire])?.oriented(turned);
+    let face = model.add_face(data, &[wire])?.oriented(used);
     Ok(Some(face))
 }
 

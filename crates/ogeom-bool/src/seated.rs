@@ -1,6 +1,6 @@
 //! A cut by blend wedges that sit flush on the solid, made by trimming the
 //! faces they sit on rather than by the general fuse. This module trims
-//! straight bands; [`ring`] trims rims.
+//! straight bands; [`ring`] trims rims, for a cut and for a fill.
 //!
 //! A straight blend's wedge is bounded by planar seats (its legs along the
 //! two faces it rounds, its caps) and by the blend, a strip of a cylinder
@@ -155,24 +155,31 @@ impl Solid {
     }
 }
 
-/// `a` with the wedges of `b` cut from it by trimming the faces they sit
-/// on, with the faces' history as the general fuse records it; `None` where
-/// a condition of the module's fails, and the cut is the general fuse's.
+/// `a` with the wedges of `b` cut from it, or fused on to it where `fill`
+/// is set, by trimming the faces they sit on, with the faces' history as
+/// the general fuse records it; `None` where a condition of the module's
+/// fails, and the boolean is the general fuse's. A fill is made for rims
+/// alone.
 pub(crate) fn seated_cut(
     model: &mut Model,
     a: &Shape,
     b: &Shape,
+    fill: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     #[cfg(feature = "test-hooks")]
     if crate::work::is_unseated() {
         return Ok(None);
     }
+    let ringed = ring::is_ringed(model, b)?;
+    if fill && !ringed {
+        return Ok(None);
+    }
     // What reading the wedges and making the result widen is put back
     // where the cut is not made here.
     let mark = model.note_widened();
-    let cut = if ring::is_ringed(model, b)? {
-        ring::ring_cut(model, a, b, tol)
+    let cut = if ringed {
+        ring::ring_cut(model, a, b, fill, tol)
     } else {
         trimmed_cut(model, a, b, tol)
     };
@@ -180,7 +187,13 @@ pub(crate) fn seated_cut(
         Ok(Some(built)) => {
             model.keep_widened(mark);
             #[cfg(feature = "test-hooks")]
-            crate::work::add(|w| w.seated_cuts += 1);
+            crate::work::add(|w| {
+                if fill {
+                    w.seated_fills += 1;
+                } else {
+                    w.seated_cuts += 1;
+                }
+            });
             Ok(Some(built))
         }
         Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => {

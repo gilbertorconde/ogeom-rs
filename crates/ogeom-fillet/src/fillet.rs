@@ -1302,7 +1302,8 @@ fn join_flush(
 /// the boolean's history. Wedges whose boxes meet go in different
 /// booleans, as a compound of lumps that overlap would count their overlap
 /// twice. A cut is [`ogeom_bool::cut_seated`], which trims the faces
-/// straight bands and rims sit on where nothing else reaches into them.
+/// straight bands and rims sit on where nothing else reaches into them, and
+/// a fill [`ogeom_bool::fuse_seated`], which does so for rims.
 fn apply_set_aside(
     model: &mut Model,
     mut built: Built,
@@ -1358,7 +1359,7 @@ fn apply_set_aside(
             model.add_compound(&lumps)?
         };
         let applied = if additive {
-            ogeom_bool::fuse(model, &built.shape, &tool, tol)
+            ogeom_bool::fuse_seated(model, &built.shape, &tool, tol)
         } else {
             ogeom_bool::cut_seated(model, &built.shape, &tool, tol)
         };

@@ -17,6 +17,9 @@ pub struct Work {
     /// Cuts made by trimming the faces a tool's wedges sit on, with no
     /// general fuse.
     pub seated_cuts: usize,
+    /// Unions made by trimming the faces a tool's wedges sit on, with no
+    /// general fuse.
+    pub seated_fills: usize,
     /// Attempts made with contacts ended where their curves part by the
     /// radius they hold to, the last a refused boolean is retried with.
     pub stated_retries: usize,
@@ -29,6 +32,7 @@ thread_local! {
             face_pairs: 0,
             pieces: 0,
             seated_cuts: 0,
+            seated_fills: 0,
             stated_retries: 0,
         })
     };
@@ -50,7 +54,9 @@ pub(crate) fn add(f: impl FnOnce(&mut Work)) {
 }
 
 /// Run `f` with every cut [`cut_seated`](crate::cut_seated) is asked for
-/// made by the general fuse, as [`cut`](crate::cut) makes it.
+/// made by the general fuse, as [`cut`](crate::cut) makes it, and every
+/// union [`fuse_seated`](crate::fuse_seated) is asked for as
+/// [`fuse`](crate::fuse) makes it.
 pub fn unseated<R>(f: impl FnOnce() -> R) -> R {
     struct Restore(bool);
     impl Drop for Restore {
@@ -62,7 +68,8 @@ pub fn unseated<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// Whether the cuts on this thread are left to the general fuse.
+/// Whether the seated cuts and unions on this thread are left to the
+/// general fuse.
 pub(crate) fn is_unseated() -> bool {
     UNSEATED.get()
 }
