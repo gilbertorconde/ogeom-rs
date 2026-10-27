@@ -799,19 +799,22 @@ fn spline_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
 }
 
 /// The rims of a drum or a cone: the circles at the ends of its height,
-/// where those ends are a part's height and not a chart's clamp.
+/// where those ends are a part's height and not a chart's clamp. On a
+/// window of one less than a turn wide, the arcs of those circles the
+/// window spans.
 fn rims(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
     /// Past this a height is a chart's stand-in for no end at all.
     const FAR: f64 = 1e6;
-    if !matches!(
-        surface,
-        SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
-    ) || !surface.is_closed_u(tol)
-    {
-        return Vec::new();
-    }
+    let is_drum = |s: &SurfaceGeometry| {
+        matches!(s, SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)) && s.is_closed_u(tol)
+    };
+    let (drum, windowed) = match surface {
+        SurfaceGeometry::Trimmed(trimmed) if is_drum(trimmed.basis()) => (trimmed.basis(), true),
+        _ if is_drum(surface) => (surface, false),
+        _ => return Vec::new(),
+    };
+    let turn = drum.domain().0.1 - drum.domain().0.0;
     let ((u0, u1), (v0, v1)) = surface.domain();
-    let turn = u1 - u0;
     let mut out: Vec<Border> = Vec::new();
     for v in [v0, v1] {
         if !v.is_finite() || v.abs() > FAR {
@@ -819,19 +822,25 @@ fn rims(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
         }
         // Three points a third of a turn apart: the circle through them
         // starts at the first and runs the way the angle does, so its
-        // parameter is the angle from the chart's start. A cone's apex is
+        // parameter is the angle from the window's start. A cone's apex is
         // no circle, and is passed over.
-        let at = |k: f64| surface.point_at(turn.mul_add(k / 3.0, u0), v, tol);
+        let at = |k: f64| drum.point_at(turn.mul_add(k / 3.0, u0), v, tol);
         let (Ok(p0), Ok(p1), Ok(p2)) = (at(0.0), at(1.0), at(2.0)) else {
             continue;
         };
         let Ok(circle) = ogeom_math::Circle::through(p0, p1, p2, tol) else {
             continue;
         };
-        out.push((
-            ogeom_geom::CircleCurve::new(circle).into(),
-            Box::new(move |t| (u0 + t, v)),
-        ));
+        let circle: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+        let rim = if windowed {
+            let Ok(arc) = ogeom_geom::TrimmedCurve::new(circle, 0.0, u1 - u0, tol) else {
+                continue;
+            };
+            arc.into()
+        } else {
+            circle
+        };
+        out.push((rim, Box::new(move |t| (u0 + t, v))));
     }
     out
 }

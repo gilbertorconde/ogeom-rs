@@ -124,3 +124,85 @@ fn a_drum_and_a_cone_whose_rims_cut_a_short_arc_from_their_crossing() {
     .shape;
     holds_the_identities(&mut model, &a, &b);
 }
+
+/// A quarter of a disc, `x >= 0` and `y <= 0`, and half a drum along `x`
+/// under its axis, `y <= -0.5`, ending `reach` past where the bore stands
+/// at the drum's lowest line `y = -1`. Only a strip of the drum's height
+/// `reach` wide stands past the bore, and the drum's wall meets the bore in
+/// one short arc inside it, between two points of the drum's end rim. Each
+/// wall is a part of a turn, and the boolean marches each over a window of
+/// its face, less than a turn: the arc lies inside one pair of sampling
+/// cells and is found only where the end rim pierces the bore. Without the
+/// rims of a window the arc was never traced, and the cut and the common
+/// were refused: the kept pieces did not close.
+///
+/// The drum stands past the bore only where `y < -sqrt(2.5^2 - end^2)`,
+/// `end` the drum's end, and by less than `reach` along `x`: under `reach`
+/// times the area of the drum's section below that line, which the
+/// assertions allow as well as the measure's own nanometre.
+#[test]
+fn a_half_drum_ending_a_hair_past_a_quarter_bore() {
+    let pi = core::f64::consts::PI;
+    for reach in [1e-5, 1e-4, 1e-3] {
+        let mut model = Model::new();
+        let disc = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.5, 3.0, T)
+            .unwrap()
+            .shape;
+        let cut_away = |model: &mut Model, from: &Shape, corner: Point, size| {
+            let block = ogeom::algo::make_box(model, frame(corner, Direction::Z), size, T)
+                .unwrap()
+                .shape;
+            ogeom::boolean::cut(model, from, &block, T).unwrap().shape
+        };
+        let quarter = cut_away(
+            &mut model,
+            &disc,
+            Point::new(-3.0, 0.0, -1.0),
+            (6.0, 3.0, 5.0),
+        );
+        let quarter = cut_away(
+            &mut model,
+            &quarter,
+            Point::new(-3.0, -3.0, -1.0),
+            (3.0, 6.0, 5.0),
+        );
+        let end = 5.25_f64.sqrt() + reach;
+        let drum = ogeom::algo::make_cylinder(
+            &mut model,
+            frame(Point::new(1.0, -0.5, 1.5), Direction::X),
+            0.5,
+            end - 1.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let half = cut_away(
+            &mut model,
+            &drum,
+            Point::new(0.0, -0.5, 0.0),
+            (4.0, 1.0, 3.0),
+        );
+        let cut = ogeom::boolean::cut(&mut model, &quarter, &half, T)
+            .unwrap()
+            .shape;
+        let common = ogeom::boolean::common(&mut model, &quarter, &half, T)
+            .unwrap()
+            .shape;
+        let inside = (end - 1.0) * pi / 8.0;
+        let below = -(6.25 - end * end).sqrt();
+        let past = reach * (below + 1.0) * 2.0 * (0.25 - (below + 0.5).powi(2)).sqrt();
+        for (name, shape, low) in [
+            ("cut", &cut, 6.25 * pi * 3.0 / 4.0 - inside),
+            ("common", &common, inside - past),
+        ] {
+            let diagnosis = ogeom::algo::check(&model, shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{reach}, {name}: {diagnosis}");
+            let got = volume(&model, shape);
+            assert!(
+                got >= low - 1e-9 && got <= low + past + 1e-9,
+                "{reach}, {name}: {got} against {low} to {}",
+                low + past
+            );
+        }
+    }
+}

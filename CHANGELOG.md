@@ -783,6 +783,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drum's section with another is found where it lies in a strip of
+  the drum's height, both faces part of a turn.** (#456)
+  - The boolean marches a pair of surfaces over windows of their faces.
+    A window of a drum or a cone less than a turn wide was a trimmed
+    view without rims, so the seeding never pierced them. A short arc
+    of the section inside one pair of sampling cells was then never
+    traced: a half drum ending a hair past a quarter disc's bore, or a
+    chord's round ending its cap a few microns past a bore at a pocket's
+    corner. The cut was refused ("the kept pieces did not close into a
+    shell").
+  - The arcs of a windowed drum's or cone's rims that the window spans
+    are now pierced as its whole rims were.
+  - Measured: the quarter disc less the half drum ending 1e-5, 1e-4 and
+    1e-3 past the bore cuts and commons to its closed form within the
+    drum's sliver past the bore. The chord's round cut from a drafted
+    pocket after the arc's (chord at −0.5, draft 0.05) now closes in
+    both orders, to 120.170582 either way, with cut plus common equal to
+    the solid to 1e-9.
+
 - **Rounds at a bore meeting a drafted chord through its axis or past it
   take the corner in either order.** (#342)
   - In a disc's pocket up to a chord whose wall is drafted, the corner of
