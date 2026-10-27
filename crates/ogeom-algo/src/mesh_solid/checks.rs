@@ -1,8 +1,9 @@
 //! The checks the build loop runs on what it built, and the bookkeeping they
 //! drive: planes off their vertices, faces that do not build or cannot be
 //! meshed and measured, faces overlapping or turned in, seams crossed or
-//! folded, facets wound backwards, faces whose meshes leave edges open, and
-//! facets lent to curved faces and given back.
+//! folded, boundaries crossing themselves in their charts, facets wound
+//! backwards, faces whose meshes leave edges open, and facets lent to
+//! curved faces and given back.
 
 use ogeom_core::{FastMap, OgeomResult, Tolerances};
 use ogeom_geom::Curve;
@@ -550,17 +551,7 @@ pub(super) fn folded_seams(
 ) -> OgeomResult<(Vec<usize>, Vec<usize>)> {
     use ogeom_geom::Surface as _;
     let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
-    // The triangle of facet `f` that could be built as a fan onto curved
-    // face `c`, and is not one yet.
-    let fan_of = |f: usize, c: usize| -> Option<usize> {
-        let mut members = groups.of.iter().enumerate().filter(|&(_, &g)| g == f);
-        let (t, _) = members.next()?;
-        if members.next().is_some() || groups.fans.contains(&t) {
-            return None;
-        }
-        let fan = groups.fan_at(t, triangles, adjacency)?;
-        fan.seams().any(|(_, g)| g == c).then_some(t)
-    };
+    let fan_of = |f: usize, c: usize| fan_onto(triangles, adjacency, groups, f, c);
     let mut fans: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let deflection = ogeom_mesh::Deflection::default();
     let fine = ogeom_mesh::Deflection::with_chord(deflection.chord * 1e-2)?;
@@ -720,6 +711,108 @@ pub(super) fn folded_seams(
             } else {
                 out.extend(across);
                 fans.extend(fannable);
+            }
+        }
+    }
+    Ok((out.into_iter().collect(), fans.into_iter().collect()))
+}
+
+/// The triangle of facet `f` that could be built as a fan (see [`Fan`])
+/// onto curved face `c`, and is not one yet.
+fn fan_onto(
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &Groups,
+    f: usize,
+    c: usize,
+) -> Option<usize> {
+    let mut members = groups.of.iter().enumerate().filter(|&(_, &g)| g == f);
+    let (t, _) = members.next()?;
+    if members.next().is_some() || groups.fans.contains(&t) {
+        return None;
+    }
+    let fan = groups.fan_at(t, triangles, adjacency)?;
+    fan.seams().any(|(_, g)| g == c).then_some(t)
+}
+
+/// The faces whose boundary crosses itself in its surface's chart
+/// ([`chart_crossings`](crate::chart_crossings)) where the drawing
+/// [`folded_seams`] reads is too coarse to show it: a facet all but
+/// tangent to a curved face beside it meets that face's surface along a
+/// curve that can run across the facet's other side a little short of the
+/// corner they share, closing a loop narrower than the drawing's chord.
+///
+/// A crossing names its two edges, and its culprits as [`folded_seams`]
+/// names them: the face itself where it is curved, else the curved faces
+/// across the two edges, else the face itself where it can be withdrawn.
+/// Returned with the facets that could be fans onto a curved face beside
+/// the crossing: a fan's seam is drawn straight in the curved face's chart,
+/// and its own boundary is its chart's square.
+pub(super) fn crossed_boundaries(
+    model: &Model,
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    regrouped: &Regrouped,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<usize>, Vec<usize>)> {
+    let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
+    let faces: Vec<(usize, &Shape)> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
+        .collect();
+    let crossed = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
+        let crossings = crate::chart_crossings(model, face, tol)?;
+        if crossings.is_empty() {
+            return Ok(Vec::new());
+        }
+        let wires = model.ordered_children_of(&face.oriented(ogeom_topo::Orientation::Forward))?;
+        let mut named = Vec::with_capacity(crossings.len());
+        for crossing in crossings {
+            let mut pair = Vec::with_capacity(2);
+            for (w, e) in crossing.edges {
+                if let Some(edge) = model.ordered_children_of(&wires[w])?.get(e) {
+                    pair.push(edge.node());
+                }
+            }
+            named.push(pair);
+        }
+        Ok(named)
+    });
+    let mut owners: FastMap<ogeom_topo::TShapeId, Vec<usize>> = FastMap::default();
+    for &(g, face) in &faces {
+        for edge in ogeom_topo::explore_unique(model, face, ogeom_topo::ShapeType::Edge)? {
+            owners.entry(edge.node()).or_default().push(g);
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    let mut fans = std::collections::BTreeSet::new();
+    for (&(g, _), named) in faces.iter().zip(crossed) {
+        for pair in named? {
+            let beside: Vec<usize> = pair
+                .iter()
+                .filter_map(|id| owners.get(id))
+                .flatten()
+                .copied()
+                .filter(|&o| o != g)
+                .collect();
+            fans.extend(beside.iter().filter_map(|&o| {
+                if curved(g) {
+                    fan_onto(triangles, adjacency, groups, o, g)
+                } else if curved(o) {
+                    fan_onto(triangles, adjacency, groups, g, o)
+                } else {
+                    None
+                }
+            }));
+            if curved(g) {
+                out.insert(g);
+            } else if beside.iter().any(|&o| curved(o)) {
+                out.extend(beside.iter().copied().filter(|&o| curved(o)));
+            } else if regrouped.can_withdraw(groups, g) {
+                out.insert(g);
             }
         }
     }

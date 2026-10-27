@@ -64,7 +64,7 @@ use builder::Builder;
 use caches::{AreaCache, ImageCache, SnapCache};
 use checks::{
     Regrouped, absorb_facets, any_turned_in, backwards_facets, broken_faces, collapsed_beside,
-    crossed_seams, failing_faces, folded_seams, give_back, overlapping_faces,
+    crossed_boundaries, crossed_seams, failing_faces, folded_seams, give_back, overlapping_faces,
     planes_off_their_vertices, unbuilt_culprits, unmatched_faces,
 };
 use planner::{NOISE_FLOOR, Planner, Replan};
@@ -976,6 +976,24 @@ fn build_from(
                             );
                             // A facet folding a curved face beside it is
                             // built as a fan before that face is faceted.
+                            if !fanned.is_empty() {
+                                groups.fans.extend(fanned);
+                                continue 'build;
+                            }
+                            reason = FallbackReason::FoldedSeam;
+                        }
+                        if culprits.is_empty() && options.recognize {
+                            let fanned;
+                            (culprits, fanned) = or_withdraw!(
+                                'checks,
+                                &built,
+                                crossed_boundaries(
+                                    model, triangles, adjacency, &groups, &built, &regrouped, tol,
+                                )
+                            );
+                            // A facet whose seam with a curved face crosses
+                            // its other side short of their corner is built
+                            // as a fan before that face is faceted.
                             if !fanned.is_empty() {
                                 groups.fans.extend(fanned);
                                 continue 'build;

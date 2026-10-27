@@ -28,8 +28,9 @@
 //!
 //! Every face a mend changes, the face itself and those sharing an edge
 //! or the vertex moved with it, must check clean after it and cross
-//! itself nowhere in its chart, or the mend is not made. A face one mend changes is not changed by another in the same
-//! pass. Anything else stays as it was, and reported.
+//! itself nowhere in its chart, or the mend is not made. A face one mend
+//! changes is not changed by another in the same pass. Anything else is
+//! left untouched and reported.
 
 use ogeom_algo::{ChartCrossing, chart_crossings, check, edge_vertices, linear_properties};
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};

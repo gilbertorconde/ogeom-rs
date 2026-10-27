@@ -1604,6 +1604,27 @@ fn a_bow_tie_face_alone_stays_reported() {
     assert_eq!(fixed.report.crossings_left, 1);
 }
 
+/// `check` reports a face whose boundary crosses itself in its chart as
+/// broken, once, where its edges cross: the bow tie at its middle. A
+/// sliver within its edges' tolerances of their corner is no crossing,
+/// and checks valid.
+#[test]
+fn check_reports_a_boundary_crossing_itself_as_broken() {
+    let mut model = Model::new();
+    let tie = bow_tie(&mut model);
+    let diagnosis = check(&model, &tie, T).unwrap();
+    let broken = diagnosis.of(ogeom::algo::Severity::Broken);
+    assert_eq!(broken.len(), 1, "{diagnosis}");
+    assert!(broken[0].at.is_same(&tie), "{diagnosis}");
+    assert!(
+        broken[0].what.contains("(5.000000, 5.000000, 0.000000)"),
+        "{diagnosis}"
+    );
+    let sliver = sharp_corner(&mut model, 1e-3, 3e-4);
+    let diagnosis = check(&model, &sliver, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+}
+
 /// A thin triangle with its sharp corner at the origin, between (50, ±0.5),
 /// whose edge out of the corner starts `lift` above it, inside the
 /// corner's tolerance of 2 µm, and so crosses the edge into the corner

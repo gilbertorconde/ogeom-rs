@@ -1184,11 +1184,15 @@ pub(crate) fn check_wire(
     Ok(())
 }
 
-/// Every edge of a face needs a pcurve on that face's surface.
+/// Every edge of a face needs a pcurve on that face's surface, and the
+/// boundary those pcurves draw must not cross itself in the surface's chart
+/// ([`chart_crossings`](crate::chart_crossings)): a figure eight encloses no
+/// single region, and the mesher, the classifier and a boolean each read it
+/// differently.
 fn check_face(
     model: &Model,
     face: &Shape,
-    _tol: Tolerances,
+    tol: Tolerances,
     found: &mut Diagnosis,
 ) -> OgeomResult<()> {
     let Some(node) = model.node(face) else {
@@ -1232,6 +1236,21 @@ fn check_face(
                 );
             }
         }
+    }
+    for crossing in crate::chart_crossings(model, face, tol)? {
+        let at = crossing.at;
+        let [(wa, ea), (wb, eb)] = crossing.edges;
+        found.note(
+            Severity::Broken,
+            face,
+            ShapeType::Face,
+            format!(
+                "its boundary crosses itself in its surface's chart at \
+                 ({:.6}, {:.6}, {:.6}), edge {ea} of wire {wa} across edge {eb} \
+                 of wire {wb}: it encloses no single region",
+                at.x, at.y, at.z
+            ),
+        );
     }
     Ok(())
 }

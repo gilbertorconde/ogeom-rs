@@ -127,9 +127,8 @@ bump may break the API and a patch bump may not.
     and each pair also asked a period apart. Two consecutive edges whose
     loop from the crossing to their shared vertex stays within twice
     their tolerances together close a sliver the images of two curves
-    meeting there may close, and are no crossing. `check` does not report
-    crossings yet: `solid_from_mesh` builds faces whose edges cross (on
-    NIST FTC-07, loops 7.6e-4 mm wide where every tolerance is 1e-7).
+    meeting there may close, and are no crossing. `check` reports each
+    crossing as broken on the face, where its edges cross.
   - Where a face's boundary crosses itself once, within one wire and one
     copy of the chart: two consecutive edges crossing short of the vertex
     they meet at, the crossing and each edge's run past it within the
@@ -673,6 +672,32 @@ bump may break the API and a patch bump may not.
   field's vocabulary.
 
 ### Fixed
+
+- **`solid_from_mesh` builds no facet whose boundary crosses itself.**
+  (#397)
+  - A facet all but tangent to a curved face beside it met that face's
+    surface along a curve that ran across the facet's other side a
+    little short of the corner they share, and the facet's boundary
+    closed a figure eight. On NIST FTC-07 a cylinder's section crossed a
+    facet's straight side 0.065 mm from their corner, closing a loop
+    7.6e-4 mm wide where every tolerance is 1e-7: 31 crossings on 24
+    facets. The loops are narrower than the 1e-3 mm chord the fold check
+    draws boundaries at, and nothing saw them.
+  - The build now asks every face for its chart crossings
+    (`chart_crossings`) once the fold check passes. A facet crossing
+    itself beside one curved face is built as a fan onto it, as a facet
+    folding or turned in already is: the ruled surface from its far
+    corner to the seam drawn straight in the curved face's chart, whose
+    boundary is its chart's square. A crossing no fan mends facets the
+    curved faces at it, as a fold does.
+  - Measured: FTC-07 and its six relistings come back with 0 crossings
+    (30 to 33 before) and the same faces, 607 with 172 curved and none
+    faceted on the plain listing; its volume moves from 1726246.6420 to
+    1726246.6577 against the part's 1726246.6525, its area from
+    391367.0891 to 391367.0918 against 391365.3670. The rough rounded
+    box's 3 crossings go, its 2123 faces and 12 cylinders stand, its
+    volume moves by 1.6e-4 mm³ (3838.814744 to 3838.814902 against the
+    mesh's 3835.757990) and its area by -1.0e-4 mm².
 
 - **A D-shaped block's arc and chord round alike in either order.**
   (#342)
