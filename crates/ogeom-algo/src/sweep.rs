@@ -728,14 +728,16 @@ fn prism_over_edge(
     // A placement may carry a uniform scale, and a scale rescales a curve's
     // parameter with it. The edge's range is in the stored curve's parameter
     // and the surface's `u` is in the placed one's, so the range is carried
-    // across by where it sits in the domain rather than by its value.
+    // across by where it sits in the domain rather than by its value: left
+    // as it is where the domains agree, since an affine map across a line's
+    // billion-wide domain moves it by that width's rounding.
     let placement = edge.transform(model.datums())?;
     let stored = geometry.domain();
     let geometry = geometry.transformed(&placement, tol)?;
     let placed = geometry.domain();
     let (lo, hi) = (
-        rescale(range.0, stored, placed),
-        rescale(range.1, stored, placed),
+        ogeom_geom::carried(range.0, stored, placed),
+        ogeom_geom::carried(range.1, stored, placed),
     );
     let travel = vector.magnitude();
     let direction = ogeom_math::Direction::new(vector, tol)?;
@@ -1212,8 +1214,8 @@ fn revolution_over_edge(
     let geometry = geometry.transformed(&placement, tol)?;
     let placed = geometry.domain();
     let (lo, hi) = (
-        rescale(range.0, stored, placed),
-        rescale(range.1, stored, placed),
+        ogeom_geom::carried(range.0, stored, placed),
+        ogeom_geom::carried(range.1, stored, placed),
     );
     if axis_relation(&geometry, (lo, hi), turn.axis, tol)? == AxisRelation::On {
         return Ok((None, History::new()));
@@ -1843,21 +1845,6 @@ fn axis_relation(
     Ok(AxisRelation::Clear)
 }
 
-/// Carry a parameter from one domain to the corresponding place in another.
-///
-/// A rigid motion leaves a curve's parameterization alone; a uniform scale
-/// stretches it, because a line's parameter is a length. Rather than knowing
-/// which curve types do which, the parameter is placed by where it sits between
-/// the domain's ends, which is the same affine map in both cases, and the
-/// identity when the two domains agree.
-fn rescale(u: f64, from: (f64, f64), to: (f64, f64)) -> f64 {
-    let span = from.1 - from.0;
-    if span.abs() <= f64::MIN_POSITIVE {
-        return to.0;
-    }
-    to.0 + (to.1 - to.0) * (u - from.0) / span
-}
-
 /// The edge one endpoint of the profile sweeps out.
 ///
 /// Shared between the two faces that meet along it (the previous edge's sweep
@@ -2104,6 +2091,30 @@ mod tests {
         for (i, solid) in solids.iter().enumerate() {
             assert_eq!(edges_walked_one_way(&model, solid), 0, "solid {i}");
         }
+    }
+
+    /// An edge stretching part of an unbounded line, whose domain reaches
+    /// a billion either side, sweeps a wall whose pcurves end where the
+    /// edge does. Carried across the line's domain by the affine map from
+    /// its far end, the edge's end at 4.2987... came back 1.1e-7 along,
+    /// past the edge's tolerance of 1e-7, and the wall's pcurves left the
+    /// curve there.
+    #[test]
+    fn a_stretch_of_an_unbounded_line_sweeps_a_wall_its_pcurves_end_on() {
+        let mut model = Model::new();
+        let length = 4.298_734_790_813_969_5;
+        let (a, b) = (Point::ORIGIN, Point::new(0.0, 0.0, length));
+        let va = crate::make_vertex(&mut model, a).shape;
+        let vb = crate::make_vertex(&mut model, b).shape;
+        let line = ogeom_geom::LineCurve::new(ogeom_math::Axis::new(a, ogeom_math::Direction::Z));
+        let edge = crate::make_edge_between(&mut model, line.into(), (0.0, length), &va, &vb, T)
+            .unwrap()
+            .shape;
+        let wall = make_prism(&mut model, &edge, Vector::new(0.0, 2.0, 0.0), T)
+            .unwrap()
+            .shape;
+        let diagnosis = crate::check(&model, &wall, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
     }
 
     #[test]

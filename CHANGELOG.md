@@ -673,6 +673,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A prism's or revolution's wall over a stretch of an unbounded line
+  ends where the edge does.** (#445)
+  - The edge's range was carried from the stored curve's domain to the
+    placed one's by an affine map from the domain's far end. On a line's
+    default domain of a billion either side, that moved an end by up to
+    the 1.19e-7 spacing of `f64` there, past the edge's tolerance of 1e-7.
+    The wall's pcurves then left the edge, and `check` rejected the solid.
+    The range is now carried by `carried`, which leaves it as it is where
+    the domains agree and scales it about zero under a scaling.
+  - Measured on a rib's top creases rounded into a boss (r = 0.85) with
+    the turn between them swept from -30 to 34 degrees: the prism, and
+    each round of it, was invalid at -30, -1, 7, 10, 18, 22 and 32
+    degrees (gaps of 1.12e-7 to 1.79e-7) and is valid at all of them now.
+    Every removed volume is unchanged to the sixth decimal.
+
 - **`solid_from_mesh` builds no facet whose boundary crosses itself.**
   (#397)
   - A facet all but tangent to a curved face beside it met that face's

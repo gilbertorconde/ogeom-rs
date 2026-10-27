@@ -844,6 +844,60 @@ fn a_round_turning_shallowly_into_a_boss_s_rim_meets_the_rim_s_round_flush() {
     }
 }
 
+/// The rib and the boss rounded together at turns either side of the four
+/// degrees above, in both orders, come back valid: a degree away from the
+/// material, where the two bands still meet flush as a chain and remove
+/// the chain's closed form, and ten degrees towards it, past where they
+/// are chained. At both turns a profile edge stretches its unbounded line
+/// to a length whose sum with the line's billion-wide reach rounds: with
+/// the prism's wall over it ending its pcurves by that rounding, 1.1e-7
+/// off the edge, every round carries the invalid edge into its result.
+#[test]
+fn rounds_of_a_rib_into_a_boss_either_side_of_a_shallow_turn_are_valid_in_both_orders() {
+    let pi = core::f64::consts::PI;
+    let radius = 0.85;
+    let section = (1.0 - pi / 4.0) * radius * radius;
+    let moment = (5.0 / 6.0 - pi / 4.0) * radius.powi(3);
+    for (degrees, chained) in [(-1.0_f64, true), (10.0, false)] {
+        let turn = degrees.to_radians();
+        for reversed in [false, true] {
+            let mut model = ogeom_topo::Model::new();
+            let (solid, along_spline, along_arc, spline) = rib_into_a_boss(&mut model, turn);
+            let before = volume(&model, &solid, 1e-4);
+            let named = if reversed {
+                [along_arc, along_spline]
+            } else {
+                [along_spline, along_arc]
+            };
+            let rounded = ogeom_fillet::fillet_edges(&mut model, &solid, &named, radius, T)
+                .unwrap_or_else(|e| panic!("{degrees} degrees, reversed {reversed}: {e}"))
+                .shape;
+            let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{degrees} degrees, reversed {reversed}: {:?}",
+                diagnosis.problems
+            );
+            if !chained {
+                continue;
+            }
+            // The chain's closed form, as for the four-degree turn above;
+            // the mesh's chord of 1e-4 holds the volume to well inside a
+            // part in ten thousand there.
+            let removed = before - volume(&model, &rounded, 1e-4);
+            let (length, bend) = length_and_turn(&spline);
+            let quarter = pi / 2.0;
+            let want = section.mul_add(length, -moment * bend)
+                + section.mul_add(3.6 * quarter, -moment * quarter)
+                - 2.0 * moment * (turn / 2.0).tan();
+            assert!(
+                (removed - want).abs() < want * 1e-4,
+                "{degrees} degrees, reversed {reversed}: {removed} against {want}"
+            );
+        }
+    }
+}
+
 /// A round on a crease that ends where its wall turns on a degree and a
 /// half back behind it, into a boss curving away round the material,
 /// stops at the crease's end. The crease's continuation past the vertex
