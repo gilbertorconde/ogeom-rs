@@ -896,3 +896,92 @@ fn a_sphere_on_a_torus_s_axis_meets_it_in_parallels() {
         }
     }
 }
+
+/// The single touch point a pair reports, both ways round and through
+/// `intersect_surfaces`, which answers it in closed form rather than
+/// marching a pair that never crosses.
+fn touch_of(a: &SurfaceGeometry, b: &SurfaceGeometry) -> Point {
+    use ogeom_intersect::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
+    let Meeting::Touching(points) = surface_surface(a, b, T).unwrap() else {
+        panic!("the pair touches at a point");
+    };
+    assert_eq!(points.len(), 1);
+    assert_eq!(
+        surface_surface(b, a, T).unwrap(),
+        Meeting::Touching(points.clone())
+    );
+    assert_eq!(
+        intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap(),
+        SurfaceIntersection::Touching(points.clone())
+    );
+    points[0]
+}
+
+/// A plane parallel to a torus's axis and off it, or leaning to it, rests
+/// on the tube's outer side at the one point where the torus reaches
+/// furthest along the plane's normal: `R` times the sine of the normal's
+/// angle to the axis, plus `r`, from the centre. Further off it misses;
+/// nearer it crosses in a quartic, which is the march's.
+#[test]
+fn a_plane_resting_beside_a_torus_touches_it_at_one_point() {
+    let (major, minor) = (3.0, 1.0);
+    let centre = Point::new(1.0, -2.0, 0.5);
+    let at = frame(centre, Vector::new(0.2, -0.3, 1.0));
+    let torus: SurfaceGeometry = TorusSurface::new(Torus::new(at, major, minor, T).unwrap()).into();
+    let (axis, x) = (at.z().vector(), at.x().vector());
+    for lean in [0.0_f64, 40.0_f64.to_radians()] {
+        let normal = x * lean.cos() + axis * lean.sin();
+        let reach = major.mul_add(lean.cos(), minor);
+        for side in [1.0, -1.0] {
+            let resting = pln(centre + normal * (side * reach), normal);
+            let p = touch_of(&torus, &resting);
+            let want = centre + (x * major + normal * minor) * side;
+            assert!(
+                p.distance(want) < 1e-12,
+                "{lean} {side}: {p:?} against {want:?}"
+            );
+            assert!(off(&torus, p) < 1e-12 && off(&resting, p) < 1e-12);
+            let clear = pln(centre + normal * (side * (reach + 1e-3)), normal);
+            assert_eq!(surface_surface(&torus, &clear, T).unwrap(), Meeting::Apart);
+            let crossing = pln(centre + normal * (side * (reach - 1e-3)), normal);
+            assert!(surface_surface(&torus, &crossing, T).is_err());
+        }
+    }
+}
+
+/// A sphere off a cylinder's axis by `d` reaches from `d - ρ` to `d + ρ`
+/// of it: against the radius, resting on the wall from inside or outside
+/// at one point, clear of it, or crossing it in a quartic, which is the
+/// march's. A touch past the drum's height touches nothing.
+#[test]
+fn a_ball_resting_against_a_drum_s_wall_touches_it_at_one_point() {
+    let origin = Point::new(-1.0, 2.0, 0.5);
+    let drum = cyl(origin, Vector::new(0.3, 0.1, 1.0), 5.0);
+    let SurfaceGeometry::Cylinder(c) = &drum else {
+        unreachable!()
+    };
+    let at = c.cylinder().frame();
+    let (axis, x) = (at.z().vector(), at.x().vector());
+    let ball = |off_axis: f64, height: f64| sph(origin + x * off_axis + axis * height, 1.0);
+    for (off_axis, height) in [(4.0, 2.0), (6.0, -3.0)] {
+        let resting = ball(off_axis, height);
+        let p = touch_of(&drum, &resting);
+        let want = origin + x * 5.0 + axis * height;
+        assert!(
+            p.distance(want) < 1e-12,
+            "{off_axis}: {p:?} against {want:?}"
+        );
+        assert!(off(&drum, p) < 1e-12 && off(&resting, p) < 1e-12);
+    }
+    for off_axis in [3.9, 6.1] {
+        assert_eq!(
+            surface_surface(&drum, &ball(off_axis, 0.0), T).unwrap(),
+            Meeting::Apart
+        );
+    }
+    assert!(surface_surface(&drum, &ball(4.5, 0.0), T).is_err());
+    assert_eq!(
+        surface_surface(&drum, &ball(4.0, 7.0), T).unwrap(),
+        Meeting::Apart
+    );
+}

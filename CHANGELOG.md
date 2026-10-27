@@ -1384,6 +1384,22 @@ bump may break the API and a patch bump may not.
   points could stand a few units in the last place past it. Fusing two
   balls takes 1.35 ms instead of 6.0 ms, cutting a ball from a box 0.91 ms
   instead of 3.3 ms, and fusing two rings 49 ms instead of 59 ms.
+- **A plane resting beside a torus, and a ball resting against a drum's
+  wall, are answered in closed form, not marched (#439).** A plane not
+  square to a torus's axis, and a sphere off a cylinder's axis, had no
+  closed form, so the general intersector marched them even where they
+  never cross. Where they rest against each other at one point it found
+  no crossing after seconds of seeding and answered `Apart`. Now
+  `surface_surface` measures the plane against the torus's reach along
+  its normal (`R` times the sine of the normal's angle to the axis, plus
+  `r`) and the sphere's reach from the axis against the cylinder's
+  radius. Clear of it, the pair is `Apart`; within the confusion distance
+  of it, `Touching` at the one point where it rests. Where they cross,
+  the pair is marched as before. Every boolean and fillet answer is
+  unchanged: the boolean took the march's `Apart` and takes a touch the
+  same way. Rounding the top loop of a 10 mm block whose vertical edges
+  are rounded takes 0.54 s instead of 26.0 s, and rounding every edge of a
+  D-shaped prism 0.87 s instead of 47.0 s, on one thread.
 
 ## [0.11.5] - 2026-10-19
 

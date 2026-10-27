@@ -756,3 +756,65 @@ fn a_cube_rounded_on_every_edge_is_the_cube_swept_by_the_ball() {
         props.mass
     );
 }
+
+/// A 10 mm cube with its vertical edges rounded at radius 2, then its top
+/// loop at radius 1: the second round's cross-section swept along the
+/// rounded square, straight along the four sides and turned about each
+/// corner's axis (Pappus). Each corner's toroidal blend rests against the
+/// side faces' planes at one point.
+#[test]
+fn the_top_loop_of_a_block_with_rounded_verticals_rounds_on_the_turns() {
+    let mut model = ogeom_topo::Model::new();
+    let (side, wall, top) = (10.0, 2.0, 1.0);
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (side, side, side), T)
+        .unwrap()
+        .shape;
+    let ends = |model: &ogeom_topo::Model, e: &ogeom_topo::Shape| {
+        let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+        let p = |v: &ogeom_topo::Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+        (p(&a), p(&b))
+    };
+    let verticals: Vec<_> = ogeom_topo::explore_unique(&model, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ends(&model, e);
+            (a.z - b.z).abs() > side / 2.0
+        })
+        .collect();
+    assert_eq!(verticals.len(), 4);
+    let rounded = ogeom_fillet::fillet_edges(&mut model, &block, &verticals, wall, T)
+        .unwrap()
+        .shape;
+    let loop_edges: Vec<_> = ogeom_topo::explore_unique(&model, &rounded, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ends(&model, e);
+            (a.z - side).abs() < 1e-9 && (b.z - side).abs() < 1e-9
+        })
+        .collect();
+    assert_eq!(loop_edges.len(), 8, "four sides and four quarter turns");
+    let result = ogeom_fillet::fillet_edges(&mut model, &rounded, &loop_edges, top, T).unwrap();
+
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let faces = ogeom_topo::explore_unique(&model, &result.shape, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 6 + 4 + 8);
+
+    let pi = core::f64::consts::PI;
+    let section = (1.0 - pi / 4.0) * top * top;
+    let centroid = (10.0 - 3.0 * pi) / (12.0 - 3.0 * pi) * top;
+    let block = side * side * side - 4.0 * (4.0 - pi) * wall * wall / 4.0 * side;
+    let straight = 4.0 * (side - 2.0 * wall) * section;
+    let turns = 2.0 * pi * (wall - centroid) * section;
+    let exact = block - straight - turns;
+    let props =
+        ogeom_algo::volume_properties(&model, &result.shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap();
+    assert!(
+        (props.mass - exact).abs() < 1e-6,
+        "volume {} against {exact}",
+        props.mass
+    );
+}

@@ -79,8 +79,8 @@ pub fn surface_surface(
         (S::Cylinder(c), S::Plane(p)) => plane_cylinder(p.plane(), c.cylinder(), tol),
         (S::Sphere(x), S::Sphere(y)) => Ok(sphere_sphere(x.sphere(), y.sphere(), tol)),
         (S::Cylinder(x), S::Cylinder(y)) => coaxial_cylinders(x.cylinder(), y.cylinder(), tol),
-        (S::Cylinder(c), S::Sphere(s)) => coaxial_cylinder_sphere(c.cylinder(), s.sphere(), tol),
-        (S::Sphere(s), S::Cylinder(c)) => coaxial_cylinder_sphere(c.cylinder(), s.sphere(), tol),
+        (S::Cylinder(c), S::Sphere(s)) => cylinder_sphere(c, s.sphere(), tol),
+        (S::Sphere(s), S::Cylinder(c)) => cylinder_sphere(c, s.sphere(), tol),
         (S::Plane(p), S::Torus(t)) => axial_plane_torus(p.plane(), t.torus(), tol),
         (S::Torus(t), S::Plane(p)) => axial_plane_torus(p.plane(), t.torus(), tol),
         (S::Cylinder(c), S::Torus(t)) => coaxial_cylinder_torus(c.cylinder(), t.torus(), tol),
@@ -368,6 +368,76 @@ fn coaxial_cylinders(
     })
 }
 
+/// A cylinder and a sphere: the circles of a sphere centred on the axis, or
+/// a sphere off the axis that stands clear of the cylinder or touches it
+/// at one point.
+fn cylinder_sphere(
+    drum: &ogeom_geom::CylinderSurface,
+    sphere: ogeom_math::Sphere,
+    tol: Tolerances,
+) -> OgeomResult<Meeting> {
+    let cylinder = drum.cylinder();
+    if cylinder.axis().distance_to(sphere.centre()) <= tol.confusion() {
+        return coaxial_cylinder_sphere(cylinder, sphere, tol);
+    }
+    match sphere_beside_cylinder(drum, sphere, tol) {
+        Some(meeting) => Ok(meeting),
+        None => ogeom_bail!(
+            NotDone,
+            "a sphere off a cylinder's axis and crossing it meets it in a \
+             quartic space curve, which needs the general marching intersector"
+        ),
+    }
+}
+
+/// A sphere off a cylinder's axis, where it does not cross the cylinder:
+/// inside or outside it and clear, or resting against its wall from inside
+/// or outside at one point. `None` where it crosses.
+///
+/// A sphere whose centre stands `d` off the axis reaches from `d - ρ` to
+/// `d + ρ` of it, and the cylinder's radius against those two is the whole
+/// story: within the confusion distance of either, the sphere touches the
+/// wall at the point of it nearest or furthest from the axis, and the
+/// surfaces part on every side of it, by `2d` across the axis from an
+/// inner touch, which is past the confusion distance since the centre is
+/// off the axis by more. A touch beyond the drum's height touches nothing.
+fn sphere_beside_cylinder(
+    drum: &ogeom_geom::CylinderSurface,
+    sphere: ogeom_math::Sphere,
+    tol: Tolerances,
+) -> Option<Meeting> {
+    let cylinder = drum.cylinder();
+    let axis = cylinder.axis();
+    let (centre, radius) = (sphere.centre(), sphere.radius());
+    let outward = centre - axis.project(centre);
+    let off = outward.magnitude();
+    let outward = Direction::new(outward, tol).ok()?;
+    let r = cylinder.radius();
+    // How far the sphere stands clear of the wall from inside, and from
+    // outside.
+    let inner = r - (off + radius);
+    let outer = (off - radius) - r;
+    if inner > tol.confusion() || outer > tol.confusion() {
+        return Some(Meeting::Apart);
+    }
+    let touch = if inner.abs() <= tol.confusion() {
+        centre + outward.vector() * radius
+    } else if outer.abs() <= tol.confusion() {
+        centre - outward.vector() * radius
+    } else {
+        return None;
+    };
+    let (h0, h1) = ogeom_geom::Surface::domain(drum).1;
+    let height = (touch - axis.location).dot(axis.direction.vector());
+    Some(
+        if height < h0.min(h1) - tol.confusion() || height > h0.max(h1) + tol.confusion() {
+            Meeting::Apart
+        } else {
+            Meeting::Touching(vec![touch])
+        },
+    )
+}
+
 /// A cylinder and a sphere whose centre is on the cylinder's axis.
 fn coaxial_cylinder_sphere(
     cylinder: ogeom_math::Cylinder,
@@ -375,13 +445,6 @@ fn coaxial_cylinder_sphere(
     tol: Tolerances,
 ) -> OgeomResult<Meeting> {
     let axis = cylinder.axis();
-    if axis.distance_to(sphere.centre()) > tol.confusion() {
-        ogeom_bail!(
-            NotDone,
-            "a sphere off a cylinder's axis meets it in a quartic space curve, \
-             which needs the general marching intersector"
-        );
-    }
     let (r, radius) = (cylinder.radius(), sphere.radius());
     if r > radius + tol.confusion() {
         return Ok(Meeting::Apart);
@@ -415,11 +478,13 @@ fn coaxial_cylinder_sphere(
 /// parallels. A plane through the axis: two meridians.
 ///
 /// Those are the plane/torus configurations with a closed form worth the
-/// name: an oblique plane, or one parallel to the axis and off it, meets a
-/// torus in a quartic (with Villarceau's circles at exactly one magic
-/// tilt), and that is the marching intersector's business. A plane through
-/// the axis often holds the torus's seam, and a fitted section there never
-/// meets the seam's own vertices. The blend machinery lives on this case:
+/// name: an oblique plane, or one parallel to the axis and off it, crossing
+/// a torus meets it in a quartic (with Villarceau's circles at exactly one
+/// magic tilt), and that is the marching intersector's business; one that
+/// does not cross it is clear of it or rests on it at one point
+/// ([`plane_beside_torus`]). A plane through the axis often holds the
+/// torus's seam, and a fitted section there never meets the seam's own
+/// vertices. The blend machinery lives on this case:
 /// a rolling ball's toroidal envelope is tangent to the plane it rolls on
 /// along a circle, and that tangency must be *reported as the circle it is*,
 /// the way a tangent plane reports its line on a cylinder; a tangential
@@ -437,11 +502,14 @@ fn axial_plane_torus(
         return Ok(meridians(plane, torus, tol));
     }
     if !square_to_axis(along, tol) {
+        if let Some(meeting) = plane_beside_torus(plane, torus, along, tol) {
+            return Ok(meeting);
+        }
         ogeom_bail!(
             NotDone,
             "a plane oblique to a torus's axis, or parallel to it and off it, \
-             meets it in a quartic, which needs the general marching \
-             intersector"
+             crossing it meets it in a quartic, which needs the general \
+             marching intersector"
         );
     }
     // The plane's height above the tube's centre plane.
@@ -476,6 +544,52 @@ fn axial_plane_torus(
     } else {
         Meeting::Along(circles)
     })
+}
+
+/// A plane not square to a torus's axis, where it does not cross the torus:
+/// clear of it, or resting against it at one point. `None` where it crosses,
+/// or where it lies so nearly square that the whole parallel it rests on is
+/// within the confusion distance of it.
+///
+/// The torus is its centre circle swept by a ball of the minor radius, so
+/// along the plane's normal `n` it reaches `R·s + r` either side of its
+/// centre, `s` being the sine of the normal's angle to the axis. That reach
+/// is attained at one point, on the tube's outer side under the normal's
+/// turn about the axis. Within the confusion distance of it, the plane
+/// touches there. Every other point stands further off the plane, by up to
+/// `2·R·s` across the axis, so the touch is isolated once that is past the
+/// confusion distance; short of it the plane lies along the parallel, which
+/// is the march's business.
+fn plane_beside_torus(
+    plane: ogeom_math::Plane,
+    torus: ogeom_math::Torus,
+    along: f64,
+    tol: Tolerances,
+) -> Option<Meeting> {
+    let axis = torus.axis();
+    let normal = plane.normal().vector();
+    let across = normal - axis.direction.vector() * along;
+    let sine = across.magnitude();
+    let (major, minor) = (torus.major_radius(), torus.minor_radius());
+    if 2.0 * major * sine <= tol.confusion() {
+        return None;
+    }
+    let reach = major.mul_add(sine, minor);
+    // How far the torus's centre stands off the plane, and how far the
+    // torus stands clear of it.
+    let offset = plane.signed_distance_to(axis.location);
+    let gap = offset.abs() - reach;
+    if gap > tol.confusion() {
+        return Some(Meeting::Apart);
+    }
+    if gap.abs() > tol.confusion() {
+        return None;
+    }
+    // Towards the plane: against the normal from a centre on its positive
+    // side.
+    let toward = -offset.signum();
+    let touch = axis.location + (across * (major / sine) + normal * minor) * toward;
+    Some(Meeting::Touching(vec![touch]))
 }
 
 /// A plane through a torus's axis: the two tube circles either side of the
