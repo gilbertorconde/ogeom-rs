@@ -712,6 +712,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A plane through a spline-sided prism's side edges cuts it.** (#450)
+  - A plane holding an extrusion's direction and passing through the
+    edge where a side face ends met that face nowhere: the extrusion of
+    a spline side was marched, and no pair of cells crosses on a line the
+    plane holds exactly. A spline patch whose border lay in the plane was
+    marched the same way, its border line refused for want of a cell
+    beyond it. A prism of a diamond with straight B-spline sides, cut on
+    the plane through two opposite corners, was refused ("the kept pieces
+    did not close into a shell"); with line sides it cut exactly.
+  - A plane meets a spline patch, and now the extrusion of a spline
+    profile read as that patch on its own chart, in the whole iso lines
+    it holds, exactly, the extrusion's columns stated as its straight
+    rulings. A line on an open border of the chart stands where the
+    surface leaves the plane there at an angle, the normals' sine past
+    the 3e-2 the marcher takes as tangent all along it; a border left
+    tangentially is still marched.
+  - Measured: the diamond prism, turned five ways, halved on the plane
+    through two opposite corners and cut on the plane through one corner
+    and the middle of a far side, common and cut, gives the closed-form
+    volume to 1e-9 relative, as with line sides. A square twisted
+    exactly an eighth turn before a sharp corner, which #432 left refused
+    when rounded, now mitres and rounds within 1.5e-4 of the closed form
+    (bound 0.19).
+
 - **A mitre where a skinned run meets a straight one, under the
   auxiliary and binormal laws.** (#394)
   - A curved run under those laws is skinned, and ends on the skin's fit

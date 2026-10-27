@@ -435,15 +435,35 @@ fn axial_plane_revolution(
 /// along the chart. The answer stands only where a grid over the chart
 /// finds the surface on one side of the plane between the lines found;
 /// anything else meets the plane elsewhere too and is marched.
+///
+/// A line on an open border of the chart has the surface on one side only.
+/// It stands where the surface leaves the plane there at an angle, the
+/// normals' sine past [`TANGENTIAL_SINE`] all along it: the plane then
+/// meets the face along its boundary edge, as a plane through a prism's
+/// side edge meets the side faces. A border the surface leaves tangentially
+/// is a contact, and the pair is marched.
+///
+/// An extrusion of a spline profile is read as the spline patch it is, on
+/// the same chart: its columns are its straight rulings, and are stated as
+/// lines.
 fn plane_along_spline_lines(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     tol: Tolerances,
 ) -> Option<Vec<SectionCurve>> {
     const SAMPLES: u32 = 96;
-    let (plane, spline, plane_first) = match (a, b) {
-        (SurfaceGeometry::Plane(p), SurfaceGeometry::BSpline(s)) => (p.plane(), s, true),
-        (SurfaceGeometry::BSpline(s), SurfaceGeometry::Plane(p)) => (p.plane(), s, false),
+    let (plane, other, plane_first) = match (a, b) {
+        (SurfaceGeometry::Plane(p), other) => (p.plane(), other, true),
+        (other, SurfaceGeometry::Plane(p)) => (p.plane(), other, false),
+        _ => return None,
+    };
+    let extruded;
+    let (spline, ruled) = match other {
+        SurfaceGeometry::BSpline(s) => (s, None),
+        SurfaceGeometry::Extrusion(e) => {
+            extruded = extrusion_patch(e, tol)?;
+            (&extruded, Some(e))
+        }
         _ => return None,
     };
     let distance = |p: Point| plane.signed_distance_to(p);
@@ -566,11 +586,28 @@ fn plane_along_spline_lines(
     }
     // Each line must be a crossing, the cells either side of it on
     // opposite sides of the plane (across the border of a closed chart,
-    // the cells at its two ends). A line the surface only touches, or with
-    // no cell beside it to say, is a tangency the marcher and the contact
-    // handling answer, and so is the whole pair.
+    // the cells at its two ends), or lie on an open border the surface
+    // leaves at an angle, the one cell beside it on a side. A line the
+    // surface only touches, or with no cell beside it to say, is a tangency
+    // the marcher and the contact handling answer, and so is the whole pair.
     let closed_u = spline.is_closed_u(tol);
     let closed_v = spline.is_closed_v(tol);
+    let plane_normal = plane.normal().vector();
+    let leaves_at_an_angle = |along_u: bool, t: f64| -> bool {
+        let (lo, hi) = if along_u { (v0, v1) } else { (u0, u1) };
+        [0.0, 0.07, 0.19, 0.37, 0.53, 0.71, 0.89, 1.0]
+            .iter()
+            .all(|&f| {
+                let s = (hi - lo).mul_add(f, lo);
+                let (u, v) = if along_u { (t, s) } else { (s, t) };
+                spline
+                    .normal_at(u, v, tol)
+                    .is_ok_and(|n| n.vector().cross(plane_normal).magnitude() > TANGENTIAL_SINE)
+            })
+    };
+    let on_open_border = |t: f64, (lo, hi): (f64, f64), closed: bool| {
+        !closed && ((t - lo).abs() <= tol.parametric() || (t - hi).abs() <= tol.parametric())
+    };
     let side_of = |cu: Option<usize>, cv: Option<usize>| -> Option<f64> {
         let mut found = sides
             .iter()
@@ -579,25 +616,49 @@ fn plane_along_spline_lines(
         let first = found.next()?;
         found.all(|s| s == first).then_some(first)
     };
-    let crosses = |k: usize, count: usize, closed: bool, cell: &dyn Fn(usize) -> Option<f64>| {
+    let crosses = |k: usize,
+                   count: usize,
+                   closed: bool,
+                   border: bool,
+                   cell: &dyn Fn(usize) -> Option<f64>| {
         let below = cell(k).or_else(|| closed.then(|| (0..=count).rev().find_map(cell)).flatten());
         let above = cell(k + 1).or_else(|| closed.then(|| (0..=count).find_map(cell)).flatten());
-        matches!((below, above), (Some(x), Some(y)) if x * y < 0.0)
+        match (below, above) {
+            (Some(x), Some(y)) => x * y < 0.0,
+            (Some(_), None) | (None, Some(_)) => border,
+            (None, None) => false,
+        }
     };
-    for k in 0..columns.len() {
-        if !crosses(k, columns.len(), closed_u, &|c| side_of(Some(c), None)) {
+    for (k, &u) in columns.iter().enumerate() {
+        let border = on_open_border(u, (u0, u1), closed_u) && leaves_at_an_angle(true, u);
+        if !crosses(k, columns.len(), closed_u, border, &|c| {
+            side_of(Some(c), None)
+        }) {
             return None;
         }
     }
-    for k in 0..rows.len() {
-        if !crosses(k, rows.len(), closed_v, &|c| side_of(None, Some(c))) {
+    for (k, &v) in rows.iter().enumerate() {
+        let border = on_open_border(v, (v0, v1), closed_v) && leaves_at_an_angle(false, v);
+        if !crosses(k, rows.len(), closed_v, border, &|c| side_of(None, Some(c))) {
             return None;
         }
     }
     let mut sections = Vec::new();
     let mut emit = |along_u: bool, t: f64| -> Option<()> {
         let iso = line_at(along_u, t)?;
-        let curve: Curve = iso.into();
+        let curve: Curve = match ruled {
+            Some(extrusion) if along_u => {
+                let range = Curve3d::domain(&iso);
+                let axis = ogeom_math::Axis {
+                    location: extrusion.curve().point_at(t, tol).ok()?,
+                    direction: extrusion.direction(),
+                };
+                ogeom_geom::LineCurve::over(axis, range.0, range.1)
+                    .ok()?
+                    .into()
+            }
+            _ => iso.into(),
+        };
         let range = curve.domain();
         let chart: PlanarCurve = if along_u {
             Line2d::over(
@@ -656,6 +717,45 @@ fn plane_along_spline_lines(
         emit(false, v)?;
     }
     Some(sections)
+}
+
+/// An extrusion of a spline profile as a spline patch on the extrusion's
+/// own chart: the profile's knots along `u`, and a straight run along `v`
+/// over the extrusion's window, so each point and each parameter is the
+/// extrusion's. `None` for any other profile.
+fn extrusion_patch(
+    extrusion: &ogeom_geom::ExtrusionSurface,
+    tol: Tolerances,
+) -> Option<ogeom_geom::BSplineSurface> {
+    let Curve::BSpline(profile) = extrusion.curve() else {
+        return None;
+    };
+    let (_, (v0, v1)) = extrusion.domain();
+    let step = extrusion.direction().vector();
+    let mut grid = Vec::with_capacity(profile.control_points().len() * 2);
+    for c in profile.control_points() {
+        for v in [v0, v1] {
+            grid.push(ogeom_math::Weighted {
+                scaled: Point::from_vector(c.scaled.to_vector() + step * (v * c.weight)),
+                weight: c.weight,
+            });
+        }
+    }
+    let count = profile.control_points().len();
+    ogeom_geom::BSplineSurface::rational(
+        profile.knots().clone(),
+        ogeom_math::KnotVector::new(vec![v0, v0, v1, v1], 1).ok()?,
+        ogeom_math::ControlGrid::new(grid, count, 2).ok()?,
+    )
+    .ok()
+    .filter(|patch| {
+        let same = |p: (f64, f64), q: (f64, f64)| {
+            (p.0 - q.0).abs() <= tol.parametric() && (p.1 - q.1).abs() <= tol.parametric()
+        };
+        let (pu, pv) = patch.domain();
+        let (eu, ev) = extrusion.domain();
+        same(pu, eu) && same(pv, ev)
+    })
 }
 
 /// The first surface where `first` holds, else the second.
@@ -1556,6 +1656,10 @@ fn walk_contact(
         .filter(|traced| traced.points.len() >= 4))
 }
 
+/// The sine of the angle between two surfaces' normals at or below which
+/// they are taken as tangent where they meet; see [`branch_is_tangential`].
+const TANGENTIAL_SINE: f64 = 3e-2;
+
 /// Whether a traced branch runs along a tangency of the two surfaces:
 /// their normals parallel, sampled along its length.
 fn branch_is_tangential(
@@ -1587,7 +1691,7 @@ fn branch_is_tangential(
         // graze transversal splits faces along slivers no classifier can
         // hold. Genuinely transversal analytic pairs meeting under two
         // degrees are the pathology, not the rule.
-        if na.cross(nb).magnitude() / (ma * mb) > 3e-2 {
+        if na.cross(nb).magnitude() / (ma * mb) > TANGENTIAL_SINE {
             return Ok(false);
         }
     }
@@ -2387,6 +2491,105 @@ mod tests {
             assert!(
                 on_curve.is_equal(lifted, T),
                 "at t = {t}: curve {on_curve:?}, lifted {lifted:?}"
+            );
+        }
+    }
+
+    /// A straight side from `(√2, 0)` to `(0, √2)` as a clamped cubic
+    /// B-spline, its control points even along it, extruded 3 along `z`
+    /// from `z = 0` and over `z` in `[1, 4]`; and the same side as a
+    /// cubic-by-linear spline patch from `z = 0`.
+    fn straight_spline_sides() -> [SurfaceGeometry; 3] {
+        let (from, to) = (
+            Point::new(2.0_f64.sqrt(), 0.0, 0.0),
+            Point::new(0.0, 2.0_f64.sqrt(), 0.0),
+        );
+        let along = |k: u32| from + (to - from) * (f64::from(k) / 3.0);
+        let knots = || ogeom_math::KnotVector::clamped_uniform(3, 4).unwrap();
+        let side = ogeom_geom::BSplineCurve::new(knots(), (0..4).map(along).collect(), T).unwrap();
+        let lowered =
+            ogeom_geom::ExtrusionSurface::over(side.clone().into(), Direction::Z, (1.0, 4.0))
+                .unwrap();
+        let extruded = ogeom_geom::ExtrusionSurface::new(side.into(), Direction::Z, 3.0).unwrap();
+        let rows: Vec<Point> = (0..4)
+            .flat_map(|k| [along(k), along(k) + Vector::new(0.0, 0.0, 3.0)])
+            .collect();
+        let patch = ogeom_geom::BSplineSurface::new(
+            knots(),
+            ogeom_math::KnotVector::clamped_uniform(1, 2).unwrap(),
+            &ogeom_math::ControlGrid::new(rows, 4, 2).unwrap(),
+            T,
+        )
+        .unwrap();
+        [extruded.into(), lowered.into(), patch.into()]
+    }
+
+    /// A plane holding the extrusion direction through either end of a
+    /// spline side meets the side in the straight ruling at that border,
+    /// exactly, as a plane through a planar side's edge does; through the
+    /// side's inside, in the ruling there. A border the surface leaves
+    /// tangentially is not stated as a crossing.
+    #[test]
+    fn a_plane_through_a_spline_patch_s_border_ruling_meets_it_there() {
+        let r = 2.0_f64.sqrt();
+        for side in straight_spline_sides() {
+            for (through, normal, u) in [
+                (Point::ORIGIN, Vector::Y, 0.0),
+                (Point::ORIGIN, Vector::X, 1.0),
+                (Point::new(0.5, 0.0, 0.0), Vector::X, 1.0 - 0.5 / r),
+            ] {
+                let cut = plane(through, normal);
+                for (a, b, cut_first) in [(&cut, &side, true), (&side, &cut, false)] {
+                    let met = intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap();
+                    let SurfaceIntersection::Along(sections) = met else {
+                        panic!("the plane through {through:?} holds a ruling: {met:?}");
+                    };
+                    assert_eq!(sections.len(), 1, "{through:?}, {normal:?}");
+                    let section = &sections[0];
+                    assert!(section.exact && !section.tangential, "{section:?}");
+                    let (_, (v0, v1)) = side.domain();
+                    let want = [
+                        side.point_at(u, v0, T).unwrap(),
+                        side.point_at(u, v1, T).unwrap(),
+                    ];
+                    let (lo, hi) = section.curve.domain();
+                    let ends = [
+                        section.curve.point_at(lo, T).unwrap(),
+                        section.curve.point_at(hi, T).unwrap(),
+                    ];
+                    assert!(
+                        ends[0].is_equal(want[0], T) && ends[1].is_equal(want[1], T),
+                        "{through:?}: the ruling at u = {u}, {want:?}, got {ends:?}"
+                    );
+                    let (on_side, on_cut) = if cut_first {
+                        (&section.on_b, &section.on_a)
+                    } else {
+                        (&section.on_a, &section.on_b)
+                    };
+                    assert_same_parameter(section, &side, on_side.as_ref().unwrap(), 16);
+                    assert_same_parameter(section, &cut, on_cut.as_ref().unwrap(), 16);
+                }
+            }
+        }
+
+        // A side leaving `(0, 0)` along `x` and bending away: the plane
+        // `y = 0` holds its first ruling, tangent to it there.
+        let bend = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.5), (2.0, 2.0)]
+            .map(|(x, y)| Point::new(x, y, 0.0))
+            .to_vec();
+        let knots = ogeom_math::KnotVector::clamped_uniform(3, 4).unwrap();
+        let side = ogeom_geom::BSplineCurve::new(knots, bend, T).unwrap();
+        let bent: SurfaceGeometry =
+            ogeom_geom::ExtrusionSurface::new(side.into(), Direction::Z, 3.0)
+                .unwrap()
+                .into();
+        let cut = plane(Point::ORIGIN, Vector::Y);
+        if let SurfaceIntersection::Along(sections) =
+            intersect_surfaces(&cut, &bent, IntersectOptions::default(), T).unwrap()
+        {
+            assert!(
+                sections.iter().all(|s| !s.exact || s.tangential),
+                "a tangent border is no crossing: {sections:?}"
             );
         }
     }

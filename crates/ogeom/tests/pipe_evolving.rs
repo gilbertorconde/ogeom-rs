@@ -674,7 +674,19 @@ fn over_turned_square(a: f64, theta: f64, f: impl Fn(f64, f64) -> f64) -> f64 {
 /// The far end is the square turned through `θ`.
 #[test]
 fn a_square_twisted_before_a_sharp_corner_mitres_and_rounds_to_its_closed_form() {
-    let (a, l, theta) = (1.0_f64, 10.0_f64, 0.3_f64);
+    twisted_before_a_sharp_corner(0.3);
+}
+
+/// As above, turned exactly an eighth of a turn: two corners of the
+/// section then stand on the corner's axis, and the plane cutting the
+/// runs there holds the skinned run's side edges through them.
+#[test]
+fn a_square_twisted_an_eighth_turn_before_a_sharp_corner_mitres_and_rounds() {
+    twisted_before_a_sharp_corner(PI / 4.0);
+}
+
+fn twisted_before_a_sharp_corner(theta: f64) {
+    let (a, l) = (1.0_f64, 10.0_f64);
     let legs = 8.0 * a * a * l;
     let turned = over_turned_square(a, theta, |lo, hi| {
         if lo < 0.0 {
