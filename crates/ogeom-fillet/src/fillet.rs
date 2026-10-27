@@ -36,7 +36,9 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 ///
 /// The blend is the one [`fillet_edges`] builds on this one edge. Where a
 /// face cuts the corner away past an end (a floor giving way to a ramp
-/// under a wall that carries on), both run it out onto that face. Where a
+/// under a wall that carries on, or a boss's cylinder past the end of a
+/// straight edge beside it), both run it out onto that face until its whole
+/// section has left the material. Where a
 /// host face narrows along the edge and the ball's contact runs off it
 /// out of the solid, both cut the band off on the face that follows. One
 /// thing differs: where the edge ends against a neighbouring blend, this
@@ -101,6 +103,10 @@ pub(crate) struct Mate {
     /// a plane: the band stops at the vertex and the junction closes the
     /// corner.
     pub meets: [bool; 2],
+    /// Per end, whether a crossed junction of the request across a convex
+    /// turn stands there: the band, built from the solid as given, runs out
+    /// there as it does alone.
+    pub alone: [bool; 2],
 }
 
 impl Mate {
@@ -125,6 +131,24 @@ impl Mate {
             mate.settled[nearer]
         });
         other || own
+    }
+
+    /// Whether the band of edge `index` runs out at its end nearest `at`
+    /// as it does alone: no other edge of the request ends there, or a
+    /// crossed junction across a convex turn stands there.
+    pub(crate) fn alone_at(mates: &[Self], index: usize, at: Point, tol: Tolerances) -> bool {
+        let near = |p: &Point| p.distance(at) <= tol.confusion() * 1e3;
+        let shared = mates
+            .iter()
+            .enumerate()
+            .any(|(i, mate)| i != index && mate.ends.iter().any(|(p, _)| near(p)));
+        let crossed = mates.get(index).is_some_and(|mate| {
+            mate.ends
+                .iter()
+                .zip(mate.alone)
+                .any(|((p, _), alone)| alone && near(p))
+        });
+        !shared || crossed
     }
 
     /// Whether a junction of the request meets edge `index` at its end
@@ -529,6 +553,7 @@ fn fillet_edges_own(
                 ends,
                 settled,
                 meets: [false, false],
+                alone: [false, false],
             })
         })
         .collect::<OgeomResult<_>>()?;
@@ -595,13 +620,17 @@ fn fillet_edges_own(
     }
     // A band stops at the vertex where a junction closes the corner; across
     // a crossed convex turn each runs out as it does alone.
-    for junction in junctions.iter().filter(|j| j.reentrant || !j.crossed) {
+    for junction in &junctions {
         for &index in &junction.pair {
             let mate = &mut mates[index];
             let end = usize::from(
                 mate.ends[1].0.distance(junction.at) < mate.ends[0].0.distance(junction.at),
             );
-            mate.meets[end] = true;
+            if junction.reentrant || !junction.crossed {
+                mate.meets[end] = true;
+            } else {
+                mate.alone[end] = true;
+            }
         }
     }
     let hosts_of = |edge: &Shape| -> Vec<ogeom_topo::TShapeId> {
@@ -1819,16 +1848,20 @@ fn planar_fillet(
             // No blend follows: the band runs out across whatever face cuts
             // the corner away past the end, probed over its section there,
             // the crease, the two contacts, each leg's middle and the arc's.
+            // A boss's cylinder is run out across only where the band runs
+            // out as it does alone: where another band of the request ends
+            // at the vertex with no junction there, the two meet as before,
+            // the later running on through the earlier.
             let section = section_at(&seat, at, inward, radius);
+            let boss = mates.is_none_or(|(index, mates)| Mate::alone_at(mates, index, at, tol));
             reach = crate::support::run_out_reach(
                 model,
                 solid,
                 edge,
                 hosts,
-                at,
-                outward,
+                (at, outward),
                 &section,
-                radius,
+                (radius, boss),
                 &mut probes,
                 tol,
             )?;

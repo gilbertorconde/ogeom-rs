@@ -291,16 +291,16 @@ fn integral(a: f64, b: f64, n: u32, f: impl Fn(f64) -> f64) -> f64 {
 
 /// What rounding the shaved cube's front bottom edge and the upright edge
 /// at its end takes off, as the union of the two blends each rounds alone.
-/// The bottom edge's blend is a prism along x, an `r` square less a
-/// quarter disc, capped flush where the flat ends at `x = 5 + sqrt(11)`.
-/// The upright's is a prism along z the full height, its section the
-/// sliver between the front plane, the drum and the ball touching both.
-/// They overlap where that sliver, short of the cap, stands over the
-/// bottom blend's section.
+/// The bottom edge's blend runs out across the drum at both ends: each
+/// column of its section, an `r` square less a quarter disc, is taken over
+/// the drum's whole chord at its depth `y`. The upright's is a prism along
+/// z the full height, its section the sliver between the front plane, the
+/// drum and the ball touching both. They overlap where that sliver stands
+/// over the bottom blend's section.
 fn shaved_corner_removed(r: f64) -> f64 {
-    let end = 5.0 + 11.0_f64.sqrt();
-    let flat = 2.0 * 11.0_f64.sqrt();
-    let bottom = flat * r * r * (1.0 - core::f64::consts::FRAC_PI_4);
+    let under = |y: f64| r - r.mul_add(r, -(y - r).powi(2)).max(0.0).sqrt();
+    let chord = |y: f64| 2.0 * (36.0 - (y - 5.0).powi(2)).sqrt();
+    let bottom = integral(0.0, r, 200_000, |y| under(y) * chord(y));
     // The upright's ball: a radius off the front plane and in from the
     // drum, touching the drum where the line from its axis through the
     // ball's centre meets it.
@@ -309,25 +309,20 @@ fn shaved_corner_removed(r: f64) -> f64 {
     let ball = |y: f64| centre_x + r.mul_add(r, -(y - r).powi(2)).max(0.0).sqrt();
     let drum = |y: f64| 5.0 + (36.0 - (y - 5.0).powi(2)).sqrt();
     let sliver = integral(0.0, top, 200_000, |y| drum(y) - ball(y));
-    let under = |y: f64| r - r.mul_add(r, -(y - r).powi(2)).max(0.0).sqrt();
     let overlap = integral(0.0, top.min(r), 200_000, |y| {
-        under(y) * (drum(y).min(end) - ball(y)).max(0.0)
+        under(y) * (drum(y) - ball(y)).max(0.0)
     });
     bottom + 10.0 * sliver - overlap
 }
 
 /// The front bottom edge of the shaved cube and the upright edge it ends
-/// at, asked for in either order. Rounded first, the bottom blend caps
-/// flush at its vertex, and that cap meets the drum along the upright's own
-/// line, a corner of the cap's that is no piece of the upright: the upright
-/// is found where it still lies between the front plane and the drum and
-/// rounds the full height through the bottom blend. Rounded second, the
-/// bottom blend runs on through the upright's band only as far as its own
-/// vertex, since the drum leaves that vertex obliquely and the material
-/// past it is no part of this edge's rounding. Both orders take off the
-/// union of the two blends.
+/// at, asked for in either order. The two cross at a convex turn, so each
+/// band runs out as it does alone: the bottom blend runs on across the
+/// drum at both ends until its whole section has left it, through the
+/// upright's band at the near end, and the upright rounds the full height.
+/// Both orders take off the union of the two blends.
 #[test]
-fn an_edge_meeting_a_capped_blend_at_a_drum_is_not_its_cap() {
+fn edges_crossing_beside_a_drum_take_what_each_takes_alone() {
     let mut model = Model::new();
     let part = shaved_cube(&mut model);
     let before = volume(&model, &part);

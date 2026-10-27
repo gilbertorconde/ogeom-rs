@@ -517,6 +517,34 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A straight round beside a drum runs out across it.** (#342)
+  - This is a convention change. A straight band ran out past its edge's
+    end only across planes. Where a drum's cylinder followed the crease
+    (either end of a D-shaped block's chord, an edge of a cube shaved by a
+    drum), the band was capped square at the vertex. What of its section
+    the drum still held past the vertex was left standing. On a drafted
+    chord wall the ball touches the wall outside the drum at the vertex,
+    and the cut refused: "the kept pieces did not close into a shell".
+  - The band now runs on along its crease until its whole section has left
+    the drum, as a band does across a ramp. The section's last point to
+    leave a cylinder need not be a corner of it, so the reach is the
+    farthest any point of its hull leaves, found in closed form along the
+    hull's sides. This matches the rule for a crossed convex turn: each
+    band as it runs out alone, the cuts taken together. A crease running
+    on into a boss, and a band meeting another band of the request at that
+    vertex without a junction, are capped as before.
+  - A straight band between a wall and a drum along its ruling is now set
+    aside with the others of its round, as every other band is. Rounded
+    first in a crossed junction, it was cut at once, and the band after it
+    was built against its cut rather than the solid as given.
+  - Measured with r = 0.5 against column-integrated references, the whole
+    volume taken. A disc of radius 2.5 up to its chord at 0.5: chord wall
+    square 0.262833 → 0.264802 (0.264802), drafted 0.1 refused → 0.208768
+    (0.208768), overhanging 0.1 0.330381 → 0.333366 (0.333366). A 10 mm
+    cube shaved by a drum of radius 6, its bottom edge and the upright at
+    its end in either order: 0.379097 → 0.395766 (0.395766). The cube's
+    top edge alone at r = 1: 1.423508 → 1.553030 (1.553030).
+
 - **An IGES curve on a surface (142) takes the representation its sender
   preferred.** (#404)
   - The model-space curve was always taken when present. Where the

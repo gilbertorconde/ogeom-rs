@@ -993,16 +993,14 @@ impl LazyProbe {
 }
 
 /// The faces of `solid` following the crease of `edge` at its end `at`:
-/// the faces other than `hosts` meeting the edge's vertex there, each a
-/// plane as a point on it and its outward unit normal. `None` where one of
-/// them is not a plane, or none follows.
-pub(crate) fn following_planes(
+/// the faces other than `hosts` meeting the edge's vertex there.
+fn following_faces(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
     hosts: [&Shape; 2],
     at: Point,
-) -> OgeomResult<Option<Vec<(Shape, Point, Vector)>>> {
+) -> OgeomResult<Option<Vec<Shape>>> {
     let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
         return Ok(None);
     };
@@ -1017,7 +1015,7 @@ pub(crate) fn following_planes(
     } else {
         b
     };
-    let mut following: Vec<(Shape, Point, Vector)> = Vec::new();
+    let mut following: Vec<Shape> = Vec::new();
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         if hosts.iter().any(|h| h.is_same(&face)) {
             continue;
@@ -1025,9 +1023,29 @@ pub(crate) fn following_planes(
         let meets = explore(model, &face, Filter::OfType(ShapeType::Vertex))?
             .iter()
             .any(|v| v.is_same(&vertex));
-        if !meets {
-            continue;
+        if meets {
+            following.push(face);
         }
+    }
+    Ok(Some(following))
+}
+
+/// The faces of `solid` following the crease of `edge` at its end `at`:
+/// the faces other than `hosts` meeting the edge's vertex there, each a
+/// plane as a point on it and its outward unit normal. `None` where one of
+/// them is not a plane, or none follows.
+pub(crate) fn following_planes(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    hosts: [&Shape; 2],
+    at: Point,
+) -> OgeomResult<Option<Vec<(Shape, Point, Vector)>>> {
+    let Some(faces) = following_faces(model, solid, edge, hosts, at)? else {
+        return Ok(None);
+    };
+    let mut following: Vec<(Shape, Point, Vector)> = Vec::new();
+    for face in faces {
         let Some(SurfaceGeometry::Plane(plane)) = model
             .node(&face)
             .and_then(|n| n.data().as_face())
@@ -1044,6 +1062,179 @@ pub(crate) fn following_planes(
         following.push((face, origin, normal));
     }
     Ok((!following.is_empty()).then_some(following))
+}
+
+/// A face a straight band runs out across, as its run-out reads it.
+#[derive(Clone, Copy)]
+enum Following {
+    /// A plane: a point on it and its outward unit normal.
+    Plane(Point, Vector),
+    /// A cylinder holding the material within it: a point of its axis,
+    /// the axis's unit direction and its radius.
+    Boss(Point, Vector, f64),
+}
+
+impl Following {
+    /// How far along the unit `outward` the line from `p` crosses the
+    /// face's surface leaving the material: `None` where it runs along it,
+    /// or misses a boss.
+    fn exit(self, p: Point, outward: Vector, tol: Tolerances) -> Option<f64> {
+        match self {
+            Self::Plane(origin, normal) => {
+                let rate = outward.dot(normal);
+                (rate.abs() > tol.angular()).then(|| (origin - p).dot(normal) / rate)
+            }
+            Self::Boss(foot, axis, big) => {
+                let flat = |v: Vector| v - axis * v.dot(axis);
+                let (q, u) = (flat(p - foot), flat(outward));
+                let a = u.dot(u);
+                if a <= tol.angular() * tol.angular() {
+                    return None;
+                }
+                let b = q.dot(u);
+                let d = b.mul_add(b, -a * big.mul_add(-big, q.dot(q)));
+                (d >= 0.0).then(|| (d.sqrt() - b) / a)
+            }
+        }
+    }
+
+    /// The farthest along the unit `outward` any point of the convex hull
+    /// of `points` leaves a boss: seen along the axis, a point `q` off it
+    /// leaves at `(sqrt(big^2 - w^2) - q.u) / |u|`, `u` the shadow of
+    /// `outward` and `w` the point's offset square to it. That is a concave
+    /// function of the point with no stationary point inside the hull (its
+    /// gradient along `u` never vanishes), so its greatest value lies on an
+    /// edge of the hull, and every edge is a segment between two of the
+    /// points. Along a segment it is concave in the offset, greatest where
+    /// its derivative vanishes or at an end. Points whose line misses the
+    /// boss never stand in it. `None` for a plane, or for a boss the hull's
+    /// lines all miss.
+    fn hull_exit(self, points: &[Point], outward: Vector, tol: Tolerances) -> Option<f64> {
+        let Self::Boss(foot, axis, big) = self else {
+            return None;
+        };
+        let flat = |v: Vector| v - axis * v.dot(axis);
+        let u = flat(outward);
+        let m = u.magnitude();
+        if m <= tol.angular() {
+            return None;
+        }
+        let along = u / m;
+        let across = axis.cross(along);
+        // Each point as (its offset across, its standing along).
+        let seen: Vec<(f64, f64)> = points
+            .iter()
+            .map(|&p| {
+                let q = flat(p - foot);
+                (q.dot(across), q.dot(along))
+            })
+            .collect();
+        let leave = |(w, l): (f64, f64)| -> Option<f64> {
+            let h = big.mul_add(big, -w * w);
+            (h >= 0.0).then(|| (h.sqrt() - l) / m)
+        };
+        let mut best: Option<f64> = None;
+        let mut take = |s: Option<f64>| {
+            if let Some(s) = s {
+                best = Some(best.map_or(s, |b: f64| b.max(s)));
+            }
+        };
+        for (i, &a) in seen.iter().enumerate() {
+            take(leave(a));
+            for &b in &seen[i + 1..] {
+                let (dw, dl) = (b.0 - a.0, b.1 - a.1);
+                if dw.abs() <= tol.confusion() {
+                    continue;
+                }
+                // d/dt [sqrt(big^2 - w^2) - l] = -w dw / sqrt(big^2 - w^2)
+                // - dl vanishes where w / sqrt(big^2 - w^2) = -dl / dw.
+                let k = -dl / dw;
+                let w = k * big / k.mul_add(k, 1.0).sqrt();
+                let t = (w - a.0) / dw;
+                if (0.0..=1.0).contains(&t) {
+                    take(leave((w, t.mul_add(dl, a.1))));
+                }
+            }
+        }
+        best
+    }
+}
+
+/// The faces a straight band runs out across past the end `at` of `edge`,
+/// leaving it along `outward`: the planes following the crease there, or,
+/// where `boss` allows, the one face following it where that is a cylinder
+/// holding the material within it that the crease leaves the material
+/// through, cutting the corner away obliquely. `None` elsewhere: a crease
+/// running on into a boss (a pin standing at its end) runs into the
+/// material.
+fn run_out_faces(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    hosts: [&Shape; 2],
+    (at, outward): (Point, Vector),
+    boss: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<(Shape, Following)>>> {
+    use ogeom_geom::Transformable as _;
+    if let Some(planes) = following_planes(model, solid, edge, hosts, at)? {
+        return Ok(Some(
+            planes
+                .into_iter()
+                .map(|(face, origin, normal)| (face, Following::Plane(origin, normal)))
+                .collect(),
+        ));
+    }
+    if !boss {
+        return Ok(None);
+    }
+    let Some(faces) = following_faces(model, solid, edge, hosts, at)? else {
+        return Ok(None);
+    };
+    let [face] = faces.as_slice() else {
+        return Ok(None);
+    };
+    let Some(surface) = model
+        .node(face)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| model.geometry().surface(d.surface))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let SurfaceGeometry::Cylinder(placed) =
+        surface.transformed(&face.transform(model.datums())?, tol)?
+    else {
+        return Ok(None);
+    };
+    let cylinder = placed.cylinder();
+    let foot = cylinder.axis().location;
+    let axis = cylinder.axis().direction.vector();
+    let off = at - foot;
+    let radial = off - axis * off.dot(axis);
+    let held = model
+        .tolerance_of(face)?
+        .map_or(tol.confusion(), ogeom_core::Tolerance::get)
+        .max(tol.confusion() * 1e3);
+    let Some(normal) = crate::marched::face_normal_within(model, face, at, held, tol)? else {
+        return Ok(None);
+    };
+    let sign = if face.orientation() == Orientation::Reversed {
+        -1.0
+    } else {
+        1.0
+    };
+    // The material lies within the cylinder where the face's outward
+    // normal points off the axis, and the crease leaves it there where it
+    // runs along that normal.
+    let normal = normal * sign;
+    if normal.dot(radial) <= 0.0 || normal.dot(outward) <= tol.angular() {
+        return Ok(None);
+    }
+    Ok(Some(vec![(
+        face.clone(),
+        Following::Boss(foot, axis, cylinder.radius()),
+    )]))
 }
 
 /// The plane of the face a straight crease runs into at its end `at`,
@@ -1073,7 +1264,8 @@ pub(crate) fn overhang_at(
 /// How far a convex straight seat's band runs out past the end `at` of
 /// `edge`, along `outward`, where the faces meeting the crease there cut
 /// the corner away obliquely: a floor giving way to a ramp, the wall the
-/// ball rolls on carrying on above it. The band carries on along the host
+/// ball rolls on carrying on above it, or a boss's cylinder the crease
+/// meets. The band carries on along the host
 /// it stays tangent to until its whole section has left the material, and
 /// the cut trims it against the face that follows.
 ///
@@ -1084,13 +1276,15 @@ pub(crate) fn overhang_at(
 /// radii. Where a ramp is the only face that follows, the material in
 /// the section shrinks across a plane; the section lies within the
 /// triangle of its corners, and a plane leaves a triangle last at a
-/// corner, so the corners' answers are exact.
+/// corner, so the corners' answers are exact. Where a boss's cylinder is
+/// the one face that follows, the triangle leaves it last along one of its
+/// sides, found in closed form ([`Following::hull_exit`]).
 ///
 /// `None` where the cap stands flush: nothing of the section stands in the
 /// material just past `at` (a wall square to the crease, or one leaning
 /// back over it), or the section does not leave the material within reach,
 /// or a point of it leaves the material, comes back into it, or leaves
-/// other than through a planar face meeting the crease's end there. That
+/// other than through a face meeting the crease's end there. That
 /// last is a step or a ledge past the end rather than a ramp across it:
 /// material no ball on this edge touches.
 #[allow(clippy::too_many_arguments, reason = "one question, all its data")]
@@ -1099,14 +1293,14 @@ pub(crate) fn run_out_reach(
     solid: &Shape,
     edge: &Shape,
     hosts: [&Shape; 2],
-    at: Point,
-    outward: Vector,
+    (at, outward): (Point, Vector),
     section: &[Point],
-    radius: f64,
+    (radius, boss): (f64, bool),
     probe: &mut LazyProbe,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let Some(following) = following_planes(model, solid, edge, hosts, at)? else {
+    let Some(following) = run_out_faces(model, solid, edge, hosts, (at, outward), boss, tol)?
+    else {
         return Ok(None);
     };
     if following.is_empty() {
@@ -1175,12 +1369,10 @@ pub(crate) fn run_out_reach(
             continue;
         };
         let mut through: Option<f64> = None;
-        for (face, origin, normal) in &following {
-            let rate = outward.dot(*normal);
-            if rate.abs() <= tol.angular() {
+        for (face, surface) in &following {
+            let Some(s) = surface.exit(p, outward, tol) else {
                 continue;
-            }
-            let s = (*origin - p).dot(*normal) / rate;
+            };
             if s < held_to - first || s > left + first {
                 continue;
             }
@@ -1195,6 +1387,13 @@ pub(crate) fn run_out_reach(
             return Ok(None);
         };
         leaves = leaves.max(s);
+    }
+    // A boss's cylinder leaves the section last not at a corner of it but
+    // where its hull leaves the cylinder last.
+    for (_, surface) in &following {
+        if let Some(s) = surface.hull_exit(section, outward, tol) {
+            leaves = leaves.max(s);
+        }
     }
     let reach = leaves + margin;
     for &p in section {

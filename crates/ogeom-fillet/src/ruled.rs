@@ -324,11 +324,5 @@ pub(crate) fn ruled_fillet(
         .into_iter()
         .next()
         .unwrap_or(wedge);
-    let mut result = if convex {
-        ogeom_bool::cut(model, solid, &wedge, tol)?
-    } else {
-        ogeom_bool::fuse(model, solid, &wedge, tol)?
-    };
-    result.history.delete(edge);
-    Ok(result)
+    crate::support::apply_wedge_solid(model, solid, Some(edge), &wedge, !convex, tol)
 }

@@ -2498,45 +2498,80 @@ fn a_curved_corner_closes_with_the_rim_s_band_first() {
     }
 }
 
-/// The straight band first, then the rim arc's and the ruling's in either
-/// order: the rim's section through the straight band crosses the point
-/// on top where the cap, the band and the torus all touch, and is fitted
-/// there as closely as elsewhere. There the corner's block meets the
-/// band's rail and the block's own vertical edge a nanometre apart along
-/// one section, and both crossings split their edges at the one stop. The
-/// ruling's band before the rim arc's leaves no stub there either: every
-/// order closes the corner the ruling-first order does, to a part in ten
-/// million.
+/// What the top edge along the side `x = 0` takes off rounded alone at
+/// radius `r`: its band runs out across the drum at both ends, so each
+/// column of its section (an `r` square less a quarter disc) is taken over
+/// the drum's whole chord at that column's depth `x`.
+fn shaved_top_band_removed(r: f64) -> f64 {
+    let steps = 200_000;
+    let h = r / f64::from(steps);
+    (0..steps)
+        .map(|i| {
+            let x = (f64::from(i) + 0.5) * h;
+            let depth = r - r.mul_add(r, -(x - r).powi(2)).max(0.0).sqrt();
+            depth * 2.0 * (36.0 - (x - 5.0).powi(2)).sqrt()
+        })
+        .sum::<f64>()
+        * h
+}
+
+/// The straight band first: alone it runs out across the drum at both ends
+/// until its whole section has left it, as a band across a boss does, and
+/// takes off exactly its column-integrated volume. The corner's vertex goes
+/// with it, so no corner is left for the corner tool. The ruling's band and
+/// what is left of the rim arc's then round in either order to one solid.
 #[test]
 #[ignore = "heavy"]
-fn a_curved_corner_closes_with_the_straight_band_first() {
+fn a_curved_corner_s_straight_band_first_runs_out_across_the_drum() {
     let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    let mut model = Model::new();
+    let (part, corner, mids) = shaved_cube(&mut model);
+    let before = volume(&model, &part);
+    let straight = edge_near(&model, &part, mids[0]);
+    let banded = ogeom::fillet::fillet_edge(&mut model, &part, &straight, 1.0, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &banded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let removed = before - volume(&model, &banded);
+    let want = shaved_top_band_removed(1.0);
+    assert!(
+        (removed - want).abs() < want * 1e-7,
+        "took off {removed}, the band alone takes {want}"
+    );
+    let left = vertex_near(&model, &banded, corner);
+    let at = model.node(&left).unwrap().data().as_vertex().unwrap().point;
+    assert!(at.distance(corner) > 0.5, "the corner stands at {at:?}");
+
+    // What is left of the rim arc, near the side y = 0.
+    let y = 5.0 - 11.0_f64.sqrt();
+    let rim = {
+        let a = (-5.0_f64).atan2(y - 5.0) - 0.03;
+        Point::new(5.0 + 6.0 * a.cos(), 5.0 + 6.0 * a.sin(), 10.0)
+    };
     let mut measured = Vec::new();
-    for order in [[2, 0, 1], [0, 1, 2], [0, 2, 1]] {
-        let mut model = Model::new();
-        let (part, corner, mids) = shaved_cube(&mut model);
-        let v = vertex_near(&model, &part, corner);
-        let mut current = part.clone();
-        for i in order {
-            let live = edge_near(&model, &current, mids[i]);
-            current = ogeom::fillet::fillet_edge(&mut model, &current, &live, 1.0, T)
-                .unwrap_or_else(|e| panic!("{order:?} at {i}: {e}"))
+    for order in [[mids[2], rim], [rim, mids[2]]] {
+        let mut copy = model.clone();
+        let mut current = banded.clone();
+        for near in order {
+            let live = edge_near(&copy, &current, near);
+            current = ogeom::fillet::fillet_edge(&mut copy, &current, &live, 1.0, T)
+                .unwrap_or_else(|e| panic!("{order:?} at {near:?}: {e}"))
                 .shape;
         }
-        let rounded = ogeom::fillet::round_vertex(&mut model, &current, &v, 1.0, T)
-            .unwrap_or_else(|e| panic!("{order:?} corner: {e}"))
-            .shape;
-        let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+        let diagnosis = ogeom::algo::check(&copy, &current, T).unwrap();
         assert!(diagnosis.is_valid(), "{order:?}: {:?}", diagnosis.problems);
-        measured.push(
-            ogeom::algo::volume_properties(&model, &rounded, fine, T)
-                .unwrap()
-                .mass,
-        );
+        measured.push(volume(&copy, &current));
     }
-    for v in &measured {
-        assert!((v - measured[0]).abs() < 1e-7 * measured[0], "{measured:?}");
-    }
+    assert!(
+        (measured[0] - measured[1]).abs() < 1e-7 * measured[0],
+        "{measured:?}"
+    );
 }
 
 #[test]

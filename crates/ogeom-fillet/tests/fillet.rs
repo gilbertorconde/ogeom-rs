@@ -679,6 +679,123 @@ fn a_round_on_a_narrowing_wall_is_cut_off_where_the_wall_ends() {
     }
 }
 
+/// A disc of radius `big` about the origin, two high, up to its chord `y =
+/// c` at the top, that wall drafted by `d` over the height so its foot
+/// stands out (overhanging for a negative `d`): the block, and its chord's
+/// top crease.
+fn d_shaped_block(
+    model: &mut ogeom_topo::Model,
+    big: f64,
+    c: f64,
+    d: f64,
+) -> (ogeom_topo::Shape, ogeom_topo::Shape) {
+    use ogeom_math::{Direction, Vector};
+    let disc = ogeom_algo::make_cylinder(model, Frame::WORLD, big, 2.0, T)
+        .unwrap()
+        .shape;
+    // The box past the chord's wall, forty a side.
+    let normal = Vector::new(0.0, 1.0, d) * (1.0 / d.hypot(1.0));
+    let across = normal.cross(Vector::X);
+    let frame = Frame::new(
+        Point::new(0.0, c, 2.0) - Vector::X * 20.0 - across * 20.0,
+        Direction::new(normal, T).unwrap(),
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let past = ogeom_algo::make_box(model, frame, (40.0, 40.0, 40.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom_bool::cut(model, &disc, &past, T).unwrap().shape;
+    let solid = explore(model, &cut, Filter::OfType(ShapeType::Solid)).unwrap()[0].clone();
+    let edge = edge_with_midpoint(model, &solid, Point::new(0.0, c, 2.0));
+    (solid, edge)
+}
+
+/// A round on the chord's top crease of a D-shaped block, a disc up to a
+/// chord, the chord's wall square, drafted, or overhanging: at each end the
+/// drum's cylinder cuts the crease's corner away obliquely, and the band
+/// runs on along the chord's line until its whole section has left the
+/// drum, the cut trimming it there. A point of the section a distance `w`
+/// across from the drum's axis then takes the drum's chord through it,
+/// `2 sqrt(big^2 - w^2)`, summed over the section a column at a time. Capped
+/// square at the vertices instead, the band left what of its section the
+/// drum still holds past them standing, and on a drafted wall, whose ball
+/// touches it outside the drum there, the cut refused.
+#[test]
+fn a_round_on_a_chord_runs_out_across_the_drum_at_both_ends() {
+    let (big, c, radius) = (2.5_f64, 0.5, 0.5);
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    for d in [0.1_f64, 0.0, -0.1] {
+        // The section in the plane square to the chord, as (y, z): the
+        // corner the top and the wall make, outside the ball.
+        let top = (0.0, 1.0);
+        let wall = (1.0 / d.hypot(1.0), d / d.hypot(1.0));
+        let k = radius / (1.0 + top.0 * wall.0 + top.1 * wall.1);
+        let ball = (c - (top.0 + wall.0) * k, 2.0 - (top.1 + wall.1) * k);
+        let corner = [
+            (c, 2.0),
+            (ball.0 + top.0 * radius, ball.1 + top.1 * radius),
+            ball,
+            (ball.0 + wall.0 * radius, ball.1 + wall.1 * radius),
+        ];
+        // Each column of the section across the chord: the corner's
+        // quadrilateral there, less the ball.
+        let (y0, y1) = corner
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+        let n = 20_000;
+        let dy = (y1 - y0) / f64::from(n);
+        let mut want = 0.0;
+        for i in 0..n {
+            let y = (f64::from(i) + 0.5).mul_add(dy, y0);
+            let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+            for k in 0..4 {
+                let (a, b) = (corner[k], corner[(k + 1) % 4]);
+                if (a.0 - y) * (b.0 - y) <= 0.0 && (b.0 - a.0).abs() > f64::EPSILON {
+                    let z = (b.1 - a.1).mul_add((y - a.0) / (b.0 - a.0), a.1);
+                    (lo, hi) = (lo.min(z), hi.max(z));
+                }
+            }
+            let mut length = (hi - lo).max(0.0);
+            let reach = radius.mul_add(radius, -(y - ball.0).powi(2));
+            if reach > 0.0 {
+                let h = reach.sqrt();
+                length -= ((ball.1 + h).min(hi) - (ball.1 - h).max(lo)).max(0.0);
+            }
+            want += length * 2.0 * big.mul_add(big, -y * y).sqrt();
+        }
+        want *= dy;
+        for alone in [true, false] {
+            let mut model = ogeom_topo::Model::new();
+            let (solid, edge) = d_shaped_block(&mut model, big, c, d);
+            let before = ogeom_algo::volume_properties(&model, &solid, fine, T)
+                .unwrap()
+                .mass;
+            let rounded = if alone {
+                ogeom_fillet::fillet_edge(&mut model, &solid, &edge, radius, T)
+            } else {
+                ogeom_fillet::fillet_edges(&mut model, &solid, &[edge], radius, T)
+            }
+            .unwrap()
+            .shape;
+            let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let removed = before
+                - ogeom_algo::volume_properties(&model, &rounded, fine, T)
+                    .unwrap()
+                    .mass;
+            assert!(
+                (removed - want).abs() < 1e-6,
+                "draft {d}, alone {alone}: {removed} against {want}"
+            );
+        }
+    }
+}
+
 /// A floor edge whose wall carries a boss along part of it, the boss's
 /// underside 0.2 over the floor: there the wall reaches no higher than
 /// that, and a ball of radius 0.5 touching the floor and the wall's plane
