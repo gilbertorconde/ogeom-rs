@@ -419,7 +419,11 @@ reported), give a \
 boundary crossing a pole its degenerate edge, fit missing pcurves, sew loose faces, \
 strip a wire's tails (an edge out and one straight back along the same \
 curve within their tolerances, on one copy of the chart, held by no other \
-face; a hole of tails alone goes), mark a wireless face natural on a \
+face; a hole of tails alone goes), mend a boundary crossing itself once in \
+its chart (two consecutive edges crossing short of their vertex within the \
+trim cap are cut back to the crossing and the vertex moved there; any other \
+crossing of a one-wire face held by a container splits it into its two \
+loops; each face changed checking clean after, anything else counted), mark a wireless face natural on a \
 sphere, torus or patch, chain free edges into contours (free_bounds; \
 nothing is sewn across a gap wider than the edges state), \
 tighten tolerances, widen an edge to how far its pcurves stand off its \
@@ -449,7 +453,7 @@ symbols = [
     "ogeom_heal::fix_shape", "ogeom_heal::free_bounds", "ogeom_heal::fix_small_faces", "ogeom_heal::remove_small_solids",
     "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew",
     "ogeom_algo::restore_containment",
-    "ogeom_algo::check", "ogeom_algo::self_crossings", "ogeom_bool::self_union",
+    "ogeom_algo::check", "ogeom_algo::chart_crossings", "ogeom_algo::self_crossings", "ogeom_bool::self_union",
 ]
 tests = [
     "crates/ogeom/tests/fix_shape.rs",

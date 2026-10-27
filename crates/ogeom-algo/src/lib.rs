@@ -9,6 +9,7 @@
 
 mod bins;
 pub mod build;
+mod chart_cross;
 pub mod check;
 pub mod classify;
 pub mod convert;
@@ -49,6 +50,7 @@ pub use build::{
     make_natural_face, make_polygon, make_revolution_band, make_shell, make_solid, make_vertex,
     make_wire, rings_are_parallels, split_ring_on_column, surface_iso_u_curve,
 };
+pub use chart_cross::{ChartCrossing, chart_crossings};
 pub use check::{
     Diagnosis, Problem, Severity, chart_breaks, check, check_kept, check_self_intersection,
     check_self_intersection_near, check_tessellation, inside_out_faces, inside_out_faces_kept,

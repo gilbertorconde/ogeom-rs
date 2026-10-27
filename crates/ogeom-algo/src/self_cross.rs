@@ -21,7 +21,7 @@ use crate::classify::{Containment, FaceTrim};
 /// The smallest sine of the angle two sheets cross at to count: below it
 /// they touch, which is where faces meet along an edge they share or bend
 /// smoothly into one another.
-const CROSSING_SINE: f64 = 1e-2;
+pub(crate) const CROSSING_SINE: f64 = 1e-2;
 
 /// How many crossings of one pair of faces' meshes are asked of the
 /// surfaces before the pair is let go: a pair whose meshes cross

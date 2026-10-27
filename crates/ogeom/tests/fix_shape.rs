@@ -1495,3 +1495,179 @@ fn free_edges_chain_into_the_rims_of_each_opening() {
         }
     }
 }
+
+/// A face on the XY plane walking `ring`: each edge a straight line from
+/// one point to another (its curve and its pcurve alike), bounded by the
+/// vertices named by index, each vertex at its point with its tolerance.
+/// The curves need not end at their vertices: the tolerance says how far
+/// they may stand off.
+fn plane_face(
+    model: &mut Model,
+    vertices: &[(Point, f64)],
+    ring: &[(usize, usize, Point, Point)],
+) -> Shape {
+    let vertices: Vec<Shape> = vertices
+        .iter()
+        .map(|&(at, reach)| {
+            let v = make_vertex(model, at).shape;
+            model
+                .widen(&v, ogeom::core::Tolerance::new(reach).unwrap())
+                .unwrap();
+            v
+        })
+        .collect();
+    let surface = model
+        .geometry_mut()
+        .add_surface(SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(
+            Frame::WORLD,
+        ))));
+    let mut edges = Vec::new();
+    for &(a, b, from, to) in ring {
+        let line = ogeom::geom::LineCurve::segment(from, to, T).unwrap().into();
+        let curve = model.geometry_mut().add_curve(line);
+        let range = (0.0, from.distance(to));
+        let data = ogeom::topo::EdgeData::on_curve(curve, Location::identity(), range);
+        let edge = model
+            .add_edge(data, &[vertices[a].clone(), vertices[b].clone()])
+            .unwrap();
+        let chart =
+            ogeom::geom::Line2d::segment(Point2::new(from.x, from.y), Point2::new(to.x, to.y), T)
+                .unwrap();
+        ogeom::algo::attach_pcurve(
+            &mut *model,
+            &edge,
+            chart.into(),
+            surface,
+            Location::identity(),
+            ogeom::geom::Curve2d::domain(&chart),
+        )
+        .unwrap();
+        edges.push(edge);
+    }
+    let wire = model.add_wire(&edges).unwrap();
+    model
+        .add_face(FaceData::new(surface, Location::default()), &[wire])
+        .unwrap()
+}
+
+fn crossings_in(model: &Model, face: &Shape) -> usize {
+    ogeom::algo::chart_crossings(model, face, T).unwrap().len()
+}
+
+/// The 10 mm bow tie: (0, 0) to (10, 10) to (10, 0) to (0, 10) and back,
+/// its first and third edges crossing at (5, 5).
+fn bow_tie(model: &mut Model) -> Shape {
+    let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+    let corners = [p(0.0, 0.0), p(10.0, 10.0), p(10.0, 0.0), p(0.0, 10.0)];
+    let vertices: Vec<(Point, f64)> = corners.iter().map(|&c| (c, 1e-7)).collect();
+    let ring: Vec<_> = (0..4)
+        .map(|i| (i, (i + 1) % 4, corners[i], corners[(i + 1) % 4]))
+        .collect();
+    plane_face(model, &vertices, &ring)
+}
+
+/// A bow tie's boundary crosses itself at its middle, and `fix_shape`
+/// splits the face, held in a compound, into its two
+/// triangles, each wound as an outer boundary on the plane and facing up
+/// as the face did: 25 mm² each, checking clean.
+#[test]
+fn a_bow_tie_face_is_split_into_its_two_loops() {
+    let mut model = Model::new();
+    let face = bow_tie(&mut model);
+    assert_eq!(crossings_in(&model, &face), 1);
+    let held = make_compound(&mut model, &[face]).unwrap().shape;
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &held, T).unwrap();
+    assert_eq!(fixed.report.faces_split_at_crossings, 1);
+    assert_eq!(fixed.report.crossings_left, 0);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let faces = explore_unique(&model, &fixed.shape, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 2);
+    for face in &faces {
+        let area = surface_properties(&model, face, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!((area - 25.0).abs() < 1e-9, "{area}");
+        let (_, normal) = ogeom::algo::face_normal(&model, face, T).unwrap();
+        assert!(normal.z > 0.0, "faces up as the bow tie did: {normal:?}");
+    }
+}
+
+/// A bow tie standing alone has no container to hold two faces: it is
+/// left as it was, and counted as still crossing itself.
+#[test]
+fn a_bow_tie_face_alone_stays_reported() {
+    let mut model = Model::new();
+    let face = bow_tie(&mut model);
+    let fixed = ogeom::heal::fix_shape(&mut model, &face, T).unwrap();
+    assert_eq!(fixed.report.faces_split_at_crossings, 0);
+    assert_eq!(fixed.report.crossings_left, 1);
+}
+
+/// A thin triangle with its sharp corner at the origin, between (50, ±0.5),
+/// whose edge out of the corner starts `lift` above it, inside the
+/// corner's tolerance of 2 µm, and so crosses the edge into the corner
+/// about 50 `lift` along it. Each edge states `stated`.
+fn sharp_corner(model: &mut Model, lift: f64, stated: f64) -> Shape {
+    let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+    let (top, corner, bottom) = (p(50.0, 0.5), p(0.0, 0.0), p(50.0, -0.5));
+    let face = plane_face(
+        model,
+        &[(top, 1e-7), (corner, 2e-3), (bottom, 1e-7)],
+        &[
+            (0, 1, top, corner),
+            (1, 2, p(0.0, lift), bottom),
+            (2, 0, bottom, top),
+        ],
+    );
+    for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
+        model
+            .widen(&edge, ogeom::core::Tolerance::new(stated).unwrap())
+            .unwrap();
+    }
+    face
+}
+
+/// The sharp corner's two edges cross 0.05 mm from it, past ten times its
+/// tolerance, and the loop they close is 1 µm wide, far wider than twice
+/// the edges' tolerances together:
+/// both are cut back to the crossing and the corner moves there. What is
+/// left is the triangle from the crossing, by the closed form of its area.
+#[test]
+fn edges_crossing_short_of_their_corner_are_cut_back_to_it() {
+    let mut model = Model::new();
+    let lift = 1e-3;
+    let face = sharp_corner(&mut model, lift, 1e-7);
+    assert_eq!(crossings_in(&model, &face), 1);
+
+    let fixed = ogeom::heal::fix_shape(&mut model, &face, T).unwrap();
+    assert_eq!(fixed.report.crossings_trimmed, 1);
+    assert_eq!(fixed.report.crossings_left, 0);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    // y = x / 100 meets y = lift - (0.5 + lift) x / 50 at x = lift /
+    // (0.02 + lift / 50).
+    let x = lift / (0.02 + lift / 50.0);
+    let crossing = Point2::new(x, x / 100.0);
+    let (top, bottom) = (Point2::new(50.0, 0.5), Point2::new(50.0, -0.5));
+    let expected = 0.5 * (bottom - crossing).cross(top - crossing);
+    let area = surface_properties(&model, &fixed.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((area - expected).abs() < 1e-9, "{area} against {expected}");
+    let moved = explore_unique(&model, &fixed.shape, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .map(|v| model.node(&v).unwrap().data().as_vertex().unwrap().point)
+        .any(|p| p.distance(Point::new(crossing.x, crossing.y, 0.0)) < 1e-9);
+    assert!(moved, "the corner stands at the crossing");
+}
+
+/// The same corner, its edges each stating 0.3 µm: the 1 µm loop is
+/// within twice their tolerances together, a sliver the images of two
+/// curves meeting at the corner may close, and is no crossing.
+#[test]
+fn edges_crossing_within_their_tolerances_of_their_corner_are_no_crossing() {
+    let mut model = Model::new();
+    let face = sharp_corner(&mut model, 1e-3, 3e-4);
+    assert_eq!(crossings_in(&model, &face), 0);
+}

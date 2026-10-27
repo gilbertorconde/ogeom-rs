@@ -20,6 +20,7 @@ pub mod split;
 mod tails;
 
 pub mod canonical;
+mod crossing;
 pub mod reshape;
 pub mod upgrade;
 

@@ -39,6 +39,15 @@
 //!   curve, within the tolerance either edge states and on one copy of
 //!   the chart, with no other face walking either edge, loses the pair (a
 //!   tail); a hole made of such pairs alone goes (see `tails`);
+//! - a boundary that crosses itself once in its surface's chart is mended
+//!   where the mend is the one it says (see `crossing`): two consecutive
+//!   edges crossing short of the vertex they meet at, by no more than a
+//!   fitted trim may stand off its surface, are cut back to the crossing
+//!   and the vertex moves there, widened to reach where it stood; any
+//!   other crossing of one wire splits its face into the figure eight's
+//!   two loops. Each face changed must check clean after and cross itself
+//!   nowhere. `check` does not name such a crossing; the report counts
+//!   the faces still crossing themselves;
 //! - a face with no wires on a surface whose domain is its whole extent (a
 //!   sphere, a torus, a patch) is marked as covering it;
 //! - loose faces (a compound of them, or an open shell) are sewn where
@@ -115,6 +124,15 @@ pub struct FixReport {
     /// Pairs of edges stripped from wires that ran out along one and
     /// straight back along the other.
     pub tails_stripped: usize,
+    /// Pairs of consecutive edges crossing short of the vertex they meet
+    /// at, cut back to the crossing.
+    pub crossings_trimmed: usize,
+    /// Faces whose boundary crossed itself, split into its two loops.
+    pub faces_split_at_crossings: usize,
+    /// Faces of the shape as mended whose boundary still crosses itself
+    /// in its surface's chart ([`chart_crossings`](ogeom_algo::chart_crossings)),
+    /// which [`check`](ogeom_algo::check()) does not report.
+    pub crossings_left: usize,
     /// Faces with no wires marked as covering their whole surface.
     pub natural_bounds_marked: usize,
     /// The free edges of the shape as mended, chained into contours.
@@ -229,6 +247,22 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         history = history.then(&built.history);
         current = built.shape;
     }
+
+    // Boundaries crossing themselves in their charts, read on the wires as
+    // trimmed and stripped of tails.
+    let mut crossings = Reshape::new();
+    let crossed = crate::crossing::stage_crossings(
+        model,
+        &current,
+        &mut crossings,
+        tol.confusion() * TRIM_CAP,
+        tol,
+    )?;
+    if !crossings.is_empty() {
+        let built = crossings.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
     let natural_bounds_marked = mark_natural_bounds(model, &current)?;
 
     // Loose faces sewn: a compound of faces, or an open shell.
@@ -292,6 +326,12 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
     // established only by widening what is bounded.
     let tolerances_widened = ogeom_algo::restore_containment(model, &current)?;
     let after = check_kept(model, &current, tol, &kept)?;
+    let mut crossings_left = 0;
+    for face in explore_unique(model, &current, ShapeType::Face)? {
+        if !ogeom_algo::chart_crossings(model, &face, tol)?.is_empty() {
+            crossings_left += 1;
+        }
+    }
     let free_bounds = crate::free_bounds::free_bounds(model, &current)?;
     Ok(Fixed {
         shape: current,
@@ -312,6 +352,9 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             pcurve_gaps_stated,
             curve_ends_stated,
             tails_stripped,
+            crossings_trimmed: crossed.trimmed,
+            faces_split_at_crossings: crossed.split,
+            crossings_left,
             natural_bounds_marked,
             free_bounds,
         },

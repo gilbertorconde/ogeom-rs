@@ -116,6 +116,41 @@ bump may break the API and a patch bump may not.
   - A skinned run whose corner pieces agree only to the skin's tolerance
     (a section with a corner on the round corner's axis) is beyond the
     boolean and stays refused.
+- **`fix_shape` mends a face's boundary that crosses itself in its
+  surface's chart, where the mend is the one the boundary says.** (#397)
+  - A wire crossing itself was named by nothing and mended by nothing: a
+    10 mm bow tie checks valid, and measures 1.3e-13 mm² of area.
+  - `ogeom_algo::chart_crossings` finds where a face's boundary crosses
+    itself in its chart: two edges' pcurves crossing at an angle, not at
+    a vertex of both (within ten times the joint's tolerance, as for a
+    gap in the chart), the walk carried across a closed surface's seam
+    and each pair also asked a period apart. Two consecutive edges whose
+    loop from the crossing to their shared vertex stays within twice
+    their tolerances together close a sliver the images of two curves
+    meeting there may close, and are no crossing. `check` does not report
+    crossings yet: `solid_from_mesh` builds faces whose edges cross (on
+    NIST FTC-07, loops 7.6e-4 mm wide where every tolerance is 1e-7).
+  - Where a face's boundary crosses itself once, within one wire and one
+    copy of the chart: two consecutive edges crossing short of the vertex
+    they meet at, the crossing and each edge's run past it within the
+    trim cap, are cut back to the crossing and the vertex moves there,
+    widened to reach where it stood plus what it stated, so every other
+    curve ending within it still does. Any other crossing splits the
+    face into the figure eight's two loops, each a face facing as the
+    face did and wound as an outer boundary; a face with holes, or a
+    face handed over alone, is not split. Every face a mend changes must
+    check clean and cross itself nowhere after, or nothing is changed.
+  - `FixReport::crossings_trimmed` and
+    `FixReport::faces_split_at_crossings` count them, and
+    `FixReport::crossings_left` counts the faces still crossing
+    themselves.
+  - Measured: a 10 mm bow tie in a compound becomes two triangles of
+    25 mm² each, both facing up; a 50 mm sliver triangle whose edge out
+    of its corner starts 1 µm off it, crossing the edge in 0.05 mm from
+    the corner, is cut back to the crossing and measures the closed
+    form of the triangle left, to 1e-9.
+  - A shape whose boundaries do not cross themselves takes the same path
+    and comes out the same.
 - **`fix_shape` makes the edge a wire lacks where a straight one provably
   fills the gap.** (#397)
   - A gap between two edges of a wire wider than the trim cap, within

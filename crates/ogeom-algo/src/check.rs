@@ -1494,7 +1494,7 @@ fn check_face_chart(
 /// before the boundary is open there. A fitted trim's ends wander from its
 /// vertex by about the tolerance its edge states, and never less than the
 /// fitting accuracy, which is where the tolerance taken starts.
-const CHART_GAP_SLACK: f64 = 10.0;
+pub(crate) const CHART_GAP_SLACK: f64 = 10.0;
 
 /// An edge's ends in a face's chart as the face walks it (one pair for a
 /// pcurve, one per side for a seam), and whether the edge holds another
