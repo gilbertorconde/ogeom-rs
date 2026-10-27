@@ -20,12 +20,17 @@
 //! Where the turn is convex (the crease carried on leaves the solid through
 //! the other's second face), each band's continuation lies inside the
 //! other's wedge, and the two wedges as they stand remove their union; the
-//! bands themselves meet along their own intersection. Where the two bands'
-//! sections in the bisecting plane agree to the fit a marched band is held
-//! to, the turn is shallow enough that the bands continue each other: their
-//! intersection is that plane to the fit, and the two nearly coincident
-//! band surfaces are not asked to cross. Each band stops in that plane, and
-//! the two are joined across it into one wedge.
+//! bands themselves meet along their own intersection. Two straight bands
+//! each run out past the vertex as they do alone, and the cuts take their
+//! union, however their sections lie: walls leaning alike with their feet
+//! out put each section past the bisecting plane under the other's, where
+//! a meeting in that plane would leave a ridge either band alone takes.
+//! Where a crease curves and the two bands' sections in the bisecting
+//! plane agree to the fit a marched band is held to, the turn is shallow
+//! enough that the bands continue each other: their intersection is that
+//! plane to the fit, and the two nearly coincident band surfaces are not
+//! asked to cross. Each band stops in that plane, and the two are joined
+//! across it into one wedge.
 //!
 //! The plane is the two bands' meeting only where the reflection in it
 //! carries one band's end section onto the other's: the shared host a
@@ -40,11 +45,10 @@
 //! as what its ball rolls off, so each band is carried on with its section
 //! widened past its wall and the two are intersected in one boolean, which
 //! bounds the corner by the bands' own intersection ([`corner`]). Across a
-//! convex turn each band runs out past the vertex as it does alone, and
-//! the two cuts take their union; so too where one crease turns about an
-//! axis along the shared host's normal on a drum (a D-shaped block's arc
-//! beside its chord), whose band's curvature keeps the two from meeting in
-//! a plane.
+//! convex turn of two straight creases the junction is crossed whatever the
+//! sections, as above; so too where one crease turns about an axis along
+//! the shared host's normal on a drum (a D-shaped block's arc beside its
+//! chord), whose band's curvature keeps the two from meeting in a plane.
 //!
 //! One crease of a re-entrant crossed junction may turn about an axis along
 //! the shared host's normal, on a drum about that axis, beside a straight
@@ -444,6 +448,14 @@ fn junction(
             }
             false
         }
+    } else if straight()? {
+        // Across a convex turn two straight bands each run out past the
+        // vertex as they do alone, and the cuts take their union, whether
+        // or not the end sections reflect into each other: where the walls
+        // lean alike with their feet out, a band's section reaches past
+        // the bisecting plane under the other's, and meeting there leaves
+        // a ridge either band alone takes.
+        true
     } else {
         // Across a convex turn the bands themselves meet. Each sweeps its
         // section along its centre line; where that line curves, the
@@ -461,7 +473,7 @@ fn junction(
         }
         let along = radius * (turn / 2.0).tan();
         if (bend * along).mul_add(along / 2.0, miss) > fit {
-            if !straight()? && !turned_beside_straight()? {
+            if !turned_beside_straight()? {
                 return Ok(None);
             }
             true

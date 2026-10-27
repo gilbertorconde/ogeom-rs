@@ -797,16 +797,18 @@ re-entrant turn both run on to that plane and take the corner cell both \
 hold, where the material holds it (a straight band between planes whose \
 end section reaches past that plane, its wall drafted out under the \
 corner as a moulded pocket's are, is carried on past it and cut back to \
-it); across a convex turn both stop in it \
+it); across a convex turn of a curved crease both stop in it \
 where the bands' curvature keeps their sections there within a marched \
 band's fit; either way the two are joined across it into one wedge. \
 Where the end sections differ and both creases are straight (a drafted \
 wall beside a square one), across a re-entrant turn each band is carried \
 on with what stands past its wall and the two are intersected in one \
 boolean, so the corner takes what lies above both bands, bounded by their \
-own intersection, where the material holds it all; across a convex turn \
-each band runs out as it does alone and the cuts take their union, as \
-they do where one of the two is a drum's rim beside a straight crease (a \
+own intersection, where the material holds it all. Across a convex turn \
+of two straight creases, whatever their sections (an acute, square or \
+obtuse outside corner, its walls square or leaning alike or apart), each \
+band runs out as it does alone and the cuts take their union, as they do \
+where one of the two is a drum's rim beside a straight crease (a \
 D-shaped block's arc beside its chord, in either order). \
 Across a re-entrant turn one of the two may be a drum's rim beside a \
 straight crease, the material within the drum (a boss fused onto a block \

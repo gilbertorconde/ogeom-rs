@@ -544,6 +544,27 @@ bump may break the API and a patch bump may not.
     cube shaved by a drum of radius 6, its bottom edge and the upright at
     its end in either order: 0.379097 → 0.395766 (0.395766). The cube's
     top edge alone at r = 1: 1.423508 → 1.553030 (1.553030).
+- **Two straight rounds meeting across a convex turn take the union of
+  each alone.** (#342)
+  - This is a convention change. Where the two bands' end sections
+    reflected into each other across the plane bisecting the turn (walls
+    square, or leaning alike), the two met flush in that plane. With the
+    walls leaning alike with their feet out, each band's section reaches
+    past that plane under the other's, and the flush meeting left a ridge
+    standing that either band alone takes.
+  - Two straight creases across a convex turn now always take a crossed
+    junction: each band runs out past the vertex as it does alone, and
+    the cuts take their union. This is the rule already used where the
+    sections differ, and it does not depend on the order the edges are
+    named in. Where the walls are square or lean with their feet in, the
+    union is the flush meeting, and the figures are unchanged. A curved
+    crease at a shallow convex turn still meets flush in the bisecting
+    plane.
+  - Measured with r = 0.5, both walls leaning by 0.1 with their feet out,
+    both orders, against the union integrated a height at a time: 45°
+    0.489549 → 0.489918 (0.489918), 60° 0.494839 → 0.495104 (0.495104),
+    90° 0.500516 → 0.500669 (0.500669), 120° 0.503794 → 0.503882
+    (0.503882).
 
 - **An IGES curve on a surface (142) takes the representation its sender
   preferred.** (#404)

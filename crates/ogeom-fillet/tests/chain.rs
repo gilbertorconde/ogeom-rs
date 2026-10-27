@@ -3192,3 +3192,144 @@ fn seated_bands_are_cut_by_trimming_to_the_general_fuse_s_solid() {
         );
     }
 }
+
+/// A block whose top `z <= 2` has an outside corner at `(0, 0, 2)` of
+/// `plan` radians, between a crease along `x` and one along `(cos plan,
+/// sin plan)`, the material between them. Each wall leans by its `leans`
+/// entry, its outward normal `(n, k)` normalised for the outward unit `n`
+/// square to its crease in plan, so a positive lean puts its foot out.
+/// Square walls end each crease six along. Returns the block and the two creases,
+/// the one along `x` first.
+fn outside_corner(
+    model: &mut ogeom_topo::Model,
+    plan: f64,
+    leans: [f64; 2],
+) -> (ogeom_topo::Shape, [ogeom_topo::Shape; 2]) {
+    let (s, c) = plan.sin_cos();
+    // The plan a unit out past both creases, cut back to the walls.
+    let outline = [
+        Point::new(-(1.0 + c) / s, -1.0, 0.0),
+        Point::new(6.0, -1.0, 0.0),
+        Point::new(6.0, 6.0f64.mul_add(-c, 6.0) / s, 0.0),
+        Point::new(6.0f64.mul_add(c, -s), 6.0f64.mul_add(s, c), 0.0),
+    ];
+    let mut block = polygon_prism(model, &outline, Direction::Z, Vector::new(0.0, 0.0, 2.0));
+    let top = Point::new(0.0, 0.0, 2.0);
+    let along = Vector::new(c, s, 0.0);
+    for normal in [
+        Vector::new(0.0, -1.0, leans[0]),
+        Vector::new(-s, c, leans[1]),
+    ] {
+        let normal = normal / normal.magnitude();
+        let past = past_plane(model, top, normal);
+        let cut = ogeom_bool::cut(model, &block, &past, T).unwrap().shape;
+        block = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    }
+    let edges = [
+        placed_edge_through(model, &block, Point::new(3.0, 0.0, 2.0)),
+        placed_edge_through(model, &block, top + along * 3.0),
+    ];
+    (block, edges)
+}
+
+/// The runs of `u` the section of `band` holds at height `z`: within its
+/// corner's half-planes, less the ball's chord there.
+fn slice(band: &Section, z: f64) -> [(f64, f64); 2] {
+    let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+    for &((au, az), b) in &band.sides {
+        let room = az.mul_add(-z, b);
+        if au.abs() < 1e-15 {
+            if room < 0.0 {
+                return [(0.0, 0.0); 2];
+            }
+        } else if au > 0.0 {
+            hi = hi.min(room / au);
+        } else {
+            lo = lo.max(room / au);
+        }
+    }
+    if hi <= lo {
+        return [(0.0, 0.0); 2];
+    }
+    let reach = band
+        .radius
+        .mul_add(band.radius, -(z - band.centre.1).powi(2));
+    if reach <= 0.0 {
+        return [(lo, hi), (0.0, 0.0)];
+    }
+    let h = reach.sqrt();
+    [
+        (lo, hi.min(band.centre.0 - h)),
+        (lo.max(band.centre.0 + h), hi),
+    ]
+}
+
+/// What rounding both creases of [`outside_corner`] at `r` takes
+/// under the union rule: each band alone runs out past the vertex across
+/// the other's wall, and the two cuts are combined. Taken a height at a
+/// time. There each band alone is its section's runs swept along its
+/// crease, each line from where it enters the solid through the other's
+/// wall to the square wall six along, a length linear in the line's
+/// offset, so each run integrates in closed form. What both take is the
+/// product of the two runs' widths, `1 / sin plan` the area of a cell in
+/// the two offsets.
+fn outside_corner_removed(plan: f64, leans: [f64; 2], r: f64) -> f64 {
+    let (s, c) = plan.sin_cos();
+    let sections = leans.map(|k| Section::new(0.0, (1.0, k), r));
+    let steps = 1_000_000;
+    let dz = r * 1.5 / f64::from(steps);
+    (0..steps)
+        .map(|i| {
+            let z = 2.0 - (f64::from(i) + 0.5) * dz;
+            let runs = [slice(&sections[0], z), slice(&sections[1], z)];
+            let width = |runs: &[(f64, f64); 2]| span(runs);
+            let alone = |own: &[(f64, f64); 2], other: f64| -> f64 {
+                own.iter()
+                    .filter(|(u0, u1)| u1 > u0)
+                    .map(|&(u0, u1)| {
+                        // The line at offset u enters the solid where
+                        // `s t >= -u c - other (2 - z)`.
+                        let length = |u: f64| 6.0 - other.mul_add(-(2.0 - z), -u * c) / s;
+                        (u1 - u0) * f64::midpoint(length(u0), length(u1))
+                    })
+                    .sum()
+            };
+            alone(&runs[0], leans[1]) + alone(&runs[1], leans[0])
+                - width(&runs[0]) * width(&runs[1]) / s
+        })
+        .sum::<f64>()
+        * dz
+}
+
+/// The two top creases at an outside corner, acute, square or obtuse,
+/// rounded in either order, the walls square or leaning alike or apart.
+/// Each band runs out past the vertex as it does alone and the cuts are
+/// combined, as across any convex turn of two straight creases. With walls
+/// leaning alike the bands' end sections reflect into each other across
+/// the bisecting plane, and with their feet out each section reaches past
+/// that plane under the other's: meeting there left a ridge either band
+/// alone takes. Measured against the union a height at a time.
+#[test]
+fn rounds_at_an_outside_corner_take_both_bands_run_out() {
+    let r = 0.5;
+    for (degrees, leans) in [
+        (60.0_f64, [0.0, 0.0]),
+        (60.0, [-0.1, -0.1]),
+        (60.0, [0.1, 0.1]),
+        (45.0, [0.1, 0.1]),
+        (90.0, [0.1, 0.1]),
+        (120.0, [0.1, 0.1]),
+        (60.0, [0.1, -0.05]),
+    ] {
+        let plan = degrees.to_radians();
+        let want = outside_corner_removed(plan, leans, r);
+        let mut model = ogeom_topo::Model::new();
+        let (block, edges) = outside_corner(&mut model, plan, leans);
+        for got in removed_both_ways(&model, &block, &edges, r) {
+            assert!(
+                (got - want).abs() < 3e-6,
+                "{degrees} degrees, leans {leans:?}: {got} against {want}"
+            );
+        }
+    }
+}

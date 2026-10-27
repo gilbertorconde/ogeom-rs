@@ -276,17 +276,20 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 /// fit a marched band is held to). Across a re-entrant turn (an L-shaped
 /// top's inside corner) both then run on past their caps to that plane,
 /// taking the corner cell they both hold, where the material holds that
-/// cell; across a convex turn both stop in it where the bands' own
-/// curvature keeps their sections there within that fit. Either way the
-/// two are built from the solid as it stands and joined across the plane
-/// into one wedge, each band's faces credited to its own edge. Where the
-/// end sections differ (a drafted wall beside a square one) and both
+/// cell; across a convex turn of a curved crease both stop in it where the
+/// bands' own curvature keeps their sections there within that fit. Either
+/// way the two are built from the solid as it stands and joined across the
+/// plane into one wedge, each band's faces credited to its own edge. Where
+/// the end sections differ (a drafted wall beside a square one) and both
 /// creases are straight, across a re-entrant turn the corner takes what
 /// lies above both bands carried on, bounded by the boolean's own
-/// intersection of the two, where the material holds it all; across a
-/// convex turn each band runs out past the vertex as it does alone and the
-/// cuts take their union, as they do where one of the two is a drum's rim
-/// (a D-shaped block's arc beside its chord). Across a re-entrant turn one
+/// intersection of the two, where the material holds it all. Across a
+/// convex turn of two straight creases, whatever their sections, each band
+/// runs out past the vertex as it does alone and the cuts take their union
+/// (walls leaning alike with their feet out each reach past the bisecting
+/// plane under the other's band, which a meeting there would leave
+/// standing), as they do where one of the two is a drum's rim (a D-shaped
+/// block's arc beside its chord). Across a re-entrant turn one
 /// of the two may be a drum's rim, the material within the drum, where the
 /// straight band carried on stands nowhere off the drum before the rim's
 /// cap. Such
