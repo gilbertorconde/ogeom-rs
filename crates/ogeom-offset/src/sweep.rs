@@ -5450,7 +5450,11 @@ pub fn make_pipe_shell_law(
 /// corner's axis. The rotation-minimizing frame carries the section across
 /// a corner by that turn; the Frenet, auxiliary and binormal laws place it
 /// themselves (the Frenet frame by each run's own curvature), so their runs may meet a mitre with different sections, the
-/// difference standing as a face of the mitre plane. Between straight legs
+/// difference standing as a face of the mitre plane. A straight run
+/// meeting a skinned run at a mitre takes, for each ring the two share
+/// within `tolerance`, the skin's own fit of it, so the two cut the mitre
+/// plane alike. A closed wire sweeps the walls of the face it bounds, the
+/// end caps taken off. Between straight legs
 /// with the rotation-minimizing frame on an open spine, every corner is
 /// built as before: each leg a prism and each round corner the section
 /// revolved. An auxiliary or binormal law round a closed spine with no
@@ -5466,8 +5470,8 @@ pub fn make_pipe_shell_law(
 ///
 /// As [`make_pipe_shell`], and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
-/// the law or the corners are asked of a spine they do not serve: a wire
-/// swept round a corner run by run, the Frenet frame along a straight run
+/// the law or the corners are asked of a spine they do not serve: an open
+/// wire swept round a corner run by run, the Frenet frame along a straight run
 /// between sharp corners, a round corner where the law sets the next run's
 /// section other than the first's turned about the corner (or the frame
 /// comes home turned round a closed spine); where the guide does not cross a station's
@@ -7585,6 +7589,53 @@ fn pipe_shell_law(
     Ok(built)
 }
 
+/// The planar face a closed planar wire bounds.
+pub(crate) fn bounded_face(model: &mut Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
+    let Some(plane) = ogeom_algo::find_plane(model, wire, tol)? else {
+        ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
+    };
+    let reach = 1e4_f64;
+    let surface: SurfaceGeometry =
+        PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+    let face = ogeom_algo::make_face(model, surface, std::slice::from_ref(wire), tol)?.shape;
+    realized_profile(model, &face, &Transform::IDENTITY, tol)
+}
+
+/// The walls of a solid swept from the face a closed planar wire bounds:
+/// every face but the end caps, the planes through each of `ends` square
+/// to its heading there, sewn into a shell (or a compound of shells).
+pub(crate) fn walls_of(
+    model: &mut Model,
+    solid: &Shape,
+    ends: &[(Point, Vector)],
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let mut walls = Vec::new();
+    for f in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        let Some(ogeom_topo::NodeData::Face(data)) = model.node(&f).map(|n| n.data()) else {
+            continue;
+        };
+        let cap = match model.geometry().surface(data.surface) {
+            Some(SurfaceGeometry::Plane(p)) => {
+                let placed = p.plane();
+                ends.iter().any(|(at, n)| {
+                    placed.normal().vector().cross(*n).magnitude() <= tol.angular()
+                        && placed.distance_to(*at) <= tol.confusion() * 100.0
+                })
+            }
+            _ => false,
+        };
+        if !cap {
+            walls.push(f);
+        }
+    }
+    let sewn = sew(model, &walls, tol)?;
+    Ok(match sewn.shells.as_slice() {
+        [shell] => shell.clone(),
+        _ => ogeom_algo::make_compound(model, &sewn.shells)?.shape,
+    })
+}
+
 /// An edge's 3D curve and range, cloned out of the model.
 /// A pipe shell whose spine turns a skew corner against a curved leg,
 /// built as pieces between such corners and fused.
@@ -7620,14 +7671,7 @@ fn mitred_pieces(
                  pieces; an open wire bounds no face to sweep round it"
             );
         }
-        let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
-            ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
-        };
-        let reach = 1e4_f64;
-        let surface: SurfaceGeometry =
-            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        let face = ogeom_algo::make_face(model, surface, std::slice::from_ref(profile), tol)?.shape;
-        let face = realized_profile(model, &face, &Transform::IDENTITY, tol)?;
+        let face = bounded_face(model, profile, tol)?;
         let solid = mitred_pieces(
             model, &face, spine, stations, skew, ring, probes, tolerance, tol,
         )?
@@ -7643,30 +7687,7 @@ fn mitred_pieces(
                 ),
             ]
         };
-        let mut walls = Vec::new();
-        for f in explore(model, &solid, Filter::OfType(ShapeType::Face))? {
-            let Some(ogeom_topo::NodeData::Face(data)) = model.node(&f).map(|n| n.data()) else {
-                continue;
-            };
-            let cap = match model.geometry().surface(data.surface) {
-                Some(SurfaceGeometry::Plane(p)) => {
-                    let placed = p.plane();
-                    ends.iter().any(|(at, n)| {
-                        placed.normal().vector().cross(*n).magnitude() <= tol.angular()
-                            && placed.distance_to(*at) <= tol.confusion() * 100.0
-                    })
-                }
-                _ => false,
-            };
-            if !cap {
-                walls.push(f);
-            }
-        }
-        let sewn = sew(model, &walls, tol)?;
-        let shape = match sewn.shells.as_slice() {
-            [shell] => shell.clone(),
-            _ => ogeom_algo::make_compound(model, &sewn.shells)?.shape,
-        };
+        let shape = walls_of(model, &solid, &ends, tol)?;
         let mut history = History::new();
         history.generate(profile, shape.clone());
         history.generate(spine, shape.clone());

@@ -653,14 +653,19 @@ fn a_pipe_through_sections_with_different_hole_counts_is_refused_by_name() {
 /// heading `-x`; then a sharp quarter turn up the line to
 /// `(-big, big + run, 0)`.
 fn arc_then_turn(model: &mut Model, big: f64, run: f64) -> Shape {
+    arc_then_turn_at(model, big, run, 0.0)
+}
+
+/// [`arc_then_turn`] raised to the height `z`.
+fn arc_then_turn_at(model: &mut Model, big: f64, run: f64, z: f64) -> Shape {
     use ogeom::geom::Curve3d as _;
-    let frame = Frame::new(Point::new(-big, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let frame = Frame::new(Point::new(-big, 0.0, z), Direction::Z, Direction::X, T).unwrap();
     let circle = Circle::new(frame, big, T).unwrap();
     let arc = make_edge(model, CircleCurve::new(circle).into(), (0.0, 0.5 * PI), T)
         .unwrap()
         .shape;
     let (_, joint) = ogeom::algo::edge_vertices(model, &arc).unwrap().unwrap();
-    let (from, to) = (Point::new(-big, big, 0.0), Point::new(-big, big + run, 0.0));
+    let (from, to) = (Point::new(-big, big, z), Point::new(-big, big + run, z));
     let end = ogeom::algo::make_vertex(model, to).shape;
     let segment = ogeom::geom::LineCurve::segment(from, to, T).unwrap();
     let range = segment.domain();
@@ -692,8 +697,7 @@ fn face_count(model: &Model, shape: &Shape) -> usize {
 /// The extended corner matches in volume, face count and validity. The
 /// round corner matches in volume and validity: the next run starts on
 /// the arc run's end section turned within the skin's tolerance, which
-/// is what the skinned run is held to. The mitred corner stays refused,
-/// its trimmed pieces not closing into a shell.
+/// is what the skinned run is held to.
 #[test]
 fn a_holed_square_under_a_level_binormal_turns_a_corner_as_the_rotation_minimizing_sweep() {
     let (big, run, half, radius, skin, chord) = (20.0, 10.0, 1.0, 0.5, 1e-3, 1e-3);
@@ -736,7 +740,277 @@ fn a_holed_square_under_a_level_binormal_turns_a_corner_as_the_rotation_minimizi
         (v - want).abs() < bound,
         "round: {v} against {want}, bound {bound}"
     );
+}
 
-    let (_, built) = sweep(&level, PipeCorners::Mitre);
-    assert!(built.is_err(), "the mitre built");
+/// The spine of [`arc_then_turn`] walked the other way: up the line from
+/// `(-big, big + run, 0)` heading `-y` to `(-big, big, 0)`, then a sharp
+/// quarter turn onto the quarter arc, heading `+x`, back to the origin.
+fn turn_then_arc(model: &mut Model, big: f64, run: f64) -> Shape {
+    use ogeom::geom::Curve3d as _;
+    let frame = Frame::new(Point::new(-big, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = Circle::new(frame, big, T).unwrap();
+    let arc = make_edge(model, CircleCurve::new(circle).into(), (0.0, 0.5 * PI), T)
+        .unwrap()
+        .shape;
+    let (_, joint) = ogeom::algo::edge_vertices(model, &arc).unwrap().unwrap();
+    let (from, to) = (Point::new(-big, big + run, 0.0), Point::new(-big, big, 0.0));
+    let start = ogeom::algo::make_vertex(model, from).shape;
+    let segment = ogeom::geom::LineCurve::segment(from, to, T).unwrap();
+    let range = segment.domain();
+    let line = ogeom::algo::make_edge_between(model, segment.into(), range, &start, &joint, T)
+        .unwrap()
+        .shape;
+    make_wire(model, &[line, arc.reversed()], T).unwrap().shape
+}
+
+/// A profile square to `-y` at `(-big, big + run, 0)`, where
+/// [`turn_then_arc`] starts: the holed square, or the disc of radius
+/// `half` where `radius` is naught.
+fn profile_down_y(model: &mut Model, at: Point, half: f64, radius: f64) -> Shape {
+    let frame = Frame::new(at, -Direction::Y, Direction::X, T).unwrap();
+    let plane = PlaneSurface::new(Plane::new(frame));
+    if radius == 0.0 {
+        let disc = circle_wire(model, frame, half);
+        return make_face(model, plane.into(), &[disc], T).unwrap().shape;
+    }
+    let (u, v) = (frame.x().vector(), frame.y().vector());
+    let pts = [(-half, -half), (half, -half), (half, half), (-half, half)]
+        .map(|(a, b)| at + u * a + v * b);
+    let outer = make_polygon(model, &pts, true, T).unwrap().shape;
+    let hole = circle_wire(model, frame, radius);
+    make_face(model, plane.into(), &[outer, hole], T)
+        .unwrap()
+        .shape
+}
+
+/// The disc of radius `half` about `(0, y, 0)` in the plane square to Y.
+fn disc(model: &mut Model, y: f64, half: f64) -> Shape {
+    let frame = Frame::new(Point::new(0.0, y, 0.0), Direction::Y, Direction::X, T).unwrap();
+    let wire = circle_wire(model, frame, half);
+    make_face(
+        model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+/// The mitred solid's volume where an arc of radius `big` meets a line
+/// `run` long at a right angle, the corner turning against the arc, for a
+/// section of area `area` centred on the spine whose height across the
+/// turn's plane at a distance `u` either side of the spine is
+/// `width(u)`, out to `reach`.
+///
+/// Away from the corner each run holds its area times its length
+/// (Pappus round the arc). The line's run is run back past the corner
+/// and cut on the plane halving it, which takes inside the corner what it
+/// adds outside, the section being symmetric. The arc's run is run on by
+/// its end section's prism, which adds a wedge `u` deep at `u` outside
+/// the corner; inside, the plane cuts the arc's own run: at `u` there, on
+/// the circle of radius `ρ = big + u`, the plane through the corner at
+/// half a right angle to the end section meets that circle `ψ(ρ)` back
+/// round the arc, where with the arc's centre at the origin and the
+/// corner at `(big, 0)` its point `(big + t, t)` has
+/// `2t² + 2 big t + big² - ρ² = 0`, so `ρ ψ` of arc is cut. Each column
+/// `u` adds `(u - ρ ψ(ρ)) width(u)`, integrated by the midpoint rule over
+/// a hundred thousand columns.
+fn mitred_against_an_arc(
+    big: f64,
+    run: f64,
+    area: f64,
+    reach: f64,
+    width: impl Fn(f64) -> f64,
+) -> f64 {
+    const COLUMNS: u32 = 100_000;
+    let psi = |rho: f64| {
+        let t = (-big + 2.0f64.mul_add(rho * rho, -big * big).sqrt()) / 2.0;
+        t.atan2(big + t)
+    };
+    let du = reach / f64::from(COLUMNS);
+    let corner: f64 = (0..COLUMNS)
+        .map(|k| {
+            let u = (f64::from(k) + 0.5) * du;
+            let rho = big + u;
+            (u - rho * psi(rho)) * width(u) * du
+        })
+        .sum();
+    area * (big * PI / 2.0 + run) + corner
+}
+
+/// A section with a hole, or a disc, mitred where a skinned run meets a
+/// straight one, under the binormal and auxiliary laws: the arc's run is
+/// skinned and ends on the skin's fit of each loop, which wobbles across
+/// the exact loop the law places on the line's run. The line's prism takes
+/// the skin's own fit of each loop the two share (the hole, the disc;
+/// not the square, which the leaning binormal turns there), so both cut
+/// the mitre plane alike and the pieces fuse. Every section here is
+/// level at the corner and symmetric across the spine, so each solid is
+/// [`mitred_against_an_arc`]'s.
+///
+/// Arc first, the arc's run is the arc swept alone, measured for its own
+/// skin's error; what is left strays by at most the skin's tolerance over
+/// the walls the corner's wedges run along and over the line's walls,
+/// whose loops are fits. Line first, the arc's run is skinned from the
+/// other end, so its whole wall counts as well.
+#[test]
+fn a_smooth_loop_mitres_against_a_skinned_run_under_a_law() {
+    let (big, run, half, radius, skin) = (20.0, 10.0, 1.0, 0.5, 1e-3);
+    let reach = half * 2.0_f64.sqrt();
+    let holed = (
+        4.0 * half * half - PI * radius * radius,
+        8.0 * half + 2.0 * PI * radius,
+    );
+    let round = (PI * half * half, 2.0 * PI * half);
+    let holed_width = |u: f64| {
+        if u > half {
+            0.0
+        } else if u < radius {
+            2.0 * half - 2.0 * (radius * radius - u * u).sqrt()
+        } else {
+            2.0 * half
+        }
+    };
+    let disc_width = |u: f64| 2.0 * (half * half - u * u).max(0.0).sqrt();
+    let lean = Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap();
+    for (case, has_hole, arc_first) in [
+        ("holed, level", true, true),
+        ("holed, leaning", true, true),
+        ("disc, leaning", false, true),
+        ("holed, auxiliary", true, true),
+        ("holed, level, line first", true, false),
+    ] {
+        let mut model = Model::new();
+        let (profile, spine) = if arc_first {
+            let profile = if has_hole {
+                holed_square(&mut model, 0.0, half, radius)
+            } else {
+                disc(&mut model, 0.0, half)
+            };
+            (profile, arc_then_turn(&mut model, big, run))
+        } else {
+            let at = Point::new(-big, big + run, 0.0);
+            let profile = profile_down_y(&mut model, at, half, radius);
+            (profile, turn_then_arc(&mut model, big, run))
+        };
+        let guide = arc_then_turn_at(&mut model, big, run, 5.0);
+        let law = if case.contains("leaning") {
+            PipeLaw::Binormal(lean)
+        } else if case.contains("auxiliary") {
+            PipeLaw::Auxiliary { guide: &guide }
+        } else {
+            PipeLaw::Binormal(Direction::Z)
+        };
+        let pipe = make_pipe_shell_with(
+            &mut model,
+            &profile,
+            &spine,
+            &law,
+            PipeCorners::Mitre,
+            skin,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{case}: {e}"))
+        .shape;
+        let found = ogeom::algo::check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{case}: {found}");
+        let v = volume(&model, &pipe);
+        let (area, perimeter) = if has_hole { holed } else { round };
+        let want = if has_hole {
+            mitred_against_an_arc(big, run, area, reach, holed_width)
+        } else {
+            mitred_against_an_arc(big, run, area, half, disc_width)
+        };
+        let corner_walls = perimeter * (2.0 * reach + run);
+        let (own, bound) = if arc_first {
+            let arc = model.ordered_children_of(&spine).unwrap()[0].clone();
+            let arc = make_wire(&mut model, &[arc], T).unwrap().shape;
+            let alone = make_pipe_shell_with(
+                &mut model,
+                &profile,
+                &arc,
+                &law,
+                PipeCorners::Mitre,
+                skin,
+                T,
+            )
+            .unwrap()
+            .shape;
+            let own = volume(&model, &alone) - area * big * PI / 2.0;
+            (own, skin * corner_walls)
+        } else {
+            let arc_walls = perimeter * (big + reach) * PI / 2.0;
+            (0.0, skin * (corner_walls + arc_walls))
+        };
+        assert!(
+            (v - own - want).abs() < bound,
+            "{case}: {v} less the arc's own {own:e} against {want}, bound {bound}"
+        );
+    }
+}
+
+/// A closed square wire, `2a` across, up a leg `l` long and a quarter
+/// turn along another, turned run by run: the walls of the square face's
+/// solid, the end caps taken off. Extended or mitred, each side wall in
+/// the turn's plane is the L the legs make, `4 a l`, the outer walls run
+/// `l + a` and the inner `l - a`, each `2a` wide: `16 a l` in all.
+/// Rounded, the legs end square at the corner: each side wall loses the
+/// outside corner's `a²` and gains a quarter disc `π a² / 4`, the outer
+/// walls run `l` each and the quarter drum `π a²` joins them:
+/// `16 a l - 6 a² + 3π a² / 2`. Under the binormal square to the legs'
+/// plane the sections are those the rotation-minimizing frame carries.
+#[test]
+fn a_closed_wire_turns_corners_run_by_run_as_the_walls_of_its_face() {
+    let (a, l) = (1.0, 10.0);
+    let squared = 16.0 * a * l;
+    let rounded = squared - 6.0 * a * a + 1.5 * PI * a * a;
+    for (law, corners, want) in [
+        (PipeLaw::RotationMinimizing, PipeCorners::Extended, squared),
+        (PipeLaw::RotationMinimizing, PipeCorners::Round, rounded),
+        (
+            PipeLaw::Binormal(Direction::Y),
+            PipeCorners::Extended,
+            squared,
+        ),
+        (PipeLaw::Binormal(Direction::Y), PipeCorners::Round, rounded),
+        (PipeLaw::Binormal(Direction::Y), PipeCorners::Mitre, squared),
+    ] {
+        let mut model = Model::new();
+        let pts = [(-a, -a), (a, -a), (a, a), (-a, a)].map(|(x, y)| Point::new(x, y, 0.0));
+        let wire = make_polygon(&mut model, &pts, true, T).unwrap().shape;
+        let spine = make_polygon(
+            &mut model,
+            &[
+                Point::ORIGIN,
+                Point::new(0.0, 0.0, l),
+                Point::new(l, 0.0, l),
+            ],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let walls = make_pipe_shell_with(&mut model, &wire, &spine, &law, corners, 1e-3, T)
+            .unwrap_or_else(|e| panic!("{law:?} {corners:?}: {e}"))
+            .shape;
+        assert_eq!(
+            model.kind_of(&walls).unwrap(),
+            ogeom::topo::ShapeType::Shell,
+            "{law:?} {corners:?}"
+        );
+        let area = ogeom::algo::surface_properties(
+            &model,
+            &walls,
+            Deflection::with_chord(1e-4).unwrap(),
+            T,
+        )
+        .unwrap();
+        assert!(area.deflection == 0.0, "{law:?} {corners:?}: not exact");
+        assert!(
+            (area.mass - want).abs() < want * 1e-12,
+            "{law:?} {corners:?}: {} against {want}",
+            area.mass
+        );
+    }
 }

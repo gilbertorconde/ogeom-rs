@@ -8,7 +8,9 @@
 //!
 //! - mitred, each run is run on straight past the corner by the prism of
 //!   its section there and trimmed by the plane halving the corner, so the
-//!   two meet on that plane whatever their sections are;
+//!   two meet on that plane whatever their sections are; a straight run
+//!   meeting a skinned one there takes the skin's own fit of each ring the
+//!   two share, so their cuts of the plane are one;
 //! - extended, each run is run on straight past the corner until its
 //!   section clears the other run's far side;
 //! - round, the half of the section outside the corner is turned about the
@@ -21,7 +23,8 @@
 //! place the section at every point of the spine themselves; the Frenet
 //! frame of a run is its own curvature's, so a straight run has none. The pieces are prisms,
 //! revolutions, the pipe shells of smooth runs and the planes trimming
-//! them, so the solid is exact wherever the runs are swept exactly.
+//! them, so the solid is exact wherever the runs are swept exactly. A
+//! closed wire sweeps the walls of the face it bounds.
 
 use ogeom_algo::{
     Built, History, curve_length, make_box, make_prism, make_revolution, parameter_at_length,
@@ -34,9 +37,9 @@ use ogeom_topo::{Filter, Model, NodeData, Shape, ShapeType, explore};
 
 use super::evolving::{Evolution, evolved_run};
 use super::{
-    DOUBLED_BACK, LEAST_TURN_SINE, PipeCorners, PipeLaw, fuse_in_order, law_normals,
+    DOUBLED_BACK, LEAST_TURN_SINE, PipeCorners, PipeLaw, bounded_face, fuse_in_order, law_normals,
     make_pipe_shell_with, outside_half, profile_square_at_start, realized_profile_wound,
-    rmf_normals, sample_wire, shell_stations, spine_curve_of, station_frame,
+    rmf_normals, sample_wire, shell_stations, spine_curve_of, station_frame, walls_of,
 };
 
 /// A spine edge's ends and its unit tangents there, in the direction of
@@ -81,10 +84,40 @@ pub(super) fn law_cornered(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if model.kind_of(profile)? == ShapeType::Wire {
+        // A closed planar wire sweeps the walls of the face it bounds: that
+        // face is swept and its end caps, on the planes square to the
+        // spine's ends, taken off.
+        if !ogeom_algo::is_wire_closed(model, profile, tol)? {
+            ogeom_bail!(
+                Construction,
+                "a pipe turned round a sharp corner run by run sweeps a face or \
+                 a closed wire; an open wire bounds no face to join the runs with"
+            );
+        }
+        let face = bounded_face(model, profile, tol)?;
+        let solid =
+            law_cornered(model, &face, spine, law, corners, evolution, tolerance, tol)?.shape;
+        let legs = legs_of(model, spine, tol)?;
+        let (first, last) = (&legs[0], &legs[legs.len() - 1]);
+        let ends = if first.start.distance(last.end) <= tol.confusion() * 10.0 {
+            Vec::new()
+        } else {
+            vec![
+                (first.start, first.heading_in),
+                (last.end, last.heading_out),
+            ]
+        };
+        let shape = walls_of(model, &solid, &ends, tol)?;
+        let mut history = History::new();
+        history.generate(spine, shape.clone());
+        history.generate(profile, shape.clone());
+        return Ok(Built::new(shape, history));
+    }
     if model.kind_of(profile)? != ShapeType::Face {
         ogeom_bail!(
             Construction,
-            "a pipe turned round a sharp corner run by run sweeps a face"
+            "a pipe turned round a sharp corner run by run sweeps a face or a closed wire"
         );
     }
     let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
@@ -138,22 +171,92 @@ pub(super) fn law_cornered(
     let share = |k: usize| if k == n { 1.0 } else { run_to[k] / total };
     // The law's frame at the spine's start, which the profile stands in.
     let start_frame = law_frame_at(model, spine, law, tolerance, tol)?;
-    let mut sections: Vec<Shape> = Vec::with_capacity(runs.len());
-    let mut solids: Vec<Shape> = Vec::with_capacity(runs.len());
-    let mut ends: Vec<Shape> = Vec::with_capacity(runs.len());
+    // Whether a join between runs `a` and `b` turns a sharp corner.
+    let turns = |a: usize, b: usize| {
+        sharp(
+            legs[runs[a].legs.end - 1].heading_out,
+            legs[runs[b].legs.start].heading_in,
+            tol,
+        )
+    };
+    let after_run = |r: usize| {
+        if r + 1 < runs.len() {
+            Some(r + 1)
+        } else if closed {
+            Some(0)
+        } else {
+            None
+        }
+    };
+    let before_run = |r: usize| {
+        if r > 0 {
+            Some(r - 1)
+        } else if closed {
+            Some(runs.len() - 1)
+        } else {
+            None
+        }
+    };
+    let mut wires: Vec<Shape> = Vec::with_capacity(runs.len());
+    let mut windows: Vec<Option<Evolution>> = Vec::with_capacity(runs.len());
+    let mut prisms: Vec<bool> = Vec::with_capacity(runs.len());
     // How far each run's solid may stand off the law's placement of its
     // sections: a prism places them exactly, a pipe shell holds its skin to
     // `tolerance`.
     let mut held: Vec<f64> = Vec::with_capacity(runs.len());
-    for (r, run) in runs.iter().enumerate() {
+    for run in &runs {
+        let first = &legs[run.legs.start];
+        let wire = run_wire(model, &legs[run.legs.clone()], tol)?;
+        let window = evolution
+            .map(|e| e.window(share(run.legs.start), share(run.legs.end)))
+            .filter(|w| !w.is_still());
+        let prism = window.is_none()
+            && run.legs.len() == 1
+            && first.straight
+            && keeps_frame(model, &wire, law, tolerance, tol)?;
+        held.push(if prism { 0.0 } else { tolerance });
+        wires.push(wire);
+        windows.push(window);
+        prisms.push(prism);
+    }
+    // Under a law that places each run's section itself, a prism meeting a
+    // skinned run at a mitre is swept once the skinned run is, from the
+    // rings that run meets the mitre with (`mitre_shared`).
+    let deferred = |r: usize| {
+        corners == PipeCorners::Mitre
+            && !matches!(law, PipeLaw::RotationMinimizing)
+            && prisms[r]
+            && (before_run(r).is_some_and(|p| !prisms[p] && turns(p, r))
+                || after_run(r).is_some_and(|q| !prisms[q] && turns(r, q)))
+    };
+    let mut sections: Vec<Option<Shape>> = vec![None; runs.len()];
+    let mut solids: Vec<Option<Shape>> = vec![None; runs.len()];
+    let mut ends: Vec<Option<Shape>> = vec![None; runs.len()];
+    // The face each run starts with: its section, or, after a prism swept
+    // once this run is, the skin's own fit of it where that stands off the
+    // section.
+    let mut starts: Vec<Option<Shape>> = vec![None; runs.len()];
+    // Whether the prism before a run took rings from the face it starts
+    // with: then that face, not the section, is what the run is run back
+    // on from at the mitre.
+    let mut shared_start: Vec<bool> = vec![false; runs.len()];
+    let order: Vec<usize> = (0..runs.len())
+        .filter(|&r| !deferred(r))
+        .chain((0..runs.len()).filter(|&r| deferred(r)))
+        .collect();
+    for r in order {
+        let run = &runs[r];
         let first = &legs[run.legs.start];
         let last = &legs[run.legs.end - 1];
-        let wire = run_wire(model, &legs[run.legs.clone()], tol)?;
+        let wire = &wires[r];
         let section = match law {
             PipeLaw::RotationMinimizing if r > 0 => {
                 let before = &legs[run.legs.start - 1];
                 let turn = least_turn(before.end, before.heading_out, first.heading_in, tol)?;
-                realized_profile_wound(model, &ends[r - 1], &turn, Some(first.heading_in), tol)?
+                let Some(end) = &ends[r - 1] else {
+                    ogeom_bail!(Construction, "a run is swept before the one it follows");
+                };
+                realized_profile_wound(model, end, &turn, Some(first.heading_in), tol)?
             }
             PipeLaw::RotationMinimizing => realized_profile_wound(
                 model,
@@ -163,7 +266,7 @@ pub(super) fn law_cornered(
                 tol,
             )?,
             _ => {
-                let here = law_frame_at(model, &wire, law, tolerance, tol)?;
+                let here = law_frame_at(model, wire, law, tolerance, tol)?;
                 let evolved = match evolution {
                     Some(evolution) => evolution.local(share(run.legs.start), tol)?,
                     None => Transform::IDENTITY,
@@ -173,15 +276,52 @@ pub(super) fn law_cornered(
                 realized_profile_wound(model, profile, &motion, Some(first.heading_in), tol)?
             }
         };
-        let window = evolution
-            .map(|e| e.window(share(run.legs.start), share(run.legs.end)))
-            .filter(|w| !w.is_still());
-        let prism = window.is_none()
-            && run.legs.len() == 1
-            && first.straight
-            && keeps_frame(model, &wire, law, tolerance, tol)?;
-        held.push(if prism { 0.0 } else { tolerance });
-        let solid = if let Some(window) = &window {
+        let section = if deferred(r) {
+            let mut section = section;
+            let mut kept: Vec<bool> = Vec::new();
+            if let Some(p) = before_run(r).filter(|&p| !prisms[p] && turns(p, r))
+                && let Some(end) = &ends[p]
+            {
+                let out = legs[runs[p].legs.end - 1].heading_out;
+                let mirror = mirror_at(first.start, out, first.heading_in, tol)?;
+                (section, kept) = mitre_shared(
+                    model,
+                    &section,
+                    end,
+                    &mirror,
+                    first.heading_in,
+                    held[p],
+                    &kept,
+                    tol,
+                )?;
+            }
+            if let Some(q) = after_run(r).filter(|&q| !prisms[q] && turns(r, q))
+                && let Some(start) = &starts[q]
+            {
+                let into = legs[runs[q].legs.start].heading_in;
+                let back = Transform::translation(first.start - first.end);
+                let mirror = back * mirror_at(last.end, last.heading_out, into, tol)?;
+                let taken;
+                (section, taken) = mitre_shared(
+                    model,
+                    &section,
+                    start,
+                    &mirror,
+                    first.heading_in,
+                    held[q],
+                    &kept,
+                    tol,
+                )?;
+                shared_start[q] = taken
+                    .iter()
+                    .enumerate()
+                    .any(|(k, t)| *t && !kept.get(k).copied().unwrap_or(false));
+            }
+            section
+        } else {
+            section
+        };
+        let solid = if let Some(window) = &windows[r] {
             let lengths = &run_to[run.legs.start..=run.legs.end];
             evolved_stretches(
                 model,
@@ -193,13 +333,13 @@ pub(super) fn law_cornered(
                 tolerance,
                 tol,
             )?
-        } else if prism {
+        } else if prisms[r] {
             make_prism(model, &section, first.end - first.start, tol)?.shape
         } else {
             make_pipe_shell_with(
                 model,
                 &section,
-                &wire,
+                wire,
                 law,
                 PipeCorners::Mitre,
                 tolerance,
@@ -207,10 +347,30 @@ pub(super) fn law_cornered(
             )?
             .shape
         };
-        ends.push(end_section(model, &solid, last.end, last.heading_out, tol)?);
-        sections.push(section);
-        solids.push(solid);
+        ends[r] = Some(end_section(model, &solid, last.end, last.heading_out, tol)?);
+        let after_deferred = before_run(r).is_some_and(|p| deferred(p) && turns(p, r));
+        starts[r] = Some(if !prisms[r] && after_deferred {
+            let own = end_section(model, &solid, first.start, first.heading_in, tol)?;
+            if same_section(model, &own, &section, tol)? {
+                section.clone()
+            } else {
+                own
+            }
+        } else {
+            section.clone()
+        });
+        sections[r] = Some(section);
+        solids[r] = Some(solid);
     }
+    let unwrap_all = |v: Vec<Option<Shape>>| -> OgeomResult<Vec<Shape>> {
+        v.into_iter()
+            .map(|s| s.ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a run was not swept")))
+            .collect()
+    };
+    let sections = unwrap_all(sections)?;
+    let mut solids = unwrap_all(solids)?;
+    let ends = unwrap_all(ends)?;
+    let starts = unwrap_all(starts)?;
 
     // The joins: after every run but the last, and the wrap of a closed
     // spine, smooth or sharp.
@@ -254,12 +414,17 @@ pub(super) fn law_cornered(
             PipeCorners::Mitre => {
                 let halving = (d1 + d2) / (d1 + d2).magnitude();
                 let reach_a = mitre_reach(model, &ends[a], corner, d1, halving, tol)?;
-                let reach_b = mitre_reach(model, &sections[b], corner, d2, halving, tol)?;
+                let from_b = if shared_start[b] {
+                    &starts[b]
+                } else {
+                    &sections[b]
+                };
+                let reach_b = mitre_reach(model, from_b, corner, d2, halving, tol)?;
                 let on_a = make_prism(model, &ends[a], d1 * reach_a, tol)?.shape;
-                let on_b = make_prism(model, &sections[b], -d2 * reach_b, tol)?.shape;
+                let on_b = make_prism(model, from_b, -d2 * reach_b, tol)?.shape;
                 let reach = reach_a.max(reach_b)
                     + bound_reach(model, &ends[a], corner, tol)?
-                    + bound_reach(model, &sections[b], corner, tol)?;
+                    + bound_reach(model, from_b, corner, tol)?;
                 let a_kept = ogeom_bool::fuse(model, &solids[a], &on_a, tol)?.shape;
                 let ahead = half_box(model, corner, halving, reach, tol)?;
                 solids[a] = ogeom_bool::cut(model, &a_kept, &ahead, tol)?.shape;
@@ -453,34 +618,122 @@ fn same_section(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
 /// Whether every sample round each ring of `a` lies within `near` of an
 /// edge of `b`.
 fn lies_on(model: &Model, a: &Shape, b: &Shape, near: f64, tol: Tolerances) -> OgeomResult<bool> {
+    for wire in model.ordered_children_of(a)? {
+        if !ring_lies_on(model, &wire, b, near, tol)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether every sample round the ring `wire` lies within `near` of an
+/// edge of `b`.
+fn ring_lies_on(
+    model: &Model,
+    wire: &Shape,
+    b: &Shape,
+    near: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
     const SAMPLES: usize = 64;
     let mut edges = Vec::new();
     for edge in explore(model, b, Filter::OfType(ShapeType::Edge))? {
         edges.push(spine_curve_of(model, &edge)?);
     }
-    for wire in model.ordered_children_of(a)? {
-        for p in sample_wire(model, &wire, SAMPLES, tol)? {
-            let mut best = f64::INFINITY;
-            for (curve, range) in &edges {
-                // Nearest on the whole curve where that falls in the edge's
-                // range, else at one of its ends.
-                let found = project_on_curve(curve, p, SAMPLES, tol)?;
-                let inside = found.parameter >= range.0.min(range.1) - tol.parametric()
-                    && found.parameter <= range.0.max(range.1) + tol.parametric();
-                let d = if inside {
-                    found.distance
-                } else {
-                    p.distance(curve.point_at(range.0, tol)?)
-                        .min(p.distance(curve.point_at(range.1, tol)?))
-                };
-                best = best.min(d);
-            }
-            if best > near {
-                return Ok(false);
-            }
+    for p in sample_wire(model, wire, SAMPLES, tol)? {
+        let mut best = f64::INFINITY;
+        for (curve, range) in &edges {
+            // Nearest on the whole curve where that falls in the edge's
+            // range, else at one of its ends.
+            let found = project_on_curve(curve, p, SAMPLES, tol)?;
+            let inside = found.parameter >= range.0.min(range.1) - tol.parametric()
+                && found.parameter <= range.0.max(range.1) + tol.parametric();
+            let d = if inside {
+                found.distance
+            } else {
+                p.distance(curve.point_at(range.0, tol)?)
+                    .min(p.distance(curve.point_at(range.1, tol)?))
+            };
+            best = best.min(d);
+        }
+        if best > near {
+            return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// The mirror in the plane through `corner` halving the turn from heading
+/// `d1` to heading `d2`: it carries the plane square to `d1` there onto
+/// the plane square to `d2`.
+fn mirror_at(corner: Point, d1: Vector, d2: Vector, tol: Tolerances) -> OgeomResult<Transform> {
+    let halving = Direction::new((d1 + d2) / (d1 + d2).magnitude(), tol)?;
+    Ok(Transform::plane_mirror(corner, halving))
+}
+
+/// The section a prism sweeps where it meets a skinned run at a mitre,
+/// with which of its rings were taken from that run.
+///
+/// A skinned run starts and ends on its skin's fit of the section, which
+/// wobbles across the exact ring the law places. Run on straight past the
+/// corner, the fit and the exact ring each cut the mitre plane, and the two
+/// cuts cross there again and again a skin's width apart: slivers no
+/// boolean can tell from a touch. So each ring of `placed` that a ring of
+/// `skinned` (the skinned run's face at the corner), carried by `motion`
+/// (the mitre's mirror, and back along the prism for its far end), matches
+/// within `held` (what that run is held to) but not within ten confusions
+/// is taken as that carried ring, unless `kept` marks it taken already;
+/// every other ring stays as placed. The prism then cuts the mitre plane
+/// where the skinned run does, and stands off the law's placement by at
+/// most what that run already does.
+#[allow(clippy::too_many_arguments)]
+fn mitre_shared(
+    model: &mut Model,
+    placed: &Shape,
+    skinned: &Shape,
+    motion: &Transform,
+    heading: Vector,
+    held: f64,
+    kept: &[bool],
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Vec<bool>)> {
+    let same = tol.confusion() * 10.0;
+    let carried = realized_profile_wound(model, skinned, motion, Some(heading), tol)?;
+    let theirs = model.ordered_children_of(&carried)?;
+    let mut rings: Vec<Vec<Shape>> = Vec::new();
+    let mut taken: Vec<bool> = Vec::new();
+    for (k, ring) in model.ordered_children_of(placed)?.into_iter().enumerate() {
+        let mut chosen = (ring.clone(), kept.get(k).copied().unwrap_or(false));
+        if !chosen.1 {
+            for other in &theirs {
+                if ring_lies_on(model, other, &ring, held, tol)?
+                    && ring_lies_on(model, &ring, other, held, tol)?
+                    && !(ring_lies_on(model, other, &ring, same, tol)?
+                        && ring_lies_on(model, &ring, other, same, tol)?)
+                {
+                    chosen = (other.clone(), true);
+                    break;
+                }
+            }
+        }
+        rings.push(model.ordered_children_of(&chosen.0)?);
+        taken.push(chosen.1);
+    }
+    if taken
+        .iter()
+        .zip(kept.iter().chain(core::iter::repeat(&false)))
+        .all(|(t, k)| t == k)
+    {
+        return Ok((placed.clone(), taken));
+    }
+    let Some(NodeData::Face(data)) = model.node(placed).map(|n| n.data()) else {
+        ogeom_bail!(Construction, "a run's section is not a face");
+    };
+    let Some(surface) = model.geometry().surface(data.surface).cloned() else {
+        ogeom_bail!(Dangling, "surface is not in this model");
+    };
+    let face = ogeom_algo::make_face_with_pcurves(model, surface, &rings, tol)?.shape;
+    Ok((face, taken))
 }
 
 /// The largest distance from `corner` to the section's bounding box: a

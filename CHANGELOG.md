@@ -13,6 +13,16 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A closed wire turns sharp corners run by run.** (#394)
+  - Extended and round corners, and any corner under the auxiliary,
+    binormal or evolving laws, swept only faces. A closed planar wire now
+    sweeps there as the walls of the face it bounds, the end caps taken
+    off. An open wire is still refused there by name.
+  - Measured: a 2 by 2 square wire up and over a right-angled L of 10 by
+    10 legs has walls of area 160 extended or mitred and
+    `160 - 6 + 3π/2` rounded, to 1e-12, under the rotation-minimizing
+    frame and the binormal.
+
 - **IGES external references resolve against the files beside the
   deck.** (#404)
   - `read_iges_file` reads a deck from disk and resolves its external
@@ -701,6 +711,27 @@ bump may break the API and a patch bump may not.
   field's vocabulary.
 
 ### Fixed
+
+- **A mitre where a skinned run meets a straight one, under the
+  auxiliary and binormal laws.** (#394)
+  - A curved run under those laws is skinned, and ends on the skin's fit
+    of each loop of the section. Fits of a hole or a smooth loop wobble
+    across the exact loop the law places on the straight run, about
+    1.7e-5 apart and crossing it eight times a quarter turn. Run on past
+    the corner, both cut the mitre plane, and the fuse refused the
+    slivers between them ("the kept pieces did not close into a shell").
+  - The straight run's prism now takes, for each loop it shares with the
+    skinned run within the skin's tolerance, the skin's own fit mirrored
+    across the mitre plane, so both runs cut that plane alike. Where the
+    straight run comes first, the skinned run is run back from its own
+    start. The straight run stands off the law by at most what the skin
+    already does.
+  - Measured against a column-integrated reference (Pappus round the arc
+    and the corner's wedges): a holed square and a disc round an arc into
+    a line, level and leaning binormal and an auxiliary spine, arc or line
+    first, within 2.9e-4 of the reference less the arc's own skin error.
+    Two skinned runs meeting at a mitre with a loop in common are still
+    refused.
 
 - **A prism's or revolution's wall over a stretch of an unbounded line
   ends where the edge does.** (#445)
