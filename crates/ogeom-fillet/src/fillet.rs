@@ -261,13 +261,16 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 /// lies above both bands carried on, bounded by the boolean's own
 /// intersection of the two, where the material holds it all; across a
 /// convex turn each band runs out past the vertex as it does alone and the
-/// cuts take their union. Across a re-entrant turn one of the two may be a
-/// drum's rim, the material within the drum, where the straight band
-/// carried on stands nowhere off the drum before the rim's cap. Such
+/// cuts take their union, as they do where one of the two is a drum's rim
+/// (a D-shaped block's arc beside its chord). Across a re-entrant turn one
+/// of the two may be a drum's rim, the material within the drum, where the
+/// straight band carried on stands nowhere off the drum before the rim's
+/// cap. Such
 /// junctions stand beside flush ones in a loop or chain, a band crossed at
 /// both ends cut in two halfway along, and two bands meeting at both their
 /// ends meet at each.
-/// Elsewhere (a wider convex turn of curved bands)
+/// Elsewhere (a wider convex turn of two curved bands, or of a curved band
+/// other than a drum's rim beside a straight one)
 /// and wherever the meeting does not close, the later seat runs on
 /// through the earlier blend's band and the cut trims the two bands
 /// against each other along their own intersection, or the caps stand, as

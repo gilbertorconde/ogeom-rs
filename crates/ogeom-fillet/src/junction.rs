@@ -41,7 +41,10 @@
 //! widened past its wall and the two are intersected in one boolean, which
 //! bounds the corner by the bands' own intersection ([`corner`]). Across a
 //! convex turn each band runs out past the vertex as it does alone, and
-//! the two cuts take their union.
+//! the two cuts take their union; so too where one crease turns about an
+//! axis along the shared host's normal on a drum (a D-shaped block's arc
+//! beside its chord), whose band's curvature keeps the two from meeting in
+//! a plane.
 //!
 //! One crease of a re-entrant crossed junction may turn about an axis along
 //! the shared host's normal, on a drum about that axis, beside a straight
@@ -377,6 +380,20 @@ fn junction(
         }
         Ok(true)
     };
+    // One crease a circle about an axis along the shared host's normal, on
+    // the cylinder through it, the other straight.
+    let turned_beside_straight = || -> OgeomResult<bool> {
+        for (k, edge) in edges.iter().enumerate() {
+            let wall = if k == 0 { &wall_0 } else { &wall_1 };
+            let (other, _) = crate::support::edge_curve(model, &edges[1 - k], tol)?;
+            if matches!(other, ogeom_geom::Curve::Line(_))
+                && turned_about(model, edge, wall, top, tol)?.is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
     let mut turned = None;
     let crossed = if reentrant {
         if miss > fit {
@@ -444,7 +461,7 @@ fn junction(
         }
         let along = radius * (turn / 2.0).tan();
         if (bend * along).mul_add(along / 2.0, miss) > fit {
-            if !straight()? {
+            if !straight()? && !turned_beside_straight()? {
                 return Ok(None);
             }
             true

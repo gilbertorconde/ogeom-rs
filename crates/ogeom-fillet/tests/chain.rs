@@ -2413,6 +2413,94 @@ fn a_pocket_of_a_disc_and_its_chord_meets_at_both_corners() {
     }
 }
 
+/// A disc of radius 2.5 about `(4, 4)`, two high, up to its chord `y = 4 +
+/// c` with a square wall. Returns the block, the rim's corner `(4 +
+/// sqrt(2.5^2 - c^2), 4 + c, 2)`, and the arc's and the chord's top creases
+/// leaving it.
+fn d_shaped_block(
+    model: &mut ogeom_topo::Model,
+    c: f64,
+) -> (ogeom_topo::Shape, Point, [ogeom_topo::Shape; 2]) {
+    let big = 2.5;
+    let disc = ogeom_algo::make_cylinder(
+        model,
+        Frame::new(Point::new(4.0, 4.0, 0.0), Direction::Z, Direction::Y, T).unwrap(),
+        big,
+        2.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let past = past_plane(model, Point::new(4.0, 4.0 + c, 2.0), Vector::Y);
+    let cut = ogeom_bool::cut(model, &disc, &past, T).unwrap().shape;
+    let solid = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
+    let corner = Point::new(4.0 + big.mul_add(big, -c * c).sqrt(), 4.0 + c, 2.0);
+    let edges = creases_at(model, &solid, corner);
+    (solid, corner, edges)
+}
+
+/// What rounding the arc and the chord of [`d_shaped_block`] takes within
+/// the square of half side `half` round its corner `at`, a column at a
+/// time: the union of what each band takes as it does alone, in the
+/// material. The arc's band is its torus band up to its cap, in the plane
+/// through the axis and the vertex; the chord's is its straight band up to
+/// its own cap, square to the chord at the vertex.
+fn d_shaped_corner_removed(at: (f64, f64), c: f64, r: f64, half: f64) -> f64 {
+    let (centre, big) = ((4.0, 4.0), 2.5);
+    let ahead = (-c / big, (at.0 - centre.0) / big);
+    let section = Section::new(0.0, (1.0, 0.0), r);
+    integral(
+        (at.0 - half, at.0 + half),
+        (at.1 - half, at.1 + half),
+        2e3,
+        |x, y| {
+            let off = (x - centre.0).hypot(y - centre.1) - big;
+            if off > 0.0 || y > at.1 {
+                return 0.0;
+            }
+            let (px, py) = (x - at.0, y - at.1);
+            let arc = if px.mul_add(ahead.0, py * ahead.1) > 0.0 {
+                [(0.0, 0.0); 2]
+            } else {
+                section.column(off)
+            };
+            let chord = if px > 0.0 {
+                [(0.0, 0.0); 2]
+            } else {
+                section.column(py)
+            };
+            span(&arc) + span(&chord) - overlap(&arc, &chord)
+        },
+    )
+}
+
+/// A D-shaped block, a disc up to a chord, its arc's and its chord's top
+/// creases rounded where they meet across a convex turn: the arc turns
+/// about the drum's axis and the chord is straight, so the bands' sections
+/// differ in the plane bisecting the turn, and each runs out past the
+/// vertex as it does alone, the cuts taking their union. With the chord off
+/// the centre and through it, where the arc's cap lies in the chord's
+/// wall, both orders take that union, measured within a box round one
+/// corner a column at a time. No junction was taken there: the later band
+/// ran on through the earlier, and with the chord through the centre the
+/// arc built after the chord left part of the union standing.
+#[test]
+fn rounds_of_a_d_shaped_block_take_both_bands_as_alone() {
+    let r = 0.5;
+    let half = 1.2;
+    for c in [0.5_f64, 0.0] {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, at, edges) = d_shaped_block(&mut model, c);
+        let want = d_shaped_corner_removed((at.x, at.y), c, r, half);
+        for got in removed_near(&model, &solid, &edges, r, at, half) {
+            assert!(
+                (got - want).abs() < 5e-6,
+                "chord at {c}: {got} against {want}"
+            );
+        }
+    }
+}
+
 /// What a rounding made, as two ways of making it are compared: whether
 /// it checks valid, its volume, its face, edge and vertex counts, and for
 /// each face, edge and vertex of the solid as given and each edge asked

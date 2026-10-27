@@ -639,6 +639,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A D-shaped block's arc and chord round alike in either order.**
+  (#342)
+  - Where a drum's rim meets a straight crease across a convex turn, the
+    rim band's curvature keeps the two from meeting in a plane, and no
+    junction was taken: the later band ran on through the earlier. With
+    the chord through the drum's axis, the arc's cap lies in the chord's
+    wall, and the arc rounded after the chord left part of the corner
+    standing.
+  - Such a turn is now a crossed junction, as one between two straight
+    creases whose sections differ: each band is built from the solid as
+    given and runs out as it does alone, and the cuts take their union.
+  - Measured on a disc of radius 2.5 up to its chord, r = 0.5, within a
+    box round one corner against a column-integrated reference: chord
+    through the centre, arc then chord 0.119607 and chord then arc
+    0.105795 → 0.119607 both (0.119607); chord at 0.5 unchanged at
+    0.118374 (0.118375).
+
 - **Booleans whose fitted and exact edges part tangentially, leaving a
   lune between them, build.** (#433)
   - A boolean that refuses is now tried once more, last, reading every
