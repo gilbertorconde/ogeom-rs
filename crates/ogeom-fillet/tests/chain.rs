@@ -3500,6 +3500,267 @@ fn bands_running_into_a_rounded_corner_are_trimmed_to_the_general_fuse_s_solid()
     }
 }
 
+/// A concave straight band's wedge along the edge from `corner` along `d`
+/// over `length`, between the faces leaving that edge along `a` and `b`
+/// (unit, square to each other and to `d`): the section between the two
+/// legs of length `r` and the quarter circle of radius `r` about
+/// `corner + r (a + b)` swept along the edge, its five faces sewn.
+fn concave_wedge(
+    model: &mut ogeom_topo::Model,
+    corner: Point,
+    (a, b): (Vector, Vector),
+    d: Vector,
+    length: f64,
+    r: f64,
+) -> ogeom_topo::Shape {
+    use ogeom_topo::Shape;
+    // `a`, `b`, `d` taken right-handed.
+    let (a, b) = if a.cross(b).dot(d) > 0.0 {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let dir = |v: Vector| Direction::new(v, T).unwrap();
+    let ends = [corner, corner + d * length];
+    // At each end: the corner, the contact on `a`'s face, on `b`'s face.
+    let [near, far] = ends.map(|c| {
+        [c, c + a * r, c + b * r].map(|at| (ogeom_algo::make_vertex(model, at).shape, at))
+    });
+    let line =
+        |model: &mut ogeom_topo::Model, (from, s): &(Shape, Point), (to, e): &(Shape, Point)| {
+            let curve = ogeom_geom::Curve::Line(ogeom_geom::LineCurve::segment(*s, *e, T).unwrap());
+            let domain = ogeom_geom::Curve3d::domain(&curve);
+            ogeom_algo::make_edge_between(model, curve, domain, from, to, T)
+                .unwrap()
+                .shape
+        };
+    // Each end's quarter circle from the contact on `a`'s face to the one
+    // on `b`'s, about the axis's point there.
+    let arc = |model: &mut ogeom_topo::Model, end: &[(Shape, Point); 3]| {
+        let frame = Frame::new(end[0].1 + (a + b) * r, dir(-d), dir(-b), T).unwrap();
+        let curve = ogeom_geom::Curve::Circle(CircleCurve::new(Circle::new(frame, r, T).unwrap()));
+        let quarter = (0.0, core::f64::consts::FRAC_PI_2);
+        ogeom_algo::make_edge_between(model, curve, quarter, &end[1].0, &end[2].0, T)
+            .unwrap()
+            .shape
+    };
+    let rails: Vec<Shape> = (0..3).map(|k| line(model, &near[k], &far[k])).collect();
+    let [[ca, arc0, bc], [ca1, arc1, bc1]] = [&near, &far].map(|end| {
+        [
+            line(model, &end[0], &end[1]),
+            arc(model, end),
+            line(model, &end[2], &end[0]),
+        ]
+    });
+    // Each ring counter-clockwise about its surface's normal; sewing turns
+    // the faces to agree and the shell to face out.
+    let face = |model: &mut ogeom_topo::Model, surface: ogeom_geom::SurfaceGeometry, ring| {
+        ogeom_algo::make_face_with_pcurves(model, surface, &[ring], T)
+            .unwrap()
+            .shape
+    };
+    let plane = |at: Point, normal: Vector| {
+        ogeom_geom::PlaneSurface::over(
+            Plane::through(at, dir(normal)),
+            (-100.0, 100.0),
+            (-100.0, 100.0),
+        )
+        .unwrap()
+        .into()
+    };
+    let frame = Frame::new(corner + (a + b) * r, dir(d), dir(-b), T).unwrap();
+    let cylinder = ogeom_geom::SurfaceGeometry::Cylinder(
+        ogeom_geom::CylinderSurface::new(
+            ogeom_math::Cylinder::new(frame, r, T).unwrap(),
+            (-1.0, length + 1.0),
+        )
+        .unwrap(),
+    );
+    // The cylinder's normal points away from its axis.
+    let blend = vec![
+        rails[1].clone(),
+        arc1.clone(),
+        rails[2].reversed(),
+        arc0.reversed(),
+    ];
+    let faces = [
+        face(model, plane(ends[0], d), vec![ca.clone(), arc0, bc.clone()]),
+        face(
+            model,
+            plane(ends[1], d),
+            vec![ca1.clone(), arc1, bc1.clone()],
+        ),
+        face(
+            model,
+            plane(corner, -b),
+            vec![ca, rails[1].clone(), ca1.reversed(), rails[0].reversed()],
+        ),
+        face(
+            model,
+            plane(corner, -a),
+            vec![rails[0].clone(), bc1.reversed(), rails[2].reversed(), bc],
+        ),
+        face(model, cylinder, blend),
+    ];
+    let sewn = ogeom_algo::sew(model, &faces, T).unwrap();
+    let [shell] = sewn.shells.as_slice() else {
+        panic!("the wedge sews into one shell");
+    };
+    let wedge = ogeom_algo::make_solid(model, std::slice::from_ref(shell))
+        .unwrap()
+        .shape;
+    assert!(ogeom_algo::check(model, &wedge, T).unwrap().is_valid());
+    wedge
+}
+
+/// A concave straight band's wedge fused on where it runs, at a pocket's
+/// corner, into a concave band of its radius already filling the floor's
+/// edge along the wall it meets is trimmed, cut back at the mitre where the
+/// two blends cross, to the solid and history the general fuse gives. The
+/// pocket, 12 x 8 and 5 deep in a 20 x 16 x 10 block, has its floor's edge
+/// along one long wall, or both, filled first; the wedge then fills the
+/// edge along a short wall, built from either end, on either short wall, and
+/// against a first band swept either way along its edge. Each band adds
+/// `(1 - pi/4) r^2` along its edge and the wedge gives back, at each corner
+/// it shares, the cell past the mitre, `2 r^3 (5/6 - pi/4)`. A wedge of
+/// another radius than the band it runs into is left to the general fuse.
+#[test]
+fn concave_bands_running_into_a_filled_corner_are_trimmed_to_the_general_fuse_s_solid() {
+    use core::f64::consts::FRAC_PI_4;
+    let section = 1.0 - FRAC_PI_4;
+    let cell = 2.0 * (5.0 / 6.0 - FRAC_PI_4);
+    let (x, y, z) = (
+        Vector::new(1.0, 0.0, 0.0),
+        Vector::new(0.0, 1.0, 0.0),
+        Vector::new(0.0, 0.0, 1.0),
+    );
+    // A band along the floor's edge on the wall at `y = 4` or `y = 12`,
+    // swept along `+x` or `-x`.
+    let long = |m: &mut ogeom_topo::Model, wall: f64, back: bool, r: f64| {
+        let leg = if wall < 8.0 { y } else { -y };
+        let (from, d) = if back { (16.0, -x) } else { (4.0, x) };
+        concave_wedge(m, Point::new(from, wall, 5.0), (leg, z), d, 12.0, r)
+    };
+    // A wedge along the floor's edge on the wall at `x = 4` or `x = 16`,
+    // swept along `+y` or `-y`.
+    let short = |m: &mut ogeom_topo::Model, wall: f64, back: bool, r: f64| {
+        let leg = if wall < 10.0 { x } else { -x };
+        let (from, d) = if back { (12.0, -y) } else { (4.0, y) };
+        concave_wedge(m, Point::new(wall, from, 5.0), (leg, z), d, 8.0, r)
+    };
+    struct Case {
+        name: &'static str,
+        bands: &'static [(f64, bool)],
+        wedge: (f64, bool, f64),
+        trimmed: bool,
+        closed_form: Option<f64>,
+    }
+    let one = 2720.0 + 20.0 * section - cell;
+    let cases = [
+        Case {
+            name: "a wedge running into the band at its far end",
+            bands: &[(12.0, false)],
+            wedge: (16.0, false, 1.0),
+            trimmed: true,
+            closed_form: Some(one),
+        },
+        Case {
+            name: "a wedge running into the band at its near end",
+            bands: &[(12.0, false)],
+            wedge: (16.0, true, 1.0),
+            trimmed: true,
+            closed_form: Some(one),
+        },
+        Case {
+            name: "a wedge on the other short wall",
+            bands: &[(12.0, false)],
+            wedge: (4.0, false, 1.0),
+            trimmed: true,
+            closed_form: Some(one),
+        },
+        Case {
+            name: "a band swept the other way",
+            bands: &[(12.0, true)],
+            wedge: (16.0, false, 1.0),
+            trimmed: true,
+            closed_form: Some(one),
+        },
+        Case {
+            name: "a wedge running into a band at both ends",
+            bands: &[(4.0, false), (12.0, true)],
+            wedge: (4.0, true, 1.0),
+            trimmed: true,
+            closed_form: Some(2720.0 + 32.0 * section - 2.0 * cell),
+        },
+        Case {
+            name: "a wedge of a smaller radius than the band",
+            bands: &[(12.0, false)],
+            wedge: (16.0, false, 0.5),
+            trimmed: false,
+            closed_form: None,
+        },
+    ];
+    for case in cases {
+        let name = case.name;
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (20.0, 16.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let at = Frame::new(Point::new(4.0, 4.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+        let pocket = ogeom_algo::make_box(&mut model, at, (12.0, 8.0, 6.0), T)
+            .unwrap()
+            .shape;
+        let mut solid = ogeom_bool::cut(&mut model, &block, &pocket, T)
+            .unwrap()
+            .shape;
+        for &(wall, back) in case.bands {
+            let band = long(&mut model, wall, back, 1.0);
+            solid = ogeom_bool::fuse_seated(&mut model, &solid, &band, T)
+                .unwrap()
+                .shape;
+        }
+        let (wall, back, r) = case.wedge;
+        let wedge = short(&mut model, wall, back, r);
+        let faces = explore_unique(&model, &wedge, ShapeType::Face).unwrap();
+        let mut general = model.clone();
+        let fused = ogeom_bool::work::unseated(|| {
+            ogeom_bool::fuse_seated(&mut general, &solid, &wedge, T)
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+        });
+        let (seated, work) = ogeom_bool::work::counted(|| {
+            ogeom_bool::fuse_seated(&mut model, &solid, &wedge, T).unwrap()
+        });
+        assert_eq!(
+            (work.seated_fills, work.faces_gathered == 0),
+            (usize::from(case.trimmed), case.trimmed),
+            "{name}: filled by trimming"
+        );
+        let (want, got) = (
+            account(&general, &solid, &faces, &fused),
+            account(&model, &solid, &faces, &seated),
+        );
+        assert!(got.0, "{name}: the fill is valid");
+        assert!(
+            (got.1 - want.1).abs() <= want.1 * 1e-9,
+            "{name}: volume {} against {}",
+            got.1,
+            want.1
+        );
+        if let Some(exact) = case.closed_form {
+            assert!(
+                (got.1 - exact).abs() <= exact * 1e-7,
+                "{name}: volume {} against the closed form {exact}",
+                got.1
+            );
+        }
+        assert_eq!(
+            (got.0, &got.2, &got.3),
+            (want.0, &want.2, &want.3),
+            "{name}"
+        );
+    }
+}
+
 /// A tangent chain of straight edges and arcs on a plane, the arcs where it
 /// meets a cylinder, rounded in one request: the arcs' wedges, pieces of a
 /// rim's between two ends through its axis, are cut after the straight

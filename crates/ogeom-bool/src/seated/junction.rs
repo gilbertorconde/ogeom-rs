@@ -14,7 +14,7 @@
 //! other: the plane both bands round (`T`), the plane the wedge's other leg
 //! lies on (`S`), and the plane its cap at that end lies on, which the first
 //! band rounded from `T`. With the corner at the origin, the material at
-//! `x, y, z <= 0` behind `S: x = 0`, the cap `y = 0` and `T: z = 0`, and
+//! `x, z <= 0, y >= 0` behind `S: x = 0`, the cap `y = 0` and `T: z = 0`, and
 //! the radius `r`, the wedge's axis runs along `y` at `x = z = -r` and the
 //! first band's along `x` at `y = r, z = -r`; the axes meet at
 //! `O = (-r, r, -r)`. The conditions read, where one fails that end is not
