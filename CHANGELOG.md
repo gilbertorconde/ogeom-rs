@@ -712,6 +712,29 @@ bump may break the API and a patch bump may not.
   than 495, a stadium slot's rim 10 ms rather than 220, and a rounded
   pocket's floor loop 100 ms rather than 466, to the same faces, edges,
   volume and area.
+- **A straight band running at a block's corner into a band already
+  rounded is cut by trimming, not by the general fuse (#384).** Rounding
+  a block's top loop cuts two opposite bands first; each of the other two
+  then runs at both ends past the first bands' blends, and went through
+  the general fuse whole. `ogeom_bool::cut_seated` now reads such an end
+  as a junction where the three faces at the corner are square to each
+  other, the solid's blend there is a strip of a cylinder of the band's
+  radius (within the confusion distance) whose axis meets the band's,
+  rounding the same face, and spanning the band's region, and the band's
+  edge along the corner keeps more than the boolean's weld reach of its
+  length. Its part inside the solid is then the band cut back at the
+  mitre where the two cylinders cross, an ellipse in their axes' bisector
+  plane: its seats lie on the two faces it rounds and on a patch of the
+  blend it runs into, and it is trimmed as a straight band is, every
+  other face of the solid standing out of the whole band's region. The
+  solid and its history are the general fuse's; everywhere else the cut
+  is the general fuse's. A new edge leaving a vertex tangent to another
+  edge is now read by the difference of their curvature vectors, so a
+  mitre and the arc it leaves alongside are told apart as a line and an
+  arc already were. Single-threaded, rounding a 20 x 20 x 10 block's top
+  loop takes 0.99 ms rather than 4.91, two of its top edges 0.54 ms rather
+  than 2.33, and a plate's top loop beside a boss 1.25 ms rather than
+  5.10, to the same faces, edges, volume and area.
 - **The corners a fillet request rounds are cut in one boolean where
   they stand clear of each other (#384).** `fillet_edges` rounded each
   corner where three or more of its edges meet with its own cut. On a

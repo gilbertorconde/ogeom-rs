@@ -14805,7 +14805,10 @@ pub fn cut(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRes
 /// other face of `a` reaches into the wedge, the faces the seats lie on are
 /// trimmed along the wedge's own edges and the blends close what is left:
 /// the general fuse is not run, and the result and its history are those
-/// it gives. Where `b` mixes rims' wedges with other lumps, each rim's box
+/// it gives. A straight band's wedge whose end runs, at a block's corner,
+/// into a blend of `a` of its radius rounding the face it rounds is trimmed
+/// so as its part inside `a`, cut back at the mitre where the two blends
+/// cross. Where `b` mixes rims' wedges with other lumps, each rim's box
 /// standing further from every other lump's than the boolean welds, the
 /// rims are trimmed out so and the other lumps cut from what is left, to
 /// the solid and history the general fuse gives cutting all of `b`.

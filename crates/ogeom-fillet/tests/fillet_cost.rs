@@ -175,9 +175,11 @@ fn the_outer_edges_of_a_holed_plate_meet_at_mitres() {
 /// The outer edges of a plate's top face fillet with the same boolean
 /// work whether the plate is plain or drilled with 256 holes: the run-out
 /// probes at the corners read the faces near the corners, and each pass's
-/// boolean sets aside every face clear of each of its wedges, the holes
-/// among them. So the faces gathered, the face pairs asked for sections
-/// and the pieces classified are the same counts for both plates.
+/// boolean, a trim of the faces its wedges sit on or the general fuse,
+/// leaves every face clear of each of its wedges as it stands, the holes
+/// among them. So the trims made, the faces gathered, the face pairs asked
+/// for sections and the pieces classified are the same counts for both
+/// plates.
 #[test]
 fn the_holes_a_plate_s_outer_fillets_do_not_touch_add_no_boolean_work() {
     let (area, centroid) = corner(1.0);
@@ -200,7 +202,7 @@ fn the_holes_a_plate_s_outer_fillets_do_not_touch_add_no_boolean_work() {
     };
     let plain = work(0);
     let holed = work(16);
-    assert!(plain.faces_gathered > 0 && plain.face_pairs > 0 && plain.pieces > 0);
+    assert!(plain.seated_cuts > 0 || plain.faces_gathered > 0);
     assert_eq!(holed, plain, "256 holes against the plain plate");
 }
 

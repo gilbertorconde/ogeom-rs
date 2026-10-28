@@ -1336,7 +1336,8 @@ fn join_flush(
 /// twice. A cut is [`ogeom_bool::cut_seated`] and a fill
 /// [`ogeom_bool::fuse_seated`], which trim the faces straight bands, rims
 /// and the pieces of rims a tangent chain's arcs round sit on, where nothing
-/// else reaches into them.
+/// else reaches into them, and straight bands running at a block's corner
+/// into a band an earlier group rounded.
 fn apply_set_aside(
     model: &mut Model,
     mut built: Built,

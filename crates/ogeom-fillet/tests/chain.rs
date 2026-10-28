@@ -3367,6 +3367,138 @@ fn rounds_at_an_outside_corner_take_both_bands_run_out() {
         }
     }
 }
+/// Bands that run, at a block's corner, into a band an earlier group of the
+/// same rounding has cut are trimmed, each cut back at the mitre where the
+/// two blends cross, to the solid and history the general fuse gives: a
+/// block's top loop, two of its top edges, and the top loop of a block
+/// standing in a left-handed frame. Each band takes `(1 - pi/4) r^2` along
+/// its edge and gives back, at each corner it shares, the cell past the
+/// mitre, `2 r^3 (5/6 - pi/4)`. Where a bore comes up beside a corner into
+/// the region a band's wedge lies in, or where a block is too narrow for
+/// the mitres at its two ends to stand apart, the cut is left to the
+/// general fuse.
+#[test]
+fn bands_running_into_a_rounded_corner_are_trimmed_to_the_general_fuse_s_solid() {
+    use core::f64::consts::FRAC_PI_4;
+    let section = 1.0 - FRAC_PI_4;
+    let cell = 2.0 * (5.0 / 6.0 - FRAC_PI_4);
+    // The edges of a solid's top, `height` up in `frame`, whose middles
+    // `pick` keeps, read in the frame.
+    let top = |model: &ogeom_topo::Model,
+               solid: &ogeom_topo::Shape,
+               frame: Frame,
+               height: f64,
+               pick: &dyn Fn(Point) -> bool| {
+        explore_unique(model, solid, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let data = model.node(e).unwrap().data().as_edge().unwrap();
+                let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d()
+                else {
+                    unreachable!("an edge of a solid made here has a curve");
+                };
+                let curve = model.geometry().curve(*curve).unwrap();
+                let [p, m, q] = [range.0, f64::midpoint(range.0, range.1), range.1]
+                    .map(|t| frame.to_local(ogeom_geom::Curve3d::point_at(curve, t, T).unwrap()));
+                [p, m, q].iter().all(|a| (a.z - height).abs() < 1e-9) && pick(m)
+            })
+            .collect::<Vec<_>>()
+    };
+    let block = |model: &mut ogeom_topo::Model, frame: Frame, size: (f64, f64, f64)| {
+        ogeom_algo::make_box(model, frame, size, T).unwrap().shape
+    };
+    let all = |_: Point| true;
+    type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64, Option<f64>);
+    type Case<'a> = &'a dyn Fn(&mut ogeom_topo::Model) -> Made;
+    let top_loop = |m: &mut ogeom_topo::Model| -> Made {
+        let solid = block(m, Frame::WORLD, (20.0, 20.0, 10.0));
+        let edges = top(m, &solid, Frame::WORLD, 10.0, &all);
+        (
+            solid,
+            edges,
+            1.0,
+            Some(4000.0 - 80.0 * section + 4.0 * cell),
+        )
+    };
+    let two_edges = |m: &mut ogeom_topo::Model| -> Made {
+        let pick = |p: Point| p.x.abs() < 1e-9 || p.y.abs() < 1e-9;
+        let solid = block(m, Frame::WORLD, (20.0, 20.0, 10.0));
+        let edges = top(m, &solid, Frame::WORLD, 10.0, &pick);
+        (solid, edges, 1.0, Some(4000.0 - 40.0 * section + cell))
+    };
+    let left_handed = |m: &mut ogeom_topo::Model| -> Made {
+        let frame =
+            Frame::from_axes(Point::ORIGIN, Direction::Y, Direction::X, Direction::Z, T).unwrap();
+        let solid = block(m, frame, (20.0, 14.0, 10.0));
+        let edges = top(m, &solid, frame, 10.0, &all);
+        (
+            solid,
+            edges,
+            1.0,
+            Some(2800.0 - 68.0 * section + 4.0 * cell),
+        )
+    };
+    let bored = |m: &mut ogeom_topo::Model| -> Made {
+        let pick = |p: Point| p.x < 1e-9 || p.y < 1e-9 || p.x > 19.9 || p.y > 19.9;
+        let solid = block(m, Frame::WORLD, (20.0, 20.0, 10.0));
+        let at = Frame::new(Point::new(19.2, 0.6, -1.0), Direction::Z, Direction::X, T).unwrap();
+        let bore = ogeom_algo::make_cylinder(m, at, 0.3, 12.0, T)
+            .unwrap()
+            .shape;
+        let solid = ogeom_bool::cut(m, &solid, &bore, T).unwrap().shape;
+        let edges = top(m, &solid, Frame::WORLD, 10.0, &pick);
+        (solid, edges, 1.0, None)
+    };
+    let narrow = |m: &mut ogeom_topo::Model| -> Made {
+        let solid = block(m, Frame::WORLD, (3.0, 20.0, 10.0));
+        let edges = top(m, &solid, Frame::WORLD, 10.0, &all);
+        (solid, edges, 1.5, None)
+    };
+    let cases: [(&str, Case, bool); 5] = [
+        ("a block's top loop", &top_loop, true),
+        ("two of a block's top edges", &two_edges, true),
+        ("a left-handed block's top loop", &left_handed, true),
+        ("a bore beside a corner", &bored, false),
+        ("a block too narrow for its mitres", &narrow, false),
+    ];
+    for (name, case, trimmed) in cases {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, edges, radius, closed_form) = case(&mut model);
+        let mut general = model.clone();
+        let fused = ogeom_bool::work::unseated(|| {
+            ogeom_fillet::fillet_edges(&mut general, &solid, &edges, radius, T)
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+        });
+        let (seated, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::fillet_edges(&mut model, &solid, &edges, radius, T).unwrap()
+        });
+        assert_eq!(work.faces_gathered == 0, trimmed, "{name}: trimmed");
+        let (want, got) = (
+            account(&general, &solid, &edges, &fused),
+            account(&model, &solid, &edges, &seated),
+        );
+        assert!(got.0, "{name}: the rounding is valid");
+        assert!(
+            (got.1 - want.1).abs() <= want.1 * 1e-9,
+            "{name}: volume {} against {}",
+            got.1,
+            want.1
+        );
+        if let Some(exact) = closed_form {
+            assert!(
+                (got.1 - exact).abs() <= exact * 1e-7,
+                "{name}: volume {} against the closed form {exact}",
+                got.1
+            );
+        }
+        assert_eq!(
+            (got.0, &got.2, &got.3),
+            (want.0, &want.2, &want.3),
+            "{name}"
+        );
+    }
+}
 
 /// A tangent chain of straight edges and arcs on a plane, the arcs where it
 /// meets a cylinder, rounded in one request: the arcs' wedges, pieces of a
