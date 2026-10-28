@@ -4020,13 +4020,16 @@ fn clipped_into_chart(
 /// The map from one cylinder's or torus's chart to another's where both
 /// are one surface on two frames: the same axis line, within `slop`, and
 /// the same radii, and for a torus the same centre on it. The frames differ
-/// by a turn about the axis, a slide along it (a cylinder's only), or the
-/// axis reversed, so the map is exact: `(u, v)` goes to `(s·u + φ, s·v +
-/// c)`, `s` the sign between the axes, `φ` the owner's angle zero read in
+/// by a turn about the axis, a slide along it (a cylinder's only), the axis
+/// reversed, or the handedness, so the map is exact: `(u, v)` goes to
+/// `(σ·u + φ, s·v + c)`, `s` the sign between the axes, `σ` the sign
+/// between the axes the two angles turn about (`x × y`, which is `z`
+/// signed by the frame's handedness), `φ` the owner's angle zero read in
 /// the target's frame, and `c` the owner's origin's height on the target's
-/// axis, zero on a torus. A reversed axis is a half turn of the chart, not
-/// a mirror, so the map is a rigid motion of the plane: on a torus it turns
-/// the tube's angle over with the axis, `v` to `-v`.
+/// axis, zero on a torus. On a torus `v` is the tube's angle, turned over
+/// with the axis. Where `σ` and `s` agree the map is a rigid motion of the
+/// plane, a half turn where both are negative; where they differ it is a
+/// mirror.
 fn coaxial_chart_map(
     owner: &SurfaceGeometry,
     target: &SurfaceGeometry,
@@ -4060,6 +4063,7 @@ fn coaxial_chart_map(
         return None;
     }
     let s = if za.dot(zb) >= 0.0 { 1.0 } else { -1.0 };
+    let sigma = s * fa.handedness().sign() * fb.handedness().sign();
     let x = fa.x().vector();
     let phi = x.dot(fb.y().vector()).atan2(x.dot(fb.x().vector()));
     let c = if matches!(target, SurfaceGeometry::Torus(_)) {
@@ -4068,10 +4072,27 @@ fn coaxial_chart_map(
         (fa.origin() - fb.origin()).dot(zb)
     };
     let slide = ogeom_math::Transform2::translation(ogeom_math::Vector2::new(phi, c));
-    Some(if s > 0.0 {
-        slide
-    } else {
-        ogeom_math::Transform2::rotation(Point2::new(phi / 2.0, c / 2.0), core::f64::consts::PI)
+    Some(match (sigma > 0.0, s > 0.0) {
+        (true, true) => slide,
+        (false, false) => {
+            ogeom_math::Transform2::rotation(Point2::new(phi / 2.0, c / 2.0), core::f64::consts::PI)
+        }
+        // `u` to `φ - u`: the mirror in the column `u = φ / 2`, slid by `c`.
+        (false, true) => {
+            ogeom_math::Transform2::translation(ogeom_math::Vector2::new(0.0, c))
+                * ogeom_math::Transform2::line_mirror(
+                    Point2::new(phi / 2.0, 0.0),
+                    ogeom_math::Direction2::X,
+                )
+        }
+        // `v` to `c - v`: the mirror in the row `v = c / 2`, slid by `φ`.
+        (true, false) => {
+            ogeom_math::Transform2::translation(ogeom_math::Vector2::new(phi, 0.0))
+                * ogeom_math::Transform2::line_mirror(
+                    Point2::new(0.0, c / 2.0),
+                    ogeom_math::Direction2::Y,
+                )
+        }
     })
 }
 
@@ -4126,8 +4147,12 @@ fn carried_across(
 /// the projection.
 fn same_chart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerances) -> bool {
     use SurfaceGeometry as S;
+    // The handedness too: on frames sharing `x` and `z`, a left-handed
+    // chart's `y` is the right-handed one's reversed, and its angle runs
+    // the other way round.
     let frames = |fa: ogeom_math::Frame, fb: ogeom_math::Frame| -> bool {
-        fa.origin().distance(fb.origin()) <= tol.confusion()
+        fa.handedness() == fb.handedness()
+            && fa.origin().distance(fb.origin()) <= tol.confusion()
             && fa.z().vector().dot(fb.z().vector()) >= 1.0 - tol.angular()
             && fa.x().vector().dot(fb.x().vector()) >= 1.0 - tol.angular()
     };
@@ -15147,6 +15172,65 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    /// One cylinder and one torus, each spelled on frames turned about the
+    /// axis, slid along it (the cylinder's), with the axis reversed and on
+    /// either handedness: every pair's chart map carries a point of the
+    /// owner's chart to the target's point at the same place in space.
+    /// A frame of the other handedness turns its angle the other way
+    /// round, which the map must mirror rather than turn.
+    #[test]
+    fn a_coaxial_chart_map_lands_on_the_same_point_across_handedness() {
+        let frames = |slide: f64| -> Vec<Frame> {
+            let mut out = Vec::new();
+            for up in [Direction::Z, -Direction::Z] {
+                let x = Direction::new(ogeom_math::Vector::new(0.6, 0.8, 0.0), T).unwrap();
+                let frame = Frame::new(Point::new(0.0, 0.0, slide), up, x, T).unwrap();
+                out.extend([frame, frame.mirrored()]);
+            }
+            out
+        };
+        let cylinder = |f: Frame| -> SurfaceGeometry {
+            ogeom_geom::CylinderSurface::new(
+                ogeom_math::Cylinder::new(f, 2.0, T).unwrap(),
+                (-5.0, 5.0),
+            )
+            .unwrap()
+            .into()
+        };
+        let torus = |f: Frame| -> SurfaceGeometry {
+            ogeom_geom::TorusSurface::new(ogeom_math::Torus::new(f, 2.0, 0.5, T).unwrap()).into()
+        };
+        let kinds: [(&dyn Fn(Frame) -> SurfaceGeometry, f64); 2] =
+            [(&cylinder, 1.5), (&torus, 0.0)];
+        for (make, slide) in kinds {
+            for target_frame in [Frame::WORLD, Frame::WORLD.mirrored()] {
+                let target = make(target_frame);
+                for owner_frame in frames(slide) {
+                    let owner = make(owner_frame);
+                    let map = coaxial_chart_map(&owner, &target, 0.0, T).unwrap();
+                    for (u, v) in [(0.3, 0.2), (2.0, -1.0), (5.0, 1.1)] {
+                        let at = owner.point_at(u, v, T).unwrap();
+                        let uv = map.apply(Point2::new(u, v));
+                        let tau = core::f64::consts::TAU;
+                        let lifted = target
+                            .point_at(uv.x.rem_euclid(tau), uv.y, T)
+                            .or_else(|_| {
+                                target.point_at(uv.x.rem_euclid(tau), uv.y.rem_euclid(tau), T)
+                            })
+                            .unwrap();
+                        // Two closed forms of one point: rounding only.
+                        assert!(
+                            at.distance(lifted) < 1e-12,
+                            "{:?} owner on {:?} target, ({u}, {v}): {at:?} against {lifted:?}",
+                            owner_frame.handedness(),
+                            target_frame.handedness()
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// An L-shaped prism across `y` whose step's underside lies on
     /// `z = 0` over `1 <= x <= 2`: past its edge at `x = 1` the plane runs

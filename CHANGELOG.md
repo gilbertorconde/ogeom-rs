@@ -907,6 +907,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean between coincident surfaces of opposite handedness.**
+  - A cylinder, cone, sphere or torus on a left-handed (mirrored) frame
+    turns its angle about `-z`. Three places read `z` as the axis the
+    angle turns about, so a fuse of a right-handed drum with a coaxial
+    left-handed one slid along it came out empty or "arrangement left no
+    piece of the face", and a dented solid fused with its whole mirrored
+    self came out invalid:
+    - the closed-form pcurve of a circle round the axis ran up `u` where
+      it runs down it;
+    - two coaxial cylinder or torus charts were mapped by a turn where
+      the angles run opposite ways, which takes a mirror;
+    - two frames with the same origin, `x` and `z` but opposite
+      handedness were read as one chart.
+  - Each now reads the angle's own axis, `x × y`; the chart map mirrors
+    `u` where the handednesses differ; and one chart takes one
+    handedness. Right-handed pairs build exactly as before.
+  - Measured: a radius-1, height-2 drum against one slid a unit up or
+    down its axis on either left-handed spelling (`y` or `z` reversed),
+    both operand orders: union `3π`, overlap `π` and each difference `π`,
+    all valid, to 1e-14. A cylinder, frustum, ball and torus dented by an
+    off-axis ball against the whole on the mirrored frame: union the whole's
+    closed form to 3e-11, overlap and differences to the dented solid's
+    own volume, all valid.
+
 - **A prism of a mirrored circle swept along its normal.** (#394)
   - `make_prism` built the wall of a circle on a left-handed frame (a
     mirrored one), swept against the frame's `z`, on a cylinder whose

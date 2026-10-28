@@ -1943,6 +1943,14 @@ fn circle_window(range: (f64, f64)) -> (f64, f64) {
     }
 }
 
+/// The axis an analytic surface's angle `u` turns about: `x × y`, which is
+/// the frame's `z` on a right-handed frame and `-z` on a left-handed
+/// (mirrored) one. A circle round the axis runs up `u` where it turns about
+/// this axis and down `u` where it turns against it.
+fn spin(frame: &ogeom_math::Frame) -> ogeom_math::Vector {
+    frame.z().vector() * frame.handedness().sign()
+}
+
 /// The pcurve of a curve on a cone, for the two straight-line families.
 ///
 /// A ruling (through the apex, on the surface) runs at constant `u`; a
@@ -1987,7 +1995,7 @@ fn on_cone(
             let start = circle.centre() + circle.frame().x().vector() * circle.radius();
             let at = frame.to_local(start);
             let phase = at.y.atan2(at.x) + turned;
-            let winding = circle.frame().z().vector().dot(axis_z).signum();
+            let winding = circle.frame().z().vector().dot(spin(&frame)).signum();
             let towards =
                 ogeom_math::Direction2::new(ogeom_math::Vector2::new(winding, 0.0), tol).ok()?;
             Some(
@@ -2117,7 +2125,7 @@ fn on_torus(
         let start = circle.centre() + circle.frame().x().vector() * circle.radius();
         let at = frame.to_local(start);
         let phase = at.y.atan2(at.x) + turned;
-        let winding = normal.dot(axis_z).signum();
+        let winding = normal.dot(spin(&frame)).signum();
         let towards =
             ogeom_math::Direction2::new(ogeom_math::Vector2::new(winding, 0.0), tol).ok()?;
         return Some(
@@ -2430,7 +2438,7 @@ fn on_cylinder(
             let start = circle.centre() + circle.frame().x().vector() * circle.radius();
             let at = frame.to_local(start);
             let phase = at.y.atan2(at.x);
-            let winding = circle.frame().z().dot(axis.direction).signum();
+            let winding = circle.frame().z().vector().dot(spin(&frame)).signum();
             let towards =
                 ogeom_math::Direction2::new(ogeom_math::Vector2::new(winding, 0.0), tol).ok()?;
             Some(
@@ -2671,7 +2679,7 @@ fn on_sphere(
     let phase = at.y.atan2(at.x);
     // Phase and winding exactly as the cylinder case: a parallel whose own
     // axis opposes the sphere's marches its angle *down* the longitude.
-    let winding = circle.frame().z().vector().dot(frame.z().vector()).signum();
+    let winding = circle.frame().z().vector().dot(spin(&frame)).signum();
     let towards = ogeom_math::Direction2::new(ogeom_math::Vector2::new(winding, 0.0), tol).ok()?;
     Some(
         Line2d::over(
@@ -3666,6 +3674,112 @@ mod tests {
                         "{:?} frame, t {t}: pcurve lifts {lifted:?} against {p3:?}",
                         frame.handedness()
                     );
+                }
+            }
+        }
+    }
+
+    /// A surface on a left-handed (mirrored) frame turns its angle `u`
+    /// about `-z`: a circle round its axis that turns about `+z` runs down
+    /// `u`, not up it. Each surface is taken on both frames through its own
+    /// `x`, each circle on it on both of its own, and the circle's pcurve
+    /// lifted through the surface must give the curve's own point back at
+    /// every parameter.
+    #[test]
+    fn a_circle_on_a_left_handed_surface_keeps_its_pcurve_same_parameter() {
+        use ogeom_geom::{ConeSurface, TorusSurface};
+        let on = |centre: Point, normal: Direction, radius: f64| {
+            (Frame::new(centre, normal, Direction::X, T).unwrap(), radius)
+        };
+        let cylinder = |frame: Frame| -> SurfaceGeometry {
+            CylinderSurface::new(Cylinder::new(frame, 2.0, T).unwrap(), (-4.0, 4.0))
+                .unwrap()
+                .into()
+        };
+        let cone = |frame: Frame| -> SurfaceGeometry {
+            ConeSurface::new(
+                ogeom_math::Cone::new(frame, 1.0, core::f64::consts::FRAC_PI_6, T).unwrap(),
+                (-1.0, 3.0),
+            )
+            .unwrap()
+            .into()
+        };
+        let sphere = |frame: Frame| -> SurfaceGeometry {
+            SphereSurface::new(Sphere::new(frame, 2.0, T).unwrap()).into()
+        };
+        let torus = |frame: Frame| -> SurfaceGeometry {
+            TorusSurface::new(ogeom_math::Torus::new(frame, 2.0, 0.5, T).unwrap()).into()
+        };
+        type Make<'a> = &'a dyn Fn(Frame) -> SurfaceGeometry;
+        let surfaces: [(Make, Vec<(Frame, f64)>); 4] = [
+            (
+                &cylinder,
+                vec![on(Point::new(0.0, 0.0, 1.0), Direction::Z, 2.0)],
+            ),
+            (
+                &cone,
+                vec![on(
+                    Point::new(0.0, 0.0, 1.0),
+                    Direction::Z,
+                    1.0 + core::f64::consts::FRAC_PI_6.tan(),
+                )],
+            ),
+            (
+                &sphere,
+                vec![
+                    on(Point::new(0.0, 0.0, 1.0), Direction::Z, 3.0_f64.sqrt()),
+                    on(Point::ORIGIN, Direction::Y, 2.0),
+                ],
+            ),
+            (
+                &torus,
+                vec![
+                    on(Point::ORIGIN, Direction::Z, 2.5),
+                    on(Point::new(0.0, 0.0, 0.5), Direction::Z, 2.0),
+                    on(Point::new(2.0, 0.0, 0.0), Direction::Y, 0.5),
+                ],
+            ),
+        ];
+        let tau = core::f64::consts::TAU;
+        for (make, circles) in &surfaces {
+            for surface_frame in [Frame::WORLD, Frame::WORLD.mirrored()] {
+                let surface = make(surface_frame);
+                for (frame, radius) in circles {
+                    for frame in [*frame, frame.mirrored()] {
+                        let circle: Curve = ogeom_geom::CircleCurve::new(
+                            ogeom_math::Circle::new(frame, *radius, T).unwrap(),
+                        )
+                        .into();
+                        // A meridian's half is imaged over its own range.
+                        let range = if frame.z().vector().dot(Vector::Z).abs() < 0.5 {
+                            let half = core::f64::consts::FRAC_PI_2 - 0.1;
+                            (-half, half)
+                        } else {
+                            (0.0, tau)
+                        };
+                        let pcurve = exact_pcurve_over(&circle, range, &surface, T)
+                            .expect("a circle of the surface has a closed-form pcurve");
+                        for i in 0..=8 {
+                            let t = (range.1 - range.0).mul_add(f64::from(i) / 8.0, range.0);
+                            let uv = pcurve.point_at(t, T).unwrap();
+                            let lifted = surface
+                                .point_at(uv.x.rem_euclid(tau), uv.y, T)
+                                .or_else(|_| {
+                                    surface.point_at(uv.x.rem_euclid(tau), uv.y.rem_euclid(tau), T)
+                                })
+                                .unwrap();
+                            let p3 = circle.point_at(t, T).unwrap();
+                            // Both sides are closed forms of one point:
+                            // rounding only.
+                            assert!(
+                                p3.distance(lifted) < 1e-9,
+                                "{:?} surface, {:?} circle {frame:?}, t {t}: pcurve lifts \
+                                 {lifted:?} against {p3:?}",
+                                surface_frame.handedness(),
+                                frame.handedness()
+                            );
+                        }
+                    }
                 }
             }
         }
