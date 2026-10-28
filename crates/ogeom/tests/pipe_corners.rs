@@ -223,6 +223,147 @@ fn an_auxiliary_spine_above_an_l_mitres_to_its_legs_volume() {
     assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
 }
 
+/// A circle of `radius` about `at`, square to `heading` (in the `xy`
+/// plane), as a wire.
+fn circle_ring(model: &mut Model, at: Point, heading: Vector, radius: f64) -> Shape {
+    let across = Vector::new(0.0, 0.0, 1.0).cross(heading);
+    let frame = Frame::new(
+        at,
+        Direction::new(heading, T).unwrap(),
+        Direction::new(across, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let circle = Circle::new(frame, radius, T).unwrap();
+    let edge = make_edge(model, CircleCurve::new(circle).into(), (0.0, 2.0 * PI), T)
+        .unwrap()
+        .shape;
+    make_wire(model, &[edge], T).unwrap().shape
+}
+
+/// A face on the plane through the origin square to `y`, bounded by
+/// `rings`, the outer first.
+fn face_of(model: &mut Model, rings: &[Shape]) -> Shape {
+    let frame = Frame::new(Point::ORIGIN, Direction::Y, Direction::X, T).unwrap();
+    make_face(model, PlaneSurface::new(Plane::new(frame)).into(), rings, T)
+        .unwrap()
+        .shape
+}
+
+/// An auxiliary spine at height `h` beside the L (0,0,0) -> (0,L,0) ->
+/// (L,L,0), its legs off the L's so the section's normal, pointing at it,
+/// turns along both of the L's legs. Each leg's planes cross it once:
+/// the first leg's on the part left of the L, the second's on the part
+/// beyond it. Where `still`, it runs parallel to each of the L's legs for
+/// the last 5 before the corner and the first 5 after it, so the frame
+/// holds still there, but each leg's frame differs from the other's
+/// mirrored across the corner.
+fn guide_beside_an_l(model: &mut Model, l: f64, h: f64, still: bool) -> Shape {
+    let points: Vec<Point> = if still {
+        vec![
+            Point::new(-3.0, -1.0, h),
+            Point::new(-1.0, l - 5.0, h),
+            Point::new(-1.0, l + 2.0, h),
+            Point::new(5.0, l + 2.0, h),
+            Point::new(l + 1.0, l + 5.0, h),
+        ]
+    } else {
+        vec![
+            Point::new(-3.0, -1.0, h),
+            Point::new(-1.0, l + 1.0, h),
+            Point::new(l + 1.0, l + 4.0, h),
+        ]
+    };
+    make_polygon(model, &points, false, T).unwrap().shape
+}
+
+/// A rectangle `2 a` by `4 a` with a circular hole of radius `r` about
+/// its centre, and a disc of radius `2 a` with that hole, down the L
+/// under an auxiliary spine that turns the section along both legs, so
+/// each leg is a skinned run and the two meet at the mitre with their
+/// frames there unrelated. The hole's circle is centred on the spine and
+/// square to it, so every frame carries it onto itself: its wall down
+/// each leg is the cylinder, cut at the mitre in one ellipse.
+///
+/// Where the frame holds still within the section's reach of the corner,
+/// each run there is the prism of its section, and the mitred L holds the
+/// section's area times the spine's length (the wedge each prism runs on
+/// past the corner and the part the mitre plane cuts back balance about
+/// the section's centre): within the skin's tolerance over the outer
+/// ring's walls. Where the frame turns up to the corner, the outer ring's
+/// turned prisms no longer balance, but the hole's tube still does, and
+/// the holed pipe is the rectangle's under the same law less `π r² 2 L`.
+/// The annulus's two rings are both such circles, so it is the mitred
+/// tube under any frame, `π (4 a² - r²) 2 L`.
+#[test]
+fn a_holed_section_down_an_l_mitres_under_a_turning_auxiliary_spine() {
+    let (a, l, r, h, skin) = (1.0, 10.0, 0.5, 5.0, 1e-3);
+    let y = Vector::new(0.0, 1.0, 0.0);
+    let hole_volume = PI * r * r * 2.0 * l;
+    let sweep = |section: &str, still: bool| {
+        let mut model = Model::new();
+        let rect = rectangle_section(&mut model, Point::ORIGIN, y, a, 2.0 * a);
+        let rect = model.ordered_children_of(&rect).unwrap()[0].clone();
+        let hole = circle_ring(&mut model, Point::ORIGIN, y, r);
+        let profile = match section {
+            "holed" => face_of(&mut model, &[rect, hole]),
+            "solid" => face_of(&mut model, &[rect]),
+            _ => {
+                let disc = circle_ring(&mut model, Point::ORIGIN, y, 2.0 * a);
+                face_of(&mut model, &[disc, hole])
+            }
+        };
+        let spine = make_polygon(
+            &mut model,
+            &[
+                Point::ORIGIN,
+                Point::new(0.0, l, 0.0),
+                Point::new(l, l, 0.0),
+            ],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let guide = guide_beside_an_l(&mut model, l, h, still);
+        let pipe = make_pipe_shell_with(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::Auxiliary { guide: &guide },
+            PipeCorners::Mitre,
+            skin,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{section}, still {still}: {e}"))
+        .shape;
+        let found = check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{section}, still {still}: {found}");
+        let (v, exact) = measure(&model, &pipe);
+        assert!(exact, "{section}, still {still}: not integrated exactly");
+        v
+    };
+
+    let v = sweep("holed", true);
+    let want = 8.0 * a * a * 2.0 * l - hole_volume;
+    let reach = (a * a + 4.0 * a * a).sqrt();
+    let bound = skin * 12.0 * a * (2.0 * l + 2.0 * reach);
+    assert!(
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
+    );
+
+    let (holed, solid) = (sweep("holed", false), sweep("solid", false));
+    assert!(
+        (solid - holed - hole_volume).abs() < hole_volume * 1e-9,
+        "{solid} less {holed} against the tube's {hole_volume}"
+    );
+
+    let v = sweep("annulus", false);
+    let want = PI * (4.0 * a * a - r * r) * 2.0 * l;
+    assert!((v - want).abs() < want * 1e-12, "{v} against {want}");
+}
+
 /// The spine: a quarter arc of radius `r` about (0, r) from (-r, r),
 /// heading -y, to the origin, heading +x; then a sharp quarter turn left
 /// up the line to (0, l2).

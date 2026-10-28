@@ -13,6 +13,35 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Holed faces mitre between skinned runs under the auxiliary and
+  binormal laws.** (#394)
+  - A face with a circular hole centred on the spine was refused at a
+    mitre where both runs are skinned ("the kept pieces did not close
+    into a shell"): a straight L whose auxiliary spine turns the section
+    along both legs, or a holed square round a lens of two arcs under the
+    binormal. Each run swept the hole as a skin of its own, and inside the
+    corner both runs' hole walls cut the mitre plane in one curve
+    (the cylinders of two legs, or two tori mirrored across the plane),
+    each skin's cut a fit of it that crossed the other within a skin's
+    width.
+  - A circle centred on the spine and square to it is carried onto itself
+    by every frame, so its wall is the tube the rotation-minimizing frame
+    sweeps under any law. A run that meets another skinned run at a mitre
+    now sweeps such a hole (or outer ring) as that tube, exactly, down
+    lines and arcs: a cylinder down a line, a torus round an arc, and
+    both runs cut the mitre plane in one exact curve. Every other ring,
+    and every other run, builds as before.
+  - Measured: a 2 by 4 rectangle with a hole of radius 0.5 down a 10 by 10
+    L under an auxiliary spine that holds still near the corner, 9.4e-6
+    from `(8 - π/4) 20` (bound 0.29, the skin over the outer walls);
+    turning up to the corner, the rectangle's pipe less the hole's tube
+    `5π` to 1e-13; an annulus of radii 2 and 0.5 to 1e-15 of `75π`. A
+    holed square round the lens under the level and the leaning binormal
+    is the square's pipe less the mitred tube's closed form to 2e-10.
+  - An off-centre hole, or an off-centre solid section, between two
+    skinned runs whose frames differ at the mitre can still be refused
+    (down the L where the frame holds still near the corner).
+
 - **Two skinned runs of a pipe meet at a mitre.** (#394)
   - Under the auxiliary and binormal laws, two runs that are both skinned
     (an arc into an arc, or a line the auxiliary spine turns) were refused

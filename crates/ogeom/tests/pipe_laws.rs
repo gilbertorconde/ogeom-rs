@@ -1394,3 +1394,94 @@ fn a_disc_round_a_lens_mitres_its_skinned_runs_at_both_corners() {
         "{v} against {want}, bound {bound}"
     );
 }
+
+/// The square of side `2 half` about the origin on the plane of `frame`,
+/// its sides along the frame's `x` and `y`, with a circular hole of
+/// `radius` about the origin where one is given.
+fn lens_section(model: &mut Model, frame: Frame, half: f64, radius: Option<f64>) -> Shape {
+    let (across, up) = (frame.y().vector(), frame.x().vector());
+    let pts = [(-half, -half), (half, -half), (half, half), (-half, half)]
+        .map(|(s, t)| Point::ORIGIN + across * s + up * t);
+    let mut rings = vec![make_polygon(model, &pts, true, T).unwrap().shape];
+    if let Some(radius) = radius {
+        rings.push(circle_wire(model, frame, radius));
+    }
+    make_face(
+        model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &rings,
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+/// A holed square round [`lens`] under the level and the leaning
+/// binormal: two skinned runs mitred at both corners, whose hole walls
+/// are the tori of one radius the two arcs carry the hole's circle round,
+/// mirror images across each mitre plane. Each run sweeps the hole's
+/// circle, centred on the spine and square to it, as the torus it is
+/// under any frame, so the holed pipe is the square's pipe under the same
+/// law less that tube mitred round the lens. The tube is the disc lens's
+/// closed form at the hole's radius: Pappus round the arcs, and at each
+/// corner each run's wedge `u tan(φ)` outside it less [`cut_round_an_arc`]
+/// at `ρ = big - u` inside it, integrated by the midpoint rule.
+#[test]
+fn a_holed_square_round_a_lens_mitres_its_tube_under_the_binormal() {
+    const COLUMNS: u32 = 100_000;
+    let (big, half_chord, half, radius, skin) = (15.0, 10.0, 1.0, 0.4, 1e-3);
+    let lean = Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap();
+    let du = radius / f64::from(COLUMNS);
+    for (case, law) in [
+        ("level", PipeLaw::Binormal(Direction::Z)),
+        ("leaning", PipeLaw::Binormal(lean)),
+    ] {
+        let sweep = |hole: Option<f64>| {
+            let mut model = Model::new();
+            let (spine, turned) = lens(&mut model, big, half_chord);
+            let start = Vector::new((turned / 2.0).sin(), (turned / 2.0).cos(), 0.0);
+            let frame = Frame::new(
+                Point::ORIGIN,
+                Direction::new(start, T).unwrap(),
+                Direction::Z,
+                T,
+            )
+            .unwrap();
+            let profile = lens_section(&mut model, frame, half, hole);
+            let pipe = make_pipe_shell_with(
+                &mut model,
+                &profile,
+                &spine,
+                &law,
+                PipeCorners::Mitre,
+                skin,
+                T,
+            )
+            .unwrap_or_else(|e| panic!("{case}: {e}"))
+            .shape;
+            let found = ogeom::algo::check(&model, &pipe, T).unwrap();
+            assert!(found.is_valid(), "{case}: {found}");
+            let measured =
+                volume_properties(&model, &pipe, Deflection::with_chord(1e-3).unwrap(), T).unwrap();
+            assert!(measured.deflection == 0.0, "{case}: not integrated exactly");
+            (measured.mass, turned)
+        };
+        let (holed, turned) = sweep(Some(radius));
+        let (solid, _) = sweep(None);
+        let half_turn = (PI - turned) / 2.0;
+        let corner: f64 = (0..COLUMNS)
+            .map(|k| {
+                let u = (f64::from(k) + 0.5) * du;
+                let width = 2.0 * (radius * radius - u * u).max(0.0).sqrt();
+                (u * half_turn.tan() - cut_round_an_arc(big, big - u, half_turn, false))
+                    * width
+                    * du
+            })
+            .sum();
+        let tube = PI * radius * radius * 2.0 * big * turned + 4.0 * corner;
+        assert!(
+            (solid - holed - tube).abs() < tube * 1e-9,
+            "{case}: {solid} less {holed} against the tube's {tube}"
+        );
+    }
+}

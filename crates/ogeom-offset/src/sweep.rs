@@ -6265,6 +6265,70 @@ fn moved_ring(
     Ok(ogeom_algo::make_wire(model, &moved, tol)?.shape)
 }
 
+/// Whether every edge of the closed wire `ring` is an arc of one circle
+/// centred on the station's point, in the plane square to its tangent, to
+/// the confusion distance and an angle's tolerance.
+fn centred_circle(
+    model: &Model,
+    ring: &Shape,
+    station: &SpineStation,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let mut radius: Option<f64> = None;
+    for edge in model.ordered_children_of(ring)? {
+        let (curve, _) = spine_curve_of(model, &edge)?;
+        let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
+        let basis = match &curve {
+            Curve::Trimmed(t) => t.basis().clone(),
+            other => other.clone(),
+        };
+        let Curve::Circle(c) = basis else {
+            return Ok(false);
+        };
+        let circle = c.circle();
+        let r = *radius.get_or_insert(circle.radius());
+        if circle.centre().distance(station.at) > tol.confusion()
+            || (circle.radius() - r).abs() > tol.confusion()
+            || circle
+                .frame()
+                .z()
+                .vector()
+                .cross(station.tangent)
+                .magnitude()
+                > tol.angular()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(radius.is_some())
+}
+
+/// The face `ring` bounds on the plane of `profile`, facing along the
+/// station's tangent.
+fn disc_of(
+    model: &mut Model,
+    profile: &Shape,
+    ring: &Shape,
+    station: &SpineStation,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let Some(ogeom_topo::NodeData::Face(data)) = model.node(profile).map(|n| n.data()) else {
+        ogeom_bail!(Construction, "a holed section is a face");
+    };
+    let Some(surface) = model.geometry().surface(data.surface).cloned() else {
+        ogeom_bail!(Dangling, "surface is not in this model");
+    };
+    let edges = model.ordered_children_of(ring)?;
+    let disc = make_face_with_pcurves(model, surface, &[edges], tol)?.shape;
+    realized_profile_wound(
+        model,
+        &disc,
+        &Transform::IDENTITY,
+        Some(station.tangent),
+        tol,
+    )
+}
+
 /// A profile swept under a law that turns it about the spine, as the loft
 /// through its outer ring placed at every station by the law's frame: the
 /// section keeps the place it has in the frame at the spine's start, and
@@ -6289,15 +6353,33 @@ fn law_loft(
     };
     if rings.len() > 1 {
         // Each hole sweeps its own solid under the same frames, cut from
-        // the outer one.
+        // the outer one. A ring that is a circle about the spine's start,
+        // square to it, is carried onto itself by every frame: where the
+        // section neither scales nor twists, it sweeps the tube the
+        // rotation-minimizing frame does. Where the run is to end on its
+        // sections exactly, that tube is built exactly down lines and arcs,
+        // so two runs meeting at a mitre cut it from that plane in one
+        // curve.
         let mut solids = Vec::with_capacity(rings.len());
         for ring in &rings {
-            solids.push(
-                law_loft(
-                    model, ring, spine, stations, law, evolution, exact_ends, tolerance, tol,
-                )?
-                .shape,
-            );
+            let tube = if exact_ends
+                && evolution.is_none()
+                && centred_circle(model, ring, &stations[0], tol)?
+            {
+                let disc = disc_of(model, profile, ring, &stations[0], tol)?;
+                exact_legs(model, &disc, spine, false, tol)?
+            } else {
+                None
+            };
+            solids.push(match tube {
+                Some(tube) => tube.shape,
+                None => {
+                    law_loft(
+                        model, ring, spine, stations, law, evolution, exact_ends, tolerance, tol,
+                    )?
+                    .shape
+                }
+            });
         }
         let mut shape = solids[0].clone();
         for hole in &solids[1..] {
