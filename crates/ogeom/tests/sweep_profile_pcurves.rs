@@ -9,16 +9,16 @@ use ogeom::algo::{
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{
-    BSplineCurve, CircleCurve, Curve, Curve3d as _, CurveOnSurface, EllipseCurve, HyperbolaCurve,
-    Line2d, LineCurve, OffsetCurve, ParabolaCurve, PlanarCurve, PlaneSurface, Reversible as _,
-    SurfaceGeometry, TrimmedCurve,
+    BSplineCurve, Circle2d, CircleCurve, Curve, Curve3d as _, CurveOnSurface, EllipseCurve,
+    HyperbolaCurve, Line2d, LineCurve, OffsetCurve, ParabolaCurve, PlanarCurve, PlaneSurface,
+    Reversible as _, SurfaceGeometry, TrimmedCurve, TrimmedSurface,
 };
 use ogeom::math::{
-    Axis, Circle, Direction, Ellipse, Frame, Hyperbola, KnotVector, Parabola, Plane, Point, Point2,
-    Vector, Weighted,
+    Axis, Circle, Circle2, Direction, Direction2, Ellipse, Frame, Frame2, Hyperbola, KnotVector,
+    Parabola, Plane, Point, Point2, Vector, Vector2, Weighted,
 };
 use ogeom::mesh::Deflection;
-use ogeom::topo::{Model, Shape};
+use ogeom::topo::{Model, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
 const PI: f64 = core::f64::consts::PI;
@@ -102,6 +102,13 @@ enum Side {
     /// The straight side as a line drawn on the profile's plane under a
     /// chart turned and moved against the profile's.
     OnTurnedChart,
+    /// The arc drawn as a circle on the profile's plane under the turned
+    /// chart, trimmed to the side.
+    ArcOnTurnedChart,
+    /// The arc drawn as a circle on the profile's plane under a chart whose
+    /// normal is turned round, a mirror image of the profile's, and the
+    /// plane trimmed.
+    ArcOnMirroredChart,
 }
 
 /// The hyperbola's half parameter range: the arc is `[-H, H]`.
@@ -314,35 +321,81 @@ fn side(a: Point, b: Point, kind: Side) -> (Curve, (f64, f64), f64) {
             (curve, range, area)
         }
         Side::OnProfilePlane | Side::OnTurnedChart => {
-            // The chart is the profile's own, or one turned a quarter
+            // The chart is the profile's own, or one turned an eighth
             // about the normal and moved within the plane.
             let chart = if matches!(kind, Side::OnProfilePlane) {
                 profile_plane().frame()
             } else {
-                Frame::new(
-                    Point::new(1.0, 0.0, 2.0),
-                    normal(),
-                    Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap(),
-                    T,
-                )
-                .unwrap()
+                turned_chart(normal())
             };
-            let flat = |p: Point| {
-                let l = chart.to_local(p);
-                Point2::new(l.x, l.y)
-            };
+            let flat = flat_in(chart);
             let line = PlanarCurve::from(Line2d::segment(flat(a), flat(b), T).unwrap());
-            let surface: SurfaceGeometry =
-                PlaneSurface::over(Plane::new(chart), (-10.0, 10.0), (-10.0, 10.0))
-                    .unwrap()
-                    .into();
-            (
-                Curve::OnSurface(Box::new(CurveOnSurface::new(line, surface))),
-                (0.0, 2.0 * half),
-                0.0,
+            (on_chart(line, chart, false), (0.0, 2.0 * half), 0.0)
+        }
+        Side::ArcOnTurnedChart | Side::ArcOnMirroredChart => {
+            // The arc's circle read in the chart: its centre and axes
+            // there, the chart's own `y` turned round with its normal.
+            let mirrored = matches!(kind, Side::ArcOnMirroredChart);
+            let chart = turned_chart(if mirrored { -normal() } else { normal() });
+            let (circle, range, area) = bulge(a, b, outward, Side::Arc);
+            let Curve::Circle(circle) = circle else {
+                unreachable!()
+            };
+            let circle = circle.circle();
+            let flat = flat_in(chart);
+            let flat_direction = |d: Direction| {
+                let l = chart.vector_to_local(d.vector());
+                Direction2::new(Vector2::new(l.x, l.y), T).unwrap()
+            };
+            let frame = Frame2::from_axes(
+                flat(circle.centre()),
+                flat_direction(circle.frame().x()),
+                flat_direction(circle.frame().y()),
+                T,
             )
+            .unwrap();
+            let drawn = PlanarCurve::from(Circle2d::new(
+                Circle2::new(frame, circle.radius(), T).unwrap(),
+            ));
+            (on_chart(drawn, chart, mirrored), range, area)
         }
     }
+}
+
+/// A chart on the profile's plane with normal `normal`, turned an eighth
+/// against the profile's and moved within the plane.
+fn turned_chart(normal: Direction) -> Frame {
+    Frame::new(
+        Point::new(1.0, 0.0, 2.0),
+        normal,
+        Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap(),
+        T,
+    )
+    .unwrap()
+}
+
+/// A point's coordinates in `chart`'s `x` and `y`.
+fn flat_in(chart: Frame) -> impl Fn(Point) -> Point2 {
+    move |p: Point| {
+        let l = chart.to_local(p);
+        Point2::new(l.x, l.y)
+    }
+}
+
+/// `drawn` on the plane with `chart`'s frame, that plane trimmed or not.
+fn on_chart(drawn: PlanarCurve, chart: Frame, trimmed: bool) -> Curve {
+    let plane: SurfaceGeometry =
+        PlaneSurface::over(Plane::new(chart), (-10.0, 10.0), (-10.0, 10.0))
+            .unwrap()
+            .into();
+    let surface = if trimmed {
+        TrimmedSurface::new(plane, (-8.0, 8.0), (-8.0, 8.0), T)
+            .unwrap()
+            .into()
+    } else {
+        plane
+    };
+    Curve::OnSurface(Box::new(CurveOnSurface::new(drawn, surface)))
 }
 
 /// The diamond face with sides of `kind`, and its area.
@@ -391,6 +444,8 @@ fn a_profile_with_sides_of_any_planar_curve_sweeps_into_a_valid_solid() {
         Side::ReversedLongHyperbola,
         Side::OnProfilePlane,
         Side::OnTurnedChart,
+        Side::ArcOnTurnedChart,
+        Side::ArcOnMirroredChart,
     ] {
         for turn in [None, Some(2.0 * PI), Some(1.5 * PI)] {
             let at = format!("{kind:?} sides, turn {turn:?}");
@@ -435,6 +490,17 @@ fn a_profile_with_sides_of_any_planar_curve_sweeps_into_a_valid_solid() {
                         continue;
                     }
                 };
+            // Every end trim is exact, so no edge or vertex widens past
+            // the confusion distance it was built with.
+            let widest = [ShapeType::Edge, ShapeType::Vertex]
+                .into_iter()
+                .flat_map(|kind| explore_unique(&model, &built, kind).unwrap())
+                .filter_map(|shape| model.tolerance_of(&shape).unwrap())
+                .map(|t| t.get())
+                .fold(0.0, f64::max);
+            if widest > T.confusion() {
+                failures.push(format!("{at}: widened to {widest:.3e}"));
+            }
             // Integrated on the exact surfaces, the volume differs from the
             // closed form by quadrature rounding alone.
             if v.deflection != 0.0 || (v.mass - want).abs() > 1e-9 * want {
@@ -448,56 +514,66 @@ fn a_profile_with_sides_of_any_planar_curve_sweeps_into_a_valid_solid() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// A side with no closed-form trim on the profile's plane that leaves the
-/// plane is not the profile's boundary: sweeping the profile into a solid
-/// that keeps it as an end refuses, naming how far off the side sits,
-/// rather than building an end with no trim on that side.
+/// A side that leaves the profile's plane is not the profile's boundary,
+/// whether or not the plane's closed forms would project it there: sweeping
+/// the profile into a solid that keeps it as an end refuses, naming how far
+/// off the side sits, rather than building an end whose trim misses the
+/// side.
 #[test]
 fn a_side_leaving_the_profile_plane_refuses_to_sweep_into_ends() {
     let at = corners();
-    let mut model = Model::new();
-    let v: Vec<Shape> = at
-        .iter()
-        .map(|p| make_vertex(&mut model, *p).shape)
-        .collect();
-    let mut edges = Vec::new();
-    for i in 0..4 {
-        let (a, b) = (at[i], at[(i + 1) % 4]);
-        let (curve, range) = if i == 0 {
-            // The reversed trimmed arc, its plane turned about the side
-            // so its middle stands `BULGE sin 0.1` off the profile.
-            let d = b - a;
-            let outward = d.cross(normal().vector()) / d.magnitude();
-            let tilted = outward * 0.1_f64.cos() + normal().vector() * 0.1_f64.sin();
-            let (circle, range, _) = bulge(b, a, tilted, Side::Arc);
-            let trimmed: Curve = TrimmedCurve::new(circle, range.0, range.1, T)
-                .unwrap()
-                .into();
-            reversed(&trimmed, range)
-        } else {
-            let (curve, range, _) = side(a, b, Side::Line);
-            (curve, range)
-        };
-        let edge = make_edge_between(&mut model, curve, range, &v[i], &v[(i + 1) % 4], T).unwrap();
-        edges.push(edge.shape);
-    }
-    let wire = make_wire(&mut model, &edges, T).unwrap().shape;
-    let surface = PlaneSurface::over(profile_plane(), (-10.0, 10.0), (-10.0, 10.0)).unwrap();
-    let face = make_face(&mut model, surface.into(), &[wire], T)
-        .unwrap()
-        .shape;
     let axis = Axis {
         location: Point::ORIGIN,
         direction: Direction::Z,
     };
-    let prism = make_prism(&mut model, &face, normal().vector() * 3.0, T);
-    let turned = make_revolution(&mut model, &face, axis, 1.5 * PI, T);
-    for built in [prism, turned] {
-        let e = built.expect_err("the sweep refuses");
-        assert!(
-            e.to_string().contains("sits 3.99e-2 off its surface"),
-            "{e}"
-        );
+    for reversed_trim in [true, false] {
+        let mut model = Model::new();
+        let v: Vec<Shape> = at
+            .iter()
+            .map(|p| make_vertex(&mut model, *p).shape)
+            .collect();
+        let mut edges = Vec::new();
+        for i in 0..4 {
+            let (a, b) = (at[i], at[(i + 1) % 4]);
+            let (curve, range) = if i == 0 {
+                // The arc, its plane turned about the side so its middle
+                // stands `BULGE sin 0.1` off the profile; as it is, or
+                // built from the far corner, trimmed and reversed.
+                let d = b - a;
+                let outward = d.cross(normal().vector()) / d.magnitude();
+                let tilted = outward * 0.1_f64.cos() + normal().vector() * 0.1_f64.sin();
+                if reversed_trim {
+                    let (circle, range, _) = bulge(b, a, tilted, Side::Arc);
+                    let trimmed: Curve = TrimmedCurve::new(circle, range.0, range.1, T)
+                        .unwrap()
+                        .into();
+                    reversed(&trimmed, range)
+                } else {
+                    let (circle, range, _) = bulge(a, b, tilted, Side::Arc);
+                    (circle, range)
+                }
+            } else {
+                let (curve, range, _) = side(a, b, Side::Line);
+                (curve, range)
+            };
+            let edge =
+                make_edge_between(&mut model, curve, range, &v[i], &v[(i + 1) % 4], T).unwrap();
+            edges.push(edge.shape);
+        }
+        let wire = make_wire(&mut model, &edges, T).unwrap().shape;
+        let surface = PlaneSurface::over(profile_plane(), (-10.0, 10.0), (-10.0, 10.0)).unwrap();
+        let face = make_face(&mut model, surface.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let prism = make_prism(&mut model, &face, normal().vector() * 3.0, T);
+        let turned = make_revolution(&mut model, &face, axis, 1.5 * PI, T);
+        for built in [prism, turned] {
+            let e = built.expect_err("the sweep refuses");
+            assert!(
+                e.to_string().contains("sits 3.99e-2 off its surface"),
+                "reversed trim {reversed_trim}: {e}"
+            );
+        }
     }
 }
 

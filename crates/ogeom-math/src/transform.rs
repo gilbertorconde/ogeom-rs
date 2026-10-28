@@ -523,6 +523,15 @@ impl Transform2 {
         Self::build(linear, 1.0, p - linear * p)
     }
 
+    /// The transform taking `frame`'s local coordinates into world
+    /// coordinates; a reflection where the frame is left-handed.
+    #[must_use]
+    pub fn from_frame(frame: &Frame2) -> Self {
+        let (x, y) = (frame.x(), frame.y());
+        let linear = Matrix2::new([[x.x(), y.x()], [x.y(), y.y()]]);
+        Self::build(linear, 1.0, frame.origin().to_vector())
+    }
+
     /// This transform's classification.
     #[must_use]
     pub const fn kind(&self) -> TransformKind {

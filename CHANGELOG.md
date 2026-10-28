@@ -827,6 +827,32 @@ bump may break the API and a patch bump may not.
     build, within 1e-4 of the corner's closed form integrated over its
     columns.
 
+- **A reversed trim, a reversed hyperbola and a curve drawn on the
+  profile's plane end a sweep exactly.** (#466)
+  - A prism's and a partial turn's caps fitted a pcurve for these sides
+    and widened the edge to the fit's miss, 3.0e-6 for a reversed trimmed
+    arc and 6.2e-6 for a hyperbola run backwards over a domain not
+    symmetric about zero.
+  - Each now takes an exact pcurve at the same parameter. A reversed trim
+    takes its basis's pcurve trimmed the same way and reversed. A
+    hyperbola run backwards over any domain takes the planar branch
+    reversed over the same domain. A curve drawn on the same plane under
+    another chart, or on that plane trimmed, takes its own pcurve moved
+    into this chart. On a plane tipped off this one, or standing off it,
+    a drawn curve is still fitted.
+  - A cap's closed-form pcurve now stands only where its lift meets the
+    edge's curve within the edge's tolerance at the same parameter.
+    Otherwise the edge is fitted, and refused when it stands off the
+    plane. A circle arc tipped out of the profile's plane was projected
+    as a circle there, and the sweep returned a solid `check` rejected
+    ("leaves its curve by 0.041"). It is now refused, naming the
+    3.99e-2 it stands off.
+  - A reversed hyperbola's planar branch has no `.brep` record, so such
+    a cap is refused by that writer by name. Before, the file written
+    read back as a solid with a negative volume.
+  - Measured: every side of the diamond sweep keeps edge and vertex
+    tolerances at 1e-7, within 1e-9 of the closed-form volume.
+
 - **A profile with any edge in its plane sweeps into a valid solid or
   refuses.** (#466)
   - A prism, and a revolution through less than a turn, keep the profile

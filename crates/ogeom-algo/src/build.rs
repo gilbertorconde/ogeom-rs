@@ -1629,7 +1629,21 @@ fn trim_bare_edges(model: &mut Model, face: &Shape, fit: bool, tol: Tolerances) 
         };
         use ogeom_geom::Transformable as _;
         let placed = geometry.transformed(&(unplace * edge.transform(model.datums())?), tol)?;
-        let pcurve = match ogeom_intersect::exact_pcurve_of(&placed, &surface, tol) {
+        // A plane's closed forms project the curve rather than test that it
+        // lies there, so where a fit could take over, the projection stands
+        // only if its lift meets the curve within the edge's tolerance at
+        // the same parameter, the measure `check` holds it to.
+        let exact = ogeom_intersect::exact_pcurve_of(&placed, &surface, tol).filter(|exact| {
+            !fit || crate::pcurve_fit::lifted_gap(
+                (&placed, *range),
+                (exact, *range),
+                &surface,
+                true,
+                tol,
+            )
+            .is_ok_and(|gap| gap <= edge_data.tolerance.get().max(tol.confusion()))
+        });
+        let pcurve = match exact {
             Some(exact) => exact,
             None if fit => {
                 fitted_where_bare(model, &edge, &edge_data, (&placed, *range), &surface, tol)?

@@ -1862,16 +1862,27 @@ fn exact_pcurve(
     // the basis carries the shape and the trim shares its parameter, so the
     // pcurve is the basis's own pcurve trimmed the same way. Answered here
     // rather than in every surface's own case, because the answer does not
-    // depend on the surface at all. A *reversed* trim renumbers, and is left
-    // alone rather than mis-read.
-    if let Curve::Trimmed(trimmed) = curve
-        && !trimmed.is_reversed()
-    {
+    // depend on the surface at all. A *reversed* trim reads its basis at
+    // `s + e - u` over its window `[s, e]`, and so does the planar trim
+    // reversed, so the range the caller uses is mirrored the same way
+    // before it reaches the basis.
+    if let Curve::Trimmed(trimmed) = curve {
         let window = ogeom_geom::Curve3d::domain(&**trimmed);
+        let range = if trimmed.is_reversed() {
+            let sum = window.0 + window.1;
+            (sum - range.1, sum - range.0)
+        } else {
+            range
+        };
         let basis = exact_pcurve(trimmed.basis(), range, surface, tol)?;
-        return ogeom_geom::Trimmed2d::new(basis, window.0, window.1, tol)
-            .ok()
-            .map(Into::into);
+        let pcurve: PlanarCurve = ogeom_geom::Trimmed2d::new(basis, window.0, window.1, tol)
+            .ok()?
+            .into();
+        return Some(if trimmed.is_reversed() {
+            ogeom_geom::Reversible::reversed(&pcurve)
+        } else {
+            pcurve
+        });
     }
     // The cases below read a circle's or an ellipse's frame as the way its
     // parameter runs, so one running backwards is read as its forward
@@ -2174,9 +2185,10 @@ fn offset_on_plane(
 
 /// Project a curve lying in a plane into the plane's own coordinates.
 ///
-/// Exact for a line, a circle, an ellipse, a hyperbola, a B-spline and a
-/// parabola: the plane's frame is orthonormal, so lengths and the curves'
-/// own parameterizations survive the projection unchanged.
+/// Exact for a line, a circle, an ellipse, a hyperbola, a B-spline, a
+/// parabola and a curve drawn on this plane under another chart: the
+/// plane's frame is orthonormal, so lengths and the curves' own
+/// parameterizations survive the projection unchanged.
 fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<PlanarCurve> {
     let frame = plane.frame();
     let flat = |p: Point| {
@@ -2234,14 +2246,18 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
         Curve::Hyperbola(h) => {
             // Run backwards over a domain symmetric about zero, the branch
             // is the forward one with `y` turned round: `cosh` is even and
-            // `sinh` odd. Over any other domain the reversal shifts the
-            // parameter, which no frame states.
+            // `sinh` odd, and the chart image runs forward, as the `.brep`
+            // format can state it. Over any other
+            // domain the reversal reads the branch at `lo + hi - u`, a
+            // shift no frame states, and the chart image is reversed over
+            // the same domain, which reads it there too.
             let hyperbola = h.hyperbola();
             let (lo, hi) = h.domain();
-            let y = match (h.is_reversed(), lo + hi == 0.0) {
-                (false, _) => hyperbola.frame().y(),
-                (true, true) => -hyperbola.frame().y(),
-                (true, false) => return None,
+            let turned = h.is_reversed() && lo + hi == 0.0;
+            let y = if turned {
+                -hyperbola.frame().y()
+            } else {
+                hyperbola.frame().y()
             };
             let frame2 = Frame2::from_axes(
                 flat(hyperbola.centre()),
@@ -2257,11 +2273,14 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
                 tol,
             )
             .ok()?;
-            Some(
-                ogeom_geom::Hyperbola2d::over(flat_hyperbola, lo, hi)
-                    .ok()?
-                    .into(),
-            )
+            let image: PlanarCurve = ogeom_geom::Hyperbola2d::over(flat_hyperbola, lo, hi)
+                .ok()?
+                .into();
+            Some(if h.is_reversed() && !turned {
+                ogeom_geom::Reversible::reversed(&image)
+            } else {
+                image
+            })
         }
         Curve::BSpline(b) => {
             // Affine invariance: a (rational) B-spline in the plane projects
@@ -2296,6 +2315,39 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
                     .into(),
             )
         }
+        Curve::OnSurface(on) => {
+            // Drawn on this plane under another chart: the other chart's
+            // origin and axes, read in this one, are a frame, and the
+            // pcurve moved by it is the same point at every parameter. A
+            // chart on a plane tipped or standing off this one is not this
+            // plane's, and is left alone.
+            let chart = chart_plane(on.surface())?.frame();
+            if !chart.z().is_parallel(frame.z(), tol)
+                || plane.distance_to(chart.origin()) > tol.confusion()
+            {
+                return None;
+            }
+            let frame2 = Frame2::from_axes(
+                flat(chart.origin()),
+                flat_direction(chart.x())?,
+                flat_direction(chart.y())?,
+                tol,
+            )
+            .ok()?;
+            on.pcurve()
+                .transformed(&ogeom_math::Transform2::from_frame(&frame2), tol)
+                .ok()
+        }
+        _ => None,
+    }
+}
+
+/// The plane whose frame's `x` and `y` are a surface's chart, where it has
+/// one: a plane, or a plane trimmed, which keeps its basis's chart.
+fn chart_plane(surface: &SurfaceGeometry) -> Option<ogeom_math::Plane> {
+    match surface {
+        SurfaceGeometry::Plane(p) => Some(p.plane()),
+        SurfaceGeometry::Trimmed(t) => chart_plane(t.basis()),
         _ => None,
     }
 }
@@ -4105,9 +4157,8 @@ mod tests {
 
     /// A hyperbola branch in a plane has an exact pcurve there at the same
     /// parameter, with its derivatives: forward, on a frame turned over, run
-    /// backwards over a domain symmetric about zero, and offset. Run
-    /// backwards over any other domain, its reversal shifts the parameter,
-    /// and it has none.
+    /// backwards over a domain symmetric about zero or over any other, and
+    /// offset.
     #[test]
     fn a_hyperbola_in_a_plane_has_its_pcurve_there() {
         use ogeom_geom::{HyperbolaCurve, OffsetCurve, Reversible as _};
@@ -4135,6 +4186,7 @@ mod tests {
             forward.clone(),
             branch(turned_over, -1.2, 0.7),
             branch(frame, -1.2, 1.2).reversed(),
+            branch(frame, -1.2, 0.7).reversed(),
         ];
         for reference in [up, -up] {
             let offset = OffsetCurve::new(forward.clone(), 0.3, reference).unwrap();
@@ -4169,8 +4221,186 @@ mod tests {
                 }
             }
         }
-        let shifted = branch(frame, -1.2, 0.7).reversed();
-        assert!(exact_pcurve_of(&shifted, &ground, T).is_none());
+    }
+
+    /// Each lifted point of `pcurve` on `surface`, and its first derivative
+    /// lifted along the chart's tangents, against the curve's own at 65
+    /// parameters over `range`, to 1e-12.
+    fn lifts_onto(
+        curve: &Curve,
+        pcurve: &PlanarCurve,
+        range: (f64, f64),
+        surface: &SurfaceGeometry,
+    ) {
+        use ogeom_geom::Surface as _;
+        for i in 0..=64 {
+            let t = (range.1 - range.0).mul_add(f64::from(i) / 64.0, range.0);
+            let at = pcurve.derivatives_at(t, 1, T).unwrap();
+            let lifted = surface.point_at(at[0].x, at[0].y, T).unwrap();
+            let point = curve.point_at(t, T).unwrap();
+            assert!(
+                lifted.distance(point) < 1e-12,
+                "{curve:?} at {t}: {lifted:?} against {point:?}"
+            );
+            let (su, sv) = surface.d1_at(at[0].x, at[0].y, T).unwrap();
+            let tangent = su * at[1].x + sv * at[1].y;
+            let own = curve.d1_at(t, T).unwrap();
+            assert!(
+                (tangent - own).magnitude() < 1e-12,
+                "{curve:?} at {t}: tangent {tangent:?} against {own:?}"
+            );
+        }
+    }
+
+    /// A trim run backwards reads its basis at `s + e - u` over its window
+    /// `[s, e]`, and its pcurve is the basis's trimmed the same way and
+    /// reversed: a circle arc inside its turn and across its seam, a
+    /// hyperbola arc, and a trim of a trim, each at the same parameter.
+    #[test]
+    fn a_reversed_trim_in_a_plane_has_its_pcurve_there() {
+        use ogeom_geom::{CircleCurve, HyperbolaCurve, Reversible as _, TrimmedCurve};
+        let normal = Vector::new(0.3, -0.5, 0.8);
+        let up = Direction::new(normal, T).unwrap();
+        let origin = Point::new(1.0, 2.0, -0.5);
+        let ground = plane(origin, normal);
+        let x = Direction::new(Vector::new(1.0, 0.0, -0.375), T).unwrap();
+        let base = Frame::new(origin, up, x, T).unwrap();
+        let centre = origin + base.x().vector() * 0.2 + base.y().vector() * 0.1;
+        let frame = Frame::new(centre, up, x, T).unwrap();
+        let circle: Curve =
+            CircleCurve::new(ogeom_math::Circle::new(frame, 1.3, T).unwrap()).into();
+        let hyperbola: Curve = HyperbolaCurve::over(
+            ogeom_math::Hyperbola::new(frame, 1.5, 0.8, T).unwrap(),
+            -1.2,
+            0.7,
+        )
+        .unwrap()
+        .into();
+        let trim = |basis: &Curve, lo: f64, hi: f64| -> Curve {
+            TrimmedCurve::new(basis.clone(), lo, hi, T).unwrap().into()
+        };
+        let curves = [
+            trim(&circle, 0.4, 2.9).reversed(),
+            trim(&circle, 5.5, 7.1).reversed(),
+            trim(&circle.reversed(), 0.4, 2.9).reversed(),
+            trim(&hyperbola, -0.9, 0.5).reversed(),
+            trim(&trim(&hyperbola, -1.0, 0.6).reversed(), -0.9, 0.5).reversed(),
+        ];
+        for curve in &curves {
+            let pcurve = exact_pcurve_of(curve, &ground, T).expect("it lies in the plane");
+            lifts_onto(curve, &pcurve, curve.domain(), &ground);
+        }
+    }
+
+    /// A ruling on a cone, trimmed and run backwards: its pcurve is the
+    /// ruling's column trimmed the same way and reversed, at the same
+    /// parameter.
+    #[test]
+    fn a_reversed_trim_of_a_ruling_on_a_cone_has_its_pcurve_there() {
+        use ogeom_geom::{ConeSurface, Reversible as _, TrimmedCurve};
+        let cone =
+            ogeom_math::Cone::new(Frame::WORLD, 24.0, core::f64::consts::FRAC_PI_4, T).unwrap();
+        let surface: SurfaceGeometry = ConeSurface::new(cone, (-1e3, 1e3)).unwrap().into();
+        let radial = Vector::new(0.3_f64.cos(), 0.3_f64.sin(), 0.0);
+        let direction =
+            Direction::new((radial + Vector::new(0.0, 0.0, 1.0)) / 2f64.sqrt(), T).unwrap();
+        let apex = Point::new(0.0, 0.0, -24.0);
+        let line: Curve =
+            ogeom_geom::LineCurve::over(ogeom_math::Axis::new(apex, direction), 5.0, 50.0)
+                .unwrap()
+                .into();
+        let curve = Curve::from(TrimmedCurve::new(line, 10.0, 30.0, T).unwrap()).reversed();
+        let pcurve = exact_pcurve_of(&curve, &surface, T).expect("a ruling inverts");
+        lifts_onto(&curve, &pcurve, curve.domain(), &surface);
+    }
+
+    /// A curve drawn on a plane under another chart has its pcurve in the
+    /// plane's own, at the same parameter, wherever that chart's plane is
+    /// this one: the same chart, one turned and moved within the plane,
+    /// one whose normal is turned round (a mirror image in the chart), and
+    /// one trimmed. A chart on a plane tipped off this one, or standing off
+    /// it, is another plane, and has none.
+    #[test]
+    fn a_curve_drawn_on_the_plane_under_any_chart_has_its_pcurve_there() {
+        use ogeom_geom::{
+            BSpline2d, Circle2d, CurveOnSurface, Line2d, PlaneSurface, Reversible as _,
+            TrimmedSurface,
+        };
+        let normal = Vector::new(0.3, -0.5, 0.8);
+        let up = Direction::new(normal, T).unwrap();
+        let origin = Point::new(1.0, 2.0, -0.5);
+        let ground = plane(origin, normal);
+        let x = Direction::new(Vector::new(1.0, 0.0, -0.375), T).unwrap();
+        let own = Frame::new(origin, up, x, T).unwrap();
+        let elsewhere = origin + own.x().vector() * 0.4 + own.y().vector() * 0.5;
+        let chart = |frame: Frame| -> SurfaceGeometry {
+            PlaneSurface::over(Plane::new(frame), (-6.0, 6.0), (-6.0, 6.0))
+                .unwrap()
+                .into()
+        };
+        let turned = Frame::new(
+            elsewhere,
+            up,
+            Direction::from_cross(normal, Vector::new(0.2, 0.9, 0.1), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let mirrored = Frame::new(elsewhere, -up, x, T).unwrap();
+        let trimmed: SurfaceGeometry =
+            TrimmedSurface::new(chart(turned), (-3.0, 3.0), (-3.0, 3.0), T)
+                .unwrap()
+                .into();
+        let ring = ogeom_math::Circle2::new(
+            ogeom_math::Frame2::new(Point2::new(0.3, -0.2), ogeom_math::Direction2::X),
+            0.9,
+            T,
+        )
+        .unwrap();
+        let knots = ogeom_math::KnotVector::clamped_uniform(3, 5).unwrap();
+        let wave = BSpline2d::new(
+            knots,
+            vec![
+                Point2::new(-1.0, 0.0),
+                Point2::new(-0.5, 0.7),
+                Point2::new(0.0, -0.4),
+                Point2::new(0.6, 0.5),
+                Point2::new(1.1, 0.1),
+            ],
+            T,
+        )
+        .unwrap();
+        let pcurves: [PlanarCurve; 4] = [
+            Line2d::segment(Point2::new(-0.5, 0.25), Point2::new(1.0, 0.75), T)
+                .unwrap()
+                .into(),
+            Circle2d::new(ring).into(),
+            PlanarCurve::from(Circle2d::new(ring)).reversed(),
+            wave.into(),
+        ];
+        for surface in [chart(own), chart(turned), chart(mirrored), trimmed] {
+            for drawn in &pcurves {
+                let curve = Curve::OnSurface(Box::new(CurveOnSurface::new(
+                    drawn.clone(),
+                    surface.clone(),
+                )));
+                let pcurve = exact_pcurve_of(&curve, &ground, T).expect("it lies in the plane");
+                lifts_onto(&curve, &pcurve, curve.domain(), &ground);
+            }
+        }
+        let tipped = Frame::new(
+            elsewhere,
+            Direction::new(normal + Vector::new(1e-3, 0.0, 0.0), T).unwrap(),
+            x,
+            T,
+        );
+        let standing = Frame::new(elsewhere + up.vector() * 1e-3, up, x, T).unwrap();
+        for frame in [tipped.unwrap(), standing] {
+            let curve = Curve::OnSurface(Box::new(CurveOnSurface::new(
+                pcurves[0].clone(),
+                chart(frame),
+            )));
+            assert!(exact_pcurve_of(&curve, &ground, T).is_none());
+        }
     }
 
     /// The plane's chart axes in space.
