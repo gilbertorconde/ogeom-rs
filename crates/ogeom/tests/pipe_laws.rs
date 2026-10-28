@@ -1485,3 +1485,134 @@ fn a_holed_square_round_a_lens_mitres_its_tube_under_the_binormal() {
         );
     }
 }
+
+/// A face round [`lens`] under `law`, the face standing in the plane of
+/// the frame the lens starts with, its `x` up: the square of side `2 half`
+/// about the spine where `half` is given, a disc of `radius` standing
+/// `off` (across, up) from the spine otherwise, or as a hole in the square
+/// where both are given. Swept with `skin`, checked valid and integrated
+/// exactly; the volume, and the lens's turn.
+fn round_the_lens(
+    law: &PipeLaw<'_>,
+    half: Option<f64>,
+    disc: Option<(f64, (f64, f64))>,
+    skin: f64,
+) -> (f64, f64) {
+    let (big, half_chord) = (15.0, 10.0);
+    let mut model = Model::new();
+    let (spine, turned) = lens(&mut model, big, half_chord);
+    let start = Vector::new((turned / 2.0).sin(), (turned / 2.0).cos(), 0.0);
+    let frame = Frame::new(
+        Point::ORIGIN,
+        Direction::new(start, T).unwrap(),
+        Direction::Z,
+        T,
+    )
+    .unwrap();
+    let (across, up) = (frame.y().vector(), frame.x().vector());
+    let mut rings = Vec::new();
+    if let Some(half) = half {
+        let pts = [(-half, -half), (half, -half), (half, half), (-half, half)]
+            .map(|(s, t)| Point::ORIGIN + across * s + up * t);
+        rings.push(make_polygon(&mut model, &pts, true, T).unwrap().shape);
+    }
+    if let Some((radius, (s, t))) = disc {
+        let centre =
+            Frame::new(Point::ORIGIN + across * s + up * t, frame.z(), frame.x(), T).unwrap();
+        rings.push(circle_wire(&mut model, centre, radius));
+    }
+    let profile = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &rings,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let pipe = make_pipe_shell_with(
+        &mut model,
+        &profile,
+        &spine,
+        law,
+        PipeCorners::Mitre,
+        skin,
+        T,
+    )
+    .unwrap_or_else(|e| panic!("{half:?} {disc:?}: {e}"))
+    .shape;
+    let found = ogeom::algo::check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{half:?} {disc:?}: {found}");
+    let measured =
+        volume_properties(&model, &pipe, Deflection::with_chord(1e-3).unwrap(), T).unwrap();
+    assert!(
+        measured.deflection == 0.0,
+        "{half:?} {disc:?}: not integrated exactly"
+    );
+    (measured.mass, turned)
+}
+
+/// Sections off the spine round [`lens`], two skinned runs mitred at both
+/// corners.
+///
+/// - Under the level binormal a planar spine's frames are its
+///   rotation-minimizing ones, turned across each corner about the
+///   corner's axis as that frame is, so a disc off the spine sweeps the
+///   pipe the rotation-minimizing frame does: arcs revolved and mitred,
+///   built apart. The two agree within the skin's tolerance over the
+///   wall: the perimeter times the longest path a point runs.
+/// - A hole raised off the spine, square to the lens's plane, keeps its
+///   height under those frames, so a square with it under either law is
+///   the square's pipe less the mitred tube about the spine of
+///   [`a_holed_square_round_a_lens_mitres_its_tube_under_the_binormal`],
+///   within the skin's tolerance over the hole's wall.
+/// - Under the leaning binormal a square with a hole off the spine is the
+///   square's pipe less the hole's own, swept alone under the same law.
+#[test]
+fn sections_off_the_spine_round_a_lens_mitre_their_skinned_runs() {
+    const COLUMNS: u32 = 100_000;
+    let (big, half, radius, skin) = (15.0, 1.0, 0.4, 1e-3);
+    let lean = Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap();
+    let level = PipeLaw::Binormal(Direction::Z);
+    let carried = PipeLaw::RotationMinimizing;
+
+    let off = (0.3, 0.4);
+    let (binormal, turned) = round_the_lens(&level, None, Some((half, off)), skin);
+    let (rotation_minimizing, _) = round_the_lens(&carried, None, Some((half, off)), skin);
+    let half_turn = (PI - turned) / 2.0;
+    let path = |r: f64| 2.0 * (big + r) * turned + 4.0 * r * half_turn.tan();
+    let reach = half + off.0.hypot(off.1);
+    let bound = skin * 2.0 * PI * half * path(reach);
+    assert!(
+        (binormal - rotation_minimizing).abs() < bound,
+        "{binormal} against {rotation_minimizing}, bound {bound}"
+    );
+
+    let du = radius / f64::from(COLUMNS);
+    let corner: f64 = (0..COLUMNS)
+        .map(|k| {
+            let u = (f64::from(k) + 0.5) * du;
+            let width = 2.0 * (radius * radius - u * u).max(0.0).sqrt();
+            (u * half_turn.tan() - cut_round_an_arc(big, big - u, half_turn, false)) * width * du
+        })
+        .sum();
+    let tube = PI * radius * radius * 2.0 * big * turned + 4.0 * corner;
+    let bound = skin * 2.0 * PI * radius * path(radius);
+    for (case, law) in [("level", &level), ("carried", &carried)] {
+        let (square, _) = round_the_lens(law, Some(half), None, skin);
+        let (holed, _) = round_the_lens(law, Some(half), Some((radius, (0.0, 0.5))), skin);
+        assert!(
+            (square - holed - tube).abs() < bound,
+            "{case}: {square} less {holed} against the tube's {tube}, bound {bound}"
+        );
+    }
+
+    let law = PipeLaw::Binormal(lean);
+    let (square, _) = round_the_lens(&law, Some(half), None, skin);
+    let (holed, _) = round_the_lens(&law, Some(half), Some((radius, off)), skin);
+    let (hole, _) = round_the_lens(&law, None, Some((radius, off)), skin);
+    let bound = skin * 2.0 * PI * radius * path(radius + off.0.hypot(off.1));
+    assert!(
+        (square - holed - hole).abs() < bound,
+        "{square} less {holed} against the hole's {hole}, bound {bound}"
+    );
+}

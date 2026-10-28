@@ -1085,9 +1085,12 @@ starting on the earlier's end ring mirrored where the earlier is swept \
 first, so both cut the mitre plane in one curve, and a holed section's \
 ring that is a circle centred on the spine sweeps there as the exact \
 tube every frame carries it along (a cylinder down a line, a torus round \
-an arc), so a holed face mitres between two skinned runs; an off-centre \
-section between two skinned runs whose frames differ at the mitre can \
-still be refused there; a round corner is refused where the law's next section is not the last \
+an arc), so a holed face mitres between two skinned runs; a section off \
+the spine, solid or holed, mitres there too, the later run run back \
+from its own skin's start rings, and where the two runs' fitted skins \
+cut the mitre plane along one curve (frames mirrored across it, as round \
+a symmetric lens) the fuse of the two can still fail, and is refused \
+by name rather than returned invalid; a round corner is refused where the law's next section is not the last \
 turned about the corner, within what the runs are held to (a skinned \
 run's tolerance), so a holed section's skinned run turns round ones too. The Frenet frame turns sharp corners extended or \
 rounded the same way, each run's section set by the run's own Frenet \

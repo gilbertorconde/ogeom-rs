@@ -929,6 +929,44 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Sections off the spine mitre between two skinned runs.** (#394)
+  - `make_pipe_shell_with` with `PipeCorners::Mitre` under the auxiliary
+    or binormal law refused a section standing off the spine where two
+    skinned runs meet: a disc, or a face with a hole off the spine, with
+    "the kept pieces did not close into a shell", and an off-centre
+    polygon with "u parameter outside [0, 1]".
+  - The later run was run back past the corner by the prism of its
+    section, not of the face its skin starts on. With exact ends that
+    face is the section carried as a rational spline, seamed elsewhere
+    than the section's circle, and the mitre plane's cut through the
+    two seams dropped the prism's wall. It is now run back from its own
+    start rings, as the earlier run is run on from its end face. A ring
+    taken from the earlier run in pieces of one curve (split where its
+    hole was cut) is taken whole, so it is still carried exactly.
+  - A rail one skinned strip adopted from its neighbour had its image
+    fitted through feet on the chart's edge, and the fit wandered off
+    the chart between them: the boolean read the surface outside its
+    domain. The image's control points are now held to the chart, the
+    curve with them, and its standoff measured after.
+  - Where both runs' fitted skins cut the mitre plane along one curve
+    (frames mirrored across it) the final fuse could return an invalid
+    solid (a face turned inside out, a holed square round a lens under
+    the leaning binormal measuring the square's volume plus its hole's);
+    such a solid is now refused by name.
+  - Measured: down a 10 by 10 L whose auxiliary spine holds the frame
+    still at both ends of the first leg and the start of the second and
+    turns it between, sections 0.6 across and 0.8 down off the spine hold
+    `A (2 L + c₂ . d₁ - c₁ . d₂)`: a disc 2.1e-4 off, a 2 by 4 rectangle
+    2.3e-4, the rectangle with a hole of radius 0.5 off the spine 1.2e-4
+    (bounds 0.17 to 0.40, the skin over the walls). Round a lens of two
+    arcs a disc off the spine under the level binormal is the
+    rotation-minimizing pipe to 8.0e-4 (bound 0.34); a square with a
+    raised hole is the square less the mitred tube to 6.3e-5 under the
+    level binormal and 6.0e-4 under the rotation-minimizing frame, which
+    failed on the domain error before; under the leaning binormal a
+    square with a hole off the spine is the square less the hole's own
+    pipe to 2.8e-9.
+
 - **A pipe shell where a straight run meets a skinned run closes at every
   skin tolerance.** (#487)
   - `make_pipe_shell` of a disc (and `make_pipe_skinned` on a wire) failed

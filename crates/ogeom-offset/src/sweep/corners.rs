@@ -41,7 +41,7 @@ use super::evolving::{Evolution, evolved_run};
 use super::{
     DOUBLED_BACK, LEAST_TURN_SINE, PipeCorners, PipeLaw, bounded_face, fuse_in_order, law_normals,
     outside_half, pipe_shell_ends, profile_square_at_start, realized_profile_wound, rmf_normals,
-    sample_wire, shell_stations, spine_curve_of, station_frame, walls_of,
+    sample_wire, shell_stations, spine_curve_of, station_frame, walls_of, whole_ring,
 };
 
 /// A spine edge's ends and its unit tangents there, in the direction of
@@ -461,10 +461,34 @@ pub(super) fn law_cornered(
             PipeCorners::Mitre => {
                 let halving = (d1 + d2) / (d1 + d2).magnitude();
                 let reach_a = mitre_reach(model, &ends[a], corner, d1, halving, tol)?;
+                // A skinned run starts on its skin's own rings: a fit of
+                // the section's, or one carried exactly in another form (a
+                // circle as its rational spline, seamed elsewhere). It is
+                // run back on from those, as the run before is run on from
+                // the face it ends on, so the prism shares the skin's edges.
+                let own_start;
                 let from_b = if shared_start[b] {
                     &starts[b]
-                } else {
+                } else if prisms[b] {
                     &sections[b]
+                } else {
+                    let own = end_section(model, &solids[b], corner, d2, tol)?;
+                    own_start = mitre_shared(
+                        model,
+                        &sections[b],
+                        &own,
+                        &Transform::IDENTITY,
+                        d2,
+                        Taking {
+                            held: held[b],
+                            fits: true,
+                            carried: exact[b],
+                        },
+                        &[],
+                        tol,
+                    )?
+                    .0;
+                    &own_start
                 };
                 let reach_b = mitre_reach(model, from_b, corner, d2, halving, tol)?;
                 let on_a = make_prism(model, &ends[a], d1 * reach_a, tol)?.shape;
@@ -523,6 +547,13 @@ pub(super) fn law_cornered(
     let Some(shape) = fuse_in_order(model, pieces, tol)? else {
         ogeom_bail!(Construction, "the spine has no run");
     };
+    // Mitred runs touch on each mitre plane. Where both cut it along one
+    // curve, each through its own skin's fit of it, the two fits cross a
+    // skin's width apart and the fuse can leave a face turned or open; such
+    // a solid is refused, not returned.
+    if corners == PipeCorners::Mitre && !ogeom_algo::check(model, &shape, tol)?.is_valid() {
+        ogeom_bail!(NotDone, "the mitred runs did not fuse into a valid solid");
+    }
     let mut history = History::new();
     history.generate(spine, shape.clone());
     history.generate(profile, shape.clone());
@@ -782,7 +813,16 @@ fn mitre_shared(
                             && !(ring_lies_on(model, other, &ring, same, tol)?
                                 && ring_lies_on(model, &ring, other, same, tol)?))
                 {
-                    chosen = (other.clone(), true);
+                    // A ring of one edge is taken as one: the skinned run's
+                    // ring may come in pieces of its one curve, split where
+                    // its solid was cut, and the run taking it carries it
+                    // exactly only whole.
+                    let whole = if one_edge {
+                        whole_ring(model, other, tol)?
+                    } else {
+                        None
+                    };
+                    chosen = (whole.unwrap_or_else(|| other.clone()), true);
                     break;
                 }
             }

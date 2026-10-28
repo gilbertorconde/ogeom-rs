@@ -1726,21 +1726,41 @@ fn adopted_image(
     }
     use ogeom_geom::Surface as _;
     let fitted = ogeom_geom::fit::fit_points_2d_at(&params, &image, 3, tol.confusion(), tol)?;
+    // A border's feet lie on the chart's edge, and the fit through them
+    // wanders across it between them. Its control points are held to the
+    // chart where it does not wrap, and the curve, inside their hull, with
+    // them: the surface is read only where it is defined. Moving a control
+    // point moves the curve by no more, and the standoff is measured after.
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let (wraps_u, wraps_v) = (surface.is_periodic_u(), surface.is_periodic_v());
+    let held: Vec<ogeom_math::Weighted<Point2>> = fitted
+        .curve
+        .control_points()
+        .iter()
+        .map(|w| {
+            let p = w.point();
+            ogeom_math::Weighted::new(
+                Point2::new(
+                    if wraps_u { p.x } else { p.x.clamp(u0, u1) },
+                    if wraps_v { p.y } else { p.y.clamp(v0, v1) },
+                ),
+                w.weight,
+                tol,
+            )
+        })
+        .collect::<OgeomResult<_>>()?;
+    let image = ogeom_geom::BSpline2d::rational(fitted.curve.knots().clone(), held)?;
     let mut off = 0.0_f64;
     for step in 0..=SAMPLES * 4 {
         let t = range.0 + (range.1 - range.0) * f64::from(step) / f64::from(SAMPLES * 4);
-        let at = ogeom_geom::Curve2d::point_at(&fitted.curve, t, tol)?;
-        // A border image runs along the chart's edge, and rounding may set
-        // it a hair outside; the surface is read at the edge there.
-        let ((u0, u1), (v0, v1)) = surface.domain();
-        let at = Point2::new(at.x.clamp(u0, u1), at.y.clamp(v0, v1));
+        let at = ogeom_geom::Curve2d::point_at(&image, t, tol)?;
         off = off.max(
             surface
                 .point_at(at.x, at.y, tol)?
                 .distance(curve.point_at(t, tol)?),
         );
     }
-    Ok((fitted.curve.into(), range, off))
+    Ok((image.into(), range, off))
 }
 
 /// A solid skinned over a grid of section samples: [`skinned_wall`] with a
@@ -3741,6 +3761,66 @@ fn carried_section<'a>(
         vs,
         closed,
     }))
+}
+
+/// The closed wire `ring` as one edge, where its edges are pieces of one
+/// curve, placed and walked alike, running end to end over a span of it
+/// that closes: that span, wound as the ring is. `None` where the ring is
+/// one edge already or is not so.
+pub(crate) fn whole_ring(
+    model: &mut Model,
+    ring: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let edges = model.ordered_children_of(ring)?;
+    let [first, ..] = edges.as_slice() else {
+        return Ok(None);
+    };
+    if edges.len() < 2 {
+        return Ok(None);
+    }
+    let place = first.transform(model.datums())?;
+    let (curve, _) = spine_curve_of(model, first)?;
+    let mut ranges = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        let (other, span) = spine_curve_of(model, edge)?;
+        if other != curve
+            || edge.transform(model.datums())? != place
+            || edge.orientation() != first.orientation()
+        {
+            return Ok(None);
+        }
+        ranges.push((span.0.min(span.1), span.0.max(span.1)));
+    }
+    ranges.sort_by(|a, b| a.0.total_cmp(&b.0));
+    if ranges
+        .windows(2)
+        .any(|w| (w[1].0 - w[0].1).abs() > tol.parametric())
+    {
+        return Ok(None);
+    }
+    let span = (ranges[0].0, ranges[ranges.len() - 1].1);
+    if curve
+        .point_at(span.0, tol)?
+        .distance(curve.point_at(span.1, tol)?)
+        > tol.confusion()
+    {
+        return Ok(None);
+    }
+    let edge = make_edge(model, curve.transformed(&place, tol)?, span, tol)?.shape;
+    let edge = if first.orientation() == ogeom_topo::Orientation::Reversed {
+        edge.reversed()
+    } else {
+        edge
+    };
+    let wire = ogeom_algo::make_wire(model, &[edge], tol)?.shape;
+    Ok(Some(
+        if ring.orientation() == ogeom_topo::Orientation::Reversed {
+            wire.reversed()
+        } else {
+            wire
+        },
+    ))
 }
 
 /// Sample a closed wire at `count` matched arc-length fractions.

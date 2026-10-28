@@ -364,6 +364,132 @@ fn a_holed_section_down_an_l_mitres_under_a_turning_auxiliary_spine() {
     assert!((v - want).abs() < want * 1e-12, "{v} against {want}");
 }
 
+/// An auxiliary spine at height `h` beside the L (0,0,0) -> (0,L,0) ->
+/// (L,L,0) that each station's plane crosses on a line parallel to the
+/// leg there: at `x = 2` for the first 2 of the first leg, at `x = -1`
+/// for its last 3, and at `y = L + 2` for the first 3 of the second leg.
+/// The frame holds still on each of those stretches, its normal there
+/// along `(2, 0, h)`, `(-1, 0, h)` and `(0, 2, h)`, and turns between, so
+/// both legs are skinned runs.
+fn guide_held_at_the_ends(model: &mut Model, l: f64, h: f64) -> Shape {
+    let points = [
+        Point::new(2.0, -1.0, h),
+        Point::new(2.0, 2.0, h),
+        Point::new(-1.0, l - 3.0, h),
+        Point::new(-1.0, l + 2.0, h),
+        Point::new(3.0, l + 2.0, h),
+        Point::new(l + 1.0, l + 5.0, h),
+    ];
+    make_polygon(model, &points, false, T).unwrap().shape
+}
+
+/// Sections off the spine down the L under [`guide_held_at_the_ends`]:
+/// a disc, a rectangle, and a rectangle about the spine with a hole off
+/// it, each meeting the mitre between two skinned runs.
+///
+/// A turn about a straight spine moves no volume, so each run holds its
+/// section's area `A` times its length wherever the frame turns. Within
+/// the section's reach of the corner the frame holds still and each run
+/// is the prism of its section, run on to the mitre plane or cut back by
+/// it: a point `q` off the corner runs `-q . d₂` past the first leg's end
+/// and `q . d₁` back from the second leg's start, `d₁` and `d₂` the legs'
+/// headings. So the pipe holds `A (2 L + c₂ . d₁ - c₁ . d₂)`, `c₁` and
+/// `c₂` the section's centroid off the corner in each leg's frame there:
+/// the start frame's normal and binormal components carried to each.
+/// A hole subtracts its own such term. The volume strays from that by at
+/// most the skin's tolerance over the walls: the perimeter times the
+/// longest path a point runs, the spine and a reach past the corner.
+#[test]
+fn an_off_centre_section_down_an_l_mitres_between_skinned_runs() {
+    let (l, h, skin) = (10.0, 5.0, 1e-3);
+    let unit = |v: Vector| v / v.magnitude();
+    let (d1, d2) = (Vector::new(0.0, 1.0, 0.0), Vector::new(1.0, 0.0, 0.0));
+    let across = Vector::new(0.0, 0.0, 1.0).cross(d1);
+    let up = Vector::new(0.0, 0.0, 1.0);
+    let n0 = unit(Vector::new(2.0, 0.0, h));
+    let n1 = unit(Vector::new(-1.0, 0.0, h));
+    let n2 = unit(Vector::new(0.0, 2.0, h));
+    // The mitre's share for a section whose centroid stands `s` across and
+    // `t` up from the spine at its start.
+    let mitred = |s: f64, t: f64| {
+        let c = across * s + up * t;
+        let (u, v) = (c.dot(n0), c.dot(d1.cross(n0)));
+        let c1 = n1 * u + d1.cross(n1) * v;
+        let c2 = n2 * u + d2.cross(n2) * v;
+        c2.dot(d1) - c1.dot(d2)
+    };
+    let (s, t, a, r) = (0.6, -0.8, 1.0, 0.5);
+    let at = |s: f64, t: f64| Point::ORIGIN + across * s + up * t;
+    let rect = |model: &mut Model, s: f64, t: f64| {
+        let pts = [(-a, -2.0 * a), (a, -2.0 * a), (a, 2.0 * a), (-a, 2.0 * a)]
+            .map(|(x, y)| at(s + x, t + y));
+        make_polygon(model, &pts, true, T).unwrap().shape
+    };
+    let sweep = |section: &str| {
+        let mut model = Model::new();
+        let rings = match section {
+            "disc" => vec![circle_ring(&mut model, at(s, t), d1, a)],
+            "rectangle" => vec![rect(&mut model, s, t)],
+            _ => {
+                let outer = rect(&mut model, 0.0, 0.0);
+                let hole = circle_ring(&mut model, at(s / 2.0, t), d1, r);
+                vec![outer, hole]
+            }
+        };
+        let profile = face_of(&mut model, &rings);
+        let spine = make_polygon(
+            &mut model,
+            &[
+                Point::ORIGIN,
+                Point::new(0.0, l, 0.0),
+                Point::new(l, l, 0.0),
+            ],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let guide = guide_held_at_the_ends(&mut model, l, h);
+        let pipe = make_pipe_shell_with(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::Auxiliary { guide: &guide },
+            PipeCorners::Mitre,
+            skin,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{section}: {e}"))
+        .shape;
+        let found = check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{section}: {found}");
+        let (v, exact) = measure(&model, &pipe);
+        assert!(exact, "{section}: not integrated exactly");
+        v
+    };
+    let path = 2.0 * l + 2.0 * (s.hypot(t) + (5.0 * a * a).sqrt());
+    for (section, want, perimeter) in [
+        ("disc", PI * a * a * (2.0 * l + mitred(s, t)), 2.0 * PI * a),
+        (
+            "rectangle",
+            8.0 * a * a * (2.0 * l + mitred(s, t)),
+            12.0 * a,
+        ),
+        (
+            "holed",
+            8.0 * a * a * 2.0 * l - PI * r * r * (2.0 * l + mitred(s / 2.0, t)),
+            12.0 * a + 2.0 * PI * r,
+        ),
+    ] {
+        let v = sweep(section);
+        let bound = skin * perimeter * path;
+        assert!(
+            (v - want).abs() < bound,
+            "{section}: {v} against {want}, bound {bound}"
+        );
+    }
+}
+
 /// The spine: a quarter arc of radius `r` about (0, r) from (-r, r),
 /// heading -y, to the origin, heading +x; then a sharp quarter turn left
 /// up the line to (0, l2).
