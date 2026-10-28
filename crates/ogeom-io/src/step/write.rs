@@ -849,10 +849,12 @@ impl Writer<'_> {
                 }
             }
             PlanarCurve::Trimmed(t) => self.planar_curve(t.basis(), pace),
-            PlanarCurve::Offset(_) | PlanarCurve::Trig(_) => ogeom_bail!(
-                Construction,
-                "a pcurve with no exact spelling in the file was admitted"
-            ),
+            PlanarCurve::Hyperbola(_) | PlanarCurve::Offset(_) | PlanarCurve::Trig(_) => {
+                ogeom_bail!(
+                    Construction,
+                    "a pcurve with no exact spelling in the file was admitted"
+                )
+            }
         }
     }
 
@@ -1571,7 +1573,7 @@ fn planar_stated(curve: &PlanarCurve, pace: Pace) -> bool {
                 && e.ellipse().frame().handedness() == Handedness::Right
         }
         PlanarCurve::Trimmed(t) => !t.is_reversed() && planar_stated(t.basis(), pace),
-        PlanarCurve::Offset(_) | PlanarCurve::Trig(_) => false,
+        PlanarCurve::Hyperbola(_) | PlanarCurve::Offset(_) | PlanarCurve::Trig(_) => false,
     }
 }
 

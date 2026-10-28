@@ -89,7 +89,7 @@ pub fn make_prism(
     let rails = &mut Rails::default();
     match model.kind_of(profile)? {
         ShapeType::Face => {
-            crate::build::trimmed_where_bare(model, profile, tol)?;
+            crate::build::trimmed_or_fitted_where_bare(model, profile, tol)?;
             prism_over_face(model, rails, profile, &displacement, vector, tol)
         }
         ShapeType::Wire => {
@@ -1049,10 +1049,16 @@ fn revolution_over_face(
     turn: &Turn,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    // A full turn keeps no end, so nothing of it needs a trim where no
+    // closed form gives one; a partial turn keeps the profile as both.
+    if turn.full {
+        crate::build::trimmed_where_bare(model, face, tol)?;
+    } else {
+        crate::build::trimmed_or_fitted_where_bare(model, face, tol)?;
+    }
     // The same question the prism asks, with the sweep direction read off the
     // turn: at the profile, revolving moves it along the tangent to its circle
     // about the axis, so that tangent is what its normal is compared against.
-    crate::build::trimmed_where_bare(model, face, tol)?;
     let (point, normal) = crate::measure::face_normal(model, face, tol)?;
     let tangent = turn
         .axis

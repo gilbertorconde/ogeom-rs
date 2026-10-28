@@ -728,6 +728,21 @@ impl Hyperbola2 {
     pub fn eccentricity(&self) -> f64 {
         self.major_radius.hypot(self.minor_radius) / self.major_radius
     }
+
+    /// This hyperbola moved by `t`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Hyperbola2::new`].
+    pub fn transformed(&self, t: &Transform2, tol: Tolerances) -> OgeomResult<Self> {
+        let s = t.scale_factor().abs();
+        Self::new(
+            t.apply_frame(&self.frame, tol)?,
+            self.major_radius * s,
+            self.minor_radius * s,
+            tol,
+        )
+    }
 }
 
 impl Parabola2 {

@@ -2059,9 +2059,9 @@ fn offset_on_plane(
 
 /// Project a curve lying in a plane into the plane's own coordinates.
 ///
-/// Exact for a line, a circle, an ellipse, a B-spline and a parabola: the
-/// plane's frame is orthonormal, so lengths and the curves' own
-/// parameterizations survive the projection unchanged.
+/// Exact for a line, a circle, an ellipse, a hyperbola, a B-spline and a
+/// parabola: the plane's frame is orthonormal, so lengths and the curves'
+/// own parameterizations survive the projection unchanged.
 fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<PlanarCurve> {
     let frame = plane.frame();
     let flat = |p: Point| {
@@ -2114,6 +2114,38 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
                         .ok()?,
                 )
                 .into(),
+            )
+        }
+        Curve::Hyperbola(h) => {
+            // Run backwards over a domain symmetric about zero, the branch
+            // is the forward one with `y` turned round: `cosh` is even and
+            // `sinh` odd. Over any other domain the reversal shifts the
+            // parameter, which no frame states.
+            let hyperbola = h.hyperbola();
+            let (lo, hi) = h.domain();
+            let y = match (h.is_reversed(), lo + hi == 0.0) {
+                (false, _) => hyperbola.frame().y(),
+                (true, true) => -hyperbola.frame().y(),
+                (true, false) => return None,
+            };
+            let frame2 = Frame2::from_axes(
+                flat(hyperbola.centre()),
+                flat_direction(hyperbola.frame().x())?,
+                flat_direction(y)?,
+                tol,
+            )
+            .ok()?;
+            let flat_hyperbola = ogeom_math::Hyperbola2::new(
+                frame2,
+                hyperbola.major_radius(),
+                hyperbola.minor_radius(),
+                tol,
+            )
+            .ok()?;
+            Some(
+                ogeom_geom::Hyperbola2d::over(flat_hyperbola, lo, hi)
+                    .ok()?
+                    .into(),
             )
         }
         Curve::BSpline(b) => {
@@ -3874,5 +3906,84 @@ mod tests {
         .into();
         let off = Curve::Offset(Box::new(OffsetCurve::new(straight, 0.4, leaned).unwrap()));
         assert!(exact_pcurve_of(&off, &ground, T).is_none());
+    }
+
+    /// A hyperbola branch in a plane has an exact pcurve there at the same
+    /// parameter, with its derivatives: forward, on a frame turned over, run
+    /// backwards over a domain symmetric about zero, and offset. Run
+    /// backwards over any other domain, its reversal shifts the parameter,
+    /// and it has none.
+    #[test]
+    fn a_hyperbola_in_a_plane_has_its_pcurve_there() {
+        use ogeom_geom::{HyperbolaCurve, OffsetCurve, Reversible as _};
+        let normal = Vector::new(0.3, -0.5, 0.8);
+        let up = Direction::new(normal, T).unwrap();
+        let origin = Point::new(1.0, 2.0, -0.5);
+        let ground = plane(origin, normal);
+        let x = Direction::new(Vector::new(1.0, 0.0, -0.375), T).unwrap();
+        let base = Frame::new(origin, up, x, T).unwrap();
+        let centre = origin + base.x().vector() * 0.2 + base.y().vector() * 0.1;
+        let frame = Frame::new(centre, up, x, T).unwrap();
+        let turned_over =
+            Frame::from_axes(frame.origin(), frame.x(), -frame.y(), -frame.z(), T).unwrap();
+        let branch = |frame: Frame, lo: f64, hi: f64| -> Curve {
+            HyperbolaCurve::over(
+                ogeom_math::Hyperbola::new(frame, 1.5, 0.8, T).unwrap(),
+                lo,
+                hi,
+            )
+            .unwrap()
+            .into()
+        };
+        let forward = branch(frame, -1.2, 0.7);
+        let mut curves = vec![
+            forward.clone(),
+            branch(turned_over, -1.2, 0.7),
+            branch(frame, -1.2, 1.2).reversed(),
+        ];
+        for reference in [up, -up] {
+            let offset = OffsetCurve::new(forward.clone(), 0.3, reference).unwrap();
+            curves.push(Curve::Offset(Box::new(offset)));
+        }
+        for curve in &curves {
+            let pcurve = exact_pcurve_of(curve, &ground, T).expect("it lies in the plane");
+            let (lo, hi) = curve.domain();
+            for i in 0..=16 {
+                let t = (hi - lo).mul_add(f64::from(i) / 16.0, lo);
+                let at = pcurve.point_at(t, T).unwrap();
+                let lifted = ground.point_at(at.x, at.y, T).unwrap();
+                let point = curve.point_at(t, T).unwrap();
+                assert!(
+                    lifted.distance(point) < 1e-9,
+                    "{curve:?} at {t}: {lifted:?} against {point:?}"
+                );
+                if matches!(curve, Curve::Offset(_)) {
+                    continue;
+                }
+                // The plane's chart is an isometry, so each derivative in
+                // the chart, lifted along its axes, is the curve's own.
+                let flat = pcurve.derivatives_at(t, 2, T).unwrap();
+                let space = curve.derivatives_at(t, 2, T).unwrap();
+                let axes = ground_axes(&ground);
+                for (order, (f, s)) in flat.iter().zip(&space).enumerate().skip(1) {
+                    let lifted = axes.0 * f.x + axes.1 * f.y;
+                    assert!(
+                        (lifted - *s).magnitude() < 1e-9,
+                        "{curve:?} at {t}, order {order}: {lifted:?} against {s:?}"
+                    );
+                }
+            }
+        }
+        let shifted = branch(frame, -1.2, 0.7).reversed();
+        assert!(exact_pcurve_of(&shifted, &ground, T).is_none());
+    }
+
+    /// The plane's chart axes in space.
+    fn ground_axes(ground: &SurfaceGeometry) -> (Vector, Vector) {
+        let SurfaceGeometry::Plane(p) = ground else {
+            unreachable!("a plane")
+        };
+        let frame = p.plane().frame();
+        (frame.x().vector(), frame.y().vector())
     }
 }

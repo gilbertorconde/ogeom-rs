@@ -1,4 +1,4 @@
-//! A planar face whose edges are offset curves or parabolas swept into a
+//! A planar face whose edges are any curve lying in its plane swept into a
 //! solid: the prism and the partial turn keep the profile as their ends, so
 //! every edge needs its pcurve on the profile's plane.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
@@ -9,10 +9,14 @@ use ogeom::algo::{
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{
-    BSplineCurve, CircleCurve, Curve, LineCurve, OffsetCurve, ParabolaCurve, PlaneSurface,
-    TrimmedCurve,
+    BSplineCurve, CircleCurve, Curve, Curve3d as _, CurveOnSurface, EllipseCurve, HyperbolaCurve,
+    Line2d, LineCurve, OffsetCurve, ParabolaCurve, PlanarCurve, PlaneSurface, Reversible as _,
+    SurfaceGeometry, TrimmedCurve,
 };
-use ogeom::math::{Axis, Circle, Direction, Frame, KnotVector, Parabola, Plane, Point, Vector};
+use ogeom::math::{
+    Axis, Circle, Direction, Ellipse, Frame, Hyperbola, KnotVector, Parabola, Plane, Point, Point2,
+    Vector, Weighted,
+};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape};
 
@@ -71,6 +75,123 @@ enum Side {
     OffsetHalfCircle,
     /// A parabola through both corners, bulging `BULGE` outward.
     Parabola,
+    /// The side itself, a line.
+    Line,
+    /// A circular arc through both corners, bulging `BULGE` outward.
+    Arc,
+    /// The same arc, built from the far corner and reversed.
+    ReversedArc,
+    /// The same arc as a rational quadratic B-spline.
+    RationalArc,
+    /// The same arc, trimmed from a whole circle and reversed.
+    ReversedTrimmedArc,
+    /// Half an ellipse on the side, `BULGE` deep.
+    HalfEllipse,
+    /// A hyperbola arc through both corners, bulging `BULGE` outward, its
+    /// branch opening into the diamond.
+    Hyperbola,
+    /// The same arc, built from the far corner and reversed.
+    ReversedHyperbola,
+    /// The same arc, trimmed from a longer stretch of the branch.
+    TrimmedHyperbola,
+    /// The same arc on a branch whose domain runs past it on one side,
+    /// built from the far corner and reversed.
+    ReversedLongHyperbola,
+    /// The straight side as a line drawn on the profile's own plane.
+    OnProfilePlane,
+    /// The straight side as a line drawn on the profile's plane under a
+    /// chart turned and moved against the profile's.
+    OnTurnedChart,
+}
+
+/// The hyperbola's half parameter range: the arc is `[-H, H]`.
+const H: f64 = 1.0;
+
+/// The profile's plane, which the diamond lies in.
+fn profile_plane() -> Plane {
+    Plane::new(Frame::new(Point::ORIGIN, normal(), Direction::X, T).unwrap())
+}
+
+/// A frame at `origin` whose `x` is `x` and whose `y` is `y`, `x` and `y`
+/// perpendicular.
+fn frame_xy(origin: Point, x: Vector, y: Vector) -> Frame {
+    Frame::new(
+        origin,
+        Direction::new(x.cross(y), T).unwrap(),
+        Direction::new(x, T).unwrap(),
+        T,
+    )
+    .unwrap()
+}
+
+/// A conic bulge from `a` to `b`, bulging `BULGE` towards `outward`, of
+/// `kind` (an arc, a rational arc, a half ellipse or a hyperbola), its
+/// range, and the area between it and the side.
+fn bulge(a: Point, b: Point, outward: Vector, kind: Side) -> (Curve, (f64, f64), f64) {
+    let d = b - a;
+    let half = d.magnitude() / 2.0;
+    let along = d / d.magnitude();
+    let middle = a + d * 0.5;
+    match kind {
+        Side::Arc | Side::RationalArc => {
+            // The circle through both corners and the apex `BULGE` out:
+            // its centre `r - BULGE` inside the side, the arc `2α` wide.
+            let r = half.mul_add(half, BULGE * BULGE) / (2.0 * BULGE);
+            let alpha = (half / r).asin();
+            let centre = middle - outward * (r - BULGE);
+            let segment = r * r / 2.0 * (2.0 * alpha - (2.0 * alpha).sin());
+            if matches!(kind, Side::RationalArc) {
+                // The end tangents meet `r / cos α` out from the centre;
+                // the middle weight `cos α` makes the conic a circle.
+                let control = vec![
+                    Weighted::new(a, 1.0, T).unwrap(),
+                    Weighted::new(centre + outward * (r / alpha.cos()), alpha.cos(), T).unwrap(),
+                    Weighted::new(b, 1.0, T).unwrap(),
+                ];
+                let knots = KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).unwrap();
+                let spline = BSplineCurve::rational(knots, control).unwrap();
+                return (spline.into(), (0.0, 1.0), segment);
+            }
+            // Angle `π/2` points out; `x` against the side puts `a` at
+            // `π/2 - α`.
+            let frame = frame_xy(centre, -along, outward);
+            let circle = CircleCurve::new(Circle::new(frame, r, T).unwrap());
+            let range = (PI / 2.0 - alpha, PI / 2.0 + alpha);
+            (circle.into(), range, segment)
+        }
+        Side::HalfEllipse => {
+            let frame = frame_xy(middle, -along, outward);
+            let ellipse = Ellipse::new(frame, half, BULGE, T).unwrap();
+            (
+                EllipseCurve::new(ellipse).into(),
+                (0.0, PI),
+                PI * half * BULGE / 2.0,
+            )
+        }
+        Side::Hyperbola => {
+            // `x = A cosh t`, `y = B sinh t` with `x` pointing in: the
+            // vertex `A` from the centre is the apex, the chord at
+            // `A cosh H` is the side. The segment between them is
+            // `2 ∫₀ᴴ (A cosh H - A cosh t) B cosh t dt = A B (sinh 2H / 2 - H)`.
+            let major = BULGE / (H.cosh() - 1.0);
+            let minor = half / H.sinh();
+            let centre = middle + outward * (BULGE + major);
+            let frame = frame_xy(centre, -outward, along);
+            let hyperbola = Hyperbola::new(frame, major, minor, T).unwrap();
+            (
+                HyperbolaCurve::new(hyperbola, H).unwrap().into(),
+                (-H, H),
+                major * minor * ((2.0 * H).sinh() / 2.0 - H),
+            )
+        }
+        _ => unreachable!("{kind:?} is not a conic bulge"),
+    }
+}
+
+/// `curve` over `range` run backwards, over the mirrored range.
+fn reversed(curve: &Curve, range: (f64, f64)) -> (Curve, (f64, f64)) {
+    let (lo, hi) = curve.domain();
+    (curve.reversed(), (lo + hi - range.1, lo + hi - range.0))
 }
 
 /// The side from `a` to `b`, its range, and the area it adds outside the
@@ -83,7 +204,8 @@ fn side(a: Point, b: Point, kind: Side) -> (Curve, (f64, f64), f64) {
     // Anticlockwise about the normal, the tangent crossed with it points
     // out of the diamond: an offset along `+D` with the normal as its
     // reference moves a basis `D` inside the side onto it.
-    let inset = d.cross(n.vector()) * (D / d.magnitude());
+    let outward = d.cross(n.vector()) / d.magnitude();
+    let inset = outward * D;
     let offset = |basis: Curve| Curve::Offset(Box::new(OffsetCurve::new(basis, D, n).unwrap()));
     let long_spline = || straight_spline(a - inset - d * 0.5, b - inset + d * 0.5);
     match kind {
@@ -142,6 +264,84 @@ fn side(a: Point, b: Point, kind: Side) -> (Curve, (f64, f64), f64) {
                 4.0 / 3.0 * half * BULGE,
             )
         }
+        Side::Line => (
+            LineCurve::segment(a, b, T).unwrap().into(),
+            (0.0, 2.0 * half),
+            0.0,
+        ),
+        Side::Arc | Side::RationalArc | Side::HalfEllipse | Side::Hyperbola => {
+            bulge(a, b, outward, kind)
+        }
+        Side::ReversedArc | Side::ReversedHyperbola => {
+            let forward = if matches!(kind, Side::ReversedArc) {
+                Side::Arc
+            } else {
+                Side::Hyperbola
+            };
+            let (curve, range, area) = bulge(b, a, outward, forward);
+            let (curve, range) = reversed(&curve, range);
+            (curve, range, area)
+        }
+        Side::ReversedTrimmedArc => {
+            let (circle, range, area) = bulge(b, a, outward, Side::Arc);
+            let trimmed: Curve = TrimmedCurve::new(circle, range.0, range.1, T)
+                .unwrap()
+                .into();
+            let (curve, range) = reversed(&trimmed, range);
+            (curve, range, area)
+        }
+        Side::TrimmedHyperbola => {
+            let (curve, _, area) = bulge(a, b, outward, Side::Hyperbola);
+            let Curve::Hyperbola(h) = curve else {
+                unreachable!()
+            };
+            let long = HyperbolaCurve::new(h.hyperbola(), 2.0 * H).unwrap();
+            (
+                TrimmedCurve::new(long.into(), -H, H, T).unwrap().into(),
+                (-H, H),
+                area,
+            )
+        }
+        Side::ReversedLongHyperbola => {
+            let (curve, range, area) = bulge(b, a, outward, Side::Hyperbola);
+            let Curve::Hyperbola(h) = curve else {
+                unreachable!()
+            };
+            let long: Curve = HyperbolaCurve::over(h.hyperbola(), -H, 2.0 * H)
+                .unwrap()
+                .into();
+            let (curve, range) = reversed(&long, range);
+            (curve, range, area)
+        }
+        Side::OnProfilePlane | Side::OnTurnedChart => {
+            // The chart is the profile's own, or one turned a quarter
+            // about the normal and moved within the plane.
+            let chart = if matches!(kind, Side::OnProfilePlane) {
+                profile_plane().frame()
+            } else {
+                Frame::new(
+                    Point::new(1.0, 0.0, 2.0),
+                    normal(),
+                    Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap(),
+                    T,
+                )
+                .unwrap()
+            };
+            let flat = |p: Point| {
+                let l = chart.to_local(p);
+                Point2::new(l.x, l.y)
+            };
+            let line = PlanarCurve::from(Line2d::segment(flat(a), flat(b), T).unwrap());
+            let surface: SurfaceGeometry =
+                PlaneSurface::over(Plane::new(chart), (-10.0, 10.0), (-10.0, 10.0))
+                    .unwrap()
+                    .into();
+            (
+                Curve::OnSurface(Box::new(CurveOnSurface::new(line, surface))),
+                (0.0, 2.0 * half),
+                0.0,
+            )
+        }
     }
 }
 
@@ -158,19 +358,19 @@ fn diamond(model: &mut Model, kind: Side) -> (Shape, f64) {
         edges.push(edge.shape);
     }
     let wire = make_wire(model, &edges, T).unwrap().shape;
-    let plane = Plane::new(Frame::new(Point::ORIGIN, normal(), Direction::X, T).unwrap());
-    let surface = PlaneSurface::over(plane, (-10.0, 10.0), (-10.0, 10.0)).unwrap();
+    let surface = PlaneSurface::over(profile_plane(), (-10.0, 10.0), (-10.0, 10.0)).unwrap();
     let face = make_face(model, surface.into(), &[wire], T).unwrap().shape;
     (face, area)
 }
 
-/// The diamond with offset or parabola sides, swept 3 along its normal and
+/// The diamond with sides of every curve that lies in a plane, swept 3 along its normal and
 /// turned a full turn and three quarters about `z`, is a valid solid of
 /// the closed-form volume: the area times 3, and by Pappus the area times
 /// the turn times the centre's distance 3 from the axis. The four sides
 /// share the diamond's symmetry, so the centroid stays at its centre.
 #[test]
-fn a_profile_with_offset_or_parabola_sides_sweeps_into_a_valid_solid() {
+fn a_profile_with_sides_of_any_planar_curve_sweeps_into_a_valid_solid() {
+    let mut failures = Vec::new();
     for kind in [
         Side::OffsetSpline,
         Side::OffsetSplineTurned,
@@ -179,6 +379,18 @@ fn a_profile_with_offset_or_parabola_sides_sweeps_into_a_valid_solid() {
         Side::TrimmedOffset,
         Side::OffsetHalfCircle,
         Side::Parabola,
+        Side::Line,
+        Side::Arc,
+        Side::ReversedArc,
+        Side::RationalArc,
+        Side::ReversedTrimmedArc,
+        Side::HalfEllipse,
+        Side::Hyperbola,
+        Side::ReversedHyperbola,
+        Side::TrimmedHyperbola,
+        Side::ReversedLongHyperbola,
+        Side::OnProfilePlane,
+        Side::OnTurnedChart,
     ] {
         for turn in [None, Some(2.0 * PI), Some(1.5 * PI)] {
             let at = format!("{kind:?} sides, turn {turn:?}");
@@ -200,17 +412,152 @@ fn a_profile_with_offset_or_parabola_sides_sweeps_into_a_valid_solid() {
                     )
                 }
             };
-            let built = built.unwrap_or_else(|e| panic!("{at}: {e}")).shape;
+            let built = match built {
+                Ok(built) => built.shape,
+                Err(e) => {
+                    failures.push(format!("{at}: refused: {e}"));
+                    continue;
+                }
+            };
             let found = check(&model, &built, T).unwrap();
-            assert!(found.is_valid(), "{at}: {found}");
-            let v = volume_properties(&model, &built, Deflection::with_chord(1e-3).unwrap(), T)
-                .unwrap_or_else(|e| panic!("{at}: {e}"));
-            assert_eq!(v.deflection, 0.0, "{at}: integrated on the exact surfaces");
+            if !found.is_valid() {
+                failures.push(format!(
+                    "{at}: invalid: {}",
+                    found.to_string().lines().next().unwrap_or("")
+                ));
+                continue;
+            }
+            let v =
+                match volume_properties(&model, &built, Deflection::with_chord(1e-3).unwrap(), T) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        failures.push(format!("{at}: no volume: {e}"));
+                        continue;
+                    }
+                };
             // Integrated on the exact surfaces, the volume differs from the
             // closed form by quadrature rounding alone.
+            if v.deflection != 0.0 || (v.mass - want).abs() > 1e-9 * want {
+                failures.push(format!(
+                    "{at}: {} against {want}, deflection {}",
+                    v.mass, v.deflection
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A side with no closed-form trim on the profile's plane that leaves the
+/// plane is not the profile's boundary: sweeping the profile into a solid
+/// that keeps it as an end refuses, naming how far off the side sits,
+/// rather than building an end with no trim on that side.
+#[test]
+fn a_side_leaving_the_profile_plane_refuses_to_sweep_into_ends() {
+    let at = corners();
+    let mut model = Model::new();
+    let v: Vec<Shape> = at
+        .iter()
+        .map(|p| make_vertex(&mut model, *p).shape)
+        .collect();
+    let mut edges = Vec::new();
+    for i in 0..4 {
+        let (a, b) = (at[i], at[(i + 1) % 4]);
+        let (curve, range) = if i == 0 {
+            // The reversed trimmed arc, its plane turned about the side
+            // so its middle stands `BULGE sin 0.1` off the profile.
+            let d = b - a;
+            let outward = d.cross(normal().vector()) / d.magnitude();
+            let tilted = outward * 0.1_f64.cos() + normal().vector() * 0.1_f64.sin();
+            let (circle, range, _) = bulge(b, a, tilted, Side::Arc);
+            let trimmed: Curve = TrimmedCurve::new(circle, range.0, range.1, T)
+                .unwrap()
+                .into();
+            reversed(&trimmed, range)
+        } else {
+            let (curve, range, _) = side(a, b, Side::Line);
+            (curve, range)
+        };
+        let edge = make_edge_between(&mut model, curve, range, &v[i], &v[(i + 1) % 4], T).unwrap();
+        edges.push(edge.shape);
+    }
+    let wire = make_wire(&mut model, &edges, T).unwrap().shape;
+    let surface = PlaneSurface::over(profile_plane(), (-10.0, 10.0), (-10.0, 10.0)).unwrap();
+    let face = make_face(&mut model, surface.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let axis = Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Z,
+    };
+    let prism = make_prism(&mut model, &face, normal().vector() * 3.0, T);
+    let turned = make_revolution(&mut model, &face, axis, 1.5 * PI, T);
+    for built in [prism, turned] {
+        let e = built.expect_err("the sweep refuses");
+        assert!(
+            e.to_string().contains("sits 3.99e-2 off its surface"),
+            "{e}"
+        );
+    }
+}
+
+/// The hyperbola-sided prism and partial turn, their ends trimmed by the
+/// branch in the plane's chart, cross the native, `.brep` and STEP formats
+/// and come back valid, of the same closed-form volume; the native text
+/// reads back to itself. STEP states no pcurve for the branch, and the
+/// reader charts the edge again.
+#[test]
+fn a_hyperbola_sided_sweep_crosses_the_exchange_formats() {
+    let axis = Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Z,
+    };
+    for turn in [None, Some(1.5 * PI)] {
+        let mut model = Model::new();
+        let (face, area) = diamond(&mut model, Side::Hyperbola);
+        let (built, want) = match turn {
+            None => (
+                make_prism(&mut model, &face, normal().vector() * 3.0, T),
+                area * 3.0,
+            ),
+            Some(angle) => (
+                make_revolution(&mut model, &face, axis, angle, T),
+                area * angle * 3.0,
+            ),
+        };
+        let built = built.unwrap().shape;
+        let text =
+            ogeom::io::native::write(&model, std::slice::from_ref(&built), Default::default())
+                .unwrap();
+        assert!(
+            text.contains("hyperbola2"),
+            "{turn:?}: the ends carry the branch"
+        );
+        let (native, roots) = ogeom::io::native::read(&text).unwrap();
+        let again = ogeom::io::native::write(&native, &roots, Default::default()).unwrap();
+        assert_eq!(
+            text, again,
+            "{turn:?}: the native text reads back to itself"
+        );
+        let brep = ogeom::io::brep::write(&model, &built, T).unwrap();
+        let (from_brep, shape) = ogeom::io::brep::read(&brep, T).unwrap();
+        let mut document = ogeom::doc::Document::over(model);
+        document.add_part("swept", built);
+        let step = ogeom::io::write_step(&document, T).unwrap();
+        let import = ogeom::io::read_step(&step, T).unwrap();
+        assert_eq!(import.solids.len(), 1, "{turn:?}");
+        for (back, shape) in [
+            (&native, &roots[0]),
+            (&from_brep, &shape),
+            (import.document.model(), &import.solids[0]),
+        ] {
+            let found = check(back, shape, T).unwrap();
+            assert!(found.is_valid(), "{turn:?}: {found}");
+            let v =
+                volume_properties(back, shape, Deflection::with_chord(1e-3).unwrap(), T).unwrap();
             assert!(
                 (v.mass - want).abs() <= 1e-9 * want,
-                "{at}: {} against {want}",
+                "{turn:?}: {} against {want}",
                 v.mass
             );
         }

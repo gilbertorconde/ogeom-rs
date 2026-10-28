@@ -55,8 +55,9 @@ use ogeom_geom::{
 };
 use ogeom_math::{
     Axis, Axis2, Circle, Circle2, Cone, ControlGrid, Cylinder, Direction, Direction2, Ellipse,
-    Ellipse2, Frame, Frame2, Handedness, Hyperbola, KnotVector, Matrix3, Parabola, Plane, Point,
-    Point2, Sphere, Torus, Transform, Transform2, TransformKind, Vector, Vector2, Weighted,
+    Ellipse2, Frame, Frame2, Handedness, Hyperbola, Hyperbola2, KnotVector, Matrix3, Parabola,
+    Plane, Point, Point2, Sphere, Torus, Transform, Transform2, TransformKind, Vector, Vector2,
+    Weighted,
 };
 use ogeom_topo::{
     CurveId, EdgeData, EdgeRepr, FaceData, Location, Model, NodeData, Orientation, PCurveId, Shape,
@@ -681,6 +682,27 @@ fn write_pcurve(out: &mut String, curve: &PlanarCurve) -> OgeomResult<()> {
                 direction2(frame.y().vector()),
                 real(ellipse.major_radius()),
                 real(ellipse.minor_radius())
+            );
+        }
+        PlanarCurve::Hyperbola(h) => {
+            // The record states the branch over its natural parameter,
+            // forward; a branch run backwards has no record.
+            if h.is_reversed() {
+                ogeom_bail!(
+                    Construction,
+                    "the format has no record for a hyperbola run backwards"
+                );
+            }
+            let hyperbola = h.hyperbola();
+            let frame = hyperbola.frame();
+            let _ = writeln!(
+                out,
+                "5 {} {} {} {} {}",
+                point2(frame.origin()),
+                direction2(frame.x().vector()),
+                direction2(frame.y().vector()),
+                real(hyperbola.major_radius()),
+                real(hyperbola.minor_radius())
             );
         }
         PlanarCurve::BSpline(b) => {
@@ -1990,6 +2012,11 @@ impl<'a> Cursor<'a> {
                 let frame = self.seat2(tol)?;
                 let ellipse = Ellipse2::new(frame, self.number()?, self.number()?, tol)?;
                 Ellipse2d::new(ellipse).into()
+            }
+            5 => {
+                let frame = self.seat2(tol)?;
+                let hyperbola = Hyperbola2::new(frame, self.number()?, self.number()?, tol)?;
+                ogeom_geom::Hyperbola2d::over(hyperbola, -OPEN_EXTENT, OPEN_EXTENT)?.into()
             }
             7 => {
                 let rational = self.flag()?;

@@ -47,8 +47,8 @@ use ogeom_geom::{
 };
 use ogeom_math::{
     Axis, Axis2, Circle, Circle2, Cone, ControlGrid, Cylinder, Direction, Direction2, Ellipse,
-    Ellipse2, Frame, Frame2, Hyperbola, KnotVector, Parabola, Plane, Point, Point2, Sphere, Torus,
-    Transform, Vector, Weighted,
+    Ellipse2, Frame, Frame2, Hyperbola, Hyperbola2, KnotVector, Parabola, Plane, Point, Point2,
+    Sphere, Torus, Transform, Vector, Weighted,
 };
 use ogeom_topo::{
     DatumId, EdgeData, EdgeRepr, FaceData, GeometryStore, Location, Model, ModelParts, NodeData,
@@ -2031,6 +2031,14 @@ fn pcurve(t: &mut Tokens, c: &PlanarCurve) -> OgeomResult<()> {
             n(t, e.ellipse().minor_radius());
             flag(t, e.is_reversed());
         }
+        PlanarCurve::Hyperbola(h) => {
+            w(t, "hyperbola2");
+            frame2(t, &h.hyperbola().frame());
+            n(t, h.hyperbola().major_radius());
+            n(t, h.hyperbola().minor_radius());
+            range(t, Curve2d::domain(h));
+            flag(t, h.is_reversed());
+        }
         PlanarCurve::BSpline(b) => {
             w(t, "bspline2");
             knots(t, b.knots());
@@ -2676,6 +2684,13 @@ impl<'a> Cursor<'a> {
                 let frame = self.frame2(tol)?;
                 let ellipse = Ellipse2::new(frame, self.number()?, self.number()?, tol)?;
                 reverse_if(Ellipse2d::new(ellipse).into(), self.flag()?)
+            }
+            "hyperbola2" => {
+                let frame = self.frame2(tol)?;
+                let hyperbola = Hyperbola2::new(frame, self.number()?, self.number()?, tol)?;
+                let (lo, hi) = self.range()?;
+                let curve = ogeom_geom::Hyperbola2d::over(hyperbola, lo, hi)?;
+                reverse_if(curve.into(), self.flag()?)
             }
             "bspline2" => {
                 let knots = self.knots()?;

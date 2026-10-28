@@ -1573,6 +1573,34 @@ pub fn covers_whole_surface(model: &Model, face: &Shape) -> OgeomResult<bool> {
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the face
 /// or an edge is not in this model.
 pub fn trimmed_where_bare(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<()> {
+    trim_bare_edges(model, face, false, tol)
+}
+
+/// As [`trimmed_where_bare`], with every edge left without a closed form
+/// given a pcurve fitted by projection at the curve's own parameters: a
+/// face kept whole in a solid (a sweep's end) is only valid with a trim on
+/// every edge.
+///
+/// The fit's miss is measured, the lifted pcurve against the curve at the
+/// same parameter, and the edge and its vertices widened to it. An edge
+/// sitting off the surface by more than its own tolerance is not the
+/// face's boundary, and refuses.
+///
+/// # Errors
+///
+/// As [`trimmed_where_bare`], and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if an
+/// edge with no closed-form trim sits off the face's surface by more than
+/// its tolerance, or cannot be projected onto it.
+pub fn trimmed_or_fitted_where_bare(
+    model: &mut Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    trim_bare_edges(model, face, true, tol)
+}
+
+fn trim_bare_edges(model: &mut Model, face: &Shape, fit: bool, tol: Tolerances) -> OgeomResult<()> {
     let Some(data) = model.node(face).and_then(|n| n.data().as_face().cloned()) else {
         ogeom_bail!(Dangling, "face is not in this model");
     };
@@ -1601,18 +1629,60 @@ pub fn trimmed_where_bare(model: &mut Model, face: &Shape, tol: Tolerances) -> O
         };
         use ogeom_geom::Transformable as _;
         let placed = geometry.transformed(&(unplace * edge.transform(model.datums())?), tol)?;
-        if let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&placed, &surface, tol) {
-            attach_pcurve(
-                model,
-                &edge,
-                pcurve,
-                data.surface,
-                edge.location().clone(),
-                *range,
-            )?;
-        }
+        let pcurve = match ogeom_intersect::exact_pcurve_of(&placed, &surface, tol) {
+            Some(exact) => exact,
+            None if fit => {
+                fitted_where_bare(model, &edge, &edge_data, (&placed, *range), &surface, tol)?
+            }
+            None => continue,
+        };
+        attach_pcurve(
+            model,
+            &edge,
+            pcurve,
+            data.surface,
+            edge.location().clone(),
+            *range,
+        )?;
     }
     Ok(())
+}
+
+/// The pcurve of a bare edge with no closed form, fitted at the curve's
+/// own parameters, the edge and its vertices widened to the fit's
+/// measured miss.
+fn fitted_where_bare(
+    model: &mut Model,
+    edge: &Shape,
+    edge_data: &EdgeData,
+    (curve, range): (&Curve, (f64, f64)),
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::PlanarCurve> {
+    let reach = edge_data.tolerance.get().max(tol.confusion());
+    let fitted =
+        match crate::pcurve_fit::fit_projected_pcurve_within(curve, range, surface, reach, tol)? {
+            crate::pcurve_fit::CappedFit::Fitted((fitted, ..)) => fitted,
+            crate::pcurve_fit::CappedFit::TooFar(off) => ogeom_bail!(
+                Construction,
+                "an edge of the face sits {off:.2e} off its surface, outside the edge's \
+                 tolerance of {reach:.2e}, so it has no trim there"
+            ),
+        };
+    // Held to the same parameter, the stricter of the two measures `check`
+    // takes, so the width holds whether or not the edge claims it.
+    let gap = crate::pcurve_fit::lifted_gap((curve, range), (&fitted, range), surface, true, tol)?;
+    if gap > tol.confusion() {
+        // The edge owns the miss, and so must the vertices that bound it:
+        // the containment rule.
+        let widened = ogeom_core::Tolerance::new(gap + tol.confusion())?;
+        model.widen(edge, widened)?;
+        if let Some((a, b)) = edge_vertices(model, edge)? {
+            model.widen(&a, widened)?;
+            model.widen(&b, widened)?;
+        }
+    }
+    Ok(fitted)
 }
 
 /// Attach a pcurve to an edge, describing it in a surface's parameter space.

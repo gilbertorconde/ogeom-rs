@@ -846,8 +846,10 @@ fn a_section_beside_a_cone_s_apex_states_its_true_tolerance() {
                 };
                 let at = image.point_at(t, T).unwrap();
                 let lifted = surface.point_at(at.x, at.y, T).unwrap();
+                // An exact section states zero: its images differ from the
+                // curve by the rounding of two evaluations alone.
                 assert!(
-                    lifted.distance(on) <= c.tolerance,
+                    lifted.distance(on) <= c.tolerance + T.confusion(),
                     "{} off at {t}, stated {}",
                     lifted.distance(on),
                     c.tolerance

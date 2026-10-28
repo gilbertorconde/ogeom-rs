@@ -213,7 +213,8 @@ crate = "ogeom-geom"
 verdict = "covered"
 symbols = [
     "ogeom_geom::Curve2d", "ogeom_geom::Line2d", "ogeom_geom::Circle2d",
-    "ogeom_geom::BSpline2d", "ogeom_geom::Trimmed2d", "ogeom_geom::Offset2d",
+    "ogeom_geom::Hyperbola2d", "ogeom_geom::BSpline2d", "ogeom_geom::Trimmed2d",
+    "ogeom_geom::Offset2d",
 ]
 tests = ["crates/ogeom-geom/src/curve2d.rs"]
 

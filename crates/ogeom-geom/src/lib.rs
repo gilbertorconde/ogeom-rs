@@ -19,7 +19,8 @@ pub use curve::{
     LineCurve, OffsetCurve, ParabolaCurve, TrimmedCurve,
 };
 pub use curve2d::{
-    BSpline2d, Circle2d, Ellipse2d, Line2d, Offset2d, PlanarCurve, Trig2d, Trimmed2d, tangent_angle,
+    BSpline2d, Circle2d, Ellipse2d, Hyperbola2d, Line2d, Offset2d, PlanarCurve, Trig2d, Trimmed2d,
+    tangent_angle,
 };
 pub use project::{SurfaceProjection, SurfaceSeeds, project_on_surface, project_on_surface_from};
 pub use surface::{

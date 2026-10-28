@@ -783,6 +783,31 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A profile with any edge in its plane sweeps into a valid solid or
+  refuses.** (#466)
+  - A prism, and a revolution through less than a turn, keep the profile
+    as their end caps. A cap edge with no closed-form pcurve on the
+    profile's plane was left bare, and the sweep returned a solid `check`
+    rejected ("bounds a face it has no pcurve on"). This happened for a
+    hyperbola arc, a reversed trimmed curve and a curve on a surface.
+  - A hyperbola in a plane now takes its exact pcurve there, a new
+    planar `Hyperbola2d`, at the same parameter. Run backwards, it takes
+    one only over a domain symmetric about zero. The native format
+    carries the planar hyperbola, and the `.brep` format carries it when
+    it runs forward. A STEP file states no pcurve for it, and the reader
+    projects the edge again.
+  - Any other cap edge with no closed form takes a pcurve fitted at the
+    curve's own parameters. The edge and its vertices widen to the
+    measured miss of the lifted fit. An edge standing off the profile's
+    plane by more than its own tolerance is refused, with the distance
+    named. Exact pcurves are unchanged. A full turn keeps no caps and
+    fits nothing.
+  - Measured: a diamond with sides of every curve type that lies in a
+    plane, swept into a prism and turned 2π and 1.5π, is valid every time,
+    within 4e-15 relative of the area times the height or Pappus's volume.
+    A fitted circle arc widens its edges to 3.0e-6, a fitted hyperbola
+    arc to 6.2e-6.
+
 - **A profile with offset or parabola edges sweeps into a valid solid.**
   (#464)
   - A prism, and a revolution through less than a turn, keep the profile

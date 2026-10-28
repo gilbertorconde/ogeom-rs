@@ -14,8 +14,8 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{
-    Axis2, Circle2, Direction2, Ellipse2, KnotVector, Point2, Transform2, Vector2, Weighted,
-    bspline, elementary,
+    Axis2, Circle2, Direction2, Ellipse2, Hyperbola2, KnotVector, Point2, Transform2, Vector2,
+    Weighted, bspline, elementary,
 };
 
 use crate::traits::{Curve2d, CurveKind, Reversible};
@@ -31,6 +31,8 @@ pub enum PlanarCurve {
     Circle(Circle2d),
     /// An ellipse or arc.
     Ellipse(Ellipse2d),
+    /// One branch of a hyperbola.
+    Hyperbola(Hyperbola2d),
     /// A polynomial or rational B-spline.
     BSpline(BSpline2d),
     /// Another planar curve restricted to a sub-interval.
@@ -61,6 +63,15 @@ pub struct Circle2d {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ellipse2d {
     ellipse: Ellipse2,
+    reversed: bool,
+}
+
+/// One branch of a hyperbola in the plane, `c + a cosh t x + b sinh t y`,
+/// parameterized by `t` over a finite domain.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hyperbola2d {
+    hyperbola: Hyperbola2,
+    domain: (f64, f64),
     reversed: bool,
 }
 
@@ -407,6 +418,40 @@ impl Circle2d {
     }
 }
 
+impl Hyperbola2d {
+    /// A hyperbola branch over `[start, end]` in its natural parameter.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+    /// interval is not finite and increasing.
+    pub fn over(hyperbola: Hyperbola2, start: f64, end: f64) -> OgeomResult<Self> {
+        if !start.is_finite() || !end.is_finite() || start >= end {
+            ogeom_bail!(
+                Construction,
+                "hyperbola domain [{start}, {end}] must be finite and increasing"
+            );
+        }
+        Ok(Self {
+            hyperbola,
+            domain: (start, end),
+            reversed: false,
+        })
+    }
+
+    /// The underlying hyperbola.
+    #[must_use]
+    pub const fn hyperbola(&self) -> Hyperbola2 {
+        self.hyperbola
+    }
+
+    /// Whether the curve runs its domain backwards.
+    #[must_use]
+    pub const fn is_reversed(&self) -> bool {
+        self.reversed
+    }
+}
+
 impl Ellipse2d {
     /// A full ellipse.
     #[must_use]
@@ -714,6 +759,57 @@ impl Curve2d for Ellipse2d {
     }
 }
 
+impl Curve2d for Hyperbola2d {
+    fn domain(&self) -> (f64, f64) {
+        self.domain
+    }
+
+    fn point_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Point2> {
+        Ok(Point2::from_vector(self.derivatives_at(u, 0, tol)?[0]))
+    }
+
+    fn d1_at(&self, u: f64, tol: Tolerances) -> OgeomResult<Vector2> {
+        Ok(self.derivatives_at(u, 1, tol)?[1])
+    }
+
+    fn derivatives_at(&self, u: f64, n: usize, tol: Tolerances) -> OgeomResult<Vec<Vector2>> {
+        let u = clamp_to_domain(u, self.domain, false, tol)?;
+        let t = if self.reversed {
+            mirror(u, self.domain.0, self.domain.1)
+        } else {
+            u
+        };
+        let f = self.hyperbola.frame();
+        let (a, b) = (self.hyperbola.major_radius(), self.hyperbola.minor_radius());
+        let (cosh, sinh) = (t.cosh(), t.sinh());
+        let (x, y) = (f.x().vector(), f.y().vector());
+        let sign = if self.reversed { -1.0 } else { 1.0 };
+        // `cosh` and `sinh` are each other's derivatives: the odd orders
+        // are the first, the even ones the position about the centre, each
+        // odd order times the reversal's sign.
+        let odd = x * (a * sinh) + y * (b * cosh);
+        let even = x * (a * cosh) + y * (b * sinh);
+        let mut out = Vec::with_capacity(n + 1);
+        out.push(self.hyperbola.centre().to_vector() + even);
+        for order in 1..=n {
+            out.push(if order % 2 == 1 { odd * sign } else { even });
+        }
+        Ok(out)
+    }
+
+    fn kind(&self) -> CurveKind {
+        CurveKind::Hyperbola
+    }
+
+    fn is_closed(&self, _tol: Tolerances) -> bool {
+        false
+    }
+
+    fn is_periodic(&self) -> bool {
+        false
+    }
+}
+
 impl Curve2d for BSpline2d {
     fn domain(&self) -> (f64, f64) {
         self.knots.domain()
@@ -805,6 +901,7 @@ macro_rules! dispatch {
             Self::Line($c) => $body,
             Self::Circle($c) => $body,
             Self::Ellipse($c) => $body,
+            Self::Hyperbola($c) => $body,
             Self::BSpline($c) => $body,
             Self::Trimmed($c) => $body,
             Self::Offset($c) => $body,
@@ -867,6 +964,10 @@ impl PlanarCurve {
             }),
             Self::Ellipse(c) => Self::Ellipse(Ellipse2d {
                 ellipse: c.ellipse.transformed(t, tol)?,
+                ..*c
+            }),
+            Self::Hyperbola(c) => Self::Hyperbola(Hyperbola2d {
+                hyperbola: c.hyperbola.transformed(t, tol)?,
                 ..*c
             }),
             Self::BSpline(c) => Self::BSpline(BSpline2d {
@@ -979,6 +1080,10 @@ impl Reversible for PlanarCurve {
                 reversed: !c.reversed,
                 ..*c
             }),
+            Self::Hyperbola(c) => Self::Hyperbola(Hyperbola2d {
+                reversed: !c.reversed,
+                ..*c
+            }),
             Self::BSpline(c) => {
                 let (knots, control) = bspline::reverse(&c.knots, &c.control);
                 Self::BSpline(BSpline2d {
@@ -1036,6 +1141,11 @@ impl From<Circle2d> for PlanarCurve {
 impl From<Ellipse2d> for PlanarCurve {
     fn from(c: Ellipse2d) -> Self {
         Self::Ellipse(c)
+    }
+}
+impl From<Hyperbola2d> for PlanarCurve {
+    fn from(c: Hyperbola2d) -> Self {
+        Self::Hyperbola(c)
     }
 }
 impl From<BSpline2d> for PlanarCurve {
@@ -1132,6 +1242,9 @@ mod tests {
                 .into(),
             Circle2d::new(Circle2::new(frame(), 2.0, T).unwrap()).into(),
             Ellipse2d::new(Ellipse2::new(frame(), 5.0, 3.0, T).unwrap()).into(),
+            Hyperbola2d::over(Hyperbola2::new(frame(), 2.0, 0.7, T).unwrap(), -1.1, 0.6)
+                .unwrap()
+                .into(),
             spline.clone().into(),
             Trimmed2d::new(spline.into(), 0.2, 0.8, T).unwrap().into(),
         ]
