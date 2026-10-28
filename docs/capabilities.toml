@@ -999,10 +999,16 @@ crate = "ogeom-offset"
 verdict = "partial"
 restriction = """Pipes run a circular section along a spine edge, \
 exactly for straight and circular spines and skinned for free-form and \
-helical ones, and along a wire exactly where its legs are: an open wire \
-of lines and arcs meeting tangent, or lines with sharp corners, open or \
-closed, mitred; a wire with arcs that closes or turns a sharp corner is \
-refused by name, for the pipe shell to sweep to a stated tolerance. \
+helical ones, and along a wire of lines and arcs, open or closed, as the \
+pipe shell of the disc square to its start with its default mitres, \
+wherever that sweeps it exactly: legs meeting tangent are the cylinders \
+and torus segments they sweep, a closed one a ring with no cap, straight \
+legs are mitred on the planes halving their corners, and a corner that \
+turns an arc out of its plane is mitred in pieces. A wire the pipe shell \
+refuses, or sweeps only as a skin (a corner turning in an arc's plane, a \
+sharp corner past an arc, a free-form edge), is refused by name; the \
+skinned pipe takes such a wire to a stated tolerance, as the pipe shell \
+of its disc. \
 `place_on_spine` brings a profile drawn elsewhere onto a spine's start \
 before a sweep, rigidly about its centroid: turned square to the start \
 tangent by the least rotation, moved so its centroid is the start point, \

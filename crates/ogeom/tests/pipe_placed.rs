@@ -12,10 +12,10 @@ use ogeom::algo::{
     volume_properties,
 };
 use ogeom::core::Tolerances;
-use ogeom::geom::{CircleCurve, Curve3d as _, LineCurve, PlaneSurface};
-use ogeom::math::{Circle, Direction, Frame, Plane, Point, Vector};
+use ogeom::geom::{BSplineCurve, CircleCurve, Curve3d as _, LineCurve, PlaneSurface};
+use ogeom::math::{Circle, Direction, Frame, KnotVector, Plane, Point, Vector};
 use ogeom::mesh::Deflection;
-use ogeom::offset::{PipePlacement, make_pipe, make_pipe_shell, place_on_spine};
+use ogeom::offset::{PipePlacement, make_pipe, make_pipe_shell, make_pipe_skinned, place_on_spine};
 use ogeom::topo::{Model, NodeData, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
@@ -115,15 +115,295 @@ fn a_pipe_along_a_wire_holds_pappus_s_volume_exactly() {
     }
 }
 
+/// The rounded rectangle in the `xy` plane about the origin: sides `2 a`
+/// along `x` and `2 b` along `y` between quarter arcs of radius `rho`
+/// centred at `(±a, ±b, 0)`, each meeting the next tangent to it, from
+/// `(a + rho, -b, 0)` heading `+y`. With `a = 0` it is the stadium, its
+/// two half circles each two quarter arcs. Its length is
+/// `4 a + 4 b + 2 π rho`.
+fn rounded(model: &mut Model, a: f64, b: f64, rho: f64) -> Shape {
+    let centres = [(a, b), (-a, b), (-a, -b), (a, -b)].map(|(x, y)| Point::new(x, y, 0.0));
+    let mut points = Vec::new();
+    for (k, centre) in centres.iter().enumerate() {
+        let from = f64::from(u8::try_from(k).unwrap()) * PI / 2.0;
+        let to = from + PI / 2.0;
+        points.push(*centre + Vector::new(rho * from.cos(), rho * from.sin(), 0.0));
+        points.push(*centre + Vector::new(rho * to.cos(), rho * to.sin(), 0.0));
+    }
+    let v: Vec<Shape> = points
+        .iter()
+        .map(|p| make_vertex(model, *p).shape)
+        .collect();
+    let mut edges = Vec::new();
+    for (k, centre) in centres.iter().enumerate() {
+        let before = (2 * k + 7) % 8;
+        // Where the side has no length the arc starts where the last ends.
+        let start = if points[before].distance(points[2 * k]) > T.confusion() {
+            let s = LineCurve::segment(points[before], points[2 * k], T).unwrap();
+            let range = s.domain();
+            edges.push(
+                make_edge_between(model, s.into(), range, &v[before], &v[2 * k], T)
+                    .unwrap()
+                    .shape,
+            );
+            &v[2 * k]
+        } else {
+            &v[before]
+        };
+        let frame = Frame::new(*centre, Direction::Z, Direction::X, T).unwrap();
+        let arc = CircleCurve::new(Circle::new(frame, rho, T).unwrap());
+        let from = f64::from(u8::try_from(k).unwrap()) * PI / 2.0;
+        edges.push(
+            make_edge_between(
+                model,
+                arc.into(),
+                (from, from + PI / 2.0),
+                start,
+                &v[(2 * k + 1) % 8],
+                T,
+            )
+            .unwrap()
+            .shape,
+        );
+    }
+    make_wire(model, &edges, T).unwrap().shape
+}
+
+/// A pipe of radius `r` round a closed spine of lines and arcs meeting
+/// tangent is a closed ring: no cap, every wall a cylinder or a torus,
+/// holding `π r²` times the spine's length exactly by Pappus, its centroid
+/// the spine's centre of symmetry. The stadium of two lines 4 long and
+/// half circles of radius 3 is `8 + 6π` long; the rounded rectangle with
+/// sides 6 and 4 and quarter arcs of radius 1.5 is `20 + 3π`.
+#[test]
+fn a_pipe_round_a_closed_wire_of_lines_and_arcs_is_a_ring_of_pappus_s_volume() {
+    let r = 0.5;
+    let mut model = Model::new();
+    let stadium = rounded(&mut model, 0.0, 2.0, 3.0);
+    let rectangle = rounded(&mut model, 3.0, 2.0, 1.5);
+    for (spine, length) in [(stadium, 8.0 + 6.0 * PI), (rectangle, 20.0 + 3.0 * PI)] {
+        let pipe = make_pipe(&mut model, &spine, r, T).unwrap().shape;
+        let found = check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{found}");
+        assert!(analytic_only(&model, &pipe));
+        let faces = explore_unique(&model, &pipe, ShapeType::Face).unwrap();
+        assert!(
+            faces.iter().all(|f| {
+                let Some(NodeData::Face(d)) = model.node(f).map(|n| n.data()) else {
+                    return false;
+                };
+                !matches!(
+                    model.geometry().surface(d.surface),
+                    Some(ogeom::geom::SurfaceGeometry::Plane(_))
+                )
+            }),
+            "a closed ring has no cap"
+        );
+        let (v, centre, exact) = measure(&model, &pipe);
+        assert!(exact);
+        // Integrated exactly: the error is the arithmetic's.
+        let want = PI * r * r * length;
+        assert!((v - want).abs() < want * 1e-12, "{v} against {want}");
+        assert!(centre.distance(Point::ORIGIN) < 1e-9, "{centre:?}");
+    }
+}
+
+/// Up `z` to `(0, 0, 5)`, then sharply onto a quarter arc of radius 3 in
+/// the plane `z = 5` about `(0, 3, 5)`, heading `+x` at its start: a
+/// corner that turns the arc out of its own plane.
+fn line_corner_flat_arc(model: &mut Model) -> Shape {
+    let (a, b) = (Point::ORIGIN, Point::new(0.0, 0.0, 5.0));
+    let (va, vb) = (make_vertex(model, a).shape, make_vertex(model, b).shape);
+    let segment = LineCurve::segment(a, b, T).unwrap();
+    let range = segment.domain();
+    let up = make_edge_between(model, segment.into(), range, &va, &vb, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(0.0, 3.0, 5.0), Direction::Z, -Direction::Y, T).unwrap();
+    let arc = CircleCurve::new(Circle::new(frame, 3.0, T).unwrap());
+    let vc = make_vertex(model, arc.point_at(PI / 2.0, T).unwrap()).shape;
+    let round = make_edge_between(model, arc.into(), (0.0, PI / 2.0), &vb, &vc, T)
+        .unwrap()
+        .shape;
+    make_wire(model, &[up, round], T).unwrap().shape
+}
+
+/// The disc of radius `r` about `at`, square to `heading`.
+fn disc(model: &mut Model, at: Point, heading: Direction, r: f64) -> Shape {
+    let frame = Frame::about(at, heading);
+    let circle = CircleCurve::new(Circle::new(frame, r, T).unwrap());
+    let rim = make_edge(model, circle.into(), (0.0, 2.0 * PI), T)
+        .unwrap()
+        .shape;
+    let ring = make_wire(model, &[rim], T).unwrap().shape;
+    make_face(
+        model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[ring],
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+/// A sharp corner between a line and an arc is mitred as the pipe shell
+/// of the disc mitres it, the default corners: here exactly, each side run
+/// on straight past the corner and cut on the plane halving it. The pipe
+/// is that solid: the same walls, the same volume.
+#[test]
+fn a_pipe_round_a_sharp_corner_onto_an_arc_is_the_pipe_shell_of_its_disc() {
+    let r = 0.5;
+    let mut model = Model::new();
+    let spine = line_corner_flat_arc(&mut model);
+    let pipe = make_pipe(&mut model, &spine, r, T).unwrap().shape;
+    let found = check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    assert!(analytic_only(&model, &pipe));
+    let profile = disc(&mut model, Point::ORIGIN, Direction::Z, r);
+    let shell = make_pipe_shell(&mut model, &profile, &spine, false, 1e-3, T)
+        .unwrap()
+        .shape;
+    let count = |shape: &Shape| {
+        explore_unique(&model, shape, ShapeType::Face)
+            .unwrap()
+            .len()
+    };
+    assert_eq!(count(&pipe), count(&shell));
+    let ((v, c, exact), (w, d, exact_shell)) = (measure(&model, &pipe), measure(&model, &shell));
+    assert!(exact && exact_shell);
+    // Both integrated exactly: the error is the arithmetic's.
+    assert!((v - w).abs() < w * 1e-12, "{v} against {w}");
+    assert!(c.distance(d) < 1e-9, "{c:?} against {d:?}");
+}
+
+/// What the pipe shell sweeps only as a skin is refused by name, with
+/// the function that takes a tolerance for it: a corner turning in an
+/// arc's plane, a sharp corner past an arc (the straight run then mitred
+/// against the skinned one), a free-form edge. A tube wider than an arc
+/// bends is refused as before.
 #[test]
 fn a_pipe_along_a_wire_refuses_what_it_does_not_sweep_exactly_by_name() {
     let mut model = Model::new();
     let turned = line_arc_line(&mut model, true);
     let err = make_pipe(&mut model, &turned, 0.5, T).unwrap_err();
-    assert!(err.to_string().contains("turns no sharp corner"), "{err}");
+    assert!(err.to_string().contains("not swept exactly"), "{err}");
+    let (a, b) = (Point::ORIGIN, Point::new(0.0, 0.0, 5.0));
+    let (va, vb) = (
+        make_vertex(&mut model, a).shape,
+        make_vertex(&mut model, b).shape,
+    );
+    let segment = LineCurve::segment(a, b, T).unwrap();
+    let range = segment.domain();
+    let up = make_edge_between(&mut model, segment.into(), range, &va, &vb, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(0.0, 0.0, 8.0), Direction::Y, -Direction::Z, T).unwrap();
+    let arc = CircleCurve::new(Circle::new(frame, 3.0, T).unwrap());
+    let vc = make_vertex(&mut model, arc.point_at(PI / 2.0, T).unwrap()).shape;
+    let round = make_edge_between(&mut model, arc.into(), (0.0, PI / 2.0), &vb, &vc, T)
+        .unwrap()
+        .shape;
+    let in_plane = make_wire(&mut model, &[up.clone(), round], T)
+        .unwrap()
+        .shape;
+    let err = make_pipe(&mut model, &in_plane, 0.5, T).unwrap_err();
+    assert!(err.to_string().contains("not swept exactly"), "{err}");
+    let free = free_form_after_line(&mut model, &up, &vb);
+    let err = make_pipe(&mut model, &free, 0.5, T).unwrap_err();
+    assert!(err.to_string().contains("make_pipe_skinned"), "{err}");
     let tight = line_arc_line(&mut model, false);
     let err = make_pipe(&mut model, &tight, 3.0, T).unwrap_err();
     assert!(err.to_string().contains("swallows its spine"), "{err}");
+}
+
+/// The line `up` to `(0, 0, 5)` and on from its end `top`, tangent to
+/// it, the cubic Bézier through `(0, 0, 7)` and `(2, 0, 9)` to `(5, 1, 10)`.
+fn free_form_after_line(model: &mut Model, up: &Shape, top: &Shape) -> Shape {
+    let control = vec![
+        Point::new(0.0, 0.0, 5.0),
+        Point::new(0.0, 0.0, 7.0),
+        Point::new(2.0, 0.0, 9.0),
+        Point::new(5.0, 1.0, 10.0),
+    ];
+    let knots = KnotVector::clamped_uniform(3, 4).unwrap();
+    let spline = BSplineCurve::new(knots, control, T).unwrap();
+    let end = make_vertex(model, Point::new(5.0, 1.0, 10.0)).shape;
+    let bend = make_edge_between(model, spline.into(), (0.0, 1.0), top, &end, T)
+        .unwrap()
+        .shape;
+    make_wire(model, &[up.clone(), bend], T).unwrap().shape
+}
+
+/// The skinned pipe takes a wire of free-form edges too, as the pipe shell
+/// of its disc: down a line and on along a Bézier bend, `π r²` times the
+/// spine's length by Pappus, to within the skin's tolerance and the mesh's
+/// chord over the walls' area.
+#[test]
+fn a_skinned_pipe_runs_along_a_wire_with_a_free_form_edge() {
+    const SKIN: f64 = 1e-3;
+    const CHORD: f64 = 1e-4;
+    let r = 0.5;
+    let mut model = Model::new();
+    let (a, b) = (Point::ORIGIN, Point::new(0.0, 0.0, 5.0));
+    let (va, vb) = (
+        make_vertex(&mut model, a).shape,
+        make_vertex(&mut model, b).shape,
+    );
+    let segment = LineCurve::segment(a, b, T).unwrap();
+    let range = segment.domain();
+    let up = make_edge_between(&mut model, segment.into(), range, &va, &vb, T)
+        .unwrap()
+        .shape;
+    let spine = free_form_after_line(&mut model, &up, &vb);
+    let pipe = make_pipe_skinned(&mut model, &spine, r, SKIN, T)
+        .unwrap()
+        .shape;
+    let found = check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    // The bend's length by Simpson's rule over its speed, far finer than
+    // the bound below.
+    let control = [
+        Vector::new(0.0, 0.0, 5.0),
+        Vector::new(0.0, 0.0, 7.0),
+        Vector::new(2.0, 0.0, 9.0),
+        Vector::new(5.0, 1.0, 10.0),
+    ];
+    let speed = |t: f64| {
+        let s = 1.0 - t;
+        ((control[1] - control[0]) * (3.0 * s * s)
+            + (control[2] - control[1]) * (6.0 * s * t)
+            + (control[3] - control[2]) * (3.0 * t * t))
+            .magnitude()
+    };
+    let n = 2000;
+    let h = 1.0 / f64::from(n);
+    let bend: f64 = (0..=n)
+        .map(|i| {
+            let w = if i == 0 || i == n {
+                1.0
+            } else if i % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            w * speed(f64::from(i) * h)
+        })
+        .sum::<f64>()
+        * h
+        / 3.0;
+    let length = 5.0 + bend;
+    let v = volume_properties(&model, &pipe, Deflection::with_chord(CHORD).unwrap(), T)
+        .unwrap()
+        .mass;
+    let want = PI * r * r * length;
+    // The walls stray from the tube by at most the skin's tolerance and
+    // the mesh's chord, over an area of at most the circle's perimeter
+    // times the spine's length.
+    let bound = (SKIN + CHORD) * 2.0 * PI * r * length;
+    assert!(
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
+    );
 }
 
 /// A `2 × 2` square drawn about `(5, 3, 1)` on the plane facing

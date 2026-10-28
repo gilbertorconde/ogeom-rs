@@ -13,6 +13,28 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`make_pipe` round closed wires and sharp corners with arcs, and
+  `make_pipe_skinned` along a wire.** (#394)
+  - `make_pipe` refused every wire with an arc in it that closes or turns
+    a sharp corner, before asking the pipe shell, though the pipe shell
+    of its disc sweeps many of them exactly. It now takes any wire of
+    lines and arcs as that pipe shell with its default mitres and keeps
+    the result wherever every face is a plane, cylinder or torus: a
+    closed ring of lines and arcs meeting tangent (no cap), or a corner
+    turning an arc out of its plane, mitred in pieces. A wire the pipe
+    shell refuses, or sweeps only as a skin (a corner turning in an
+    arc's plane, a sharp corner past an arc), is refused by name, as is a
+    free-form edge. Single edges and the wires swept before are built as
+    they were.
+  - `make_pipe_skinned` read one spine edge. A wire of several edges,
+    free-form ones included, is now the pipe shell of its disc, held to
+    the given tolerance.
+  - Measured: a stadium (lines 4, half circles of radius 3) and a rounded
+    rectangle (sides 6 and 4, corners of radius 1.5) hold `π r²` times
+    their length to 1e-15, centroids on the origin to 1e-14; the corner
+    onto a flat arc matches the pipe shell of the disc to the last digit;
+    a line and a Bézier bend skinned to 1e-3 hold Pappus's volume to
+    1.6e-5 relative.
 - **Holed faces mitre between skinned runs under the auxiliary and
   binormal laws.** (#394)
   - A face with a circular hole centred on the spine was refused at a
