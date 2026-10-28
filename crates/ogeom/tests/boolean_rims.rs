@@ -292,3 +292,114 @@ fn a_drum_capped_in_a_plane_tangent_to_a_bore() {
         }
     }
 }
+
+/// The volume of the bore `x² + y² ≤ R²` beyond the plane x = 1 within a
+/// drum of radius `r` along x, its axis at y = `offset`:
+/// `∫∫ (√(R² − y²) − 1) dy dz` over the drum's section. The wall's depth
+/// `√(R² − (offset + s)²)` is a power series in `s` (the square root of a
+/// quadratic, its coefficients by the Cauchy product), convergent over the
+/// section as `|offset| + r < R`. The section's moments are
+/// `∫∫ s^(2n) = π·r^(2n + 2)·(2n)! / (4ⁿ·n!·(n + 1)!)` and its odd ones
+/// vanish, so the integral is the series' even coefficients against those
+/// moments, summed until a term falls under rounding.
+fn drum_within_bore(big: f64, small: f64, offset: f64) -> f64 {
+    let quadratic = [big * big - offset * offset, -2.0 * offset, -1.0];
+    let mut root = vec![quadratic[0].sqrt()];
+    let pi = core::f64::consts::PI;
+    let (mut moment, mut sum) = (pi * small * small, 0.0);
+    for n in 0..200_u32 {
+        while root.len() <= 2 * n as usize {
+            let k = root.len();
+            let cross: f64 = (1..k).map(|j| root[j] * root[k - j]).sum();
+            root.push((quadratic.get(k).copied().unwrap_or(0.0) - cross) / (2.0 * root[0]));
+        }
+        let term = root[2 * n as usize] * moment;
+        sum += term;
+        if term.abs() <= f64::EPSILON * sum.abs() {
+            break;
+        }
+        let n = f64::from(n);
+        moment *= small * small * (2.0 * n + 1.0) * (2.0 * n + 2.0) / (4.0 * (n + 1.0) * (n + 2.0));
+    }
+    sum - pi * small * small
+}
+
+/// The disc of [`a_drum_capped_in_a_plane_tangent_to_a_bore`] and its drum,
+/// the drum's axis moved to y = `offset` and its seam `seam` rad round from
+/// its top, with cut and common in either order checked valid and against
+/// [`drum_within_bore`] within 1e-9.
+fn cuts_by_a_tangent_cap(offset: f64, seam: f64, ends: &[bool]) {
+    let pi = core::f64::consts::PI;
+    let (big, small) = (2.5_f64, 0.5_f64);
+    let inside = drum_within_bore(big, small, offset);
+    let seam = Direction::new(ogeom::math::Vector::new(0.0, seam.sin(), seam.cos()), T).unwrap();
+    for &far in ends {
+        let (foot, axis) = if far {
+            (Point::new(1.0, offset, 1.5), Direction::X)
+        } else {
+            (
+                Point::new(big, offset, 1.5),
+                Direction::new(-ogeom::math::Vector::X, T).unwrap(),
+            )
+        };
+        let mut model = Model::new();
+        let disc = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, big, 3.0, T)
+            .unwrap()
+            .shape;
+        let drum = ogeom::algo::make_cylinder(
+            &mut model,
+            Frame::new(foot, axis, seam, T).unwrap(),
+            small,
+            big - 1.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        for (name, a, b, whole) in [
+            ("disc, drum", &disc, &drum, pi * big * big * 3.0),
+            ("drum, disc", &drum, &disc, pi * small * small * (big - 1.0)),
+        ] {
+            let cut = ogeom::boolean::cut(&mut model, a, b, T).unwrap().shape;
+            let common = ogeom::boolean::common(&mut model, a, b, T).unwrap().shape;
+            for (what, shape, want) in [("cut", &cut, whole - inside), ("common", &common, inside)]
+            {
+                let diagnosis = ogeom::algo::check(&model, shape, T).unwrap();
+                assert!(
+                    diagnosis.is_valid(),
+                    "{offset}, {axis:?}, {name}, {what}: {diagnosis}"
+                );
+                let got = volume(&model, shape);
+                assert!(
+                    (got - want).abs() <= 1e-9,
+                    "{offset}, {axis:?}, {name}, {what}: {got} against {want}"
+                );
+            }
+        }
+    }
+}
+
+/// The drum of [`a_drum_capped_in_a_plane_tangent_to_a_bore`], its seam
+/// crossing the section where it runs within a tenth of a millimetre of the
+/// rim it touches. Its axis at y = 0 with the seam 0.04 rad round, and at
+/// y = −0.3 with the seam 0.7 rad round, the seam meets the section 0.02
+/// and 0.03 from the touch, where the section stands 8e-5 and 9.8e-5 off
+/// the rim. Read as running along the rim within the loose width a fitted
+/// section is measured at, the stretch from the seam to the touch split
+/// the bore's wall and not the drum's, and no attempt closed the shell.
+#[test]
+fn a_drum_whose_seam_crosses_its_section_beside_a_tangent_rim() {
+    cuts_by_a_tangent_cap(0.0, 0.04, &[true, false]);
+    cuts_by_a_tangent_cap(-0.3, 0.7, &[true, false]);
+}
+
+/// The drum of [`a_drum_capped_in_a_plane_tangent_to_a_bore`], its axis
+/// at y = 0.45 and its seam 2.5 rad round. Its wall stands past the bore
+/// for y < 0 in a sliver between the section and the rim, at most
+/// `2.5 − √(6.25 − 0.05²)` = 5e-4 wide, which the touches of the section
+/// with the rim at both its ends bound. The touches are known along the
+/// rim only to 6.6e-3, and with the drum's wall welded at that width
+/// everywhere the sliver had no inside and was lost.
+#[test]
+fn a_sliver_of_drum_between_its_section_and_a_tangent_rim_is_kept() {
+    cuts_by_a_tangent_cap(0.45, 2.5, &[true]);
+}

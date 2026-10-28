@@ -5541,6 +5541,9 @@ fn fill(
                 .map(|b| b.expanded(s.tolerance))
         })
         .collect();
+    // Read here, on the caller's thread: the sections are paved on worker
+    // threads, which do not share it.
+    let at_stated = AT_STATED.get();
     let paved: Vec<OgeomResult<SectionWork>> = ogeom_core::parallel::map_ordered(
         &sections,
         |si, section: &SectionRec| {
@@ -6322,7 +6325,14 @@ fn fill(
                         // the stretch within a tenth of a millimetre of the
                         // rail is the section, not the rail. Read as a hug
                         // it leaves the cap's crescent unable to close.
-                        let floor = if section.tolerance > 0.0 {
+                        // On the last attempt a fitted section, too, runs
+                        // along an edge only within the sum of its radius
+                        // and the edge's: its tolerance is how far it may
+                        // sit from the true section, the shallow angle of
+                        // the two surfaces included, and a section leaving
+                        // a rim it touches parts from it by more than that
+                        // well inside the loose width.
+                        let floor = if section.tolerance > 0.0 && !at_stated {
                             tol.confusion() * 1e3
                         } else {
                             tol.confusion() * 10.0
@@ -6330,7 +6340,13 @@ fn fill(
                         let mut near = false;
                         for (ei, e) in own.edges.iter().enumerate() {
                             let (drawn, drange, off) = e.drawn();
-                            let width = held_to(reach.max(floor).max(off * 2.0), off * 2.0);
+                            let radii = if at_stated && section.tolerance > 0.0 {
+                                section.tolerance + e.tolerance.max(e.residual)
+                            } else {
+                                0.0
+                            };
+                            let width =
+                                held_to(reach.max(floor).max(radii).max(off * 2.0), off * 2.0);
                             // The edge's box holds its curve: a point outside
                             // the box grown by the width is not near it.
                             if !e.bound.expanded(width).contains(at) {
@@ -6933,7 +6949,6 @@ fn fill(
     // Where stretches end at the radii the curves hold to, each edge holds
     // to the widest it is measured to on any face of it, and each edge's
     // own record is kept to measure a stretch from its side.
-    let at_stated = AT_STATED.get();
     let mut held: ogeom_core::FastMap<EdgeKey, (f64, &BoundaryEdge)> =
         ogeom_core::FastMap::default();
     if at_stated {
@@ -10385,12 +10400,21 @@ fn general_fuse_as(
         // weld need not widen to the cluster's span, which would swallow a
         // sliver beside the edge whole. A fitted one wanders by more than
         // that, and the weld widens for it.
+        // On the last attempt that weld is each such end's alone: the face's
+        // node weld also decides which regions are too thin to hold a point,
+        // and a junction's run along one edge says nothing of a sliver
+        // elsewhere on the face.
         let mut spread = 0.0_f64;
-        for strand in strands.iter_mut().filter(|st| !st.boundary) {
+        let mut spread_at: Vec<[f64; 2]> = vec![[0.0; 2]; strands.len()];
+        for (si, strand) in strands
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, st)| !st.boundary)
+        {
             let exact = matches!(strand.tag, Tag::Section { section, .. }
                 if sections.get(section).is_some_and(|s| s.tolerance <= 0.0));
             let last = strand.polyline.len().saturating_sub(1);
-            for end in [0, last] {
+            for (side, end) in [0, last].into_iter().enumerate() {
                 let Some(&at) = strand.polyline.get(end) else {
                     continue;
                 };
@@ -10411,7 +10435,10 @@ fn general_fuse_as(
                             .min_by(|p, r| p.distance(at).total_cmp(&r.distance(at)))
                             .unwrap_or(chart);
                     }
-                    Some(&(_, _, reach)) => spread = spread.max(reach),
+                    Some(&(_, _, reach)) => {
+                        spread = spread.max(reach);
+                        spread_at[si][side] = reach;
+                    }
                     None => {}
                 }
             }
@@ -10428,28 +10455,23 @@ fn general_fuse_as(
                 .fold(face.tolerance, |acc, hole| acc.max(hole.doubt))
                 .min(doubt_of(face))
         };
-        // On the last attempt only a fitted section with a strand on this
-        // face leaves an edge at a hug's far end; one whose every stretch
-        // ran along the boundary left nothing to weld.
-        let hugging_strand = strands.iter().any(|st| {
-            matches!(st.tag, Tag::Section { section, .. } if sections[section].tolerance > 0.0)
-        });
         let near = contacts
             .iter()
             .filter(|c| c.target_from_a == from_a && c.target_face == fi)
             .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0))
             .max(tol.confusion() * 2.0)
             .max(everywhere(face))
-            .max(spread)
+            .max(if read_thin { 0.0 } else { spread })
             .max(
-                if sections.iter().any(|s| {
-                    s.tolerance > 0.0
-                        && if from_a {
-                            s.face_a == fi
-                        } else {
-                            s.face_b == fi
-                        }
-                }) && (!read_thin || hugging_strand)
+                if !read_thin
+                    && sections.iter().any(|s| {
+                        s.tolerance > 0.0
+                            && if from_a {
+                                s.face_a == fi
+                            } else {
+                                s.face_b == fi
+                            }
+                    })
                 {
                     tol.confusion() * 1e3
                 } else {
@@ -10504,6 +10526,17 @@ fn general_fuse_as(
                 let mut weld = doubt_at(face, q, tol)?.max(near);
                 if let Tag::Section { section, .. } = st.tag {
                     weld = weld.max(doubt_at(other(section), q, tol)?);
+                }
+                // On the last attempt the face weld leaves out a junction's
+                // run and a fitted section's hug width, and they hold at the
+                // ends they concern: a fitted section's end, hugging an edge
+                // within the two curves' radii or crossing it, meets the
+                // edge's node within its own reach, twice its tolerance.
+                if read_thin {
+                    weld = weld.max(spread_at[si][usize::from(end != 0)]);
+                    if let Tag::Section { section, .. } = st.tag {
+                        weld = weld.max(honest(sections[section].tolerance, tol) * 2.0);
+                    }
                 }
                 ends.push((si, end, at, q, weld));
             }

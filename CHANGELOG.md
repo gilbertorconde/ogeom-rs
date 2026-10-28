@@ -783,6 +783,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Slivers beside a section touching a drum's rim are kept.** (#460)
+  - A drum ending in a plane tangent to a disc's wall was still refused
+    in 6 of 64 placements ("the kept pieces did not close into a
+    shell"), every retry included. Where the drum's seam crossed the
+    section within 1e-4 of the rim it touches, the stretch from the seam
+    to the touch was read as running along the rim, at the loose width a
+    fitted section is measured at, and split the disc's wall but not the
+    drum's. Where the drum's wall stood past the disc in a sliver 5e-4
+    wide, the touches bounding it welded the whole wall at 6.6e-3, how
+    far they run along the rim, and the sliver was dropped.
+  - On the last retry a fitted section now runs along an edge only within
+    the sum of its tolerance and the edge's, and a junction's run and a
+    fitted section's reach weld only the strand ends they concern, not
+    the face. Results the earlier attempts build are unchanged.
+  - Measured: all 64 placements cut and common either way round, valid,
+    within 9e-11 of `∫∫ (√(R² − y²) − x₀) dy dz` over the drum's section.
+
 - **A section touching an edge of a surface ends on the touch.** (#457)
   - Where the section of two surfaces touches an edge of one without
     crossing it (a drum's rim in a plane tangent to a bore), the walk
