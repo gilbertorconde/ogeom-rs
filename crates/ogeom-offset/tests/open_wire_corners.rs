@@ -1,6 +1,7 @@
-//! Open wires swept down spines of straight legs under the
-//! rotation-minimizing frame, round mitred and rounded corners, against
-//! closed forms and against the walls of the closed wire they halve.
+//! Open wires swept down spines of lines and arcs under the
+//! rotation-minimizing frame and the laws carrying the section as it does,
+//! round mitred and rounded corners, against closed forms and against the
+//! walls of the closed wire or face they halve.
 //!
 //! A profile point at `α` outside a corner's axis (along the side the
 //! corner turns away from), turning a corner through `θ`: mitred, its path
@@ -16,6 +17,7 @@ use core::f64::consts::{FRAC_PI_2, FRAC_PI_3, PI};
 
 use ogeom_algo::{check, curve_length, make_polygon, make_prism, make_wire, surface_properties};
 use ogeom_core::{FastMap, Tolerances};
+use ogeom_geom::Curve3d as _;
 use ogeom_math::{Axis, Direction, Point, Transform, Vector};
 use ogeom_mesh::Deflection;
 use ogeom_offset::{PipeCorners, PipeLaw, make_pipe_shell_with};
@@ -934,6 +936,529 @@ fn a_corner_turning_next_to_nothing_mitres_or_is_refused_by_name() {
                     "{case}: boundary {boundary} against {around}"
                 );
             }
+        }
+    }
+}
+
+/// A piece of a spine: a line to a point, or an arc of a radius through an
+/// angle, bending toward a direction, after turning sharply to a heading
+/// where one is given.
+#[derive(Clone, Copy)]
+enum Piece {
+    Line(Point),
+    Arc {
+        turned: Option<Vector>,
+        toward: Vector,
+        radius: f64,
+        angle: f64,
+    },
+}
+
+/// A spine from the origin heading `+z`, piece by piece, each starting
+/// where the last ends.
+fn pieced(model: &mut Model, pieces: &[Piece]) -> Shape {
+    let mut at = Point::ORIGIN;
+    let mut heading = Vector::new(0.0, 0.0, 1.0);
+    let mut from = ogeom_algo::make_vertex(model, at).shape;
+    let mut edges = Vec::new();
+    for piece in pieces {
+        let (curve, range, to): (ogeom_geom::Curve, _, _) = match *piece {
+            Piece::Line(to) => {
+                let line = ogeom_geom::LineCurve::segment(at, to, T).unwrap();
+                heading = (to - at) / to.distance(at);
+                let range = line.domain();
+                (line.into(), range, to)
+            }
+            Piece::Arc {
+                turned,
+                toward,
+                radius,
+                angle,
+            } => {
+                if let Some(h) = turned {
+                    heading = h;
+                }
+                let centre = at + toward * radius;
+                let x = (at - centre) / radius;
+                let frame = ogeom_math::Frame::new(
+                    centre,
+                    Direction::new(x.cross(heading), T).unwrap(),
+                    Direction::new(x, T).unwrap(),
+                    T,
+                )
+                .unwrap();
+                let circle = ogeom_math::Circle::new(frame, radius, T).unwrap();
+                let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+                let to = curve.point_at(angle, T).unwrap();
+                let d = curve.d1_at(angle, T).unwrap();
+                heading = d / d.magnitude();
+                (curve, (0.0, angle), to)
+            }
+        };
+        let end = ogeom_algo::make_vertex(model, to).shape;
+        edges.push(
+            ogeom_algo::make_edge_between(model, curve, range, &from, &end, T)
+                .unwrap()
+                .shape,
+        );
+        at = to;
+        from = end;
+    }
+    make_wire(model, &edges, T).unwrap().shape
+}
+
+const X: Vector = Vector::new(1.0, 0.0, 0.0);
+const Y: Vector = Vector::new(0.0, 1.0, 0.0);
+const Z: Vector = Vector::new(0.0, 0.0, 1.0);
+
+/// A profile wholly outside a right-angled corner toward `+x` (`α = -x`),
+/// and its mirror, wholly outside one toward `-x` (`α = x`).
+const OUTSIDE: [(f64, f64); 3] = [(-3.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)];
+const MIRRORED: [(f64, f64); 3] = [(3.0, -1.0), (1.0, -1.0), (1.0, 1.0)];
+
+/// The area and boundary of a polyline profile's sheet where every point
+/// sweeps a path whose length is linear in the point, `run(x, y)`: each
+/// segment sweeps its length times the run of its middle, and the
+/// boundary is the profile twice and the runs of its two ends.
+fn linear_closed_form(profile: &[(f64, f64)], run: impl Fn(f64, f64) -> f64) -> (f64, f64) {
+    let mut length = 0.0;
+    let mut area = 0.0;
+    for pair in profile.windows(2) {
+        let s = ((pair[1].0 - pair[0].0).powi(2) + (pair[1].1 - pair[0].1).powi(2)).sqrt();
+        length += s;
+        area += s * run(
+            f64::midpoint(pair[0].0, pair[1].0),
+            f64::midpoint(pair[0].1, pair[1].1),
+        );
+    }
+    let ends = [profile[0], profile[profile.len() - 1]];
+    (
+        area,
+        2.0 * length + run(ends[0].0, ends[0].1) + run(ends[1].0, ends[1].1),
+    )
+}
+
+/// Down legs of lines and arcs, a point's path is its run down each line,
+/// its arc about each arc's axis (the angle times its distance from the
+/// axis, linear in the point while the section stays on one side of it)
+/// and, at each right-angled corner it lies outside, `2 α` mitred
+/// (`α tan(θ/2)` on each side) or `π α / 2` rounded.
+///
+/// Up `+z` 10, then sharply `+x` into an arc of radius 8 bending toward
+/// `+z`, `-z` or `+y`: the corner turns the section's `(x, y)` to the
+/// offset `(0, y, -x)` from it, `α = -x`, at `8 + x`, `8 - x` or `8 - y`
+/// from the arc's axis. An arc of radius 8 toward `+x` first takes it to
+/// `(0, y, -x)` at `8 - x` from the axis; a sharp turn up `+z` then has
+/// `α = x` and takes it to `(x, y, 0)`, and an arc of radius 5 bending
+/// toward `-x` from there holds it at `5 + x`. Up `+z`, sharply `+x` into a
+/// quarter arc toward `+y` (at `8 - y`) and sharply down `-z` turns two
+/// corners with `α = -x`. Tangent, a line and an arc turn no corner.
+#[test]
+fn an_open_profile_outside_corners_against_arcs_sweeps_to_its_closed_form() {
+    let l = 10.0;
+    let q = FRAC_PI_2;
+    let arc = |turned, toward, radius, angle| Piece::Arc {
+        turned,
+        toward,
+        radius,
+        angle,
+    };
+    let up = Point::new(0.0, 0.0, l);
+    let gain = |alpha: f64, round: bool| if round { q * alpha } else { 2.0 * alpha };
+    // A case's name, profile, spine, and the run of a point `(x, y)`
+    // gaining `g` round the corner.
+    type Case<'a> = (&'a str, &'a [(f64, f64)], Vec<Piece>, Run);
+    type Run = fn(f64, f64, f64) -> f64;
+    let cases: Vec<Case<'_>> = vec![
+        (
+            "line, arc up",
+            &OUTSIDE,
+            vec![Piece::Line(up), arc(Some(X), Z, 8.0, q)],
+            |x, _, g| 10.0 + g + FRAC_PI_2 * (8.0 + x),
+        ),
+        (
+            "line, arc down",
+            &OUTSIDE,
+            vec![Piece::Line(up), arc(Some(X), -Z, 8.0, 0.5)],
+            |x, _, g| 10.0 + g + 0.5 * (8.0 - x),
+        ),
+        (
+            "line, arc aside",
+            &OUTSIDE,
+            vec![Piece::Line(up), arc(Some(X), Y, 8.0, q)],
+            |_, y, g| 10.0 + g + FRAC_PI_2 * (8.0 - y),
+        ),
+        (
+            "arc, line",
+            &MIRRORED,
+            vec![
+                arc(None, X, 8.0, q),
+                Piece::Line(Point::new(8.0, 0.0, 8.0 + l)),
+            ],
+            |x, _, g| FRAC_PI_2 * (8.0 - x) + g + 10.0,
+        ),
+        (
+            "arc, arc",
+            &MIRRORED,
+            vec![arc(None, X, 8.0, q), arc(Some(Z), -X, 5.0, q)],
+            |x, _, g| FRAC_PI_2 * (8.0 - x) + g + FRAC_PI_2 * (5.0 + x),
+        ),
+    ];
+    for (name, profile, pieces, run) in &cases {
+        for corners in [PipeCorners::Mitre, PipeCorners::Round] {
+            let round = corners == PipeCorners::Round;
+            let mut model = Model::new();
+            let wire = polyline(&mut model, profile);
+            let path = pieced(&mut model, pieces);
+            let sheet = sweep(&mut model, &wire, &path, corners);
+            let (area, boundary) = measured(&model, &sheet);
+            let alpha_sign = if profile[0].0 < 0.0 { -1.0 } else { 1.0 };
+            let (want, around) =
+                linear_closed_form(profile, |x, y| run(x, y, gain(alpha_sign * x, round)));
+            let case = format!("{name} {corners:?}");
+            assert!(close(area, want), "{case}: area {area} against {want}");
+            assert!(
+                close(boundary, around),
+                "{case}: boundary {boundary} against {around}"
+            );
+        }
+    }
+    // Two corners, both with `α = -x`.
+    for corners in [PipeCorners::Mitre, PipeCorners::Round] {
+        let round = corners == PipeCorners::Round;
+        let mut model = Model::new();
+        let wire = polyline(&mut model, &OUTSIDE);
+        let path = pieced(
+            &mut model,
+            &[
+                Piece::Line(up),
+                arc(Some(X), Y, 8.0, q),
+                Piece::Line(Point::new(8.0, 8.0, 0.0)),
+            ],
+        );
+        // The second corner starts the last line straight down.
+        let sheet = sweep(&mut model, &wire, &path, corners);
+        let (area, boundary) = measured(&model, &sheet);
+        let (want, around) = linear_closed_form(&OUTSIDE, |x, y| {
+            2.0 * l + 2.0 * gain(-x, round) + q * (8.0 - y)
+        });
+        assert!(close(area, want), "{corners:?}: area {area} against {want}");
+        assert!(
+            close(boundary, around),
+            "{corners:?}: boundary {boundary} against {around}"
+        );
+    }
+    // Tangent: a line into an arc toward `+x` (at `8 - x`) and an arc into
+    // a line, the profile on both sides of the spine.
+    for (pieces, run) in [
+        (
+            vec![Piece::Line(up), arc(None, X, 8.0, q)],
+            (|x, _| 10.0 + FRAC_PI_2 * (8.0 - x)) as fn(f64, f64) -> f64,
+        ),
+        (
+            vec![
+                arc(None, X, 8.0, q),
+                Piece::Line(Point::new(8.0 + l, 0.0, 8.0)),
+            ],
+            |x, _| FRAC_PI_2 * (8.0 - x) + 10.0,
+        ),
+    ] {
+        for corners in [PipeCorners::Mitre, PipeCorners::Round] {
+            let mut model = Model::new();
+            let wire = polyline(&mut model, &L);
+            let path = pieced(&mut model, &pieces);
+            let sheet = sweep(&mut model, &wire, &path, corners);
+            let (area, boundary) = measured(&model, &sheet);
+            let (want, around) = linear_closed_form(&L, run);
+            assert!(close(area, want), "{corners:?}: area {area} against {want}");
+            assert!(
+                close(boundary, around),
+                "{corners:?}: boundary {boundary} against {around}"
+            );
+        }
+    }
+}
+
+/// A rectangle wholly outside a corner against an arc, swept as a face,
+/// is bounded by its two ends and the walls its two open halves sweep:
+/// rounded, exactly; mitred, within what the face's skin is held to.
+#[test]
+fn two_open_halves_outside_a_corner_against_an_arc_bound_the_face_swept() {
+    let rectangle = [(-3.0, -1.0), (-1.0, -1.0), (-1.0, 1.0), (-3.0, 1.0)];
+    let halves = [
+        vec![rectangle[0], rectangle[1], rectangle[2]],
+        vec![rectangle[2], rectangle[3], rectangle[0]],
+    ];
+    let pieces = |toward: Vector| {
+        [
+            Piece::Line(Point::new(0.0, 0.0, 10.0)),
+            Piece::Arc {
+                turned: Some(X),
+                toward,
+                radius: 8.0,
+                angle: FRAC_PI_2,
+            },
+        ]
+    };
+    for toward in [Z, Y] {
+        for corners in [PipeCorners::Mitre, PipeCorners::Round] {
+            let mut model = Model::new();
+            let path = pieced(&mut model, &pieces(toward));
+            let sheets: f64 = halves
+                .iter()
+                .map(|half| {
+                    let wire = polyline(&mut model, half);
+                    let sheet = sweep(&mut model, &wire, &path, corners);
+                    measured(&model, &sheet).0
+                })
+                .sum();
+            let face = {
+                let points: Vec<Point> = rectangle
+                    .iter()
+                    .map(|&(x, y)| Point::new(x, y, 0.0))
+                    .collect();
+                let wire = make_polygon(&mut model, &points, true, T).unwrap().shape;
+                let plane = ogeom_math::Plane::new(
+                    ogeom_math::Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap(),
+                );
+                ogeom_algo::make_face(
+                    &mut model,
+                    ogeom_geom::PlaneSurface::new(plane).into(),
+                    &[wire],
+                    T,
+                )
+                .unwrap()
+                .shape
+            };
+            let solid = sweep(&mut model, &face, &path, corners);
+            let walls =
+                surface_properties(&model, &solid, Deflection::with_chord(1e-4).unwrap(), T)
+                    .unwrap()
+                    .mass
+                    - 2.0 * 4.0;
+            // The skin stands within its tolerance of the walls, whose
+            // boundary is the rectangle's perimeter twice and the paths of
+            // its four corners, each under 30 long.
+            let bound = if corners == PipeCorners::Mitre {
+                1e-3 * (2.0 * 8.0 + 4.0 * 30.0)
+            } else {
+                walls * EXACT
+            };
+            assert!(
+                (sheets - walls).abs() <= bound,
+                "{toward:?} {corners:?}: halves {sheets} against the face's walls {walls}"
+            );
+        }
+    }
+}
+
+/// A point inside a corner against an arc crosses the plane halving it on
+/// the legs themselves, where the line's path and the arc's do not meet
+/// it at one point: refused by name, mitred or round, before or after the
+/// arc.
+#[test]
+fn an_open_profile_inside_a_corner_against_an_arc_is_refused_by_name() {
+    let pieces = [
+        vec![
+            Piece::Line(Point::new(0.0, 0.0, 10.0)),
+            Piece::Arc {
+                turned: Some(X),
+                toward: Z,
+                radius: 8.0,
+                angle: FRAC_PI_2,
+            },
+        ],
+        vec![
+            Piece::Arc {
+                turned: None,
+                toward: X,
+                radius: 8.0,
+                angle: FRAC_PI_2,
+            },
+            Piece::Line(Point::new(8.0, 0.0, 18.0)),
+        ],
+    ];
+    for pieces in &pieces {
+        for corners in [PipeCorners::Mitre, PipeCorners::Round] {
+            let mut model = Model::new();
+            let wire = polyline(&mut model, &L);
+            let path = pieced(&mut model, pieces);
+            let message = refusal(&mut model, &wire, &path, corners);
+            assert!(
+                message.contains("an open wire reaches inside a corner against an arc"),
+                "{corners:?}: {message}"
+            );
+        }
+    }
+}
+
+/// The binormal square to a plane spine, and the Frenet frame of two arcs
+/// whose normals the corner between them turns onto each other (a quarter
+/// arc toward `+x`, then sharply up `+z` into one toward `+x` again), are
+/// the rotation-minimizing frame turned by a fixed angle: the open sheet
+/// is the one that frame sweeps. A binormal leaning off the spine's plane
+/// sets the next leg's section other than the last turned about the
+/// corner, as does the Frenet frame of a second arc bending toward `-x`,
+/// whose normal the corner turns the other way, and a straight run between
+/// corners has no Frenet frame: each refused by name.
+#[test]
+fn a_law_carrying_the_section_as_the_rotation_minimizing_frame_sweeps_its_sheet() {
+    let l_spine = [
+        Point::ORIGIN,
+        Point::new(0.0, 0.0, 10.0),
+        Point::new(10.0, 0.0, 10.0),
+    ];
+    let arcs = |toward: Vector| {
+        [
+            Piece::Arc {
+                turned: None,
+                toward: X,
+                radius: 8.0,
+                angle: FRAC_PI_2,
+            },
+            Piece::Arc {
+                turned: Some(Z),
+                toward,
+                radius: 5.0,
+                angle: FRAC_PI_2,
+            },
+        ]
+    };
+    let leaning = PipeLaw::Binormal(Direction::new(Vector::new(1.0, 1.0, 0.0), T).unwrap());
+    let level = PipeLaw::Binormal(Direction::Y);
+    for corners in [PipeCorners::Mitre, PipeCorners::Round] {
+        let mut model = Model::new();
+        let wire = polyline(&mut model, &L);
+        let path = spine(&mut model, &l_spine);
+        let carried = sweep(&mut model, &wire, &path, corners);
+        let want = measured(&model, &carried);
+        let by_law = make_pipe_shell_with(&mut model, &wire, &path, &level, corners, 1e-3, T)
+            .unwrap_or_else(|e| panic!("binormal {corners:?}: {e}"))
+            .shape;
+        let got = measured(&model, &by_law);
+        assert!(
+            close(got.0, want.0) && close(got.1, want.1),
+            "binormal {corners:?}: {got:?} against {want:?}"
+        );
+        let message =
+            match make_pipe_shell_with(&mut model, &wire, &path, &leaning, corners, 1e-3, T) {
+                Ok(_) => panic!("leaning binormal {corners:?}: built"),
+                Err(e) => e.to_string(),
+            };
+        assert!(
+            message.contains("the law turns an open wire's section other than"),
+            "leaning binormal {corners:?}: {message}"
+        );
+    }
+    let mut model = Model::new();
+    let wire = polyline(&mut model, &MIRRORED);
+    let path = pieced(&mut model, &arcs(X));
+    let carried = sweep(&mut model, &wire, &path, PipeCorners::Round);
+    let want = measured(&model, &carried);
+    let by_law = make_pipe_shell_with(
+        &mut model,
+        &wire,
+        &path,
+        &PipeLaw::Frenet,
+        PipeCorners::Round,
+        1e-3,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let got = measured(&model, &by_law);
+    assert!(
+        close(got.0, want.0) && close(got.1, want.1),
+        "Frenet: {got:?} against {want:?}"
+    );
+    for (path, says) in [
+        (
+            pieced(&mut model, &arcs(-X)),
+            "the law turns an open wire's section other than",
+        ),
+        (
+            spine(&mut model, &l_spine),
+            "the Frenet frame is not defined along a straight run",
+        ),
+    ] {
+        let message = match make_pipe_shell_with(
+            &mut model,
+            &wire,
+            &path,
+            &PipeLaw::Frenet,
+            PipeCorners::Round,
+            1e-3,
+            T,
+        ) {
+            Ok(_) => panic!("{says}: built"),
+            Err(e) => e.to_string(),
+        };
+        assert!(message.contains(says), "{message}");
+    }
+}
+
+/// A spine of a line and an arc placed by a location, on the wire or on
+/// each edge under it, with the profile moved alike, sweeps the closed
+/// form of the same shapes unmoved: up `+z` 10, then sharply `+x` into a
+/// quarter arc of radius 8 toward `+y`, the corner `α = -x` and the arc's
+/// axis `8 - y` off.
+#[test]
+fn an_open_sweep_against_an_arc_down_a_placed_spine_keeps_its_closed_form() {
+    let motion = Transform::translation(Vector::new(3.0, -7.0, 2.5))
+        * Transform::rotation(
+            Axis {
+                location: Point::new(1.0, 2.0, 3.0),
+                direction: Direction::new(Vector::new(1.0, 2.0, -0.5), T).unwrap(),
+            },
+            1.1,
+        );
+    let pieces = [
+        Piece::Line(Point::new(0.0, 0.0, 10.0)),
+        Piece::Arc {
+            turned: Some(X),
+            toward: Y,
+            radius: 8.0,
+            angle: FRAC_PI_2,
+        },
+    ];
+    for corners in [PipeCorners::Mitre, PipeCorners::Round] {
+        let gain = |alpha: f64| {
+            if corners == PipeCorners::Round {
+                FRAC_PI_2 * alpha
+            } else {
+                2.0 * alpha
+            }
+        };
+        let (want, around) =
+            linear_closed_form(&OUTSIDE, |x, y| 10.0 + gain(-x) + FRAC_PI_2 * (8.0 - y));
+        for on_edges in [false, true] {
+            let mut model = Model::new();
+            let profile: Vec<Point> = OUTSIDE
+                .iter()
+                .map(|&(x, y)| motion.apply(Point::new(x, y, 0.0)))
+                .collect();
+            let wire = make_polygon(&mut model, &profile, false, T).unwrap().shape;
+            let placed = Location::of(model.add_datum(motion));
+            let path = pieced(&mut model, &pieces);
+            let path = if on_edges {
+                let edges: Vec<Shape> = model
+                    .ordered_children_of(&path)
+                    .unwrap()
+                    .iter()
+                    .map(|e| e.moved(&placed))
+                    .collect();
+                make_wire(&mut model, &edges, T).unwrap().shape
+            } else {
+                path.moved(&placed)
+            };
+            let sheet = sweep(&mut model, &wire, &path, corners);
+            let (area, boundary) = measured(&model, &sheet);
+            let case = format!("{corners:?} on edges {on_edges}");
+            assert!(close(area, want), "{case}: {area} against {want}");
+            assert!(
+                close(boundary, around),
+                "{case}: {boundary} against {around}"
+            );
         }
     }
 }

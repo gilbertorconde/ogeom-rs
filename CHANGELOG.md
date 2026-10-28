@@ -13,6 +13,46 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **An open wire sweeps a sheet round corners against arcs, and under
+  other laws.** (#394)
+  - An open planar wire swept by `make_pipe_shell_with` was refused along
+    any spine with an arc in it, and under any law but the
+    rotation-minimizing one round a sharp corner: the cornered sweeps had
+    no solid to take the walls of, and the skin closed the wire on itself.
+  - Under the rotation-minimizing frame, along an open spine of lines and
+    arcs, it now sweeps one exact sheet: each arc leg the section revolved
+    about the arc's axis (a plane, cylinder, cone or torus for each
+    profile edge), each line leg its prism, legs meeting tangent sewn on
+    their common section. A mitred corner runs each leg on straight past
+    it, an arc leg by the prism of its end section, and cuts it on the
+    plane halving the corner; the turn mirrors one run-on onto the other
+    in that plane, so the cuts are one curve. A round corner turns the
+    section about the corner's axis, as between lines.
+  - A point of the section inside a corner crosses that plane on the
+    legs themselves, which only two lines mirror onto each other: a
+    profile reaching inside a corner against an arc is refused by name
+    ("an open wire reaches inside a corner against an arc"). Its paths
+    down a line and an arc meet off the plane, on the conic where the
+    two walls cross, which the sheet does not yet cut.
+  - The Frenet (round corners only, as for a face), binormal and
+    auxiliary laws sweep an open wire round sharp corners where every
+    frame they set is the rotation-minimizing one turned by one fixed
+    angle (a binormal square to a plane spine, the Frenet frame of arcs
+    the corner turns onto each other): that is the same sheet. Where the
+    law sets a corner's next section otherwise, the two legs' cuts differ
+    and the sweep is refused by name; the Frenet frame along a straight
+    run between corners is refused as for a face, and an auxiliary guide
+    placed by a location is refused rather than read where it is stored.
+  - Measured against closed forms (a point's path is its runs down the
+    lines, its arcs about the arcs' axes and `2 α` or `π α / 2` round a
+    right-angled corner it lies `α` outside), area and boundary length
+    within 1e-9, the corners and tangents unplaced within 7e-16: an L outside a corner into an arc bending up, down or aside,
+    out of an arc, between two arcs, round two corners either side of an
+    arc, tangent lines and arcs, and the spine placed by a location. The
+    two open halves of a rectangle outside the corner sum to the walls of
+    the rectangle's face swept: rounded to 3e-14 (exact walls), mitred
+    within 4.7e-4 (the face's walls are skinned to 1e-3 there).
+
 - **`make_pipe` round closed wires and sharp corners with arcs, and
   `make_pipe_skinned` along a wire.** (#394)
   - `make_pipe` refused every wire with an arc in it that closes or turns

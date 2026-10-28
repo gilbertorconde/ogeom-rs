@@ -5788,10 +5788,15 @@ pub fn make_pipe_shell_law(
 /// Under those laws each hole of a face swept along an open spine sweeps
 /// its own solid, cut from the outer one. On a spine with no sharp corner
 /// every way of turning corners is the same solid. An open wire down an
-/// open spine of straight legs under the rotation-minimizing frame sweeps
-/// one exact sheet: each leg the prism of its section, cut on the plane
-/// halving each corner, and at a round corner the section's part outside
-/// the turn revolved about the corner.
+/// open spine of lines and arcs under the rotation-minimizing frame sweeps
+/// one exact sheet: each line leg the prism of its section and each arc
+/// leg its revolution about the arc's axis, run on straight past each
+/// mitred corner and cut on the plane halving it, and at a round corner
+/// the section's part outside the turn revolved about the corner. A point
+/// of the section may lie inside a corner only between two lines. The
+/// Frenet (round corners only), auxiliary and binormal laws sweep an open
+/// wire round sharp corners where their frames are the
+/// rotation-minimizing ones turned by a fixed angle, as that sheet.
 ///
 /// # Errors
 ///
@@ -5801,7 +5806,9 @@ pub fn make_pipe_shell_law(
 /// wire swept round a corner run by run, or round an extended corner, or
 /// down legs too short for their corners' reach, or into itself, or round
 /// a round corner turning so little that its round falls within the
-/// confusion distance of its square end, the Frenet
+/// confusion distance of its square end, or reaching inside a corner
+/// against an arc, or under a law that turns its section other than the
+/// rotation-minimizing frame does, the Frenet
 /// frame along a straight run
 /// between sharp corners, a round corner where the law sets the next run's
 /// section other than the first's turned about the corner (or the frame
@@ -5847,13 +5854,20 @@ pub(crate) fn pipe_shell_ends(
         ogeom_topo::Orientation::Reversed => profile.reversed(),
         _ => profile.clone(),
     };
-    if matches!(law, PipeLaw::RotationMinimizing)
-        && model.kind_of(profile)? == ShapeType::Wire
+    if model.kind_of(profile)? == ShapeType::Wire
         && !ogeom_algo::is_wire_closed(model, &stored, tol)?
-        && straight_legs(model, spine, tol)?.is_some()
+        && open_lines::lines_and_arcs(model, spine)?
         && !spine_closes(model, spine, tol)?
     {
-        return open_lines::open_wire_lines(model, profile, spine, corners, tol);
+        if matches!(law, PipeLaw::RotationMinimizing) {
+            return open_lines::open_wire_legs(model, profile, spine, corners, tol);
+        }
+        // The Frenet frame has no direction at a mitre, as for a face.
+        if !(matches!(law, PipeLaw::Frenet) && corners == PipeCorners::Mitre)
+            && has_sharp_corner(model, spine, tol)?
+        {
+            return open_lines::open_wire_law(model, profile, spine, law, corners, tolerance, tol);
+        }
     }
     if corners != PipeCorners::Mitre
         && matches!(law, PipeLaw::RotationMinimizing)
