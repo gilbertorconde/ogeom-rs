@@ -878,6 +878,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A prism of a mirrored circle swept along its normal.** (#394)
+  - `make_prism` built the wall of a circle on a left-handed frame (a
+    mirrored one), swept against the frame's `z`, on a cylinder whose
+    angle ran against the circle's, so the wall's pcurves left their edges
+    by as much as the radius and the solid was invalid. Swept along `z` it
+    stood on the left-handed frame itself.
+  - The wall now stands on the right-handed frame turned to the travel
+    whenever the circle's frame is left-handed, its chart running with
+    the circle's angle where the circle turns about the travel and
+    against it otherwise. A right-handed circle's wall is unchanged.
+  - Measured: a disc of radius 2 on a mirrored circle, swept 3 either way,
+    valid, one cylinder wall, `12π` to 1e-12.
+
 - **A pipe turns a corner of next to nothing between straight legs.** (#394)
   - A face piped with extended or round corners down straight legs
     meeting at a turn whose sine was above an angle's tolerance but

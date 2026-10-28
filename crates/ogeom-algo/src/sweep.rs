@@ -805,12 +805,19 @@ fn prism_over_edge(
         // (u the circle's angle, v the travel), so the pcurves below serve
         // either surface unchanged, and the boolean's same-domain
         // resolution meets a prism wall as the cylinder it is. Swept
-        // against its axis (a tool pushed down through a block) it is the
-        // cylinder on the frame turned to the travel, whose angle runs the
-        // other way round: the chart maps `u` to a turn less `u`.
+        // against its axis (a tool pushed down through a block), or where
+        // the circle's frame is left-handed (mirrored), it is the cylinder
+        // on the right-handed frame turned to the travel. That frame's
+        // angle runs the way the circle's does where the circle turns about
+        // the travel (`x × y` along it), and otherwise the other way round:
+        // the chart maps `u` to a turn less `u`.
         let circle = c.circle();
-        let frame = if circle.frame().z().vector().dot(direction.vector()) > 0.0 {
+        let right = circle.frame().handedness() == ogeom_math::Handedness::Right;
+        let spin = circle.frame().z().vector() * circle.frame().handedness().sign();
+        let frame = if right && spin.dot(direction.vector()) > 0.0 {
             circle.frame()
+        } else if spin.dot(direction.vector()) > 0.0 {
+            ogeom_math::Frame::new(circle.centre(), direction, circle.frame().x(), tol)?
         } else {
             chart = Box::new(|(u, v): (f64, f64)| (core::f64::consts::TAU - u, v));
             // The extrusion's normal, the tangent crossed with a travel
@@ -2187,6 +2194,64 @@ mod tests {
                     "pcurve and curve agree: {on_curve:?} vs {on_surface:?}"
                 );
             }
+        }
+    }
+
+    /// A disc bounded by a circle on a left-handed (mirrored) frame, swept
+    /// either way along its axis: its angle turns about `-z`, so the wall
+    /// is the cylinder on the right-handed frame turned to the travel, the
+    /// chart flipped where the circle turns against the travel. Each prism
+    /// is valid, its wall a cylinder, and holds `π r² h`.
+    #[test]
+    fn a_mirrored_circle_sweeps_its_cylinder_either_way() {
+        let (r, h) = (2.0, 3.0);
+        let frame = Frame::from_axes(
+            Point::new(1.0, -1.0, 0.0),
+            ogeom_math::Direction::X,
+            ogeom_math::Direction::Y,
+            -ogeom_math::Direction::Z,
+            T,
+        )
+        .unwrap();
+        assert_eq!(frame.handedness(), ogeom_math::Handedness::Left);
+        for travel in [h, -h] {
+            let mut model = Model::new();
+            let curve: ogeom_geom::Curve =
+                ogeom_geom::CircleCurve::new(Circle::new(frame, r, T).unwrap()).into();
+            let domain = curve.domain();
+            let ring = crate::build::make_edge(&mut model, curve, domain, T)
+                .unwrap()
+                .shape;
+            let plane = ogeom_math::Plane::new(Frame::WORLD);
+            let surface: ogeom_geom::SurfaceGeometry =
+                ogeom_geom::PlaneSurface::over(plane, (-20.0, 20.0), (-20.0, 20.0))
+                    .unwrap()
+                    .into();
+            let disc = crate::build::make_face_with_pcurves(&mut model, surface, &[vec![ring]], T)
+                .unwrap()
+                .shape;
+            let built = make_prism(&mut model, &disc, Vector::new(0.0, 0.0, travel), T).unwrap();
+            let diagnosis = crate::check(&model, &built.shape, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "travel {travel}: {:?}",
+                diagnosis.problems
+            );
+            let kinds = surface_kinds(&model, &built.shape);
+            assert_eq!(
+                kinds,
+                vec![
+                    SurfaceKind::Cylinder,
+                    SurfaceKind::Plane,
+                    SurfaceKind::Plane
+                ],
+                "travel {travel}"
+            );
+            let v = volume_properties(&model, &built.shape, deflection(1e-3), T)
+                .unwrap()
+                .mass;
+            let want = core::f64::consts::PI * r * r * h;
+            assert_relative_eq!(v, want, max_relative = 1e-12);
         }
     }
 
