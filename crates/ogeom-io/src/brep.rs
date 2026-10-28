@@ -25,6 +25,15 @@
 //! orientation and placement, and edges carrying their curve, their pcurves
 //! and their seams.
 //!
+//! No record carries a reversal, so a curve run backwards crosses as a
+//! forward curve through the same points in the same direction: a circle
+//! or an ellipse with its frame turned, a hyperbola or a parabola with its
+//! `y` turned round, a reversed trim as a trim of its basis reversed. Where
+//! that curve reads the original at a shifted parameter (a conic run
+//! backwards over a window not symmetric about zero), every curve of the
+//! edge is written at the same shift, and the chart of a surface swept from
+//! it moves with it, so the edge's curves still agree at each parameter.
+//!
 //! ## What does not
 //!
 //! One thing the reader deliberately does *not* take on faith: whether an
@@ -44,14 +53,16 @@
 //! writer's own session, not the shape.
 
 use ogeom_core::{FastMap, FastSet};
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
 use ogeom_geom::{
-    BSplineCurve, BSplineSurface, Circle2d, CircleCurve, ConeSurface, Curve, Curve2d as _,
-    Curve3d as _, CylinderSurface, Ellipse2d, EllipseCurve, ExtrusionSurface, HyperbolaCurve,
-    Line2d, LineCurve, ParabolaCurve, PlanarCurve, PlaneSurface, RevolutionSurface, SphereSurface,
-    Surface as _, SurfaceGeometry, TorusSurface, Transformable as _, TrimmedCurve, TrimmedSurface,
+    BSpline2d, BSplineCurve, BSplineSurface, Circle2d, CircleCurve, ConeSurface, Curve,
+    Curve2d as _, Curve3d as _, CylinderSurface, Ellipse2d, EllipseCurve, ExtrusionSurface,
+    Hyperbola2d, HyperbolaCurve, Line2d, LineCurve, Offset2d, OffsetCurve, ParabolaCurve,
+    PlanarCurve, PlaneSurface, Reversible as _, RevolutionSurface, SphereSurface, Surface as _,
+    SurfaceGeometry, TorusSurface, Transformable as _, Trimmed2d, TrimmedCurve, TrimmedSurface,
 };
 use ogeom_math::{
     Axis, Axis2, Circle, Circle2, Cone, ControlGrid, Cylinder, Direction, Direction2, Ellipse,
@@ -84,7 +95,7 @@ const VERSION_FAMILY: &str = "CASCADE Topology V";
 /// something the file would claim was exact.
 pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String> {
     let mut tables = Tables::default();
-    tables.gather(model, root)?;
+    tables.gather(model, root, tol)?;
 
     let mut out = String::new();
     let _ = writeln!(out, "{CONTENT_TYPE}\n");
@@ -121,24 +132,33 @@ pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String
     }
 
     let _ = writeln!(out, "Curve2ds {}", tables.pcurves.len());
-    for id in &tables.pcurves {
-        let Some(geometry) = model.geometry().pcurve(*id) else {
-            ogeom_bail!(Dangling, "a pcurve is not in this model");
-        };
-        // A cone's chart runs along its axis here and along its ruling in
-        // the format.
-        match tables.ruled.get(id) {
-            Some(cos) => write_pcurve(&mut out, &geometry.stretched(1.0, 1.0 / cos, tol)?)?,
-            None => write_pcurve(&mut out, geometry)?,
+    for (id, surface, shift) in &tables.pcurves {
+        let chart = chart(model, *id, *surface, tol)?;
+        let (form, own) = spelled2(&chart, tol)?;
+        if own == *shift {
+            write_pcurve(&mut out, &form)?;
+        } else {
+            let Some(moved) = shifted2(&form, own - shift, tol)? else {
+                ogeom_bail!(Construction, "{UNSHIFTED}");
+            };
+            write_pcurve(&mut out, &moved)?;
         }
     }
 
     let _ = writeln!(out, "Curves {}", tables.curves.len());
-    for id in &tables.curves {
+    for (id, shift) in &tables.curves {
         let Some(geometry) = model.geometry().curve(*id) else {
             ogeom_bail!(Dangling, "a curve is not in this model");
         };
-        write_curve(&mut out, geometry)?;
+        let (form, own) = spelled(geometry, tol)?;
+        if own == *shift {
+            write_curve(&mut out, &form)?;
+        } else {
+            let Some(moved) = shifted(&form, own - shift, tol)? else {
+                ogeom_bail!(Construction, "{UNSHIFTED}");
+            };
+            write_curve(&mut out, &moved)?;
+        }
     }
 
     // The two cached-mesh sections, empty. They are part of the file's
@@ -151,7 +171,7 @@ pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String
         let Some(geometry) = model.geometry().surface(*id) else {
             ogeom_bail!(Dangling, "a surface is not in this model");
         };
-        write_surface(&mut out, geometry)?;
+        write_surface(&mut out, geometry, tol)?;
     }
     let _ = writeln!(out, "Triangulations 0");
 
@@ -213,22 +233,37 @@ pub fn write(model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<String
     Ok(out)
 }
 
+/// No record carries a reversal flag, so a curve reaching a record with one
+/// would be written running the other way.
+const BACKWARDS: &str = "a curve run backwards reached a record unspelled";
+
+/// Why an edge is refused when its representations cannot be written over
+/// one parameter.
+const UNSHIFTED: &str = "an edge has a curve the format states only at a shifted \
+                         parameter (a conic run backwards over a window not \
+                         symmetric about zero), and another of its curves needs \
+                         another shift, or has no record that shifts with it";
+
 /// The tables a file's sections are: geometry by the order it is written,
 /// topology leaves first, and every placement anything refers to.
+///
+/// A curve is written at a parameter shift (see [`spelled`]), and a chart
+/// curve on its surface at one, so each is keyed by what it is written as.
 #[derive(Default)]
 struct Tables {
-    curves: Vec<CurveId>,
-    pcurves: Vec<PCurveId>,
+    curves: Vec<(CurveId, f64)>,
+    pcurves: Vec<(PCurveId, SurfaceId, f64)>,
     surfaces: Vec<SurfaceId>,
     locations: Vec<Location>,
     order: Vec<TShapeId>,
     index_of: FastMap<TShapeId, usize>,
-    curve_at: FastMap<CurveId, usize>,
-    pcurve_at: FastMap<PCurveId, usize>,
+    curve_at: FastMap<(CurveId, u64), usize>,
+    pcurve_at: FastMap<(PCurveId, SurfaceId, u64), usize>,
     surface_at: FastMap<SurfaceId, usize>,
     location_at: FastMap<Location, usize>,
-    /// Charts on a cone, with the cosine of its half-angle.
-    ruled: FastMap<PCurveId, f64>,
+    /// The shift each edge's parameter is written at: every one of its
+    /// curves is written at it, so they still agree at each parameter.
+    edge_shift: FastMap<TShapeId, f64>,
     /// Where each of an edge's charts is written as used: the placement of
     /// the face's surface as seen from the edge, once per use the faces
     /// make of it, by the chart's index among the edge's representations.
@@ -237,14 +272,14 @@ struct Tables {
 
 impl Tables {
     /// Walk the shape leaves-first, numbering everything it refers to.
-    fn gather(&mut self, model: &Model, root: &Shape) -> OgeomResult<()> {
-        self.visit(model, root)?;
+    fn gather(&mut self, model: &Model, root: &Shape, tol: Tolerances) -> OgeomResult<()> {
+        self.visit(model, root, tol)?;
         // The file's own shape is placed by a record like any other.
         self.take_location(root.location());
         Ok(())
     }
 
-    fn visit(&mut self, model: &Model, shape: &Shape) -> OgeomResult<()> {
+    fn visit(&mut self, model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<()> {
         if self.index_of.contains_key(&shape.node()) {
             return Ok(());
         }
@@ -254,17 +289,21 @@ impl Tables {
         // Children first, so a parent's record can name them by how far
         // above it they were written.
         for child in node.children() {
-            self.visit(model, child)?;
+            self.visit(model, child, tol)?;
             self.take_location(child.location());
         }
         match node.data() {
             NodeData::Edge(data) => {
+                let shift = edge_shift(model, data, tol)?;
+                if shift != 0.0 {
+                    self.edge_shift.insert(shape.node(), shift);
+                }
                 for representation in &data.representations {
                     match representation {
                         EdgeRepr::Curve3d {
                             curve, location, ..
                         } => {
-                            self.take_curve(*curve);
+                            self.take_curve(*curve, shift);
                             self.take_location(location);
                         }
                         EdgeRepr::PCurve {
@@ -273,10 +312,9 @@ impl Tables {
                             location,
                             ..
                         } => {
-                            self.take_pcurve(*curve);
+                            self.take_pcurve(*curve, *surface, shift);
                             self.take_surface(*surface);
                             self.take_location(&location.inverted());
-                            self.note_ruled(model, *surface, &[*curve]);
                         }
                         EdgeRepr::Seam {
                             forward,
@@ -285,11 +323,10 @@ impl Tables {
                             location,
                             ..
                         } => {
-                            self.take_pcurve(*forward);
-                            self.take_pcurve(*reversed);
+                            self.take_pcurve(*forward, *surface, shift);
+                            self.take_pcurve(*reversed, *surface, shift);
                             self.take_surface(*surface);
                             self.take_location(&location.inverted());
-                            self.note_ruled(model, *surface, &[*forward, *reversed]);
                         }
                         _ => {}
                     }
@@ -328,25 +365,19 @@ impl Tables {
         Ok(())
     }
 
-    fn note_ruled(&mut self, model: &Model, surface: SurfaceId, curves: &[PCurveId]) {
-        if let Some(SurfaceGeometry::Cone(cone)) = model.geometry().surface(surface) {
-            for curve in curves {
-                self.ruled.insert(*curve, cone.cone().half_angle().cos());
-            }
+    fn take_curve(&mut self, id: CurveId, shift: f64) {
+        let key = (id, shift.to_bits());
+        if !self.curve_at.contains_key(&key) {
+            self.curve_at.insert(key, self.curves.len());
+            self.curves.push((id, shift));
         }
     }
 
-    fn take_curve(&mut self, id: CurveId) {
-        if !self.curve_at.contains_key(&id) {
-            self.curve_at.insert(id, self.curves.len());
-            self.curves.push(id);
-        }
-    }
-
-    fn take_pcurve(&mut self, id: PCurveId) {
-        if !self.pcurve_at.contains_key(&id) {
-            self.pcurve_at.insert(id, self.pcurves.len());
-            self.pcurves.push(id);
+    fn take_pcurve(&mut self, id: PCurveId, surface: SurfaceId, shift: f64) {
+        let key = (id, surface, shift.to_bits());
+        if !self.pcurve_at.contains_key(&key) {
+            self.pcurve_at.insert(key, self.pcurves.len());
+            self.pcurves.push((id, surface, shift));
         }
     }
 
@@ -375,12 +406,16 @@ impl Tables {
         self.location_at.get(location).map_or(0, |at| at + 1)
     }
 
-    fn curve_number(&self, id: CurveId) -> usize {
-        self.curve_at.get(&id).map_or(0, |at| at + 1)
+    fn curve_number(&self, id: CurveId, shift: f64) -> usize {
+        self.curve_at
+            .get(&(id, shift.to_bits()))
+            .map_or(0, |at| at + 1)
     }
 
-    fn pcurve_number(&self, id: PCurveId) -> usize {
-        self.pcurve_at.get(&id).map_or(0, |at| at + 1)
+    fn pcurve_number(&self, id: PCurveId, surface: SurfaceId, shift: f64) -> usize {
+        self.pcurve_at
+            .get(&(id, surface, shift.to_bits()))
+            .map_or(0, |at| at + 1)
     }
 
     fn surface_number(&self, id: SurfaceId) -> usize {
@@ -424,6 +459,7 @@ fn write_record(
                 1,
                 usize::from(data.degenerate)
             );
+            let shift = tables.edge_shift.get(&shape.node()).copied().unwrap_or(0.0);
             for (index, representation) in data.representations.iter().enumerate() {
                 // Each use the faces make of a chart is its own line, at
                 // the placement that use names; a chart no face uses is
@@ -453,10 +489,10 @@ fn write_record(
                         let _ = writeln!(
                             out,
                             "1 {} {} {} {}",
-                            tables.curve_number(*curve),
+                            tables.curve_number(*curve, shift),
                             tables.location_number(location),
-                            real(range.0),
-                            real(range.1)
+                            real(range.0 + shift),
+                            real(range.1 + shift)
                         );
                     }
                     EdgeRepr::PCurve {
@@ -469,11 +505,11 @@ fn write_record(
                             let _ = writeln!(
                                 out,
                                 "2 {} {} {} {} {}",
-                                tables.pcurve_number(*curve),
+                                tables.pcurve_number(*curve, *surface, shift),
                                 tables.surface_number(*surface),
                                 tables.location_number(seen),
-                                real(range.0),
-                                real(range.1)
+                                real(range.0 + shift),
+                                real(range.1 + shift)
                             );
                         }
                     }
@@ -488,12 +524,12 @@ fn write_record(
                             let _ = writeln!(
                                 out,
                                 "3 {} {} C0 {} {} {} {}",
-                                tables.pcurve_number(*forward),
-                                tables.pcurve_number(*reversed),
+                                tables.pcurve_number(*forward, *surface, shift),
+                                tables.pcurve_number(*reversed, *surface, shift),
                                 tables.surface_number(*surface),
                                 tables.location_number(seen),
-                                real(range.0),
-                                real(range.1)
+                                real(range.0 + shift),
+                                real(range.1 + shift)
                             );
                         }
                     }
@@ -532,7 +568,19 @@ fn write_record(
     Ok(())
 }
 
+/// Write a curve [`spelled`] in the format's terms.
 fn write_curve(out: &mut String, curve: &Curve) -> OgeomResult<()> {
+    let backwards = match curve {
+        Curve::Circle(c) => c.is_reversed(),
+        Curve::Ellipse(e) => e.is_reversed(),
+        Curve::Hyperbola(h) => h.is_reversed(),
+        Curve::Parabola(p) => p.is_reversed(),
+        Curve::Trimmed(t) => t.is_reversed(),
+        _ => false,
+    };
+    if backwards {
+        ogeom_bail!(Construction, "{BACKWARDS}");
+    }
     match curve {
         Curve::Line(l) => {
             let axis = l.axis();
@@ -648,7 +696,18 @@ fn write_curve(out: &mut String, curve: &Curve) -> OgeomResult<()> {
     Ok(())
 }
 
+/// Write a chart curve [`spelled2`] in the format's terms.
 fn write_pcurve(out: &mut String, curve: &PlanarCurve) -> OgeomResult<()> {
+    let backwards = match curve {
+        PlanarCurve::Circle(c) => c.is_reversed(),
+        PlanarCurve::Ellipse(e) => e.is_reversed(),
+        PlanarCurve::Hyperbola(h) => h.is_reversed(),
+        PlanarCurve::Trimmed(t) => t.is_reversed(),
+        _ => false,
+    };
+    if backwards {
+        ogeom_bail!(Construction, "{BACKWARDS}");
+    }
     match curve {
         PlanarCurve::Line(l) => {
             let axis = l.axis();
@@ -685,14 +744,6 @@ fn write_pcurve(out: &mut String, curve: &PlanarCurve) -> OgeomResult<()> {
             );
         }
         PlanarCurve::Hyperbola(h) => {
-            // The record states the branch over its natural parameter,
-            // forward; a branch run backwards has no record.
-            if h.is_reversed() {
-                ogeom_bail!(
-                    Construction,
-                    "the format has no record for a hyperbola run backwards"
-                );
-            }
             let hyperbola = h.hyperbola();
             let frame = hyperbola.frame();
             let _ = writeln!(
@@ -751,7 +802,7 @@ fn write_pcurve(out: &mut String, curve: &PlanarCurve) -> OgeomResult<()> {
     Ok(())
 }
 
-fn write_surface(out: &mut String, surface: &SurfaceGeometry) -> OgeomResult<()> {
+fn write_surface(out: &mut String, surface: &SurfaceGeometry, tol: Tolerances) -> OgeomResult<()> {
     // The elementary surfaces all begin the same way: an origin and the
     // frame's three directions, normal first.
     let seat = |frame: &Frame| {
@@ -805,7 +856,7 @@ fn write_surface(out: &mut String, surface: &SurfaceGeometry) -> OgeomResult<()>
         }
         SurfaceGeometry::Extrusion(e) => {
             let _ = writeln!(out, "6 {}", direction(e.direction().vector()));
-            write_curve(out, e.curve())?;
+            write_curve(out, &spelled(e.curve(), tol)?.0)?;
         }
         SurfaceGeometry::Revolution(r) => {
             let axis = r.axis();
@@ -815,7 +866,7 @@ fn write_surface(out: &mut String, surface: &SurfaceGeometry) -> OgeomResult<()>
                 point(axis.location),
                 direction(axis.direction.vector())
             );
-            write_curve(out, r.curve())?;
+            write_curve(out, &spelled(r.curve(), tol)?.0)?;
         }
         SurfaceGeometry::BSpline(b) => {
             let grid = b.grid();
@@ -860,6 +911,8 @@ fn write_surface(out: &mut String, surface: &SurfaceGeometry) -> OgeomResult<()>
         }
         SurfaceGeometry::Trimmed(t) => {
             let ((u0, u1), (v0, v1)) = t.domain();
+            let moved = chart_shift(t.basis(), tol)?;
+            let ((u0, u1), (v0, v1)) = ((u0 + moved.x, u1 + moved.x), (v0 + moved.y, v1 + moved.y));
             let _ = writeln!(
                 out,
                 "10 {} {} {} {}",
@@ -868,11 +921,11 @@ fn write_surface(out: &mut String, surface: &SurfaceGeometry) -> OgeomResult<()>
                 real(v0),
                 real(v1)
             );
-            write_surface(out, t.basis())?;
+            write_surface(out, t.basis(), tol)?;
         }
         SurfaceGeometry::Offset(o) => {
             let _ = writeln!(out, "11 {}", real(o.distance()));
-            write_surface(out, o.basis())?;
+            write_surface(out, o.basis(), tol)?;
         }
     }
     Ok(())
@@ -901,6 +954,372 @@ fn direction(v: Vector) -> String {
 
 fn direction2(v: Vector2) -> String {
     format!("{} {}", real(v.x), real(v.y))
+}
+
+// --- reversal in the format's terms ------------------------------------------
+
+/// A curve as the format can state it: the same points in the same
+/// direction, with no reversal flag, since no record carries one. The
+/// curve's point at `u` is the spelling's at `u + shift`.
+///
+/// A circle or an ellipse run backwards is its conic with the frame turned
+/// half a turn about `x`, at the same parameter. A hyperbola or a parabola
+/// run backwards over `[lo, hi]` reads its conic at `lo + hi - u`, which is
+/// the conic with its `y` turned round read at `u - lo - hi`: the same
+/// parameter when the domain is symmetric about zero, and otherwise that
+/// conic trimmed to the mirrored domain `[-hi, -lo]`, shifted. A reversed
+/// trim over `[s, e]` reads its basis at `s + e - u`, which is the reversed
+/// basis read `lo + hi - s - e` further on. Where the reversed basis can
+/// take that shift into its own geometry ([`shifted`]), the parameter is
+/// kept.
+fn spelled(curve: &Curve, tol: Tolerances) -> OgeomResult<(Cow<'_, Curve>, f64)> {
+    let owned = |c: Curve| Cow::Owned(c);
+    Ok(match curve {
+        Curve::Circle(c) if c.is_reversed() => (owned(c.forward(tol)?.into()), 0.0),
+        Curve::Ellipse(e) if e.is_reversed() => (owned(e.forward(tol)?.into()), 0.0),
+        Curve::Hyperbola(h) if h.is_reversed() => {
+            let (lo, hi) = h.domain();
+            let conic = h.hyperbola();
+            let turned = Hyperbola::new(
+                turned_about_x(conic.frame(), tol)?,
+                conic.major_radius(),
+                conic.minor_radius(),
+                tol,
+            )?;
+            let (form, shift) = mirrored(
+                HyperbolaCurve::over(turned, -hi, -lo)?.into(),
+                (lo, hi),
+                tol,
+            )?;
+            (owned(form), shift)
+        }
+        Curve::Parabola(p) if p.is_reversed() => {
+            let (lo, hi) = p.domain();
+            let conic = p.parabola();
+            let turned = Parabola::new(turned_about_x(conic.frame(), tol)?, conic.focal(), tol)?;
+            let (form, shift) =
+                mirrored(ParabolaCurve::over(turned, -hi, -lo)?.into(), (lo, hi), tol)?;
+            (owned(form), shift)
+        }
+        Curve::Trimmed(t) => {
+            let (s, e) = t.domain();
+            let (basis, shift) = if t.is_reversed() {
+                let (lo, hi) = t.basis().domain();
+                let reversed = t.basis().reversed();
+                let (basis, shift) = spelled(&reversed, tol)?;
+                let basis = basis.into_owned();
+                (Cow::Owned(basis), shift + ((lo + hi) - (s + e)))
+            } else {
+                spelled(t.basis(), tol)?
+            };
+            if let Cow::Borrowed(_) = basis {
+                (Cow::Borrowed(curve), 0.0)
+            } else if shift == 0.0 {
+                (
+                    owned(TrimmedCurve::new(basis.into_owned(), s, e, tol)?.into()),
+                    0.0,
+                )
+            } else if let Some(moved) = shifted(&basis, shift, tol)? {
+                (owned(TrimmedCurve::new(moved, s, e, tol)?.into()), 0.0)
+            } else {
+                let trimmed = TrimmedCurve::new(basis.into_owned(), s + shift, e + shift, tol)?;
+                (owned(trimmed.into()), shift)
+            }
+        }
+        Curve::Offset(o) => match spelled(o.basis(), tol)? {
+            (Cow::Borrowed(_), _) => (Cow::Borrowed(curve), 0.0),
+            (basis, shift) => {
+                let offset = OffsetCurve::new(basis.into_owned(), o.distance(), o.reference())?;
+                (owned(Curve::Offset(Box::new(offset))), shift)
+            }
+        },
+        other => (Cow::Borrowed(other), 0.0),
+    })
+}
+
+/// A conic run backwards over `domain`, given as its turned conic over the
+/// mirrored domain: the parameter is kept where the domain is symmetric
+/// about zero, and the turned conic is trimmed to the mirrored domain, the
+/// parameter shifted, where it is not.
+fn mirrored(turned: Curve, (lo, hi): (f64, f64), tol: Tolerances) -> OgeomResult<(Curve, f64)> {
+    let shift = -(lo + hi);
+    Ok(if shift == 0.0 {
+        (turned, 0.0)
+    } else {
+        (TrimmedCurve::new(turned, -hi, -lo, tol)?.into(), shift)
+    })
+}
+
+/// A frame turned half a turn about its own `x`: the same `x`, `y` and the
+/// normal turned round, so a conic in it is the one in `frame` read at the
+/// negated parameter.
+fn turned_about_x(frame: Frame, tol: Tolerances) -> OgeomResult<Frame> {
+    Frame::from_axes(
+        frame.origin(),
+        frame.x(),
+        frame.y().reversed(),
+        frame.z().reversed(),
+        tol,
+    )
+}
+
+/// A spelled curve read `by` further on: the curve whose point at `u` is
+/// this one's at `u + by`, where a record states it in closed form. A
+/// line's origin moves along it, a circle's frame turns about its normal,
+/// a spline's knots move, and a trim or an offset follows its basis. An
+/// ellipse's eccentric angle, a hyperbola's and a parabola's parameter do
+/// not shift within their records, and give `None`.
+fn shifted(curve: &Curve, by: f64, tol: Tolerances) -> OgeomResult<Option<Curve>> {
+    if by == 0.0 {
+        return Ok(Some(curve.clone()));
+    }
+    Ok(match curve {
+        Curve::Line(l) => {
+            let axis = l.axis();
+            let (lo, hi) = l.domain();
+            let moved = Axis::new(axis.point_at(by), axis.direction);
+            Some(LineCurve::over(moved, lo - by, hi - by)?.into())
+        }
+        Curve::Circle(c) if !c.is_reversed() => {
+            let circle = c.circle();
+            let frame = turned_by(circle.frame(), by, tol)?;
+            Some(CircleCurve::new(Circle::new(frame, circle.radius(), tol)?).into())
+        }
+        Curve::BSpline(b) => {
+            let knots = b.knots().knots().iter().map(|k| k - by).collect();
+            let knots = KnotVector::new(knots, b.knots().degree())?;
+            Some(BSplineCurve::rational(knots, b.control_points().to_vec())?.into())
+        }
+        Curve::Trimmed(t) if !t.is_reversed() => match shifted(t.basis(), by, tol)? {
+            Some(basis) => {
+                let (s, e) = t.domain();
+                Some(TrimmedCurve::new(basis, s - by, e - by, tol)?.into())
+            }
+            None => None,
+        },
+        Curve::Offset(o) => match shifted(o.basis(), by, tol)? {
+            Some(basis) => Some(Curve::Offset(Box::new(OffsetCurve::new(
+                basis,
+                o.distance(),
+                o.reference(),
+            )?))),
+            None => None,
+        },
+        _ => None,
+    })
+}
+
+/// `frame` turned by `angle` about its normal: a circle in it is the one in
+/// `frame` read `angle` further on.
+fn turned_by(frame: Frame, angle: f64, tol: Tolerances) -> OgeomResult<Frame> {
+    let (sin, cos) = angle.sin_cos();
+    let (x, y) = (frame.x().vector(), frame.y().vector());
+    Frame::from_axes(
+        frame.origin(),
+        Direction::new(x * cos + y * sin, tol)?,
+        Direction::new(y * cos - x * sin, tol)?,
+        frame.z(),
+        tol,
+    )
+}
+
+/// A chart curve as the format can state it, as [`spelled`] in space. A
+/// circle or an ellipse run backwards is its conic with the frame's `y`
+/// turned round, a mirror-image frame the record states as it is. A
+/// hyperbola run backwards is the branch with its `y` turned round, read
+/// at `u - lo - hi`.
+fn spelled2(curve: &PlanarCurve, tol: Tolerances) -> OgeomResult<(Cow<'_, PlanarCurve>, f64)> {
+    let owned = |c: PlanarCurve| Cow::Owned(c);
+    Ok(match curve {
+        PlanarCurve::Circle(c) if c.is_reversed() => {
+            let circle = c.circle();
+            let frame = mirrored_frame(circle.frame(), tol)?;
+            let turned = Circle2d::new(Circle2::new(frame, circle.radius(), tol)?);
+            (owned(turned.into()), 0.0)
+        }
+        PlanarCurve::Ellipse(e) if e.is_reversed() => {
+            let ellipse = e.ellipse();
+            let frame = mirrored_frame(ellipse.frame(), tol)?;
+            let turned = Ellipse2::new(frame, ellipse.major_radius(), ellipse.minor_radius(), tol)?;
+            (owned(Ellipse2d::new(turned).into()), 0.0)
+        }
+        PlanarCurve::Hyperbola(h) if h.is_reversed() => {
+            let (lo, hi) = h.domain();
+            let conic = h.hyperbola();
+            let turned = Hyperbola2::new(
+                mirrored_frame(conic.frame(), tol)?,
+                conic.major_radius(),
+                conic.minor_radius(),
+                tol,
+            )?;
+            let turned: PlanarCurve = Hyperbola2d::over(turned, -hi, -lo)?.into();
+            let shift = -(lo + hi);
+            if shift == 0.0 {
+                (owned(turned), 0.0)
+            } else {
+                (owned(Trimmed2d::new(turned, -hi, -lo, tol)?.into()), shift)
+            }
+        }
+        PlanarCurve::Trimmed(t) => {
+            let (s, e) = t.domain();
+            let (basis, shift) = if t.is_reversed() {
+                let (lo, hi) = t.basis().domain();
+                let reversed = t.basis().reversed();
+                let (basis, shift) = spelled2(&reversed, tol)?;
+                let basis = basis.into_owned();
+                (Cow::Owned(basis), shift + ((lo + hi) - (s + e)))
+            } else {
+                spelled2(t.basis(), tol)?
+            };
+            if let Cow::Borrowed(_) = basis {
+                (Cow::Borrowed(curve), 0.0)
+            } else if shift == 0.0 {
+                (
+                    owned(Trimmed2d::new(basis.into_owned(), s, e, tol)?.into()),
+                    0.0,
+                )
+            } else if let Some(moved) = shifted2(&basis, shift, tol)? {
+                (owned(Trimmed2d::new(moved, s, e, tol)?.into()), 0.0)
+            } else {
+                let trimmed = Trimmed2d::new(basis.into_owned(), s + shift, e + shift, tol)?;
+                (owned(trimmed.into()), shift)
+            }
+        }
+        PlanarCurve::Offset(o) => match spelled2(o.basis(), tol)? {
+            (Cow::Borrowed(_), _) => (Cow::Borrowed(curve), 0.0),
+            (basis, shift) => {
+                let offset = Offset2d::new(basis.into_owned(), o.distance())?;
+                (owned(PlanarCurve::Offset(Box::new(offset))), shift)
+            }
+        },
+        other => (Cow::Borrowed(other), 0.0),
+    })
+}
+
+/// `frame` with its `y` turned round.
+fn mirrored_frame(frame: Frame2, tol: Tolerances) -> OgeomResult<Frame2> {
+    Frame2::from_axes(frame.origin(), frame.x(), frame.y().reversed(), tol)
+}
+
+/// A spelled chart curve read `by` further on, as [`shifted`] in space.
+fn shifted2(curve: &PlanarCurve, by: f64, tol: Tolerances) -> OgeomResult<Option<PlanarCurve>> {
+    if by == 0.0 {
+        return Ok(Some(curve.clone()));
+    }
+    Ok(match curve {
+        PlanarCurve::Line(l) => {
+            let axis = l.axis();
+            let (lo, hi) = l.domain();
+            let moved = Axis2::new(axis.point_at(by), axis.direction);
+            Some(Line2d::over(moved, lo - by, hi - by)?.into())
+        }
+        PlanarCurve::Circle(c) if !c.is_reversed() => {
+            let circle = c.circle();
+            let frame = circle.frame();
+            let (sin, cos) = by.sin_cos();
+            let (x, y) = (frame.x().vector(), frame.y().vector());
+            let frame = Frame2::from_axes(
+                frame.origin(),
+                Direction2::new(x * cos + y * sin, tol)?,
+                Direction2::new(y * cos - x * sin, tol)?,
+                tol,
+            )?;
+            Some(Circle2d::new(Circle2::new(frame, circle.radius(), tol)?).into())
+        }
+        PlanarCurve::BSpline(b) => {
+            let knots = b.knots().knots().iter().map(|k| k - by).collect();
+            let knots = KnotVector::new(knots, b.knots().degree())?;
+            Some(BSpline2d::rational(knots, b.control_points().to_vec())?.into())
+        }
+        PlanarCurve::Trimmed(t) if !t.is_reversed() => match shifted2(t.basis(), by, tol)? {
+            Some(basis) => {
+                let (s, e) = t.domain();
+                Some(Trimmed2d::new(basis, s - by, e - by, tol)?.into())
+            }
+            None => None,
+        },
+        PlanarCurve::Offset(o) => match shifted2(o.basis(), by, tol)? {
+            Some(basis) => Some(PlanarCurve::Offset(Box::new(Offset2d::new(
+                basis,
+                o.distance(),
+            )?))),
+            None => None,
+        },
+        _ => None,
+    })
+}
+
+/// How a surface's chart moves when its generating curve is spelled with a
+/// shift: an extrusion's `u` and a revolution's `v` are that curve's
+/// parameter, and move with it.
+fn chart_shift(surface: &SurfaceGeometry, tol: Tolerances) -> OgeomResult<Vector2> {
+    Ok(match surface {
+        SurfaceGeometry::Extrusion(e) => Vector2::new(spelled(e.curve(), tol)?.1, 0.0),
+        SurfaceGeometry::Revolution(r) => Vector2::new(0.0, spelled(r.curve(), tol)?.1),
+        SurfaceGeometry::Trimmed(t) => chart_shift(t.basis(), tol)?,
+        SurfaceGeometry::Offset(o) => chart_shift(o.basis(), tol)?,
+        _ => Vector2::new(0.0, 0.0),
+    })
+}
+
+/// Chart curve `id` as written on `surface`, before its spelling: a cone's
+/// chart runs along its axis here and along its ruling in the format, and a
+/// chart moves with its surface's generating curve ([`chart_shift`]).
+fn chart(
+    model: &Model,
+    id: PCurveId,
+    surface: SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<Cow<'_, PlanarCurve>> {
+    let (Some(geometry), Some(on)) = (
+        model.geometry().pcurve(id),
+        model.geometry().surface(surface),
+    ) else {
+        ogeom_bail!(Dangling, "a pcurve or its surface is not in this model");
+    };
+    let mut chart = match on {
+        SurfaceGeometry::Cone(cone) => {
+            Cow::Owned(geometry.stretched(1.0, 1.0 / cone.cone().half_angle().cos(), tol)?)
+        }
+        _ => Cow::Borrowed(geometry),
+    };
+    let moved = chart_shift(on, tol)?;
+    if moved != Vector2::ZERO {
+        chart = Cow::Owned(chart.transformed(&Transform2::translation(moved), tol)?);
+    }
+    Ok(chart)
+}
+
+/// The shift an edge's parameter is written at: zero, unless one of its
+/// curves is spelled only at a shift, and then that one's. Every other
+/// curve of the edge must then shift with it ([`shifted`]).
+fn edge_shift(model: &Model, data: &EdgeData, tol: Tolerances) -> OgeomResult<f64> {
+    for representation in &data.representations {
+        let own = |id: PCurveId, surface: SurfaceId| -> OgeomResult<f64> {
+            let chart = chart(model, id, surface, tol)?;
+            Ok(spelled2(&chart, tol)?.1)
+        };
+        let shifts = match representation {
+            EdgeRepr::Curve3d { curve, .. } => {
+                let Some(geometry) = model.geometry().curve(*curve) else {
+                    ogeom_bail!(Dangling, "a curve is not in this model");
+                };
+                [spelled(geometry, tol)?.1, 0.0]
+            }
+            EdgeRepr::PCurve { curve, surface, .. } => [own(*curve, *surface)?, 0.0],
+            EdgeRepr::Seam {
+                forward,
+                reversed,
+                surface,
+                ..
+            } => [own(*forward, *surface)?, own(*reversed, *surface)?],
+            _ => continue,
+        };
+        if let Some(shift) = shifts.into_iter().find(|s| *s != 0.0) {
+            return Ok(shift);
+        }
+    }
+    Ok(0.0)
 }
 
 // --- reading -----------------------------------------------------------------

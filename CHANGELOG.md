@@ -804,6 +804,35 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The `.brep` writer keeps a curve's reversal.** (#472)
+  - A circle, ellipse, hyperbola, parabola or trim run backwards, in
+    space or as a pcurve, was written as its forward curve, and read back
+    running the other way. A prism or turn with such sides read back
+    invalid ("curve stops 2.1 from the vertex it should meet"). A
+    reversed hyperbola pcurve was refused by name.
+  - The format has no reversal construct, so each such curve is now
+    written as a forward curve through the same points:
+    - A circle or ellipse: its frame turned half a turn about `x`.
+    - A hyperbola or parabola over a domain symmetric about zero: its
+      `y` turned round.
+    - A reversed trim: a trim of its basis reversed, the shift taken into
+      the basis where its record allows. A line's origin moves, a
+      circle's frame turns, a spline's knots move.
+    - A hyperbola or parabola over a domain not symmetric about zero, and
+      a reversed trim of one or of an ellipse: the turned conic trimmed
+      to the mirrored window, at a shifted parameter. Every curve of the
+      edge is then written at that shift. A surface swept from the curve
+      moves its chart with it.
+  - An edge whose curves would need different shifts, or a shift one of
+    them has no record for, is refused by name.
+  - Measured:
+    - Every curve kind, forward and backwards, in space and as a pcurve
+      on a plane, reads back within 1e-12 of itself at every fraction of
+      its range.
+    - The diamond prism, full turn and 1.5π turn with reversed arc,
+      trimmed arc and hyperbola sides read back valid, within 1e-9 of
+      their closed-form volumes.
+
 - **A wall leaving a plane shallowly along its border meets it there.**
   (#469)
   - Coincidence of two surfaces with no closed form was measured on a
@@ -847,9 +876,8 @@ bump may break the API and a patch bump may not.
     as a circle there, and the sweep returned a solid `check` rejected
     ("leaves its curve by 0.041"). It is now refused, naming the
     3.99e-2 it stands off.
-  - A reversed hyperbola's planar branch has no `.brep` record, so such
-    a cap is refused by that writer by name. Before, the file written
-    read back as a solid with a negative volume.
+  - The `.brep` writer refused such a cap by name. It now writes it
+    (#472).
   - Measured: every side of the diamond sweep keeps edge and vertex
     tolerances at 1e-7, within 1e-9 of the closed-form volume.
 

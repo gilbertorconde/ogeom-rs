@@ -365,3 +365,340 @@ fn a_read_extrusion_survives_the_native_format() {
     let (now, was) = (volume(&back, &roots[0]), volume(&model, &prism));
     assert!((now - was).abs() < 1e-9 * was, "{now} against {was}");
 }
+
+/// A curve in the `z = 0` plane paired with its chart curve on that plane
+/// under the world chart, at the same parameter, and the part an edge uses.
+type Drawn = (
+    &'static str,
+    ogeom::geom::Curve,
+    ogeom::geom::PlanarCurve,
+    (f64, f64),
+);
+
+/// One of each curve kind the format has a record for, forward, each with
+/// its chart curve on the plane: lines, conics, splines, and trims and
+/// offsets of them, a trim across a circle's seam and one of a curve
+/// already run backwards among them.
+fn drawn_curves() -> Vec<Drawn> {
+    use ogeom::geom::{
+        BSpline2d, BSplineCurve, Circle2d, CircleCurve, Curve, Curve3d as _, Ellipse2d,
+        EllipseCurve, Hyperbola2d, HyperbolaCurve, Line2d, LineCurve, Offset2d, OffsetCurve,
+        ParabolaCurve, PlanarCurve, Reversible as _, Trimmed2d, TrimmedCurve,
+    };
+    use ogeom::math::{
+        Axis, Axis2, Circle, Circle2, Direction2, Ellipse, Ellipse2, Frame2, Hyperbola, Hyperbola2,
+        KnotVector, Parabola, Point2, Vector, Vector2,
+    };
+    let (angle, centre) = (0.4_f64, Point2::new(0.3, -0.2));
+    let x = Vector::new(angle.cos(), angle.sin(), 0.0);
+    let frame = Frame::new(
+        Point::new(centre.x, centre.y, 0.0),
+        Direction::Z,
+        Direction::new(x, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let frame2 = Frame2::new(centre, Direction2::new(Vector2::new(x.x, x.y), T).unwrap());
+    let flat = |p: Point| Point2::new(p.x, p.y);
+
+    let line: Curve = LineCurve::over(Axis::new(frame.origin(), frame.x()), -1.0, 2.0)
+        .unwrap()
+        .into();
+    let line2: PlanarCurve = Line2d::over(Axis2::new(centre, frame2.x()), -1.0, 2.0)
+        .unwrap()
+        .into();
+    let circle: Curve = CircleCurve::new(Circle::new(frame, 1.5, T).unwrap()).into();
+    let circle2: PlanarCurve = Circle2d::new(Circle2::new(frame2, 1.5, T).unwrap()).into();
+    let ellipse: Curve = EllipseCurve::new(Ellipse::new(frame, 2.0, 1.0, T).unwrap()).into();
+    let ellipse2: PlanarCurve = Ellipse2d::new(Ellipse2::new(frame2, 2.0, 1.0, T).unwrap()).into();
+    let hyperbola: Curve =
+        HyperbolaCurve::over(Hyperbola::new(frame, 1.2, 0.7, T).unwrap(), -1.0, 2.0)
+            .unwrap()
+            .into();
+    let hyperbola2: PlanarCurve =
+        Hyperbola2d::over(Hyperbola2::new(frame2, 1.2, 0.7, T).unwrap(), -1.0, 2.0)
+            .unwrap()
+            .into();
+    // A parabola is quadratic in its parameter: in the plane, the Bezier
+    // through its ends whose middle pole stands on both end tangents.
+    let parabola: Curve = ParabolaCurve::over(Parabola::new(frame, 0.8, T).unwrap(), -1.0, 2.0)
+        .unwrap()
+        .into();
+    let (start, end) = (
+        parabola.point_at(-1.0, T).unwrap(),
+        parabola.point_at(2.0, T).unwrap(),
+    );
+    let middle = start + parabola.d1_at(-1.0, T).unwrap() * 1.5;
+    let parabola2: PlanarCurve = BSpline2d::new(
+        KnotVector::new(vec![-1.0, -1.0, -1.0, 2.0, 2.0, 2.0], 2).unwrap(),
+        vec![flat(start), flat(middle), flat(end)],
+        T,
+    )
+    .unwrap()
+    .into();
+    let poles = [(0.0, 0.0), (0.5, 1.0), (1.2, -0.4), (2.0, 0.8), (2.6, 0.1)];
+    let knots = || KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0, 1.0], 3).unwrap();
+    let spline: Curve = BSplineCurve::new(
+        knots(),
+        poles.iter().map(|&(x, y)| Point::new(x, y, 0.0)).collect(),
+        T,
+    )
+    .unwrap()
+    .into();
+    let spline2: PlanarCurve = BSpline2d::new(
+        knots(),
+        poles.iter().map(|&(x, y)| Point2::new(x, y)).collect(),
+        T,
+    )
+    .unwrap()
+    .into();
+
+    let trim = |c: &Curve, s: f64, e: f64| -> Curve {
+        TrimmedCurve::new(c.clone(), s, e, T).unwrap().into()
+    };
+    let trim2 = |c: &PlanarCurve, s: f64, e: f64| -> PlanarCurve {
+        Trimmed2d::new(c.clone(), s, e, T).unwrap().into()
+    };
+    // An offset along the tangent crossed with `-z` is one along the
+    // chart curve's left normal.
+    let offset = |c: &Curve| -> Curve {
+        Curve::Offset(Box::new(
+            OffsetCurve::new(c.clone(), 0.25, -Direction::Z).unwrap(),
+        ))
+    };
+    let offset2 = |c: &PlanarCurve| -> PlanarCurve {
+        PlanarCurve::Offset(Box::new(Offset2d::new(c.clone(), 0.25).unwrap()))
+    };
+    vec![
+        ("line", line.clone(), line2.clone(), (-0.5, 1.5)),
+        ("circle", circle.clone(), circle2.clone(), (0.4, 2.5)),
+        ("ellipse", ellipse.clone(), ellipse2.clone(), (0.4, 2.5)),
+        (
+            "hyperbola",
+            hyperbola.clone(),
+            hyperbola2.clone(),
+            (-0.5, 1.5),
+        ),
+        ("parabola", parabola, parabola2, (-0.5, 1.5)),
+        ("spline", spline.clone(), spline2.clone(), (0.1, 0.9)),
+        (
+            "trimmed line",
+            trim(&line, -0.8, 1.7),
+            trim2(&line2, -0.8, 1.7),
+            (-0.5, 1.5),
+        ),
+        (
+            "circle trimmed across its seam",
+            trim(&circle, 5.0, 7.0),
+            trim2(&circle2, 5.0, 7.0),
+            (5.2, 6.8),
+        ),
+        (
+            "trimmed ellipse",
+            trim(&ellipse, 0.5, 2.5),
+            trim2(&ellipse2, 0.5, 2.5),
+            (0.7, 2.3),
+        ),
+        (
+            "trimmed hyperbola",
+            trim(&hyperbola, -0.5, 1.8),
+            trim2(&hyperbola2, -0.5, 1.8),
+            (-0.2, 1.5),
+        ),
+        (
+            "trimmed spline",
+            trim(&spline, 0.2, 0.7),
+            trim2(&spline2, 0.2, 0.7),
+            (0.3, 0.6),
+        ),
+        (
+            "trim of a circle run backwards",
+            trim(&circle.reversed(), 1.0, 3.0),
+            trim2(&circle2.reversed(), 1.0, 3.0),
+            (1.2, 2.8),
+        ),
+        (
+            "offset circle",
+            offset(&circle),
+            offset2(&circle2),
+            (0.4, 2.5),
+        ),
+        (
+            "offset of a trimmed hyperbola",
+            offset(&trim(&hyperbola, -0.5, 1.8)),
+            offset2(&trim2(&hyperbola2, -0.5, 1.8)),
+            (-0.2, 1.5),
+        ),
+    ]
+}
+
+/// An edge on `curve` over `range` between `ends`, carrying `chart` on
+/// `surface` over the same range.
+fn edge_with_chart(
+    model: &mut Model,
+    (curve, chart): (ogeom::geom::Curve, ogeom::geom::PlanarCurve),
+    range: (f64, f64),
+    surface: ogeom::topo::SurfaceId,
+    ends: &[Shape],
+) -> Shape {
+    use ogeom::topo::{EdgeData, EdgeRepr, Location};
+    let curve = model.geometry_mut().add_curve(curve);
+    let chart = model.geometry_mut().add_pcurve(chart);
+    let mut data = EdgeData::on_curve(curve, Location::identity(), range);
+    data.add(EdgeRepr::PCurve {
+        curve: chart,
+        surface,
+        location: Location::identity(),
+        range,
+    });
+    data.assert_same_parameter(true);
+    model.add_edge(data, ends).unwrap()
+}
+
+/// Every curve kind crosses as an edge's curve in space and as its chart
+/// curve on a plane, forward and run backwards. The edge bounds a face on
+/// the plane, closed through a point off its chord. Read back, the curve
+/// and the chart curve each stand where they were written at every
+/// fraction of the edge's range, to 1e-12, and still share one range, so
+/// they still agree at each parameter.
+#[test]
+fn every_curve_kind_crosses_forward_and_run_backwards() {
+    use ogeom::geom::{
+        Curve2d as _, Curve3d as _, Line2d, LineCurve, Reversible as _, Surface as _,
+    };
+    use ogeom::math::{Point2, Vector};
+    use ogeom::topo::{EdgeRepr, FaceData, Location};
+    let plane: ogeom::geom::SurfaceGeometry =
+        ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(Frame::WORLD)).into();
+    let flat = |p: Point| Point2::new(p.x, p.y);
+    let mut failures = Vec::new();
+    for (name, curve, chart, range) in drawn_curves() {
+        assert_eq!(curve.domain(), chart.domain(), "{name}");
+        let (lo, hi) = curve.domain();
+        let backwards = (lo + hi - range.1, lo + hi - range.0);
+        for (way, curve, chart, range) in [
+            ("forward", curve.clone(), chart.clone(), range),
+            ("backwards", curve.reversed(), chart.reversed(), backwards),
+        ] {
+            let at = format!("{name}, {way}");
+            let mut model = Model::new();
+            let surface = model.geometry_mut().add_surface(plane.clone());
+            let (start, end) = (
+                curve.point_at(range.0, T).unwrap(),
+                curve.point_at(range.1, T).unwrap(),
+            );
+            let aside = start.midpoint(end) + Vector::new(0.0, 0.0, 1.0).cross(end - start);
+            let corners = [start, end, aside].map(|p| model.add_point(p));
+            let mut edges = vec![edge_with_chart(
+                &mut model,
+                (curve.clone(), chart.clone()),
+                range,
+                surface,
+                &corners[..2],
+            )];
+            for (from, to) in [(1, 2), (2, 0)] {
+                let (a, b) = ([start, end, aside][from], [start, end, aside][to]);
+                let segment = (
+                    LineCurve::segment(a, b, T).unwrap().into(),
+                    Line2d::segment(flat(a), flat(b), T).unwrap().into(),
+                );
+                let edge = edge_with_chart(
+                    &mut model,
+                    segment,
+                    (0.0, a.distance(b)),
+                    surface,
+                    &[corners[from].clone(), corners[to].clone()],
+                );
+                edges.push(edge);
+            }
+            let wire = model.add_wire(&edges).unwrap();
+            let face = model
+                .add_face(FaceData::new(surface, Location::identity()), &[wire])
+                .unwrap();
+
+            let text = match ogeom::io::brep::write(&model, &face, T) {
+                Ok(text) => text,
+                Err(e) => {
+                    failures.push(format!("{at}: refused: {e}"));
+                    continue;
+                }
+            };
+            let (back, shape) = ogeom::io::brep::read(&text, T).unwrap();
+            // The edge is the one whose ends are the curve's, read within a
+            // hundredth of the confusion distance: each closing segment has
+            // an end at the point aside, more than a chord off both.
+            let Some(data) = explore_unique(&back, &shape, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .filter_map(|e| back.node(&e).and_then(|n| n.data().as_edge()).cloned())
+                .find(|data| {
+                    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                        return false;
+                    };
+                    let read = back.geometry().curve(*curve).unwrap();
+                    [(range.0, start), (range.1, end)]
+                        .iter()
+                        .all(|(t, p)| read.point_at(*t, T).unwrap().distance(*p) < 1e-9)
+                })
+            else {
+                failures.push(format!("{at}: the edge is lost"));
+                continue;
+            };
+            let Some(EdgeRepr::Curve3d {
+                curve: read,
+                range: read_range,
+                ..
+            }) = data.curve3d()
+            else {
+                unreachable!("found by its curve");
+            };
+            let Some((read_chart, chart_range, on)) =
+                data.representations.iter().find_map(|r| match r {
+                    EdgeRepr::PCurve {
+                        curve,
+                        range,
+                        surface,
+                        ..
+                    } => Some((*curve, *range, *surface)),
+                    _ => None,
+                })
+            else {
+                failures.push(format!("{at}: the chart curve is lost"));
+                continue;
+            };
+            let read = back.geometry().curve(*read).unwrap();
+            let read_chart = back.geometry().pcurve(read_chart).unwrap();
+            let on = back.geometry().surface(on).unwrap();
+            if *read_range != chart_range {
+                failures.push(format!(
+                    "{at}: curve over {read_range:?}, chart curve over {chart_range:?}"
+                ));
+            }
+            let mut widest = (0.0_f64, 0.0_f64);
+            for k in 0..=64 {
+                let f = f64::from(k) / 64.0;
+                let along = |(a, b): (f64, f64)| (b - a).mul_add(f, a);
+                let point = curve.point_at(along(range), T).unwrap();
+                let drawn = chart.point_at(along(range), T).unwrap();
+                let read_point = read.point_at(along(*read_range), T).unwrap();
+                let read_drawn = read_chart.point_at(along(chart_range), T).unwrap();
+                let lifted = on.point_at(read_drawn.x, read_drawn.y, T).unwrap();
+                widest.0 = widest.0.max(read_point.distance(point));
+                widest.1 = widest
+                    .1
+                    .max(read_drawn.distance(drawn))
+                    .max(lifted.distance(point));
+            }
+            // Each curve written is the one in the model with its frame
+            // turned, its origin or knots moved or its window mirrored, all
+            // by arithmetic exact to rounding, on curves a few units across.
+            if widest.0 > 1e-12 || widest.1 > 1e-12 {
+                failures.push(format!(
+                    "{at}: the curve misses by {:.3e}, the chart curve by {:.3e}",
+                    widest.0, widest.1
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

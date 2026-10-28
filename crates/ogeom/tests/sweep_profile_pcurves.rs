@@ -639,3 +639,68 @@ fn a_hyperbola_sided_sweep_crosses_the_exchange_formats() {
         }
     }
 }
+
+/// The diamond with sides run backwards (an arc, a trimmed arc, a
+/// hyperbola over a domain symmetric about zero and over one that is not),
+/// with their forward spellings and a parabola beside them, swept into a
+/// prism, a full turn and a partial one, crosses the `.brep` format: it
+/// reads back valid, of the closed-form volume.
+#[test]
+fn a_profile_with_sides_run_backwards_crosses_the_brep_format() {
+    let axis = Axis {
+        location: Point::ORIGIN,
+        direction: Direction::Z,
+    };
+    let mut failures = Vec::new();
+    for kind in [
+        Side::Arc,
+        Side::ReversedArc,
+        Side::ReversedTrimmedArc,
+        Side::Hyperbola,
+        Side::ReversedHyperbola,
+        Side::ReversedLongHyperbola,
+        Side::Parabola,
+    ] {
+        for turn in [None, Some(2.0 * PI), Some(1.5 * PI)] {
+            let at = format!("{kind:?} sides, turn {turn:?}");
+            let mut model = Model::new();
+            let (face, area) = diamond(&mut model, kind);
+            let (built, want) = match turn {
+                None => (
+                    make_prism(&mut model, &face, normal().vector() * 3.0, T),
+                    area * 3.0,
+                ),
+                Some(angle) => (
+                    make_revolution(&mut model, &face, axis, angle, T),
+                    area * angle * 3.0,
+                ),
+            };
+            let built = built.unwrap().shape;
+            let (back, shape) = match ogeom::io::brep::write(&model, &built, T)
+                .and_then(|text| ogeom::io::brep::read(&text, T))
+            {
+                Ok(read) => read,
+                Err(e) => {
+                    failures.push(format!("{at}: {e}"));
+                    continue;
+                }
+            };
+            let found = check(&back, &shape, T).unwrap();
+            if !found.is_valid() {
+                failures.push(format!(
+                    "{at}: invalid: {}",
+                    found.to_string().lines().next().unwrap_or("")
+                ));
+                continue;
+            }
+            // Integrated on the exact surfaces read back, the volume differs
+            // from the closed form by quadrature rounding alone.
+            match volume_properties(&back, &shape, Deflection::with_chord(1e-3).unwrap(), T) {
+                Ok(v) if (v.mass - want).abs() <= 1e-9 * want => {}
+                Ok(v) => failures.push(format!("{at}: {} against {want}", v.mass)),
+                Err(e) => failures.push(format!("{at}: no volume: {e}")),
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
