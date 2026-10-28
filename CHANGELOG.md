@@ -783,6 +783,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A profile with offset or parabola edges sweeps into a valid solid.**
+  (#464)
+  - A prism, and a revolution through less than a turn, keep the profile
+    as their end caps, and each cap edge takes its exact pcurve on the
+    profile's plane. An offset curve and a parabola had none, so the caps
+    came back with bare edges and `check` rejected the solid ("bounds a
+    face it has no pcurve on").
+  - An offset whose reference stands square to the plane now takes its
+    basis's pcurve offset in the chart. A parabola takes the one quadratic
+    Bézier it is in its own parameter. Both are the same point as the
+    curve at every parameter. An offset whose reference leans off the
+    plane's normal far enough to lift it past the confusion distance
+    still has none.
+  - Measured: a diamond with sides that are offsets of B-spline lines,
+    lines, trimmed B-splines and half circles, trimmed offsets, or
+    parabolas, swept into a prism and turned a full turn and three
+    quarters, is valid and within 1e-15 relative of the area times the
+    height, or of Pappus's volume.
+
 - **A border of one surface lying in the other is a section, whatever
   the pair.** (#462)
   - Where a border of one surface's chart lies in the other surface, the

@@ -23,7 +23,7 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{
-    Circle2d, Curve, Curve2d as _, Curve3d, Ellipse2d, Line2d, PlanarCurve, Surface,
+    Circle2d, Curve, Curve2d as _, Curve3d, Ellipse2d, Line2d, Offset2d, PlanarCurve, Surface,
     SurfaceGeometry,
 };
 use ogeom_math::{Circle2, Ellipse2, Frame2, Point, Point2};
@@ -1790,6 +1790,9 @@ fn exact_pcurve(
             tol,
         );
     }
+    if let (Curve::Offset(offset), SurfaceGeometry::Plane(p)) = (curve, surface) {
+        return offset_on_plane(offset, range, surface, p.plane(), tol);
+    }
     match surface {
         SurfaceGeometry::Plane(p) => on_plane(curve, p.plane(), tol),
         SurfaceGeometry::Cylinder(c) => on_cylinder(curve, range, c.cylinder(), tol),
@@ -2022,11 +2025,43 @@ fn on_torus(
     None
 }
 
+/// The pcurve of an offset curve on a plane its reference stands square
+/// to: the basis's own pcurve, offset in the chart.
+///
+/// The offset moves each point along the tangent crossed with the
+/// reference. Within the plane, the tangent crossed with the chart's
+/// `x × y` is the tangent turned a quarter right, so the chart offset is
+/// the distance along the left normal with the sign flipped, and flipped
+/// again where the reference runs against `x × y`. A reference leaning `ε`
+/// off the normal turns the offset direction by at most `ε`, moving the
+/// point by at most `2 |d| sin(ε / 2)`, under `|d| tan ε`; the offset is
+/// read in the plane only where that stays within the confusion distance.
+/// Same-parameter as the basis's pcurve is.
+fn offset_on_plane(
+    offset: &ogeom_geom::OffsetCurve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    plane: ogeom_math::Plane,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
+    let frame = plane.frame();
+    let up = frame.x().vector().cross(frame.y().vector());
+    let reference = offset.reference().vector();
+    let (cos, sin) = (reference.dot(up), reference.cross(up).magnitude());
+    if cos == 0.0 || offset.distance().abs() * sin > tol.confusion() * cos.abs() {
+        return None;
+    }
+    let basis = exact_pcurve(offset.basis(), range, surface, tol)?;
+    Offset2d::new(basis, -cos.signum() * offset.distance())
+        .ok()
+        .map(|o| PlanarCurve::Offset(Box::new(o)))
+}
+
 /// Project a curve lying in a plane into the plane's own coordinates.
 ///
-/// Exact for a line, a circle and an ellipse: the plane's frame is orthonormal,
-/// so lengths and the curves' own parameterizations survive the projection
-/// unchanged.
+/// Exact for a line, a circle, an ellipse, a B-spline and a parabola: the
+/// plane's frame is orthonormal, so lengths and the curves' own
+/// parameterizations survive the projection unchanged.
 fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<PlanarCurve> {
     let frame = plane.frame();
     let flat = |p: Point| {
@@ -2094,6 +2129,22 @@ fn on_plane(curve: &Curve, plane: ogeom_math::Plane, tol: Tolerances) -> Option<
                 .ok()?;
             Some(
                 ogeom_geom::BSpline2d::rational(b.knots().clone(), control)
+                    .ok()?
+                    .into(),
+            )
+        }
+        Curve::Parabola(parabola) => {
+            // Quadratic in its own parameter, run either way: the one
+            // quadratic Bézier over its domain from end to end, its middle
+            // control point where the end tangents meet, is the same curve
+            // at every parameter.
+            let (lo, hi) = parabola.domain();
+            let start = parabola.point_at(lo, tol).ok()?;
+            let middle = start + parabola.d1_at(lo, tol).ok()? * ((hi - lo) / 2.0);
+            let end = parabola.point_at(hi, tol).ok()?;
+            let knots = ogeom_math::KnotVector::new(vec![lo, lo, lo, hi, hi, hi], 2).ok()?;
+            Some(
+                ogeom_geom::BSpline2d::new(knots, vec![flat(start), flat(middle), flat(end)], tol)
                     .ok()?
                     .into(),
             )
@@ -3745,5 +3796,83 @@ mod tests {
             (0.0, 10.0),
         );
         assert!(!surfaces_coincide(&here, &across, reach, T));
+    }
+
+    /// A curve offset square to a plane's normal, and a parabola, lying in
+    /// the plane, have exact pcurves on it, the same point at every
+    /// parameter: an offset of a B-spline and of a circle, the reference
+    /// along the normal or against it, the distance either sign. An
+    /// offset whose reference leans off the normal leaves the plane and
+    /// has none.
+    #[test]
+    fn an_offset_square_to_a_plane_and_a_parabola_have_pcurves_on_it() {
+        use ogeom_geom::{BSplineCurve, CircleCurve, OffsetCurve, ParabolaCurve};
+        let normal = Vector::new(0.3, -0.5, 0.8);
+        let up = Direction::new(normal, T).unwrap();
+        let origin = Point::new(1.0, 2.0, -0.5);
+        let ground = plane(origin, normal);
+        let frame = Frame::new(
+            origin,
+            up,
+            Direction::new(Vector::new(1.0, 0.0, -0.375), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let on = |x: f64, y: f64| frame.origin() + frame.x().vector() * x + frame.y().vector() * y;
+        let knots = ogeom_math::KnotVector::clamped_uniform(3, 5).unwrap();
+        let wiggle: Curve = BSplineCurve::new(
+            knots,
+            vec![
+                on(0.0, 0.0),
+                on(1.0, 1.0),
+                on(2.0, -0.5),
+                on(3.0, 0.5),
+                on(4.0, 0.0),
+            ],
+            T,
+        )
+        .unwrap()
+        .into();
+        let round: Curve = CircleCurve::new(ogeom_math::Circle::new(frame, 1.5, T).unwrap()).into();
+        let parabola: Curve =
+            ParabolaCurve::over(ogeom_math::Parabola::new(frame, 0.7, T).unwrap(), -1.5, 2.0)
+                .unwrap()
+                .into();
+        let mut curves = vec![parabola];
+        for basis in [wiggle, round] {
+            for reference in [up, -up] {
+                for distance in [0.4, -0.3] {
+                    let offset = OffsetCurve::new(basis.clone(), distance, reference).unwrap();
+                    curves.push(Curve::Offset(Box::new(offset)));
+                }
+            }
+        }
+        for curve in &curves {
+            let pcurve = exact_pcurve_of(curve, &ground, T).expect("it lies in the plane");
+            let (lo, hi) = curve.domain();
+            for i in 0..=16 {
+                let t = (hi - lo).mul_add(f64::from(i) / 16.0, lo);
+                let at = pcurve.point_at(t, T).unwrap();
+                let lifted = ground.point_at(at.x, at.y, T).unwrap();
+                let point = curve.point_at(t, T).unwrap();
+                assert!(
+                    lifted.distance(point) < 1e-9,
+                    "{curve:?} at {t}: {lifted:?} against {point:?}"
+                );
+            }
+        }
+        // Leaned by `ε`, the reference lifts a point offset `d` off the
+        // plane by up to `d tan ε`, here past the confusion distance.
+        let leaned = Direction::new(normal + frame.x().vector() * 0.05, T).unwrap();
+        let knots = ogeom_math::KnotVector::clamped_uniform(3, 4).unwrap();
+        let straight: Curve = BSplineCurve::new(
+            knots,
+            vec![on(0.0, 0.0), on(1.0, 0.0), on(2.0, 0.0), on(3.0, 0.0)],
+            T,
+        )
+        .unwrap()
+        .into();
+        let off = Curve::Offset(Box::new(OffsetCurve::new(straight, 0.4, leaned).unwrap()));
+        assert!(exact_pcurve_of(&off, &ground, T).is_none());
     }
 }
