@@ -334,32 +334,51 @@ fn free_form_after_line(model: &mut Model, up: &Shape, top: &Shape) -> Shape {
     make_wire(model, &[up.clone(), bend], T).unwrap().shape
 }
 
+/// The volume of `solid` against the tube `π r²` times `length`, to within
+/// the skin's tolerance and the mesh's chord over the walls' area, at most
+/// the circle's perimeter times the spine's length.
+fn assert_tube_volume(model: &Model, solid: &Shape, r: f64, length: f64, skin: f64) {
+    const CHORD: f64 = 1e-4;
+    let found = check(model, solid, T).unwrap();
+    assert!(found.is_valid(), "at {skin}: {found}");
+    let v = volume_properties(model, solid, Deflection::with_chord(CHORD).unwrap(), T)
+        .unwrap()
+        .mass;
+    let want = PI * r * r * length;
+    let bound = (skin + CHORD) * 2.0 * PI * r * length;
+    assert!(
+        (v - want).abs() < bound,
+        "at {skin}: {v} against {want}, bound {bound}"
+    );
+}
+
+/// The pipe shell of a disc down a line, round a tangent arc, along a
+/// line and round a sharp turn onto a last line closes at every skin
+/// tolerance: the arc's skinned run and the straight runs either side of it
+/// meet on one section, whichever fit each run settles on. Its volume is
+/// `π r²` times the spine's length, `16 + 3π/2`, by Pappus.
+#[test]
+fn a_disc_piped_past_an_arc_and_a_sharp_turn_closes_at_every_tolerance() {
+    let r = 0.5;
+    for skin in [1e-2, 3e-3, 1.5e-3, 1e-3, 3e-4, 2e-4, 1e-4] {
+        let mut model = Model::new();
+        let spine = line_arc_line(&mut model, true);
+        let profile = disc(&mut model, Point::ORIGIN, Direction::Z, r);
+        let shell = make_pipe_shell(&mut model, &profile, &spine, false, skin, T)
+            .unwrap_or_else(|e| panic!("at {skin}: {e}"))
+            .shape;
+        assert_tube_volume(&model, &shell, r, 16.0 + 1.5 * PI, skin);
+    }
+}
+
 /// The skinned pipe takes a wire of free-form edges too, as the pipe shell
 /// of its disc: down a line and on along a Bézier bend, `π r²` times the
-/// spine's length by Pappus, to within the skin's tolerance and the mesh's
-/// chord over the walls' area.
+/// spine's length by Pappus, at every skin tolerance: the straight run and
+/// the bend's skinned run meet on one section, whichever fit each settles
+/// on.
 #[test]
 fn a_skinned_pipe_runs_along_a_wire_with_a_free_form_edge() {
-    const SKIN: f64 = 1e-3;
-    const CHORD: f64 = 1e-4;
     let r = 0.5;
-    let mut model = Model::new();
-    let (a, b) = (Point::ORIGIN, Point::new(0.0, 0.0, 5.0));
-    let (va, vb) = (
-        make_vertex(&mut model, a).shape,
-        make_vertex(&mut model, b).shape,
-    );
-    let segment = LineCurve::segment(a, b, T).unwrap();
-    let range = segment.domain();
-    let up = make_edge_between(&mut model, segment.into(), range, &va, &vb, T)
-        .unwrap()
-        .shape;
-    let spine = free_form_after_line(&mut model, &up, &vb);
-    let pipe = make_pipe_skinned(&mut model, &spine, r, SKIN, T)
-        .unwrap()
-        .shape;
-    let found = check(&model, &pipe, T).unwrap();
-    assert!(found.is_valid(), "{found}");
     // The bend's length by Simpson's rule over its speed, far finer than
     // the bound below.
     let control = [
@@ -392,18 +411,24 @@ fn a_skinned_pipe_runs_along_a_wire_with_a_free_form_edge() {
         * h
         / 3.0;
     let length = 5.0 + bend;
-    let v = volume_properties(&model, &pipe, Deflection::with_chord(CHORD).unwrap(), T)
-        .unwrap()
-        .mass;
-    let want = PI * r * r * length;
-    // The walls stray from the tube by at most the skin's tolerance and
-    // the mesh's chord, over an area of at most the circle's perimeter
-    // times the spine's length.
-    let bound = (SKIN + CHORD) * 2.0 * PI * r * length;
-    assert!(
-        (v - want).abs() < bound,
-        "{v} against {want}, bound {bound}"
-    );
+    for skin in [1e-3, 3e-4, 1e-4, 7e-5, 3e-5] {
+        let mut model = Model::new();
+        let (a, b) = (Point::ORIGIN, Point::new(0.0, 0.0, 5.0));
+        let (va, vb) = (
+            make_vertex(&mut model, a).shape,
+            make_vertex(&mut model, b).shape,
+        );
+        let segment = LineCurve::segment(a, b, T).unwrap();
+        let range = segment.domain();
+        let up = make_edge_between(&mut model, segment.into(), range, &va, &vb, T)
+            .unwrap()
+            .shape;
+        let spine = free_form_after_line(&mut model, &up, &vb);
+        let pipe = make_pipe_skinned(&mut model, &spine, r, skin, T)
+            .unwrap_or_else(|e| panic!("at {skin}: {e}"))
+            .shape;
+        assert_tube_volume(&model, &pipe, r, length, skin);
+    }
 }
 
 /// A `2 × 2` square drawn about `(5, 3, 1)` on the plane facing

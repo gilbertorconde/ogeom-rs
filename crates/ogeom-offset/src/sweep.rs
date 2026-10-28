@@ -7325,22 +7325,6 @@ fn pipe_shell_law(
         }
         Ok(join)
     };
-    // Across a curved corner the two legs' skins share the join row as one
-    // edge: a run adopts the previous run's end row at its start, and the
-    // last run of a cornered ring adopts the first run's start row at its
-    // end.
-    let shares_start = |ri: usize| -> bool {
-        ri > 0
-            && corner_pairs
-                .iter()
-                .any(|pair| pair.curved && pair.after == runs[ri])
-    };
-    let shares_end = |ri: usize| -> bool {
-        ring && ri + 1 == runs.len()
-            && corner_pairs
-                .iter()
-                .any(|pair| pair.curved && pair.before == runs[ri] && pair.after == runs[0])
-    };
     // The curved corner a station is a twin of, if any.
     let curved_at = |i: usize| -> Option<&CornerPair> {
         corner_pairs
@@ -7376,15 +7360,19 @@ fn pipe_shell_law(
     let y0 = t0.cross(x0);
     let origin = stations[0].at;
     let flat = |p: Point| -> (f64, f64) { ((p - origin).dot(x0), (p - origin).dot(y0)) };
+    // Points round the profile, in the start frame's coordinates.
+    let probes: Vec<(f64, f64)> = {
+        let mut out = Vec::new();
+        for wire in &loops {
+            out.extend(sample_wire(model, wire, AROUND, tol)?.into_iter().map(flat));
+        }
+        out
+    };
     // A skew corner against a curved leg: the legs' generators miss, so
     // no join row closes the walls. Such a corner is a mitre instead: the
     // spine is split there, each side swept on straight past the corner
     // and trimmed by the mitre plane, and the pieces fused.
     let skew: Vec<(usize, usize)> = {
-        let mut probes: Vec<(f64, f64)> = Vec::new();
-        for wire in &loops {
-            probes.extend(sample_wire(model, wire, AROUND, tol)?.into_iter().map(flat));
-        }
         let mut out = Vec::new();
         for pair in corner_pairs.iter().filter(|pair| pair.curved) {
             let mut worst = 0.0_f64;
@@ -7398,13 +7386,6 @@ fn pipe_shell_law(
         out
     };
     if !skew.is_empty() {
-        let probes: Vec<(f64, f64)> = {
-            let mut out = Vec::new();
-            for wire in &loops {
-                out.extend(sample_wire(model, wire, AROUND, tol)?.into_iter().map(flat));
-            }
-            out
-        };
         return mitred_pieces(
             model, profile, spine, &stations, &skew, ring, &probes, tolerance, tol,
         );
@@ -7424,6 +7405,38 @@ fn pipe_shell_law(
             None => p,
         })
     };
+    // Where a run's first section is the previous run's last (a smooth
+    // junction, a corner's mitre or a curved corner's join row: the twin
+    // stations place every profile point on one point), the two skins
+    // share that section as one edge: a run adopts the previous run's end
+    // row at its start, and the last run of a cornered ring adopts the
+    // first run's start row at its end. Two fits of one section each stand
+    // within their own error of it, but not within the sew's tolerance of
+    // each other unless they happen to be the same fit. Away from a curved
+    // corner placing is affine in the profile's coordinates, so agreement
+    // on the probes round the profile is agreement everywhere.
+    let one_section = |i: usize, j: usize| -> OgeomResult<bool> {
+        for ab in &probes {
+            if place(i, *ab)?.distance(place(j, *ab)?) > tol.confusion() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    let mut butted_start = vec![false; runs.len()];
+    for ri in 1..runs.len() {
+        butted_start[ri] = corner_pairs
+            .iter()
+            .any(|pair| pair.curved && pair.after == runs[ri])
+            || one_section(runs[ri - 1].1, runs[ri].0)?;
+    }
+    let butted_wrap = ring
+        && runs.len() > 1
+        && (corner_pairs.iter().any(|pair| {
+            pair.curved && pair.before == runs[runs.len() - 1] && pair.after == runs[0]
+        }) || one_section(runs[runs.len() - 1].1, runs[0].0)?);
+    let shares_start = |ri: usize| -> bool { butted_start[ri] };
+    let shares_end = |ri: usize| -> bool { butted_wrap && ri + 1 == runs.len() };
     // One profile point's generator along a re-rowed run: its parameter
     // against the length run from the column's start, and the whole length.
     struct RerowColumn {

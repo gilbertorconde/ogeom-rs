@@ -929,6 +929,26 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pipe shell where a straight run meets a skinned run closes at every
+  skin tolerance.** (#487)
+  - `make_pipe_shell` of a disc (and `make_pipe_skinned` on a wire) failed
+    with "the pipe shell did not close" at some tolerances and not at
+    others, not monotonically: down a line, round a tangent arc, along a
+    line and round a sharp turn at 3e-2, 1.5e-3, 1e-3, 3e-4 and 2e-4;
+    down a line and on along a Bézier bend at 1e-4 and 7e-5. Each run of
+    the spine fitted its own ring at the section it shares with the next,
+    and two fits of one ring met only where both runs settled on the same
+    fit; otherwise they stood up to 1.9e-4 apart, within each fit's error
+    of the section but far outside the sew's tolerance of each other.
+  - Wherever the twin stations between two runs place every point of the
+    profile on one point (a smooth junction, a mitre, a curved corner's
+    join row), the next run now adopts the previous run's ring as its own
+    border, widened to how far it measurably stands off the new skin, as
+    curved corners already did.
+  - Measured: both spines at 19 tolerances from 3e-2 down to 1e-5 close
+    valid; the first holds `π r²` times its length `16 + 3π/2` to within
+    9.4e-3 at 3e-2 and 9.3e-5 at 1e-3, against a bound of the skin's
+    tolerance and the mesh's chord over the walls' area.
 - **A boolean between a dented solid and its whole on a frame with the
   axis reversed.** (#484)
   - A drum dented by an off-axis ball, fused with the whole drum spelled
