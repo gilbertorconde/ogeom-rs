@@ -19,7 +19,9 @@
 //! the triangle pairs that cross give starting points. A branch thinner than
 //! the grid crosses no pair of triangles; where it meets a spline's border it
 //! is found as a piercing, and a closed loop inside both surfaces is found
-//! from the approach of the surfaces inside it. Where the surfaces lie close
+//! from the approach of the surfaces inside it. A branch running along a
+//! border of either chart, where one surface ends in the other, is found by
+//! sampling the border itself. Where the surfaces lie close
 //! along a whole curve only part of that search is made, and there the grid
 //! is the knob.
 //!
@@ -174,6 +176,17 @@ pub fn seeds(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Contact>> {
+    Ok(seeded(a, b, options, tol)?.0)
+}
+
+/// [`seeds`], and the stretches of either surface's borders lying in the
+/// other, found on the same sampling: see [`border_stretches`].
+fn seeded(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<Contact>, Vec<Traced>)> {
     options.validate()?;
     let (mesh_a, mesh_b) = (sample(a, options.grid, tol), sample(b, options.grid, tol));
     let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
@@ -292,7 +305,8 @@ pub fn seeds(
             found.push(Seed::at(a, b, contact, tol));
         }
     }
-    Ok(found.into_iter().map(|s| s.contact).collect())
+    let lying = border_stretches(a, b, (&mesh_a, &mesh_b), options, tol)?;
+    Ok((found.into_iter().map(|s| s.contact).collect(), lying))
 }
 
 /// How many times a cell's sag the surface is allowed to bow from the
@@ -745,6 +759,14 @@ fn merges(found: &[Seed], contact: Contact, apart: f64) -> bool {
     })
 }
 
+/// Past this a chart's bound is a stand-in for no end at all.
+const FAR: f64 = 1e6;
+
+/// The sine of the angle between two surfaces' normals at or below which
+/// they are taken as tangent where they meet: a branch along which they
+/// stay that close to tangent is a contact, not a crossing.
+pub(crate) const TANGENTIAL_SINE: f64 = 3e-2;
+
 /// A border of a surface as a curve, and the map from the curve's
 /// parameter to the surface's.
 type Border = (ogeom_geom::Curve, Box<dyn Fn(f64) -> (f64, f64)>);
@@ -803,8 +825,6 @@ fn spline_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
 /// window of one less than a turn wide, the arcs of those circles the
 /// window spans.
 fn rims(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
-    /// Past this a height is a chart's stand-in for no end at all.
-    const FAR: f64 = 1e6;
     let is_drum = |s: &SurfaceGeometry| {
         matches!(s, SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)) && s.is_closed_u(tol)
     };
@@ -845,6 +865,419 @@ fn rims(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
     out
 }
 
+/// A border of a surface's chart: the parameter it holds (`u` where
+/// `holds_u`), the value it holds it at, the range of the other parameter
+/// along it, and whether it closes on itself.
+#[derive(Debug, Clone, Copy)]
+struct ChartBorder {
+    holds_u: bool,
+    at: f64,
+    range: (f64, f64),
+    closed: bool,
+}
+
+impl ChartBorder {
+    /// The surface's parameters at `t` along the border.
+    const fn params(&self, t: f64) -> (f64, f64) {
+        if self.holds_u {
+            (self.at, t)
+        } else {
+            (t, self.at)
+        }
+    }
+
+    /// The surface's point at `t` along the border, and the derivative
+    /// along it there.
+    fn point_d1(
+        &self,
+        surface: &SurfaceGeometry,
+        t: f64,
+        tol: Tolerances,
+    ) -> Option<(Point, Vector)> {
+        let (u, v) = self.params(t);
+        let (p, du, dv) = surface.point_d1_at(u, v, tol).ok()?;
+        Some((p, if self.holds_u { dv } else { du }))
+    }
+}
+
+/// The borders of a surface's chart in each direction that neither repeats
+/// nor closes, where the bound and the range along it are a part's and not
+/// a chart's stand-in for no end.
+fn chart_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<ChartBorder> {
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let real = |x: f64| x.is_finite() && x.abs() <= FAR;
+    let open_u = !surface.is_periodic_u() && !surface.is_closed_u(tol);
+    let open_v = !surface.is_periodic_v() && !surface.is_closed_v(tol);
+    let mut out = Vec::new();
+    for (holds_u, open, ends, range, closed) in [
+        (true, open_u, (u0, u1), (v0, v1), !open_v),
+        (false, open_v, (v0, v1), (u0, u1), !open_u),
+    ] {
+        if !open || !real(range.0) || !real(range.1) || range.1 <= range.0 {
+            continue;
+        }
+        for at in [ends.0, ends.1] {
+            if real(at) {
+                out.push(ChartBorder {
+                    holds_u,
+                    at,
+                    range,
+                    closed,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The stretches of either surface's chart borders that lie in the other
+/// surface and leave it at an angle, each as a traced branch.
+///
+/// A border lying in the other surface is a curve of the section, and one
+/// neither seeding finds: no pair of cells crosses on it (the cells beside
+/// it lie on one side of the other surface, or meet it only along an
+/// edge), the border pierces the other surface nowhere, and a walk along
+/// it stops at once, as every step leaves the chart. So each border is
+/// sampled at the grid's spacing. A sample lies in the other surface where
+/// a cell of the other comes within the distance the surface bows from its
+/// cells, and the foot projected from that cell is within the confusion
+/// distance, the distance a corrected seed is held to. Two neighbouring
+/// samples in it make a stretch, carried by bisection out to where the
+/// border leaves the other surface, then stepped along at the chord as a
+/// walk is, every point projected again. A stretch stands only where every
+/// point lies in the other surface and the normals' sine there is past
+/// [`TANGENTIAL_SINE`]: a border the surface leaves tangentially, as a
+/// blend's edge leaves its host, is a contact, and is left to the marcher
+/// and the contact handling. A stretch both surfaces' borders hold is
+/// stated once.
+fn border_stretches(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    (mesh_a, mesh_b): (&[Cell], &[Cell]),
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Traced>> {
+    let reach = options.chord.max(tol.confusion()) * 8.0;
+    let mut out: Vec<Traced> = Vec::new();
+    for (from_a, border_of, other, cells) in [(true, a, b, mesh_b), (false, b, a, mesh_a)] {
+        let borders = chart_borders(border_of, tol);
+        if borders.is_empty() || cells.is_empty() {
+            continue;
+        }
+        for border in borders {
+            for piece in stretches(border_of, other, cells, border, options, tol)? {
+                let piece = if from_a {
+                    piece
+                } else {
+                    Traced {
+                        on_a: piece.on_b,
+                        on_b: piece.on_a,
+                        ..piece
+                    }
+                };
+                let n = piece.points.len();
+                let middle = if n > 2 {
+                    piece.points[n / 2]
+                } else {
+                    piece.points[0].midpoint(piece.points[n - 1])
+                };
+                if out.iter().any(|other| passes_near(other, middle, reach)) {
+                    continue;
+                }
+                out.push(piece);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The stretches of `border` of `surface` lying in `other`, sampled into
+/// `cells`, as traced branches whose first parameters are on `surface`:
+/// see [`border_stretches`].
+fn stretches(
+    surface: &SurfaceGeometry,
+    other: &SurfaceGeometry,
+    cells: &[Cell],
+    border: ChartBorder,
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Traced>> {
+    let grid = options.grid;
+    let (lo, hi) = border.range;
+    #[allow(clippy::cast_precision_loss)]
+    let at = |k: usize| (hi - lo).mul_add(k as f64 / grid as f64, lo);
+    let samples: Vec<Option<Point>> = (0..=grid)
+        .map(|k| {
+            let (u, v) = border.params(at(k));
+            surface.point_at(u, v, tol).ok()
+        })
+        .collect();
+    let mut low = Point::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut high = Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in samples.iter().flatten() {
+        low = Point::new(low.x.min(p.x), low.y.min(p.y), low.z.min(p.z));
+        high = Point::new(high.x.max(p.x), high.y.max(p.y), high.z.max(p.z));
+    }
+    // A border that is a single point (a pole, an apex) has no length to
+    // lie along.
+    if samples.iter().flatten().count() < 2 || (high - low).magnitude() <= tol.confusion() {
+        return Ok(Vec::new());
+    }
+    // The cells the samples could lie on: those whose boxes come within
+    // the distance the surface bows from them of the samples' box.
+    let near: Vec<usize> = (0..cells.len())
+        .filter(|&j| {
+            let (cell, reach) = (&cells[j], BOW.mul_add(cells[j].sag, options.chord));
+            cell.low.x <= high.x + reach
+                && low.x <= cell.high.x + reach
+                && cell.low.y <= high.y + reach
+                && low.y <= cell.high.y + reach
+                && cell.low.z <= high.z + reach
+                && low.z <= cell.high.z + reach
+        })
+        .collect();
+    if near.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lying = Lying {
+        surface,
+        other,
+        cells,
+        near,
+        border,
+        options,
+        tol,
+    };
+    let feet: Vec<Option<(f64, f64)>> = samples
+        .iter()
+        .map(|p| {
+            let p = (*p)?;
+            lying.foot(p, lying.nearest_cell(p)?)
+        })
+        .collect();
+    lying.stretches(&feet)
+}
+
+/// One border of a surface asked against another surface, and the cells of
+/// the other near it: see [`border_stretches`].
+struct Lying<'s> {
+    surface: &'s SurfaceGeometry,
+    other: &'s SurfaceGeometry,
+    cells: &'s [Cell],
+    near: Vec<usize>,
+    border: ChartBorder,
+    options: Marching,
+    tol: Tolerances,
+}
+
+impl Lying<'_> {
+    /// The stretches lying in the other surface, from the feet of the
+    /// border's samples there.
+    fn stretches(&self, feet: &[Option<(f64, f64)>]) -> OgeomResult<Vec<Traced>> {
+        let border = self.border;
+        let grid = feet.len() - 1;
+        let (lo, hi) = border.range;
+        #[allow(clippy::cast_precision_loss)]
+        let at = |k: usize| (hi - lo).mul_add(k as f64 / grid as f64, lo);
+        let mut out = Vec::new();
+        if border.closed && feet.iter().all(Option::is_some) {
+            if let Some(mut whole) = self.walked((lo, feet[0]), (hi, feet[grid]))? {
+                whole.points.pop();
+                whole.on_a.pop();
+                whole.on_b.pop();
+                whole.points.push(whole.points[0]);
+                whole.on_a.push(whole.on_a[0]);
+                whole.on_b.push(whole.on_b[0]);
+                whole.stopped = Stopped::Closed;
+                out.push(whole);
+            }
+            return Ok(out);
+        }
+        let mut k = 0;
+        while k < grid {
+            if feet[k].is_none() || feet[k + 1].is_none() {
+                k += 1;
+                continue;
+            }
+            let mut end = k + 1;
+            while end < grid && feet[end + 1].is_some() {
+                end += 1;
+            }
+            let start = if k == 0 {
+                (lo, feet[0])
+            } else {
+                self.leaves((at(k), feet[k]), at(k - 1))
+            };
+            let finish = if end == grid {
+                (hi, feet[grid])
+            } else {
+                self.leaves((at(end), feet[end]), at(end + 1))
+            };
+            if let Some(piece) = self.walked(start, finish)? {
+                out.push(piece);
+            }
+            k = end + 1;
+        }
+        Ok(out)
+    }
+
+    /// The parameters of the cell corner of the other surface nearest `p`,
+    /// among the cells it could lie on: those within the distance the
+    /// surface bows from them.
+    fn nearest_cell(&self, p: Point) -> Option<(f64, f64)> {
+        let (_, cell) = self
+            .near
+            .iter()
+            .map(|&j| &self.cells[j])
+            .filter_map(|cell| {
+                let reach = BOW.mul_add(cell.sag, self.options.chord);
+                let boxed = (cell.low.x - reach..=cell.high.x + reach).contains(&p.x)
+                    && (cell.low.y - reach..=cell.high.y + reach).contains(&p.y)
+                    && (cell.low.z - reach..=cell.high.z + reach).contains(&p.z);
+                if !boxed {
+                    return None;
+                }
+                let d = point_to_triangle(p, cell.corners);
+                (d <= reach).then_some((d, cell))
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))?;
+        let corner = (0..3).min_by(|&i, &j| {
+            p.square_distance(cell.corners[i])
+                .total_cmp(&p.square_distance(cell.corners[j]))
+        })?;
+        Some(cell.params[corner])
+    }
+
+    /// The foot of `p` on the other surface, from `guess`, where it lies
+    /// within the confusion distance.
+    fn foot(&self, p: Point, guess: (f64, f64)) -> Option<(f64, f64)> {
+        let found = ogeom_geom::project_on_surface_from(self.other, p, guess, self.tol).ok()?;
+        (found.distance <= self.tol.confusion()).then_some(found.parameters)
+    }
+
+    /// The foot at `t` along the border, from `guess` and failing that
+    /// from the nearest cell.
+    fn foot_at(&self, t: f64, guess: Option<(f64, f64)>) -> Option<(Point, (f64, f64))> {
+        let (u, v) = self.border.params(t);
+        let p = self.surface.point_at(u, v, self.tol).ok()?;
+        let found = guess
+            .and_then(|g| self.foot(p, g))
+            .or_else(|| self.foot(p, self.nearest_cell(p)?))?;
+        Some((p, found))
+    }
+
+    /// Where the border leaves the other surface between `inside`, whose
+    /// foot is known, and `outside`: bisected down to the parametric
+    /// confusion.
+    fn leaves(&self, inside: (f64, Option<(f64, f64)>), outside: f64) -> (f64, Option<(f64, f64)>) {
+        let (mut on, mut foot) = inside;
+        let mut off = outside;
+        for _ in 0..64 {
+            if (off - on).abs() <= self.tol.parametric() {
+                break;
+            }
+            let mid = f64::midpoint(on, off);
+            match self.foot_at(mid, foot) {
+                Some((_, found)) => {
+                    on = mid;
+                    foot = Some(found);
+                }
+                None => off = mid,
+            }
+        }
+        (on, foot)
+    }
+
+    /// The border from `start` to `finish` stepped along at the chord as a
+    /// walk is, `None` unless every point lies in the other surface and
+    /// the two leave each other at an angle there.
+    fn walked(
+        &self,
+        start: (f64, Option<(f64, f64)>),
+        finish: (f64, Option<(f64, f64)>),
+    ) -> OgeomResult<Option<Traced>> {
+        let (border, chord, tol) = (self.border, self.options.chord, self.tol);
+        let ((t0, foot0), (t1, _)) = (start, finish);
+        if t1 <= t0 {
+            return Ok(None);
+        }
+        let extent = span(self.surface).max(span(self.other));
+        let ceiling = extent / 8.0;
+        let mut step = (chord * extent).sqrt().clamp(tol.confusion(), ceiling);
+        let mut traced = Traced {
+            points: Vec::new(),
+            on_a: Vec::new(),
+            on_b: Vec::new(),
+            stopped: Stopped::LeftTheDomain,
+        };
+        let keep = |traced: &mut Traced, t: f64, guess: Option<(f64, f64)>| -> Option<(f64, f64)> {
+            let (p, foot) = self.foot_at(t, guess)?;
+            let ns = normal_at(self.surface, border.params(t), tol)?;
+            let no = normal_at(self.other, foot, tol)?;
+            if ns.cross(no).magnitude() <= TANGENTIAL_SINE {
+                return None;
+            }
+            traced.points.push(p);
+            traced.on_a.push(border.params(t));
+            traced.on_b.push(foot);
+            Some(foot)
+        };
+        let (Some(mut foot), Some((mut here, mut heading))) = (
+            keep(&mut traced, t0, foot0),
+            border.point_d1(self.surface, t0, tol),
+        ) else {
+            return Ok(None);
+        };
+        let mut t = t0;
+        while t < t1 {
+            ogeom_core::progress::checkpoint()?;
+            let speed = heading.magnitude();
+            if speed <= tol.confusion() {
+                return Ok(None);
+            }
+            let mut taken = None;
+            for _ in 0..40 {
+                let next = (t + step / speed).min(t1);
+                let Some((there, ahead)) = border.point_d1(self.surface, next, tol) else {
+                    return Ok(None);
+                };
+                let turn = heading
+                    .normalized(tol)
+                    .ok()
+                    .zip(ahead.normalized(tol).ok())
+                    .map_or(0.0, |(d, e)| d.dot(e).clamp(-1.0, 1.0).acos());
+                let sag = here.distance(there) * turn / 8.0;
+                if sag <= chord || step <= tol.confusion() * 8.0 {
+                    let scale = if sag > 0.0 {
+                        (chord / sag).sqrt().clamp(0.5, 2.0)
+                    } else {
+                        2.0
+                    };
+                    taken = Some((
+                        next,
+                        there,
+                        ahead,
+                        (step * scale).clamp(tol.confusion(), ceiling),
+                    ));
+                    break;
+                }
+                step *= (chord / sag).sqrt().clamp(0.25, 0.9);
+            }
+            let Some((next, there, ahead, following)) = taken else {
+                return Ok(None);
+            };
+            let Some(landed) = keep(&mut traced, next, Some(foot)) else {
+                return Ok(None);
+            };
+            if traced.points.len() >= self.options.max_points {
+                return Ok(None);
+            }
+            (t, here, heading, step, foot) = (next, there, ahead, following, landed);
+        }
+        Ok(Some(traced))
+    }
+}
+
 /// Every branch of the intersection: seed, trace each, and keep the distinct
 /// ones.
 ///
@@ -874,8 +1307,10 @@ pub fn branches(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Traced>> {
-    let found = seeds(a, b, options, tol)?;
-    let mut out: Vec<Traced> = Vec::new();
+    let (found, lying) = seeded(a, b, options, tol)?;
+    // A stretch of a border lying in the other surface is a branch already
+    // traced, and a seed on it is not followed again.
+    let mut out: Vec<Traced> = lying;
     let mut again: Vec<Traced> = Vec::new();
     let reach = options.chord.max(tol.confusion()) * 8.0;
     let follow = |seed: Contact, out: &mut Vec<Traced>, again: &mut Vec<Traced>| {

@@ -30,7 +30,7 @@ use ogeom_math::{Circle2, Ellipse2, Frame2, Point, Point2};
 
 use crate::approx::approximate_branch;
 use crate::contact::trace_tangential;
-use crate::march::{Marching, branches};
+use crate::march::{Marching, TANGENTIAL_SINE, branches};
 use crate::surface::{Meeting, surface_surface};
 
 /// How to intersect, when the general path runs.
@@ -1656,10 +1656,6 @@ fn walk_contact(
         .filter(|traced| traced.points.len() >= 4))
 }
 
-/// The sine of the angle between two surfaces' normals at or below which
-/// they are taken as tangent where they meet; see [`branch_is_tangential`].
-const TANGENTIAL_SINE: f64 = 3e-2;
-
 /// Whether a traced branch runs along a tangency of the two surfaces:
 /// their normals parallel, sampled along its length.
 fn branch_is_tangential(
@@ -2591,6 +2587,156 @@ mod tests {
                 sections.iter().all(|s| !s.exact || s.tangential),
                 "a tangent border is no crossing: {sections:?}"
             );
+        }
+    }
+
+    /// A side running from the corner `(√2, 0)` toward `(0, √2)`, stood
+    /// up three tall, in each spelling no closed form or iso-line path
+    /// reads: an extrusion of half an ellipse bulging outward, trimmed; of
+    /// a B-spline line, trimmed; of a B-spline line offset onto the side;
+    /// a spline patch; an extrusion of a B-spline line. Each starts on the
+    /// ruling through the corner, a border of its chart, and leaves it
+    /// along `(1, 1)` or `(-1, 1)`, into `y > 0`.
+    fn sides_from_the_corner() -> Vec<SurfaceGeometry> {
+        use ogeom_geom::{BSplineCurve, EllipseCurve, ExtrusionSurface, OffsetCurve, TrimmedCurve};
+        let r = 2.0_f64.sqrt();
+        let (from, to) = (Point::new(r, 0.0, 0.0), Point::new(0.0, r, 0.0));
+        let line = |from: Point, to: Point| -> Curve {
+            let along = |k: u32| from + (to - from) * (f64::from(k) / 3.0);
+            let knots = ogeom_math::KnotVector::clamped_uniform(3, 4).unwrap();
+            BSplineCurve::new(knots, (0..4).map(along).collect(), T)
+                .unwrap()
+                .into()
+        };
+        let middle = from.midpoint(to);
+        let frame = Frame::new(
+            middle,
+            Direction::Z,
+            Direction::new(from - to, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let half_ellipse = TrimmedCurve::new(
+            EllipseCurve::new(ogeom_math::Ellipse::new(frame, 1.0, 0.4, T).unwrap()).into(),
+            0.0,
+            core::f64::consts::PI,
+            T,
+        )
+        .unwrap();
+        let run = to - from;
+        let trimmed_line =
+            TrimmedCurve::new(line(from - run * 0.5, to + run * 0.5), 0.25, 0.75, T).unwrap();
+        let inset = Vector::new(1.0, 1.0, 0.0) * (0.25 / r);
+        let offset = OffsetCurve::new(line(from - inset, to - inset), 0.25, Direction::Z).unwrap();
+        let extruded = |curve: Curve| -> SurfaceGeometry {
+            ExtrusionSurface::new(curve, Direction::Z, 3.0)
+                .unwrap()
+                .into()
+        };
+        let [_, _, patch] = straight_spline_sides();
+        vec![
+            extruded(half_ellipse.into()),
+            extruded(trimmed_line.into()),
+            extruded(Curve::Offset(Box::new(offset))),
+            patch,
+            extruded(line(from, to)),
+        ]
+    }
+
+    /// Where a border of one surface's chart lies in the other surface
+    /// and the two leave each other there at an angle, they meet along
+    /// it, whichever surface comes first: here the ruling `x = √2, y = 0`
+    /// of each side, met by the plane `y = 0` and by the drum of radius
+    /// one about `(√2, -1)`, which rests on the ruling from below. Every
+    /// side lies in `y >= 0`, so the ruling is all they share.
+    #[test]
+    fn a_border_lying_in_the_other_surface_is_a_section_along_it() {
+        let r = 2.0_f64.sqrt();
+        let drum: SurfaceGeometry = CylinderSurface::new(
+            Cylinder::new(
+                Frame::new(Point::new(r, -1.0, -1.0), Direction::Z, Direction::X, T).unwrap(),
+                1.0,
+                T,
+            )
+            .unwrap(),
+            (0.0, 5.0),
+        )
+        .unwrap()
+        .into();
+        let cutters = [
+            ("the plane y = 0", plane(Point::ORIGIN, Vector::Y)),
+            ("the drum", drum),
+        ];
+        for (k, side) in sides_from_the_corner().iter().enumerate() {
+            for (name, cutter) in &cutters {
+                for (a, b) in [(cutter, side), (side, cutter)] {
+                    let met = intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap();
+                    let SurfaceIntersection::Along(sections) = met else {
+                        panic!("side {k}, {name}: the ruling is shared, got {met:?}");
+                    };
+                    assert_eq!(sections.len(), 1, "side {k}, {name}: {sections:?}");
+                    let section = &sections[0];
+                    assert!(!section.tangential, "side {k}, {name}: {section:?}");
+                    // Each point of the section within its stated tolerance
+                    // of the ruling, the ends on its ends.
+                    let (lo, hi) = section.curve.domain();
+                    let near = section.tolerance + T.confusion();
+                    for i in 0..=16 {
+                        let p = section
+                            .curve
+                            .point_at(lo + (hi - lo) * f64::from(i) / 16.0, T)
+                            .unwrap();
+                        let off = (p.x - r).hypot(p.y);
+                        assert!(
+                            off <= near,
+                            "side {k}, {name}: {p:?} is {off} off the ruling"
+                        );
+                    }
+                    let ends = [
+                        section.curve.point_at(lo, T).unwrap(),
+                        section.curve.point_at(hi, T).unwrap(),
+                    ];
+                    let mut heights = [ends[0].z, ends[1].z];
+                    heights.sort_by(f64::total_cmp);
+                    assert!(
+                        heights[0].abs() <= near && (heights[1] - 3.0).abs() <= near,
+                        "side {k}, {name}: the section runs {heights:?}"
+                    );
+                }
+            }
+        }
+
+        // The drum of radius one about `(√2 - 1/√2, -1/√2)` touches the
+        // spline patch's plane along the ruling, from outside: the ruling
+        // lies in it, and the two leave each other tangentially there.
+        // That is a contact, not a crossing.
+        let [_, _, patch] = straight_spline_sides();
+        let resting: SurfaceGeometry = CylinderSurface::new(
+            Cylinder::new(
+                Frame::new(
+                    Point::new(r - 1.0 / r, -1.0 / r, -1.0),
+                    Direction::Z,
+                    Direction::X,
+                    T,
+                )
+                .unwrap(),
+                1.0,
+                T,
+            )
+            .unwrap(),
+            (0.0, 5.0),
+        )
+        .unwrap()
+        .into();
+        for (a, b) in [(&resting, &patch), (&patch, &resting)] {
+            if let SurfaceIntersection::Along(sections) =
+                intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap()
+            {
+                assert!(
+                    sections.iter().all(|s| s.tangential),
+                    "a border left tangentially is no crossing: {sections:?}"
+                );
+            }
         }
     }
 

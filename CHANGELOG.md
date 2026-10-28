@@ -783,6 +783,33 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A border of one surface lying in the other is a section, whatever
+  the pair.** (#462)
+  - Where a border of one surface's chart lies in the other surface, the
+    two meet along it, and the marcher did not find it: no pair of cells
+    crosses there, the border pierces the other nowhere, and a walk along
+    it leaves the chart at its first step. #450 answered this for a plane
+    against a B-spline patch or an extrusion of a B-spline profile only.
+    An extrusion of a trimmed or offset profile met a plane through its
+    end ruling nowhere. A plane through the side edges of a prism with
+    trimmed sides, a drum through a spline-sided prism's side edges, and
+    a plane on the rim between two revolved spline faces were refused
+    ("the kept pieces did not close into a shell").
+  - The marcher now samples each border of either chart. A stretch lying
+    in the other surface within the confusion distance, by projection at
+    every point, and leaving it at an angle (the normals' sine past 3e-2,
+    the threshold that tells a contact from a crossing) is traced along
+    the border as a branch. A border left tangentially is still a
+    contact, as before.
+  - Measured: the diamond prism with trimmed half-ellipse or trimmed
+    B-spline sides, halved through two opposite corners at five turns,
+    within 1e-15 relative of half of `2 R² h` and the bulges; the
+    B-spline-sided prism and a drum through two of its side edges, at
+    five turns, within 2.3e-11 relative of the triangle and the circular
+    segment; the spindle halved on its rim, whole and three quarters,
+    upright and leaned, within 1.7e-10 relative of `1.125` times its
+    turn.
+
 - **Slivers beside a section touching a drum's rim are kept.** (#460)
   - A drum ending in a plane tangent to a disc's wall was still refused
     in 6 of 64 placements ("the kept pieces did not close into a
