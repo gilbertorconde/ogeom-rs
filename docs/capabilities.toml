@@ -1088,7 +1088,15 @@ are skinned round it, closed on themselves and held to the tolerance \
 against the law, holes as void tunnels. Along an open spine those laws \
 sweep a face with holes, each hole a solid of its own cut from the outer. \
 Turned run by run, a closed wire sweeps the walls of the face it bounds, \
-the end caps taken off; an open wire is refused there."""
+the end caps taken off; an open wire is refused there, but down an open \
+spine of straight legs under the rotation-minimizing frame, where it \
+sweeps one exact sheet: each leg the prism of its section, mitred on the \
+plane halving each corner or rounded (the section's part outside the \
+turn turned about the corner, the part inside mitred), the pieces sewn \
+and held to a disc whose boundary runs only along its end sections and \
+the paths of the wire's ends; an extended corner, a leg shorter than its \
+corners' reach, a round turning too little to stand off its square end \
+and a sheet that runs into itself are refused by name."""
 symbols = [
     "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
     "ogeom_offset::make_pipe_shell", "ogeom_offset::make_evolved",
@@ -1103,6 +1111,7 @@ tests = [
     "crates/ogeom/tests/pipe_evolving.rs", "crates/ogeom/tests/pipe_laws.rs",
     "crates/ogeom/tests/pipe_rings.rs",
     "crates/ogeom/tests/pipe_corners.rs", "crates/ogeom/tests/pipe_placed.rs",
+    "crates/ogeom-offset/tests/open_wire_corners.rs",
 ]
 
 [[capability]]

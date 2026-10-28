@@ -38,11 +38,62 @@ bump may break the API and a patch bump may not.
   - Extended and round corners, and any corner under the auxiliary,
     binormal or evolving laws, swept only faces. A closed planar wire now
     sweeps there as the walls of the face it bounds, the end caps taken
-    off. An open wire is still refused there by name.
+    off. An open wire is still refused there by name, but down straight
+    legs under the rotation-minimizing frame (below).
   - Measured: a 2 by 2 square wire up and over a right-angled L of 10 by
     10 legs has walls of area 160 extended or mitred and
     `160 - 6 + 3π/2` rounded, to 1e-12, under the rotation-minimizing
     frame and the binormal.
+
+- **An open wire sweeps a sheet down straight legs.** (#394)
+  - An open planar wire (a segment or a run of collinear segments too)
+    swept by `make_pipe_shell_with` under the rotation-minimizing frame
+    along an open spine of straight edges was refused whatever the
+    corners: a wire bounds no face, so the cornered sweeps had no solid to
+    take the walls of, and the skin closed the wire on itself.
+  - It now sweeps one exact sheet: each leg the prism of its section,
+    carried there as the frame turns, trimmed on the plane halving each
+    corner. Mitred, each profile point's path down either leg meets the
+    plane at one point, so the trims are one curve. Rounded, the part of
+    the section outside the turn turns about the corner's axis onto the
+    next leg and the part inside is mitred; an edge along the axis turns
+    on itself. Along one leg, or legs running straight on, it is the
+    prism of the wire. The sheet faces as the wire's prism down the first
+    leg does. The spine and the wire are read where they stand, each
+    edge's placement applied under its wire's.
+  - That round is taken point by point, not as a solid's: a face's round
+    corner is the union of its legs and its outside half revolved, and a
+    closed wire's the walls of that solid. A closed wire split into open
+    ones sweeps those walls only where each of its points inside the turn
+    reaches the corner's axis across the section's interior; a square
+    tilted about the spine, whose inside walls the other leg covers, does
+    not.
+  - The pieces are sewn and the sheet held to a disc: one shell facing
+    one way, every edge of one face or two, one boundary loop running only
+    along the end sections and the paths of the wire's two ends, Euler
+    characteristic one, no two faces crossing. Refused by name: an
+    extended corner (it squares a solid's outside; a sheet's corner is
+    mitred or round), a leg shorter than its corners' reach, a sheet that
+    runs into itself, a profile not square to the spine or off its
+    start, and a round corner turning so little that the arc of the
+    section's farthest point outside it, or the cut of its farthest point
+    inside it, is within the confusion distance (a mitred corner sweeps
+    it). Elsewhere (a curved leg, a closed spine, another law) an open
+    wire is refused as before.
+  - Measured against closed forms (a point `α` outside a corner of turn
+    `θ` gains `α tan(θ/2)` on each leg mitred; rounded, `α θ` outside and
+    `α tan(θ/2)` inside), area and boundary length to 1e-9: L, U, V and
+    segment profiles round right-angled and 60 degree corners turned four
+    ways, a half circle, U and Z spines, an edge along the corner's axis
+    (59), the sweep moved by a rigid motion or down a spine walked back,
+    legs a thousandth past and short of their reach, the spine or the
+    wire placed by a translation, a rotation or one placement over
+    another (the sheet's vertices those of the sweep built in place, to
+    1e-9), and corners turning `1e-11` to `1e-7` mitred, each path held to
+    the confusion distance; and two halves of a
+    square together, `8 Σℓ` mitred round a spine turning out of plane and
+    `8 Σℓ + 3π/2 - 6` a corner rounded round a staircase, the latter also
+    the closed square's walls built as a solid's.
 
 - **IGES external references resolve against the files beside the
   deck.** (#404)
@@ -826,6 +877,20 @@ bump may break the API and a patch bump may not.
   field's vocabulary.
 
 ### Fixed
+
+- **A pipe turns a corner of next to nothing between straight legs.** (#394)
+  - A face piped with extended or round corners down straight legs
+    meeting at a turn whose sine was above an angle's tolerance but
+    within the confusion distance failed to normalize the corner's axis:
+    the axis was the cross product of the headings, normalized as a
+    length.
+  - The axis is now the cross product over its own length once the turn
+    is known to be one, and the angle is read off that length rather than
+    off the headings' dot product, which rounds such a turn to none.
+  - Measured: a 2 by 2 square extended round a turn of `1e-11`, `1e-9`
+    and `1e-7` between legs of 10 is a valid solid of volume
+    `80 + 2 tan(θ/2)` to its area times the confusion distance. Rounded,
+    a face there is still refused, by its revolution.
 
 - **A boolean splits a contact edge only on the target face's boundary.** (#478)
   - An edge of one solid lying on a face of the other was split wherever it

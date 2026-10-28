@@ -273,6 +273,60 @@ fn the_three_ways_round_a_corner() {
     }
 }
 
+/// The 2 x 2 square turning a corner of next to nothing extended, as far
+/// down as an angle's tolerance: each leg's prism mitres to `4 l`, and the
+/// squared outside of the corner adds `2 tan(θ/2)`. Every point is held to
+/// the confusion distance, so the volume to the solid's area times it.
+#[test]
+fn a_square_turning_next_to_nothing_extends_to_its_legs_volume() {
+    let l = 10.0;
+    for theta in [1e-11_f64, 1e-9, 1e-7] {
+        let mut model = Model::new();
+        let face = square(&mut model);
+        let spine = make_polygon(
+            &mut model,
+            &[
+                Point::ORIGIN,
+                Point::new(0.0, l, 0.0),
+                Point::new(l * theta.sin(), l + l * theta.cos(), 0.0),
+            ],
+            false,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let pipe = make_pipe_shell_with(
+            &mut model,
+            &face,
+            &spine,
+            &PipeLaw::RotationMinimizing,
+            PipeCorners::Extended,
+            1e-3,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{theta}: {e}"))
+        .shape;
+        assert!(
+            ogeom::algo::check(&model, &pipe, T).unwrap().is_valid(),
+            "{theta}"
+        );
+        let want = 8.0 * l + 2.0 * (theta / 2.0).tan();
+        let area = ogeom::algo::surface_properties(
+            &model,
+            &pipe,
+            Deflection::with_chord(1e-3).unwrap(),
+            T,
+        )
+        .unwrap()
+        .mass;
+        let v = volume(&model, &pipe);
+        assert!(
+            (v - want).abs() <= area * T.confusion(),
+            "{theta}: {v} against {want}"
+        );
+    }
+}
+
 fn circle_wire(model: &mut Model, frame: Frame, radius: f64) -> Shape {
     let circle = Circle::new(frame, radius, T).unwrap();
     let edge = make_edge(model, CircleCurve::new(circle).into(), (0.0, 2.0 * PI), T)

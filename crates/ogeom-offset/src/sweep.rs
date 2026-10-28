@@ -27,6 +27,7 @@ use ogeom_topo::{EdgeData, EdgeRepr, Filter, Model, Shape, ShapeType, VertexData
 
 mod corners;
 mod evolving;
+mod open_lines;
 mod placement;
 
 pub use evolving::{
@@ -5601,6 +5602,17 @@ pub enum PipeCorners {
     /// Each leg ends square at the corner and the section turns about the
     /// corner through its angle, joining the two ends: the outside of the
     /// corner rounded.
+    ///
+    /// A face's corner is the union of the legs and its section's half
+    /// outside the turn revolved about the corner's axis, and a closed
+    /// wire's is that solid's walls. An open wire bounds no solid: its
+    /// sheet is rounded point by point, each point of the section outside
+    /// the turn turning about the axis and each point inside cut on the
+    /// plane halving the corner. A closed wire split into open ones sweeps
+    /// its walls so only where each point of it inside the turn reaches
+    /// the corner's axis across the section's interior; a section turned
+    /// about the spine so that its walls inside the turn are covered by
+    /// the other leg (a tilted square) does not.
     Round,
 }
 
@@ -5657,14 +5669,22 @@ pub fn make_pipe_shell_law(
 /// `tolerance` against the law, each hole a void tunnel of its own shell.
 /// Under those laws each hole of a face swept along an open spine sweeps
 /// its own solid, cut from the outer one. On a spine with no sharp corner
-/// every way of turning corners is the same solid.
+/// every way of turning corners is the same solid. An open wire down an
+/// open spine of straight legs under the rotation-minimizing frame sweeps
+/// one exact sheet: each leg the prism of its section, cut on the plane
+/// halving each corner, and at a round corner the section's part outside
+/// the turn revolved about the corner.
 ///
 /// # Errors
 ///
 /// As [`make_pipe_shell`], and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
 /// the law or the corners are asked of a spine they do not serve: an open
-/// wire swept round a corner run by run, the Frenet frame along a straight run
+/// wire swept round a corner run by run, or round an extended corner, or
+/// down legs too short for their corners' reach, or into itself, or round
+/// a round corner turning so little that its round falls within the
+/// confusion distance of its square end, the Frenet
+/// frame along a straight run
 /// between sharp corners, a round corner where the law sets the next run's
 /// section other than the first's turned about the corner (or the frame
 /// comes home turned round a closed spine); where the guide does not cross a station's
@@ -5702,6 +5722,20 @@ pub(crate) fn pipe_shell_ends(
     // turning one is the same solid.
     if matches!(law, PipeLaw::Fixed) {
         return crate::fixed::fixed_pipe(model, profile, spine, tol);
+    }
+    // Whether a wire closes is asked of it as stored: walked backward it
+    // closes or not as it does.
+    let stored = match profile.orientation() {
+        ogeom_topo::Orientation::Reversed => profile.reversed(),
+        _ => profile.clone(),
+    };
+    if matches!(law, PipeLaw::RotationMinimizing)
+        && model.kind_of(profile)? == ShapeType::Wire
+        && !ogeom_algo::is_wire_closed(model, &stored, tol)?
+        && straight_legs(model, spine, tol)?.is_some()
+        && !spine_closes(model, spine, tol)?
+    {
+        return open_lines::open_wire_lines(model, profile, spine, corners, tol);
     }
     if corners != PipeCorners::Mitre
         && matches!(law, PipeLaw::RotationMinimizing)
@@ -5870,42 +5904,7 @@ fn cornered_lines(
         ogeom_bail!(Construction, "the profile has no loop");
     };
     let samples = sample_wire(model, &outer, 256, tol)?;
-    // The motion carrying the profile to each leg's start: along the legs
-    // before it, turned at each corner by the least rotation between the
-    // headings.
-    let mut carried: Vec<Transform> = Vec::with_capacity(legs.len());
-    let mut turns: Vec<Option<(ogeom_math::Axis, f64)>> = Vec::with_capacity(legs.len());
-    let mut motion = Transform::IDENTITY;
-    for (i, &(_, v)) in legs.iter().enumerate() {
-        carried.push(motion);
-        motion = Transform::translation(v) * motion;
-        let turn = match legs.get(i + 1) {
-            Some(&(corner, next)) => {
-                let (d, n) = (unit(v), unit(next));
-                if d.dot(n) < DOUBLED_BACK {
-                    ogeom_bail!(
-                        Construction,
-                        "the spine all but doubles back at a corner; no corner \
-                         of that kind turns it"
-                    );
-                }
-                let axis = d.cross(n);
-                if axis.magnitude() > tol.angular() {
-                    let about = ogeom_math::Axis {
-                        location: corner,
-                        direction: Direction::new(axis, tol)?,
-                    };
-                    let angle = d.dot(n).clamp(-1.0, 1.0).acos();
-                    motion = Transform::rotation(about, angle) * motion;
-                    Some((about, angle))
-                } else {
-                    None
-                }
-            }
-            None => None,
-        };
-        turns.push(turn);
-    }
+    let (carried, turns) = carried_down_lines(legs, tol)?;
     // How far each leg runs on past a corner for an extended corner: until
     // its section passes the far side of the other leg's section there.
     let reach_past = |section: &Transform, corner: Point, along: Vector, turn: f64| {
@@ -5970,6 +5969,64 @@ fn cornered_lines(
     history.generate(spine, shape.clone());
     history.generate(profile, shape.clone());
     Ok(Built::new(shape, history))
+}
+
+/// A leg's turn at its far corner: the corner's axis and the angle, where
+/// the leg turns.
+type Turn = Option<(ogeom_math::Axis, f64)>;
+
+/// The motion carrying the profile to each straight leg's start, along the
+/// legs before it and turned at each corner by the least rotation between
+/// the headings, as the rotation-minimizing frame turns; and each leg's
+/// turn at its far corner, about the corner's axis, where it turns.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
+/// the spine all but doubles back at a corner.
+fn carried_down_lines(
+    legs: &[(Point, Vector)],
+    tol: Tolerances,
+) -> OgeomResult<(Vec<Transform>, Vec<Turn>)> {
+    let unit = |v: Vector| v / v.magnitude();
+    let mut carried: Vec<Transform> = Vec::with_capacity(legs.len());
+    let mut turns: Vec<Turn> = Vec::with_capacity(legs.len());
+    let mut motion = Transform::IDENTITY;
+    for (i, &(_, v)) in legs.iter().enumerate() {
+        carried.push(motion);
+        motion = Transform::translation(v) * motion;
+        let turn = match legs.get(i + 1) {
+            Some(&(corner, next)) => {
+                let (d, n) = (unit(v), unit(next));
+                if d.dot(n) < DOUBLED_BACK {
+                    ogeom_bail!(
+                        Construction,
+                        "the spine all but doubles back at a corner; no corner \
+                         of that kind turns it"
+                    );
+                }
+                // The turn is read off the cross product's length, not
+                // the dot product's, which rounds a turn of an angle's
+                // tolerance to none.
+                let axis = d.cross(n);
+                let sine = axis.magnitude();
+                if sine > tol.angular() {
+                    let about = ogeom_math::Axis {
+                        location: corner,
+                        direction: Direction::unit(axis / sine, tol)?,
+                    };
+                    let angle = sine.atan2(d.dot(n));
+                    motion = Transform::rotation(about, angle) * motion;
+                    Some((about, angle))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        turns.push(turn);
+    }
+    Ok((carried, turns))
 }
 
 /// The part of a planar section lying on the `outward` side of the line
@@ -8125,7 +8182,6 @@ fn realized_profile_wound(
     about: Option<Vector>,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
-    use ogeom_geom::Transformable as _;
     let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
@@ -8133,6 +8189,31 @@ fn realized_profile_wound(
         motion.apply(plane.origin()),
         Direction::new(motion.apply_vector(plane.normal().vector()), tol)?,
     );
+    let mut wires = realized_rings(model, profile, motion, tol)?;
+    if let Some(axis) = about {
+        for (k, ring) in wires.iter_mut().enumerate() {
+            let turning = ring_turning(model, ring, axis, tol)?;
+            if (turning > 0.0) != (k == 0) {
+                *ring = ring.iter().rev().map(Shape::reversed).collect();
+            }
+        }
+    }
+    let reach = 1e4_f64;
+    let surface: SurfaceGeometry =
+        PlaneSurface::over(moved_plane, (-reach, reach), (-reach, reach))?.into();
+    Ok(ogeom_algo::make_face_with_pcurves(model, surface, &wires, tol)?.shape)
+}
+
+/// Each ring of a profile (a face's loops, outer first, or a wire) rebuilt
+/// under a rigid motion: every edge's curve moved and re-bounded, the
+/// vertices shared, each edge used as the ring uses it.
+fn realized_rings(
+    model: &mut Model,
+    profile: &Shape,
+    motion: &Transform,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vec<Shape>>> {
+    use ogeom_geom::Transformable as _;
     let mut vertices: ogeom_core::FastMap<ogeom_topo::TShapeId, Shape> =
         ogeom_core::FastMap::default();
     let mut edge_copies: ogeom_core::FastMap<ogeom_topo::TShapeId, Shape> =
@@ -8189,19 +8270,9 @@ fn realized_profile_wound(
                 copy
             });
         }
-        if let Some(axis) = about {
-            let turning = ring_turning(model, &ring, axis, tol)?;
-            let outer = wires.is_empty();
-            if (turning > 0.0) != outer {
-                ring = ring.iter().rev().map(Shape::reversed).collect();
-            }
-        }
         wires.push(ring);
     }
-    let reach = 1e4_f64;
-    let surface: SurfaceGeometry =
-        PlaneSurface::over(moved_plane, (-reach, reach), (-reach, reach))?.into();
-    Ok(ogeom_algo::make_face_with_pcurves(model, surface, &wires, tol)?.shape)
+    Ok(wires)
 }
 
 /// `ring` walked so it turns about `axis` positively where `outer`,
