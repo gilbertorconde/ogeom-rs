@@ -804,6 +804,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Booleans on a cone face past its apex.** (#476)
+  - A cone face on the far nappe of its surface, where the chart's radius
+    runs negative, has its trim half a turn round from the surface's own
+    zero, closed at the apex by its pole. Every boolean on such a face
+    was refused ("the kept pieces did not close into a shell"), even a
+    slab whose plane meets it in one circle.
+  - A section's chart image is folded into the face's trim by a leaning
+    ray's crossings, and that trim left out the poles, which become
+    strands only after the sections cut them. Open at the apex, it read
+    the half of the circle a turn on as outside, and left it in the
+    surface's first turn, outside the face. The trim now holds the poles
+    whole.
+  - Measured on the cone of radius 1 and height 1 read from STEP on its
+    far nappe: cut, common, fuse and reversed cut against three slabs, a
+    coaxial drum and a half-space through the axis match their closed
+    forms within 1e-9, and against a half-space off the axis, a tilted
+    slab, two drums, a ball and a box on its edge they match the same
+    operations on the near-nappe `make_cone` within 1e-6.
+
 - **The `.brep` writer keeps a curve's reversal.** (#472)
   - A circle, ellipse, hyperbola, parabola or trim run backwards, in
     space or as a pcurve, was written as its forward curve, and read back

@@ -10166,7 +10166,24 @@ fn general_fuse_as(
             }
         }
         // The trim the strands are folded inside: the boundary strands as
-        // they stand, with their boxes, drawn once for the face.
+        // they stand and the poles whole, with their boxes, drawn once for
+        // the face. The poles become strands only after the sections that
+        // cut them, and a trim without them is open where it reaches one: a
+        // point inside reads outside along a ray leaving through the gap.
+        let pole_lines = face
+            .poles
+            .iter()
+            .map(|pole| {
+                pcurve_polyline(
+                    &pole.pcurve,
+                    pole.prange,
+                    pole.prange,
+                    pole.prange,
+                    &face.surface,
+                    tol,
+                )
+            })
+            .collect::<OgeomResult<Vec<_>>>()?;
         let mut section_trim: Option<arrange::Trim> = None;
         for sp in &section_pieces {
             let section = &sections[sp.section];
@@ -10222,6 +10239,7 @@ fn general_fuse_as(
                         .iter()
                         .filter(|st| st.boundary)
                         .map(|st| st.polyline.clone())
+                        .chain(pole_lines.iter().cloned())
                         .collect(),
                 )
             });
