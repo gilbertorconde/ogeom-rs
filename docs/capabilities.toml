@@ -1060,7 +1060,8 @@ evolving face sweeps run by run, mitred, extended or rounded: each run \
 under the laws over its share of the length, from the section it starts \
 with, the stretches where the laws stand still swept exactly. A skinned \
 run into a curved leg's extended corner is beyond the boolean and refused \
-there. The multisection pipe takes faces with holes, as many \
+there where the curved run's skinned wall leaves the extension's side \
+plane at a shallow angle along its start edge. The multisection pipe takes faces with holes, as many \
 in every section, each hole swept through the sections and cut from the \
 outer solid. Round sharp corners a face is also swept run by run: the \
 spine cut at its corners, each smooth run swept on its own (a straight \
@@ -1071,8 +1072,10 @@ this way too, their runs meeting a mitre with the sections the law sets; \
 a straight run meeting a skinned one at a mitre takes the skin's own fit \
 of each ring the two share within the tolerance (a hole or a smooth \
 loop), so both cut the mitre plane alike; two skinned runs meeting at a \
-mitre with a ring in common are refused, their two fits crossing there; \
-a round corner is refused where the law's next section is not the last \
+mitre end on their sections exactly where a ring is one edge with an \
+exact rational form (a circle, a conic, a B-spline), the later run \
+starting on the earlier's end ring mirrored where the earlier is swept \
+first, so both cut the mitre plane in one curve; a round corner is refused where the law's next section is not the last \
 turned about the corner, within what the runs are held to (a skinned \
 run's tolerance), so a holed section's skinned run turns round ones too. The Frenet frame turns sharp corners extended or \
 rounded the same way, each run's section set by the run's own Frenet \

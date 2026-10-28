@@ -601,7 +601,9 @@ pub fn make_pipe_shell_laws(
             tol,
         );
     }
-    let shape = evolved_run(model, profile, spine, law, &evolution, tolerance, tol)?;
+    let shape = evolved_run(
+        model, profile, spine, law, &evolution, false, tolerance, tol,
+    )?;
     let mut history = History::new();
     history.generate(spine, shape.clone());
     history.generate(profile, shape.clone());
@@ -610,12 +612,16 @@ pub fn make_pipe_shell_laws(
 
 /// A planar profile swept along a spine with no sharp corner under the
 /// evolving laws: each loop its own solid, the holes' cut from the outer.
+/// Where `exact_ends` asks it, a skinned loop of one edge with an exact
+/// rational form ends on its end sections exactly.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn evolved_run(
     model: &mut Model,
     profile: &Shape,
     spine: &Shape,
     law: &PipeLaw<'_>,
     evolution: &Evolution,
+    exact_ends: bool,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
@@ -626,7 +632,7 @@ pub(super) fn evolved_run(
     let mut solids = Vec::with_capacity(rings.len());
     for ring in &rings {
         solids.push(evolving_ring(
-            model, ring, spine, law, evolution, tolerance, tol,
+            model, ring, spine, law, evolution, exact_ends, tolerance, tol,
         )?);
     }
     let mut shape = solids[0].clone();
@@ -637,12 +643,14 @@ pub(super) fn evolved_run(
 }
 
 /// One closed ring of the profile swept under the evolving law, as a solid.
+#[allow(clippy::too_many_arguments)]
 fn evolving_ring(
     model: &mut Model,
     ring: &Shape,
     spine: &Shape,
     law: &PipeLaw<'_>,
     evolution: &Evolution,
+    exact_ends: bool,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
@@ -719,6 +727,7 @@ fn evolving_ring(
         &stations,
         law,
         Some(evolution),
+        exact_ends,
         tolerance,
         tol,
     )?

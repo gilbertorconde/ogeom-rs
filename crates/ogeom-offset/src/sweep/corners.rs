@@ -10,7 +10,9 @@
 //!   its section there and trimmed by the plane halving the corner, so the
 //!   two meet on that plane whatever their sections are; a straight run
 //!   meeting a skinned one there takes the skin's own fit of each ring the
-//!   two share, so their cuts of the plane are one;
+//!   two share, so their cuts of the plane are one; two skinned runs
+//!   meeting there end on their sections exactly where a loop has an exact
+//!   rational form, and the later takes the earlier's end loop mirrored;
 //! - extended, each run is run on straight past the corner until its
 //!   section clears the other run's far side;
 //! - round, the half of the section outside the corner is turned about the
@@ -38,8 +40,8 @@ use ogeom_topo::{Filter, Model, NodeData, Shape, ShapeType, explore};
 use super::evolving::{Evolution, evolved_run};
 use super::{
     DOUBLED_BACK, LEAST_TURN_SINE, PipeCorners, PipeLaw, bounded_face, fuse_in_order, law_normals,
-    make_pipe_shell_with, outside_half, profile_square_at_start, realized_profile_wound,
-    rmf_normals, sample_wire, shell_stations, spine_curve_of, station_frame, walls_of,
+    outside_half, pipe_shell_ends, profile_square_at_start, realized_profile_wound, rmf_normals,
+    sample_wire, shell_stations, spine_curve_of, station_frame, walls_of,
 };
 
 /// A spine edge's ends and its unit tangents there, in the direction of
@@ -219,6 +221,20 @@ pub(super) fn law_cornered(
         windows.push(window);
         prisms.push(prism);
     }
+    // A skinned run meeting another at a mitre ends on its sections exactly
+    // where its loops have an exact rational form, and the later run of the
+    // two, where the earlier one is swept first, takes that one's end loop
+    // there mirrored across the mitre plane: the two runs then cut that
+    // plane in one curve.
+    let exact: Vec<bool> = (0..runs.len())
+        .map(|r| {
+            corners == PipeCorners::Mitre
+                && !matches!(law, PipeLaw::RotationMinimizing)
+                && !prisms[r]
+                && (before_run(r).is_some_and(|p| !prisms[p] && turns(p, r))
+                    || after_run(r).is_some_and(|q| !prisms[q] && turns(r, q)))
+        })
+        .collect();
     // Under a law that places each run's section itself, a prism meeting a
     // skinned run at a mitre is swept once the skinned run is, from the
     // rings that run meets the mitre with (`mitre_shared`).
@@ -290,7 +306,11 @@ pub(super) fn law_cornered(
                     end,
                     &mirror,
                     first.heading_in,
-                    held[p],
+                    Taking {
+                        held: held[p],
+                        fits: true,
+                        carried: exact[p],
+                    },
                     &kept,
                     tol,
                 )?;
@@ -308,7 +328,11 @@ pub(super) fn law_cornered(
                     start,
                     &mirror,
                     first.heading_in,
-                    held[q],
+                    Taking {
+                        held: held[q],
+                        fits: true,
+                        carried: exact[q],
+                    },
                     &kept,
                     tol,
                 )?;
@@ -318,6 +342,27 @@ pub(super) fn law_cornered(
                     .any(|(k, t)| *t && !kept.get(k).copied().unwrap_or(false));
             }
             section
+        } else if exact[r]
+            && let Some(p) = before_run(r).filter(|&p| !prisms[p] && turns(p, r))
+            && let Some(end) = &ends[p]
+        {
+            let out = legs[runs[p].legs.end - 1].heading_out;
+            let mirror = mirror_at(first.start, out, first.heading_in, tol)?;
+            mitre_shared(
+                model,
+                &section,
+                end,
+                &mirror,
+                first.heading_in,
+                Taking {
+                    held: held[p],
+                    fits: false,
+                    carried: true,
+                },
+                &[],
+                tol,
+            )?
+            .0
         } else {
             section
         };
@@ -330,18 +375,20 @@ pub(super) fn law_cornered(
                 lengths,
                 law,
                 window,
+                exact[r],
                 tolerance,
                 tol,
             )?
         } else if prisms[r] {
             make_prism(model, &section, first.end - first.start, tol)?.shape
         } else {
-            make_pipe_shell_with(
+            pipe_shell_ends(
                 model,
                 &section,
                 wire,
                 law,
                 PipeCorners::Mitre,
+                exact[r],
                 tolerance,
                 tol,
             )?
@@ -671,6 +718,16 @@ fn mirror_at(corner: Point, d1: Vector, d2: Vector, tol: Tolerances) -> OgeomRes
     Ok(Transform::plane_mirror(corner, halving))
 }
 
+/// Which rings of a skinned run [`mitre_shared`] takes, within `held` of
+/// the placed ones: those that are fits of them (`fits`), and those of one
+/// edge the run carries exactly (`carried`).
+#[derive(Debug, Clone, Copy)]
+struct Taking {
+    held: f64,
+    fits: bool,
+    carried: bool,
+}
+
 /// The section a prism sweeps where it meets a skinned run at a mitre,
 /// with which of its rings were taken from that run.
 ///
@@ -686,6 +743,12 @@ fn mirror_at(corner: Point, d1: Vector, d2: Vector, tol: Tolerances) -> OgeomRes
 /// every other ring stays as placed. The prism then cuts the mitre plane
 /// where the skinned run does, and stands off the law's placement by at
 /// most what that run already does.
+///
+/// Which rings `taking` takes: those it `fits` as above, and where the
+/// skinned run ends on its sections exactly, those of one edge it
+/// `carried`. Such a ring is the placed one as a set but another curve
+/// point for point, and the two would cut the mitre plane in two curves
+/// that agree only to how they were each found.
 #[allow(clippy::too_many_arguments)]
 fn mitre_shared(
     model: &mut Model,
@@ -693,10 +756,15 @@ fn mitre_shared(
     skinned: &Shape,
     motion: &Transform,
     heading: Vector,
-    held: f64,
+    taking: Taking,
     kept: &[bool],
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Vec<bool>)> {
+    let Taking {
+        held,
+        fits,
+        carried: exactly,
+    } = taking;
     let same = tol.confusion() * 10.0;
     let carried = realized_profile_wound(model, skinned, motion, Some(heading), tol)?;
     let theirs = model.ordered_children_of(&carried)?;
@@ -705,11 +773,14 @@ fn mitre_shared(
     for (k, ring) in model.ordered_children_of(placed)?.into_iter().enumerate() {
         let mut chosen = (ring.clone(), kept.get(k).copied().unwrap_or(false));
         if !chosen.1 {
+            let one_edge = exactly && model.ordered_children_of(&ring)?.len() == 1;
             for other in &theirs {
                 if ring_lies_on(model, other, &ring, held, tol)?
                     && ring_lies_on(model, &ring, other, held, tol)?
-                    && !(ring_lies_on(model, other, &ring, same, tol)?
-                        && ring_lies_on(model, &ring, other, same, tol)?)
+                    && (one_edge
+                        || fits
+                            && !(ring_lies_on(model, other, &ring, same, tol)?
+                                && ring_lies_on(model, &ring, other, same, tol)?))
                 {
                     chosen = (other.clone(), true);
                     break;
@@ -853,6 +924,7 @@ fn evolved_stretches(
     run_to: &[f64],
     law: &PipeLaw<'_>,
     window: &Evolution,
+    exact_ends: bool,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
@@ -885,7 +957,7 @@ fn evolved_stretches(
             } else {
                 window.window(a, b)
             };
-            evolved_run(model, &start, &wire, law, &laws, tolerance, tol)?
+            evolved_run(model, &start, &wire, law, &laws, exact_ends, tolerance, tol)?
         } else if legs.len() == 1
             && legs[0].straight
             && keeps_frame(model, &wire, law, tolerance, tol)?
@@ -896,12 +968,13 @@ fn evolved_stretches(
             );
             make_prism(model, &start, q - p, tol)?.shape
         } else {
-            make_pipe_shell_with(
+            pipe_shell_ends(
                 model,
                 &start,
                 &wire,
                 law,
                 PipeCorners::Mitre,
+                exact_ends,
                 tolerance,
                 tol,
             )?

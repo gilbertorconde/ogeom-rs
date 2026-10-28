@@ -1014,3 +1014,329 @@ fn a_closed_wire_turns_corners_run_by_run_as_the_walls_of_its_face() {
         );
     }
 }
+
+/// The quarter arc of radius `big` about `(x + big, y, 0)` from `(x, y, 0)`,
+/// heading `+y`, clockwise about `z` to `(x + big, y + big, 0)`; it starts
+/// on `from` where given.
+fn clockwise_arc_from(model: &mut Model, x: f64, y: f64, big: f64, from: Option<&Shape>) -> Shape {
+    let frame = Frame::new(Point::new(x + big, y, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = CircleCurve::new(Circle::new(frame, big, T).unwrap());
+    let to = ogeom::algo::make_vertex(model, Point::new(x + big, y + big, 0.0)).shape;
+    let from = from
+        .cloned()
+        .unwrap_or_else(|| ogeom::algo::make_vertex(model, Point::new(x, y, 0.0)).shape);
+    ogeom::algo::make_edge_between(model, circle.into(), (0.5 * PI, PI), &to, &from, T)
+        .unwrap()
+        .shape
+        .reversed()
+}
+
+/// The spine in the `xy` plane: [`arc_then_turn`]'s quarter arc of radius
+/// `big`, from the origin heading `+y` round to `(-big, big, 0)` heading
+/// `-x`, then a sharp quarter turn onto [`clockwise_arc_from`] there, of
+/// radius `small`, heading `+y`. The first arc turns against the corner,
+/// the second with it.
+fn arc_then_arc(model: &mut Model, big: f64, small: f64) -> Shape {
+    let frame = Frame::new(Point::new(-big, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = Circle::new(frame, big, T).unwrap();
+    let first = make_edge(model, CircleCurve::new(circle).into(), (0.0, 0.5 * PI), T)
+        .unwrap()
+        .shape;
+    let (_, joint) = ogeom::algo::edge_vertices(model, &first).unwrap().unwrap();
+    let second = clockwise_arc_from(model, -big, big, small, Some(&joint));
+    make_wire(model, &[first, second], T).unwrap().shape
+}
+
+/// How much of an arc's run of radius `big` the plane halving a corner
+/// cuts off, along the circle of radius `rho` a column inside the corner
+/// runs round, where the corner turns through twice `half`: with the arc's
+/// centre at the origin, the corner at `(big, 0)` and the run ending
+/// heading `y`, the plane meets that circle at `(big ± w cos half, -w sin
+/// half)`, `+` where the corner turns against the arc (inside the corner
+/// is away from its centre), `-` where it turns with it, so
+/// `w² ± 2 big w cos half + big² - ρ² = 0`, and `ρ ψ` is cut where `ψ` is
+/// the angle back round to that point.
+fn cut_round_an_arc(big: f64, rho: f64, half: f64, against: bool) -> f64 {
+    let sign = if against { 1.0 } else { -1.0 };
+    let (sin, cos) = half.sin_cos();
+    let w = sign * ((rho * rho - big * big * sin * sin).sqrt() - big * cos);
+    rho * (w * sin).atan2((sign * w).mul_add(cos, big))
+}
+
+/// The mitred solid's volume where an arc of radius `big`, turning
+/// against the corner, meets an arc of radius `small` turning with it, at
+/// a right angle, for sections of area `area` centred on the spine, each
+/// symmetric across it, whose heights across the turn's plane at a
+/// distance `u` either side of the spine are `widths.0(u)` at the end of
+/// the first arc and `widths.1(u)` at the start of the second, out to
+/// `reach`.
+///
+/// Away from the corner each run holds its area times its length
+/// (Pappus). Each run is run on past the corner by its end section's
+/// prism, which adds a wedge `u` deep at `u` outside the corner, and cut
+/// by the plane halving the corner, which inside it takes off the
+/// [`cut_round_an_arc`] of that run's own walls: `ρ = big + u` for the
+/// first, `ρ = small - u` for the second. Each column `u` adds
+/// `(u - cut₁) width₁(u) + (u - cut₂) width₂(u)`, integrated by the
+/// midpoint rule over a hundred thousand columns.
+fn mitred_between_arcs(
+    big: f64,
+    small: f64,
+    area: f64,
+    reach: f64,
+    widths: (&dyn Fn(f64) -> f64, &dyn Fn(f64) -> f64),
+) -> f64 {
+    const COLUMNS: u32 = 100_000;
+    let du = reach / f64::from(COLUMNS);
+    let corner: f64 = (0..COLUMNS)
+        .map(|k| {
+            let u = (f64::from(k) + 0.5) * du;
+            let first = (u - cut_round_an_arc(big, big + u, PI / 4.0, true)) * widths.0(u);
+            let second = (u - cut_round_an_arc(small, small - u, PI / 4.0, false)) * widths.1(u);
+            (first + second) * du
+        })
+        .sum();
+    area * (big + small) * PI / 2.0 + corner
+}
+
+/// [`arc_then_turn`] with an auxiliary spine that turns the section a
+/// quarter turn up the line: [`arc_then_turn_at`] raised by `rise` to the
+/// arc's end, then straight to `rise` behind the line's end, so the law's
+/// normal turns from `z` to `-x` along the line. Behind the line, the
+/// guide crosses no plane square to the arc.
+fn guide_turning_the_line(model: &mut Model, big: f64, run: f64, rise: f64) -> Shape {
+    let frame = Frame::new(Point::new(-big, 0.0, rise), Direction::Z, Direction::X, T).unwrap();
+    let circle = Circle::new(frame, big, T).unwrap();
+    let arc = make_edge(model, CircleCurve::new(circle).into(), (0.0, 0.5 * PI), T)
+        .unwrap()
+        .shape;
+    let (_, joint) = ogeom::algo::edge_vertices(model, &arc).unwrap().unwrap();
+    let to = Point::new(-big - rise, big + run, 0.0);
+    let end = ogeom::algo::make_vertex(model, to).shape;
+    let segment = ogeom::geom::LineCurve::segment(Point::new(-big, big, rise), to, T).unwrap();
+    let range = ogeom::geom::Curve3d::domain(&segment);
+    let line = ogeom::algo::make_edge_between(model, segment.into(), range, &joint, &end, T)
+        .unwrap()
+        .shape;
+    make_wire(model, &[arc, line], T).unwrap().shape
+}
+
+/// Two skinned runs mitred where both carry one loop of the section, under
+/// the binormal and auxiliary laws: an arc into an arc, a disc and a holed
+/// square under the level and the leaning binormal, and an arc into a line
+/// the auxiliary spine turns, so the line is skinned too. Each run's skin
+/// ends on the exact section the law places there, the circle in its
+/// rational form, and the second run starts on the first's end circle
+/// mirrored across the mitre plane: the two runs' prisms cut that plane
+/// in one ellipse. The square's sides are straight in either skin.
+///
+/// Every section here is centred on the spine and symmetric across it. At
+/// the corner the first run's is level; under the leaning binormal the
+/// second arc starts with the square turned an eighth of a turn, and the
+/// disc any way round. So each arc into an arc is
+/// [`mitred_between_arcs`]'s, and the arc into the line
+/// [`mitred_against_an_arc`]'s.
+///
+/// The volume is integrated on the faces exactly, so it strays from the
+/// closed form by at most the skin's tolerance over the skinned walls: the
+/// perimeter times the longest path a profile point runs, round each arc
+/// at its radius and the section's reach, up the line, and past the
+/// corner by the reach either way on each run.
+#[test]
+fn two_skinned_runs_mitre_on_their_exact_common_section() {
+    let (big, small, run, half, radius, skin) = (20.0, 15.0, 10.0, 1.0, 0.5, 1e-3);
+    let reach = half * 2.0_f64.sqrt();
+    let holed = (
+        4.0 * half * half - PI * radius * radius,
+        8.0 * half + 2.0 * PI * radius,
+    );
+    let round = (PI * half * half, 2.0 * PI * half);
+    let hole = |u: f64| 2.0 * (radius * radius - u * u).max(0.0).sqrt();
+    let holed_width = |u: f64| if u > half { 0.0 } else { 2.0 * half - hole(u) };
+    let diamond_width = |u: f64| 2.0 * (reach - u).max(0.0) - hole(u);
+    let disc_width = |u: f64| 2.0 * (half * half - u * u).max(0.0).sqrt();
+    let lean = Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap();
+    for (case, has_hole) in [
+        ("disc, level", false),
+        ("holed, level", true),
+        ("disc, leaning", false),
+        ("holed, leaning", true),
+        ("disc, auxiliary turning the line", false),
+    ] {
+        let line = case.contains("line");
+        let mut model = Model::new();
+        let guide = guide_turning_the_line(&mut model, big, run, 5.0);
+        let law = if case.contains("leaning") {
+            PipeLaw::Binormal(lean)
+        } else if line {
+            PipeLaw::Auxiliary { guide: &guide }
+        } else {
+            PipeLaw::Binormal(Direction::Z)
+        };
+        let profile = if has_hole {
+            holed_square(&mut model, 0.0, half, radius)
+        } else {
+            disc(&mut model, 0.0, half)
+        };
+        let spine = if line {
+            arc_then_turn(&mut model, big, run)
+        } else {
+            arc_then_arc(&mut model, big, small)
+        };
+        let pipe = make_pipe_shell_with(
+            &mut model,
+            &profile,
+            &spine,
+            &law,
+            PipeCorners::Mitre,
+            skin,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{case}: {e}"))
+        .shape;
+        let found = ogeom::algo::check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{case}: {found}");
+        let measured =
+            volume_properties(&model, &pipe, Deflection::with_chord(1e-3).unwrap(), T).unwrap();
+        assert!(measured.deflection == 0.0, "{case}: not integrated exactly");
+        let v = measured.mass;
+        let (area, perimeter) = if has_hole { holed } else { round };
+        let turned = case == "holed, leaning";
+        let want = match (line, has_hole) {
+            (true, _) => mitred_against_an_arc(big, run, area, half, disc_width),
+            (false, true) => {
+                let second: &dyn Fn(f64) -> f64 =
+                    if turned { &diamond_width } else { &holed_width };
+                mitred_between_arcs(big, small, area, reach, (&holed_width, second))
+            }
+            (false, false) => {
+                mitred_between_arcs(big, small, area, half, (&disc_width, &disc_width))
+            }
+        };
+        let path = if line {
+            run
+        } else {
+            (small + reach) * PI / 2.0
+        } + (big + reach) * PI / 2.0
+            + 4.0 * reach;
+        let bound = skin * perimeter * path;
+        assert!(
+            (v - want).abs() < bound,
+            "{case}: {v} against {want}, bound {bound}"
+        );
+    }
+}
+
+/// A closed spine of two arcs of radius `big` in the `xy` plane, through
+/// the origin and `(0, 2 half_chord, 0)`, their centres `(∓d, half_chord,
+/// 0)`: a lens, each arc turning anticlockwise, the spine turning sharply
+/// at both points. Returned with the angle each arc turns through.
+fn lens(model: &mut Model, big: f64, half_chord: f64) -> (Shape, f64) {
+    let d = (big * big - half_chord * half_chord).sqrt();
+    let spread = half_chord.atan2(d);
+    let (a, b) = (
+        ogeom::algo::make_vertex(model, Point::ORIGIN).shape,
+        ogeom::algo::make_vertex(model, Point::new(0.0, 2.0 * half_chord, 0.0)).shape,
+    );
+    let mut arc = |x: f64, from: f64, ends: (&Shape, &Shape)| {
+        let frame = Frame::new(
+            Point::new(x, half_chord, 0.0),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let circle = CircleCurve::new(Circle::new(frame, big, T).unwrap());
+        ogeom::algo::make_edge_between(
+            model,
+            circle.into(),
+            (from - spread, from + spread),
+            ends.0,
+            ends.1,
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let first = arc(-d, 0.0, (&a, &b));
+    let second = arc(d, PI, (&b, &a));
+    (
+        make_wire(model, &[first, second], T).unwrap().shape,
+        2.0 * spread,
+    )
+}
+
+/// A disc swept round [`lens`] under the level binormal: two skinned runs
+/// mitred at both corners, the second run starting on the first's end
+/// circle mirrored, and the first run's start meeting the second's end at
+/// the wrap. On a planar spine the binormal's frames are level, and the
+/// disc is symmetric, so at each corner each run is run on by the wedge
+/// `u tan(φ)` at `u` outside the corner and cut by
+/// [`cut_round_an_arc`] at `ρ = big - u` inside it, `2φ` the turn there,
+/// both arcs turning with the corner. Pappus gives `π` times the length
+/// for the runs; the four corners' columns are integrated by the
+/// midpoint rule. The volume is integrated on the faces exactly, so it
+/// strays by at most the skin's tolerance over the walls: the perimeter
+/// times the longest path a point runs, round both arcs at the outer
+/// radius and past each corner by its wedge.
+#[test]
+fn a_disc_round_a_lens_mitres_its_skinned_runs_at_both_corners() {
+    const COLUMNS: u32 = 100_000;
+    let (big, half_chord, half, skin) = (15.0, 10.0, 1.0, 1e-3);
+    let mut model = Model::new();
+    let (spine, turned) = lens(&mut model, big, half_chord);
+    // The first arc leaves the origin heading `(sin s, cos s)` for `s` half
+    // its turn and comes into the far point heading `(-sin s, cos s)`, where
+    // the second leaves heading `(-sin s, -cos s)`: each corner turns
+    // through `π - turned`.
+    let half_turn = (PI - turned) / 2.0;
+    let start = Vector::new((turned / 2.0).sin(), (turned / 2.0).cos(), 0.0);
+    let frame = Frame::new(
+        Point::ORIGIN,
+        Direction::new(start, T).unwrap(),
+        Direction::Z,
+        T,
+    )
+    .unwrap();
+    let wire = circle_wire(&mut model, frame, half);
+    let profile = make_face(
+        &mut model,
+        PlaneSurface::new(Plane::new(frame)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let pipe = make_pipe_shell_with(
+        &mut model,
+        &profile,
+        &spine,
+        &PipeLaw::Binormal(Direction::Z),
+        PipeCorners::Mitre,
+        skin,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let found = ogeom::algo::check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let measured =
+        volume_properties(&model, &pipe, Deflection::with_chord(1e-3).unwrap(), T).unwrap();
+    assert!(measured.deflection == 0.0, "not integrated exactly");
+    let du = half / f64::from(COLUMNS);
+    let corner: f64 = (0..COLUMNS)
+        .map(|k| {
+            let u = (f64::from(k) + 0.5) * du;
+            let width = 2.0 * (half * half - u * u).max(0.0).sqrt();
+            (u * half_turn.tan() - cut_round_an_arc(big, big - u, half_turn, false)) * width * du
+        })
+        .sum();
+    let want = PI * half * half * 2.0 * big * turned + 4.0 * corner;
+    let path = 2.0 * (big + half) * turned + 4.0 * half * half_turn.tan();
+    let bound = skin * 2.0 * PI * half * path;
+    let v = measured.mass;
+    assert!(
+        (v - want).abs() < bound,
+        "{v} against {want}, bound {bound}"
+    );
+}

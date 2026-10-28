@@ -679,7 +679,10 @@ fn matched_by_length(sections: &mut [Section], tol: Tolerances) -> OgeomResult<(
 
 /// Curves raised to one degree and refined to one knot vector, each
 /// unchanged as a curve.
-fn made_compatible(curves: &[BSplineCurve], tol: Tolerances) -> OgeomResult<Vec<BSplineCurve>> {
+pub(crate) fn made_compatible(
+    curves: &[BSplineCurve],
+    tol: Tolerances,
+) -> OgeomResult<Vec<BSplineCurve>> {
     let degree = curves.iter().map(BSplineCurve::degree).max().unwrap_or(1);
     let mut raised = Vec::with_capacity(curves.len());
     for c in curves {

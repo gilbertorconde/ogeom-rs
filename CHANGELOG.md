@@ -13,6 +13,27 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Two skinned runs of a pipe meet at a mitre.** (#394)
+  - Under the auxiliary and binormal laws, two runs that are both skinned
+    (an arc into an arc, or a line the auxiliary spine turns) were refused
+    at a mitre where they share a loop ("the kept pieces did not close
+    into a shell"). Each ended on its own fit of the loop, and the two
+    fits crossed each other on the mitre plane again and again within a
+    skin's width.
+  - Such runs now end on their sections exactly where a loop is one edge
+    with an exact rational form (a circle, a conic, a B-spline): the skin
+    keeps that form's knots and weights along its rows and fits each
+    control point's path across it, so it stands off the law by at most
+    the widest miss of a path, and its end rows are the sections. The
+    later run starts on the earlier's end loop mirrored across the mitre
+    plane, so both cut the plane in one curve. Every other run builds as
+    before.
+  - Measured against closed forms integrated over the corner's columns:
+    a disc and a holed square round an arc into an arc under the level
+    and the leaning binormal, a disc round an arc into a line the
+    auxiliary spine turns, and a disc round a lens of two arcs, mitred at
+    both corners, each within 7e-4 of its volume (bounds 0.31 to 0.73,
+    the skin's tolerance over the walls).
 - **A closed wire turns sharp corners run by run.** (#394)
   - Extended and round corners, and any corner under the auxiliary,
     binormal or evolving laws, swept only faces. A closed planar wire now

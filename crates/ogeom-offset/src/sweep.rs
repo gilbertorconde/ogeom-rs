@@ -736,6 +736,96 @@ struct Skin<'a> {
     /// end the start again) and `v` across them, and where the fit starts
     /// sampling it.
     traced: Option<Traced<'a>>,
+    /// The section's exact form carried along the skin, where every row is
+    /// that form moved: the fit is then made in its control points.
+    carried: Option<Carried<'a>>,
+}
+
+/// A section in exact rational form carried along a skin: every row is the
+/// section's curve with its control points moved, its knots and weights
+/// kept. Each control point's path across the skin is fitted, and the
+/// surface spoken through those paths with the section's knots and weights
+/// along the rows. A similarity carries a rational curve to the curve of its
+/// moved control points, and the rows' basis functions are positive and sum
+/// to one, so the surface stands off the carried section by at most the
+/// widest miss of any path; the paths keep their end points, so the end
+/// rows are the given sections exactly.
+struct Carried<'a> {
+    /// The first row: the section's exact form.
+    curve: ogeom_geom::BSplineCurve,
+    /// Control point `i` of the row at `v` across the skin.
+    control: Box<dyn Fn(usize, f64) -> OgeomResult<Point> + 'a>,
+    /// Where the fit starts sampling the paths across the skin, the first
+    /// and the last its ends.
+    vs: Vec<f64>,
+    /// Whether the section closes on its first control point, which its
+    /// last then repeats.
+    closed: bool,
+}
+
+impl Carried<'_> {
+    /// The skin's surface through the fitted paths, with the widest miss of
+    /// any path between the samples as well as at them.
+    fn fit(
+        &self,
+        tolerance: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<ogeom_geom::fit::Fitted<ogeom_geom::BSplineSurface>> {
+        let control = self.curve.control_points();
+        let n = control.len();
+        let mut paths: Vec<ogeom_geom::BSplineCurve> = Vec::with_capacity(n);
+        let mut error = 0.0_f64;
+        for i in 0..n {
+            if self.closed && i + 1 == n {
+                paths.push(paths[0].clone());
+                continue;
+            }
+            let fitted = ogeom_geom::fit::fit_curve_sampled(
+                |v| (self.control)(i, v),
+                &self.vs,
+                false,
+                3,
+                tolerance,
+                tol,
+            )?;
+            error = error.max(fitted.error);
+            paths.push(fitted.curve);
+        }
+        let paths = crate::sheet::made_compatible(&paths, tol)?;
+        let (v0, v1) = (self.vs[0], self.vs[self.vs.len() - 1]);
+        let mut net = Vec::with_capacity(n * paths[0].control_points().len());
+        for (i, path) in paths.iter().enumerate() {
+            let points: Vec<Point> = path.control_points().iter().map(|w| w.point()).collect();
+            let last = points.len() - 1;
+            // The ends pinned to the given rows, each move stated in the
+            // error: moving one control point moves the path by no more.
+            let i = if self.closed && i + 1 == n { 0 } else { i };
+            let ends = ((self.control)(i, v0)?, (self.control)(i, v1)?);
+            error = error
+                .max(points[0].distance(ends.0))
+                .max(points[last].distance(ends.1));
+            let weight = control[i].weight;
+            for (j, p) in points.iter().enumerate() {
+                let p = match j {
+                    0 => ends.0,
+                    j if j == last => ends.1,
+                    _ => *p,
+                };
+                net.push(ogeom_math::Weighted::new(p, weight, tol)?);
+            }
+        }
+        let grid = ogeom_math::ControlGrid::new(net, n, paths[0].control_points().len())?;
+        let surface = ogeom_geom::BSplineSurface::rational(
+            self.curve.knots().clone(),
+            paths[0].knots().clone(),
+            grid,
+        )?;
+        Ok(ogeom_geom::fit::Fitted {
+            curve: surface,
+            error,
+            met: error <= tolerance,
+        })
+    }
 }
 
 /// The geometry a skin traces and where its fit starts sampling it.
@@ -791,6 +881,7 @@ impl<'a> Skin<'a> {
             round: true,
             by_spacing: false,
             traced: None,
+            carried: None,
         }
     }
 
@@ -835,6 +926,7 @@ impl<'a> Skin<'a> {
             round,
             by_spacing,
             traced: None,
+            carried: None,
         };
         let (_, vs) = ogeom_geom::fit::grid_parameters(&grid, (false, by_spacing))?;
         if vs.windows(2).any(|w| w[1] <= w[0]) {
@@ -936,6 +1028,7 @@ impl<'a> Skin<'a> {
                     most: 512,
                 },
             }),
+            carried: None,
         })
     }
 
@@ -981,6 +1074,15 @@ impl<'a> Skin<'a> {
         tolerance: f64,
         tol: Tolerances,
     ) -> OgeomResult<ogeom_geom::fit::Fitted<ogeom_geom::BSplineSurface>> {
+        // A carried section's paths that cannot be fitted alike, or miss,
+        // leave the skin fitted as if nothing were carried.
+        if let Some(carried) = &self.carried
+            && !closed_v
+            && let Ok(fitted) = carried.fit(tolerance, tol)
+            && fitted.met
+        {
+            return Ok(fitted);
+        }
         match &self.traced {
             None => {
                 let mut grid: Vec<Vec<Point>> = self
@@ -1204,28 +1306,24 @@ fn skinned_wall(
     let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
     let (k, l, net) = {
         let grid = surface.grid();
-        let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
-        (grid.u_count(), grid.v_count(), net)
+        (grid.u_count(), grid.v_count(), grid.points().to_vec())
     };
-    let point_at = |i: usize, j: usize| -> Point { net[i * l + j] };
+    let point_at = |i: usize, j: usize| net[i * l + j];
     let (u_dom, v_dom) = surface.domain();
 
-    // Border curves straight off the net: v-borders are the end sections,
-    // the u-border is the seam.
+    // Border curves straight off the net, weights and all: v-borders are
+    // the end sections, the u-border is the seam.
     let border_v = |j: usize| -> OgeomResult<ogeom_geom::Curve> {
-        let control: Vec<Point> = (0..k).map(|i| point_at(i, j)).collect();
-        Ok(ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(
-            u_knots.clone(),
-            control,
-            tol,
-        )?))
+        let control: Vec<_> = (0..k).map(|i| point_at(i, j)).collect();
+        Ok(ogeom_geom::Curve::BSpline(
+            ogeom_geom::BSplineCurve::rational(u_knots.clone(), control)?,
+        ))
     };
     let seam_curve = {
-        let control: Vec<Point> = (0..l).map(|j| point_at(0, j)).collect();
-        ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::new(
+        let control: Vec<_> = (0..l).map(|j| point_at(0, j)).collect();
+        ogeom_geom::Curve::BSpline(ogeom_geom::BSplineCurve::rational(
             v_knots.clone(),
             control,
-            tol,
         )?)
     };
 
@@ -3349,7 +3447,7 @@ pub fn make_loft_skinned(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let built = loft_skinned_along(model, sections, None, tolerance, tol)?;
+    let built = loft_skinned_along(model, sections, None, false, tolerance, tol)?;
     state_new_gaps(model, sections, &built.shape, tol)?;
     Ok(built)
 }
@@ -3361,11 +3459,14 @@ type SectionMotion<'a> = &'a dyn Fn(f64) -> OgeomResult<Transform>;
 
 /// [`make_loft_skinned`], and where `along` is given the sections are the
 /// first one moved by it and the skin is held to that motion between them
-/// as well as to the sections.
+/// as well as to the sections. Where `exact_ends` asks it too, a loop of
+/// one edge with an exact rational form is carried in that form, so the
+/// skin's end rows are the end sections exactly (see [`Carried`]).
 fn loft_skinned_along(
     model: &mut Model,
     sections: &[Shape],
     along: Option<SectionMotion<'_>>,
+    exact_ends: bool,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -3504,7 +3605,12 @@ fn loft_skinned_along(
                 let Some(Section::Loop(first)) = loops.first().cloned() else {
                     ogeom_bail!(Construction, "a loft's first section is a loop");
                 };
-                Skin::swept(
+                let carried = if exact_ends {
+                    carried_section(model, sections, motion, tol)?
+                } else {
+                    None
+                };
+                let mut skin = Skin::swept(
                     move |f, s| {
                         if s.fract() == 0.0 {
                             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -3516,7 +3622,9 @@ fn loft_skinned_along(
                     fractions(AROUND_SECTION),
                     (0, sections.len() - 1),
                     true,
-                )?
+                )?;
+                skin.carried = carried;
+                skin
             }
             None => Skin::sections(loops, false)?,
         };
@@ -3528,6 +3636,90 @@ fn loft_skinned_along(
         built.history.generate(section, built.shape.clone());
     }
     Ok(built)
+}
+
+/// A sweep's sections carried in exact rational form, where each is one
+/// closed edge with such a form and all share its knots and weights: the
+/// skin's rows are then those forms (see [`Carried`]). At a section the
+/// control points are that section's own, between two the first's moved by
+/// `motion`. `None` where a section has no such form or the forms differ
+/// in anything but their control points.
+fn carried_section<'a>(
+    model: &Model,
+    sections: &[Shape],
+    motion: SectionMotion<'a>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Carried<'a>>> {
+    let mut forms: Vec<ogeom_geom::BSplineCurve> = Vec::with_capacity(sections.len());
+    for wire in sections {
+        if model.kind_of(wire)? != ShapeType::Wire {
+            return Ok(None);
+        }
+        let edges = model.ordered_children_of(wire)?;
+        let [edge] = edges.as_slice() else {
+            return Ok(None);
+        };
+        let (curve, range) = spine_curve_of(model, edge)?;
+        let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
+        let Ok(form) = curve.to_bspline_over(range, tol) else {
+            return Ok(None);
+        };
+        forms.push(form);
+    }
+    let first = &forms[0];
+    let alike = forms.iter().all(|f| {
+        f.knots().knots().len() == first.knots().knots().len()
+            && f.knots()
+                .knots()
+                .iter()
+                .zip(first.knots().knots())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+            && f.control_points()
+                .iter()
+                .zip(first.control_points())
+                .all(|(a, b)| (a.weight - b.weight).abs() <= 1e-12 * b.weight)
+    });
+    if !alike {
+        return Ok(None);
+    }
+    let control: Vec<Vec<Point>> = forms
+        .iter()
+        .map(|f| f.control_points().iter().map(|w| w.point()).collect())
+        .collect();
+    let n = control[0].len();
+    // A closed section's last control point is its first: one path for
+    // both, so the skin's seam closes exactly.
+    let weights = first.control_points();
+    let closed = (weights[0].weight - weights[n - 1].weight).abs() <= 1e-12 * weights[0].weight
+        && control
+            .iter()
+            .all(|c| c[0].distance(c[n - 1]) <= tol.confusion());
+    let mut curve = forms[0].clone();
+    if closed {
+        let mut points = curve.control_points().to_vec();
+        points[n - 1] = points[0];
+        curve = ogeom_geom::BSplineCurve::rational(curve.knots().clone(), points)?;
+    }
+    let steps = sections.len() - 1;
+    #[allow(clippy::cast_precision_loss, reason = "section counts")]
+    let vs: Vec<f64> = (0..=steps).map(|i| i as f64 / steps as f64).collect();
+    let point = move |i: usize, v: f64| -> OgeomResult<Point> {
+        let i = if closed && i + 1 == n { 0 } else { i };
+        #[allow(clippy::cast_precision_loss, reason = "section counts")]
+        let s = v * steps as f64;
+        let whole = s.round();
+        if (s - whole).abs() <= 1e-9 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            return Ok(control[whole as usize][i]);
+        }
+        Ok(motion(s)?.apply(control[0][i]))
+    };
+    Ok(Some(Carried {
+        curve,
+        control: Box::new(point),
+        vs,
+        closed,
+    }))
 }
 
 /// Sample a closed wire at `count` matched arc-length fractions.
@@ -3857,6 +4049,7 @@ pub fn make_pipe_skinned(
                 most: 512,
             },
         }),
+        carried: None,
     };
     let mut built = skinned_solid(
         model,
@@ -5487,6 +5680,24 @@ pub fn make_pipe_shell_with(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    pipe_shell_ends(model, profile, spine, law, corners, false, tolerance, tol)
+}
+
+/// [`make_pipe_shell_with`], and where `exact_ends` asks it, a pipe swept
+/// by a skin under the auxiliary or binormal law ends on its end sections
+/// exactly wherever their loops have an exact rational form (see
+/// [`Carried`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pipe_shell_ends(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    law: &PipeLaw<'_>,
+    corners: PipeCorners,
+    exact_ends: bool,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     // A section carried by translation turns no corner: every way of
     // turning one is the same solid.
     if matches!(law, PipeLaw::Fixed) {
@@ -5528,7 +5739,7 @@ pub fn make_pipe_shell_with(
             tol,
         );
     }
-    let built = pipe_shell_law(model, profile, spine, law, tolerance, tol)?;
+    let built = pipe_shell_law(model, profile, spine, law, exact_ends, tolerance, tol)?;
     state_new_gaps(model, &[profile.clone(), spine.clone()], &built.shape, tol)?;
     Ok(built)
 }
@@ -6010,6 +6221,7 @@ fn law_loft(
     stations: &[SpineStation],
     law: &PipeLaw<'_>,
     evolution: Option<&evolving::Evolution>,
+    exact_ends: bool,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -6024,7 +6236,10 @@ fn law_loft(
         let mut solids = Vec::with_capacity(rings.len());
         for ring in &rings {
             solids.push(
-                law_loft(model, ring, spine, stations, law, evolution, tolerance, tol)?.shape,
+                law_loft(
+                    model, ring, spine, stations, law, evolution, exact_ends, tolerance, tol,
+                )?
+                .shape,
             );
         }
         let mut shape = solids[0].clone();
@@ -6113,7 +6328,8 @@ fn law_loft(
         held.borrow_mut().insert(s.to_bits(), m);
         Ok(m)
     };
-    let mut built = loft_skinned_along(model, &sections, Some(&motion), tolerance, tol)?;
+    let mut built =
+        loft_skinned_along(model, &sections, Some(&motion), exact_ends, tolerance, tol)?;
     built.history.generate(spine, built.shape.clone());
     built.history.generate(profile, built.shape.clone());
     Ok(built)
@@ -6693,6 +6909,7 @@ fn pipe_shell_law(
     profile: &Shape,
     spine: &Shape,
     law: &PipeLaw<'_>,
+    exact_ends: bool,
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -6763,7 +6980,9 @@ fn pipe_shell_law(
         );
     }
     if !classic {
-        return law_loft(model, profile, spine, &stations, law, None, tolerance, tol);
+        return law_loft(
+            model, profile, spine, &stations, law, None, exact_ends, tolerance, tol,
+        );
     }
     if ring && kinks.is_empty() {
         let still = evolving::Ramp::level(0.0);
