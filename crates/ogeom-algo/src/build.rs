@@ -1992,7 +1992,10 @@ pub fn make_revolution_band(
                  of it; its axis or centre is off the revolution axis"
             );
         }
-        let winding = c.circle().frame().z().vector().dot(axis_z).signum();
+        // A circle turns about its frame's spin, and back about it where
+        // the curve is reversed.
+        let turned = if c.is_reversed() { -1.0 } else { 1.0 };
+        let winding = turned * spin(&c.circle().frame()).dot(axis_z).signum();
         let row = match analytic_chart_of(surface, at) {
             Some(uv) => uv.y,
             None => {
@@ -3020,15 +3023,22 @@ fn analytic_chart_of(
     Some(ogeom_math::Point2::new(u, v))
 }
 
-/// The revolution axis direction of a periodic analytic surface.
+/// The revolution axis direction of a periodic analytic surface, the way
+/// its angle `u` turns about: [`spin`] of its frame.
 fn surface_iso_axis(surface: &ogeom_geom::SurfaceGeometry) -> Option<ogeom_math::Vector> {
     match surface {
-        ogeom_geom::SurfaceGeometry::Cylinder(c) => Some(c.cylinder().frame().z().vector()),
-        ogeom_geom::SurfaceGeometry::Cone(c) => Some(c.cone().frame().z().vector()),
-        ogeom_geom::SurfaceGeometry::Torus(t) => Some(t.torus().frame().z().vector()),
-        ogeom_geom::SurfaceGeometry::Sphere(s) => Some(s.sphere().frame().z().vector()),
+        ogeom_geom::SurfaceGeometry::Cylinder(c) => Some(spin(&c.cylinder().frame())),
+        ogeom_geom::SurfaceGeometry::Cone(c) => Some(spin(&c.cone().frame())),
+        ogeom_geom::SurfaceGeometry::Torus(t) => Some(spin(&t.torus().frame())),
+        ogeom_geom::SurfaceGeometry::Sphere(s) => Some(spin(&s.sphere().frame())),
         _ => None,
     }
+}
+
+/// The axis a frame's angle turns about: `x × y`, which is `z` on a
+/// right-handed frame and `-z` on a left-handed one.
+fn spin(frame: &ogeom_math::Frame) -> ogeom_math::Vector {
+    frame.z().vector() * frame.handedness().sign()
 }
 
 /// The surface's `u = at` iso-curve, parameterized by `v` exactly.
@@ -4489,6 +4499,82 @@ mod band_tests {
         }
     }
 
+    /// A band on a cylinder of either handedness, between rims spelled on
+    /// frames of either handedness and either axis direction, each circle
+    /// forward or reversed: each rim's pcurve lands on its circle at every
+    /// parameter, and the face keeps its chart area `2π · 2` on its left.
+    /// On a left-handed frame the angle turns about `-z`, and a reversed
+    /// circle turns back, so a winding read from `z` alone runs such a
+    /// rim's pcurve the wrong way round.
+    #[test]
+    fn a_band_follows_its_rims_on_frames_of_either_handedness() {
+        use ogeom_geom::{Curve2d as _, Curve3d as _, Surface as _};
+        let spellings = |f: Frame| {
+            let (o, x, y, z) = (f.origin(), f.x(), f.y(), f.z());
+            [
+                f,
+                f.mirrored(),
+                Frame::from_axes(o, x, y, -z, T).unwrap(),
+                Frame::from_axes(o, x, -y, -z, T).unwrap(),
+            ]
+        };
+        for wall in spellings(Frame::WORLD) {
+            let cylinder = ogeom_math::Cylinder::new(wall, 2.0, T).unwrap();
+            let heights = if wall.z().vector().z > 0.0 {
+                (-1.0, 3.0)
+            } else {
+                (-3.0, 1.0)
+            };
+            let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(cylinder, heights)
+                .unwrap()
+                .into();
+            let lows = spellings(Frame::WORLD);
+            let highs = spellings(Frame::WORLD.with_origin(Point::new(0.0, 0.0, 2.0)));
+            let pairs = lows.into_iter().zip(highs.into_iter().rev());
+            for ((low, high), reversed) in pairs.flat_map(|p| [(p, false), (p, true)]) {
+                let mut model = Model::new();
+                let mut rim = |frame: Frame| {
+                    use ogeom_geom::Reversible as _;
+                    let circle: ogeom_geom::Curve =
+                        CircleCurve::new(Circle::new(frame, 2.0, T).unwrap()).into();
+                    let circle = if reversed { circle.reversed() } else { circle };
+                    let vertex = make_vertex(&mut model, frame.origin() + frame.x() * 2.0).shape;
+                    make_edge_between(&mut model, circle, (0.0, TAU), &vertex, &vertex, T)
+                        .unwrap()
+                        .shape
+                };
+                let (low, high) = (rim(low), rim(high));
+                let face = make_revolution_band(&mut model, &surface, &low, &high, T).unwrap();
+                let id = model.node(&face).unwrap().data().as_face().unwrap().surface;
+                for rim in [&low, &high] {
+                    let data = model.node(rim).unwrap().data().as_edge().unwrap();
+                    let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+                        unreachable!("a rim has a curve");
+                    };
+                    let curve = model.geometry().curve(*curve).unwrap();
+                    let Some(EdgeRepr::PCurve { curve: p, .. }) =
+                        data.pcurve_for(id, &Location::identity())
+                    else {
+                        unreachable!("a rim has a pcurve on the band");
+                    };
+                    let pcurve = model.geometry().pcurve(*p).unwrap();
+                    for k in 0..=16 {
+                        let t = TAU * f64::from(k) / 16.0;
+                        let uv = pcurve.point_at(t, T).unwrap();
+                        let lifted = surface.point_at(uv.x, uv.y, T).unwrap();
+                        let on = curve.point_at(t, T).unwrap();
+                        assert!(
+                            lifted.distance(on) < 1e-9,
+                            "wall {wall:?}: a rim's pcurve misses its circle by {}",
+                            lifted.distance(on)
+                        );
+                    }
+                }
+                assert_relative_eq!(chart_area(&model, &face), TAU * 2.0, max_relative = 1e-9);
+            }
+        }
+    }
+
     /// Two rims of a drum whose vertices stand half a turn apart: no seam
     /// along one column joins them, so the band is refused, and the rims
     /// come back with no pcurve on the surface. A pcurve left behind would
@@ -4519,6 +4605,71 @@ mod band_tests {
                     .all(|r| !matches!(r, EdgeRepr::PCurve { .. } | EdgeRepr::Seam { .. })),
                 "a refused band left a pcurve on a rim"
             );
+        }
+    }
+
+    /// A band of rings on a cylinder of either handedness, its rims'
+    /// vertices a quarter turn round from the frame's `x`: the face's copy
+    /// of the surface is turned so the seam stands at the start of its
+    /// window, and every rim pcurve lies in the window and lands on its
+    /// circle. On a left-handed frame the angle turns about `-z`, so a turn
+    /// about `z` puts the seam half a turn off the window's start.
+    #[test]
+    fn a_band_of_rings_seams_at_its_window_start_on_either_handedness() {
+        use ogeom_geom::{Curve2d as _, Curve3d as _, Surface as _};
+        for wall in [Frame::WORLD, Frame::WORLD.mirrored()] {
+            let mut model = Model::new();
+            let cylinder = ogeom_math::Cylinder::new(wall, 2.0, T).unwrap();
+            let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(cylinder, (-1.0, 3.0))
+                .unwrap()
+                .into();
+            let at = |z: f64| {
+                Frame::new(
+                    Point::new(0.0, 0.0, z),
+                    ogeom_math::Direction::Z,
+                    ogeom_math::Direction::Y,
+                    T,
+                )
+                .unwrap()
+            };
+            let low = ring(&mut model, at(0.0), 2.0);
+            let high = ring(&mut model, at(2.0), 2.0);
+            let face = make_band_of_rings(
+                &mut model,
+                &surface,
+                core::slice::from_ref(&low),
+                core::slice::from_ref(&high),
+                T,
+            )
+            .unwrap();
+            let id = model.node(&face).unwrap().data().as_face().unwrap().surface;
+            let band = model.geometry().surface(id).unwrap().clone();
+            let ((ua, ub), _) = band.domain();
+            for rim in [&low, &high] {
+                let data = model.node(rim).unwrap().data().as_edge().unwrap();
+                let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+                    unreachable!("a rim has a curve");
+                };
+                let curve = model.geometry().curve(*curve).unwrap();
+                let Some(EdgeRepr::PCurve { curve: p, .. }) =
+                    data.pcurve_for(id, &Location::identity())
+                else {
+                    unreachable!("a rim has a pcurve on the band");
+                };
+                let pcurve = model.geometry().pcurve(*p).unwrap();
+                for k in 0..=16 {
+                    let t = TAU * f64::from(k) / 16.0;
+                    let uv = pcurve.point_at(t, T).unwrap();
+                    assert!(
+                        uv.x >= ua - 1e-9 && uv.x <= ub + 1e-9,
+                        "wall {wall:?}: u {} off the window",
+                        uv.x
+                    );
+                    let lifted = band.point_at(uv.x, uv.y, T).unwrap();
+                    assert!(lifted.distance(curve.point_at(t, T).unwrap()) < 1e-9);
+                }
+            }
+            assert_relative_eq!(chart_area(&model, &face), TAU * 2.0, max_relative = 1e-9);
         }
     }
 

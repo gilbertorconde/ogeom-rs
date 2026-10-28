@@ -907,6 +907,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A revolution band between rims on a left-handed frame, or rims
+  reversed.** (#484)
+  - `make_revolution_band` read which way a rim runs round the surface
+    from the two frames' `z`. On a left-handed frame the angle turns about
+    `-z`, and a reversed circle turns back, so such a rim's pcurve ran the
+    wrong way round and missed its circle by up to a diameter.
+    `make_band_of_rings` turned a left-handed surface's chart the wrong
+    way about its axis, so the band stood off its window.
+  - Both now read the axis each angle turns about, `x × y`, and a reversed
+    circle's turn. Right-handed forward rims build exactly as before.
+  - Measured: a band of radius 2 and height 2 on a cylinder of each
+    spelling (`y`, `z` or both reversed), between rims of each spelling,
+    forward or reversed: every rim's pcurve on its circle to 1e-9, and the
+    chart area `4π` to 1e-9.
+
 - **A boolean between coincident surfaces of opposite handedness.**
   - A cylinder, cone, sphere or torus on a left-handed (mirrored) frame
     turns its angle about `-z`. Three places read `z` as the axis the
