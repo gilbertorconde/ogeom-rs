@@ -804,6 +804,29 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A wall leaving a plane shallowly along its border meets it there.**
+  (#469)
+  - Coincidence of two surfaces with no closed form was measured on a
+    grid, and four samples of one lying in the other counted as proof.
+    Where a plane's window covered only a wall's first row, every such
+    sample lay on the wall's border, which lies in the plane, and the
+    pair was answered `Same`. The samples that agree must now spread over
+    an area: where they lie along one line of either chart, each is
+    stepped off it until it lands inside the other's window, and there it
+    must agree too.
+  - A border lying in a plane, or in another surface, was traced only
+    where the surface leaves at a sine past 3e-2; below that it was taken
+    as a contact. It is now traced wherever the surface's rise `s d`, a
+    distance `d` in at the nearest sample, clears the width within which
+    a sample decides nothing and is no less than the surface's bow there.
+    A blend touching its host fails that, as before, and stays a contact.
+  - A square scaled from 1 to 0.5 up a line of 10 and round an arc of
+    radius 20 into an extended corner was refused at half sides 1 and 2,
+    where the arc's walls leave the corner prism's sides at sines 0.012
+    and 0.024 ("the kept pieces did not close into a shell"). Both now
+    build, within 1e-4 of the corner's closed form integrated over its
+    columns.
+
 - **A profile with any edge in its plane sweeps into a valid solid or
   refuses.** (#466)
   - A prism, and a revolution through less than a turn, keep the profile

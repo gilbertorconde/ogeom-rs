@@ -30,7 +30,7 @@ use ogeom_math::{Circle2, Ellipse2, Frame2, Point, Point2};
 
 use crate::approx::approximate_branch;
 use crate::contact::trace_tangential;
-use crate::march::{Marching, TANGENTIAL_SINE, branches};
+use crate::march::{Marching, TANGENTIAL_SINE, branches, leaves_at_an_angle};
 use crate::surface::{Meeting, surface_surface};
 
 /// How to intersect, when the general path runs.
@@ -234,6 +234,14 @@ pub fn intersect_surfaces_within(
 /// far, and a distance measured to its rim is about the window, not the
 /// surface.
 ///
+/// The samples that agree must spread over an area, not lie along one
+/// line of either chart: samples along one curve prove only that the curve
+/// lies in both surfaces, as a wall's border does in the plane it leaves.
+/// Where they do lie along one line, each is stepped off it in the sampled
+/// chart, by half a grid step and then by halves of that until its foot
+/// lands inside the other's window; one such sample must agree, and none
+/// may stand off.
+///
 /// One-sided by construction: a pair that crosses puts interior samples well
 /// off the other, so it cannot pass, and a pair this cannot resolve is
 /// marched.
@@ -245,8 +253,11 @@ fn surfaces_coincide(
 ) -> bool {
     /// Samples per direction over the window, and how many must land inside
     /// the other before agreement means anything.
-    const GRID: usize = 6;
+    const GRID: i32 = 6;
     const EVIDENCE: usize = 4;
+    /// How many times a step off a line of samples is halved looking for
+    /// the other's window: down to a millionth of a grid step.
+    const HALVINGS: u32 = 20;
 
     let span = |s: &SurfaceGeometry| -> f64 {
         let ((ua, ub), (va, vb)) = s.domain();
@@ -261,31 +272,100 @@ fn surfaces_coincide(
     // A twentieth of the window in from each rim: enough that a foot the
     // search pinned to the rim is not read as one the surface truly reaches.
     let (mu, mv) = ((wu1 - wu0) * 0.05, (wv1 - wv0) * 0.05);
+    let (du, dv) = ((ub - ua) / f64::from(GRID), (vb - va) / f64::from(GRID));
 
-    let mut evidence = 0_usize;
+    // The foot on the other of the sample at `(u, v)`: `Some(None)` where it
+    // lands on the window's rim, `None` where the sample stands off the
+    // other or cannot be measured.
+    let measure = |u: f64, v: f64| -> Option<Option<(f64, f64)>> {
+        let p = sampled.point_at(u, v, tol).ok()?;
+        let foot = ogeom_geom::project_on_surface(against, p, 16, tol).ok()?;
+        let (fu, fv) = foot.parameters;
+        if fu <= wu0 + mu || fu >= wu1 - mu || fv <= wv0 + mv || fv >= wv1 - mv {
+            return Some(None);
+        }
+        (foot.distance <= reach).then_some(Some(foot.parameters))
+    };
+    let mut agreeing: Vec<((i32, i32), (f64, f64))> = Vec::new();
     for i in 0..=GRID {
         for j in 0..=GRID {
-            #[allow(clippy::cast_precision_loss)]
-            let u = ua + (ub - ua) * (i as f64 / GRID as f64);
-            #[allow(clippy::cast_precision_loss)]
-            let v = va + (vb - va) * (j as f64 / GRID as f64);
-            let Ok(p) = sampled.point_at(u, v, tol) else {
-                return false;
-            };
-            let Ok(foot) = ogeom_geom::project_on_surface(against, p, 16, tol) else {
-                return false;
-            };
-            let (fu, fv) = foot.parameters;
-            if fu <= wu0 + mu || fu >= wu1 - mu || fv <= wv0 + mv || fv >= wv1 - mv {
-                continue;
+            let (u, v) = (du.mul_add(f64::from(i), ua), dv.mul_add(f64::from(j), va));
+            match measure(u, v) {
+                None => return false,
+                Some(None) => {}
+                Some(Some(foot)) => agreeing.push(((i, j), foot)),
             }
-            if foot.distance > reach {
-                return false;
-            }
-            evidence += 1;
         }
     }
-    evidence >= EVIDENCE
+    if agreeing.len() < EVIDENCE {
+        return false;
+    }
+
+    // Along one line of the sampled grid, exactly; and of the other's
+    // chart, to the parametric confusion of the feet's spread.
+    let (first, _) = agreeing[0];
+    let lined_up = agreeing
+        .iter()
+        .find(|(at, _)| *at != first)
+        .map(|&(at, _)| (at.0 - first.0, at.1 - first.1))
+        .filter(|&(di, dj)| {
+            agreeing
+                .iter()
+                .all(|&((i, j), _)| di * (j - first.1) == dj * (i - first.0))
+        });
+    let feet_lined_up = {
+        let mut far = (agreeing[0].1, agreeing[0].1, 0.0_f64);
+        for (x, (_, p)) in agreeing.iter().enumerate() {
+            for (_, q) in &agreeing[x + 1..] {
+                let d = (q.0 - p.0).hypot(q.1 - p.1);
+                if d > far.2 {
+                    far = (*p, *q, d);
+                }
+            }
+        }
+        let (p, q, d) = far;
+        agreeing.iter().all(|(_, r)| {
+            ((q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)).abs()
+                <= tol.parametric() * d * d
+        })
+    };
+    if lined_up.is_none() && !feet_lined_up {
+        return true;
+    }
+
+    // Off the line: across it in the sampled chart, or either way where only
+    // the feet line up.
+    let across: &[(f64, f64)] = match lined_up {
+        Some((0, _)) => &[(1.0, 0.0)],
+        Some(_) => &[(0.0, 1.0)],
+        None => &[(1.0, 0.0), (0.0, 1.0)],
+    };
+    let mut spread = false;
+    for &((i, j), _) in &agreeing {
+        for &(ku, kv) in across {
+            for sign in [-1.0, 1.0] {
+                let mut h = 0.5 * sign;
+                for _ in 0..HALVINGS {
+                    let (u, v) = (
+                        du.mul_add(ku.mul_add(h, f64::from(i)), ua),
+                        dv.mul_add(kv.mul_add(h, f64::from(j)), va),
+                    );
+                    if !(ua..=ub).contains(&u) || !(va..=vb).contains(&v) {
+                        break;
+                    }
+                    match measure(u, v) {
+                        None => return false,
+                        Some(None) => h *= 0.5,
+                        Some(Some(_)) => {
+                            spread = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    spread
 }
 
 /// A plane through the axis of a surface of revolution whose profile lies
@@ -437,11 +517,12 @@ fn axial_plane_revolution(
 /// anything else meets the plane elsewhere too and is marched.
 ///
 /// A line on an open border of the chart has the surface on one side only.
-/// It stands where the surface leaves the plane there at an angle, the
-/// normals' sine past [`TANGENTIAL_SINE`] all along it: the plane then
-/// meets the face along its boundary edge, as a plane through a prism's
-/// side edge meets the side faces. A border the surface leaves tangentially
-/// is a contact, and the pair is marched.
+/// It stands where the surface leaves the plane there at an angle all
+/// along it, as [`leaves_at_an_angle`] has it, against the grid's nearest
+/// row in and the band its samples ignore: the plane then meets the face
+/// along its boundary edge, as a plane through a prism's side edge meets
+/// the side faces. A border the surface leaves tangentially is a contact,
+/// and the pair is marched.
 ///
 /// An extrusion of a spline profile is read as the spline patch it is, on
 /// the same chart: its columns are its straight rulings, and are stated as
@@ -593,16 +674,34 @@ fn plane_along_spline_lines(
     let closed_u = spline.is_closed_u(tol);
     let closed_v = spline.is_closed_v(tol);
     let plane_normal = plane.normal().vector();
-    let leaves_at_an_angle = |along_u: bool, t: f64| -> bool {
+    let leaves_plane = |along_u: bool, t: f64| -> bool {
         let (lo, hi) = if along_u { (v0, v1) } else { (u0, u1) };
+        // The grid's nearest row in from the border, half a step in.
+        let (from, to) = if along_u { (u0, u1) } else { (v0, v1) };
+        let half_step = (to - from) / (2.0 * f64::from(SAMPLES + 1));
+        let inside = if (t - from).abs() <= (to - t).abs() {
+            t + half_step
+        } else {
+            t - half_step
+        };
         [0.0, 0.07, 0.19, 0.37, 0.53, 0.71, 0.89, 1.0]
             .iter()
             .all(|&f| {
                 let s = (hi - lo).mul_add(f, lo);
-                let (u, v) = if along_u { (t, s) } else { (s, t) };
-                spline
-                    .normal_at(u, v, tol)
-                    .is_ok_and(|n| n.vector().cross(plane_normal).magnitude() > TANGENTIAL_SINE)
+                let (on, near) = if along_u {
+                    ((t, s), (inside, s))
+                } else {
+                    ((s, t), (s, inside))
+                };
+                let (Ok(n), Ok(p), Ok(q)) = (
+                    spline.normal_at(on.0, on.1, tol),
+                    spline.point_at(on.0, on.1, tol),
+                    spline.point_at(near.0, near.1, tol),
+                ) else {
+                    return false;
+                };
+                let sine = n.vector().cross(plane_normal).magnitude();
+                leaves_at_an_angle(sine, p.distance(q), distance(q).abs(), band)
             })
     };
     let on_open_border = |t: f64, (lo, hi): (f64, f64), closed: bool| {
@@ -630,7 +729,7 @@ fn plane_along_spline_lines(
         }
     };
     for (k, &u) in columns.iter().enumerate() {
-        let border = on_open_border(u, (u0, u1), closed_u) && leaves_at_an_angle(true, u);
+        let border = on_open_border(u, (u0, u1), closed_u) && leaves_plane(true, u);
         if !crosses(k, columns.len(), closed_u, border, &|c| {
             side_of(Some(c), None)
         }) {
@@ -638,7 +737,7 @@ fn plane_along_spline_lines(
         }
     }
     for (k, &v) in rows.iter().enumerate() {
-        let border = on_open_border(v, (v0, v1), closed_v) && leaves_at_an_angle(false, v);
+        let border = on_open_border(v, (v0, v1), closed_v) && leaves_plane(false, v);
         if !crosses(k, rows.len(), closed_v, border, &|c| side_of(None, Some(c))) {
             return None;
         }
@@ -1387,6 +1486,21 @@ fn marched(
     }
     let mut out = Vec::with_capacity(traced.len());
     let mut contacts: Vec<crate::march::Traced> = Vec::new();
+    // A stretch of a border of either chart lying in the other surface
+    // runs on that border, each point at the border's own parameter. It
+    // was kept only where the surface leaves the other at an angle there,
+    // which it is not asked again.
+    let domains = (
+        view_a.as_ref().unwrap_or(a).domain(),
+        view_b.as_ref().unwrap_or(b).domain(),
+    );
+    let on_border = |params: &[(f64, f64)], ((u0, u1), (v0, v1)): ((f64, f64), (f64, f64))| {
+        let Some(&(u, v)) = params.first() else {
+            return false;
+        };
+        ((u == u0 || u == u1) && params.iter().all(|p| p.0 == u))
+            || ((v == v0 || v == v1) && params.iter().all(|p| p.1 == v))
+    };
     for branch in &traced {
         // A branch along which the two surfaces share their normal is a
         // tangency, not a crossing: the marcher's seeding cannot tell the
@@ -1396,7 +1510,8 @@ fn marched(
         // walker is the one that can follow it, so the fragment becomes a
         // seed rather than a discard, and what comes back is marked as
         // contact so nobody classifies by it.
-        if branch_is_tangential(a, b, branch, tol)? {
+        let lying = on_border(&branch.on_a, domains.0) || on_border(&branch.on_b, domains.1);
+        if !lying && branch_is_tangential(a, b, branch, tol)? {
             if let Some(contact) = walk_contact(a, b, branch, &contacts, options.marching, tol)? {
                 contacts.push(contact);
             }
@@ -2812,6 +2927,86 @@ mod tests {
         .unwrap()
         .into();
         for (a, b) in [(&resting, &patch), (&patch, &resting)] {
+            if let SurfaceIntersection::Along(sections) =
+                intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap()
+            {
+                assert!(
+                    sections.iter().all(|s| s.tangential),
+                    "a border left tangentially is no crossing: {sections:?}"
+                );
+            }
+        }
+    }
+
+    /// The patch over `0 ≤ x ≤ 1`, `0 ≤ y ≤ 12` standing `z = s y + q y²`
+    /// off the plane `z = 0`, linear along `x`, quadratic along `y` with
+    /// the middle control point on the start's heading half way: its border
+    /// `y = 0` lies in the plane, which it leaves there at the sine
+    /// `s / √(1 + s²)`.
+    fn wall_leaving(s: f64, q: f64) -> SurfaceGeometry {
+        let points: Vec<Point> = [0.0, 1.0]
+            .into_iter()
+            .flat_map(|x| {
+                [(0.0, 0.0), (6.0, 6.0 * s), (12.0, 12.0 * s + 144.0 * q)]
+                    .map(|(y, z)| Point::new(x, y, z))
+            })
+            .collect();
+        ogeom_geom::BSplineSurface::new(
+            ogeom_math::KnotVector::clamped_uniform(1, 2).unwrap(),
+            ogeom_math::KnotVector::clamped_uniform(2, 3).unwrap(),
+            &ogeom_math::ControlGrid::new(points, 2, 3).unwrap(),
+            T,
+        )
+        .unwrap()
+        .into()
+    }
+
+    /// A window of the plane `z = 0` reaching a unit past the wall's border
+    /// `y = 0` and no further than `y = 1`, short of the wall's next row
+    /// of samples at `y = 2`, meets the wall along that border however
+    /// shallowly the wall leaves it: the samples inside the window all lie
+    /// on the border, which says only that the border lies in the plane,
+    /// and the wall's rise `s d` a distance `d` in is resolved within a
+    /// fraction of a millimetre. A wall leaving the plane tangentially there
+    /// is a contact, never a crossing.
+    #[test]
+    fn a_wall_leaving_a_plane_window_shallowly_meets_it_along_its_border() {
+        let window: SurfaceGeometry =
+            PlaneSurface::over(Plane::new(Frame::WORLD), (-1.0, 2.0), (-1.0, 1.0))
+                .unwrap()
+                .into();
+        for s in [0.005, 0.012, 0.023] {
+            let wall = wall_leaving(s, 0.002);
+            for (a, b) in [(&window, &wall), (&wall, &window)] {
+                let met = intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap();
+                let SurfaceIntersection::Along(sections) = met else {
+                    panic!("sine {s}: the border is shared, got {met:?}");
+                };
+                assert_eq!(sections.len(), 1, "sine {s}: {sections:?}");
+                let section = &sections[0];
+                assert!(!section.tangential, "sine {s}: {section:?}");
+                let (lo, hi) = section.curve.domain();
+                let near = section.tolerance + T.confusion();
+                for i in 0..=16 {
+                    let p = section
+                        .curve
+                        .point_at(lo + (hi - lo) * f64::from(i) / 16.0, T)
+                        .unwrap();
+                    assert!(
+                        p.y.hypot(p.z) <= near && (-near..=1.0 + near).contains(&p.x),
+                        "sine {s}: {p:?} is off the border"
+                    );
+                }
+                let mut xs = [lo, hi].map(|t| section.curve.point_at(t, T).unwrap().x);
+                xs.sort_by(f64::total_cmp);
+                assert!(
+                    xs[0].abs() <= near && (xs[1] - 1.0).abs() <= near,
+                    "sine {s}: the section runs {xs:?}"
+                );
+            }
+        }
+        let resting = wall_leaving(0.0, 0.002);
+        for (a, b) in [(&window, &resting), (&resting, &window)] {
             if let SurfaceIntersection::Along(sections) =
                 intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap()
             {

@@ -767,6 +767,26 @@ const FAR: f64 = 1e6;
 /// stay that close to tangent is a contact, not a crossing.
 pub(crate) const TANGENTIAL_SINE: f64 = 3e-2;
 
+/// Whether a surface meeting another along a curve the two share leaves
+/// it there at an angle, rather than touching it: `sine` is the sine
+/// between their normals on the curve, `probe` the distance in from the
+/// curve to the nearest sample that says which side of the other the
+/// surface keeps, `standing` how far that sample stands off the other, and
+/// `width` the distance from the other within which a sample says nothing.
+///
+/// Leaving at a sine `s`, the surface rises `s d` a distance `d` in; it
+/// also bows, by what is left of `standing`. It leaves at an angle where
+/// its rise is resolved at the probe, `s probe > width`, and is no less
+/// than its bow there, `s probe ≥ standing - s probe`: the side it keeps
+/// is then the one its angle takes it to. One touching the other has a
+/// sine of naught on the curve, or the little a fit leaves, and stands off
+/// it by its bow, so it fails one or the other. Past [`TANGENTIAL_SINE`],
+/// the sine below which two surfaces are taken as tangent wherever they
+/// meet, it always leaves.
+pub(crate) fn leaves_at_an_angle(sine: f64, probe: f64, standing: f64, width: f64) -> bool {
+    sine > TANGENTIAL_SINE || (sine * probe > width && 2.0 * sine * probe >= standing)
+}
+
 /// A border of a surface as a curve, and the map from the curve's
 /// parameter to the surface's.
 type Border = (ogeom_geom::Curve, Box<dyn Fn(f64) -> (f64, f64)>);
@@ -945,11 +965,12 @@ fn chart_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<ChartBorder>
 /// samples in it make a stretch, carried by bisection out to where the
 /// border leaves the other surface, then stepped along at the chord as a
 /// walk is, every point projected again. A stretch stands only where every
-/// point lies in the other surface and the normals' sine there is past
-/// [`TANGENTIAL_SINE`]: a border the surface leaves tangentially, as a
-/// blend's edge leaves its host, is a contact, and is left to the marcher
-/// and the contact handling. A stretch both surfaces' borders hold is
-/// stated once.
+/// point lies in the other surface and the surface leaves the other there
+/// at an angle, as [`leaves_at_an_angle`] has it, against the grid's next
+/// row in and the confusion distance: a border the surface leaves
+/// tangentially, as a blend's edge leaves its host, is a contact, and is
+/// left to the marcher and the contact handling. A stretch both surfaces'
+/// borders hold is stated once.
 fn border_stretches(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
@@ -1188,6 +1209,36 @@ impl Lying<'_> {
         (on, foot)
     }
 
+    /// The surface's sampling grid's next row in from the border at `t`,
+    /// where the border stands at `p` with its foot `foot` on the other:
+    /// how far that row stands from `p`, and from the other surface. It is
+    /// the nearest sample saying which side of the other the surface keeps.
+    fn probe(&self, t: f64, p: Point, foot: (f64, f64)) -> Option<(f64, f64)> {
+        let ((u0, u1), (v0, v1)) = self.surface.domain();
+        let (lo, hi) = if self.border.holds_u {
+            (u0, u1)
+        } else {
+            (v0, v1)
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let step = (hi - lo) / self.options.grid as f64;
+        let at = self.border.at;
+        let inside = if (at - lo).abs() <= (hi - at).abs() {
+            at + step
+        } else {
+            at - step
+        };
+        let (u, v) = self.border.params(t);
+        let (u, v) = if self.border.holds_u {
+            (inside, v)
+        } else {
+            (u, inside)
+        };
+        let q = self.surface.point_at(u, v, self.tol).ok()?;
+        let off = ogeom_geom::project_on_surface_from(self.other, q, foot, self.tol).ok()?;
+        Some((q.distance(p), off.distance))
+    }
+
     /// The border from `start` to `finish` stepped along at the chord as a
     /// walk is, `None` unless every point lies in the other surface and
     /// the two leave each other at an angle there.
@@ -1214,8 +1265,12 @@ impl Lying<'_> {
             let (p, foot) = self.foot_at(t, guess)?;
             let ns = normal_at(self.surface, border.params(t), tol)?;
             let no = normal_at(self.other, foot, tol)?;
-            if ns.cross(no).magnitude() <= TANGENTIAL_SINE {
-                return None;
+            let sine = ns.cross(no).magnitude();
+            if sine <= TANGENTIAL_SINE {
+                let (probe, standing) = self.probe(t, p, foot)?;
+                if !leaves_at_an_angle(sine, probe, standing, tol.confusion()) {
+                    return None;
+                }
             }
             traced.points.push(p);
             traced.on_a.push(border.params(t));
@@ -5921,6 +5976,68 @@ mod tests {
             "{} branches, none the short arc",
             found.len()
         );
+    }
+
+    /// The patch over `0 ≤ x ≤ 1`, `0 ≤ y ≤ 2` standing `z = s y + q y²`
+    /// off the plane `z = 0`: linear along `x`, its quadratic in `y` with
+    /// the middle control point on the start's heading half way. Its
+    /// border `y = 0` lies in the plane, and it leaves the plane there at
+    /// the sine `s / √(1 + s²)`, bowing on at `q`.
+    fn leaving(s: f64, q: f64) -> SurfaceGeometry {
+        let points: Vec<Point> = [0.0, 1.0]
+            .into_iter()
+            .flat_map(|x| {
+                [(0.0, 0.0), (1.0, s), (2.0, 2.0 * s + 4.0 * q)].map(|(y, z)| Point::new(x, y, z))
+            })
+            .collect();
+        ogeom_geom::BSplineSurface::new(
+            ogeom_math::KnotVector::clamped_uniform(1, 2).unwrap(),
+            ogeom_math::KnotVector::clamped_uniform(2, 3).unwrap(),
+            &ogeom_math::ControlGrid::new(points, 2, 3).unwrap(),
+            T,
+        )
+        .unwrap()
+        .into()
+    }
+
+    /// A border lying in the other surface is a stretch of the section
+    /// however shallowly the surface leaves it, so long as the angle takes
+    /// it off: a sine `s` puts it `s d` off a distance `d` in, past the
+    /// confusion distance by the grid's first row in, here `d = 1/12`. One
+    /// leaving tangentially, a sine of naught there and rising only as it
+    /// bows, is a contact and gives no stretch, and so is one leaving at
+    /// `2e-4` (the little a fit of a tangent blend leaves) while bowing at a
+    /// curvature of one, which stands it off two hundred times further there.
+    #[test]
+    fn a_border_left_shallowly_is_a_stretch_and_one_left_tangentially_is_not() {
+        let ground = plane(Point::ORIGIN, Vector::Z);
+        let options = Marching::default();
+        for (s, q, stretches) in [
+            (0.002, 0.005, 1),
+            (0.01, 0.0, 1),
+            (0.02, 0.02, 1),
+            (0.0, 0.02, 0),
+            (2e-4, 0.5, 0),
+        ] {
+            let patch = leaving(s, q);
+            for (a, b) in [(&ground, &patch), (&patch, &ground)] {
+                let mesh = (sample(a, options.grid, T), sample(b, options.grid, T));
+                let found = border_stretches(a, b, (&mesh.0, &mesh.1), options, T).unwrap();
+                assert_eq!(found.len(), stretches, "sine {s}, bow {q}: {found:?}");
+                for piece in &found {
+                    let ends = [piece.points[0], piece.points[piece.points.len() - 1]];
+                    for p in &piece.points {
+                        assert!(p.y.abs().max(p.z.abs()) <= T.confusion(), "sine {s}: {p:?}");
+                    }
+                    let mut xs = ends.map(|p| p.x);
+                    xs.sort_by(f64::total_cmp);
+                    assert!(
+                        xs[0].abs() <= T.confusion() && (xs[1] - 1.0).abs() <= T.confusion(),
+                        "sine {s}: the stretch runs {xs:?}"
+                    );
+                }
+            }
+        }
     }
 
     fn sphere(centre: Point, radius: f64) -> SurfaceGeometry {

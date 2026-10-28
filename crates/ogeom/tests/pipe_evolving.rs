@@ -755,3 +755,113 @@ fn twisted_before_a_sharp_corner(theta: f64) {
         assert_eq!(ends, 4, "{corners:?}");
     }
 }
+
+/// The spine up `z` from the origin to `(0, 0, l)`, then a sharp quarter
+/// turn onto the quarter arc of radius `r` about `(0, 0, l + r)`, leaving
+/// along `-x` and ending at `(-r, 0, l + r)`: the corner's axis is `y`.
+fn up_and_round(model: &mut Model, l: f64, r: f64) -> Shape {
+    let frame = Frame::new(Point::new(0.0, 0.0, l + r), Direction::Y, Direction::X, T).unwrap();
+    let circle = Circle::new(frame, r, T).unwrap();
+    let arc = make_edge(model, CircleCurve::new(circle).into(), (PI / 2.0, PI), T)
+        .unwrap()
+        .shape;
+    let (joint, _) = ogeom::algo::edge_vertices(model, &arc).unwrap().unwrap();
+    let start = ogeom::algo::make_vertex(model, Point::ORIGIN).shape;
+    let segment = LineCurve::segment(Point::ORIGIN, Point::new(0.0, 0.0, l), T).unwrap();
+    let range = segment.domain();
+    let rise = ogeom::algo::make_edge_between(model, segment.into(), range, &start, &joint, T)
+        .unwrap()
+        .shape;
+    make_wire(model, &[rise, arc], T).unwrap().shape
+}
+
+/// A square of half side `a` scaled linearly from one to `s` along
+/// [`up_and_round`], extended at the corner. The scale falls at
+/// `m = (1 - s) / L` per unit of the spine's length `L = l + π r / 2`,
+/// to `c = 1 - m l` at the corner, so the two runs hold
+/// `4 a² ∫ σ² = 4 a² (1 - s³) / 3m` (Pappus round the arc, the section
+/// centred on the spine).
+///
+/// The first run goes on past the corner by its section's prism, `2 a c`
+/// square and `a c` up, `4 a³ c³`; the arc's run reaches back along `+x`
+/// by its start section's prism, which lies within the first run and that
+/// prism. The arc's section at `φ` round it, `2 a σ(φ)` across `y` with
+/// `σ(φ) = c - m r φ`, is the thinnest of the three wherever they overlap,
+/// so the overlap is `2 a σ(φ)` over the part of its column, at radius
+/// `ρ` from the arc's centre, that stands within the prism (up to `a c`
+/// above the corner and within `a c` of the first run's axis) or within
+/// the first run below the corner (within `a (c + m w)` of its axis at a
+/// depth `w`), integrated by the midpoint rule over a hundred thousand
+/// columns.
+fn scaled_into_an_arc(a: f64, s: f64, l: f64, r: f64) -> f64 {
+    const COLUMNS: u32 = 100_000;
+    let m = (1.0 - s) / (l + r * PI / 2.0);
+    let c = 1.0 - m * l;
+    let runs = 4.0 * a * a * (1.0 - s.powi(3)) / (3.0 * m);
+    let step = PI / 2.0 / f64::from(COLUMNS);
+    let mut overlap = 0.0;
+    for k in 0..COLUMNS {
+        let phi = (f64::from(k) + 0.5) * step;
+        let sigma = c - m * r * phi;
+        let (sin, cos) = phi.sin_cos();
+        // The column at `ρ` stands `r - ρ cos φ` above the corner and
+        // `ρ sin φ` off the first run's axis.
+        let low = (r - a * sigma).max((r - a * c) / cos);
+        let mut high = a * c / sin;
+        if high * cos > r {
+            let leaning = sin - a * m * cos;
+            high = if leaning > 0.0 {
+                (a * c - a * m * r) / leaning
+            } else {
+                f64::INFINITY
+            };
+        }
+        let high = high.min(r + a * sigma);
+        if high > low {
+            overlap += 2.0 * a * sigma * (high * high - low * low) / 2.0 * step;
+        }
+    }
+    runs + 4.0 * (a * c).powi(3) - overlap
+}
+
+/// The arc's run of [`scaled_into_an_arc`] starts on the first run's end
+/// section turned about the corner, so its side walls start on edges lying
+/// in the side planes of the first run's prism, and leave those planes at
+/// the sine `a m` at which they narrow, here 0.012 and 0.024.
+#[test]
+fn a_square_scaled_into_an_arc_at_an_extended_corner_holds_its_volume() {
+    let (l, r, s) = (10.0_f64, 20.0_f64, 0.5_f64);
+    for a in [1.0, 2.0] {
+        let mut model = Model::new();
+        let wire = square_wire(&mut model, a);
+        let profile = xy_face(&mut model, &[wire]);
+        let spine = up_and_round(&mut model, l, r);
+        let laws = PipeLaws {
+            scale: SpineLaw::Linear(s),
+            twist: SpineLaw::Linear(0.0),
+        };
+        let solid = make_pipe_shell_laws(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::RotationMinimizing,
+            &laws,
+            PipeCorners::Extended,
+            SKIN,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("half side {a}: {e}"))
+        .shape;
+        let found = check(&model, &solid, T).unwrap();
+        assert!(found.is_valid(), "half side {a}: {found}");
+        let v = measure_skinned(&model, &solid);
+        let want = scaled_into_an_arc(a, s, l, r);
+        // The furthest a profile point runs: up the first run and its
+        // prism, then round the arc at the section's widest reach.
+        let bound = skin_bound(8.0 * a, l + a + (r + a * 2.0_f64.sqrt()) * PI / 2.0);
+        assert!(
+            (v - want).abs() < bound,
+            "half side {a}: {v} against {want}, bound {bound}"
+        );
+    }
+}
