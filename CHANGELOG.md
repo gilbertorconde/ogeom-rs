@@ -804,6 +804,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean splits a contact edge only on the target face's boundary.** (#478)
+  - An edge of one solid lying on a face of the other was split wherever it
+    crossed the curve of one of that face's edges, also where the crossing
+    lay past the edge's ends, outside the face. Rounding a block's top
+    loop at one left 8 such vertices on the side faces' rails, where each
+    band's rail crosses the circle of the next band's end arc a diameter
+    from the corner: F/E/V 10/28/20 where the minimal solid is 10/20/12.
+    The solid was valid with the right volume.
+  - Such a crossing now splits the contact edge only where it lies on
+    the target edge, within the edge's radius and its ends'.
+  - Measured over the workspace's tests, booleans in 57 tests give
+    fewer edges and vertices, 1206 of each in all, valid as before with
+    the same faces, volume and area. Booleans on a part converted from a
+    mesh move within their sections' fit, by under 1.2e-9 of the volume.
+    A fill along a stadium boss's base no longer splits its band in two.
+
 - **Booleans on a cone face past its apex.** (#476)
   - A cone face on the far nappe of its surface, where the chart's radius
     runs negative, has its trim half a turn round from the surface's own

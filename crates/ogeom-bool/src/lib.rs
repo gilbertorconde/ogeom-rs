@@ -6991,6 +6991,20 @@ fn fill(
                 if crossing.gap > reach {
                     continue;
                 }
+                // The target face's boundary is what its edges cover, not
+                // their whole curves. A blend's rail lying on a wedge's end
+                // face meets the circle of the end's arc twice: at the
+                // arc's end, and a diameter on, outside the face, where a
+                // pave leaves the rail a vertex no face needs. A crossing
+                // past the edge's ends is on the boundary only within the
+                // edge's radius, its ends' and the crossing's own.
+                let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
+                if (on_b < e.crange.0 - tol.parametric() || on_b > e.crange.1 + tol.parametric())
+                    && distance_to_edge_curve(&e.curve, e.crange, crossing.point, tol)?
+                        > reach + crossing.reach + e.tolerance.max(e.ends_tolerance)
+                {
+                    continue;
+                }
                 // A contact ending on a target edge needs no split of its
                 // own there, but the edge does: the contact's strand ends
                 // on it, and an edge left whole leaves the strand dangling.
@@ -7070,7 +7084,6 @@ fn fill(
                         spread: 0.0,
                     });
                 }
-                let on_b = onto_range(crossing.on_b, &e.curve, e.crange, tol);
                 if on_b > e.crange.0 + tol.parametric() && on_b < e.crange.1 - tol.parametric() {
                     paves.entry(e.node).or_default().push(Pave {
                         t: on_b,

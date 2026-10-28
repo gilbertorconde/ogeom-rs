@@ -1560,7 +1560,10 @@ fn rounds_at_inside_corners_whose_walls_lean_alike_under_them_meet_in_the_bisect
 /// the corner outside its quarter circle along the box less, at each
 /// corner, the cell past the bisecting plane its cap overlapped the other
 /// band by, the corner's moment about its wall: (1 - pi/4) r^2 L per edge
-/// less 2 r^3 (5/6 - pi/4) per corner.
+/// less 2 r^3 (5/6 - pi/4) per corner. The solid keeps no vertex but the
+/// box's own, the bands' ends and the mitres': the circle of a band's end
+/// arc crosses the next band's rail again a diameter past the corner,
+/// outside every face, and splits nothing there.
 #[test]
 fn a_box_s_top_edges_meet_at_their_corners_each_credited_its_own_band() {
     let pi = core::f64::consts::PI;
@@ -1573,7 +1576,12 @@ fn a_box_s_top_edges_meet_at_their_corners_each_credited_its_own_band() {
         .shape;
     let top = [(2.0, 0.0), (4.0, 2.0), (2.0, 4.0), (0.0, 2.0)]
         .map(|(x, y)| placed_edge_through(&model, &block, Point::new(x, y, 2.0)));
-    for (count, corners) in [(2_usize, 1.0), (4, 4.0)] {
+    // Two adjacent edges keep the box's four bottom corners, its one top
+    // corner off both bands, two band ends at each free end and the rail
+    // ends and mitre's top at the shared corner, and Euler's 2 gives the
+    // edges; all four keep the bottom corners, the rail ends and the
+    // mitres' tops.
+    for (count, corners, minimal) in [(2_usize, 1.0, (8, 17, 11)), (4, 4.0, (10, 20, 12))] {
         let named = &top[..count];
         let removed = removed_both_ways(&model, &block, named, r);
         #[allow(clippy::cast_precision_loss, reason = "a handful of edges")]
@@ -1593,6 +1601,22 @@ fn a_box_s_top_edges_meet_at_their_corners_each_credited_its_own_band() {
                 "{count} edges: each edge's own band"
             );
         }
+        let diagnosis = ogeom_algo::check(&rounded_model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{count} edges: {diagnosis}");
+        let held = |kind| {
+            explore_unique(&rounded_model, &rounded.shape, kind)
+                .unwrap()
+                .len()
+        };
+        assert_eq!(
+            (
+                held(ShapeType::Face),
+                held(ShapeType::Edge),
+                held(ShapeType::Vertex)
+            ),
+            minimal,
+            "{count} edges: faces, edges and vertices"
+        );
     }
 }
 

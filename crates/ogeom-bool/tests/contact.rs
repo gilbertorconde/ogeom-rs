@@ -140,3 +140,73 @@ fn lunes_beside_a_cap_tangent_to_them_are_kept() {
         }
     }
 }
+
+/// A 20 x 20 x 10 block with its edge `y = 0` at the top rounded at one by
+/// cutting the wedge between the edge and its rounding cylinder, then cut
+/// by the same wedge along its edge `x = 20`. Each rounding's rail lies on
+/// the other wedge's end face and crosses the circle of that face's arc
+/// twice: at the arc's end, and a diameter away, at `(18, 0, 9)` and
+/// `(20, 2, 9)`, outside every face of the wedge. Only the first is on the
+/// face's boundary. Paved at both, each rail kept a vertex no face needs.
+/// The block keeps 4000 less the two wedges plus their overlap at the
+/// corner, `5/3 - pi/2`.
+#[test]
+fn a_contact_splits_only_where_it_crosses_the_target_edge_itself() {
+    use core::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+    use ogeom_math::Direction;
+    use ogeom_topo::{ShapeType, explore_unique};
+    let mut model = ogeom_topo::Model::new();
+    // The bar from `corner` sized `size`, less the cylinder of radius one
+    // along `axis` from `start`, run a unit past the bar at either end so
+    // no cap lies on the bar's ends.
+    let wedge = |model: &mut ogeom_topo::Model,
+                 corner: Point,
+                 size: (f64, f64, f64),
+                 start: Point,
+                 axis: Direction| {
+        let at = Frame::new(corner, Direction::Z, Direction::X, T).unwrap();
+        let bar = ogeom_algo::make_box(model, at, size, T).unwrap().shape;
+        let up = Frame::new(start, axis, Direction::Z.cross(axis, T).unwrap(), T).unwrap();
+        let drum = ogeom_algo::make_cylinder(model, up, 1.0, 22.0, T)
+            .unwrap()
+            .shape;
+        ogeom_bool::cut(model, &bar, &drum, T).unwrap().shape
+    };
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let along_x = wedge(
+        &mut model,
+        Point::new(0.0, 0.0, 9.0),
+        (20.0, 1.0, 1.0),
+        Point::new(-1.0, 1.0, 9.0),
+        Direction::X,
+    );
+    let along_y = wedge(
+        &mut model,
+        Point::new(19.0, 0.0, 9.0),
+        (1.0, 20.0, 1.0),
+        Point::new(19.0, -1.0, 9.0),
+        Direction::Y,
+    );
+    let rounded = ogeom_bool::cut(&mut model, &block, &along_x, T)
+        .unwrap()
+        .shape;
+    let both = ogeom_bool::cut(&mut model, &rounded, &along_y, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom_algo::check(&model, &both, T).unwrap().is_valid());
+    let volume = ogeom_algo::volume_properties(&model, &both, ogeom_mesh::Deflection::default(), T)
+        .unwrap()
+        .mass;
+    let wedge_volume = 20.0 * (1.0 - FRAC_PI_4);
+    let want = 4000.0 - 2.0 * wedge_volume + (5.0 / 3.0 - FRAC_PI_2);
+    // The faces are planes and cylinders, measured exactly.
+    assert!((volume - want).abs() < 1e-9, "{volume} against {want}");
+    for v in explore_unique(&model, &both, ShapeType::Vertex).unwrap() {
+        let at = model.node(&v).unwrap().data().as_vertex().unwrap().point;
+        for off in [Point::new(18.0, 0.0, 9.0), Point::new(20.0, 2.0, 9.0)] {
+            assert!(at.distance(off) > 1e-3, "a vertex off both faces at {at:?}");
+        }
+    }
+}
