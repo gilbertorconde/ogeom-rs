@@ -3879,7 +3879,8 @@ struct ContactRec {
 /// # Errors
 ///
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if neither
-/// chart holds the edge.
+/// chart holds the edge, or the owner's image lies off the target's window
+/// while the edge lies on it.
 fn projected_into_shared_chart(
     curve: &Curve,
     range: (f64, f64),
@@ -3905,15 +3906,17 @@ fn projected_into_shared_chart(
         );
     };
     let ((ua, ub), (va, vb)) = target.domain();
+    let reach = tol.confusion() * 1e4;
+    let at = |i: u32| range.0 + (range.1 - range.0) * f64::from(i) / 16.0;
     let mut checked = 0usize;
     for i in 0..=16 {
-        let t = range.0 + (range.1 - range.0) * f64::from(i) / 16.0;
+        let t = at(i);
         let uv = on_owner.0.point_at(t, tol)?;
         if uv.x < ua || uv.x > ub || uv.y < va || uv.y > vb {
             continue;
         }
         let lifted = target.point_at(uv.x, uv.y, tol)?;
-        if lifted.distance(curve.point_at(t, tol)?) > tol.confusion() * 1e4 {
+        if lifted.distance(curve.point_at(t, tol)?) > reach {
             ogeom_bail!(
                 NotDone,
                 "same-domain contact whose edge overhangs the shared surface's \
@@ -3923,9 +3926,42 @@ fn projected_into_shared_chart(
         checked += 1;
     }
     if checked == 0 {
+        // The owner's image clear of the target's window says the edge is
+        // clear of it only on a shared chart. Where the charts differ (the
+        // axis reversed, so the owner's heights read negated), the edge's
+        // own feet on the target say whether it reaches the window.
+        for i in 0..=16 {
+            if on_window(curve.point_at(at(i), tol)?, target, reach, tol)? {
+                ogeom_bail!(
+                    NotDone,
+                    "same-domain contact whose edge lies on the shared surface's \
+                     window, on a chart the two surfaces do not share"
+                );
+            }
+        }
         return Ok(None);
     }
     Ok(Some(on_owner.0))
+}
+
+/// Whether a point's foot on a surface lies within `reach` of it and clear
+/// of the rim of its window. A foot the search pinned to the rim is past
+/// the window, not on it.
+fn on_window(
+    p: Point,
+    surface: &SurfaceGeometry,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let (mu, mv) = ((ub - ua).abs() * 1e-9, (vb - va).abs() * 1e-9);
+    let Ok(foot) = ogeom_algo::project_on_surface(surface, p, 16, tol) else {
+        return Ok(false);
+    };
+    let (u, v) = foot.parameters;
+    Ok(foot.distance <= reach
+        && (!u.is_finite() || !ua.is_finite() || (u > ua + mu && u < ub - mu))
+        && (!v.is_finite() || !va.is_finite() || (v > va + mv && v < vb - mv)))
 }
 
 /// The stretches of an edge that lie on a coincident surface's window, and
@@ -3949,19 +3985,8 @@ fn clipped_into_chart(
     tol: Tolerances,
 ) -> OgeomResult<Vec<(PlanarCurve, (f64, f64))>> {
     const SAMPLES: u32 = 64;
-    let ((ua, ub), (va, vb)) = target.domain();
-    // A foot the search pinned to the rim is past the window, not on it.
-    let (mu, mv) = ((ub - ua).abs() * 1e-9, (vb - va).abs() * 1e-9);
-    let on = |t: f64| -> OgeomResult<bool> {
-        let p = curve.point_at(t, tol)?;
-        let Ok(foot) = ogeom_algo::project_on_surface(target, p, 16, tol) else {
-            return Ok(false);
-        };
-        let (u, v) = foot.parameters;
-        Ok(foot.distance <= reach
-            && (!u.is_finite() || !ua.is_finite() || (u > ua + mu && u < ub - mu))
-            && (!v.is_finite() || !va.is_finite() || (v > va + mv && v < vb - mv)))
-    };
+    let on =
+        |t: f64| -> OgeomResult<bool> { on_window(curve.point_at(t, tol)?, target, reach, tol) };
     let at = |i: u32| range.0 + (range.1 - range.0) * f64::from(i) / f64::from(SAMPLES);
     let mut inside = Vec::with_capacity(SAMPLES as usize + 1);
     for i in 0..=SAMPLES {

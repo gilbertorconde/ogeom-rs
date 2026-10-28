@@ -907,6 +907,27 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean between a dented solid and its whole on a frame with the
+  axis reversed.** (#484)
+  - A drum dented by an off-axis ball, fused with the whole drum spelled
+    on a frame whose axis points the other way (right-handed or
+    left-handed), failed with "the kept pieces did not close into a
+    shell"; the overlap and the whole less the dented drum failed alike.
+    Where a dent's fitted edge has no fit in the whole drum's chart, the
+    boolean reads it in the dented drum's own chart, and took an image
+    lying off the whole drum's window for an edge lying off the whole
+    drum. With the axis reversed the heights read negated, so the image
+    lay off the window while the edge lay on it, and the edge was dropped.
+  - An image off the window now stands for an edge off the window only
+    where the edge's own feet on the surface lie off it too; otherwise the
+    edge is carried across the two charts exactly, or fitted over the
+    stretches it has on the window.
+  - Measured: a cylinder, frustum, ball and torus dented by a ball of
+    radius 0.3, against the whole on the frame with `y` reversed, `z`
+    reversed or both, either operand first: every operation valid, the
+    union the whole's closed form and the rest the dented solid's own
+    volume, to 1.1e-10.
+
 - **A revolution band between rims on a left-handed frame, or rims
   reversed.** (#484)
   - `make_revolution_band` read which way a rim runs round the surface

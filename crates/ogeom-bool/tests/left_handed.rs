@@ -1,6 +1,7 @@
-//! Booleans between solids on surfaces of opposite handedness: one solid's
-//! wall on a right-handed frame, the other's on the same surface spelled on
-//! a left-handed (mirrored) frame, whose angle runs the other way round.
+//! Booleans between solids on one surface spelled on two frames: one
+//! solid's wall on a right-handed frame, the other's on a left-handed
+//! (mirrored) frame, whose angle runs the other way round, or on a
+//! right-handed frame with its axis reversed.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
@@ -16,14 +17,17 @@ use ogeom_topo::{Model, Shape};
 
 const T: Tolerances = Tolerances::millimetres();
 
-/// The two left-handed spellings of a right-handed frame: `y` reversed,
-/// where the angle runs the other way round the same axis, and `z`
-/// reversed, where it runs the same way round an axis pointing the other
-/// way.
+/// Other spellings of a right-handed frame: the two left-handed ones, `y`
+/// reversed, where the angle runs the other way round the same axis, and
+/// `z` reversed, where it runs the same way round an axis pointing the
+/// other way; and the right-handed one turned half a turn about `x`, both
+/// `y` and `z` reversed, where the angle runs the other way round an axis
+/// pointing the other way.
 #[derive(Clone, Copy, Debug)]
 enum Mirror {
     Y,
     Z,
+    Turned,
 }
 
 impl Mirror {
@@ -31,21 +35,23 @@ impl Mirror {
         match self {
             Self::Y => f.mirrored(),
             Self::Z => Frame::from_axes(f.origin(), f.x(), f.y(), -f.z(), T).unwrap(),
+            Self::Turned => Frame::from_axes(f.origin(), f.x(), -f.y(), -f.z(), T).unwrap(),
         }
     }
 
-    /// A height window read on the mirrored frame.
+    /// A height window read on the other frame.
     fn heights(self, (lo, hi): (f64, f64)) -> (f64, f64) {
         match self {
             Self::Y => (lo, hi),
-            Self::Z => (-hi, -lo),
+            Self::Z | Self::Turned => (-hi, -lo),
         }
     }
 }
 
 /// The solid with every cylinder, cone, sphere and torus restated on the
-/// mirrored spelling of its frame, the same point set, and every circle
-/// on its left-handed spelling, the same point at every parameter.
+/// other spelling of its frame, the same point set, and for the
+/// left-handed spellings every circle on its left-handed spelling, the
+/// same point at every parameter.
 fn left_handed(model: &mut Model, solid: &Shape, mirror: Mirror) -> Shape {
     use SurfaceGeometry as S;
     let surface = |s: &S| -> OgeomResult<Option<(S, bool)>> {
@@ -61,7 +67,7 @@ fn left_handed(model: &mut Model, solid: &Shape, mirror: Mirror) -> Shape {
                 let c = c.cone();
                 let angle = match mirror {
                     Mirror::Y => c.half_angle(),
-                    Mirror::Z => -c.half_angle(),
+                    Mirror::Z | Mirror::Turned => -c.half_angle(),
                 };
                 let c = Cone::new(mirror.frame(c.frame()), c.reference_radius(), angle, T)?;
                 Some((ConeSurface::new(c, window)?.into(), true))
@@ -86,7 +92,7 @@ fn left_handed(model: &mut Model, solid: &Shape, mirror: Mirror) -> Shape {
     };
     let curve = |c: &Curve, range: (f64, f64)| -> OgeomResult<Option<(Curve, (f64, f64))>> {
         Ok(match c {
-            Curve::Circle(c) if !c.is_reversed() => {
+            Curve::Circle(c) if !c.is_reversed() && !matches!(mirror, Mirror::Turned) => {
                 let circle = c.circle();
                 let frame = Mirror::Z.frame(circle.frame());
                 let circle = Circle::new(frame, circle.radius(), T)?;
@@ -98,7 +104,7 @@ fn left_handed(model: &mut Model, solid: &Shape, mirror: Mirror) -> Shape {
     let restated = ogeom_algo::restate_geometry(model, solid, &surface, &curve, T)
         .unwrap()
         .shape;
-    assert_valid(model, &restated, "the left-handed spelling");
+    assert_valid(model, &restated, "the other spelling");
     restated
 }
 
@@ -179,12 +185,14 @@ fn coaxial_drums_of_opposite_handedness_overlapping_along_the_axis() {
 
 /// A cylinder, a cone frustum, a ball and a torus, each dented by a small
 /// ball off its axis, so its wall carries a fitted section, against the
-/// whole solid spelled on the frame with `y` reversed, its axis kept (the
-/// drum also slid half a unit up it). The union is the whole solid's
-/// closed form, the overlap the dented solid's volume less what lies below
-/// the slid drum, and the whole less the dented solid what remains.
+/// whole solid spelled on each other frame: `y` reversed, its axis kept,
+/// or its axis reversed on a left-handed or a right-handed frame (the drum
+/// also slid half a unit up it). Either operand first. The union is the
+/// whole solid's closed form, the overlap the dented solid's volume less
+/// what lies below the slid drum, and the whole less the dented solid what
+/// remains.
 #[test]
-fn a_dented_quadric_against_the_whole_on_a_mirrored_frame() {
+fn a_dented_quadric_against_the_whole_on_another_frame() {
     let frustum = PI * 2.0 / 3.0 * (1.0 + 0.5 + 0.25);
     let cases: [(&str, f64, Point, f64); 5] = [
         ("drum", 0.0, Point::new(1.0, 0.0, 1.0), 2.0 * PI),
@@ -198,8 +206,10 @@ fn a_dented_quadric_against_the_whole_on_a_mirrored_frame() {
             2.0 * PI * PI * 2.0 * 0.25,
         ),
     ];
-    let mirror = Mirror::Y;
-    for (kind, slide, dent_at, whole) in cases {
+    for (mirror, (kind, slide, dent_at, whole)) in [Mirror::Y, Mirror::Z, Mirror::Turned]
+        .into_iter()
+        .flat_map(|mirror| cases.map(|case| (mirror, case)))
+    {
         let mut model = Model::new();
         let m = &mut model;
         let solid = match kind {
@@ -227,13 +237,10 @@ fn a_dented_quadric_against_the_whole_on_a_mirrored_frame() {
         // it; the dent lies within both.
         let overlap = kept - PI * slide;
         let union = whole + PI * slide;
+        let case = format!("{mirror:?} spelling, {kind}");
         let want = [union, overlap, kept - overlap, whole - overlap];
-        assert_ops(
-            m,
-            &dented,
-            &other,
-            want,
-            &format!("{mirror:?} mirror, {kind}"),
-        );
+        assert_ops(m, &dented, &other, want, &case);
+        let want = [union, overlap, whole - overlap, kept - overlap];
+        assert_ops(m, &other, &dented, want, &format!("{case}, whole first"));
     }
 }
