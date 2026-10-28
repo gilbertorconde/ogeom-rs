@@ -2041,7 +2041,13 @@ fn on_cone(
             if local.x.hypot(local.y) <= tol.confusion() {
                 return None;
             }
-            let u = local.y.atan2(local.x).rem_euclid(tau);
+            // The chart's point at angle `u` and height `z` stands at the
+            // radius `radius_at(z)` along `u`'s direction, and past the apex
+            // that radius runs negative: a point on the far nappe is on the
+            // column half a turn from its own bearing. The whole ruling,
+            // through the apex or not, is that one column.
+            let side = cone.radius_at(local.z).signum();
+            let u = (local.y * side).atan2(local.x * side).rem_euclid(tau);
             // Same-parameter exactly: a degree-one spline over the used
             // range maps t linearly onto the chart column, whatever rate
             // the slant climbs at.
@@ -4312,6 +4318,62 @@ mod tests {
         let curve = Curve::from(TrimmedCurve::new(line, 10.0, 30.0, T).unwrap()).reversed();
         let pcurve = exact_pcurve_of(&curve, &surface, T).expect("a ruling inverts");
         lifts_onto(&curve, &pcurve, curve.domain(), &surface);
+    }
+
+    /// A ruling past a cone's apex lies on the far nappe, where the chart's
+    /// radius runs negative, so its chart column is half a turn from its own
+    /// bearing there. The ruling is used wholly on either side of the apex,
+    /// through the apex with its farther end on either side, from an origin
+    /// stated past the apex on the side it does not use, and run backwards.
+    /// Each lifts onto its line at the same parameter, on a cone widening up
+    /// its axis and on one narrowing.
+    #[test]
+    fn a_ruling_past_the_apex_has_its_pcurve_on_its_own_nappe() {
+        use ogeom_geom::{ConeSurface, Reversible as _};
+        let frame = Frame::new(
+            Point::new(1.0, -2.0, 0.5),
+            Direction::new(Vector::new(0.2, -0.3, 1.0), T).unwrap(),
+            Direction::from_cross(Vector::new(0.2, -0.3, 1.0), Vector::new(0.0, 1.0, 0.0), T)
+                .unwrap(),
+            T,
+        )
+        .unwrap();
+        for half_angle in [core::f64::consts::FRAC_PI_4, -core::f64::consts::FRAC_PI_6] {
+            let cone = ogeom_math::Cone::new(frame, 3.0, half_angle, T).unwrap();
+            let surface: SurfaceGeometry = ConeSurface::new(cone, (-200.0, 200.0)).unwrap().into();
+            // The column at angle 0.3, climbing the chart's height: through
+            // the apex at the height where the radius is zero.
+            let u = 0.3_f64;
+            let (x, y, z) = (frame.x().vector(), frame.y().vector(), frame.z().vector());
+            let bearing = x * u.cos() + y * u.sin();
+            let apex = frame.origin() + z * (-3.0 / half_angle.tan());
+            let up = Direction::new(bearing * half_angle.tan() + z, T).unwrap();
+            let stated = |origin: f64, range: (f64, f64)| -> Curve {
+                let at = apex + up.vector() * origin;
+                ogeom_geom::LineCurve::over(
+                    ogeom_math::Axis::new(at, up),
+                    range.0 - origin,
+                    range.1 - origin,
+                )
+                .unwrap()
+                .into()
+            };
+            let lines = [
+                stated(0.0, (5.0, 40.0)),
+                stated(0.0, (-40.0, -5.0)),
+                stated(0.0, (-10.0, 30.0)),
+                stated(0.0, (-30.0, 10.0)),
+                stated(60.0, (-40.0, -5.0)),
+                stated(-60.0, (5.0, 40.0)),
+                stated(0.0, (-30.0, 10.0)).reversed(),
+                stated(0.0, (-40.0, -5.0)).reversed(),
+            ];
+            for line in &lines {
+                let range = line.domain();
+                let pcurve = exact_pcurve_over(line, range, &surface, T).expect("a ruling inverts");
+                lifts_onto(line, &pcurve, range, &surface);
+            }
+        }
     }
 
     /// A curve drawn on a plane under another chart has its pcurve in the

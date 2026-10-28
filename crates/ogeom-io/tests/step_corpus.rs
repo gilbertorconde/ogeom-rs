@@ -175,6 +175,79 @@ END-ISO-10303-21;
     }
 }
 
+/// A cone walked from its apex to its rim on the far nappe of its surface.
+///
+/// The conical surface sits at the origin with radius 1 and half-angle π/4,
+/// so its apex is at `z = -1`, and the face runs from there down to the rim
+/// at `z = -2`. There the chart's radius `1 + z` is negative, so the slant
+/// line to the rim's point `(1, 0, -2)` is the chart column at angle π, half
+/// a turn from its own bearing. Read back, the solid is valid and holds the
+/// closed-form volume of a cone of radius 1 and height 1, π/3.
+#[test]
+fn a_cone_on_the_far_nappe_of_its_surface_reads_valid() {
+    let text = r#"ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('far nappe','2026-10-28',(''),(''),'','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+#1=CARTESIAN_POINT('',(0.,0.,0.));
+#2=DIRECTION('',(0.,0.,1.));
+#3=DIRECTION('',(1.,0.,0.));
+#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);
+#5=CONICAL_SURFACE('',#4,1.,0.7853981633974483);
+#6=CARTESIAN_POINT('',(0.,0.,-2.));
+#7=AXIS2_PLACEMENT_3D('',#6,#2,#3);
+#8=PLANE('',#7);
+#9=CARTESIAN_POINT('',(0.,0.,-1.));
+#10=CARTESIAN_POINT('',(1.,0.,-2.));
+#11=VERTEX_POINT('',#9);
+#12=VERTEX_POINT('',#10);
+#13=DIRECTION('',(0.7071067811865476,0.,-0.7071067811865476));
+#14=VECTOR('',#13,1.);
+#15=LINE('',#9,#14);
+#16=CIRCLE('',#7,1.);
+#17=EDGE_CURVE('',#11,#12,#15,.T.);
+#18=EDGE_CURVE('',#12,#12,#16,.T.);
+#19=ORIENTED_EDGE('',*,*,#17,.T.);
+#20=ORIENTED_EDGE('',*,*,#18,.T.);
+#21=ORIENTED_EDGE('',*,*,#17,.F.);
+#22=EDGE_LOOP('',(#19,#20,#21));
+#23=FACE_OUTER_BOUND('',#22,.T.);
+#24=ADVANCED_FACE('',(#23),#5,.T.);
+#25=ORIENTED_EDGE('',*,*,#18,.F.);
+#26=EDGE_LOOP('',(#25));
+#27=FACE_OUTER_BOUND('',#26,.T.);
+#28=ADVANCED_FACE('',(#27),#8,.F.);
+#29=CLOSED_SHELL('',(#24,#28));
+#30=MANIFOLD_SOLID_BREP('',#29);
+ENDSEC;
+END-ISO-10303-21;
+"#;
+    let import = ogeom_io::read_step(text, T).unwrap();
+    assert_eq!(import.solids.len(), 1);
+    let model = import.document.model();
+    let solid = &import.solids[0];
+    let found = ogeom_algo::check(model, solid, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let volume = ogeom_algo::volume_properties(
+        model,
+        solid,
+        ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    // Integrated on the exact surfaces, the volume differs from the closed
+    // form by quadrature rounding alone.
+    let want = core::f64::consts::PI / 3.0;
+    assert!(
+        (volume.mass - want).abs() <= 1e-9 * want,
+        "{} against {want}",
+        volume.mass
+    );
+}
+
 /// A determinate progress bar's contract: reading a file with N solids
 /// announces `step: solid` exactly N times, as `(1, N) … (N, N)`.
 ///

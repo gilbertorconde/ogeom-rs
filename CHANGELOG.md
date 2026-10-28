@@ -832,6 +832,20 @@ bump may break the API and a patch bump may not.
     - The diamond prism, full turn and 1.5π turn with reversed arc,
       trimmed arc and hyperbola sides read back valid, within 1e-9 of
       their closed-form volumes.
+- **A ruling past a cone's apex is charted on its own nappe.** (#473)
+  - Past the apex, the cone's chart radius runs negative, so a point on
+    the far nappe stands on the column half a turn from its own bearing.
+    The pcurve of a line on a cone took the bearing of the farther end of
+    its used range, whichever nappe that end lay on. So a ruling on the
+    far nappe, or one through the apex reaching farther past it, was
+    charted half a turn away, and lifted onto its mirror through the
+    axis.
+  - The column now turns with the sign of the radius at that end. The
+    whole ruling, through the apex or not, is that one column.
+  - A STEP cone whose face lies on the far nappe of its conical surface
+    read back as a solid `check` rejected ("has a pcurve that leaves its
+    curve by 1.414"), with volume 0.531 against π/3. It now reads valid,
+    within 1e-9 of π/3.
 
 - **A wall leaving a plane shallowly along its border meets it there.**
   (#469)
