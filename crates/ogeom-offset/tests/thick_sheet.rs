@@ -130,6 +130,15 @@ fn saddle(model: &mut Model) -> (Shape, SurfaceGeometry) {
 /// The saddle, with a hole where the chart circle of the given centre
 /// and radius lies.
 fn saddle_with(model: &mut Model, hole: Option<(Point2, f64)>) -> (Shape, SurfaceGeometry) {
+    saddle_built(model, hole, false)
+}
+
+/// The saddle, with the given hole, built bare by `make_face` when `bare`.
+fn saddle_built(
+    model: &mut Model,
+    hole: Option<(Point2, f64)>,
+    bare: bool,
+) -> (Shape, SurfaceGeometry) {
     let n = 21;
     let rows: Vec<Vec<Point>> = (0..n)
         .map(|j| {
@@ -172,6 +181,16 @@ fn saddle_with(model: &mut Model, hole: Option<(Point2, f64)>) -> (Shape, Surfac
         )));
         let edge = make_edge(model, traced, (0.0, 2.0 * PI), T).unwrap().shape;
         wires.push(vec![edge.reversed()]);
+    }
+    if bare {
+        let rings: Vec<Shape> = wires
+            .iter()
+            .map(|ring| ogeom_algo::make_wire(model, ring, T).unwrap().shape)
+            .collect();
+        let face = ogeom_algo::make_face(model, geometry.clone(), &rings, T)
+            .unwrap()
+            .shape;
+        return (face, geometry);
     }
     let face = make_face_with_pcurves(model, geometry.clone(), &wires, T)
         .unwrap()
@@ -1269,4 +1288,370 @@ fn offset_and_thickened_sheets_state_their_pcurves_gaps() {
     held(&model, &thick, "thickened saddle");
     let moved = offset_sheet(&mut model, &face, 1.0, T).unwrap().shape;
     held(&model, &moved, "offset saddle");
+}
+
+/// A face straight from `make_face`: its edges carry no pcurves.
+fn bare_face(model: &mut Model, surface: SurfaceGeometry, ring: &[Shape]) -> Shape {
+    let wire = ogeom_algo::make_wire(model, ring, T).unwrap().shape;
+    ogeom_algo::make_face(model, surface, &[wire], T)
+        .unwrap()
+        .shape
+}
+
+fn area(model: &Model, shape: &Shape) -> f64 {
+    ogeom_algo::surface_properties(model, shape, Deflection::default(), T)
+        .unwrap()
+        .mass
+}
+
+/// The square [0, 10]^2 in z = 0, built bare.
+fn bare_square(model: &mut Model) -> Shape {
+    let wire = make_polygon(
+        model,
+        &[
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(0.0, 10.0, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom_algo::make_face(
+        model,
+        PlaneSurface::new(Plane::new(Frame::WORLD)).into(),
+        &[wire],
+        T,
+    )
+    .unwrap()
+    .shape
+}
+
+/// A circle of `radius` about z at height `z`, its edge between the
+/// angles `from` and `to` (longitude) from `a` to `b`.
+fn parallel(
+    model: &mut Model,
+    radius: f64,
+    z: f64,
+    (from, to): (f64, f64),
+    (a, b): (&Shape, &Shape),
+) -> Shape {
+    let frame = Frame::new(Point::new(0.0, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+    let circle: Curve = CircleCurve::new(Circle::new(frame, radius, T).unwrap()).into();
+    make_edge_between(model, circle, (from, to), a, b, T)
+        .unwrap()
+        .shape
+}
+
+/// The cylinder of radius 10 about z between the angles 0.3 and 1.8,
+/// from z = 0 to 5, built bare.
+fn bare_cylinder_patch(model: &mut Model) -> Shape {
+    let (r, h, from, to) = (10.0, 5.0, 0.3_f64, 1.8_f64);
+    let corner = |angle: f64, z: f64| Point::new(r * angle.cos(), r * angle.sin(), z);
+    let v = [
+        make_vertex(model, corner(from, 0.0)).shape,
+        make_vertex(model, corner(to, 0.0)).shape,
+        make_vertex(model, corner(to, h)).shape,
+        make_vertex(model, corner(from, h)).shape,
+    ];
+    let line = |model: &mut Model, a: &Shape, b: &Shape, p: Point, q: Point| {
+        let segment: Curve = LineCurve::segment(p, q, T).unwrap().into();
+        make_edge_between(model, segment, (0.0, p.distance(q)), a, b, T)
+            .unwrap()
+            .shape
+    };
+    let bottom = parallel(model, r, 0.0, (from, to), (&v[0], &v[1]));
+    let top = parallel(model, r, h, (from, to), (&v[3], &v[2]));
+    let left = line(model, &v[1], &v[2], corner(to, 0.0), corner(to, h));
+    let right = line(model, &v[0], &v[3], corner(from, 0.0), corner(from, h));
+    let cylinder =
+        CylinderSurface::new(Cylinder::new(Frame::WORLD, r, T).unwrap(), (-1.0, h + 1.0)).unwrap();
+    bare_face(
+        model,
+        cylinder.into(),
+        &[bottom, left, top.reversed(), right.reversed()],
+    )
+}
+
+/// The patch of the sphere of radius 10 about the origin between the
+/// longitudes 0 and pi / 2 and the latitudes 0.2 and 0.9, built bare: two
+/// meridian arcs and two parallels.
+fn bare_sphere_patch(model: &mut Model) -> Shape {
+    use ogeom_geom::SphereSurface;
+    use ogeom_math::Sphere;
+    let (r, lat0, lat1) = (10.0_f64, 0.2_f64, 0.9_f64);
+    let at = |lon: f64, lat: f64| {
+        Point::new(
+            r * lat.cos() * lon.cos(),
+            r * lat.cos() * lon.sin(),
+            r * lat.sin(),
+        )
+    };
+    let v = [
+        make_vertex(model, at(0.0, lat0)).shape,
+        make_vertex(model, at(FRAC_PI_2, lat0)).shape,
+        make_vertex(model, at(FRAC_PI_2, lat1)).shape,
+        make_vertex(model, at(0.0, lat1)).shape,
+    ];
+    let meridian = |model: &mut Model, lon: f64, a: &Shape, b: &Shape| {
+        let x = Direction::new(Vector::new(lon.cos(), lon.sin(), 0.0), T).unwrap();
+        let y = Direction::new(Vector::new(-lon.sin(), lon.cos(), 0.0), T).unwrap();
+        let circle =
+            Circle::new(Frame::new(Point::ORIGIN, y.reversed(), x, T).unwrap(), r, T).unwrap();
+        make_edge_between(
+            model,
+            CircleCurve::new(circle).into(),
+            (lat0, lat1),
+            a,
+            b,
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let south = parallel(
+        model,
+        r * lat0.cos(),
+        r * lat0.sin(),
+        (0.0, FRAC_PI_2),
+        (&v[0], &v[1]),
+    );
+    let north = parallel(
+        model,
+        r * lat1.cos(),
+        r * lat1.sin(),
+        (0.0, FRAC_PI_2),
+        (&v[3], &v[2]),
+    );
+    let east = meridian(model, FRAC_PI_2, &v[1], &v[2]);
+    let west = meridian(model, 0.0, &v[0], &v[3]);
+    bare_face(
+        model,
+        SphereSurface::new(Sphere::new(Frame::WORLD, r, T).unwrap()).into(),
+        &[south, east, north.reversed(), west.reversed()],
+    )
+}
+
+#[test]
+fn a_bare_plane_offsets_and_thickens() {
+    let mut model = Model::new();
+    let face = bare_square(&mut model);
+    let moved = offset_sheet(&mut model, &face, 1.5, T).unwrap().shape;
+    assert_valid(&model, &moved);
+    let got = area(&model, &moved);
+    assert!((got - 100.0).abs() < 1e-9, "{got} against 100");
+    assert!((z_range(&model, &moved).0 - 1.5).abs() < 1e-12);
+    for both in [false, true] {
+        let solid = make_thick_sheet(&mut model, &face, 2.0, both, T)
+            .unwrap()
+            .shape;
+        assert_valid(&model, &solid);
+        let got = volume(&model, &solid);
+        assert!((got - 200.0).abs() < 1e-9, "{got} against 200");
+    }
+}
+
+#[test]
+fn a_bare_cylinder_patch_offsets_and_thickens() {
+    // A sector of angle a on a cylinder of radius r and height h: area
+    // a r h; the shell between r and r + t, a h ((r + t)^2 - r^2) / 2.
+    let (a, r, h) = (1.5_f64, 10.0_f64, 5.0_f64);
+    let mut model = Model::new();
+    let face = bare_cylinder_patch(&mut model);
+    for d in [2.0, -2.0] {
+        let moved = offset_sheet(&mut model, &face, d, T).unwrap().shape;
+        assert_valid(&model, &moved);
+        let want = a * (r + d) * h;
+        let got = area(&model, &moved);
+        assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+    }
+    for (t, both, (inner, outer)) in [
+        (1.0, false, (r, r + 1.0)),
+        (-1.0, false, (r - 1.0, r)),
+        (2.0, true, (r - 1.0, r + 1.0)),
+    ] {
+        let solid = make_thick_sheet(&mut model, &face, t, both, T)
+            .unwrap()
+            .shape;
+        assert_valid(&model, &solid);
+        let want = a * h * (outer * outer - inner * inner) / 2.0;
+        let got = volume(&model, &solid);
+        assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+    }
+}
+
+#[test]
+fn a_bare_sphere_patch_offsets_and_thickens() {
+    // Between longitudes 0 and a and latitudes p and q on a ball of
+    // radius r: area a r^2 (sin q - sin p); the shell between r and s,
+    // a (s^3 - r^3) (sin q - sin p) / 3.
+    let (a, r) = (FRAC_PI_2, 10.0_f64);
+    let band = 0.9_f64.sin() - 0.2_f64.sin();
+    let mut model = Model::new();
+    let face = bare_sphere_patch(&mut model);
+    for d in [3.0, -3.0] {
+        let moved = offset_sheet(&mut model, &face, d, T).unwrap().shape;
+        assert_valid(&model, &moved);
+        let want = a * (r + d) * (r + d) * band;
+        let got = area(&model, &moved);
+        assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+    }
+    for (t, both, (inner, outer)) in [(1.0, false, (r, r + 1.0)), (2.0, true, (r - 1.0, r + 1.0))] {
+        let solid = make_thick_sheet(&mut model, &face, t, both, T)
+            .unwrap()
+            .shape;
+        assert_valid(&model, &solid);
+        let want = a * (outer.powi(3) - inner.powi(3)) * band / 3.0;
+        let got = volume(&model, &solid);
+        assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+    }
+}
+
+#[test]
+fn a_bare_drum_band_thickens_across_its_seam() {
+    // The band of the cylinder of radius r about z from 0 to h, closed
+    // by one seam walked both ways: area 2 pi r h; thickened by t, the
+    // tube of volume pi ((r + t)^2 - r^2) h.
+    let (r, h, t) = (4.0_f64, 6.0_f64, 1.0_f64);
+    let mut model = Model::new();
+    let low = make_vertex(&mut model, Point::new(r, 0.0, 0.0)).shape;
+    let high = make_vertex(&mut model, Point::new(r, 0.0, h)).shape;
+    let bottom = parallel(&mut model, r, 0.0, (0.0, 2.0 * PI), (&low, &low));
+    let top = parallel(&mut model, r, h, (0.0, 2.0 * PI), (&high, &high));
+    let segment: Curve = LineCurve::segment(Point::new(r, 0.0, 0.0), Point::new(r, 0.0, h), T)
+        .unwrap()
+        .into();
+    let seam = make_edge_between(&mut model, segment, (0.0, h), &low, &high, T)
+        .unwrap()
+        .shape;
+    let cylinder =
+        CylinderSurface::new(Cylinder::new(Frame::WORLD, r, T).unwrap(), (-1.0, h + 1.0)).unwrap();
+    let face = bare_face(
+        &mut model,
+        cylinder.into(),
+        &[bottom, seam.clone(), top.reversed(), seam.reversed()],
+    );
+    let moved = offset_sheet(&mut model, &face, t, T).unwrap().shape;
+    assert_valid(&model, &moved);
+    let want = 2.0 * PI * (r + t) * h;
+    let got = area(&model, &moved);
+    assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+    let tube = make_thick_sheet(&mut model, &face, t, false, T)
+        .unwrap()
+        .shape;
+    assert_valid(&model, &tube);
+    let want = PI * ((r + t).powi(2) - r * r) * h;
+    let got = volume(&model, &tube);
+    assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+}
+
+#[test]
+fn a_bare_fitted_saddle_thickens_and_states_its_fitted_pcurves() {
+    // A face on a B-spline whose border edges carry no pcurves: the
+    // offset's pcurves are charted from the border, and each moved edge
+    // states how far its pcurves stand off it.
+    let mut model = Model::new();
+    let (face, original) = saddle_built(&mut model, None, true);
+    let t = 0.8;
+    let solid = make_thick_sheet(&mut model, &face, t, true, T)
+        .unwrap()
+        .shape;
+    assert_valid(&model, &solid);
+    let want = over_saddle(&original, None, &|u, v| {
+        let k = original.curvature_at(u, v, T).unwrap().gaussian();
+        t + t.powi(3) * k / 12.0
+    });
+    let got = volume(&model, &solid);
+    assert!((got - want).abs() < want * 1e-5, "{got} against {want}");
+    let moved = offset_sheet(&mut model, &face, 1.0, T).unwrap().shape;
+    assert_valid(&model, &moved);
+    for shape in [&solid, &moved] {
+        for edge in ogeom_topo::explore_unique(&model, shape, ShapeType::Edge).unwrap() {
+            let stated = model
+                .node(&edge)
+                .unwrap()
+                .data()
+                .as_edge()
+                .unwrap()
+                .tolerance
+                .get();
+            if let Some(gap) = ogeom_algo::edge_pcurve_gap(&model, &edge, T).unwrap() {
+                assert!(
+                    gap <= stated,
+                    "a pcurve stands {gap:e} off an edge stating {stated:e}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_bare_cylinder_patch_with_a_hole_a_period_away_thickens() {
+    // The patch between the angles -0.75 and 0.75, z from 0 to 5, with a
+    // window between the angles -0.3 and 0.3, z from 2 to 3, whose arcs
+    // run one turn on, from 2 pi - 0.3: the window's chart images land a
+    // period from the boundary's and are carried onto its branch.
+    let (r, h, t) = (10.0_f64, 5.0_f64, 1.0_f64);
+    let mut model = Model::new();
+    let ring = |model: &mut Model, (from, to): (f64, f64), (z0, z1): (f64, f64)| {
+        let corner = |angle: f64, z: f64| Point::new(r * angle.cos(), r * angle.sin(), z);
+        let v = [
+            make_vertex(model, corner(from, z0)).shape,
+            make_vertex(model, corner(to, z0)).shape,
+            make_vertex(model, corner(to, z1)).shape,
+            make_vertex(model, corner(from, z1)).shape,
+        ];
+        let line = |model: &mut Model, a: &Shape, b: &Shape, p: Point, q: Point| {
+            let segment: Curve = LineCurve::segment(p, q, T).unwrap().into();
+            make_edge_between(model, segment, (0.0, p.distance(q)), a, b, T)
+                .unwrap()
+                .shape
+        };
+        let bottom = parallel(model, r, z0, (from, to), (&v[0], &v[1]));
+        let top = parallel(model, r, z1, (from, to), (&v[3], &v[2]));
+        let left = line(model, &v[1], &v[2], corner(to, z0), corner(to, z1));
+        let right = line(model, &v[0], &v[3], corner(from, z0), corner(from, z1));
+        vec![bottom, left, top.reversed(), right.reversed()]
+    };
+    let outer = ring(&mut model, (-0.75, 0.75), (0.0, h));
+    let window = ring(&mut model, (2.0 * PI - 0.3, 2.0 * PI + 0.3), (2.0, 3.0));
+    let hole: Vec<Shape> = window.iter().rev().map(Shape::reversed).collect();
+    let outer = ogeom_algo::make_wire(&mut model, &outer, T).unwrap().shape;
+    let hole = ogeom_algo::make_wire(&mut model, &hole, T).unwrap().shape;
+    let cylinder =
+        CylinderSurface::new(Cylinder::new(Frame::WORLD, r, T).unwrap(), (-1.0, h + 1.0)).unwrap();
+    let face = ogeom_algo::make_face(&mut model, cylinder.into(), &[outer, hole], T)
+        .unwrap()
+        .shape;
+    let solid = make_thick_sheet(&mut model, &face, t, false, T)
+        .unwrap()
+        .shape;
+    assert_valid(&model, &solid);
+    let want = (1.5 * h - 0.6 * 1.0) * ((r + t).powi(2) - r * r) / 2.0;
+    let got = volume(&model, &solid);
+    assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+
+    // On the moved face, window and boundary read in one stretch of the
+    // chart, the 1.5 radians the patch spans.
+    let moved = offset_sheet(&mut model, &face, t, T).unwrap().shape;
+    assert_valid(&model, &moved);
+    let Some(NodeData::Face(data)) = model.node(&moved).map(|n| n.data().clone()) else {
+        panic!("the offset is not a face");
+    };
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for edge in ogeom_topo::explore_unique(&model, &moved, ShapeType::Edge).unwrap() {
+        let edge_data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::PCurve { curve, range, .. }) = edge_data.pcurve_on(data.surface) else {
+            panic!("an edge of the moved face has no pcurve on it");
+        };
+        let pcurve = model.geometry().pcurve(*curve).unwrap();
+        for k in 0..=8 {
+            let s = range.0 + (range.1 - range.0) * f64::from(k) / 8.0;
+            let u = ogeom_geom::Curve2d::point_at(pcurve, s, T).unwrap().x;
+            (lo, hi) = (lo.min(u), hi.max(u));
+        }
+    }
+    assert!(hi - lo < 1.5 + 1e-9, "the chart images span [{lo}, {hi}]");
 }

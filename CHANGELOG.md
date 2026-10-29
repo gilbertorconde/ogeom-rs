@@ -1189,6 +1189,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sheet built without pcurves offsets and thickens valid.** (#506)
+  - `offset_sheet` and `make_thick_sheet` on an unplaced face from
+    `make_face`, whose edges carry no pcurves, returned a sheet or solid
+    that `check` reported broken: every moved edge bounded a face it had
+    no pcurve on (a plane, a cylinder and a sphere patch alike).
+  - The sheet's reader now charts each edge use that has no pcurve from
+    the edge's curve, exact where the surface has a closed form (lines and
+    circles on planes, cylinders, cones, spheres and tori) and fitted by
+    projection otherwise. On a periodic chart each image is carried onto
+    the branch the ring's walk reaches it on, a seam getting one image
+    per sense, and a ring charted wholly so is carried onto the first
+    ring's branch. The moved edges carry these images over as they carry
+    stored ones, and a fitted image's measured gap is stated as the moved
+    edge's tolerance. The input is not modified.
+  - A plane, cylinder and sphere patch offset to the area and thicken to
+    the volume of their closed forms; a seamed drum band, a cylinder
+    patch with a window charted a period away, and a fitted saddle check
+    clean too.
+
 - **Profiles, sections and paths are read where they are placed.** (#504)
   - `make_helical_sweep`, `make_loft` to a point, `make_pipe_sections`,
     `make_evolved`, `place_on_spine`, `make_filling`, `offset_wire`,

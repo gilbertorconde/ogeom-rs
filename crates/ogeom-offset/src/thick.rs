@@ -393,7 +393,11 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
     let mut edges: Vec<SheetEdge> = Vec::new();
     let mut edge_index: FastMap<TShapeId, usize> = FastMap::default();
     for (fi, face) in faces.iter().enumerate() {
+        // Where the face's first ring lies in a periodic chart: the branch
+        // a ring charted here from its curves alone is carried onto.
+        let mut first_ring: Option<(Point2, Point2)> = None;
         for (wire_sense, list) in &face.wires {
+            let mut ring: Vec<RingUse> = Vec::with_capacity(list.len());
             for (edge_node, edge_sense) in list {
                 let sense = wire_sense.compose(*edge_sense);
                 let index = if let Some(i) = edge_index.get(edge_node) {
@@ -427,7 +431,7 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
                     edge_index.insert(*edge_node, edges.len() - 1);
                     edges.len() - 1
                 };
-                let edge = &mut edges[index];
+                let edge = &edges[index];
                 let pcurve = match edge.data.pcurve_on(face.surface_id) {
                     Some(EdgeRepr::PCurve { curve, range, .. }) => model
                         .geometry()
@@ -452,10 +456,20 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
                 if pcurve.is_none() && edge.data.degenerate {
                     ogeom_bail!(Construction, "a pole edge has no pcurve to place it");
                 }
-                edge.uses.push(EdgeUse {
-                    face: fi,
+                ring.push(RingUse {
+                    edge: index,
+                    walked: *edge_sense,
                     sense,
                     pcurve,
+                    charted: false,
+                });
+            }
+            chart_bare_uses(&edges, face, &mut ring, &mut first_ring, tol)?;
+            for used in ring {
+                edges[used.edge].uses.push(EdgeUse {
+                    face: fi,
+                    sense: used.sense,
+                    pcurve: used.pcurve,
                 });
             }
         }
@@ -597,6 +611,118 @@ fn read_sheet(model: &mut Model, sheet: &Shape, tol: Tolerances) -> OgeomResult<
         vertices,
         prefix,
     })
+}
+
+/// One use of an edge by a ring of a face, in the ring's stored order.
+struct RingUse {
+    edge: usize,
+    /// The edge's sense in the ring as stored, which chains the ring.
+    walked: Orientation,
+    /// The edge's sense in the bare face.
+    sense: Orientation,
+    pcurve: Option<(PlanarCurve, (f64, f64))>,
+    /// Whether the pcurve was charted here from the edge's curve.
+    charted: bool,
+}
+
+/// Chart every use of `ring` whose edge carries no pcurve on `face` (a
+/// face built bare, as `make_face` builds it) from the edge's curve: the
+/// closed-form image where the surface has one, and otherwise the
+/// projected fit, whose error the moved edge states once its pcurves are
+/// measured. On a periodic chart each image is carried by whole periods
+/// onto the branch where the ring's walk reaches it, from the previous
+/// use's end; a ring charted entirely here is then carried whole so the
+/// middle of the region it spans lies within half a period of the face's
+/// first ring's, as holes and outer boundary share one branch.
+fn chart_bare_uses(
+    edges: &[SheetEdge],
+    face: &SheetFace,
+    ring: &mut [RingUse],
+    first_ring: &mut Option<(Point2, Point2)>,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let surface = &face.surface;
+    let ends = |used: &RingUse| -> OgeomResult<Option<(Point2, Point2)>> {
+        let Some((p, range)) = &used.pcurve else {
+            return Ok(None);
+        };
+        let (a, b) = (p.point_at(range.0, tol)?, p.point_at(range.1, tol)?);
+        Ok(Some(if used.walked == Orientation::Reversed {
+            (b, a)
+        } else {
+            (a, b)
+        }))
+    };
+    let mut previous = match ring.last() {
+        Some(last) => ends(last)?.map(|(_, end)| end),
+        None => None,
+    };
+    let mut all_charted = true;
+    for used in ring.iter_mut() {
+        if used.pcurve.is_none()
+            && let Some((curve, range)) = &edges[used.edge].curve
+        {
+            let image = match ogeom_intersect::exact_pcurve_over(curve, *range, surface, tol) {
+                Some(exact) => exact,
+                None => {
+                    ogeom_algo::pcurve_fit::fit_projected_pcurve(curve, *range, surface, tol)?.0
+                }
+            };
+            let start = if used.walked == Orientation::Reversed {
+                range.1
+            } else {
+                range.0
+            };
+            let image = match previous {
+                Some(near) => on_branch(image, start, near, surface, tol)?,
+                None => image,
+            };
+            used.pcurve = Some((image, *range));
+            used.charted = true;
+        } else {
+            all_charted = false;
+        }
+        if let Some((_, end)) = ends(used)? {
+            previous = Some(end);
+        }
+    }
+    let periodic = surface.is_periodic_u() || surface.is_periodic_v();
+    let mut span: Option<(Point2, Point2)> = None;
+    for used in ring.iter() {
+        if let Some((p, range)) = &used.pcurve {
+            for k in 0..=8 {
+                let t = range.0 + (range.1 - range.0) * f64::from(k) / 8.0;
+                let uv = p.point_at(t, tol)?;
+                span = Some(match span {
+                    None => (uv, uv),
+                    Some((lo, hi)) => (
+                        Point2::new(lo.x.min(uv.x), lo.y.min(uv.y)),
+                        Point2::new(hi.x.max(uv.x), hi.y.max(uv.y)),
+                    ),
+                });
+            }
+        }
+    }
+    let Some(span) = span else {
+        return Ok(());
+    };
+    match *first_ring {
+        None => *first_ring = Some(span),
+        Some((lo, hi)) if periodic && all_charted => {
+            let middle =
+                |(a, b): (Point2, Point2)| Point2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+            let (want, have) = (middle((lo, hi)), middle(span));
+            for used in ring.iter_mut().filter(|u| u.charted) {
+                if let Some((p, range)) = used.pcurve.take() {
+                    let at = p.point_at(range.0, tol)?;
+                    let near = Point2::new(at.x + want.x - have.x, at.y + want.y - have.y);
+                    used.pcurve = Some((on_branch(p, range.0, near, surface, tol)?, range));
+                }
+            }
+        }
+        Some(_) => {}
+    }
+    Ok(())
 }
 
 /// Whether anything in the sheet stands away from its node: a placed
@@ -888,7 +1014,34 @@ fn moved_layer(
                     };
                     attach_seam(model, &built, f, r, sid, Location::identity(), *range)?;
                 }
-                _ => {}
+                // Charted from the edge's curve as the sheet was read: one
+                // image, or a seam's two, one for each sense it is walked.
+                _ => {
+                    let here: Vec<&EdgeUse> = edge
+                        .uses
+                        .iter()
+                        .filter(|u| surfaces[u.face].id == sid)
+                        .collect();
+                    let image = |sense: Orientation| {
+                        here.iter()
+                            .find(|u| u.sense == sense)
+                            .and_then(|u| u.pcurve.clone())
+                    };
+                    let seam = here.len() == 2 && here[0].face == here[1].face;
+                    match (
+                        seam,
+                        image(Orientation::Forward),
+                        image(Orientation::Reversed),
+                    ) {
+                        (true, Some((f, range)), Some((r, _))) => {
+                            attach_seam(model, &built, f, r, sid, Location::identity(), range)?;
+                        }
+                        (_, Some((p, range)), _) | (_, None, Some((p, range))) => {
+                            attach_pcurve(model, &built, p, sid, Location::identity(), range)?;
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         // The sheet's own slop moves with it.
