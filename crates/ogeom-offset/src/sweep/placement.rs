@@ -6,6 +6,13 @@
 //! the area it bounds): turned by the least rotation that stands its plane
 //! square to the spine's start tangent, and moved so its centroid lands on
 //! the spine's start point.
+//!
+//! A pipe shell may instead bring its profile into contact itself, as
+//! [`PipeContact`] asks: moved along its plane's normal onto the spine's
+//! start, and turned about that point square to the start tangent. That
+//! needs only the profile's plane, so it serves open wires as well as
+//! faces and closed wires, and it keeps the profile's offset from the
+//! spine within its plane.
 
 use ogeom_algo::{Built, find_plane, surface_properties};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -25,6 +32,39 @@ pub struct PipePlacement {
     /// Turn the profile about its centroid, by the least rotation, until
     /// its plane stands square to the spine's tangent at its start.
     pub correction: bool,
+}
+
+/// How a pipe shell brings its profile onto the spine before sweeping it,
+/// a rigid motion of the profile defined by the profile's plane and the
+/// spine's start alone.
+///
+/// The contact point is the foot of the spine's start point on the
+/// profile's plane. It is one point for any planar profile, an open wire
+/// as much as a face, and a face and its outer wire share it; the
+/// profile's own point nearest the start would not be (every point of a
+/// ring about the start is nearest at once, and a face's nearest point
+/// can lie inside it where its boundary's cannot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PipeContact {
+    /// The profile is swept where it stands: square to the spine at its
+    /// start and through the start point, or refused.
+    #[default]
+    AsPlaced,
+    /// The profile is moved, unturned, along its plane's normal by the
+    /// distance from its plane to the spine's start point, so that the
+    /// contact point lands on the start point. A profile already within
+    /// the confusion distance of the start is swept as it stands.
+    Contact,
+    /// As `Contact`, then the profile is turned about the spine's start
+    /// point by the least rotation standing its plane square to the
+    /// spine's start tangent: about the axis square to both, through the
+    /// angle between the tangent and the plane's normal taken whichever
+    /// way round the normal is nearer the tangent. A plane has no side, so
+    /// a normal pointing back along the tangent is already square and the
+    /// profile is not turned. A plane holding the tangent (to an angle's
+    /// tolerance) is a quarter turn from square either way round, and is
+    /// refused.
+    Correction,
 }
 
 /// A planar profile (a face, or a closed wire) moved rigidly onto the start
@@ -60,19 +100,10 @@ pub fn place_on_spine(
     let (start, tangent) = spine_start(model, spine, tol)?;
     let centre = centroid(model, profile, kind, &plane, tol)?;
     let mut motion = Transform::IDENTITY;
-    if placement.correction {
-        // The least rotation standing the plane square to the tangent turns
-        // whichever way round the plane faces nearer it.
-        let n = plane.normal().vector();
-        let n = if n.dot(tangent) < 0.0 { -n } else { n };
-        let axis = n.cross(tangent);
-        if axis.magnitude() > tol.angular() {
-            let about = Axis {
-                location: centre,
-                direction: Direction::new(axis, tol)?,
-            };
-            motion = Transform::rotation(about, axis.magnitude().atan2(n.dot(tangent)));
-        }
+    if placement.correction
+        && let Some(turn) = least_turn(plane.normal().vector(), tangent, centre, tol)?
+    {
+        motion = turn;
     }
     if placement.contact {
         motion = Transform::translation(start - centre) * motion;
@@ -84,6 +115,97 @@ pub fn place_on_spine(
     let mut built = Built::new(placed.clone(), ogeom_algo::History::new());
     built.history.modify(profile, placed);
     Ok(built)
+}
+
+/// The least rotation about `about` standing a plane of normal `normal`
+/// square to the unit `tangent`, or `None` where it stands square already
+/// to an angle's tolerance. The plane faces whichever way round is nearer
+/// the tangent.
+fn least_turn(
+    normal: Vector,
+    tangent: Vector,
+    about: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<Transform>> {
+    let n = if normal.dot(tangent) < 0.0 {
+        -normal
+    } else {
+        normal
+    };
+    let axis = n.cross(tangent);
+    if axis.magnitude() <= tol.angular() {
+        return Ok(None);
+    }
+    let about = Axis {
+        location: about,
+        direction: Direction::new(axis, tol)?,
+    };
+    Ok(Some(Transform::rotation(
+        about,
+        axis.magnitude().atan2(n.dot(tangent)),
+    )))
+}
+
+/// The profile a pipe shell sweeps under `contact`: `profile` itself where
+/// it is swept as placed or the motion moves nothing, else a fresh profile
+/// moved rigidly as [`PipeContact`] defines.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// the profile is not a planar wire or face, if the spine has no tangent
+/// at its start, or if a correction is asked of a profile whose plane
+/// holds the start tangent.
+pub(crate) fn profile_in_contact(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    contact: PipeContact,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    if contact == PipeContact::AsPlaced {
+        return Ok(profile.clone());
+    }
+    let kind = model.kind_of(profile)?;
+    if !matches!(kind, ShapeType::Face | ShapeType::Wire) {
+        ogeom_bail!(
+            Construction,
+            "a pipe shell sweeps a planar wire or face, not a {kind:?}"
+        );
+    }
+    let Some(plane) = find_plane(model, profile, tol)? else {
+        ogeom_bail!(
+            Construction,
+            "a profile is brought into contact along its plane's normal; this \
+             one is not planar"
+        );
+    };
+    let (start, tangent) = spine_start(model, spine, tol)?;
+    let normal = plane.normal().vector();
+    let shift = normal * (start - plane.origin()).dot(normal);
+    let mut motion = Transform::translation(shift);
+    let mut moves = shift.magnitude() > tol.confusion();
+    if contact == PipeContact::Correction {
+        if normal.dot(tangent).abs() <= tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "the profile's plane holds the spine's start tangent: a quarter \
+                 turn either way round stands it square, so its correction is \
+                 not one turn"
+            );
+        }
+        if let Some(turn) = least_turn(normal, tangent, start, tol)? {
+            motion = turn * motion;
+            moves = true;
+        }
+    }
+    if !moves {
+        return Ok(profile.clone());
+    }
+    match kind {
+        ShapeType::Face => realized_profile(model, profile, &motion, tol),
+        _ => moved_ring(model, profile, &motion, tol),
+    }
 }
 
 /// The spine's start point and its unit tangent there, in the direction

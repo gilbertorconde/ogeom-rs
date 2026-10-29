@@ -379,6 +379,7 @@ fn a_square_twisted_out_and_back_by_a_law_holds_the_prism_s_volume() {
     let laws = PipeLaws {
         scale: SpineLaw::Linear(1.0),
         twist: SpineLaw::Through(vec![(0.5, most), (1.0, 0.0)]),
+        ..PipeLaws::default()
     };
     let solid = make_pipe_shell_laws(
         &mut model,
@@ -441,6 +442,7 @@ fn a_disc_scaled_out_and_back_by_a_law_holds_its_slices_volume() {
     let laws = PipeLaws {
         scale: SpineLaw::Through(vec![(0.5, 2.0), (1.0, 1.0)]),
         twist: SpineLaw::Linear(0.0),
+        ..PipeLaws::default()
     };
     let solid = make_pipe_shell_laws(
         &mut model,
@@ -477,7 +479,11 @@ fn a_law_refuses_what_it_does_not_describe_by_name() {
             &profile,
             &spine,
             &PipeLaw::RotationMinimizing,
-            &PipeLaws { scale, twist },
+            &PipeLaws {
+                scale,
+                twist,
+                ..PipeLaws::default()
+            },
             PipeCorners::Mitre,
             SKIN,
             T,
@@ -585,6 +591,7 @@ fn a_square_scaled_round_a_sharp_corner_mitres_and_rounds_to_its_closed_form() {
         let laws = PipeLaws {
             scale: SpineLaw::Linear(s),
             twist: SpineLaw::Linear(0.0),
+            ..PipeLaws::default()
         };
         let solid = make_pipe_shell_laws(
             &mut model,
@@ -699,6 +706,7 @@ fn twisted_before_a_sharp_corner(theta: f64) {
     let laws = PipeLaws {
         scale: SpineLaw::Linear(1.0),
         twist: SpineLaw::Through(vec![(0.1, 0.0), (0.4, theta), (1.0, theta)]),
+        ..PipeLaws::default()
     };
     for (corners, want) in [
         (PipeCorners::Mitre, legs),
@@ -883,6 +891,7 @@ fn a_square_twisted_through_a_mitred_corner_holds_its_closed_form_and_mitre_face
         let laws = PipeLaws {
             scale: SpineLaw::Linear(1.0),
             twist: SpineLaw::Linear(total),
+            ..PipeLaws::default()
         };
         let solid = make_pipe_shell_laws(
             &mut model,
@@ -1018,6 +1027,7 @@ fn a_square_scaled_into_an_arc_at_an_extended_corner_holds_its_volume() {
         let laws = PipeLaws {
             scale: SpineLaw::Linear(s),
             twist: SpineLaw::Linear(0.0),
+            ..PipeLaws::default()
         };
         let solid = make_pipe_shell_laws(
             &mut model,
@@ -1094,6 +1104,7 @@ fn a_disc_scaled_by_a_function_holds_its_slices_volume_and_sections() {
     let laws = PipeLaws {
         scale: law_of(s),
         twist: SpineLaw::Linear(0.0),
+        ..PipeLaws::default()
     };
     let solid = make_pipe_shell_laws(
         &mut model,
@@ -1146,6 +1157,7 @@ fn a_square_twisted_by_a_function_holds_the_prism_s_volume_and_turns_its_section
     let laws = PipeLaws {
         scale: SpineLaw::Linear(1.0),
         twist: law_of(theta),
+        ..PipeLaws::default()
     };
     let solid = make_pipe_shell_laws(
         &mut model,
@@ -1221,10 +1233,12 @@ fn a_function_law_reads_as_the_law_it_gives() {
     let (v_linear, far_linear) = sweep(PipeLaws {
         scale: SpineLaw::Linear(0.5),
         twist: SpineLaw::Linear(PI / 2.0),
+        ..PipeLaws::default()
     });
     let (v_function, far_function) = sweep(PipeLaws {
         scale: law_of(|l| 1.0 - l / 2.0),
         twist: law_of(|l| PI / 2.0 * l),
+        ..PipeLaws::default()
     });
     let expected = scaled_volume(4.0 * a * a, h, 0.5);
     let bound = skin_bound(8.0 * a, h + PI / 2.0 * a * 2.0_f64.sqrt());
@@ -1253,7 +1267,11 @@ fn a_function_law_refuses_what_it_does_not_describe_by_name() {
             &profile,
             &spine,
             &PipeLaw::RotationMinimizing,
-            &PipeLaws { scale, twist },
+            &PipeLaws {
+                scale,
+                twist,
+                ..PipeLaws::default()
+            },
             PipeCorners::Mitre,
             SKIN,
             T,
@@ -1353,6 +1371,7 @@ fn a_square_scaled_by_a_function_round_a_sharp_corner_mitres_and_rounds_to_its_i
         let laws = PipeLaws {
             scale: law_of(sigma),
             twist: SpineLaw::Linear(0.0),
+            ..PipeLaws::default()
         };
         let solid = make_pipe_shell_laws(
             &mut model,

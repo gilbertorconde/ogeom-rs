@@ -1020,7 +1020,13 @@ of its disc. \
 `place_on_spine` brings a profile drawn elsewhere onto a spine's start \
 before a sweep, rigidly about its centroid: turned square to the start \
 tangent by the least rotation, moved so its centroid is the start point, \
-or both. The evolved sweep runs a profile along a planar spine, \
+or both. A pipe shell may bring its own profile on, as `PipeLaws::contact` \
+asks: `PipeContact::Contact` moves it along its plane's normal until its \
+plane runs through the start point (the start's foot on the plane is the \
+contact point, so an open wire is moved as a face is), and \
+`PipeContact::Correction` then turns it about the start by the least \
+rotation standing it square to the start tangent; a profile with no plane, \
+or whose plane holds the tangent, is refused by name. The evolved sweep runs a profile along a planar spine, \
 exactly, by composition. The pipe shell sweeps an arbitrary planar profile, \
 holes and all, along an open spine wire under a rotation-minimizing or \
 Frenet frame law, and it also sweeps a profile round a closed spine, smooth or faceted, holes \
@@ -1147,6 +1153,7 @@ symbols = [
     "ogeom_offset::PipeEvolution", "ogeom_offset::make_pipe_shell_laws",
     "ogeom_offset::PipeLaws", "ogeom_offset::SpineLaw", "ogeom_offset::SpineFunction",
     "ogeom_offset::place_on_spine", "ogeom_offset::PipePlacement",
+    "ogeom_offset::PipeContact",
 ]
 tests = [
     "crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs",

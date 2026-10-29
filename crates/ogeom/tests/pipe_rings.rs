@@ -479,6 +479,7 @@ fn a_square_twisted_round_a_circle_by_a_law_closes_on_its_symmetry() {
     let laws = PipeLaws {
         scale: SpineLaw::Linear(1.0),
         twist: SpineLaw::Through(vec![(0.5, lingered), (1.0, PI / 2.0)]),
+        ..PipeLaws::default()
     };
     let pipe = make_pipe_shell_laws(
         &mut model,
@@ -528,6 +529,7 @@ fn a_square_twisted_round_a_circle_by_a_function_closes_on_its_symmetry() {
             twist: SpineLaw::Function(SpineFunction::new(move |l| {
                 most * (PI * l / 2.0).sin().powi(2)
             })),
+            ..PipeLaws::default()
         };
         let pipe = make_pipe_shell_laws(
             &mut model,

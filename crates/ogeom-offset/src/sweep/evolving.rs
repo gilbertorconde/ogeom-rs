@@ -23,6 +23,7 @@ use ogeom_math::{Axis, Direction, Point, Transform};
 use ogeom_topo::{Filter, Model, Shape, ShapeType, VertexData, explore};
 
 use super::corners::law_cornered;
+use super::placement::{PipeContact, profile_in_contact};
 use super::{
     PipeCorners, PipeLaw, SpineStation, WalkCurve, closed_pipe_shell, closes_on_a_corner,
     densified, evenly_by, has_sharp_corner, law_loft, make_loft, make_pipe_shell_with, moved_ring,
@@ -95,7 +96,8 @@ impl PartialEq for SpineFunction {
 }
 
 /// How a pipe's section scales and twists along its spine, each by its
-/// own law of the share of the spine's length run.
+/// own law of the share of the spine's length run, and how its profile is
+/// brought onto the spine first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipeLaws {
     /// The section's scale about the spine; one at the start.
@@ -104,6 +106,20 @@ pub struct PipeLaws {
     /// spine, counter-clockwise about the direction of travel; naught at
     /// the start.
     pub twist: SpineLaw,
+    /// How the profile is moved onto the spine's start before it is
+    /// swept; as placed by default.
+    pub contact: PipeContact,
+}
+
+/// The section neither scaled nor twisted, its profile swept as placed.
+impl Default for PipeLaws {
+    fn default() -> Self {
+        Self {
+            scale: SpineLaw::Linear(1.0),
+            twist: SpineLaw::Linear(0.0),
+            contact: PipeContact::AsPlaced,
+        }
+    }
 }
 
 impl From<PipeEvolution> for PipeLaws {
@@ -111,6 +127,7 @@ impl From<PipeEvolution> for PipeLaws {
         Self {
             scale: SpineLaw::Linear(evolution.scale),
             twist: SpineLaw::Linear(evolution.twist),
+            contact: PipeContact::AsPlaced,
         }
     }
 }
@@ -672,6 +689,11 @@ pub fn make_pipe_shell_evolving(
 /// moves along is skinned, and round a closed spine it twists only, as a
 /// scale it is refused there.
 ///
+/// Where `laws.contact` asks, the profile is first moved rigidly onto the
+/// spine's start as [`PipeContact`] defines, and the moved profile is
+/// swept as above; the history records the given profile as generating
+/// the result.
+///
 /// Round sharp corners a face sweeps run by run as
 /// [`make_pipe_shell_with`] does, each corner turned as `corners` asks:
 /// each smooth run is swept under the laws over its share of the spine's
@@ -687,7 +709,9 @@ pub fn make_pipe_shell_evolving(
 /// law's shares do not rise strictly to one, a value is not finite, a
 /// scale law through values reaches naught or below, or a law given as a
 /// function does not give the start value at the spine's start or, as a
-/// scale, gives naught or below where it is read.
+/// scale, gives naught or below where it is read; and, where
+/// `laws.contact` moves the profile, if the profile is not planar, or its
+/// plane holds the spine's start tangent under a correction.
 #[allow(clippy::too_many_arguments)]
 pub fn make_pipe_shell_laws(
     model: &mut Model,
@@ -716,6 +740,24 @@ pub fn make_pipe_shell_laws(
         scale: Ramp::of(&laws.scale, 1.0, "scale")?,
         twist: Ramp::of(&laws.twist, 0.0, "twist")?,
     };
+    let placed = profile_in_contact(model, profile, spine, laws.contact, tol)?;
+    if placed != *profile {
+        let mut built = make_pipe_shell_laws(
+            model,
+            &placed,
+            spine,
+            law,
+            &PipeLaws {
+                contact: PipeContact::AsPlaced,
+                ..laws.clone()
+            },
+            corners,
+            tolerance,
+            tol,
+        )?;
+        built.history.generate(profile, built.shape.clone());
+        return Ok(built);
+    }
     if matches!(laws.scale, SpineLaw::Through(_) | SpineLaw::Function(_))
         && evolution.scale.least() <= 0.0
     {

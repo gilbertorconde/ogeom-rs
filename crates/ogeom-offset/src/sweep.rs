@@ -35,7 +35,7 @@ pub use evolving::{
     PipeEvolution, PipeLaws, SpineFunction, SpineLaw, make_pipe_shell_evolving,
     make_pipe_shell_laws,
 };
-pub use placement::{PipePlacement, place_on_spine};
+pub use placement::{PipeContact, PipePlacement, place_on_spine};
 
 /// Sweep a circular profile of `radius` along a spine edge or wire.
 ///

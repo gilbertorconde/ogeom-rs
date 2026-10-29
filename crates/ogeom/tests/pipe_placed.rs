@@ -8,14 +8,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{
-    check, make_edge, make_edge_between, make_face, make_polygon, make_vertex, make_wire,
-    volume_properties,
+    check, find_plane, make_edge, make_edge_between, make_face, make_polygon, make_vertex,
+    make_wire, surface_properties, volume_properties,
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{BSplineCurve, CircleCurve, Curve3d as _, LineCurve, PlaneSurface};
 use ogeom::math::{Circle, Direction, Frame, KnotVector, Plane, Point, Vector};
 use ogeom::mesh::Deflection;
-use ogeom::offset::{PipePlacement, make_pipe, make_pipe_shell, make_pipe_skinned, place_on_spine};
+use ogeom::offset::{
+    PipeContact, PipeCorners, PipeLaw, PipeLaws, PipePlacement, make_pipe, make_pipe_shell,
+    make_pipe_shell_laws, make_pipe_skinned, place_on_spine,
+};
 use ogeom::topo::{Model, NodeData, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
@@ -562,4 +565,171 @@ fn contact_and_correction_each_move_the_profile_as_named() {
     let (v, _, exact) = measure(&model, &pipe);
     assert!(exact);
     assert!((v - 12.0).abs() < 12.0 * 1e-12, "{v}");
+}
+
+/// The pipe shell of `profile` down `spine` under the rotation-minimizing
+/// frame, mitred, its profile brought on as `contact` asks.
+fn piped(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    contact: PipeContact,
+) -> ogeom::core::OgeomResult<Shape> {
+    let laws = PipeLaws {
+        contact,
+        ..PipeLaws::default()
+    };
+    Ok(make_pipe_shell_laws(
+        model,
+        profile,
+        spine,
+        &PipeLaw::RotationMinimizing,
+        &laws,
+        PipeCorners::Mitre,
+        1e-3,
+        T,
+    )?
+    .shape)
+}
+
+/// A spine straight up `z` from the origin to `(0, 0, length)`.
+fn up_z(model: &mut Model, length: f64) -> Shape {
+    let line = LineCurve::segment(Point::ORIGIN, Point::new(0.0, 0.0, length), T).unwrap();
+    let range = line.domain();
+    make_edge(model, line.into(), range, T).unwrap().shape
+}
+
+/// Contact moves a profile drawn square to the spine but 5 back from its
+/// start along its plane's normal onto the start: down a line, a quarter
+/// arc and a line, a disc of radius `r` so moved holds Pappus's
+/// `π r² (10 + 3π/2)` as the disc drawn at the start does, and an open half
+/// circle so moved sweeps the sheet of the half circle drawn at the start,
+/// to the same area. Swept as placed, the profiles off the start are
+/// refused, as before.
+#[test]
+fn contact_moves_a_profile_off_the_start_onto_it() {
+    let r = 0.5;
+    let mut model = Model::new();
+    let spine = line_arc_line(&mut model, false);
+    let back = Point::new(0.0, 0.0, -5.0);
+
+    let off = disc(&mut model, back, Direction::Z, r);
+    let err = piped(&mut model, &off, &spine, PipeContact::AsPlaced).unwrap_err();
+    assert!(err.to_string().contains("does not sit"), "{err}");
+    let moved = piped(&mut model, &off, &spine, PipeContact::Contact).unwrap();
+    let found = check(&model, &moved, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    let at_start = disc(&mut model, Point::ORIGIN, Direction::Z, r);
+    let placed = piped(&mut model, &at_start, &spine, PipeContact::AsPlaced).unwrap();
+    let want = PI * r * r * (10.0 + 1.5 * PI);
+    let (v_moved, c_moved, exact) = measure(&model, &moved);
+    let (v_placed, c_placed, _) = measure(&model, &placed);
+    assert!(exact);
+    assert!((v_moved - want).abs() < want * 1e-12, "{v_moved} vs {want}");
+    assert!(
+        (v_moved - v_placed).abs() < want * 1e-12,
+        "{v_moved} vs {v_placed}"
+    );
+    assert!(c_moved.distance(c_placed) < 10.0 * T.confusion());
+
+    let half = |model: &mut Model, at: Point| -> Shape {
+        let frame = Frame::about(at, Direction::Z);
+        let circle = CircleCurve::new(Circle::new(frame, r, T).unwrap());
+        let arc = make_edge(model, circle.into(), (0.0, PI), T).unwrap().shape;
+        make_wire(model, &[arc], T).unwrap().shape
+    };
+    let off = half(&mut model, back);
+    let err = piped(&mut model, &off, &spine, PipeContact::AsPlaced).unwrap_err();
+    assert!(err.to_string().contains("does not sit"), "{err}");
+    let moved = piped(&mut model, &off, &spine, PipeContact::Contact).unwrap();
+    let at_start = half(&mut model, Point::ORIGIN);
+    let placed = piped(&mut model, &at_start, &spine, PipeContact::AsPlaced).unwrap();
+    let area = |model: &Model, s: &Shape| {
+        surface_properties(model, s, Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let (a_moved, a_placed) = (area(&model, &moved), area(&model, &placed));
+    assert!(
+        (a_moved - a_placed).abs() < a_placed * 1e-12,
+        "{a_moved} vs {a_placed}"
+    );
+}
+
+/// The normals of a solid's planar faces.
+fn plane_normals(model: &Model, solid: &Shape) -> Vec<Vector> {
+    explore_unique(model, solid, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter_map(|f| find_plane(model, f, T).unwrap())
+        .map(|p| p.normal().vector())
+        .collect()
+}
+
+/// Correction turns a disc of radius `r` centred on the start of a
+/// straight spine of length `L`, leaning `30°` off square, about the start
+/// until it stands square: the cylinder `π r² L`, centred half way up, its
+/// two end faces square to the spine. A disc facing back down the spine
+/// is square already and is not turned. As placed, or moved into contact
+/// without a turn, the leaning disc is refused, as before.
+#[test]
+fn correction_turns_a_leaning_disc_square_to_the_spine() {
+    let (r, length) = (0.75, 4.0);
+    let mut model = Model::new();
+    let spine = up_z(&mut model, length);
+    let tilt = PI / 6.0;
+    let leaning = Direction::new(Vector::new(0.0, -tilt.sin(), tilt.cos()), T).unwrap();
+    let profile = disc(&mut model, Point::ORIGIN, leaning, r);
+    for contact in [PipeContact::AsPlaced, PipeContact::Contact] {
+        let err = piped(&mut model, &profile, &spine, contact).unwrap_err();
+        assert!(err.to_string().contains("leans"), "{err}");
+    }
+
+    let want = PI * r * r * length;
+    let back = disc(&mut model, Point::ORIGIN, -Direction::Z, r);
+    for profile in [profile, back] {
+        let pipe = piped(&mut model, &profile, &spine, PipeContact::Correction).unwrap();
+        let found = check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{found}");
+        let (v, centre, exact) = measure(&model, &pipe);
+        assert!(exact);
+        assert!((v - want).abs() < want * 1e-12, "{v} vs {want}");
+        assert!(
+            centre.distance(Point::new(0.0, 0.0, length / 2.0)) < 10.0 * T.confusion(),
+            "{centre:?}"
+        );
+        let normals = plane_normals(&model, &pipe);
+        assert_eq!(normals.len(), 2);
+        for n in normals {
+            assert!(n.cross(Vector::Z).magnitude() < 1e-12, "{n:?}");
+        }
+    }
+}
+
+/// Correction is refused by name where it is not one turn: a profile with
+/// no plane to stand square, and a disc whose plane holds the spine's
+/// start tangent, a quarter turn from square either way round.
+#[test]
+fn correction_refuses_a_profile_it_cannot_turn_by_name() {
+    let mut model = Model::new();
+    let spine = up_z(&mut model, 4.0);
+    let bent = make_polygon(
+        &mut model,
+        &[
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.0, 1.0, 0.5),
+            Point::new(-1.0, 0.0, 0.0),
+            Point::new(0.0, -1.0, 0.5),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let err = piped(&mut model, &bent, &spine, PipeContact::Correction).unwrap_err();
+    assert!(err.to_string().contains("not planar"), "{err}");
+
+    let along = disc(&mut model, Point::ORIGIN, Direction::X, 0.5);
+    let err = piped(&mut model, &along, &spine, PipeContact::Correction).unwrap_err();
+    assert!(err.to_string().contains("quarter turn"), "{err}");
 }

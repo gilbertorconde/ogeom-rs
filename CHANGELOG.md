@@ -13,6 +13,33 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Pipe shells bring their profile into contact with the spine, and
+  correct its plane.** (#394)
+  - `make_pipe_shell_laws` swept the profile only where the caller placed
+    it: square to the spine at its start and through the start point, or
+    refused. `PipeLaws::contact` now takes a `PipeContact`. `AsPlaced`,
+    the default, sweeps as before.
+  - `Contact` moves the profile, unturned, along its plane's normal until
+    its plane runs through the spine's start point. The contact point is
+    the start's foot on the profile's plane: one point for any planar
+    profile, so an open wire is moved as a face is, and the profile keeps
+    its offset from the spine within its plane. `place_on_spine` still
+    centres a profile's area on the start instead.
+  - `Correction` moves it into contact and then turns it about the start
+    by the least rotation standing its plane square to the start tangent.
+    A plane has no side, so a profile facing back down the spine is not
+    turned. A profile with no plane, or whose plane holds the tangent (a
+    quarter turn from square either way round), is refused by name.
+  - The placed profile is then swept by the existing pipe shell; the
+    history records the caller's profile as generating the result.
+  - `PipeLaws` gains the field and a `Default`, the still laws as placed.
+  - Measured: a disc of radius 0.5 drawn 5 back from the start of a line,
+    quarter arc and line, moved into contact, holds `π r² (10 + 3π/2)` to
+    1e-12, as the disc drawn at the start does, and an open half circle
+    so moved sweeps the same sheet area to 1e-12. A disc leaning 30° off
+    square, corrected, holds `π r² L` to 1e-12, its centroid half way up
+    and both end faces square to the spine to 1e-12; as placed it is
+    refused, as before.
 - **`fix_shape` bounds wireless faces, cuts notches, drops holes of
   nothing, and sews free edges twinned across a gap; `check` names tails
   and notches.** (#397)
