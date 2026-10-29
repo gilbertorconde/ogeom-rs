@@ -118,10 +118,12 @@ pub fn curve_bounds(curve: &Curve, tol: Tolerances) -> OgeomResult<Aabb> {
 /// [`curve_bounds`] answers for the whole curve, which is the right answer
 /// to a different question: a line's carrier runs to the ends of the
 /// world, and an imported edge sits on a stretch of it a few millimetres
-/// long. Where the range can be honoured exactly it is (a segment is the
-/// hull of its two ends, an arc the hull of its ends and whichever of its
-/// extremes along the world axes it sweeps past), and where it cannot, the
-/// whole curve's bound stands, which is still a bound.
+/// long. Where the range can be honoured it is (a segment is the hull of
+/// its two ends, an arc the hull of its ends and whichever of its extremes
+/// along the world axes it sweeps past, a stretch of a hyperbola or a
+/// parabola the hull of its ends and where its end tangents meet), and
+/// where it cannot, the whole curve's bound stands, which is still a
+/// bound.
 ///
 /// # Errors
 ///
@@ -156,10 +158,44 @@ pub fn curve_bounds_over(curve: &Curve, range: (f64, f64), tol: Tolerances) -> O
                 tol,
             )?
         }
+        Curve::Hyperbola(_) | Curve::Parabola(_) => convex_arc_bounds(curve, range, tol)?,
         Curve::Offset(o) => curve_bounds_over(o.basis(), range, tol)?.expanded(o.distance().abs()),
         Curve::Trimmed(t) => curve_bounds_over(t.basis(), range, tol)?,
         _ => curve_bounds(curve, tol)?,
     })
+}
+
+/// The hull of a stretch of a hyperbola's branch or a parabola: its ends
+/// and the point where its tangents there meet.
+///
+/// Either curve is planar and convex, and turns through less than half a
+/// turn end to end, so a stretch of it lies in the triangle its chord
+/// makes with its end tangents, each tangent running from its end towards
+/// the other's. Where the tangents run parallel, or meet behind an end,
+/// the whole curve's bound stands.
+fn convex_arc_bounds(curve: &Curve, range: (f64, f64), tol: Tolerances) -> OgeomResult<Aabb> {
+    use ogeom_geom::Curve3d as _;
+    let (lo, hi) = if range.0 <= range.1 {
+        (range.0, range.1)
+    } else {
+        (range.1, range.0)
+    };
+    let (p0, p1) = (curve.point_at(lo, tol)?, curve.point_at(hi, tol)?);
+    let (d0, d1) = (curve.d1_at(lo, tol)?, curve.d1_at(hi, tol)?);
+    // Where `p0 + s d0` meets `p1 + t d1`, both in the curve's plane.
+    let normal = d0.cross(d1);
+    let square = normal.dot(normal);
+    let turned = d0.magnitude() * d1.magnitude() * tol.angular();
+    if square <= turned * turned {
+        return curve_bounds(curve, tol);
+    }
+    let chord = p1 - p0;
+    let s = chord.cross(d1).dot(normal) / square;
+    let t = chord.cross(d0).dot(normal) / square;
+    if s < 0.0 || t > 0.0 {
+        return curve_bounds(curve, tol);
+    }
+    Ok(Aabb::of_corners(p0, p1).with_point(p0 + d0 * s))
 }
 
 /// The hull of an arc's ends and the extremes along the world axes it
@@ -1561,6 +1597,86 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A stretch of a hyperbola's branch or a parabola, on a tilted frame
+    /// and on the world's: every stretch, across the vertex and off it,
+    /// stays inside its bound, and one along which both world coordinates
+    /// only grow is bounded by its own ends. The whole curve's bound
+    /// stood for every stretch, reaching from the vertex to the domain's
+    /// ends whatever stretch an edge used.
+    #[test]
+    fn a_stretch_of_a_hyperbola_or_parabola_is_bounded_by_itself() {
+        let tilted = Frame::new(
+            Point::new(1.0, -2.0, 3.0),
+            Direction::from_coords(1.0, 2.0, 3.0, T).unwrap(),
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let curves = |frame: Frame| -> Vec<Curve> {
+            vec![
+                ogeom_geom::HyperbolaCurve::new(
+                    ogeom_math::Hyperbola::new(frame, 3.0, 4.0, T).unwrap(),
+                    2.0,
+                )
+                .unwrap()
+                .into(),
+                ogeom_geom::ParabolaCurve::new(
+                    ogeom_math::Parabola::new(frame, 2.0, T).unwrap(),
+                    4.0,
+                )
+                .unwrap()
+                .into(),
+            ]
+        };
+        for curve in curves(tilted).iter().chain(&curves(Frame::WORLD)) {
+            // Fractions of the half domain, which is symmetric about the
+            // vertex.
+            let (_, end) = curve.domain();
+            for (lo, hi) in [
+                (0.1, 0.4),
+                (-0.3, 0.2),
+                (-0.9, -0.85),
+                (-1.0, 1.0),
+                (0.6, 0.6),
+            ] {
+                let (lo, hi) = (lo * end, hi * end);
+                let bound = curve_bounds_over(curve, (lo, hi), T)
+                    .unwrap()
+                    .with_tolerance(T);
+                for i in 0..=200 {
+                    let t = lo + (hi - lo) * f64::from(i) / 200.0;
+                    let p = curve.point_at(t, T).unwrap();
+                    assert!(
+                        bound.contains(p),
+                        "{:?} over ({lo}, {hi}) escaped its bound at {p:?}: {bound}",
+                        curve.kind()
+                    );
+                }
+            }
+        }
+        // On the world's frame both coordinates grow along the stretch past
+        // the vertex, so its ends are its extremes.
+        for curve in curves(Frame::WORLD) {
+            let (_, end) = curve.domain();
+            let (lo, hi) = (0.1 * end, 0.4 * end);
+            let ends = Aabb::of_corners(
+                curve.point_at(lo, T).unwrap(),
+                curve.point_at(hi, T).unwrap(),
+            );
+            let bound = curve_bounds_over(&curve, (lo, hi), T).unwrap();
+            let (Some(p), Some(q), Some(r), Some(s)) =
+                (bound.low(), bound.high(), ends.low(), ends.high())
+            else {
+                panic!("{:?}: an empty bound", curve.kind());
+            };
+            assert!(
+                p.distance(r) < 1e-12 && q.distance(s) < 1e-12,
+                "{:?}: {bound} against its ends' {ends}",
+                curve.kind()
+            );
         }
     }
 
