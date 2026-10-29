@@ -3637,6 +3637,78 @@ fn lean_spread(
     }
 }
 
+/// How far along an edge its crossing by a fitted section at `at` may
+/// stand from the true one where the edge touches the section's other
+/// surface there: zero where it crosses that surface at an angle.
+///
+/// The section lies within `honesty` of the surface, so it meets the edge
+/// anywhere along the stretch where the edge does. Along the edge, its
+/// signed distance off the surface runs `g(s) = g1 s + g2 s^2 / 2` from the
+/// crossing: `g1` the edge's lean out of the surface's tangent plane, `g2`
+/// the edge's curvature towards the surface's normal less the surface's own
+/// normal curvature along the edge. Where `g1^2 <= 2 |g2| honesty` the
+/// valley's floor lies within `honesty` of the surface: the edge touches
+/// the surface rather than crossing it twice, and the stretch runs to the
+/// far side of the valley, `(|g1| + sqrt(g1^2 + 2 |g2| honesty)) / |g2|` from
+/// the crossing. Two faces whose surfaces are tangent where a section
+/// leaves them (two rounds of one top face whose rails cross) meet it so:
+/// the face across splits its own edge at the rails' crossing, as much as
+/// a hundredth of a millimetre from where the section meets this one.
+/// Elsewhere the lean bounds the stretch at `honesty / |g1|`, which the
+/// crossing's own honesty already covers.
+fn touch_spread(
+    (curve, t): (&Curve, f64),
+    surface: &SurfaceGeometry,
+    at: Point,
+    honesty: f64,
+    tol: Tolerances,
+) -> f64 {
+    if honesty <= 0.0 {
+        return 0.0;
+    }
+    let Ok(d) = curve.derivatives_at(t, 2, tol) else {
+        return 0.0;
+    };
+    let (Some(&d1), Some(&d2)) = (d.get(1), d.get(2)) else {
+        return 0.0;
+    };
+    let speed = d1.magnitude();
+    let Ok(foot) = ogeom_geom::project_on_surface(surface, at, 16, tol) else {
+        return 0.0;
+    };
+    let (u, v) = foot.parameters;
+    let (Ok((_, su, sv)), Ok((suu, suv, svv))) =
+        (surface.point_d1_at(u, v, tol), surface.d2_at(u, v, tol))
+    else {
+        return 0.0;
+    };
+    let normal = su.cross(sv);
+    let area = normal.magnitude();
+    if speed <= 0.0 || area <= 0.0 {
+        return 0.0;
+    }
+    let normal = normal * (1.0 / area);
+    let tangent = d1 * (1.0 / speed);
+    // The edge's unit tangent in the surface's parameters, solved on the
+    // first fundamental form (whose determinant is `area^2`), and the
+    // surface's normal curvature along it.
+    let (e, f, g) = (su.dot(su), su.dot(sv), sv.dot(sv));
+    let (tu, tv) = (tangent.dot(su), tangent.dot(sv));
+    let du = g.mul_add(tu, -f * tv) / (area * area);
+    let dv = e.mul_add(tv, -f * tu) / (area * area);
+    let bends = (du * du).mul_add(
+        suu.dot(normal),
+        (2.0 * du * dv).mul_add(suv.dot(normal), dv * dv * svv.dot(normal)),
+    );
+    let lean = tangent.dot(normal).abs();
+    let curving = (d2 - tangent * d2.dot(tangent)) * (1.0 / (speed * speed));
+    let parting = (curving.dot(normal) - bends).abs();
+    if parting <= 0.0 || lean * lean > 2.0 * parting * honesty {
+        return 0.0;
+    }
+    (lean + lean.mul_add(lean, 2.0 * parting * honesty).sqrt()) / parting
+}
+
 /// Paves the edge cannot tell apart, as one junction each.
 ///
 /// A tolerant rail meeting a wedge's faces near one corner collects a
@@ -5934,7 +6006,15 @@ fn fill(
                         // facet's chord beside it five hundredths apart.
                         // Held to ten tolerances, where the lean vanishes.
                         let spread = if at_end.is_none() {
-                            lean_spread(e, on_b, &across.surface, crossing.point, tol)
+                            lean_spread(e, on_b, &across.surface, crossing.point, tol).max(
+                                touch_spread(
+                                    (drawn, crossing.on_b),
+                                    &across.surface,
+                                    crossing.point,
+                                    honest(section.tolerance, tol),
+                                    tol,
+                                ),
+                            )
                         } else {
                             0.0
                         };
@@ -15753,6 +15833,47 @@ mod tests {
         for c in &clusters {
             assert!(c.span <= 0.06 + 1e-9, "{clusters:?}");
         }
+    }
+
+    /// A line touching a cylinder of radius 2 parts from it as `s^2 / 4`
+    /// along it. A crossing on the line found at the touch, by a section a
+    /// micron off the cylinder, may stand `sqrt(2 * 1e-6 * 2)` from the
+    /// true one either way; found `d` = 1e-3 along the line, the valley
+    /// reaches past the touch to `d + sqrt(d^2 + 4e-6)`.
+    /// A line crossing the cylinder at an angle, and an exact section,
+    /// spread nothing.
+    #[test]
+    fn a_crossing_where_the_edge_touches_the_other_surface_spreads_across_its_valley() {
+        let cylinder: SurfaceGeometry = ogeom_geom::CylinderSurface::new(
+            ogeom_math::Cylinder::new(Frame::WORLD, 2.0, T).unwrap(),
+            (-5.0, 5.0),
+        )
+        .unwrap()
+        .into();
+        let line = |x: f64| {
+            Curve::Line(
+                ogeom_geom::LineCurve::segment(
+                    Point::new(x, -3.0, 0.0),
+                    Point::new(x, 3.0, 0.0),
+                    T,
+                )
+                .unwrap(),
+            )
+        };
+        let touching = line(2.0);
+        let spread_at = |curve: &Curve, y: f64, honesty: f64| {
+            let t = y + 3.0;
+            let at = curve.point_at(t, T).unwrap();
+            touch_spread((curve, t), &cylinder, at, honesty, T)
+        };
+        let at_touch = spread_at(&touching, 0.0, 1e-6);
+        assert!((at_touch - 2e-3).abs() < 1e-9, "{at_touch}");
+        let d = 1e-3;
+        let beside = spread_at(&touching, d, 1e-6);
+        let want = d + d.mul_add(d, 4e-6).sqrt();
+        assert!((beside - want).abs() < 1e-6, "{beside} against {want}");
+        assert_eq!(spread_at(&touching, 0.0, 0.0), 0.0);
+        assert_eq!(spread_at(&line(1.0), 3.0_f64.sqrt(), 1e-6), 0.0);
     }
 
     /// A crossing of a loose edge spreads along it as its tolerance over

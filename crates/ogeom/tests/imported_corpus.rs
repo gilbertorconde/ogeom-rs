@@ -2121,6 +2121,53 @@ fn a_sphere_cap_walked_up_its_seam_is_closed_across_the_pole() {
     );
 }
 
+/// A rib whose top crease runs into a boss's rim, with the rib's round run
+/// out past the vertex already cut, and the rim's round. The two rounds
+/// are tangent to the top face along their rails, which cross: the
+/// section of the two bands ends there, where their surfaces are tangent,
+/// and the fitted section meets the rim round's rail a hundredth of a
+/// millimetre from where the rib round's rail crosses it. Either way round,
+/// the cut and the common are valid and add up to the solid they were
+/// taken from, and the two commons agree.
+#[test]
+fn rounds_whose_rails_cross_on_one_top_cut_either_way() {
+    let name = "rounds_whose_rails_cross_on_one_top.ogeom";
+    let (model, roots) = ogeom::io::native::read(&corpus(name)).unwrap();
+    let volume = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| {
+        let diagnosis = ogeom::algo::check(model, shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        ogeom::algo::volume_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let mut commons = Vec::new();
+    for (first, second) in [(&roots[0], &roots[1]), (&roots[1], &roots[0])] {
+        let mut model = model.clone();
+        let cut = ogeom::boolean::cut(&mut model, first, second, T)
+            .unwrap()
+            .shape;
+        let common = ogeom::boolean::common(&mut model, first, second, T)
+            .unwrap()
+            .shape;
+        let (whole, kept, shared) = (
+            volume(&model, first),
+            volume(&model, &cut),
+            volume(&model, &common),
+        );
+        // The bands' fitted faces are measured through their meshes, each
+        // to about 1e-8.
+        assert!(
+            (whole - kept - shared).abs() <= 1e-7,
+            "cut {kept} and common {shared} against {whole}"
+        );
+        commons.push(shared);
+    }
+    assert!(
+        (commons[0] - commons[1]).abs() <= 1e-7,
+        "the commons {commons:?}"
+    );
+}
+
 /// A pocket of radius 2.5 up to a chord through its axis, with the chord's
 /// round capped by planes tangent to the pocket's wall, and the band
 /// rounding the pocket's arc, each cut from or met with the other.

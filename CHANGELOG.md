@@ -1231,6 +1231,28 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section ending where its two surfaces are tangent meets the face
+  across at one junction.** (#342)
+  - A fitted section lies within its stated error of both its surfaces.
+    Where it crosses a face's edge at an angle, that places the crossing
+    along the edge to the error over the edge's lean out of the other
+    surface. Where the edge instead touches the other surface (both
+    surfaces tangent there), the edge stays within the error of it for a
+    stretch the square root of the error times the radius they part at
+    long, and the meet of the section with the edge lands anywhere on it.
+    The face across splits its own edge at the exact point, and the two
+    faces' pieces did not close.
+  - Example: two rounds of one top face whose rails cross, a rib's round
+    run out past its end and a boss rim's round. Their section ends where
+    the rails cross; it met the rim round's rail 9e-3 from where the rib
+    round's rail crosses it, and the cut refused ("the kept pieces did not
+    close into a shell") in both orders.
+  - Such a crossing now spreads along the edge to the far side of that
+    valley, read from the edge's lean and its curvature towards the other
+    surface less the surface's own normal curvature along it. Paves within
+    their spreads are one junction, which reaches only as far as they
+    stand apart, as a loose edge's crossings already are.
+
 - **A section meeting a face's edge tangentially ends on the edge's own
   touch.** (#342)
   - The boolean splits a face where a section crosses one of its edges,

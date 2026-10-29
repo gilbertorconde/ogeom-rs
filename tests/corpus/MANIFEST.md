@@ -450,3 +450,17 @@ the block was refused (the kept pieces did not close into a shell).
 The same pocket as `capped_round_tangent_to_a_bore.ogeom`, its wall
 drafted 0.1, in this kernel's native format: the block with the arc's
 band already cut, and the chord's capped round. Refused the same way.
+
+## rounds_whose_rails_cross_on_one_top.ogeom
+
+Three solids in this kernel's native format, as the union rule of #342
+builds a rib running into a boss's rim (`rib_into_a_boss` in
+`crates/ogeom-fillet/tests/marched_fillet.rs`, turned 10°, r = 0.85): the
+rib with its spline crease's round, run out past the vertex as it is
+alone, already cut; the round of the rim's arc, capped in the radial plane
+through the vertex; and the rib as given. The two rounds' rails cross on
+the top face, where the rounds are tangent to it and to each other. The
+reproducer for a fitted section ending where its two surfaces are tangent:
+it met the rim round's rail 9e-3 from where the rib round's rail crosses
+it, and the cut of the rim's round was refused (the kept pieces did not
+close into a shell).
