@@ -1,39 +1,32 @@
-//! Tails stripped from wires: a boundary that runs out along an edge and
-//! straight back along the same curve.
+//! Tails and notches stripped from wires: a boundary that runs out along
+//! an edge and straight back along the same path
+//! ([`out_and_back`](ogeom_algo::out_and_back) says which pairs of edges
+//! do, and why each bounds nothing).
 //!
-//! Two consecutive edges of a wire, the first from one vertex to another
-//! and the second from that one back, that lie along each other within the
-//! tolerance either states, bound nothing between them: the region the
-//! wire encloses is the same with them as without. Kept, the tip is a
-//! vertex of the boundary that bounds no corner, every boolean through the
-//! face meets a strand there, and a mesher has to strip it before it can
-//! triangulate. A wire made of such pairs alone (a slit) bounds nothing at
-//! all and, as a hole, goes; the outer wire of a face is never stripped to
-//! nothing.
+//! A tail runs out and back whole: the pair goes. Pairs collapse as they
+//! close, so a tail with a tail on its tip goes as a whole. A wire made of
+//! such pairs alone (a slit) bounds nothing at all and, as a hole, goes;
+//! the outer wire of a face is never stripped to nothing.
 //!
-//! A pair is a tail only where all of these hold, so that nothing a
-//! neighbour holds or the chart tells apart is taken for one:
-//!
-//! - neither edge is degenerate, and the pair's ends are two vertices;
-//! - no other face of the shape walks either edge, nor this face again,
-//!   except as the pair itself (one edge walked out and back);
-//! - neither edge is a seam on the face, and in the face's chart the walk
-//!   back ends where the walk out began, and the tip is one point, with no
-//!   whole period between them along a direction the surface closes in:
-//!   two meridians a period apart on a sphere are one curve in space and
-//!   bound the whole sphere between them in the chart;
-//! - the two curves stand no farther apart than the wider of the two
-//!   edges' tolerances anywhere along them.
+//! A notch runs back short of where it ran out from, or past it: the
+//! longer edge is cut where the shorter one's far end stands on it, the
+//! piece out to the tip goes with the shorter edge, and the piece kept
+//! ends at that far vertex. The vertex stays where it stands and widens to
+//! reach where the piece kept ends, no farther than the tolerance the
+//! notch was found within: the same slop as a curve ending away from its
+//! vertex, stated the same way. Every face the cut changes (the face, and
+//! those sharing that vertex) must check clean after it, or it is not made.
 
-use ogeom_algo::edge_vertices;
+use ogeom_algo::{edge_vertices, linear_properties};
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
-use ogeom_geom::{Curve2d as _, Surface as _, SurfaceGeometry};
-use ogeom_math::Point2;
+use ogeom_mesh::Deflection;
 use ogeom_topo::{
-    EdgeRepr, Model, Orientation, Shape, ShapeType, SurfaceId, TShapeId, explore_unique,
+    EdgeRepr, Model, Orientation, Shape, ShapeType, TShapeId, VertexData, explore_unique,
 };
 
 use crate::Reshape;
+use crate::crossing::rebound;
+use crate::divide::{split_edge, vertex_point};
 
 /// Stage, for every wire of `shape` with a tail (see the module
 /// documentation), the wire without it, and for every hole made of tails
@@ -45,14 +38,7 @@ pub(crate) fn stage_tails(
     tol: Tolerances,
 ) -> OgeomResult<usize> {
     let faces = explore_unique(model, shape, ShapeType::Face)?;
-    let mut uses: FastMap<TShapeId, usize> = FastMap::default();
-    for face in &faces {
-        for wire in model.children_of(face)? {
-            for edge in model.children_of(&wire)? {
-                *uses.entry(edge.node()).or_default() += 1;
-            }
-        }
-    }
+    let uses = ogeom_algo::edge_uses(model, shape)?;
     let mut seen: FastSet<TShapeId> = FastSet::default();
     let mut staged: Vec<(Shape, Option<Vec<usize>>)> = Vec::new();
     let mut stripped = 0;
@@ -74,7 +60,7 @@ pub(crate) fn stage_tails(
             }
             let walked = model.ordered_children_of(&wire.oriented(Orientation::Forward))?;
             let tail = |i: usize, j: usize| -> OgeomResult<bool> {
-                is_tail(
+                ogeom_algo::is_tail(
                     model,
                     (surface_id, surface),
                     &walked[i],
@@ -131,119 +117,105 @@ pub(crate) fn stage_tails(
     Ok(stripped)
 }
 
-/// Whether `out`, then `back`, walked in that order by one wire of the
-/// face on `surface`, are a tail. See the module documentation.
-fn is_tail(
-    model: &Model,
-    (surface_id, surface): (SurfaceId, &SurfaceGeometry),
-    out: &Shape,
-    back: &Shape,
-    uses: &FastMap<TShapeId, usize>,
+/// Stage, for every notch of `shape` (see the module documentation), the
+/// cut that takes it off. A face is cut at one notch per pass, and a face
+/// one cut changes is not changed by another. Returns how many notches are
+/// cut.
+pub(crate) fn stage_notches(
+    model: &mut Model,
+    shape: &Shape,
+    reshape: &mut Reshape,
     tol: Tolerances,
-) -> OgeomResult<bool> {
-    let data = |edge: &Shape| model.node(edge).and_then(|n| n.data().as_edge());
-    let (Some(out_data), Some(back_data)) = (data(out), data(back)) else {
-        return Ok(false);
-    };
-    if out_data.degenerate || back_data.degenerate {
-        return Ok(false);
+) -> OgeomResult<usize> {
+    let found = ogeom_algo::out_and_back(model, shape, tol)?;
+    if found.iter().all(|pair| pair.notch.is_none()) {
+        return Ok(0);
     }
-    let used = |edge: &Shape| uses.get(&edge.node()).copied().unwrap_or(0);
-    let alone = if out.node() == back.node() {
-        used(out) == 2 && out.orientation() != back.orientation()
-    } else {
-        used(out) == 1 && used(back) == 1
-    };
-    if !alone {
-        return Ok(false);
+    let faces = explore_unique(model, shape, ShapeType::Face)?;
+    let mut holders: FastMap<TShapeId, Vec<usize>> = FastMap::default();
+    for (k, face) in faces.iter().enumerate() {
+        for vertex in explore_unique(model, face, ShapeType::Vertex)? {
+            holders.entry(vertex.node()).or_default().push(k);
+        }
     }
-    let (Some((a, b)), Some((c, d))) = (edge_vertices(model, out)?, edge_vertices(model, back)?)
-    else {
-        return Ok(false);
-    };
-    if a.node() == b.node() || c.node() != b.node() || d.node() != a.node() {
-        return Ok(false);
+    let mut changed: FastSet<usize> = FastSet::default();
+    let mut cut = 0;
+    for pair in found {
+        let Some(notch) = pair.notch else { continue };
+        let Some(k) = faces.iter().position(|f| f.is_same(&pair.face)) else {
+            continue;
+        };
+        if changed.contains(&k) {
+            continue;
+        }
+        let stored = pair.face.oriented(Orientation::Forward);
+        let wire = model.ordered_children_of(&stored)?[pair.wire].clone();
+        let walked = model.ordered_children_of(&wire.oriented(Orientation::Forward))?;
+        let (out, back) = (&walked[pair.edges[0]], &walked[pair.edges[1]]);
+        let (Some((a, _)), Some((_, d))) =
+            (edge_vertices(model, out)?, edge_vertices(model, back)?)
+        else {
+            continue;
+        };
+        let (longer, shorter, far) = if notch.longer == 0 {
+            (out, back, d)
+        } else {
+            (back, out, a)
+        };
+        let Some(EdgeRepr::Curve3d { range, .. }) = model
+            .node(longer)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.curve3d().cloned())
+        else {
+            continue;
+        };
+        if !longer.location().is_identity() || !far.location().is_identity() {
+            continue;
+        }
+        let fraction = (notch.parameter - range.0) / (range.1 - range.0);
+        let (pieces, made) = split_edge(model, &Shape::of(longer.node()), &[fraction], None, tol)?;
+        let ([first, second], [middle]) = (&pieces[..], &made[..]) else {
+            continue;
+        };
+        // The tip is where the edge out ends and the edge back begins.
+        let tip_high = (longer.orientation() == Orientation::Reversed) != (notch.longer == 0);
+        let kept = if tip_high { first } else { second };
+        let stood = vertex_point(model, &far)?;
+        let ends = vertex_point(model, middle)?;
+        let stated = model.tolerance_of(&far)?.map_or(0.0, |t| t.get());
+        let reach = stated.max(stood.distance(ends)).max(tol.confusion());
+        let widened = model.add_vertex(VertexData::with_tolerance(stood, reach)?);
+        let new_longer = rebound(model, kept, middle, &widened)?;
+        if linear_properties(model, &new_longer, Deflection::default(), tol)?.mass <= reach {
+            continue;
+        }
+        let stage = |into: &mut Reshape| {
+            into.replace(&Shape::of(longer.node()), new_longer.clone());
+            into.remove(&Shape::of(shorter.node()));
+            into.replace(&Shape::of(far.node()), widened.clone());
+        };
+        let mut local = Reshape::new();
+        stage(&mut local);
+        let mut hit: Vec<usize> = vec![k];
+        hit.extend(holders.get(&far.node()).into_iter().flatten().copied());
+        hit.sort_unstable();
+        hit.dedup();
+        if hit.iter().any(|h| changed.contains(h)) {
+            continue;
+        }
+        let mut clean = true;
+        for &h in &hit {
+            let after = local.apply(model, &faces[h])?.shape;
+            clean &= ogeom_algo::check(model, &after, tol)?.is_valid();
+        }
+        if !clean {
+            continue;
+        }
+        stage(reshape);
+        changed.extend(hit);
+        cut += 1;
     }
-    let (Some(out_chart), Some(back_chart)) = (
-        chart_ends(model, surface_id, out, tol)?,
-        chart_ends(model, surface_id, back, tol)?,
-    ) else {
-        return Ok(false);
-    };
-    if !within_a_period(surface, out_chart.0, back_chart.1, tol)
-        || !within_a_period(surface, out_chart.1, back_chart.0, tol)
-    {
-        return Ok(false);
-    }
-    if out.node() == back.node() {
-        return Ok(true);
-    }
-    let reach = out_data.tolerance.get().max(back_data.tolerance.get());
-    Ok(ogeom_algo::edges_apart(model, out, back, tol)?.is_some_and(|apart| apart <= reach))
-}
-
-/// Where `edge`'s one plain pcurve on `surface` begins and ends as its
-/// occurrence walks it. `None` for a seam, or an edge with no pcurve there.
-fn chart_ends(
-    model: &Model,
-    surface: SurfaceId,
-    edge: &Shape,
-    tol: Tolerances,
-) -> OgeomResult<Option<(Point2, Point2)>> {
-    let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
-        return Ok(None);
-    };
-    let Some(EdgeRepr::PCurve {
-        curve,
-        range,
-        location,
-        ..
-    }) = data.pcurve_for(surface, edge.location())
-    else {
-        return Ok(None);
-    };
-    // Two plain pcurves on one surface at one placement are a seam stored
-    // as two columns, walked once each way.
-    let plain = data
-        .representations
-        .iter()
-        .filter(|r| {
-            matches!(r, EdgeRepr::PCurve { .. })
-                && r.surface() == Some(surface)
-                && r.location() == Some(location)
-        })
-        .count();
-    if plain > 1 {
-        return Ok(None);
-    }
-    let Some(pcurve) = model.geometry().pcurve(*curve) else {
-        return Ok(None);
-    };
-    let (start, end) = (
-        pcurve.point_at(range.0, tol)?,
-        pcurve.point_at(range.1, tol)?,
-    );
-    Ok(Some(if edge.orientation() == Orientation::Reversed {
-        (end, start)
-    } else {
-        (start, end)
-    }))
-}
-
-/// Whether `p` and `q` stand less than half a period apart along every
-/// direction `surface` closes in: the same copy of the chart.
-fn within_a_period(surface: &SurfaceGeometry, p: Point2, q: Point2, tol: Tolerances) -> bool {
-    let ((u0, u1), (v0, v1)) = surface.domain();
-    let closes = [
-        surface.is_periodic_u() || surface.is_closed_u(tol),
-        surface.is_periodic_v() || surface.is_closed_v(tol),
-    ];
-    [
-        (closes[0], u1 - u0, (p.x - q.x).abs()),
-        (closes[1], v1 - v0, (p.y - q.y).abs()),
-    ]
-    .into_iter()
-    .all(|(closes, period, apart)| !closes || !period.is_finite() || 2.0 * apart < period)
+    Ok(cut)
 }
 
 #[cfg(test)]
@@ -447,6 +419,6 @@ mod tests {
         let walked = model.ordered_children_of(&wire).unwrap();
         let uses = walked.iter().map(|e| (e.node(), 1)).collect();
         let on = (surface, model.geometry().surface(surface).unwrap());
-        assert!(!is_tail(&model, on, &walked[0], &walked[1], &uses, T).unwrap());
+        assert!(!ogeom_algo::is_tail(&model, on, &walked[0], &walked[1], &uses, T).unwrap());
     }
 }

@@ -420,13 +420,21 @@ reported), give a \
 boundary crossing a pole its degenerate edge, fit missing pcurves, sew loose faces, \
 strip a wire's tails (an edge out and one straight back along the same \
 curve within their tolerances, on one copy of the chart, held by no other \
-face; a hole of tails alone goes), mend a boundary crossing itself once in \
+face; a hole of tails alone goes) and cut off its notches (an edge run back \
+along part of the one before it, the longer cut where the shorter turns; \
+check names two-edge tails and notches, not a slit of one edge), remove a hole on a plane or cylinder held \
+by no other face whose every point is within the face's tolerance of its \
+boundary (proved cell by cell; the hole's area within the tolerance times \
+its length is necessary, not sufficient), mend a boundary crossing itself once in \
 its chart (two consecutive edges crossing short of their vertex within the \
 trim cap are cut back to the crossing and the vertex moved there; any other \
 crossing of a one-wire face held by a container splits it into its two \
-loops; each face changed checking clean after, anything else counted), mark a wireless face natural on a \
-sphere, torus or patch, chain free edges into contours (free_bounds; \
-nothing is sewn across a gap wider than the edges state), \
+loops; each face changed checking clean after, anything else counted), bound a wireless face by its \
+domain's sides (seam and pole edges) on a sphere, torus or patch, or mark it natural where those \
+sides have no closed form, state the gap between two free edges of a shell that are each \
+other's only twin within the trim cap (the gap shorter than every edge of either face, no other \
+vertex as near their ends) where sewing a copy shows it joins them, chain free edges into contours and \
+wires (free_bounds), \
 tighten tolerances, widen an edge to how far its pcurves stand off its \
 curve and a vertex to how far its curves end from it (within the trim \
 cap, as the readers record the same slop), orient each run of a \
@@ -454,7 +462,7 @@ symbols = [
     "ogeom_heal::fix_shape", "ogeom_heal::free_bounds", "ogeom_heal::fix_small_faces", "ogeom_heal::remove_small_solids",
     "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew",
     "ogeom_algo::restore_containment",
-    "ogeom_algo::check", "ogeom_algo::chart_crossings", "ogeom_algo::self_crossings", "ogeom_bool::self_union",
+    "ogeom_algo::check", "ogeom_algo::chart_crossings", "ogeom_algo::out_and_back", "ogeom_algo::self_crossings", "ogeom_bool::self_union",
 ]
 tests = [
     "crates/ogeom/tests/fix_shape.rs",

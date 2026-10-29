@@ -23,6 +23,7 @@ pub mod measure;
 pub mod medial;
 pub mod medial_graph;
 pub mod mesh_solid;
+pub mod out_and_back;
 pub mod pcurve_fit;
 pub mod pcurve_gap;
 pub mod place;
@@ -81,6 +82,7 @@ pub use mesh_solid::{
     MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, refine_solid,
     single_precision_quantum, solid_from_mesh,
 };
+pub use out_and_back::{Notch, OutAndBack, edge_uses, is_tail, notch_of, out_and_back};
 pub use pcurve_gap::{
     edge_pcurve_gap, edges_apart, pcurve_gap, state_pcurve_gaps, state_pcurve_gaps_of,
 };

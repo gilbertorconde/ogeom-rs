@@ -8,7 +8,7 @@
 
 use ogeom_core::{OgeomResult, Tolerance, Tolerances};
 use ogeom_geom::{Curve, Curve2d as _, Curve3d as _, PlanarCurve, Surface as _, SurfaceGeometry};
-use ogeom_math::Point;
+use ogeom_math::{Point, Transform};
 use ogeom_topo::{EdgeRepr, Model, Shape, ShapeType};
 
 /// How much wider than the gap it was measured from an edge's tolerance is
@@ -135,6 +135,16 @@ pub(crate) fn nearest_on_stretch(
     target: Point,
     tol: Tolerances,
 ) -> OgeomResult<f64> {
+    Ok(nearest_point_on_stretch(curve, range, target, tol)?.1)
+}
+
+/// [`nearest_on_stretch`], with the parameter of the nearest point found.
+pub(crate) fn nearest_point_on_stretch(
+    curve: &Curve,
+    range: (f64, f64),
+    target: Point,
+    tol: Tolerances,
+) -> OgeomResult<(f64, f64)> {
     const SCAN: u32 = 64;
     let at = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(target)) };
     let step = (range.1 - range.0) / f64::from(SCAN);
@@ -146,9 +156,11 @@ pub(crate) fn nearest_on_stretch(
         .collect::<OgeomResult<Vec<(f64, f64)>>>()?;
     let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
     let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
-    let mut nearest = f64::INFINITY;
+    let mut nearest = (range.0, f64::INFINITY);
     for (k, &(t, d)) in scan.iter().enumerate() {
-        nearest = nearest.min(d);
+        if d < nearest.1 {
+            nearest = (t, d);
+        }
         let low = k == 0 || scan[k - 1].1 >= d;
         let high = k + 1 == scan.len() || scan[k + 1].1 >= d;
         if !(low && high) {
@@ -163,7 +175,11 @@ pub(crate) fn nearest_on_stretch(
                 a = c;
             }
         }
-        nearest = nearest.min(at(f64::midpoint(a, b))?);
+        let middle = f64::midpoint(a, b);
+        let d = at(middle)?;
+        if d < nearest.1 {
+            nearest = (middle, d);
+        }
     }
     Ok(nearest)
 }
@@ -255,7 +271,6 @@ pub fn edges_apart(
     b: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    const SAMPLES: u32 = 64;
     let mut placed = Vec::with_capacity(2);
     for edge in [a, b] {
         let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
@@ -269,6 +284,19 @@ pub fn edges_apart(
         };
         placed.push((curve, *range, edge.transform(model.datums())?));
     }
+    Ok(Some(stretches_apart(placed[0], placed[1], tol)?))
+}
+
+/// How far apart two placed stretches of curves stand: the farthest that
+/// any of many samples along either lies from the nearest point of the
+/// other, as [`edges_apart`] measures two edges.
+pub(crate) fn stretches_apart(
+    a: (&Curve, (f64, f64), Transform),
+    b: (&Curve, (f64, f64), Transform),
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    const SAMPLES: u32 = 64;
+    let placed = [a, b];
     let mut widest: f64 = 0.0;
     for (from, to) in [(0, 1), (1, 0)] {
         let (curve, range, placement) = placed[from];
@@ -283,7 +311,7 @@ pub fn edges_apart(
             widest = widest.max(nearest_on_stretch(other, other_range, at, tol)? * scale);
         }
     }
-    Ok(Some(widest))
+    Ok(widest)
 }
 
 /// Raise each of `edges`' tolerance, and its vertices', to how far its

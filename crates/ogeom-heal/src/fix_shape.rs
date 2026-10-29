@@ -38,7 +38,14 @@
 //! - a wire that runs out along an edge and straight back along the same
 //!   curve, within the tolerance either edge states and on one copy of
 //!   the chart, with no other face walking either edge, loses the pair (a
-//!   tail); a hole made of such pairs alone goes (see `tails`);
+//!   tail); a hole made of such pairs alone goes. Where one of the two runs
+//!   farther than the other (a notch), the longer is cut where the shorter
+//!   turns back, and the stretch out to the tip goes with the shorter edge
+//!   (see `tails`);
+//! - a hole on a plane or a cylinder every point of which stands within the
+//!   face's tolerance of the hole's boundary, which no neighbour walks,
+//!   goes: by the face's own tolerance it encloses nothing (see
+//!   `small_wires`);
 //! - a boundary that crosses itself once in its surface's chart is mended
 //!   where the mend is the one it says (see `crossing`): two consecutive
 //!   edges crossing short of the vertex they meet at, by no more than a
@@ -46,12 +53,18 @@
 //!   and the vertex moves there, widened to reach where it stood; any
 //!   other crossing of one wire splits its face into the figure eight's
 //!   two loops. Each face changed must check clean after and cross itself
-//!   nowhere. `check` does not name such a crossing; the report counts
-//!   the faces still crossing themselves;
+//!   nowhere; the report counts the faces still crossing themselves;
 //! - a face with no wires on a surface whose domain is its whole extent (a
-//!   sphere, a torus, a patch) is marked as covering it;
+//!   sphere, a torus, a patch) is bounded by that domain's sides, with a
+//!   seam edge where the surface closes and a degenerate edge where it
+//!   pinches to a pole, or else marked as covering it;
 //! - loose faces (a compound of them, or an open shell) are sewn where
-//!   they share edges;
+//!   they share edges. Two free edges of a shell's faces that are each
+//!   other's twin across a gap no wider than a fitted trim may stand off
+//!   its surface, the gap shorter than every edge of either face and no
+//!   other vertex as near their ends, first state that gap, each edge and
+//!   vertex as wide as its own, where sewing a copy of the shape shows the
+//!   pair joins (see `free_gaps`);
 //! - faces two of which walk an edge they share the same way are turned
 //!   until each such edge is walked once each way, a shell's as sewing
 //!   turns them, a solid's keeping the orientation most of each run of
@@ -66,8 +79,8 @@
 //!   way. A gap past that reach is no slop and stays reported.
 //!
 //! The free edges of the shape as mended come back chained into contours
-//! ([`free_bounds`](crate::free_bounds())); none is joined across a gap
-//! wider than the tolerances the edges state.
+//! ([`free_bounds`](crate::free_bounds())), each of which
+//! [`FreeBounds::wires`](crate::FreeBounds::wires) makes a wire.
 //!
 //! What is not, and where it lives: small faces and small solids stay
 //! (removing a face opens the shell it is in; that is defeaturing, and
@@ -109,6 +122,9 @@ pub struct FixReport {
     pub edges_trimmed: usize,
     /// Edge pairs sewn, and edges still free after, when sewing ran.
     pub sewn: Option<(usize, usize)>,
+    /// Pairs of a shell's free edges that are each other's twin across a
+    /// gap, widened to state it before sewing.
+    pub free_gaps_stated: usize,
     /// Tolerances tightened.
     pub tolerances_reduced: usize,
     /// Tolerances widened so that every vertex is at least as loose as the
@@ -124,16 +140,24 @@ pub struct FixReport {
     /// Pairs of edges stripped from wires that ran out along one and
     /// straight back along the other.
     pub tails_stripped: usize,
+    /// Notches cut off: an edge run back along part of the edge before it,
+    /// the shorter edge and the stretch of the longer it ran along gone.
+    pub notches_cut: usize,
+    /// Holes removed that enclosed no area the face's tolerance resolves:
+    /// every point of each within that tolerance of its boundary.
+    pub small_wires_removed: usize,
     /// Pairs of consecutive edges crossing short of the vertex they meet
     /// at, cut back to the crossing.
     pub crossings_trimmed: usize,
     /// Faces whose boundary crossed itself, split into its two loops.
     pub faces_split_at_crossings: usize,
     /// Faces of the shape as mended whose boundary still crosses itself
-    /// in its surface's chart ([`chart_crossings`](ogeom_algo::chart_crossings)),
-    /// which [`check`](ogeom_algo::check()) does not report.
+    /// in its surface's chart ([`chart_crossings`](ogeom_algo::chart_crossings)).
     pub crossings_left: usize,
-    /// Faces with no wires marked as covering their whole surface.
+    /// Faces with no wires bounded by the sides of their surface's domain.
+    pub natural_bounds_made: usize,
+    /// Faces with no wires marked as covering their whole surface, where
+    /// the sides of its domain could not bound them.
     pub natural_bounds_marked: usize,
     /// The free edges of the shape as mended, chained into contours.
     pub free_bounds: crate::FreeBounds,
@@ -247,6 +271,26 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         history = history.then(&built.history);
         current = built.shape;
     }
+    // Notches, on the wires stripped of tails: a tail on a notch's tip
+    // has gone, and what runs back is the notch's own edge.
+    let mut notches = Reshape::new();
+    let notches_cut = crate::tails::stage_notches(model, &current, &mut notches, tol)?;
+    if !notches.is_empty() {
+        let built = notches.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
+
+    // Holes enclosing nothing the face's tolerance resolves, read on the
+    // wires stripped of tails and notches.
+    let mut small = Reshape::new();
+    let small_wires_removed =
+        crate::small_wires::stage_small_wires(model, &current, &mut small, tol)?;
+    if !small.is_empty() {
+        let built = small.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
 
     // Boundaries crossing themselves in their charts, read on the wires as
     // trimmed and stripped of tails.
@@ -263,12 +307,23 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
         history = history.then(&built.history);
         current = built.shape;
     }
-    let natural_bounds_marked = mark_natural_bounds(model, &current)?;
+    let mut natural = Reshape::new();
+    let (natural_bounds_made, natural_bounds_marked) =
+        bound_natural_faces(model, &current, &mut natural, tol)?;
+    if !natural.is_empty() {
+        let built = natural.apply(model, &current)?;
+        history = history.then(&built.history);
+        current = built.shape;
+    }
 
     // Loose faces sewn: a compound of faces, or an open shell.
     let mut sewn = None;
     let kind = model.kind_of(&current)?;
+    let mut free_gaps_stated = 0;
     if matches!(kind, ShapeType::Compound | ShapeType::Shell) {
+        // Twins across a gap, stated as it so that sewing joins them.
+        free_gaps_stated =
+            crate::free_gaps::state_free_gaps(model, &current, tol.confusion() * TRIM_CAP, tol)?;
         let faces = explore_unique(model, &current, ShapeType::Face)?;
         if !faces.is_empty() {
             let result = sew(model, &faces, tol)?;
@@ -346,31 +401,45 @@ pub fn fix_shape(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomResu
             pole_edges_made,
             edges_trimmed,
             sewn,
+            free_gaps_stated,
             tolerances_reduced,
             tolerances_widened,
             faces_turned,
             pcurve_gaps_stated,
             curve_ends_stated,
             tails_stripped,
+            notches_cut,
+            small_wires_removed,
             crossings_trimmed: crossed.trimmed,
             faces_split_at_crossings: crossed.split,
             crossings_left,
+            natural_bounds_made,
             natural_bounds_marked,
             free_bounds,
         },
     })
 }
 
-/// Mark every face of `shape` with no wires as covering its whole surface,
-/// where the surface's parameter domain is its whole extent (a sphere, a
-/// torus, a Bézier or B-spline patch): what the face is a face of, and
-/// what the mesher and every other reader take a face with no wires to be.
-/// On any other surface the domain is a window standing in for an
+/// Bound every face of `shape` with no wires that is not marked as
+/// covering its whole surface, where the surface's parameter domain is its
+/// whole extent (a sphere, a torus, a Bézier or B-spline patch): what the
+/// face is a face of, and what the mesher and every other reader take a
+/// face with no wires to be. The face is rebuilt with the sides of that
+/// domain as its wire, a periodic pair of sides one seam edge and a side
+/// the surface pinches to a point a degenerate edge, as a whole surface is
+/// bounded before it is divided; where those sides have no closed-form
+/// curve, or the face so bounded does not check clean, it is marked
+/// instead. On any other surface the domain is a window standing in for an
 /// unbounded sheet (a plane's says where its face was built), and the face
-/// stays reported. Returns how many faces are marked.
-fn mark_natural_bounds(model: &mut Model, shape: &Shape) -> OgeomResult<usize> {
+/// stays reported. Returns how many faces are bounded and how many marked.
+fn bound_natural_faces(
+    model: &mut Model,
+    shape: &Shape,
+    reshape: &mut Reshape,
+    tol: Tolerances,
+) -> OgeomResult<(usize, usize)> {
     use ogeom_geom::{Surface as _, SurfaceKind};
-    let mut marked = 0;
+    let (mut bounded, mut marked) = (0, 0);
     for face in explore_unique(model, shape, ShapeType::Face)? {
         if !model.children_of(&face)?.is_empty() {
             continue;
@@ -390,6 +459,14 @@ fn mark_natural_bounds(model: &mut Model, shape: &Shape) -> OgeomResult<usize> {
         ) {
             continue;
         }
+        let stored = face.oriented(ogeom_topo::Orientation::Forward);
+        if let Some(whole) = crate::divide::bounded_natural(model, &stored, tol)?
+            && ogeom_algo::check(model, &whole, tol)?.is_valid()
+        {
+            reshape.replace(&stored, whole);
+            bounded += 1;
+            continue;
+        }
         if let Some(node) = model.node_mut(&face)
             && let ogeom_topo::NodeData::Face(data) = node.data_mut()
         {
@@ -397,7 +474,7 @@ fn mark_natural_bounds(model: &mut Model, shape: &Shape) -> OgeomResult<usize> {
             marked += 1;
         }
     }
-    Ok(marked)
+    Ok((bounded, marked))
 }
 
 /// Widen every edge whose pcurves stand off its curve farther than it

@@ -10,11 +10,9 @@
 //! stops where no free edge carries on (two openings meeting at vertices
 //! the model holds apart, or faces that disagree in orientation) is open.
 //!
-//! Nothing is joined across a gap. Free edges within the tolerances they
-//! state are already one edge to sewing, and a pair farther apart is not
-//! known to be one by anything the model says: on the community
-//! assemblies' open sheets, sewing at a millimetre joins hundreds of pairs
-//! of edges that are not each other's twins.
+//! Nothing is joined here. Free edges within the tolerances they state are
+//! already one edge to sewing, and [`fix_shape`](crate::fix_shape()) says
+//! which pairs farther apart are each other's twins.
 
 use ogeom_algo::edge_vertices;
 use ogeom_core::{FastMap, OgeomResult};
@@ -35,6 +33,21 @@ impl FreeBounds {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.closed.is_empty() && self.open.is_empty()
+    }
+
+    /// Each contour as a wire of its edges in the order they walk, the
+    /// closed contours first, then the open chains.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if an
+    /// edge is not in `model`.
+    pub fn wires(&self, model: &mut Model) -> OgeomResult<Vec<Shape>> {
+        self.closed
+            .iter()
+            .chain(&self.open)
+            .map(|edges| model.add_wire(edges))
+            .collect()
     }
 }
 

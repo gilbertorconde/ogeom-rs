@@ -1405,13 +1405,16 @@ fn a_gap_whose_chord_leaves_the_surface_stays_reported() {
 }
 
 /// A face with no wires is a face of its whole surface; one that lost the
-/// mark saying so is marked again where the surface's domain is its whole
-/// extent (a sphere), and left reported where the domain is only a window
-/// on an unbounded sheet (a plane).
+/// mark saying so is bounded by its domain's sides where the domain is the
+/// surface's whole extent (a sphere: a seam and a degenerate edge at each
+/// pole; a torus: two seams), and left reported where the domain is only a
+/// window on an unbounded sheet (a plane). Bounded, a solid of the sphere's
+/// one face is closed by its edges and measures the ball.
 #[test]
-fn a_face_with_no_wires_is_marked_natural_where_its_domain_is_its_extent() {
-    use ogeom::geom::SphereSurface;
-    use ogeom::math::Sphere;
+fn a_face_with_no_wires_is_bounded_where_its_domain_is_its_extent() {
+    use ogeom::geom::{SphereSurface, TorusSurface};
+    use ogeom::math::{Sphere, Torus};
+    use std::f64::consts::PI;
     let mut model = Model::new();
     let unmark = |model: &mut Model, face: &Shape| {
         if let Some(node) = model.node_mut(face)
@@ -1426,6 +1429,11 @@ fn a_face_with_no_wires_is_marked_natural_where_its_domain_is_its_extent() {
             .filter(|p| p.what.starts_with("has no wires"))
             .count()
     };
+    let area = |model: &Model, shape: &Shape| {
+        surface_properties(model, shape, Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
     let sphere = SphereSurface::new(Sphere::new(Frame::WORLD, 2.0, T).unwrap());
     let ball = ogeom::algo::make_natural_face(&mut model, sphere.into())
         .unwrap()
@@ -1433,8 +1441,38 @@ fn a_face_with_no_wires_is_marked_natural_where_its_domain_is_its_extent() {
     unmark(&mut model, &ball);
     assert_eq!(no_wires(&check(&model, &ball, T).unwrap()), 1);
     let fixed = ogeom::heal::fix_shape(&mut model, &ball, T).unwrap();
-    assert_eq!(fixed.report.natural_bounds_marked, 1);
-    assert_eq!(no_wires(&fixed.report.after), 0, "{}", fixed.report.after);
+    assert_eq!(fixed.report.natural_bounds_made, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let edges = explore_unique(&model, &fixed.shape, ShapeType::Edge).unwrap();
+    let degenerate = edges
+        .iter()
+        .filter(|e| model.node(e).unwrap().data().as_edge().unwrap().degenerate)
+        .count();
+    assert_eq!((edges.len(), degenerate), (3, 2), "a seam and two poles");
+    let exact = 4.0 * PI * 4.0;
+    assert!((area(&model, &fixed.shape) - exact).abs() < 1e-9 * exact);
+
+    let shell = model.add_shell(std::slice::from_ref(&ball)).unwrap();
+    let solid = model.add_solid(&[shell]).unwrap();
+    let fixed = ogeom::heal::fix_shape(&mut model, &solid, T).unwrap();
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let volume = volume_of(&model, &fixed.shape);
+    let exact = 4.0 / 3.0 * PI * 8.0;
+    assert!(
+        (volume - exact).abs() < 1e-6 * exact,
+        "{volume} against {exact}"
+    );
+
+    let torus = TorusSurface::new(Torus::new(Frame::WORLD, 5.0, 1.5, T).unwrap());
+    let ring = ogeom::algo::make_natural_face(&mut model, torus.into())
+        .unwrap()
+        .shape;
+    unmark(&mut model, &ring);
+    let fixed = ogeom::heal::fix_shape(&mut model, &ring, T).unwrap();
+    assert_eq!(fixed.report.natural_bounds_made, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let exact = 4.0 * PI * PI * 5.0 * 1.5;
+    assert!((area(&model, &fixed.shape) - exact).abs() < 1e-9 * exact);
 
     let plane = SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(Frame::WORLD)));
     let sheet = ogeom::algo::make_natural_face(&mut model, plane)
@@ -1442,6 +1480,7 @@ fn a_face_with_no_wires_is_marked_natural_where_its_domain_is_its_extent() {
         .shape;
     unmark(&mut model, &sheet);
     let fixed = ogeom::heal::fix_shape(&mut model, &sheet, T).unwrap();
+    assert_eq!(fixed.report.natural_bounds_made, 0);
     assert_eq!(fixed.report.natural_bounds_marked, 0);
     assert_eq!(no_wires(&fixed.report.after), 1);
 }
@@ -1691,4 +1730,314 @@ fn edges_crossing_within_their_tolerances_of_their_corner_are_no_crossing() {
     let mut model = Model::new();
     let face = sharp_corner(&mut model, 1e-3, 3e-4);
     assert_eq!(crossings_in(&model, &face), 0);
+}
+
+/// How many pairs of edges `check` names as running out and back.
+fn out_and_back_found(diagnosis: &ogeom::algo::Diagnosis) -> usize {
+    diagnosis
+        .problems
+        .iter()
+        .filter(|p| p.what.contains("bounds nothing"))
+        .count()
+}
+
+fn area_of(model: &Model, shape: &Shape) -> f64 {
+    surface_properties(model, shape, Deflection::default(), T)
+        .unwrap()
+        .mass
+}
+
+/// A 4 mm square with an edge run from its corner (4, 0) to (3, 1) and
+/// another straight back: `check` names the pair, and `fix_shape` strips
+/// it, leaving the square.
+#[test]
+fn check_names_a_tail_and_fix_shape_strips_it() {
+    let mut model = Model::new();
+    let p = |x: f64, y: f64| (Point::new(x, y, 0.0), 1e-7);
+    let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+    let face = plane_face(
+        &mut model,
+        &[
+            p(0.0, 0.0),
+            p(4.0, 0.0),
+            p(3.0, 1.0),
+            p(4.0, 4.0),
+            p(0.0, 4.0),
+        ],
+        &[
+            (0, 1, at(0.0, 0.0), at(4.0, 0.0)),
+            (1, 2, at(4.0, 0.0), at(3.0, 1.0)),
+            (2, 1, at(3.0, 1.0), at(4.0, 0.0)),
+            (1, 3, at(4.0, 0.0), at(4.0, 4.0)),
+            (3, 4, at(4.0, 4.0), at(0.0, 4.0)),
+            (4, 0, at(0.0, 4.0), at(0.0, 0.0)),
+        ],
+    );
+    let compound = make_compound(&mut model, &[face]).unwrap().shape;
+    assert_eq!(out_and_back_found(&check(&model, &compound, T).unwrap()), 1);
+    let fixed = ogeom::heal::fix_shape(&mut model, &compound, T).unwrap();
+    assert_eq!(fixed.report.tails_stripped, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    assert!((area_of(&model, &fixed.shape) - 16.0).abs() < 1e-9);
+}
+
+/// A 4 mm square whose edge up its right side, (4, 0) to (4, 4), is
+/// followed by one back down it to (4, 2) before the boundary turns to
+/// (0, 4): a notch. `check` names it; `fix_shape` cuts the side at
+/// (4, 2) and drops the stretch above with the edge back, leaving the
+/// quadrilateral (0, 0), (4, 0), (4, 2), (0, 4) of 12 mm². Walked the
+/// other way round (mirrored, so it still faces up), the edge back is the
+/// longer one, and it is cut instead.
+#[test]
+fn check_names_a_notch_and_fix_shape_cuts_it_off() {
+    for mirrored in [false, true] {
+        let mut model = Model::new();
+        let x = |x: f64| if mirrored { -x } else { x };
+        let p = |px: f64, py: f64| (Point::new(x(px), py, 0.0), 1e-7);
+        let at = |px: f64, py: f64| Point::new(x(px), py, 0.0);
+        let vertices = [
+            p(0.0, 0.0),
+            p(4.0, 0.0),
+            p(4.0, 4.0),
+            p(4.0, 2.0),
+            p(0.0, 4.0),
+        ];
+        let ring = if mirrored {
+            vec![
+                (4, 3, at(0.0, 4.0), at(4.0, 2.0)),
+                (3, 2, at(4.0, 2.0), at(4.0, 4.0)),
+                (2, 1, at(4.0, 4.0), at(4.0, 0.0)),
+                (1, 0, at(4.0, 0.0), at(0.0, 0.0)),
+                (0, 4, at(0.0, 0.0), at(0.0, 4.0)),
+            ]
+        } else {
+            vec![
+                (0, 1, at(0.0, 0.0), at(4.0, 0.0)),
+                (1, 2, at(4.0, 0.0), at(4.0, 4.0)),
+                (2, 3, at(4.0, 4.0), at(4.0, 2.0)),
+                (3, 4, at(4.0, 2.0), at(0.0, 4.0)),
+                (4, 0, at(0.0, 4.0), at(0.0, 0.0)),
+            ]
+        };
+        let face = plane_face(&mut model, &vertices, &ring);
+        let compound = make_compound(&mut model, &[face]).unwrap().shape;
+        let before = check(&model, &compound, T).unwrap();
+        assert_eq!(out_and_back_found(&before), 1, "{before}");
+        let fixed = ogeom::heal::fix_shape(&mut model, &compound, T).unwrap();
+        assert_eq!(fixed.report.notches_cut, 1, "mirrored {mirrored}");
+        assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+        assert_eq!(
+            explore_unique(&model, &fixed.shape, ShapeType::Edge)
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!((area_of(&model, &fixed.shape) - 12.0).abs() < 1e-9);
+    }
+}
+
+/// A plane face of tolerance `reach`, its outer ring the square from
+/// (0, 0) to (10, 10), with a hole through each of `holes`' points in
+/// turn, wound against the outer ring.
+fn plane_face_with_holes(model: &mut Model, reach: f64, holes: &[Vec<Point2>]) -> Shape {
+    let surface = model
+        .geometry_mut()
+        .add_surface(SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(
+            Frame::WORLD,
+        ))));
+    let ring = |model: &mut Model, points: &[Point2]| -> Shape {
+        let vertices: Vec<Shape> = points
+            .iter()
+            .map(|p| make_vertex(model, Point::new(p.x, p.y, 0.0)).shape)
+            .collect();
+        let mut edges = Vec::new();
+        for k in 0..points.len() {
+            let (from, to) = (points[k], points[(k + 1) % points.len()]);
+            let (a, b) = (Point::new(from.x, from.y, 0.0), Point::new(to.x, to.y, 0.0));
+            let line = ogeom::geom::LineCurve::segment(a, b, T).unwrap().into();
+            let curve = model.geometry_mut().add_curve(line);
+            let data =
+                ogeom::topo::EdgeData::on_curve(curve, Location::identity(), (0.0, a.distance(b)));
+            let edge = model
+                .add_edge(
+                    data,
+                    &[
+                        vertices[k].clone(),
+                        vertices[(k + 1) % points.len()].clone(),
+                    ],
+                )
+                .unwrap();
+            let chart = ogeom::geom::Line2d::segment(from, to, T).unwrap();
+            ogeom::algo::attach_pcurve(
+                &mut *model,
+                &edge,
+                chart.into(),
+                surface,
+                Location::identity(),
+                ogeom::geom::Curve2d::domain(&chart),
+            )
+            .unwrap();
+            edges.push(edge);
+        }
+        model.add_wire(&edges).unwrap()
+    };
+    let square =
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].map(|(x, y)| Point2::new(x, y));
+    let mut wires = vec![ring(model, &square)];
+    for hole in holes {
+        wires.push(ring(model, hole));
+    }
+    let mut data = FaceData::new(surface, Location::identity());
+    data.widen(ogeom::core::Tolerance::new(reach).unwrap());
+    model.add_face(data, &wires).unwrap()
+}
+
+/// On a 10 mm square of tolerance 1e-3, a triangular hole 1 mm long and
+/// 1e-4 mm high holds no point farther than 1e-3 from its boundary and
+/// goes. A hole of 1 mm² stays, and so does a 0.01 mm square hole with a
+/// slit 1 mm long and 1.5e-3 wide off it, which encloses less than the
+/// tolerance times its boundary's length but whose middle stands 5e-3 from
+/// its boundary. The face measures the square less the two holes kept.
+#[test]
+fn a_hole_within_the_face_s_tolerance_of_its_boundary_goes() {
+    let pt = |x: f64, y: f64| Point2::new(x, y);
+    let sliver = vec![pt(4.0, 5.0), pt(4.5, 5.0 + 1e-4), pt(5.0, 5.0)];
+    let square = vec![pt(2.0, 2.0), pt(2.0, 3.0), pt(3.0, 3.0), pt(3.0, 2.0)];
+    let flagged = vec![
+        pt(7.0, 7.0),
+        pt(7.0, 7.01),
+        pt(7.01, 7.01),
+        pt(7.01, 7.005 + 7.5e-4),
+        pt(8.01, 7.005 + 7.5e-4),
+        pt(8.01, 7.005 - 7.5e-4),
+        pt(7.01, 7.005 - 7.5e-4),
+        pt(7.01, 7.0),
+    ];
+    let mut model = Model::new();
+    let face = plane_face_with_holes(&mut model, 1e-3, &[sliver, square, flagged]);
+    let compound = make_compound(&mut model, &[face]).unwrap().shape;
+    let fixed = ogeom::heal::fix_shape(&mut model, &compound, T).unwrap();
+    assert_eq!(fixed.report.small_wires_removed, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let flag_area = 1e-4 + 1.0 * 1.5e-3;
+    let exact = 100.0 - 1.0 - flag_area;
+    assert!(
+        (area_of(&model, &fixed.shape) - exact).abs() < 1e-9,
+        "{}",
+        area_of(&model, &fixed.shape)
+    );
+    let faces = explore_unique(&model, &fixed.shape, ShapeType::Face).unwrap();
+    assert_eq!(model.children_of(&faces[0]).unwrap().len(), 3);
+}
+
+/// A 10 mm box's shell with its lid lifted 1e-3 mm off the walls: each of
+/// the lid's edges is free beside a wall's, a gap the edges do not state.
+/// `fix_shape` states the gap on each pair and sews them: the shell closes
+/// and checks clean, and measures the box's 600 mm² to within the lift
+/// along the rim. A lid lifted 2 mm, past the millimetre a fitted trim may
+/// stand off its surface, stays apart, its faces as they were.
+#[test]
+fn a_shell_s_free_edges_twinned_across_a_gap_are_sewn() {
+    for (lift, sewn) in [(1e-3, true), (2.0, false)] {
+        let mut model = Model::new();
+        let p = |x: f64, y: f64, z: f64| Point::new(x, y, z);
+        let top = 10.0 + lift;
+        let quads: [[Point; 4]; 6] = [
+            [
+                p(0., 0., 0.),
+                p(0., 10., 0.),
+                p(10., 10., 0.),
+                p(10., 0., 0.),
+            ],
+            [
+                p(0., 0., 0.),
+                p(10., 0., 0.),
+                p(10., 0., 10.),
+                p(0., 0., 10.),
+            ],
+            [
+                p(0., 10., 0.),
+                p(0., 10., 10.),
+                p(10., 10., 10.),
+                p(10., 10., 0.),
+            ],
+            [
+                p(0., 0., 0.),
+                p(0., 0., 10.),
+                p(0., 10., 10.),
+                p(0., 10., 0.),
+            ],
+            [
+                p(10., 0., 0.),
+                p(10., 10., 0.),
+                p(10., 10., 10.),
+                p(10., 0., 10.),
+            ],
+            [
+                p(0., 0., top),
+                p(10., 0., top),
+                p(10., 10., top),
+                p(0., 10., top),
+            ],
+        ];
+        let mut faces = Vec::new();
+        for quad in &quads {
+            let ring = make_polygon(&mut model, quad, true, T).unwrap().shape;
+            let normal = Direction::new((quad[1] - quad[0]).cross(quad[2] - quad[0]), T).unwrap();
+            let reference = Direction::new(quad[1] - quad[0], T).unwrap();
+            let frame = Frame::new(quad[0], normal, reference, T).unwrap();
+            let plane = SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(frame)));
+            faces.push(make_face(&mut model, plane, &[ring], T).unwrap().shape);
+        }
+        let lid = faces.pop().unwrap();
+        let walls = ogeom::algo::sew(&mut model, &faces, T).unwrap();
+        assert_eq!(walls.shells.len(), 1);
+        let mut all = explore_unique(&model, &walls.shells[0], ShapeType::Face).unwrap();
+        all.push(lid);
+        let open = model.add_shell(&all).unwrap();
+        assert!(!check(&model, &open, T).unwrap().is_valid());
+        let fixed = ogeom::heal::fix_shape(&mut model, &open, T).unwrap();
+        if sewn {
+            assert_eq!(fixed.report.free_gaps_stated, 4);
+            assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+            assert!(fixed.report.free_bounds.is_empty());
+        } else {
+            assert_eq!(fixed.report.free_gaps_stated, 0);
+            assert_eq!(fixed.report.free_bounds.closed.len(), 2);
+        }
+        // Sewn, the walls reach to whichever edge sewing keeps: at most
+        // the lift times the rim's 40 mm more.
+        let area = area_of(&model, &fixed.shape);
+        let slack = if sewn { 40.0 * lift } else { 0.0 };
+        assert!((area - 600.0).abs() <= slack + 1e-9, "lift {lift}: {area}");
+    }
+}
+
+/// `fix_shape` hands every sound primitive back as it is.
+#[test]
+fn sound_primitives_are_left_alone() {
+    let mut model = Model::new();
+    let solids = [
+        make_box(&mut model, Frame::WORLD, (2.0, 3.0, 4.0), T)
+            .unwrap()
+            .shape,
+        ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 5.0, T)
+            .unwrap()
+            .shape,
+        ogeom::algo::make_cone(&mut model, Frame::WORLD, 2.0, 0.0, 5.0, T)
+            .unwrap()
+            .shape,
+        ogeom::algo::make_sphere(&mut model, Frame::WORLD, 2.0, T)
+            .unwrap()
+            .shape,
+        ogeom::algo::make_torus(&mut model, Frame::WORLD, 5.0, 1.5, T)
+            .unwrap()
+            .shape,
+    ];
+    for solid in solids {
+        assert!(check(&model, &solid, T).unwrap().is_valid());
+        let fixed = ogeom::heal::fix_shape(&mut model, &solid, T).unwrap();
+        assert!(fixed.shape.is_same(&solid), "the same node");
+        assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    }
 }

@@ -261,7 +261,12 @@ fn cut(
 
 /// A new edge with `piece`'s geometry, bounded as it is but at `to` where
 /// it is bounded at `from`.
-fn rebound(model: &mut Model, piece: &Shape, from: &Shape, to: &Shape) -> OgeomResult<Shape> {
+pub(crate) fn rebound(
+    model: &mut Model,
+    piece: &Shape,
+    from: &Shape,
+    to: &Shape,
+) -> OgeomResult<Shape> {
     let data = edge_data(model, piece)?;
     let bounds: Vec<Shape> = model
         .children_of(piece)?

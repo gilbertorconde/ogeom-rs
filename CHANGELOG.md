@@ -13,6 +13,48 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fix_shape` bounds wireless faces, cuts notches, drops holes of
+  nothing, and sews free edges twinned across a gap; `check` names tails
+  and notches.** (#397)
+  - A face with no wires that had lost its natural-restriction mark, on a
+    sphere, a torus or a patch, is rebuilt with its domain's sides as its
+    wire: a seam where the surface closes, a degenerate edge where it
+    pinches to a pole. It falls back to the mark where a side has no
+    closed-form curve or the bounded face does not check clean.
+    `FixReport::natural_bounds_made` counts them. A solid of such a
+    sphere is now closed by its edges.
+  - `ogeom_algo::out_and_back` finds consecutive edges that run out and
+    back along one path: tails of two distinct edges, and notches, where
+    one edge runs farther than the other. `check` names each as
+    `Suspect`. A slit, one edge walked out and straight back, is a
+    construct the booleans support and is not reported. `fix_shape` cuts a
+    notch at the shorter edge's far end, drops the stretch out to the tip
+    with the shorter edge, and widens that vertex to reach where the piece
+    kept ends. Every face changed must check clean.
+    `FixReport::notches_cut` counts them.
+  - A hole on a plane or a cylinder, no edge of which another face walks,
+    goes where every point of it is within the face's tolerance of its
+    boundary. Enclosing no more than the tolerance times its length is
+    necessary; the rest is proved cell by cell in the chart drawn to
+    scale. A round hole with a long thin slit off it passes the area test
+    and stays. `FixReport::small_wires_removed` counts them.
+  - Two free edges of a shell's faces that are each other's only twin
+    within the trim cap, with the gap shorter than every edge of either
+    face and no other vertex as near their ends, state that gap on the
+    edges and their vertices. Sewing then joins them. A pair is stated
+    only where sewing a copy of the shape shows it adds exactly one join
+    (and the pairs kept together one each), so a pair sewing would not
+    join leaves the shape exactly as it was.
+    `FixReport::free_gaps_stated` counts the pairs.
+  - `FreeBounds::wires` makes each contour a wire.
+  - Measured: a box shell whose lid stands 1e-3 off its walls closes and
+    checks clean; a square with a notch measures 12 mm² after the cut,
+    walked either way round; a 1 mm × 1e-4 mm triangular hole goes from a
+    face of tolerance 1e-3, while a 1 mm² hole and a slit hole stay, the
+    face measuring its closed form; a sphere's and a torus's bounded faces
+    measure 4πr² and 4π²Rr to 1e-9. DoomCube and Voron: `fix_shape` gives
+    an identical result on every one of the 2312 solids and 24 open
+    sheets, and every solid's `check` and volume are as on main.
 - **Pipe scale and twist laws given as functions.** (#394)
   - `make_pipe_shell_laws` took a scale or twist law only as linear or as
     the monotone cubic through given `(share, value)` points.

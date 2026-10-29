@@ -182,6 +182,7 @@ pub fn check_kept(
         check_face_chart(model, face, &|_| false, tol, out)?;
         check_seam_sides(model, face, tol, out)
     })?;
+    note_out_and_back(crate::out_and_back(model, shape, tol)?, &mut found);
     for shell in of(ShapeType::Shell) {
         check_shell(model, shell, &mut found)?;
     }
@@ -337,6 +338,36 @@ impl Readings {
     /// How many places read at all.
     pub(crate) const fn count(self) -> usize {
         self.out + self.inward
+    }
+}
+
+/// Note every pair of consecutive edges that runs out and back along one
+/// path ([`out_and_back`](crate::out_and_back)): the face's region is the
+/// same without that stretch of its boundary, but its tip is a vertex that
+/// bounds no corner, which every boolean through the face meets as a
+/// strand and a mesher has to strip.
+fn note_out_and_back(pairs: Vec<crate::OutAndBack>, found: &mut Diagnosis) {
+    for pair in pairs {
+        let [out, back] = pair.edges;
+        let w = pair.wire;
+        let what = match pair.notch {
+            None => format!(
+                "edge {out} of wire {w} runs out and edge {back} straight back along \
+                 it: the pair bounds nothing"
+            ),
+            Some(notch) => {
+                let (long, short) = if notch.longer == 0 {
+                    (out, back)
+                } else {
+                    (back, out)
+                };
+                format!(
+                    "edge {short} of wire {w} runs along part of edge {long} and \
+                     back: that stretch of the boundary bounds nothing"
+                )
+            }
+        };
+        found.note(Severity::Suspect, &pair.face, ShapeType::Face, what);
     }
 }
 
