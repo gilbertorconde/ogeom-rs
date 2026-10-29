@@ -1660,13 +1660,18 @@ fn off_centre_disc_round_the_lens(radius: f64, inward: f64, turned: f64) -> f64 
 ///   spine is the square's pipe less the hole's, within the skin's
 ///   tolerance over the wall: the perimeter times the longest path a
 ///   point runs.
-/// - Under the leaning binormal a square with a hole off the spine is the
-///   square's pipe less the hole's own, swept alone under the same law.
+/// - Under the leaning binormal a disc off the spine sweeps
+///   [`leaning_disc_round_the_lens`], and a square with a hole off the
+///   spine is the square's pipe less that disc's own, swept alone under the
+///   same law. Standing 0.4 across and 0.2 up, the hole's circle touches
+///   the axis of the first run's corners at both its ends, so each trim of
+///   that run cuts its skin along a loop touching the end rim.
 #[test]
 fn sections_off_the_spine_round_a_lens_glue_their_runs_on_the_mitre_planes() {
     let (big, half, radius, skin) = (15.0, 1.0, 0.4, 1e-3);
     let level = PipeLaw::Binormal(Direction::Z);
-    let lean = PipeLaw::Binormal(Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap());
+    let leaning = Vector::new(1.0, 0.0, 1.0);
+    let lean = PipeLaw::Binormal(Direction::new(leaning, T).unwrap());
     let path =
         |turned: f64, r: f64| 2.0 * (big + r) * turned + 4.0 * r * ((PI - turned) / 2.0).tan();
 
@@ -1691,13 +1696,103 @@ fn sections_off_the_spine_round_a_lens_glue_their_runs_on_the_mitre_planes() {
     }
 
     let (square, _) = round_the_lens(&lean, Some(half), None, skin);
-    for off in [(0.5, 0.0), (0.2, -0.5)] {
+    for off in [(0.5, 0.0), (0.2, -0.5), (-0.4, 0.2)] {
         let (holed, _) = round_the_lens(&lean, Some(half), Some((radius, off)), skin);
         let (hole, _) = round_the_lens(&lean, None, Some((radius, off)), skin);
         let bound = skin * 2.0 * PI * radius * path(turned, radius + off.0.hypot(off.1));
+        let want = leaning_disc_round_the_lens(radius, off, leaning);
+        assert!(
+            (hole - want).abs() < bound,
+            "leaning, disc at {off:?}: {hole} against {want}, bound {bound}"
+        );
         assert!(
             (square - holed - hole).abs() < bound,
             "leaning, hole at {off:?}: {square} less {holed} against the hole's {hole}, bound {bound}"
         );
     }
+}
+
+/// The volume a disc of `radius` centred `off` (across, up) off the spine
+/// sweeps round [`lens`] under the binormal law leaning along `lean`,
+/// mitred at both corners, integrated over the disc point by point.
+///
+/// The law holds each point at fixed coordinates in the frame of the
+/// tangent `t`, the lean less its part along `t` for `b`, and `n = b × t`,
+/// so the frame turns about `t` alone and a point standing `u` toward the
+/// arcs' centres sweeps `(1 - u / big)` per unit of spine. Each run ends on
+/// the plane halving its corner: a point whose end section stands short of
+/// that plane is run on along the end tangent to it (the end section's
+/// prism), and one whose path crosses it before the run ends is cut back
+/// from where it crosses. The disc is summed by the midpoint rule in
+/// polar coordinates, the spine by Simpson's rule, and each crossing found
+/// by bisection.
+fn leaning_disc_round_the_lens(radius: f64, off: (f64, f64), lean: Vector) -> f64 {
+    const RINGS: u32 = 64;
+    const SPOKES: u32 = 256;
+    const SIMPSON: u32 = 64;
+    let (big, half_chord): (f64, f64) = (15.0, 10.0);
+    let d = (big * big - half_chord * half_chord).sqrt();
+    let spread = half_chord.atan2(d);
+    let lean = lean / lean.magnitude();
+    let frame = |t: Vector| {
+        let b = lean - t * lean.dot(t);
+        let b = b / b.magnitude();
+        let n = b.cross(t);
+        (n / n.magnitude(), b)
+    };
+    let tangent = |q: f64| Vector::new(-q.sin(), q.cos(), 0.0);
+    let inward = |q: f64| Vector::new(-q.cos(), -q.sin(), 0.0);
+    let simpson = |f: &dyn Fn(f64) -> f64, lo: f64, hi: f64| -> f64 {
+        let h = (hi - lo) / f64::from(SIMPSON);
+        let inner: f64 = (1..SIMPSON)
+            .map(|k| f(lo + h * f64::from(k)) * if k % 2 == 1 { 4.0 } else { 2.0 })
+            .sum();
+        (f(lo) + f(hi) + inner) * h / 3.0
+    };
+    let start = tangent(-spread);
+    let (n0, b0) = frame(start);
+    let centre = start.cross(Vector::new(0.0, 0.0, 1.0)) * off.0 + Vector::new(0.0, 0.0, off.1);
+    let mut total = 0.0;
+    // The first run round the arc centred at (-d, half_chord), kept where
+    // x >= 0; the second round the one at (d, half_chord), kept where x <= 0.
+    for (cx, from, keep) in [(-d, 0.0, 1.0), (d, PI, -1.0)] {
+        let (qs, qe) = (from - spread, from + spread);
+        let sweep = |a: f64, b: f64, q: f64| {
+            let (n, bn) = frame(tangent(q));
+            big - (n * a + bn * b).dot(inward(q))
+        };
+        let kept_x = |a: f64, b: f64, q: f64| {
+            let (n, bn) = frame(tangent(q));
+            keep * (cx + big * q.cos() + n.x * a + bn.x * b)
+        };
+        for i in 0..RINGS {
+            let r = radius * (f64::from(i) + 0.5) / f64::from(RINGS);
+            for j in 0..SPOKES {
+                let angle = 2.0 * PI * (f64::from(j) + 0.5) / f64::from(SPOKES);
+                let p = centre + n0 * (r * angle.cos()) + b0 * (r * angle.sin());
+                let (a, b) = (p.dot(n0), p.dot(b0));
+                let mut length = simpson(&|q| sweep(a, b, q), qs, qe);
+                for end in [qe, qs] {
+                    let short = kept_x(a, b, end);
+                    if short >= 0.0 {
+                        length += short / tangent(end).x.abs();
+                        continue;
+                    }
+                    let (mut inside, mut past) = (f64::midpoint(qs, qe), end);
+                    for _ in 0..60 {
+                        let mid = f64::midpoint(inside, past);
+                        if kept_x(a, b, mid) >= 0.0 {
+                            inside = mid;
+                        } else {
+                            past = mid;
+                        }
+                    }
+                    let crossing = f64::midpoint(inside, past);
+                    length -= simpson(&|q| sweep(a, b, q), crossing.min(end), crossing.max(end));
+                }
+                total += length * r * (radius / f64::from(RINGS)) * (2.0 * PI / f64::from(SPOKES));
+            }
+        }
+    }
+    total
 }

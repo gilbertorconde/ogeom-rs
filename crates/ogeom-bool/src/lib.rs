@@ -3078,10 +3078,10 @@ fn contact_intervals(
             (Ok(pa), Ok(pb))
                 if arrange::inside_many(
                     &refs_a,
-                    fold_point_into_chart(pa, &fused.a.faces[contact.face_a].surface),
+                    fold_point_into_chart(pa, &fused.a.faces[contact.face_a].surface, tol),
                 ) && arrange::inside_many(
                     &refs_b,
-                    fold_point_into_chart(pb, &fused.b.faces[contact.face_b].surface),
+                    fold_point_into_chart(pb, &fused.b.faces[contact.face_b].surface, tol),
                 )
         );
         match (held, open) {
@@ -4274,44 +4274,52 @@ fn interior_of(line: &[Point2]) -> Point2 {
 /// width and a single period shift per axis brings it home. The shift is
 /// chosen by the strand's midpoint, so endpoints sitting exactly on the
 /// chart's edge stay on whichever side the strand's body is.
-fn fold_into_chart(line: &mut [Point2], surface: &SurfaceGeometry) {
-    let ((ua, ub), (va, vb)) = surface.domain();
+fn fold_into_chart(line: &mut [Point2], surface: &SurfaceGeometry, tol: Tolerances) {
+    let ((ua, _), (va, _)) = surface.domain();
     if line.is_empty() {
         return;
     }
     let mid = interior_of(line);
-    if surface.is_periodic_u() {
-        let span = ub - ua;
-        if span > 0.0 {
-            let shift = (ua + (mid.x - ua).rem_euclid(span)) - mid.x;
-            for p in line.iter_mut() {
-                p.x += shift;
-            }
+    let [span_u, span_v] = chart_spans(surface, tol);
+    if let Some(span) = span_u {
+        let shift = (ua + (mid.x - ua).rem_euclid(span)) - mid.x;
+        for p in line.iter_mut() {
+            p.x += shift;
         }
     }
-    if surface.is_periodic_v() {
-        let span = vb - va;
-        if span > 0.0 {
-            let shift = (va + (mid.y - va).rem_euclid(span)) - mid.y;
-            for p in line.iter_mut() {
-                p.y += shift;
-            }
+    if let Some(span) = span_v {
+        let shift = (va + (mid.y - va).rem_euclid(span)) - mid.y;
+        for p in line.iter_mut() {
+            p.y += shift;
         }
     }
 }
 
+/// The width a chart comes round by along each direction: its period, or
+/// its span where it closes on itself without repeating (a drum spelt as a
+/// clamped spline). A section's pcurve is unwrapped across either alike,
+/// so a point of it lies a whole span off the chart's window wherever the
+/// section crosses the closure, and folds back by that span.
+fn chart_spans(surface: &SurfaceGeometry, tol: Tolerances) -> [Option<f64>; 2] {
+    let ((ua, ub), (va, vb)) = surface.domain();
+    [
+        ((surface.is_periodic_u() || surface.is_closed_u(tol)) && ub > ua).then_some(ub - ua),
+        ((surface.is_periodic_v() || surface.is_closed_v(tol)) && vb > va).then_some(vb - va),
+    ]
+}
+
 /// The shifts by whole periods worth trying on a chart point after its fold,
 /// nearest first: none, then one period along each periodic direction.
-fn period_shifts(surface: &SurfaceGeometry) -> Vec<(f64, f64)> {
-    let ((ua, ub), (va, vb)) = surface.domain();
+fn period_shifts(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<(f64, f64)> {
     let mut out = vec![(0.0, 0.0)];
-    if surface.is_periodic_u() && ub > ua {
-        out.push((ub - ua, 0.0));
-        out.push((ua - ub, 0.0));
+    let [span_u, span_v] = chart_spans(surface, tol);
+    if let Some(span) = span_u {
+        out.push((span, 0.0));
+        out.push((-span, 0.0));
     }
-    if surface.is_periodic_v() && vb > va {
-        out.push((0.0, vb - va));
-        out.push((0.0, va - vb));
+    if let Some(span) = span_v {
+        out.push((0.0, span));
+        out.push((0.0, -span));
     }
     out
 }
@@ -4326,11 +4334,14 @@ fn period_shifts(surface: &SurfaceGeometry) -> Vec<(f64, f64)> {
 /// is the one diagonal tried: asked of every diagonal, a trim still open
 /// where a pole is yet to close it reads a point a period off both ways as
 /// inside.
-fn shifts_toward(surface: &SurfaceGeometry, from: Point2, centre: Point2) -> Vec<(f64, f64)> {
-    let mut out = period_shifts(surface);
-    let ((ua, ub), (va, vb)) = surface.domain();
-    if surface.is_periodic_u() && ub > ua && surface.is_periodic_v() && vb > va {
-        let (du, dv) = (ub - ua, vb - va);
+fn shifts_toward(
+    surface: &SurfaceGeometry,
+    from: Point2,
+    centre: Point2,
+    tol: Tolerances,
+) -> Vec<(f64, f64)> {
+    let mut out = period_shifts(surface, tol);
+    if let [Some(du), Some(dv)] = chart_spans(surface, tol) {
         let toward = (
             ((centre.x - from.x) / du).round() * du,
             ((centre.y - from.y) / dv).round() * dv,
@@ -4367,13 +4378,18 @@ fn middle_of<'a>(lines: impl IntoIterator<Item = &'a [Point2]>) -> Point2 {
 /// its mesh left, running diagonally round) covers a period starting at the
 /// seam, and a point just short of it belongs a period on. The fold is kept
 /// where it lands inside the trim, or where no shift does.
-fn fold_inside(p: Point2, surface: &SurfaceGeometry, trim: &[&[Point2]]) -> Point2 {
-    let folded = fold_point_into_chart(p, surface);
-    // A chart with no period has the one fold, inside or not.
-    if trim.is_empty() || !(surface.is_periodic_u() || surface.is_periodic_v()) {
+fn fold_inside(
+    p: Point2,
+    surface: &SurfaceGeometry,
+    trim: &[&[Point2]],
+    tol: Tolerances,
+) -> Point2 {
+    let folded = fold_point_into_chart(p, surface, tol);
+    // A chart that does not come round has the one fold, inside or not.
+    if trim.is_empty() || chart_spans(surface, tol).iter().all(Option::is_none) {
         return folded;
     }
-    shifts_toward(surface, folded, middle_of(trim.iter().copied()))
+    shifts_toward(surface, folded, middle_of(trim.iter().copied()), tol)
         .into_iter()
         .map(|(du, dv)| Point2::new(folded.x + du, folded.y + dv))
         .find(|q| inside_many(trim, *q))
@@ -4383,8 +4399,13 @@ fn fold_inside(p: Point2, surface: &SurfaceGeometry, trim: &[&[Point2]]) -> Poin
 /// A strand folded into the chart as a whole, to the side of the face's
 /// seam its interior lies inside the trim on, as [`fold_inside`] does for
 /// a point.
-fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &arrange::Trim) {
-    fold_into_chart(line, surface);
+fn fold_line_inside(
+    line: &mut [Point2],
+    surface: &SurfaceGeometry,
+    trim: &arrange::Trim,
+    tol: Tolerances,
+) {
+    fold_into_chart(line, surface, tol);
     if line.is_empty() || trim.is_empty() {
         return;
     }
@@ -4392,7 +4413,7 @@ fn fold_line_inside(line: &mut [Point2], surface: &SurfaceGeometry, trim: &arran
     // (a contact running across the chart ends where it paved the trim),
     // where the level ray passes through them. The leaning ray cannot.
     let mid = interior_of(line);
-    if let Some((du, dv)) = shifts_toward(surface, mid, trim.middle())
+    if let Some((du, dv)) = shifts_toward(surface, mid, trim.middle(), tol)
         .into_iter()
         .find(|(du, dv)| trim.inside_slanted(Point2::new(mid.x + du, mid.y + dv)))
     {
@@ -4427,22 +4448,11 @@ fn face_trim_lines(face: &GFace, tol: Tolerances) -> Vec<Vec<Point2>> {
 
 /// Remove period tears from a sampled polyline, axis by axis.
 fn unwrap_polyline(line: &mut [Point2], surface: &SurfaceGeometry, tol: Tolerances) {
-    let ((ua, ub), (va, vb)) = surface.domain();
     // A surface closed without being periodic (a sphere spelt as a spline)
     // tears the same way: a closed section's sample at its end folds back to
     // its start, one column across the chart from where the strand arrives.
-    let spans = (
-        if surface.is_periodic_u() || surface.is_closed_u(tol) {
-            ub - ua
-        } else {
-            0.0
-        },
-        if surface.is_periodic_v() || surface.is_closed_v(tol) {
-            vb - va
-        } else {
-            0.0
-        },
-    );
+    let [span_u, span_v] = chart_spans(surface, tol);
+    let spans = (span_u.unwrap_or(0.0), span_v.unwrap_or(0.0));
     for i in 1..line.len() {
         if spans.0 > 0.0 {
             while line[i].x - line[i - 1].x > spans.0 * 0.5 {
@@ -4463,10 +4473,10 @@ fn unwrap_polyline(line: &mut [Point2], surface: &SurfaceGeometry, tol: Toleranc
     }
 }
 
-/// Fold a point into a periodic surface's chart.
-fn fold_point_into_chart(p: Point2, surface: &SurfaceGeometry) -> Point2 {
+/// Fold a point into a chart that comes round, as [`fold_into_chart`].
+fn fold_point_into_chart(p: Point2, surface: &SurfaceGeometry, tol: Tolerances) -> Point2 {
     let mut one = [p];
-    fold_into_chart(&mut one, surface);
+    fold_into_chart(&mut one, surface, tol);
     one[0]
 }
 
@@ -6251,8 +6261,8 @@ fn fill(
                 let at = |t: f64| -> OgeomResult<(Point2, Point2)> {
                     let tf = if section.closed { fold(t, domain) } else { t };
                     Ok((
-                        fold_inside(section.pc_a.point_at(tf, tol)?, &face_a.surface, &la),
-                        fold_inside(section.pc_b.point_at(tf, tol)?, &face_b.surface, &lb),
+                        fold_inside(section.pc_a.point_at(tf, tol)?, &face_a.surface, &la, tol),
+                        fold_inside(section.pc_b.point_at(tf, tol)?, &face_b.surface, &lb, tol),
                     ))
                 };
                 let mid = f64::midpoint(lo, hi);
@@ -6302,12 +6312,20 @@ fn fill(
                             .pc_a
                             .point_at(tf, tol)
                             .ok()
-                            .map(|q| fold_point_into_chart(q, &ga.faces[section.face_a].surface)),
+                            .map(|q| fold_point_into_chart(
+                                q,
+                                &ga.faces[section.face_a].surface,
+                                tol
+                            )),
                         section
                             .pc_b
                             .point_at(tf, tol)
                             .ok()
-                            .map(|q| fold_point_into_chart(q, &gb.faces[section.face_b].surface))
+                            .map(|q| fold_point_into_chart(
+                                q,
+                                &gb.faces[section.face_b].surface,
+                                tol
+                            ))
                     );
                 }
                 // A section that runs along a boundary edge of a face splits
@@ -9073,7 +9091,7 @@ fn chart_point_within(face: &GFace, p: Point, reach: f64, tol: Tolerances) -> Op
             Point2::new(foot.parameters.0, foot.parameters.1)
         }
     };
-    let at = fold_point_into_chart(raw, &face.surface);
+    let at = fold_point_into_chart(raw, &face.surface, tol);
     let lines = face.outline(tol)?;
     let trim = face.outline_trim(tol)?;
     // The face's boundary polylines are unwrapped (a winding ring may span
@@ -10306,7 +10324,7 @@ fn general_fuse_as(
                         .collect(),
                 )
             });
-            fold_line_inside(&mut line, &face.surface, trim);
+            fold_line_inside(&mut line, &face.surface, trim, tol);
             strands.push(Strand {
                 polyline: line,
                 tag: Tag::Section {
@@ -10434,7 +10452,7 @@ fn general_fuse_as(
                             .collect(),
                     )
                 });
-                fold_line_inside(&mut line, &face.surface, trim);
+                fold_line_inside(&mut line, &face.surface, trim, tol);
                 let mid = interior_of(&line);
                 // On the last attempt, where the stretch stands nearest an
                 // edge's inside, it is inside the face just where it stands
@@ -10510,7 +10528,7 @@ fn general_fuse_as(
                     // A junction on a seam stands on both sides of it, and
                     // the strand is carried to the side it arrives from.
                     Some(&(_, chart, _)) if exact => {
-                        strand.polyline[end] = period_shifts(&face.surface)
+                        strand.polyline[end] = period_shifts(&face.surface, tol)
                             .into_iter()
                             .map(|(du, dv)| Point2::new(chart.x + du, chart.y + dv))
                             .min_by(|p, r| p.distance(at).total_cmp(&r.distance(at)))
@@ -10833,7 +10851,7 @@ fn general_fuse_as(
                 let target = ends[k].2;
                 // A node on a seam stands on both sides of it, and the end
                 // is carried to the side it arrives from.
-                strands[si].polyline[end] = period_shifts(&face.surface)
+                strands[si].polyline[end] = period_shifts(&face.surface, tol)
                     .into_iter()
                     .map(|(du, dv)| Point2::new(target.x + du, target.y + dv))
                     .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)))
@@ -12495,7 +12513,7 @@ fn build_sub_edge(
             );
             let mid = c.pcurve.point_at(f64::midpoint(sub_p.0, sub_p.1), tol)?;
             let trim: Vec<&[Point2]> = face.trim_lines(tol).iter().map(Vec::as_slice).collect();
-            let folded = fold_inside(mid, &face.surface, &trim);
+            let folded = fold_inside(mid, &face.surface, &trim, tol);
             let shifted = c
                 .pcurve
                 .transformed(&ogeom_math::Transform2::translation(folded - mid), tol)?;
@@ -12579,7 +12597,7 @@ fn build_sub_edge(
             let pcurve = if from_a { &s.pc_a } else { &s.pc_b };
             let mid = pcurve.point_at(f64::midpoint(f0, f1), tol)?;
             let trim: Vec<&[Point2]> = face.trim_lines(tol).iter().map(Vec::as_slice).collect();
-            let folded = fold_inside(mid, &face.surface, &trim);
+            let folded = fold_inside(mid, &face.surface, &trim, tol);
             let shifted =
                 pcurve.transformed(&ogeom_math::Transform2::translation(folded - mid), tol)?;
             // The chart image ends where the vertex is, as the edge does in
@@ -12660,7 +12678,7 @@ fn pcurve_onto_ends(
         // whether or not the surface's wrapper says it is periodic. A
         // shifted candidate counts where the surface agrees it is the foot.
         let turn = core::f64::consts::TAU;
-        let mut shifts = period_shifts(surface);
+        let mut shifts = period_shifts(surface, tol);
         for du in [-turn, 0.0, turn] {
             for dv in [-turn, 0.0, turn] {
                 shifts.push((du, dv));

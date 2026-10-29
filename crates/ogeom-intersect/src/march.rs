@@ -1393,6 +1393,15 @@ pub fn branches(
                 again.push(piece);
                 continue;
             }
+            // And a branch traced before that lies along this piece all
+            // its length is this piece again: its walk stopped at a touch
+            // this one ran over and was cut at, or at the closure of a
+            // chart this one crossed.
+            let (along, apart): (Vec<Traced>, Vec<Traced>) = out
+                .drain(..)
+                .partition(|other| other.points.iter().all(|&p| passes_near(&piece, p, reach)));
+            *out = apart;
+            again.extend(along);
             out.push(piece);
         }
     };
@@ -5884,6 +5893,74 @@ mod tests {
         CylinderSurface::new(Cylinder::new(frame, radius, T).unwrap(), height)
             .unwrap()
             .into()
+    }
+
+    /// A unit drum spelt as its exact clamped patch, which closes round
+    /// without repeating, cut by a plane touching one of its end rims off
+    /// the patch's seam: `x cos a + y sin a + c d = 1`, `a` the touch's
+    /// angle and `d` the depth into the drum from that rim. The section is
+    /// the ellipse of semi-axes 1 and `√(1 + 1/c²)`, touching the rim. A
+    /// walk from a seed on one side of the touch stops on it, and one from
+    /// the other side may run over it and round the seam: the arc the first
+    /// traced is then a stretch of the second, and is returned once, so the
+    /// arcs' polylines together run shorter than the ellipse's perimeter,
+    /// by Simpson's rule.
+    #[test]
+    fn a_plane_touching_a_spline_drums_rim_is_traced_once() {
+        let drum: SurfaceGeometry = SurfaceGeometry::from(
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, 1.0, T).unwrap(), (0.0, 2.0)).unwrap(),
+        )
+        .to_bspline(T)
+        .unwrap()
+        .into();
+        for c in [1.5_f64, 2.5, 4.0] {
+            let b = (1.0 + 1.0 / (c * c)).sqrt();
+            let quarter = core::f64::consts::FRAC_PI_2 / 512.0;
+            let perimeter = 4.0 * quarter / 3.0
+                * (0..=512)
+                    .map(|k| {
+                        let t = quarter * f64::from(k);
+                        let weight = if k == 0 || k == 512 {
+                            1.0
+                        } else if k % 2 == 1 {
+                            4.0
+                        } else {
+                            2.0
+                        };
+                        weight * t.sin().hypot(b * t.cos())
+                    })
+                    .sum::<f64>();
+            for k in 0..12 {
+                let a = f64::from(k) / 12.0 * core::f64::consts::TAU + 0.1;
+                for (height, up) in [(0.0, 1.0), (2.0, -1.0)] {
+                    let plane: SurfaceGeometry = PlaneSurface::over(
+                        Plane::through(
+                            Point::new(a.cos(), a.sin(), height),
+                            Direction::new(Vector::new(a.cos(), a.sin(), up * c), T).unwrap(),
+                        ),
+                        (-8.0, 8.0),
+                        (-8.0, 8.0),
+                    )
+                    .unwrap()
+                    .into();
+                    let found = branches(&drum, &plane, Marching::default(), T).unwrap();
+                    let length: f64 = found
+                        .iter()
+                        .flat_map(|branch| branch.points.windows(2))
+                        .map(|pair| pair[0].distance(pair[1]))
+                        .sum();
+                    // A polyline through samples of a convex loop runs
+                    // shorter than the loop. A stretch returned twice adds
+                    // its length.
+                    assert!(
+                        length < perimeter,
+                        "c {c}, touch at {a} on the rim at {height}: {} arcs run {length}, \
+                         the ellipse {perimeter}",
+                        found.len()
+                    );
+                }
+            }
+        }
     }
 
     /// A drum of radius 0.5 along x, its axis at y = `c` and z = 1.5,

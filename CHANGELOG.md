@@ -997,6 +997,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section whose loop touches a corner's axis mitres round it.** (#492)
+  - `make_pipe_shell_with` with `PipeCorners::Mitre` round a lens of two
+    arcs under the leaning binormal refused a square with a hole of
+    radius 0.4 standing 0.4 across and 0.2 up off the spine ("the kept
+    pieces did not close into a shell"), and the hole's disc alone the
+    same way. The hole's circle touches the corner's axis at both ends of
+    the first run (measured 3e-31 off it), so the plane trimming that run
+    cuts its skin along a loop touching the end rim.
+  - The skin is a clamped spline that closes round without repeating. A
+    section's pcurve is unwrapped across that closure, but the boolean
+    folded chart points back by a period only on a periodic chart: three
+    quarters of the loop, past the closure, read outside the face and
+    were dropped. The boolean now folds chart points by a closed chart's
+    span as by a period.
+  - The marcher returned one stretch of the loop twice where a walk from
+    one seed stopped at the touch and a later one ran over it and round
+    the closure: a branch traced before that lies along a later piece all
+    its length is now that piece again.
+  - Measured: the disc alone holds a closed form integrated over the disc
+    point by point along each point's own path, run on or cut back to
+    the mitre planes, within 1.4e-4 (at (0.5, 0) and (0.2, -0.5), 4.1e-5
+    and 4.5e-5; bound 0.13), and square less holed less hole is within
+    7e-11.
+
 - **Mitred runs whose cuts of the mitre plane differ are glued on it.**
   (#492)
   - `make_pipe_shell_laws` refused a twist still moving through a mitred
@@ -1034,9 +1058,6 @@ bump may break the API and a patch bump may not.
     spine holds Pappus plus its corners' columns within 4.9e-4, and holed
     squares less their holes' tubes 1e-5 and 1.7e-4; under the leaning
     binormal square less holed less hole is within 1e-6.
-  - Still refused: round the lens under the leaning binormal, a square
-    with a hole of radius 0.4 standing 0.4 across and 0.2 up off the
-    spine, which fails in the trim of one run, before the runs meet.
   - Results that succeed through the fuse are unchanged: the glue is
     tried only where the fuse fails or its result fails `check`.
 

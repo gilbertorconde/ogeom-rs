@@ -1103,10 +1103,7 @@ instead: cuts that run within the two runs' tolerances of each other all \
 along are sewn as one edge stating the gap, the others split where they \
 cross, and the plane keeps a face where only one run's region covers \
 it, looking out of that run; a solid that still fails the checks is \
-refused by name rather than returned invalid (round the lens under the \
-leaning binormal, a square with a hole of radius 0.4 standing 0.4 across \
-and 0.2 up off the spine still fails in the trim of one run, before \
-the runs meet); a round corner is refused where the law's next section is not the last \
+refused by name rather than returned invalid; a round corner is refused where the law's next section is not the last \
 turned about the corner, within what the runs are held to (a skinned \
 run's tolerance), so a holed section's skinned run turns round ones too. The Frenet frame turns sharp corners extended or \
 rounded the same way, each run's section set by the run's own Frenet \
