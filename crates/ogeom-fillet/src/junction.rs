@@ -398,9 +398,35 @@ fn junction(
         }
         Ok(turned)
     };
+    // Whether a band's end section stands past the plane the band keeps to,
+    // as two walls leaning alike with their feet out under a re-entrant
+    // corner put it. The section lies within the triangle of the vertex and
+    // its two contacts, the ball's arc between them within its tangents
+    // there, and the vertex stands in the plane, so it is past where a
+    // contact is. A straight band is the straight band of that section on
+    // either side of its cap, and is carried on through the plane and cut
+    // back to it. A curved band before its cap is not, and what of it
+    // stands past the plane is no reflection of the other band's: the
+    // plane is no meeting there, and the junction is crossed.
+    let past_plane = || -> bool {
+        let near = tol.confusion() * 1e3;
+        [
+            (side_0, outward[0], bisector),
+            (side_1, outward[1], -bisector),
+        ]
+        .into_iter()
+        .any(|(side, along, normal)| {
+            let rate = along.dot(normal);
+            let ball = at - (top + side) * (radius / (1.0 + top.dot(side)));
+            rate.abs() > tol.angular()
+                && [ball + top * radius, ball + side * radius]
+                    .into_iter()
+                    .any(|q| (meet - q).dot(normal) / rate < -near)
+        })
+    };
     let mut turned = None;
     let crossed = if reentrant {
-        if miss > fit {
+        if miss > fit || (!straight()? && past_plane()) {
             if !straight()? {
                 // One band turning about an axis along the shared host's
                 // normal beside a straight one: the turned band's section

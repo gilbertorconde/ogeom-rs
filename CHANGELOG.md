@@ -1251,6 +1251,66 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drum drafted with its foot out meets a straight crease beside it.**
+  (#342)
+  - A drum whose wall is a cone standing out at its foot, fused onto a
+    block, its rim and the block's top crease rounded together: the
+    junction was attempted, refused, and the bands met as built, 3.5e-3 to
+    7.5e-3 short of what lies above both. Three defects, each fixed at its
+    source.
+  - **A trimmed hyperbola or parabola was bounded as the whole curve.**
+    `curve_bounds_over` honoured the range of lines and arcs only, and a
+    stretch of either conic took the bound of its curve's whole domain.
+    The cone meets the block's wall plane in a hyperbola, and the
+    junction reads how far its corner reaches off the bound of the piece
+    of the rim's widening in the material: a piece 0.55 across, bounded
+    as 8 by 20. The block's band was carried across the drum and out of
+    its far side ("the corner two bands carried on take leaves the
+    material"; with the wall square, "the blend wedge trimmed by a face
+    fell apart"), or the cone was built so far up the axis that its apex,
+    30 above the top, fell within it, which is the refusal #512 reported. A stretch of either is now bounded by its
+    ends and where its end tangents meet: both are planar, convex, and
+    turn through less than half a turn.
+  - **One cone on two frames had no chart map.** The boolean carries an
+    edge on a coincident face across exactly where the two are one
+    cylinder or torus spelled on two frames, and a cone fell through to a
+    fit that missed on a long conic ("same-domain contact whose edge's
+    stretch on the shared surface's window has no image in its chart").
+    A cone's chart maps the same way, `v` a height along the axis, where
+    the half angles agree up to the axes' sign and one's reference radius
+    is the other's radius at its origin.
+  - **A turned band's end section past the bisecting plane.** With the
+    block's wall leaning out too, the two walls lean alike with their feet
+    out: the rim's and the crease's end sections reflect into each other,
+    so the junction was flush, but the rim's section stands past the
+    plane bisecting the turn ("a band's end section stands past the plane
+    its junction meets in"). A straight band is carried on through the
+    plane and cut back to it, being the straight band of its section on
+    either side of its cap; a curved band before its cap is not, and the
+    plane is no meeting there. Such a junction is now crossed, built from
+    the bands' own intersection as where the sections differ.
+  - Measured within a 2.4 box round the corner at r = 0.5, both orders
+    alike, against the column-integrated reference, the drum's wall
+    drafted 0.1 foot out, "lean" the block wall's (+ foot in):
+
+    | crease | lean | main | now | reference |
+    |---|---|---|---|---|
+    | y = 1 | +0.1 | 0.144553 | 0.152033 | 0.152031 |
+    | y = 1 | −0.1 | 0.114373 | 0.119830 | 0.119830 |
+    | y = 2 | 0 | 0.123185 | 0.127084 | 0.127083 |
+    | y = 2 | +0.1 | 0.139731 | 0.143333 | 0.143332 |
+    | y = 2 | −0.1 | 0.109574 | 0.113031 | 0.113031 |
+
+  - A D-shaped block on a drafted drum with its chord off the centre,
+    named chord first, met as built: 0.095054 against 0.095161 with the
+    chord leaning 0.1 and the foot out, and with the foot in 0.132278
+    against 0.132271 and 0.121791 against 0.121563. Every case now builds
+    its reference in both orders.
+  - Still open: at y = 1 with the block's wall square, the band carried on
+    past the rim's cap crosses the cone at a turn of 0.8° beside the wall,
+    which the boolean reads as a touch, and the request rounds as before,
+    0.128008 against 0.134552.
+
 - **A section ending where its two surfaces are tangent meets the face
   across at one junction.** (#342)
   - A fitted section lies within its stated error of both its surfaces.
