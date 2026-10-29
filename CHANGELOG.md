@@ -13,6 +13,36 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **An open wire sweeps a ring round a closed spine of lines and arcs.**
+  (#502)
+  - `make_pipe_shell_with` refused an open wire round any closed spine
+    ("a pipe shell sweeps a planar profile", "a pipe turned round a sharp
+    corner run by run sweeps a face or a closed wire", "curve at 1 is …
+    from the vertex it should meet").
+  - Round a closed spine of lines and arcs it now sweeps a ring of the
+    exact open sheet: from the middle of the first leg, the profile
+    carried there as the leg carries it, round to there again, where the
+    sheet closes on itself, every corner (the one where the spine closes
+    too) mitred or rounded as down an open spine, inside a corner as
+    well. The Frenet (rounded only round corners), binormal and auxiliary
+    laws sweep it where their frames are the rotation-minimizing ones
+    turned by a fixed angle, as down an open spine. The pieces are sewn
+    and held to one ring bounded only by the paths of the profile's two
+    ends.
+  - Where the frame comes home turned (a spine out of one plane whose
+    turns do not cancel) the ring would not close onto itself and is
+    refused by name, as is a closed spine with any other edge.
+  - Measured against closed forms, area and boundary length within
+    1e-9: a segment round a circle sweeps the annulus `13π`, the cylinder
+    band `24π` and the cone band `13√2 π` of its revolution, an L Pappus'
+    area `26π`, under the rotation-minimizing and Frenet frames; a
+    segment round a stadium `20 + 13π`; round a closed square started at
+    a corner, `52` mitred and `40 + 3π` rounded outside, `80` and `76 +
+    π` across the spine, also under a binormal law; round a half circle
+    closed by its diameter, mitred against the arc, `16 + 6.5π`. A
+    pentagon out of plane whose frame comes home turned by 19 degrees is
+    refused by name.
+
 - **An open wire sweeps a sheet of fitted skins down free-form legs,
   and inside a corner against an arc with a curved edge.** (#394)
   - `make_pipe_shell_with` refused an open planar wire down any open

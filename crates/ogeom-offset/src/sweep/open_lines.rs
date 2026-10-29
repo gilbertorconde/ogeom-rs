@@ -1,4 +1,5 @@
-//! An open wire swept down an open spine of lines and arcs, as one sheet.
+//! An open wire swept down an open spine of lines and arcs, as one sheet,
+//! or round a closed one, as one ring.
 //!
 //! An open wire bounds no face, so there is no solid to fuse round a
 //! corner and take the walls of. The sheet is built from its walls. The
@@ -41,6 +42,13 @@
 //!   pass each other without meeting, and the walls leave a gap only a
 //!   face of the plane halving the corner could close, as a face's sweep
 //!   closes it. A point there is refused.
+//!
+//! Round a closed spine the sheet is swept from the middle of the first
+//! leg round to there, the profile carried there as the leg carries it,
+//! so the corner where the spine closes is turned as any other and the
+//! sheet closes on itself where it runs on smoothly. It closes only where
+//! the frame comes home unturned: a spine turning in one plane, or out of
+//! it by turns that cancel. Elsewhere the ring is refused.
 //!
 //! Each leg lies between its corners' planes and each round between the
 //! planes square to its legs, so neighbours meet only on the edges they
@@ -128,11 +136,11 @@ fn spine_edges(model: &Model, spine: &Shape) -> OgeomResult<Vec<Shape>> {
     })
 }
 
-/// Sweep an open wire down an open spine of lines and arcs under a frame
-/// law other than the rotation-minimizing one, round sharp corners: as
-/// [`open_wire_legs`] where the law's frames are the rotation-minimizing
-/// ones turned by one fixed angle, so that it places every section as that
-/// frame carries it. The Frenet frame is read run by run between the sharp
+/// Sweep an open wire down an open spine of lines and arcs round sharp
+/// corners, or round a closed one, under a frame law other than the
+/// rotation-minimizing one: as [`open_wire_legs`] where the law's frames
+/// are the rotation-minimizing ones turned by one fixed angle, so that it
+/// places every section as that frame carries it. The Frenet frame is read run by run between the sharp
 /// corners, as a face's runs are swept, and is refused along a straight
 /// run, which has none.
 #[allow(clippy::too_many_arguments)]
@@ -250,10 +258,10 @@ fn placed_stations(model: &Model, spine: &Shape, legs: &[Leg]) -> OgeomResult<Ve
     Ok(stations)
 }
 
-/// Sweep an open wire down an open spine of lines and arcs under the
-/// rotation-minimizing frame, each corner mitred or rounded; see the
-/// module documentation. The sheet faces the way the prism of the profile
-/// along the first leg's heading does.
+/// Sweep an open wire down an open spine of lines and arcs, or round a
+/// closed one, under the rotation-minimizing frame, each corner mitred or
+/// rounded; see the module documentation. The sheet faces the way the
+/// prism of the profile along the first leg's heading does.
 pub(super) fn open_wire_legs(
     model: &mut Model,
     profile: &Shape,
@@ -262,9 +270,33 @@ pub(super) fn open_wire_legs(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let given = profile;
     let legs = placed_legs(model, spine, tol)?;
     let unit = |v: Vector| v / v.magnitude();
     let sharp = |a: Vector, b: Vector| a.cross(b).magnitude() > tol.angular() || a.dot(b) < 0.0;
+    let Some(first) = legs.first().copied() else {
+        ogeom_bail!(Construction, "the spine has no leg");
+    };
+    match ogeom_algo::find_plane(model, profile, tol)? {
+        Some(plane) => plane_square_at_start(&plane, first.start, first.heading_in, tol)?,
+        None => lines_square_at_start(model, profile, first.start, first.heading_in, tol)?,
+    }
+    // Round a closed spine the sheet is swept from the middle of the first
+    // leg, where the spine runs on smoothly, round to there again: the
+    // profile is carried there as the leg carries it, and the corner where
+    // the spine closes, if it turns there, is turned as any other.
+    let closed = legs[legs.len() - 1].end.distance(first.start) <= tol.confusion();
+    let (legs, section) = if closed {
+        let (before, after) = halved(&first);
+        let section = ogeom_algo::transformed(model, profile, before.motion())?.shape;
+        let mut ring = vec![after];
+        ring.extend_from_slice(&legs[1..]);
+        ring.push(before);
+        (ring, section)
+    } else {
+        (legs, profile.clone())
+    };
+    let profile = &section;
     if corners == PipeCorners::Extended
         && legs
             .windows(2)
@@ -276,13 +308,7 @@ pub(super) fn open_wire_legs(
              wire sweeps a sheet, whose corners are mitred or round"
         );
     }
-    let Some(first) = legs.first().copied() else {
-        ogeom_bail!(Construction, "the spine has no leg");
-    };
-    match ogeom_algo::find_plane(model, profile, tol)? {
-        Some(plane) => plane_square_at_start(&plane, first.start, first.heading_in, tol)?,
-        None => lines_square_at_start(model, profile, first.start, first.heading_in, tol)?,
-    }
+    let first = legs[0];
     let (carried, turns) = carried_down(&legs, tol)?;
     // The motion carrying the profile to each leg's end.
     let carried_end: Vec<Transform> = legs
@@ -291,6 +317,26 @@ pub(super) fn open_wire_legs(
         .map(|(leg, motion)| leg.motion() * *motion)
         .collect();
     let hull = hull_points(model, profile, tol)?;
+    // The frame carried once round a closed spine comes home turned by the
+    // loop's holonomy, but for a spine turning in one plane, or as such
+    // turns cancel; the sheet closes onto itself only where it comes home
+    // unturned, every point of the section where it set out. How far a
+    // point is moved is convex in the point, so the hull's points bound
+    // it.
+    if closed {
+        let home = carried_end[carried_end.len() - 1];
+        if hull
+            .iter()
+            .any(|p| home.apply(*p).distance(*p) > tol.confusion())
+        {
+            ogeom_bail!(
+                Construction,
+                "the rotation-minimizing frame comes home turned round this \
+                 closed spine, so an open wire's sheet round it would not \
+                 close onto itself"
+            );
+        }
+    }
     let width = {
         let bounds = shape_bounds(model, profile, tol)?;
         match (bounds.low(), bounds.high()) {
@@ -480,11 +526,42 @@ pub(super) fn open_wire_legs(
             }
         }
     }
-    let shape = one_disc(model, &faces, &boundary, tol)?;
+    let shape = if closed {
+        one_ring(model, &faces, &boundary, tol)?
+    } else {
+        one_disc(model, &faces, &boundary, tol)?
+    };
     let mut history = History::new();
     history.generate(spine, shape.clone());
-    history.generate(profile, shape.clone());
+    history.generate(given, shape.clone());
     Ok(Built::new(shape, history))
+}
+
+/// A leg cut in two at its middle: the half from its start, and the half
+/// to its end.
+fn halved(leg: &Leg) -> (Leg, Leg) {
+    let (along, half) = match leg.along {
+        Along::Line(v) => (Along::Line(v * 0.5), Transform::translation(v * 0.5)),
+        Along::Arc(axis, angle) => (
+            Along::Arc(axis, angle * 0.5),
+            Transform::rotation(axis, angle * 0.5),
+        ),
+    };
+    let (middle, heading) = (half.apply(leg.start), half.apply_vector(leg.heading_in));
+    (
+        Leg {
+            end: middle,
+            heading_out: heading,
+            along,
+            ..*leg
+        },
+        Leg {
+            start: middle,
+            heading_in: heading,
+            along,
+            ..*leg
+        },
+    )
 }
 
 /// An open wire's sweep down its legs, the corners read: what each leg
@@ -1870,6 +1947,31 @@ pub(super) fn one_disc(
     boundary: &Boundary,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
+    one_sheet(model, faces, boundary, 1, tol)
+}
+
+/// The faces sewn into one sheet that is a ring, as [`one_disc`] asks of a
+/// disc but bounded by two loops, Euler characteristic naught: a sheet
+/// swept round a closed spine, open only along the paths of the
+/// profile's two ends.
+fn one_ring(
+    model: &mut Model,
+    faces: &[Shape],
+    boundary: &Boundary,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    one_sheet(model, faces, boundary, 2, tol)
+}
+
+/// The faces sewn into one sheet of genus naught bounded by `loops` loops
+/// running only along `boundary`; see [`one_disc`].
+fn one_sheet(
+    model: &mut Model,
+    faces: &[Shape],
+    boundary: &Boundary,
+    loops: usize,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
     // Sewn within the confusion distance, as any sewing joins, and with an
     // edge split where a neighbour's vertices meet it: the trim may split
     // one leg's cut where the next leg's runs whole.
@@ -1908,8 +2010,7 @@ pub(super) fn one_disc(
             "the swept sheet has an edge of more than two faces"
         );
     }
-    // The boundary: each of its vertices on two of its edges, and all of
-    // them one loop.
+    // The boundary: each of its edges along `boundary`.
     let mut around: FastMap<Key, Vec<Key>> = FastMap::default();
     for (edge, _) in uses.values().filter(|(_, n)| *n == 1) {
         let points = edge_points(model, edge, tol)?;
@@ -1917,8 +2018,9 @@ pub(super) fn one_disc(
         let slack = model
             .tolerance_of(edge)?
             .map_or(tol.confusion(), |t| t.get().max(tol.confusion()));
-        let on_section = boundary
-            .sections
+        // A ring has no end sections: the sheet closes on itself there.
+        let sections: &[(Point, Vector)] = if loops == 1 { &boundary.sections } else { &[] };
+        let on_section = sections
             .iter()
             .any(|&(at, n)| points.iter().all(|p| (*p - at).dot(n).abs() <= slack));
         let mut on_rails = true;
@@ -1944,23 +2046,37 @@ pub(super) fn one_disc(
         around.entry(key(&a)).or_default().push(key(&b));
         around.entry(key(&b)).or_default().push(key(&a));
     }
-    let one_loop = !around.is_empty() && around.values().all(|next| next.len() == 2) && {
-        let mut seen = ogeom_core::FastSet::default();
-        let mut pending: Vec<&Key> = around.keys().take(1).collect();
+    // The boundary's loops, each vertex of it on two of its edges.
+    let mut seen = ogeom_core::FastSet::default();
+    let mut found = 0_usize;
+    for start in around.keys() {
+        if seen.contains(start) {
+            continue;
+        }
+        found += 1;
+        let mut pending: Vec<&Key> = vec![start];
         while let Some(at) = pending.pop() {
             if seen.insert(at.clone()) {
                 pending.extend(around[at].iter());
             }
         }
-        seen.len() == around.len()
-    };
+    }
+    let bounded = around.values().all(|next| next.len() == 2) && found == loops;
     let vertex_count = explore_unique(model, shell, ShapeType::Vertex)?.len();
     #[allow(clippy::cast_possible_wrap, reason = "counts of a model's shapes")]
     let euler = vertex_count as i64 - uses.len() as i64 + face_count;
-    if !one_loop || euler != 1 {
+    #[allow(clippy::cast_possible_wrap, reason = "a count of loops")]
+    if !bounded || euler != 2 - loops as i64 {
+        if loops == 1 {
+            ogeom_bail!(
+                Construction,
+                "the swept sheet's pieces do not join into one sheet with one boundary"
+            );
+        }
         ogeom_bail!(
             Construction,
-            "the swept sheet's pieces do not join into one sheet with one boundary"
+            "the swept sheet's pieces do not join into one ring bounded by the paths \
+             of the profile's two ends"
         );
     }
     if check(model, shell, tol)?

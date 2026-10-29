@@ -5815,7 +5815,10 @@ pub fn make_pipe_shell_law(
 /// halving a corner between two lines, and on the conic a straight profile
 /// edge's two walls share where a corner against an arc turns in the arc's
 /// plane, or on a curve fitted through a curved edge's points' crossings,
-/// its error stated as its tolerance and held to `tolerance`. The
+/// its error stated as its tolerance and held to `tolerance`. Round a
+/// closed spine of lines and arcs an open wire sweeps a ring of that
+/// sheet, from the middle of the first leg round to there, where it closes
+/// on itself, the corner where the spine closes turned as any other. The
 /// Frenet (round corners only), auxiliary and binormal laws sweep an open
 /// wire round sharp corners where their frames are the
 /// rotation-minimizing ones turned by a fixed angle, as that sheet. Down
@@ -5847,9 +5850,11 @@ pub fn make_pipe_shell_law(
 /// frame along a straight run
 /// between sharp corners, a round corner where the law sets the next run's
 /// section other than the first's turned about the corner (or the frame
-/// comes home turned round a closed spine); where the guide does not cross a station's
-/// plane, or the spine's tangent runs along the binormal or toward the
-/// guide.
+/// comes home turned round a closed spine); an open wire round a closed
+/// spine with an edge neither a line nor an arc, or round which the
+/// rotation-minimizing frame comes home turned; where the guide does not
+/// cross a station's plane, or the spine's tangent runs along the binormal
+/// or toward the guide.
 #[allow(clippy::too_many_arguments)]
 pub fn make_pipe_shell_with(
     model: &mut Model,
@@ -5937,6 +5942,32 @@ pub(crate) fn pipe_shell_ends(
                 model, profile, spine, law, corners, tolerance, tol,
             );
         }
+    }
+    // Round a closed spine of lines and arcs an open wire sweeps a ring of
+    // the same sheet.
+    if model.kind_of(profile)? == ShapeType::Wire
+        && !ogeom_algo::is_wire_closed(model, &stored, tol)?
+        && spine_closes(model, spine, tol)?
+    {
+        if !open_lines::lines_and_arcs(model, spine)? {
+            ogeom_bail!(
+                Construction,
+                "an open wire sweeps a ring round a closed spine of lines and arcs; \
+                 round a closed spine with any other edge it is not built"
+            );
+        }
+        if matches!(law, PipeLaw::RotationMinimizing) {
+            return open_lines::open_wire_legs(model, profile, spine, corners, tolerance, tol);
+        }
+        let sharp = has_sharp_corner(model, spine, tol)? || closes_on_a_corner(model, spine, tol)?;
+        if matches!(law, PipeLaw::Frenet) && corners == PipeCorners::Mitre && sharp {
+            ogeom_bail!(
+                Construction,
+                "a Frenet frame has no direction at a mitred corner; an open wire \
+                 round a cornered closed spine turns its corners round under it"
+            );
+        }
+        return open_lines::open_wire_law(model, profile, spine, law, corners, tolerance, tol);
     }
     if corners != PipeCorners::Mitre
         && matches!(law, PipeLaw::RotationMinimizing)

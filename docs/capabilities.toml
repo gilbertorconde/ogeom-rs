@@ -1129,8 +1129,14 @@ are skinned round it, closed on themselves and held to the tolerance \
 against the law, holes as void tunnels. Along an open spine those laws \
 sweep a face with holes, each hole a solid of its own cut from the outer. \
 Turned run by run, a closed wire sweeps the walls of the face it bounds, \
-the end caps taken off; an open wire is refused there round a closed \
-spine. Down an open spine of lines and arcs under the rotation-minimizing \
+the end caps taken off. Round a closed spine of lines and arcs an open \
+wire sweeps a ring of the exact sheet below, from the middle of the first \
+leg round to there, where it closes on itself, each corner (the one where \
+the spine closes too) mitred or rounded as down an open spine, and under \
+a law as below; where the rotation-minimizing frame comes home turned (a \
+spine out of one plane whose turns do not cancel) the ring would not \
+close and is refused by name, as is a closed spine with any other edge. \
+Down an open spine of lines and arcs under the rotation-minimizing \
 frame an open wire sweeps one exact sheet: each line leg the prism of its section and each \
 arc leg its revolution about the arc's axis, legs meeting tangent sewn on \
 their common section, mitred on the plane halving each corner (an arc \
