@@ -644,6 +644,7 @@ dependencies = [
  "ogeom-core",
  "ogeom-fillet",
  "ogeom-geom",
+ "ogeom-heal",
  "ogeom-intersect",
  "ogeom-math",
  "ogeom-mesh",

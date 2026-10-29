@@ -27,6 +27,7 @@ use ogeom_topo::{EdgeData, EdgeRepr, Filter, Model, Shape, ShapeType, VertexData
 
 mod corners;
 mod evolving;
+mod inside_turn;
 mod meeting;
 mod open_lines;
 mod placement;
@@ -5794,8 +5795,11 @@ pub fn make_pipe_shell_law(
 /// one exact sheet: each line leg the prism of its section and each arc
 /// leg its revolution about the arc's axis, run on straight past each
 /// mitred corner and cut on the plane halving it, and at a round corner
-/// the section's part outside the turn revolved about the corner. A point
-/// of the section may lie inside a corner only between two lines. The
+/// the section's part outside the turn revolved about the corner. Inside a
+/// corner each leg's wall runs on until it meets the other's: on the plane
+/// halving a corner between two lines, and on the conic a straight profile
+/// edge's two walls share where a corner against an arc turns in the arc's
+/// plane. The
 /// Frenet (round corners only), auxiliary and binormal laws sweep an open
 /// wire round sharp corners where their frames are the
 /// rotation-minimizing ones turned by a fixed angle, as that sheet.
@@ -5808,8 +5812,10 @@ pub fn make_pipe_shell_law(
 /// wire swept round a corner run by run, or round an extended corner, or
 /// down legs too short for their corners' reach, or into itself, or round
 /// a round corner turning so little that its round falls within the
-/// confusion distance of its square end, or reaching inside a corner
-/// against an arc, or under a law that turns its section other than the
+/// confusion distance of its square end, or reaching inside a corner that
+/// turns an arc out of its plane, or inside a corner against an arc with a
+/// curved edge, or so far that a point's two paths there miss each other
+/// or meet past a leg's end, or under a law that turns its section other than the
 /// rotation-minimizing frame does, the Frenet
 /// frame along a straight run
 /// between sharp corners, a round corner where the law sets the next run's

@@ -13,6 +13,44 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **An open wire sweeps a sheet inside a corner against an arc.** (#394)
+  - `make_pipe_shell_with` refused an open planar wire with any point
+    inside a sharp corner where a leg is an arc ("an open wire reaches
+    inside a corner against an arc"): a point's paths down a line and an
+    arc, or two arcs, cross off the plane halving the corner, so plane
+    cuts would not join.
+  - Where the corner turns in the arc's plane, the rotation-minimizing
+    frame keeps the section's frame in that plane, and each leg now runs
+    on until it meets the other's wall, mitred or rounded alike, as
+    between two lines. A point at offset `u` inside the turn and height
+    `w` meets it where the two legs' offset tracks cross (a line and a
+    circle on a parabola with its focus at the arc's centre, two circles
+    on an ellipse or hyperbola with the centres as foci), lifted by `w`.
+    For a straight profile edge that curve is a conic, a plane's section
+    of the cone, cylinder or plane a turned edge sweeps, held exactly as
+    a rational quadratic and checked against both tracks.
+  - The profile's edges are cut where they cross the corner's axis and
+    swept one by one. Each edge inside the corner has both its walls split
+    on its one meeting curve (`ogeom_heal::split_face`), its trace on a
+    cone or cylinder fitted at the curve's own parameters to the confusion
+    distance; outside the corner the walls run on and are cut on the
+    halving plane, as before.
+  - Still refused by name: a point inside a corner that turns an arc out
+    of its plane, whose two paths pass each other without meeting (the
+    gap a face's sweep closes with a face of the mitre plane); a curved
+    profile edge inside a corner against an arc, whose walls meet on a
+    curve with no closed form; and a point whose two paths meet past a
+    leg's end or miss each other.
+  - Sweeps with no point inside such a corner build as before.
+  - Measured against closed forms integrated along the profile, for a
+    line into an arc bending either way, an arc into a line, two arcs, an
+    arc between two corners turning the same way and the other way, and
+    profiles across the corner's axis or along it: area within 8e-11 and
+    boundary within 2e-13, relative, mitred and rounded. Against a
+    rectangle swept as a face, its two open halves' sheets hold its walls
+    within 5e-12 rounded and 2.1e-5 mitred, the face's skin being held
+    to 1e-3.
+
 - **Pipe shells bring their profile into contact with the spine, and
   correct its plane.** (#394)
   - `make_pipe_shell_laws` swept the profile only where the caller placed
