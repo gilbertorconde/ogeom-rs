@@ -11,8 +11,8 @@ use ogeom::geom::{CircleCurve, Curve, Curve3d as _, LineCurve, PlaneSurface, Sur
 use ogeom::math::{Circle, Direction, Frame, Plane, Point, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::offset::{
-    PipeCorners, PipeEvolution, PipeLaw, PipeLaws, SpineLaw, make_pipe_shell_evolving,
-    make_pipe_shell_laws,
+    PipeCorners, PipeEvolution, PipeLaw, PipeLaws, SpineFunction, SpineLaw,
+    make_pipe_shell_evolving, make_pipe_shell_laws,
 };
 use ogeom::topo::{Model, NodeData, Shape, ShapeType, explore_unique};
 
@@ -862,6 +862,338 @@ fn a_square_scaled_into_an_arc_at_an_extended_corner_holds_its_volume() {
         assert!(
             (v - want).abs() < bound,
             "half side {a}: {v} against {want}, bound {bound}"
+        );
+    }
+}
+
+/// A law given as a function of the share of the spine run.
+fn law_of(f: impl Fn(f64) -> f64 + Send + Sync + 'static) -> SpineLaw {
+    SpineLaw::Function(SpineFunction::new(f))
+}
+
+/// The solid's section by the plane `z = z0`, as the loops it cuts there in
+/// that plane's `(x, y)`, each a polyline whose points lie on the section.
+fn cut_at(model: &mut Model, solid: &Shape, z0: f64) -> Vec<Vec<(f64, f64)>> {
+    let plane =
+        Plane::new(Frame::new(Point::new(0.0, 0.0, z0), Direction::Z, Direction::X, T).unwrap());
+    let fine = Deflection {
+        chord: CHORD,
+        ..Deflection::default()
+    };
+    let view = ogeom::hlr::section(model, solid, &plane, fine, T).unwrap();
+    view.outline
+        .iter()
+        .map(|ring| ring.iter().map(|p| (p.x, p.y)).collect())
+        .collect()
+}
+
+/// How far `(x, y)` stands from the boundary of the square of half side
+/// `half` turned through `theta` about the origin.
+fn off_turned_square(half: f64, theta: f64, (x, y): (f64, f64)) -> f64 {
+    let (sin, cos) = theta.sin_cos();
+    let (u, v) = (x * cos + y * sin, -x * sin + y * cos);
+    let (du, dv) = (u.abs() - half, v.abs() - half);
+    if du <= 0.0 && dv <= 0.0 {
+        -du.max(dv)
+    } else {
+        du.max(0.0).hypot(dv.max(0.0))
+    }
+}
+
+/// A disc of radius `r` scaled by `s(λ) = 1 + sin(πλ) / 2` down a line of
+/// length `h`, the law given as a function: each slice is the disc scaled
+/// by `s`, so the solid holds `π r² h ∫ s² dλ = π r² h (9/8 + 2/π)`, and
+/// its section at a share `λ` is the circle of radius `r s(λ)`.
+#[test]
+fn a_disc_scaled_by_a_function_holds_its_slices_volume_and_sections() {
+    let (r, h) = (1.0, 4.0);
+    let s = |lambda: f64| 1.0 + (PI * lambda).sin() / 2.0;
+    let mut model = Model::new();
+    let wire = circle_wire(&mut model, Point::ORIGIN, r);
+    let profile = xy_face(&mut model, &[wire]);
+    let spine = line(&mut model, Point::ORIGIN, Point::new(0.0, 0.0, h));
+    let laws = PipeLaws {
+        scale: law_of(s),
+        twist: SpineLaw::Linear(0.0),
+    };
+    let solid = make_pipe_shell_laws(
+        &mut model,
+        &profile,
+        &spine,
+        &PipeLaw::RotationMinimizing,
+        &laws,
+        PipeCorners::Mitre,
+        SKIN,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let found = check(&model, &solid, T).unwrap();
+    assert!(found.is_usable(), "{found}");
+    let v = measure_skinned(&model, &solid);
+    let expected = PI * r * r * h * (9.0 / 8.0 + 2.0 / PI);
+    // A rim point runs `h` along and `r` out and back.
+    let bound = skin_bound(2.0 * PI * 1.5 * r, h + r);
+    assert!(
+        (v - expected).abs() < bound,
+        "{v} against {expected}, bound {bound}"
+    );
+    for lambda in [0.2, 0.5, 0.85] {
+        let rings = cut_at(&mut model, &solid, lambda * h);
+        assert_eq!(rings.len(), 1, "at {lambda}");
+        let want = r * s(lambda);
+        for &(x, y) in &rings[0] {
+            let off = (x.hypot(y) - want).abs();
+            assert!(
+                off < SKIN,
+                "at {lambda}: ({x}, {y}) stands {off} off radius {want}"
+            );
+        }
+    }
+}
+
+/// A square turned by `θ(λ) = 1.2 sin²(πλ/2)` down a line, the law given
+/// as a function: every slice is the square turned, so the solid holds the
+/// prism's `4 a² h` for any twist law, and its section at a share `λ` is
+/// the square turned through `θ(λ)`.
+#[test]
+fn a_square_twisted_by_a_function_holds_the_prism_s_volume_and_turns_its_sections() {
+    let (a, h) = (1.0, 4.0);
+    let theta = |lambda: f64| 1.2 * (PI * lambda / 2.0).sin().powi(2);
+    let mut model = Model::new();
+    let wire = square_wire(&mut model, a);
+    let profile = xy_face(&mut model, &[wire]);
+    let spine = line(&mut model, Point::ORIGIN, Point::new(0.0, 0.0, h));
+    let laws = PipeLaws {
+        scale: SpineLaw::Linear(1.0),
+        twist: law_of(theta),
+    };
+    let solid = make_pipe_shell_laws(
+        &mut model,
+        &profile,
+        &spine,
+        &PipeLaw::RotationMinimizing,
+        &laws,
+        PipeCorners::Mitre,
+        SKIN,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let found = check(&model, &solid, T).unwrap();
+    assert!(found.is_usable(), "{found}");
+    let v = measure_skinned(&model, &solid);
+    let expected = 4.0 * a * a * h;
+    let bound = skin_bound(8.0 * a, h + 1.2 * a * 2.0_f64.sqrt());
+    assert!(
+        (v - expected).abs() < bound,
+        "{v} against {expected}, bound {bound}"
+    );
+    for lambda in [0.25, 0.5, 0.9] {
+        let rings = cut_at(&mut model, &solid, lambda * h);
+        assert_eq!(rings.len(), 1, "at {lambda}");
+        for &p in &rings[0] {
+            let off = off_turned_square(a, theta(lambda), p);
+            assert!(
+                off < SKIN,
+                "at {lambda}: {p:?} stands {off} off the turned square"
+            );
+        }
+    }
+}
+
+/// A law given as a function that is the linear one builds what the linear
+/// law does within the skin's tolerance: here the far end, a square scaled
+/// by a half and turned a quarter turn, lands on the same corners.
+#[test]
+fn a_function_law_reads_as_the_law_it_gives() {
+    let (a, h) = (1.0, 3.0);
+    let sweep = |laws: PipeLaws| {
+        let mut model = Model::new();
+        let wire = square_wire(&mut model, a);
+        let profile = xy_face(&mut model, &[wire]);
+        let spine = line(&mut model, Point::ORIGIN, Point::new(0.0, 0.0, h));
+        let solid = make_pipe_shell_laws(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::RotationMinimizing,
+            &laws,
+            PipeCorners::Mitre,
+            SKIN,
+            T,
+        )
+        .unwrap()
+        .shape;
+        assert!(check(&model, &solid, T).unwrap().is_usable());
+        let mut far: Vec<(f64, f64)> = explore_unique(&model, &solid, ShapeType::Vertex)
+            .unwrap()
+            .iter()
+            .filter_map(|v| match model.node(v).map(|n| n.data()) {
+                Some(NodeData::Vertex(d)) if (d.point.z - h).abs() < T.confusion() => {
+                    Some((d.point.x, d.point.y))
+                }
+                _ => None,
+            })
+            .collect();
+        far.sort_by(|p, q| p.0.total_cmp(&q.0));
+        (measure_skinned(&model, &solid), far)
+    };
+    let (v_linear, far_linear) = sweep(PipeLaws {
+        scale: SpineLaw::Linear(0.5),
+        twist: SpineLaw::Linear(PI / 2.0),
+    });
+    let (v_function, far_function) = sweep(PipeLaws {
+        scale: law_of(|l| 1.0 - l / 2.0),
+        twist: law_of(|l| PI / 2.0 * l),
+    });
+    let expected = scaled_volume(4.0 * a * a, h, 0.5);
+    let bound = skin_bound(8.0 * a, h + PI / 2.0 * a * 2.0_f64.sqrt());
+    for v in [v_linear, v_function] {
+        assert!((v - expected).abs() < bound, "{v} against {expected}");
+    }
+    assert_eq!(far_linear.len(), 4);
+    assert_eq!(far_function.len(), 4);
+    for (p, q) in far_linear.iter().zip(&far_function) {
+        assert!(
+            (p.0 - q.0).hypot(p.1 - q.1) < T.confusion() * 10.0,
+            "{p:?} against {q:?}"
+        );
+    }
+}
+
+#[test]
+fn a_function_law_refuses_what_it_does_not_describe_by_name() {
+    let mut model = Model::new();
+    let wire = square_wire(&mut model, 1.0);
+    let profile = xy_face(&mut model, &[wire]);
+    let spine = line(&mut model, Point::ORIGIN, Point::new(0.0, 0.0, 3.0));
+    let mut sweep = |scale: SpineLaw, twist: SpineLaw| {
+        make_pipe_shell_laws(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::RotationMinimizing,
+            &PipeLaws { scale, twist },
+            PipeCorners::Mitre,
+            SKIN,
+            T,
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let err = sweep(law_of(|l| 2.0 - l), SpineLaw::Linear(0.0));
+    assert!(err.contains("gives 1 at the spine's start"), "{err}");
+    let err = sweep(SpineLaw::Linear(1.0), law_of(|l| 0.1 + l));
+    assert!(err.contains("gives 0 at the spine's start"), "{err}");
+    // Through naught half way, back up to one: positive at both ends.
+    let err = sweep(law_of(|l| (1.0 - 2.0 * l).powi(2)), SpineLaw::Linear(0.0));
+    assert!(err.contains("stays above naught"), "{err}");
+    let err = sweep(
+        SpineLaw::Linear(1.0),
+        law_of(|l| if l > 0.5 { f64::NAN } else { l }),
+    );
+    assert!(err.contains("finite values"), "{err}");
+}
+
+/// A square of half side `a` scaled by `σ(λ) = 1 - λ² / 2` up and over the
+/// sharp corner of [`up_and_over`], the law given as a function and still
+/// moving through the corner, where it stands at `c = σ(1/2)`. As for the
+/// linear law, each leg holds `4 a² ∫ σ²` along it, so the two
+/// `8 a² l (1 - 1/3 + 1/20)`.
+///
+/// Mitred, each prism adds the wedge `a³ c³` outside the corner and each
+/// leg loses inside what crosses the plane `x + z = l`: at a depth `w`
+/// below the corner the first leg reaches `a σ₁(w)` past the spine and
+/// loses `∫ (a σ₁ - w) 2 a σ₁ dw` out to where `a σ₁ = w`, the second
+/// alike a distance `x` along it.
+///
+/// Rounded, the quarter drum `π a³ c³ / 2` is added and the two legs'
+/// overlap inside the corner taken off. The law falls along the spine, so
+/// the first leg stands wider there than the second and the overlap is
+/// `∫ 2 a σ₂(x) · |{w ≤ a σ₂(x) : x ≤ a σ₁(w)}| dx`: in the column at `x`,
+/// `x ≤ a σ₁(w)` from the depth `w₀(x)` where they are equal (naught while
+/// `x ≤ a c`), as `σ₁` rises with `w`.
+///
+/// Each integral is taken numerically over its smooth stretch.
+#[test]
+fn a_square_scaled_by_a_function_round_a_sharp_corner_mitres_and_rounds_to_its_integral() {
+    let (a, l) = (1.0_f64, 10.0_f64);
+    let sigma = |lambda: f64| 1.0 - lambda * lambda / 2.0;
+    let first = move |w: f64| sigma((l - w) / (2.0 * l));
+    let second = move |x: f64| sigma((l + x) / (2.0 * l));
+    let c = sigma(0.5);
+    let legs = 8.0 * a * a * l * (1.0 - 1.0 / 3.0 + 1.0 / 20.0);
+    // The root of a falling `g` in `[0, hi]`, by bisection.
+    let root = |g: &dyn Fn(f64) -> f64, hi: f64| {
+        let (mut lo, mut hi) = (0.0_f64, hi);
+        for _ in 0..200 {
+            let mid = f64::midpoint(lo, hi);
+            if g(mid) > 0.0 { lo = mid } else { hi = mid }
+        }
+        f64::midpoint(lo, hi)
+    };
+    // Composite Simpson's rule over `[0, w]`.
+    let simpson_n = |f: &dyn Fn(f64) -> f64, w: f64| {
+        const N: u32 = 2000;
+        let step = w / f64::from(N);
+        (0..N)
+            .map(|k| {
+                let x = f64::from(k) * step;
+                step / 6.0 * (f(x) + 4.0 * f(x + step / 2.0) + f(x + step))
+            })
+            .sum::<f64>()
+    };
+    let lost = |s: &dyn Fn(f64) -> f64| {
+        let reach = root(&|w| a * s(w) - w, 4.0 * a);
+        simpson_n(&|w| (a * s(w) - w) * 2.0 * a * s(w), reach)
+    };
+    let mitred = legs + 2.0 * (a * c).powi(3) - lost(&first) - lost(&second);
+    // The column at `x` overlaps from `w₀(x)` to `a σ₂(x)`.
+    let depth = |x: f64| {
+        if x <= a * c {
+            0.0
+        } else {
+            root(&|w| x - a * first(w), 4.0 * a)
+        }
+    };
+    let across = |x: f64| (a * second(x) - depth(x)).max(0.0);
+    let far = root(&|x| a * second(x) - depth(x), 4.0 * a);
+    let overlap = simpson_n(&|x| 2.0 * a * second(x) * across(x), a * c)
+        + simpson_n(
+            &|x| 2.0 * a * second(a * c + x) * across(a * c + x),
+            far - a * c,
+        );
+    let rounded = legs + PI * (a * c).powi(3) / 2.0 - overlap;
+
+    for (corners, want) in [(PipeCorners::Mitre, mitred), (PipeCorners::Round, rounded)] {
+        let mut model = Model::new();
+        let wire = square_wire(&mut model, a);
+        let profile = xy_face(&mut model, &[wire]);
+        let spine = up_and_over(&mut model, l);
+        let laws = PipeLaws {
+            scale: law_of(sigma),
+            twist: SpineLaw::Linear(0.0),
+        };
+        let solid = make_pipe_shell_laws(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::RotationMinimizing,
+            &laws,
+            corners,
+            SKIN,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{corners:?}: {e}"))
+        .shape;
+        let found = check(&model, &solid, T).unwrap();
+        assert!(found.is_valid(), "{corners:?}: {found}");
+        let v = measure_skinned(&model, &solid);
+        let bound = skin_bound(8.0 * a, 2.0 * l + 2.0 * a);
+        assert!(
+            (v - want).abs() < bound,
+            "{corners:?}: {v} against {want}, bound {bound}"
         );
     }
 }

@@ -13,6 +13,34 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Pipe scale and twist laws given as functions.** (#394)
+  - `make_pipe_shell_laws` took a scale or twist law only as linear or as
+    the monotone cubic through given `(share, value)` points.
+    `SpineLaw::Function(SpineFunction::new(f))` now takes any function of
+    the share of the spine's length run, from naught to one.
+  - The function must give the start value at naught exactly (one for a
+    scale, naught for a twist), and is refused by name otherwise. It is
+    read wherever a section is placed or the skin checked, and the skin is
+    held to the tolerance against what it reads there. A scale that reads
+    naught or below there, or a value that is not finite, is refused by
+    name.
+  - A function law is never taken as standing still, so every run it
+    moves along is skinned. Round sharp corners each run reads the
+    function over its own share of the spine. Round a smooth closed spine
+    it twists as a linear law ending where it does would; a scale given
+    as a function is refused there, as any other scale is.
+  - The linear and cubic laws, and `make_pipe_shell_evolving`, build as
+    before.
+  - Measured against closed forms: a disc scaled by `1 + sin(πλ)/2` down a
+    line holds `π r² h (9/8 + 2/π)` within 6.3e-5, its sections the
+    scaled circle within 1e-4; a square twisted by `1.2 sin²(πλ/2)` holds
+    the prism's volume within 7.5e-5, its sections the turned square
+    within 1.2e-4; a square scaled by `1 - λ²/2` round a sharp corner,
+    still moving there, lands on the volume integrated numerically from
+    the exact solid within 6e-11 mitred and 6e-9 rounded; a square twisted
+    round a circle by such a function a quarter turn and a whole turn
+    holds Pappus's volume within 1.3e-4.
+
 - **An open wire sweeps a sheet round corners against arcs, and under
   other laws.** (#394)
   - An open planar wire swept by `make_pipe_shell_with` was refused along

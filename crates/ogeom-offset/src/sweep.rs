@@ -31,7 +31,8 @@ mod open_lines;
 mod placement;
 
 pub use evolving::{
-    PipeEvolution, PipeLaws, SpineLaw, make_pipe_shell_evolving, make_pipe_shell_laws,
+    PipeEvolution, PipeLaws, SpineFunction, SpineLaw, make_pipe_shell_evolving,
+    make_pipe_shell_laws,
 };
 pub use placement::{PipePlacement, place_on_spine};
 

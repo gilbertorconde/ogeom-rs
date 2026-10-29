@@ -1045,9 +1045,13 @@ through the axis, cylindrical or tapered, either hand: every point runs \
 its own helix and the walls are fitted through those images in quarter \
 turns. `make_pipe_shell_evolving` scales and twists the section linearly \
 with the length run along the spine, and `make_pipe_shell_laws` by laws \
-of its own: linear, or the monotone cubic through given values, which \
+of its own: linear, the monotone cubic through given values, which \
 keeps between neighbouring values (a scale through positive values stays \
-positive). Scaled linearly without a twist down one \
+positive), or a function of the share of the length run \
+(`SpineFunction`), which gives the start value at the start and is read \
+wherever a section is placed or the skin checked, a scale refused where \
+it reads naught or below; a function law is never taken as standing \
+still, so every run it moves along is skinned. Scaled linearly without a twist down one \
 straight edge it is the ruled loft to the scaled image, exact (a \
 pyramid's or cone's frustum, the pyramid or cone at a scale of zero); \
 otherwise each loop is skinned through the placed sections and held to \
@@ -1064,7 +1068,11 @@ section would not come home to itself; a twist law of any shape closes \
 there where a linear one ending as it does would. Round sharp corners an \
 evolving face sweeps run by run, mitred, extended or rounded: each run \
 under the laws over its share of the length, from the section it starts \
-with, the stretches where the laws stand still swept exactly; a skinned \
+with, the stretches where the laws stand still swept exactly; a twist \
+still moving through a mitred corner turns the two legs' sections \
+inside it against each other, so their skins cut the mitre plane along \
+curves that can run within a skin's width of each other, and the fuse \
+is then refused by name; a skinned \
 run into a curved leg's extended corner, its wall leaving the extension's \
 side plane along its start edge as the scale narrows it, joins that \
 extension however shallowly it leaves, so long as it rises past ten \
@@ -1124,7 +1132,7 @@ symbols = [
     "ogeom_offset::make_pipe_shell", "ogeom_offset::make_evolved",
     "ogeom_offset::make_helical_sweep", "ogeom_offset::make_pipe_shell_evolving",
     "ogeom_offset::PipeEvolution", "ogeom_offset::make_pipe_shell_laws",
-    "ogeom_offset::PipeLaws", "ogeom_offset::SpineLaw",
+    "ogeom_offset::PipeLaws", "ogeom_offset::SpineLaw", "ogeom_offset::SpineFunction",
     "ogeom_offset::place_on_spine", "ogeom_offset::PipePlacement",
 ]
 tests = [

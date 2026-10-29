@@ -3,8 +3,8 @@
 //! The section is the profile placed in the law's frame at each point of
 //! the spine, as for [`make_pipe_shell_with`](super::make_pipe_shell_with),
 //! and before that scaled about the spine and turned about it, each by its
-//! own law of the share of the spine's length run there: linear, or a
-//! monotone cubic through given values.
+//! own law of the share of the spine's length run there: linear, a
+//! monotone cubic through given values, or a function the caller gives.
 //!
 //! Scaled without a twist down a straight spine, every profile point runs
 //! along a straight line, at a constant speed, to its scaled image at the
@@ -13,6 +13,8 @@
 //! pyramid or cone itself where the scale reaches zero). Everywhere else
 //! the walls are skinned through the placed sections and held to the
 //! tolerance between them against the law itself.
+
+use std::sync::Arc;
 
 use ogeom_algo::{Built, History, curve_length, find_plane};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -54,6 +56,42 @@ pub enum SpineLaw {
     /// Hermite interpolant): a value the points never leave, the law never
     /// leaves either.
     Through(Vec<(f64, f64)>),
+    /// The value the function gives at each share, from naught to one. It
+    /// gives the start value at naught exactly. The sweep reads it at its
+    /// stations and wherever it checks its skin between them, and holds
+    /// the skin to the tolerance against what it reads there; it is to be
+    /// continuous over the spine, and a scale law above naught all along.
+    Function(SpineFunction),
+}
+
+/// A law of the share of a pipe's spine run, given as a function from a
+/// share in `[0, 1]` to the law's value there.
+#[derive(Clone)]
+pub struct SpineFunction(Arc<dyn Fn(f64) -> f64 + Send + Sync>);
+
+impl SpineFunction {
+    /// The law `f`.
+    pub fn new(f: impl Fn(f64) -> f64 + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    /// The law's value at share `lambda`.
+    pub fn at(&self, lambda: f64) -> f64 {
+        (self.0)(lambda)
+    }
+}
+
+impl core::fmt::Debug for SpineFunction {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SpineFunction(..)")
+    }
+}
+
+/// Two laws are one where they are the same function.
+impl PartialEq for SpineFunction {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// How a pipe's section scales and twists along its spine, each by its
@@ -86,7 +124,35 @@ pub(super) struct Ramp {
     slopes: Vec<f64>,
     /// Whether the law runs straight from its start value to its end one.
     linear: bool,
+    /// A law given as a function, read in place of the cubics.
+    function: Option<FunctionRead>,
 }
+
+/// A [`SpineFunction`] read over a stretch of the spine: at a share `λ` of
+/// the stretch it gives `gain f(from + (to - from) λ) + offset + tilt λ`.
+#[derive(Debug, Clone, PartialEq)]
+struct FunctionRead {
+    law: SpineFunction,
+    from: f64,
+    to: f64,
+    gain: f64,
+    offset: f64,
+    tilt: f64,
+}
+
+impl FunctionRead {
+    fn at(&self, lambda: f64) -> f64 {
+        self.gain * self.law.at(self.from + (self.to - self.from) * lambda)
+            + self.offset
+            + self.tilt * lambda
+    }
+}
+
+/// How many even shares a law given as a function is read at to bound
+/// from below how far it runs, which seeds the stations a skin starts
+/// from (the skin then refines itself between them), and to refuse a
+/// scale it shows at or below naught.
+const FUNCTION_READS: u32 = 64;
 
 impl Ramp {
     /// The law that holds `value` all along.
@@ -96,7 +162,38 @@ impl Ramp {
             values: vec![value, value],
             slopes: vec![0.0, 0.0],
             linear: true,
+            function: None,
         }
+    }
+
+    /// The law `f`, which gives `start` at the spine's start; `what` names
+    /// it in a refusal.
+    fn of_function(f: &SpineFunction, start: f64, what: &str) -> OgeomResult<Self> {
+        let (first, last) = (f.at(0.0), f.at(1.0));
+        if first != start {
+            ogeom_bail!(
+                Construction,
+                "a {what} law given as a function gives {start} at the spine's start, \
+                 not {first}"
+            );
+        }
+        if !last.is_finite() {
+            ogeom_bail!(Construction, "a {what} law takes finite values");
+        }
+        Ok(Self {
+            shares: vec![0.0, 1.0],
+            values: vec![first, last],
+            slopes: vec![0.0, 0.0],
+            linear: false,
+            function: Some(FunctionRead {
+                law: f.clone(),
+                from: 0.0,
+                to: 1.0,
+                gain: 1.0,
+                offset: 0.0,
+                tilt: 0.0,
+            }),
+        })
     }
 
     /// `law` read from `start` at the spine's start; `what` names it in a
@@ -115,6 +212,7 @@ impl Ramp {
                     values.push(value);
                 }
             }
+            SpineLaw::Function(f) => return Self::of_function(f, start, what),
         }
         if values.iter().any(|v| !v.is_finite()) {
             ogeom_bail!(Construction, "a {what} law takes finite values");
@@ -164,6 +262,7 @@ impl Ramp {
             shares,
             values,
             slopes,
+            function: None,
         })
     }
 
@@ -177,6 +276,9 @@ impl Ramp {
     /// The law's value a share `lambda` of the way along.
     pub(super) fn at(&self, lambda: f64) -> f64 {
         let lambda = lambda.clamp(0.0, 1.0);
+        if let Some(f) = &self.function {
+            return f.at(lambda);
+        }
         if self.linear {
             return self.values[0] + (self.values[1] - self.values[0]) * lambda;
         }
@@ -215,12 +317,30 @@ impl Ramp {
     /// stretch ends.
     fn window(&self, from: f64, to: f64) -> Self {
         let width = to - from;
+        if let Some(f) = &self.function {
+            let span = f.to - f.from;
+            let read = FunctionRead {
+                from: f.from + span * from,
+                to: f.from + span * to,
+                offset: f.offset + f.tilt * from,
+                tilt: f.tilt * width,
+                ..f.clone()
+            };
+            return Self {
+                shares: vec![0.0, 1.0],
+                values: vec![read.at(0.0), read.at(1.0)],
+                slopes: vec![0.0, 0.0],
+                linear: false,
+                function: Some(read),
+            };
+        }
         if self.linear {
             return Self {
                 shares: vec![0.0, 1.0],
                 values: vec![self.at(from), self.at(to)],
                 slopes: vec![0.0, 0.0],
                 linear: true,
+                function: None,
             };
         }
         let mut shares = vec![0.0];
@@ -241,12 +361,18 @@ impl Ramp {
             values,
             slopes,
             linear: false,
+            function: None,
         }
     }
 
     /// The law with every value taken through `f`, an affine map whose
     /// rate is `rate`.
     fn mapped(mut self, f: impl Fn(f64) -> f64, rate: f64) -> Self {
+        if let Some(read) = &mut self.function {
+            read.gain *= rate;
+            read.offset = f(read.offset);
+            read.tilt *= rate;
+        }
         for v in &mut self.values {
             *v = f(*v);
         }
@@ -266,6 +392,11 @@ impl Ramp {
     /// level spans at either end, where its values and slopes stand still.
     fn still_ends(&self) -> (f64, f64) {
         let n = self.shares.len();
+        if self.function.is_some() {
+            // A function's level stretches are not known: it is read as
+            // moving all along.
+            return (0.0, 1.0);
+        }
         if self.linear {
             return if self.values[0] == self.values[1] {
                 (1.0, 0.0)
@@ -291,7 +422,7 @@ impl Ramp {
 
     /// Whether the law holds `value` all along.
     pub(super) fn is_level(&self, value: f64) -> bool {
-        self.values.iter().all(|v| *v == value)
+        self.function.is_none() && self.values.iter().all(|v| *v == value)
     }
 
     /// Whether the law runs straight from its start value to its end one.
@@ -299,19 +430,50 @@ impl Ramp {
         self.linear
     }
 
-    /// The least value the law takes: each span keeps between its ends.
+    /// The law's values at [`FUNCTION_READS`] even steps from start to
+    /// end, for a law given as a function.
+    fn function_reads(&self) -> Option<Vec<f64>> {
+        self.function.as_ref().map(|f| {
+            (0..=FUNCTION_READS)
+                .map(|k| f.at(f64::from(k) / f64::from(FUNCTION_READS)))
+                .collect()
+        })
+    }
+
+    /// The least value the law takes: each span keeps between its ends. A
+    /// function's is the least it shows where it is read.
     fn least(&self) -> f64 {
-        self.values.iter().copied().fold(f64::INFINITY, f64::min)
+        let reads = self.function_reads().unwrap_or_else(|| self.values.clone());
+        reads.iter().copied().fold(f64::INFINITY, |a, b| {
+            if b.is_nan() {
+                f64::NEG_INFINITY
+            } else {
+                a.min(b)
+            }
+        })
     }
 
     /// How far the law runs, up and down, from start to end: each span
-    /// runs one way only.
+    /// runs one way only. A function runs at least as far as it shows
+    /// where it is read.
     fn variation(&self) -> f64 {
-        self.values.windows(2).map(|w| (w[1] - w[0]).abs()).sum()
+        let reads = self.function_reads().unwrap_or_else(|| self.values.clone());
+        reads.windows(2).map(|w| (w[1] - w[0]).abs()).sum()
     }
 
     /// The same law ending at `end`.
     fn ending_at(&self, end: f64) -> OgeomResult<Self> {
+        if let Some(f) = &self.function {
+            let read = FunctionRead {
+                tilt: f.tilt + end - f.at(1.0),
+                ..f.clone()
+            };
+            return Ok(Self {
+                values: vec![read.at(0.0), read.at(1.0)],
+                function: Some(read),
+                ..self.clone()
+            });
+        }
         let points: Vec<(f64, f64)> = self.shares[1..]
             .iter()
             .zip(&self.values[1..])
@@ -342,14 +504,29 @@ impl Evolution {
     /// frame's coordinates: about its origin, the spine, and its `z`, the
     /// spine's tangent.
     pub(super) fn local(&self, lambda: f64, tol: Tolerances) -> OgeomResult<Transform> {
+        let (scale, twist) = (self.scale.at(lambda), self.twist.at(lambda));
+        // A law given as a function is checked wherever it is read.
+        if self.scale.function.is_some() && !(scale.is_finite() && scale > 0.0) {
+            ogeom_bail!(
+                Construction,
+                "a scale law given as a function stays above naught; it gives {scale} \
+                 where the sweep reads it"
+            );
+        }
+        if self.twist.function.is_some() && !twist.is_finite() {
+            ogeom_bail!(
+                Construction,
+                "a twist law takes finite values; it gives {twist} where the sweep reads it"
+            );
+        }
         let turn = Transform::rotation(
             Axis {
                 location: Point::ORIGIN,
                 direction: Direction::Z,
             },
-            self.twist.at(lambda),
+            twist,
         );
-        Ok(turn * Transform::scaling(Point::ORIGIN, self.scale.at(lambda), tol)?)
+        Ok(turn * Transform::scaling(Point::ORIGIN, scale, tol)?)
     }
 
     /// The shares of the way along bounding where the laws move the
@@ -490,6 +667,10 @@ pub fn make_pipe_shell_evolving(
 /// against the laws; round a smooth closed spine the twist may follow any
 /// law that ends where a linear one may, unscaled. A scale law through
 /// values is above naught all along: a cubic span keeps between its ends.
+/// A law given as a function is read wherever the sweep places a section
+/// or checks its skin, and is never taken as standing still: every run it
+/// moves along is skinned, and round a closed spine it twists only, as a
+/// scale it is refused there.
 ///
 /// Round sharp corners a face sweeps run by run as
 /// [`make_pipe_shell_with`] does, each corner turned as `corners` asks:
@@ -503,8 +684,10 @@ pub fn make_pipe_shell_evolving(
 /// As [`make_pipe_shell_evolving`] and, round sharp corners, as
 /// [`make_pipe_shell_with`]; and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
-/// law's shares do not rise strictly to one, a value is not finite, or a
-/// scale law through values reaches naught or below.
+/// law's shares do not rise strictly to one, a value is not finite, a
+/// scale law through values reaches naught or below, or a law given as a
+/// function does not give the start value at the spine's start or, as a
+/// scale, gives naught or below where it is read.
 #[allow(clippy::too_many_arguments)]
 pub fn make_pipe_shell_laws(
     model: &mut Model,
@@ -533,11 +716,13 @@ pub fn make_pipe_shell_laws(
         scale: Ramp::of(&laws.scale, 1.0, "scale")?,
         twist: Ramp::of(&laws.twist, 0.0, "twist")?,
     };
-    if matches!(laws.scale, SpineLaw::Through(_)) && evolution.scale.least() <= 0.0 {
+    if matches!(laws.scale, SpineLaw::Through(_) | SpineLaw::Function(_))
+        && evolution.scale.least() <= 0.0
+    {
         ogeom_bail!(
             Construction,
-            "a scale law through values stays above naught; a section shrinks to a point \
-             only linearly"
+            "a scale law through values or given as a function stays above naught; a \
+             section shrinks to a point only linearly"
         );
     }
     if evolution.is_still() {

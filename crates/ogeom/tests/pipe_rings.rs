@@ -16,8 +16,8 @@ use ogeom::geom::{CircleCurve, Curve3d as _, LineCurve, PlaneSurface};
 use ogeom::math::{Circle, Direction, Frame, Plane, Point, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::offset::{
-    PipeCorners, PipeEvolution, PipeLaw, PipeLaws, SpineLaw, make_pipe_shell_evolving,
-    make_pipe_shell_laws, make_pipe_shell_with,
+    PipeCorners, PipeEvolution, PipeLaw, PipeLaws, SpineFunction, SpineLaw,
+    make_pipe_shell_evolving, make_pipe_shell_laws, make_pipe_shell_with,
 };
 use ogeom::topo::{Model, Shape};
 
@@ -509,4 +509,54 @@ fn a_square_twisted_round_a_circle_by_a_law_closes_on_its_symmetry() {
         (top - reach).abs() < SKIN + CHORD,
         "reaches z {top}, not {reach}"
     );
+}
+
+/// A square twisted round a circle by laws given as functions, which
+/// linger at either end: `θ(λ) = Θ sin²(πλ/2)` for a quarter turn, which
+/// the square's symmetry closes, and a whole turn. Pappus gives
+/// `2 π big · 4 a²` however it turns, and each passes an eighth of a turn
+/// on the way, its corner up at the half diagonal `a √2` in `z`.
+#[test]
+fn a_square_twisted_round_a_circle_by_a_function_closes_on_its_symmetry() {
+    let (big, a) = (10.0, 1.0);
+    for most in [PI / 2.0, 2.0 * PI] {
+        let mut model = Model::new();
+        let spine = ring(&mut model, big);
+        let profile = square(&mut model, big, a, None);
+        let laws = PipeLaws {
+            scale: SpineLaw::Linear(1.0),
+            twist: SpineLaw::Function(SpineFunction::new(move |l| {
+                most * (PI * l / 2.0).sin().powi(2)
+            })),
+        };
+        let pipe = make_pipe_shell_laws(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::RotationMinimizing,
+            &laws,
+            PipeCorners::Mitre,
+            SKIN,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{most}: {e}"))
+        .shape;
+        let found = check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{most}: {found}");
+        let v = measure(&model, &pipe);
+        let want = 2.0 * PI * big * 4.0 * a * a;
+        let reach = a * 2.0_f64.sqrt();
+        let length = 2.0 * PI * big;
+        let path = length + 2.0 * PI * reach + most * reach;
+        let bound = skin_bound(8.0 * a, path);
+        assert!(
+            (v - want).abs() < bound,
+            "{most}: {v} against {want}, bound {bound}"
+        );
+        let top = highest(&model, &pipe);
+        assert!(
+            (top - reach).abs() < SKIN + CHORD,
+            "{most}: reaches z {top}, not {reach}"
+        );
+    }
 }
