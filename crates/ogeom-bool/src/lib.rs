@@ -4114,19 +4114,22 @@ fn clipped_into_chart(
     Ok(stretches)
 }
 
-/// The map from one cylinder's or torus's chart to another's where both
-/// are one surface on two frames: the same axis line, within `slop`, and
-/// the same radii, and for a torus the same centre on it. The frames differ
-/// by a turn about the axis, a slide along it (a cylinder's only), the axis
-/// reversed, or the handedness, so the map is exact: `(u, v)` goes to
-/// `(σ·u + φ, s·v + c)`, `s` the sign between the axes, `σ` the sign
-/// between the axes the two angles turn about (`x × y`, which is `z`
-/// signed by the frame's handedness), `φ` the owner's angle zero read in
-/// the target's frame, and `c` the owner's origin's height on the target's
-/// axis, zero on a torus. On a torus `v` is the tube's angle, turned over
-/// with the axis. Where `σ` and `s` agree the map is a rigid motion of the
-/// plane, a half turn where both are negative; where they differ it is a
-/// mirror.
+/// The map from one cylinder's, cone's or torus's chart to another's where
+/// both are one surface on two frames: the same axis line, within `slop`,
+/// and the same radii, and for a torus the same centre on it. The frames
+/// differ by a turn about the axis, a slide along it (a cylinder's or a
+/// cone's), the axis reversed, or the handedness, so the map is exact:
+/// `(u, v)` goes to `(σ·u + φ, s·v + c)`, `s` the sign between the axes,
+/// `σ` the sign between the axes the two angles turn about (`x × y`, which
+/// is `z` signed by the frame's handedness), `φ` the owner's angle zero read
+/// in the target's frame, and `c` the owner's origin's height on the
+/// target's axis, zero on a torus. On a torus `v` is the tube's angle,
+/// turned over with the axis. A cone's `v` is a height along its axis too,
+/// its radius `r + v tan(a)` on either frame: one cone where the half
+/// angles agree up to the axes' sign and the owner's reference radius is
+/// the target's radius at the owner's origin. Where `σ` and `s` agree the
+/// map is a rigid motion of the plane, a half turn where both are negative;
+/// where they differ it is a mirror.
 fn coaxial_chart_map(
     owner: &SurfaceGeometry,
     target: &SurfaceGeometry,
@@ -4134,12 +4137,18 @@ fn coaxial_chart_map(
     tol: Tolerances,
 ) -> Option<ogeom_math::Transform2> {
     let reach = slop.max(tol.confusion());
+    let mut cones = None;
     let (fa, fb) = match (owner, target) {
         (SurfaceGeometry::Cylinder(a), SurfaceGeometry::Cylinder(b)) => {
             let (a, b) = (a.cylinder(), b.cylinder());
             if (a.radius() - b.radius()).abs() > reach {
                 return None;
             }
+            (a.frame(), b.frame())
+        }
+        (SurfaceGeometry::Cone(a), SurfaceGeometry::Cone(b)) => {
+            let (a, b) = (a.cone(), b.cone());
+            cones = Some((a, b));
             (a.frame(), b.frame())
         }
         (SurfaceGeometry::Torus(a), SurfaceGeometry::Torus(b)) => {
@@ -4168,6 +4177,12 @@ fn coaxial_chart_map(
     } else {
         (fa.origin() - fb.origin()).dot(zb)
     };
+    if let Some((a, b)) = cones
+        && ((a.half_angle() - s * b.half_angle()).abs() > tol.angular()
+            || (a.reference_radius() - b.radius_at(c)).abs() > reach)
+    {
+        return None;
+    }
     let slide = ogeom_math::Transform2::translation(ogeom_math::Vector2::new(phi, c));
     Some(match (sigma > 0.0, s > 0.0) {
         (true, true) => slide,
@@ -15336,8 +15351,9 @@ mod tests {
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
 
-    /// One cylinder and one torus, each spelled on frames turned about the
-    /// axis, slid along it (the cylinder's), with the axis reversed and on
+    /// One cylinder, one cone and one torus, each spelled on frames turned
+    /// about the axis, slid along it (the cylinder's and the cone's), with
+    /// the axis reversed and on
     /// either handedness: every pair's chart map carries a point of the
     /// owner's chart to the target's point at the same place in space.
     /// A frame of the other handedness turns its angle the other way
@@ -15364,8 +15380,22 @@ mod tests {
         let torus = |f: Frame| -> SurfaceGeometry {
             ogeom_geom::TorusSurface::new(ogeom_math::Torus::new(f, 2.0, 0.5, T).unwrap()).into()
         };
-        let kinds: [(&dyn Fn(Frame) -> SurfaceGeometry, f64); 2] =
-            [(&cylinder, 1.5), (&torus, 0.0)];
+        // One cone, its radius 2 + z / 4 at a height z on the world's axis,
+        // spelled from each frame's origin with the half angle signed by
+        // which way the frame's axis runs.
+        let cone = |f: Frame| -> SurfaceGeometry {
+            let up = f.z().vector().z;
+            let height = f.origin().z;
+            ogeom_geom::ConeSurface::new(
+                ogeom_math::Cone::new(f, 0.25_f64.mul_add(height, 2.0), up * 0.25_f64.atan(), T)
+                    .unwrap(),
+                (-5.0, 5.0),
+            )
+            .unwrap()
+            .into()
+        };
+        let kinds: [(&dyn Fn(Frame) -> SurfaceGeometry, f64); 3] =
+            [(&cylinder, 1.5), (&cone, 1.5), (&torus, 0.0)];
         for (make, slide) in kinds {
             for target_frame in [Frame::WORLD, Frame::WORLD.mirrored()] {
                 let target = make(target_frame);
