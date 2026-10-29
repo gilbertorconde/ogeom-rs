@@ -756,6 +756,185 @@ fn twisted_before_a_sharp_corner(theta: f64) {
     }
 }
 
+/// The area of the square of half side `a` turned through `theta` about
+/// its centre that lies past `x = w`: the turned square clipped by that
+/// line, by the shoelace formula.
+fn turned_square_past(a: f64, theta: f64, w: f64) -> f64 {
+    let (sin, cos) = theta.sin_cos();
+    let corners =
+        [(a, a), (-a, a), (-a, -a), (a, -a)].map(|(x, y)| (x * cos - y * sin, x * sin + y * cos));
+    let mut kept: Vec<(f64, f64)> = Vec::new();
+    for i in 0..4 {
+        let (p, q) = (corners[i], corners[(i + 1) % 4]);
+        if p.0 > w {
+            kept.push(p);
+        }
+        if (p.0 > w) != (q.0 > w) {
+            kept.push((w, p.1 + (q.1 - p.1) * (w - p.0) / (q.0 - p.0)));
+        }
+    }
+    (0..kept.len())
+        .map(|i| {
+            let (p, q) = (kept[i], kept[(i + 1) % kept.len()]);
+            p.0 * q.1 - q.0 * p.1
+        })
+        .sum::<f64>()
+        / 2.0
+}
+
+/// `∫ f` over `[0, w]` by the four-point Gauss–Legendre rule on `panels`
+/// even panels.
+fn gauss(f: impl Fn(f64) -> f64, w: f64, panels: u32) -> f64 {
+    const NODES: [(f64, f64); 4] = [
+        (-0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+        (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+    ];
+    let h = w / f64::from(panels);
+    (0..panels)
+        .map(|k| {
+            let mid = (f64::from(k) + 0.5) * h;
+            NODES
+                .iter()
+                .map(|(x, wt)| wt * f(mid + x * h / 2.0))
+                .sum::<f64>()
+                * h
+                / 2.0
+        })
+        .sum()
+}
+
+/// A square of half side `a` twisted linearly by `total` up and over the
+/// sharp L, still turning through the mitred corner, under the
+/// rotation-minimizing law: the section at height `z` up the first leg is
+/// the square turned `θ' z`, and a distance `x` along the second the
+/// square turned `θ' (l + x)`, `θ' = total / 2l`, `θc = θ' l` at the
+/// corner.
+///
+/// On the mitre plane `x + z = l`, a point `w` inside the corner (`x = w`)
+/// at `y` lies in the first leg's section `w` below the corner, turned
+/// `θc - θ' w`, at `(w, y)` of its own plane, and in the second's `w` past
+/// it, turned `θc + θ' w`, at the same `(w, y)`; outside the corner both
+/// legs' prisms carry the corner section. Each leg holds `4 a² l`, a
+/// twist keeping every slice the square; each prism adds what lies past
+/// `x = -w` of the corner section, which is what lies past `w` of it, and
+/// each leg loses what lies past `w` of its own section `w` from the
+/// corner:
+/// `V = 8 a² l + Σ± ∫ [past(θc, w) - past(θc ∓ θ' w, w)] dw`.
+///
+/// The two legs' cuts of the plane differ inside the corner, so the solid
+/// has faces there: the first leg's region less the second's, looking up
+/// the plane's normal `(1, 0, 1)`, and the second's less the first's
+/// looking down it, each `√2 ∫ |slice₁(w) \ slice₂(w)| dw` across the
+/// stretches of `y` the turned squares cover at `x = w`.
+///
+/// Every integrand is smooth between the heights where a corner of a
+/// section crosses `x = w`, so the Gauss–Legendre sums are exact to far
+/// below the skin. The volume strays from the closed form by at most the
+/// skin bound; each mitre face's area by the skin's tolerance and the
+/// mesh's chord, within `√2` of the plane each, over both cuts' lengths,
+/// at most the section's perimeter `√2` stretched across the plane.
+#[test]
+fn a_square_twisted_through_a_mitred_corner_holds_its_closed_form_and_mitre_faces() {
+    let (a, l) = (1.0_f64, 10.0_f64);
+    let reach = a * 2.0_f64.sqrt();
+    for total in [0.6, 2.0] {
+        let rate = total / (2.0 * l);
+        let corner = rate * l;
+        let lost = |sign: f64| {
+            gauss(
+                |w| {
+                    turned_square_past(a, corner, w)
+                        - turned_square_past(a, corner + sign * rate * w, w)
+                },
+                reach * 1.2,
+                20_000,
+            )
+        };
+        let want = 8.0 * a * a * l + lost(-1.0) + lost(1.0);
+        // The stretch of `y` the square turned `θ` covers at `x = w`, the
+        // turned square's `x` stretch at `y = w` mirrored across `x = y`.
+        let slice = |theta: f64, w: f64| turned_square_at(a, -theta, w);
+        let only = |own: f64, other: f64| {
+            2.0_f64.sqrt()
+                * gauss(
+                    |w| {
+                        let mine = slice(corner + own * rate * w, w);
+                        let theirs = slice(corner + other * rate * w, w);
+                        match (mine, theirs) {
+                            (None, _) => 0.0,
+                            (Some((lo, hi)), None) => hi - lo,
+                            (Some((lo, hi)), Some((low, high))) => {
+                                (hi - lo) - (hi.min(high) - lo.max(low)).max(0.0)
+                            }
+                        }
+                    },
+                    reach * 1.2,
+                    20_000,
+                )
+        };
+        let (up, down) = (only(-1.0, 1.0), only(1.0, -1.0));
+
+        let mut model = Model::new();
+        let wire = square_wire(&mut model, a);
+        let profile = xy_face(&mut model, &[wire]);
+        let spine = up_and_over(&mut model, l);
+        let laws = PipeLaws {
+            scale: SpineLaw::Linear(1.0),
+            twist: SpineLaw::Linear(total),
+        };
+        let solid = make_pipe_shell_laws(
+            &mut model,
+            &profile,
+            &spine,
+            &PipeLaw::RotationMinimizing,
+            &laws,
+            PipeCorners::Mitre,
+            SKIN,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("{total}: {e}"))
+        .shape;
+        let found = check(&model, &solid, T).unwrap();
+        assert!(found.is_valid(), "{total}: {found}");
+        let v = measure_skinned(&model, &solid);
+        let bound = skin_bound(8.0 * a, 2.0 * l + total * reach);
+        assert!(
+            (v - want).abs() < bound,
+            "{total}: {v} against {want}, bound {bound}"
+        );
+
+        let normal = Vector::new(1.0, 0.0, 1.0) / 2.0_f64.sqrt();
+        let (mut looking_up, mut looking_down) = (0.0, 0.0);
+        for face in explore_unique(&model, &solid, ShapeType::Face).unwrap() {
+            let (at, n) = ogeom::algo::face_normal(&model, &face, T).unwrap();
+            if n.cross(normal).magnitude() > 1e-9 || (at.x + at.z - l).abs() > 1e-6 {
+                continue;
+            }
+            let fine = Deflection {
+                chord: CHORD,
+                ..Deflection::default()
+            };
+            let area = ogeom::algo::surface_properties(&model, &face, fine, T)
+                .unwrap()
+                .mass;
+            if n.dot(normal) > 0.0 {
+                looking_up += area;
+            } else {
+                looking_down += area;
+            }
+        }
+        let bound = (SKIN + CHORD) * 2.0_f64.sqrt() * 2.0 * 8.0 * a * 2.0_f64.sqrt();
+        for (case, measured, wanted) in [("up", looking_up, up), ("down", looking_down, down)] {
+            assert!(
+                (measured - wanted).abs() < bound,
+                "{total}: the face looking {case} holds {measured} against {wanted}, bound {bound}"
+            );
+        }
+    }
+}
+
 /// The spine up `z` from the origin to `(0, 0, l)`, then a sharp quarter
 /// turn onto the quarter arc of radius `r` about `(0, 0, l + r)`, leaving
 /// along `-x` and ending at `(-r, 0, l + r)`: the corner's axis is `y`.

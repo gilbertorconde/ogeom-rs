@@ -1616,3 +1616,88 @@ fn sections_off_the_spine_round_a_lens_mitre_their_skinned_runs() {
         "{square} less {holed} against the hole's {hole}, bound {bound}"
     );
 }
+
+/// The volume a disc of `radius` sweeps round [`lens`], its centre
+/// standing `inward` toward the arcs' centres off the spine, under frames
+/// that keep that offset in the lens's plane (the level binormal, which on
+/// a planar spine is the rotation-minimizing frame turned across each
+/// corner about its axis), mitred at both corners. Pappus gives the area
+/// times the arcs' length at the centre's radius `big - inward`. At each
+/// corner, turning through `π - turned`, each run is run on by the wedge
+/// `-u tan(φ)` at `u < 0` outside the corner and cut by
+/// [`cut_round_an_arc`] at `ρ = big - u` inside it, `u` measured inward;
+/// the columns across the disc are summed by the midpoint rule.
+fn off_centre_disc_round_the_lens(radius: f64, inward: f64, turned: f64) -> f64 {
+    const COLUMNS: u32 = 100_000;
+    let big = 15.0;
+    let half_turn = (PI - turned) / 2.0;
+    let du = 2.0 * radius / f64::from(COLUMNS);
+    let corner: f64 = (0..COLUMNS)
+        .map(|k| {
+            let u = inward - radius + (f64::from(k) + 0.5) * du;
+            let off = u - inward;
+            let width = 2.0 * (radius * radius - off * off).max(0.0).sqrt();
+            let added = if u < 0.0 {
+                -u * half_turn.tan()
+            } else {
+                -cut_round_an_arc(big, big - u, half_turn, false)
+            };
+            added * width * du
+        })
+        .sum();
+    PI * radius * radius * (big - inward) * 2.0 * turned + 4.0 * corner
+}
+
+/// Sections off the spine round [`lens`] whose two runs' cuts of a mitre
+/// plane run within a skin's width of each other: two fits of one curve
+/// where the runs are mirror images across the plane, or curves that
+/// cross. The runs are glued on the plane, each pair of cuts within the
+/// runs' tolerances of each other taken for one and the rest bounding the
+/// faces between them.
+///
+/// - Under the level binormal a disc off the spine sweeps
+///   [`off_centre_disc_round_the_lens`], and a square with a hole off the
+///   spine is the square's pipe less the hole's, within the skin's
+///   tolerance over the wall: the perimeter times the longest path a
+///   point runs.
+/// - Under the leaning binormal a square with a hole off the spine is the
+///   square's pipe less the hole's own, swept alone under the same law.
+#[test]
+fn sections_off_the_spine_round_a_lens_glue_their_runs_on_the_mitre_planes() {
+    let (big, half, radius, skin) = (15.0, 1.0, 0.4, 1e-3);
+    let level = PipeLaw::Binormal(Direction::Z);
+    let lean = PipeLaw::Binormal(Direction::new(Vector::new(1.0, 0.0, 1.0), T).unwrap());
+    let path =
+        |turned: f64, r: f64| 2.0 * (big + r) * turned + 4.0 * r * ((PI - turned) / 2.0).tan();
+
+    let off = (-0.4, 0.2);
+    let (disc, turned) = round_the_lens(&level, None, Some((half, off)), skin);
+    let want = off_centre_disc_round_the_lens(half, -off.0, turned);
+    let bound = skin * 2.0 * PI * half * path(turned, half + off.0.hypot(off.1));
+    assert!(
+        (disc - want).abs() < bound,
+        "disc at {off:?}: {disc} against {want}, bound {bound}"
+    );
+
+    let (square, _) = round_the_lens(&level, Some(half), None, skin);
+    for off in [(0.5, 0.0), (-0.5, 0.0)] {
+        let (holed, _) = round_the_lens(&level, Some(half), Some((radius, off)), skin);
+        let tube = off_centre_disc_round_the_lens(radius, -off.0, turned);
+        let bound = skin * 2.0 * PI * radius * path(turned, radius + off.0.hypot(off.1));
+        assert!(
+            (square - holed - tube).abs() < bound,
+            "level, hole at {off:?}: {square} less {holed} against the tube's {tube}, bound {bound}"
+        );
+    }
+
+    let (square, _) = round_the_lens(&lean, Some(half), None, skin);
+    for off in [(0.5, 0.0), (0.2, -0.5)] {
+        let (holed, _) = round_the_lens(&lean, Some(half), Some((radius, off)), skin);
+        let (hole, _) = round_the_lens(&lean, None, Some((radius, off)), skin);
+        let bound = skin * 2.0 * PI * radius * path(turned, radius + off.0.hypot(off.1));
+        assert!(
+            (square - holed - hole).abs() < bound,
+            "leaning, hole at {off:?}: {square} less {holed} against the hole's {hole}, bound {bound}"
+        );
+    }
+}

@@ -997,6 +997,49 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Mitred runs whose cuts of the mitre plane differ are glued on it.**
+  (#492)
+  - `make_pipe_shell_laws` refused a twist still moving through a mitred
+    corner ("the mitred runs did not fuse into a valid solid"), and
+    `make_pipe_shell_with` refused sections off the spine round a lens of
+    two arcs under the binormal laws ("the kept pieces did not close into
+    a shell", or the same refusal).
+  - Each run is trimmed on the mitre plane, and inside the corner each
+    run's own skin crosses that plane. Under a twist the two legs'
+    sections there are turned against each other, so their cuts are two
+    curves crossing at a shallow angle (about 1° and 3° for a
+    `Linear(0.6)` twist down a 10 by 10 L); the fuse split one cut at
+    the crossing but not the other and left a face whose boundary
+    crossed itself. Round the symmetric lens the two runs' cuts are two
+    fits of one curve, up to 3.2e-4 apart, which the fuse cannot
+    reconcile.
+  - Where the fuse fails or leaves an invalid solid, the trimmed runs are
+    now glued on each plane they meet on (`sweep/meeting.rs`). Cuts that
+    run within the two runs' tolerances of each other all along are
+    taken for one and sewn as one edge stating the gap; the others are
+    split where they cross, and the plane keeps a face where only one
+    run's region covers it, looking out of that run. Every result is
+    checked, and one that fails is refused as before.
+  - Sewing across a gap split an edge at another face's vertex only
+    inside the edge's polyline box, which a curve bulges past by up to
+    the polyline's chord: an arc split at its top was not split. And a
+    pcurve refitted onto a twin edge on a closed curve clamped a point
+    just past the closing point to the far end of its stretch. Both are
+    fixed in `ogeom-algo`'s `sew_within`.
+  - Measured: a square twisted `Linear(0.6)` round the L holds the closed
+    form `8 a² l + Σ± ∫ [past(θc, w) - past(θc ∓ θ' w, w)] dw` within
+    1.2e-4, and its two mitre faces the areas of the regions between the
+    cuts within 1.7e-6 (`Linear(2.0)`: 8.5e-4 and 1.6e-4; bounds 0.18
+    and 0.035). Round the lens under the level binormal a disc off the
+    spine holds Pappus plus its corners' columns within 4.9e-4, and holed
+    squares less their holes' tubes 1e-5 and 1.7e-4; under the leaning
+    binormal square less holed less hole is within 1e-6.
+  - Still refused: round the lens under the leaning binormal, a square
+    with a hole of radius 0.4 standing 0.4 across and 0.2 up off the
+    spine, which fails in the trim of one run, before the runs meet.
+  - Results that succeed through the fuse are unchanged: the glue is
+    tried only where the fuse fails or its result fails `check`.
+
 - **Sections off the spine mitre between two skinned runs.** (#394)
   - `make_pipe_shell_with` with `PipeCorners::Mitre` under the auxiliary
     or binormal law refused a section standing off the spine where two

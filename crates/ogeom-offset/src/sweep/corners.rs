@@ -13,6 +13,9 @@
 //!   two share, so their cuts of the plane are one; two skinned runs
 //!   meeting there end on their sections exactly where a loop has an exact
 //!   rational form, and the later takes the earlier's end loop mirrored;
+//!   where the fuse of the trimmed runs cannot reconcile their cuts of the
+//!   plane, the runs are glued on it instead, the plane's faces built from
+//!   both cuts (see [`meeting`](super::meeting));
 //! - extended, each run is run on straight past the corner until its
 //!   section clears the other run's far side;
 //! - round, the half of the section outside the corner is turned about the
@@ -38,6 +41,7 @@ use ogeom_math::{Axis, Direction, Frame, Point, Transform, Vector};
 use ogeom_topo::{Filter, Model, NodeData, Shape, ShapeType, explore};
 
 use super::evolving::{Evolution, evolved_run};
+use super::meeting::{self, Meeting};
 use super::{
     DOUBLED_BACK, LEAST_TURN_SINE, PipeCorners, PipeLaw, bounded_face, fuse_in_order, law_normals,
     outside_half, pipe_shell_ends, profile_square_at_start, realized_profile_wound, rmf_normals,
@@ -433,6 +437,7 @@ pub(super) fn law_cornered(
         })
         .collect();
     let mut after: Vec<Vec<Shape>> = vec![Vec::new(); runs.len()];
+    let mut meetings: Vec<Meeting> = Vec::with_capacity(joins.len());
     for &(a, b) in &joins {
         let out = &legs[runs[a].legs.end - 1];
         let into = &legs[runs[b].legs.start];
@@ -448,6 +453,13 @@ pub(super) fn law_cornered(
                      not meet on one section"
                 );
             }
+            meetings.push(Meeting {
+                a,
+                b,
+                at: corner,
+                normal: d1,
+                gap: (held[a] + held[b]).max(tol.confusion() * 10.0),
+            });
             continue;
         }
         if d1.dot(d2) < DOUBLED_BACK {
@@ -460,6 +472,13 @@ pub(super) fn law_cornered(
         match corners {
             PipeCorners::Mitre => {
                 let halving = (d1 + d2) / (d1 + d2).magnitude();
+                meetings.push(Meeting {
+                    a,
+                    b,
+                    at: corner,
+                    normal: halving,
+                    gap: (held[a] + held[b]).max(tol.confusion() * 10.0),
+                });
                 let reach_a = mitre_reach(model, &ends[a], corner, d1, halving, tol)?;
                 // A skinned run starts on its skin's own rings: a fit of
                 // the section's, or one carried exactly in another form (a
@@ -539,21 +558,43 @@ pub(super) fn law_cornered(
             }
         }
     }
+    let trimmed = solids.clone();
     let mut pieces = Vec::with_capacity(runs.len() * 3);
     for (solid, joined) in solids.into_iter().zip(after) {
         pieces.push(solid);
         pieces.extend(joined);
     }
-    let Some(shape) = fuse_in_order(model, pieces, tol)? else {
-        ogeom_bail!(Construction, "the spine has no run");
+    let fused = fuse_in_order(model, pieces, tol);
+    let shape = if corners == PipeCorners::Mitre {
+        // Mitred runs touch on each mitre plane. Where both cut it along
+        // curves drawn apart (two fits of one curve, or the cuts of two
+        // sections turned against each other), the fuse can fail to
+        // reconcile them, or leave a face turned or open; the runs are
+        // then glued on the planes they meet on, and a solid that still
+        // fails `check` is refused, not returned.
+        let valid = |model: &Model, shape: &Shape| -> OgeomResult<bool> {
+            Ok(ogeom_algo::check(model, shape, tol)?.is_valid())
+        };
+        match fused {
+            Ok(Some(shape)) if valid(model, &shape)? => shape,
+            Ok(None) => ogeom_bail!(Construction, "the spine has no run"),
+            failed => {
+                let glued = meeting::glued(model, &trimmed, &meetings, tol);
+                match glued {
+                    Ok(shape) if valid(model, &shape)? => shape,
+                    _ => {
+                        failed?;
+                        ogeom_bail!(NotDone, "the mitred runs did not fuse into a valid solid");
+                    }
+                }
+            }
+        }
+    } else {
+        let Some(shape) = fused? else {
+            ogeom_bail!(Construction, "the spine has no run");
+        };
+        shape
     };
-    // Mitred runs touch on each mitre plane. Where both cut it along one
-    // curve, each through its own skin's fit of it, the two fits cross a
-    // skin's width apart and the fuse can leave a face turned or open; such
-    // a solid is refused, not returned.
-    if corners == PipeCorners::Mitre && !ogeom_algo::check(model, &shape, tol)?.is_valid() {
-        ogeom_bail!(NotDone, "the mitred runs did not fuse into a valid solid");
-    }
     let mut history = History::new();
     history.generate(spine, shape.clone());
     history.generate(profile, shape.clone());

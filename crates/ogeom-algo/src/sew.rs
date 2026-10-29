@@ -1002,8 +1002,8 @@ fn split_at_vertices(
                 continue;
             };
             let own: Vec<TShapeId> = model.children_of(&edge)?.iter().map(Shape::node).collect();
-            let drawn =
-                ogeom_mesh::polyline_of_edge(model, &edge, ogeom_mesh::Deflection::default(), tol)?;
+            let deflection = ogeom_mesh::Deflection::default();
+            let drawn = ogeom_mesh::polyline_of_edge(model, &edge, deflection, tol)?;
             let (mut lo, mut hi) = (drawn[0], drawn[0]);
             for p in &drawn {
                 lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
@@ -1013,14 +1013,18 @@ fn split_at_vertices(
                 print.range.0.min(print.range.1),
                 print.range.0.max(print.range.1),
             );
+            // The curve strays from its polyline's chords by up to the
+            // chord deflection, past the polyline's box where it bulges
+            // out at an extreme.
+            let margin = reach + deflection.chord;
             let mut here: Vec<(f64, TShapeId)> = Vec::new();
             for &(v, p) in &vertices {
-                let outside = p.x < lo.x - reach
-                    || p.y < lo.y - reach
-                    || p.z < lo.z - reach
-                    || p.x > hi.x + reach
-                    || p.y > hi.y + reach
-                    || p.z > hi.z + reach;
+                let outside = p.x < lo.x - margin
+                    || p.y < lo.y - margin
+                    || p.z < lo.z - margin
+                    || p.x > hi.x + margin
+                    || p.y > hi.y + margin
+                    || p.z > hi.z + margin;
                 if own.contains(&v)
                     || outside
                     || p.distance(print.start) <= reach
@@ -1373,6 +1377,15 @@ fn repaced_carry(
     }
     const SAMPLES: usize = 24;
     let (klo, khi) = (kept_fp.range.0, kept_fp.range.1);
+    let closes = {
+        let (da, db) = dropped_fp.curve.domain();
+        db > da
+            && dropped_fp
+                .curve
+                .point_at(da, tol)?
+                .distance(dropped_fp.curve.point_at(db, tol)?)
+                <= tol.confusion()
+    };
     let mut out = Vec::with_capacity(carried.len());
     let mut pending: Vec<(
         ogeom_topo::SurfaceId,
@@ -1431,7 +1444,19 @@ fn repaced_carry(
                     s -= turn;
                 }
             }
-            let s = s.clamp(lo, hi);
+            // A foot still off the stretch on a curve that closes is held
+            // at the end nearer it round the turn, not across the stretch:
+            // just past the closing point is just before the stretch's
+            // start.
+            let s = if (s < lo || s > hi) && closes {
+                let round = |a: f64, b: f64| {
+                    let d = (a - b).rem_euclid(turn);
+                    d.min(turn - d)
+                };
+                if round(s, lo) <= round(s, hi) { lo } else { hi }
+            } else {
+                s.clamp(lo, hi)
+            };
             let pt = if (dhi - dlo).abs() <= f64::MIN_POSITIVE {
                 prange.0
             } else {
@@ -2602,6 +2627,92 @@ mod tests {
         assert_eq!(sewn.joined, 3);
         let d = crate::check(&model, &sewn.shells[0], T).unwrap();
         assert!(d.is_usable(), "{d}");
+    }
+
+    /// A circular segment whose arc runs past the top of its circle, beside
+    /// two annular pieces whose inner arcs meet right at that top. The
+    /// segment's arc is split there and sewn to both, though its default
+    /// polyline cuts under the top and leaves the vertex outside its box.
+    #[test]
+    fn an_arc_is_split_at_a_vertex_on_its_bulge() {
+        use ogeom_geom::{CircleCurve, Curve, LineCurve, SurfaceGeometry};
+        let mut model = Model::new();
+        let turn = 130_f64.to_radians();
+        let circle = |r: f64| -> Curve {
+            CircleCurve::new(ogeom_math::Circle::new(Frame::WORLD, r, T).unwrap()).into()
+        };
+        let on = |r: f64, a: f64| Point::new(r * a.cos(), r * a.sin(), 0.0);
+        // A ring through the corners `(radius, angle)` in turn, each edge
+        // the arc about the origin where the radius holds and the line
+        // across where it changes.
+        let ring = |model: &mut Model, corners: &[(f64, f64)]| -> Vec<Shape> {
+            let vertices: Vec<Shape> = corners
+                .iter()
+                .map(|&(r, a)| crate::make_vertex(model, on(r, a)).shape)
+                .collect();
+            let n = corners.len();
+            (0..n)
+                .map(|k| {
+                    let ((r, a), (_, b)) = (corners[k], corners[(k + 1) % n]);
+                    let (from, to) = (&vertices[k], &vertices[(k + 1) % n]);
+                    if (corners[(k + 1) % n].0 - r).abs() > 0.0 {
+                        let curve =
+                            LineCurve::segment(on(r, a), on(corners[(k + 1) % n].0, b), T).unwrap();
+                        let range = ogeom_geom::Curve3d::domain(&curve);
+                        crate::make_edge_between(model, Curve::Line(curve), range, from, to, T)
+                            .unwrap()
+                            .shape
+                    } else if a < b {
+                        crate::make_edge_between(model, circle(r), (a, b), from, to, T)
+                            .unwrap()
+                            .shape
+                    } else {
+                        crate::make_edge_between(model, circle(r), (b, a), to, from, T)
+                            .unwrap()
+                            .shape
+                            .reversed()
+                    }
+                })
+                .collect()
+        };
+        let plane: SurfaceGeometry = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+        let quarter = core::f64::consts::FRAC_PI_2;
+        // The segment's chord is a line between two corners on one circle.
+        let segment = {
+            let a = crate::make_vertex(&mut model, on(10.0, 0.0)).shape;
+            let b = crate::make_vertex(&mut model, on(10.0, turn)).shape;
+            let chord = LineCurve::segment(on(10.0, turn), on(10.0, 0.0), T).unwrap();
+            let range = ogeom_geom::Curve3d::domain(&chord);
+            vec![
+                crate::make_edge_between(&mut model, circle(10.0), (0.0, turn), &a, &b, T)
+                    .unwrap()
+                    .shape,
+                crate::make_edge_between(&mut model, Curve::Line(chord), range, &b, &a, T)
+                    .unwrap()
+                    .shape,
+            ]
+        };
+        let first = ring(
+            &mut model,
+            &[(10.0, 0.0), (12.0, 0.0), (12.0, quarter), (10.0, quarter)],
+        );
+        let second = ring(
+            &mut model,
+            &[(10.0, quarter), (12.0, quarter), (12.0, turn), (10.0, turn)],
+        );
+        let faces: Vec<Shape> = [segment, first, second]
+            .into_iter()
+            .map(|ring| {
+                crate::make_face_with_pcurves(&mut model, plane.clone(), &[ring], T)
+                    .unwrap()
+                    .shape
+            })
+            .collect();
+        let sewn = sew_within(&mut model, &faces, 1e-6, T).unwrap();
+        assert_eq!(sewn.shells.len(), 1);
+        // The segment's arc against both inner arcs, and the two pieces'
+        // lines between them.
+        assert_eq!(sewn.joined, 3);
     }
 
     /// A prism's walls with a lid built apart at each end: the walls' end

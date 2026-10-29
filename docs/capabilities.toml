@@ -1071,8 +1071,8 @@ under the laws over its share of the length, from the section it starts \
 with, the stretches where the laws stand still swept exactly; a twist \
 still moving through a mitred corner turns the two legs' sections \
 inside it against each other, so their skins cut the mitre plane along \
-curves that can run within a skin's width of each other, and the fuse \
-is then refused by name; a skinned \
+two curves that cross, and the mitre faces are the regions between \
+them (see the glued mitres below); a skinned \
 run into a curved leg's extended corner, its wall leaving the extension's \
 side plane along its start edge as the scale narrows it, joins that \
 extension however shallowly it leaves, so long as it rises past ten \
@@ -1095,10 +1095,18 @@ ring that is a circle centred on the spine sweeps there as the exact \
 tube every frame carries it along (a cylinder down a line, a torus round \
 an arc), so a holed face mitres between two skinned runs; a section off \
 the spine, solid or holed, mitres there too, the later run run back \
-from its own skin's start rings, and where the two runs' fitted skins \
-cut the mitre plane along one curve (frames mirrored across it, as round \
-a symmetric lens) the fuse of the two can still fail, and is refused \
-by name rather than returned invalid; a round corner is refused where the law's next section is not the last \
+from its own skin's start rings. Where the fuse of two mitred runs \
+cannot reconcile their cuts of the mitre plane (two fits of one curve \
+where the frames mirror across it, as round a symmetric lens, or curves \
+that cross at a shallow angle), the trimmed runs are glued on the plane \
+instead: cuts that run within the two runs' tolerances of each other all \
+along are sewn as one edge stating the gap, the others split where they \
+cross, and the plane keeps a face where only one run's region covers \
+it, looking out of that run; a solid that still fails the checks is \
+refused by name rather than returned invalid (round the lens under the \
+leaning binormal, a square with a hole of radius 0.4 standing 0.4 across \
+and 0.2 up off the spine still fails in the trim of one run, before \
+the runs meet); a round corner is refused where the law's next section is not the last \
 turned about the corner, within what the runs are held to (a skinned \
 run's tolerance), so a holed section's skinned run turns round ones too. The Frenet frame turns sharp corners extended or \
 rounded the same way, each run's section set by the run's own Frenet \

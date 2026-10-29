@@ -27,6 +27,7 @@ use ogeom_topo::{EdgeData, EdgeRepr, Filter, Model, Shape, ShapeType, VertexData
 
 mod corners;
 mod evolving;
+mod meeting;
 mod open_lines;
 mod placement;
 
@@ -3930,7 +3931,7 @@ fn dense_wire(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<Vec<P
 /// next piece, whose chords stand within `allowed` of the curve at their
 /// quarter points: a piece is halved where they do not, at most `DEEPEST`
 /// times.
-fn chords_within(
+pub(super) fn chords_within(
     at: &impl Fn(f64) -> OgeomResult<Point>,
     a: (f64, Point),
     b: (f64, Point),
