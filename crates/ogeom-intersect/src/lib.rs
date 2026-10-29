@@ -43,6 +43,7 @@ pub mod contact;
 pub mod curve_surface;
 pub mod curves;
 pub mod extrema;
+mod extrusion;
 pub mod march;
 pub mod section;
 pub mod surface;

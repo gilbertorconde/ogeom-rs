@@ -13,6 +13,34 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A plane across a linear extrusion meets it in closed form.** (#342)
+  - `intersect_surfaces` marched every plane against an extrusion and
+    fitted the section; a plane holding a spline profile's rulings was
+    the one pair answered exactly.
+  - Now, where the plane crosses the extrusion's direction, the section
+    is the profile carried along that direction onto the plane, at the
+    profile's own parameter: a line to a line, a circle or an ellipse to
+    an ellipse (a circle where the two radii agree), a parabola to a
+    parabola, a trimmed profile trimmed alike, each with its exact trace
+    on the extrusion (a line, a trig curve, a quadratic). Where the plane
+    holds the direction, the section is the rulings through the
+    profile's crossings with the plane. Each is cut to the extrusion's
+    window at the profile's crossings with the plane moved to either end
+    of the sweep, found in closed form.
+  - Still marched, as before: a B-spline, hyperbola, helix or offset
+    profile, a reversed trim, a plane lying along the profile or touching
+    it, a plane within the tangency sine of the extrusion's direction,
+    and a section that does not land on both surfaces within the
+    confusion distance. A B-spline profile's image is exact too, but a
+    B-spline section stated at tolerance zero is read by the boolean as
+    a closed form, and ten carried-band junctions in
+    `ogeom-fillet/tests/chain.rs` then refuse; it is left marched.
+  - Measured: every section lies on both surfaces within 1e-12 over
+    randomized profiles, sweeps and planes, and covers every point of
+    the profile whose height falls inside the sweep; the closed forms
+    (an ellipse of radii `R / cos θ` and `R`, a parabola of focal length
+    `f cos θ`) hold to 1e-12.
+
 - **An open wire sweeps a ring round a closed spine of lines and arcs.**
   (#502)
   - `make_pipe_shell_with` refused an open wire round any closed spine

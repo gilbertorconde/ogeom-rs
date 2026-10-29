@@ -339,6 +339,7 @@ symbols = [
 tests = [
     "crates/ogeom-intersect/tests/instruments.rs",
     "crates/ogeom-intersect/src/surface.rs",
+    "crates/ogeom-intersect/src/extrusion.rs",
 ]
 
 [[capability]]

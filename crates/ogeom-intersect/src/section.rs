@@ -208,6 +208,7 @@ pub fn intersect_surfaces_within(
         Err(_) => match near_parallel_drums(a, b, tol)
             .or_else(|| ball_through_drum(a, b, tol))
             .or_else(|| axial_plane_revolution(a, b, tol))
+            .or_else(|| crate::extrusion::plane_extrusion(a, b, tol))
             .or_else(|| plane_along_spline_lines(a, b, tol))
         {
             Some(sections) if sections.is_empty() => Ok(SurfaceIntersection::Apart),
@@ -1371,7 +1372,7 @@ fn chart_inversion(
 
 /// The parameter interval over which a 2D line stays inside a surface's
 /// parameter box. `None` when it never enters.
-fn inside_box(pcurve: &PlanarCurve, surface: &SurfaceGeometry) -> Option<(f64, f64)> {
+pub(crate) fn inside_box(pcurve: &PlanarCurve, surface: &SurfaceGeometry) -> Option<(f64, f64)> {
     // The pcurve as a point and a rate along its own parameter: a line, or
     // a degree-one spline of two points (a cone's ruling), linear in it.
     let (o, d) = match pcurve {
@@ -1419,7 +1420,11 @@ fn inside_box(pcurve: &PlanarCurve, surface: &SurfaceGeometry) -> Option<(f64, f
 }
 
 /// Whether a closed pcurve may pass through the surface's box.
-fn touches_box(pcurve: &PlanarCurve, surface: &SurfaceGeometry, tol: Tolerances) -> bool {
+pub(crate) fn touches_box(
+    pcurve: &PlanarCurve,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> bool {
     use ogeom_geom::Curve2d;
     let ((ua, ub), (va, vb)) = surface.domain();
     let (lo, hi) = pcurve.domain();
