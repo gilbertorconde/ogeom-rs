@@ -179,7 +179,8 @@ pub fn check_kept(
     })?;
     each(of(ShapeType::Face), &mut found, |face, out| {
         check_face(model, face, tol, out)?;
-        check_face_chart(model, face, &|_| false, tol, out)
+        check_face_chart(model, face, &|_| false, tol, out)?;
+        check_seam_sides(model, face, tol, out)
     })?;
     for shell in of(ShapeType::Shell) {
         check_shell(model, shell, &mut found)?;
@@ -1436,15 +1437,7 @@ fn check_face_chart(
         for k in 0..walked.len() {
             let (i, j) = ((start + k) % n, (start + k + 1) % n);
             let (end, next) = (walked[k].1, walked[(k + 1) % walked.len()].0);
-            let joint = crate::build::edge_vertices(model, &edges[i])?
-                .and_then(|(_, v)| model.tolerance_of(&v).ok().flatten())
-                .map_or(0.0, |t| t.get());
-            let reach = CHART_GAP_SLACK
-                * [&edges[i], &edges[j]]
-                    .iter()
-                    .filter_map(|e| model.tolerance_of(e).ok().flatten())
-                    .map(|t| t.get())
-                    .fold(joint.max(tol.approximation()), f64::max);
+            let reach = joint_reach(model, &edges[i], &edges[j], tol)?;
             let Some(apart) = along_surface(surface, end, next, tol) else {
                 continue;
             };
@@ -1507,6 +1500,317 @@ fn check_face_chart(
         }
     }
     Ok(())
+}
+
+/// How far apart, along the surface, one edge's end and the next edge's
+/// start may stand in a face's chart before the boundary is open there:
+/// [`CHART_GAP_SLACK`] times the widest of the two edges' tolerances and
+/// the joint vertex's.
+fn joint_reach(model: &Model, from: &Shape, to: &Shape, tol: Tolerances) -> OgeomResult<f64> {
+    let joint = crate::build::edge_vertices(model, from)?
+        .and_then(|(_, v)| model.tolerance_of(&v).ok().flatten())
+        .map_or(0.0, |t| t.get());
+    Ok(CHART_GAP_SLACK
+        * [from, to]
+            .iter()
+            .filter_map(|e| model.tolerance_of(e).ok().flatten())
+            .map(|t| t.get())
+            .fold(joint.max(tol.approximation()), f64::max))
+}
+
+/// One edge of a ring as [`check_seam_sides`] walks it: its ends in the
+/// chart as the ring walks it, the pcurve and range they come from and the
+/// move that takes the pcurve to them, and, for a seam the ring walks both
+/// ways, the direction across which its two sides stand apart.
+struct SeamStep<'a> {
+    ends: (Point2, Point2),
+    pcurve: &'a ogeom_geom::PlanarCurve,
+    range: (f64, f64),
+    by: ogeom_math::Vector2,
+    back: bool,
+    across: Option<usize>,
+}
+
+/// A ring that walks a seam both ways across a direction its surface
+/// repeats in must chain, in the surface's chart, from each of the seam's
+/// sides to the other through the edges between.
+///
+/// Every edge keeps the face on its left, so of a seam's two sides, which
+/// stand a period apart (a far side stated whole periods further is read
+/// a period from the near one) and bound the window the face wraps, an
+/// occurrence walks the one from which the other lies on its left: the one
+/// the face lies against. That reading is the boolean's, and it does not
+/// trust the seam's stored designation, which a file may state swapped.
+/// Every other edge may be stated any whole number of periods off and is
+/// moved to start where the ring has reached: on a repeating chart no copy
+/// is the stated one, and the ring's own direction is all that places an
+/// edge between the seam's sides. On a chart that closes without repeating the
+/// domain places every pcurve, a reader takes the ring as stated, and the
+/// ring is not read here.
+///
+/// Where the edges between two such occurrences meet the seam's column
+/// only at their two ends, they lie
+/// between two neighbouring copies of the column and run from one
+/// occurrence's side to the next one's side in one copy of the chart: if
+/// they arrive a whole period off it, they leave the column on the side
+/// away from the face, and the boundary does not close with the face on
+/// its left. Rims turned to run the other way round a drum, their uses
+/// kept, do that; read on the nearer side, as [`check_face_chart`] reads
+/// a seam, the same ring closes, round the window the wrong way.
+///
+/// A boolean folds such a ring onto the seam's sides and finds a strand
+/// that dangles. Edges between that meet the column elsewhere (a ring
+/// round the end of a seam that stops inside the face), occurrences of one
+/// seam that meet directly (across the join, at a pole or at a slit's
+/// tip), a seam walked once in the ring, and a ring that does not close
+/// at all, which [`check_face_chart`] reports, are not read. A joint
+/// bridged in space rather than in the chart (at a pole, or within its
+/// tolerance) places the next edge only to within its chart gap, so an
+/// arrival is named only where it stands off the next side by more than
+/// half a period beyond the gaps summed.
+fn check_seam_sides(
+    model: &Model,
+    face: &Shape,
+    tol: Tolerances,
+    found: &mut Diagnosis,
+) -> OgeomResult<()> {
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+        return Ok(());
+    };
+    let surface_id = data.surface;
+    let Some(surface) = model.geometry().surface(surface_id) else {
+        ogeom_bail!(Dangling, "face names a surface not in this model");
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let periods = [
+        (surface.is_periodic_u() || surface.is_closed_u(tol)).then_some(u1 - u0),
+        (surface.is_periodic_v() || surface.is_closed_v(tol)).then_some(v1 - v0),
+    ]
+    .map(|p| p.filter(|p| *p > 0.0 && p.is_finite()));
+    let repeats = [surface.is_periodic_u(), surface.is_periodic_v()];
+    if !repeats.iter().any(|r| *r) {
+        return Ok(());
+    }
+    let along = |p: Point2, axis: usize| if axis == 0 { p.x } else { p.y };
+    let stored = face.oriented(ogeom_topo::Orientation::Forward);
+    'wires: for wire in model.ordered_children_of(&stored)? {
+        let edges = model.ordered_children_of(&wire)?;
+        let mut steps: Vec<SeamStep<'_>> = Vec::with_capacity(edges.len());
+        for edge in &edges {
+            let Some(edge_data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+                continue 'wires;
+            };
+            let back = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let curve = |id| -> OgeomResult<&ogeom_geom::PlanarCurve> {
+                let Some(pcurve) = model.geometry().pcurve(id) else {
+                    ogeom_bail!(Dangling, "an edge names geometry not in this model");
+                };
+                Ok(pcurve)
+            };
+            let walked = |pcurve: &ogeom_geom::PlanarCurve, range: (f64, f64)| {
+                let (a, b) = (
+                    pcurve.point_at(range.0, tol)?,
+                    pcurve.point_at(range.1, tol)?,
+                );
+                OgeomResult::Ok(if back { (b, a) } else { (a, b) })
+            };
+            match edge_data.pcurve_for(surface_id, edge.location()) {
+                Some(EdgeRepr::PCurve {
+                    curve: id, range, ..
+                }) => {
+                    let pcurve = curve(*id)?;
+                    steps.push(SeamStep {
+                        ends: walked(pcurve, *range)?,
+                        pcurve,
+                        range: *range,
+                        by: ogeom_math::Vector2::new(0.0, 0.0),
+                        back,
+                        across: None,
+                    });
+                }
+                Some(EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    ..
+                }) => {
+                    if edges.iter().filter(|e| e.is_same(edge)).count() != 2 {
+                        continue 'wires;
+                    }
+                    let (ahead, other) = (curve(*forward)?, curve(*reversed)?);
+                    let (a, b) = walked(ahead, *range)?;
+                    let middle = 0.5 * (range.0 + range.1);
+                    let towards = other.point_at(middle, tol)? - ahead.point_at(middle, tol)?;
+                    let run = b - a;
+                    let left = run.x * towards.y - run.y * towards.x;
+                    // Sides that do not stand apart across the run name no
+                    // side the face lies against.
+                    if left.abs() <= run.magnitude() * towards.magnitude() * tol.angular() {
+                        continue 'wires;
+                    }
+                    let across = usize::from(towards.y.abs() > towards.x.abs());
+                    let (Some(period), true) = (periods[across], repeats[across]) else {
+                        continue 'wires;
+                    };
+                    // The far side read a period from the near one, towards
+                    // it: a file may state it whole periods further.
+                    let mut by = ogeom_math::Vector2::new(0.0, 0.0);
+                    if left < 0.0 {
+                        if across == 0 {
+                            by.x = period.copysign(towards.x);
+                        } else {
+                            by.y = period.copysign(towards.y);
+                        }
+                    }
+                    steps.push(SeamStep {
+                        ends: (a + by, b + by),
+                        pcurve: ahead,
+                        range: *range,
+                        by,
+                        back,
+                        across: Some(across),
+                    });
+                }
+                _ => continue 'wires,
+            }
+        }
+        let n = steps.len();
+        for axis in 0..2 {
+            let Some(period) = periods[axis] else {
+                continue;
+            };
+            let pinned: Vec<usize> = (0..n).filter(|&k| steps[k].across == Some(axis)).collect();
+            for (at, &from) in pinned.iter().enumerate() {
+                let to = pinned[(at + 1) % pinned.len()];
+                let between: Vec<usize> = (1..n)
+                    .map(|k| (from + k) % n)
+                    .take_while(|&k| k != to)
+                    .collect();
+                if between.is_empty() {
+                    continue;
+                }
+                let column = along(steps[from].ends.1, axis);
+                // Which gap between neighbouring copies of the column a
+                // point lies in, or `None` on the column itself.
+                let gap_of = |p: Point2| {
+                    let turns = (along(p, axis) - column) / period;
+                    ((turns - turns.round()).abs() * period > tol.parametric())
+                        .then(|| turns.floor())
+                };
+                let mut last = steps[from].ends.1;
+                let mut slack = 0.0;
+                let mut elsewhere = false;
+                let mut prior = from;
+                for (k, &i) in between.iter().enumerate() {
+                    let Some((shift, gap)) = chained(
+                        model,
+                        surface,
+                        (&edges[prior], &edges[i]),
+                        last,
+                        steps[i].ends.0,
+                        &periods,
+                        tol,
+                    )?
+                    else {
+                        continue 'wires;
+                    };
+                    slack += gap;
+                    let step = &steps[i];
+                    let mut previous: Option<f64> = None;
+                    for j in 0..=SEAM_SIDE_SAMPLES {
+                        let t = f64::from(j) / f64::from(SEAM_SIDE_SAMPLES);
+                        let t = if step.back { 1.0 - t } else { t };
+                        let p = step
+                            .pcurve
+                            .point_at(step.range.0 + (step.range.1 - step.range.0) * t, tol)?
+                            + step.by
+                            + shift;
+                        let first = k == 0 && j == 0;
+                        let arrival = k + 1 == between.len() && j == SEAM_SIDE_SAMPLES;
+                        match gap_of(p) {
+                            None if !first && !arrival => elsewhere = true,
+                            None => {}
+                            Some(g) => {
+                                elsewhere |= previous.is_some_and(|q| q != g);
+                                previous = Some(g);
+                            }
+                        }
+                    }
+                    last = step.ends.1 + shift;
+                    prior = i;
+                }
+                if elsewhere {
+                    continue;
+                }
+                let next = steps[to].ends.0;
+                let off = along(next, axis) - along(last, axis);
+                let turns = (off / period).round();
+                let mut home = next;
+                if axis == 0 {
+                    home.x -= turns * period;
+                } else {
+                    home.y -= turns * period;
+                }
+                let reach = joint_reach(model, &edges[prior], &edges[to], tol)?;
+                let meets = along_surface(surface, last, home, tol).is_some_and(|d| d <= reach)
+                    || along_surface(surface, last, next, tol).is_some_and(|d| d <= reach);
+                if !meets || off.abs() - slack <= 0.5 * period {
+                    continue;
+                }
+                found.note(
+                    Severity::Broken,
+                    face,
+                    ShapeType::Face,
+                    format!(
+                        "its boundary, each seam read on the side the face lies \
+                         against, does not close in its surface's chart: edges \
+                         {} to {} run from one side of a seam to the other and \
+                         arrive {turns} periods off it, leaving the seam on the \
+                         side away from the face; a boolean through the face \
+                         finds a strand that dangles",
+                        between[0],
+                        between[between.len() - 1]
+                    ),
+                );
+                continue 'wires;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// How finely [`check_seam_sides`] samples an edge between two sides of a
+/// seam for where it meets the seam's column: a crossing shows as two
+/// neighbouring samples in different gaps between the column's copies.
+const SEAM_SIDE_SAMPLES: u32 = 16;
+
+/// The whole periods that bring the start `next` of an edge to where the
+/// ring has reached, `last`, after the edge `edges.0`, and the chart gap
+/// left at the joint: where the joint meets in space within its reach,
+/// without a move or with one; `None` where it does not.
+fn chained(
+    model: &Model,
+    surface: &ogeom_geom::SurfaceGeometry,
+    edges: (&Shape, &Shape),
+    last: Point2,
+    next: Point2,
+    periods: &[Option<f64>; 2],
+    tol: Tolerances,
+) -> OgeomResult<Option<(ogeom_math::Vector2, f64)>> {
+    let reach = joint_reach(model, edges.0, edges.1, tol)?;
+    let mut shift = ogeom_math::Vector2::new(0.0, 0.0);
+    if along_surface(surface, last, next, tol).is_some_and(|d| d > reach) {
+        if let Some(period) = periods[0] {
+            shift.x = ((last.x - next.x) / period).round() * period;
+        }
+        if let Some(period) = periods[1] {
+            shift.y = ((last.y - next.y) / period).round() * period;
+        }
+        if !along_surface(surface, last, next + shift, tol).is_some_and(|d| d <= reach) {
+            return Ok(None);
+        }
+    }
+    Ok(Some((shift, last.distance(next + shift))))
 }
 
 /// How many times its joint's tolerance a gap in a face's chart may span
@@ -2622,6 +2926,130 @@ mod tests {
                 "placed by a rotation of {angle}, other faces read inside out"
             );
         }
+    }
+
+    /// A drum or a frustum with each rim circle restated on its frame
+    /// mirrored (`y` reversed) or turned half a turn about `x`, so that it
+    /// runs the other way round, its uses in the faces kept.
+    fn rims_turned(frustum: bool, turn: fn(Frame) -> Frame) -> (Model, Shape, Shape) {
+        use ogeom_geom::{CircleCurve, Curve};
+        let mut model = Model::new();
+        let solid = if frustum {
+            crate::make_cone(&mut model, Frame::WORLD, 1.0, 0.5, 2.0, T)
+        } else {
+            make_cylinder(&mut model, Frame::WORLD, 1.0, 2.0, T)
+        }
+        .unwrap()
+        .shape;
+        let surface = |_: &ogeom_geom::SurfaceGeometry| Ok(None);
+        let curve = |c: &Curve, range: (f64, f64)| {
+            Ok(match c {
+                Curve::Circle(c) => {
+                    let circle = c.circle();
+                    let circle = ogeom_math::Circle::new(turn(circle.frame()), circle.radius(), T)?;
+                    Some((CircleCurve::new(circle).into(), range))
+                }
+                _ => None,
+            })
+        };
+        let turned = crate::restate_geometry(&mut model, &solid, &surface, &curve, T)
+            .unwrap()
+            .shape;
+        (model, solid, turned)
+    }
+
+    fn seam_side_findings(diagnosis: &Diagnosis) -> Vec<&Problem> {
+        diagnosis
+            .problems
+            .iter()
+            .filter(|p| p.what.contains("the side the face lies against"))
+            .collect()
+    }
+
+    /// Rims turned to run the other way round, their uses kept: the wall's
+    /// ring, each seam occurrence read on the side the face lies against,
+    /// runs from one side to the other a whole period the wrong way, which
+    /// a boolean through the wall reads as a strand that dangles. The wall
+    /// is named, and nothing else; the drum as built is valid.
+    #[test]
+    fn rims_turned_over_under_their_uses_leave_the_wall_s_seam_open() {
+        let turns: [fn(Frame) -> Frame; 2] = [
+            |f| f.mirrored(),
+            |f| Frame::from_axes(f.origin(), f.x(), -f.y(), -f.z(), T).unwrap(),
+        ];
+        for turn in turns {
+            for frustum in [false, true] {
+                let (model, solid, turned) = rims_turned(frustum, turn);
+                assert!(check(&model, &solid, T).unwrap().is_valid());
+                let diagnosis = check(&model, &turned, T).unwrap();
+                let named = seam_side_findings(&diagnosis);
+                assert_eq!(named.len(), 1, "{diagnosis}");
+                assert_eq!(named[0].severity, Severity::Broken);
+                let wall = model.node(&named[0].at).unwrap().data().as_face().unwrap();
+                assert!(
+                    model
+                        .geometry()
+                        .surface(wall.surface)
+                        .unwrap()
+                        .is_periodic_u(),
+                    "{diagnosis}"
+                );
+            }
+        }
+    }
+
+    /// The same turned drum restated as splines: the wall's chart closes
+    /// without repeating, so every pcurve stands where its domain puts it
+    /// and the ring is read as stated, as the boolean reads it. It is not
+    /// named.
+    #[test]
+    fn rims_turned_over_on_a_chart_that_does_not_repeat_are_not_named() {
+        let (mut model, _, turned) = rims_turned(false, |f| f.mirrored());
+        let splines = crate::to_nurbs(&mut model, &turned, T).unwrap().shape;
+        let diagnosis = check(&model, &splines, T).unwrap();
+        assert!(seam_side_findings(&diagnosis).is_empty(), "{diagnosis}");
+    }
+
+    /// A rim stated a whole turn off the wall's window, still running the
+    /// way the face needs, chains onto the seam's sides once moved by the
+    /// turn, and is not named.
+    #[test]
+    fn a_rim_stated_a_turn_off_its_window_is_not_named() {
+        let mut model = Model::new();
+        let solid = make_cylinder(&mut model, Frame::WORLD, 1.0, 2.0, T)
+            .unwrap()
+            .shape;
+        let mut moved = 0;
+        for face in explore_unique(&model, &solid, ShapeType::Face).unwrap() {
+            let surface = model.node(&face).unwrap().data().as_face().unwrap().surface;
+            if !model.geometry().surface(surface).unwrap().is_periodic_u() {
+                continue;
+            }
+            for edge in explore_unique(&model, &face, ShapeType::Edge).unwrap() {
+                let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+                let Some(EdgeRepr::PCurve { curve, .. }) =
+                    data.pcurve_for(surface, edge.location())
+                else {
+                    continue;
+                };
+                let curve = *curve;
+                let off = ogeom_math::Transform2::translation(ogeom_math::Vector2::new(
+                    2.0 * core::f64::consts::PI,
+                    0.0,
+                ));
+                let shifted = model
+                    .geometry()
+                    .pcurve(curve)
+                    .unwrap()
+                    .transformed(&off, T)
+                    .unwrap();
+                *model.geometry_mut().pcurve_mut(curve).unwrap() = shifted;
+                moved += 1;
+            }
+        }
+        assert_eq!(moved, 2);
+        let diagnosis = check(&model, &solid, T).unwrap();
+        assert!(seam_side_findings(&diagnosis).is_empty(), "{diagnosis}");
     }
 }
 

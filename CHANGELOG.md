@@ -997,6 +997,32 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`check` names a wall whose rims run against its seam.** (#484)
+  - Restating a drum's or a frustum's rim circles to run the other way
+    round, their uses in the faces kept, left a solid `check` called
+    valid, with the right volume, that fuse, common and cut with a box
+    each refused ("a face boundary strand dangles").
+  - On a chart that repeats, a pcurve may stand any whole number of
+    periods off, so a reader places each edge by the ring: the boolean
+    reads a seam walked both ways on the side the face lies against
+    (from which the other side lies on the ring's left) and moves the
+    edges between to chain from it. The turned rims then chain from one
+    side to the other two periods off. `check` read each seam on its
+    nearer side instead, where the same ring closes, round its window
+    the wrong way.
+  - `check` now walks each such ring as the boolean does and reports,
+    as broken, edges between two sides of a seam that arrive a whole
+    period or more off the next side. Edges between that meet the seam's
+    column elsewhere, sides met directly (at a pole, across a slit's
+    tip), and charts that close without repeating, where the domain
+    places every pcurve and the ring is read as stated, are not read.
+    The same turned drum restated as splines is not named: there fuse,
+    common and cut succeed (9.4978, 0.7854 and 5.4978, the closed forms
+    `2π + 4 - π/4`, `π/4` and `2π - π/4`).
+  - Real data: of 2312 solids in two assemblies, the check reads 14590
+    such rings and 29192 runs between sides (190 set aside as meeting
+    the column elsewhere) and names none.
+
 - **A section touching a closed spline's rim near its seam is traced
   whole.** (#495)
   - `branches` of a drum spelt as a clamped spline, which closes round
