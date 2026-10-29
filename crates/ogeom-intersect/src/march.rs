@@ -1383,25 +1383,46 @@ pub fn branches(
             // branch again, reached from a seed its trace stopped short of,
             // or one that turned a corner where the section crosses itself
             // and ran on along another: held to find that crossing from.
+            // A branch traced before that lies along this piece all its
+            // length is, the other way round, this piece again: its walk
+            // stopped at a touch this one ran over and was cut at, or at the
+            // closure of a chart this one crossed. So a piece whose middle
+            // lies only on such branches, and which runs on past them, is
+            // the longer trace of their stretch and takes their place.
+            let along: Vec<bool> = out
+                .iter()
+                .map(|other| other.points.iter().all(|&p| passes_near(&piece, p, reach)))
+                .collect();
             let n = piece.points.len();
             let middle = if n > 2 {
                 piece.points[n / 2]
             } else {
                 piece.points[0].midpoint(piece.points[n - 1])
             };
-            if out.iter().any(|other| passes_near(other, middle, reach)) {
+            let on_middle: Vec<bool> = out
+                .iter()
+                .zip(&along)
+                .filter(|(other, _)| passes_near(other, middle, reach))
+                .map(|(_, &along)| along)
+                .collect();
+            let runs_past = || {
+                piece.points.iter().any(|&p| {
+                    !out.iter()
+                        .zip(&along)
+                        .any(|(other, &along)| along && passes_near(other, p, reach))
+                })
+            };
+            if !on_middle.is_empty() && (on_middle.contains(&false) || !runs_past()) {
                 again.push(piece);
                 continue;
             }
-            // And a branch traced before that lies along this piece all
-            // its length is this piece again: its walk stopped at a touch
-            // this one ran over and was cut at, or at the closure of a
-            // chart this one crossed.
-            let (along, apart): (Vec<Traced>, Vec<Traced>) = out
-                .drain(..)
-                .partition(|other| other.points.iter().all(|&p| passes_near(&piece, p, reach)));
-            *out = apart;
-            again.extend(along);
+            for (other, along) in core::mem::take(out).into_iter().zip(along) {
+                if along {
+                    again.push(other);
+                } else {
+                    out.push(other);
+                }
+            }
             out.push(piece);
         }
     };
@@ -5899,12 +5920,16 @@ mod tests {
     /// without repeating, cut by a plane touching one of its end rims off
     /// the patch's seam: `x cos a + y sin a + c d = 1`, `a` the touch's
     /// angle and `d` the depth into the drum from that rim. The section is
-    /// the ellipse of semi-axes 1 and `√(1 + 1/c²)`, touching the rim. A
-    /// walk from a seed on one side of the touch stops on it, and one from
-    /// the other side may run over it and round the seam: the arc the first
-    /// traced is then a stretch of the second, and is returned once, so the
-    /// arcs' polylines together run shorter than the ellipse's perimeter,
-    /// by Simpson's rule.
+    /// the ellipse of semi-axes 1 and `b = √(1 + 1/c²)`, touching the rim.
+    /// A walk from a seed on one side of the touch stops on it, and one
+    /// from the other side may run over it and round the seam: the arc the
+    /// first traced is then a stretch of the second, and is returned once,
+    /// and the stretch from the touch to the seam is returned too. So the
+    /// arcs' polylines together run as long as the ellipse's perimeter `P`,
+    /// by Simpson's rule, less what chords sagging at most the march's
+    /// chord `h` cut off: a chord of a stretch of curvature `κ` sagging `s`
+    /// is shorter than it by `κ·s·L/3` to leading order, `L` its length, at
+    /// most `b·h·L/3` here, and at most `b·h·P/3` all round.
     #[test]
     fn a_plane_touching_a_spline_drums_rim_is_traced_once() {
         let drum: SurfaceGeometry = SurfaceGeometry::from(
@@ -5951,11 +5976,12 @@ mod tests {
                         .sum();
                     // A polyline through samples of a convex loop runs
                     // shorter than the loop. A stretch returned twice adds
-                    // its length.
+                    // its length, and one missed takes its length away.
+                    let cut_off = b * Marching::default().chord * perimeter / 3.0;
                     assert!(
-                        length < perimeter,
+                        length < perimeter && perimeter - length <= cut_off,
                         "c {c}, touch at {a} on the rim at {height}: {} arcs run {length}, \
-                         the ellipse {perimeter}",
+                         the ellipse {perimeter}, chords cut off at most {cut_off}",
                         found.len()
                     );
                 }

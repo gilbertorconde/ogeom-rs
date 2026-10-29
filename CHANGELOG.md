@@ -997,6 +997,24 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section touching a closed spline's rim near its seam is traced
+  whole.** (#495)
+  - `branches` of a drum spelt as a clamped spline, which closes round
+    without repeating, and a plane touching one of its end rims within
+    about 0.4 rad of the seam missed the stretch from the touch to the
+    seam: the traced arcs ran 0.1 to 0.43 short of the ellipse's
+    perimeter in 6 of 72 such cuts.
+  - A first seed's walks stopped at the touch one way and at the seam the
+    other. A later seed on the missing stretch traced the whole loop,
+    running over the touch and round the seam, but its middle lay on the
+    first arc, so it was set aside as that arc again. A piece whose
+    middle lies only on arcs that lie along it all their length, and
+    which runs on past them, now takes their place.
+  - Measured: in all 72 cuts the arcs run as long as the ellipse less at
+    most 1.94e-4, within the `b·h·P/3` (2.2e-4 to 2.8e-4) that chords
+    sagging at most the march's chord `h` cut off a perimeter `P` of
+    greatest curvature `b`.
+
 - **A section whose loop touches a corner's axis mitres round it.** (#492)
   - `make_pipe_shell_with` with `PipeCorners::Mitre` round a lens of two
     arcs under the leaning binormal refused a square with a hole of
