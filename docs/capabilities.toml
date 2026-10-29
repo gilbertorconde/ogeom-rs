@@ -1129,9 +1129,9 @@ are skinned round it, closed on themselves and held to the tolerance \
 against the law, holes as void tunnels. Along an open spine those laws \
 sweep a face with holes, each hole a solid of its own cut from the outer. \
 Turned run by run, a closed wire sweeps the walls of the face it bounds, \
-the end caps taken off; an open wire is refused there, but down an open \
-spine of lines and arcs under the rotation-minimizing frame, where it \
-sweeps one exact sheet: each line leg the prism of its section and each \
+the end caps taken off; an open wire is refused there round a closed \
+spine. Down an open spine of lines and arcs under the rotation-minimizing \
+frame an open wire sweeps one exact sheet: each line leg the prism of its section and each \
 arc leg its revolution about the arc's axis, legs meeting tangent sewn on \
 their common section, mitred on the plane halving each corner (an arc \
 leg run on straight by the prism of its end section) or rounded (the \
@@ -1139,21 +1139,34 @@ section's part outside the turn turned about the corner). Inside a \
 corner, mitred or rounded, each leg runs on until it meets the other's \
 wall: on the halving plane between two lines, and where a corner against \
 an arc turns in the arc's plane, on the conic a straight profile edge's \
-two walls cross on, held exactly as a rational quadratic; each profile \
-edge is cut where it crosses the corner's axis and swept on its own, and \
-both its walls are split on that one curve. The pieces are sewn and held \
+two walls cross on, held exactly as a rational quadratic, or for a \
+curved profile edge on a curve fitted through each of its points' exact \
+crossings, its error stated as its tolerance; each profile edge is cut \
+where it crosses the corner's axis and swept on its own, and both its \
+walls are split on that one curve. The pieces are sewn and held \
 to a disc whose boundary runs only along its end sections and the paths \
 of the wire's ends; an extended corner, a leg shorter than its corners' \
 reach (or a point's two paths meeting past a leg's end), a round turning \
 too little to stand off its square end, a section reaching inside a \
 corner that turns an arc out of its plane (its paths down the two legs \
-pass each other without meeting), a curved profile edge inside a corner \
-against an arc (its walls meet on a curve with no closed form) and a \
-sheet that runs into itself are refused by name. The Frenet \
-(rounded only), binormal and auxiliary laws sweep that sheet round sharp \
-corners where their frames are the rotation-minimizing ones turned by a \
-fixed angle, and are refused by name where they set a corner's next \
-section otherwise."""
+pass each other without meeting) and a sheet that runs into itself are \
+refused by name. The Frenet (rounded only), binormal and auxiliary laws \
+sweep that sheet where their frames are the rotation-minimizing ones \
+turned by a fixed angle, and are refused by name where they set a sharp \
+corner's next section otherwise. Down an open spine with a leg that is \
+neither a line nor an arc, or under a law whose frames are not those \
+turned by a fixed angle along a spine with no sharp corner, an open wire \
+sweeps one sheet of fitted skins held to the tolerance, uncapped: each \
+profile edge a strip per run, neighbouring strips sharing their rails \
+and neighbouring runs their rows. Its sharp corners follow the exact \
+sheet's rules point by point: outside a mitred corner against a curved \
+leg the end row runs on straight to the halving plane as two ruled \
+faces sharing their exact cut, outside a round one it turns about the \
+corner's axis, and inside either it runs on until its two paths cross; \
+a point inside a corner whose paths pass each other, a turn too small to \
+stand a round or run-on off its square end, and a law that sets a sharp \
+corner's sections other than the rotation-minimizing frame turned by a \
+fixed angle are refused by name."""
 symbols = [
     "ogeom_offset::make_pipe", "ogeom_offset::make_pipe_skinned",
     "ogeom_offset::make_pipe_shell", "ogeom_offset::make_evolved",
@@ -1170,6 +1183,7 @@ tests = [
     "crates/ogeom/tests/pipe_rings.rs",
     "crates/ogeom/tests/pipe_corners.rs", "crates/ogeom/tests/pipe_placed.rs",
     "crates/ogeom-offset/tests/open_wire_corners.rs",
+    "crates/ogeom-offset/tests/open_wire_skinned.rs",
 ]
 
 [[capability]]

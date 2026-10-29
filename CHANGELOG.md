@@ -13,6 +13,61 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **An open wire sweeps a sheet of fitted skins down free-form legs,
+  and inside a corner against an arc with a curved edge.** (#394)
+  - `make_pipe_shell_with` refused an open planar wire down any open
+    spine with a leg that is neither a line nor an arc ("curve at 1 is
+    … from the vertex it should meet", "a pipe shell sweeps a planar
+    profile", "a pipe turned round a sharp corner run by run sweeps a face
+    or a closed wire"), and under the auxiliary and binormal laws along a
+    spine with no sharp corner ("a loft section must be closed"): the
+    skinned path closed the open wire on itself.
+  - Such a wire now sweeps one sheet of fitted skins held to the
+    tolerance, uncapped: each profile edge a strip per run of the spine,
+    neighbouring strips sharing their rails and neighbouring runs their
+    rows, as a face's walls do. Round a sharp corner each profile point
+    follows the exact sheet's rules. Outside a mitred corner against a
+    curved leg the end row runs on straight to the plane halving the
+    corner, as two ruled faces whose shared cut is the row's own spline
+    with its control points projected, exact. Outside a round corner the
+    row turns about the corner's axis. Inside either, the point's paths
+    down the two legs run on until they cross. The profile is cut where it
+    crosses such a corner's axis.
+  - A law other than the rotation-minimizing or Frenet frame is asked for
+    its normal wherever the skin is read. Round a sharp corner a law is
+    taken only where its frames are the rotation-minimizing ones turned by
+    a fixed angle, and refused by name otherwise: its sections on the two
+    legs differ, and only a face of the corner's plane, which a sheet has
+    not, could close the gap. Down lines and arcs, such a law along a
+    spine with no sharp corner sweeps the exact sheet.
+  - A curved profile edge (an arc or a spline) inside a corner against an
+    arc turning in the arc's plane was refused ("its walls meet on a curve
+    with no closed form"). Each of its points' crossing is now found
+    exactly, the meeting edge fitted through them at the edge's own
+    parameters and held to the confusion distance, its error stated as
+    its tolerance, and both walls are split on it. A curved edge is cut
+    where it crosses the corner's axis. A wall straddling its chart's
+    seam has its traces moved by whole periods to run on unbroken before
+    the split, and a round of an edge with both ends on the corner's axis
+    is turned in two halves, so the sewing does not take its far edge for
+    its near one.
+  - Still refused by name: a point inside a corner whose two paths pass
+    each other (a corner turning a curved leg out of its plane), a turn
+    too small to stand a round or run-on off its square end, and a closed
+    spine.
+  - Measured with skins held to 1e-5: a polyline down a planar spline
+    within 4.6e-6 of its closed-form area and 7e-7 of its boundary; a
+    half circle within 3.8e-5 and 8.5e-6; a profile outside a corner
+    against a spline within 3.9e-6 and 2e-7, mitred and rounded; two open
+    halves of a rectangle across such a corner within 6.1e-7 of the walls
+    of the face swept mitred at 1e-4, and their rounded sum within 1e-14
+    of the mitred one plus the closed-form gain outside the turn; under a
+    leaning binormal, within 3.3e-7 of the face's walls. Curved profile
+    edges inside a corner against an arc (arcs and Béziers, inside and
+    across the axis, every spine of the straight-edge test): area within
+    2.9e-7 (2.8e-9 relative) and boundary within 1e-11 of the closed form
+    integrated along the curve.
+
 - **An open wire sweeps a sheet inside a corner against an arc.** (#394)
   - `make_pipe_shell_with` refused an open planar wire with any point
     inside a sharp corner where a leg is an arc ("an open wire reaches

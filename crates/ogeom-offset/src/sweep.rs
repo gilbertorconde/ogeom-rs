@@ -30,6 +30,7 @@ mod evolving;
 mod inside_turn;
 mod meeting;
 mod open_lines;
+mod open_skinned;
 mod placement;
 
 pub use evolving::{
@@ -5799,10 +5800,22 @@ pub fn make_pipe_shell_law(
 /// corner each leg's wall runs on until it meets the other's: on the plane
 /// halving a corner between two lines, and on the conic a straight profile
 /// edge's two walls share where a corner against an arc turns in the arc's
-/// plane. The
+/// plane, or on a curve fitted through a curved edge's points' crossings,
+/// its error stated as its tolerance and held to `tolerance`. The
 /// Frenet (round corners only), auxiliary and binormal laws sweep an open
 /// wire round sharp corners where their frames are the
-/// rotation-minimizing ones turned by a fixed angle, as that sheet.
+/// rotation-minimizing ones turned by a fixed angle, as that sheet. Down
+/// an open spine with a leg that is neither a line nor an arc, or under a
+/// law whose frames are not those turned by a fixed angle along a spine
+/// with no sharp corner, an open wire sweeps one sheet of fitted skins held
+/// to `tolerance`: each profile edge's strip run by run, neighbouring
+/// strips sharing their rails and neighbouring runs their rows, nothing
+/// capping the ends. Round its sharp corners each profile point follows
+/// the exact sheet's rules: outside a mitred corner against a curved leg
+/// its end row runs on straight to the plane halving the corner, as two
+/// ruled faces sharing their cut; outside a round one it turns about the
+/// corner's axis; inside either it runs on until its paths down the two
+/// legs cross.
 ///
 /// # Errors
 ///
@@ -5813,10 +5826,10 @@ pub fn make_pipe_shell_law(
 /// down legs too short for their corners' reach, or into itself, or round
 /// a round corner turning so little that its round falls within the
 /// confusion distance of its square end, or reaching inside a corner that
-/// turns an arc out of its plane, or inside a corner against an arc with a
-/// curved edge, or so far that a point's two paths there miss each other
-/// or meet past a leg's end, or under a law that turns its section other than the
-/// rotation-minimizing frame does, the Frenet
+/// turns an arc out of its plane, or so far that a point's two paths there miss each other
+/// or meet past a leg's end, or inside a corner against a curved leg whose
+/// paths pass each other, or under a law that turns its section other than the
+/// rotation-minimizing frame does round a sharp corner, the Frenet
 /// frame along a straight run
 /// between sharp corners, a round corner where the law sets the next run's
 /// section other than the first's turned about the corner (or the frame
@@ -5864,17 +5877,25 @@ pub(crate) fn pipe_shell_ends(
     };
     if model.kind_of(profile)? == ShapeType::Wire
         && !ogeom_algo::is_wire_closed(model, &stored, tol)?
-        && open_lines::lines_and_arcs(model, spine)?
         && !spine_closes(model, spine, tol)?
     {
-        if matches!(law, PipeLaw::RotationMinimizing) {
-            return open_lines::open_wire_legs(model, profile, spine, corners, tol);
+        if !open_lines::lines_and_arcs(model, spine)? {
+            return open_skinned::open_wire_skinned(
+                model, profile, spine, law, corners, tolerance, tol,
+            );
         }
+        if matches!(law, PipeLaw::RotationMinimizing) {
+            return open_lines::open_wire_legs(model, profile, spine, corners, tolerance, tol);
+        }
+        let sharp = has_sharp_corner(model, spine, tol)?;
         // The Frenet frame has no direction at a mitre, as for a face.
-        if !(matches!(law, PipeLaw::Frenet) && corners == PipeCorners::Mitre)
-            && has_sharp_corner(model, spine, tol)?
-        {
+        if !(matches!(law, PipeLaw::Frenet) && corners == PipeCorners::Mitre) && sharp {
             return open_lines::open_wire_law(model, profile, spine, law, corners, tolerance, tol);
+        }
+        if !sharp {
+            return open_skinned::open_wire_skinned(
+                model, profile, spine, law, corners, tolerance, tol,
+            );
         }
     }
     if corners != PipeCorners::Mitre
@@ -7181,6 +7202,47 @@ fn law_normals_on(
     }
 }
 
+/// The stations a law's skin is taken at: as many as the law's turning
+/// asks, spread evenly along the spine.
+fn law_stations(
+    model: &Model,
+    spine: &Shape,
+    stations: Vec<SpineStation>,
+    law: &PipeLaw<'_>,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<SpineStation>> {
+    // As many stations as the law's turning asks, spread evenly: the
+    // skin takes its sections at even steps of its own parameter.
+    let wanted = densified(model, spine, stations.clone(), law, tolerance, tol)?.len();
+    // Shared out along the spine by length, so the spacing is the same
+    // on every edge: the skin steps evenly along its whole run.
+    let mut lengths: Vec<f64> = Vec::new();
+    for pair in stations.windows(2) {
+        let e = pair[1].edge;
+        if lengths.len() <= e {
+            lengths.resize(e + 1, 0.0);
+        }
+        if pair[0].edge == e {
+            lengths[e] += pair[0].at.distance(pair[1].at);
+        }
+    }
+    let total: f64 = lengths.iter().sum();
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let share = |e: usize| -> u32 {
+        let length = lengths.get(e).copied().unwrap_or(0.0);
+        if total <= 0.0 {
+            return 2;
+        }
+        ((wanted as f64 * length / total).ceil() as u32).max(2)
+    };
+    evenly_by(model, spine, stations, &share, false, tol)
+}
+
 /// The pipe shell under a frame law, mitred at corners.
 #[allow(clippy::too_many_lines)]
 fn pipe_shell_law(
@@ -7203,35 +7265,7 @@ fn pipe_shell_law(
     let stations = if classic {
         stations
     } else {
-        // As many stations as the law's turning asks, spread evenly: the
-        // skin takes its sections at even steps of its own parameter.
-        let wanted = densified(model, spine, stations.clone(), law, tolerance, tol)?.len();
-        // Shared out along the spine by length, so the spacing is the same
-        // on every edge: the skin steps evenly along its whole run.
-        let mut lengths: Vec<f64> = Vec::new();
-        for pair in stations.windows(2) {
-            let e = pair[1].edge;
-            if lengths.len() <= e {
-                lengths.resize(e + 1, 0.0);
-            }
-            if pair[0].edge == e {
-                lengths[e] += pair[0].at.distance(pair[1].at);
-            }
-        }
-        let total: f64 = lengths.iter().sum();
-        #[allow(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss
-        )]
-        let share = |e: usize| -> u32 {
-            let length = lengths.get(e).copied().unwrap_or(0.0);
-            if total <= 0.0 {
-                return 2;
-            }
-            ((wanted as f64 * length / total).ceil() as u32).max(2)
-        };
-        evenly_by(model, spine, stations, &share, false, tol)?
+        law_stations(model, spine, stations, law, tolerance, tol)?
     };
     // Corners: twin stations standing on one point with different headings.
     let corners: Vec<usize> = (0..stations.len() - 1)

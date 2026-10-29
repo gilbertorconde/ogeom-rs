@@ -1324,8 +1324,14 @@ fn integrated_closed_form(profile: &[(f64, f64)], run: impl Fn(f64, f64) -> f64)
 /// it (a parabola or an ellipse, in or across the corner's plane), and
 /// points outside run on as the closed-form test's: mitred or round the
 /// sheet is that integral.
-#[test]
-fn an_open_profile_inside_a_corner_against_an_arc_sweeps_to_its_closed_form() {
+/// A point's path round a corner against an arc, by its `x` and `y` in the
+/// start section and whether the corner is rounded.
+type Run = Box<dyn Fn(f64, f64, bool) -> f64>;
+
+/// The spines of the closed-form test inside corners against arcs, each
+/// with whether its corner turns toward `-x` (the profile mirrored in `x`
+/// to reach inside it) and the closed-form run of a point.
+fn inside_cases() -> Vec<(&'static str, Vec<Piece>, bool, Run)> {
     let q = FRAC_PI_2;
     let arc = |turned, toward, radius, angle| Piece::Arc {
         turned,
@@ -1348,11 +1354,7 @@ fn an_open_profile_inside_a_corner_against_an_arc_sweeps_to_its_closed_form() {
         // Of the two, the one on the corner's side of the centres' line.
         (c1.0 + a * ux + h * uz, c1.1 + a * uz - h * ux)
     };
-    type Run = Box<dyn Fn(f64, f64, bool) -> f64>;
-    let inside = [(-1.0, -1.0), (2.0, -1.0), (2.0, 1.0)];
-    let across = [(-1.0, 1.5), (2.5, -0.5)];
-    let mirrored = |p: &[(f64, f64)]| p.iter().map(|&(x, y)| (-x, y)).collect::<Vec<_>>();
-    let cases: Vec<(&str, Vec<Piece>, bool, Run)> = vec![
+    vec![
         (
             "line, arc up",
             vec![Piece::Line(up), arc(Some(X), Z, 8.0, q)],
@@ -1441,7 +1443,15 @@ fn an_open_profile_inside_a_corner_against_an_arc_sweeps_to_its_closed_form() {
                 10.0 + gain(s, round) + (8.0 - s) * root.atan2(s) + root + 2.0
             }),
         ),
-    ];
+    ]
+}
+
+#[test]
+fn an_open_profile_inside_a_corner_against_an_arc_sweeps_to_its_closed_form() {
+    let inside = [(-1.0, -1.0), (2.0, -1.0), (2.0, 1.0)];
+    let across = [(-1.0, 1.5), (2.5, -0.5)];
+    let mirrored = |p: &[(f64, f64)]| p.iter().map(|&(x, y)| (-x, y)).collect::<Vec<_>>();
+    let cases = inside_cases();
     for (name, pieces, flipped, run) in &cases {
         for profile in [&inside[..], &across[..]] {
             let profile = if *flipped {
@@ -1459,6 +1469,167 @@ fn an_open_profile_inside_a_corner_against_an_arc_sweeps_to_its_closed_form() {
                 let (want, around) = integrated_closed_form(&profile, |x, y| run(x, y, round));
                 let case = format!("{name} {profile:?} {corners:?}");
                 assert!(close(area, want), "{case}: area {area} against {want}");
+                assert!(
+                    close(boundary, around),
+                    "{case}: boundary {boundary} against {around}"
+                );
+            }
+        }
+    }
+}
+
+/// A curved edge of the profile in the plane `z = 0`: an arc of a circle
+/// about `(x, y)` of a radius from one angle to another, or a cubic Bézier
+/// through four control points.
+#[derive(Clone, Copy)]
+enum Bend {
+    Arc((f64, f64), f64, (f64, f64)),
+    Bezier([(f64, f64); 4]),
+}
+
+impl Bend {
+    /// The bend mirrored in `x`.
+    fn mirrored(self) -> Self {
+        match self {
+            Bend::Arc((x, y), r, angles) => Bend::Arc((-x, y), r, angles),
+            Bend::Bezier(points) => Bend::Bezier(points.map(|(x, y)| (-x, y))),
+        }
+    }
+
+    /// The point at `t` in `[0, 1]` and the speed there, an arc's `x` about
+    /// its centre taken with the sign `mirror`.
+    fn at(self, t: f64, mirror: f64) -> ((f64, f64), f64) {
+        match self {
+            Bend::Arc((x, y), r, (a, b)) => {
+                let phi = a + (b - a) * t;
+                (
+                    (x + mirror * r * phi.cos(), y + r * phi.sin()),
+                    r * (b - a).abs(),
+                )
+            }
+            Bend::Bezier(p) => {
+                let u = 1.0 - t;
+                let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+                let dw = [
+                    -3.0 * u * u,
+                    3.0 * u * (u - 2.0 * t),
+                    3.0 * t * (2.0 * u - t),
+                    3.0 * t * t,
+                ];
+                let sum = |ws: [f64; 4], i: usize| -> f64 {
+                    ws.iter()
+                        .zip(p)
+                        .map(|(w, q)| w * if i == 0 { q.0 } else { q.1 })
+                        .sum()
+                };
+                ((sum(w, 0), sum(w, 1)), sum(dw, 0).hypot(sum(dw, 1)))
+            }
+        }
+    }
+
+    /// A wire of the bend's one edge, `mirror` as for [`Self::at`].
+    fn wire(self, model: &mut Model, mirror: f64) -> Shape {
+        let (curve, range): (ogeom_geom::Curve, (f64, f64)) = match self {
+            Bend::Arc((x, y), r, (a, b)) => {
+                let along = Direction::new(Vector::new(mirror, 0.0, 0.0), T).unwrap();
+                let up = Direction::new(Vector::new(0.0, 0.0, mirror), T).unwrap();
+                let frame = ogeom_math::Frame::new(Point::new(x, y, 0.0), up, along, T).unwrap();
+                let circle = ogeom_math::Circle::new(frame, r, T).unwrap();
+                (ogeom_geom::CircleCurve::new(circle).into(), (a, b))
+            }
+            Bend::Bezier(p) => (
+                ogeom_geom::Curve::BSpline(
+                    ogeom_geom::BSplineCurve::new(
+                        ogeom_math::KnotVector::new(
+                            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                            3,
+                        )
+                        .unwrap(),
+                        p.iter().map(|&(x, y)| Point::new(x, y, 0.0)).collect(),
+                        T,
+                    )
+                    .unwrap(),
+                ),
+                (0.0, 1.0),
+            ),
+        };
+        let edge = ogeom_algo::make_edge(model, curve, range, T).unwrap().shape;
+        make_wire(model, &[edge], T).unwrap().shape
+    }
+}
+
+/// A curved edge of the profile inside a corner against an arc turning in
+/// the arc's plane: its walls meet on a curve with no closed form, fitted
+/// through each of its points' exact crossings, and both walls are cut on
+/// that one edge. Each point's path is the closed form of the straight
+/// profiles' test, integrated along the curve (split where it crosses the
+/// corner's axis, where the path's length has a kink): arcs wholly inside
+/// and crossing the axis twice, and Béziers wholly inside and across it,
+/// mitred and round.
+#[test]
+fn a_curved_profile_edge_inside_a_corner_against_an_arc_sweeps_to_its_closed_form() {
+    let bends = [
+        Bend::Arc((0.5, 0.0), 1.0, (-FRAC_PI_2, FRAC_PI_2)),
+        Bend::Arc((0.5, 0.0), 1.0, (FRAC_PI_2, 3.0 * FRAC_PI_2)),
+        Bend::Bezier([(0.3, -1.0), (1.8, -0.6), (1.6, 0.7), (0.4, 1.0)]),
+        Bend::Bezier([(-1.0, -1.0), (0.5, -1.2), (1.5, 0.5), (-0.5, 1.2)]),
+    ];
+    for (case, (name, pieces, flipped, run)) in inside_cases().iter().enumerate() {
+        // A spline's walls are trimmed slowly: two spines take them.
+        let bends = if case < 2 { &bends[..] } else { &bends[..2] };
+        for &bend in bends {
+            let (bend, mirror) = if *flipped {
+                (bend.mirrored(), -1.0)
+            } else {
+                (bend, 1.0)
+            };
+            for corners in [PipeCorners::Mitre, PipeCorners::Round] {
+                let round = corners == PipeCorners::Round;
+                let mut model = Model::new();
+                let wire = bend.wire(&mut model, mirror);
+                let path = pieced(&mut model, pieces);
+                let sheet = sweep(&mut model, &wire, &path, corners);
+                let (area, boundary) = measured(&model, &sheet);
+                // The kinks where the curve crosses `x = 0`, bisected.
+                let x = |t: f64| bend.at(t, mirror).0.0;
+                let mut breaks = vec![0.0];
+                for k in 0..1024 {
+                    let (mut a, mut b) = (f64::from(k) / 1024.0, f64::from(k + 1) / 1024.0);
+                    if x(a) * x(b) < 0.0 {
+                        for _ in 0..60 {
+                            let m = f64::midpoint(a, b);
+                            if x(a) * x(m) <= 0.0 {
+                                b = m;
+                            } else {
+                                a = m;
+                            }
+                        }
+                        breaks.push(f64::midpoint(a, b));
+                    }
+                }
+                breaks.push(1.0);
+                let along = |t: f64| {
+                    let ((x, y), speed) = bend.at(t, mirror);
+                    run(x, y, round) * speed
+                };
+                let speed = |t: f64| bend.at(t, mirror).1;
+                let (mut want, mut length) = (0.0, 0.0);
+                for w in breaks.windows(2) {
+                    want += integral(along, w[0], w[1]);
+                    length += integral(speed, w[0], w[1]);
+                }
+                let ends = [bend.at(0.0, mirror).0, bend.at(1.0, mirror).0];
+                let around = 2.0 * length
+                    + run(ends[0].0, ends[0].1, round)
+                    + run(ends[1].0, ends[1].1, round);
+                let case = format!("{name} {corners:?}");
+                // Each wall is cut on a fitted curve held to the confusion
+                // distance, which moves its area by at most that times the
+                // cut's length: under the boundary's, for both walls.
+                assert!(
+                    (area - want).abs() <= 2.0 * T.confusion() * around,
+                    "{case}: area {area} against {want}"
+                );
                 assert!(
                     close(boundary, around),
                     "{case}: boundary {boundary} against {around}"
@@ -1511,9 +1682,7 @@ fn an_open_sheet_inside_a_corner_against_an_arc_faces_as_its_prism() {
 }
 
 /// Inside a corner that turns an arc out of its plane a point's two paths
-/// pass each other without meeting, and a curved profile edge inside a
-/// corner against an arc meets the other leg's wall on a curve with no
-/// closed form; a point `2` inside the turn onto an arc of radius 8 toward
+/// pass each other without meeting; a point `2` inside the turn onto an arc of radius 8 toward
 /// `-z` meets it `atan(2 / √32) ≈ 0.34` rad round and `8 - √32 ≈ 2.34`
 /// back from the corner, past an arc of `0.3` rad and a line of `2`: each
 /// refused by name, mitred or round.
@@ -1528,15 +1697,6 @@ fn an_open_profile_inside_a_corner_against_an_arc_it_cannot_join_is_refused_by_n
             angle: FRAC_PI_2,
         },
     ];
-    let up = vec![
-        Piece::Line(Point::new(0.0, 0.0, 10.0)),
-        Piece::Arc {
-            turned: Some(X),
-            toward: Z,
-            radius: 8.0,
-            angle: FRAC_PI_2,
-        },
-    ];
     for corners in [PipeCorners::Mitre, PipeCorners::Round] {
         let mut model = Model::new();
         let wire = polyline(&mut model, &L);
@@ -1546,26 +1706,6 @@ fn an_open_profile_inside_a_corner_against_an_arc_it_cannot_join_is_refused_by_n
             message.contains(
                 "an open wire reaches inside a corner that turns an arc out of its plane"
             ),
-            "{corners:?}: {message}"
-        );
-
-        let mut model = Model::new();
-        let frame = ogeom_math::Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
-        let circle = ogeom_math::Circle::new(frame, 1.0, T).unwrap();
-        let edge = ogeom_algo::make_edge(
-            &mut model,
-            ogeom_geom::CircleCurve::new(circle).into(),
-            (0.0, PI),
-            T,
-        )
-        .unwrap()
-        .shape;
-        let wire = make_wire(&mut model, &[edge], T).unwrap().shape;
-        let path = pieced(&mut model, &up);
-        let message = refusal(&mut model, &wire, &path, corners);
-        assert!(
-            message
-                .contains("a curved edge of an open wire reaches inside a corner against an arc"),
             "{corners:?}: {message}"
         );
 

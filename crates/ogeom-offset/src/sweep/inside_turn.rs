@@ -98,6 +98,13 @@ impl InsideTurn {
         }
     }
 
+    /// The plane of the corner's axis, square to the leg into the corner:
+    /// the corner, and the unit normal away from the turn. A point's offset
+    /// outside the turn is its distance along that normal.
+    pub(super) fn offset_plane(&self) -> (Point, Vector) {
+        (self.at, self.outward)
+    }
+
     /// A point's offset outside the turn and its height, where the section
     /// stands at the corner.
     pub(super) fn offset_and_height(&self, p: Point) -> (f64, f64) {
