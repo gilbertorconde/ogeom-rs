@@ -42,13 +42,13 @@ use ogeom_math::{Axis, Direction, Point, Transform, Vector};
 use ogeom_topo::{Filter, Model, Shape, ShapeType, explore};
 
 use super::open_lines::{
-    Boundary, Rail, crossings, guide_where_stored, lines_and_arcs, lines_square_at_start, one_disc,
-    open_wire_legs, plane_square_at_start, turned_rotation_minimizing,
+    Boundary, Rail, crossings, lines_and_arcs, lines_square_at_start, one_disc, open_wire_legs,
+    plane_square_at_start, turned_rotation_minimizing,
 };
 use super::{
     DOUBLED_BACK, PipeCorners, PipeLaw, Skin, SpineStation, SpineWalk, fractions, frenet_normals,
-    guide_curves, law_normals, law_normals_on, law_stations, rmf_normals, shell_stations,
-    skinned_strip, spine_curve_of, walk_curves,
+    guide_curves, law_normals, law_normals_on, law_stations, placed_path, rmf_normals,
+    shell_stations, skinned_strip, spine_curve_of, walk_curves,
 };
 
 /// The samples each strip starts from along its profile piece.
@@ -80,7 +80,7 @@ pub(super) fn open_wire_skinned(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let given_spine = spine;
-    let spine = &placed_spine(model, spine, tol)?;
+    let spine = &placed_path(model, spine, tol)?;
     let stations = shell_stations(model, spine, tol)?;
     let turns = |i: usize, stations: &[SpineStation]| {
         let (a, b) = (stations[i].tangent, stations[i + 1].tangent);
@@ -94,9 +94,6 @@ pub(super) fn open_wire_skinned(
             "an extended corner squares the outside of a solid's section; an open \
              wire sweeps a sheet, whose corners are mitred or round"
         );
-    }
-    if let PipeLaw::Auxiliary { guide } = law {
-        guide_where_stored(model, guide)?;
     }
     // The frames the sheet is swept in: the rotation-minimizing or Frenet
     // frame carried between stations, or the law's own, asked wherever the
@@ -606,40 +603,6 @@ fn turned_row(
         model.widen(&edge, held)?;
     }
     Ok(edge)
-}
-
-/// The spine with each edge's placement applied, as a wire of its own
-/// where any edge is placed; the spine itself where none is.
-fn placed_spine(model: &mut Model, spine: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
-    let edges = match model.kind_of(spine)? {
-        ShapeType::Edge => vec![spine.clone()],
-        _ => model.ordered_children_of(spine)?,
-    };
-    if spine.location().is_identity() && edges.iter().all(|e| e.location().is_identity()) {
-        return Ok(spine.clone());
-    }
-    let mut placed: Vec<Shape> = Vec::with_capacity(edges.len());
-    let mut from: Option<Shape> = None;
-    for edge in &edges {
-        let (curve, range) = spine_curve_of(model, edge)?;
-        let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
-        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
-        let (t0, t1) = if reversed { (range.1, range.0) } else { range };
-        let a = match from.take() {
-            Some(v) => v,
-            None => make_vertex(model, curve.point_at(t0, tol)?).shape,
-        };
-        let b = make_vertex(model, curve.point_at(t1, tol)?).shape;
-        placed.push(if reversed {
-            make_edge_between(model, curve, range, &b, &a, tol)?
-                .shape
-                .reversed()
-        } else {
-            make_edge_between(model, curve, range, &a, &b, tol)?.shape
-        });
-        from = Some(b);
-    }
-    Ok(ogeom_algo::make_wire(model, &placed, tol)?.shape)
 }
 
 /// A piece of the profile: a curve where it stands, run from `from` to

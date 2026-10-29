@@ -150,9 +150,6 @@ pub(super) fn open_wire_law(
         let (a, b) = (legs[k].heading_out, legs[k + 1].heading_in);
         a.cross(b).magnitude() > tol.angular() || a.dot(b) < 0.0
     };
-    if let PipeLaw::Auxiliary { guide } = law {
-        guide_where_stored(model, guide)?;
-    }
     let stations = placed_stations(model, spine, &legs)?;
     let normals = match law {
         PipeLaw::Frenet => {
@@ -195,20 +192,6 @@ pub(super) fn open_wire_law(
         );
     }
     open_wire_legs(model, profile, spine, corners, tolerance, tol)
-}
-
-/// Refuse an auxiliary guide placed by a location, which is read where it
-/// is stored.
-pub(super) fn guide_where_stored(model: &Model, guide: &Shape) -> OgeomResult<()> {
-    let edges = spine_edges(model, guide)?;
-    if !guide.location().is_identity() || edges.iter().any(|e| !e.location().is_identity()) {
-        ogeom_bail!(
-            Construction,
-            "an auxiliary spine placed by a location is not read where it \
-             stands; an open wire's sheet under it is refused"
-        );
-    }
-    Ok(())
 }
 
 /// Whether the frames `normals` at `stations` are the rotation-minimizing

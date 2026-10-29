@@ -27,7 +27,8 @@ use super::placement::{PipeContact, profile_in_contact};
 use super::{
     PipeCorners, PipeLaw, SpineStation, WalkCurve, closed_pipe_shell, closes_on_a_corner,
     densified, evenly_by, has_sharp_corner, law_loft, make_loft, make_pipe_shell_with, moved_ring,
-    profile_square_at_start, shell_stations, spine_closes, spine_curve_of, straight_legs,
+    placed_path, profile_square_at_start, shell_stations, spine_closes, spine_curve_of,
+    straight_legs,
 };
 
 /// How a pipe's section scales and twists along its spine, each in
@@ -740,6 +741,22 @@ pub fn make_pipe_shell_laws(
         scale: Ramp::of(&laws.scale, 1.0, "scale")?,
         twist: Ramp::of(&laws.twist, 0.0, "twist")?,
     };
+    // The spine is swept where it stands.
+    let placed_spine = placed_path(model, spine, tol)?;
+    if placed_spine != *spine {
+        let mut built = make_pipe_shell_laws(
+            model,
+            profile,
+            &placed_spine,
+            law,
+            laws,
+            corners,
+            tolerance,
+            tol,
+        )?;
+        built.history.generate(spine, built.shape.clone());
+        return Ok(built);
+    }
     let placed = profile_in_contact(model, profile, spine, laws.contact, tol)?;
     if placed != *profile {
         let mut built = make_pipe_shell_laws(

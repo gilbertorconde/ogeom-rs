@@ -1159,6 +1159,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pipe reads its spine where the spine is placed.** (#502)
+  - `make_pipe`, `make_pipe_skinned`, `make_pipe_shell`,
+    `make_pipe_shell_law`, `make_pipe_shell_with`,
+    `make_pipe_shell_evolving` and `make_pipe_shell_laws` read the curves
+    of a spine's edges as stored, without the placement (`Location`) on
+    the edges or on the wire. A placed spine was swept where it was
+    drawn: of 310 sweeps of a face or a closed wire (under every law and
+    corner, evolving or twisted by a function) and of a circle, along
+    arcs, an L, a line into an arc, a circle, a square, a stadium and a
+    spline, as an edge or a wire placed by a turn over a shift, 43 came
+    out valid but in the wrong place or of the wrong volume or area, and
+    202 were refused ("the profile leans along its spine") where the
+    spine built in place sweeps. An
+    auxiliary guide placed by a location was likewise read where it was
+    drawn ("the auxiliary spine does not cross the plane square to the
+    spine"), and an open wire's sheet refused it by name.
+  - Each sweep now reads its spine, and the pipe shell its guide, with
+    every edge's placement baked into its curve, the vertices kept
+    shared so a closed spine still closes; the history generates the
+    result from the spine given.
+  - Measured: the 255 of those 310 sweeps that build along the spine in
+    place now build along the placed spine to one volume or area and
+    one bound, within 1e-6; the other 55 are refused alike.
+
 - **`check` names a wall whose rims run against its seam.** (#484)
   - Restating a drum's or a frustum's rim circles to run the other way
     round, their uses in the faces kept, left a solid `check` called

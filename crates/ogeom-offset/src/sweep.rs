@@ -67,6 +67,13 @@ pub fn make_pipe(
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a pipe of radius {radius} holds nothing");
     }
+    // The spine is swept where it stands.
+    let placed = placed_path(model, spine, tol)?;
+    if placed != *spine {
+        let mut built = make_pipe(model, &placed, radius, tol)?;
+        built.history.generate(spine, built.shape.clone());
+        return Ok(built);
+    }
     if model.kind_of(spine)? == ShapeType::Wire {
         let edges = model.ordered_children_of(spine)?;
         if let [edge] = edges.as_slice() {
@@ -4077,6 +4084,13 @@ pub fn make_pipe_skinned(
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a pipe of radius {radius} holds nothing");
     }
+    // The spine is swept where it stands.
+    let placed = placed_path(model, spine, tol)?;
+    if placed != *spine {
+        let mut built = make_pipe_skinned(model, &placed, radius, tolerance, tol)?;
+        built.history.generate(spine, built.shape.clone());
+        return Ok(built);
+    }
     if model.kind_of(spine)? == ShapeType::Wire {
         let edges = model.ordered_children_of(spine)?;
         if let [edge] = edges.as_slice() {
@@ -5864,6 +5878,32 @@ pub(crate) fn pipe_shell_ends(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    // The spine and an auxiliary guide are swept where they stand.
+    let placed = placed_path(model, spine, tol)?;
+    let guide = match law {
+        PipeLaw::Auxiliary { guide } => Some(placed_path(model, guide, tol)?),
+        _ => None,
+    };
+    let placed_law = match (law, &guide) {
+        (PipeLaw::Auxiliary { .. }, Some(guide)) => PipeLaw::Auxiliary { guide },
+        _ => *law,
+    };
+    let guide_moved =
+        matches!((law, &guide), (PipeLaw::Auxiliary { guide: given }, Some(g)) if *given != g);
+    if placed != *spine || guide_moved {
+        let mut built = pipe_shell_ends(
+            model,
+            profile,
+            &placed,
+            &placed_law,
+            corners,
+            exact_ends,
+            tolerance,
+            tol,
+        )?;
+        built.history.generate(spine, built.shape.clone());
+        return Ok(built);
+    }
     // A section carried by translation turns no corner: every way of
     // turning one is the same solid.
     if matches!(law, PipeLaw::Fixed) {
@@ -8613,6 +8653,64 @@ pub(crate) fn spine_curve_of(
         ogeom_bail!(Dangling, "curve is not in this model");
     };
     Ok((geometry.clone(), *range))
+}
+
+/// A spine or guide (an edge or a wire) with each edge's placement baked
+/// into its curve: the shape itself where no edge is placed, else an edge
+/// or a wire of its own over the placed curves, each vertex the stated
+/// vertex where it stands, so a wire that closes still closes. Every
+/// reader of a spine's curves reads them as stored, so the sweeps read
+/// their spine through this.
+pub(crate) fn placed_path(model: &mut Model, path: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
+    let kind = model.kind_of(path)?;
+    let edges = match kind {
+        ShapeType::Edge => vec![path.clone()],
+        ShapeType::Wire => model.ordered_children_of(path)?,
+        _ => return Ok(path.clone()),
+    };
+    if edges.iter().all(|e| e.location().is_identity()) {
+        return Ok(path.clone());
+    }
+    // Each vertex occurrence, by node and placement, to its twin.
+    let mut twins: Vec<(Shape, Shape)> = Vec::new();
+    let mut twin_of = |model: &mut Model, vertex: &Shape| -> OgeomResult<Shape> {
+        if let Some((_, twin)) = twins.iter().find(|(v, _)| v.is_same(vertex)) {
+            return Ok(twin.clone());
+        }
+        let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+            ogeom_bail!(Construction, "a spine vertex holds no point");
+        };
+        let at = vertex.transform(model.datums())?.apply(data.point);
+        let held = data.tolerance;
+        let twin = make_vertex(model, at).shape;
+        model.widen(&twin, held)?;
+        twins.push((vertex.clone(), twin.clone()));
+        Ok(twin)
+    };
+    let mut placed: Vec<Shape> = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        let (curve, range) = spine_curve_of(model, edge)?;
+        let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
+        let Some((first, last)) = edge_vertices(model, edge)? else {
+            ogeom_bail!(Construction, "a spine edge has no vertices");
+        };
+        let (a, b) = (twin_of(model, &first)?, twin_of(model, &last)?);
+        let built = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+            make_edge_between(model, curve, range, &b, &a, tol)?
+                .shape
+                .reversed()
+        } else {
+            make_edge_between(model, curve, range, &a, &b, tol)?.shape
+        };
+        if let Some(held) = model.tolerance_of(edge)? {
+            model.widen(&built, held)?;
+        }
+        placed.push(built);
+    }
+    if kind == ShapeType::Edge {
+        return Ok(placed.swap_remove(0));
+    }
+    Ok(ogeom_algo::make_wire(model, &placed, tol)?.shape)
 }
 
 /// The pipe shell around a spine that loops back on itself: one wall,
