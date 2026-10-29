@@ -26,7 +26,7 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::{CircleCurve, Curve, LineCurve, PlanarCurve};
 use ogeom_math::{Circle, Frame, Point, Point2, Vector2};
-use ogeom_topo::{EdgeRepr, Filter, Model, Shape, ShapeType, explore};
+use ogeom_topo::{Filter, Model, Shape, ShapeType, explore};
 
 /// How a gap at a corner is closed: by a planar wire's offset, or where a
 /// thick solid's walls meet across an edge.
@@ -182,20 +182,8 @@ pub fn offset_wire(
     let edges = explore(model, wire, Filter::OfType(ShapeType::Edge))?;
     let mut pieces: Vec<Piece> = Vec::with_capacity(edges.len());
     for edge in &edges {
-        let (curve, range) = {
-            let Some(node) = model.node(edge) else {
-                ogeom_bail!(Dangling, "edge is not in this model");
-            };
-            let Some(data) = node.data().as_edge() else {
-                ogeom_bail!(Construction, "edge node holds no edge data");
-            };
-            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                ogeom_bail!(Construction, "an edge has no curve to offset");
-            };
-            let Some(geometry) = model.geometry().curve(*curve) else {
-                ogeom_bail!(Dangling, "curve is not in this model");
-            };
-            (geometry.clone(), *range)
+        let Some((curve, range)) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+            ogeom_bail!(Construction, "an edge has no curve to offset");
         };
         let Some((sv, ev)) = edge_vertices(model, edge)? else {
             ogeom_bail!(Construction, "an edge has no bounding vertices");

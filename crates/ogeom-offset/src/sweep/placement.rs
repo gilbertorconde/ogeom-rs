@@ -21,7 +21,7 @@ use ogeom_math::{Axis, Direction, Point, Transform, Vector};
 use ogeom_mesh::Deflection;
 use ogeom_topo::{Model, Shape, ShapeType};
 
-use super::{moved_ring, realized_profile, spine_curve_of};
+use super::{moved_ring, realized_profile};
 
 /// How a profile is brought onto a spine by [`place_on_spine`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -222,7 +222,9 @@ fn spine_start(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<(Po
             "a spine is an edge or a wire, not a {other:?}"
         ),
     };
-    let (curve, range) = spine_curve_of(model, &first)?;
+    let Some((curve, range)) = ogeom_algo::placed_edge_curve(model, &first, tol)? else {
+        ogeom_bail!(Construction, "an edge has no curve");
+    };
     let reversed = first.orientation() == ogeom_topo::Orientation::Reversed;
     let t = if reversed { range.1 } else { range.0 };
     let d = curve.d1_at(t, tol)?;

@@ -1189,6 +1189,41 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Profiles, sections and paths are read where they are placed.** (#504)
+  - `make_helical_sweep`, `make_loft` to a point, `make_pipe_sections`,
+    `make_evolved`, `place_on_spine`, `make_filling`, `offset_wire`,
+    `make_prism_tapered` (edges placed inside the profile) and
+    `make_face_with_pcurves` read their edges' curves as stored, without
+    the placement (`Location`) on the edge or on the wire or face holding
+    it. Probed with each input placed by a turn over a shift, whole or
+    with its edges shifted inside a turned wire or face, against the same
+    input built in place: the helical sweep came out invalid at half the
+    volume, the loft to a point, the filling and the profile brought onto
+    a spine valid but up to 6.8 away, `make_face_with_pcurves` invalid
+    (pcurves 2 to 3 off their edges), and the multisection pipe ("the
+    spine does not cross a section's plane"), the evolved sweep ("a face
+    boundary strand dangles"), the wire offset and the nested tapered
+    prism ("cannot read which side of the profile the material is on")
+    refused.
+  - Each now reads an edge through one shared reader,
+    `placed_edge_curve`, which places the curve by the curve record's own
+    location and the occurrence's; the multisection pipe bakes its spine
+    as the other pipes do. A pcurve is attached at the occurrence's
+    placement; an edge whose placement rescales its curve's parameter is
+    refused by name there rather than given a pcurve on the wrong
+    parameter.
+  - The exact volume of a solid with some faces placed by a mirror and
+    some not (a prism of a mirrored profile) read the mirrored faces as
+    turned against their neighbours, and gave 4 for a prism of 12: a
+    reflection turns the placed chart's normal, and the faces' walks now
+    read the flag through it.
+  - Measured: every probed operation (prisms and revolutions of edges,
+    wires and faces, lofts, ruled and two-rail sheets, sweeps, offsets
+    of wires, faces and solids, fillets, chamfers, drafts, booleans,
+    mirrored and transformed inputs) now builds from placed inputs to
+    the volume, area or length and the bounds of the inputs built in
+    place, within 1e-9, and checks alike.
+
 - **A pipe reads its spine where the spine is placed.** (#502)
   - `make_pipe`, `make_pipe_skinned`, `make_pipe_shell`,
     `make_pipe_shell_law`, `make_pipe_shell_with`,

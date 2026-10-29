@@ -22,7 +22,7 @@
 use ogeom_algo::{Built, History, make_natural_face};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d as _, Reversible as _, SurfaceGeometry, TrimmedCurve};
-use ogeom_topo::{EdgeRepr, Model, Shape, ShapeType};
+use ogeom_topo::{Model, Shape, ShapeType};
 
 pub use crate::fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 
@@ -52,20 +52,11 @@ pub fn make_filling(
         if model.kind_of(edge)? != ShapeType::Edge {
             ogeom_bail!(Construction, "a filling is bounded by edges");
         }
-        let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
-            ogeom_bail!(Construction, "edge holds no edge data");
-        };
-        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        let Some((geometry, range)) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
             ogeom_bail!(Construction, "a filling edge needs a 3D curve");
         };
-        let Some(geometry) = model.geometry().curve(*curve) else {
-            ogeom_bail!(Construction, "edge refers to a curve not in this model");
-        };
         curves.push(Curve::Trimmed(Box::new(TrimmedCurve::new(
-            geometry.clone(),
-            range.0,
-            range.1,
-            tol,
+            geometry, range.0, range.1, tol,
         )?)));
     }
 

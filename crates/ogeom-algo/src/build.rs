@@ -192,6 +192,87 @@ pub fn edge_vertices(model: &Model, edge: &Shape) -> OgeomResult<Option<(Shape, 
     ))
 }
 
+/// An edge occurrence's curve where the occurrence stands, and the range of
+/// it the edge covers; `None` for an edge with no curve in space.
+///
+/// The curve is moved by the curve's own location and then by the
+/// occurrence's, so a reader building geometry from it builds it where the
+/// edge is. A placement with a scale rescales a length-parameterized
+/// curve's domain, and the range is carried with it. An unplaced edge's
+/// curve comes back as stored.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the edge,
+/// its curve or a datum is not in `model`; as
+/// [`Transformable::transformed`](ogeom_geom::Transformable::transformed).
+pub fn placed_edge_curve(
+    model: &Model,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Curve, (f64, f64))>> {
+    use ogeom_geom::Transformable as _;
+    let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+        ogeom_bail!(Dangling, "edge is not in this model");
+    };
+    let Some(EdgeRepr::Curve3d {
+        curve,
+        location,
+        range,
+    }) = data.curve3d()
+    else {
+        return Ok(None);
+    };
+    let Some(stored) = model.geometry().curve(*curve) else {
+        ogeom_bail!(Dangling, "curve is not in this model");
+    };
+    if location.is_identity() && edge.location().is_identity() {
+        return Ok(Some((stored.clone(), *range)));
+    }
+    let placement = edge.transform(model.datums())? * location.composed(model.datums())?;
+    let placed = stored.transformed(&placement, tol)?;
+    let (from, to) = (stored.domain(), placed.domain());
+    let range = (
+        ogeom_geom::carried(range.0, from, to),
+        ogeom_geom::carried(range.1, from, to),
+    );
+    Ok(Some((placed, range)))
+}
+
+/// An edge's curve where its occurrence places it in the face it bounds,
+/// for a pcurve on that face's surface: `edge` is the occurrence as the
+/// face's wire holds it. The pcurve runs on the edge's own parameter, so an
+/// occurrence placed with a scale, which carries the curve to another
+/// parameter, is refused.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// edge has no curve in space or its placement rescales its parameter; as
+/// [`placed_edge_curve`].
+pub(crate) fn charted_edge_curve(
+    model: &Model,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Curve, (f64, f64))> {
+    let Some((curve, range)) = placed_edge_curve(model, edge, tol)? else {
+        ogeom_bail!(Construction, "a face edge has no 3D curve");
+    };
+    let stored = model
+        .node(edge)
+        .and_then(|n| n.data().as_edge())
+        .and_then(EdgeData::curve3d)
+        .and_then(EdgeRepr::range);
+    if stored != Some(range) {
+        ogeom_bail!(
+            Construction,
+            "an edge placed with a scale runs on another parameter than its \
+             curve; bake its placement before charting it on a face"
+        );
+    }
+    Ok((curve, range))
+}
+
 /// Build a wire of straight segments through a sequence of points.
 ///
 /// `closed` adds a final segment back to the first point, and does it by
@@ -698,21 +779,7 @@ pub fn make_face_with_pcurves(
     for edges in wires {
         let mut prev_end: Option<ogeom_math::Point2> = None;
         for edge in edges {
-            let (curve, prange) = {
-                let Some(node) = model.node(edge) else {
-                    ogeom_bail!(Dangling, "edge is not in this model");
-                };
-                let Some(data) = node.data().as_edge() else {
-                    ogeom_bail!(Construction, "edge node holds no edge data");
-                };
-                let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                    ogeom_bail!(Construction, "a face edge has no 3D curve");
-                };
-                let Some(geometry) = model.geometry().curve(*curve) else {
-                    ogeom_bail!(Dangling, "curve is not in this model");
-                };
-                (geometry.clone(), *range)
-            };
+            let (curve, prange) = charted_edge_curve(model, edge, tol)?;
             let mut pcurve = match ogeom_intersect::exact_pcurve_over(&curve, prange, &surface, tol)
             {
                 Some(exact) => exact,
@@ -775,7 +842,7 @@ pub fn make_face_with_pcurves(
                 edge,
                 pcurve,
                 surface_id,
-                Location::identity(),
+                edge.location().clone(),
                 prange,
             )?;
         }

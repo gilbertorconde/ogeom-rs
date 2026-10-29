@@ -2415,15 +2415,13 @@ fn loft_to_point(
         let Some(data) = model.node(apex).and_then(|n| n.data().as_vertex()) else {
             ogeom_bail!(Construction, "the apex vertex holds no data");
         };
-        data.point
+        apex.transform(model.datums())?.apply(data.point)
     };
 
     // The circular case: a cone, apex on the axis.
     let edges = explore(model, section, Filter::OfType(ShapeType::Edge))?;
     if edges.len() == 1
-        && let Some(data) = model.node(&edges[0]).and_then(|n| n.data().as_edge())
-        && let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d()
-        && let Some(Curve::Circle(c)) = model.geometry().curve(*curve)
+        && let Some((Curve::Circle(c), _)) = ogeom_algo::placed_edge_curve(model, &edges[0], tol)?
     {
         let circle = c.circle();
         let axis = circle.frame().z().vector();
@@ -2459,13 +2457,10 @@ fn loft_to_point(
     // The polygonal case: exact triangle walls to a shared apex.
     let mut corners: Vec<Point> = Vec::new();
     for edge in model.ordered_children_of(section)? {
-        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
-            ogeom_bail!(Construction, "a section edge holds no data");
-        };
-        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        let Some((curve, range)) = ogeom_algo::placed_edge_curve(model, &edge, tol)? else {
             ogeom_bail!(Construction, "a section edge has no curve");
         };
-        let Some(Curve::Line(line)) = model.geometry().curve(*curve).cloned() else {
+        let Curve::Line(line) = curve else {
             ogeom_bail!(
                 Construction,
                 "a mixed or curved section lofts to a point through the \
@@ -5032,7 +5027,9 @@ pub fn make_helical_sweep(
         // spans a quarter turn round it at most.
         let mut pieces: Vec<(ogeom_geom::Curve, f64, f64)> = Vec::new();
         for edge in &edges {
-            let (curve, range) = spine_curve_of(model, edge)?;
+            let Some((curve, range)) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+                ogeom_bail!(Construction, "a profile edge has no curve");
+            };
             let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
             let (t0, t1) = if reversed { (range.1, range.0) } else { range };
             let closed =
@@ -6744,6 +6741,13 @@ pub fn make_pipe_sections(
             Construction,
             "a multisection pipe needs at least two sections"
         );
+    }
+    // The spine is swept where it stands.
+    let placed = placed_path(model, spine, tol)?;
+    if placed != *spine {
+        let mut built = make_pipe_sections(model, sections, &placed, frenet, tolerance, tol)?;
+        built.history.generate(spine, built.shape.clone());
+        return Ok(built);
     }
     if let Some(loops) = holed_sections(model, sections)? {
         // Each loop through the sections swept on its own, every hole's
@@ -8699,7 +8703,18 @@ pub(crate) fn placed_path(model: &mut Model, path: &Shape, tol: Tolerances) -> O
         ShapeType::Wire => model.ordered_children_of(path)?,
         _ => return Ok(path.clone()),
     };
-    if edges.iter().all(|e| e.location().is_identity()) {
+    let curve_placed = |e: &Shape| {
+        model
+            .node(e)
+            .and_then(|n| n.data().as_edge())
+            .and_then(ogeom_topo::EdgeData::curve3d)
+            .and_then(EdgeRepr::location)
+            .is_some_and(|l| !l.is_identity())
+    };
+    if edges
+        .iter()
+        .all(|e| e.location().is_identity() && !curve_placed(e))
+    {
         return Ok(path.clone());
     }
     // Each vertex occurrence, by node and placement, to its twin.
@@ -8720,8 +8735,9 @@ pub(crate) fn placed_path(model: &mut Model, path: &Shape, tol: Tolerances) -> O
     };
     let mut placed: Vec<Shape> = Vec::with_capacity(edges.len());
     for edge in &edges {
-        let (curve, range) = spine_curve_of(model, edge)?;
-        let curve = curve.transformed(&edge.transform(model.datums())?, tol)?;
+        let Some((curve, range)) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+            ogeom_bail!(Construction, "an edge has no curve");
+        };
         let Some((first, last)) = edge_vertices(model, edge)? else {
             ogeom_bail!(Construction, "a spine edge has no vertices");
         };

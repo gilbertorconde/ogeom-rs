@@ -840,13 +840,18 @@ fn occurrence_points(
     map: &dyn Fn(Point) -> Point,
     tol: Tolerances,
 ) -> OgeomResult<Option<[Point; 3]>> {
-    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+    let Some(EdgeRepr::Curve3d {
+        curve,
+        range,
+        location,
+    }) = data.curve3d()
+    else {
         return Ok(None);
     };
     let Some(geometry) = model.geometry().curve(*curve) else {
         return Ok(None);
     };
-    let placement = edge.transform(model.datums())?;
+    let placement = edge.transform(model.datums())? * location.composed(model.datums())?;
     let mut out = [Point::ORIGIN; 3];
     for (slot, t) in out
         .iter_mut()
@@ -881,13 +886,18 @@ fn convert_edge(
     vertices: &mut NewVertices,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Curve, (f64, f64))> {
-    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+    let Some(EdgeRepr::Curve3d {
+        curve,
+        range,
+        location,
+    }) = data.curve3d()
+    else {
         ogeom_bail!(Construction, "an edge with no curve cannot be converted");
     };
     let Some(geometry) = model.geometry().curve(*curve).cloned() else {
         ogeom_bail!(Dangling, "curve is not in this model");
     };
-    let placement = edge.transform(model.datums())?;
+    let placement = edge.transform(model.datums())? * location.composed(model.datums())?;
     use ogeom_geom::Transformable as _;
     let placed = geometry.transformed(&placement, tol)?;
     // A placement with scale rescales a length-parameterized curve's domain

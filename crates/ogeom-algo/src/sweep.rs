@@ -202,11 +202,11 @@ pub fn make_prism_tapered(
         // A loop of one closed circle tapers as a cone; a loop of straight
         // edges tapers as tilted planes with re-mitred corners.
         let lone_circle = edges.len() == 1 && {
-            let (curve, _) = edge_geometry(model, &edges[0])?;
+            let (curve, _) = edge_geometry(model, &edges[0], tol)?;
             matches!(curve, Curve::Circle(_))
         };
         if lone_circle {
-            let (curve, range) = edge_geometry(model, &edges[0])?;
+            let (curve, range) = edge_geometry(model, &edges[0], tol)?;
             let Curve::Circle(c) = curve else {
                 unreachable!("just matched")
             };
@@ -268,7 +268,7 @@ pub fn make_prism_tapered(
         let mut aways: Vec<Vector> = Vec::new();
         let mut dirs: Vec<Vector> = Vec::new();
         for edge in &edges {
-            let (curve, range) = edge_geometry(model, edge)?;
+            let (curve, range) = edge_geometry(model, edge, tol)?;
             let Curve::Line(_) = curve else {
                 ogeom_bail!(
                     Construction,
@@ -496,18 +496,16 @@ fn away_sign(
     )
 }
 
-/// An edge's 3D curve and range, cloned out of the model.
-fn edge_geometry(model: &Model, edge: &Shape) -> OgeomResult<(ogeom_geom::Curve, (f64, f64))> {
-    let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
-        ogeom_bail!(Construction, "an edge holds no data");
-    };
-    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+/// An edge's 3D curve where its occurrence stands, and its range there.
+fn edge_geometry(
+    model: &Model,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(ogeom_geom::Curve, (f64, f64))> {
+    let Some(placed) = crate::build::placed_edge_curve(model, edge, tol)? else {
         ogeom_bail!(Construction, "an edge has no curve");
     };
-    let Some(geometry) = model.geometry().curve(*curve) else {
-        ogeom_bail!(Dangling, "curve is not in this model");
-    };
-    Ok((geometry.clone(), *range))
+    Ok(placed)
 }
 
 /// Attach exact pcurves to every edge of a planar cap that lacks one.
@@ -532,11 +530,12 @@ fn attach_cap_pcurves(model: &mut Model, cap: &Shape, tol: Tolerances) -> OgeomR
         if held {
             continue;
         }
-        let (curve, range) = edge_geometry(model, &edge)?;
+        let (curve, range) = crate::build::charted_edge_curve(model, &edge, tol)?;
         let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
             ogeom_bail!(Construction, "a cap edge has no closed-form pcurve");
         };
-        crate::build::attach_pcurve(model, &edge, pcurve, cap_id, Location::identity(), range)?;
+        let at = edge.location().clone();
+        crate::build::attach_pcurve(model, &edge, pcurve, cap_id, at, range)?;
     }
     Ok(())
 }

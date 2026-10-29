@@ -1636,13 +1636,18 @@ fn face_walks(
     let Some(surface) = model.geometry().surface(data.surface) else {
         return Ok(None);
     };
-    let placed = surface
-        .clone()
-        .transformed(&face.transform(model.datums())?, tol)?;
+    let placement = face.transform(model.datums())?;
+    let placed = surface.clone().transformed(&placement, tol)?;
+    // A reflecting placement turns the placed chart's own normal against
+    // the image of the face's, so the flag is read through it.
     let flag = if face.orientation() == ogeom_topo::Orientation::Reversed {
         -1.0
     } else {
         1.0
+    } * if placement.preserves_handedness() {
+        1.0
+    } else {
+        -1.0
     };
     // Where the boundary walks into closed chart loops, their windings
     // say which side the face lies on at every point, concave or not.
