@@ -2,7 +2,7 @@
 //!
 //! A ball of constant radius rolling along a straight edge between two planar
 //! faces stays tangent to both, and its envelope is exactly a cylinder; the
-//! same ball rolling around the rim where a cylindrical wall meets its
+//! same ball rolling around the rim where a cylindrical or conical wall meets its
 //! perpendicular cap traces a torus. These are the blends whose *new* surface
 //! costs nothing, and both are built the same way: the chamfer's wedge with
 //! the bevel exchanged for the envelope (legs running along the faces to the
@@ -28,8 +28,8 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 ///
 /// Two seats are recognised, and each has a closed-form envelope: a straight
 /// edge between two planar faces, where the rolling ball traces a cylinder,
-/// and a circular rim where a cylindrical wall meets a perpendicular planar
-/// cap, where it traces a torus. In both, the result is the boolean
+/// and a circular rim where a cylindrical or conical wall meets a
+/// perpendicular planar cap, where it traces a torus. In both, the result is the boolean
 /// difference with a wedge whose curved face is that envelope, so the history
 /// reads as a cut: the faces are modified into their trimmed pieces, and the
 /// edge's neighbourhood gains the blend face.
@@ -85,7 +85,14 @@ fn fillet_edge_own(
     // past a face's far side into the material, or all along the edge,
     // the band would cut through the face.
     crate::support::ball_fits(model, solid, edge, radius, true, tol)?;
-    fillet_edge_meeting(model, solid, edge, radius, None, tol)
+    let edges = std::slice::from_ref(edge);
+    with_fitted_rims(
+        model,
+        solid,
+        edges,
+        |model, rims| fillet_edge_meeting(model, solid, edge, radius, None, rims, tol),
+        tol,
+    )
 }
 
 /// An edge of a multi-edge request, by its ends: where each end stands and
@@ -181,9 +188,10 @@ fn fillet_edge_meeting(
     edge: &Shape,
     radius: f64,
     mates: Option<(usize, &[Mate])>,
+    rims: Rims,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let mut built = fillet_edge_seat(model, solid, edge, radius, mates, tol)?;
+    let mut built = fillet_edge_seat(model, solid, edge, radius, mates, rims, tol)?;
     crate::support::credit_new_faces(model, solid, edge, &mut built)?;
     Ok(built)
 }
@@ -196,15 +204,23 @@ fn fillet_edge_seat(
     edge: &Shape,
     radius: f64,
     mates: Option<(usize, &[Mate])>,
+    rims: Rims,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
-    match route(model, solid, edge, tol)? {
+    match route(model, solid, edge, rims, tol)? {
         Route::Planar => planar_fillet(model, solid, edge, radius, mates, tol),
         Route::Ruled(seat) => {
             crate::ruled::ruled_fillet(model, solid, edge, radius, mates, seat, tol)
+        }
+        // A cone's ball whose tube would reach its own axis takes the march:
+        // the torus would cross the axis.
+        Route::Revolved(_, _, seat)
+            if seat.slope != 0.0 && seat.ball(radius).rho - radius <= tol.confusion() =>
+        {
+            crate::marched::marched_fillet(model, solid, edge, radius, mates, tol)
         }
         Route::Revolved(c, crange, seat) => {
             let closed =
@@ -223,6 +239,15 @@ fn fillet_edge_seat(
     }
 }
 
+/// Which construction rounds a rim on a planar cap and a coaxial cone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rims {
+    /// The exact torus band.
+    Exact,
+    /// The marched band, fitted through the ball's arcs.
+    Fitted,
+}
+
 /// The construction that rounds an edge, chosen by its curve and the two
 /// faces it lies between.
 enum Route {
@@ -230,18 +255,24 @@ enum Route {
     Planar,
     /// A straight edge between planes or drums parallel to it.
     Ruled(crate::ruled::RuledSeat),
-    /// A circle between a planar cap and its coaxial wall, with the
-    /// edge's range on it.
+    /// A circle between a planar cap and its coaxial wall, a cylinder or
+    /// a cone, with the edge's range on it.
     Revolved(CircleCurve, (f64, f64), crate::support::RevolvedSeat),
     /// Any other seat: the march.
     Marched,
 }
 
 /// How `edge` of `solid` is rounded. A rim on a planar cap and its
-/// coaxial wall is the revolved blend's, exact; a circle on any other pair
-/// of hosts (a bore down a ball's axis, a ring's own rim) is a seat like
-/// any other for the march.
-fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomResult<Route> {
+/// coaxial wall is the revolved blend's, exact, but where `rims` asks a
+/// cone's for the march; a circle on any other pair of hosts (a bore down
+/// a ball's axis, a ring's own rim) is a seat like any other for the march.
+fn route(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    rims: Rims,
+    tol: Tolerances,
+) -> OgeomResult<Route> {
     let (curve, crange) = edge_curve(model, edge, tol)?;
     Ok(match curve {
         Curve::Line(_) if crate::support::hosts_planar(model, solid, edge, tol)? => Route::Planar,
@@ -250,6 +281,7 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
             None => Route::Marched,
         },
         Curve::Circle(c) => match revolved_seat(model, solid, edge, &c, tol) {
+            Ok(seat) if seat.slope != 0.0 && rims == Rims::Fitted => Route::Marched,
             Ok(seat) => Route::Revolved(c, crange, seat),
             Err(OgeomError::Construction(_)) => Route::Marched,
             Err(e) => return Err(e),
@@ -290,7 +322,8 @@ fn route(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
 /// plane under the other's band, which a meeting there would leave
 /// standing), as they do where one of the two is a drum's rim (a D-shaped
 /// block's arc beside its chord). Across a re-entrant turn one
-/// of the two may be a drum's rim, the material within the drum, where the
+/// of the two may be a drum's rim, upright or drafted, the material within
+/// the drum, where the
 /// straight band carried on stands nowhere off the drum before the rim's
 /// cap. Such
 /// junctions stand beside flush ones in a loop or chain, a band crossed at
@@ -346,16 +379,81 @@ pub fn fillet_edges(
 }
 
 /// [`fillet_edges`] on a shape every node below which is its own, its
-/// bands meeting at the junctions where two of its creases turn. Where
-/// that meeting refuses, the request is rounded again from the solid as it
-/// was given (its tolerances and surfaces put back), every band capped or
-/// run on at its ends as it is without junctions: a junction never turns a
-/// rounding into a refusal.
+/// cone rims rounded exactly where that builds and fitted where it does
+/// not, as [`with_fitted_rims`] says.
 fn fillet_edges_meeting(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
     radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    with_fitted_rims(
+        model,
+        solid,
+        edges,
+        |model, rims| fillet_edges_meeting_with(model, solid, edges, radius, rims, tol),
+        tol,
+    )
+}
+
+/// Round with every cone rim's band an exact torus band, and where that
+/// refuses, again from the solid as it was given (its tolerances put back)
+/// with those bands fitted through the ball's arcs, as the march builds
+/// them. The fitted band stands within its fit of the torus, and the
+/// boolean resolves some meetings of it that it does not of the exact one,
+/// so an exact rim never turns a rounding into a refusal.
+fn with_fitted_rims(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    mut round: impl FnMut(&mut Model, Rims) -> OgeomResult<Built>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let mark = model.note_widened();
+    let exact = round(model, Rims::Exact);
+    if matches!(
+        exact,
+        Ok(_) | Err(OgeomError::Cancelled | OgeomError::Dangling(_))
+    ) || !has_cone_rim(model, solid, edges, tol)?
+    {
+        model.keep_widened(mark);
+        return exact;
+    }
+    model.undo_widened(mark);
+    round(model, Rims::Fitted)
+}
+
+/// Whether any of `edges` is a rim of `solid` on a planar cap and a
+/// coaxial cone.
+fn has_cone_rim(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    for edge in edges {
+        if let Route::Revolved(_, _, seat) = route(model, solid, edge, Rims::Exact, tol)?
+            && seat.slope != 0.0
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// [`fillet_edges_meeting`] with cone rims rounded as `rims` says, its
+/// bands meeting at the junctions where two of its creases turn. Where
+/// that meeting refuses, the request is rounded again from the solid as it
+/// was given (its tolerances and surfaces put back), every band capped or
+/// run on at its ends as it is without junctions: a junction never turns a
+/// rounding into a refusal.
+fn fillet_edges_meeting_with(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    rims: Rims,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let mut ends: Vec<Shape> = Vec::new();
@@ -371,7 +469,7 @@ fn fillet_edges_meeting(
         }
     }
     if !shared {
-        return fillet_edges_own(model, solid, edges, radius, None, tol);
+        return fillet_edges_own(model, solid, edges, radius, None, rims, tol);
     }
     // What an attempt changes of the given solid where it stands: the
     // tolerances it widens, which the model's journal notes, and, once a
@@ -386,7 +484,7 @@ fn fillet_edges_meeting(
             crossed,
             ..Taken::default()
         };
-        match fillet_edges_own(model, solid, edges, radius, Some(&mut taken), tol) {
+        match fillet_edges_own(model, solid, edges, radius, Some(&mut taken), rims, tol) {
             Ok(built) => {
                 model.keep_widened(mark);
                 return Ok(built);
@@ -419,7 +517,7 @@ fn fillet_edges_meeting(
             }
         }
     }
-    fillet_edges_own(model, solid, edges, radius, None, tol)
+    fillet_edges_own(model, solid, edges, radius, None, rims, tol)
 }
 
 /// What a rounding with junctions may take and took: whether crossed
@@ -441,6 +539,7 @@ fn fillet_edges_own(
     edges: &[Shape],
     radius: f64,
     meeting: Option<&mut Taken>,
+    cones: Rims,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if edges.is_empty() {
@@ -715,7 +814,7 @@ fn fillet_edges_own(
     for i in 0..edges.len() {
         if (0..edges.len()).any(|j| j != i && meet(i, j)) {
             marched[i] = Some(matches!(
-                route(model, solid, &edges[i], tol)?,
+                route(model, solid, &edges[i], cones, tol)?,
                 Route::Marched
             ));
         }
@@ -863,7 +962,15 @@ fn fillet_edges_own(
             };
             let mut step = {
                 let (step, wedges) = crate::support::collecting_wedges(|| {
-                    fillet_edge_meeting(model, &current, target, radius, Some((index, &mates)), tol)
+                    fillet_edge_meeting(
+                        model,
+                        &current,
+                        target,
+                        radius,
+                        Some((index, &mates)),
+                        cones,
+                        tol,
+                    )
                 });
                 let step = step?;
                 for mut wedge in wedges {
@@ -2099,16 +2206,19 @@ pub(crate) fn seated_fillet(
 }
 
 /// The circular-rim fillet: a ball rolling around a rim where a cylindrical
-/// wall meets a perpendicular planar cap traces a torus.
+/// or conical wall meets a perpendicular planar cap traces a torus.
 ///
 /// Four seats, one parameterization. With `sigma` the wall's outward radial
 /// sign and `tau` telling whether the wall extends away from the cap's
-/// outward side, the tube's centre circle sits at radius `R − sigma tau r`,
+/// outward side, the tube's centre circle sits at radius `R − sigma tau r`
+/// beside a cylinder (where a cone's wall leans, as
+/// [`RevolvedSeat::ball`](crate::support::RevolvedSeat::ball) derives),
 /// lifted `tau r` against the cap's normal, and `tau` alone decides whether
 /// the wedge subtracts (the external rim and the hole's rim, both convex) or
 /// fuses (the boss base and the blind hole's floor, both concave). The wedge
 /// is always the same three revolved faces: a band of the wall, an annulus
-/// of the cap, and the quarter-tube between them.
+/// of the cap, and the stretch of tube between them, a quarter beside a
+/// cylinder.
 fn revolved_fillet(
     model: &mut Model,
     solid: &Shape,
@@ -2119,7 +2229,8 @@ fn revolved_fillet(
 ) -> OgeomResult<Built> {
     let seat = revolved_seat(model, solid, edge, rim, tol)?;
 
-    let tube_rho = seat.sigma.mul_add(-(seat.tau * radius), seat.radius);
+    let ball = seat.ball(radius);
+    let tube_rho = ball.rho;
     if tube_rho <= tol.confusion() {
         ogeom_bail!(
             Construction,
@@ -2128,11 +2239,11 @@ fn revolved_fillet(
             seat.radius
         );
     }
-    let tube_level = seat.centre - seat.up * (seat.tau * radius);
-    let flanks = revolved_flanks(model, &seat, radius, tube_rho, tol)?;
+    let tube_level = seat.centre + seat.up * ball.height;
+    let flanks = revolved_flanks(model, &seat, -seat.tau * ball.wall_height, tube_rho, tol)?;
 
-    // The blend: the quarter-tube between the tangencies, its natural normal
-    // away from the tube's centre (into the wedge), so always reversed.
+    // The blend: the tube between the tangencies, its natural normal away
+    // from the tube's centre (into the wedge), so always reversed.
     let blend_band = {
         let surface: SurfaceGeometry = TorusSurface::new(Torus::new(
             seat.frame_at(tube_level, tol)?,
@@ -2141,11 +2252,61 @@ fn revolved_fillet(
             tol,
         )?)
         .into();
-        make_revolution_band(model, &surface, &flanks.wall_ring, &flanks.cap_ring, tol)?.reversed()
+        if seat.slope == 0.0 {
+            make_revolution_band(model, &surface, &flanks.wall_ring, &flanks.cap_ring, tol)?
+        } else {
+            tube_band(model, &surface, &seat, &flanks, tol)?
+        }
+        .reversed()
     };
 
     let faces = [flanks.wall_band, flanks.annulus, blend_band];
     apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol)
+}
+
+/// The tube between a cone seat's tangency rings, over the whole turn.
+///
+/// In the tube's chart the angle about the tube is counted from its outer
+/// equator, and beside a cone the ball's arc can cross it: where the wall
+/// leans out over the ball, it touches below the equator. So the rings'
+/// rows are given, not read back: the cap's straight along `tau up` from
+/// the tube's centre and the wall's within a half turn of it, the arc
+/// between them less than one.
+fn tube_band(
+    model: &mut Model,
+    surface: &SurfaceGeometry,
+    seat: &crate::support::RevolvedSeat,
+    flanks: &crate::support::RevolvedFlanks,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    use core::f64::consts::{PI, TAU};
+    let cap_row = seat.tau.atan2(0.0);
+    let lean = seat.sigma * seat.tau;
+    let wall_row = {
+        let row = (-lean * seat.slope).atan2(lean);
+        row + ((cap_row - row) / TAU).round() * TAU
+    };
+    debug_assert!((cap_row - wall_row).abs() < PI);
+    let row = |v: f64| -> OgeomResult<ogeom_geom::PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(
+                ogeom_math::Point2::new(0.0, v),
+                ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), tol)?,
+            ),
+            0.0,
+            TAU,
+        )?
+        .into())
+    };
+    ogeom_algo::make_band_between(
+        model,
+        surface,
+        [
+            (&flanks.wall_ring, row(wall_row)?),
+            (&flanks.cap_ring, row(cap_row)?),
+        ],
+        tol,
+    )
 }
 
 /// Whether the blend along `edge` of `solid`, a circle, runs the circle's
@@ -2335,7 +2496,8 @@ fn revolved_arc_fillet(
     use ogeom_geom::Curve3d as _;
     let seat = revolved_seat(model, solid, edge, rim, tol)?;
 
-    let tube_rho = seat.sigma.mul_add(-(seat.tau * radius), seat.radius);
+    let ball = seat.ball(radius);
+    let tube_rho = ball.rho;
     if tube_rho <= tol.confusion() {
         ogeom_bail!(
             Construction,
@@ -2344,7 +2506,8 @@ fn revolved_arc_fillet(
             seat.radius
         );
     }
-    let tube_level = seat.centre - seat.up * (seat.tau * radius);
+    let tube_level = seat.centre + seat.up * ball.height;
+    let wall_level = seat.centre + seat.up * ball.wall_height;
 
     // The arc's window in the seat's own parameterization: the edge's stored
     // circle may be framed anyhow, so the ends are read back through the
@@ -2390,7 +2553,7 @@ fn revolved_arc_fillet(
         )
     };
     let apex_at = |theta: f64| seat.centre + dir_at(theta) * seat.radius;
-    let wall_at = |theta: f64| tube_level + dir_at(theta) * seat.radius;
+    let wall_at = |theta: f64| wall_level + dir_at(theta) * ball.wall_rho;
     let cap_at = |theta: f64| seat.centre + dir_at(theta) * tube_rho;
 
     // Six shared corner vertices, nine shared edges: a wire chains through
@@ -2412,29 +2575,22 @@ fn revolved_arc_fillet(
         let curve = Curve::Circle(CircleCurve::new(circle));
         Ok(make_edge_between(model, curve, (0.0, sweep), from, to, tol)?.shape)
     };
-    // The quarter meridian at `theta`, from the wall contact to the cap
-    // contact: the tube's own circle, in the meridian plane.
+    // The ball's arc in the meridian at `theta`, from the wall contact to
+    // the cap contact: the tube's own circle, in the meridian plane, a
+    // quarter of it beside a cylinder.
     let quarter = |model: &mut Model, theta: f64, from: &Shape, to: &Shape| -> OgeomResult<Shape> {
         let dir = dir_at(theta);
         let centre_m = tube_level + dir * tube_rho;
-        let x_dir = Direction::new(dir * (seat.sigma * seat.tau), tol)?;
+        let x_dir = Direction::new((dir - seat.up * seat.slope) * (seat.sigma * seat.tau), tol)?;
         let z_dir = Direction::new(dir.cross(seat.up) * seat.sigma, tol)?;
         let frame = Frame::new(centre_m, z_dir, x_dir, tol)?;
         let circle = Circle::new(frame, radius, tol)?;
         let curve = Curve::Circle(CircleCurve::new(circle));
-        Ok(make_edge_between(
-            model,
-            curve,
-            (0.0, core::f64::consts::FRAC_PI_2),
-            from,
-            to,
-            tol,
-        )?
-        .shape)
+        Ok(make_edge_between(model, curve, (0.0, ball.sweep), from, to, tol)?.shape)
     };
 
     let arc_apex = ring_arc(model, seat.centre, seat.radius, &va0, &va1)?;
-    let arc_wall = ring_arc(model, tube_level, seat.radius, &vw0, &vw1)?;
+    let arc_wall = ring_arc(model, wall_level, ball.wall_rho, &vw0, &vw1)?;
     let arc_cap = ring_arc(model, seat.centre, tube_rho, &vc0, &vc1)?;
     let ruling0 = segment_between(model, (&va0, apex_at(theta0)), (&vw0, wall_at(theta0)), tol)?;
     let ruling1 = segment_between(model, (&vw1, wall_at(theta1)), (&va1, apex_at(theta1)), tol)?;
@@ -2459,12 +2615,12 @@ fn revolved_arc_fillet(
     // chart where the contact ring stands below the rim.
     let wall_patch = {
         let below = radius + 1.0;
-        let origin = seat.centre - seat.up * below;
-        let surface: SurfaceGeometry = CylinderSurface::new(
-            Cylinder::new(wedge_frame_at(origin)?, seat.radius, tol)?,
-            (0.0, 2.0 * below),
-        )?
-        .into();
+        let surface = seat.wall_surface(
+            (-below, below),
+            (ball.wall_height.min(0.0), ball.wall_height.max(0.0)),
+            Direction::new(dir_at(theta0), tol)?,
+            tol,
+        )?;
         let edges = walked(
             vec![
                 arc_wall.clone(),

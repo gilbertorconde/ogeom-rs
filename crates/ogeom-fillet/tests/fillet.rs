@@ -171,6 +171,196 @@ fn a_cylinder_rim_gains_a_toroidal_blend() {
     );
 }
 
+/// The circular edge of `solid` through `(rho, 0, z)`.
+fn rim_through(
+    model: &ogeom_topo::Model,
+    solid: &ogeom_topo::Shape,
+    rho: f64,
+    z: f64,
+) -> ogeom_topo::Shape {
+    ogeom_topo::explore_unique(model, solid, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            ogeom_algo::edge_vertices(model, e)
+                .unwrap()
+                .is_some_and(|(a, _)| {
+                    model
+                        .node(&a)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .is_some_and(|p| {
+                            (p.z - z).abs() < 1e-7 && (p.x.hypot(p.y) - rho).abs() < 1e-7
+                        })
+                })
+        })
+        .expect("the solid has that rim")
+}
+
+/// What a ball of radius `r` rounds off a corner revolved about the `z`
+/// axis, by Pappus: in the meridian the corner stands at `c = (rho, z)`,
+/// its faces leaving it along the unit `a` and `b`. The ball's centre lies
+/// on the bisector `r / sin(theta / 2)` from the corner and touches each
+/// face `r / tan(theta / 2)` along it; the region is the kite of the
+/// corner, the contacts and the centre less the ball's sector, each
+/// weighted by its centroid's distance from the axis.
+fn pappus_rounded(c: (f64, f64), a: (f64, f64), b: (f64, f64), r: f64) -> f64 {
+    let theta = a.0.mul_add(b.0, a.1 * b.1).acos();
+    let along = r / (theta / 2.0).tan();
+    let bisector = {
+        let s = (a.0 + b.0, a.1 + b.1);
+        let m = s.0.hypot(s.1);
+        (s.0 / m, s.1 / m)
+    };
+    let off = r / (theta / 2.0).sin();
+    let centre = (bisector.0.mul_add(off, c.0), bisector.1.mul_add(off, c.1));
+    let touch_a = (a.0.mul_add(along, c.0), a.1.mul_add(along, c.1));
+    let touch_b = (b.0.mul_add(along, c.0), b.1.mul_add(along, c.1));
+    // Each triangle's area times its centroid's distance from the axis.
+    let moment = |p: (f64, f64), q: (f64, f64), s: (f64, f64)| {
+        let area = (q.0 - p.0)
+            .mul_add(s.1 - p.1, -(s.0 - p.0) * (q.1 - p.1))
+            .abs()
+            / 2.0;
+        area * (p.0 + q.0 + s.0) / 3.0
+    };
+    let kite = moment(c, touch_a, centre) + moment(c, centre, touch_b);
+    let phi = core::f64::consts::PI - theta;
+    let sector = phi * r * r / 2.0;
+    let sector_rho = centre.0 - bisector.0 * (4.0 * r * (phi / 2.0).sin() / (3.0 * phi));
+    2.0 * core::f64::consts::PI * sector.mul_add(-sector_rho, kite)
+}
+
+/// Rims where a flat top or floor meets a drafted wall, a cone, rounded
+/// whole, drafted either way: a frustum's top and foot, a tapered bore's
+/// rim through a block, and a frustum standing on a block at its foot
+/// (concave, filled). The ball's centre runs on a circle about the axis,
+/// so the round is a torus, and the volume taken or added is the corner's
+/// region in the meridian swept round by Pappus, to the measure's own
+/// precision. Fitted as a spline band, each round stood up to 5e-5 off.
+#[test]
+fn a_cone_rim_rounds_to_its_torus() {
+    let r = 0.4;
+    let h = 2.0;
+    let unit = |v: (f64, f64)| {
+        let m = v.0.hypot(v.1);
+        (v.0 / m, v.1 / m)
+    };
+    let at =
+        |p: Point| Frame::new(p, ogeom_math::Direction::Z, ogeom_math::Direction::X, T).unwrap();
+    let measured = |model: &ogeom_topo::Model, shape: &ogeom_topo::Shape| {
+        ogeom_algo::volume_properties(
+            model,
+            shape,
+            ogeom_mesh::Deflection {
+                chord: 1e-4,
+                ..ogeom_mesh::Deflection::default()
+            },
+            T,
+        )
+        .unwrap()
+        .mass
+    };
+    let one = |model: &ogeom_topo::Model, shape: &ogeom_topo::Shape| {
+        ogeom_topo::explore_unique(model, shape, ShapeType::Solid).unwrap()[0].clone()
+    };
+    for (foot, top) in [(3.0_f64, 2.6_f64), (2.6, 3.0), (3.0, 2.0), (2.0, 3.0)] {
+        let down = unit((foot - top, -h));
+        let up = unit((top - foot, h));
+        let mut cases = Vec::new();
+        // A frustum's top and foot.
+        for (c, a, b) in [
+            ((top, h), (-1.0, 0.0), down),
+            ((foot, 0.0), (-1.0, 0.0), up),
+        ] {
+            let mut model = ogeom_topo::Model::new();
+            let solid = ogeom_algo::make_cone(&mut model, Frame::WORLD, foot, top, h, T)
+                .unwrap()
+                .shape;
+            cases.push((model, solid, c, a, b, true));
+        }
+        // A tapered bore through a block, its top rim.
+        {
+            let mut model = ogeom_topo::Model::new();
+            let block = ogeom_algo::make_box(
+                &mut model,
+                at(Point::new(-5.0, -5.0, 0.0)),
+                (10.0, 10.0, h),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let k = (top - foot) / h;
+            let hole = ogeom_algo::make_cone(
+                &mut model,
+                at(Point::new(0.0, 0.0, -1.0)),
+                foot - k,
+                top + k,
+                h + 2.0,
+                T,
+            )
+            .unwrap()
+            .shape;
+            let cut = ogeom_bool::cut(&mut model, &block, &hole, T).unwrap().shape;
+            let solid = one(&model, &cut);
+            cases.push((model, solid, (top, h), (1.0, 0.0), down, true));
+        }
+        // A frustum standing on a block, its foot.
+        {
+            let mut model = ogeom_topo::Model::new();
+            let block = ogeom_algo::make_box(
+                &mut model,
+                at(Point::new(-5.0, -5.0, -1.0)),
+                (10.0, 10.0, 1.0),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let boss = ogeom_algo::make_cone(&mut model, Frame::WORLD, foot, top, h, T)
+                .unwrap()
+                .shape;
+            let fused = ogeom_bool::fuse(&mut model, &block, &boss, T)
+                .unwrap()
+                .shape;
+            let fused = one(&model, &fused);
+            let unified = ogeom_heal::unify_same_domain(&mut model, &fused, T)
+                .unwrap()
+                .0
+                .shape;
+            let solid = one(&model, &unified);
+            cases.push((model, solid, (foot, 0.0), (1.0, 0.0), up, false));
+        }
+        for (mut model, solid, c, a, b, cuts) in cases {
+            let before = measured(&model, &solid);
+            let edge = rim_through(&model, &solid, c.0, c.1);
+            let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &edge, r, T).unwrap();
+            let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let after = measured(&model, &rounded.shape);
+            let changed = if cuts { before - after } else { after - before };
+            let want = pappus_rounded(c, a, b, r);
+            assert!(
+                (changed - want).abs() < 1e-9,
+                "foot {foot}, top {top}, rim at {c:?}: {changed} against {want}"
+            );
+            let tori = ogeom_topo::explore_unique(&model, &rounded.shape, ShapeType::Face)
+                .unwrap()
+                .iter()
+                .filter(|f| {
+                    model
+                        .node(f)
+                        .and_then(|n| n.data().as_face())
+                        .and_then(|d| model.geometry().surface(d.surface))
+                        .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Torus(_)))
+                })
+                .count();
+            assert_eq!(
+                tori, 1,
+                "foot {foot}, top {top}, rim at {c:?}: the round is a torus"
+            );
+        }
+    }
+}
+
 /// A drum standing at a slant, either rim rounded. The tube's ring on the
 /// wall lies on the torus chart's outer equator, the seam of its tube
 /// angle, where rounding reads it at either end of the chart; the blend is

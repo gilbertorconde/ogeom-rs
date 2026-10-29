@@ -782,6 +782,10 @@ crate = "ogeom-fillet"
 verdict = "partial"
 restriction = """Single edges, tangent chains and full rims blend, constant \
 and variable radius, and the corner where three blends meet is closed: \
+a rim where a flat cap meets a coaxial cylinder or cone (a drum's top, a \
+frustum's foot, a tapered bore) rounds to its exact torus band, where the \
+tube stands clear of its axis, and to the fitted band where that is what \
+builds. \
 a corner blend applied through the boolean's tangency at a face's own vertex. The marched fillet carries the \
 rolling ball to topology on seats no closed form speaks (a fitted seam \
 between two analytic walls, a conic seat re-opened to its full loop), with \
@@ -819,10 +823,12 @@ of two straight creases, whatever their sections (an acute, square or \
 obtuse outside corner, its walls square or leaning alike or apart), each \
 band runs out as it does alone and the cuts take their union, as they do \
 where one of the two is a drum's rim beside a straight crease (a \
-D-shaped block's arc beside its chord, in either order). \
+D-shaped block's arc beside its chord, in either order, its drum \
+upright or drafted). \
 Across a re-entrant turn one of the two may be a drum's rim beside a \
 straight crease, the material within the drum (a boss fused onto a block \
-whose wall leans either way) or outside it (a bore up to a drafted \
+whose wall leans either way, the boss upright or overhanging, a cone \
+narrowing to its foot) or outside it (a bore up to a drafted \
 chord): the rim's torus band is taken from its cap to where its section \
 stands wholly past the other wall, widened by what stands off the drum \
 before the rim's cap (beside the chord's own band too, where a chord \

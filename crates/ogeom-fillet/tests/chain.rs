@@ -2122,24 +2122,25 @@ fn past_plane(model: &mut ogeom_topo::Model, on: Point, normal: Vector) -> ogeom
         .shape
 }
 
-/// A drum of radius 3 about the `z` axis, two high, fused with a block
-/// `x <= 0` whose top crease `y = b` meets the drum's rim at `(-sqrt(9 -
-/// b^2), b, 2)`, its wall leaning by `lean` from the vertical, its foot in
-/// under the block for a positive lean, the two tops unified into one
-/// face. Returns the solid, that corner, and the rim's and the block's
-/// top creases leaving it.
+/// A drum of radius 3 at its top about the `z` axis, two high, drafted by
+/// `k` over the height so its foot stands out for a positive `k` (a cone;
+/// upright, a cylinder), fused with a block `x <= 0` whose top crease `y =
+/// b` meets the drum's rim at `(-sqrt(9 - b^2), b, 2)`, its wall leaning by
+/// `lean` from the vertical, its foot in under the block for a positive
+/// lean, the two tops unified into one face. Returns the solid, that
+/// corner, and the rim's and the block's top creases leaving it.
 fn drum_on_a_leaning_block(
     model: &mut ogeom_topo::Model,
     b: f64,
     lean: f64,
+    k: f64,
 ) -> (ogeom_topo::Shape, Point, [ogeom_topo::Shape; 2]) {
-    let drum = ogeom_algo::make_cylinder(
-        model,
-        Frame::new(Point::ORIGIN, Direction::Z, -Direction::X, T).unwrap(),
-        3.0,
-        2.0,
-        T,
-    )
+    let frame = Frame::new(Point::ORIGIN, Direction::Z, -Direction::X, T).unwrap();
+    let drum = if k == 0.0 {
+        ogeom_algo::make_cylinder(model, frame, 3.0, 2.0, T)
+    } else {
+        ogeom_algo::make_cone(model, frame, 2.0_f64.mul_add(k, 3.0), 3.0, 2.0, T)
+    }
     .unwrap()
     .shape;
     let block = ogeom_algo::make_box(
@@ -2204,11 +2205,13 @@ fn drafted_d_pocket(
     (solid, corner, edges)
 }
 
-/// A corner where a top crease on a vertical drum of radius `big` about
-/// `centre` meets a straight one at `at`, both under the top `z = 2`: the
-/// material within the drum where `within`, the drum's crease carried on
-/// past the vertex along `ahead`, the straight wall's outward normal in
-/// plan `side` and its lean `lean`. Within the square of half side `half`
+/// A corner where a top crease on a drum of radius `big` about `centre`
+/// meets a straight one at `at`, both under the top `z = 2`: the material
+/// within the drum where `within`, the drum's wall drafted by `k` (its
+/// outward normal in the half-plane through the axis `(1, k)`, off the
+/// axis and up; upright for zero), the drum's crease carried on past the
+/// vertex along `ahead`, the straight wall's outward normal in plan `side`
+/// and its lean `lean`. Within the square of half side `half`
 /// round the corner, what lies above both bands carried on and in the
 /// material, a column at a time: the drum's band its torus band before its
 /// cap and the straight band of its end section past it, out of the open
@@ -2219,7 +2222,7 @@ fn turned_corner_removed(
     (centre, big, within): ((f64, f64), f64, bool),
     ahead: (f64, f64),
     side: (f64, f64),
-    lean: f64,
+    (lean, k): (f64, f64),
     r: f64,
     half: f64,
 ) -> f64 {
@@ -2228,7 +2231,7 @@ fn turned_corner_removed(
         towards * (at.0 - centre.0) / big,
         towards * (at.1 - centre.1) / big,
     );
-    let turned = Section::new(0.0, (1.0, 0.0), r);
+    let turned = Section::new(0.0, (1.0, k), r);
     let straight = Section::new(0.0, (lean.cos(), -lean.sin()), r);
     integral(
         (at.0 - half, at.0 + half),
@@ -2251,7 +2254,7 @@ fn turned_corner_removed(
                 .iter()
                 .map(|&(p, q)| (p.max(0.0), q.min(2.0)))
                 .collect();
-            let open = if off > 0.0 { (0.0, 2.0) } else { (0.0, 0.0) };
+            let open = turned.past(off, 0.0);
             span(&runs) - overlap(&runs, &meet(&[open], &[pb]))
         },
     )
@@ -2315,14 +2318,14 @@ fn rounds_at_a_drum_meeting_a_leaning_wall_take_all_above_both() {
     let half = 1.2;
     for (b, lean) in [(1.0_f64, 0.1_f64.atan()), (2.0, 0.1_f64.atan())] {
         let mut model = ogeom_topo::Model::new();
-        let (solid, at, edges) = drum_on_a_leaning_block(&mut model, b, lean);
+        let (solid, at, edges) = drum_on_a_leaning_block(&mut model, b, lean, 0.0);
         let reach = (9.0 - b * b).sqrt();
         let want = turned_corner_removed(
             (at.x, at.y),
             ((0.0, 0.0), 3.0, true),
             (-b / 3.0, -reach / 3.0),
             (0.0, 1.0),
-            lean,
+            (lean, 0.0),
             r,
             half,
         );
@@ -2350,14 +2353,14 @@ fn rounds_at_a_drum_meeting_a_wall_leaning_out_take_all_above_both() {
     let lean = -0.1_f64.atan();
     for b in [1.0_f64, 2.0] {
         let mut model = ogeom_topo::Model::new();
-        let (solid, at, edges) = drum_on_a_leaning_block(&mut model, b, lean);
+        let (solid, at, edges) = drum_on_a_leaning_block(&mut model, b, lean, 0.0);
         let reach = (9.0 - b * b).sqrt();
         let want = turned_corner_removed(
             (at.x, at.y),
             ((0.0, 0.0), 3.0, true),
             (-b / 3.0, -reach / 3.0),
             (0.0, 1.0),
-            lean,
+            (lean, 0.0),
             r,
             half,
         );
@@ -2371,6 +2374,58 @@ fn rounds_at_a_drum_meeting_a_wall_leaning_out_take_all_above_both() {
             );
         }
     }
+}
+
+/// As [`rounds_at_a_drum_meeting_a_leaning_wall_take_all_above_both`], the
+/// drum drafted so it narrows to its foot (a cone), the block's wall
+/// square or leaning either way. The rim's round is a torus band, its
+/// section the same at every turn about the axis, so the junction takes
+/// what lies above both bands, the open corner bounded by the cone itself.
+/// The rim's round was fitted, and the junction took no fitted band: the
+/// request refused in both orders, or fell 3.6e-3 to 1.31e-2 short.
+#[test]
+fn rounds_at_a_drafted_drum_meeting_a_wall_take_all_above_both() {
+    let r = 0.5;
+    let half = 1.2;
+    let k = -0.1;
+    for b in [1.0_f64, 2.0] {
+        for lean in [0.0, 0.1_f64.atan(), -0.1_f64.atan()] {
+            let mut model = ogeom_topo::Model::new();
+            let (solid, at, edges) = drum_on_a_leaning_block(&mut model, b, lean, k);
+            let reach = (9.0 - b * b).sqrt();
+            let want = turned_corner_removed(
+                (at.x, at.y),
+                ((0.0, 0.0), 3.0, true),
+                (-b / 3.0, -reach / 3.0),
+                (0.0, 1.0),
+                (lean, k),
+                r,
+                half,
+            );
+            for got in removed_near(&model, &solid, &edges, r, at, half) {
+                assert!(
+                    (got - want).abs() < 5e-6,
+                    "b {b}, leaning {lean}: {got} against {want}"
+                );
+            }
+        }
+    }
+}
+
+/// A drum drafted with its foot out (a cone) fused onto a block whose wall
+/// leans out, both top creases rounded. No junction is taken there, and
+/// with the rim's exact torus band the later cut does not close in the
+/// boolean when the block's crease is named first; the request is rounded
+/// again with the rim's band fitted, as before the exact band, and both
+/// orders build the same corner.
+#[test]
+fn a_cone_rim_that_meets_unresolved_is_rounded_fitted() {
+    let r = 0.5;
+    let half = 1.2;
+    let mut model = ogeom_topo::Model::new();
+    let (solid, at, edges) = drum_on_a_leaning_block(&mut model, 2.0, -0.1_f64.atan(), 0.1);
+    let [first, second] = removed_near(&model, &solid, &edges, r, at, half);
+    assert!((first - second).abs() < 1e-6, "{first} against {second}");
 }
 
 /// A pocket of a disc up to a chord whose wall is drafted, the floor
@@ -2400,7 +2455,7 @@ fn rounds_at_a_bore_meeting_a_drafted_chord_take_all_above_both() {
             ((4.0, 4.0), 2.5, false),
             (-c / 2.5, reach / 2.5),
             (0.0, -1.0),
-            -d.atan(),
+            (-d.atan(), 0.0),
             r,
             half,
         );
@@ -2434,7 +2489,7 @@ fn a_pocket_of_a_disc_and_its_chord_meets_at_both_corners() {
             ((4.0, 4.0), 2.5, false),
             (-c / 2.5, reach / 2.5),
             (0.0, -1.0),
-            0.0,
+            (0.0, 0.0),
             r,
             half,
         );
@@ -2447,24 +2502,25 @@ fn a_pocket_of_a_disc_and_its_chord_meets_at_both_corners() {
     }
 }
 
-/// A disc of radius 2.5 about `(4, 4)`, two high, up to its chord `y = 4 +
-/// c` at the top, the chord's wall leaning `d` per unit of depth, its foot
-/// in for a positive `d`. Returns the block, the rim's corner `(4 +
-/// sqrt(2.5^2 - c^2), 4 + c, 2)`, and the arc's and the chord's top creases
-/// leaving it.
+/// A disc of radius 2.5 about `(4, 4)` at the top, two high, its drum
+/// drafted by `k` over the height so its foot stands out for a positive
+/// `k` (a cone; upright, a cylinder), up to its chord `y = 4 + c` at the
+/// top, the chord's wall leaning `d` per unit of depth, its foot in for a
+/// positive `d`. Returns the block, the rim's corner `(4 + sqrt(2.5^2 -
+/// c^2), 4 + c, 2)`, and the arc's and the chord's top creases leaving it.
 fn d_shaped_block(
     model: &mut ogeom_topo::Model,
     c: f64,
     d: f64,
+    k: f64,
 ) -> (ogeom_topo::Shape, Point, [ogeom_topo::Shape; 2]) {
     let big = 2.5;
-    let disc = ogeom_algo::make_cylinder(
-        model,
-        Frame::new(Point::new(4.0, 4.0, 0.0), Direction::Z, Direction::Y, T).unwrap(),
-        big,
-        2.0,
-        T,
-    )
+    let frame = Frame::new(Point::new(4.0, 4.0, 0.0), Direction::Z, Direction::Y, T).unwrap();
+    let disc = if k == 0.0 {
+        ogeom_algo::make_cylinder(model, frame, big, 2.0, T)
+    } else {
+        ogeom_algo::make_cone(model, frame, 2.0_f64.mul_add(k, big), big, 2.0, T)
+    }
     .unwrap()
     .shape;
     let normal = Vector::new(0.0, 1.0, d) * (1.0 / d.hypot(1.0));
@@ -2527,7 +2583,7 @@ fn rounds_of_a_d_shaped_block_take_both_bands_as_alone() {
     let half = 1.2;
     for c in [0.5_f64, 0.0] {
         let mut model = ogeom_topo::Model::new();
-        let (solid, at, edges) = d_shaped_block(&mut model, c, 0.0);
+        let (solid, at, edges) = d_shaped_block(&mut model, c, 0.0, 0.0);
         let want = d_shaped_corner_removed((at.x, at.y), c, r, half);
         for got in removed_near(&model, &solid, &edges, r, at, half) {
             assert!(
@@ -2540,14 +2596,15 @@ fn rounds_of_a_d_shaped_block_take_both_bands_as_alone() {
 
 /// What rounding the arc and the chord of [`d_shaped_block`] takes within
 /// the square of half side `half` round its corner `at`, the chord's wall
-/// leaning `d`, a column at a time: the union of what each band takes as
-/// it does alone, in the material. The arc's band is its torus band up to
-/// its cap, in the plane through the axis and the vertex; the chord's is
-/// its straight band run out past the vertex across the drum.
-fn leaning_d_corner_removed(at: (f64, f64), c: f64, d: f64, r: f64, half: f64) -> f64 {
+/// leaning `d` and the drum drafted by `k`, a column at a time: the union
+/// of what each band takes as it does alone, in the material. The arc's
+/// band is its torus band up to its cap, in the plane through the axis and
+/// the vertex; the chord's is its straight band run out past the vertex
+/// across the drum, in the material within the drum's wall at each height.
+fn leaning_d_corner_removed(at: (f64, f64), c: f64, (d, k): (f64, f64), r: f64, half: f64) -> f64 {
     let (centre, big) = ((4.0, 4.0), 2.5);
     let ahead = (-c / big, (at.0 - centre.0) / big);
-    let arc_band = Section::new(0.0, (1.0, 0.0), r);
+    let arc_band = Section::new(0.0, (1.0, k), r);
     let chord_band = Section::new(0.0, (1.0, d), r);
     integral(
         (at.0 - half, at.0 + half),
@@ -2555,22 +2612,28 @@ fn leaning_d_corner_removed(at: (f64, f64), c: f64, d: f64, r: f64, half: f64) -
         2e3,
         |x, y| {
             let off = (x - centre.0).hypot(y - centre.1) - big;
-            if off > 0.0 {
-                return 0.0;
-            }
-            let (px, py) = (x - at.0, y - at.1);
-            let arc = if px.mul_add(ahead.0, py * ahead.1) > 0.0 {
-                [(0.0, 0.0); 2]
+            // The heights the drum holds at this column: those where its
+            // radius, `big + k (2 - z)`, reaches `off` past the top's.
+            let drum = if k == 0.0 {
+                if off > 0.0 { (0.0, 0.0) } else { (0.0, 2.0) }
+            } else if k > 0.0 {
+                (0.0, (2.0 - off / k).min(2.0))
             } else {
-                arc_band.column(off)
+                ((2.0 - off / k).max(0.0), 2.0)
             };
-            let past = [chord_band.past(py, 0.0)];
+            let (px, py) = (x - at.0, y - at.1);
             let within = |runs: [(f64, f64); 2]| -> Vec<(f64, f64)> {
                 runs.iter()
                     .map(|&(p, q)| (p.max(0.0), q.min(2.0)))
                     .collect()
             };
-            let (arc, chord) = (within(arc), within(chord_band.column(py)));
+            let arc = if px.mul_add(ahead.0, py * ahead.1) > 0.0 {
+                Vec::new()
+            } else {
+                within(arc_band.column(off))
+            };
+            let chord = meet(&within(chord_band.column(py)), &[drum]);
+            let past = [chord_band.past(py, 0.0)];
             span(&arc) + span(&chord) - overlap(&arc, &chord) - overlap(&arc, &past)
         },
     )
@@ -2591,12 +2654,35 @@ fn rounds_of_a_d_shaped_block_with_an_overhanging_chord_close_in_both_orders() {
     let half = 1.2;
     for d in [-0.1_f64, -0.05] {
         let mut model = ogeom_topo::Model::new();
-        let (solid, at, edges) = d_shaped_block(&mut model, 0.0, d);
-        let want = leaning_d_corner_removed((at.x, at.y), 0.0, d, r, half);
+        let (solid, at, edges) = d_shaped_block(&mut model, 0.0, d, 0.0);
+        let want = leaning_d_corner_removed((at.x, at.y), 0.0, (d, 0.0), r, half);
         for got in removed_near(&model, &solid, &edges, r, at, half) {
             assert!(
                 (got - want).abs() < 5e-6,
                 "chord wall leaning {d}: {got} against {want}"
+            );
+        }
+    }
+}
+
+/// A D-shaped block whose drum is drafted (a cone), its foot out or in,
+/// its arc's and its chord's top creases rounded in both orders. The arc's
+/// round is the torus band of its section, a cone's, and the turn is
+/// convex, so each band runs out as it does alone and the cuts take their
+/// union, the chord's band run out across the cone. The arc's round was
+/// fitted, and the request refused in both orders.
+#[test]
+fn rounds_of_a_d_shaped_block_on_a_drafted_drum_take_both_bands_as_alone() {
+    let r = 0.5;
+    let half = 1.2;
+    for (c, k) in [(0.5_f64, 0.1_f64), (0.0, 0.1), (0.0, -0.1)] {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, at, edges) = d_shaped_block(&mut model, c, 0.0, k);
+        let want = leaning_d_corner_removed((at.x, at.y), c, (0.0, k), r, half);
+        for got in removed_near(&model, &solid, &edges, r, at, half) {
+            assert!(
+                (got - want).abs() < 5e-6,
+                "chord at {c}, drum drafted {k}: {got} against {want}"
             );
         }
     }

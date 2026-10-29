@@ -334,6 +334,26 @@ fn chamfer_edges_with_own(
     Ok(built)
 }
 
+/// The seat of a rim's bevel: a revolved seat whose wall is a cylinder. A
+/// cone's wall meets the cap at a slant the bevel's legs do not follow.
+fn rim_seat(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    rim: &ogeom_geom::CircleCurve,
+    tol: Tolerances,
+) -> OgeomResult<RevolvedSeat> {
+    let seat = revolved_seat(model, solid, edge, rim, tol)?;
+    if seat.slope != 0.0 {
+        ogeom_bail!(
+            Construction,
+            "the rim meets a face that is neither plane nor cylinder; that \
+             seat needs the marching blend machinery"
+        );
+    }
+    Ok(seat)
+}
+
 /// The wedge one chamfer cuts, built on `solid` as it stands.
 fn wedge_for(
     model: &mut Model,
@@ -349,7 +369,7 @@ fn wedge_for(
                 bevel(model, &seat, [*distance, *distance], tol)
             }
             SeatKind::Rim(rim) => {
-                let seat = revolved_seat(model, solid, edge, &rim, tol)?;
+                let seat = rim_seat(model, solid, edge, &rim, tol)?;
                 revolved_bevel(model, edge, &seat, *distance, *distance, tol)
             }
         },
@@ -367,7 +387,7 @@ fn wedge_for(
                 bevel(model, &seat, distances, tol)
             }
             SeatKind::Rim(rim) => {
-                let seat = revolved_seat(model, solid, edge, &rim, tol)?;
+                let seat = rim_seat(model, solid, edge, &rim, tol)?;
                 let (on_wall, on_cap) = revolved_side(&seat, face, *on_face, *on_other)?;
                 revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
             }
@@ -421,7 +441,7 @@ fn wedge_for(
                             "the bevel at that angle never meets the edge's other face"
                         );
                     }
-                    let seat = revolved_seat(model, solid, edge, &rim, tol)?;
+                    let seat = rim_seat(model, solid, edge, &rim, tol)?;
                     let derived = distance * angle.tan();
                     let (on_wall, on_cap) = revolved_side(&seat, face, distance, derived)?;
                     revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)

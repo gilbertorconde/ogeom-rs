@@ -95,22 +95,25 @@ pub(crate) struct Junction {
     /// Each edge's wall's outward unit normal at the vertex.
     pub sides: [Vector; 2],
     /// Of a crossed re-entrant junction whose one crease is a circle about
-    /// an axis along `top`, on the cylinder through it about that axis, and
-    /// whose other is straight: that band, a torus band, its section the
-    /// same at every turn about the axis.
+    /// an axis along `top`, on the cylinder or cone through it about that
+    /// axis, and whose other is straight: that band, a torus band, its
+    /// section the same at every turn about the axis.
     pub turned: Option<Turned>,
 }
 
 /// The turned band of a crossed junction: its crease a circle about an
-/// axis along the shared host's normal, on the cylinder through it.
+/// axis along the shared host's normal, on the cylinder or cone through it.
 #[derive(Clone, Copy)]
 pub(crate) struct Turned {
     /// The band's slot in the junction.
     pub slot: usize,
     /// The circle's centre.
     pub centre: Point,
-    /// The circle's radius, the cylinder's.
+    /// The circle's radius, the wall's there.
     pub big: f64,
+    /// How fast the wall's radius grows along the shared host's normal:
+    /// zero for a cylinder.
+    pub slope: f64,
     /// The material lies within the cylinder (a boss), not outside it (a
     /// bore).
     pub within: bool,
@@ -409,18 +412,21 @@ fn junction(
                     let wall = if k == 0 { &wall_0 } else { &wall_1 };
                     let (other, _) = crate::support::edge_curve(model, &edges[1 - k], tol)?;
                     if matches!(other, ogeom_geom::Curve::Line(_)) {
-                        turned = turned_about(model, edge, wall, top, tol)?.map(|(centre, big)| {
-                            // The wall's outward normal points off the axis
-                            // where the material lies within the cylinder.
-                            let from_axis = at - centre;
-                            let side = if k == 0 { side_0 } else { side_1 };
-                            Turned {
-                                slot: k,
-                                centre,
-                                big,
-                                within: side.dot(from_axis - top * from_axis.dot(top)) > 0.0,
-                            }
-                        });
+                        turned = turned_about(model, edge, wall, top, tol)?.map(
+                            |(centre, big, slope)| {
+                                // The wall's outward normal points off the axis
+                                // where the material lies within the cylinder.
+                                let from_axis = at - centre;
+                                let side = if k == 0 { side_0 } else { side_1 };
+                                Turned {
+                                    slot: k,
+                                    centre,
+                                    big,
+                                    slope,
+                                    within: side.dot(from_axis - top * from_axis.dot(top)) > 0.0,
+                                }
+                            },
+                        );
                     }
                 }
                 if turned.is_none() {
@@ -494,15 +500,16 @@ fn junction(
 }
 
 /// Where `edge` is a circle about an axis along the unit `top`, on a `wall`
-/// that is the cylinder through it about that axis, each within the wall's
-/// own tolerance: the circle's centre and radius.
+/// that is the cylinder or the cone through it about that axis, each within
+/// the wall's own tolerance: the circle's centre and radius, and how fast
+/// the wall's radius grows along `top`.
 fn turned_about(
     model: &Model,
     edge: &Shape,
     wall: &Shape,
     top: Vector,
     tol: Tolerances,
-) -> OgeomResult<Option<(Point, f64)>> {
+) -> OgeomResult<Option<(Point, f64, f64)>> {
     use ogeom_geom::Transformable as _;
     let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
     let ogeom_geom::Curve::Circle(circle) = curve else {
@@ -520,13 +527,23 @@ fn turned_about(
     else {
         return Ok(None);
     };
-    let ogeom_geom::SurfaceGeometry::Cylinder(placed) =
-        surface.transformed(&wall.transform(model.datums())?, tol)?
-    else {
-        return Ok(None);
+    // The wall's axis, and its radius at a height along that axis from the
+    // axis's own origin, as a radius there and a growth per unit height.
+    let (axis, radius, growth) = match surface.transformed(&wall.transform(model.datums())?, tol)? {
+        ogeom_geom::SurfaceGeometry::Cylinder(placed) => {
+            let cylinder = placed.cylinder();
+            (cylinder.axis(), cylinder.radius(), 0.0)
+        }
+        ogeom_geom::SurfaceGeometry::Cone(placed) => {
+            let cone = placed.cone();
+            (
+                cone.axis(),
+                cone.reference_radius(),
+                cone.half_angle().tan(),
+            )
+        }
+        _ => return Ok(None),
     };
-    let cylinder = placed.cylinder();
-    let axis = cylinder.axis();
     let along = axis.direction.vector();
     if along.cross(top).magnitude() > tol.angular() {
         return Ok(None);
@@ -536,12 +553,17 @@ fn turned_about(
         .map_or(tol.confusion(), ogeom_core::Tolerance::get)
         .max(tol.confusion());
     let off = circle.centre() - axis.location;
-    if (off - along * off.dot(along)).magnitude() > held
-        || (cylinder.radius() - circle.radius()).abs() > held
+    let height = off.dot(along);
+    if (off - along * height).magnitude() > held
+        || (growth.mul_add(height, radius) - circle.radius()).abs() > held
     {
         return Ok(None);
     }
-    Ok(Some((circle.centre(), circle.radius())))
+    Ok(Some((
+        circle.centre(),
+        circle.radius(),
+        growth * along.dot(top).signum(),
+    )))
 }
 
 /// Whether `edge` between `hosts` is a convex crease: the material lies
@@ -943,6 +965,7 @@ pub(crate) fn corner(
                     Some(
                         ogeom_geom::SurfaceGeometry::Plane(_)
                             | ogeom_geom::SurfaceGeometry::Cylinder(_)
+                            | ogeom_geom::SurfaceGeometry::Cone(_)
                             | ogeom_geom::SurfaceGeometry::Torus(_)
                     )
                 ) {
@@ -1276,8 +1299,10 @@ pub(crate) fn corner(
 }
 
 /// What of a cube of side `2 size` round the vertex of `junction` stands
-/// off its turned wall, the cylinder about the turned band's axis: outside
-/// it round a boss, within it in a bore.
+/// off its turned wall, the cylinder or cone about the turned band's axis:
+/// outside it round a boss, within it in a bore. A cone whose apex stands
+/// within that reach is refused: its wall there is no longer the turned
+/// band's.
 fn off_turned_wall(
     model: &mut Model,
     junction: &Junction,
@@ -1299,7 +1324,21 @@ fn off_turned_wall(
         ogeom_math::Direction::new(across, tol)?,
         tol,
     )?;
-    let drum = ogeom_algo::make_cylinder(model, frame, turned.big, reach * 2.0, tol)?.shape;
+    let drum = if turned.slope == 0.0 {
+        ogeom_algo::make_cylinder(model, frame, turned.big, reach * 2.0, tol)?.shape
+    } else {
+        let ends = [
+            turned.slope.mul_add(-reach, turned.big),
+            turned.slope.mul_add(reach, turned.big),
+        ];
+        if ends.iter().any(|&r| r <= tol.confusion()) {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a turned band's cone comes to its apex within the corner's reach"
+            );
+        }
+        ogeom_algo::make_cone(model, frame, ends[0], ends[1], reach * 2.0, tol)?.shape
+    };
     let normal = junction.sides[turned.slot];
     let cube = half_space(model, (junction.at - normal * size, normal), size, tol)?;
     Ok(if turned.within {

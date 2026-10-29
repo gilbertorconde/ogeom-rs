@@ -900,6 +900,48 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A rim where a flat cap meets a cone rounds to its exact torus.** (#342)
+  - A rolling ball round a rim on a planar cap and a coaxial cone (a
+    frustum's top or foot, a tapered bore's rim, a drafted boss's foot)
+    keeps its centre on a circle about the axis, so its round is a torus
+    band. The exact revolved route took only a cylinder beside the cap, and
+    a cone's rim was marched and fitted as a spline band, within 2e-4 of
+    the torus.
+  - The revolved seat now takes a cone. In the meridian the wall is the
+    line `rho = R + s h`, and the ball's centre stands a radius off the cap
+    and off that line: at `h = -tau r`, `rho = R + s h - sigma tau r
+    sqrt(1 + s²)`. It touches the wall a radius along the line's normal,
+    and its arc turns through the angle whose cosine is `-sigma s / sqrt(1
+    + s²)` rather than a right angle. The wall's band is a cone band, and
+    across the whole turn the tube's rows are given rather than read back,
+    since the arc can cross the torus chart's outer equator.
+  - Every rim this changes moves onto its closed form. A frustum's top and
+    foot, a tapered bore's rim and a frustum's foot on a block, drafted
+    both ways (radii 3 and 2.6 or 2 over a height of 2, r = 0.4), now take
+    their Pappus volume to 1e-13; the fitted bands stood 5e-6 to 5e-5
+    short of it. Those sixteen rims round in 0.5 s, against 47 s fitted.
+  - Where the tube would reach its own axis, or where a request with the
+    exact band does not close in the boolean, the cone's rim is rounded
+    with the fitted band as before. Chamfers of a cone's rim are unchanged.
+- **A drafted drum meets a straight crease in a junction.** (#342)
+  - With the rim's round a torus band, the crossed junction of a drum's
+    rim beside a straight crease takes a cone: the turned band's wall and
+    the open corner past the other wall are bounded by the cone itself.
+  - A drum narrowing to its foot (top radius 3, drafted 0.1) fused onto a
+    block whose crease meets the rim at y = 1 or 2, the block's wall
+    square or leaning 0.1 either way, r = 0.5: every case now takes what
+    lies above both bands, within 2e-6 of the column-integrated reference
+    in both orders. Two of them refused in both orders, and the others
+    fell 3.6e-3 to 1.31e-2 short.
+  - A D-shaped block on a drafted drum, its arc and chord rounded
+    together, takes the union of each band alone in both orders with the
+    chord at 0.5 or through the centre and the drum drafted out, and with
+    the chord through the centre and the drum drafted in. Each refused in
+    both orders.
+  - A drum drafted with its foot out still meets a straight crease as
+    without a junction, as before.
+
+
 - **A straight round beside a drum runs out across it.** (#342)
   - This is a convention change. A straight band ran out past its edge's
     end only across planes. Where a drum's cylinder followed the crease

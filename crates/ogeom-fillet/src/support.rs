@@ -10,8 +10,10 @@
 use ogeom_algo::{make_edge, make_edge_between, make_revolution_band, make_vertex};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
-use ogeom_geom::{CircleCurve, Curve, CylinderSurface, LineCurve, PlaneSurface, SurfaceGeometry};
-use ogeom_math::{Circle, Cylinder, Direction, Frame, Plane, Point, Vector};
+use ogeom_geom::{
+    CircleCurve, ConeSurface, Curve, CylinderSurface, LineCurve, PlaneSurface, SurfaceGeometry,
+};
+use ogeom_math::{Circle, Cone, Cylinder, Direction, Frame, Plane, Point, Vector};
 use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Orientation, Shape, ShapeType, explore};
 
 /// Where a blend sits on a solid: a straight edge and the two planar faces
@@ -388,19 +390,24 @@ pub(crate) fn planar_seat(
 }
 
 /// Where a revolved blend sits: a circular rim shared by one perpendicular
-/// planar cap and one coaxial cylindrical wall, reduced to the numbers the
-/// revolved wedge runs on.
+/// planar cap and one coaxial wall, a cylinder or a cone, reduced to the
+/// numbers the revolved wedge runs on.
 ///
 /// Four seats, one parameterization. With `sigma` the wall's outward radial
 /// sign and `tau` telling whether the wall extends away from the cap's
 /// outward side, `tau` alone decides whether the wedge subtracts (the
 /// external rim and the hole's rim, both convex) or fuses (the boss base and
-/// the blind hole's floor, both concave).
+/// the blind hole's floor, both concave). A cone's wall meets the cap at
+/// other than a right angle, but its material angle stays between the two
+/// straight lines of the meridian, so the four seats are the same.
 pub(crate) struct RevolvedSeat {
     /// The rim's centre.
     pub centre: Point,
-    /// The rim's radius, also the wall's.
+    /// The rim's radius, also the wall's there.
     pub radius: f64,
+    /// How fast the wall's radius grows along `up`: zero for a cylinder,
+    /// the tangent of a cone's half angle, signed, for a cone.
+    pub slope: f64,
     /// The cap's outward unit normal.
     pub up: Vector,
     /// The rim frame's `x`, so every ring built on the seat shares a
@@ -413,7 +420,7 @@ pub(crate) struct RevolvedSeat {
     pub tau: f64,
     /// The planar cap.
     pub cap_face: Shape,
-    /// The cylindrical wall.
+    /// The wall.
     pub wall_face: Shape,
     /// Whether the rims on the rim's circle (edges bounding walls on its
     /// cylinder) run its whole turn, in one piece or in several.
@@ -429,6 +436,83 @@ impl RevolvedSeat {
     /// A frame at `origin` sharing the seat's axis and parameter origin.
     pub fn frame_at(&self, origin: Point, tol: Tolerances) -> OgeomResult<Frame> {
         Frame::new(origin, Direction::new(self.up, tol)?, self.x_ref, tol)
+    }
+
+    /// The wall's radius at `height` along `up` from the rim.
+    pub fn radius_at(&self, height: f64) -> f64 {
+        self.slope.mul_add(height, self.radius)
+    }
+
+    /// The wall's own surface, charted from `lo` to `hi` along `up` from the
+    /// rim, both sides of the stretch `held` it must hold, its angles
+    /// counted from `x`. A cone's chart is kept clear of its apex: past the
+    /// apex its radius would run negative.
+    pub fn wall_surface(
+        &self,
+        (lo, hi): (f64, f64),
+        held: (f64, f64),
+        x: Direction,
+        tol: Tolerances,
+    ) -> OgeomResult<SurfaceGeometry> {
+        let frame_at = |origin: Point| Frame::new(origin, Direction::new(self.up, tol)?, x, tol);
+        if self.slope == 0.0 {
+            let origin = self.centre + self.up * lo;
+            return Ok(CylinderSurface::new(
+                Cylinder::new(frame_at(origin)?, self.radius, tol)?,
+                (0.0, hi - lo),
+            )?
+            .into());
+        }
+        let apex = -self.radius / self.slope;
+        let (lo, hi) = if apex < held.0 {
+            (lo.max(f64::midpoint(apex, held.0)), hi)
+        } else if apex > held.1 {
+            (lo, hi.min(f64::midpoint(apex, held.1)))
+        } else {
+            ogeom_bail!(
+                Construction,
+                "a revolved seat's wall comes to its apex within the blend"
+            );
+        };
+        let origin = self.centre + self.up * lo;
+        Ok(ConeSurface::new(
+            Cone::new(
+                frame_at(origin)?,
+                self.radius_at(lo),
+                self.slope.atan(),
+                tol,
+            )?,
+            (0.0, hi - lo),
+        )?
+        .into())
+    }
+
+    /// Where a ball of `radius` rolling round the seat sits, in the
+    /// meridian: `(rho, h)`, the distance off the axis and the height along
+    /// `up` from the rim.
+    ///
+    /// The cap is the line `h = 0` and the wall the line `rho = R + s h`,
+    /// its unit normal off the axis `(1, -s) / w` with `w = sqrt(1 + s²)`.
+    /// The ball's centre stands a radius off the cap on the wall's side,
+    /// `h = -tau r`, and a radius off the wall on the side `-sigma tau`
+    /// (a cylinder's `R - sigma tau r`): `rho = R + s h - sigma tau r w`. It
+    /// touches the cap straight along `tau up` from there and the wall
+    /// along `sigma tau (1, -s) / w`, and its arc between the two turns
+    /// through the angle whose cosine is their dot, `-sigma s / w`. That is
+    /// a right angle on a cylinder, and less than a half turn on any cone.
+    pub fn ball(&self, radius: f64) -> RevolvedBall {
+        let s = self.slope;
+        let w = s.hypot(1.0);
+        let height = -self.tau * radius;
+        let lean = self.sigma * self.tau * radius;
+        let wall_height = height - lean * s / w;
+        RevolvedBall {
+            rho: lean.mul_add(-w, s.mul_add(height, self.radius)),
+            height,
+            wall_rho: self.radius_at(wall_height),
+            wall_height,
+            sweep: 1.0_f64.atan2(-self.sigma * s),
+        }
     }
 
     /// A full ring on the seat's axis: radius `r` in the plane through
@@ -447,14 +531,31 @@ impl RevolvedSeat {
     }
 }
 
+/// A rolling ball's place in a [`RevolvedSeat`], in the meridian:
+/// [`RevolvedSeat::ball`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RevolvedBall {
+    /// The centre's distance off the axis: the tube's major radius, and the
+    /// radius of the ring the ball touches the cap along.
+    pub rho: f64,
+    /// The centre's height along `up` from the rim.
+    pub height: f64,
+    /// The radius of the ring the ball touches the wall along.
+    pub wall_rho: f64,
+    /// That ring's height along `up` from the rim.
+    pub wall_height: f64,
+    /// The angle the ball's arc turns through from the wall to the cap.
+    pub sweep: f64,
+}
+
 /// Find a revolved blend's seat: the exactly one perpendicular planar cap and
-/// one coaxial cylindrical wall meeting at a circular rim.
+/// one coaxial wall, a cylinder or a cone, meeting at a circular rim.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// rim's faces are not that pair, or the wall has no far ring to read its
-/// side from.
+/// rim's faces are not that pair, the rim lies on a cone's far nappe, or the
+/// wall has no far ring to read its side from.
 pub(crate) fn revolved_seat(
     model: &Model,
     solid: &Shape,
@@ -467,9 +568,10 @@ pub(crate) fn revolved_seat(
     let rim_radius = rim_circle.radius();
     let rim_axis = rim_circle.frame().z().vector();
 
-    // The two faces at the rim: exactly one plane and one coaxial cylinder.
+    // The two faces at the rim: exactly one plane and one coaxial cylinder
+    // or cone, the cone by its axis and how fast its radius grows along it.
     let mut cap: Option<(Shape, Vector)> = None;
-    let mut wall: Option<(Shape, f64)> = None;
+    let mut wall: Option<(Shape, f64, Vector, f64)> = None;
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
             .iter()
@@ -523,24 +625,50 @@ pub(crate) fn revolved_seat(
                     );
                 }
                 let sigma = if reversed { -1.0 } else { 1.0 };
-                wall = Some((face.clone(), sigma));
+                wall = Some((face.clone(), sigma, axis_z, 0.0));
+            }
+            Some(SurfaceGeometry::Cone(c)) => {
+                // A cone's natural normal points off its axis on the nappe
+                // its reference radius stands on, as a cylinder's does; the
+                // rim is taken there only.
+                let cone = c.cone();
+                let axis_point = placement.apply(cone.frame().origin());
+                let axis_z = placement.apply_vector(cone.frame().z().vector());
+                let to_rim = rim_centre - axis_point;
+                let height = to_rim.dot(axis_z);
+                let off_axis = (to_rim - axis_z * height).magnitude();
+                if axis_z.cross(rim_axis).magnitude() > tol.angular()
+                    || off_axis > tol.confusion()
+                    || (cone.radius_at(height) - rim_radius).abs() > tol.confusion()
+                {
+                    ogeom_bail!(
+                        Construction,
+                        "the rim's wall is not the coaxial cone through it on \
+                         its own nappe; that seat needs the marching blend \
+                         machinery"
+                    );
+                }
+                let sigma = if reversed { -1.0 } else { 1.0 };
+                wall = Some((face.clone(), sigma, axis_z, cone.half_angle().tan()));
             }
             Some(_) => ogeom_bail!(
                 Construction,
-                "the rim meets a face that is neither plane nor cylinder; \
-                 that seat needs the marching blend machinery"
+                "the rim meets a face that is neither plane nor cylinder nor \
+                 cone; that seat needs the marching blend machinery"
             ),
             None => ogeom_bail!(Dangling, "face refers to a surface not in this model"),
         }
     }
-    let (Some((cap_face, up_raw)), Some((wall_face, sigma))) = (cap, wall) else {
+    let (Some((cap_face, up_raw)), Some((wall_face, sigma, wall_axis, growth))) = (cap, wall)
+    else {
         ogeom_bail!(
             Construction,
             "a revolved blend needs the edge shared by one planar cap and one \
-             cylindrical wall"
+             cylindrical or conical wall"
         );
     };
     let up = up_raw / up_raw.magnitude();
+    let slope = growth * wall_axis.dot(up).signum();
 
     // Which side of the cap the wall extends: read at the edge itself, just
     // above and just below the cap's plane, where the wall stands on one
@@ -554,6 +682,12 @@ pub(crate) fn revolved_seat(
         let (curve, range) = edge_curve(model, edge, tol)?;
         let at = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
         let eps = rim_radius * 1e-2;
+        // Off the rim along the wall, which leans off `up` by `slope`.
+        let radial = {
+            let off = at - rim_centre;
+            let off = off - up * off.dot(up);
+            off / off.magnitude()
+        };
         let deflection = ogeom_mesh::Deflection {
             chord: eps * 0.1,
             ..ogeom_mesh::Deflection::default()
@@ -564,7 +698,8 @@ pub(crate) fn revolved_seat(
                     == ogeom_algo::Containment::In,
             )
         };
-        match (stands(at + up * eps)?, stands(at - up * eps)?) {
+        let along = |height: f64| at + up * height + radial * (slope * height);
+        match (stands(along(eps))?, stands(along(-eps))?) {
             (true, false) => Some(-1.0),
             (false, true) => Some(1.0),
             _ => None,
@@ -613,6 +748,7 @@ pub(crate) fn revolved_seat(
     Ok(RevolvedSeat {
         centre: rim_centre,
         radius: rim_radius,
+        slope,
         up,
         x_ref: rim_circle.frame().x(),
         sigma,
@@ -624,9 +760,10 @@ pub(crate) fn revolved_seat(
 }
 
 /// Whether the rims on `circle` run its whole turn between them: the
-/// edges of `solid` on the circle that bound a wall on the circle's own
-/// cylinder, each edge's arc taken as angles about `frame`, whose origin
-/// is the circle's centre, and no gap left between them round the turn.
+/// edges of `solid` on the circle that bound a wall on a cylinder or cone
+/// through the circle about its axis, each edge's arc taken as angles about
+/// `frame`, whose origin is the circle's centre, and no gap left between
+/// them round the turn.
 /// An edge on the circle between two faces of the cap's plane (where a
 /// drum's top meets a neck fused onto it) is no rim.
 fn circle_covered(
@@ -648,22 +785,35 @@ fn circle_covered(
     let axis = circle.frame().z().vector();
     let mut on_walls: Vec<Shape> = Vec::new();
     for face in ogeom_topo::explore_unique(model, solid, ShapeType::Face)? {
-        let Some(SurfaceGeometry::Cylinder(c)) = model
+        // The wall's frame, its radius in the frame's plane, and how fast
+        // that grows along the frame's axis.
+        let (wall_frame, radius, growth) = match model
             .node(&face)
             .and_then(|n| n.data().as_face())
             .and_then(|d| model.geometry().surface(d.surface))
-        else {
-            continue;
+        {
+            Some(SurfaceGeometry::Cylinder(c)) => {
+                (c.cylinder().frame(), c.cylinder().radius(), 0.0)
+            }
+            Some(SurfaceGeometry::Cone(c)) => {
+                let cone = c.cone();
+                (
+                    cone.frame(),
+                    cone.reference_radius(),
+                    cone.half_angle().tan(),
+                )
+            }
+            _ => continue,
         };
         let placement = face.transform(model.datums())?;
-        let cylinder = c.cylinder();
-        let axis_point = placement.apply(cylinder.frame().origin());
-        let axis_z = placement.apply_vector(cylinder.frame().z().vector());
+        let axis_point = placement.apply(wall_frame.origin());
+        let axis_z = placement.apply_vector(wall_frame.z().vector());
         let to_centre = circle.centre() - axis_point;
-        let off_axis = (to_centre - axis_z * to_centre.dot(axis_z)).magnitude();
+        let height = to_centre.dot(axis_z);
+        let off_axis = (to_centre - axis_z * height).magnitude();
         if axis_z.cross(axis).magnitude() <= tol.angular()
             && off_axis <= reach
-            && (cylinder.radius() - circle.radius()).abs() <= reach
+            && (growth.mul_add(height, radius) - circle.radius()).abs() <= reach
         {
             on_walls.extend(ogeom_topo::explore_unique(model, &face, ShapeType::Edge)?);
         }
@@ -748,7 +898,7 @@ pub(crate) fn runs_whole_turn(
     let complement = mid + core::f64::consts::PI;
     let dir = frame.x().vector() * complement.cos() + frame.y().vector() * complement.sin();
     let eps = seat.radius * 1e-2;
-    let probe = seat.centre + dir * seat.radius - seat.up * (seat.tau * eps);
+    let probe = seat.centre + dir * seat.radius_at(-seat.tau * eps) - seat.up * (seat.tau * eps);
     let deflection = ogeom_mesh::Deflection {
         chord: eps * 0.1,
         ..ogeom_mesh::Deflection::default()
@@ -778,14 +928,14 @@ pub(crate) struct RevolvedFlanks {
     pub wall_band: Shape,
     /// The annulus of the cap between the rim and `cap_ring`.
     pub annulus: Shape,
-    /// The tangency ring on the wall, `wall_depth` from the rim.
+    /// The tangency ring on the wall, `wall_depth` from the cap's plane.
     pub wall_ring: Shape,
     /// The tangency ring on the cap, at radius `cap_rho`.
     pub cap_ring: Shape,
 }
 
-/// Build the flanks: legs `wall_depth` down the wall and in to `cap_rho`
-/// along the cap, each coincident with the solid's own face, aligned when
+/// Build the flanks: legs down the wall to `wall_depth` from the cap's
+/// plane and in to `cap_rho` along the cap, each coincident with the solid's own face, aligned when
 /// subtracting and opposed when fusing, which is what the melt needs.
 pub(crate) fn revolved_flanks(
     model: &mut Model,
@@ -794,18 +944,19 @@ pub(crate) fn revolved_flanks(
     cap_rho: f64,
     tol: Tolerances,
 ) -> OgeomResult<RevolvedFlanks> {
-    let wall_level = seat.centre - seat.up * (seat.tau * wall_depth);
+    let wall_height = -seat.tau * wall_depth;
+    let wall_level = seat.centre + seat.up * wall_height;
     let apex_ring = seat.ring(model, seat.centre, seat.radius, tol)?;
-    let wall_ring = seat.ring(model, wall_level, seat.radius, tol)?;
+    let wall_ring = seat.ring(model, wall_level, seat.radius_at(wall_height), tol)?;
     let cap_ring = seat.ring(model, seat.centre, cap_rho, tol)?;
 
     let wall_band = {
-        let origin = seat.centre - seat.up * (wall_depth + 1.0);
-        let surface: SurfaceGeometry = CylinderSurface::new(
-            Cylinder::new(seat.frame_at(origin, tol)?, seat.radius, tol)?,
-            (0.0, 2.0 * wall_depth + 2.0),
-        )?
-        .into();
+        let surface = seat.wall_surface(
+            (-(wall_depth + 1.0), wall_depth + 1.0),
+            (wall_height.min(0.0), wall_height.max(0.0)),
+            seat.x_ref,
+            tol,
+        )?;
         let band = make_revolution_band(model, &surface, &wall_ring, &apex_ring, tol)?;
         if seat.sigma * seat.tau < 0.0 {
             band.reversed()
