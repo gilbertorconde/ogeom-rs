@@ -1940,7 +1940,21 @@ fn shared_support_3d(
             (t_in, s_at)
         };
         let (lo_a, lo_b) = refine(start, start.checked_sub(1));
-        let (hi_a, hi_b) = refine(end, (end + 1 < sa.points.len()).then_some(end + 1));
+        let (hi_a, mut hi_b) = refine(end, (end + 1 < sa.points.len()).then_some(end + 1));
+        // On a periodic second curve the run may pass its seam: its feet
+        // are followed from the start, each taken a whole turn nearest the
+        // last, and the far end read beside the last of them, so the run
+        // keeps the way round it goes. A trim of one holds its feet in its
+        // window, which no run passes the seam of.
+        if b.is_periodic() && !matches!(b, Curve::Trimmed(_)) {
+            let (from, to) = b.domain();
+            let period = to - from;
+            let mut last = lo_b;
+            for foot in feet[start..=end].iter().flatten() {
+                last = foot.0 + period * ((last - foot.0) / period).round();
+            }
+            hi_b += period * ((last - hi_b) / period).round();
+        }
         if hi_a - lo_a <= tol.parametric() || (hi_b - lo_b).abs() <= tol.parametric() {
             continue;
         }
@@ -2841,6 +2855,31 @@ mod tests {
             found.crossings.is_empty(),
             "no crossing survives inside the overlap: {:?}",
             found.crossings
+        );
+    }
+
+    /// An ellipse's arc from `5.5` round past its seam at `2π` to `7`,
+    /// spelled as a rational B-spline, runs along the ellipse over that
+    /// arc: one overlap, read on the ellipse from `5.5` to `7`, the way the
+    /// arc goes round. Read the short way between the seam's two sides it
+    /// named the rest of the ellipse, `0.72` to `5.5`.
+    #[test]
+    fn an_arc_across_a_periodic_curve_s_seam_overlaps_it_the_way_it_goes() {
+        let ellipse: Curve = ogeom_geom::EllipseCurve::new(
+            ogeom_math::Ellipse::new(Frame::WORLD, 0.5025, 0.5, T).unwrap(),
+        )
+        .into();
+        let arc: Curve = ellipse.to_bspline_over((5.5, 7.0), T).unwrap().into();
+        let found = intersect_curves(&arc, &ellipse, CurveCurveOptions::default(), T).unwrap();
+        let [overlap] = found.overlaps.as_slice() else {
+            panic!("one shared stretch: {found:?}");
+        };
+        let (lo, hi) = overlap.on_a;
+        assert!(lo.abs() < 1e-9 && (hi - 1.0).abs() < 1e-9);
+        let (from, to) = overlap.on_b;
+        assert!(
+            (from - 5.5).abs() < 1e-9 && (to - 7.0).abs() < 1e-9,
+            "{overlap:?}"
         );
     }
 

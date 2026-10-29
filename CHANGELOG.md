@@ -1279,6 +1279,19 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **An overlap across a periodic curve's seam is read the way it goes.**
+  (#516)
+  - `intersect_curves` reported a curve running along an ellipse from
+    6.25, round past the ellipse's seam, to 1.44 as overlapping it from
+    1.44 to 6.25: the rest of the ellipse. A section running along a
+    face's two edges that are one ellipse cut at its seam was then split
+    at neither edge's end.
+  - The run's feet on an untrimmed periodic curve are now followed
+    through its seam, and the far end is read beside the last of them.
+  - Measured: an ellipse's arc from 5.5 to 7, spelled as a rational
+    B-spline, overlaps the ellipse over (5.5, 7), where it read
+    (5.5, 0.72).
+
 - **A drum drafted with its foot out meets a straight crease beside it.**
   (#342)
   - A drum whose wall is a cone standing out at its foot, fused onto a
