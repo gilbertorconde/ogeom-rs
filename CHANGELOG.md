@@ -1189,6 +1189,27 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A point on a face's edge lies on the face where the edge bends more in
+  the chart than in space.** (#509)
+  - `classify_on_face` reads a point against the face's trim drawn as a
+    polyline in its chart, and the uncertain band it reports `On` within
+    carries the chord the polyline was drawn at. The polyline took its
+    points from where each edge is drawn in space, so it kept to the edge
+    within the chord in space only. Where the edge bends more in the chart,
+    the polyline stood off it by more than the chord: on the parabola where
+    a drum drafted by 0.1 meets a wall drafted alike, 6.9e-4 off at a
+    chord of 5e-4, and 1.7e-4 at 1e-4. About half the points of the
+    seam read as off the cone face, and points twice the chord inside it
+    as on its trim.
+  - The rings a point is classified against (`classify_on_face`,
+    `FaceTrim`, and the solid classifiers' face trims) are now drawn by
+    the new `face_boundary_in_chart`: each edge's samples split at their
+    middle until every span's chart chord keeps within the chord of the
+    edge's pcurve, read in space through the surface's tangent scales as
+    the band is. The seam's ring then keeps within 1.7e-4 of it at 5e-4
+    and 4.4e-5 at 1e-4. Meshes and `face_boundary` draw as before.
+  - The fillet's run-out no longer carries its own on-edge test for this.
+
 - **A round runs out across a drafted drum as across an upright one.**
   (#342)
   - A straight round whose crease ends where a boss's wall follows it

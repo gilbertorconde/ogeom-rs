@@ -21,7 +21,9 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Aabb, Direction, Point, Point2, Vector};
-use ogeom_mesh::{Deflection, face_boundary, inside_boundary, open_chart_ring, triangulate};
+use ogeom_mesh::{
+    Deflection, face_boundary_in_chart, inside_boundary, open_chart_ring, triangulate,
+};
 use ogeom_topo::{Model, NodeData, Shape, ShapeType};
 
 use crate::measure::project_on_surface;
@@ -473,7 +475,7 @@ impl Hole {
 }
 
 impl Rings {
-    /// A face's rings as [`face_boundary`] draws them: a plane's with
+    /// A face's rings as [`face_boundary_in_chart`] draws them: a plane's with
     /// several wires one wire at a time, where each hole's box can be read
     /// from its pcurves and is smaller than the outer ring, so the outer
     /// ring is the largest, as drawing all of them would find.
@@ -484,7 +486,7 @@ impl Rings {
         deflection: Deflection,
         tol: Tolerances,
     ) -> OgeomResult<Self> {
-        let all = || face_boundary(model, face, deflection, tol).map(Rings::All);
+        let all = || face_boundary_in_chart(model, face, deflection, tol).map(Rings::All);
         let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
             return all();
         };

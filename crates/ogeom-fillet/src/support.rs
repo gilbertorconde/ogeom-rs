@@ -1508,7 +1508,6 @@ pub(crate) fn run_out_reach(
             let crossing = p + outward * s;
             if ogeom_algo::classify_on_face(model, face, crossing, deflection, tol)?
                 != ogeom_algo::Containment::Out
-                || on_face_edge(model, face, crossing, tol)?
             {
                 through = Some(through.map_or(s, |t: f64| t.min(s)));
             }
@@ -1532,58 +1531,6 @@ pub(crate) fn run_out_reach(
         }
     }
     Ok(Some(reach))
-}
-
-/// Whether `point` lies on an edge of `face`, within the edge's own
-/// tolerance of its curve over its range. The face's trim, drawn as a
-/// polyline in its chart from points of each edge's curve, stands off an
-/// edge whose image in the chart bends more than the edge does in space,
-/// so a point on the edge itself can read as outside the trim.
-fn on_face_edge(model: &Model, face: &Shape, point: Point, tol: Tolerances) -> OgeomResult<bool> {
-    for edge in ogeom_topo::explore_unique(model, face, ShapeType::Edge)? {
-        let Ok((curve, (a, b))) = edge_curve(model, &edge, tol) else {
-            continue;
-        };
-        let within = model
-            .tolerance_of(&edge)?
-            .map_or(tol.confusion(), ogeom_core::Tolerance::get)
-            .max(tol.confusion());
-        let gap = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(point)) };
-        // The nearest of a few stations brackets the nearest point, and a
-        // golden search closes on it. Every distance taken is to a point of
-        // the edge, so a point read as on it is on it; one missed keeps the
-        // band capped.
-        let steps = 64;
-        let at = |k: usize| {
-            #[allow(clippy::cast_precision_loss, reason = "a station index")]
-            let share = k as f64 / steps as f64;
-            (b - a).mul_add(share, a)
-        };
-        let mut best = (f64::INFINITY, 0);
-        for k in 0..=steps {
-            let d = gap(at(k))?;
-            if d < best.0 {
-                best = (d, k);
-            }
-        }
-        let (mut lo, mut hi) = (at(best.1.saturating_sub(1)), at((best.1 + 1).min(steps)));
-        let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
-        let mut nearest = best.0;
-        for _ in 0..80 {
-            let (x, y) = (hi - (hi - lo) * ratio, lo + (hi - lo) * ratio);
-            let (dx, dy) = (gap(x)?, gap(y)?);
-            nearest = nearest.min(dx).min(dy);
-            if dx < dy {
-                hi = y;
-            } else {
-                lo = x;
-            }
-        }
-        if nearest <= within {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// A blend's wedge set aside to be applied with others in one boolean.

@@ -431,7 +431,16 @@ fn triangulate_reporting_from(
         walked,
     } = match prepared {
         Some(trim) => trim,
-        None => trimming_rings(model, face, data.surface, surface, deflection, finer, tol)?,
+        None => trimming_rings(
+            model,
+            face,
+            data.surface,
+            surface,
+            deflection,
+            finer,
+            false,
+            tol,
+        )?,
     };
     let rings_ms = phase.elapsed().as_secs_f64() * 1e3;
     if uv.is_empty() {
@@ -1010,6 +1019,7 @@ fn walk_for_chords(
                 surface,
                 deflection,
                 &nothing,
+                false,
                 tol,
             )?;
             let narrow = narrow_chord(surface, &trim.rings, deflection, tol);
@@ -1264,6 +1274,40 @@ pub fn face_boundary(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Vec<Point2>>> {
+    drawn_boundary(model, face, deflection, false, tol)
+}
+
+/// [`face_boundary`], each ring keeping within the chord of its edges in
+/// the chart too, read in space through the surface's tangent scales: a
+/// point on an edge then lies within the chord of its ring however much
+/// more the edge bends in the chart than in space.
+///
+/// The rings to place points against. [`face_boundary`]'s are drawn at the
+/// points a mesh welds its faces along, and keep to their edges in space
+/// only: a parabola where a cone meets a plane drafted as the cone is bends
+/// little in space and much in the cone's chart, and its ring stands off it
+/// there by more than the chord.
+///
+/// # Errors
+///
+/// As [`face_boundary`].
+pub fn face_boundary_in_chart(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vec<Point2>>> {
+    drawn_boundary(model, face, deflection, true, tol)
+}
+
+/// [`face_boundary`], or with `in_chart` [`face_boundary_in_chart`].
+fn drawn_boundary(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    in_chart: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vec<Point2>>> {
     deflection.validate()?;
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "expected a face");
@@ -1285,6 +1329,7 @@ pub fn face_boundary(
         surface,
         deflection,
         &EdgeChords::new(),
+        in_chart,
         tol,
     )?
     .rings)
@@ -1359,13 +1404,13 @@ fn face_chords(
     let mut chord = deflection.chord;
     // A face narrower than a few chords first: its edges drawn to a
     // fraction of its width, so the boundary's sag is small against it.
-    let first = trimming_rings(model, face, id, surface, deflection, &finer, tol)?.rings;
+    let first = trimming_rings(model, face, id, surface, deflection, &finer, false, tol)?.rings;
     if let Some(want) = narrow_chord(surface, &first, deflection, tol) {
         chord = want;
         lower(&mut finer, chord);
     }
     for _ in 0..=REFINEMENTS {
-        let rings = trimming_rings(model, face, id, surface, deflection, &finer, tol)?.rings;
+        let rings = trimming_rings(model, face, id, surface, deflection, &finer, false, tol)?.rings;
         let planar = triangulate_region(
             &rings,
             surface,
@@ -1586,6 +1631,12 @@ fn turns_into_domain(extent: (f64, f64), domain: (f64, f64)) -> f64 {
     }
 }
 
+/// A face's rings walked from its wires, each drawn by [`boundary_ring`]
+/// with `in_chart`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the walk's settings, each read once"
+)]
 fn trimming_rings(
     model: &Model,
     face: &Shape,
@@ -1593,6 +1644,7 @@ fn trimming_rings(
     surface: &SurfaceGeometry,
     deflection: Deflection,
     finer: &EdgeChords,
+    in_chart: bool,
     tol: Tolerances,
 ) -> OgeomResult<Trimming> {
     let mut rings = Vec::new();
@@ -1606,7 +1658,7 @@ fn trimming_rings(
     let mut walked = Vec::new();
     for wire in wires {
         let (ring, anchors, ring_met, folds, ties) =
-            boundary_ring(model, &wire, id, deflection, finer, tol)?;
+            boundary_ring(model, &wire, id, deflection, finer, in_chart, tol)?;
         met &= ring_met;
         if ring.len() >= 3 {
             let mut here = Vec::with_capacity(ring.len());
@@ -2230,8 +2282,8 @@ fn walks_back(model: &Model, wire: &Shape) -> OgeomResult<bool> {
 }
 
 /// One wire's trimming ring on a face whose chart neither repeats nor
-/// closes on itself, as [`face_boundary`] draws it among the face's other
-/// rings; `None` where the wire leaves no ring there.
+/// closes on itself, as [`face_boundary_in_chart`] draws it among the
+/// face's other rings; `None` where the wire leaves no ring there.
 ///
 /// On such a chart each ring is drawn from its own wire alone, so a caller
 /// asking about a few holes of a face with hundreds draws only those. The
@@ -2277,6 +2329,7 @@ pub fn open_chart_ring(
         data.surface,
         deflection,
         &EdgeChords::new(),
+        true,
         tol,
     )?;
     if ring.len() < 3 {
@@ -2453,12 +2506,16 @@ pub fn inside_boundary_with<P: Predicates>(rings: &[Vec<Point2>], p: Point2) -> 
 ///
 /// Each edge is discretized in *space* and its pcurve evaluated at the resulting
 /// parameters, so two faces sharing the edge agree on where its points are.
+/// With `in_chart`, each edge's samples are also refined until its chords
+/// keep to its pcurve in the chart ([`refine_in_chart`]): a ring to place
+/// points against rather than to weld a mesh along.
 fn boundary_ring(
     model: &Model,
     wire: &Shape,
     surface: ogeom_topo::SurfaceId,
     deflection: Deflection,
     finer: &EdgeChords,
+    in_chart: bool,
     tol: Tolerances,
 ) -> OgeomResult<WalkedRing> {
     let mut ring: Vec<Point2> = Vec::new();
@@ -2602,6 +2659,21 @@ fn boundary_ring(
         let samples = match sample_parameters(model, data, along, tol)? {
             Some((parameters, edge_met)) => {
                 met &= edge_met;
+                let parameters = match (in_chart, model.geometry().surface(surface)) {
+                    (true, Some(geometry)) => {
+                        let (refined, chart_met) = refine_in_chart(
+                            parameters,
+                            |t| to_pcurve_parameter(t, data, pcurve_range),
+                            pcurve,
+                            geometry,
+                            along,
+                            tol,
+                        );
+                        met &= chart_met;
+                        refined
+                    }
+                    _ => parameters,
+                };
                 if let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d()
                     && let Some(geometry) = model.geometry().curve(*curve)
                     && let Ok(edge_placement) = edge.transform(model.datums())
@@ -2664,7 +2736,14 @@ fn boundary_ring(
                     along,
                     tol,
                 )?;
-                parameters
+                if in_chart {
+                    let (refined, chart_met) =
+                        refine_in_chart(parameters, |t| t, pcurve, geometry, along, tol);
+                    met &= chart_met;
+                    refined
+                } else {
+                    parameters
+                }
             }
         };
 
@@ -3132,6 +3211,77 @@ fn map_to_pcurve(
         .iter()
         .map(|u| pa + (pb - pa) * (u - ca) / (cb - ca))
         .collect()
+}
+
+/// [`map_to_pcurve`] for one parameter.
+fn to_pcurve_parameter(u: f64, data: &ogeom_topo::EdgeData, pcurve_range: (f64, f64)) -> f64 {
+    map_to_pcurve(&[u], data, pcurve_range)[0]
+}
+
+/// An edge's sample `parameters` refined until its polyline in the chart
+/// keeps within the chord of its pcurve, read in space through the
+/// surface's tangent scales, as a classifier's band reads a chart step:
+/// `(du |S_u|, dv |S_v|)`. Samples placed by the chord in space alone keep
+/// the edge's chords near the edge in space, but where the edge bends more
+/// in the chart than in space (a parabola on a cone) the chart's straight
+/// chords stand off its pcurve by many chords.
+///
+/// Each span is read at its quarters and its middle, the greatest of the
+/// three distances from its chart chord, and split at its middle where that
+/// exceeds the chord. `to_pcurve` maps a sample parameter onto the pcurve.
+/// A span whose surface has no tangents where read is left as drawn; the
+/// flag is false where `max_segments` stopped the refinement short.
+fn refine_in_chart(
+    parameters: Vec<f64>,
+    to_pcurve: impl Fn(f64) -> f64,
+    pcurve: &ogeom_geom::PlanarCurve,
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> (Vec<f64>, bool) {
+    let at = |t: f64| pcurve.point_at(to_pcurve(t), tol).ok();
+    let stands_off = |a: f64, b: f64| -> bool {
+        let (Some(pa), Some(pb)) = (at(a), at(b)) else {
+            return false;
+        };
+        [0.25, 0.5, 0.75].into_iter().any(|share| {
+            let t = (b - a).mul_add(share, a);
+            let Some(q) = at(t) else {
+                return false;
+            };
+            let Ok((du, dv)) = surface.d1_at(q.x, q.y, tol) else {
+                return false;
+            };
+            let (su, sv) = (du.magnitude(), dv.magnitude());
+            let scaled = |p: Point2| Point2::new((p.x - q.x) * su, (p.y - q.y) * sv);
+            let (a, b) = (scaled(pa), scaled(pb));
+            let d = b - a;
+            let squared = d.dot(d);
+            let w = if squared <= f64::MIN_POSITIVE {
+                0.0
+            } else {
+                (-(a.x * d.x + a.y * d.y) / squared).clamp(0.0, 1.0)
+            };
+            let foot = a + d * w;
+            foot.x.hypot(foot.y) > deflection.chord
+        })
+    };
+    let mut parameters = parameters;
+    let ceiling = deflection.max_segments.max(parameters.len());
+    let mut i = 0;
+    while i + 1 < parameters.len() {
+        let (a, b) = (parameters[i], parameters[i + 1]);
+        let mid = f64::midpoint(a, b);
+        if mid > a && mid < b && stands_off(a, b) {
+            if parameters.len() > ceiling {
+                return (parameters, false);
+            }
+            parameters.insert(i + 1, mid);
+        } else {
+            i += 1;
+        }
+    }
+    (parameters, true)
 }
 
 /// The edge of a surface's domain, as a boundary ring.
