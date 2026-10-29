@@ -1437,7 +1437,7 @@ fn repaced_carry(
             let (da, db) = dropped_fp.curve.domain();
             let turn = db - da;
             let mut s = foot.parameter;
-            if turn > 0.0 {
+            if closes {
                 if s < lo - tol.parametric() && s + turn <= hi + tol.parametric() {
                     s += turn;
                 } else if s > hi + tol.parametric() && s - turn >= lo - tol.parametric() {
@@ -3450,6 +3450,91 @@ mod tests {
         assert!(sew(&mut model, &[], T).is_err());
         let vertex = model.add_point(Point::ORIGIN);
         assert!(sew(&mut model, &[vertex], T).is_err());
+    }
+
+    /// An edge from `(0, 0, 0)` to `(1, 0, 0)` at uniform pace, and its twin
+    /// on an open quadratic, `x = s²`, used over `[0, 1 − 10⁻⁶]`, whose
+    /// pcurve on the plane `z = 0` is `(s², 0)`: the twin's pcurve
+    /// carried to the edge's pace is `(t, 0)`, and the edge's end, whose
+    /// foot lies past the twin's stretch on a curve that does not close,
+    /// is held at the stretch's end, not a domain's length back at its
+    /// start.
+    #[test]
+    fn a_pcurve_carried_from_an_open_twin_keeps_its_far_end() {
+        use ogeom_geom::{BSpline2d, BSplineCurve, Curve2d as _};
+        use ogeom_math::{KnotVector, Point2};
+        let mut model = Model::new();
+        let line = BSplineCurve::new(
+            KnotVector::clamped_uniform(1, 2).unwrap(),
+            vec![Point::ORIGIN, Point::new(1.0, 0.0, 0.0)],
+            T,
+        )
+        .unwrap();
+        let kept = crate::make_edge(&mut model, line.into(), (0.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let square = BSplineCurve::new(
+            KnotVector::clamped_uniform(2, 3).unwrap(),
+            vec![Point::ORIGIN, Point::ORIGIN, Point::new(1.0, 0.0, 0.0)],
+            T,
+        )
+        .unwrap();
+        let short = 1.0 - 1e-6;
+        let dropped = crate::make_edge(&mut model, square.into(), (0.0, short), T)
+            .unwrap()
+            .shape;
+        let frame = Frame::new(
+            Point::ORIGIN,
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let surface = model
+            .geometry_mut()
+            .add_surface(PlaneSurface::new(Plane::new(frame)).into());
+        let trace = BSpline2d::new(
+            KnotVector::clamped_uniform(2, 3).unwrap(),
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 0.0),
+            ],
+            T,
+        )
+        .unwrap();
+        let curve = model.geometry_mut().add_pcurve(trace.into());
+        let carried = [EdgeRepr::PCurve {
+            curve,
+            surface,
+            location: Location::identity(),
+            range: (0.0, short),
+        }];
+        let paced = repaced_carry(
+            &mut model,
+            &dropped,
+            &kept,
+            false,
+            &carried,
+            T.confusion(),
+            T,
+        )
+        .unwrap();
+        let [EdgeRepr::PCurve { curve, range, .. }] = paced.as_slice() else {
+            panic!("{paced:?}");
+        };
+        assert_eq!(*range, (0.0, 1.0));
+        let pcurve = model.geometry().pcurve(*curve).unwrap();
+        // The twin's stretch stops `1 − short²` short of the edge's end.
+        let gap = 1.0 - short * short;
+        for k in 0..=64 {
+            let t = f64::from(k) / 64.0;
+            let uv = pcurve.point_at(t, T).unwrap();
+            assert!(
+                uv.distance(Point2::new(t, 0.0)) <= gap + T.confusion(),
+                "at {t}: {uv:?}"
+            );
+        }
     }
 
     #[test]

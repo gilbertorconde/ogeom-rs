@@ -13,6 +13,28 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A plane across the extrusion of a B-spline profile meets it in closed
+  form.** (#516)
+  - The closed forms of a plane across a linear extrusion (#515) left a
+    B-spline profile marched and fitted.
+  - Now its section is the B-spline of the profile's control points
+    carried along the sweep onto the plane, on the profile's own knots and
+    weights, polynomial or rational. Its trace on the extrusion is
+    `(u, v(u))`: on each Bézier piece `v` blends the control points'
+    heights with the profile's weights, and `u` is `u W(u) / W(u)`, one
+    degree up.
+  - Taken where every control point's height lies within the sweep,
+    which holds every point's; where all lie past one end the pair is
+    apart. Still marched: heights straddling an end of the sweep, whose
+    cut has no closed form, a plane holding the sweep's direction or
+    within the tangency sine of it, and a periodic profile.
+  - Measured: a circle's arc spelled as a rational quadratic, swept along
+    its axis and cut at a tilt, lies on the ellipse of the tilt and at
+    each parameter on the arc's point lifted to the plane, to 1e-12; a
+    space cubic swept along a slant and cut level is the cubic carried,
+    trace included, to 1e-12; the randomized property test now sweeps
+    rational cubics too.
+
 - **A plane across a linear extrusion meets it in closed form.** (#342)
   - `intersect_surfaces` marched every plane against an extrusion and
     fitted the section; a plane holding a spline profile's rulings was
@@ -27,14 +49,11 @@ bump may break the API and a patch bump may not.
     profile's crossings with the plane. Each is cut to the extrusion's
     window at the profile's crossings with the plane moved to either end
     of the sweep, found in closed form.
-  - Still marched, as before: a B-spline, hyperbola, helix or offset
-    profile, a reversed trim, a plane lying along the profile or touching
-    it, a plane within the tangency sine of the extrusion's direction,
-    and a section that does not land on both surfaces within the
-    confusion distance. A B-spline profile's image is exact too, but a
-    B-spline section stated at tolerance zero is read by the boolean as
-    a closed form, and ten carried-band junctions in
-    `ogeom-fillet/tests/chain.rs` then refuse; it is left marched.
+  - Still marched, as before: a hyperbola, helix or offset profile, a
+    reversed trim, a plane lying along the profile or touching it, a
+    plane within the tangency sine of the extrusion's direction, and a
+    section that does not land on both surfaces within the confusion
+    distance. A B-spline profile is taken in closed form by #516.
   - Measured: every section lies on both surfaces within 1e-12 over
     randomized profiles, sweeps and planes, and covers every point of
     the profile whose height falls inside the sweep; the closed forms
@@ -1278,6 +1297,40 @@ bump may break the API and a patch bump may not.
   field's vocabulary.
 
 ### Fixed
+
+- **A pcurve carried from a sewn twin on an open curve keeps its far
+  end.** (#516)
+  - Sewing two edges that trace one curve at different paces refits the
+    dropped edge's pcurves at the kept edge's parameters, each point's
+    foot found on the dropped curve. A foot past the end of the dropped
+    edge's stretch was moved back by the curve's whole domain, as on a
+    curve that closes, even where it does not: on an open curve it landed
+    at the stretch's start. A wall swept inside a corner against an arc,
+    cut by a mitre plane in the exact B-spline section below, had its
+    section's pcurve run back to its start at its far end, a gap of 0.74
+    in the wall's chart ("the swept sheet does not check clean").
+  - A foot is carried across the turn only on a curve that closes;
+    otherwise it is held at the stretch's nearer end.
+  - Measured: a twin `x = s²` over `[0, 1 − 10⁻⁶]`, its pcurve `(s², 0)`
+    carried to a uniform edge, reads `(t, 0)` within the stretch's
+    shortfall of 2e-6 all along, where it ran back to `(0, 0)` at the end.
+
+- **A band carried past its cap draws its cap's circle where it is.**
+  (#516)
+  - The carried band sweeps the cap's arc as a rational B-spline, and the
+    cap's circle, shared with the band, was given a pcurve on that sweep
+    by a fit aimed at a hundred confusion distances while the edge stated
+    one. Read at the circle's parameter the fit landed up to 9.5e-6 along
+    it from the circle's point. A fitted section beside the band widened
+    the faces' weld past that; with the B-spline sections above exact,
+    ten carried-band junctions in `ogeom-fillet/tests/chain.rs` refused
+    and fell back.
+  - The fit is now aimed at the edge's own tolerance, and the edge is
+    widened to what the fit reports missing where that is more.
+  - Measured: all 41 chain tests pass with the B-spline sections exact;
+    the drafted inside corner at draft -0.5 now removes within 8.3e-8 of
+    its reference (4.5e-7 before), and every other volume in the suite
+    moves by at most 6e-9.
 
 - **An overlap across a periodic curve's seam is read the way it goes.**
   (#516)

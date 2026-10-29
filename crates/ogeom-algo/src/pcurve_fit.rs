@@ -182,6 +182,24 @@ pub fn fit_projected_pcurve_within(
     cap: f64,
     tol: Tolerances,
 ) -> OgeomResult<CappedFit> {
+    fit_projected_pcurve_aimed(curve, range, surface, cap, tol.confusion() * 1e2, tol)
+}
+
+/// [`fit_projected_pcurve_within`], the fit aimed at `aim`, a length,
+/// rather than at a hundred confusions: a producer that states its edge's
+/// tolerance asks for the pcurve to keep to it.
+///
+/// # Errors
+///
+/// As [`fit_projected_pcurve_within`].
+pub fn fit_projected_pcurve_aimed(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    cap: f64,
+    aim: f64,
+    tol: Tolerances,
+) -> OgeomResult<CappedFit> {
     const SAMPLES: usize = 96;
     let mut parameters = Vec::with_capacity(SAMPLES + 1);
     let mut trace = Vec::with_capacity(SAMPLES + 1);
@@ -342,7 +360,7 @@ pub fn fit_projected_pcurve_within(
     } else {
         1.0
     };
-    let target = (tol.confusion() * 1e2 * scale).max(f64::MIN_POSITIVE);
+    let target = (aim * scale).max(f64::MIN_POSITIVE);
     let fit_and_clamp = |parameters: &[f64],
                          trace: &[ogeom_math::Point2]|
      -> OgeomResult<ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>> {

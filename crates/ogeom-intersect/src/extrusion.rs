@@ -5,28 +5,35 @@
 //! that point where `v = n·(o − C(u)) / n·d`, so where `n·d` is not zero the
 //! section is `C` carried along `d` onto the plane, at `C`'s own parameter:
 //! the image of `C` under an affine map. An affine map takes a line to a
-//! line, a circle or an ellipse to an ellipse and a parabola to a parabola.
-//! Where `n·d` is zero the plane holds `d`, and the section is the rulings
-//! through `C`'s crossings with the plane.
+//! line, a circle or an ellipse to an ellipse, a parabola to a parabola,
+//! and a B-spline, polynomial or rational, to the B-spline of its control
+//! points carried, on its own knots and weights. Where `n·d` is zero the
+//! plane holds `d`, and the section is the rulings through `C`'s crossings
+//! with the plane.
 //!
 //! Each section is cut to the extrusion's own window: to the stretches of
 //! `C`'s domain where the height `v` stays within the sweep, found as `C`'s
 //! crossings with the plane moved to each end of the sweep, each a root of
-//! a closed form.
+//! a closed form. A B-spline's crossings have none, and its section is
+//! taken only where its control points' heights all lie within the sweep,
+//! which holds every point's.
 //!
 //! The pair is left to the marcher, as before, wherever the closed form
 //! does not hold cleanly: a profile this does not map (a helix, an offset,
 //! a hyperbola, whose chart trace on the extrusion no planar curve states,
-//! a reversed trim, a B-spline), a profile lying in a plane it is
-//! cut by, a crossing it only touches, a plane or a ruling the extrusion
-//! meets within the sine the marcher takes as tangent, or a section that
-//! does not land on both surfaces within the confusion distance when
-//! checked.
+//! a reversed trim, a periodic B-spline), a B-spline whose heights straddle
+//! an end of the sweep or that a plane holding `d` cuts, a profile lying in
+//! a plane it is cut by, a crossing it only touches, a plane or a ruling
+//! the extrusion meets within the sine the marcher takes as tangent, or a
+//! section that does not land on both surfaces within the confusion
+//! distance when checked.
 
 use ogeom_core::Tolerances;
 use ogeom_geom::{
-    BSpline2d, Curve, Curve2d as _, Curve3d as _, LineCurve, PlanarCurve, Surface, SurfaceGeometry,
+    BSpline2d, BSplineCurve, Curve, Curve2d as _, Curve3d as _, LineCurve, PlanarCurve, Surface,
+    SurfaceGeometry,
 };
+use ogeom_math::bspline::{self, Spline, Weighted};
 use ogeom_math::{
     Axis, Axis2, Direction, Direction2, Frame, KnotVector, Point, Point2, Vector, Vector2,
 };
@@ -56,11 +63,37 @@ pub(crate) fn plane_extrusion(
     let d = extrusion.direction().vector();
     let o = plane.origin();
     let (window, sweep) = extrusion.domain();
-    let (profile, window, whole_turn) = Profile::of(extrusion.curve(), window, tol)?;
+    let along = n.dot(d);
+    let sections = if let Some(spline) = SplineProfile::of(extrusion.curve(), window, tol) {
+        // A spline profile's crossings with a plane have no closed form, so
+        // neither the rulings of a plane holding `d` nor the cuts at the
+        // sweep's ends are taken here.
+        if along.abs() < TANGENTIAL_SINE {
+            return None;
+        }
+        spline.carried(&Carry { n, o, d, along }, sweep, tol)?
+    } else {
+        let (profile, window, whole_turn) = Profile::of(extrusion.curve(), window, tol)?;
+        planar_sections(&profile, window, whole_turn, (n, o, d), extrusion, tol)?
+    };
+    finish(sections, plane_surface, extrusion, plane_first, tol)
+}
+
+/// The sections of an extrusion of a profile in closed form by the plane
+/// through `o` with normal `n`, the extrusion swept along `d`.
+fn planar_sections(
+    profile: &Profile,
+    window: (f64, f64),
+    whole_turn: bool,
+    (n, o, d): (Vector, Point, Vector),
+    extrusion: &ogeom_geom::ExtrusionSurface,
+    tol: Tolerances,
+) -> Option<Vec<(Curve, PlanarCurve)>> {
+    let (_, sweep) = extrusion.domain();
     let along = n.dot(d);
     let reach = sweep.0.abs().max(sweep.1.abs());
-    let sections = if along.abs() * reach <= tol.confusion() {
-        rulings(&profile, window, whole_turn, (n, o), extrusion, tol)?
+    Some(if along.abs() * reach <= tol.confusion() {
+        rulings(profile, window, whole_turn, (n, o), extrusion, tol)?
     } else {
         // The extrusion's normal is square to `d`, so the sine between it
         // and `n` is at least `|n·d|`: past the tangency the marcher and
@@ -70,8 +103,19 @@ pub(crate) fn plane_extrusion(
             return None;
         }
         let carry = Carry { n, o, d, along };
-        carried(&profile, window, whole_turn, &carry, sweep, tol)?
-    };
+        carried(profile, window, whole_turn, &carry, sweep, tol)?
+    })
+}
+
+/// The pieces checked against both surfaces and stated as sections, each
+/// trace on the surface asked first first.
+fn finish(
+    sections: Vec<(Curve, PlanarCurve)>,
+    plane_surface: &SurfaceGeometry,
+    extrusion: &ogeom_geom::ExtrusionSurface,
+    plane_first: bool,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
     // Each piece checked against both surfaces, kept where it reaches the
     // plane's window, and cut to it where it is straight.
     let mut out = Vec::with_capacity(sections.len());
@@ -255,6 +299,133 @@ impl Profile {
         kept.sort_by(f64::total_cmp);
         kept.dedup_by(|x, y| (*x - *y).abs() <= slack);
         Some(kept)
+    }
+}
+
+/// A clamped B-spline profile over the extrusion's window, polynomial or
+/// rational: carried onto a plane, its control points carried with their
+/// weights are the image's, since the carry is affine and the weights are
+/// positive.
+struct SplineProfile {
+    knots: KnotVector,
+    control: Vec<Weighted<Point>>,
+}
+
+impl SplineProfile {
+    /// The profile of `curve` cut to `window`, where it is a B-spline, a
+    /// forward trim of one, and not periodic.
+    fn of(curve: &Curve, window: (f64, f64), tol: Tolerances) -> Option<Self> {
+        let basis = match curve {
+            Curve::Trimmed(t) if !t.is_reversed() => t.basis(),
+            other => other,
+        };
+        let Curve::BSpline(spline) = basis else {
+            return None;
+        };
+        if basis.is_periodic() || !spline.knots().is_clamped() {
+            return None;
+        }
+        let mut piece: Spline<Weighted<Point>> =
+            (spline.knots().clone(), spline.control_points().to_vec());
+        let (lo, hi) = piece.0.domain();
+        if window.0 > lo + tol.parametric() {
+            piece = bspline::split(&piece.0, &piece.1, window.0, tol).ok()?.1;
+        }
+        if window.1 < hi - tol.parametric() {
+            piece = bspline::split(&piece.0, &piece.1, window.1, tol).ok()?.0;
+        }
+        Some(Self {
+            knots: piece.0,
+            control: piece.1,
+        })
+    }
+
+    /// The profile carried onto the plane, with its chart trace on the
+    /// extrusion: `Some` of nothing where every control point's height,
+    /// and so every point's, falls outside the sweep on one side; `None`
+    /// where the heights straddle an end of the sweep, whose cut has no
+    /// closed form.
+    fn carried(
+        &self,
+        carry: &Carry,
+        sweep: (f64, f64),
+        tol: Tolerances,
+    ) -> Option<Vec<(Curve, PlanarCurve)>> {
+        // A point of the profile is a convex blend of its control points,
+        // and so is its height of theirs.
+        let heights: Vec<f64> = self
+            .control
+            .iter()
+            .map(|w| carry.height(w.point()))
+            .collect();
+        if heights.iter().all(|&v| v < sweep.0) || heights.iter().all(|&v| v > sweep.1) {
+            return Some(Vec::new());
+        }
+        if heights.iter().any(|&v| v < sweep.0 || v > sweep.1) {
+            return None;
+        }
+        let image: Vec<Weighted<Point>> = self
+            .control
+            .iter()
+            .map(|w| Weighted::new(carry.point(w.point()), w.weight, tol))
+            .collect::<Result<_, _>>()
+            .ok()?;
+        let curve: Curve = BSplineCurve::rational(self.knots.clone(), image)
+            .ok()?
+            .into();
+        let chart = self.chart(&heights, tol)?;
+        Some(vec![(curve, chart.into())])
+    }
+
+    /// The chart trace `(u, v(u))` at the profile's own parameter, where
+    /// `v` is the height blended as the profile's points are. Over each
+    /// Bézier piece on `[a, b]` with weights `wₖ`, `v` is the blend of the
+    /// heights with those weights, and `u` is `u W(u) / W(u)`, `u W(u)` one
+    /// degree up with coefficients `((p + 1 − k) wₖ a + k wₖ₋₁ b) / (p + 1)`.
+    /// The pieces join on their shared ends.
+    fn chart(&self, heights: &[f64], tol: Tolerances) -> Option<BSpline2d> {
+        let p = self.knots.degree();
+        let lifted: Vec<Weighted<Point2>> = self
+            .control
+            .iter()
+            .zip(heights)
+            .map(|(w, &v)| Weighted {
+                scaled: Point2::new(0.0, v * w.weight),
+                weight: w.weight,
+            })
+            .collect();
+        let pieces = bspline::to_bezier_segments(&self.knots, &lifted, tol).ok()?;
+        let up = p + 1;
+        #[allow(clippy::cast_precision_loss)]
+        let share = |k: usize| k as f64 / up as f64;
+        let mut knots: Vec<f64> = Vec::with_capacity(pieces.len() * up + 2);
+        let mut control: Vec<Weighted<Point2>> = Vec::with_capacity(pieces.len() * up + 1);
+        for (index, ((a, b), piece)) in pieces.iter().enumerate() {
+            for k in 0..=up {
+                if index > 0 && k == 0 {
+                    continue;
+                }
+                let (before, here) = ((k > 0).then(|| piece[k - 1]), (k <= p).then(|| piece[k]));
+                let blend = |f: fn(&Weighted<Point2>) -> f64| {
+                    before.map_or(0.0, |w| share(k) * f(&w))
+                        + here.map_or(0.0, |w| (1.0 - share(k)) * f(&w))
+                };
+                let weight = blend(|w| w.weight);
+                let rise = blend(|w| w.scaled.y);
+                let run = (1.0 - share(k)) * here.map_or(0.0, |w| w.weight) * a
+                    + share(k) * before.map_or(0.0, |w| w.weight) * b;
+                control.push(Weighted {
+                    scaled: Point2::new(run, rise),
+                    weight,
+                });
+            }
+            let ends = if index == 0 { up + 1 } else { up };
+            knots.extend(core::iter::repeat_n(*a, ends));
+            if index == pieces.len() - 1 {
+                knots.extend(core::iter::repeat_n(*b, up + 1));
+            }
+        }
+        BSpline2d::rational(KnotVector::new(knots, up).ok()?, control).ok()
     }
 }
 
@@ -637,10 +808,14 @@ fn lands_on_both(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use ogeom_geom::{
-        CircleCurve, Curve, Curve2d as _, Curve3d as _, EllipseCurve, ExtrusionSurface, LineCurve,
-        ParabolaCurve, PlanarCurve, PlaneSurface, Surface as _, SurfaceGeometry, TrimmedCurve,
+        BSplineCurve, CircleCurve, Curve, Curve2d as _, Curve3d as _, EllipseCurve,
+        ExtrusionSurface, LineCurve, ParabolaCurve, PlanarCurve, PlaneSurface, Surface as _,
+        SurfaceGeometry, TrimmedCurve,
     };
-    use ogeom_math::{Axis, Circle, Direction, Ellipse, Frame, Parabola, Plane, Point, Vector};
+    use ogeom_math::bspline::Weighted;
+    use ogeom_math::{
+        Axis, Circle, Direction, Ellipse, Frame, KnotVector, Parabola, Plane, Point, Vector,
+    };
     use proptest::prelude::*;
 
     use crate::{IntersectOptions, SectionCurve, SurfaceIntersection, intersect_surfaces};
@@ -921,8 +1096,118 @@ mod tests {
         assert_eq!(across, 1);
     }
 
+    /// A circle's arc spelled as a rational quadratic B-spline, swept along
+    /// its axis and cut at a tilt `θ`: every point of the section lies on
+    /// the drum and in the plane, on the ellipse of radii `R / cos θ` and
+    /// `R`, and the section at the profile's parameter `t` is the arc's
+    /// point there lifted to the plane.
+    #[test]
+    fn a_swept_arc_spline_cut_at_a_tilt_is_the_arc_lifted_to_the_plane() {
+        let (radius, tilt) = (2.0, 0.6_f64);
+        let centre = Point::new(1.0, 0.0, 0.0);
+        let circle = Circle::new(
+            Frame::new(centre, Direction::Z, Direction::X, T).unwrap(),
+            radius,
+            T,
+        )
+        .unwrap();
+        let arc: Curve = Curve::from(CircleCurve::new(circle))
+            .to_bspline_over((0.3, 2.5), T)
+            .unwrap()
+            .into();
+        let (found, plane, extrusion) = cut(
+            arc.clone(),
+            Direction::Z,
+            (-10.0, 10.0),
+            centre,
+            direction(tilt.sin(), 0.0, tilt.cos()),
+        );
+        exact_on_both(&found, &plane, &extrusion);
+        let [section] = found.as_slice() else {
+            panic!("{} sections", found.len());
+        };
+        assert!(matches!(section.curve, Curve::BSpline(_)));
+        assert_eq!(section.curve.domain(), arc.domain());
+        let (lo, hi) = arc.domain();
+        for i in 0..=32 {
+            let t = (hi - lo).mul_add(f64::from(i) / 32.0, lo);
+            let p = section.curve.point_at(t, T).unwrap();
+            let q = arc.point_at(t, T).unwrap();
+            let lifted = Point::new(q.x, q.y, -tilt.tan() * (q.x - 1.0));
+            assert!(p.distance(lifted) < 1e-12);
+            let (x, y) = ((p.x - 1.0).mul_add(tilt.cos(), -p.z * tilt.sin()), p.y);
+            let on = (x * tilt.cos() / radius).powi(2) + (y / radius).powi(2);
+            assert!((on - 1.0).abs() < 1e-12);
+        }
+    }
+
+    /// A polynomial cubic winding in space, swept along a slant `d` and cut
+    /// by `z = 1`: the section at `t` is `C(t) + d (1 − C_z(t)) / d_z`, and
+    /// its trace on the extrusion is `(t, (1 − C_z(t)) / d_z)`. Swept short
+    /// of the plane it is apart, and swept to straddle it the pair is left
+    /// to the marcher.
+    #[test]
+    fn a_swept_cubic_cut_level_is_the_cubic_carried_along_the_sweep() {
+        let control = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 2.0, 0.5),
+            Point::new(2.0, -1.0, -0.4),
+            Point::new(3.0, 1.0, 0.3),
+            Point::new(4.0, 0.0, 0.0),
+        ];
+        let cubic: Curve =
+            BSplineCurve::new(KnotVector::clamped_uniform(3, 5).unwrap(), control, T)
+                .unwrap()
+                .into();
+        let along = direction(0.0, 1.0, 1.0);
+        let (found, plane, extrusion) = cut(
+            cubic.clone(),
+            along,
+            (-5.0, 5.0),
+            Point::new(0.0, 0.0, 1.0),
+            Direction::Z,
+        );
+        exact_on_both(&found, &plane, &extrusion);
+        let [section] = found.as_slice() else {
+            panic!("{} sections", found.len());
+        };
+        let Some(trace) = &section.on_b else {
+            panic!("a section without its trace");
+        };
+        let d = along.vector();
+        let (lo, hi) = cubic.domain();
+        for i in 0..=32 {
+            let t = (hi - lo).mul_add(f64::from(i) / 32.0, lo);
+            let q = cubic.point_at(t, T).unwrap();
+            let height = (1.0 - q.z) / d.z;
+            assert!(
+                section
+                    .curve
+                    .point_at(t, T)
+                    .unwrap()
+                    .distance(q + d * height)
+                    < 1e-12
+            );
+            let uv = trace.point_at(t, T).unwrap();
+            assert!((uv.x - t).abs() < 1e-12 && (uv.y - height).abs() < 1e-12);
+        }
+        let plane: SurfaceGeometry =
+            PlaneSurface::new(Plane::through(Point::new(0.0, 0.0, 1.0), Direction::Z)).into();
+        let short: SurfaceGeometry = ExtrusionSurface::over(cubic.clone(), along, (-5.0, 0.5))
+            .unwrap()
+            .into();
+        assert_eq!(
+            super::plane_extrusion(&plane, &short, T).map(|f| f.len()),
+            Some(0)
+        );
+        let straddling: SurfaceGeometry = ExtrusionSurface::over(cubic, along, (-5.0, 1.0))
+            .unwrap()
+            .into();
+        assert!(super::plane_extrusion(&plane, &straddling, T).is_none());
+    }
+
     /// The profiles the property test sweeps: a line, a circle, an
-    /// ellipse and a parabola, whole or trimmed.
+    /// ellipse, a parabola and a rational cubic, whole or trimmed.
     fn profile() -> impl Strategy<Value = Curve> {
         let point = || (-2.0..2.0f64, -2.0..2.0f64, -2.0..2.0f64);
         let frame = (point(), -3.0..3.0f64, -3.0..3.0f64).prop_map(|((x, y, z), a, b)| {
@@ -931,7 +1216,7 @@ mod tests {
             let x_axis = Direction::new(lean - axis.vector() * lean.dot(axis.vector()), T).unwrap();
             Frame::new(Point::new(x, y, z), axis, x_axis, T).unwrap()
         });
-        let kind = 0..4u32;
+        let kind = 0..5u32;
         let trim = proptest::option::of((0.05..0.45f64, 0.55..0.95f64));
         (kind, frame, 0.3..2.0f64, 0.2..1.0f64, trim).prop_map(
             |(kind, frame, size, ratio, trim)| {
@@ -949,13 +1234,29 @@ mod tests {
                     1 => CircleCurve::new(Circle::new(frame, size, T).unwrap()).into(),
                     2 => EllipseCurve::new(Ellipse::new(frame, size, size * ratio, T).unwrap())
                         .into(),
-                    _ => ParabolaCurve::over(
+                    3 => ParabolaCurve::over(
                         Parabola::new(frame, size * ratio, T).unwrap(),
                         -size,
                         size,
                     )
                     .unwrap()
                     .into(),
+                    // A rational cubic winding off its frame's plane.
+                    _ => {
+                        let control = (0..6u32)
+                            .map(|i| {
+                                let k = f64::from(i);
+                                let p = frame.origin()
+                                    + frame.x().vector() * (size * (k - 2.5))
+                                    + frame.y().vector() * (size * ratio * (k * 1.7).sin())
+                                    + frame.z().vector() * (size * 0.3 * (k * 0.9).cos());
+                                Weighted::new(p, 1.0 + ratio * f64::from(i % 2), T).unwrap()
+                            })
+                            .collect();
+                        BSplineCurve::rational(KnotVector::clamped_uniform(3, 6).unwrap(), control)
+                            .unwrap()
+                            .into()
+                    }
                 };
                 match trim {
                     Some((a, b)) => {

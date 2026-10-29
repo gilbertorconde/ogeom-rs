@@ -2024,13 +2024,24 @@ fn trimmed_on_its_surface(
         };
         let range = *range;
         let placed = geometry.transformed(&(unplace * edge.transform(model.datums())?), tol)?;
-        let pcurve = match ogeom_intersect::exact_pcurve_of(&placed, &surface, tol) {
-            Some(exact) => exact,
+        // A fit is aimed at the edge's own tolerance: the pcurve is read at
+        // the curve's parameter, and lifted it lands within that of the
+        // curve's point there, or the edge is widened to what it misses.
+        let (pcurve, missed) = match ogeom_intersect::exact_pcurve_of(&placed, &surface, tol) {
+            Some(exact) => (exact, 0.0),
             None => {
-                ogeom_algo::pcurve_fit::fit_projected_pcurve_capped(
-                    &placed, range, &surface, near, tol,
-                )?
-                .0
+                let held = edge_data.tolerance.get();
+                match ogeom_algo::pcurve_fit::fit_projected_pcurve_aimed(
+                    &placed, range, &surface, near, held, tol,
+                )? {
+                    ogeom_algo::pcurve_fit::CappedFit::Fitted((fitted, missed, ..)) => {
+                        (fitted, missed)
+                    }
+                    ogeom_algo::pcurve_fit::CappedFit::TooFar(off) => ogeom_core::ogeom_bail!(
+                        Construction,
+                        "the edge sits {off:.2e} from the surface it should bound"
+                    ),
+                }
             }
         };
         ogeom_algo::attach_pcurve(
@@ -2041,6 +2052,9 @@ fn trimmed_on_its_surface(
             edge.location().clone(),
             range,
         )?;
+        if missed > edge_data.tolerance.get() {
+            model.widen(&edge, ogeom_core::Tolerance::new(missed)?)?;
+        }
     }
     Ok(())
 }
