@@ -5753,6 +5753,7 @@ fn fill(
                                 crossing.on_b,
                                 tol,
                             )?;
+                        let mut ended = false;
                         // A closed section has no ends: where it starts is
                         // only where its circle's frame happened to point.
                         if touch && !section.closed {
@@ -5785,6 +5786,7 @@ fn fill(
                                     );
                                 }
                                 if foot.distance <= width {
+                                    ended = true;
                                     on_a = end;
                                     on_b = onto_range(
                                         e.onto_curve(foot.parameter),
@@ -5828,6 +5830,44 @@ fn fill(
                                         .max(crossing.reach.min(tol.confusion() * 1e5));
                                 }
                                 break;
+                            }
+                        }
+                        // A touch along the section is where the edge
+                        // touches the other face's surface: the section
+                        // lies in both surfaces, the edge in its own face's.
+                        // The meet of the two curves has a double root
+                        // there and lands anywhere in its valley, the root
+                        // of the section's honesty times the radius they
+                        // part at long, so the face across, meeting the
+                        // section at the same point, splits it elsewhere.
+                        // The touch is solved from the edge and the surface
+                        // instead, and taken where it lies in the crossing's
+                        // own valley with the section within its reach.
+                        if touch
+                            && !ended
+                            && at_end.is_none()
+                            && let Some(touched) = ogeom_intersect::touch_curve_surface(
+                                drawn,
+                                &across.surface,
+                                crossing.on_b,
+                                tol,
+                            )
+                            && touched.point.distance(crossing.point) <= crossing.reach + weld
+                        {
+                            let foot = ogeom_algo::project_on_curve(
+                                &section.curve,
+                                touched.point,
+                                64,
+                                tol,
+                            )?;
+                            if foot.distance <= reach {
+                                on_a = foot.parameter;
+                                on_b = onto_range(
+                                    e.onto_curve(touched.on_curve),
+                                    &e.curve,
+                                    e.crange,
+                                    tol,
+                                );
                             }
                         }
                         // Where the edge runs all but in the other face's plane

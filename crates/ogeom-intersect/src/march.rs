@@ -2237,24 +2237,12 @@ fn end_at_touch(
 ///
 /// `k` is the unknown the edge holds at `bound`. Along the edge the
 /// bordered surface's point runs as a curve of its free parameter, and the
-/// section touches the edge where that curve touches the other surface:
-/// where the other surface's foot of it is its closest point (two rows),
-/// and the curve runs in the other surface's tangent plane (one row). The
-/// three rows are regular where the curve and the surface part at second
-/// order. The gap along the normal is not a row, as it touches zero without
-/// crossing it: it is measured, and the touch is kept only within the
-/// confusion distance. It is kept, too, only where the section leaves the
+/// section touches the edge where that curve touches the other surface, as
+/// [`crate::curve_surface::touch_solved`] solves it. The touch is kept only
+/// within the confusion distance, and only where the section leaves the
 /// edge into the domain: a section outside it, touching the edge from
 /// there, meets the domain at the touch alone, and a walk along the edge
 /// beside it is the correction held on the edge, not the section.
-///
-/// The solve is kept only where its linear model holds over the move it
-/// made, by Kantorovich's condition as [`crate::walk::settle`] asks it:
-/// `‖J₀⁻¹·(J₁ − J₀)‖ ≤ ½` in the Frobenius norm, which is never less than
-/// the operator norm. A start further from the touch than that, or one
-/// beside an edge the section crosses, whose curve turns into the other
-/// surface's tangent plane only away from the crossing if at all, is not
-/// trusted to have found a touch beside it.
 fn touch_on_edge(
     pair: &SurfacePair<'_>,
     from: &[f64],
@@ -2270,68 +2258,14 @@ fn touch_on_edge(
     let along_u = k == first + 1;
     let free = if along_u { first } else { first + 1 };
     let place = |s: f64| if along_u { (s, bound) } else { (bound, s) };
-    let system = |x: &[f64; 3]| -> Option<([f64; 3], [[f64; 3]; 3])> {
-        let (u, v) = place(x[0]);
+    let along = |s: f64| {
+        let (u, v) = place(s);
         let (p, su, sv) = edged.point_d1_at(u, v, tol).ok()?;
         let (suu, _, svv) = edged.d2_at(u, v, tol).ok()?;
-        let (c, c2) = if along_u { (su, suu) } else { (sv, svv) };
-        let (q, ou, ov) = other.point_d1_at(x[1], x[2], tol).ok()?;
-        let (ouu, ouv, ovv) = other.d2_at(x[1], x[2], tol).ok()?;
-        let gap = p - q;
-        let normal = ou.cross(ov);
-        let residual = [gap.dot(ou), gap.dot(ov), c.dot(normal)];
-        let jacobian = [
-            [
-                c.dot(ou),
-                gap.dot(ouu) - ou.dot(ou),
-                gap.dot(ouv) - ov.dot(ou),
-            ],
-            [
-                c.dot(ov),
-                gap.dot(ouv) - ou.dot(ov),
-                gap.dot(ovv) - ov.dot(ov),
-            ],
-            [
-                c2.dot(normal),
-                c.dot(ouu.cross(ov) + ou.cross(ouv)),
-                c.dot(ouv.cross(ov) + ou.cross(ovv)),
-            ],
-        ];
-        Some((residual, jacobian))
+        Some(if along_u { (p, su, suu) } else { (p, sv, svv) })
     };
     let start = [from[free], from[rest], from[rest + 1]];
-    let (_, jacobian) = system(&start)?;
-    // The rows are products of derivatives with no common scale, so the
-    // solve is run until its steps stop moving the parameters, and what it
-    // found is a root where the step from there would not move them either:
-    // at the root the damped search cannot lower the residual further, and
-    // reports running out.
-    let criteria = solve::Criteria {
-        residual: 0.0,
-        step: tol.parametric(),
-        max_iterations: 40,
-    };
-    let (found, _, _, _) = solve::newton_system_fixed(
-        |x| system(x).unwrap_or(([f64::INFINITY; 3], [[0.0; 3]; 3])),
-        start,
-        criteria,
-    )
-    .ok()?;
-    let (left, after) = system(&found)?;
-    let step = solve::linear_fixed(after, left)?;
-    if step.iter().any(|d| d.abs() > tol.parametric()) {
-        return None;
-    }
-    let mut drift = 0.0;
-    for column in 0..3 {
-        let change: [f64; 3] =
-            core::array::from_fn(|row| after[row][column] - jacobian[row][column]);
-        let moved = solve::linear_fixed(jacobian, change)?;
-        drift += moved.iter().map(|v| v * v).sum::<f64>();
-    }
-    if drift.sqrt() > 0.5 {
-        return None;
-    }
+    let found = crate::curve_surface::touch_solved(along, other, start, tol)?;
     let (u, v) = place(found[0]);
     let within = |surface: &SurfaceGeometry, (u, v): (f64, f64)| {
         let ((ua, ub), (va, vb)) = surface.domain();

@@ -2448,12 +2448,14 @@ fn a_pocket_of_a_disc_and_its_chord_meets_at_both_corners() {
 }
 
 /// A disc of radius 2.5 about `(4, 4)`, two high, up to its chord `y = 4 +
-/// c` with a square wall. Returns the block, the rim's corner `(4 +
+/// c` at the top, the chord's wall leaning `d` per unit of depth, its foot
+/// in for a positive `d`. Returns the block, the rim's corner `(4 +
 /// sqrt(2.5^2 - c^2), 4 + c, 2)`, and the arc's and the chord's top creases
 /// leaving it.
 fn d_shaped_block(
     model: &mut ogeom_topo::Model,
     c: f64,
+    d: f64,
 ) -> (ogeom_topo::Shape, Point, [ogeom_topo::Shape; 2]) {
     let big = 2.5;
     let disc = ogeom_algo::make_cylinder(
@@ -2465,7 +2467,8 @@ fn d_shaped_block(
     )
     .unwrap()
     .shape;
-    let past = past_plane(model, Point::new(4.0, 4.0 + c, 2.0), Vector::Y);
+    let normal = Vector::new(0.0, 1.0, d) * (1.0 / d.hypot(1.0));
+    let past = past_plane(model, Point::new(4.0, 4.0 + c, 2.0), normal);
     let cut = ogeom_bool::cut(model, &disc, &past, T).unwrap().shape;
     let solid = explore_unique(model, &cut, ShapeType::Solid).unwrap()[0].clone();
     let corner = Point::new(4.0 + big.mul_add(big, -c * c).sqrt(), 4.0 + c, 2.0);
@@ -2524,12 +2527,76 @@ fn rounds_of_a_d_shaped_block_take_both_bands_as_alone() {
     let half = 1.2;
     for c in [0.5_f64, 0.0] {
         let mut model = ogeom_topo::Model::new();
-        let (solid, at, edges) = d_shaped_block(&mut model, c);
+        let (solid, at, edges) = d_shaped_block(&mut model, c, 0.0);
         let want = d_shaped_corner_removed((at.x, at.y), c, r, half);
         for got in removed_near(&model, &solid, &edges, r, at, half) {
             assert!(
                 (got - want).abs() < 5e-6,
                 "chord at {c}: {got} against {want}"
+            );
+        }
+    }
+}
+
+/// What rounding the arc and the chord of [`d_shaped_block`] takes within
+/// the square of half side `half` round its corner `at`, the chord's wall
+/// leaning `d`, a column at a time: the union of what each band takes as
+/// it does alone, in the material. The arc's band is its torus band up to
+/// its cap, in the plane through the axis and the vertex; the chord's is
+/// its straight band run out past the vertex across the drum.
+fn leaning_d_corner_removed(at: (f64, f64), c: f64, d: f64, r: f64, half: f64) -> f64 {
+    let (centre, big) = ((4.0, 4.0), 2.5);
+    let ahead = (-c / big, (at.0 - centre.0) / big);
+    let arc_band = Section::new(0.0, (1.0, 0.0), r);
+    let chord_band = Section::new(0.0, (1.0, d), r);
+    integral(
+        (at.0 - half, at.0 + half),
+        (at.1 - half, at.1 + half),
+        2e3,
+        |x, y| {
+            let off = (x - centre.0).hypot(y - centre.1) - big;
+            if off > 0.0 {
+                return 0.0;
+            }
+            let (px, py) = (x - at.0, y - at.1);
+            let arc = if px.mul_add(ahead.0, py * ahead.1) > 0.0 {
+                [(0.0, 0.0); 2]
+            } else {
+                arc_band.column(off)
+            };
+            let past = [chord_band.past(py, 0.0)];
+            let within = |runs: [(f64, f64); 2]| -> Vec<(f64, f64)> {
+                runs.iter()
+                    .map(|&(p, q)| (p.max(0.0), q.min(2.0)))
+                    .collect()
+            };
+            let (arc, chord) = (within(arc), within(chord_band.column(py)));
+            span(&arc) + span(&chord) - overlap(&arc, &chord) - overlap(&arc, &past)
+        },
+    )
+}
+
+/// A D-shaped block with its chord through the centre and the chord's wall
+/// overhanging, its arc's and its chord's top creases rounded in both
+/// orders. The chord's wall cuts the arc's torus band along a section that
+/// leaves the wall tangent to its top edge, where the band is tangent to
+/// the top, and to its seam with the drum, where the band is tangent to the
+/// drum. Named arc first, the arc's cut met each edge anywhere in the
+/// valley the section's fit leaves along a tangent, 5.7e-4 and 1.3e-4 off
+/// the edges' own touches, the wall's pieces did not close with the band's,
+/// and the request refused.
+#[test]
+fn rounds_of_a_d_shaped_block_with_an_overhanging_chord_close_in_both_orders() {
+    let r = 0.5;
+    let half = 1.2;
+    for d in [-0.1_f64, -0.05] {
+        let mut model = ogeom_topo::Model::new();
+        let (solid, at, edges) = d_shaped_block(&mut model, 0.0, d);
+        let want = leaning_d_corner_removed((at.x, at.y), 0.0, d, r, half);
+        for got in removed_near(&model, &solid, &edges, r, at, half) {
+            assert!(
+                (got - want).abs() < 5e-6,
+                "chord wall leaning {d}: {got} against {want}"
             );
         }
     }

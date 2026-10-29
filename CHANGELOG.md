@@ -1189,6 +1189,34 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section meeting a face's edge tangentially ends on the edge's own
+  touch.** (#342)
+  - The boolean splits a face where a section crosses one of its edges,
+    found as the meet of the section's curve with the edge's. Where the
+    section runs tangent to the edge, that meet has a double root: it
+    lands anywhere in a valley the square root of the fitted section's
+    error times the radius the two part at long. The face across, crossing
+    the section at the same point, split it elsewhere, and the two faces'
+    pieces did not close.
+  - Example: a D-shaped block, its chord through the centre, its chord
+    wall overhanging by 0.1, rounded at r = 0.5 with the arc named first.
+    The wall cuts the arc's torus band along a section tangent to the
+    wall's top edge, where the band is tangent to the top, and to its seam
+    with the drum, where the band is tangent to the drum. The meets landed
+    5.7e-4 and 1.3e-4 off the touches, and the request refused ("the kept
+    pieces did not close into a shell").
+  - The new `touch_curve_surface` solves where a curve touches a surface
+    on the regular system of the touch: the surface's foot of the curve's
+    point is its nearest (two rows), and the curve runs in the surface's
+    tangent plane there (one row). A tangential crossing of a section with
+    an edge is now placed where the edge touches the other face's surface,
+    when that touch lies in the crossing's own valley and on the section
+    within its reach. The march's touch on a surface's edge solves the
+    same system.
+  - The D-shaped block now builds 0.133157 in both orders, against a
+    column-integrated 0.133155. With the wall overhanging by 0.05, both
+    orders are unchanged at 0.126035, against 0.126033.
+
 - **A point on a face's edge lies on the face where the edge bends more in
   the chart than in space.** (#509)
   - `classify_on_face` reads a point against the face's trim drawn as a

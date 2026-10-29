@@ -23,7 +23,7 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d, Surface, SurfaceGeometry};
-use ogeom_math::{Point, solve};
+use ogeom_math::{Point, Vector, solve};
 
 use crate::march::{Cell, sample_by, segment_meets_triangle};
 
@@ -121,6 +121,139 @@ pub fn intersect_curve_surface(
             std::borrow::Cow::Owned(tree),
         )
     })
+}
+
+/// Where a curve touches a surface without crossing it, solved from
+/// `seed` on the curve: the touch, or `None` if there is none beside the
+/// seed.
+///
+/// At a touch the gap between the curve and the surface falls to zero
+/// without changing sign, so `C(t) = S(u, v)` has a double root there:
+/// Newton on it slows to a halving of the distance per step and stops where
+/// the gap, the square of the distance left, meets its tolerance, short of
+/// the touch by the square root of that tolerance times the radius the two
+/// part at. [`intersect_curve_surface`] lands anywhere in that valley. The
+/// touch is solved here as one instead, from the seed's foot on the
+/// surface: where that foot is the curve point's nearest (two rows) and the
+/// curve runs in the surface's tangent plane (one row), rows that stay
+/// regular where the two part at second order. It is kept where the curve
+/// and the surface are within the confusion distance there.
+#[must_use]
+pub fn touch_curve_surface(
+    curve: &Curve,
+    surface: &SurfaceGeometry,
+    seed: f64,
+    tol: Tolerances,
+) -> Option<Piercing> {
+    let foot =
+        ogeom_geom::project_on_surface(surface, curve.point_at(seed, tol).ok()?, 16, tol).ok()?;
+    let along = |t: f64| {
+        let d = curve.derivatives_at(t, 2, tol).ok()?;
+        Some((Point::ORIGIN + *d.first()?, *d.get(1)?, *d.get(2)?))
+    };
+    let start = [seed, foot.parameters.0, foot.parameters.1];
+    let [t, u, v] = touch_solved(along, surface, start, tol)?;
+    let (lo, hi) = curve.domain();
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let within = |x: f64, lo: f64, hi: f64, periodic: bool| {
+        periodic || (x >= lo - tol.parametric() && x <= hi + tol.parametric())
+    };
+    if !within(t, lo, hi, curve.is_periodic())
+        || !within(u, ua, ub, surface.is_periodic_u())
+        || !within(v, va, vb, surface.is_periodic_v())
+    {
+        return None;
+    }
+    let point = curve.point_at(t, tol).ok()?;
+    let gap = point.distance(surface.point_at(u, v, tol).ok()?);
+    (gap <= tol.confusion()).then_some(Piercing {
+        on_curve: t,
+        on_surface: (u, v),
+        point,
+        gap,
+    })
+}
+
+/// Where a curve touches a surface, solved from `start`, a parameter on the
+/// curve and one on the surface beside the touch: the three there, or
+/// `None` where the solve does not find a touch beside the start.
+///
+/// `along` gives the curve's point and first two derivatives at a
+/// parameter. The curve touches the surface where the surface's foot of it
+/// is its closest point (two rows), and the curve runs in the surface's
+/// tangent plane (one row). The three rows are regular where the curve and
+/// the surface part at second order. The gap along the normal is not a row,
+/// as it touches zero without crossing it: the caller measures it.
+///
+/// The solve is kept only where its linear model holds over the move it
+/// made, by Kantorovich's condition as [`crate::walk::settle`] asks it:
+/// `‖J₀⁻¹·(J₁ − J₀)‖ ≤ ½` in the Frobenius norm, which is never less than
+/// the operator norm. A start further from the touch than that, or one
+/// beside a crossing, where the curve turns into the surface's tangent
+/// plane only away from the crossing if at all, is not trusted to have
+/// found a touch beside it.
+pub(crate) fn touch_solved(
+    along: impl Fn(f64) -> Option<(Point, Vector, Vector)>,
+    surface: &SurfaceGeometry,
+    start: [f64; 3],
+    tol: Tolerances,
+) -> Option<[f64; 3]> {
+    let system = |x: &[f64; 3]| -> Option<([f64; 3], [[f64; 3]; 3])> {
+        let (p, c, c2) = along(x[0])?;
+        let (q, ou, ov) = surface.point_d1_at(x[1], x[2], tol).ok()?;
+        let (ouu, ouv, ovv) = surface.d2_at(x[1], x[2], tol).ok()?;
+        let gap = p - q;
+        let normal = ou.cross(ov);
+        let residual = [gap.dot(ou), gap.dot(ov), c.dot(normal)];
+        let jacobian = [
+            [
+                c.dot(ou),
+                gap.dot(ouu) - ou.dot(ou),
+                gap.dot(ouv) - ov.dot(ou),
+            ],
+            [
+                c.dot(ov),
+                gap.dot(ouv) - ou.dot(ov),
+                gap.dot(ovv) - ov.dot(ov),
+            ],
+            [
+                c2.dot(normal),
+                c.dot(ouu.cross(ov) + ou.cross(ouv)),
+                c.dot(ouv.cross(ov) + ou.cross(ovv)),
+            ],
+        ];
+        Some((residual, jacobian))
+    };
+    let (_, jacobian) = system(&start)?;
+    // The rows are products of derivatives with no common scale, so the
+    // solve is run until its steps stop moving the parameters, and what it
+    // found is a root where the step from there would not move them either:
+    // at the root the damped search cannot lower the residual further, and
+    // reports running out.
+    let criteria = solve::Criteria {
+        residual: 0.0,
+        step: tol.parametric(),
+        max_iterations: 40,
+    };
+    let (found, _, _, _) = solve::newton_system_fixed(
+        |x| system(x).unwrap_or(([f64::INFINITY; 3], [[0.0; 3]; 3])),
+        start,
+        criteria,
+    )
+    .ok()?;
+    let (left, after) = system(&found)?;
+    let step = solve::linear_fixed(after, left)?;
+    if step.iter().any(|d| d.abs() > tol.parametric()) {
+        return None;
+    }
+    let mut drift = 0.0;
+    for column in 0..3 {
+        let change: [f64; 3] =
+            core::array::from_fn(|row| after[row][column] - jacobian[row][column]);
+        let moved = solve::linear_fixed(jacobian, change)?;
+        drift += moved.iter().map(|v| v * v).sum::<f64>();
+    }
+    (drift.sqrt() <= 0.5).then_some(found)
 }
 
 /// A surface made ready for many curve queries.
@@ -1491,5 +1624,86 @@ mod tests {
         assert_eq!(found.lying.len(), 1);
         let (from, to) = found.lying[0];
         assert!((to - from).abs() > 6.0, "{from} to {to}");
+    }
+
+    /// A wall leaning off a round's torus band, its foot back, cuts the
+    /// band along a section that leaves the wall's face tangent to two of
+    /// its edges: the top edge, where the band is tangent to the top, and
+    /// the wall's seam with the drum, where the band is tangent to the
+    /// drum. Each edge touches the torus there, the gap falling to zero
+    /// without changing sign, and the touch comes back on its closed-form
+    /// point from a seed a millimetre's thousandth along the edge, where a
+    /// solve for the gap stops in the valley. A line crossing the band is
+    /// not a touch.
+    #[test]
+    fn an_edge_tangent_to_a_band_touches_it_where_the_band_meets_its_face() {
+        use ogeom_geom::TorusSurface;
+        use ogeom_math::Torus;
+        let band: SurfaceGeometry = TorusSurface::new(
+            Torus::new(
+                Frame::new(Point::new(4.0, 4.0, 1.5), Direction::Z, -Direction::X, T).unwrap(),
+                2.0,
+                0.5,
+                T,
+            )
+            .unwrap(),
+        )
+        .into();
+        let lean = 0.1_f64;
+        let wall = plane(Point::new(4.0, 4.0, 2.0), Vector::new(0.0, 1.0, -lean));
+        let drum = CylinderSurface::new(
+            Cylinder::new(
+                Frame::new(Point::new(4.0, 4.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+                2.5,
+                T,
+            )
+            .unwrap(),
+            (0.0, 2.0),
+        )
+        .unwrap()
+        .into();
+        let crate::section::SurfaceIntersection::Along(seams) = crate::section::intersect_surfaces(
+            &wall,
+            &drum,
+            crate::section::IntersectOptions::default(),
+            T,
+        )
+        .unwrap() else {
+            panic!("the wall meets the drum");
+        };
+        let foot = Point::new(4.0 + 2.5_f64.mul_add(2.5, -0.05 * 0.05).sqrt(), 3.95, 1.5);
+        // The nearest of a fine sampling: a seed, not an answer.
+        let nearest = |c: &Curve, p: Point| {
+            let (lo, hi) = c.domain();
+            (0..=20_000)
+                .map(|k| lo + (hi - lo) * f64::from(k) / 20_000.0)
+                .map(|t| (t, c.point_at(t, T).unwrap().distance(p)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap()
+        };
+        let seam = seams
+            .iter()
+            .map(|s| &s.curve)
+            .find(|c| nearest(c, foot).1 < 1e-2)
+            .unwrap();
+        let top = segment(Point::new(1.5, 4.0, 2.0), Point::new(6.5, 4.0, 2.0));
+        for (edge, want) in [(&top, Point::new(6.0, 4.0, 2.0)), (seam, foot)] {
+            let at = nearest(edge, want).0;
+            let step = 1e-3 / edge.d1_at(at, T).unwrap().magnitude();
+            for seed in [at - step, at + step] {
+                let touch = touch_curve_surface(edge, &band, seed, T).unwrap();
+                assert!(
+                    touch.point.distance(want) < 1e-9 && touch.gap < 1e-9,
+                    "{touch:?} against {want:?}"
+                );
+            }
+        }
+        let across = segment(Point::new(6.2, 4.0, 3.0), Point::new(6.2, 4.0, 0.0));
+        let found =
+            intersect_curve_surface(&across, &band, CurveSurfaceOptions::default(), T).unwrap();
+        assert_eq!(found.crossings.len(), 2, "{:?}", found.crossings);
+        for crossing in found.crossings {
+            assert!(touch_curve_surface(&across, &band, crossing.on_curve, T).is_none());
+        }
     }
 }
