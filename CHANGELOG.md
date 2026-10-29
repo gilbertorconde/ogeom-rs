@@ -1189,6 +1189,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A round runs out across a drafted drum as across an upright one.**
+  (#342)
+  - A straight round whose crease ends where a boss's wall follows it
+    runs on until its whole section has left the boss. Only a cylinder was
+    followed: beside a drafted drum (a cone) the band was capped square at
+    the vertex, and what of its section the drum still held past it stood.
+    On a D-shaped block, a disc of radius 2.5 up to a chord at 0.5, r =
+    0.5, the drum drafted by 0.1 either way, the round removed 0.9e-3 to
+    4.7e-3 too little.
+  - A cone holding the material within its nappe is now followed too. Its
+    material is convex, so a point's exit along the band is a concave
+    function of the point, falling by one per unit along the band: the
+    section's hull leaves the cone last on one of its sides, where the
+    exit's derivative along the side vanishes, solved in closed form from
+    the cone's quadratic form.
+  - A point crossing the following face on one of that face's own edges
+    counts as crossing the face. The trim the face is classified against
+    is drawn as a polyline in its chart, and where an edge bends more in
+    the chart than in space (a cone's seam with a chord wall drafted as
+    the cone is, a parabola), a point on the edge read as off the face and
+    the band was capped.
+  - Every chord and drum draft of the test now matches its
+    column-integrated reference within 1.3e-7, alone and in a request.
+
 - **A sheet built without pcurves offsets and thickens valid.** (#506)
   - `offset_sheet` and `make_thick_sheet` on an unplaced face from
     `make_face`, whose edges carry no pcurves, returned a sheet or solid

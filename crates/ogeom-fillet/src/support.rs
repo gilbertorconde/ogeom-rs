@@ -1072,6 +1072,12 @@ enum Following {
     /// A cylinder holding the material within it: a point of its axis,
     /// the axis's unit direction and its radius.
     Boss(Point, Vector, f64),
+    /// A cone holding the material within its one nappe: its apex, the
+    /// axis's unit direction into that nappe, and `1 + tan^2` of its half
+    /// angle. A point `x` stands within it where `q(x - apex) <= 0` and
+    /// `(x - apex).axis >= 0`, `q` the quadratic form
+    /// `q(v) = v.v - k (v.axis)^2` of [`Following::cone_form`].
+    Taper(Point, Vector, f64),
 }
 
 impl Following {
@@ -1095,7 +1101,42 @@ impl Following {
                 let d = b.mul_add(b, -a * big.mul_add(-big, q.dot(q)));
                 (d >= 0.0).then(|| (d.sqrt() - b) / a)
             }
+            Self::Taper(apex, axis, k) => {
+                // Along the line the form is `a s^2 + 2 b s + c`; the line
+                // leaves the nappe where the form rises through zero, on the
+                // nappe's side of the apex. A line whose stretch within the
+                // nappe runs on without end never leaves it.
+                let form = Self::cone_form(axis, k);
+                let w = p - apex;
+                let (a, b, c) = (form(outward, outward), form(outward, w), form(w, w));
+                let rising = |s: f64| a.mul_add(s, b) >= 0.0 && (w + outward * s).dot(axis) >= 0.0;
+                if a.abs() <= tol.angular() * tol.angular() {
+                    if b.abs() <= tol.angular() {
+                        return None;
+                    }
+                    let s = -c / (2.0 * b);
+                    return rising(s).then_some(s);
+                }
+                let d = b.mul_add(b, -a * c);
+                if d < 0.0 {
+                    return None;
+                }
+                let root = d.sqrt();
+                [(-b - root) / a, (-b + root) / a]
+                    .into_iter()
+                    .filter(|&s| rising(s))
+                    .reduce(f64::max)
+            }
         }
+    }
+
+    /// The symmetric form `(v, w) -> v.w - k (v.axis)(w.axis)` whose
+    /// quadratic `q(v) = v.v - k (v.axis)^2` is negative within a cone about
+    /// the unit `axis` through the origin, `k` being `1 + tan^2` of its half
+    /// angle: `v.v - (v.axis)^2` is the squared distance off the axis, and
+    /// `tan^2 (v.axis)^2` the squared radius there.
+    fn cone_form(axis: Vector, k: f64) -> impl Fn(Vector, Vector) -> f64 {
+        move |v: Vector, w: Vector| v.dot(w) - k * v.dot(axis) * w.dot(axis)
     }
 
     /// The farthest along the unit `outward` any point of the convex hull
@@ -1107,9 +1148,12 @@ impl Following {
     /// edge of the hull, and every edge is a segment between two of the
     /// points. Along a segment it is concave in the offset, greatest where
     /// its derivative vanishes or at an end. Points whose line misses the
-    /// boss never stand in it. `None` for a plane, or for a boss the hull's
-    /// lines all miss.
+    /// boss never stand in it. A cone's is [`Following::taper_hull_exit`].
+    /// `None` for a plane, or for a boss the hull's lines all miss.
     fn hull_exit(self, points: &[Point], outward: Vector, tol: Tolerances) -> Option<f64> {
+        if let Self::Taper(apex, axis, k) = self {
+            return Self::taper_hull_exit(points, outward, (apex, axis, k), tol);
+        }
         let Self::Boss(foot, axis, big) = self else {
             return None;
         };
@@ -1158,13 +1202,80 @@ impl Following {
         }
         best
     }
+
+    /// [`Following::hull_exit`] for a cone. The material within a cone's
+    /// nappe is convex, so the exit along `outward` is a concave function
+    /// of the point among those whose lines meet the nappe: two such
+    /// points' exits, mixed, place the mixed point's line within the nappe
+    /// that far along. It falls by one per unit moved along `outward`, so
+    /// its greatest value over the hull lies on an edge of it, a segment
+    /// between two of the points. Along a segment `a + t e` the exit `s`
+    /// is the far root of `q(a - apex + t e + s u) = 0`, and where it is
+    /// greatest its derivative in `t` vanishes: `form(e, x) = 0` at the
+    /// exit `x`, linear in `t` and `s`. Solved for `t` and put back, the
+    /// form's root is a quadratic in `s`, whose roots give the turns of the
+    /// segment the greatest exit may stand at, each then measured as it
+    /// stands. A segment along which `form(e, e)` vanishes has its exit
+    /// monotone between its ends.
+    fn taper_hull_exit(
+        points: &[Point],
+        outward: Vector,
+        (apex, axis, k): (Point, Vector, f64),
+        tol: Tolerances,
+    ) -> Option<f64> {
+        let form = Self::cone_form(axis, k);
+        let cone = Self::Taper(apex, axis, k);
+        let mut best: Option<f64> = None;
+        let mut take = |s: Option<f64>| {
+            if let Some(s) = s {
+                best = Some(best.map_or(s, |b: f64| b.max(s)));
+            }
+        };
+        for (i, &a) in points.iter().enumerate() {
+            take(cone.exit(a, outward, tol));
+            for &b in &points[i + 1..] {
+                let e = b - a;
+                let ee = form(e, e);
+                if ee.abs() <= tol.angular() * e.dot(e) {
+                    continue;
+                }
+                // The turn `t = -(form(e, u) s + form(e, w)) / ee` at which
+                // `form(e, x)` vanishes, as `x = w' + s u'`.
+                let w = a - apex;
+                let w_ = w - e * (form(e, w) / ee);
+                let u_ = outward - e * (form(e, outward) / ee);
+                let (qa, qb, qc) = (form(u_, u_), form(w_, u_), form(w_, w_));
+                let roots: Vec<f64> = if qa.abs() <= tol.angular() * tol.angular() {
+                    if qb.abs() <= tol.angular() {
+                        Vec::new()
+                    } else {
+                        vec![-qc / (2.0 * qb)]
+                    }
+                } else {
+                    let d = qb.mul_add(qb, -qa * qc);
+                    if d < 0.0 {
+                        Vec::new()
+                    } else {
+                        vec![(-qb - d.sqrt()) / qa, (-qb + d.sqrt()) / qa]
+                    }
+                };
+                for s in roots {
+                    let t = -form(e, outward).mul_add(s, form(e, w)) / ee;
+                    if (0.0..=1.0).contains(&t) {
+                        take(cone.exit(a + e * t, outward, tol));
+                    }
+                }
+            }
+        }
+        best
+    }
 }
 
 /// The faces a straight band runs out across past the end `at` of `edge`,
 /// leaving it along `outward`: the planes following the crease there, or,
 /// where `boss` allows, the one face following it where that is a cylinder
-/// holding the material within it that the crease leaves the material
-/// through, cutting the corner away obliquely. `None` elsewhere: a crease
+/// or a cone holding the material within it that the crease leaves the
+/// material through, cutting the corner away obliquely. `None` elsewhere: a crease
 /// running on into a boss (a pin standing at its end) runs into the
 /// material.
 fn run_out_faces(
@@ -1202,14 +1313,33 @@ fn run_out_faces(
     else {
         return Ok(None);
     };
-    let SurfaceGeometry::Cylinder(placed) =
-        surface.transformed(&face.transform(model.datums())?, tol)?
-    else {
-        return Ok(None);
-    };
-    let cylinder = placed.cylinder();
-    let foot = cylinder.axis().location;
-    let axis = cylinder.axis().direction.vector();
+    // The wall's axis, and what it follows as: a cylinder by its radius, a
+    // cone by its apex and the axis into the nappe the vertex stands on.
+    let (foot, axis, following) =
+        match surface.transformed(&face.transform(model.datums())?, tol)? {
+            SurfaceGeometry::Cylinder(placed) => {
+                let cylinder = placed.cylinder();
+                let foot = cylinder.axis().location;
+                let axis = cylinder.axis().direction.vector();
+                (foot, axis, Following::Boss(foot, axis, cylinder.radius()))
+            }
+            SurfaceGeometry::Cone(placed) => {
+                let cone = placed.cone();
+                let foot = cone.axis().location;
+                let mut axis = cone.axis().direction.vector();
+                let slope = cone.half_angle().tan();
+                let apex = foot - axis * (cone.reference_radius() / slope);
+                if (at - apex).dot(axis) < 0.0 {
+                    axis = -axis;
+                }
+                (
+                    foot,
+                    axis,
+                    Following::Taper(apex, axis, slope.mul_add(slope, 1.0)),
+                )
+            }
+            _ => return Ok(None),
+        };
     let off = at - foot;
     let radial = off - axis * off.dot(axis);
     let held = model
@@ -1224,17 +1354,14 @@ fn run_out_faces(
     } else {
         1.0
     };
-    // The material lies within the cylinder where the face's outward
-    // normal points off the axis, and the crease leaves it there where it
-    // runs along that normal.
+    // The material lies within the cylinder or cone where the face's
+    // outward normal points off the axis, and the crease leaves it there
+    // where it runs along that normal.
     let normal = normal * sign;
     if normal.dot(radial) <= 0.0 || normal.dot(outward) <= tol.angular() {
         return Ok(None);
     }
-    Ok(Some(vec![(
-        face.clone(),
-        Following::Boss(foot, axis, cylinder.radius()),
-    )]))
+    Ok(Some(vec![(face.clone(), following)]))
 }
 
 /// The plane of the face a straight crease runs into at its end `at`,
@@ -1264,8 +1391,8 @@ pub(crate) fn overhang_at(
 /// How far a convex straight seat's band runs out past the end `at` of
 /// `edge`, along `outward`, where the faces meeting the crease there cut
 /// the corner away obliquely: a floor giving way to a ramp, the wall the
-/// ball rolls on carrying on above it, or a boss's cylinder the crease
-/// meets. The band carries on along the host
+/// ball rolls on carrying on above it, or a boss's cylinder or cone the
+/// crease meets. The band carries on along the host
 /// it stays tangent to until its whole section has left the material, and
 /// the cut trims it against the face that follows.
 ///
@@ -1276,9 +1403,11 @@ pub(crate) fn overhang_at(
 /// radii. Where a ramp is the only face that follows, the material in
 /// the section shrinks across a plane; the section lies within the
 /// triangle of its corners, and a plane leaves a triangle last at a
-/// corner, so the corners' answers are exact. Where a boss's cylinder is
-/// the one face that follows, the triangle leaves it last along one of its
-/// sides, found in closed form ([`Following::hull_exit`]).
+/// corner, so the corners' answers are exact. Where a boss's cylinder or
+/// cone is the one face that follows, the triangle leaves it last along one
+/// of its sides, found in closed form ([`Following::hull_exit`]). A point
+/// leaving through a face may cross it on the face's own edge, which counts
+/// as on it.
 ///
 /// `None` where the cap stands flush: nothing of the section stands in the
 /// material just past `at` (a wall square to the crease, or one leaning
@@ -1379,6 +1508,7 @@ pub(crate) fn run_out_reach(
             let crossing = p + outward * s;
             if ogeom_algo::classify_on_face(model, face, crossing, deflection, tol)?
                 != ogeom_algo::Containment::Out
+                || on_face_edge(model, face, crossing, tol)?
             {
                 through = Some(through.map_or(s, |t: f64| t.min(s)));
             }
@@ -1388,8 +1518,8 @@ pub(crate) fn run_out_reach(
         };
         leaves = leaves.max(s);
     }
-    // A boss's cylinder leaves the section last not at a corner of it but
-    // where its hull leaves the cylinder last.
+    // A boss's cylinder or cone leaves the section last not at a corner of
+    // it but where its hull leaves the boss last.
     for (_, surface) in &following {
         if let Some(s) = surface.hull_exit(section, outward, tol) {
             leaves = leaves.max(s);
@@ -1402,6 +1532,58 @@ pub(crate) fn run_out_reach(
         }
     }
     Ok(Some(reach))
+}
+
+/// Whether `point` lies on an edge of `face`, within the edge's own
+/// tolerance of its curve over its range. The face's trim, drawn as a
+/// polyline in its chart from points of each edge's curve, stands off an
+/// edge whose image in the chart bends more than the edge does in space,
+/// so a point on the edge itself can read as outside the trim.
+fn on_face_edge(model: &Model, face: &Shape, point: Point, tol: Tolerances) -> OgeomResult<bool> {
+    for edge in ogeom_topo::explore_unique(model, face, ShapeType::Edge)? {
+        let Ok((curve, (a, b))) = edge_curve(model, &edge, tol) else {
+            continue;
+        };
+        let within = model
+            .tolerance_of(&edge)?
+            .map_or(tol.confusion(), ogeom_core::Tolerance::get)
+            .max(tol.confusion());
+        let gap = |t: f64| -> OgeomResult<f64> { Ok(curve.point_at(t, tol)?.distance(point)) };
+        // The nearest of a few stations brackets the nearest point, and a
+        // golden search closes on it. Every distance taken is to a point of
+        // the edge, so a point read as on it is on it; one missed keeps the
+        // band capped.
+        let steps = 64;
+        let at = |k: usize| {
+            #[allow(clippy::cast_precision_loss, reason = "a station index")]
+            let share = k as f64 / steps as f64;
+            (b - a).mul_add(share, a)
+        };
+        let mut best = (f64::INFINITY, 0);
+        for k in 0..=steps {
+            let d = gap(at(k))?;
+            if d < best.0 {
+                best = (d, k);
+            }
+        }
+        let (mut lo, mut hi) = (at(best.1.saturating_sub(1)), at((best.1 + 1).min(steps)));
+        let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+        let mut nearest = best.0;
+        for _ in 0..80 {
+            let (x, y) = (hi - (hi - lo) * ratio, lo + (hi - lo) * ratio);
+            let (dx, dy) = (gap(x)?, gap(y)?);
+            nearest = nearest.min(dx).min(dy);
+            if dx < dy {
+                hi = y;
+            } else {
+                lo = x;
+            }
+        }
+        if nearest <= within {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A blend's wedge set aside to be applied with others in one boolean.
@@ -2107,6 +2289,57 @@ mod tests {
     use ogeom_topo::{Filter, Model, Orientation, Shape, ShapeType, explore, explore_unique};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A triangle's farthest exit from a cone along a direction square to
+    /// its axis, against the greatest exit of points spread over the
+    /// triangle. The triangle straddles the plane through the axis along
+    /// that direction, where a point's exit is greatest, so the greatest
+    /// stands inside a side, past every corner's: the corners alone fall
+    /// short of it.
+    #[test]
+    fn a_cone_s_farthest_exit_over_a_triangle_is_its_hull_exit() {
+        use ogeom_math::Vector;
+        // Apex at the origin, the nappe up `z`, a tenth's slope: radius
+        // `z / 10`.
+        let slope = 0.1_f64;
+        let cone = super::Following::Taper(Point::ORIGIN, Vector::Z, slope.mul_add(slope, 1.0));
+        let outward = Vector::X;
+        let corners = [
+            Point::new(2.3, -0.3, 25.0),
+            Point::new(2.3, 0.4, 25.0),
+            Point::new(2.35, 0.1, 24.6),
+        ];
+        let got = cone.hull_exit(&corners, outward, T).unwrap();
+        // Seen along the axis, the point leaves where its line meets the
+        // circle of the cone's radius at its height.
+        let leave = |p: Point| (p.z * slope).mul_add(p.z * slope, -p.y * p.y).sqrt() - p.x;
+        let n = 600;
+        let mut best = f64::NEG_INFINITY;
+        for i in 0..=n {
+            for j in 0..=(n - i) {
+                let (a, b) = (f64::from(i) / f64::from(n), f64::from(j) / f64::from(n));
+                let p = corners[0] + (corners[1] - corners[0]) * a + (corners[2] - corners[0]) * b;
+                best = best.max(leave(p));
+            }
+        }
+        let at_corners = corners
+            .iter()
+            .map(|&p| leave(p))
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            best - at_corners > 1e-3,
+            "{best} against the corners' {at_corners}"
+        );
+        // The spread lies in the triangle, so its best is no greater than
+        // the hull's. The greatest stands on the first side, whose points
+        // the spread takes 1.2e-3 apart, and the exit's second derivative
+        // across the axis there is about one over the radius, 0.4: the
+        // spread misses it by under 1e-7.
+        assert!(
+            got >= best - 1e-12 && got - best < 1e-5,
+            "{got} against {best}"
+        );
+    }
 
     /// How many edges two faces of `shape` walk the same way.
     fn walked_one_way(model: &Model, shape: &Shape) -> usize {
