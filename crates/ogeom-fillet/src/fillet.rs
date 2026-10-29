@@ -321,7 +321,8 @@ fn route(
 /// (walls leaning alike with their feet out each reach past the bisecting
 /// plane under the other's band, which a meeting there would leave
 /// standing), as they do where one of the two is a drum's rim (a D-shaped
-/// block's arc beside its chord). Across a re-entrant turn one
+/// block's arc beside its chord, and past where they meet flush, a rib's
+/// spline wall running into a boss's rim). Across a re-entrant turn one
 /// of the two may be a drum's rim, upright or drafted, the material within
 /// the drum, where the
 /// straight band carried on stands nowhere off the drum before the rim's
@@ -330,7 +331,7 @@ fn route(
 /// both ends cut in two halfway along, and two bands meeting at both their
 /// ends meet at each.
 /// Elsewhere (a wider convex turn of two curved bands, or of a curved band
-/// other than a drum's rim beside a straight one)
+/// other than a drum's rim beside one of another kind)
 /// and wherever the meeting does not close, the later seat runs on
 /// through the earlier blend's band and the cut trims the two bands
 /// against each other along their own intersection, or the caps stand, as

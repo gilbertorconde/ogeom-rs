@@ -900,6 +900,26 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A round on a drum's rim and one on a spline crease across a convex
+  turn take the union of each alone.** (#342)
+  - Where a crease turning about the shared top's normal on a drum (a
+    boss's rim) meets a spline crease at a convex turn too wide for the
+    two bands to meet flush in the bisecting plane, no junction was taken.
+    The rim's round was built against the spline's, which had run out
+    across the rim's crease, and the request fell back short of either
+    convention.
+  - The two now take a crossed junction, as a drum's rim beside a straight
+    crease already does: each band runs out as it does alone (the spline's
+    past the vertex until its section has left the drum, the rim's capped
+    in the radial plane through the vertex), and the cuts take their
+    union, in either order. A shallow turn still meets flush.
+  - Measured on a rib whose spline wall runs into a boss of radius 3.6,
+    r = 0.85, both orders, against the union integrated a column at a
+    time: 6° 2.142116 → 2.375689 (2.375700), 10° 2.155688 → 2.373619
+    (2.373633), 20° 2.192222 → 2.368385 (2.368393), 30° 2.220628 →
+    2.362964 (2.362972). At 4° the flush meeting is unchanged at 2.376707,
+    against a union of 2.376729.
+
 - **A rim where a flat cap meets a cone rounds to its exact torus.** (#342)
   - A rolling ball round a rim on a planar cap and a coaxial cone (a
     frustum's top or foot, a tapered bore's rim, a drafted boss's foot)

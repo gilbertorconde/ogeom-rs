@@ -929,3 +929,264 @@ fn a_round_into_a_boss_turning_back_behind_its_wall_stops_at_the_crease_s_end() 
         "{removed} against {want}"
     );
 }
+
+/// A quadrature rule: `f` integrated over `a..b`.
+type Rule<'r> = &'r dyn Fn(&dyn Fn(f64) -> f64, f64, f64) -> f64;
+
+/// `f` integrated over `a..b`, `whole` its rule over the range: each half
+/// is taken by `rule` and halved again until the halves agree with it
+/// whole, at most `depth` times.
+fn adaptive(
+    rule: Rule<'_>,
+    f: &dyn Fn(f64) -> f64,
+    (a, b): (f64, f64),
+    whole: f64,
+    depth: u32,
+) -> f64 {
+    let m = f64::midpoint(a, b);
+    let (left, right) = (rule(f, a, m), rule(f, m, b));
+    if depth == 0 || (left + right - whole).abs() <= 1e-14 {
+        return left + right;
+    }
+    adaptive(rule, f, (a, m), left, depth - 1) + adaptive(rule, f, (m, b), right, depth - 1)
+}
+
+/// The rib of [`rib_into_a_boss`] at `turn`, rounded at `radius`: the
+/// volume each top crease's round removes alone, and their union, integrated
+/// a column at a time over the profile.
+///
+/// A round on a crease between the top face and an upright wall removes,
+/// above a point of the profile at depth `u` in from the wall, the height
+/// `h(u) = r - sqrt(r^2 - (r - u)^2)` up to `u = r`. The spline's round alone
+/// runs out past the vertex along the crease continued as itself to second
+/// order (the spline's end point, tangent and curvature carried on as a
+/// parabola), its columns standing where the profile holds them: within the
+/// boss's drum past the drum's first radial plane. The arc's round alone is
+/// capped in the radial planes at its ends. Taken in the spline's own
+/// coordinates (along it, and in from it), a column's area is the speed
+/// times `1 - kappa u`. The union is the two less the columns both take, each
+/// the lower of its two heights.
+fn rib_rounds_removed(turn: f64, radius: f64) -> (f64, f64, f64) {
+    use core::f64::consts::FRAC_PI_2;
+    let r = radius;
+    let h = |u: f64| r - (r * r - (r - u) * (r - u)).max(0.0).sqrt();
+    let control = [(0.0, 0.0), (4.0, 0.0), (7.0, -0.6), (10.0, 0.0)];
+    let bezier = |t: f64| -> [(f64, f64); 3] {
+        let [p0, p1, p2, p3] = control;
+        let s = 1.0 - t;
+        let point = (
+            s * s * s * p0.0 + 3.0 * s * s * t * p1.0 + 3.0 * s * t * t * p2.0 + t * t * t * p3.0,
+            s * s * s * p0.1 + 3.0 * s * s * t * p1.1 + 3.0 * s * t * t * p2.1 + t * t * t * p3.1,
+        );
+        let d1 = (
+            3.0 * (s * s * (p1.0 - p0.0) + 2.0 * s * t * (p2.0 - p1.0) + t * t * (p3.0 - p2.0)),
+            3.0 * (s * s * (p1.1 - p0.1) + 2.0 * s * t * (p2.1 - p1.1) + t * t * (p3.1 - p2.1)),
+        );
+        let d2 = (
+            6.0 * (s * (p2.0 - 2.0 * p1.0 + p0.0) + t * (p3.0 - 2.0 * p2.0 + p1.0)),
+            6.0 * (s * (p2.1 - 2.0 * p1.1 + p0.1) + t * (p3.1 - 2.0 * p2.1 + p1.1)),
+        );
+        [point, d1, d2]
+    };
+    let [end, leaving, bending] = bezier(1.0);
+    // The crease: the spline, and past its end the parabola of its end
+    // point, tangent and curvature.
+    let crease = |t: f64| -> [(f64, f64); 3] {
+        if t <= 1.0 {
+            return bezier(t);
+        }
+        let s = t - 1.0;
+        [
+            (
+                end.0 + leaving.0 * s + bending.0 * s * s * 0.5,
+                end.1 + leaving.1 * s + bending.1 * s * s * 0.5,
+            ),
+            (leaving.0 + bending.0 * s, leaving.1 + bending.1 * s),
+            bending,
+        ]
+    };
+    let big = 3.6;
+    let heading = leaving.1.atan2(leaving.0) + turn;
+    let centre = (end.0 - heading.sin() * big, end.1 + heading.cos() * big);
+    let start = (end.1 - centre.1).atan2(end.0 - centre.0);
+    // How far round the drum from its first radial plane, wrapped to a
+    // half turn either way.
+    let round = |x: f64, z: f64| {
+        let mut a = (z - centre.1).atan2(x - centre.0) - start;
+        while a > core::f64::consts::PI {
+            a -= 2.0 * core::f64::consts::PI;
+        }
+        while a <= -core::f64::consts::PI {
+            a += 2.0 * core::f64::consts::PI;
+        }
+        a
+    };
+    // Per column at (t, u) in the spline's coordinates: whether the profile
+    // holds it, its area, and the depth in from the drum where the arc's
+    // round stands over it.
+    let column = |t: f64, u: f64| -> (bool, f64, Option<f64>) {
+        let [p, d1, d2] = crease(t);
+        let speed = d1.0.hypot(d1.1);
+        let left = (-d1.1 / speed, d1.0 / speed);
+        let kappa = (d1.0 * d2.1 - d1.1 * d2.0) / speed.powi(3);
+        let (x, z) = (p.0 + left.0 * u, p.1 + left.1 * u);
+        let a = round(x, z);
+        let depth = big - (x - centre.0).hypot(z - centre.1);
+        let held = a < 0.0 || depth >= 0.0;
+        let arc = (0.0..=FRAC_PI_2).contains(&a) && (0.0..=r).contains(&depth);
+        (held, speed * (1.0 - kappa * u), arc.then_some(depth))
+    };
+    // A column's height under the spline's round alone, and under both.
+    let alone = |t: f64, u: f64| {
+        let (held, area, _) = column(t, u);
+        if held { h(u) * area } else { 0.0 }
+    };
+    let both = |t: f64, u: f64| {
+        let (held, area, arc) = column(t, u);
+        match arc {
+            Some(depth) if held => h(u).min(h(depth)) * area,
+            _ => 0.0,
+        }
+    };
+    // Gauss-Legendre, eight nodes. Across the crease each column's line is
+    // split where its integrand's pieces change, found to rounding by
+    // bisection, and each piece taken adaptively.
+    let nodes = [
+        (-0.960_289_856_497_536_3, 0.101_228_536_290_376_26),
+        (-0.796_666_477_413_626_7, 0.222_381_034_453_374_47),
+        (-0.525_532_409_916_329, 0.313_706_645_877_887_3),
+        (-0.183_434_642_495_649_8, 0.362_683_783_378_362),
+        (0.183_434_642_495_649_8, 0.362_683_783_378_362),
+        (0.525_532_409_916_329, 0.313_706_645_877_887_3),
+        (0.796_666_477_413_626_7, 0.222_381_034_453_374_47),
+        (0.960_289_856_497_536_3, 0.101_228_536_290_376_26),
+    ];
+    let gauss = |f: &dyn Fn(f64) -> f64, a: f64, b: f64| -> f64 {
+        nodes
+            .iter()
+            .map(|&(x, w)| w * f((b - a).mul_add(x, a + b) * 0.5))
+            .sum::<f64>()
+            * (b - a)
+            * 0.5
+    };
+    let across = |t: f64, which: &dyn Fn(f64, f64) -> f64| -> f64 {
+        // In from the crease by u = r (1 - sin phi): the height's root at
+        // the wall is smooth in phi.
+        let depth_at = |phi: f64| r * (1.0 - phi.sin());
+        let f = |phi: f64| which(t, depth_at(phi)) * r * phi.cos();
+        // The pieces change where the profile, the arc's round, or which
+        // round stands lower changes along the line in from the crease.
+        let state = |phi: f64| {
+            let u = depth_at(phi);
+            let (held, _, arc) = column(t, u);
+            (held, arc.is_some(), arc.is_some_and(|depth| depth < u))
+        };
+        let steps = 64;
+        let quarter = FRAC_PI_2;
+        let mut total = 0.0;
+        let mut from = 0.0;
+        let piece = |a: f64, b: f64| {
+            if b > a {
+                adaptive(&gauss, &f, (a, b), gauss(&f, a, b), 24)
+            } else {
+                0.0
+            }
+        };
+        for k in 1..=steps {
+            let (mut lo, mut hi) = (
+                quarter * f64::from(k - 1) / f64::from(steps),
+                quarter * f64::from(k) / f64::from(steps),
+            );
+            if state(lo) != state(hi) {
+                let was = state(lo);
+                for _ in 0..60 {
+                    let mid = f64::midpoint(lo, hi);
+                    if state(mid) == was {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                total += piece(from, lo);
+                from = lo;
+            }
+        }
+        total + piece(from, quarter)
+    };
+    let along = |which: &dyn Fn(f64, f64) -> f64, a: f64, b: f64, panels: u32| -> f64 {
+        (0..panels)
+            .map(|k| {
+                let lo = (b - a).mul_add(f64::from(k) / f64::from(panels), a);
+                let hi = (b - a).mul_add(f64::from(k + 1) / f64::from(panels), a);
+                gauss(&|t| across(t, which), lo, hi)
+            })
+            .sum()
+    };
+    // Past the vertex, the spline's round runs out until no column of its
+    // section stands within the drum. Behind the drum's first radial plane
+    // only the spline's round stands, so the columns both take begin less
+    // than two radii back along the spline.
+    let mut last = 1.0;
+    while (0..=16).any(|k| column(last, r * f64::from(k) / 16.0).0) {
+        last += 0.01;
+    }
+    let spline = along(&alone, 0.0, 1.0, 400) + along(&alone, 1.0, last, 2000);
+    let section = (1.0 - core::f64::consts::FRAC_PI_4) * r * r;
+    let moment = (5.0 / 6.0 - core::f64::consts::FRAC_PI_4) * r.powi(3);
+    let arc = section.mul_add(big * FRAC_PI_2, -moment * FRAC_PI_2);
+    let shared = along(
+        &both,
+        1.0 - 2.0 * r / leaving.0.hypot(leaving.1),
+        last,
+        4000,
+    );
+    (spline, arc, spline + arc - shared)
+}
+
+/// A rib's spline wall running into a boss's rim, turned 10° to 30°
+/// towards the material: past where the two bands meet flush, each round
+/// runs out as it does alone (the spline's past the vertex until its
+/// section has left the drum, the rim's capped in the radial plane through
+/// the vertex) and the request takes the union of the two cuts, in either
+/// order, against the column-integrated union. At 4° the bands still meet
+/// flush in the bisecting plane, which leaves the union no more than the
+/// march's fit. The rounds' rails cross on the top face, where the second
+/// cut's section ends with its two surfaces tangent.
+#[test]
+fn rounds_of_a_rib_into_a_boss_take_the_union_of_each_alone() {
+    let radius = 0.85;
+    for degrees in [4.0_f64, 10.0, 20.0, 30.0] {
+        let turn = degrees.to_radians();
+        let (spline, arc, union) = rib_rounds_removed(turn, radius);
+        let mut model = ogeom_topo::Model::new();
+        let (solid, along_spline, along_arc, _) = rib_into_a_boss(&mut model, turn);
+        let before = volume(&model, &solid, 1e-4);
+        let asked = [
+            (vec![along_spline.clone()], spline, "the spline's round"),
+            (vec![along_arc.clone()], arc, "the rim's round"),
+            (vec![along_spline.clone(), along_arc.clone()], union, "both"),
+            (
+                vec![along_arc, along_spline],
+                union,
+                "both, the rim's first",
+            ),
+        ];
+        for (named, want, what) in asked {
+            let mut model = model.clone();
+            let rounded = ogeom_fillet::fillet_edges(&mut model, &solid, &named, radius, T)
+                .unwrap_or_else(|e| panic!("{degrees} degrees, {what}: {e}"))
+                .shape;
+            let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{degrees} degrees, {what}: {:?}",
+                diagnosis.problems
+            );
+            let removed = before - volume(&model, &rounded, 1e-4);
+            assert!(
+                (removed - want).abs() < want * 1e-4,
+                "{degrees} degrees, {what}: {removed} against {want}"
+            );
+        }
+    }
+}
