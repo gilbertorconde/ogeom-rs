@@ -614,6 +614,20 @@ fn params_along(du: Vector, dv: Vector, t: Vector) -> Option<(f64, f64)> {
 /// normals; where the surfaces only touch, rounding leaves the normals a
 /// whisker apart, and the separation keeps one sign on both sides.
 fn passes_through(a: &SurfaceGeometry, b: &SurfaceGeometry, at: Contact, tol: Tolerances) -> bool {
+    let sine = crossing_sine(a, b, at.on_a, at.on_b, tol);
+    sine > f64::MIN_POSITIVE && parts_either_side(a, b, at, 4.0 * tol.confusion() / sine, tol)
+}
+
+/// Whether the first surface stands off the second by more than the
+/// confusion distance, on opposite sides, a distance `h` either way across
+/// the intersection from `at`.
+fn parts_either_side(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    at: Contact,
+    h: f64,
+    tol: Tolerances,
+) -> bool {
     let Some(along) = tangent_at(a, b, at, tol) else {
         return false;
     };
@@ -623,14 +637,9 @@ fn passes_through(a: &SurfaceGeometry, b: &SurfaceGeometry, at: Contact, tol: To
     ) else {
         return false;
     };
-    let sine = crossing_sine(a, b, at.on_a, at.on_b, tol);
-    let Some(d) = (sine > f64::MIN_POSITIVE)
-        .then(|| params_along(du, dv, na.cross(along)))
-        .flatten()
-    else {
+    let Some(d) = params_along(du, dv, na.cross(along)) else {
         return false;
     };
-    let h = 4.0 * tol.confusion() / sine;
     let side = |s: f64| {
         let (u, v) = clamp(a, d.0.mul_add(s, at.on_a.0), d.1.mul_add(s, at.on_a.1));
         let mut near = at.on_b;
@@ -642,6 +651,58 @@ fn passes_through(a: &SurfaceGeometry, b: &SurfaceGeometry, at: Contact, tol: To
         }
         _ => false,
     }
+}
+
+/// Whether two surfaces that are their own geometry, not a fit of another,
+/// cross at `at` by more than the confusion distance `w` every marched
+/// point stands within of both, rather than touch there.
+///
+/// A distance `x` across the intersection on the first surface, the first
+/// stands off the second by `s x + k x² / 2`: `s` the sine between their
+/// normals, `k` the difference of their normal curvatures across it.
+/// - Touching along a curve, a marched point within `w` of both lies `x`
+///   off the touch with `k x² / 2 ≤ w`, where the sine reads `k x`: so
+///   `s² ≤ 2 k w`.
+/// - Crossing, the two part on one side and bend back towards each other
+///   on the other, `s² / 2k` apart at the deepest, `s / k` across. That is
+///   past `w` exactly where `s² > 2 k w`: the one bound tells a touch from
+///   a crossing that can be measured, both ways.
+///
+/// Past the bound the separation is measured either side: `s / k` across,
+/// or `4 w / s` where that is nearer, there `4 w − 8 k w² / s²`, at least
+/// `2 w`. A touch keeps one side either way, so no term the model leaves
+/// out reads one as a crossing.
+pub(crate) fn crosses_measurably(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    at: Contact,
+    tol: Tolerances,
+) -> bool {
+    let w = tol.confusion();
+    let sine = crossing_sine(a, b, at.on_a, at.on_b, tol);
+    let (Some(along), Some(na)) = (tangent_at(a, b, at, tol), normal_at(a, at.on_a, tol)) else {
+        return false;
+    };
+    let across = na.cross(along);
+    let bending = |s: &SurfaceGeometry, (u, v): (f64, f64)| -> Option<f64> {
+        let curvature = s.curvature_at(u, v, tol).ok()?;
+        let k = curvature.normal_curvature(across)?;
+        Some(if curvature.normal.vector().dot(na) < 0.0 {
+            -k
+        } else {
+            k
+        })
+    };
+    let (Some(ka), Some(kb)) = (bending(a, at.on_a), bending(b, at.on_b)) else {
+        return false;
+    };
+    let k = (ka - kb).abs();
+    if sine * sine <= 2.0 * k * w {
+        return false;
+    }
+    let near = 4.0 * w / sine;
+    let h = if k * near > sine { sine / k } else { near };
+    parts_either_side(a, b, at, h, tol)
 }
 
 /// A point of the loop around a stationary approach `at` where the

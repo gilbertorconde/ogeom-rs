@@ -1298,6 +1298,33 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Two exact surfaces crossing at a shallow turn are a crossing, not a
+  contact.** (#516)
+  - The marcher read a traced branch as a tangency wherever the sine
+    between the surfaces' normals stayed under 0.03 along it, and handed
+    it to the contact walker. That threshold absorbs a fitted blend's
+    graze on its host, but two analytic surfaces, or sweeps of analytic
+    curves, carry no fit: a drum's rim round carried on past its cap and
+    crossing the drafted drum's cone from a node on its border, at a sine
+    of at most 0.018, came back apart.
+  - Now, for such a pair, a branch under the threshold is a crossing where
+    the two measurably cross on it. A distance `x` across, the surfaces
+    stand `s x + k x² / 2` apart, `s` the sine and `k` the difference of
+    their normal curvatures across: a marched point within the confusion
+    distance `w` of a true touch reads `s² ≤ 2 k w`, and a crossing whose
+    surfaces bend back more than `w` apart reads `s² > 2 k w`. Past that
+    bound the separation is measured on both sides, and a crossing is
+    taken only where it stands past `w` with opposite signs, which a
+    touch never shows. Patches, offsets and sweeps of splines, which may
+    be fits, keep the sine threshold.
+  - Measured: the band and the cone cross along both branches from the
+    node, each on both surfaces and ending where it solves the pair's
+    equation at each end of the sweep, in either order. A drum laid on a
+    cone's ruling stays a contact resting there and pressed in by less
+    than `w`; pressed in by 1e-6 or 1e-5 it crosses along two sections,
+    one each side of the ruling, where the sine alone gave one contact or
+    two, by naming order.
+
 - **A pcurve refitted for a sewn twin is checked against the kept edge in
   space, and a carried pcurve's miss is bounded between samples.** (#519)
   - Sewing two edges that trace one curve at different paces refits the

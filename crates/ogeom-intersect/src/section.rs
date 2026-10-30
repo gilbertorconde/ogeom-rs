@@ -1789,10 +1789,11 @@ fn branch_is_tangential(
     if count == 0 {
         return Ok(true);
     }
+    let exact = exact_surface(a) && exact_surface(b);
     for k in 0..5 {
-        let i = (k * (count - 1)) / 4;
-        let (ua, va) = branch.on_a[i.min(count - 1)];
-        let (ub, vb) = branch.on_b[i.min(count - 1)];
+        let i = ((k * (count - 1)) / 4).min(count - 1);
+        let (ua, va) = branch.on_a[i];
+        let (ub, vb) = branch.on_b[i];
         let (dau, dav) = a.d1_at(ua, va, tol)?;
         let (dbu, dbv) = b.d1_at(ub, vb, tol)?;
         let na = dau.cross(dav);
@@ -1810,8 +1811,49 @@ fn branch_is_tangential(
         if na.cross(nb).magnitude() / (ma * mb) > TANGENTIAL_SINE {
             return Ok(false);
         }
+        // Two surfaces that are their own geometry hold no fit to graze
+        // within: under the threshold they are tangent only where they do
+        // not measurably cross.
+        let at = crate::march::Contact {
+            point: branch.points[i],
+            on_a: (ua, va),
+            on_b: (ub, vb),
+        };
+        if exact && crate::march::crosses_measurably(a, b, at, tol) {
+            return Ok(false);
+        }
     }
     Ok(true)
+}
+
+/// Whether a surface is its own geometry rather than what may be a fit of
+/// another: an analytic surface, or one swept from an analytic curve. A
+/// patch, an offset, or a sweep of a spline may be a fit, tangent to its
+/// neighbours only to within it.
+fn exact_surface(surface: &SurfaceGeometry) -> bool {
+    fn exact_curve(curve: &Curve) -> bool {
+        match curve {
+            Curve::Line(_)
+            | Curve::Circle(_)
+            | Curve::Ellipse(_)
+            | Curve::Hyperbola(_)
+            | Curve::Parabola(_)
+            | Curve::Helix(_) => true,
+            Curve::Trimmed(t) => exact_curve(t.basis()),
+            _ => false,
+        }
+    }
+    match surface {
+        SurfaceGeometry::Plane(_)
+        | SurfaceGeometry::Cylinder(_)
+        | SurfaceGeometry::Cone(_)
+        | SurfaceGeometry::Sphere(_)
+        | SurfaceGeometry::Torus(_) => true,
+        SurfaceGeometry::Extrusion(e) => exact_curve(e.curve()),
+        SurfaceGeometry::Revolution(r) => exact_curve(r.curve()),
+        SurfaceGeometry::Trimmed(t) => exact_surface(t.basis()),
+        _ => false,
+    }
 }
 
 /// The exact pcurve of a curve lying on a surface, where the projection has
@@ -4591,5 +4633,194 @@ mod tests {
         };
         let frame = p.plane().frame();
         (frame.x().vector(), frame.y().vector())
+    }
+
+    /// The cone `ρ = 3.2 − z / 10` about the `z` axis, down from `z = 2`.
+    fn drafted_drum() -> SurfaceGeometry {
+        let frame = Frame::new(Point::new(0.0, 0.0, 2.0), -Direction::Z, -Direction::X, T).unwrap();
+        ogeom_geom::ConeSurface::new(
+            ogeom_math::Cone::new(frame, 3.0, 0.1_f64.atan(), T).unwrap(),
+            (0.0, 2.0),
+        )
+        .unwrap()
+        .into()
+    }
+
+    /// The rim of [`drafted_drum`] rounded at radius ½ under `z = 2`, its
+    /// section's arc in the plane `y = 0` from its contact with the cone
+    /// over `turn`, swept along `y`, the rim's tangent there, over `sweep`:
+    /// a band of the drum of radius ½ about `y` through `(c, 0, 3 / 2)`,
+    /// `c = 3.05 − √1.01 / 2`. Returns the band and `c`.
+    fn carried_round(turn: f64, sweep: (f64, f64)) -> (SurfaceGeometry, f64) {
+        let lean = 1.01_f64.sqrt();
+        let c = lean.mul_add(-0.5, 3.05);
+        let frame = Frame::from_axes(
+            Point::new(c, 0.0, 1.5),
+            Direction::new(Vector::new(1.0, 0.0, 0.1), T).unwrap(),
+            Direction::new(Vector::new(-0.1, 0.0, 1.0), T).unwrap(),
+            -Direction::Y,
+            T,
+        )
+        .unwrap();
+        let arc: Curve = ogeom_geom::TrimmedCurve::new(
+            ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(frame, 0.5, T).unwrap()).into(),
+            0.0,
+            turn,
+            T,
+        )
+        .unwrap()
+        .into();
+        let band = ogeom_geom::ExtrusionSurface::over(arc, Direction::Y, sweep)
+            .unwrap()
+            .into();
+        (band, c)
+    }
+
+    /// [`carried_round`] over the first 0.425 of its turn and `y` from
+    /// −0.012 to 0.02 against the cone. The arc touches the cone at its
+    /// start, where the sweep's ruling is the rim's tangent: the band
+    /// stands off the cone by about `0.164 y² − u² / 4` near there, so two
+    /// branches leave that node on the band's border, one to each end of
+    /// the sweep, the two surfaces' normals parting by a sine of at most
+    /// 0.018 along them, under the marcher's tangency threshold. Each is
+    /// the point of the band at the turn `u` solving
+    /// `√(x(u)² + y²) = 3.2 − z(u) / 10` at each `y`. Both are sections
+    /// the two cross along, not a contact: they were traced, read as
+    /// tangential by their sine alone, and the pair came back apart.
+    #[test]
+    fn a_band_crossing_a_cone_shallowly_from_a_node_on_its_border_crosses_it() {
+        let sweep = (-0.012, 0.02);
+        let (band, c) = carried_round(0.425, sweep);
+        let drum = drafted_drum();
+        let lean = 1.01_f64.sqrt();
+        let at = |u: f64, y: f64| {
+            let (cos, sin) = (u.cos(), u.sin());
+            Point::new(
+                0.5f64.mul_add((cos - 0.1 * sin) / lean, c),
+                y,
+                0.5f64.mul_add((0.1f64.mul_add(cos, sin)) / lean, 1.5),
+            )
+        };
+        let off = |p: Point| p.x.hypot(p.y) - 0.1f64.mul_add(-p.z, 3.2);
+        let crossing = |y: f64| {
+            let (mut lo, mut hi) = (1e-9, 0.425);
+            for _ in 0..200 {
+                let mid = f64::midpoint(lo, hi);
+                if off(at(mid, y)).signum() == off(at(lo, y)).signum() {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            at(f64::midpoint(lo, hi), y)
+        };
+        let node = at(0.0, 0.0);
+        let wanted = [node, crossing(sweep.0), crossing(sweep.1)];
+        for (a, b) in [(&band, &drum), (&drum, &band)] {
+            let met = intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap();
+            let SurfaceIntersection::Along(sections) = met else {
+                panic!("the band crosses the cone, got {met:?}");
+            };
+            let mut ends: Vec<Point> = Vec::new();
+            for section in &sections {
+                assert!(!section.tangential, "{section:?}");
+                let (lo, hi) = section.curve.domain();
+                let near = section.tolerance + T.confusion();
+                for i in 0..=16 {
+                    let p = section
+                        .curve
+                        .point_at(lo + (hi - lo) * f64::from(i) / 16.0, T)
+                        .unwrap();
+                    let from_band = ((p.x - c).hypot(p.z - 1.5) - 0.5).abs();
+                    assert!(
+                        from_band <= near && off(p).abs() <= near,
+                        "{p:?} is off the band by {from_band:e} or the cone by {:e}",
+                        off(p)
+                    );
+                }
+                ends.extend([lo, hi].map(|t| section.curve.point_at(t, T).unwrap()));
+            }
+            let near = sections.iter().map(|s| s.tolerance).fold(0.0, f64::max) + T.confusion();
+            for want in wanted {
+                assert!(
+                    ends.iter().any(|p| p.distance(want) <= near),
+                    "no section ends at {want:?}: {ends:?}"
+                );
+            }
+        }
+    }
+
+    /// A drum of radius ½ laid along a ruling of [`drafted_drum`], outside
+    /// it, its axis that far off the ruling along the cone's normal, less
+    /// `into`: the cone's tangent plane holds along the ruling, so resting
+    /// there the two touch along it, and pressed in by `ε` they cross along
+    /// two curves either side of it with `ε` between them. Resting, or
+    /// pressed in by less than the confusion distance a marched point
+    /// stands within, they are a contact; pressed in by a micron or ten,
+    /// where the two cross at a sine of 0.002 or 0.007, they cross along
+    /// two sections, one each side of the ruling, every point on both. The
+    /// sine alone read the crossings as a contact.
+    #[test]
+    fn a_drum_pressed_into_a_cone_along_a_ruling_crosses_it_only_measurably() {
+        let drum = drafted_drum();
+        let lean = 1.01_f64.sqrt();
+        let up = Vector::new(-0.1, 0.0, 1.0) / lean;
+        let out = Vector::new(1.0, 0.0, 0.1) / lean;
+        let off = |p: Point| p.x.hypot(p.y) - 0.1f64.mul_add(-p.z, 3.2);
+        for into in [0.0, 0.4 * T.confusion(), 1e-6, 1e-5] {
+            let foot = Point::new(3.0, 0.0, 2.0) + out * (0.5 - into);
+            let frame = Frame::new(
+                foot,
+                Direction::new(up, T).unwrap(),
+                Direction::new(out, T).unwrap(),
+                T,
+            )
+            .unwrap();
+            let roller: SurfaceGeometry =
+                CylinderSurface::new(Cylinder::new(frame, 0.5, T).unwrap(), (-1.8, -0.2))
+                    .unwrap()
+                    .into();
+            let from_axis = |p: Point| {
+                let d = p - foot;
+                (d - up * d.dot(up)).magnitude()
+            };
+            for (a, b) in [(&roller, &drum), (&drum, &roller)] {
+                let met = intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap();
+                let SurfaceIntersection::Along(sections) = met else {
+                    panic!("pressed in {into:e}: {met:?}");
+                };
+                if into <= T.confusion() {
+                    assert!(
+                        sections.iter().all(|s| s.tangential),
+                        "pressed in {into:e}: {sections:?}"
+                    );
+                    continue;
+                }
+                assert_eq!(sections.len(), 2, "pressed in {into:e}: {sections:?}");
+                let mut sides = Vec::new();
+                for section in &sections {
+                    assert!(!section.tangential, "pressed in {into:e}: {section:?}");
+                    let (lo, hi) = section.curve.domain();
+                    let near = section.tolerance + T.confusion();
+                    let mut side = 0.0;
+                    for i in 0..=16 {
+                        let p = section
+                            .curve
+                            .point_at(lo + (hi - lo) * f64::from(i) / 16.0, T)
+                            .unwrap();
+                        assert!(
+                            (from_axis(p) - 0.5).abs() <= near && off(p).abs() <= near,
+                            "pressed in {into:e}: {p:?} is off the drum or the cone"
+                        );
+                        side += p.y;
+                    }
+                    sides.push(side);
+                }
+                assert!(
+                    sides[0] * sides[1] < 0.0,
+                    "pressed in {into:e}: both on one side {sides:?}"
+                );
+            }
+        }
     }
 }
