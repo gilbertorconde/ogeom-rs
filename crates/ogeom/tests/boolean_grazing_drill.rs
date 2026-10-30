@@ -97,6 +97,26 @@ fn across_disc(radius: f64, inside: impl Fn(f64, f64) -> f64) -> f64 {
     total
 }
 
+/// The integral of `f` over `[a, b]` by the tanh-sinh rule at step
+/// `2^-level` times 8, which takes the square-root ends of a chord's
+/// length at full accuracy.
+fn tanh_sinh(a: f64, b: f64, level: i32, f: impl Fn(f64) -> f64) -> f64 {
+    let h = 8.0 * 2.0f64.powi(-level);
+    let half_pi = core::f64::consts::FRAC_PI_2;
+    let mut total = 0.0;
+    let mut k = -(6.0 / h) as i64;
+    while (k as f64) * h <= 6.0 {
+        let t = (k as f64) * h;
+        let u = half_pi * t.sinh();
+        let x = 0.5 * (a + b) + 0.5 * (b - a) * u.tanh();
+        if a < x && x < b {
+            total += half_pi * t.cosh() / u.cosh().powi(2) * f(x);
+        }
+        k += 1;
+    }
+    total * h * 0.5 * (b - a)
+}
+
 /// A frustum of radius 6 at its base and 3 at its top, 10 high, drilled
 /// along y by drills lying on its base whose lowest line touches the base's
 /// circle at its seam vertex. The section of each with the frustum's wall
@@ -186,6 +206,78 @@ fn drills_along_a_round_s_tangent_line_into_the_corners_cut() {
             "r {radius}: common {common} against {expected} integrated"
         );
     }
+}
+
+/// The same rounded box drilled along y by a drill whose circle on the
+/// front face passes through the point where the top round's tangent line
+/// ends at the corner, the corner ball touching the front face's plane
+/// there (stress drill scenario, seed 1, drill 2). The section with the
+/// top face is tangent to that line at its end. Cut and common are valid
+/// and add up to the part. The common is the rounded box's chord along y,
+/// the inner depth and twice the root of 4 less the square of the distance
+/// off the inner box's section, integrated over the drill's disc: across z
+/// in closed form, along x by the tanh-sinh rule, whose levels 8, 10 and 12
+/// agree to 4e-12.
+#[test]
+fn a_drill_touching_a_round_s_tangent_line_at_the_corner_cuts() {
+    let mut model = Model::new();
+    let block = make_box(&mut model, Frame::WORLD, (20.0, 14.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    let part = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let radius = 2.610_957_085_164_471_4;
+    let centre = 18.0 + radius;
+    let frame = Frame::new(
+        Point::new(centre, -2.638_181_458_367_212, 10.0),
+        Direction::Y,
+        Direction::new(Vector::new(-1.0, 0.0, 0.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let tool = make_cylinder(&mut model, frame, radius, 29.276_362_916_734_424, T)
+        .unwrap()
+        .shape;
+    let mut volumes = Vec::new();
+    for (name, made) in [
+        ("cut", ogeom::boolean::cut(&mut model, &part, &tool, T)),
+        (
+            "common",
+            ogeom::boolean::common(&mut model, &part, &tool, T),
+        ),
+    ] {
+        let made = made.unwrap_or_else(|e| panic!("{name}: {e}"));
+        let diagnosis = check(&model, &made.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+        volumes.push(volume(&model, &made.shape));
+    }
+    let (cut, common) = (volumes[0], volumes[1]);
+    let whole = volume(&model, &part);
+    assert!(
+        (cut + common - whole).abs() < whole * 1e-6,
+        "cut {cut} + common {common} against the part's {whole}"
+    );
+    // At a distance a = x - 18 past the inner box, the chord is 10 plus
+    // twice the root of c squared less t squared, c the root of 4 less a
+    // squared and t the height over z = 8, up to t = c, and 10 plus twice c
+    // below z = 8, down to the drill's circle.
+    let across = |x: f64| {
+        let a = x - 18.0;
+        let c = (4.0 - a * a).sqrt();
+        let low = 10.0 - (radius * radius - (x - centre).powi(2)).max(0.0).sqrt();
+        let quarter = |t: f64| 0.5 * (t * (c * c - t * t).max(0.0).sqrt() + c * c * (t / c).asin());
+        let t0 = (low - 8.0).max(0.0);
+        (8.0 - low).max(0.0) * 2.0f64.mul_add(c, 10.0)
+            + 10.0 * (c - t0)
+            + 2.0 * (quarter(c) - quarter(t0))
+    };
+    let expected = tanh_sinh(18.0, 20.0, 10, across);
+    assert!(
+        (common - expected).abs() < expected * 1e-9,
+        "common {common} against {expected} integrated"
+    );
 }
 
 /// A cube shaved round by a drum about its vertical centre line, drilled
@@ -483,38 +575,73 @@ fn drill_inside_a_torus_s_outer_equator(radius: f64, angle: f64, seam: f64, inwa
     );
 }
 
-/// A drill along y whose top line runs at the height of `nist_ftc_11`'s
-/// bore rim and touches the rim's circle where the bore's wall meets the
-/// torus above it. The section along the drill's top stops a millimetre
-/// short of the touch, and the drill's wall in the cut did not close in
-/// its chart. A face the boolean made that does not close is refused: the
-/// cut is valid or not given at all.
-#[test]
-fn a_drill_whose_top_touches_a_bore_rim_is_never_broken() {
-    let path = format!(
-        "{}/../../tests/corpus/nist_ftc_11_asme1_rb.stp",
-        env!("CARGO_MANIFEST_DIR")
-    );
+/// A corpus part as a caller imports it: its periodic faces' rings
+/// re-anchored on their seams.
+fn corpus_part(name: &str) -> (Model, Shape) {
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(path).expect("the corpus file is committed");
     let mut import = ogeom::io::read_step(&text, T).unwrap();
     let solid = import.solids[0].clone();
     let (part, _) =
         ogeom::heal::reanchor_periodic_rings(import.document.model_mut(), &solid, T).unwrap();
-    let mut model = import.document.model().clone();
+    (import.document.model().clone(), part.shape)
+}
+
+/// A drill along y whose top line runs at the height of `nist_ftc_11`'s
+/// bore rim and touches the rim's circle where the bore's wall meets the
+/// torus above it (stress drill scenario, seed 11, drill 14). The face the
+/// drill's wall leaves in the cut closes in its chart: cut, common and
+/// drill less the part are valid and add up to the part and the drill.
+#[test]
+fn a_drill_whose_top_touches_a_bore_rim_cuts() {
+    let (mut model, part) = corpus_part("nist_ftc_11_asme1_rb.stp");
     let r = 13.210_863_646_990_134;
-    let frame = Frame::new(
+    drill(
+        &mut model,
+        &part,
         Point::new(-16.0, -40.414_594_903_803_48, -r),
-        Direction::Y,
-        Direction::new(Vector::new(0.0, 0.0, -1.0), T).unwrap(),
-        T,
-    )
-    .unwrap();
-    let drill = make_cylinder(&mut model, frame, r, 80.829_189_807_606_97, T)
-        .unwrap()
-        .shape;
-    if let Ok(cut) = ogeom::boolean::cut(&mut model, &part.shape, &drill, T) {
-        let diagnosis = check(&model, &cut.shape, T).unwrap();
-        assert!(diagnosis.is_valid(), "{diagnosis}");
+        (Vector::new(0.0, 1.0, 0.0), Vector::new(0.0, 0.0, -1.0)),
+        r,
+        80.829_189_807_606_97,
+    );
+}
+
+/// Drills along `nist_ctc_03`'s faces where they run into its rounds
+/// (stress drill scenario, `nist_ctc_03` drill 5 at seed 2 and drill 0 at
+/// seed 3). The first, of radius 32 along y, has its top ruling in the
+/// plate's top face where that face runs into the round of radius 11 at
+/// its edge, the drill, the round and the face tangent at one point. The
+/// second, of radius 87 along x, has its seam along the edge where a wall
+/// meets the lip's ceiling above it, the drill inside the material on both
+/// sides of that edge. Cut, common and drill less the part are valid and
+/// add up to the part and the drill.
+#[test]
+fn drills_along_faces_that_run_into_rounds_cut() {
+    let (model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    for (start, (axis, across), radius, length) in [
+        (
+            Point::new(
+                -8.889_999_999_999_999,
+                -59.490_189_782_151_33,
+                46.209_359_186_641_39,
+            ),
+            (Vector::new(0.0, 1.0, 0.0), Vector::new(0.0, 0.0, -1.0)),
+            31.898_180_813_358_604,
+            969.890_539_564_302_6,
+        ),
+        (
+            Point::new(
+                -309.051_276_925_560_4,
+                512.865_081_835_070_6,
+                76.199_999_999_999_99,
+            ),
+            (Vector::new(1.0, 0.0, 0.0), Vector::new(0.0, -1.0, 0.0)),
+            87.410_001_835_070_63,
+            600.322_553_851_120_8,
+        ),
+    ] {
+        let mut model = model.clone();
+        drill(&mut model, &part, start, (axis, across), radius, length);
     }
 }
 

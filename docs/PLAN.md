@@ -22,6 +22,36 @@ first, then refusals, then cost.
 
 ### Booleans
 
+**Section loops pinned at a sphere's pole.** Where a curved wall passes
+through a pole of a sphere face, the marched section stalls and doubles back
+at the pole, and the arrangement can read one piece round both loops. Before
+the boolean, `ball_chart.rs` restates a whole ball or a trimmed sphere face on
+a chart whose poles stand clear; a solid at a rigid placement is restated in
+its own frame, and one scaled, mirrored or on a left-handed sphere is baked
+first. It leaves as it is (and the pole stays): a face whose trim the new
+chart would have to split (two loops round the axis, or a loop the seam
+meridian crosses at no vertex), a face placed inside its solid, and a face
+with an edge that has no curve in space. A ball of radius 10 cut to the
+slab |x| < 0.8 or 0.5 and drilled along z with the drill's wall through its
+pole fails so: every clear axis either lies within a tenth of the radius of
+the trim or has both loops round it. A drill on the axis passes. Of 14 drills whose
+wall passes through the pole (radii 0.2 to 4), none passes, and three
+answer wrong or broken without refusing:
+
+- |x| < 0.5, drill of radius 1 at (0, 1): cut, common and drill less the
+  part all pass `check`, but the cut is the whole ball as one face (volume
+  4188.3 against the part's 313.9), and the common is 34.40 against 38.00
+  integrated.
+- |x| < 0.8, drill of radius 0.3 at (0, -0.3): the common passes `check`
+  and its boundary is wound inward (its volume refuses as negative).
+- A drill of radius 0.2 at (0.2, 0), either slab: the cut fails `check`,
+  a face's normal reversed.
+
+The rest refuse ("the kept pieces did not close into a shell", "a face
+boundary strand dangles", "edge 18 ends where edge 19 does not begin",
+"the intersection came out empty though the solids overlap"), or give an
+edge two pcurves on one surface 11.3 apart.
+
 **Nearly coplanar faces are not paired as coincident.** A piece that reads on
 the other solid's boundary at every point asked, with no coincident partner
 face, is refused by the boolean's piece classification ("a contact over a
@@ -34,7 +64,7 @@ section (`one_side_of` in `ogeom-bool/src/lib.rs`): a corner facet meeting
 the wall only at a vertex, and a facet's side edge beside the next wall. Of
 the 15 committed row-count sets at depths 3 and 10, all 30 pass with each
 row a face of its own at 0.00001, 0.00002 and 0.00005; at the converter's
-own distance 25, 30 and 27 of 30 pass. What remains:
+own distance 25, 29 and 26 of 30 pass. What remains:
 
 - At 0.00001, [7,7,7,6,6,6,5] and [8,5,9,9,5,8,7] at the converter's
   distance, both depths: the kept pieces do not close. In the first, the
@@ -44,26 +74,17 @@ own distance 25, 30 and 27 of 30 pass. What remains:
   kept on one side and not the other, and the corner edge above the
   section's end is left open.
 - At the converter's distance with depth 10 (the pad through the whole
-  slab), the fuse comes out 4e-5 to 6e-5 cubic millimetres under the mesh's
-  measure: 0.00001 [8;7] and three sets at 0.00005. Within the weld distance
-  times the top band's area, past the test's 2e-5.
+  slab), the fuse comes out 2.1e-5 to 8.2e-5 cubic millimetres under the
+  mesh's measure: 0.00001 [8;7] (5.2e-5), 0.00002 [6,6,6,4,8,7,5] (2.1e-5)
+  and four sets at 0.00005 ([8,8,8,7,7,6,5] 5.7e-5, [7,7,7,6,6,6,5]
+  8.2e-5, [8,9,9,5,4,5,5] 2.8e-5, [6,6,6,4,8,7,5] 5.9e-5). Within the
+  weld distance times the top band's area, past the test's 2e-5. At
+  444a5213 (2026-10-12) the 0.00002 set passed and the 0.00005 misses were
+  3.7e-5 to 6.3e-5 on three sets: the fuse has drifted down by about 2e-5
+  since.
 - The design for a band the two stand within the weld distance of each
   other over a region: pair it as same-domain and split it where the planes
   part by the weld distance.
-
-**Section loops pinned at a sphere's pole.** Where a curved wall passes
-through a pole of a sphere face, the marched section stalls and doubles back
-at the pole, and the arrangement can read one piece round both loops. Before
-the boolean, `ball_chart.rs` restates a whole ball or a trimmed sphere face on
-a chart whose poles stand clear; a solid at a rigid placement is restated in
-its own frame, and one scaled, mirrored or on a left-handed sphere is baked
-first. It leaves as it is (and the pole stays): a face whose trim the new
-chart would have to split (two loops round the axis, or a loop the seam
-meridian crosses at no vertex), a face placed inside its solid, and a face
-with an edge that has no curve in space. A ball cut to the slab |x| < 0.8 or
-0.5 (radius 10) and drilled along z through its pole fails so: every clear
-axis either lies within a tenth of the radius of the trim or has both loops
-round it.
 
 **A section whose fit misses widens its junctions as far.** A marched section
 keeps its fit's measured error as its tolerance, and the paving's reach and
@@ -75,54 +96,38 @@ the split waits on the pole item above. A branch nothing fits (residuals of
 0.1 to 10 near a tangency), and a near-tangent crossing whose capped angle
 term stands at 1e-3 or more, carry their miss.
 
-**A drill lying in a face that runs into a round.** A drill whose lowest line
-lies in a plate's underside meets the round at each end within a few microns
-of tangency. The section is a figure eight crossing the round's tangent edge
-twice at its double point, or two loops crossing it a hundredth of a
-millimetre apart. With the drill's seam toward -y, the marcher returns the
-section as six open pieces whose fits miss by up to 9e-3, and the kept pieces
-do not close; the same placement moved by a few ulps leaves the drill less
-the part unclosed. With the seam toward z it closes. The stress drill
-scenario's seed 2 drill 5 on `nist_ctc_03` is the same: the drill's top
-ruling lies in the plate's top face and runs into the round of radius 11 at
-its edge, where the drill, the round and the plate's face are tangent at one
-point; the marched drill-round section, fitted to 2.8e-4, crosses the round's
-tangent edge twice 9.5e-3 apart, and the sliver between the crossings sews
-to nothing (its twin edges stand 9.2e-4 apart).
-
 **A drill's seam along the other part's edge.** A drill whose wall runs along
 a round's tangent line with its own seam on that line: the section hugs an
 edge on both sides and lays no split, and the boolean refuses. A drill tangent
 to a plane along a face's edge, seam there, is the same. Carrying the seam
 onto that face as a contact closes it, but the same contact breaks a drill
 whose seam crosses a face's interior lying in its plane. Turned away, the
-seam closes. The concave case: seed 3's drill 0 on `nist_ctc_03` has its seam
-along the edge where a wall (y = 425.455) meets the lip's ceiling above it,
-with the drill inside the material on both sides of the line, so the edge
-turns nothing and is rightly carried as no contact (the touch along a
-boundary edge is carried only where the solid turns across the touching
-face). The drill's wall below the seam is then never split by the faces it
-crosses behind the wall, and its band inside the material merges into the
-outside piece, whose one ring runs along both sides of the seam.
+seam closes. On the rounded box (20 by 14 by 10, radius 2) a drill along x
+whose lowest line runs along a bottom round's tangent line on the front or
+back face (radii 1.38 and 1.18) cuts with its seam toward -y and refuses
+with it on that line ("the kept pieces did not close into a shell"). The
+drill lying in `nist_ctc_03`'s plate underside between its rounds refuses
+the same way with its seam toward -z, on the underside, and cuts with it
+toward z or -y.
 A drill whose seam stands up to a few tenths of a micron above a block's top
-face cuts through validly; a blind one in the same place is refused (the
-piece where it ends lies on the block at every probe), and a drill with its
-top line in a plate's top face where the face runs into a round is refused
-for some seam directions and offsets of up to a tenth of a micron (radii 11
-and 6, eight of 45 placements). Treating a plane and a drum that part by no
+face cuts through validly; a blind one in the same place is refused: a
+drill of radius 2 along x with its seam 1e-7 above the top refuses as a
+piece that lies on the block at every probe, and 3e-7 or 5e-7 above as
+kept pieces that do not close. A drill with its top line in a plate's top
+face where the face runs into a round is refused for some seam directions
+and offsets of up to a tenth of a micron: at the stress drill seed 2,
+drill 5 placement on `nist_ctc_03` (radius 32 against the round of radius
+11), all eight seam directions cut on the face, and 23 of the 32 raised or
+lowered by 1e-8 or 1e-7 refuse. Treating a plane and a drum that part by no
 more than the confusion distance as tangent closes the blind block, but the
 drum's section against the round still sees the drum above the plate, and
 the pieces stop agreeing: twice as many of those placements refused.
 
 **A section tangent to an edge at its end.** A drill whose circle on a rounded
 box's base touches the round's tangent line at the corner vertex, where the
-corner ball touches the base, is refused. At seeds 1 to 3 the stress drill
-scenario refuses one drill each: seed 1's drill 2 on the rounded box is this
-item, and seeds 2 and 3 each refuse one on `nist_ctc_03`, recorded under the
-two items above. A drill along y whose top line touches `nist_ftc_11`'s bore
-rim where the bore meets the torus above it (stress seed 11, drill 14) has
-its section along the top stop a millimetre short of the touch; the face it
-leaves does not close in its chart, and the boolean refuses it.
+corner ball touches the base (stress drill seed 1, drill 2): the cut and the
+common are right, but the drill less the box is refused ("the kept pieces
+did not close into a shell").
 
 **A loop's pcurve stopped short of its seam column after a fuse.** A
 section that crosses a torus's seam a hair from its own start is marched
@@ -139,13 +144,6 @@ and 3 before the seam fixes of 2026-10-12): seed 10's
 marched fit beside the ball's pole ("a branch passing beside a chart's
 pole fits nothing yet"), and seed 4's `chain/primitives/178`, two fused
 balls cut by a cone, whose boundary strand dangles.
-
-**A tilted half ball drilled on the diagonal chart.** A half ball charted
-about the cube diagonal (1, 1, 1) with its seam toward z, on a drum and drilled
-through, gives fuse + common and cut + common 1.2e-8 relative off the
-operands, where other charts hold 5e-9. The rim and section are fitted on the
-tilted chart (held to 7e-6 and 2e-5), and the measured volumes move by that
-much.
 
 ### Fillets and blends
 
@@ -178,10 +176,10 @@ distance widens when any one fit presses against it. So the same mesh
 listed otherwise finds other regions: on `nist_ftc_07` 378 to 666 faces
 over 30 rotations (the distance widened in about half), and on every
 corpus part some shuffled listing gives a different face count, a region
-faceted (`grid_point_on_a_diagonal_boundary`, `nist_ftc_10`). All 30
-rotations of `nist_ftc_07` meet, against 9, at 349 to 614 faces, one with a
-region faceted; all 30 of `nist_ftc_10` meet, at 282 to 369 faces, three
-with one to three regions faceted. Putting
+faceted (`grid_point_on_a_diagonal_boundary`, `nist_ftc_10`). Listed from
+each thirtieth of the way along, all 30 rotations of `nist_ftc_07` meet at
+319 to 612 faces and all 30 of `nist_ftc_10` at 285 to 339, none with a
+region faceted. Putting
 the mesh in an order read off the geometry (points by position, triangles
 by their corners; patch `canonical-order.patch` in the scratch crate)
 makes every listing one result, but the one it picks facets two regions

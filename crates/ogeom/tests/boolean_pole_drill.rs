@@ -385,7 +385,9 @@ fn tilted_with_drum(
 /// into arcs where the chart's seam and poles meet it, and one of them runs
 /// across the start of the drum's whole circle; that arc lies along the
 /// circle on both sides of its start. A drum through the flat face and out
-/// of the dome checks the same charts against the drilled volume.
+/// of the dome checks the same charts against the drilled volume. On the
+/// chart about the cube diagonal the rim and the section are fitted on the
+/// tilted chart, and the sums hold to 1e-8 there as on the others.
 #[test]
 fn a_tilted_half_ball_on_a_drum_or_drilled() {
     let charts = [
@@ -404,7 +406,7 @@ fn a_tilted_half_ball_on_a_drum_or_drilled() {
     let r = 2.5;
     let (cx, cy) = (1.0, -2.0);
     let drilled = over_disc(cx, cy, r, |x, y| (BALL * BALL - x * x - y * y).sqrt());
-    for (axis, x_reference) in &charts[1..] {
+    for (axis, x_reference) in &charts {
         let foot = Point::new(cx, cy, -5.0);
         if let Err(e) = tilted_with_drum(*axis, *x_reference, foot, r, 20.0, drilled) {
             failures.push(format!("{axis:?} {x_reference:?} through: {e}"));

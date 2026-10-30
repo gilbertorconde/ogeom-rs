@@ -234,9 +234,9 @@ fn an_oblique_drill_through_the_slot_corners_cuts() {
 /// drill's section with it is a figure eight crossing the round's tangent
 /// edge twice at its double point, or two loops crossing that edge a
 /// hundredth of a millimetre apart where the edge cannot be told from the
-/// drill between them, which is one junction. Cut and common are valid, cut
-/// and common add up to the part and the drill less the part and the common
-/// add up to the drill. The common matches the drill's share of the part's
+/// drill between them, which is one junction. With the drill's seam on top
+/// or toward -y, cut and common are valid, cut and common add up to the
+/// part and the drill less the part and the common add up to the drill. The common matches the drill's share of the part's
 /// mesh as read: at a tangency the mesh's chord moves that share by the
 /// root of the chord, so no extrapolation holds. Over chords from 2e-3 to
 /// 1.25e-4 and grids up to sixteen times finer it lands from 3e-5 below
@@ -260,49 +260,56 @@ fn a_drill_lying_in_a_plate_s_underside_between_its_rounds_cuts() {
         210.972_399_999_999_96,
         99.816_669_978_788_24,
     );
-    let (x, z) = (Vector::new(0.0, 0.0, 1.0), Vector::new(1.0, 0.0, 0.0));
-    let frame = Frame::new(
-        start,
-        Direction::new(z, T).unwrap(),
-        Direction::new(x, T).unwrap(),
-        T,
-    )
-    .unwrap();
-    let drill = ogeom::algo::make_cylinder(model, frame, radius, length, T)
-        .unwrap()
-        .shape;
-    let cut = ogeom::boolean::cut(model, &part, &drill, T).unwrap().shape;
-    let common = ogeom::boolean::common(model, &part, &drill, T)
-        .unwrap()
-        .shape;
-    let rest = ogeom::boolean::cut(model, &drill, &part, T).unwrap().shape;
-    for result in [&cut, &common, &rest] {
-        assert!(ogeom::algo::check(model, result, T).unwrap().is_valid());
-    }
-    let (a, b, c) = (
-        volume(model, &cut),
-        volume(model, &common),
-        volume(model, &rest),
-    );
-    assert!(
-        (a + b - whole).abs() < whole * 1e-6,
-        "{a} + {b} against {whole}"
-    );
-    let bore = core::f64::consts::PI * radius * radius * length;
-    assert!(
-        (c + b - bore).abs() < bore * 1e-6,
-        "{c} + {b} against the drill's {bore}"
-    );
+    let z = Vector::new(1.0, 0.0, 0.0);
+    let up = Vector::new(0.0, 0.0, 1.0);
     let inside = mesh_inside_cylinder(
         &mesh,
         start,
-        (x, z.cross(x), z),
+        (up, z.cross(up), z),
         radius,
         length,
         (300, 1200),
     );
-    assert!(
-        (b - inside).abs() < b * 5e-5,
-        "common {b} against {inside} measured on the mesh as read"
-    );
+    let bore = core::f64::consts::PI * radius * radius * length;
+    for x in [up, Vector::new(0.0, -1.0, 0.0)] {
+        let frame = Frame::new(
+            start,
+            Direction::new(z, T).unwrap(),
+            Direction::new(x, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let drill = ogeom::algo::make_cylinder(model, frame, radius, length, T)
+            .unwrap()
+            .shape;
+        let cut = ogeom::boolean::cut(model, &part, &drill, T)
+            .unwrap_or_else(|e| panic!("seam toward {x:?}: cut: {e}"))
+            .shape;
+        let common = ogeom::boolean::common(model, &part, &drill, T)
+            .unwrap_or_else(|e| panic!("seam toward {x:?}: common: {e}"))
+            .shape;
+        let rest = ogeom::boolean::cut(model, &drill, &part, T)
+            .unwrap_or_else(|e| panic!("seam toward {x:?}: rest: {e}"))
+            .shape;
+        for result in [&cut, &common, &rest] {
+            assert!(ogeom::algo::check(model, result, T).unwrap().is_valid());
+        }
+        let (a, b, c) = (
+            volume(model, &cut),
+            volume(model, &common),
+            volume(model, &rest),
+        );
+        assert!(
+            (a + b - whole).abs() < whole * 1e-6,
+            "seam toward {x:?}: {a} + {b} against {whole}"
+        );
+        assert!(
+            (c + b - bore).abs() < bore * 1e-6,
+            "seam toward {x:?}: {c} + {b} against the drill's {bore}"
+        );
+        assert!(
+            (b - inside).abs() < b * 5e-5,
+            "seam toward {x:?}: common {b} against {inside} measured on the mesh as read"
+        );
+    }
 }
