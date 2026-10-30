@@ -4888,6 +4888,27 @@ mod tests {
         }
     }
 
+    /// [`crosses_from_the_node_to_both_ends`] over the whole band, `y` from
+    /// −0.004 to 0.02, a turn of 1.2 and the round's quarter turn, turned
+    /// every half degree. At most turns no pair of the grid's cells
+    /// crosses, and the band's borders seed alone: the ruling at the node
+    /// first, where the surfaces are tangent, then where each branch leaves
+    /// through an end of the sweep. Both of those lie within a seed's reach
+    /// of the node and were merged into it, and no walk sets out from a
+    /// tangency: the pair came back apart at 612 and 613 turns of 720.
+    #[test]
+    fn a_band_crossing_a_cone_unwindowed_is_two_crossings_at_every_turn() {
+        for turn in [1.2, 1.471_127_674_303_734_5] {
+            for k in 0..720 {
+                crosses_from_the_node_to_both_ends(
+                    (turn, (-0.004, 0.02)),
+                    (f64::from(k) * 0.5).to_radians(),
+                    None,
+                );
+            }
+        }
+    }
+
     /// [`crosses_from_the_node_to_both_ends`] over the band of
     /// [`a_band_crossing_a_cone_is_two_crossings_at_every_turn`], walked
     /// within a window cut `1e-5` below the node, turned every half degree:

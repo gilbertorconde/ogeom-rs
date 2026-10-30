@@ -176,17 +176,30 @@ pub fn seeds(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Contact>> {
-    Ok(seeded(a, b, options, tol)?.0)
+    Ok(seeded(a, b, options, tol)?.found)
 }
 
-/// [`seeds`], and the stretches of either surface's borders lying in the
-/// other, found on the same sampling: see [`border_stretches`].
+/// What [`seeded`] finds on one sampling of a pair.
+struct Seeded {
+    /// One seed per branch, as [`seeds`] returns them.
+    found: Vec<Contact>,
+    /// The contacts within reach of a seed where the surfaces are tangent,
+    /// and of no other: see [`merges`].
+    beside_tangency: Vec<Contact>,
+    /// The stretches of either surface's borders lying in the other: see
+    /// [`border_stretches`].
+    lying: Vec<Traced>,
+}
+
+/// [`seeds`], the contacts held back beside a tangency, and the stretches
+/// of either surface's borders lying in the other, found on the same
+/// sampling.
 fn seeded(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     options: Marching,
     tol: Tolerances,
-) -> OgeomResult<(Vec<Contact>, Vec<Traced>)> {
+) -> OgeomResult<Seeded> {
     options.validate()?;
     let (mesh_a, mesh_b) = (sample(a, options.grid, tol), sample(b, options.grid, tol));
     let apart = span(a).min(span(b)) / f64::from(u32::try_from(options.grid).unwrap_or(1));
@@ -203,6 +216,7 @@ fn seeded(
     );
 
     let mut found: Vec<Seed> = Vec::new();
+    let mut beside_tangency: Vec<Contact> = Vec::new();
     // The pairs of cells that come close without crossing, and the grid
     // squares of the first surface some pair crosses in.
     let mut close: Vec<(usize, usize)> = Vec::new();
@@ -238,10 +252,13 @@ fn seeded(
             // reach is the *finer* surface's grid: the coarser surface's
             // cells say nothing about how far apart branches can be, and a
             // plane's clamped domain spans a million units.
-            if merges(&found, contact, apart) {
-                continue;
+            match merges(&found, contact, apart) {
+                Merged::Along => {}
+                Merged::BesideTangency => {
+                    beside_tangency.push(on_its_bound(a, b, contact, options.chord, tol))
+                }
+                Merged::Not => found.push(Seed::at(a, b, contact, tol)),
             }
-            found.push(Seed::at(a, b, contact, tol));
         }
     }
     // A branch that runs in from a border at a grazing angle can be
@@ -287,10 +304,13 @@ fn seeded(
                 else {
                     continue;
                 };
-                if merges(&found, contact, apart) {
-                    continue;
+                match merges(&found, contact, apart) {
+                    Merged::Along => {}
+                    Merged::BesideTangency => {
+                        beside_tangency.push(on_its_bound(a, b, contact, options.chord, tol))
+                    }
+                    Merged::Not => found.push(Seed::at(a, b, contact, tol)),
                 }
-                found.push(Seed::at(a, b, contact, tol));
             }
         }
     }
@@ -303,12 +323,20 @@ fn seeded(
     // sign.
     let extra = extremum_seeds(a, b, (&mesh_a, &mesh_b), &close, &crossed, options, tol);
     for contact in extra {
-        if !merges(&found, contact, apart) {
-            found.push(Seed::at(a, b, contact, tol));
+        match merges(&found, contact, apart) {
+            Merged::Along => {}
+            Merged::BesideTangency => {
+                beside_tangency.push(on_its_bound(a, b, contact, options.chord, tol));
+            }
+            Merged::Not => found.push(Seed::at(a, b, contact, tol)),
         }
     }
     let lying = border_stretches(a, b, (&mesh_a, &mesh_b), options, tol)?;
-    Ok((found.into_iter().map(|s| s.contact).collect(), lying))
+    Ok(Seeded {
+        found: found.into_iter().map(|s| s.contact).collect(),
+        beside_tangency,
+        lying,
+    })
 }
 
 /// How many times a cell's sag the surface is allowed to bow from the
@@ -804,22 +832,92 @@ impl Seed {
     }
 }
 
+/// Whether a contact is a seed already kept: see [`merges`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Merged {
+    /// Met again further along a kept seed's branch.
+    Along,
+    /// Within reach of a kept seed where the surfaces are tangent, and of
+    /// no other.
+    BesideTangency,
+    /// A seed of its own.
+    Not,
+}
+
 /// Whether a contact is a seed already kept, met again further along its
 /// branch: within `apart` of it, and off the line the intersection runs
 /// through it by less than a quarter of the way there. Two branches side by
 /// side, or a loop beside another the same drum cuts, lie across that line
 /// rather than along it, and each keeps a seed of its own however close.
 /// Where the surfaces are all but tangent the intersection has no direction
-/// to ask, and nearness alone decides.
-fn merges(found: &[Seed], contact: Contact, apart: f64) -> bool {
-    found.iter().any(|seed| {
+/// to ask, and nearness alone decides; but [`trace`] follows nothing from
+/// such a seed, and the branches leaving a node where the section crosses
+/// itself pass within `apart` of it, so a contact held by it alone is held
+/// back rather than dropped: see [`branches_from_touches`].
+fn merges(found: &[Seed], contact: Contact, apart: f64) -> Merged {
+    let mut beside_tangency = false;
+    for seed in found {
         let offset = contact.point - seed.contact.point;
         let gap = offset.magnitude();
-        gap <= apart
-            && seed
-                .along
-                .is_none_or(|along| offset.cross(along).magnitude() <= 0.25 * gap)
-    })
+        if gap > apart {
+            continue;
+        }
+        match seed.along {
+            Some(along) if offset.cross(along).magnitude() <= 0.25 * gap => return Merged::Along,
+            Some(_) => {}
+            None => beside_tangency = true,
+        }
+    }
+    if beside_tangency {
+        Merged::BesideTangency
+    } else {
+        Merged::Not
+    }
+}
+
+/// A contact held on a bound of either chart that does not repeat, solved
+/// on that bound to within `within` of where the section crosses it, as
+/// [`settled_from`] solves; as it was where that solve does not settle.
+///
+/// The solve that lands a contact stops once the surfaces stand within a
+/// residual of each other, and a point held on a bound slides along it by
+/// that residual over the sine the section crosses the bound at: beside a
+/// tangency, where the sine falls towards zero, further than the chord
+/// from where the section leaves the chart.
+fn on_its_bound(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    contact: Contact,
+    within: f64,
+    tol: Tolerances,
+) -> Contact {
+    let x = [
+        contact.on_a.0,
+        contact.on_a.1,
+        contact.on_b.0,
+        contact.on_b.1,
+    ];
+    let ((ua, ub), (va, vb)) = a.domain();
+    let ((uc, ud), (vc, vd)) = b.domain();
+    let bounds = [
+        (a.is_periodic_u(), ua, ub),
+        (a.is_periodic_v(), va, vb),
+        (b.is_periodic_u(), uc, ud),
+        (b.is_periodic_v(), vc, vd),
+    ];
+    let Some(held) = (0..4).find(|&k| {
+        let (periodic, lo, hi) = bounds[k];
+        !periodic && (x[k] == lo || x[k] == hi)
+    }) else {
+        return contact;
+    };
+    let mut row = [0.0; 4];
+    row[held] = 1.0;
+    let on = |y: &[f64; 4], _: Point, _: [Vector; 2]| (y[held] - x[held], row);
+    match settled_from((a, b), x, &on, within, tol) {
+        Landing::At(landed) => landed,
+        _ => contact,
+    }
 }
 
 /// Past this a chart's bound is a stand-in for no end at all.
@@ -1497,7 +1595,11 @@ pub(crate) fn branches_from_touches(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(Traced, bool)>> {
-    let (found, lying) = seeded(a, b, options, tol)?;
+    let Seeded {
+        found,
+        beside_tangency,
+        lying,
+    } = seeded(a, b, options, tol)?;
     // A stretch of a border lying in the other surface is a branch already
     // traced, and a seed on it is not followed again.
     let mut out: Vec<Traced> = lying;
@@ -1561,41 +1663,72 @@ pub(crate) fn branches_from_touches(
             out.push(piece);
         }
     };
-    for seed in found {
-        // Already on something followed.
-        if out
-            .iter()
-            .any(|branch| passes_near(branch, seed.point, reach))
-        {
-            continue;
-        }
-        follow(seed, &mut out, &mut again);
-    }
-    // A touch of an edge is where two arcs of the section end, one either
-    // side. A seed there lies on the arc already followed to it and is
-    // skipped, and the arc on the other side is found only if some seed lies
-    // on it: so each touch ending one arc alone is followed from, each way,
-    // and the arc it runs back along is that arc again.
     let mut followed: Vec<Point> = Vec::new();
-    loop {
-        let alone: Vec<Contact> = lone_touches(&out, a, b, tol)
-            .into_iter()
-            .filter(|touch| {
-                followed
-                    .iter()
-                    .all(|p| p.distance(touch.point) > tol.confusion())
-            })
-            .collect();
-        if alone.is_empty() {
-            break;
+    let follow_all = |seeds: &[Contact],
+                      out: &mut Vec<Traced>,
+                      again: &mut Vec<Traced>,
+                      followed: &mut Vec<Point>| {
+        for &seed in seeds {
+            // Already on something followed.
+            if out
+                .iter()
+                .any(|branch| passes_near(branch, seed.point, reach))
+            {
+                continue;
+            }
+            follow(seed, out, again);
         }
-        for touch in alone {
-            followed.push(touch.point);
-            follow(touch, &mut out, &mut again);
+        // A touch of an edge is where two arcs of the section end, one
+        // either side. A seed there lies on the arc already followed to it
+        // and is skipped, and the arc on the other side is found only if
+        // some seed lies on it: so each touch ending one arc alone is
+        // followed from, each way, and the arc it runs back along is that
+        // arc again.
+        loop {
+            let alone: Vec<Contact> = lone_touches(out, a, b, tol)
+                .into_iter()
+                .filter(|touch| {
+                    followed
+                        .iter()
+                        .all(|p| p.distance(touch.point) > tol.confusion())
+                })
+                .collect();
+            if alone.is_empty() {
+                break;
+            }
+            for touch in alone {
+                followed.push(touch.point);
+                follow(touch, out, again);
+            }
         }
+    };
+    follow_all(&found, &mut out, &mut again, &mut followed);
+    let joined = |out: Vec<Traced>, again: Vec<Traced>| {
+        let stitched = stitch_stalled(out, a, b, options, tol);
+        split_at_touches(stitched, again, a, b, options, tol)
+    };
+    if beside_tangency.is_empty() {
+        return Ok(joined(out, again));
     }
-    let stitched = stitch_stalled(out, a, b, options, tol);
-    Ok(split_at_touches(stitched, again, a, b, options, tol))
+    // A contact held back beside a tangency lies on the section, so some
+    // branch must pass it: where none does, it is followed in its own
+    // right, and the section joined again with what it finds.
+    let first = joined(out.clone(), again.clone());
+    let missed: Vec<Contact> = beside_tangency
+        .into_iter()
+        .filter(|c| {
+            !first
+                .iter()
+                .any(|(branch, _)| passes_near(branch, c.point, reach))
+        })
+        .collect();
+    // Each piece followed is kept in one list or the other.
+    let pieces = out.len() + again.len();
+    follow_all(&missed, &mut out, &mut again, &mut followed);
+    if out.len() + again.len() == pieces {
+        return Ok(first);
+    }
+    Ok(joined(out, again))
 }
 
 /// The touches of an edge that end one branch alone, as contacts to follow
@@ -7715,7 +7848,7 @@ mod tests {
             };
             let node = band.point_at(0.0, 0.0, T).unwrap();
             for (a, b) in [(&band, &cone), (&cone, &band)] {
-                let (seeds, _) = seeded(a, b, options, T).unwrap();
+                let seeds = seeded(a, b, options, T).unwrap().found;
                 let traced: Vec<Traced> = seeds
                     .into_iter()
                     .filter_map(|seed| trace(a, b, seed, options, T).ok())

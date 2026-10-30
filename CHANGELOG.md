@@ -1298,6 +1298,28 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The marcher follows the branches leaving a node however its seeds
+  fall.** (#528)
+  - A seed found within a grid cell's reach of one kept before is
+    dropped as that branch met again. Where the kept seed is a point the
+    surfaces are tangent at, nearness alone decided, but no walk sets out
+    from a tangency, so a branch whose only seeds lay beside one was
+    never traced. #523's band against the drafted cone, unwindowed, `y`
+    from −0.004 to 0.02, at a turn of 1.2 or the round's quarter turn:
+    where no pair of grid cells crosses, the band's ruling at the node
+    seeded first and took in both seeds where the branches leave the
+    sweep's ends. The pair came back apart at 612 and 613 of 720 turns.
+  - Now a contact held only by such a seed is kept back, solved on the
+    chart's bound where it lies on one, and followed in its own right
+    where no branch of the section joined from the other seeds passes
+    it. Where every such contact is passed, the section is what it was.
+  - Measured: every half degree, both orders, the band unwindowed at
+    turns 0.425, 0.8, 1.2 and the quarter turn with the lower end at
+    0.004 down to 0.00011, and windowed as a boolean cuts it with the
+    window's lower end at 0.004, 0.0008, 5e-5 and 1e-5: no turn comes
+    back apart, each section lies on both surfaces, and the windowed
+    results match main's turn by turn.
+
 - **The marcher places a crossing's samples on the arms by its node,
   walks out an arm shorter than the node's snap, and cuts crowded nodes
   as it cuts the rest.** (#526)
