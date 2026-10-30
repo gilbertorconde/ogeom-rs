@@ -10301,6 +10301,22 @@ fn general_fuse_as(
     // sew then finds the cylinder's piece used once.
     let chart_length =
         |line: &[Point2]| -> f64 { line.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>() };
+    // Each edge's end vertices where they stand, each with its radius and
+    // the edge's own: a contact strand on the other solid's face ends at
+    // one of them.
+    let mut edge_vertices: ogeom_core::FastMap<EdgeKey, [(Point, f64); 2]> =
+        ogeom_core::FastMap::default();
+    for e in ga
+        .faces
+        .iter()
+        .chain(gb.faces.iter())
+        .flat_map(|f| f.edges.iter())
+    {
+        edge_vertices.entry(e.node).or_insert([
+            (e.vertices[0], e.ends[0].1 + e.tolerance),
+            (e.vertices[1], e.ends[1].1 + e.tolerance),
+        ]);
+    }
     let strands_of = |from_a: bool,
                       fi: usize,
                       face: &GFace|
@@ -10761,6 +10777,17 @@ fn general_fuse_as(
                 if let Tag::Section { section, .. } = st.tag {
                     weld = weld.max(doubt_at(other(section), q, tol)?);
                 }
+                // A contact's end is its own edge's end vertex, within that
+                // vertex's radius, as an edge of this face ends at its own.
+                if let Tag::Contact { contact, .. } = st.tag
+                    && let Some(vertices) = edge_vertices.get(&contacts[contact].node)
+                {
+                    for &(v, radius) in vertices {
+                        if q.distance(v) <= radius {
+                            weld = weld.max(radius);
+                        }
+                    }
+                }
                 // On the last attempt the face weld leaves out a junction's
                 // run and a fitted section's hug width, and they hold at the
                 // ends they concern: a fitted section's end, hugging an edge
@@ -10867,7 +10894,8 @@ fn general_fuse_as(
         // Two ends that each stand within a vertex's radius (its own and
         // its edge's) of the same vertex are that vertex: the curves a file
         // closes on one vertex can stop either side of it, each within the
-        // radius. In the chart they stand as far apart as both their
+        // radius. The vertex is one of this face's edges', or one ending
+        // the other solid's edge a contact strand runs along. In the chart they stand as far apart as both their
         // reaches, or further where the chart stretches more than the
         // reaches allow for (a cylinder narrower than the radius turns a
         // quarter within it); there the stretch between them, read as an
@@ -10885,9 +10913,24 @@ fn general_fuse_as(
                 return false;
             }
             let close = from.distance(to) <= reach[i] + reach[j];
-            face.edges.iter().any(|e| {
-                e.vertices.iter().zip(e.ends).any(|(&v, (_, radius))| {
-                    let within = radius + e.tolerance;
+            let contact_vertices = [i, j]
+                .into_iter()
+                .filter_map(|k| match strands[ends[k].0].tag {
+                    Tag::Contact { contact, .. } => edge_vertices.get(&contacts[contact].node),
+                    _ => None,
+                })
+                .flatten()
+                .copied();
+            face.edges
+                .iter()
+                .flat_map(|e| {
+                    e.vertices
+                        .iter()
+                        .zip(e.ends)
+                        .map(|(&v, (_, radius))| (v, radius + e.tolerance))
+                })
+                .chain(contact_vertices)
+                .any(|(v, within)| {
                     a.distance(v) <= within
                         && b.distance(v) <= within
                         && (close
@@ -10903,7 +10946,6 @@ fn general_fuse_as(
                                         .is_ok_and(|q| q.distance(v) <= within)
                                 }))
                 })
-            })
         };
         for i in 0..ends.len() {
             if reach[i] <= face_snap {

@@ -1507,9 +1507,11 @@ fn half_space(
 type ArcPiece = (ogeom_geom::Curve, (f64, f64), (Point, Point), Point);
 
 /// A band's end section on its planar cap: its two straight legs, the
-/// ball's arc between their far ends, and the cap's plane.
+/// ball's arc between their far ends, as its own curve over the arc and
+/// as a rational B-spline, and the cap's plane.
 struct Section {
     lines: Vec<(Point, Point)>,
+    curve: ogeom_geom::Curve,
     arc: ogeom_geom::BSplineCurve,
     plane: (Point, Vector),
 }
@@ -1529,18 +1531,29 @@ impl Section {
                 pieces.push((curve, range, ends, middle));
             }
         }
-        let arc = match pieces.as_slice() {
+        let (basis, range) = match pieces.as_slice() {
             [] => ogeom_core::ogeom_bail!(Construction, "a band's end cap has no arc"),
-            [(curve, range, _, _)] => curve.to_bspline_over(*range, tol)?,
+            [(curve, range, _, _)] => (curve.clone(), *range),
             // The ball's arc split in pieces (at its circle's own seam, which
             // follows the part's placement): one circle through them all,
             // from the end no other piece meets to the other.
             _ => Self::one_arc(&pieces, near, tol)?,
         };
+        let arc = basis.to_bspline_over(range, tol)?;
+        let curve = if basis.domain() == range {
+            basis
+        } else {
+            ogeom_geom::TrimmedCurve::new(basis, range.0, range.1, tol)?.into()
+        };
         let Some(plane) = plane_of(model, cap, tol)? else {
             ogeom_core::ogeom_bail!(Construction, "a band's end cap is not planar");
         };
-        Ok(Self { lines, arc, plane })
+        Ok(Self {
+            lines,
+            curve,
+            arc,
+            plane,
+        })
     }
 
     /// The section's corners and seventeen points along its arc, where it
@@ -1557,12 +1570,12 @@ impl Section {
     }
 
     /// The arc the circular `pieces` (each a curve, its range, its ends and
-    /// its middle) make end to end, as one circle's arc.
+    /// its middle) make end to end: one circle and its range.
     fn one_arc(
         pieces: &[ArcPiece],
         near: f64,
         tol: Tolerances,
-    ) -> OgeomResult<ogeom_geom::BSplineCurve> {
+    ) -> OgeomResult<(ogeom_geom::Curve, (f64, f64))> {
         let ends: Vec<Point> = pieces
             .iter()
             .flat_map(|(_, _, (a, b), _)| [*a, *b])
@@ -1600,7 +1613,10 @@ impl Section {
         let (am, a1) = (lift(angle(pieces[0].3)), lift(angle(*end)));
         // The arc through the pieces, one way round or the other.
         let range = if am <= a1 { (a0, a1) } else { (a1 - turn, a0) };
-        ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle)).to_bspline_over(range, tol)
+        Ok((
+            ogeom_geom::Curve::Circle(ogeom_geom::CircleCurve::new(circle)),
+            range,
+        ))
     }
 
     /// Points whose hull holds the section: its legs' ends and its arc's
@@ -1683,6 +1699,7 @@ impl Section {
         Ok((
             Self {
                 lines,
+                curve: self.curve.clone(),
                 arc: self.arc.clone(),
                 plane: self.plane,
             },
@@ -1866,7 +1883,7 @@ fn swept_past(
     let slide = |q: Point| -> f64 { (on - q).dot(normal) / rate };
     let image = |q: Point| -> Point { q + along * slide(q) };
     let near = rings.near;
-    let arc: Curve = section.arc.clone().into();
+    let arc = section.curve.clone();
     let (lo, hi) = arc.domain();
     if section.points(tol)?.iter().any(|&q| slide(q) < -near) {
         ogeom_core::ogeom_bail!(

@@ -249,12 +249,14 @@ fn seeded(
     // of both domains can lie inside a single pair of cells without
     // crossing them: no pair of cells crosses on it. Where it meets the
     // border it is a curve piercing a surface, which is found exactly:
-    // each border of each spline, and each rim of a drum or a cone, is
-    // intersected with the other surface, and every piercing seeds.
+    // each border of each spline and of each extrusion, and each rim of a
+    // drum or a cone, is intersected with the other surface, and every
+    // piercing seeds.
     for (from_a, border_of, other) in [(true, a, b), (false, b, a)] {
         let borders = spline_borders(border_of, tol)
             .into_iter()
-            .chain(rims(border_of, tol));
+            .chain(rims(border_of, tol))
+            .chain(extrusion_borders(border_of, tol));
         for (border, at) in borders {
             let Ok(met) = crate::intersect_curve_surface(
                 &border,
@@ -896,6 +898,63 @@ fn spline_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
             {
                 out.push((c, Box::new(move |t| (t, v))));
             }
+        }
+    }
+    out
+}
+
+/// The open borders of a linear extrusion, or of a window of one: the
+/// rulings at the ends of its `u` and the profile carried to the ends of
+/// its `v`, each at the extrusion's own parameter along it.
+fn extrusion_borders(surface: &SurfaceGeometry, tol: Tolerances) -> Vec<Border> {
+    use ogeom_geom::Curve3d as _;
+    let extrusion = match surface {
+        SurfaceGeometry::Extrusion(e) => e,
+        SurfaceGeometry::Trimmed(trimmed) => match trimmed.basis() {
+            SurfaceGeometry::Extrusion(e) => e,
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    if ![u0, u1, v0, v1]
+        .iter()
+        .all(|x| x.is_finite() && x.abs() <= FAR)
+    {
+        return Vec::new();
+    }
+    let profile = extrusion.curve();
+    let d = extrusion.direction();
+    let mut out: Vec<Border> = Vec::new();
+    if !surface.is_closed_u(tol) {
+        for u in [u0, u1] {
+            let Ok(at) = profile.point_at(u, tol) else {
+                continue;
+            };
+            let axis = ogeom_math::Axis {
+                location: at,
+                direction: d,
+            };
+            if let Ok(line) = ogeom_geom::LineCurve::over(axis, v0, v1) {
+                out.push((line.into(), Box::new(move |t| (u, t))));
+            }
+        }
+    }
+    let (p0, p1) = profile.domain();
+    for v in [v0, v1] {
+        let moved = ogeom_math::Transform::translation(d.vector() * v);
+        let Ok(carried) = ogeom_geom::Transformable::transformed(profile, &moved, tol) else {
+            continue;
+        };
+        let iso = if u0 <= p0 + tol.parametric() && u1 >= p1 - tol.parametric() {
+            Some(carried)
+        } else {
+            ogeom_geom::TrimmedCurve::new(carried, u0, u1, tol)
+                .ok()
+                .map(Into::into)
+        };
+        if let Some(iso) = iso {
+            out.push((iso, Box::new(move |t| (t, v))));
         }
     }
     out
@@ -3947,7 +4006,9 @@ fn split_at_touches(
     let weigh = |arc: Traced, kept: &mut Vec<Traced>, touches: &[Touch]| {
         let across = across_section(&arc, touches, near, (a, b), tol);
         if kept.iter().any(|other| {
-            lies_on(&arc, other, near, &across, touches) || same_stretch(&arc, other, near, touches)
+            lies_on(&arc, other, near, &across, touches)
+                || same_stretch(&arc, other, near, touches)
+                || stub_lies_on(&arc, other, near, touches)
         }) {
             return;
         }
@@ -4114,11 +4175,17 @@ fn join_arms(
             }
             // The walk starts where the section has a direction it can
             // follow: out from the touch's radius, twice as far each time,
-            // as far as a stall is carried onto a touch.
-            let Some((start, tangent)) = core::iter::successors(Some(touch.radius), |r| {
+            // as far as a stall is carried onto a touch. An arm that leaves
+            // the chart inside the radius is started inside it, half as far
+            // each time, no nearer than the touch's snap, inside which the
+            // section is the straight arm itself.
+            let floor = touch.snap.max(near);
+            let outwards = core::iter::successors(Some(touch.radius), |r| {
                 Some(r * 2.0).filter(|&r| r <= carry)
-            })
-            .find_map(|out| {
+            });
+            let inwards = core::iter::successors(Some(touch.radius * 0.5), |r| Some(r * 0.5))
+                .take_while(|&r| r >= floor);
+            let Some((start, tangent)) = outwards.chain(inwards).find_map(|out| {
                 let start = along_arm(a, b, touch, half, (out, arms), options.chord, tol)?;
                 Some((start, tangent_at(a, b, start, tol)?))
             }) else {
@@ -4605,6 +4672,40 @@ fn lies_on(arc: &Traced, other: &Traced, near: f64, across: &[Across], touches: 
             continue;
         }
         if !holds(other, p, within, wide, &mut last) {
+            return false;
+        }
+        weighed = true;
+    }
+    weighed
+}
+
+/// Whether `arc`, lying wholly within one touch's radius from the touch
+/// out to an end of its own, is a stretch of `other`: every sample of it
+/// off the touch lies within `near` of `other`. [`lies_on`] weighs no
+/// sample so near a touch; the arm's stretch out to a chart's border is
+/// still traced twice where two walks reach it.
+fn stub_lies_on(arc: &Traced, other: &Traced, near: f64, touches: &[Touch]) -> bool {
+    let m = arc.points.len();
+    if m < 2 {
+        return false;
+    }
+    let Some(touch) = touches
+        .iter()
+        .find(|t| arc.points.iter().all(|p| t.point.distance(*p) <= t.radius))
+    else {
+        return false;
+    };
+    let on_touch = |p: Point| p.distance(touch.point) <= near.max(touch.blur);
+    if on_touch(arc.points[0]) == on_touch(arc.points[m - 1]) {
+        return false;
+    }
+    let mut last = 0;
+    let mut weighed = false;
+    for &p in &arc.points {
+        if on_touch(p) {
+            continue;
+        }
+        if !holds(other, p, near, (near, None), &mut last) {
             return false;
         }
         weighed = true;
@@ -5242,6 +5343,44 @@ fn cut_at_touches(
             visits[i] = Some(tq);
         }
     }
+    // An end of an open branch on the border of either chart is an end of
+    // the section, however near a touch it stands: the samples from it
+    // back along the half arm it lies on, each solved onto that arm, are
+    // the arm's and no visit, and the stretch from the touch out to the
+    // border is cut as an arc of its own, however short: an arm leaving
+    // the chart within the radius has no sample clear of the touch. Such
+    // an end heads for no touch.
+    let mut freed = [false; 2];
+    if !branch.closed() {
+        for (side, at) in [0, n - 1].into_iter().enumerate() {
+            let Some(t) = visits[at] else { continue };
+            let touch = &touches[t];
+            let on_border = outside(a, branch.on_a[at], tol) || outside(b, branch.on_b[at], tol);
+            let Some(h) = half_arm(touch, branch.points[at]) else {
+                continue;
+            };
+            if !on_border || branch.points[at].distance(touch.point) <= near {
+                continue;
+            }
+            let inward: Vec<usize> = if at == 0 {
+                (0..n).collect()
+            } else {
+                (0..n).rev().collect()
+            };
+            for i in inward {
+                let p = branch.points[i];
+                if visits[i] != Some(t)
+                    || p.distance(touch.point) <= near
+                    || half_arm(touch, p) != Some(h)
+                    || !on_arm((a, b), touch, (h, false), p, near, tol)
+                {
+                    break;
+                }
+                visits[i] = None;
+                freed[side] = true;
+            }
+        }
+    }
     // The touch a stalled end heads for: one within `carry` of it, or
     // failing that the one solved from the end itself. Where the end
     // will not carry onto the first, the one solved from it is tried
@@ -5249,7 +5388,7 @@ fn cut_at_touches(
     // `carry` of its end, and the one listed first may be the other.
     let solved_at = |at: usize| if at == 0 { solved[0] } else { solved[1] };
     let end_touch = |at: usize| -> Option<usize> {
-        if branch.stopped != Stopped::Stalled {
+        if branch.stopped != Stopped::Stalled || freed[usize::from(at != 0)] {
             return None;
         }
         touch_near(branch.points[at]).or_else(|| solved_at(at))

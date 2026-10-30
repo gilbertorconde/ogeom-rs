@@ -2422,9 +2422,11 @@ fn rounds_at_a_drafted_drum_meeting_a_wall_take_all_above_both() {
 /// the rim's end section stands past the plane bisecting the turn, and the
 /// flush meeting in that plane refused. Each fell back to the bands as
 /// built, 3.5e-3 to 7.5e-3 short. At the nearer crease with the wall
-/// square the corner's boolean still does not resolve the band carried on
-/// past its cap crossing the cone at a shallow turn beside the wall, and
-/// the request rounds as before.
+/// square the band carried on past its cap crosses the cone at a shallow
+/// turn beside the wall. Swept from the cap's arc spelled as a spline,
+/// which may be a fit, that crossing was read as a touch; swept from the
+/// cap's own circle, the march found no seed in the window it walks the
+/// band in. The corner refused, and fell 6.5e-3 short.
 #[test]
 fn rounds_at_a_drum_drafted_foot_out_meeting_a_wall_take_all_above_both() {
     let r = 0.5;
@@ -2432,7 +2434,8 @@ fn rounds_at_a_drum_drafted_foot_out_meeting_a_wall_take_all_above_both() {
     let k = 0.1;
     let (inward, outward) = (0.1_f64.atan(), -0.1_f64.atan());
     for (b, lean) in [
-        (1.0_f64, inward),
+        (1.0_f64, 0.0),
+        (1.0, inward),
         (1.0, outward),
         (2.0, 0.0),
         (2.0, inward),

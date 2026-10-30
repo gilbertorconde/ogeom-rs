@@ -464,3 +464,17 @@ reproducer for a fitted section ending where its two surfaces are tangent:
 it met the rim round's rail 9e-3 from where the rib round's rail crosses
 it, and the cut of the rim's round was refused (the kept pieces did not
 close into a shell).
+
+## contact_ending_inside_a_wide_vertex.ogeom
+
+Two solids in this kernel's native format, cut from #342's pentagon pocket
+(`pockets_whose_walls_lean_their_own_ways_meet_at_every_corner` in
+`crates/ogeom-fillet/tests/chain.rs`, walls drafted 0.1 / 0.05 / −0.05 /
+0.08 / 0, r = 0.5) by a box round its corner at (6, 2), with the fillet
+junction sweeping the cap's own circle: the pocketed block, and the ring
+wedge the junction joined. Two edges of the wedge lying in the pocket's
+wall there end at one vertex of radius 1.4e-4: one at the end of the cap's
+arc, the other on the pocket's corner edge, 1.43e-4 from it. The
+reproducer for a contact ending within its own vertex's radius of the
+other solid's edge: the cut of the wedge from the block was refused (the
+kept pieces did not close into a shell).

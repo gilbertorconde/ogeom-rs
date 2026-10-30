@@ -1298,6 +1298,64 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A fillet junction carries a band on past its cap from the cap's own
+  circle.** (#522, #342)
+  - The band carried past its cap was the extrusion of the cap's arc
+    converted to a rational B-spline. The intersector cannot tell such a
+    spline from a fit, so it read the shallow crossing of a drum's rim
+    round, carried on, with the drafted drum's cone as a touch (#516),
+    and the corner fell back.
+  - Now the band is swept from the cap's own circle, trimmed to the arc;
+    its far end in the meeting plane stays the arc's exact affine image.
+  - Measured on #342's drum drafted foot out, the block's wall square at
+    b = 1, r = 0.5: 0.128008 → 0.134553 in both orders, against
+    0.134552 integrated a column at a time. The pentagon and every other
+    pocket and junction case keep their figures.
+
+- **A contact ending within its own vertex's radius of the other solid's
+  edge meets that edge.** (#522)
+  - An edge of one solid lying on the other's face splits the face as a
+    contact strand, and each end was welded at the doubt of the face's
+    own edges and vertices. An edge ending at a vertex of its own solid
+    held to a wider radius (a ring wedge sewn across 1.43e-4 at the end
+    of a cap's arc) stopped that far from the corner edge its partner
+    edge ran along, and dangled: the region the two bound was never split
+    off, and the cut refused ("the kept pieces did not close into a
+    shell").
+  - Now a contact strand's end is welded within its own vertex's radius
+    and edge tolerance, as an edge of the face ends at its own vertex,
+    and two ends inside that vertex's radius are that vertex.
+  - Measured on `contact_ending_inside_a_wide_vertex.ogeom`, a corner of
+    #342's pentagon pocket: cut and common both build valid, the common
+    the wedge and the cut the block less it, to 1e-11.
+
+- **The marcher keeps a crossing's arm that leaves the chart within a
+  node's radius, and seeds an extrusion's borders.** (#522)
+  - Samples within sixty chords of a node where the section crosses
+    itself count as on it, and the arcs either side are cut there. An arm
+    leaving the chart within that radius was all node and went; one the
+    walk never took was walked out only from past the radius, outside the
+    chart. A drum's rim round carried 0.004 past a node on its border
+    against a drafted cone lost that branch.
+  - Now an end on a chart's border inside the radius keeps the samples
+    back along its arm, each solved onto the arm, and the stretch from
+    the node out to the border is an arc of its own; an untaken arm is
+    walked out from inside the radius, halving down to the node's snap.
+    Such an arc, wholly inside the radius, is weighed against those kept
+    sample by sample off the node, so one traced twice is returned once.
+  - The borders of a linear extrusion, and of a window of one, are now
+    intersected with the other surface and seed the march, as a spline's
+    borders and a drum's rims are: a branch crossing a window's end at a
+    shallow turn lies inside one pair of cells, and the band carried past
+    a cap in #342's corner, walked in its face's window, found no seed at
+    half the turns about the cone's axis.
+  - Measured: the rim band crosses the cone along both branches from the
+    node, each ending once where it solves the pair's equation at each
+    end of the sweep or window, with the lower branch 0.0021 and 0.0043
+    long, over turns of 0.425 and 1.2, and in the window at 24 turns
+    about the cone's axis. An arm shorter than ten chords is still
+    dropped as debris.
+
 - **Two exact surfaces crossing at a shallow turn are a crossing, not a
   contact.** (#516)
   - The marcher read a traced branch as a tangency wherever the sine

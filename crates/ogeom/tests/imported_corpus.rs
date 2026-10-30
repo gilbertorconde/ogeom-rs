@@ -2226,3 +2226,39 @@ fn a_round_capped_tangent_to_a_bore_cuts_either_way() {
         );
     }
 }
+
+/// The ring wedge a fillet junction joins round a pentagon pocket, cut
+/// to a box round one corner, against the pocketed block cut the same way
+/// (`contact_ending_inside_a_wide_vertex.ogeom`). Two of the wedge's edges
+/// lying in the pocket's wall end at one vertex of radius 1.4e-4, one of
+/// them where its arc ends and the other on the pocket's corner edge
+/// 1.43e-4 away. The wedge lies within the block, so the common is the
+/// wedge and the cut the block less the wedge, both valid. The wall's
+/// arrangement welded the first edge's end at the face's own doubt, a
+/// micron, and it dangled beside the corner edge: the region it bounds
+/// with the other was never split off, and the cut refused.
+#[test]
+fn a_contact_ending_within_its_own_vertex_closes_the_cut() {
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("contact_ending_inside_a_wide_vertex.ogeom")).unwrap();
+    let volume = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| {
+        let diagnosis = ogeom::algo::check(model, shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        ogeom::algo::volume_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let mut model = model;
+    let cut = ogeom::boolean::cut(&mut model, &roots[0], &roots[1], T)
+        .unwrap()
+        .shape;
+    let common = ogeom::boolean::common(&mut model, &roots[0], &roots[1], T)
+        .unwrap()
+        .shape;
+    let (block, wedge) = (volume(&model, &roots[0]), volume(&model, &roots[1]));
+    let (kept, shared) = (volume(&model, &cut), volume(&model, &common));
+    assert!(
+        (shared - wedge).abs() <= 1e-9 && (block - wedge - kept).abs() <= 1e-9,
+        "cut {kept} and common {shared}, block {block} and wedge {wedge}"
+    );
+}

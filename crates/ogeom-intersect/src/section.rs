@@ -4676,21 +4676,46 @@ mod tests {
         (band, c)
     }
 
-    /// [`carried_round`] over the first 0.425 of its turn and `y` from
-    /// −0.012 to 0.02 against the cone. The arc touches the cone at its
-    /// start, where the sweep's ruling is the rim's tangent: the band
+    /// [`carried_round`] over `turn` and `y` over `sweep`, turned `angle`
+    /// about the cone's axis, against the cone in both orders, the band
+    /// walked within `window` where one is given. The arc touches the cone
+    /// at its start, where the sweep's ruling is the rim's tangent: the band
     /// stands off the cone by about `0.164 y² − u² / 4` near there, so two
     /// branches leave that node on the band's border, one to each end of
-    /// the sweep, the two surfaces' normals parting by a sine of at most
-    /// 0.018 along them, under the marcher's tangency threshold. Each is
-    /// the point of the band at the turn `u` solving
-    /// `√(x(u)² + y²) = 3.2 − z(u) / 10` at each `y`. Both are sections
-    /// the two cross along, not a contact: they were traced, read as
-    /// tangential by their sine alone, and the pair came back apart.
-    #[test]
-    fn a_band_crossing_a_cone_shallowly_from_a_node_on_its_border_crosses_it() {
-        let sweep = (-0.012, 0.02);
-        let (band, c) = carried_round(0.425, sweep);
+    /// the sweep or the window. Each is the point of the band at the turn
+    /// `u` solving `√(x(u)² + y²) = 3.2 − z(u) / 10` at each `y`, turned
+    /// with the band. Every section must be a crossing on both surfaces,
+    /// the two branches must end at the node and at both ends, and each end
+    /// must end one section only: a branch returned twice ends there twice.
+    fn crosses_from_the_node_to_both_ends(
+        (turn, sweep): (f64, (f64, f64)),
+        angle: f64,
+        window: Option<ParameterWindow>,
+    ) {
+        let (band, c) = carried_round(turn, sweep);
+        let about = ogeom_math::Transform::rotation(
+            ogeom_math::Axis {
+                location: Point::ORIGIN,
+                direction: Direction::Z,
+            },
+            angle,
+        );
+        let band = ogeom_geom::Transformable::transformed(&band, &about, T).unwrap();
+        let (sin, cos) = angle.sin_cos();
+        let turned = |p: Point| {
+            Point::new(
+                p.x.mul_add(cos, -p.y * sin),
+                p.x.mul_add(sin, p.y * cos),
+                p.z,
+            )
+        };
+        let back = |p: Point| {
+            Point::new(
+                p.x.mul_add(cos, p.y * sin),
+                p.y.mul_add(cos, -p.x * sin),
+                p.z,
+            )
+        };
         let drum = drafted_drum();
         let lean = 1.01_f64.sqrt();
         let at = |u: f64, y: f64| {
@@ -4712,18 +4737,35 @@ mod tests {
                     hi = mid;
                 }
             }
-            at(f64::midpoint(lo, hi), y)
+            turned(at(f64::midpoint(lo, hi), y))
         };
-        let node = at(0.0, 0.0);
-        let wanted = [node, crossing(sweep.0), crossing(sweep.1)];
-        for (a, b) in [(&band, &drum), (&drum, &band)] {
-            let met = intersect_surfaces(a, b, IntersectOptions::default(), T).unwrap();
+        let node = turned(at(0.0, 0.0));
+        let ends = window.map_or(sweep, |w| w.1);
+        let far = [crossing(ends.0), crossing(ends.1)];
+        // A boolean marches at a chord of a ten-millionth of the parts.
+        let options = window.map_or_else(IntersectOptions::default, |_| IntersectOptions {
+            tolerance: 1e-7,
+            marching: Marching {
+                chord: 1e-7,
+                ..Marching::default()
+            },
+        });
+        for band_first in [true, false] {
+            let met = if band_first {
+                intersect_surfaces_within(&band, &drum, (window, None), options, T)
+            } else {
+                intersect_surfaces_within(&drum, &band, (None, window), options, T)
+            }
+            .unwrap();
             let SurfaceIntersection::Along(sections) = met else {
-                panic!("the band crosses the cone, got {met:?}");
+                panic!("turned {angle}: the band crosses the cone, got {met:?}");
             };
-            let mut ends: Vec<Point> = Vec::new();
+            let mut found: Vec<Point> = Vec::new();
             for section in &sections {
-                assert!(!section.tangential, "{section:?}");
+                assert!(
+                    !section.tangential,
+                    "turned {angle}, band first {band_first}: {section:?}"
+                );
                 let (lo, hi) = section.curve.domain();
                 let near = section.tolerance + T.confusion();
                 for i in 0..=16 {
@@ -4731,22 +4773,80 @@ mod tests {
                         .curve
                         .point_at(lo + (hi - lo) * f64::from(i) / 16.0, T)
                         .unwrap();
-                    let from_band = ((p.x - c).hypot(p.z - 1.5) - 0.5).abs();
+                    let q = back(p);
+                    let from_band = ((q.x - c).hypot(q.z - 1.5) - 0.5).abs();
                     assert!(
                         from_band <= near && off(p).abs() <= near,
                         "{p:?} is off the band by {from_band:e} or the cone by {:e}",
                         off(p)
                     );
                 }
-                ends.extend([lo, hi].map(|t| section.curve.point_at(t, T).unwrap()));
+                found.extend([lo, hi].map(|t| section.curve.point_at(t, T).unwrap()));
             }
             let near = sections.iter().map(|s| s.tolerance).fold(0.0, f64::max) + T.confusion();
-            for want in wanted {
-                assert!(
-                    ends.iter().any(|p| p.distance(want) <= near),
-                    "no section ends at {want:?}: {ends:?}"
+            assert!(
+                found.iter().any(|p| p.distance(node) <= near),
+                "turned {angle}: no section ends at the node {node:?}: {found:?}"
+            );
+            for want in far {
+                let count = found.iter().filter(|p| p.distance(want) <= near).count();
+                assert_eq!(
+                    count, 1,
+                    "turned {angle}: {count} sections end at {want:?}: {found:?}"
                 );
             }
+        }
+    }
+
+    /// [`crosses_from_the_node_to_both_ends`] with `y` from −0.012 to 0.02:
+    /// the two surfaces' normals part by a sine of at most 0.018 along the
+    /// branches, under the marcher's tangency threshold. Both are sections
+    /// the two cross along, not a contact: they were traced, read as
+    /// tangential by their sine alone, and the pair came back apart.
+    #[test]
+    fn a_band_crossing_a_cone_shallowly_from_a_node_on_its_border_crosses_it() {
+        crosses_from_the_node_to_both_ends((0.425, (-0.012, 0.02)), 0.0, None);
+    }
+
+    /// [`crosses_from_the_node_to_both_ends`] with the branch to the lower
+    /// end of the sweep 0.0021 and 0.0043 long, within the sixty chords
+    /// round the node where the march's samples count as on it, over a
+    /// short turn and a long one. That branch was all samples on the node
+    /// and went; where the walk from it stalled onto the other branch, the
+    /// arm it leaves the node along was walked out only from past the
+    /// node's radius, outside the band. The section stopped at the node.
+    #[test]
+    fn a_band_crossing_a_cone_from_a_node_keeps_its_arm_short_of_the_node_s_radius() {
+        for turn in [0.425, 1.2] {
+            for low in [-0.004, -0.002] {
+                crosses_from_the_node_to_both_ends((turn, (low, 0.02)), 0.0, None);
+            }
+        }
+    }
+
+    /// [`crosses_from_the_node_to_both_ends`] over the band a fillet
+    /// junction carries on past its cap at a drum drafted foot out:
+    /// the round's whole quarter turn swept along `y` from −2.42 to 4.83,
+    /// walked within the window of the face a boolean cuts from it, `u` to
+    /// 0.42 and `y` from −0.004 to 0.02, turned about the cone's axis every
+    /// 15 degrees from 7.5. Both branches leave that window through its ends
+    /// in `y`, crossing the cone there, and at each of those turns the cells
+    /// the march seeds from find neither: the pair came back apart.
+    #[test]
+    fn a_band_crossing_a_cone_is_seeded_where_it_leaves_its_window() {
+        let window = (
+            (0.0, 0.424_721_486_693_660_6),
+            (-0.003_979_668_916_835_106, 0.019_898_344_584_175_24),
+        );
+        for k in 0..24 {
+            crosses_from_the_node_to_both_ends(
+                (
+                    1.471_127_674_303_734_5,
+                    (-2.415_259_779_545_657_6, 4.830_519_559_091_315),
+                ),
+                (f64::from(2 * k + 1) * 7.5).to_radians(),
+                Some(window),
+            );
         }
     }
 
