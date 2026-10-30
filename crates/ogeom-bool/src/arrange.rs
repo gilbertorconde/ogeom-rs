@@ -39,6 +39,10 @@ pub(crate) struct Traversal<T> {
     pub tag: T,
     /// Whether the ring runs the strand backwards.
     pub reversed: bool,
+    /// The nodes the arrangement closed the ring on at the strand's start
+    /// and end, as the strand runs: where its neighbours in the ring meet
+    /// it in the chart. `None` for a ring read from the face as stated.
+    pub nodes: Option<[Point2; 2]>,
 }
 
 /// One piece of a split face.
@@ -123,6 +127,7 @@ pub(crate) fn assemble<'s, T: Clone>(
         from,
         ends,
         cycles,
+        ..
     } = &walk;
     let tail = |d: usize| -> usize {
         let (u, v) = ends[d / 2];
@@ -268,12 +273,12 @@ pub(crate) fn assemble<'s, T: Clone>(
     }
     let mut pieces = Vec::new();
     for (pi, (cycle, line)) in positives.iter().enumerate() {
-        let mut rings = vec![traversals(cycle, live)];
+        let mut rings = vec![traversals(cycle, &walk)];
         let mut rings_outline = vec![line.clone()];
         for &hi in &holes_of[pi] {
             let (_, hole_cycle, hole) = &negatives[hi];
             rings.push(match hole_cycle {
-                Ok(cycle) => traversals(cycle, live),
+                Ok(cycle) => traversals(cycle, &walk),
                 Err(ring) => ring.rings.clone(),
             });
             rings_outline.push(hole.clone());
@@ -316,13 +321,15 @@ type HoleSide<'a, T> = (
 );
 
 /// A face's strands walked into cycles: the strands that take part, the
-/// place of each among the strands given, the nodes each runs between, and
-/// every cycle as darts (dart `2k` runs live strand `k` forward, `2k + 1`
-/// backward), each starting at its least dart.
+/// place of each among the strands given, the nodes each runs between and
+/// where those stand in the chart, and every cycle as darts (dart `2k` runs
+/// live strand `k` forward, `2k + 1` backward), each starting at its least
+/// dart.
 struct Walk<'s, T> {
     live: Vec<&'s Strand<T>>,
     from: Vec<usize>,
     ends: Vec<(usize, usize)>,
+    nodes: Vec<Point2>,
     cycles: Vec<Vec<usize>>,
 }
 
@@ -801,6 +808,7 @@ fn walk<'s, T>(
         live,
         from,
         ends,
+        nodes,
         cycles,
     })
 }
@@ -862,18 +870,22 @@ pub(crate) fn lone_ring<T: Clone>(
     let (cycle, outline) = hole.filter(|_| disc)?;
     Some(Lone {
         order: (places[walk.from[cycle[0] / 2]], cycle[0] % 2 == 1),
-        rings: traversals(cycle, &walk.live),
+        rings: traversals(cycle, &walk),
         outline,
         lines: walk.live.iter().map(|s| s.polyline.clone()).collect(),
     })
 }
 
-fn traversals<T: Clone>(cycle: &[usize], live: &[&Strand<T>]) -> Vec<Traversal<T>> {
+fn traversals<T: Clone>(cycle: &[usize], walk: &Walk<'_, T>) -> Vec<Traversal<T>> {
     cycle
         .iter()
-        .map(|&d| Traversal {
-            tag: live[d / 2].tag.clone(),
-            reversed: d % 2 == 1,
+        .map(|&d| {
+            let (u, v) = walk.ends[d / 2];
+            Traversal {
+                tag: walk.live[d / 2].tag.clone(),
+                reversed: d % 2 == 1,
+                nodes: Some([walk.nodes[u], walk.nodes[v]]),
+            }
         })
         .collect()
 }

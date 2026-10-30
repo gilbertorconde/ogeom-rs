@@ -67,6 +67,30 @@ bump may break the API and a patch bump may not.
     tessellation is 2.1e-4 under the mesh's measure, from a vertex 3.8e-6
     off the pad's flat walls, while its exact volume is the cut's plus the
     pad's to 1e-9 (see docs/PLAN.md).
+- **Two balls fused and then cut: the fused ball's face closes on its seam
+  column, and the cut passes.**
+  - Two balls fused, their section circle crossing the second ball's seam
+    about a hundredth of a radian below its pole, then cut or intersected
+    with a cone (the chain stress scenario's seed 4, case 178): the cut
+    and the common were refused on 0.12.0 ("a face boundary strand
+    dangles").
+  - The section's fitted image lags its circle along it by 7.9e-6 in
+    space, inside the edge's tolerance. Beside the pole that lag is
+    1.35e-4 across the chart. The fuse's own arrangement closed the
+    ring on the seam column, but the edges it rebuilt kept the image's
+    ends, so the fused face's ring stood 1.35e-4 off its seam column,
+    past the next boolean's node snap. A section piece's image now ends
+    on the node its face's arrangement closed the ring on, where the two
+    stand further apart than any arrangement's snap and the node lifts
+    nearer the piece's end in space than the image's end does. The bend
+    fades along the piece without moving any point of it further in space
+    than it moves the end. The fused ring meets its seam column within
+    1.6e-7.
+  - The fused volume is the two balls less their lens to 4e-13, and the
+    cut and the common add up to it to 3e-13, each integrated exactly. In
+    the chain stress scenario at seeds 1 to 12 with 100 cases per part,
+    3597 of 3600 cases pass, against 3596 on 0.12.0, and the three left
+    are refused as before.
 
 ## [0.12.0] - 2026-10-30
 

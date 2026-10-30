@@ -8786,6 +8786,7 @@ fn quiet_piece(
                     range: face.edges[index].crange,
                 },
                 reversed: edge.orientation() == ogeom_topo::Orientation::Reversed,
+                nodes: None,
             });
         }
         rings.push(ring);
@@ -12413,7 +12414,7 @@ fn build_piece(
                     piece.from_a,
                     face,
                     surface_id,
-                    &traversal.tag,
+                    (&traversal.tag, traversal.nodes),
                     tol,
                 )?;
                 cache
@@ -12575,14 +12576,15 @@ fn build_piece(
     ))
 }
 
-/// Build the exact sub-edge a tag names, pcurves attached.
+/// Build the exact sub-edge a tag names, pcurves attached, with the nodes
+/// the face's arrangement closed its ring on at the strand's two ends.
 fn build_sub_edge(
     rebuild: &mut Rebuild,
     fused: &GeneralFused,
     from_a: bool,
     face: &GFace,
     surface_id: ogeom_topo::SurfaceId,
-    tag: &Tag,
+    (tag, nodes): (&Tag, Option<[Point2; 2]>),
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     match tag {
@@ -12869,8 +12871,43 @@ fn build_sub_edge(
                 ends[0].filter(|v| bent[0] && v.distance(from) > loose),
                 ends[1].filter(|v| bent[1] && v.distance(to) > loose),
             ];
-            let shifted = if targets.iter().any(Option::is_some) {
-                pcurve_onto_ends(&shifted, (f0, f1), &face.surface, targets, tol)?
+            // Elsewhere the image ends on the node the arrangement closed
+            // the ring on, where its own end stands further off it than any
+            // later arrangement's snap and the node lifts nearer the piece's
+            // end in space than the image's end does. A fitted image can lag
+            // its curve by a few microns. Beside a pole, where a micron spans
+            // a hundred times as much of the chart, that leaves it a
+            // ten-thousandth of a radian off the seam column its neighbour
+            // ends on, and the face's ring open there to every later
+            // boolean. A piece whose own end stops short of its node (a loop
+            // whose last hair was welded away) keeps the image of that end.
+            let mut onto = [None, None];
+            for (k, ((target, t), at)) in targets.iter().zip([f0, f1]).zip([from, to]).enumerate() {
+                let end = shifted.point_at(t, tol)?;
+                if let Some(target) = target {
+                    onto[k] = Some(chart_foot(&face.surface, *target, end, tol)?);
+                    continue;
+                }
+                let Some(node) = nodes.map(|n| n[k]) else {
+                    continue;
+                };
+                let node = period_shifts(&face.surface, tol)
+                    .into_iter()
+                    .map(|(du, dv)| Point2::new(node.x + du, node.y + dv))
+                    .min_by(|p, q| p.distance(end).total_cmp(&q.distance(end)))
+                    .unwrap_or(node);
+                let vertex = if k == 0 { &v0 } else { &v1 };
+                let radius = model.tolerance_of(vertex)?.map_or(0.0, |r| r.get());
+                if node.distance(end) > PARAM_SNAP
+                    && !on_collapsed_row(&face.surface, node, radius, tol)
+                    && face.surface.point_at(node.x, node.y, tol)?.distance(at)
+                        < face.surface.point_at(end.x, end.y, tol)?.distance(at)
+                {
+                    onto[k] = Some(node);
+                }
+            }
+            let shifted = if onto.iter().any(Option::is_some) {
+                pcurve_onto_ends(&shifted, (f0, f1), &face.surface, onto, tol)?
             } else {
                 shifted
             };
@@ -12905,16 +12942,71 @@ fn build_sub_edge(
     }
 }
 
-/// A pcurve over `range` bent at its ends onto the chart points of
-/// `targets`, where given: each end's correction fades linearly to nothing
-/// at the other end, and the result is refitted at the same parameters, at
-/// every span of the image, so the image stays same-parameter with its
-/// edge to the correction's size.
+/// The point of `surface`'s chart nearest `end` that lifts to the foot of
+/// `target` on the surface: the foot may land a turn away from `end` on a
+/// periodic chart, whether or not the surface's wrapper says it is
+/// periodic, and a shifted candidate counts where the surface agrees it is
+/// the foot.
+fn chart_foot(
+    surface: &SurfaceGeometry,
+    target: Point,
+    end: Point2,
+    tol: Tolerances,
+) -> OgeomResult<Point2> {
+    let foot = ogeom_algo::project_on_surface_from(surface, target, (end.x, end.y), tol)?;
+    let raw = Point2::new(foot.parameters.0, foot.parameters.1);
+    let turn = core::f64::consts::TAU;
+    let mut shifts = period_shifts(surface, tol);
+    for du in [-turn, 0.0, turn] {
+        for dv in [-turn, 0.0, turn] {
+            shifts.push((du, dv));
+        }
+    }
+    Ok(shifts
+        .into_iter()
+        .map(|(du, dv)| Point2::new(raw.x + du, raw.y + dv))
+        .filter(|c| {
+            surface
+                .point_at(c.x, c.y, tol)
+                .is_ok_and(|q| q.distance(foot.point) <= tol.confusion() * 1e2)
+        })
+        .min_by(|a, b| {
+            a.distance(end)
+                .partial_cmp(&b.distance(end))
+                .unwrap_or(core::cmp::Ordering::Equal)
+        })
+        .unwrap_or(raw))
+}
+
+/// Whether the chart row or column through `at` lies, across the chart's
+/// whole width that way, within `radius` of one point in space: a pole's
+/// row or an apex's, along which a point moves nowhere, so a pcurve's end
+/// is placed on it by the way it arrives and not by a node there.
+fn on_collapsed_row(surface: &SurfaceGeometry, at: Point2, radius: f64, tol: Tolerances) -> bool {
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let Ok((du, dv)) = surface.d1_at(at.x, at.y, tol) else {
+        return true;
+    };
+    du.magnitude() * (u1 - u0).abs() <= radius || dv.magnitude() * (v1 - v0).abs() <= radius
+}
+
+/// A pcurve over `range` bent at its ends onto the chart points `targets`,
+/// where given, and refitted at the same parameters, at every span of the
+/// image, so the image stays same-parameter with its edge to the
+/// correction's size.
+///
+/// Each end's correction fades linearly to nothing at the other end, and,
+/// read on the surface's first derivatives, nowhere moves the image
+/// further in space than it moves the end: where a chart step costs more
+/// in space than it does at the end (away from a pole the end stands
+/// beside), the step is scaled down by as much. A ten-thousandth of a
+/// radian round a ball's axis is a few microns beside its pole and a
+/// ten-thousandth of its radius at its equator.
 fn pcurve_onto_ends(
     pcurve: &PlanarCurve,
     range: (f64, f64),
     surface: &SurfaceGeometry,
-    targets: [Option<Point>; 2],
+    targets: [Option<Point2>; 2],
     tol: Tolerances,
 ) -> OgeomResult<PlanarCurve> {
     const SAMPLES: usize = 32;
@@ -12922,40 +13014,33 @@ fn pcurve_onto_ends(
         pcurve.point_at(range.0, tol)?,
         pcurve.point_at(range.1, tol)?,
     ];
+    // The length in space of a chart step `by` taken at `at`.
+    let cost = |at: Point2, by: ogeom_math::Vector2| -> Option<f64> {
+        let (du, dv) = surface.d1_at(at.x, at.y, tol).ok()?;
+        Some((du * by.x + dv * by.y).magnitude())
+    };
     let mut deltas = [ogeom_math::Vector2::new(0.0, 0.0); 2];
+    let mut at_end = [None; 2];
     for (k, target) in targets.iter().enumerate() {
         let Some(target) = target else {
             continue;
         };
-        let end = ends[k];
-        let foot = ogeom_algo::project_on_surface_from(surface, *target, (end.x, end.y), tol)?;
-        let raw = Point2::new(foot.parameters.0, foot.parameters.1);
-        // The foot may land a turn away from the end on a periodic chart,
-        // whether or not the surface's wrapper says it is periodic. A
-        // shifted candidate counts where the surface agrees it is the foot.
-        let turn = core::f64::consts::TAU;
-        let mut shifts = period_shifts(surface, tol);
-        for du in [-turn, 0.0, turn] {
-            for dv in [-turn, 0.0, turn] {
-                shifts.push((du, dv));
-            }
-        }
-        let onto = shifts
-            .into_iter()
-            .map(|(du, dv)| Point2::new(raw.x + du, raw.y + dv))
-            .filter(|c| {
-                surface
-                    .point_at(c.x, c.y, tol)
-                    .is_ok_and(|q| q.distance(foot.point) <= tol.confusion() * 1e2)
-            })
-            .min_by(|a, b| {
-                a.distance(end)
-                    .partial_cmp(&b.distance(end))
-                    .unwrap_or(core::cmp::Ordering::Equal)
-            })
-            .unwrap_or(raw);
-        deltas[k] = onto - end;
+        deltas[k] = *target - ends[k];
+        at_end[k] = cost(ends[k], deltas[k]);
     }
+    // How much of an end's correction a point of the image takes, its
+    // linear share scaled so the point moves no further in space than the
+    // end does.
+    let share = |k: usize, p: Point2, linear: f64| -> f64 {
+        let (Some(end), Some(here)) = (at_end[k], cost(p, deltas[k])) else {
+            return linear;
+        };
+        if here > end {
+            linear * end / here
+        } else {
+            linear
+        }
+    };
     // Refitted at every span of the image and held to the target between
     // the samples as well as at them; the edge states what the bend and
     // the fit leave once the image is attached.
@@ -12968,7 +13053,8 @@ fn pcurve_onto_ends(
             } else {
                 0.0
             };
-            Ok(pcurve.point_at(t, tol)? + deltas[0] * (1.0 - along) + deltas[1] * along)
+            let p = pcurve.point_at(t, tol)?;
+            Ok(p + deltas[0] * share(0, p, 1.0 - along) + deltas[1] * share(1, p, along))
         },
         &stations,
         3,
@@ -15739,6 +15825,7 @@ mod tests {
                 ring.push(Traversal {
                     tag: Tag::Contact { contact: k, range },
                     reversed,
+                    nodes: None,
                 });
             }
             thin_by_strands(

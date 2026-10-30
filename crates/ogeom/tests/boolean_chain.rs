@@ -123,3 +123,207 @@ fn a_fused_torus_face_whose_loop_stops_a_hair_short_of_its_seam_is_cut() {
         "cut {kept} + common {shared} against {whole}"
     );
 }
+
+/// The chart gap, widest over `shape`'s faces, at each joint of a ring
+/// where a seam meets an edge of another kind, read across whole periods:
+/// how far the ring stands open on its seam column in the chart.
+fn widest_seam_joint(model: &Model, shape: &Shape) -> f64 {
+    use ogeom::geom::{Curve2d, Surface};
+    use ogeom::math::Point2;
+    use ogeom::topo::{EdgeRepr, Orientation, ShapeType};
+    let mut widest = 0.0_f64;
+    for face in ogeom::topo::explore_unique(model, shape, ShapeType::Face).unwrap() {
+        let surface_id = model.node(&face).unwrap().data().as_face().unwrap().surface;
+        let surface = model.geometry().surface(surface_id).unwrap();
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let turns = |periodic: bool, span: f64| {
+            if periodic {
+                vec![-span, 0.0, span]
+            } else {
+                vec![0.0]
+            }
+        };
+        let shifts: Vec<(f64, f64)> = turns(surface.is_periodic_u(), u1 - u0)
+            .into_iter()
+            .flat_map(|du| {
+                turns(surface.is_periodic_v(), v1 - v0)
+                    .into_iter()
+                    .map(move |dv| (du, dv))
+            })
+            .collect();
+        for wire in model
+            .ordered_children_of(&face.oriented(Orientation::Forward))
+            .unwrap()
+        {
+            let edges = model.ordered_children_of(&wire).unwrap();
+            // Each edge's ends as the ring walks it, one pair per side, and
+            // whether it is a seam.
+            let ends: Vec<(bool, Vec<(Point2, Point2)>)> = edges
+                .iter()
+                .map(|edge| {
+                    let data = model.node(edge).unwrap().data().as_edge().unwrap();
+                    let back = edge.orientation() == Orientation::Reversed;
+                    let walked = |id, range: (f64, f64)| {
+                        let pcurve = model.geometry().pcurve(id).unwrap();
+                        let (a, b) = (
+                            pcurve.point_at(range.0, T).unwrap(),
+                            pcurve.point_at(range.1, T).unwrap(),
+                        );
+                        if back { (b, a) } else { (a, b) }
+                    };
+                    match data.pcurve_for(surface_id, edge.location()) {
+                        Some(EdgeRepr::PCurve { curve, range, .. }) => {
+                            (false, vec![walked(*curve, *range)])
+                        }
+                        Some(EdgeRepr::Seam {
+                            forward,
+                            reversed,
+                            range,
+                            ..
+                        }) => (
+                            true,
+                            vec![walked(*forward, *range), walked(*reversed, *range)],
+                        ),
+                        _ => (false, Vec::new()),
+                    }
+                })
+                .collect();
+            for i in 0..edges.len() {
+                let j = (i + 1) % edges.len();
+                if ends[i].0 == ends[j].0 {
+                    continue;
+                }
+                let gap = ends[i]
+                    .1
+                    .iter()
+                    .flat_map(|a| ends[j].1.iter().map(move |b| (a.1, b.0)))
+                    .flat_map(|(end, start)| {
+                        shifts.iter().map(move |(du, dv)| {
+                            end.distance(Point2::new(start.x + du, start.y + dv))
+                        })
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                if gap.is_finite() {
+                    widest = widest.max(gap);
+                }
+            }
+        }
+    }
+    widest
+}
+
+/// Two balls fused, their section circle crossing the second ball's seam
+/// about a hundredth of a radian below its pole, then cut by a cone. Beside
+/// the pole a fitted image's lag of a few microns along the circle is a
+/// ten-thousandth of a radian across the chart, past a later boolean's
+/// arrangement snap: the fused face's ring closes on its seam column in the
+/// chart, or the strand ending on the column dangles. The fused volume is
+/// the two balls less their lens, and the cut and the common add up to the
+/// fused solid.
+#[test]
+fn a_fused_ball_face_whose_section_crosses_its_seam_beside_the_pole_is_cut() {
+    let mut model = Model::new();
+    let (r1, r2) = (3.75, 3.219_816_700_387_659_7);
+    let (c1, c2) = (
+        Point::new(1.0, 1.5, 2.827_136_898_230_423),
+        Point::new(1.5, 1.0, -1.218_746_613_467_500_2),
+    );
+    let first = ogeom::algo::make_sphere(
+        &mut model,
+        frame(
+            [c1.x, c1.y, c1.z],
+            [
+                0.039_962_428_829_553_68,
+                -0.641_765_914_547_37,
+                -0.765_858_678_352_097,
+            ],
+            [
+                -0.999_201_183_086_791_1,
+                -0.025_667_027_941_364_065,
+                -0.030_630_040_721_722_51,
+            ],
+        ),
+        r1,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let second = ogeom::algo::make_sphere(
+        &mut model,
+        frame(
+            [c2.x, c2.y, c2.z],
+            [
+                -0.581_169_508_139_111_3,
+                -0.641_184_792_228_283_4,
+                0.501_122_804_334_942_3,
+            ],
+            [-0.0, 0.615_794_499_290_288_7, 0.787_906_805_811_336_2],
+        ),
+        r2,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let cone = ogeom::algo::make_cone(
+        &mut model,
+        frame(
+            [-2.5, -1.5, -0.877_100_382_536_820_9],
+            [
+                0.567_663_994_121_792_6,
+                0.394_737_864_230_853_44,
+                -0.722_453_879_718_392_7,
+            ],
+            [
+                -0.823_260_341_433_797_9,
+                0.272_184_218_482_011_4,
+                -0.498_154_756_508_098_8,
+            ],
+        ),
+        3.027_096_920_196_425_5,
+        2.156_288_217_038_640_4,
+        4.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &first, &second, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &fused, T).unwrap();
+    assert!(diagnosis.is_valid(), "fused: {diagnosis}");
+    // Read at a millionth of a radian, the snap below which every
+    // arrangement's nodes meet.
+    let open = widest_seam_joint(&model, &fused);
+    assert!(
+        open <= 1e-6,
+        "the fused ring stands {open} off its seam column"
+    );
+    // The union of two balls: both, less the lens they share.
+    let pi = core::f64::consts::PI;
+    let d = c1.distance(c2);
+    let lens = pi
+        * (r1 + r2 - d).powi(2)
+        * (d * d + 2.0 * d * r2 - 3.0 * r2 * r2 + 2.0 * d * r1 + 6.0 * r1 * r2 - 3.0 * r1 * r1)
+        / (12.0 * d);
+    let whole = 4.0 / 3.0 * pi * (r1.powi(3) + r2.powi(3)) - lens;
+    let measured = volume(&model, &fused);
+    assert!(
+        (measured - whole).abs() <= whole * 1e-9,
+        "fused {measured} against {whole}"
+    );
+    let cut = ogeom::boolean::cut(&mut model, &fused, &cone, T)
+        .unwrap()
+        .shape;
+    let common = ogeom::boolean::common(&mut model, &fused, &cone, T)
+        .unwrap()
+        .shape;
+    for (name, shape) in [("cut", &cut), ("common", &common)] {
+        let diagnosis = ogeom::algo::check(&model, shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+    }
+    let (kept, shared) = (volume(&model, &cut), volume(&model, &common));
+    assert!(
+        (kept + shared - measured).abs() <= measured * 1e-9,
+        "cut {kept} + common {shared} against {measured}"
+    );
+}

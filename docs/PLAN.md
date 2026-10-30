@@ -128,21 +128,34 @@ corner ball touches the base (stress drill seed 1, drill 2): the cut and the
 common are right, but the drill less the box is refused ("the kept pieces
 did not close into a shell").
 
-**A loop's pcurve stopped short of its seam column after a fuse.** A
+**A loop's pcurve stops short of its seam column after a fuse.** A
 section that crosses a torus's seam a hair from its own start is marched
-as a long piece and one a few hundred-thousandths long across the seam;
-the fuse drops the short piece, the loop closes in space within its
-vertex's radius, and on the fused face its pcurve stops 1e-4 short of the
-column it closes on. A later boolean on the fused solid meets that gap:
-past its arrangement's node snap, the strand ending on the column dangles
-and it refuses. The fuse should carry the short piece into the loop's
-pcurve, or state the loop on the column it closes on. Of the chain stress
-scenario's 900 cases at seeds 4, 9 and 10, 1, 0 and 1 are refused (3, 5
-and 3 before the seam fixes of 2026-10-12): seed 10's
-`chain/primitives/29`, a torus and a ball fused and cut by a ball, a
-marched fit beside the ball's pole ("a branch passing beside a chart's
-pole fits nothing yet"), and seed 4's `chain/primitives/178`, two fused
-balls cut by a cone, whose boundary strand dangles.
+as a long piece and one a few hundred-thousandths long across the seam.
+The fuse drops the short piece, the loop closes in space within its
+vertex's radius, and on the fused face its pcurve stops 7.6e-5 short of
+the column it closes on (`a_fused_torus_face_whose_loop_stops_a_hair_short_of_its_seam_is_cut`
+in `crates/ogeom/tests/boolean_chain.rs`). A later boolean reads the two
+ends as meeting within their radii and cuts it, but the fused face's ring
+is open in the chart. Ending the long piece's image on the column breaks
+its agreement with its own curve by the dropped piece's length, and the
+exact volume integral then gives the face up to the mesh. The fuse should
+carry the short piece into the long one, across the closed section's
+join, which a piece's range does not yet pass.
+
+**A section passing beside a ball's pole in a chain.** Of the chain stress
+scenario's 3600 cases at seeds 1 to 12 with 100 cases per part, 3 are
+refused. Seed 10's `chain/primitives/29`, a torus and a ball fused and cut
+by a ball, and seed 11's `chain/primitives/62` are refused by name ("a
+branch passing beside a chart's pole fits nothing yet"). In seed 10's
+case the cutting ball's section circle passes 1.7e-4 from the small
+ball's pole. The image fitted at fixed parameters through samples crowded
+into the swing beside the pole runs off the chart between them, and the
+marched pair misses its trace by 0.011. Fitted with its error read between
+the samples, the image holds to 8.7e-7, but the cut then comes out with a
+face `check` reads as turned inward, and the cut and the common miss the
+fused solid by 15.7: the piece bounded by an image winding round the pole
+a hair from it is not yet split and classified rightly. Seed 8's
+`chain/primitives/284` is refused as kept pieces that do not close.
 
 ### Fillets and blends
 
