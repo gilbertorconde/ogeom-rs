@@ -8,7 +8,7 @@
 
 use ogeom_core::{OgeomResult, Tolerance, Tolerances};
 use ogeom_geom::{Curve, Curve2d as _, Curve3d as _, PlanarCurve, Surface as _, SurfaceGeometry};
-use ogeom_math::{Point, Transform};
+use ogeom_math::{Point, Transform, Vector};
 use ogeom_topo::{EdgeRepr, Model, Shape, ShapeType};
 
 /// How much wider than the gap it was measured from an edge's tolerance is
@@ -122,6 +122,105 @@ fn peak_about(
         }
     }
     Ok(widest)
+}
+
+/// The widest `|gap(f)|` for `f` over `[0, 1]`, bounded between samples
+/// rather than read only at them.
+///
+/// The stretch is cut into equal spans and at `breaks` (fractions where a
+/// piecewise curve's smoothness drops), and each span is halved until the
+/// gap at its middle stands within `settle` of the chord between its ends.
+/// Where the gap bends as a parabola across a span, its offset from that
+/// chord peaks at the middle and the chord's length peaks at an end, so the
+/// span is bounded by its widest sample plus the middle's offset. A span
+/// bounded within `floor` is left whole, nothing in it being wanted; one
+/// narrower than `finest` is a point at the parameter's resolution, bounded
+/// by its samples. A sample that cannot be had (a lift off its surface's
+/// domain) leaves its span bounded by the samples it has.
+///
+/// # Errors
+///
+/// As `gap`.
+pub(crate) fn widest_refined(
+    gap: &impl Fn(f64) -> OgeomResult<Option<Vector>>,
+    breaks: &[f64],
+    floor: f64,
+    settle: f64,
+    finest: f64,
+) -> OgeomResult<f64> {
+    const SPANS: u32 = 32;
+    let mut cuts: Vec<f64> = (0..=SPANS)
+        .map(|i| f64::from(i) / f64::from(SPANS))
+        .chain(breaks.iter().copied().filter(|f| *f > 0.0 && *f < 1.0))
+        .collect();
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup();
+    let at = cuts
+        .iter()
+        .map(|f| gap(*f))
+        .collect::<OgeomResult<Vec<Option<Vector>>>>()?;
+    let mut spans: Vec<(f64, f64, Option<Vector>, Option<Vector>)> = cuts
+        .windows(2)
+        .zip(at.windows(2))
+        .map(|(f, g)| (f[0], f[1], g[0], g[1]))
+        .collect();
+    let mut widest: f64 = 0.0;
+    while let Some((a, b, ga, gb)) = spans.pop() {
+        let middle = f64::midpoint(a, b);
+        let gm = gap(middle)?;
+        let sampled = [ga, gm, gb]
+            .iter()
+            .flatten()
+            .map(|g| g.magnitude())
+            .fold(0.0_f64, f64::max);
+        let (Some(va), Some(vm), Some(vb)) = (ga, gm, gb) else {
+            widest = widest.max(sampled);
+            continue;
+        };
+        let bent = (vm - (va + vb) * 0.5).magnitude();
+        let bound = sampled + bent;
+        if bound <= floor || bent <= settle {
+            widest = widest.max(bound);
+        } else if b - a <= finest {
+            widest = widest.max(sampled);
+        } else {
+            spans.push((a, middle, ga, gm));
+            spans.push((middle, b, gm, gb));
+        }
+    }
+    Ok(widest)
+}
+
+/// Where `curve`'s smoothness may drop inside `range`, as fractions of the
+/// way along it: a B-spline's interior knots.
+pub(crate) fn curve_breaks(curve: &Curve, range: (f64, f64)) -> Vec<f64> {
+    match curve {
+        Curve::BSpline(spline) => fractions(spline.knots(), range),
+        _ => Vec::new(),
+    }
+}
+
+/// [`curve_breaks`] for a pcurve over `range`.
+pub(crate) fn pcurve_breaks(pcurve: &PlanarCurve, range: (f64, f64)) -> Vec<f64> {
+    match pcurve {
+        PlanarCurve::BSpline(spline) => fractions(spline.knots(), range),
+        _ => Vec::new(),
+    }
+}
+
+/// The distinct knots strictly inside `range`, as fractions of the way along
+/// it from its first end.
+fn fractions(knots: &ogeom_math::KnotVector, range: (f64, f64)) -> Vec<f64> {
+    let width = range.1 - range.0;
+    if width == 0.0 {
+        return Vec::new();
+    }
+    knots
+        .distinct()
+        .into_iter()
+        .map(|(at, _)| (at - range.0) / width)
+        .filter(|f| *f > 0.0 && *f < 1.0)
+        .collect()
 }
 
 /// The distance from `target` to the nearest point of `curve` over `range`:

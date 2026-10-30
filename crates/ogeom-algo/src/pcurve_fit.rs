@@ -109,6 +109,10 @@ fn land(
 /// where it landed in the chart, and how far off the surface it sat.
 type Landed = (f64, Point, ogeom_math::Point2, f64);
 
+/// The readers' line between a file's own slop and a wrong pairing, in
+/// confusions: a millimetre at unit scale.
+pub const TRIM_CAP: f64 = 1e7;
+
 /// Fit a pcurve by projection at the reader's own line: slop under a
 /// millimetre is a file's error, honestly carried; anything past it is a
 /// wrong pairing and refuses. The exchange readers call this; a healer
@@ -124,7 +128,7 @@ pub fn fit_projected_pcurve(
     surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> FittedPcurve {
-    fit_projected_pcurve_capped(curve, range, surface, tol.confusion() * 1e7, tol)
+    fit_projected_pcurve_capped(curve, range, surface, tol.confusion() * TRIM_CAP, tol)
 }
 
 /// As the reader's projected-pcurve fit, with the acceptance cap in the

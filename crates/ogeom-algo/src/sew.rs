@@ -449,7 +449,7 @@ fn sew_faces(
     // of the other vertex) have those vertices joined, and the edges are
     // rebuilt on them and matched again.
     let mut rounds = 0;
-    let (rebuilt_edges, merged, joined) = loop {
+    let (rebuilt_edges, mut merged, mut joined) = loop {
         let rebuilt_edges = rebuild_edges(model, faces, &vertices)?;
 
         // Every distinct edge node used by the faces, with the geometry that
@@ -605,7 +605,7 @@ fn sew_faces(
             continue;
         }
         let survivor = Shape::of(kept);
-        let paced = repaced_carry(
+        let Some((paced, missed)) = repaced_carry(
             model,
             &Shape::of(dropped),
             &survivor,
@@ -613,13 +613,26 @@ fn sew_faces(
             &carried,
             reach,
             tol,
-        )?;
+        )?
+        else {
+            // The dropped edge's pcurves, carried to the survivor's pace,
+            // run elsewhere than the survivor does: the two are not one
+            // edge, and each stays with its own faces.
+            merged.remove(&dropped);
+            joined -= 1;
+            continue;
+        };
         let off = carried_off(model, &survivor, &paced, tol)?;
         let Some(node) = model.node_mut(&survivor) else {
             ogeom_bail!(Dangling, "an edge is not in this model");
         };
         let NodeData::Edge(data) = node.data_mut() else {
             ogeom_bail!(Construction, "edge node holds no edge data");
+        };
+        let off = if missed > data.tolerance.get() {
+            Some(off.map_or(missed, |o| o.max(missed)))
+        } else {
+            off
         };
         for repr in paced {
             data.add(repr);
@@ -1339,6 +1352,15 @@ fn join_vertex(
 /// parameters when the two curves pace one stretch differently. Two edges
 /// on one curve object, or on curves whose middle parameters land within
 /// the pair's honesty of each other, are carried as they are.
+///
+/// A refit is lifted through its surface and measured against the
+/// survivor's curve at the same parameter, bounded between samples by
+/// [`widest_refined`]; the widest miss comes back with the carry, for the
+/// survivor to state where it is wider than its tolerance. `None` where a
+/// refit misses by more than the readers' trim cap, or the gap sewn across
+/// where that is wider: the two edges are not one.
+///
+/// [`widest_refined`]: crate::pcurve_gap::widest_refined
 fn repaced_carry(
     model: &mut Model,
     dropped: &Shape,
@@ -1347,13 +1369,16 @@ fn repaced_carry(
     carried: &[EdgeRepr],
     floor: f64,
     tol: Tolerances,
-) -> OgeomResult<Vec<EdgeRepr>> {
-    let as_is = || -> Vec<EdgeRepr> {
-        carried
-            .iter()
-            .cloned()
-            .map(|r| if flipped { reversed_repr(r) } else { r })
-            .collect()
+) -> OgeomResult<Option<(Vec<EdgeRepr>, f64)>> {
+    let as_is = || -> Option<(Vec<EdgeRepr>, f64)> {
+        Some((
+            carried
+                .iter()
+                .cloned()
+                .map(|r| if flipped { reversed_repr(r) } else { r })
+                .collect(),
+            0.0,
+        ))
     };
     let (Some(dropped_fp), Some(kept_fp)) = (
         fingerprint(&*model, dropped, tol)?,
@@ -1386,6 +1411,16 @@ fn repaced_carry(
                 .distance(dropped_fp.curve.point_at(db, tol)?)
                 <= tol.confusion()
     };
+    // The survivor's own statement, below which a refit's miss need not be
+    // known; and the line past which a refit is no description of the edge
+    // at all: the readers' trim cap, or the gap sewn across where that is
+    // wider, every pair within it being sewn as one edge.
+    let stated = model
+        .node(survivor)
+        .and_then(|n| n.data().as_edge())
+        .map_or(0.0, |d| d.tolerance.get());
+    let cap = floor.max(tol.confusion() * crate::pcurve_fit::TRIM_CAP);
+    let mut missed = 0.0_f64;
     let mut out = Vec::with_capacity(carried.len());
     let mut pending: Vec<(
         ogeom_topo::SurfaceId,
@@ -1511,7 +1546,35 @@ fn repaced_carry(
             });
             continue;
         }
-        pending.push((*surface, location.clone(), fitted.curve.into(), (klo, khi)));
+        let planar: ogeom_geom::PlanarCurve = fitted.curve.into();
+        let Some(chart) = model.geometry().surface(*surface) else {
+            ogeom_bail!(Dangling, "surface is not in this model");
+        };
+        let placement = location.composed(model.datums())?;
+        let gap = |f: f64| -> OgeomResult<Option<ogeom_math::Vector>> {
+            let t = klo + (khi - klo) * f;
+            let uv = ogeom_geom::Curve2d::point_at(&planar, t, tol)?;
+            let Ok(lifted) = ogeom_geom::Surface::point_at(chart, uv.x, uv.y, tol) else {
+                return Ok(None);
+            };
+            Ok(Some(
+                placement.apply(lifted) - kept_fp.curve.point_at(t, tol)?,
+            ))
+        };
+        let mut breaks = crate::pcurve_gap::curve_breaks(&kept_fp.curve, (klo, khi));
+        breaks.extend(crate::pcurve_gap::pcurve_breaks(&planar, (klo, khi)));
+        let off = crate::pcurve_gap::widest_refined(
+            &gap,
+            &breaks,
+            stated,
+            tol.confusion(),
+            tol.parametric() / (khi - klo).abs(),
+        )?;
+        if off > cap {
+            return Ok(None);
+        }
+        missed = missed.max(off);
+        pending.push((*surface, location.clone(), planar, (klo, khi)));
     }
     for (surface, location, planar, range) in pending {
         let curve = model.geometry_mut().add_pcurve(planar);
@@ -1522,7 +1585,7 @@ fn repaced_carry(
             range,
         });
     }
-    Ok(out)
+    Ok(Some((out, missed)))
 }
 
 /// Each edge `face` walks once each way, holding two plain pcurves on the
@@ -1659,9 +1722,13 @@ fn chart_end(
 }
 
 /// How far the pcurves carried onto `survivor` leave its curve beyond its
-/// stated tolerance, each lifted through its surface at 33 points along it
-/// and measured against the nearest point of the curve's stretch; `None`
-/// where they keep within it.
+/// stated tolerance, each lifted through its surface and measured against
+/// the curve at the same fraction of the way along, or where that is past
+/// the tolerance, against the nearest point of the curve's stretch, and
+/// bounded between samples by [`widest_refined`]; `None` where they keep
+/// within it.
+///
+/// [`widest_refined`]: crate::pcurve_gap::widest_refined
 fn carried_off(
     model: &Model,
     survivor: &Shape,
@@ -1719,29 +1786,40 @@ fn carried_off(
             let Some(pcurve) = model.geometry().pcurve(id) else {
                 ogeom_bail!(Dangling, "pcurve is not in this model");
             };
-            // A pcurve fitted through its edge's points strays most between
-            // them, so the samples are many more than a fit takes per span.
-            const SAMPLES: u32 = 32;
-            for i in 0..=SAMPLES {
-                let t = f64::from(i) / f64::from(SAMPLES);
-                let on_curve = curve.point_at(range.0 + (range.1 - range.0) * t, tol)?;
+            let gap = |f: f64| -> OgeomResult<Option<ogeom_math::Vector>> {
+                let on_curve = curve.point_at(range.0 + (range.1 - range.0) * f, tol)?;
                 let uv = ogeom_geom::Curve2d::point_at(
                     pcurve,
-                    prange.0 + (prange.1 - prange.0) * t,
+                    prange.0 + (prange.1 - prange.0) * f,
                     tol,
                 )?;
                 let Ok(lifted) = ogeom_geom::Surface::point_at(surface, uv.x, uv.y, tol) else {
-                    continue;
+                    return Ok(None);
                 };
-                let mut gap = on_curve.distance(lifted);
-                if gap > reach {
-                    gap = gap.min(crate::pcurve_gap::nearest_on_stretch(
-                        curve, *range, lifted, tol,
-                    )?);
+                let along = lifted - on_curve;
+                if along.magnitude() <= reach {
+                    return Ok(Some(along));
                 }
-                if gap > reach {
-                    widest = Some(widest.map_or(gap, |w| w.max(gap)));
-                }
+                let (foot, off) =
+                    crate::pcurve_gap::nearest_point_on_stretch(curve, *range, lifted, tol)?;
+                Ok(Some(if off < along.magnitude() {
+                    lifted - curve.point_at(foot, tol)?
+                } else {
+                    along
+                }))
+            };
+            let mut breaks = crate::pcurve_gap::curve_breaks(curve, *range);
+            breaks.extend(crate::pcurve_gap::pcurve_breaks(pcurve, prange));
+            let wide = (range.1 - range.0).abs().max((prange.1 - prange.0).abs());
+            let off = crate::pcurve_gap::widest_refined(
+                &gap,
+                &breaks,
+                reach,
+                tol.confusion(),
+                tol.parametric() / wide,
+            )?;
+            if off > reach {
+                widest = Some(widest.map_or(off, |w| w.max(off)));
             }
         }
     }
@@ -3519,7 +3597,9 @@ mod tests {
             T.confusion(),
             T,
         )
-        .unwrap();
+        .unwrap()
+        .unwrap()
+        .0;
         let [EdgeRepr::PCurve { curve, range, .. }] = paced.as_slice() else {
             panic!("{paced:?}");
         };
@@ -3535,6 +3615,329 @@ mod tests {
                 "at {t}: {uv:?}"
             );
         }
+    }
+
+    /// Two strips side by side on the plane `z = 0`: `[0, L] × [−1, 0]`, its
+    /// edges straight, and `[0, L] × [0, 1]`, whose bottom edge is `bottom`
+    /// (its curve and range) drawn by `trace` over `[0, 1]` in the plane's
+    /// own coordinates, the world's `x` and `y`. The first strip's edge
+    /// along `y = 0`, catalogued first, is the one kept. Returns the strips
+    /// and the second's surface.
+    fn strips_meeting_on(
+        model: &mut Model,
+        length: f64,
+        bottom: (ogeom_geom::Curve, (f64, f64)),
+        trace: ogeom_geom::PlanarCurve,
+    ) -> ([Shape; 2], ogeom_topo::SurfaceId) {
+        use ogeom_geom::{Line2d, LineCurve};
+        use ogeom_math::Point2;
+        let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+        let below = loose_polygon(
+            model,
+            [
+                at(0.0, -1.0),
+                at(length, -1.0),
+                at(length, 0.0),
+                at(0.0, 0.0),
+            ],
+        );
+        let surface = model
+            .geometry_mut()
+            .add_surface(PlaneSurface::new(Plane::new(Frame::WORLD)).into());
+        let corners = [at(0.0, 0.0), at(length, 0.0), at(length, 1.0), at(0.0, 1.0)];
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|p| crate::make_vertex(model, *p).shape)
+            .collect();
+        let mut edges = vec![
+            crate::make_edge_between(model, bottom.0, bottom.1, &vertices[0], &vertices[1], T)
+                .unwrap()
+                .shape,
+        ];
+        crate::attach_pcurve(
+            model,
+            &edges[0],
+            trace,
+            surface,
+            Location::identity(),
+            (0.0, 1.0),
+        )
+        .unwrap();
+        for k in 1..4 {
+            let (a, b) = (corners[k], corners[(k + 1) % 4]);
+            let edge = crate::make_edge_between(
+                model,
+                LineCurve::segment(a, b, T).unwrap().into(),
+                (0.0, a.distance(b)),
+                &vertices[k],
+                &vertices[(k + 1) % 4],
+                T,
+            )
+            .unwrap()
+            .shape;
+            crate::attach_pcurve(
+                model,
+                &edge,
+                Line2d::segment(Point2::new(a.x, a.y), Point2::new(b.x, b.y), T)
+                    .unwrap()
+                    .into(),
+                surface,
+                Location::identity(),
+                (0.0, a.distance(b)),
+            )
+            .unwrap();
+            edges.push(edge);
+        }
+        let wire = crate::make_wire(model, &edges, T).unwrap().shape;
+        let above = crate::make_face_on(model, surface, std::slice::from_ref(&wire), T)
+            .unwrap()
+            .shape;
+        ([below, above], surface)
+    }
+
+    /// The edge from `(0, 0, 0)` to `(L, 0, 0)` paced as `x = L s²`.
+    fn squared_pace(length: f64) -> (ogeom_geom::Curve, (f64, f64)) {
+        use ogeom_geom::BSplineCurve;
+        use ogeom_math::KnotVector;
+        let curve = BSplineCurve::new(
+            KnotVector::clamped_uniform(2, 3).unwrap(),
+            vec![Point::ORIGIN, Point::ORIGIN, Point::new(length, 0.0, 0.0)],
+            T,
+        )
+        .unwrap();
+        (curve.into(), (0.0, 1.0))
+    }
+
+    /// The trace `(L s², 0)` drawn as a polyline through 65 of its points
+    /// over `[0, 1 − 10⁻³]`, then run back to `(0, 0)` over the last
+    /// thousandth: everywhere on the edge's line, but at `s = 1` at its
+    /// start, as a pcurve read at a foot carried a domain back from an open
+    /// curve's end lands.
+    fn traced_back_to_its_start(length: f64) -> ogeom_geom::PlanarCurve {
+        use ogeom_geom::BSpline2d;
+        use ogeom_math::{KnotVector, Point2};
+        const N: u32 = 64;
+        let reach = 1.0 - 1e-3;
+        let mut knots = vec![0.0, 0.0];
+        let mut control = Vec::new();
+        for i in 0..=N {
+            let s = f64::from(i) / f64::from(N);
+            if i > 0 {
+                knots.push(s * reach);
+            }
+            control.push(Point2::new(length * s * s, 0.0));
+        }
+        knots.extend([1.0, 1.0]);
+        control.push(Point2::new(0.0, 0.0));
+        BSpline2d::new(KnotVector::new(knots, 1).unwrap(), control, T)
+            .unwrap()
+            .into()
+    }
+
+    /// The widest the edge's pcurve on `surface`, lifted, stands off its
+    /// curve at the same fraction of the way along, over 4096 samples.
+    fn matched_miss(model: &Model, edge: &Shape, surface: ogeom_topo::SurfaceId) -> f64 {
+        use ogeom_geom::{Curve2d as _, Surface as _};
+        let data = model.node(edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            panic!("no curve");
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        let Some(EdgeRepr::PCurve {
+            curve: pc,
+            range: prange,
+            ..
+        }) = data.pcurve_for(surface, &Location::identity())
+        else {
+            panic!("no pcurve on the surface");
+        };
+        let pcurve = model.geometry().pcurve(*pc).unwrap();
+        let chart = model.geometry().surface(surface).unwrap();
+        let mut widest = 0.0_f64;
+        for k in 0..=4096 {
+            let f = f64::from(k) / 4096.0;
+            let uv = pcurve
+                .point_at(prange.0 + (prange.1 - prange.0) * f, T)
+                .unwrap();
+            let lifted = chart.point_at(uv.x, uv.y, T).unwrap();
+            let on = curve
+                .point_at(range.0 + (range.1 - range.0) * f, T)
+                .unwrap();
+            widest = widest.max(lifted.distance(on));
+        }
+        widest
+    }
+
+    /// The edge both strips share, after sewing.
+    fn shared_edge(model: &Model, sewn: &Sewn) -> Shape {
+        let mut uses: FastMap<TShapeId, (usize, Shape)> = FastMap::default();
+        for shell in &sewn.shells {
+            for face in explore_unique(model, shell, ShapeType::Face).unwrap() {
+                for edge in explore_unique(model, &face, ShapeType::Edge).unwrap() {
+                    uses.entry(edge.node()).or_insert((0, edge.clone())).0 += 1;
+                }
+            }
+        }
+        let shared: Vec<Shape> = uses
+            .into_values()
+            .filter(|(n, _)| *n == 2)
+            .map(|(_, e)| e)
+            .collect();
+        let [edge] = shared.as_slice() else {
+            panic!("{} shared edges", shared.len());
+        };
+        edge.clone()
+    }
+
+    /// A twin paced `x = 2 s²` whose pcurve lies on the shared line but at
+    /// its end is back at its start: carried to the kept edge's pace it
+    /// misses the kept edge's end by its whole length, 2, past the trim
+    /// cap of a millimetre at unit scale, though every lifted point stands
+    /// on the line. The two are not one edge, and the strips stay apart.
+    #[test]
+    fn a_twin_whose_carried_pcurve_ends_at_its_start_is_kept_apart() {
+        let mut model = Model::new();
+        let length = 2.0;
+        let (strips, _) = strips_meeting_on(
+            &mut model,
+            length,
+            squared_pace(length),
+            traced_back_to_its_start(length),
+        );
+        let sewn = sew(&mut model, &strips, T).unwrap();
+        assert_eq!(sewn.joined, 0);
+        assert_eq!(sewn.shells.len(), 2);
+    }
+
+    /// The same twin half a unit long, within the cap: sewn, and the kept
+    /// edge states how far the carried pcurve misses it, at least half a
+    /// unit at its end, measured densely.
+    #[test]
+    fn a_twin_whose_carried_pcurve_ends_at_its_start_states_its_miss() {
+        let mut model = Model::new();
+        let length = 0.5;
+        let (strips, surface) = strips_meeting_on(
+            &mut model,
+            length,
+            squared_pace(length),
+            traced_back_to_its_start(length),
+        );
+        let sewn = sew(&mut model, &strips, T).unwrap();
+        assert_eq!(sewn.joined, 1);
+        let edge = shared_edge(&model, &sewn);
+        let stated = model
+            .node(&edge)
+            .unwrap()
+            .data()
+            .as_edge()
+            .unwrap()
+            .tolerance
+            .get();
+        let miss = matched_miss(&model, &edge, surface);
+        assert!(miss >= length, "{miss}");
+        assert!(stated >= miss, "states {stated} against a miss of {miss}");
+    }
+
+    /// The twin paced `x = 2 s²` with its own pcurve `(2 s², 0)`: carried
+    /// to the kept edge's pace, by length along it, it is `(t, 0)`, and the
+    /// kept edge states the tolerance its strip's edges held before sewing.
+    #[test]
+    fn a_twin_carried_at_its_own_pace_keeps_the_kept_edge_s_tolerance() {
+        use ogeom_geom::BSpline2d;
+        use ogeom_math::{KnotVector, Point2};
+        let mut model = Model::new();
+        let length = 2.0;
+        let trace = BSpline2d::new(
+            KnotVector::clamped_uniform(2, 3).unwrap(),
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(0.0, 0.0),
+                Point2::new(length, 0.0),
+            ],
+            T,
+        )
+        .unwrap();
+        let (strips, surface) =
+            strips_meeting_on(&mut model, length, squared_pace(length), trace.into());
+        let before: Vec<f64> = explore_unique(&model, &strips[0], ShapeType::Edge)
+            .unwrap()
+            .iter()
+            .map(|e| {
+                model
+                    .node(e)
+                    .unwrap()
+                    .data()
+                    .as_edge()
+                    .unwrap()
+                    .tolerance
+                    .get()
+            })
+            .collect();
+        let sewn = sew(&mut model, &strips, T).unwrap();
+        assert_eq!(sewn.joined, 1);
+        let edge = shared_edge(&model, &sewn);
+        let stated = model
+            .node(&edge)
+            .unwrap()
+            .data()
+            .as_edge()
+            .unwrap()
+            .tolerance
+            .get();
+        assert!(
+            before.iter().all(|b| *b == stated),
+            "{before:?} against {stated}"
+        );
+        assert!(matched_miss(&model, &edge, surface) <= T.confusion());
+    }
+
+    /// A twin on the kept edge's own line and pace, its pcurve rising to a
+    /// hundredth off the line over a tenth of the width between two of the
+    /// 33 points a uniform sampling reads, and nowhere near the middle of
+    /// that span: carried as it is, the kept edge states the rise.
+    #[test]
+    fn a_rise_in_a_carried_pcurve_between_samples_is_stated() {
+        use ogeom_geom::{BSpline2d, LineCurve};
+        use ogeom_math::{KnotVector, Point2};
+        let mut model = Model::new();
+        let length = 1.0;
+        let (rise, step) = (1e-2, 1.0 / 32.0);
+        let (from, top, to) = (10.2 * step, 10.25 * step, 10.3 * step);
+        let trace = BSpline2d::new(
+            KnotVector::new(vec![0.0, 0.0, from, top, to, 1.0, 1.0], 1).unwrap(),
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(from * length, 0.0),
+                Point2::new(top * length, rise),
+                Point2::new(to * length, 0.0),
+                Point2::new(length, 0.0),
+            ],
+            T,
+        )
+        .unwrap();
+        let line = LineCurve::segment(Point::ORIGIN, Point::new(length, 0.0, 0.0), T).unwrap();
+        let (strips, _) = strips_meeting_on(
+            &mut model,
+            length,
+            (line.into(), (0.0, length)),
+            trace.into(),
+        );
+        let sewn = sew(&mut model, &strips, T).unwrap();
+        assert_eq!(sewn.joined, 1);
+        let edge = shared_edge(&model, &sewn);
+        let stated = model
+            .node(&edge)
+            .unwrap()
+            .data()
+            .as_edge()
+            .unwrap()
+            .tolerance
+            .get();
+        assert!(stated >= rise, "states {stated} against a rise of {rise}");
+        assert!(
+            stated <= rise * (1.0 + 1e-3),
+            "states {stated} against a rise of {rise}"
+        );
     }
 
     #[test]

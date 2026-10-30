@@ -1298,6 +1298,34 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A pcurve refitted for a sewn twin is checked against the kept edge in
+  space, and a carried pcurve's miss is bounded between samples.** (#519)
+  - Sewing two edges that trace one curve at different paces refits the
+    dropped edge's pcurves at the kept edge's parameters, and checked the
+    refit only against its own samples in the chart. Lifted through its
+    surface it was never compared with the kept edge's curve: the refit
+    that ran back to its start in #516 missed the kept edge's end by 0.74
+    and was accepted.
+  - Now each refit is lifted and measured against the kept edge's curve
+    at the same parameter. A miss within the readers' trim cap, a
+    millimetre at unit scale, or the gap sewn across where that is wider,
+    is stated as the kept edge's tolerance; a refit missing by more is no
+    description of the edge, and the two edges stay apart, as any pair
+    that does not match.
+  - The pcurves carried onto a kept edge were measured at 33 points, and
+    the #516 refit was widened by 0.0053. Every such measure is now
+    bounded between samples: the stretch is cut at the curves' knots and
+    each span halved until the gap at its middle stands within a
+    confusion of the chord across it, and the span is bounded by its
+    widest sample plus that offset.
+  - Measured: a twin paced `x = L s²` whose pcurve lies on the shared
+    line but ends at its start (the #516 refit, made by hand) is kept
+    apart at `L = 2`, and at `L = 0.5` sewn with a tolerance covering its
+    dense miss of 0.5, where both were sewn at 1e-7; a pcurve rising 0.01
+    off the line between two of the 33 old samples is stated at 0.01,
+    where it was not seen; a twin carried at its own pace leaves the kept
+    edge's tolerance as it was.
+
 - **A pcurve carried from a sewn twin on an open curve keeps its far
   end.** (#516)
   - Sewing two edges that trace one curve at different paces refits the
