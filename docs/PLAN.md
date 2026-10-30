@@ -202,27 +202,17 @@ edge's own vertex and can cross the hole. No measured part builds one.
 
 ### Construction and exchange
 
-**The converter's result depends on how the mesh lists its triangles.**
-Recognized regions grow from seeds taken in list order (a stride through
-the triangle indices) and claim triangles first come, and the default
-distance widens when any one fit presses against it. So the same mesh
-listed otherwise finds other regions: on `nist_ftc_07` 378 to 666 faces
-over 30 rotations (the distance widened in about half), and on every
-corpus part some shuffled listing gives a different face count, a region
-faceted (`grid_point_on_a_diagonal_boundary`, `nist_ftc_10`). Listed from
-each thirtieth of the way along, all 30 rotations of `nist_ftc_07` meet at
-319 to 612 faces and all 30 of `nist_ftc_10` at 285 to 339, none with a
-region faceted. Putting
-the mesh in an order read off the geometry (points by position, triangles
-by their corners; patch `canonical-order.patch` in the scratch crate)
-makes every listing one result, but the one it picks facets two regions
-of `nist_ftc_08` (a small cone at a cylinder's end) and six of
-`nist_ftc_10` (one small cylinder's fit presses, the distance widens
-twice, 1272 faces): it is a listing like any other. Before it lands, the
-growth has to stop depending on who comes first: options are widening
-only where many fits press (noise is everywhere, a run-on is local),
-seeding from the most confident triangles first, or letting regions that
-meet compete for their shared triangles by residual.
+**The converter widens its distance for one fit.** The default coplanar
+distance doubles, twice at most, when any one recognized fit presses
+against it, as a fit that runs on tangentially into its neighbours does:
+`nist_ftc_10` widens once and `nist_ctc_05` twice, each for one or two
+fits. Regions do not depend on how the mesh lists its triangles, so
+neither does the widening, but a wider distance lets facets of surfaces
+nothing recognizes merge into planes: `nist_ftc_07` widened twice comes
+back on 319 faces with its volume 6e-5 off, against 583 and 3e-7 at the
+default. Exporter scatter is everywhere and a run-on is local, so the
+distance should widen only where many fits press, or for the pressing
+region alone.
 
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's
 pcurve where its lifted gap is within twice the projection's. A pcurve the

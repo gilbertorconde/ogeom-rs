@@ -8,7 +8,8 @@ mod walks;
 
 use ogeom::algo::{
     Canonical, FallbackReason, FitConstraints, MeshRegion, MeshRegions, MeshSolidOptions,
-    MeshSolidReport, SurfaceKind, check, shape_bounds, solid_from_mesh, volume_properties,
+    MeshSolidReport, SurfaceKind, check, shape_bounds, solid_from_mesh, surface_properties,
+    volume_properties,
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
@@ -157,30 +158,19 @@ fn pcurves_off_their_curves(model: &Model, shape: &Shape) -> Vec<(f64, f64)> {
 /// pcurve within its edge's tolerance of the edge's curve, and with curved
 /// faces where the part has them. Returns what the conversion reported.
 fn comes_back(name: &str, closed: bool, meet: bool) -> MeshSolidReport {
-    comes_back_listed(name, closed, meet, |_| {})
-}
-
-/// As [`comes_back`], with the mesh's triangles relisted by `list` first.
-fn comes_back_listed(
-    name: &str,
-    closed: bool,
-    meet: bool,
-    list: impl Fn(&mut ogeom::topo::Triangulation),
-) -> MeshSolidReport {
     let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(path).expect("the corpus file is committed");
     let import = ogeom::io::read_step(&text, T).unwrap();
     let model = import.document.model();
     let part = &import.solids[0];
     let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
-    let mut mesh = ogeom::mesh::triangulate(
+    let mesh = ogeom::mesh::triangulate(
         model,
         part,
         Deflection::with_chord(diagonal * 1e-3).unwrap(),
         T,
     )
     .unwrap();
-    list(&mut mesh);
     assert!(mesh.is_closed(), "{name}: the source mesh is open");
     let mut back = Model::new();
     let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
@@ -387,51 +377,6 @@ fn nist_ftc_07() {
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
-/// Its fillet tori a few facets round come back whichever corner each
-/// triangle lists first: a dozen vertices of such a torus are too few to
-/// be fitted as one, and the sample a fit starts from grows past them.
-#[test]
-#[ignore = "heavy"]
-fn nist_ftc_07_whatever_corner_each_triangle_lists_first() {
-    for seed in [1_u64, 3] {
-        let report = comes_back_listed("nist_ftc_07_asme1_rd.stp", true, true, |mesh| {
-            let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-            for t in &mut mesh.triangles {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                t.rotate_left(usize::try_from(state % 3).unwrap());
-            }
-        });
-        assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
-    }
-}
-
-/// Listed from a triangle further on, a few of its regions grow over other
-/// orders until their fits press against the coplanar distance, and the
-/// distance widens: its long rounds of radius 0.43 run on into their
-/// neighbours, and at the wider distance small regions beside the rounds'
-/// ends fit spheres and cones the rounds then overlap. Each region the
-/// build cannot place at the wider distance is put back as the default
-/// distance found it, and nothing is faceted. A drill found short of a
-/// turn takes the facets left between its rows and goes round, and is
-/// built as a band with its seam; a long round fitted leaning leaves pieces
-/// of its flat rows to planes, which join it once it is put between its
-/// flanks, and its faces meshed one by one meet edge to edge. Listed from
-/// the thousandth triangle, a single long facet of a round's row is left a
-/// face of its own, and its chords and the round's settle to meet.
-#[test]
-#[ignore = "heavy"]
-fn nist_ftc_07_whatever_triangle_its_list_starts_at() {
-    for start in [997_usize, 1994, 6757, 13514] {
-        let report = comes_back_listed("nist_ftc_07_asme1_rd.stp", true, true, |mesh| {
-            let len = mesh.triangles.len();
-            mesh.triangles.rotate_left(start % len);
-        });
-        assert_eq!(report.curved_faceted, 0, "{start}: {:?}", report.fallbacks);
-    }
-}
-
 /// Its fillet tori are meshed a few facets round, and a piece of one can
 /// lie on a sphere as exactly as on the torus. Where the rest of the torus
 /// is a larger region beside it, the piece joins that region; where the
@@ -441,6 +386,114 @@ fn nist_ftc_07_whatever_triangle_its_list_starts_at() {
 fn nist_ftc_08() {
     let report = comes_back("nist_ftc_08_asme1_rc.stp", true, true);
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
+}
+
+/// Each face's surface kind and sizes (radii, a cone's half angle), area
+/// and centroid.
+fn faces_of(
+    model: &Model,
+    shape: &Shape,
+) -> Vec<(&'static str, Vec<f64>, f64, ogeom::math::Point)> {
+    explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .map(|face| {
+            let data = model.node(face).unwrap().data().as_face().unwrap();
+            let (kind, sizes) = match model.geometry().surface(data.surface).unwrap() {
+                SurfaceGeometry::Plane(_) => ("plane", vec![]),
+                SurfaceGeometry::Cylinder(c) => ("cylinder", vec![c.cylinder().radius()]),
+                SurfaceGeometry::Cone(c) => (
+                    "cone",
+                    vec![c.cone().reference_radius(), c.cone().half_angle()],
+                ),
+                SurfaceGeometry::Sphere(s) => ("sphere", vec![s.sphere().radius()]),
+                SurfaceGeometry::Torus(t) => (
+                    "torus",
+                    vec![t.torus().major_radius(), t.torus().minor_radius()],
+                ),
+                _ => ("other", vec![]),
+            };
+            let area = surface_properties(model, face, Deflection::default(), T).unwrap();
+            (kind, sizes, area.mass, area.centre)
+        })
+        .collect()
+}
+
+/// Its fillet tori and corner patches are a few facets round and fit only
+/// from samples that keep off their neighbours, so what is found there must
+/// not turn on which triangle is sampled first. Listed from another
+/// triangle on, shuffled, or each triangle from another corner, it comes
+/// back on the same faces: each on the same kind of surface, of the same
+/// sizes, with the same area in the same place.
+#[test]
+fn nist_ftc_08_whatever_order_its_triangles_are_listed_in() {
+    let name = "nist_ftc_08_asme1_rc.stp";
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(path).expect("the corpus file is committed");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
+    let drawn = ogeom::mesh::triangulate(
+        model,
+        part,
+        Deflection::with_chord(diagonal * 1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    let convert = |mesh: &ogeom::topo::Triangulation| {
+        let mut back = Model::new();
+        let out = solid_from_mesh(&mut back, mesh, &MeshSolidOptions::default(), T).unwrap();
+        assert_eq!(out.report.curved_faceted, 0, "{:?}", out.report.fallbacks);
+        faces_of(&back, &out.shape)
+    };
+    let first = convert(&drawn);
+    let len = drawn.triangles.len();
+    let mut listings = Vec::new();
+    for start in [len / 3, 2 * len / 3] {
+        let mut mesh = drawn.clone();
+        mesh.triangles.rotate_left(start);
+        listings.push(mesh);
+    }
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut shuffled = drawn.clone();
+    for i in (1..shuffled.triangles.len()).rev() {
+        let j = usize::try_from(next() % (i as u64 + 1)).unwrap();
+        shuffled.triangles.swap(i, j);
+    }
+    listings.push(shuffled);
+    let mut turned = drawn.clone();
+    for t in &mut turned.triangles {
+        t.rotate_left(usize::try_from(next() % 3).unwrap());
+    }
+    listings.push(turned);
+    let length = diagonal * 1e-9;
+    for (k, mesh) in listings.iter().enumerate() {
+        let mut faces = convert(mesh);
+        assert_eq!(faces.len(), first.len(), "listing {k}");
+        for (kind, sizes, area, centre) in &first {
+            let at = faces.iter().position(|(other, others, a, c)| {
+                other == kind
+                    && sizes
+                        .iter()
+                        .zip(others)
+                        .all(|(x, y)| (x - y).abs() <= length)
+                    && (a - area).abs() <= length * diagonal
+                    && c.distance(*centre) <= length
+            });
+            assert!(
+                at.is_some(),
+                "listing {k}: no {kind} {sizes:?} of area {area} at {centre:?}"
+            );
+            faces.swap_remove(at.unwrap());
+        }
+    }
 }
 
 #[test]
@@ -470,20 +523,6 @@ fn nist_ftc_10() {
         "a curved face was faceted for a facet turned in beside it: {:?}",
         report.fallbacks
     );
-}
-
-/// Listed from four fifths of the way along, its horizontal bore is fitted
-/// on a cylinder whose seam the three cross bores' loops stand beside, and
-/// those loops' pcurves come out a turn round the chart from the bore's
-/// own bound. The bore draws round its three holes, not whole with three
-/// discs over them, and the part tessellates closed.
-#[test]
-#[ignore = "heavy"]
-fn nist_ftc_10_whatever_triangle_its_list_starts_at() {
-    comes_back_listed("nist_ftc_10_asme1_rb.stp", true, true, |mesh| {
-        let start = mesh.triangles.len() * 4 / 5;
-        mesh.triangles.rotate_left(start);
-    });
 }
 
 #[test]
@@ -524,33 +563,6 @@ fn a_button_head_screw() {
 fn sliver_on_a_diagonal_of_the_grid() {
     let report = comes_back("sliver_on_a_diagonal_of_the_grid.step", true, true);
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
-}
-
-/// Its rounds run on into spline faces along rows the mesh leaves as
-/// single facets all but tangent to them, whichever order the mesh lists
-/// its triangles in: each such facet is built as a fan onto the round, and
-/// the round stays curved.
-#[test]
-#[ignore = "heavy"]
-fn sliver_on_a_diagonal_of_the_grid_whatever_order_its_triangles_are_listed_in() {
-    for seed in [1_u64, 2] {
-        let report = comes_back_listed(
-            "sliver_on_a_diagonal_of_the_grid.step",
-            true,
-            true,
-            |mesh| {
-                let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-                for i in (1..mesh.triangles.len()).rev() {
-                    state ^= state << 13;
-                    state ^= state >> 7;
-                    state ^= state << 17;
-                    let j = usize::try_from(state % (i as u64 + 1)).unwrap();
-                    mesh.triangles.swap(i, j);
-                }
-            },
-        );
-        assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
-    }
 }
 
 /// A turned part whose rounds meet single facets, chords of a spline

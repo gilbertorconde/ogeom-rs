@@ -368,14 +368,16 @@ impl MeshRegions {
         super::build(model, &self.found, &self.options, &protected, self.tol)
     }
 
-    /// The mesh's vertices as the regions read them, welded.
+    /// The mesh's vertices as the regions read them, welded and numbered
+    /// in the order of their positions.
     #[must_use]
     pub fn points(&self) -> &[Point] {
         &self.found.points
     }
 
     /// The mesh's triangles as the regions read them: without the ones of
-    /// no area or repeated, wound consistently and outward.
+    /// no area or repeated, wound consistently and outward, and listed by
+    /// their corners' positions rather than as the input listed them.
     #[must_use]
     pub fn triangles(&self) -> &[[u32; 3]] {
         &self.found.triangles

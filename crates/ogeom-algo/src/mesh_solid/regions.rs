@@ -729,19 +729,21 @@ impl Surfaces<'_> {
             .collect()
     }
 
-    /// A seed's first samples and their fit, read from where the faces and
-    /// the retired seeds stand; it changes nothing.
+    /// A seed's first samples and their fit, read from where the faces
+    /// stand; it changes nothing. What earlier seeds failed to fit does not
+    /// shape it, so a sample is the same whichever seeds came before.
     ///
     /// Samples grow across smooth edges into triangles where the surface
     /// is seen to bend, each with an edge across which it turns. Within a
     /// strip of a cylinder or a torus the two triangles of a cell meet
     /// flat, and each still bends across its other side; a flat face met
     /// tangentially (a fillet's run-out) lends only its triangles along
-    /// the tangent line, whose far corners the trimmed fit drops. The fit
+    /// the tangent line, and of those only the corners the sample's own
+    /// triangles share: their far corners lie on the flat face. The fit
     /// is tried as the sample grows: a narrow fillet fits from a few dozen
     /// vertices and would take in its neighbours' by a hundred; a patch of a
     /// thick torus needs the hundred to show its tube.
-    fn first_fit(&self, seed: usize, of: &[usize], tried: &[bool]) -> FirstFit {
+    fn first_fit(&self, seed: usize, of: &[usize]) -> FirstFit {
         const STAGES: [usize; 4] = [12, 24, 60, 150];
         let mut held: ogeom_core::FastSet<usize> = ogeom_core::FastSet::from_iter([seed]);
         let mut seen: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
@@ -760,6 +762,7 @@ impl Surfaces<'_> {
         let mut shared = Vec::new();
         let mut first_sample = usize::MAX;
         let mut wide = false;
+        let mut leaves: ogeom_core::FastSet<usize> = ogeom_core::FastSet::default();
         for target in STAGES {
             while vertices.len() < target {
                 let Some(next) = queue.pop_front() else {
@@ -773,10 +776,7 @@ impl Surfaces<'_> {
                     if !self.smooth(h) || held.contains(&other) {
                         continue;
                     }
-                    if of[other] != usize::MAX
-                        || tried[other]
-                        || !(self.curved(h) || self.bends(other))
-                    {
+                    if of[other] != usize::MAX || !(self.curved(h) || self.bends(other)) {
                         continue;
                     }
                     held.insert(other);
@@ -790,25 +790,33 @@ impl Surfaces<'_> {
                     let (patch, own) = (self.patches.of[other], self.patches.of[seed]);
                     if self.patches.area[patch] <= self.patches.area[own] * LEAF_SCALE {
                         queue.push_back(other);
+                    } else {
+                        leaves.insert(other);
                     }
                 }
             }
             // Fitted on the vertices two or more of the sampled triangles
-            // share: a corner of a flat face across a tangent line is
-            // touched by the one triangle that reached it, and a single
-            // such corner far off the surface decides a least-squares axis.
+            // share, one of them not a leaf: a corner of a flat face across
+            // a tangent line is touched by the one triangle that reached
+            // it, or by leaves alone where the face's facets run along the
+            // line, and a few such corners far off the surface decide a
+            // least-squares axis.
             shared = {
                 let mut count: FastMap<u32, u32> =
                     FastMap::with_capacity_and_hasher(vertices.len(), Default::default());
+                let mut own: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
                 for &t in &region {
                     for &v in &self.triangles[t] {
                         *count.entry(v).or_insert(0) += 1;
+                        if !leaves.contains(&t) {
+                            own.insert(v);
+                        }
                     }
                 }
                 vertices
                     .iter()
                     .copied()
-                    .filter(|v| count[v] >= 2)
+                    .filter(|v| count[v] >= 2 && own.contains(v))
                     .collect::<Vec<u32>>()
             };
             first_sample = first_sample.min(region.len());
@@ -863,13 +871,15 @@ impl Surfaces<'_> {
     }
 }
 
-/// Grow the recognized regions, seed by seed in triangle order.
+/// Grow the recognized regions, seed by seed in a stride through the
+/// triangles, which are listed by where they lie.
 ///
 /// A seed's first fit is the costly part, and it only reads: so seeds are
 /// fitted a batch at a time in parallel against where things stand, then
-/// taken in order, and a seed whose gathering took a triangle an earlier
-/// seed of the same batch has since claimed or retired is fitted again.
-/// The answer is the one seed-by-seed order gives, at any thread count.
+/// taken in order, and at a seed whose gathering took a triangle an
+/// earlier seed of the same batch has since claimed the batch ends, the
+/// next one starting from that seed. The answer is the one seed-by-seed
+/// order gives, at any thread count.
 #[allow(clippy::too_many_lines, reason = "one growth, read in one place")]
 pub(super) fn recognized_regions(
     points: &[Point],
@@ -898,17 +908,17 @@ pub(super) fn recognized_regions(
     // to half the turn between facets, which the crease bounds.
     let agree = options.crease.cos();
     let mut tried = vec![false; n];
-    // The batch in which each triangle's standing last changed.
+    // The batch in which each triangle was last claimed.
     let mut changed = vec![0_u32; n];
     let batch_size = ogeom_core::parallel::threads().max(1) * 4;
     let mut batch = 0_u32;
     let eligible =
         |t: usize, of: &[usize], tried: &[bool]| of[t] == usize::MAX && !tried[t] && mesh.bends(t);
     // Seeds are taken in a fixed stride through the triangles rather than
-    // one after another: a mesh lists neighbours together, and a batch of
-    // neighbouring seeds would mostly gather what the first of them took.
-    // The stride is a prime not dividing the count, so every triangle comes
-    // up once.
+    // one after another: the triangles are listed by where they lie, and a
+    // batch of neighbouring seeds would mostly gather what the first of
+    // them took. The stride is a prime not dividing the count, so every
+    // triangle comes up once.
     let stride = [7919_usize, 7907, 7901]
         .into_iter()
         .find(|p| !n.is_multiple_of(*p))
@@ -918,9 +928,8 @@ pub(super) fn recognized_regions(
     // seed has been taken, those whose sample has since lost triangles to
     // other regions are taken once more, the rest of their samples free
     // again: a fillet, or a band between two, sampled together with its
-    // unclaimed neighbours fits nothing, and its triangles, retired seed by
-    // seed, leave ever smaller samples; on its own, its neighbours claimed,
-    // it fits.
+    // unclaimed neighbours fits nothing; on its own, its neighbours
+    // claimed, it fits.
     let mut straddled: Vec<(usize, Vec<usize>)> = Vec::new();
     let mut again = true;
     let mut next = 0;
@@ -949,26 +958,27 @@ pub(super) fn recognized_regions(
         let mut seeds = Vec::with_capacity(batch_size);
         while next < order.len() && seeds.len() < batch_size {
             if eligible(order[next], &groups.of, &tried) {
-                seeds.push(order[next]);
+                seeds.push((next, order[next]));
             }
             next += 1;
         }
         let fits = {
-            let (of, tried) = (&groups.of, &tried);
-            ogeom_core::parallel::map_ordered(&seeds, |_, &seed| mesh.first_fit(seed, of, tried))
+            let of = &groups.of;
+            ogeom_core::parallel::map_ordered(&seeds, |_, &(_, seed)| mesh.first_fit(seed, of))
         };
-        for (seed, fit) in seeds.into_iter().zip(fits) {
+        for ((at, seed), fit) in seeds.into_iter().zip(fits) {
             if !eligible(seed, &groups.of, &tried) {
                 continue;
             }
             // A triangle's standing only moves one way (free to taken), so
             // a triangle the gathering passed over stays passed over, and
-            // only one it took can have changed what it gathers.
-            let fit = if fit.region.iter().any(|&t| changed[t] == batch) {
-                mesh.first_fit(seed, &groups.of, &tried)
-            } else {
-                fit
-            };
+            // only one it took can have changed what it gathers. Such a
+            // seed starts the next batch, fitted again with the others
+            // after it.
+            if fit.region.iter().any(|&t| changed[t] == batch) {
+                next = at;
+                break;
+            }
             let FirstFit {
                 mut region,
                 mut vertices,
@@ -990,7 +1000,6 @@ pub(super) fn recognized_regions(
                 let retired = if wide { 1 } else { first_sample };
                 for &t in &region[..retired.min(region.len())] {
                     tried[t] = true;
-                    changed[t] = batch;
                 }
                 continue;
             };
@@ -1013,7 +1022,6 @@ pub(super) fn recognized_regions(
                 if region.is_empty() {
                     for &t in &gathered[..first_sample.min(gathered.len())] {
                         tried[t] = true;
-                        changed[t] = batch;
                     }
                     continue;
                 }
@@ -1261,7 +1269,6 @@ pub(super) fn recognized_regions(
                     None => {
                         for &t in &region {
                             tried[t] = true;
-                            changed[t] = batch;
                         }
                         continue;
                     }
@@ -1381,7 +1388,6 @@ pub(super) fn recognized_regions(
             {
                 for &t in &region {
                     tried[t] = true;
-                    changed[t] = batch;
                 }
                 continue;
             }

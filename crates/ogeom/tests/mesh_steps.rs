@@ -237,6 +237,16 @@ fn rim_vertex(regions: &MeshRegions, r: f64, n: u32, i: u32, z: f64) -> u32 {
     vertex_at(regions, Point::new(r * a.cos(), r * a.sin(), z))
 }
 
+/// The region of a faceted cylinder found on the cylinder: its band.
+fn band(regions: &MeshRegions) -> RegionId {
+    regions
+        .regions()
+        .into_iter()
+        .find(|g| matches!(g.surface, Some(ogeom::algo::Canonical::Cylinder(_))))
+        .expect("the band is found on its cylinder")
+        .id
+}
+
 /// The path that cuts the facets from angle step `from` to `to` off a
 /// one-row band: up the first ruling, along the top rim, down the last.
 fn across_the_band(regions: &MeshRegions, r: f64, h: f64, n: u32, from: u32, to: u32) -> Vec<u32> {
@@ -684,7 +694,7 @@ fn a_region_an_edit_leaves_unbuildable_is_named_with_why() {
     assert_eq!(kinds(&back, &whole.shape), [2, 1, 0, 0, 0, 0]);
     assert!(whole.report.fallbacks.is_empty(), "{:?}", whole.report);
 
-    let band = regions.region_of(0).unwrap();
+    let band = band(&regions);
     let path = across_the_band(&regions, r, h, n, 0, 8);
     let (piece, rest) = regions.split(band, &path).unwrap();
     let deviation = regions
@@ -798,9 +808,15 @@ fn a_facet_the_caller_split_off_is_not_absorbed() {
     let (r, h, n) = (10.0, 20.0, 64);
     let mesh = faceted_cylinder(r, h, n, 1);
     let mut regions = MeshRegions::find(&mesh, &MeshSolidOptions::default(), T).unwrap();
-    let band = regions.region_of(0).unwrap();
+    let band = band(&regions);
     let path = across_the_band(&regions, r, h, n, 0, 1);
-    let (flat, rest) = regions.split(band, &path).unwrap();
+    let (one, other) = regions.split(band, &path).unwrap();
+    let size = |id| regions.region(id).unwrap().triangles.len();
+    let (flat, rest) = if size(one) <= size(other) {
+        (one, other)
+    } else {
+        (other, one)
+    };
     let facet = regions.region(flat).unwrap();
     assert_eq!(facet.triangles.len(), 2);
     assert!(matches!(

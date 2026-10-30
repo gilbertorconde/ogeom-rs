@@ -58,6 +58,37 @@ pub(super) fn weld_points(positions: &[Point], weld: f64) -> (Vec<Point>, Vec<u3
     (kept, remap)
 }
 
+/// The welded points renumbered in the order of their positions (by `x`,
+/// then `y`, then `z`), and `remap` carried along. Welded points are
+/// apart, so no two share a place in that order, and what is read through
+/// the numbers does not depend on the order the welded points were found
+/// in.
+pub(super) fn by_position(points: Vec<Point>, remap: Vec<u32>) -> (Vec<Point>, Vec<u32>) {
+    let mut order: Vec<usize> = (0..points.len()).collect();
+    order.sort_by(|&i, &j| {
+        let (p, q) = (points[i], points[j]);
+        p.x.total_cmp(&q.x)
+            .then(p.y.total_cmp(&q.y))
+            .then(p.z.total_cmp(&q.z))
+    });
+    let mut renumber = vec![0_u32; points.len()];
+    for (k, &i) in order.iter().enumerate() {
+        renumber[i] = u32::try_from(k).unwrap_or(u32::MAX);
+    }
+    let sorted = order.iter().map(|&i| points[i]).collect();
+    let remap = remap.into_iter().map(|v| renumber[v as usize]).collect();
+    (sorted, remap)
+}
+
+/// A triangle's corners turned, its winding kept, to start at its lowest
+/// numbered one: with the points numbered by position, the same triangle
+/// whichever corner the mesh listed first.
+pub(super) fn lowest_first(mut t: [u32; 3]) -> [u32; 3] {
+    let k = (0..3).min_by_key(|&k| t[k]).unwrap_or(0);
+    t.rotate_left(k);
+    t
+}
+
 /// Whether a triangle stands more than the weld distance tall over its
 /// longest side.
 pub(super) fn has_area(points: &[Point], [a, b, c]: [u32; 3], weld: f64) -> bool {

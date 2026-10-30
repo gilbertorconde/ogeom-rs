@@ -41,6 +41,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Mesh conversion gives one result whatever order the mesh lists its
+  triangles in.**
+  - `solid_from_mesh` grew regions from seeds taken in the order the mesh
+    listed its triangles, and a sample that fitted nothing kept its
+    triangles out of every later sample, so which fillet tori and corner
+    patches a few facets round were found depended on which neighbour was
+    sampled first. Over 30 rotations and 5 shuffles of each corpus mesh,
+    `nist_ftc_07` came back on 319 to 617 faces, `nist_ftc_08` on 276 to
+    332 and `nist_ftc_10` on 275 to 339, and some listings faceted a region
+    of `grid_point_on_a_diagonal_boundary`, `nist_ftc_10` or
+    `nist_ctc_02`.
+  - The mesh is read in an order taken from its geometry: welded points by
+    position, each triangle from its lowest corner, triangles by their
+    corners. A sample reads only the regions already found, not which
+    seeds failed before it. The facets of a flat face along a tangent line
+    lend a sample only the corners its own triangles share, so a fillet
+    torus a few facets round beside a floor fits on its own.
+  - Every corpus part the converter tests use comes back on one result
+    under all 35 listings, none with a region faceted: `nist_ftc_07` on
+    583 faces, `nist_ftc_08` on 262 (276 at best before), `nist_ctc_04` on
+    469 (471), `sliver_on_a_diagonal_of_the_grid` on 937 (947),
+    `nist_ftc_10` on 294.
+  - `MeshRegions::triangles` lists the triangles by their corners'
+    positions.
 - **A ball cut to a slab through both poles and drilled with the wall
   through a pole: no wrong answer, and the drills pass.**
   - A ball of radius 10 cut to `|x| < 0.8` or `|x| < 0.5` and drilled

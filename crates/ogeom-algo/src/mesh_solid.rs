@@ -70,7 +70,10 @@ use checks::{
 use planner::{NOISE_FLOOR, Planner, Replan};
 use regions::{flat_noise, split_disconnected};
 use segment::{coplanar_groups, found_within, one_each, plane_of, segment};
-use weld::{Adjacency, Piece, diagonal, has_area, inside, orient, unfold, weld_points};
+use weld::{
+    Adjacency, Piece, by_position, diagonal, has_area, inside, lowest_first, orient, unfold,
+    weld_points,
+};
 
 /// How [`solid_from_mesh`] builds.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -516,12 +519,21 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
 
     let (points, remap) = weld_points(&mesh.positions, weld);
     report.vertices_welded = count - points.len();
-    let mut triangles = Vec::with_capacity(mesh.triangles.len());
+    // Everything after reads the mesh in an order taken from its geometry
+    // (points by position, triangles by their corners), so the regions
+    // found do not depend on how the mesh lists its triangles.
+    let (points, remap) = by_position(points, remap);
+    let mut listed: Vec<[u32; 3]> = mesh
+        .triangles
+        .iter()
+        .map(|t| lowest_first(t.map(|v| remap[v as usize])))
+        .collect();
+    listed.sort_unstable();
+    let mut triangles = Vec::with_capacity(listed.len());
     let mut seen: FastMap<[u32; 3], ()> =
-        FastMap::with_capacity_and_hasher(mesh.triangles.len(), Default::default());
+        FastMap::with_capacity_and_hasher(listed.len(), Default::default());
     let mut flat_slivers: Vec<[u32; 3]> = Vec::new();
-    for t in &mesh.triangles {
-        let [a, b, c] = t.map(|v| remap[v as usize]);
+    for [a, b, c] in listed {
         if a == b || b == c || c == a || !has_area(&points, [a, b, c], weld) {
             report.degenerate_dropped += 1;
             if a != b && b != c && c != a {
