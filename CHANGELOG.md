@@ -41,6 +41,26 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Mesh conversion no longer returns a solid with a face passing through
+  another.**
+  - A curved region fitted to a strip of a few triangles meets the plane of
+    a facet beside it along a curve that can bow well past the mesh edge
+    they share. Read in one listing of its triangles (not the order of
+    their positions), `nist_ctc_02` grew a cylinder of radius 5.3 on two
+    triangles whose seam with a one-triangle facet bowed 2.5 mm past that
+    edge, through the torus across the facet, and the solid came back
+    folded through itself: `check` named the crossing, and the solid's
+    winding number reads −1 there.
+  - The build now asks the built solid where its boundary passes through
+    itself (`self_crossings`), after every other check passes. The curved
+    faces of each crossing pair are faceted or given back their facets,
+    and the planes of a pair of planes gathered again. A region so faceted
+    is reported with the new `FallbackReason::Crosses`. On that listing
+    the torus gives back the facets it took, and the solid built again
+    checks valid on 1427 faces, nothing faceted, its volume within 7.7e-5
+    of the part's; every other listing of the 35 swept is unchanged.
+  - Every corpus part the converter tests use comes back unchanged: the
+    same faces, curved faces and volume on all 20.
 - **Mesh conversion gives one result whatever order the mesh lists its
   triangles in.**
   - `solid_from_mesh` grew regions from seeds taken in the order the mesh

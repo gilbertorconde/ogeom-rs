@@ -80,7 +80,7 @@ pub fn self_crossings(
     solid: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Vec<SelfCrossing>> {
-    crossings(model, solid, &crate::ProbeCache::new(), tol)
+    crossings(model, solid, &ogeom_mesh::FaceMeshCache::default(), tol)
 }
 
 /// The pairs of faces of `solid` (a face with itself among them) that
@@ -96,13 +96,12 @@ pub fn self_crossings(
 pub(crate) fn crossings(
     model: &Model,
     solid: &Shape,
-    kept: &crate::ProbeCache,
+    kept: &ogeom_mesh::FaceMeshCache,
     tol: Tolerances,
 ) -> OgeomResult<Vec<SelfCrossing>> {
     let faces = explore_unique(model, solid, ShapeType::Face)?;
     let meshed = ogeom_core::parallel::map_ordered(&faces, |_, face| {
-        ogeom_mesh::triangulate_face_kept(model, face, Deflection::default(), kept.meshes(), tol)
-            .ok()
+        ogeom_mesh::triangulate_face_kept(model, face, Deflection::default(), kept, tol).ok()
     });
     let mut sheets = Vec::with_capacity(faces.len());
     let mut facets = Vec::new();

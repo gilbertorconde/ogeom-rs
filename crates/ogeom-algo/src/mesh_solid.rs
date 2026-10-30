@@ -64,8 +64,8 @@ use builder::Builder;
 use caches::{AreaCache, ImageCache, SnapCache};
 use checks::{
     Regrouped, absorb_facets, any_turned_in, backwards_facets, broken_faces, collapsed_beside,
-    crossed_boundaries, crossed_seams, failing_faces, folded_seams, give_back, overlapping_faces,
-    planes_off_their_vertices, unbuilt_culprits, unmatched_faces,
+    crossed_boundaries, crossed_seams, crossing_faces, failing_faces, folded_seams, give_back,
+    overlapping_faces, planes_off_their_vertices, unbuilt_culprits, unmatched_faces,
 };
 use planner::{NOISE_FLOOR, Planner, Replan};
 use regions::{flat_noise, split_disconnected};
@@ -464,6 +464,17 @@ struct Found {
 
 /// Weld, clean and orient the mesh, and gather its triangles into regions.
 fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> OgeomResult<Found> {
+    find_in(mesh, options, true, tol)
+}
+
+/// [`find`], reading the mesh in an order taken from its geometry where
+/// `canonical`, else as it lists its points and triangles.
+fn find_in(
+    mesh: &Triangulation,
+    options: &MeshSolidOptions,
+    canonical: bool,
+    tol: Tolerances,
+) -> OgeomResult<Found> {
     let weld = options.weld.unwrap_or_else(|| tol.confusion());
     if !(weld.is_finite() && weld > 0.0) {
         ogeom_bail!(
@@ -522,13 +533,22 @@ fn find(mesh: &Triangulation, options: &MeshSolidOptions, tol: Tolerances) -> Og
     // Everything after reads the mesh in an order taken from its geometry
     // (points by position, triangles by their corners), so the regions
     // found do not depend on how the mesh lists its triangles.
-    let (points, remap) = by_position(points, remap);
+    let (points, remap) = if canonical {
+        by_position(points, remap)
+    } else {
+        (points, remap)
+    };
     let mut listed: Vec<[u32; 3]> = mesh
         .triangles
         .iter()
-        .map(|t| lowest_first(t.map(|v| remap[v as usize])))
+        .map(|t| t.map(|v| remap[v as usize]))
         .collect();
-    listed.sort_unstable();
+    if canonical {
+        for t in &mut listed {
+            *t = lowest_first(*t);
+        }
+        listed.sort_unstable();
+    }
     let mut triangles = Vec::with_capacity(listed.len());
     let mut seen: FastMap<[u32; 3], ()> =
         FastMap::with_capacity_and_hasher(listed.len(), Default::default());
@@ -1077,6 +1097,16 @@ fn build_from(
                                 broken_faces(model, &groups, &built, &regrouped, tol)
                             );
                             reason = FallbackReason::BoundaryOpen;
+                        }
+                        if culprits.is_empty() && options.recognize {
+                            culprits = or_withdraw!(
+                                'checks,
+                                &built,
+                                crossing_faces(
+                                    model, &shape, &groups, &built, &regrouped, kept.meshes(), tol,
+                                )
+                            );
+                            reason = FallbackReason::Crosses;
                         }
                         if culprits.is_empty() {
                             report.faces = built.iter().flatten().count();

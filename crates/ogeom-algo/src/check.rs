@@ -187,7 +187,7 @@ pub fn check_kept(
         check_shell(model, shell, &mut found)?;
     }
     for solid in of(ShapeType::Solid) {
-        let crossings = crate::self_cross::crossings(model, solid, kept, tol)?;
+        let crossings = crate::self_cross::crossings(model, solid, kept.meshes(), tol)?;
         check_orientation(model, solid, tol, kept, !crossings.is_empty(), &mut found)?;
         note_crossings(crossings, &mut found);
     }

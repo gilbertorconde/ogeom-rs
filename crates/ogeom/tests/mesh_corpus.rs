@@ -327,6 +327,48 @@ fn nist_ctc_02() {
     );
 }
 
+/// Read as one listing of its triangles (a twelfth-thirtieth rotation,
+/// not in the order of their positions), `nist_ctc_02` grows a cylinder
+/// on a strip of two triangles between a torus and a facet whose other two
+/// sides lie on a second torus. The cylinder meets the facet's plane along
+/// a curve bowing 2.5 mm past the mesh edge they share, through the second
+/// torus, and the solid folded through itself there. A face passing
+/// through another is faceted or gathered again, and the solid checks
+/// valid and holds the part's volume.
+#[test]
+#[ignore = "heavy"]
+fn a_seam_bowing_through_a_face_past_its_facet_is_not_built() {
+    let name = "nist_ctc_02_asme1_rc.stp";
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
+    let mut mesh = ogeom::mesh::triangulate(
+        model,
+        part,
+        Deflection::with_chord(diagonal * 1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    let len = mesh.triangles.len();
+    mesh.triangles.rotate_left(12 * len / 30);
+    let regions = MeshRegions::find_as_listed(&mesh, &MeshSolidOptions::default(), T).unwrap();
+    let mut back = Model::new();
+    let out = regions.build(&mut back).unwrap();
+    let diagnosis = check(&back, &out.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let fine = Deflection::with_chord(diagonal * 1e-5).unwrap();
+    let (want, got) = (
+        volume_properties(model, part, fine, T).unwrap().mass,
+        volume_properties(&back, &out.shape, fine, T).unwrap().mass,
+    );
+    assert!(
+        (got - want).abs() <= want * 3e-3,
+        "{want} drawn, {got} came back"
+    );
+}
+
 /// A fitted face here ran past a facet it should have ended on, and the
 /// solid came back with the facet facing into material. A round along a
 /// plane's edge turns round a rounded corner on a torus meshed a few facets

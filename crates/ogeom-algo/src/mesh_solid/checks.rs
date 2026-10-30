@@ -1015,6 +1015,48 @@ pub(super) fn broken_faces(
         .collect())
 }
 
+/// The built faces of `shape` that pass through another face of it, or
+/// through themselves, away from the edges they share
+/// ([`self_crossings`](crate::self_crossings)): a seam fitted between two
+/// boundary nodes can bow past the facet it bounds and carry its curved
+/// face through a face beyond, a fold no check on one face or one seam
+/// sees. The curved faces of each crossing pair are the culprits; where
+/// both are planes, those that can be gathered again.
+pub(super) fn crossing_faces(
+    model: &Model,
+    shape: &Shape,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    regrouped: &Regrouped,
+    kept: &ogeom_mesh::FaceMeshCache,
+    tol: Tolerances,
+) -> OgeomResult<Vec<usize>> {
+    let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
+    let of_face: FastMap<ogeom_topo::TShapeId, usize> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, face)| Some((face.as_ref()?.node(), g)))
+        .collect();
+    let mut out = std::collections::BTreeSet::new();
+    for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
+        for crossing in crate::self_cross::crossings(model, &solid, kept, tol)? {
+            let pair: Vec<usize> = [&crossing.face, &crossing.other]
+                .into_iter()
+                .filter_map(|f| of_face.get(&f.node()).copied())
+                .collect();
+            if pair.iter().any(|&g| curved(g)) {
+                out.extend(pair.into_iter().filter(|&g| curved(g)));
+            } else {
+                out.extend(
+                    pair.into_iter()
+                        .filter(|&g| regrouped.can_withdraw(groups, g)),
+                );
+            }
+        }
+    }
+    Ok(out.into_iter().collect())
+}
+
 /// Each built face is meshed on its own, its edges drawn alike for every
 /// face, and the meshes are joined where their points coincide. A mesh
 /// edge used other than twice is a gap or an overlap: a face whose trim

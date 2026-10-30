@@ -105,6 +105,9 @@ pub enum FallbackReason {
     /// Its face's boundary did not close: a wire's edges did not meet end
     /// to end, or did not close in its surface's chart.
     BoundaryOpen,
+    /// Its face, built, passed through another face of the solid or
+    /// through itself, away from the edges they share.
+    Crosses,
 }
 
 impl fmt::Display for FallbackReason {
@@ -119,6 +122,7 @@ impl fmt::Display for FallbackReason {
             Self::MeshesOpen => "its face did not mesh closed with its neighbours",
             Self::BuildFailed => "building or meshing its face failed",
             Self::BoundaryOpen => "its face's boundary did not close",
+            Self::Crosses => "its face passed through another face",
         })
     }
 }
@@ -332,6 +336,30 @@ impl MeshRegions {
     ) -> OgeomResult<Self> {
         Ok(Self {
             found: super::find(mesh, options, tol)?,
+            options: *options,
+            tol,
+            touched: Vec::new(),
+        })
+    }
+
+    /// [`MeshRegions::find`], reading the mesh as it lists its points and
+    /// triangles rather than in the order of their positions: how a test
+    /// reaches a region set that listing grows. Present only with the
+    /// `test-hooks` feature, which nothing but the workspace's own tests
+    /// enables.
+    ///
+    /// # Errors
+    ///
+    /// As [`MeshRegions::find`].
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn find_as_listed(
+        mesh: &Triangulation,
+        options: &MeshSolidOptions,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        Ok(Self {
+            found: super::find_in(mesh, options, false, tol)?,
             options: *options,
             tol,
             touched: Vec::new(),
