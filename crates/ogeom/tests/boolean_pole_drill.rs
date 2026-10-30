@@ -2,7 +2,8 @@
 //! chart, or a hair beside them, and drills through the pole of a dome: a
 //! ball cut below its pole, alone or standing on a drum. A half ball
 //! charted about a tilted axis stands on a drum or is drilled. A placed
-//! half ball or ball is drilled through its pole.
+//! half ball or ball is drilled through its pole. A ball cut to a slab
+//! through both poles is drilled with the wall through them.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{check, make_box, make_cylinder, make_sphere, volume_properties};
@@ -1183,6 +1184,173 @@ fn a_quarter_ball_with_no_pole_edges_cuts_as_stated_or_refuses() {
                     k += 1;
                 }
             }
+        }
+    }
+}
+
+/// The ball cut to the slab `|x| < half`: a band of the sphere through both
+/// poles of its chart, between two parallels of the chart about x.
+fn ball_slab(model: &mut Model, half: f64) -> Shape {
+    let ball = make_sphere(model, Frame::WORLD, BALL, T).unwrap().shape;
+    let at = Frame::new(
+        Point::new(-half, -20.0, -20.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let slab = make_box(model, at, (2.0 * half, 40.0, 40.0), T)
+        .unwrap()
+        .shape;
+    ogeom::boolean::common(model, &ball, &slab, T)
+        .unwrap()
+        .shape
+}
+
+/// The ball's volume inside the slab `|x| < half` and a vertical drill of
+/// radius `r` at `(cx, cy)`: the chord across y in closed form, then
+/// across x by Simpson's rule on `x = cx + r sin t`, where the integrand is
+/// smooth up to the drill's rim.
+fn slab_drilled_volume(half: f64, cx: f64, cy: f64, r: f64) -> f64 {
+    // Twice the integral of sqrt(a^2 - y^2) up to `y`.
+    let primitive = |a: f64, y: f64| {
+        let y = y.clamp(-a, a);
+        y * (a * a - y * y).max(0.0).sqrt() + a * a * (y / a).asin()
+    };
+    let across = |x: f64| {
+        let w = (r * r - (x - cx) * (x - cx)).max(0.0).sqrt();
+        let a = (BALL * BALL - x * x).sqrt();
+        primitive(a, cy + w) - primitive(a, cy - w)
+    };
+    let angle = |x: f64| ((x - cx) / r).clamp(-1.0, 1.0).asin();
+    let (from, to) = (angle((cx - r).max(-half)), angle((cx + r).min(half)));
+    let steps = 20_000_u32;
+    let h = (to - from) / f64::from(steps);
+    let mut total = 0.0;
+    for i in 0..=steps {
+        let t = from + h * f64::from(i);
+        let w = if i == 0 || i == steps {
+            1.0
+        } else if i % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        total += w * across(cx + r * t.sin()) * r * t.cos();
+    }
+    total * h / 3.0
+}
+
+/// Cut, common and drill less the part of the ball slab `|x| < half` with
+/// a vertical drill of radius `r` at `(cx, cy)`: each valid, the common at
+/// its integrated volume, and the cut and the drill less the part at what
+/// is left of the part's and the drill's closed forms.
+fn slab_drilled(half: f64, r: f64, cx: f64, cy: f64) -> Result<(), String> {
+    let mut model = Model::new();
+    let part = ball_slab(&mut model, half);
+    let len = 30.0;
+    let at = Frame::new(Point::new(cx, cy, -15.0), Direction::Z, Direction::Y, T).unwrap();
+    let drill = make_cylinder(&mut model, at, r, len, T).unwrap().shape;
+    let inside = slab_drilled_volume(half, cx, cy, r);
+    let pi = core::f64::consts::PI;
+    let whole = pi * (2.0 * BALL * BALL * half - 2.0 * half.powi(3) / 3.0);
+    let bore = pi * r * r * len;
+    for (name, want) in [
+        ("cut", whole - inside),
+        ("common", inside),
+        ("drill less the part", bore - inside),
+    ] {
+        let made = match name {
+            "cut" => ogeom::boolean::cut(&mut model, &part, &drill, T),
+            "common" => ogeom::boolean::common(&mut model, &part, &drill, T),
+            _ => ogeom::boolean::cut(&mut model, &drill, &part, T),
+        }
+        .map_err(|e| format!("{name}: {e}"))?;
+        let diagnosis = check(&model, &made.shape, T).unwrap();
+        if !diagnosis.is_valid() {
+            return Err(format!("{name}: {diagnosis}"));
+        }
+        // The volume integrates the exact faces to far below this; the
+        // reference is a quadrature converged to well under it.
+        let got = volume(&model, &made.shape);
+        if (got - want).abs() > want * 1e-6 {
+            return Err(format!("{name}: volume {got} against {want}"));
+        }
+    }
+    Ok(())
+}
+
+/// Drills along the axis of the ball's chart whose wall passes through its
+/// poles, each `(r, cx, cy)`, in a ball cut to a slab `|x| < 0.8` or `0.5`.
+const SLAB_DRILLS: [(f64, f64, f64); 7] = [
+    (0.3, 0.0, 0.3),
+    (0.3, 0.0, -0.3),
+    (0.2, 0.2, 0.0),
+    (1.0, 0.0, 1.0),
+    (2.664_527_471_227_642, 0.0, 2.664_527_471_227_642),
+    (2.0, 0.0, -2.0),
+    (4.0, 0.0, 4.0),
+];
+
+/// The ball slab's band is restated on its sphere charted about x, its two
+/// loops cut where the new seam meets them and the slab's discs rebuilt on
+/// the pieces, so the drill's sections stand clear of every pole.
+#[test]
+fn a_ball_slab_drilled_with_its_wall_through_the_poles() {
+    for (half, r, cx, cy) in [
+        (0.5, 1.0, 0.0, 1.0),
+        (0.8, 0.3, 0.0, -0.3),
+        (0.8, 0.2, 0.2, 0.0),
+    ] {
+        slab_drilled(half, r, cx, cy)
+            .unwrap_or_else(|e| panic!("|x| < {half}, drill {r} at ({cx}, {cy}): {e}"));
+    }
+}
+
+#[test]
+#[ignore = "heavy"]
+fn ball_slabs_drilled_with_their_walls_through_the_poles() {
+    let mut failures = Vec::new();
+    for half in [0.8, 0.5] {
+        for (r, cx, cy) in SLAB_DRILLS {
+            if let Err(e) = slab_drilled(half, r, cx, cy) {
+                failures.push(format!("|x| < {half}, drill {r} at ({cx}, {cy}): {e}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Left on its own chart, the band meets each drill in sections through its
+/// poles, whose images no one chart line can follow: each operation
+/// refuses by name rather than reading a piece round both of the band's
+/// loops.
+#[test]
+fn a_section_through_a_sphere_charts_pole_is_refused() {
+    for (half, r, cx, cy) in [
+        (0.5, 1.0, 0.0, 1.0),
+        (0.8, 0.3, 0.0, -0.3),
+        (0.8, 0.2, 0.2, 0.0),
+    ] {
+        let mut model = Model::new();
+        let part = ball_slab(&mut model, half);
+        let at = Frame::new(Point::new(cx, cy, -15.0), Direction::Z, Direction::Y, T).unwrap();
+        let drill = make_cylinder(&mut model, at, r, 30.0, T).unwrap().shape;
+        for name in ["cut", "common", "drill less the part"] {
+            let made = ogeom_bool::work::unturned(|| match name {
+                "cut" => ogeom::boolean::cut(&mut model, &part, &drill, T),
+                "common" => ogeom::boolean::common(&mut model, &part, &drill, T),
+                _ => ogeom::boolean::cut(&mut model, &drill, &part, T),
+            });
+            let case = format!("|x| < {half}, drill {r} at ({cx}, {cy}) {name}");
+            let Err(e) = made else {
+                panic!("{case}: answered where its section passes a pole");
+            };
+            assert!(
+                e.to_string()
+                    .contains("a section through a sphere chart's pole is not resolved"),
+                "{case}: {e}"
+            );
         }
     }
 }

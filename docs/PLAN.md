@@ -22,35 +22,22 @@ first, then refusals, then cost.
 
 ### Booleans
 
-**Section loops pinned at a sphere's pole.** Where a curved wall passes
-through a pole of a sphere face, the marched section stalls and doubles back
-at the pole, and the arrangement can read one piece round both loops. Before
-the boolean, `ball_chart.rs` restates a whole ball or a trimmed sphere face on
-a chart whose poles stand clear; a solid at a rigid placement is restated in
-its own frame, and one scaled, mirrored or on a left-handed sphere is baked
-first. It leaves as it is (and the pole stays): a face whose trim the new
-chart would have to split (two loops round the axis, or a loop the seam
-meridian crosses at no vertex), a face placed inside its solid, and a face
-with an edge that has no curve in space. A ball of radius 10 cut to the
-slab |x| < 0.8 or 0.5 and drilled along z with the drill's wall through its
-pole fails so: every clear axis either lies within a tenth of the radius of
-the trim or has both loops round it. A drill on the axis passes. Of 14 drills whose
-wall passes through the pole (radii 0.2 to 4), none passes, and three
-answer wrong or broken without refusing:
-
-- |x| < 0.5, drill of radius 1 at (0, 1): cut, common and drill less the
-  part all pass `check`, but the cut is the whole ball as one face (volume
-  4188.3 against the part's 313.9), and the common is 34.40 against 38.00
-  integrated.
-- |x| < 0.8, drill of radius 0.3 at (0, -0.3): the common passes `check`
-  and its boundary is wound inward (its volume refuses as negative).
-- A drill of radius 0.2 at (0.2, 0), either slab: the cut fails `check`,
-  a face's normal reversed.
-
-The rest refuse ("the kept pieces did not close into a shell", "a face
-boundary strand dangles", "edge 18 ends where edge 19 does not begin",
-"the intersection came out empty though the solids overlap"), or give an
-edge two pcurves on one surface 11.3 apart.
+**Sections through a sphere's pole are refused.** A marched section whose
+image on a sphere face runs past the chart's pole row by more than its
+tolerance, or passes within it of one of the face's poles between its ends,
+is refused ("a section through a sphere chart's pole is not resolved"): the
+image cannot follow the half turn of longitude at the pole, and the
+arrangement read it on the far side of the chart. Before the boolean,
+`ball_chart.rs` restates a whole ball or a trimmed sphere face on a chart
+whose poles stand clear, so the section meets no pole; a band whose two
+loops go round the new axis takes a seam between them, its loop edges cut
+where the seam crosses them. The face is left on its own chart, and the
+section refused, where the rechart cannot run: a face with one new pole
+inside whose loop round it the seam meridian crosses at no vertex, a face
+placed inside its solid, and a face with an edge that has no curve in space.
+What would clear them: cut the loop at the seam as the band's is cut, or
+march the section through the pole, breaking its image at the pole sample
+so each piece has an image of its own.
 
 **Nearly coplanar faces are not paired as coincident.** A piece that reads on
 the other solid's boundary at every point asked, with no coincident partner

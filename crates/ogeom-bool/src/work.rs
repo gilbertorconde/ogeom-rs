@@ -37,6 +37,7 @@ thread_local! {
         })
     };
     static UNSEATED: Cell<bool> = const { Cell::new(false) };
+    static UNTURNED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `f` and count the work the booleans it runs on this thread do.
@@ -72,4 +73,24 @@ pub fn unseated<R>(f: impl FnOnce() -> R) -> R {
 /// general fuse.
 pub(crate) fn is_unseated() -> bool {
     UNSEATED.get()
+}
+
+/// Run `f` with every boolean on this thread taking its operands on the
+/// charts they come with: no ball or sphere face is restated on a chart
+/// whose poles stand clear of the other operand.
+pub fn unturned<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNTURNED.set(self.0);
+        }
+    }
+    let _restore = Restore(UNTURNED.replace(true));
+    f()
+}
+
+/// Whether the booleans on this thread take their operands on the charts
+/// they come with.
+pub(crate) fn is_unturned() -> bool {
+    UNTURNED.get()
 }

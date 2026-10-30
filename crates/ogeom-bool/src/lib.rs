@@ -10153,6 +10153,14 @@ fn general_fuse_as(
              by another lying along it is not resolved"
         );
     }
+    for section in &sections {
+        for (pcurve, face) in [
+            (&section.pc_a, &ga.faces[section.face_a]),
+            (&section.pc_b, &gb.faces[section.face_b]),
+        ] {
+            past_a_pole(section, pcurve, face, tol)?;
+        }
+    }
     let mut junctions = pave_junctions(&ga, &gb, &paves, tol)?;
     if *DEBUG_WIRE {
         for j in &junctions {
@@ -15297,6 +15305,84 @@ fn cut_once(model: &mut Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomRe
     }
     history.modify(a, empty.clone());
     Ok(Built::new(empty, history))
+}
+
+/// Refused where `section`'s image on `face`, a sphere face, leaves the
+/// chart at a pole: past the pole row by more than the section's
+/// tolerance, or through one of the face's poles between its ends. An
+/// image past the pole row stands for the point half a turn round on the
+/// near side, and a curve through a pole leaves it half a turn round the
+/// chart from where it came, which no one image can follow; the
+/// arrangement would read either where the section is not. Each is read
+/// at its worst among evenly spaced samples, refined by golden section
+/// between their neighbours.
+fn past_a_pole(
+    section: &SectionRec,
+    pcurve: &PlanarCurve,
+    face: &GFace,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    const SAMPLES: usize = 256;
+    let SurfaceGeometry::Sphere(sphere) = &face.surface else {
+        return Ok(());
+    };
+    let radius = sphere.sphere().radius();
+    let reach = section.tolerance.max(tol.confusion());
+    let range = section.curve.domain();
+    let worst = |measure: &dyn Fn(f64) -> OgeomResult<f64>| -> OgeomResult<f64> {
+        #[allow(clippy::cast_precision_loss)]
+        let step = |k: usize| range.0 + (range.1 - range.0) * k as f64 / SAMPLES as f64;
+        let mut top = (f64::NEG_INFINITY, 0);
+        for k in 0..=SAMPLES {
+            let m = measure(step(k))?;
+            if m > top.0 {
+                top = (m, k);
+            }
+        }
+        let (mut lo, mut hi) = (
+            step(top.1.saturating_sub(1)),
+            step((top.1 + 1).min(SAMPLES)),
+        );
+        let golden = (5.0_f64.sqrt() - 1.0) / 2.0;
+        for _ in 0..100 {
+            let (a, b) = (hi - golden * (hi - lo), lo + golden * (hi - lo));
+            if measure(a)? > measure(b)? {
+                hi = b;
+            } else {
+                lo = a;
+            }
+        }
+        Ok(measure(f64::midpoint(lo, hi))?.max(top.0))
+    };
+    let past =
+        worst(&|t| Ok((pcurve.point_at(t, tol)?.y.abs() - core::f64::consts::FRAC_PI_2) * radius))?;
+    if past > reach {
+        ogeom_bail!(
+            NotDone,
+            "a section's image on a sphere runs {past} past the chart's pole, beyond \
+             its tolerance of {reach}; a section through a sphere chart's pole is not \
+             resolved; see docs/CAPABILITIES.md, bool.booleans"
+        );
+    }
+    let (start, end) = (
+        section.curve.point_at(range.0, tol)?,
+        section.curve.point_at(range.1, tol)?,
+    );
+    for pole in &face.poles {
+        if start.distance(pole.point) <= reach || end.distance(pole.point) <= reach {
+            continue;
+        }
+        let near = -worst(&|t| Ok(-section.curve.point_at(t, tol)?.distance(pole.point)))?;
+        if near <= reach {
+            ogeom_bail!(
+                NotDone,
+                "a section passes within {near} of a sphere chart's pole between its \
+                 ends, inside its tolerance of {reach}; a section through a sphere \
+                 chart's pole is not resolved; see docs/CAPABILITIES.md, bool.booleans"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The edges where the two solids' boundaries cross.

@@ -11,6 +11,40 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A ball cut to a slab through both poles and drilled with the wall
+  through a pole: no wrong answer, and the drills pass.**
+  - A ball of radius 10 cut to `|x| < 0.8` or `|x| < 0.5` and drilled
+    along z with the drill's wall through the pole: of 14 drills (radii
+    0.2 to 4), none passed on 0.12.0, and several answered wrong without
+    refusing. At `|x| < 0.5` the drill of radius 1 at (0, 1) gave the cut
+    as the whole ball, valid by `check` (4188.3 against the part's 313.9),
+    and the common as 34.40 against 38.00 integrated; at `|x| < 0.8` the
+    drill of radius 0.3 at (0, −0.3) gave a valid common wound inward; the
+    drill of radius 0.2 at (0.2, 0) gave a cut with a face reversed.
+  - Each drill's section passes through a pole of the band's chart, where
+    longitude jumps half a turn. The marched images ran straight on past
+    the pole row, by up to 1.16 mm in space against tolerances of 0.005 to
+    0.12, so the arrangement read them on the far side of the chart, and
+    the faces they bounded round both of the band's loops. A section's
+    image on a sphere face that runs past a pole row by more than the
+    section's tolerance, or passes within it of one of the face's poles
+    between its ends, is now refused by name.
+  - The band could not be restated on a chart about x, whose poles stand
+    clear: both loops go round that axis, and a seam crossing them at no
+    vertex had no edge to end on. Now a band takes a seam between its two
+    loops on the meridian, of eight round the axis, that crosses each loop
+    once, reaches no other, and stands furthest from the other operand's
+    walls; a loop edge the seam crosses inside is cut there, in the
+    sphere face and in every face of the solid holding it. All 14 drills
+    pass, the cut, the common and the drill less the part each valid. The
+    common is within 7e-15 of the ball's volume over the drill's disc
+    inside the slab (its chord in closed form, then Simpson's rule and
+    Gauss-Legendre across it, which agree to 6e-15). The drill less the
+    part is within 5e-14, and the cut within 1.1e-12, of what that leaves
+    of the drill's and the part's closed forms.
+
 ## [0.12.0] - 2026-10-30
 
 A minor release, since the API and the licence change. The kernel is now

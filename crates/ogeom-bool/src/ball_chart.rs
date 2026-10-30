@@ -11,8 +11,11 @@
 //! loops. A ball that is one face (a seam and two poles, no trim) can be
 //! restated that way exactly: the surface is the same set of points, only
 //! the parameterization moves. A trimmed sphere face of any solid is
-//! restated too, where the new chart's seam can leave its trim at a vertex:
-//! its trim edges take fitted images in the new chart.
+//! restated too, where the new chart's seam can leave its trim at a vertex,
+//! or, for a band whose two loops go round the new axis, where the seam
+//! crosses each loop once: its trim edges take fitted images in the new
+//! chart, and an edge the band's seam crosses is cut there, in every face
+//! of the solid that holds it.
 
 use ogeom_algo::{Built, History, make_sphere};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
@@ -50,6 +53,10 @@ pub(crate) fn with_poles_clear(
     tol: Tolerances,
     mut run: impl FnMut(&mut Model, &Shape, &Shape) -> OgeomResult<Built>,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "test-hooks")]
+    if crate::work::is_unturned() {
+        return run(model, a, b);
+    }
     if let Some((ta, tb, before)) = turned(model, a, b, tol)? {
         match run(model, &ta, &tb) {
             Ok(built) => return Ok(Built::new(built.shape, before.then(&built.history))),
@@ -318,9 +325,23 @@ const FIT_IN_CHART: f64 = 1e-11;
 /// at the vertex the seam leaves the face at.
 const OFF_SEAM: f64 = 1e-6;
 
+/// Meridians a band's seam is tried on, evenly spaced round the new axis,
+/// and the points along each between the two loops its clearance of the
+/// other operand's walls is read at.
+const BAND_SEAMS: usize = 8;
+const BAND_PROBES: usize = 8;
+
 /// A shape the restating replaces and what it became, or `None` where it
 /// is gone.
 type Record = (Shape, Option<Shape>);
+
+/// A trim edge cut where a new chart's seam crosses it: the edge, forward,
+/// and its pieces in its own direction.
+type Split = (Shape, Vec<Shape>);
+
+/// A loop started where a band's seam crosses it: its edges, the vertex
+/// it starts at, and the edge the seam cut there, if any.
+type Started = (Vec<Shape>, Shape, Vec<Split>);
 
 /// `solid` with each sphere face whose pole stands on or beside `other`'s
 /// curved surfaces restated on a chart whose poles stand clear, and what
@@ -332,8 +353,13 @@ type Record = (Shape, Option<Shape>);
 /// go. The new chart's seam crosses the trim only at a vertex: a pole
 /// inside the face alone takes a seam from that vertex up to it and a pole
 /// edge, two poles inside take a seam between them, and a seam the face
-/// does not reach takes no edge at all. A face whose trim the new chart
-/// would have to split elsewhere is left as it is.
+/// does not reach takes no edge at all. A band, no pole inside and its two
+/// loops once round the axis each way, takes a seam between them on a
+/// meridian crossing each loop once and reaching no other, the one of
+/// [`BAND_SEAMS`] standing furthest from `other`'s walls; a loop edge it
+/// crosses inside is cut there, and every face holding that edge takes the
+/// pieces. A face whose trim the new chart would have to split otherwise
+/// is left as it is.
 ///
 /// A solid at a rigid placement is restated in its own frame and placed
 /// as it was. One placed with a scale or a reflection, or with a pinned
@@ -406,15 +432,17 @@ fn rigid_faces_turned(
     let to_local = solid.transform(model.datums())?.inverse()?;
     let mut walls: Option<Vec<SurfaceGeometry>> = None;
     let mut records = Vec::new();
-    let mut shells = Vec::new();
-    let mut changed = false;
-    for shell in model.children_of(&bare)? {
-        let faces = model.children_of(&shell)?;
-        let mut kept = Vec::with_capacity(faces.len());
-        let mut touched = false;
-        for face in faces {
+    // Each trim edge a restated face cut at its seam, with the face that
+    // cut it.
+    let mut splits: Vec<(Split, ogeom_topo::TShapeId)> = Vec::new();
+    let shells = model.children_of(&bare)?;
+    let mut turned_in: Vec<Vec<Option<Shape>>> = Vec::with_capacity(shells.len());
+    for shell in &shells {
+        let faces = model.children_of(shell)?;
+        let mut turned_here = Vec::with_capacity(faces.len());
+        for face in &faces {
             let mut turned = None;
-            if let Some(pinned) = pinned_sphere(model, &face)?
+            if let Some(pinned) = pinned_sphere(model, face)?
                 && pinned.sphere.frame().handedness() == ogeom_math::Handedness::Right
             {
                 let walls = match &walls {
@@ -426,34 +454,73 @@ fn rigid_faces_turned(
                             .collect::<OgeomResult<_>>()?,
                     ),
                 };
-                turned = face_turned(model, &face, &pinned, walls, tol)?;
-                if let Some(new) = &turned {
+                if let Some((new, cut)) = face_turned(model, face, &pinned, walls, tol)? {
                     records.push((face.clone(), Some(new.clone())));
                     for gone in &pinned.dropped {
                         records.push((gone.clone(), None));
                     }
+                    for (old, pieces) in &cut {
+                        for piece in pieces {
+                            records.push((old.clone(), Some(piece.clone())));
+                        }
+                    }
+                    splits.extend(cut.into_iter().map(|s| (s, face.node())));
+                    turned = Some(new);
                 }
             }
-            match turned {
-                Some(new) => {
-                    kept.push(new);
-                    touched = true;
+            turned_here.push(turned);
+        }
+        turned_in.push(turned_here);
+    }
+    // A restated face reads its trim edges uncut: where another restated
+    // face cut one of them, the solid is left as it is.
+    for (shell, turned_here) in shells.iter().zip(&turned_in) {
+        for (face, turned) in model.children_of(shell)?.iter().zip(turned_here) {
+            if turned.is_none() {
+                continue;
+            }
+            for edge in explore_unique(model, face, ShapeType::Edge)? {
+                if splits
+                    .iter()
+                    .any(|((old, _), by)| old.node() == edge.node() && *by != face.node())
+                {
+                    return Ok(None);
                 }
-                None => kept.push(face),
+            }
+        }
+    }
+    let cut: Vec<Split> = splits.into_iter().map(|(s, _)| s).collect();
+    let mut changed = false;
+    let mut rebuilt_shells = Vec::with_capacity(shells.len());
+    for (shell, turned_here) in shells.into_iter().zip(turned_in) {
+        let faces = model.children_of(&shell)?;
+        let mut kept = Vec::with_capacity(faces.len());
+        let mut touched = false;
+        for (face, turned) in faces.into_iter().zip(turned_here) {
+            if let Some(new) = turned {
+                kept.push(new);
+                touched = true;
+            } else if let Some(new) = with_pieces(model, &face, &cut)? {
+                records.push((face, Some(new.clone())));
+                kept.push(new);
+                touched = true;
+            } else {
+                kept.push(face);
             }
         }
         if touched {
             let new_shell = model.add_shell(&kept)?;
             records.push((shell, Some(new_shell.clone())));
-            shells.push(new_shell);
+            rebuilt_shells.push(new_shell);
             changed = true;
         } else {
-            shells.push(shell);
+            rebuilt_shells.push(shell);
         }
     }
     if !changed {
         return Ok(None);
     }
+    let shells = rebuilt_shells;
     let made = model.add_solid(&shells)?;
     if !ogeom_algo::check(model, &made, tol)?.is_valid() {
         return Ok(None);
@@ -465,6 +532,61 @@ fn rigid_faces_turned(
         .collect();
     records.push((solid.clone(), Some(placed.clone())));
     Ok(Some((placed, records)))
+}
+
+/// `face` on its own surface with each edge `splits` cut replaced by its
+/// pieces, run the way the face runs the edge; `None` where it holds none
+/// of them, or holds one at a placement.
+fn with_pieces(model: &mut Model, face: &Shape, splits: &[Split]) -> OgeomResult<Option<Shape>> {
+    if splits.is_empty() {
+        return Ok(None);
+    }
+    let Some(node) = model.node(face) else {
+        ogeom_core::ogeom_bail!(Dangling, "face is not in this model");
+    };
+    let NodeData::Face(data) = node.data() else {
+        return Ok(None);
+    };
+    let mut data = (**data).clone();
+    data.triangulation = None;
+    let wires = node.children().to_vec();
+    let mut any = false;
+    let mut made = Vec::with_capacity(wires.len());
+    for wire in wires {
+        let Some(held) = model.node(&wire) else {
+            ogeom_core::ogeom_bail!(Dangling, "wire is not in this model");
+        };
+        let mut edges = Vec::with_capacity(held.children().len() + 1);
+        for edge in held.children() {
+            let Some((_, pieces)) = splits.iter().find(|(old, _)| old.node() == edge.node()) else {
+                edges.push(edge.clone());
+                continue;
+            };
+            if !edge.location().is_identity() {
+                return Ok(None);
+            }
+            any = true;
+            if edge.orientation() == Orientation::Reversed {
+                edges.extend(pieces.iter().rev().map(Shape::reversed));
+            } else {
+                edges.extend(pieces.iter().cloned());
+            }
+        }
+        let rebuilt = model.add_wire(&edges)?;
+        made.push(
+            rebuilt
+                .located(wire.location().clone())
+                .oriented(wire.orientation()),
+        );
+    }
+    if !any {
+        return Ok(None);
+    }
+    let new = model.add_face(data, &made)?;
+    Ok(Some(
+        new.located(face.location().clone())
+            .oriented(face.orientation()),
+    ))
 }
 
 /// A sphere face with a pole in its chart, its trim chained into loops.
@@ -586,15 +708,16 @@ fn pinned_sphere(model: &Model, face: &Shape) -> OgeomResult<Option<Pinned>> {
 
 /// The face restated on its sphere charted about an axis whose poles stand
 /// clear of `walls` and of the face's own trim, where a pole of its chart
-/// stands on or beside `walls`; `None` otherwise, or where no candidate
-/// axis lays a chart the trim fits whole.
+/// stands on or beside `walls`, and the trim edges its new seam cut;
+/// `None` otherwise, or where no candidate axis lays a chart the trim
+/// fits.
 fn face_turned(
     model: &mut Model,
     face: &Shape,
     pinned: &Pinned,
     walls: &[SurfaceGeometry],
     tol: Tolerances,
-) -> OgeomResult<Option<Shape>> {
+) -> OgeomResult<Option<(Shape, Vec<Split>)>> {
     let clearance = |p: Point| -> f64 {
         walls
             .iter()
@@ -636,7 +759,7 @@ fn face_turned(
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     for (_, axis) in scored {
-        if let Some(made) = restated(model, face, pinned, axis, tol)? {
+        if let Some(made) = restated(model, face, pinned, axis, &clearance, tol)? {
             return Ok(Some(made));
         }
     }
@@ -740,16 +863,274 @@ fn reaches(lo: f64, hi: f64, u: f64) -> bool {
     first <= hi + OFF_SEAM
 }
 
-/// The face restated on its sphere charted about `axis`, where the trim
-/// fits that chart crossing its seam only at a vertex; `None` where it does
-/// not, or an image of the trim misses its edge.
+/// The index of the sample beside the one place a loop's carried
+/// longitudes pass longitude `u` (some whole turn of it), or `None` where
+/// they pass it other than once.
+fn crossed_once(us: &[f64], u: f64) -> Option<usize> {
+    let turn = core::f64::consts::TAU;
+    let mut count = 0.0;
+    let mut found = None;
+    for (i, w) in us.windows(2).enumerate() {
+        let (lo, hi) = if w[0] <= w[1] {
+            (w[0], w[1])
+        } else {
+            (w[1], w[0])
+        };
+        // The turns of `u` in `(lo, hi]`.
+        let passed = (((hi - u) / turn).floor() - ((lo - u) / turn).floor()).max(0.0);
+        if passed > 0.0 {
+            count += passed;
+            found = Some(i);
+        }
+    }
+    if count == 1.0 { found } else { None }
+}
+
+/// The surface a face lies on.
+fn face_surface(model: &Model, face: &Shape) -> Option<ogeom_topo::SurfaceId> {
+    match model.node(face).map(|n| n.data()) {
+        Some(NodeData::Face(data)) => Some(data.surface),
+        _ => None,
+    }
+}
+
+/// `ring`, a loop once round `chart`'s axis, started at the vertex where it
+/// crosses the chart's seam meridian (longitude 0), the edge it crosses
+/// inside cut there: the loop, that vertex, and the cut. `None` where it
+/// crosses that meridian other than once, or the edge will not cut.
+fn started_on_seam(
+    model: &mut Model,
+    ring: &[Shape],
+    chart: &Frame,
+    old_surface: ogeom_topo::SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<Option<Started>> {
+    use core::f64::consts::FRAC_PI_2;
+    let mut samples: Vec<(usize, f64, f64)> = Vec::new();
+    for (k, edge) in ring.iter().enumerate() {
+        for (t, p) in edge_samples(model, edge, EDGE_SAMPLES, tol)? {
+            samples.push((k, t, chart_of(chart, p).0));
+        }
+    }
+    // Longitude changes sign at the seam and, a half turn round, where it
+    // wraps; only the seam's is wanted.
+    let crossings: Vec<(usize, f64, f64, f64)> = samples
+        .windows(2)
+        .filter(|w| {
+            w[0].0 == w[1].0
+                && (w[0].2 < 0.0) != (w[1].2 < 0.0)
+                && w[0].2.abs() < FRAC_PI_2
+                && w[1].2.abs() < FRAC_PI_2
+        })
+        .map(|w| (w[0].0, w[0].1, w[1].1, w[0].2))
+        .collect();
+    let [(k, lo, hi, u_lo)] = crossings[..] else {
+        return Ok(None);
+    };
+    let (mut lo, mut hi) = (lo, hi);
+    let Some(NodeData::Edge(data)) = model.node(&ring[k]).map(|n| n.data()) else {
+        return Ok(None);
+    };
+    let Some(EdgeRepr::Curve3d { curve, .. }) = data.curve3d() else {
+        return Ok(None);
+    };
+    let Some(curve) = model.geometry().curve(*curve).cloned() else {
+        return Ok(None);
+    };
+    let below = u_lo < 0.0;
+    for _ in 0..200 {
+        let mid = f64::midpoint(lo, hi);
+        if mid == lo || mid == hi {
+            break;
+        }
+        if (chart_of(chart, curve.point_at(mid, tol)?).0 < 0.0) == below {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let t = f64::midpoint(lo, hi);
+    let at = curve.point_at(t, tol)?;
+    let Some((start, end)) = ogeom_algo::edge_vertices(model, &ring[k])? else {
+        return Ok(None);
+    };
+    for (vertex, from) in [(&start, k), (&end, k + 1)] {
+        let Some(NodeData::Vertex(v)) = model.node(vertex).map(|n| n.data()) else {
+            return Ok(None);
+        };
+        if v.point.distance(at) <= v.tolerance.get().max(tol.confusion()) {
+            let mut started = ring.to_vec();
+            started.rotate_left(from % ring.len());
+            return Ok(Some((started, vertex.clone(), Vec::new())));
+        }
+    }
+    let edge = ring[k].oriented(Orientation::Forward);
+    let Some((pieces, vertex)) = cut_edge(model, &edge, t, old_surface, tol)? else {
+        return Ok(None);
+    };
+    let [head, tail] = pieces.as_slice() else {
+        return Ok(None);
+    };
+    let run = if ring[k].orientation() == Orientation::Reversed {
+        [tail.reversed(), head.reversed()]
+    } else {
+        [head.clone(), tail.clone()]
+    };
+    let mut started: Vec<Shape> = ring[..k].to_vec();
+    started.extend(run);
+    started.extend(ring[k + 1..].iter().cloned());
+    started.rotate_left(k + 1);
+    Ok(Some((started, vertex, vec![(edge, pieces)])))
+}
+
+/// `edge` (forward) cut at `t` on its curve: its two pieces in its own
+/// direction, each with the edge's pcurves on surfaces other than `skip`
+/// cut where they pass the cut point, and the vertex between them. `None`
+/// where the edge is degenerate or placed, it is a seam of another
+/// surface, or a pcurve passes nowhere within its tolerance of that point.
+fn cut_edge(
+    model: &mut Model,
+    edge: &Shape,
+    t: f64,
+    skip: ogeom_topo::SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Vec<Shape>, Shape)>> {
+    let Some(NodeData::Edge(data)) = model.node(edge).map(|n| n.data()) else {
+        return Ok(None);
+    };
+    let data = data.clone();
+    if data.degenerate {
+        return Ok(None);
+    }
+    let Some(EdgeRepr::Curve3d {
+        curve,
+        location,
+        range,
+    }) = data.curve3d()
+    else {
+        return Ok(None);
+    };
+    if !location.is_identity() || !(range.0 < t && t < range.1) {
+        return Ok(None);
+    }
+    let range = *range;
+    let Some(geometry) = model.geometry().curve(*curve).cloned() else {
+        return Ok(None);
+    };
+    let Some((start, end)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(None);
+    };
+    let at = geometry.point_at(t, tol)?;
+    let reach = data.tolerance.get().max(tol.confusion());
+    let mut cuts = Vec::new();
+    for repr in &data.representations {
+        match repr {
+            EdgeRepr::PCurve {
+                curve,
+                surface,
+                location,
+                range,
+            } => {
+                if *surface == skip {
+                    continue;
+                }
+                if !location.is_identity() {
+                    return Ok(None);
+                }
+                let (Some(pcurve), Some(on)) = (
+                    model.geometry().pcurve(*curve),
+                    model.geometry().surface(*surface),
+                ) else {
+                    return Ok(None);
+                };
+                let Some(s) = pcurve_parameter_at(on, pcurve, *range, at, reach, tol)? else {
+                    return Ok(None);
+                };
+                if !(range.0 < s && s < range.1) {
+                    return Ok(None);
+                }
+                cuts.push((pcurve.clone(), *surface, (range.0, s), (s, range.1)));
+            }
+            EdgeRepr::Seam { surface, .. } if *surface != skip => return Ok(None),
+            _ => {}
+        }
+    }
+    let vertex = model.add_vertex(ogeom_topo::VertexData::new(at));
+    let head =
+        ogeom_algo::make_edge_between(model, geometry.clone(), (range.0, t), &start, &vertex, tol)?
+            .shape;
+    let tail =
+        ogeom_algo::make_edge_between(model, geometry, (t, range.1), &vertex, &end, tol)?.shape;
+    for (pcurve, surface, first, second) in cuts {
+        let identity = ogeom_topo::Location::identity();
+        ogeom_algo::attach_pcurve(
+            model,
+            &head,
+            pcurve.clone(),
+            surface,
+            identity.clone(),
+            first,
+        )?;
+        ogeom_algo::attach_pcurve(model, &tail, pcurve, surface, identity, second)?;
+    }
+    model.widen(&head, data.tolerance)?;
+    model.widen(&tail, data.tolerance)?;
+    Ok(Some((vec![head, tail], vertex)))
+}
+
+/// The parameter in `range` at which `pcurve` on `surface` passes nearest
+/// `p`, where it passes within `reach` of it: the nearest of evenly spaced
+/// samples, refined by golden section between its neighbours.
+fn pcurve_parameter_at(
+    surface: &SurfaceGeometry,
+    pcurve: &PlanarCurve,
+    range: (f64, f64),
+    p: Point,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let gap = |s: f64| -> OgeomResult<f64> {
+        let uv = pcurve.point_at(s, tol)?;
+        Ok(surface.point_at(uv.x, uv.y, tol)?.distance(p))
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let step = |k: usize| range.0 + (range.1 - range.0) * k as f64 / FIT_SAMPLES as f64;
+    let mut nearest = (f64::INFINITY, 0);
+    for k in 0..=FIT_SAMPLES {
+        let d = gap(step(k))?;
+        if d < nearest.0 {
+            nearest = (d, k);
+        }
+    }
+    let (mut lo, mut hi) = (
+        step(nearest.1.saturating_sub(1)),
+        step((nearest.1 + 1).min(FIT_SAMPLES)),
+    );
+    let golden = (5.0_f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..100 {
+        let (a, b) = (hi - golden * (hi - lo), lo + golden * (hi - lo));
+        if gap(a)? < gap(b)? {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    let s = f64::midpoint(lo, hi);
+    Ok((gap(s)? <= reach).then_some(s))
+}
+
+/// The face restated on its sphere charted about `axis`, and the trim
+/// edges a band's seam cut, where the trim fits that chart crossing its
+/// seam only at a vertex, or once across each of a band's two loops;
+/// `None` where it does not, or an image of the trim misses its edge.
 fn restated(
     model: &mut Model,
     face: &Shape,
     pinned: &Pinned,
     axis: Vector,
+    clearance: &dyn Fn(Point) -> f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Shape>> {
+) -> OgeomResult<Option<(Shape, Vec<Split>)>> {
     use core::f64::consts::{FRAC_PI_2, TAU};
     use ogeom_algo::Containment;
     let (centre, radius) = (pinned.sphere.centre(), pinned.sphere.radius());
@@ -835,6 +1216,56 @@ fn restated(
             return Ok(None);
         };
         found
+    } else if poles_in == 0 && !around.is_empty() {
+        // A band: the two loops round the axis, the seam on the meridian
+        // standing furthest from the walls of those that cross each loop
+        // once and reach no other loop.
+        let [first, second] = around.as_slice() else {
+            return Ok(None);
+        };
+        if turns[*first].abs() != 1 || turns[*second] != -turns[*first] {
+            return Ok(None);
+        }
+        let carried: Vec<Vec<f64>> = points.iter().map(|r| longitudes(&provisional, r)).collect();
+        let mut best: Option<(f64, f64)> = None;
+        for k in 0..BAND_SEAMS {
+            #[allow(clippy::cast_precision_loss)]
+            let u = TAU * k as f64 / BAND_SEAMS as f64;
+            let mut latitudes = Vec::with_capacity(2);
+            let mut fits = true;
+            for (i, us) in carried.iter().enumerate() {
+                if !around.contains(&i) {
+                    let (lo, hi) = span(us);
+                    fits &= !reaches(lo, hi, u);
+                    continue;
+                }
+                match crossed_once(us, u) {
+                    Some(at) => latitudes.push(chart_of(&provisional, points[i][at]).1),
+                    None => fits = false,
+                }
+            }
+            let [a, b] = latitudes.as_slice() else {
+                continue;
+            };
+            if !fits {
+                continue;
+            }
+            let meridian = across * u.cos() + axis.cross(across) * u.sin();
+            let score = (0..=BAND_PROBES)
+                .map(|j| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let v = a + (b - a) * j as f64 / BAND_PROBES as f64;
+                    clearance(centre + (meridian * v.cos() + axis * v.sin()) * radius)
+                })
+                .fold(f64::INFINITY, f64::min);
+            if best.is_none_or(|(s, _)| score > s) {
+                best = Some((score, u));
+            }
+        }
+        let Some((_, u)) = best else {
+            return Ok(None);
+        };
+        (u, None)
     } else {
         if !around.is_empty() {
             return Ok(None);
@@ -883,12 +1314,36 @@ fn restated(
     let geometry: SurfaceGeometry = ogeom_geom::SphereSurface::new(sphere).into();
     let surface = model.geometry_mut().add_surface(geometry.clone());
 
+    // A band's two loops cut where the seam crosses them, each then
+    // starting there, with the vertex and its latitude.
+    let mut rings = pinned.rings.clone();
+    let mut splits: Vec<Split> = Vec::new();
+    let mut band_ends: Vec<(usize, Shape, f64)> = Vec::new();
+    if poles_in == 0 && !around.is_empty() {
+        let Some(old_surface) = face_surface(model, face) else {
+            return Ok(None);
+        };
+        for &i in &around {
+            let Some((ring, vertex, cut)) =
+                started_on_seam(model, &rings[i], &chart, old_surface, tol)?
+            else {
+                return Ok(None);
+            };
+            let Some(NodeData::Vertex(v)) = model.node(&vertex).map(|n| n.data()) else {
+                return Ok(None);
+            };
+            band_ends.push((i, vertex.clone(), chart_of(&chart, v.point).1));
+            rings[i] = ring;
+            splits.extend(cut);
+        }
+    }
+
     // Each loop's edges given their image, the longitude carried along the
-    // loop from where it starts: the vertex on the seam for the loop round
-    // a pole, else wherever puts the whole loop inside one turn.
+    // loop from where it starts: the vertex on the seam for a loop round
+    // the axis, else wherever puts the whole loop inside one turn.
     let mut wires: Vec<(Vec<Shape>, f64)> = Vec::new();
     let mut seam_ends: Option<(f64, f64)> = None;
-    for (i, ring) in pinned.rings.iter().enumerate() {
+    for (i, ring) in rings.iter().enumerate() {
         let mut ring = ring.clone();
         if let Some((outer, k)) = through
             && outer == i
@@ -973,6 +1428,43 @@ fn restated(
     // The seam and pole edges the new chart needs, and the outer loop
     // first.
     let (outer, holes): (Vec<Shape>, Vec<Vec<Shape>>) = match (poles_in, through) {
+        (0, None) if !band_ends.is_empty() => {
+            let [low, high] = band_ends.as_slice() else {
+                return Ok(None);
+            };
+            let (low, high) = if low.2 <= high.2 {
+                (low, high)
+            } else {
+                (high, low)
+            };
+            // Up the seam where the lower loop ends, down where it starts.
+            let sides = if turns[low.0] > 0 {
+                (TAU, 0.0)
+            } else {
+                (0.0, TAU)
+            };
+            let seam = seam_between(
+                model,
+                surface,
+                &chart,
+                radius,
+                (&low.1, low.2),
+                (&high.1, high.2),
+                sides,
+                tol,
+            )?;
+            let mut edges = wires[low.0].0.clone();
+            edges.push(seam.clone());
+            edges.extend(wires[high.0].0.iter().cloned());
+            edges.push(seam.reversed());
+            let holes = wires
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| *i != low.0 && *i != high.0)
+                .map(|(_, (w, _))| w)
+                .collect();
+            (edges, holes)
+        }
         (1, Some((ring_index, _))) => {
             let Some((u_start, u_end)) = seam_ends else {
                 return Ok(None);
@@ -992,7 +1484,7 @@ fn restated(
                 &chart,
                 radius,
                 (&start, low),
-                &north,
+                (&north, FRAC_PI_2),
                 (u_end, u_start),
                 tol,
             )?;
@@ -1027,7 +1519,7 @@ fn restated(
                 &chart,
                 radius,
                 (&south, -FRAC_PI_2),
-                &north,
+                (&north, FRAC_PI_2),
                 sides,
                 tol,
             )?;
@@ -1070,7 +1562,7 @@ fn restated(
     let data = ogeom_topo::FaceData::new(surface, ogeom_topo::Location::identity());
     let made = model.add_face(data, &made_wires)?;
     model.widen(&made, held)?;
-    Ok(Some(made.oriented(face.orientation())))
+    Ok(Some((made.oriented(face.orientation()), splits)))
 }
 
 /// A pole at `at`, latitude `v` of a sphere chart: an edge with no length,
@@ -1097,10 +1589,10 @@ fn pole_at(
     Ok(edge)
 }
 
-/// The seam of a sphere chart about `chart` from `low` (a vertex and its
-/// latitude) up to the vertex `north` at its pole, its image up the side
-/// of the chart at longitude `sides.0` where the edge runs forward and at
-/// `sides.1` where it runs back.
+/// The seam of a sphere chart about `chart` from `low` up to `high` (each
+/// a vertex and its latitude), its image up the side of the chart at
+/// longitude `sides.0` where the edge runs forward and at `sides.1` where
+/// it runs back.
 #[allow(clippy::too_many_arguments)]
 fn seam_between(
     model: &mut Model,
@@ -1108,12 +1600,11 @@ fn seam_between(
     chart: &Frame,
     radius: f64,
     low: (&Shape, f64),
-    north: &Shape,
+    high: (&Shape, f64),
     sides: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
-    use core::f64::consts::FRAC_PI_2;
-    let (from, latitude) = low;
+    let ((from, bottom), (to, top)) = (low, high);
     // Its plane is spanned by the chart's x and axis, so the circle's
     // normal is -y and its angle is the latitude.
     let meridian = ogeom_math::Circle::new(
@@ -1124,17 +1615,14 @@ fn seam_between(
     let seam = ogeom_algo::make_edge_between(
         model,
         ogeom_geom::CircleCurve::new(meridian).into(),
-        (latitude, FRAC_PI_2),
+        (bottom, top),
         from,
-        north,
+        to,
         tol,
     )?
     .shape;
     let side = |u: f64| -> OgeomResult<PlanarCurve> {
-        Ok(
-            ogeom_geom::Line2d::segment(Point2::new(u, latitude), Point2::new(u, FRAC_PI_2), tol)?
-                .into(),
-        )
+        Ok(ogeom_geom::Line2d::segment(Point2::new(u, bottom), Point2::new(u, top), tol)?.into())
     };
     ogeom_algo::attach_seam(
         model,
@@ -1143,7 +1631,7 @@ fn seam_between(
         side(sides.1)?,
         surface,
         ogeom_topo::Location::identity(),
-        (0.0, FRAC_PI_2 - latitude),
+        (0.0, top - bottom),
     )?;
     Ok(seam)
 }
