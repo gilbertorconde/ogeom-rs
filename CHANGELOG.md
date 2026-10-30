@@ -44,6 +44,29 @@ bump may break the API and a patch bump may not.
     Gauss-Legendre across it, which agree to 6e-15). The drill less the
     part is within 5e-14, and the cut within 1.1e-12, of what that leaves
     of the drill's and the part's closed forms.
+- **A pad into a slab whose merged corner face leans off the pad's corner
+  wall by a hundred-thousandth closes.**
+  - A slab drafted 0.00001 with corner rows of 7, 7, 7, 6, 6, 6 and 5
+    facets, or 8, 5, 9, 9, 5, 8 and 7, converted at the converter's own
+    coplanar distance, and a pad of its top face pushed 3 or 10 mm into
+    it: the fuse, common and cut were refused on 0.12.0 ("the kept pieces
+    did not close into a shell").
+  - The slab's merged corner face meets the pad's corner wall in a
+    section lying all but along the pad's corner edge and the slab's edge
+    beside it: it crosses the two a micron apart along it, a nanometre
+    across. The piece kept on the slab's face ended on the slab's edge,
+    and the pad's edge was split only where the section crossed it, past
+    the piece's end, which was not kept: the pad's wall was never split,
+    and its one piece was read inside the slab, below the slab's floor
+    too. Where a stretch of section runs along an edge of each face, the
+    edges it runs along now split under the end of a piece kept beside
+    it.
+  - At depth 3 all three are valid, within 4.3e-5 cubic millimetres of
+    the mesh's measure and inside the slab's doubt. At depth 10 all three
+    are valid and the common and cut are within 2.5e-5; the fuse's
+    tessellation is 2.1e-4 under the mesh's measure, from a vertex 3.8e-6
+    off the pad's flat walls, while its exact volume is the cut's plus the
+    pad's to 1e-9 (see docs/PLAN.md).
 
 ## [0.12.0] - 2026-10-30
 

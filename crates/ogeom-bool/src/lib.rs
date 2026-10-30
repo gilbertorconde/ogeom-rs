@@ -6424,6 +6424,10 @@ fn fill(
                 ])
             };
 
+            // Stretches running along an edge of each face, and the stops
+            // where a kept piece ends.
+            let mut bridges: Vec<(f64, f64, [Vec<usize>; 2])> = Vec::new();
+            let mut kept_stops: Vec<f64> = Vec::new();
             for (lo, hi) in candidates {
                 if hi - lo <= tol.parametric() {
                     continue;
@@ -6671,6 +6675,9 @@ fn fill(
                 } else {
                     false
                 };
+                if hugs[0] && hugs[1] {
+                    bridges.push((lo, hi, hugged.clone()));
+                }
                 if !admitted {
                     continue;
                 }
@@ -6679,6 +6686,7 @@ fn fill(
                     // adding it a third time would cancel what it copies.
                     continue;
                 }
+                kept_stops.extend([lo, hi]);
                 // Keep the paves that end a kept interval: those are where edges
                 // genuinely split.
                 for (node, on_edge, on_section, honesty, across, spread) in &edge_hits {
@@ -6886,6 +6894,69 @@ fn fill(
                             hugs,
                             hug_key,
                         });
+                    }
+                }
+            }
+            // A stretch running along an edge of each face is those edges'
+            // to carry, and they split where it ends, as the section does.
+            // Two faces' edges all but in line (a merged facet column's
+            // edge leaning off a pad's corner edge by a hundred-thousandth)
+            // are crossed by a section lying all but along both a micron
+            // apart along it and a nanometre across, and the piece kept on
+            // one side of that stretch ends at one face's crossing: the
+            // other face's edge splits under that end too, or its piece of
+            // the section ends a nanometre inside it and the face is never
+            // split.
+            for (lo, hi, hugged) in &bridges {
+                for stop in [*lo, *hi] {
+                    if !kept_stops
+                        .iter()
+                        .any(|k| (k - stop).abs() <= tol.parametric())
+                    {
+                        continue;
+                    }
+                    let at = section
+                        .curve
+                        .point_at(at_param(stop, domain, section.closed), tol)?;
+                    for (side, own) in [&ga.faces[section.face_a], &gb.faces[section.face_b]]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        for &ei in &hugged[side] {
+                            let e = &own.edges[ei];
+                            if edge_hits.iter().any(|(node, _, on_section, ..)| {
+                                *node == e.node && (on_section - stop).abs() <= tol.parametric()
+                            }) {
+                                continue;
+                            }
+                            let foot = ogeom_algo::project_on_curve(e.drawn().0, at, 64, tol)?;
+                            if foot.distance > reach.max(tol.confusion() * 1e3) {
+                                continue;
+                            }
+                            let on_e =
+                                onto_range(e.onto_curve(foot.parameter), &e.curve, e.crange, tol);
+                            if on_e <= e.crange.0.min(e.crange.1) + tol.parametric()
+                                || on_e >= e.crange.0.max(e.crange.1) - tol.parametric()
+                            {
+                                continue;
+                            }
+                            if *DEBUG_WIRE {
+                                eprintln!(
+                                    "PAVE s{si}: side {side} edge {} along ({lo:.6}, {hi:.6}) paved at {on_e:.6} for the stop at {stop:.6}, {:.2e} off",
+                                    e.node.index(),
+                                    foot.distance
+                                );
+                            }
+                            paves.push((
+                                e.node,
+                                Pave {
+                                    t: on_e,
+                                    honesty: honest(section.tolerance, tol).max(foot.distance),
+                                    across: None,
+                                    spread: 0.0,
+                                },
+                            ));
+                        }
                     }
                 }
             }

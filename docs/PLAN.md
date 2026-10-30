@@ -48,27 +48,39 @@ the band where the two stand within the weld distance covers most of the
 facet. Two planar faces where one lies on one side of the other's plane, its
 corners past it by rounding at most, no longer give their planes' line as a
 section (`one_side_of` in `ogeom-bool/src/lib.rs`): a corner facet meeting
-the wall only at a vertex, and a facet's side edge beside the next wall. Of
-the 15 committed row-count sets at depths 3 and 10, all 30 pass with each
-row a face of its own at 0.00001, 0.00002 and 0.00005; at the converter's
-own distance 25, 29 and 26 of 30 pass. What remains:
+the wall only at a vertex, and a facet's side edge beside the next wall. A
+section lying all but along an edge of each face (the slab's merged corner
+column's edge and the pad's corner edge, a nanometre apart where it crosses
+them a micron apart along it) splits the other face's edge under the end of
+the piece kept on one face. Of the 15 committed row-count sets at depths 3
+and 10, all 30 pass with each row a face of its own at 0.00001, 0.00002 and
+0.00005; at the converter's own distance 27, 29 and 26 of 30 pass, and every
+one of the 90 closes into a valid result. What remains:
 
-- At 0.00001, [7,7,7,6,6,6,5] and [8,5,9,9,5,8,7] at the converter's
-  distance, both depths: the kept pieces do not close. In the first, the
-  slab's merged corner face meets the pad's flat wall in a section that
-  leaves the corner edge 7.8 mm up and reaches the pad's floor two microns
-  off it; the sliver between that section and the pad's corner edge is
-  kept on one side and not the other, and the corner edge above the
-  section's end is left open.
 - At the converter's distance with depth 10 (the pad through the whole
-  slab), the fuse comes out 2.1e-5 to 8.2e-5 cubic millimetres under the
-  mesh's measure: 0.00001 [8;7] (5.2e-5), 0.00002 [6,6,6,4,8,7,5] (2.1e-5)
-  and four sets at 0.00005 ([8,8,8,7,7,6,5] 5.7e-5, [7,7,7,6,6,6,5]
-  8.2e-5, [8,9,9,5,4,5,5] 2.8e-5, [6,6,6,4,8,7,5] 5.9e-5). Within the
-  weld distance times the top band's area, past the test's 2e-5. At
-  444a5213 (2026-10-12) the 0.00002 set passed and the 0.00005 misses were
-  3.7e-5 to 6.3e-5 on three sets: the fuse has drifted down by about 2e-5
-  since.
+  slab), the fuse's tessellation comes out 2.1e-5 to 2.1e-4 cubic
+  millimetres under the mesh's measure, past the test's 2e-5: 0.00001
+  [8;7] (5.2e-5), [7,7,7,6,6,6,5] (2.1e-4) and [8,5,9,9,5,8,7] (2.1e-4),
+  0.00002 [6,6,6,4,8,7,5] (2.1e-5), and four sets at 0.00005
+  ([8,8,8,7,7,6,5] 5.7e-5, [7,7,7,6,6,6,5] 8.2e-5, [8,9,9,5,4,5,5]
+  2.8e-5, [6,6,6,4,8,7,5] 5.9e-5). The common, which the test reaches
+  only past the fuse, misses too: [8,5,9,9,5,8,7] at 0.00001 by 2.5e-5,
+  and at 0.00005 [8,8,8,7,7,6,5] by 6.2e-5, [7,7,7,6,6,6,5] by 9.0e-5 and
+  [6,6,6,4,8,7,5] by 4.0e-5. The exact volumes of the fuse, common
+  and cut (each face's own chart) add up to the converted slab's and the
+  pad's to within 1e-7 in every one; the fuse of the uniform [8;7] is the
+  pad's exact volume to 1e-9. What moves is the tessellation, which stands
+  on the result's vertices: the pad's walls carry a vertex the slab's
+  merged corner column welds onto them up to 1e-5 off their plane (3.8e-6
+  off the 80 mm² flat walls in [7,7,7,6,6,6,5]), and the pieces of merged
+  corner faces the walls split carry their fitted planes' standoff (up to
+  4e-5 over 1.5 mm²). The test's doubt counts only faces the pad's floor
+  crosses. The 2e-5 drift since 444a5213 (2026-10-12) is e1742085 (two
+  sections cross off a loose edge only where both are kept): it drops
+  cuts inside a kept piece of a merged face's section, and the exact
+  volumes do not move (1e-9 to 6e-8) while the tessellation moves by 2e-5
+  to 3.5e-5. A sound check needs either result vertices kept on the tight
+  faces' planes or a doubt for the result's faces' standoff.
 - The design for a band the two stand within the weld distance of each
   other over a region: pair it as same-domain and split it where the planes
   part by the weld distance.

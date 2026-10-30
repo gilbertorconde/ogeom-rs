@@ -3999,6 +3999,15 @@ fn pads_into_a_slab_drafted_a_hundred_thousandth_with_rows_kept_cut_and_fuse() {
 /// The same slab at the converter's own coplanar distance, where rows merge
 /// into faces on fitted planes: the top facets touch their walls only at
 /// corners shared to rounding, and are cut and fused alike.
+///
+/// With rows of seven, seven, seven, six, six, six and five, or eight,
+/// five, nine, nine, five, eight and seven, the slab's merged corner face
+/// meets the pad's corner wall in a section lying all but along the pad's
+/// corner edge and the slab's edge beside it, which stand a nanometre apart
+/// where it crosses them a micron apart along it. The section's piece kept
+/// on the slab's face ends on the slab's edge, and the pad's edge splits
+/// there too: the pad's wall is split along the section, and the sliver
+/// between it and the corner edge is read on its own.
 #[test]
 fn pads_into_a_slab_drafted_a_hundred_thousandth_cut_and_fuse() {
     let mut failed = Vec::new();
@@ -4008,6 +4017,8 @@ fn pads_into_a_slab_drafted_a_hundred_thousandth_cut_and_fuse() {
         ([4; 7], 3.0),
         ([8; 7], 3.0),
         ([5, 6, 7, 7, 8, 8, 8], 10.0),
+        ([7, 7, 7, 6, 6, 6, 5], 3.0),
+        ([8, 5, 9, 9, 5, 8, 7], 3.0),
     ] {
         if let Err(e) = pad_on_a_drafted_slab(depth, 0.00001, counts, false) {
             failed.push(format!("{counts:?}: {e}"));
