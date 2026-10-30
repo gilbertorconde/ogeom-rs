@@ -30,7 +30,7 @@ use ogeom_math::{Circle2, Ellipse2, Frame2, Point, Point2};
 
 use crate::approx::approximate_branch;
 use crate::contact::trace_tangential;
-use crate::march::{Marching, TANGENTIAL_SINE, branches, leaves_at_an_angle};
+use crate::march::{Marching, TANGENTIAL_SINE, branches_from_touches, leaves_at_an_angle};
 use crate::surface::{Meeting, surface_surface};
 
 /// How to intersect, when the general path runs.
@@ -1480,7 +1480,7 @@ fn marched(
     // the surfaces as given, whose chart the views share.
     let view_a = windows.0.and_then(|w| windowed(a, w, tol));
     let view_b = windows.1.and_then(|w| windowed(b, w, tol));
-    let traced = branches(
+    let traced = branches_from_touches(
         view_a.as_ref().unwrap_or(a),
         view_b.as_ref().unwrap_or(b),
         options.marching,
@@ -1506,7 +1506,7 @@ fn marched(
         ((u == u0 || u == u1) && params.iter().all(|p| p.0 == u))
             || ((v == v0 || v == v1) && params.iter().all(|p| p.1 == v))
     };
-    for branch in &traced {
+    for (branch, crossing) in &traced {
         // A branch along which the two surfaces share their normal is a
         // tangency, not a crossing: the marcher's seeding cannot tell the
         // noise floor of a tangential valley from a genuine sign change, and
@@ -1514,9 +1514,13 @@ fn marched(
         // section. The valley is still a curve, though, and the tangential
         // walker is the one that can follow it, so the fragment becomes a
         // seed rather than a discard, and what comes back is marked as
-        // contact so nobody classifies by it.
+        // contact so nobody classifies by it. A branch leaving a touch
+        // along an arm, where the section crosses itself, is a crossing
+        // however shallow: near the touch no sample of it crosses
+        // measurably, and the valley walker would follow some other curve
+        // within its reach of both.
         let lying = on_border(&branch.on_a, domains.0) || on_border(&branch.on_b, domains.1);
-        if !lying && branch_is_tangential(a, b, branch, tol)? {
+        if !lying && !crossing && branch_is_tangential(a, b, branch, tol)? {
             if let Some(contact) = walk_contact(a, b, branch, &contacts, options.marching, tol)? {
                 contacts.push(contact);
             }
@@ -4824,27 +4828,47 @@ mod tests {
         }
     }
 
+    /// [`crosses_from_the_node_to_both_ends`] with the branch to the lower
+    /// end of the sweep 0.0008 and 0.0005 long, under the ten chords an arc
+    /// of the march is debris within, over a short turn and a long one.
+    /// That branch, the section out to the band's border, was dropped as
+    /// debris; kept, every sample of it lies where the surfaces part by
+    /// less than they measurably cross at, and it was read as a contact.
+    #[test]
+    fn a_band_crossing_a_cone_from_a_node_keeps_its_arm_shorter_than_ten_chords() {
+        for turn in [0.425, 1.2] {
+            for low in [-0.000_74, -0.000_5] {
+                crosses_from_the_node_to_both_ends((turn, (low, 0.02)), 0.0, None);
+            }
+        }
+    }
+
     /// [`crosses_from_the_node_to_both_ends`] over the band a fillet
     /// junction carries on past its cap at a drum drafted foot out:
     /// the round's whole quarter turn swept along `y` from −2.42 to 4.83,
     /// walked within the window of the face a boolean cuts from it, `u` to
     /// 0.42 and `y` from −0.004 to 0.02, turned about the cone's axis every
-    /// 15 degrees from 7.5. Both branches leave that window through its ends
-    /// in `y`, crossing the cone there, and at each of those turns the cells
-    /// the march seeds from find neither: the pair came back apart.
+    /// half degree. Both branches leave that window through its ends in
+    /// `y`, crossing the cone there. At the odd multiples of 7.5 degrees the
+    /// cells the march seeds from found neither, and the pair came back
+    /// apart. Turned 60 degrees, the cone named first, the lower branch was
+    /// traced twice, the two tracings standing microns apart across it
+    /// where it nears the node: the stretch of one there was kept beside
+    /// the other, read as a contact, and the valley walker followed the
+    /// band's border, tangent to the cone at the node, 0.0078 either way.
     #[test]
-    fn a_band_crossing_a_cone_is_seeded_where_it_leaves_its_window() {
+    fn a_band_crossing_a_cone_is_two_crossings_at_every_turn() {
         let window = (
             (0.0, 0.424_721_486_693_660_6),
             (-0.003_979_668_916_835_106, 0.019_898_344_584_175_24),
         );
-        for k in 0..24 {
+        for k in 0..720 {
             crosses_from_the_node_to_both_ends(
                 (
                     1.471_127_674_303_734_5,
                     (-2.415_259_779_545_657_6, 4.830_519_559_091_315),
                 ),
-                (f64::from(2 * k + 1) * 7.5).to_radians(),
+                (f64::from(k) * 0.5).to_radians(),
                 Some(window),
             );
         }

@@ -1298,6 +1298,32 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The marcher returns a crossing arm near its node once, and as a
+  crossing, however short.** (#524)
+  - Out along an arm from a node where the section crosses itself, a
+    sample within the confusion distance of both surfaces stands up to
+    `ε / (ρ · spread)` across the arm, and the way the section runs
+    through it turns by as much. Two tracings of one arm stood microns
+    apart there, neither held by the other sample by sample, and the
+    stretch of one near the node was kept beside the other. Every sample
+    of it lay where the surfaces part by less than they measurably cross
+    at, so it was read as a contact, and the valley walker followed the
+    band's border, tangent to the cone at the node, as a spurious
+    tangential section 0.0157 long: #523's band against the drafted cone,
+    turned 60° about its axis, the cone named first.
+  - Now a sample on an arm of a node is held by a tracing that leaves the
+    node along that arm and runs out past it, and an arc leaving a node
+    along an arm is a crossing: the surfaces' separation changes sign
+    across each arm of a saddle.
+  - An arm from a node out to the border of a chart shorter than ten
+    chords was dropped as debris, leaving out a piece of the section up
+    to ten times longer than its tolerance. Now it is kept: #523's band
+    with the lower branch 0.0008 or 0.0005 long, at a chord of 1e-4, gets
+    that branch, its points on both surfaces to 1e-13 (0.0008 long).
+  - Measured: the band against the cone, in the window a boolean walks
+    it in, turned every half degree in both orders, is the two crossings
+    from the node to the window's ends and nothing else.
+
 - **A fillet junction carries a band on past its cap from the cap's own
   circle.** (#522, #342)
   - The band carried past its cap was the extrusion of the cap's arc
