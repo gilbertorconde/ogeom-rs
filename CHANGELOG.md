@@ -11,6 +11,38 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-30
+
+A minor release, since the API and the licence change. The kernel is now
+LGPL-2.1-only (it was MIT OR Apache-2.0); `PROVENANCE.md` has the record.
+`PipeLaws` gains `contact`, so building one with a struct literal needs
+`..PipeLaws::default()`, and `check` now names as broken a ring that does
+not chain between a seam's sides on a repeating chart, and as suspect a
+notch or a tail of two edges.
+
+Pipe shells sweep open wire profiles as sheets: down straight, arc and
+skinned legs, round corners against arcs, inside corners on one exact
+shared curve, and round closed spines. Their mitres hold between skinned
+runs, for holed and off-centre sections, and under twists still moving
+through the corner. Scale and twist laws can be functions, and a profile
+can be brought into contact with its spine. Every pipe route, and the
+sweeps, lofts, fillings and offsets beside them, reads a spine, profile or
+section where it is placed: on 0.11.5 a placed spine could sweep the wrong
+solid. `make_pipe` follows wires of lines and arcs, open or closed.
+
+`fillet_edges` closes the corners #342 listed: a round runs out across a
+drafted drum, a cone's rim rounds to its exact torus, a drafted drum meets
+a straight crease in both orders, and a drum's rim beside a spline crease
+takes the union of each round alone. Booleans meet coincident surfaces of
+opposite handedness, place a section that meets an edge tangentially on
+its touch, and fold a section across a closed spline's seam. The
+intersector traces two exact surfaces crossing at a shallow turn as a
+crossing, follows every branch through a node, and cuts a plane through a
+linear extrusion in closed form. `fix_shape` bounds wireless faces, cuts
+notches, drops holes too small to bound anything, and sews free edges
+twinned across a gap. IGES gains wireframe, points, external references
+and network subfigures.
+
 ### Added
 
 - **`fix_shape` drops holes of nothing on every curved surface it can
@@ -9160,7 +9192,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.5...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.5...v0.12.0
 [0.11.5]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.2...v0.11.3
