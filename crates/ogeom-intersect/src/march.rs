@@ -3975,8 +3975,10 @@ fn split_at_touches(
             true
         });
     if crowded && !complete {
-        return uncertified(split_at_touches_as_traced(found, a, b, options, tol));
+        return split_at_touches_as_traced(found, a, b, options, tol);
     }
+    let certified =
+        |arcs: Vec<Traced>, touches: &[Touch]| certified(arcs, touches, (a, b), near, tol);
     if complete {
         settle_touches(&mut touches, (a, b), options, tol);
     }
@@ -3997,14 +3999,6 @@ fn split_at_touches(
     }
     let (joins, walked_out) = join_arms(&touches, &mut covered, &[], (a, b), options, tol);
     arcs.extend(joins);
-    let certified = |arcs: Vec<Traced>, touches: &[Touch]| {
-        arcs.into_iter()
-            .map(|arc| {
-                let leaves = ArmsOf::new(&arc, touches, (a, b), near, tol).leaves(&arc);
-                (arc, leaves)
-            })
-            .collect()
-    };
     if walked_out.is_empty() && arcs.is_empty() {
         return certified(kept, &touches);
     }
@@ -4032,17 +4026,19 @@ fn split_at_touches(
     }
     weighed.sort_by(|x, y| arc_length(y).total_cmp(&arc_length(x)));
     let weigh = |arc: Traced, kept: &mut Vec<Traced>, touches: &[Touch]| {
-        let across = across_section(&arc, touches, near, (a, b), tol);
-        let arms = ArmsOf::new(&arc, touches, (a, b), near, tol);
-        if kept.iter().any(|other| {
-            lies_on(&arc, other, near, (&across, &arms), touches)
-                || same_stretch(&arc, other, near, touches)
-                || stub_lies_on(&arc, other, near, touches)
-        }) {
-            return;
-        }
-        if let Some(arc) = trimmed(arc, kept, near, (&across, &arms), touches) {
-            kept.push(arc);
+        for arc in straightened(arc, touches, (a, b), near, tol) {
+            let across = across_section(&arc, touches, near, (a, b), tol);
+            let arms = ArmsOf::new(&arc, touches, (a, b), near, tol);
+            if kept.iter().any(|other| {
+                lies_on(&arc, other, near, (&across, &arms), touches)
+                    || same_stretch(&arc, other, near, touches)
+                    || stub_lies_on(&arc, other, near, touches)
+            }) {
+                continue;
+            }
+            if let Some(arc) = trimmed(arc, kept, near, (&across, &arms), touches) {
+                kept.push(arc);
+            }
         }
     };
     for arc in weighed {
@@ -4078,6 +4074,24 @@ fn split_at_touches(
         }
     }
     certified(kept, &touches)
+}
+
+/// Arcs cut at the touches, each straightened ([`straightened`]) and with
+/// whether it leaves a touch along one of its arms ([`ArmsOf::leaves`]).
+fn certified(
+    arcs: Vec<Traced>,
+    touches: &[Touch],
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    near: f64,
+    tol: Tolerances,
+) -> Vec<(Traced, bool)> {
+    arcs.into_iter()
+        .flat_map(|arc| straightened(arc, touches, (a, b), near, tol))
+        .map(|arc| {
+            let leaves = ArmsOf::new(&arc, touches, (a, b), near, tol).leaves(&arc);
+            (arc, leaves)
+        })
+        .collect()
 }
 
 /// The arms of the touches `covered` does not list, joined to a facing
@@ -4208,17 +4222,51 @@ fn join_arms(
             // as far as a stall is carried onto a touch. An arm that leaves
             // the chart inside the radius is started inside it, half as far
             // each time, no nearer than the touch's snap, inside which the
-            // section is the straight arm itself.
+            // samples of a walk stand anywhere in the band the confusion
+            // distance leaves round the arms. An arm leaving the chart
+            // short of every start is solved out to where it does.
             let floor = touch.snap.max(near);
             let outwards = core::iter::successors(Some(touch.radius), |r| {
                 Some(r * 2.0).filter(|&r| r <= carry)
             });
             let inwards = core::iter::successors(Some(touch.radius * 0.5), |r| Some(r * 0.5))
                 .take_while(|&r| r >= floor);
-            let Some((start, tangent)) = outwards.chain(inwards).find_map(|out| {
-                let start = along_arm(a, b, touch, half, (out, arms), options.chord, tol)?;
-                Some((start, tangent_at(a, b, start, tol)?))
-            }) else {
+            // The nearest start tried past the snap.
+            let shortest = outwards
+                .clone()
+                .chain(inwards.clone())
+                .filter(|&r| r >= floor)
+                .fold(f64::INFINITY, f64::min);
+            let leaves = |out: f64| {
+                matches!(
+                    arm_point((a, b), touch, half, (out, arms), near, tol),
+                    Landing::Leaves(..)
+                )
+            };
+            let inside_snap = leaves(floor);
+            let start = if inside_snap {
+                None
+            } else {
+                outwards.chain(inwards).find_map(|out| {
+                    let start = along_arm(a, b, touch, half, (out, arms), options.chord, tol)?;
+                    Some((start, tangent_at(a, b, start, tol)?))
+                })
+            };
+            let Some((start, tangent)) = start else {
+                let beyond = if inside_snap { floor } else { shortest };
+                if (inside_snap || (beyond.is_finite() && leaves(beyond)))
+                    && let Some(arm) = arm_to_border(
+                        (a, b),
+                        touch,
+                        half,
+                        (beyond, arms),
+                        (near, options.max_points),
+                        tol,
+                    )
+                {
+                    covered.push((t, h));
+                    arcs.push(arm);
+                }
                 continue;
             };
             let sense = if tangent.dot(half) >= 0.0 { 1.0 } else { -1.0 };
@@ -4313,20 +4361,116 @@ fn loose_ends(arcs: &[Traced], touches: &[Touch], near: f64) -> Vec<(Contact, Ve
     ends
 }
 
+/// Whether a branch runs straight through a touch between the samples
+/// `before` and `after` it, taken from the samples either side clear of the
+/// touch's radius: a stretch between two touches starts on one. Where the
+/// touch's two arms are known, the branch runs straight through when it
+/// comes in along one arm and goes on along it, the same way; it turns a
+/// corner when it goes on along the other. Which arm a sample is on is
+/// read from the section's own direction there, the cross of the normals,
+/// not the chord to the touch, which a long stride tilts.
+fn straight_through(
+    branch: &Traced,
+    (before, after): (&[usize], &[usize]),
+    touch: &Touch,
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    tol: Tolerances,
+) -> bool {
+    let unit = |v: Vector| {
+        let m = v.magnitude();
+        (m > tol.confusion()).then(|| v / m)
+    };
+    let clear = |&&k: &&usize| branch.points[k].distance(touch.point) > touch.radius;
+    let (Some(&i), Some(&o)) = (before.iter().rev().find(clear), after.iter().find(clear)) else {
+        return false;
+    };
+    let into = unit(touch.point - branch.points[i]);
+    let onward = unit(branch.points[o] - touch.point);
+    let (Some(into), Some(onward)) = (into, onward) else {
+        return false;
+    };
+    match touch.arms {
+        Some(arms) => {
+            let heading = |k: usize, chord: Vector| {
+                let at = Contact {
+                    on_a: branch.on_a[k],
+                    on_b: branch.on_b[k],
+                    point: branch.points[k],
+                };
+                tangent_at(a, b, at, tol).unwrap_or(chord)
+            };
+            let line = |w: Vector| w.dot(arms[1]).abs() > w.dot(arms[0]).abs();
+            line(heading(i, into)) == line(heading(o, onward)) && into.dot(onward) > 0.0
+        }
+        None => into.dot(onward) > 0.5,
+    }
+}
+
+/// The samples of an open branch freed from the touches they visit, back
+/// from an end on the border of either chart: see [`cut_at_touches`]. For
+/// each end, head then tail, whether any were.
+fn freed_from_borders(
+    branch: &Traced,
+    visits: &mut [Option<usize>],
+    touches: &[Touch],
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    near: f64,
+    tol: Tolerances,
+) -> [bool; 2] {
+    let n = branch.points.len();
+    let mut freed = [false; 2];
+    if n == 0 || branch.closed() {
+        return freed;
+    }
+    for (side, at) in [0, n - 1].into_iter().enumerate() {
+        let Some(t) = visits[at] else { continue };
+        let touch = &touches[t];
+        let on_border = outside(a, branch.on_a[at], tol) || outside(b, branch.on_b[at], tol);
+        let Some(h) = half_arm(touch, branch.points[at]) else {
+            continue;
+        };
+        if !on_border || branch.points[at].distance(touch.point) <= near {
+            continue;
+        }
+        let inward: Vec<usize> = if at == 0 {
+            (0..n).collect()
+        } else {
+            (0..n).rev().collect()
+        };
+        for i in inward {
+            let p = branch.points[i];
+            if visits[i] != Some(t)
+                || p.distance(touch.point) <= near
+                || half_arm(touch, p) != Some(h)
+                || !on_arm((a, b), touch, (h, false), p, near, tol)
+            {
+                break;
+            }
+            visits[i] = None;
+            freed[side] = true;
+        }
+    }
+    freed
+}
+
 /// Branches cut at the touches as they were traced, where the touches stand
 /// within a stride of the march of each other (see [`split_at_touches`]):
 /// each touch found from the low-angle samples of transversal branches,
 /// within `reach` of a sample, a branch cut there unless it runs straight
 /// through, judged by the directions in and out, and the arcs either side
-/// carried onto it along the straight way.
+/// carried onto it along the straight way. Debris goes as
+/// [`split_at_touches`] drops it: an arc joining two touches, or running
+/// from a touch out to the border of a chart, is kept however short. Each
+/// comes certified as [`split_at_touches`] certifies its arcs.
 fn split_at_touches_as_traced(
     found: Vec<Traced>,
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     options: Marching,
     tol: Tolerances,
-) -> Vec<Traced> {
-    let reach = options.chord.max(tol.confusion()) * 60.0;
+) -> Vec<(Traced, bool)> {
+    let near = options.chord.max(tol.confusion());
+    let reach = near * 60.0;
     // How far a touch solved from a low-angle sample may stand from it and
     // still be the one it lies beside, and how far short of a touch any
     // stalled end is carried onto it: the walk gives out where the arms
@@ -4344,9 +4488,13 @@ fn split_at_touches_as_traced(
     let mut solved_ends: Vec<[Option<usize>; 2]> = vec![[None; 2]; found.len()];
     for (branch, solved) in found.iter().zip(&mut solved_ends) {
         let n = branch.points.len();
-        if n < 5 || !interior_is_transversal(branch, a, b, tol) {
+        if n < 5 {
             continue;
         }
+        // A branch with no transversal stretch to certify it may be
+        // tangential contact rather than a curve, and only crossings are
+        // taken from it, as [`find_touches`] takes them.
+        let transversal = interior_is_transversal(branch, a, b, tol);
         let sines: Vec<f64> = (0..n)
             .map(|i| crossing_sine(a, b, branch.on_a[i], branch.on_b[i], tol))
             .collect();
@@ -4361,9 +4509,20 @@ fn split_at_touches_as_traced(
             {
                 continue;
             }
-            let Some(touch) = touching_point(a, b, branch.on_a[i], branch.on_b[i], tol) else {
+            let Some(mut touch) = touching_point(a, b, branch.on_a[i], branch.on_b[i], tol) else {
                 continue;
             };
+            let form = touch_arms(a, b, touch.on_a, touch.on_b, tol);
+            if form.is_some_and(|form| !crosses(&touch, form, near, tol)) {
+                continue;
+            }
+            touch.blur = form.map_or(0.0, |form| blur_of(form.3, tol));
+            touch.arms = form
+                .map(|(arms, _, _, _)| arms)
+                .filter(|&arms| apart(arms, reach, near));
+            if !transversal && touch.arms.is_none() {
+                continue;
+            }
             let stall = branch.stopped == Stopped::Stalled && (i == 0 || i + 1 == n);
             if !stall && touch.point.distance(branch.points[i]) > carry {
                 continue;
@@ -4381,15 +4540,20 @@ fn split_at_touches_as_traced(
         }
     }
     if touches.is_empty() {
-        return found;
+        return found.into_iter().map(|arc| (arc, false)).collect();
     }
-    let touch_near = |p: Point, within: f64| -> Option<usize> {
-        touches.iter().position(|t| t.point.distance(p) <= within)
-    };
-
+    settle_touches(&mut touches, (a, b), options, tol);
     let mut out = Vec::with_capacity(found.len());
     for (branch, solved) in found.into_iter().zip(solved_ends) {
         let n = branch.points.len();
+        // A branch with no transversal stretch is cut only at crossings.
+        let transversal = interior_is_transversal(&branch, a, b, tol);
+        let counts = |t: &Touch| transversal || t.arms.is_some();
+        let touch_near = |p: Point, within: f64| -> Option<usize> {
+            touches
+                .iter()
+                .position(|t| counts(t) && t.point.distance(p) <= within)
+        };
         // A sample on a touch, or either end of a step passing within
         // reach of one: the walk strides straight arms in long steps.
         let mut visits: Vec<Option<usize>> = branch
@@ -4401,7 +4565,7 @@ fn split_at_touches_as_traced(
             let (p, q) = (branch.points[i - 1], branch.points[i]);
             if let Some(t) = touches
                 .iter()
-                .position(|t| distance_to_segment(t.point, p, q) <= reach)
+                .position(|t| counts(t) && distance_to_segment(t.point, p, q) <= reach)
             {
                 visits[i - 1].get_or_insert(t);
                 visits[i].get_or_insert(t);
@@ -4412,9 +4576,10 @@ fn split_at_touches_as_traced(
         // will not carry onto the first, the one solved from it is tried
         // next: two crossings a little apart on one branch both lie within
         // `carry` of its end, and the one listed first may be the other.
+        let freed = freed_from_borders(&branch, &mut visits, &touches, (a, b), near, tol);
         let solved_at = |at: usize| if at == 0 { solved[0] } else { solved[1] };
         let end_touch = |at: usize| -> Option<usize> {
-            if branch.stopped != Stopped::Stalled {
+            if branch.stopped != Stopped::Stalled || freed[usize::from(at != 0)] {
                 return None;
             }
             touch_near(branch.points[at], carry).or_else(|| solved_at(at))
@@ -4426,7 +4591,7 @@ fn split_at_touches_as_traced(
         let stall_end = |at: usize| end_touch(at).is_some();
         let touched =
             visits.iter().any(Option::is_some) || (n > 0 && (stall_end(0) || stall_end(n - 1)));
-        if !touched || !interior_is_transversal(&branch, a, b, tol) {
+        if !touched {
             out.push(branch);
             continue;
         }
@@ -4478,19 +4643,10 @@ fn split_at_touches_as_traced(
         }
         // A branch passing each touch once, running straight through,
         // stays whole: the crossing is the caller's to split like any other.
-        let unit = |v: Vector| {
-            let m = v.magnitude();
-            (m > tol.confusion()).then(|| v / m)
-        };
         let pass = |before: &[usize], after: &[usize], t: usize| -> (usize, bool) {
-            let (Some(&i), Some(&o)) = (before.last(), after.first()) else {
-                return (t, false);
-            };
-            let into = unit(touches[t].point - branch.points[i]);
-            let onward = unit(branch.points[o] - touches[t].point);
             (
                 t,
-                matches!((into, onward), (Some(x), Some(y)) if x.dot(y) > 0.5),
+                straight_through(&branch, (before, after), &touches[t], (a, b), tol),
             )
         };
         let mut passes: Vec<(usize, bool)> = runs
@@ -4542,10 +4698,21 @@ fn split_at_touches_as_traced(
                 }
             }
             let length: f64 = arc.points.windows(2).map(|w| w[0].distance(w[1])).sum();
-            if length <= options.chord * 10.0 || arc.points.len() < 4 {
+            let m = arc.points.len();
+            let on = |end: Option<usize>, at: usize| {
+                end.is_some_and(|t| arc.points[at].distance(touches[t].point) <= tol.confusion())
+            };
+            let joins = head != tail && on(head, 0) && on(tail, m - 1);
+            // A run freed back from the border of a chart, carried onto its
+            // touch, is the section's arm from the touch out to the border.
+            let to_border = (freed[0] && run.first() == Some(&0) && on(tail, m - 1))
+                || (freed[1] && run.last() == Some(&(n - 1)) && on(head, 0));
+            if !joins
+                && !to_border
+                && (length <= options.chord * 10.0 || (m < 4 && length <= near * 60.0))
+            {
                 continue;
             }
-            let m = arc.points.len();
             if head.is_some() && head == tail && arc.points[0].distance(arc.points[m - 1]) <= reach
             {
                 // The golden section of the samples, clear of the middle
@@ -4565,7 +4732,7 @@ fn split_at_touches_as_traced(
         }
         out.extend(arcs);
     }
-    out
+    certified(out, &touches, (a, b), near, tol)
 }
 
 /// An arc's end carried onto a touch along the straight way there, as
@@ -5277,6 +5444,32 @@ fn arc_length(arc: &Traced) -> f64 {
     arc.points.windows(2).map(|w| w[0].distance(w[1])).sum()
 }
 
+/// The parameters of both surfaces moved from a touch by `step` in the
+/// shared tangent plane, each through its own chart's first derivatives.
+fn out_along(
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    touch: &Touch,
+    step: Vector,
+    tol: Tolerances,
+) -> Option<[f64; 4]> {
+    let moved = |surface: &SurfaceGeometry, (u, v): (f64, f64)| -> Option<(f64, f64)> {
+        let (su, sv) = surface.d1_at(u, v, tol).ok()?;
+        let (e, f, g) = (su.dot(su), su.dot(sv), sv.dot(sv));
+        let det = e.mul_add(g, -(f * f));
+        if det <= f64::MIN_POSITIVE {
+            return None;
+        }
+        let (p, q) = (su.dot(step), sv.dot(step));
+        Some((
+            u + g.mul_add(p, -(f * q)) / det,
+            v + e.mul_add(q, -(f * p)) / det,
+        ))
+    };
+    let (ua, va) = moved(a, touch.on_a)?;
+    let (ub, vb) = moved(b, touch.on_b)?;
+    Some([ua, va, ub, vb])
+}
+
 /// The section a distance `reach` out from a touch along one half of an
 /// arm: corrected onto both surfaces on the plane square to the arm there,
 /// from parameters moved out along it on each chart. `None` where the
@@ -5290,21 +5483,7 @@ fn along_arm(
     within: f64,
     tol: Tolerances,
 ) -> Option<Contact> {
-    let moved = |surface: &SurfaceGeometry, (u, v): (f64, f64)| -> Option<(f64, f64)> {
-        let (su, sv) = surface.d1_at(u, v, tol).ok()?;
-        let (e, f, g) = (su.dot(su), su.dot(sv), sv.dot(sv));
-        let det = e.mul_add(g, -(f * f));
-        if det <= f64::MIN_POSITIVE {
-            return None;
-        }
-        let (p, q) = (su.dot(half) * reach, sv.dot(half) * reach);
-        Some((
-            u + g.mul_add(p, -(f * q)) / det,
-            v + e.mul_add(q, -(f * p)) / det,
-        ))
-    };
-    let (ua, va) = moved(a, touch.on_a)?;
-    let (ub, vb) = moved(b, touch.on_b)?;
+    let [ua, va, ub, vb] = out_along((a, b), touch, half * reach, tol)?;
     let guess = touch.point + half * reach;
     let landed = correct(
         a,
@@ -5318,6 +5497,419 @@ fn along_arm(
     // The other arm crosses that plane `reach · tan α` off this one.
     let apart = arms[0].cross(arms[1]).magnitude();
     (landed.point.distance(guess) * 2.0 < reach * apart).then_some(landed)
+}
+
+/// Where a solve for the section lands: see [`settled_from`].
+#[derive(Debug, Clone, Copy)]
+enum Landing {
+    /// On the section, within the distance asked.
+    At(Contact),
+    /// Short of the section, a chart's border in the way: the parameter
+    /// held to the chart, and the bound it was held to.
+    Leaves(usize, f64),
+    /// The solve did not settle.
+    Unsettled,
+}
+
+/// One more equation for the section's three, in the four parameters of
+/// both surfaces: its value and gradient, given the parameters, the first
+/// surface's point and its derivatives there.
+type Constraint<'c> = &'c dyn Fn(&[f64; 4], Point, [Vector; 2]) -> (f64, [f64; 4]);
+
+/// The section's three equations and `constraint`, solved from `start` to
+/// the residual that places the point within `within` of where the section
+/// meets the constraint ([`crate::walk::settling_residual`]), stopping no
+/// later than [`correct`] does. The landing is kept where the Jacobian
+/// changes over the whole move, seen through the start's inverse, by no
+/// more than a half, the condition [`crate::walk::settle`] keeps a further
+/// solve to: the iteration ran to the one root beside its start. A solve
+/// that cannot reach the section without leaving a chart says which bound
+/// held it.
+fn settled_from(
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    start: [f64; 4],
+    constraint: Constraint<'_>,
+    within: f64,
+    tol: Tolerances,
+) -> Landing {
+    let measure = |x: &[f64; 4]| -> Option<Measured> {
+        let (ua, va) = clamp(a, x[0], x[1]);
+        let (ub, vb) = clamp(b, x[2], x[3]);
+        let (pa, au, av) = a.point_d1_at(ua, va, tol).ok()?;
+        let (pb, bu, bv) = b.point_d1_at(ub, vb, tol).ok()?;
+        let gap = pa - pb;
+        let (value, row) = constraint(x, pa, [au, av]);
+        let residual = [gap.x, gap.y, gap.z, value];
+        let jacobian = [
+            [au.x, av.x, -bu.x, -bv.x],
+            [au.y, av.y, -bu.y, -bv.y],
+            [au.z, av.z, -bu.z, -bv.z],
+            row,
+        ];
+        Some((*x, jacobian, residual, [au, av]))
+    };
+    let system = |x: &[f64; 4]| {
+        measure(x).map_or(([f64::INFINITY; 4], [[0.0; 4]; 4]), |(_, j, r, _)| (r, j))
+    };
+    let Some((_, first, _, [au, av])) = measure(&start) else {
+        return Landing::Unsettled;
+    };
+    let gradient = [au, av, Vector::ZERO, Vector::ZERO];
+    let residual =
+        crate::walk::settling_residual(&first, &gradient, within, tol.confusion() * 0.01);
+    let criteria = solve::Criteria {
+        residual,
+        step: 0.0,
+        max_iterations: 50,
+    };
+    let Ok((x, norm, _, _)) = solve::newton_system_fixed(system, start, criteria) else {
+        return Landing::Unsettled;
+    };
+    let held = [clamp(a, x[0], x[1]), clamp(b, x[2], x[3])];
+    let held = [held[0].0, held[0].1, held[1].0, held[1].1];
+    if norm > residual {
+        // A periodic parameter wraps rather than being held.
+        let bounded = |k: usize| match k {
+            0 => !a.is_periodic_u(),
+            1 => !a.is_periodic_v(),
+            2 => !b.is_periodic_u(),
+            _ => !b.is_periodic_v(),
+        };
+        return (0..4)
+            .find(|&k| bounded(k) && held[k] != x[k])
+            .map_or(Landing::Unsettled, |k| Landing::Leaves(k, held[k]));
+    }
+    let Some((_, last, _, _)) = measure(&x) else {
+        return Landing::Unsettled;
+    };
+    let mut drift = 0.0;
+    for column in 0..4 {
+        let change: [f64; 4] = core::array::from_fn(|row| last[row][column] - first[row][column]);
+        let Some(moved) = solve::linear_fixed(first, change) else {
+            return Landing::Unsettled;
+        };
+        drift += moved.iter().map(|v| v * v).sum::<f64>();
+    }
+    if drift.sqrt() > 0.5 {
+        return Landing::Unsettled;
+    }
+    a.point_at(held[0], held[1], tol)
+        .map_or(Landing::Unsettled, |point| {
+            Landing::At(Contact {
+                on_a: (held[0], held[1]),
+                on_b: (held[2], held[3]),
+                point,
+            })
+        })
+}
+
+/// The section `along` out from a touch on one half of an arm, solved on
+/// the plane square to that half there to within `within` of the section.
+///
+/// Out along an arm `ρ` from a touch the surfaces cross at a sine of about
+/// `ρ · spread`, so a point within the confusion distance of both may
+/// stand `ε / (ρ · spread)` off the arm, and a solve stopped at that
+/// residual places its point anywhere across that band. This one starts
+/// on the arm's straight line, the parameters moved out along it on each
+/// chart, off the arm by its bow, `O(ρ²)`, against a band of `O(1/ρ)`, and
+/// is solved down as [`settled_from`] solves. The point is kept where it
+/// stands nearer this arm than the other, which crosses the plane
+/// `ρ · tan α` off it.
+fn arm_point(
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    touch: &Touch,
+    half: Vector,
+    (along, arms): (f64, [Vector; 2]),
+    within: f64,
+    tol: Tolerances,
+) -> Landing {
+    let Some(start) = out_along((a, b), touch, half * along, tol) else {
+        return Landing::Unsettled;
+    };
+    let plane = |_: &[f64; 4], pa: Point, [au, av]: [Vector; 2]| {
+        (
+            (pa - touch.point).dot(half) - along,
+            [au.dot(half), av.dot(half), 0.0, 0.0],
+        )
+    };
+    let landed = settled_from((a, b), start, &plane, within, tol);
+    let guess = touch.point + half * along;
+    let apart = arms[0].cross(arms[1]).magnitude();
+    match landed {
+        Landing::At(c) if c.point.distance(guess) * 2.0 >= along * apart => Landing::Unsettled,
+        other => other,
+    }
+}
+
+/// Where an arm leaving a touch along `half` leaves either chart, short of
+/// `beyond` out along it, where [`arm_point`] has it leave: the point of
+/// the section on the chart's border there, solved from the last point of
+/// the arm found, within the confusion distance of the way out. `None`
+/// where a solve on the way does not settle, or the arm leaves within the
+/// confusion distance of the touch.
+fn arm_exit(
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    touch: &Touch,
+    half: Vector,
+    (beyond, arms): (f64, [Vector; 2]),
+    near: f64,
+    tol: Tolerances,
+) -> Option<Contact> {
+    let Landing::Leaves(k, at) = arm_point((a, b), touch, half, (beyond, arms), near, tol) else {
+        return None;
+    };
+    let mut inside: Option<(Contact, f64)> = None;
+    let (mut out, mut bound) = (beyond, (k, at));
+    loop {
+        let from = inside.map_or(0.0, |(_, along)| along);
+        if out - from <= tol.confusion() {
+            break;
+        }
+        let middle = f64::midpoint(from, out);
+        match arm_point((a, b), touch, half, (middle, arms), near, tol) {
+            Landing::At(c) => inside = Some((c, middle)),
+            Landing::Leaves(k, at) => (out, bound) = (middle, (k, at)),
+            Landing::Unsettled => return None,
+        }
+    }
+    let ((c, _), (k, at)) = (inside?, bound);
+    let mut start = [c.on_a.0, c.on_a.1, c.on_b.0, c.on_b.1];
+    start[k] = at;
+    let mut row = [0.0; 4];
+    row[k] = 1.0;
+    let border = |x: &[f64; 4], _: Point, _: [Vector; 2]| (x[k] - at, row);
+    match settled_from((a, b), start, &border, near, tol) {
+        Landing::At(end) => Some(end),
+        _ => None,
+    }
+}
+
+/// An arm leaving a chart within `beyond` of its touch, where no walk can
+/// start: the touch, the points of the arm the chord between neighbours
+/// calls for, each solved on it by [`arm_point`], and where it leaves
+/// ([`arm_exit`]). `None` where a solve does not settle, the arm leaves
+/// within the chord of the touch, or it would take more than `budget`
+/// points.
+fn arm_to_border(
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    touch: &Touch,
+    half: Vector,
+    (beyond, arms): (f64, [Vector; 2]),
+    (near, budget): (f64, usize),
+    tol: Tolerances,
+) -> Option<Traced> {
+    let exit = arm_exit((a, b), touch, half, (beyond, arms), near, tol)?;
+    let length = (exit.point - touch.point).dot(half);
+    if length <= near {
+        return None;
+    }
+    let start = Contact {
+        on_a: touch.on_a,
+        on_b: touch.on_b,
+        point: touch.point,
+    };
+    // Each chord between neighbours is halved where the arm solved at its
+    // middle stands further than `near` off it.
+    let mut points = vec![(start, 0.0), (exit, length)];
+    let mut k = 0;
+    while k + 1 < points.len() {
+        let ((p, from), (q, to)) = (points[k], points[k + 1]);
+        let middle = f64::midpoint(from, to);
+        let Landing::At(m) = arm_point((a, b), touch, half, (middle, arms), near, tol) else {
+            return None;
+        };
+        if distance_to_segment(m.point, p.point, q.point) <= near {
+            k += 1;
+            continue;
+        }
+        if points.len() >= budget {
+            return None;
+        }
+        points.insert(k + 1, (m, middle));
+    }
+    let mut arm = Traced {
+        points: Vec::with_capacity(points.len()),
+        on_a: Vec::with_capacity(points.len()),
+        on_b: Vec::with_capacity(points.len()),
+        stopped: Stopped::LeftTheDomain,
+    };
+    for (c, _) in points {
+        arm.points.push(c.point);
+        arm.on_a.push(beside(a, c.on_a, exit.on_a));
+        arm.on_b.push(beside(b, c.on_b, exit.on_b));
+    }
+    Some(arm)
+}
+
+/// What [`straightened`] makes of one sample.
+#[derive(Debug, Clone, Copy)]
+enum Placed {
+    /// Left as it is.
+    Kept,
+    /// Moved onto the arm it lies out on.
+    Moved(Contact),
+    /// No point of that arm within the chord: past where the arm leaves
+    /// the chart, with where it does where that is found.
+    Off(Option<Contact>),
+}
+
+/// Where a sample stands about the touches, for [`straightened`]: on a
+/// touch, on a half arm of one, or clear of both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Beside {
+    Touch(usize),
+    Arm(usize, usize),
+    Clear,
+}
+
+/// A sample beside a touch where the section crosses itself, placed on the
+/// arm it lies out on: see [`straightened`].
+fn placed(
+    touches: &[Touch],
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    sample: Contact,
+    near: f64,
+    tol: Tolerances,
+) -> (Placed, Beside) {
+    let p = sample.point;
+    let Some((t, touch)) = touches
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.arms.is_some())
+        .min_by(|x, y| x.1.point.distance(p).total_cmp(&y.1.point.distance(p)))
+    else {
+        return (Placed::Kept, Beside::Clear);
+    };
+    let r = p.distance(touch.point);
+    if r <= near {
+        return (Placed::Kept, Beside::Touch(t));
+    }
+    let (Some(arms), Some(h)) = (touch.arms, half_arm(touch, p)) else {
+        return (Placed::Kept, Beside::Clear);
+    };
+    let half = halves(arms)[h];
+    let along = (p - touch.point).dot(half);
+    if r > touch.around || along <= 0.0 || touch.spread <= 0.0 {
+        return (Placed::Kept, Beside::Clear);
+    }
+    let band = tol.confusion() / (along * touch.spread);
+    let inside = r <= touch.snap;
+    if !inside && band <= near {
+        return (Placed::Kept, Beside::Clear);
+    }
+    let on_border = outside(a, sample.on_a, tol) || outside(b, sample.on_b, tol);
+    let placed = match arm_point((a, b), touch, half, (along, arms), near, tol) {
+        Landing::At(c) if on_border => {
+            if c.point.distance(p) <= near || !inside {
+                Placed::Kept
+            } else {
+                Placed::Off(None)
+            }
+        }
+        Landing::At(c) if inside || c.point.distance(p) <= band => Placed::Moved(c),
+        Landing::Leaves(..) if inside => {
+            match arm_exit((a, b), touch, half, (along, arms), near, tol) {
+                Some(exit) if exit.point.distance(p) <= near => Placed::Moved(exit),
+                exit => Placed::Off(exit),
+            }
+        }
+        _ => return (Placed::Kept, Beside::Clear),
+    };
+    (placed, Beside::Arm(t, h))
+}
+
+/// An arc with its samples beside the touches where the section crosses
+/// itself placed on the section, in the pieces left where some are not.
+///
+/// The march settles a sample within the chord of the section, but beside a
+/// touch the solve stops in the band the confusion distance leaves round
+/// an arm, `ε / (ρ · spread)` across at `ρ` out, and the samples zigzag
+/// across it. Each sample between the touch and its `around`, where that
+/// band is wider than the chord, is solved again on the arm it lies out
+/// on, from the arm's straight line ([`arm_point`]), and moved there where
+/// it lies within the band of it.
+///
+/// Within the touch's snap every point stands within `ε` of both surfaces
+/// and the band holds the whole of it; the section there is the two arms,
+/// so a sample there is moved onto the arm it lies out on. One out past
+/// where that arm leaves the chart, further than the chord from where it
+/// does, is a point of the band: next to the touch, or to a sample of that
+/// same arm, it is the arc's end on the chart's border, misplaced along it,
+/// and is moved to where the arm leaves; otherwise it lies on no arm the
+/// arc runs along, and goes, the arc cut there. A piece left lying wholly
+/// on one touch is that touch.
+fn straightened(
+    arc: Traced,
+    touches: &[Touch],
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    near: f64,
+    tol: Tolerances,
+) -> Vec<Traced> {
+    let m = arc.points.len();
+    let mut placements: Vec<(Placed, Beside)> = (0..m)
+        .map(|k| {
+            let sample = Contact {
+                on_a: arc.on_a[k],
+                on_b: arc.on_b[k],
+                point: arc.points[k],
+            };
+            placed(touches, (a, b), sample, near, tol)
+        })
+        .collect();
+    for k in 0..m {
+        let (Placed::Off(Some(exit)), Beside::Arm(t, h)) = placements[k] else {
+            continue;
+        };
+        let continues = [k.checked_sub(1), (k + 1 < m).then_some(k + 1)]
+            .into_iter()
+            .flatten()
+            .any(|j| match placements[j] {
+                (Placed::Off(_), _) => false,
+                (_, Beside::Touch(u)) => u == t,
+                (_, side) => side == Beside::Arm(t, h),
+            });
+        if continues {
+            placements[k].0 = Placed::Moved(exit);
+        }
+    }
+    let empty = || Traced {
+        points: Vec::new(),
+        on_a: Vec::new(),
+        on_b: Vec::new(),
+        stopped: arc.stopped,
+    };
+    let mut pieces = Vec::new();
+    let mut piece = empty();
+    for (k, (placed, _)) in placements.into_iter().enumerate() {
+        let (p, on_a, on_b) = match placed {
+            Placed::Kept => (arc.points[k], arc.on_a[k], arc.on_b[k]),
+            Placed::Moved(c) => (
+                c.point,
+                beside(a, c.on_a, arc.on_a[k]),
+                beside(b, c.on_b, arc.on_b[k]),
+            ),
+            Placed::Off(_) => {
+                pieces.push(core::mem::replace(&mut piece, empty()));
+                continue;
+            }
+        };
+        piece.points.push(p);
+        piece.on_a.push(on_a);
+        piece.on_b.push(on_b);
+    }
+    pieces.push(piece);
+    if pieces.len() > 1 {
+        for cut in &mut pieces {
+            cut.stopped = Stopped::Stalled;
+        }
+    }
+    let on_one_touch = |piece: &Traced| {
+        touches
+            .iter()
+            .any(|t| piece.points.iter().all(|p| p.distance(t.point) <= near))
+    };
+    pieces.retain(|piece| piece.points.len() >= 2 && !on_one_touch(piece));
+    pieces
 }
 
 /// The touches a branch's low-angle samples are solved onto, added to
@@ -5576,37 +6168,7 @@ fn cut_at_touches(
     // border is cut as an arc of its own, however short: an arm leaving
     // the chart within the radius has no sample clear of the touch. Such
     // an end heads for no touch.
-    let mut freed = [false; 2];
-    if !branch.closed() {
-        for (side, at) in [0, n - 1].into_iter().enumerate() {
-            let Some(t) = visits[at] else { continue };
-            let touch = &touches[t];
-            let on_border = outside(a, branch.on_a[at], tol) || outside(b, branch.on_b[at], tol);
-            let Some(h) = half_arm(touch, branch.points[at]) else {
-                continue;
-            };
-            if !on_border || branch.points[at].distance(touch.point) <= near {
-                continue;
-            }
-            let inward: Vec<usize> = if at == 0 {
-                (0..n).collect()
-            } else {
-                (0..n).rev().collect()
-            };
-            for i in inward {
-                let p = branch.points[i];
-                if visits[i] != Some(t)
-                    || p.distance(touch.point) <= near
-                    || half_arm(touch, p) != Some(h)
-                    || !on_arm((a, b), touch, (h, false), p, near, tol)
-                {
-                    break;
-                }
-                visits[i] = None;
-                freed[side] = true;
-            }
-        }
-    }
+    let freed = freed_from_borders(&branch, &mut visits, touches, (a, b), near, tol);
     // The touch a stalled end heads for: one within `carry` of it, or
     // failing that the one solved from the end itself. Where the end
     // will not carry onto the first, the one solved from it is tried
@@ -5722,45 +6284,11 @@ fn cut_at_touches(
     }
     // A branch passing each touch once, running straight through,
     // stays whole: the crossing is the caller's to split like any other.
-    let unit = |v: Vector| {
-        let m = v.magnitude();
-        (m > tol.confusion()).then(|| v / m)
-    };
-    // Where the touch's two arms are known, the branch runs straight
-    // through when it comes in along one arm and goes on along it, the
-    // same way; it turns a corner when it goes on along the other. Which
-    // arm a sample is on is read from the section's own direction there,
-    // the cross of the normals, not the chord to the touch, which a long
-    // stride tilts.
     let pass = |before: &[usize], after: &[usize], t: usize| -> (usize, bool) {
-        // The samples either side clear of the touch: a stretch between two
-        // touches starts on one.
-        let clear = |&&k: &&usize| branch.points[k].distance(touches[t].point) > touches[t].radius;
-        let (Some(&i), Some(&o)) = (before.iter().rev().find(clear), after.iter().find(clear))
-        else {
-            return (t, false);
-        };
-        let into = unit(touches[t].point - branch.points[i]);
-        let onward = unit(branch.points[o] - touches[t].point);
-        let (Some(into), Some(onward)) = (into, onward) else {
-            return (t, false);
-        };
-        let straight = match touches[t].arms {
-            Some(arms) => {
-                let heading = |k: usize, chord: Vector| {
-                    let at = Contact {
-                        on_a: branch.on_a[k],
-                        on_b: branch.on_b[k],
-                        point: branch.points[k],
-                    };
-                    tangent_at(a, b, at, tol).unwrap_or(chord)
-                };
-                let line = |w: Vector| w.dot(arms[1]).abs() > w.dot(arms[0]).abs();
-                line(heading(i, into)) == line(heading(o, onward)) && into.dot(onward) > 0.0
-            }
-            None => into.dot(onward) > 0.5,
-        };
-        (t, straight)
+        (
+            t,
+            straight_through(&branch, (before, after), &touches[t], (a, b), tol),
+        )
     };
     // Runs either side of a step over two touches meet neither straight.
     let mut passes: Vec<(usize, bool)> = runs
@@ -7088,6 +7616,170 @@ mod tests {
             },
         ] {
             assert!(seeds(&a, &b, options, T).is_err());
+        }
+    }
+
+    /// The rim of a cone `ρ = 3.2 − z / 10` about the `z` axis rounded at
+    /// radius ½, over `turn` from where it touches the cone, swept along
+    /// `y` over `sweep`, turned `angle` about the cone's axis, and the cone:
+    /// the band stands off the cone by about `0.164 y² − u² / 4` near the
+    /// node at `u = y = 0`, where the section crosses itself. With the
+    /// band's centre `c` and its point at `(u, y)` unturned.
+    #[allow(clippy::type_complexity)]
+    fn band_and_cone(
+        turn: f64,
+        sweep: (f64, f64),
+        angle: f64,
+    ) -> (
+        SurfaceGeometry,
+        SurfaceGeometry,
+        Box<dyn Fn(f64, f64) -> Point>,
+    ) {
+        let lean = 1.01_f64.sqrt();
+        let c = lean.mul_add(-0.5, 3.05);
+        let frame = Frame::from_axes(
+            Point::new(c, 0.0, 1.5),
+            Direction::new(Vector::new(1.0, 0.0, 0.1), T).unwrap(),
+            Direction::new(Vector::new(-0.1, 0.0, 1.0), T).unwrap(),
+            -Direction::Y,
+            T,
+        )
+        .unwrap();
+        let arc: ogeom_geom::Curve = ogeom_geom::TrimmedCurve::new(
+            ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(frame, 0.5, T).unwrap()).into(),
+            0.0,
+            turn,
+            T,
+        )
+        .unwrap()
+        .into();
+        let band: SurfaceGeometry = ogeom_geom::ExtrusionSurface::over(arc, Direction::Y, sweep)
+            .unwrap()
+            .into();
+        let about = ogeom_math::Transform::rotation(
+            ogeom_math::Axis {
+                location: Point::ORIGIN,
+                direction: Direction::Z,
+            },
+            angle,
+        );
+        let band = ogeom_geom::Transformable::transformed(&band, &about, T).unwrap();
+        let frame = Frame::new(Point::new(0.0, 0.0, 2.0), -Direction::Z, -Direction::X, T).unwrap();
+        let cone = ogeom_geom::ConeSurface::new(
+            ogeom_math::Cone::new(frame, 3.0, 0.1_f64.atan(), T).unwrap(),
+            (0.0, 2.0),
+        )
+        .unwrap()
+        .into();
+        let at = move |u: f64, y: f64| {
+            let (cos, sin) = (u.cos(), u.sin());
+            Point::new(
+                0.5f64.mul_add((cos - 0.1 * sin) / lean, c),
+                y,
+                0.5f64.mul_add((0.1f64.mul_add(cos, sin)) / lean, 1.5),
+            )
+        };
+        (band, cone, Box::new(at))
+    }
+
+    /// Branches cut where touches crowd, as traced: the band and cone of
+    /// [`band_and_cone`] with the branch to the lower end of the sweep
+    /// 0.0008 long, under ten chords, in both orders, turned every fifteen
+    /// degrees. The two branches traced from the seeds are joined at the
+    /// node as a walk turning the corner there, and cut as traced. Each arc
+    /// leaving the node must be certified a crossing there, every sample
+    /// must lie on both surfaces, and an arc must run from the node to
+    /// where the lower branch crosses the end of the sweep, at the turn `u`
+    /// solving `√(x(u)² + y²) = 3.2 − z(u) / 10`. The branch was not cut,
+    /// the surfaces crossing too shallowly along it to count the node; cut,
+    /// the arm went as debris under ten chords; and no arc was certified.
+    #[test]
+    fn crowded_touches_cut_as_traced_keep_a_short_arm_as_a_crossing() {
+        let low = -0.000_8;
+        let off = |p: Point| p.x.hypot(p.y) - 0.1f64.mul_add(-p.z, 3.2);
+        let options = Marching::default();
+        for k in 0..24 {
+            let angle = (f64::from(k) * 15.0).to_radians();
+            let (band, cone, at) = band_and_cone(0.425, (low, 0.02), angle);
+            let crossing = {
+                let (mut lo, mut hi) = (1e-9, 0.425);
+                for _ in 0..200 {
+                    let mid = f64::midpoint(lo, hi);
+                    if off(at(mid, low)).signum() == off(at(lo, low)).signum() {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                band.point_at(f64::midpoint(lo, hi), low, T).unwrap()
+            };
+            let node = band.point_at(0.0, 0.0, T).unwrap();
+            for (a, b) in [(&band, &cone), (&cone, &band)] {
+                let (seeds, _) = seeded(a, b, options, T).unwrap();
+                let traced: Vec<Traced> = seeds
+                    .into_iter()
+                    .filter_map(|seed| trace(a, b, seed, options, T).ok())
+                    .collect();
+                // The two branches, each run from the node out, joined
+                // there as a walk turning the corner onto the other arm.
+                let from_node = |towards: Point| {
+                    let mut branch = traced
+                        .iter()
+                        .find(|t| {
+                            let m = t.points.len();
+                            [t.points[0], t.points[m - 1]]
+                                .iter()
+                                .any(|p| p.distance(towards) <= options.chord)
+                        })
+                        .unwrap_or_else(|| panic!("turned {k} × 15°: nothing traced"))
+                        .clone();
+                    if branch.points[0].distance(node) > branch.points[1].distance(node) {
+                        branch = reversed(branch);
+                    }
+                    branch
+                };
+                let top = traced
+                    .iter()
+                    .flat_map(|t| [t.points[0], t.points[t.points.len() - 1]])
+                    .max_by(|p, q| p.distance(node).total_cmp(&q.distance(node)))
+                    .unwrap_or_else(|| panic!("turned {k} × 15°: nothing traced"));
+                let upper = from_node(top);
+                let lower = from_node(crossing);
+                let mut corner = reversed(upper);
+                corner.points.extend(&lower.points[1..]);
+                corner.on_a.extend(&lower.on_a[1..]);
+                corner.on_b.extend(&lower.on_b[1..]);
+                corner.stopped = Stopped::LeftTheDomain;
+                let arcs = split_at_touches_as_traced(vec![corner], a, b, options, T);
+                let mut reaches = false;
+                for (arc, crossing_there) in &arcs {
+                    for p in &arc.points {
+                        let unturned = Point::new(
+                            p.x.mul_add(angle.cos(), p.y * angle.sin()),
+                            p.y.mul_add(angle.cos(), -p.x * angle.sin()),
+                            p.z,
+                        );
+                        let lean = 1.01_f64.sqrt();
+                        let from_band =
+                            ((unturned.x - lean.mul_add(-0.5, 3.05)).hypot(unturned.z - 1.5) - 0.5)
+                                .abs();
+                        assert!(
+                            from_band <= T.confusion() && off(*p).abs() <= T.confusion(),
+                            "turned {k} × 15°: {p:?} is off the band or the cone"
+                        );
+                    }
+                    let m = arc.points.len();
+                    let ends = [arc.points[0], arc.points[m - 1]];
+                    if ends.iter().any(|p| p.distance(node) <= options.chord) {
+                        assert!(crossing_there, "turned {k} × 15°: {arc:?}");
+                        reaches |= ends.iter().any(|p| p.distance(crossing) <= options.chord);
+                    }
+                }
+                assert!(
+                    reaches,
+                    "turned {k} × 15°: no arc runs from the node to {crossing:?}: {arcs:?}"
+                );
+            }
         }
     }
 }

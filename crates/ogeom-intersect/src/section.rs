@@ -4689,8 +4689,10 @@ mod tests {
     /// the sweep or the window. Each is the point of the band at the turn
     /// `u` solving `√(x(u)² + y²) = 3.2 − z(u) / 10` at each `y`, turned
     /// with the band. Every section must be a crossing on both surfaces,
+    /// stating no wider a tolerance than the chord and the fit asked for,
     /// the two branches must end at the node and at both ends, and each end
     /// must end one section only: a branch returned twice ends there twice.
+    /// No section may end anywhere else.
     fn crosses_from_the_node_to_both_ends(
         (turn, sweep): (f64, (f64, f64)),
         angle: f64,
@@ -4770,6 +4772,11 @@ mod tests {
                     !section.tangential,
                     "turned {angle}, band first {band_first}: {section:?}"
                 );
+                assert!(
+                    section.tolerance <= options.marching.chord + options.tolerance,
+                    "turned {angle}, band first {band_first}: a tolerance of {:e}",
+                    section.tolerance
+                );
                 let (lo, hi) = section.curve.domain();
                 let near = section.tolerance + T.confusion();
                 for i in 0..=16 {
@@ -4797,6 +4804,13 @@ mod tests {
                 assert_eq!(
                     count, 1,
                     "turned {angle}: {count} sections end at {want:?}: {found:?}"
+                );
+            }
+            for p in &found {
+                assert!(
+                    p.distance(node) <= near || far.iter().any(|q| p.distance(*q) <= near),
+                    "turned {angle}, band first {band_first}: a section ends at {p:?}, \
+                     neither the node nor an end: {found:?}"
                 );
             }
         }
@@ -4872,6 +4886,73 @@ mod tests {
                 Some(window),
             );
         }
+    }
+
+    /// [`crosses_from_the_node_to_both_ends`] over the band of
+    /// [`a_band_crossing_a_cone_is_two_crossings_at_every_turn`], walked
+    /// within a window cut `1e-5` below the node, turned every half degree:
+    /// the lower branch is an arm `1.1e-5` long, out to the window's lower
+    /// border. Inside the node's snap, `√(2ε / bend)`, about `3.2e-4` here,
+    /// every point stands within `ε` of both surfaces, and the walk running
+    /// through the node landed on that border `1.7e-4` along it from where
+    /// the arm crosses it: at a dozen turns that came back as a third
+    /// section beside the arm, ending where no section does.
+    #[test]
+    fn a_band_crossing_a_cone_in_a_window_cut_by_its_node_has_no_section_along_the_cut() {
+        let window = (
+            (0.0, 0.424_721_486_693_660_6),
+            (-1e-5, 0.019_898_344_584_175_24),
+        );
+        for k in 0..720 {
+            crosses_from_the_node_to_both_ends(
+                (
+                    1.471_127_674_303_734_5,
+                    (-2.415_259_779_545_657_6, 4.830_519_559_091_315),
+                ),
+                (f64::from(k) * 0.5).to_radians(),
+                Some(window),
+            );
+        }
+    }
+
+    /// [`crosses_from_the_node_to_both_ends`] with the branch to the lower
+    /// end of the sweep about `3.4e-4`, `2.2e-4` and `1.2e-4` long, at the
+    /// default chord of `1e-4`, turned every degree: each arm leaves the
+    /// band at or inside the node's snap, `3.2e-4`, where no walk is set
+    /// out from, and was missing.
+    #[test]
+    fn a_band_crossing_a_cone_from_a_node_keeps_its_arm_shorter_than_the_snap() {
+        for low in [-0.000_32, -0.000_2, -0.000_11] {
+            for k in 0..360 {
+                crosses_from_the_node_to_both_ends(
+                    (0.425, (low, 0.02)),
+                    f64::from(k).to_radians(),
+                    None,
+                );
+            }
+        }
+    }
+
+    /// [`crosses_from_the_node_to_both_ends`] turned 60 degrees, the cone
+    /// named first: the lower crossing's samples by the node stood across
+    /// the arm by up to `9e-6`, each within `3e-10` of both surfaces, and
+    /// its fit stated a tolerance of `6.5e-4` at a chord of `1e-7`. Every
+    /// half degree is weighed by
+    /// [`a_band_crossing_a_cone_is_two_crossings_at_every_turn`].
+    #[test]
+    fn a_band_crossing_a_cone_states_a_tight_tolerance_by_its_node() {
+        let window = (
+            (0.0, 0.424_721_486_693_660_6),
+            (-0.003_979_668_916_835_106, 0.019_898_344_584_175_24),
+        );
+        crosses_from_the_node_to_both_ends(
+            (
+                1.471_127_674_303_734_5,
+                (-2.415_259_779_545_657_6, 4.830_519_559_091_315),
+            ),
+            60.0_f64.to_radians(),
+            Some(window),
+        );
     }
 
     /// A drum of radius ½ laid along a ruling of [`drafted_drum`], outside

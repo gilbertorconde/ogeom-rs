@@ -1298,6 +1298,42 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The marcher places a crossing's samples on the arms by its node,
+  walks out an arm shorter than the node's snap, and cuts crowded nodes
+  as it cuts the rest.** (#526)
+  - Out along an arm `ρ` from a node, a sample within the confusion
+    distance `ε` of both surfaces may stand `ε / (ρ · spread)` across the
+    arm, and the walk's solve stopped there. #523's band against the
+    drafted cone, turned 60°, cone first, at a chord of 1e-7: the lower
+    crossing's samples by the node stood up to 9e-6 across it, each within
+    3e-10 of both surfaces, and its fit stated a tolerance of 6.5e-4.
+  - Now each sample by a node, where that band is wider than the chord,
+    is solved again on its arm from the arm's straight line, down to the
+    residual that places it within the chord, the landing kept only where
+    Newton's iteration provably stayed by its start. The same crossing
+    states 1.007e-7, and the worst over every half degree in both orders
+    is 1.38e-7.
+  - Inside the node's snap, `√(2ε / bend)`, every point lies within `ε`
+    of both surfaces. With the window cut 1e-5 below the node, the walk
+    through the node landed on the window's border 1.7e-4 from where the
+    arm crosses it, and 12 of 360 turns came back with a third section
+    there. Now a sample in the snap past where its arm leaves the chart
+    is moved to where it leaves if the arc runs out along that arm, and
+    otherwise dropped: the third section is gone at every half degree.
+  - An arm leaving the chart inside the snap was never walked out, no
+    walk starting there. Now it is solved out from the node to where it
+    leaves, each point on the arm: the band with the lower branch 3.4e-4,
+    2.2e-4 and 1.2e-4 long at a chord of 1e-4 gets it at every degree,
+    its end on both surfaces to 1e-13.
+  - Where crossings crowd within a stride and the patch search does not
+    finish, the branches are cut as traced. That fallback now takes a
+    crossing from a branch the surfaces cross shallowly along, tells a
+    corner from a straight pass by the node's arms, keeps an arm out to a
+    chart's border however short, and certifies each arc leaving a node
+    as a crossing, as the main path does.
+  - Measured: the real-world imports (Voron 2.4, DoomCube 350) give
+    per-solid results identical to main.
+
 - **The marcher returns a crossing arm near its node once, and as a
   crossing, however short.** (#524)
   - Out along an arm from a node where the section crosses itself, a
