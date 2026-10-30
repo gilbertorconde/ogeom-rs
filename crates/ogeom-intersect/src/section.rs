@@ -1542,7 +1542,7 @@ fn marched(
         // is not there. (A boolean marching an *exact* pair whose image has
         // no closed form holds its own marched sections to a budget, in
         // its own fallback, where a miss is a miss.)
-        for fitted in fitted_in_pieces(a, b, branch, options.tolerance, tol)? {
+        for fitted in fitted_in_pieces(a, b, branch, options, tol)? {
             out.push(SectionCurve {
                 curve: fitted.curve.into(),
                 on_a: Some(fitted.on_a.into()),
@@ -1660,12 +1660,13 @@ fn windowed(
 /// off the trace by the drum's size. A fit that misses its tolerance by
 /// less stands whole, its error stated: a caller takes one curve per branch
 /// where it can, and a few microns do not warrant more. So does a branch no
-/// split helps.
+/// split helps. Either is fitted again from the section filled in between
+/// its samples where that brings it closer ([`filled_in`]).
 fn fitted_in_pieces(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     branch: &crate::march::Traced,
-    tolerance: f64,
+    options: IntersectOptions,
     tol: Tolerances,
 ) -> OgeomResult<Vec<crate::approx::IntersectionCurve>> {
     const DEPTH: u32 = 6;
@@ -1674,10 +1675,11 @@ fn fitted_in_pieces(
         a: &SurfaceGeometry,
         b: &SurfaceGeometry,
         branch: &crate::march::Traced,
-        tolerance: f64,
+        options: IntersectOptions,
         depth: u32,
         tol: Tolerances,
     ) -> OgeomResult<Vec<crate::approx::IntersectionCurve>> {
+        let tolerance = options.tolerance;
         let whole = approximate_branch(a, b, branch, tolerance, tol)?;
         // The finest step the marcher took between the branch's ends: the
         // first and last steps land on a patch edge or close the loop, and
@@ -1693,7 +1695,7 @@ fn fitted_in_pieces(
             || depth == 0
             || branch.points.len() < 2 * FLOOR
         {
-            return Ok(vec![whole]);
+            return Ok(vec![filled_in(a, b, branch, whole, options, tol)?]);
         }
         let middle = branch.points.len() / 2;
         // A half of a loop is open: it stops where the other half starts.
@@ -1708,12 +1710,12 @@ fn fitted_in_pieces(
             on_b: branch.on_b[range].to_vec(),
             stopped,
         };
-        let mut pieces = go(a, b, &half(0..=middle), tolerance, depth - 1, tol)?;
+        let mut pieces = go(a, b, &half(0..=middle), options, depth - 1, tol)?;
         pieces.extend(go(
             a,
             b,
             &half(middle..=branch.points.len() - 1),
-            tolerance,
+            options,
             depth - 1,
             tol,
         )?);
@@ -1726,7 +1728,52 @@ fn fitted_in_pieces(
             vec![whole]
         })
     }
-    go(a, b, branch, tolerance, DEPTH, tol)
+    go(a, b, branch, options, DEPTH, tol)
+}
+
+/// A branch's fit, fitted again from the section filled in between its
+/// samples where it misses its tolerance, the closer standing.
+///
+/// The marcher spaces its samples by how far a chord sags, which bounds the
+/// polyline, not a cubic laid through it: on a short branch with a few
+/// samples spread unevenly, the fit can pass every sample within its
+/// tolerance and stray past it between two far apart, where nothing holds
+/// it. Each round solves the section at the middle of every chord
+/// ([`crate::march::with_middles`]) and fits again, while the fit misses
+/// and each round brings it closer. Every fit's error is measured against
+/// the surfaces' crossing as before: filling in states nothing it does not
+/// measure.
+fn filled_in(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    branch: &crate::march::Traced,
+    whole: crate::approx::IntersectionCurve,
+    options: IntersectOptions,
+    tol: Tolerances,
+) -> OgeomResult<crate::approx::IntersectionCurve> {
+    let mut best = whole;
+    let mut dense = branch.clone();
+    while best.fit_error > options.tolerance {
+        let marching = options.marching;
+        let Some(more) = crate::march::with_middles(
+            (a, b),
+            &dense,
+            (options.tolerance, marching.chord),
+            marching.max_points,
+            tol,
+        ) else {
+            break;
+        };
+        if more.points.len() == dense.points.len() {
+            break;
+        }
+        match approximate_branch(a, b, &more, options.tolerance, tol) {
+            Ok(again) if again.fit_error < best.fit_error => best = again,
+            _ => break,
+        }
+        dense = more;
+    }
+    Ok(best)
 }
 
 /// Follow the contact a tangential fragment sits on, unless one already
@@ -4904,6 +4951,58 @@ mod tests {
                     (turn, (-0.004, 0.02)),
                     (f64::from(k) * 0.5).to_radians(),
                     None,
+                );
+            }
+        }
+    }
+
+    /// [`crosses_from_the_node_to_both_ends`] at the quarter turn, `y` from
+    /// −0.002 to 0.02, unwindowed, turned every half degree. Turned 150
+    /// degrees, the cone named first, the lower branch is seven samples,
+    /// five once thinned, two of them `1.8e-3` apart with nothing between.
+    /// The cubic laid through them passed each within `1.2e-7` and strayed
+    /// `1.0e-6` from the section between those two, stating a tolerance of
+    /// `1.0100720e-4`, past the chord and fit asked for.
+    #[test]
+    fn a_band_crossing_a_cone_unwindowed_states_its_fit_on_a_short_branch() {
+        for k in 0..720 {
+            crosses_from_the_node_to_both_ends(
+                (1.471_127_674_303_734_5, (-0.002, 0.02)),
+                (f64::from(k) * 0.5).to_radians(),
+                None,
+            );
+        }
+    }
+
+    /// [`crosses_from_the_node_to_both_ends`] over the band of
+    /// [`a_band_crossing_a_cone_is_two_crossings_at_every_turn`], walked
+    /// within windows cut `8e-4` and `5e-5` below the node, turned every
+    /// half degree: the lower branch leaves through the window's lower
+    /// border. Cut at `8e-4`, the seed found where that border pierces the
+    /// cone stopped at its solve's residual and, held on the border, slid
+    /// along it by that residual over the sine the section crosses it at,
+    /// `8.9e-7`, past a seed's reach of the true crossing: the branch walked
+    /// from it took the place of the one walked from the crossing, and at
+    /// 180 and 264 degrees no section ended there. Cut at `5e-5`, a branch
+    /// walked both ways from a seed by the node stalled there at one end and
+    /// left the window at the other, and the end on the border, clear of
+    /// the node, was carried onto it as if stalled too: at 120, 264 and 315
+    /// degrees the crossing of the border lay inside a section.
+    #[test]
+    fn a_band_crossing_a_cone_in_a_small_window_ends_on_its_border() {
+        for low in [-8e-4, -5e-5] {
+            let window = (
+                (0.0, 0.424_721_486_693_660_6),
+                (low, 0.019_898_344_584_175_24),
+            );
+            for k in 0..720 {
+                crosses_from_the_node_to_both_ends(
+                    (
+                        1.471_127_674_303_734_5,
+                        (-2.415_259_779_545_657_6, 4.830_519_559_091_315),
+                    ),
+                    (f64::from(k) * 0.5).to_radians(),
+                    Some(window),
                 );
             }
         }

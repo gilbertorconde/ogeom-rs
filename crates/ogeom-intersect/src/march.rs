@@ -248,15 +248,17 @@ fn seeded(
             let Some(contact) = correct(a, b, start, guess, None, options.chord, tol) else {
                 continue;
             };
+            // A contact held on a chart's bound slides along it by its
+            // residual over the sine the section crosses it at, and is
+            // solved again on it before it is weighed against the seeds.
+            let contact = on_its_bound(a, b, contact, options.chord, tol);
             // One seed per branch, not one per cell it passes through. The
             // reach is the *finer* surface's grid: the coarser surface's
             // cells say nothing about how far apart branches can be, and a
             // plane's clamped domain spans a million units.
             match merges(&found, contact, apart) {
                 Merged::Along => {}
-                Merged::BesideTangency => {
-                    beside_tangency.push(on_its_bound(a, b, contact, options.chord, tol))
-                }
+                Merged::BesideTangency => beside_tangency.push(contact),
                 Merged::Not => found.push(Seed::at(a, b, contact, tol)),
             }
         }
@@ -304,11 +306,10 @@ fn seeded(
                 else {
                     continue;
                 };
+                let contact = on_its_bound(a, b, contact, options.chord, tol);
                 match merges(&found, contact, apart) {
                     Merged::Along => {}
-                    Merged::BesideTangency => {
-                        beside_tangency.push(on_its_bound(a, b, contact, options.chord, tol))
-                    }
+                    Merged::BesideTangency => beside_tangency.push(contact),
                     Merged::Not => found.push(Seed::at(a, b, contact, tol)),
                 }
             }
@@ -323,11 +324,10 @@ fn seeded(
     // sign.
     let extra = extremum_seeds(a, b, (&mesh_a, &mesh_b), &close, &crossed, options, tol);
     for contact in extra {
+        let contact = on_its_bound(a, b, contact, options.chord, tol);
         match merges(&found, contact, apart) {
             Merged::Along => {}
-            Merged::BesideTangency => {
-                beside_tangency.push(on_its_bound(a, b, contact, options.chord, tol));
-            }
+            Merged::BesideTangency => beside_tangency.push(contact),
             Merged::Not => found.push(Seed::at(a, b, contact, tol)),
         }
     }
@@ -4541,7 +4541,11 @@ fn straight_through(
 
 /// The samples of an open branch freed from the touches they visit, back
 /// from an end on the border of either chart: see [`cut_at_touches`]. For
-/// each end, head then tail, whether any were.
+/// each end, head then tail, whether any were, or whether it lies on a
+/// border visiting no touch at all. A branch walked out both ways from its
+/// seed stops for the reason its one end did, and an end on a border clear
+/// of every touch is where the walk left the chart, whatever stopped the
+/// other: it heads for no touch either.
 fn freed_from_borders(
     branch: &Traced,
     visits: &mut [Option<usize>],
@@ -4556,13 +4560,18 @@ fn freed_from_borders(
         return freed;
     }
     for (side, at) in [0, n - 1].into_iter().enumerate() {
-        let Some(t) = visits[at] else { continue };
+        if !outside(a, branch.on_a[at], tol) && !outside(b, branch.on_b[at], tol) {
+            continue;
+        }
+        let Some(t) = visits[at] else {
+            freed[side] = true;
+            continue;
+        };
         let touch = &touches[t];
-        let on_border = outside(a, branch.on_a[at], tol) || outside(b, branch.on_b[at], tol);
         let Some(h) = half_arm(touch, branch.points[at]) else {
             continue;
         };
-        if !on_border || branch.points[at].distance(touch.point) <= near {
+        if branch.points[at].distance(touch.point) <= near {
             continue;
         }
         let inward: Vec<usize> = if at == 0 {
@@ -6663,9 +6672,10 @@ fn cut_at_touches(
 
 /// Samples of the section between two of its points, each chord between
 /// neighbours standing within `near` of it: the section solved on the plane
-/// square to a chord through its middle, the chord halved where that lands
-/// further off. `None` where a solve does not settle within half the chord
-/// of its middle, or more samples than `budget` would be needed.
+/// square to a chord through its middle ([`middle_of`]), the chord halved
+/// where that lands further off. `None` where a solve does not settle
+/// within half the chord of its middle, or more samples than `budget` would
+/// be needed.
 fn fill(
     (a, b): (&SurfaceGeometry, &SurfaceGeometry),
     p: Contact,
@@ -6674,11 +6684,52 @@ fn fill(
     budget: &mut usize,
     tol: Tolerances,
 ) -> Option<Vec<Contact>> {
-    let chord = q.point - p.point;
-    let length = chord.magnitude();
-    if length <= near {
+    if p.point.distance(q.point) <= near {
         return Some(Vec::new());
     }
+    let Middle {
+        landed: m,
+        off,
+        on_both,
+    } = middle_of((a, b), p, q, near, tol)?;
+    // A chord whose middle lies within the confusion distance of both
+    // surfaces is on the section to tolerance, though the section solved
+    // through it lands further off: an end settled onto a touch stands off
+    // the exact crossing by up to the touch's own tolerance.
+    if off <= near || on_both {
+        return Some(Vec::new());
+    }
+    *budget = budget.checked_sub(1)?;
+    let mut out = fill((a, b), p, m, near, budget, tol)?;
+    out.push(m);
+    out.extend(fill((a, b), m, q, near, budget, tol)?);
+    Some(out)
+}
+
+/// The section beside the middle of a chord between two of its points:
+/// see [`middle_of`].
+struct Middle {
+    /// The section there, its parameters beside the chord's start.
+    landed: Contact,
+    /// How far it stands off the chord's middle.
+    off: f64,
+    /// Whether the chord's middle itself lies within the confusion
+    /// distance of both surfaces.
+    on_both: bool,
+}
+
+/// The section solved on the plane square to the chord between two of its
+/// points through its middle, to within `near` of it. `None` where the
+/// solve does not settle within half the chord of the middle.
+fn middle_of(
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    p: Contact,
+    q: Contact,
+    near: f64,
+    tol: Tolerances,
+) -> Option<Middle> {
+    let chord = q.point - p.point;
+    let length = chord.magnitude();
     let middle = p.point + chord * 0.5;
     // The solve starts from the points of both surfaces nearest the middle
     // of the chord, so it lands on the stretch of section beside it: from
@@ -6717,23 +6768,60 @@ fn fill(
     if off > length * 0.5 {
         return None;
     }
-    // A chord whose middle lies within the confusion distance of both
-    // surfaces is on the section to tolerance, though the section solved
-    // through it lands further off: an end settled onto a touch stands off
-    // the exact crossing by up to the touch's own tolerance.
-    if off <= near || on_both().is_some() {
-        return Some(Vec::new());
-    }
-    *budget = budget.checked_sub(1)?;
-    let m = Contact {
-        on_a: beside(a, landed.on_a, p.on_a),
-        on_b: beside(b, landed.on_b, p.on_b),
-        point: landed.point,
+    Some(Middle {
+        landed: Contact {
+            on_a: beside(a, landed.on_a, p.on_a),
+            on_b: beside(b, landed.on_b, p.on_b),
+            point: landed.point,
+        },
+        off,
+        on_both: on_both().is_some(),
+    })
+}
+
+/// A branch with the section solved between each two neighbouring samples,
+/// on the plane square to their chord through its middle, to within `near`
+/// of the section ([`middle_of`]). The trace stands within `chord` of the
+/// section, so a point solved further than that off the chord it stands by
+/// lies on some other stretch of the section, and the branch is not
+/// filled: `None` then, or where the branch would pass `budget` samples. A
+/// chord whose solve does not settle is left as it was.
+pub(crate) fn with_middles(
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    branch: &Traced,
+    (near, chord): (f64, f64),
+    budget: usize,
+    tol: Tolerances,
+) -> Option<Traced> {
+    let n = branch.points.len();
+    let contact = |i: usize| Contact {
+        on_a: branch.on_a[i],
+        on_b: branch.on_b[i],
+        point: branch.points[i],
     };
-    let mut out = fill((a, b), p, m, near, budget, tol)?;
-    out.push(m);
-    out.extend(fill((a, b), m, q, near, budget, tol)?);
-    Some(out)
+    let mut out = Traced {
+        points: Vec::with_capacity(2 * n),
+        on_a: Vec::with_capacity(2 * n),
+        on_b: Vec::with_capacity(2 * n),
+        stopped: branch.stopped,
+    };
+    for i in 0..n {
+        if i > 0 {
+            let (p, q) = (contact(i - 1), contact(i));
+            if let Some(Middle { landed: m, .. }) = middle_of((a, b), p, q, near, tol) {
+                if distance_to_segment(m.point, p.point, q.point) > chord {
+                    return None;
+                }
+                out.points.push(m.point);
+                out.on_a.push(m.on_a);
+                out.on_b.push(m.on_b);
+            }
+        }
+        out.points.push(branch.points[i]);
+        out.on_a.push(branch.on_a[i]);
+        out.on_b.push(branch.on_b[i]);
+    }
+    (out.points.len() <= budget).then_some(out)
 }
 
 /// Whether a sample beside a touch runs along the arm it lies out on: the

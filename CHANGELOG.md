@@ -1298,6 +1298,43 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A short marched branch's fit meets its tolerance, and a section in a
+  small window ends where it leaves it.** (#530)
+  - The marcher spaces its samples by how far a chord sags, which bounds
+    the polyline and not a cubic through it. #523's band against the
+    drafted cone, unwindowed, the quarter turn, `y` from −0.002, turned
+    150°, cone first: the lower branch is seven samples, two of them
+    1.8e-3 apart with nothing between, and its cubic passed each within
+    1.2e-7 but strayed 1.0e-6 from the section between those two. It
+    stated 1.0100720e-4, over the chord and fit asked for.
+  - Now a fit that misses its tolerance is fitted again from the section
+    solved at the middle of every chord, round after round while that
+    brings it closer, the closer fit standing. Every fit's error is still
+    measured against the surfaces' crossing. The same branch states
+    1.00102e-4, its curve on the section to 6e-12.
+  - A seed solved where a chart's border pierces the other surface stops
+    at its solve's residual and, held on the border, slides along it by
+    that residual over the sine the section crosses it at. The band in a
+    window cut 8e-4 below the node: 8.9e-7, past a seed's reach, and the
+    branch walked from it took the place of the one from the true
+    crossing, at 180° and 264°. Now every seed held on a chart's bound
+    that does not repeat is solved again on it, as #528 solved the
+    contacts it held back.
+  - A branch walked both ways from its seed stops for the reason one end
+    did. In a window cut 5e-5 below the node, a branch stalled by the
+    node at one end and left the window at the other, and that end, clear
+    of the node, was carried onto it as if stalled too, leaving the
+    border's crossing inside a section at 120°, 264° and 315°. Now an end
+    on a chart's border visiting no touch heads for none.
+  - Measured: every half degree, both orders, the band unwindowed at
+    turns 0.425, 0.8, 1.2 and the quarter turn with the lower end at
+    0.004 down to 0.00011, and windowed as a boolean cuts it with the
+    window's lower end at 0.004, 0.0008, 5e-5 and 1e-5, at turns 1.2 and
+    the quarter turn: every section lies on both surfaces within its
+    stated tolerance and ends at the node or an end, at every turn. On
+    main 1, 2 and 3 turns of 720 failed. The real-world imports (Voron
+    2.4, DoomCube 350) give per-solid results identical to main.
+
 - **The marcher follows the branches leaving a node however its seeds
   fall.** (#528)
   - A seed found within a grid cell's reach of one kept before is
