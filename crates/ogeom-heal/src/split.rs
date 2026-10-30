@@ -1315,12 +1315,21 @@ fn cut(
     }
     let mut pieces_of: Vec<(TShapeId, Parts)> = Vec::new();
     let mut vertex_at: Vec<((TShapeId, u64), Shape)> = Vec::new();
-    for (edge, mut list) in fractions {
-        list.sort_by(f64::total_cmp);
-        list.dedup_by(|b, a| (*a - *b).abs() <= 1e-12);
+    for (edge, mut given) in fractions {
+        given.sort_by(f64::total_cmp);
+        // Fractions a whisker apart are one cut, made once; each fraction
+        // given keeps the vertex of the cut it joined.
+        let mut list: Vec<f64> = Vec::with_capacity(given.len());
+        let mut joined: Vec<(f64, usize)> = Vec::with_capacity(given.len());
+        for &s in &given {
+            if list.last().is_none_or(|last| (s - last).abs() > 1e-12) {
+                list.push(s);
+            }
+            joined.push((s, list.len() - 1));
+        }
         let (pieces, vertices) = split_edge(model, &edge, &list, Some(data.surface), tol)?;
-        for (s, v) in list.iter().zip(&vertices) {
-            vertex_at.push(((edge.node(), s.to_bits()), v.clone()));
+        for (s, k) in joined {
+            vertex_at.push(((edge.node(), s.to_bits()), vertices[k].clone()));
         }
         let mut bounds = vec![0.0];
         bounds.extend(&list);

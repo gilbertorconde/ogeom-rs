@@ -1693,6 +1693,29 @@ fn marched_tangent(model: &Model, shape: &Shape, round: &Shape) {
     }
 }
 
+/// As [`marched_tangent`] for a round closed on itself, whose lines of
+/// contact may each run in more than one edge.
+fn marched_tangent_closed(model: &Model, shape: &Shape, round: &Shape) {
+    let contacts = analyse_blend(model, shape, round, 15, T).unwrap();
+    let mut neighbours: Vec<Shape> = contacts.iter().map(|c| c.neighbour.clone()).collect();
+    neighbours.dedup_by(|a, b| a.is_same(b));
+    assert_eq!(
+        neighbours.len(),
+        2,
+        "the round meets two faces: {contacts:?}"
+    );
+    for contact in &contacts {
+        assert!(
+            contact.tangency_error < 0.1_f64.to_radians(),
+            "tangent within a tenth of a degree: {contact:?}"
+        );
+        assert!(
+            contact.gap < 2e-4,
+            "the shared edge lies on both: {contact:?}"
+        );
+    }
+}
+
 /// The face of `shape` holding `p`.
 fn face_holding(model: &Model, shape: &Shape, p: Point) -> Option<Shape> {
     faces(model, shape).into_iter().find(|f| {
@@ -1885,6 +1908,419 @@ fn a_plane_and_a_spline_drum_across_a_gap_round_as_the_cylinder() {
     }
 }
 
+/// A tube of `radius` about the axis through `origin` along `axis`,
+/// running `length` along it, its seam on the side `x` points to, facing
+/// out of its axis.
+fn tube_along(
+    model: &mut Model,
+    origin: Point,
+    axis: Direction,
+    x: Direction,
+    radius: f64,
+    length: f64,
+) -> Shape {
+    let frame = Frame::new(origin, axis, x, T).unwrap();
+    let ring = ogeom::algo::make_edge(
+        model,
+        Curve::Circle(CircleCurve::new(Circle::new(frame, radius, T).unwrap())),
+        (0.0, 2.0 * PI),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let tube = make_prism(model, &ring, axis.vector() * length, T)
+        .unwrap()
+        .shape;
+    let (p, n) = face_normal(model, &tube, T).unwrap();
+    let d = p - origin;
+    let radial = d - axis.vector() * d.dot(axis.vector());
+    if n.dot(radial) > 0.0 {
+        tube
+    } else {
+        tube.reversed()
+    }
+}
+
+/// A tube of radius 3 about the axis through the origin leaning `lean`
+/// degrees from z toward +x, running from 4 below the origin to 8 above it
+/// along the axis.
+fn leaning_tube(model: &mut Model, lean: f64) -> Shape {
+    let (s, c) = lean.to_radians().sin_cos();
+    let axis = Direction::new(Vector::new(s, 0.0, c), T).unwrap();
+    let base = Point::ORIGIN - axis.vector() * 4.0;
+    tube_along(model, base, axis, Direction::Y, 3.0, 12.0)
+}
+
+/// A ball of radius `r` rolling round a closed seat, read in closed form:
+/// `at(t)` gives, at the loop's parameter `t` over one turn, the ball's
+/// centre and the centre's first two derivatives, and the unit directions
+/// from the centre to its touch points on the first face and the second.
+struct ClosedSeat<F: Fn(f64) -> ([Vector; 3], Vector, Vector)> {
+    r: f64,
+    at: F,
+}
+
+impl<F: Fn(f64) -> ([Vector; 3], Vector, Vector)> ClosedSeat<F> {
+    /// The round's area: the ball's arc between its touch points swept
+    /// round the loop, `r (1 - r κ d·N)` over the arc and along the
+    /// centre's path, integrated by the trapezoid rule, which converges
+    /// geometrically on a smooth periodic integrand.
+    fn round_area(&self) -> f64 {
+        const STEPS: u32 = 4096;
+        let r = self.r;
+        let mut total = 0.0;
+        for k in 0..STEPS {
+            let t = 2.0 * PI * f64::from(k) / f64::from(STEPS);
+            let ([_, d1, d2], a, b) = (self.at)(t);
+            let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
+            let across = (b - a * a.dot(b)).normalized(T).unwrap();
+            // The arc's directions integrated over the arc.
+            let swept = a * sweep.sin() + across * (1.0 - sweep.cos());
+            let speed = d1.magnitude();
+            total += speed * r * sweep - r * r * swept.dot(d2) / speed;
+        }
+        total * 2.0 * PI / f64::from(STEPS)
+    }
+
+    /// How far `p` stands from the nearest centre of the ball: the loop
+    /// scanned, then the nearest sample's neighbourhood narrowed down.
+    fn off_centres(&self, p: Point) -> f64 {
+        const SCAN: u32 = 720;
+        let at = |t: f64| (Point::ORIGIN + (self.at)(t).0[0]).distance(p);
+        let step = 2.0 * PI / f64::from(SCAN);
+        let best = (0..SCAN)
+            .map(|k| f64::from(k) * step)
+            .min_by(|x, y| at(*x).total_cmp(&at(*y)))
+            .unwrap();
+        let (mut lo, mut hi) = (best - step, best + step);
+        for _ in 0..100 {
+            let (m1, m2) = ((2.0 * lo + hi) / 3.0, (lo + 2.0 * hi) / 3.0);
+            if at(m1) < at(m2) {
+                hi = m2;
+            } else {
+                lo = m1;
+            }
+        }
+        at(f64::midpoint(lo, hi))
+    }
+
+    /// The ball's contact read off a closed round: every sample of its
+    /// band stands the radius from the nearest centre of the ball, and
+    /// its borders lie on the faces (`off` says how far a point stands off
+    /// the first face's surface or the second's), all within the band's
+    /// fit; a radius along its normal reaches the ball's centre within
+    /// the fit and the band's tilt of a tenth of a degree.
+    fn rides(&self, model: &Model, round: &Shape, off: [&dyn Fn(Point) -> f64; 2]) {
+        let samples = band_samples(model, round, 8, 96);
+        let (u0, u1) = (samples[0].0, samples[samples.len() - 1].0);
+        for (u, _, p) in samples {
+            let gap = (self.off_centres(p) - self.r).abs();
+            assert!(gap < 2e-4, "the band stands {gap} off the ball at {p:?}");
+            for (f, border) in [(0, u0), (1, u1)] {
+                if u == border {
+                    let gap = off[f](p);
+                    assert!(gap < 2e-4, "a border {gap} off face {f} at {p:?}");
+                }
+            }
+        }
+        let (p, n) = face_normal(model, round, T).unwrap();
+        let gap = self.off_centres(p + n * self.r);
+        assert!(
+            gap < self.r.mul_add(0.1_f64.to_radians(), 2e-4),
+            "the round faces the ball: {n:?} at {p:?}, {gap} off"
+        );
+    }
+}
+
+/// The ball of radius `r` rolling on the floor z = 0 round the outside of
+/// the tube of radius `big` about the axis through the origin leaning
+/// `lean` degrees from z toward +x: its centre runs round the ellipse
+/// where the plane z = r cuts the cylinder of radius `big + r` about the
+/// axis, at angle `t` round the axis from the leaning side.
+fn leaning_seat(
+    lean: f64,
+    big: f64,
+    r: f64,
+) -> ClosedSeat<impl Fn(f64) -> ([Vector; 3], Vector, Vector)> {
+    let (s, c) = lean.to_radians().sin_cos();
+    let axis = Vector::new(s, 0.0, c);
+    let (e1, e2) = (Vector::new(c, 0.0, -s), Vector::new(0.0, 1.0, 0.0));
+    let rho = big + r;
+    ClosedSeat {
+        r,
+        at: move |t: f64| {
+            let (st, ct) = t.sin_cos();
+            let radial = e1 * ct + e2 * st;
+            let along = [
+                (rho * s).mul_add(ct, r) / c,
+                -rho * s * st / c,
+                -rho * s * ct / c,
+            ];
+            (
+                [
+                    axis * along[0] + radial * rho,
+                    axis * along[1] + (e2 * ct - e1 * st) * rho,
+                    axis * along[2] - radial * rho,
+                ],
+                Vector::new(0.0, 0.0, -1.0),
+                -radial,
+            )
+        },
+    }
+}
+
+/// How far `p` stands off the cylinder of `radius` about the line
+/// through the origin along `axis`.
+fn off_cylinder(axis: Vector, radius: f64, p: Point) -> f64 {
+    let d = p - Point::ORIGIN;
+    ((d - axis * d.dot(axis)).magnitude() - radius).abs()
+}
+
+/// The round's band sampled over its chart, a grid of `n + 1` by `m`.
+fn band_samples(model: &Model, round: &Shape, n: u32, m: u32) -> Vec<(f64, f64, Point)> {
+    use ogeom::geom::Surface as _;
+    let data = model.node(round).unwrap().data().as_face().unwrap();
+    let band = model.geometry().surface(data.surface).unwrap();
+    let ((u0, u1), (v0, v1)) = band.domain();
+    let mut out = Vec::new();
+    for i in 0..=n {
+        for j in 0..m {
+            let u = (u1 - u0).mul_add(f64::from(i) / f64::from(n), u0);
+            let v = (v1 - v0).mul_add(f64::from(j) / f64::from(m), v0);
+            out.push((u, v, band.point_at(u, v, T).unwrap()));
+        }
+    }
+    out
+}
+
+/// A round's faces against its neighbours, trimmed: one shell of three
+/// faces that sew into one, the round the face neither face became.
+fn trimmed_round(model: &mut Model, built: &ogeom::algo::Built, a: &Shape, b: &Shape) -> Shape {
+    let shell = built.shape.clone();
+    assert_eq!(model.kind_of(&shell).unwrap(), ShapeType::Shell);
+    assert_eq!(faces(model, &shell).len(), 3);
+    usable(model, &shell);
+    let three = faces(model, &shell);
+    let sewn = ogeom::algo::sew(model, &three, T).unwrap();
+    assert_eq!(sewn.shells.len(), 1, "the three faces sew into one shell");
+    let kept = |face: &Shape, f: &Shape| built.history.modified(face).iter().any(|k| k.is_same(f));
+    let round = faces(model, &shell)
+        .into_iter()
+        .find(|f| !kept(a, f) && !kept(b, f))
+        .unwrap();
+    assert!(built.history.generated(a).iter().any(|f| f.is_same(&round)));
+    marched_tangent_closed(model, &shell, &round);
+    round
+}
+
+/// A floor and a separate tube leaning 20 degrees through it: no shared
+/// direction or axis, so the ball is marched round where they cross, and
+/// it touches both all the way round, so the round closes on itself. The
+/// ball's centre runs round the ellipse where the plane z = 1 cuts the
+/// cylinder of radius 4 about the tube's axis, so the floor keeps all but
+/// that ellipse's inside, 400 less 16π / cos 20°, and the tube what stands
+/// above its touch points, which stand 1 / cos 20° up the axis on
+/// average: 6π (8 - 1 / cos 20°). The round's area is the ball's arc swept
+/// round the ellipse, integrated apart. Each area is held to the band's
+/// fit times the length of its lines of contact.
+#[test]
+fn a_plane_and_a_leaning_tube_round_closed_on_itself() {
+    let lean = 20.0_f64;
+    let seat = leaning_seat(lean, 3.0, 1.0);
+    let (s, cos) = lean.to_radians().sin_cos();
+    let axis = Vector::new(s, 0.0, cos);
+    let on_floor = |p: Point| p.z.abs();
+    let on_tube = |p: Point| off_cylinder(axis, 3.0, p);
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (-10.0, 10.0));
+    let tube = leaning_tube(&mut model, lean);
+    let built = fillet_faces(&mut model, &floor, &tube, seat.r, true, T).unwrap();
+    let round = trimmed_round(&mut model, &built, &floor, &tube);
+    assert_eq!(
+        edge_use(&model, &built.shape).0,
+        3,
+        "both lines of contact and the tube's seam shared"
+    );
+    seat.rides(&model, &round, [&on_floor, &on_tube]);
+    // A tolerance of the fit along a line of contact moves the area it
+    // bounds by at most that much per unit of its length.
+    let slack = 2e-4 * 2.0 * PI * 5.0;
+    let kept_floor = face_where(&model, &built.shape, |s| {
+        matches!(s, SurfaceGeometry::Plane(_))
+    });
+    let want = 400.0 - PI * 16.0 / cos;
+    let got = area(&model, &kept_floor);
+    assert!(
+        (got - want).abs() < slack,
+        "the floor keeps {got}, not {want}"
+    );
+    let kept_tube = face_where(&model, &built.shape, |s| {
+        matches!(s, SurfaceGeometry::Cylinder(_))
+    });
+    let want = 6.0 * PI * (8.0 - 1.0 / cos);
+    let got = area(&model, &kept_tube);
+    assert!(
+        (got - want).abs() < slack,
+        "the tube keeps {got}, not {want}"
+    );
+    let want = seat.round_area();
+    let got = area(&model, &round);
+    assert!(
+        (got - want).abs() < slack,
+        "the round's area {got}, not {want}"
+    );
+
+    // Untrimmed, the round alone, facing the ball as both faces do.
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (-10.0, 10.0));
+    let tube = leaning_tube(&mut model, lean);
+    let round = fillet_faces(&mut model, &floor, &tube, seat.r, false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(model.kind_of(&round).unwrap(), ShapeType::Face);
+    usable(&model, &round);
+    seat.rides(&model, &round, [&on_floor, &on_tube]);
+    let got = area(&model, &round);
+    assert!(
+        (got - want).abs() < slack,
+        "the round's area {got}, not {want}"
+    );
+}
+
+/// The floor over 20 by 20 restated as a B-spline patch and the upright
+/// tube: the patch has no axis the closed form can read, so the ball is
+/// marched round the tube's foot, and the round it closes is the torus
+/// band about the tube's axis on the circle of radius 4 at height 1. Its
+/// area is the quarter turn of the torus tube from below the core to its
+/// inside, 2π r (4 π / 2 - r), which the swept integral gives too.
+#[test]
+fn a_spline_floor_and_an_upright_tube_round_to_the_torus_by_marching() {
+    let seat = leaning_seat(0.0, 3.0, 1.0);
+    let mut model = Model::new();
+    let flat = floor_rectangle(&mut model, (-10.0, 10.0), (-10.0, 10.0));
+    let splined = ogeom::algo::to_nurbs(&mut model, &flat, T).unwrap().shape;
+    let floor = faces(&model, &splined).remove(0);
+    assert!(matches!(
+        surface_of(&model, &floor),
+        SurfaceGeometry::BSpline(_)
+    ));
+    let tube = leaning_tube(&mut model, 0.0);
+    let built = fillet_faces(&mut model, &floor, &tube, seat.r, true, T).unwrap();
+    let round = trimmed_round(&mut model, &built, &floor, &tube);
+    let on_floor = |p: Point| p.z.abs();
+    let on_tube = |p: Point| off_cylinder(Vector::new(0.0, 0.0, 1.0), 3.0, p);
+    seat.rides(&model, &round, [&on_floor, &on_tube]);
+    for (_, _, p) in band_samples(&model, &round, 8, 96) {
+        let core =
+            Point::new(0.0, 0.0, 1.0) + Vector::new(p.x, p.y, 0.0).normalized(T).unwrap() * 4.0;
+        let off = (p.distance(core) - seat.r).abs();
+        assert!(off < 2e-4, "the band leaves the torus by {off} at {p:?}");
+    }
+    let want = 2.0 * PI * seat.r * (4.0 * PI / 2.0 - seat.r);
+    assert!(
+        (seat.round_area() - want).abs() < 1e-9,
+        "the swept integral is the torus's"
+    );
+    let slack = 2e-4 * 2.0 * PI * 4.0;
+    let got = area(&model, &round);
+    assert!(
+        (got - want).abs() < slack,
+        "the round's area {got}, not {want}"
+    );
+}
+
+/// Two pipes crossing square: a tube of radius 2 standing on the x axis
+/// out of the top of a tube of radius 5 along it, as separate faces, the
+/// ball of radius 1 outside both. Its centre runs where the cylinders of
+/// radius 3 and 6 about the two axes cross, (3 cos t, 3 sin t,
+/// √(36 - 9 sin² t)), touching the small tube at the same height and the
+/// big one on the way to its axis. The small tube keeps what stands above
+/// its line of contact, ∫ 2 (12 - z) dt; the big one all but the patch its
+/// line of contact encloses, its area 5 ∮ x dφ with sin φ = (5/6)(3 sin t)
+/// / 5 round the big tube; the round the ball's arc swept round the loop.
+#[test]
+fn two_crossing_pipes_round_closed_on_itself() {
+    let r = 1.0;
+    let (small, big) = (2.0_f64, 5.0_f64);
+    let (ps, pb) = (small + r, big + r);
+    let seat = ClosedSeat {
+        r,
+        at: move |t: f64| {
+            let (s, c) = t.sin_cos();
+            let w = pb.mul_add(pb, -(ps * ps * s * s)).sqrt();
+            let w1 = -ps * ps * s * c / w;
+            let w2 = -(ps * ps).mul_add(c.mul_add(c, -(s * s)), w1 * w1) / w;
+            let centre = Vector::new(ps * c, ps * s, w);
+            (
+                [
+                    centre,
+                    Vector::new(-ps * s, ps * c, w1),
+                    Vector::new(-ps * c, -ps * s, w2),
+                ],
+                -Vector::new(c, s, 0.0),
+                -Vector::new(0.0, centre.y, centre.z) / pb,
+            )
+        },
+    };
+    let mut model = Model::new();
+    let pipe = tube_along(
+        &mut model,
+        Point::new(-12.0, 0.0, 0.0),
+        Direction::X,
+        Direction::Y,
+        big,
+        24.0,
+    );
+    let branch = tube_along(
+        &mut model,
+        Point::ORIGIN,
+        Direction::Z,
+        Direction::X,
+        small,
+        12.0,
+    );
+    let on_branch = |p: Point| off_cylinder(Vector::new(0.0, 0.0, 1.0), small, p);
+    let on_pipe = |p: Point| off_cylinder(Vector::new(1.0, 0.0, 0.0), big, p);
+    let built = fillet_faces(&mut model, &branch, &pipe, r, true, T).unwrap();
+    let round = trimmed_round(&mut model, &built, &branch, &pipe);
+    seat.rides(&model, &round, [&on_branch, &on_pipe]);
+
+    const STEPS: u32 = 4096;
+    let mean = |f: &dyn Fn(f64) -> f64| -> f64 {
+        (0..STEPS)
+            .map(|k| f(2.0 * PI * f64::from(k) / f64::from(STEPS)))
+            .sum::<f64>()
+            * 2.0
+            * PI
+            / f64::from(STEPS)
+    };
+    let height = |t: f64| pb.mul_add(pb, -(ps * ps * t.sin().powi(2))).sqrt();
+    let branch_kept = mean(&|t| small * (12.0 - height(t)));
+    let enclosed = mean(&|t| {
+        let (s, c) = t.sin_cos();
+        let q = ps / pb;
+        big * ps * c * (q * c / q.mul_add(-(q * s * s), 1.0).sqrt())
+    });
+    let pipe_kept = 2.0 * PI * big * 24.0 - enclosed;
+    let slack = 2e-4 * 2.0 * PI * pb;
+    for (face, want, what) in [
+        (
+            built.history.modified(&branch)[0].clone(),
+            branch_kept,
+            "the branch keeps",
+        ),
+        (
+            built.history.modified(&pipe)[0].clone(),
+            pipe_kept,
+            "the pipe keeps",
+        ),
+        (round, seat.round_area(), "the round's area is"),
+    ] {
+        let got = area(&model, &face);
+        assert!((got - want).abs() < slack, "{what} {got}, not {want}");
+    }
+}
+
 #[test]
 fn face_rounds_refuse_by_name() {
     let mut model = Model::new();
@@ -1919,6 +2355,19 @@ fn face_rounds_refuse_by_name() {
     .shape;
     let said = refusal(fillet_faces(&mut model, &a, &copy, 1.0, true, T));
     assert!(said.contains("parallel"), "{said}");
+
+    // An upright tube swept from a B-spline ring stands on a closed
+    // B-spline surface whose chart does not wrap round: the ball's line of
+    // contact round it crosses the seam, and the face cut along it does
+    // not part into pieces covering it once, or is not cut at all.
+    // Untrimmed, the round stands.
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (-10.0, 10.0), (-10.0, 10.0));
+    let (sheet, _) = tube_on_floor_as(&mut model, true);
+    let tube = face_where(&model, &sheet, |s| !matches!(s, SurfaceGeometry::Plane(_)));
+    let said = refusal(fillet_faces(&mut model, &floor, &tube, 1.0, true, T));
+    assert!(said.contains("its chart does not wrap round"), "{said}");
+    assert!(fillet_faces(&mut model, &floor, &tube, 1.0, false, T).is_ok());
 }
 
 /// A floor whose far side notches back toward the corner, to within 1.5

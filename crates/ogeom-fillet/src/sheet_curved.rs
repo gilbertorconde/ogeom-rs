@@ -884,7 +884,7 @@ pub(crate) fn same_parameter(model: &mut Model, edge: &Shape) {
 /// An edge on the curve of `old` (an occurrence, placed as it stands) over
 /// `range` of its parameter, between `from` and `to`, carrying the
 /// occurrence's own image on `surface` over the same range.
-fn piece_of(
+pub(crate) fn piece_of(
     model: &mut Model,
     old: &Shape,
     surface: SurfaceId,
@@ -983,7 +983,7 @@ fn attach_image(
 /// A face again on its own surface, every edge of `swap` replaced by its
 /// pieces (forward edges, in the replaced edge's stored order), each
 /// occurrence keeping its orientation.
-fn rebuilt_face(
+pub(crate) fn rebuilt_face(
     model: &mut Model,
     face: &Shape,
     surface_id: SurfaceId,
@@ -1030,7 +1030,7 @@ fn rebuilt_face(
 /// centre of the ball touching the round at a point. The round's ring is
 /// first made to run counter-clockwise in its chart, so that the face keeps
 /// itself on the left of its ring whichever side it faces.
-fn oriented_round(
+pub(crate) fn oriented_round(
     model: &mut Model,
     round: Shape,
     away: bool,
@@ -2953,7 +2953,7 @@ fn closed_up(
 }
 
 /// A vertex's point, placed.
-fn vertex_point(model: &Model, vertex: &Shape) -> OgeomResult<Point> {
+pub(crate) fn vertex_point(model: &Model, vertex: &Shape) -> OgeomResult<Point> {
     let Some(point) = model
         .node(vertex)
         .and_then(|n| n.data().as_vertex().map(|v| v.point))

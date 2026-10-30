@@ -194,7 +194,10 @@ pub fn fillet_sheet_edges(
 /// B-spline patch continued past its face for the march, each written back
 /// as the face's own surface. The round is a B-spline band fitted through
 /// the ball's arcs over the stretch both faces reach, ending in the ball's
-/// sections there, and rides both faces within a tenth of a degree.
+/// sections there, or, where the ball touches both faces all the way round
+/// a closed seat (a tube through a floor at a slant, two pipes crossing),
+/// fitted closed round the loop with no ends. It rides both faces within a
+/// tenth of a degree.
 ///
 /// With `trim`, each face is cut back to its line of contact (everything of
 /// it on the round's side of that line goes) and the result is one shell
@@ -218,11 +221,12 @@ pub fn fillet_sheet_edges(
 /// - a face is a trimmed or offset surface and the seat has no closed
 ///   form;
 /// - for a marched round, no ball seats on the front of both surfaces
-///   along where they (or their offsets) meet, the ball rolls round a
-///   closed seat (a marched round does not close on itself between
-///   separate faces), a line of contact does not cut its face from
-///   boundary to boundary, or more than one corner holds a ball touching
-///   both faces;
+///   along where they (or their offsets) meet, a line of contact does not
+///   cut its face from boundary to boundary, or more than one corner holds
+///   a ball touching both faces; with `trim`, a line of contact closed
+///   round its face does not part it into pieces covering it once (it
+///   crosses a seam of a closed B-spline face whose chart does not wrap
+///   round);
 /// - two planes are parallel, or no ball of `radius` touches the front of
 ///   both surfaces, or it does not fit inside a curved face, or more than
 ///   one does and touches both faces;

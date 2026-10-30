@@ -20,7 +20,10 @@
 //! ring where the ball touches both faces all the way round a closed seat,
 //! and otherwise capped at each end of the run in the ball's section there,
 //! as the open marched edge blend caps its run. Between separate faces each
-//! face is cut back to its line of contact and the round sewn between them.
+//! face is cut back to its line of contact and the round sewn between them:
+//! over the overlap of the faces' stretches, or, where the ball touches
+//! both all the way round a closed seat, as a band closed round the loop
+//! between two closed lines of contact.
 
 use ogeom_algo::{
     Built, History, attach_pcurve, make_edge, make_edge_between, make_vertex, project_on_curve,
@@ -1399,11 +1402,7 @@ pub(crate) fn fillet_faces(
     } = seat;
     let stretches = match run {
         Run::Open(stretches) => stretches,
-        Run::Closed => ogeom_bail!(
-            Construction,
-            "the ball rolls round a closed seat between the two faces; a marched round closing \
-             on itself between separate faces is not built"
-        ),
+        Run::Closed => return closed_round(model, [a, b], &hosts, blend, radius, trim, tol),
         Run::Capped => ogeom_bail!(
             Invariant,
             "a seat between separate faces is taken over their stretches"
@@ -1492,6 +1491,378 @@ pub(crate) fn fillet_faces(
     history.generate(a, round.clone());
     history.generate(b, round);
     Ok(Built::new(shell, history))
+}
+
+/// Round the corner between two faces of separate shapes where the ball
+/// rolls round a closed seat touching both all the way: the band fitted
+/// closed round the loop of the ball's arcs, bounded by its two borders,
+/// one along each line of contact, and a seam across it at the loop's
+/// first station. With `trim`, each face is cut along its border and the
+/// piece away from the round kept, and the three are one shell.
+#[allow(clippy::too_many_arguments, reason = "one round, all its data")]
+fn closed_round(
+    model: &mut Model,
+    faces: [&Shape; 2],
+    hosts: &Hosts,
+    mut blend: MarchedBlend,
+    radius: f64,
+    trim: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    crate::marched::owned_once(&mut blend, tol);
+    let fit_target = band_fit_target(tol);
+    // Aimed at half the target, as the open band is: the borders are the
+    // rails the faces are cut along, and the band's normal there, which
+    // the faces' must match, strays by the fit over the arc's sampling.
+    let (fitted, _) = crate::marched::fit_closed_band(&blend, radius, fit_target * 0.5, tol)?;
+    if fitted.error > fit_target {
+        ogeom_bail!(
+            NotDone,
+            "the blend surface reached {} against a target of {fit_target}",
+            fitted.error
+        );
+    }
+    let band = fitted.curve;
+    let marched = Marched {
+        blend,
+        band,
+        fit_target,
+    };
+    let band: SurfaceGeometry = marched.band.clone().into();
+    let (u_dom, v_dom) = band.domain();
+    let band_id = model.geometry_mut().add_surface(band.clone());
+    let widened = Tolerance::new(fit_target)?;
+    let mut rails = Vec::with_capacity(2);
+    for f in 0..2 {
+        let rail = make_edge(model, marched.border(f, tol)?, v_dom, tol)?.shape;
+        model.widen(&rail, widened)?;
+        rails.push(rail);
+    }
+
+    let mut history = History::new();
+    let mut kept = Vec::with_capacity(2);
+    let mut walked = Vec::with_capacity(2);
+    for (f, face) in faces.iter().enumerate() {
+        if !trim {
+            walked.push(vec![rails[f].clone()]);
+            continue;
+        }
+        let (piece, pieces) = cut_along_rail(model, face, f, &rails[f], hosts, &marched, tol)?;
+        kept.push(piece);
+        walked.push(pieces);
+    }
+    for (f, pieces) in walked.iter().enumerate() {
+        let u = if f == 0 { u_dom.0 } else { u_dom.1 };
+        for piece in pieces {
+            let (_, range) = edge_curve(model, piece, tol)?;
+            attach_pcurve(
+                model,
+                &piece.oriented(Orientation::Forward),
+                column(u, v_dom)?,
+                band_id,
+                Location::identity(),
+                range,
+            )?;
+        }
+    }
+    let anchors = [
+        ogeom_algo::edge_vertices(model, &walked[0][0])?,
+        ogeom_algo::edge_vertices(model, &walked[1][0])?,
+    ];
+    let [Some((anchor0, _)), Some((anchor1, _))] = anchors else {
+        ogeom_bail!(Construction, "a rail of the round has no vertex");
+    };
+    let seam_curve = {
+        let grid = marched.band.grid();
+        let nv = grid.v_count();
+        let control: Vec<Point> = (0..grid.u_count())
+            .map(|i| grid.points()[i * nv].point())
+            .collect();
+        Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            marched.band.u_knots().clone(),
+            control,
+            tol,
+        )?)
+    };
+    let seam = make_edge_between(model, seam_curve, u_dom, &anchor0, &anchor1, tol)?.shape;
+    model.widen(&seam, widened)?;
+    let row = |v: f64| -> OgeomResult<PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(0.0, v), ogeom_math::Direction2::X),
+            u_dom.0 - 1.0,
+            u_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    ogeom_algo::attach_seam(
+        model,
+        &seam,
+        row(v_dom.0)?,
+        row(v_dom.1)?,
+        band_id,
+        Location::identity(),
+        u_dom,
+    )?;
+    let ring: Vec<Shape> = [
+        vec![seam.clone()],
+        walked[1].clone(),
+        vec![seam.reversed()],
+        walked[0].iter().rev().map(Shape::reversed).collect(),
+    ]
+    .concat();
+    let wire = ogeom_algo::make_wire(model, &ring, tol)?.shape;
+    let face = ogeom_algo::make_face_on(model, band_id, std::slice::from_ref(&wire), tol)?.shape;
+    let spine = marched.blend.spine.clone();
+    let round = crate::sheet_curved::oriented_round(
+        model,
+        face,
+        false,
+        |q| crate::marched::touching_ball(&spine, q),
+        tol,
+    )?;
+    for face in faces {
+        history.generate(face, round.clone());
+    }
+    if !trim {
+        return Ok(Built::new(round, history));
+    }
+    let shell = model.add_shell(&[kept[0].clone(), round.clone(), kept[1].clone()])?;
+    history.modify(faces[0], kept[0].clone());
+    history.modify(faces[1], kept[1].clone());
+    Ok(Built::new(shell, history))
+}
+
+/// The line `v` of a band's chart at its `u`, over the band's `v` window
+/// and a little past it.
+fn column(u: f64, (v0, v1): (f64, f64)) -> OgeomResult<PlanarCurve> {
+    Ok(ogeom_geom::Line2d::over(
+        ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+        v0 - 1.0,
+        v1 + 1.0,
+    )?
+    .into())
+}
+
+/// Face `f` cut along the closed `rail` the round's band borders it with,
+/// and the piece away from the round: back come the piece and the edges
+/// the cut left along the rail, in order round it from the rail's own
+/// vertex.
+fn cut_along_rail(
+    model: &mut Model,
+    face: &Shape,
+    f: usize,
+    rail: &Shape,
+    hosts: &Hosts,
+    marched: &Marched,
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Vec<Shape>)> {
+    let split = ogeom_heal::split_face(
+        model,
+        face,
+        face,
+        std::slice::from_ref(rail),
+        ogeom_heal::Projection::OnFace,
+        tol,
+    )
+    .map_err(|e| match e {
+        OgeomError::Construction(why) => ogeom_core::ogeom_err!(
+            Construction,
+            "cutting a face along the line the ball touches it on fails ({why}); the line \
+             crosses a seam of the face its chart does not wrap round, or leaves the face"
+        ),
+        other => other,
+    })?;
+    let cut: Vec<Shape> = split
+        .history
+        .generated(rail)
+        .iter()
+        .filter(|s| model.kind_of(s).is_ok_and(|k| k == ShapeType::Edge))
+        .cloned()
+        .collect();
+    // The cut's edges stand on the rail's own curve: put in order along it
+    // from its start, where the round's seam meets it.
+    let (_, whole) = edge_curve(model, rail, tol)?;
+    let mut cut = cut
+        .into_iter()
+        .map(|e| {
+            let e = e.oriented(Orientation::Forward);
+            edge_curve(model, &e, tol).map(|(_, range)| (range, e))
+        })
+        .collect::<OgeomResult<Vec<_>>>()?;
+    cut.sort_by(|x, y| x.0.0.total_cmp(&y.0.0));
+    let gap = tol.parametric() * 1e3;
+    let chained = !cut.is_empty()
+        && (cut[0].0.0 - whole.0).abs() <= gap
+        && (cut[cut.len() - 1].0.1 - whole.1).abs() <= gap
+        && cut.windows(2).all(|w| (w[1].0.0 - w[0].0.1).abs() <= gap);
+    if !chained {
+        ogeom_bail!(
+            Construction,
+            "the line the ball touches a face along does not stay on the face all the way round; \
+             the cut along it leaves no closed rail"
+        );
+    }
+    let cut: Vec<Shape> = cut.into_iter().map(|(_, e)| e).collect();
+    let blend = &marched.blend;
+    let surface = &hosts.surfaces[f];
+    let i = blend.len() / 2;
+    let (touch, other) = if f == 0 {
+        (&blend.touch_first, &blend.touch_second)
+    } else {
+        (&blend.touch_second, &blend.touch_first)
+    };
+    let (centre, at, to) = (blend.spine[i], touch[i], other[i]);
+    let (a, b) = (at - centre, to - centre);
+    let away: Vector = -(b - a * (a.dot(b) / a.dot(a))).normalized(tol)?;
+    let pieces = explore_unique(model, &split.shape, ShapeType::Face)?;
+    // The pieces cover the face once: a cut the face's chart cannot hold
+    // (a line round a closed spline face, across a seam its chart does not
+    // wrap) parts it into pieces that do not. Their areas, integrated on
+    // the exact surface, are held to the face's within the most a cut
+    // standing within its tolerance of the line could move across it.
+    let (rail_curve, rail_range) = edge_curve(model, rail, tol)?;
+    let length = ogeom_algo::curve_length(&rail_curve, rail_range, tol)?;
+    let slack = model
+        .node(rail)
+        .and_then(|n| n.data().as_edge().map(|d| d.tolerance.get()))
+        .unwrap_or(marched.fit_target)
+        * length;
+    let area = |model: &Model, face: &Shape| -> Option<f64> {
+        ogeom_algo::surface_properties(model, face, ogeom_mesh::Deflection::default(), tol)
+            .ok()
+            .filter(|found| found.deflection == 0.0)
+            .map(|found| found.mass)
+    };
+    let whole = area(model, face);
+    let parts: Option<f64> = pieces.iter().map(|p| area(model, p)).sum();
+    if !matches!((whole, parts), (Some(w), Some(p)) if (w - p).abs() <= slack) {
+        ogeom_bail!(
+            Construction,
+            "cutting a face along the line the ball touches it on does not part it into \
+             pieces covering it once; the line crosses a seam of the face its chart does not \
+             wrap round"
+        );
+    }
+    for scale in [1e-3, 1e-2, 5e-2] {
+        let eps = a.magnitude() * scale;
+        let deflection = ogeom_mesh::Deflection {
+            chord: eps * 0.1,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let probe = project_on_surface(surface, at + away * eps, 32, tol)?.point;
+        let mut holding = Vec::new();
+        for piece in &pieces {
+            if ogeom_algo::classify_on_face(model, piece, probe, deflection, tol)?
+                == ogeom_algo::Containment::In
+            {
+                holding.push(piece.clone());
+            }
+        }
+        let [piece] = holding.as_slice() else {
+            continue;
+        };
+        return closed_up(model, piece, cut, tol);
+    }
+    ogeom_bail!(
+        Construction,
+        "no piece of a face cut along its line of contact stands away from the round"
+    )
+}
+
+/// The kept `piece` with the edges `cut` along a closed line, in order
+/// round it, joined end to end. A cut across a periodic face's seam ends
+/// on a second vertex beside the one it started from, with a sliver of the
+/// seam between the two: the second vertex is merged into the first, the
+/// sliver dropped, and every edge of the piece at the second vertex moved
+/// onto the first. Back come the piece and the cut's edges as it holds
+/// them.
+fn closed_up(
+    model: &mut Model,
+    piece: &Shape,
+    cut: Vec<Shape>,
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Vec<Shape>)> {
+    let ends = |model: &Model, e: &Shape| -> OgeomResult<(Shape, Shape)> {
+        ogeom_algo::edge_vertices(model, e)?
+            .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a cut edge has no vertices"))
+    };
+    let tolerance_of = |model: &Model, v: &Shape| -> f64 {
+        model
+            .node(v)
+            .and_then(|n| n.data().as_vertex().map(|d| d.tolerance.get()))
+            .unwrap_or(0.0)
+    };
+    // Each vertex a cut edge ends on that the next does not start from,
+    // paired with the one it does start from.
+    let mut moves: Vec<(Shape, Shape)> = Vec::new();
+    for k in 0..cut.len() {
+        let (_, end) = ends(model, &cut[k])?;
+        let (start, _) = ends(model, &cut[(k + 1) % cut.len()])?;
+        if end.is_same(&start) {
+            continue;
+        }
+        let (p, q) = (
+            crate::sheet_curved::vertex_point(model, &end)?,
+            crate::sheet_curved::vertex_point(model, &start)?,
+        );
+        if p.distance(q) > tolerance_of(model, &end).max(tolerance_of(model, &start)) {
+            ogeom_bail!(
+                Construction,
+                "the cut along the line the ball touches a face on does not close; its ends \
+                 stand {} apart",
+                p.distance(q)
+            );
+        }
+        moves.push((end, start));
+    }
+    if moves.is_empty() {
+        return Ok((piece.clone(), cut));
+    }
+    let (surface_id, _, tolerance) = unplaced_face(model, piece)?;
+    let moved = |v: &Shape| -> Shape {
+        moves
+            .iter()
+            .find(|(gone, _)| gone.is_same(v))
+            .map_or_else(|| v.clone(), |(_, kept)| kept.clone())
+    };
+    let paired = |v: &Shape| moves.iter().any(|(g, k)| g.is_same(v) || k.is_same(v));
+    let mut swap: Vec<(Shape, Vec<Shape>)> = Vec::new();
+    let mut restated = cut.clone();
+    for edge in explore_unique(model, piece, ShapeType::Edge)? {
+        let forward = edge.oriented(Orientation::Forward);
+        let (a, b) = ends(model, &forward)?;
+        let on_cut = cut.iter().position(|c| c.is_same(&forward));
+        if on_cut.is_none()
+            && !a.is_same(&b)
+            && paired(&a)
+            && paired(&b)
+            && moved(&a).is_same(&moved(&b))
+        {
+            // The sliver between a pair.
+            swap.push((forward, Vec::new()));
+            continue;
+        }
+        let (from, to) = (moved(&a), moved(&b));
+        if from.is_same(&a) && to.is_same(&b) {
+            continue;
+        }
+        let (_, range) = edge_curve(model, &forward, tol)?;
+        let new =
+            crate::sheet_curved::piece_of(model, &forward, surface_id, range, &from, &to, tol)?;
+        if let Some(k) = on_cut {
+            restated[k] = new.clone();
+        }
+        swap.push((forward, vec![new]));
+    }
+    for (gone, kept) in &moves {
+        let p = crate::sheet_curved::vertex_point(model, gone)?;
+        let reach =
+            p.distance(crate::sheet_curved::vertex_point(model, kept)?) + tolerance_of(model, gone);
+        model.widen(kept, Tolerance::new(reach.max(tolerance_of(model, kept)))?)?;
+    }
+    let rebuilt =
+        crate::sheet_curved::rebuilt_face(model, piece, surface_id, tolerance, &swap, tol)?;
+    Ok((rebuilt, restated))
 }
 
 #[cfg(test)]

@@ -161,16 +161,37 @@ a hair from it is not yet split and classified rightly. Seed 8's
 
 **Curved face blends refused by name.** `blend_faces` and `fillet_faces`
 round curved faces that share no edge where their surfaces share a direction
-or an axis, and otherwise march the ball round where the surfaces cross. They
-refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`):
+or an axis, and otherwise march the ball round where the surfaces cross;
+between separate faces a march closed round its seat is a band fitted closed
+round the loop. They refuse (`curved_face_blends_refuse_by_name` in
+`tests/blends.rs`, `face_rounds_refuse_by_name` and `curved_rounds_refuse_by_name`
+in `tests/sheet_fillets.rs`):
 
 - faces the ball leaves at different places round its seat and never both at
-  once, so neither face gives the round both its ends;
-- a marched round closing on itself between separate faces, and one whose
-  line of contact crosses a face more than once;
+  once. The round would be two runs, one over each overlap of the faces'
+  stretches. Each face's end is found by cutting it along its line of
+  contact over a run opened where the ball is off every face it leaves;
+  with no such station, any opening runs one face's line out of it and back,
+  and the cut gives two edges. Owed: each face's stretch read with the loop
+  opened in that face's own gap, the stretches intersected round the loop,
+  and one capped wedge per run applied in turn;
+- a line of contact crossing a face more than once: several runs between the
+  same two faces, and with `trim` a face cut along several lines whose piece
+  away from every round may be more than one;
 - a round crossing a face that stands between the two (a ball crossing a
   chamfer between the faces it rounds), where the solid beside the round is
-  open where the seat says material, or the reverse.
+  open where the seat says material, or the reverse. No ball rolls in that
+  corner touching only the two faces: on the test's drum, chamfered 1, the
+  ball of radius 1.5 touching the wall and the lid has its centre 1.41 from
+  the chamfer's plane. The round would leave the material through the
+  chamfer, giving round, chamfer, round meeting at creases. It needs a ball
+  touching the chamfer as well (a three-face blend);
+- with `trim`, a closed line of contact across the seam of a closed B-spline
+  face whose chart does not wrap round (a tube swept from a B-spline ring):
+  `split_face` brings a trace back by a period only on a periodic chart, so
+  the cut does not part the face into pieces covering it once. Owed: the
+  line cut at the seam on such a chart, or the face restated on a periodic
+  one.
 
 **A pole leg whose edge winds round the pole and whose rail does not.** A
 marched band whose rail passes over a sphere's pole has a leg from the

@@ -945,7 +945,19 @@ means a sliver that one chart collapses is collapsed in every chart. Where three
 one `fillet_edges` call meet at a vertex, the corner tool closes it with \
 the rolling ball's patch before the bands, which stop flush against it: a \
 box corner's sphere octant, a pyramid apex's sphere or spheres and \
-cylinders; a corner the tool does not speak keeps the bands' caps."""
+cylinders; a corner the tool does not speak keeps the bands' caps. \
+`blend_faces` and `fillet_faces` round curved faces that share no edge: \
+swept from one section where the surfaces share a direction or an axis, \
+marched where they cross otherwise. Between separate faces a marched \
+ball that touches both all the way round a closed seat (a tube through a \
+floor at a slant, two pipes crossing) gives a band fitted closed round \
+the loop, each face cut along its closed line of contact; a closed line \
+across the seam of a closed B-spline face whose chart does not wrap \
+round is refused by name, as the cut does not part the face. Refused by \
+name too: faces the ball leaves at different places round its seat and \
+never both at once, a line of contact crossing a face more than once, \
+and a round crossing a face between the two (a ball wider than a \
+chamfer between the faces it rounds)."""
 symbols = [
     "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edges",
     "ogeom_fillet::fillet_edge_variable",

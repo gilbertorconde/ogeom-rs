@@ -11,6 +11,34 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **`fillet_faces` rounds a marched seat that closes on itself between
+  separate faces.**
+  - Where the ball touches both faces all the way round where their
+    surfaces cross (a tube through a floor at a slant, two pipes crossing
+    square, a B-spline floor round a tube), the round is a band fitted
+    closed round the loop of the ball's arcs, bounded by its two borders
+    and a seam across it. It was refused by name.
+  - With `trim`, each face is cut along its border and keeps the piece
+    away from the round; a cut across a periodic face's seam that ends on
+    a second vertex beside its first is closed on one vertex, the sliver
+    of seam between them dropped. A cut that does not part its face into
+    pieces covering it once (a closed line across the seam of a closed
+    B-spline face whose chart does not wrap round) is refused by name.
+  - `split_face` joins boundary cuts a whisker apart into one cut; a
+    meeting whose fraction was joined to its neighbour's lost its vertex
+    and the split failed with "a cut vertex is lost".
+  - Measured against closed forms: a floor and a tube of radius 3 leaning
+    20 degrees, ball of radius 1. The floor keeps 400 − 16π / cos 20° to
+    2e-6 and the tube 6π (8 − 1 / cos 20°) to 1e-7. The round's area
+    matches the ball's arc swept round the ellipse of centres, integrated
+    apart, to 4e-6 of 34.47. Two pipes of radius 5 and 2 crossing: all
+    three areas to 1e-5. A B-spline floor round an upright tube: the torus
+    band's area 2π (2π − 1) to 1.5e-5, every sample on the torus within
+    2e-4. The band stands the radius from the ball's centres within its
+    fit of 2e-4, and meets both faces within a tenth of a degree.
+
 ### Fixed
 
 - **A ball cut to a slab through both poles and drilled with the wall

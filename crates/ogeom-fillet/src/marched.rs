@@ -538,36 +538,7 @@ pub(crate) fn closed_band_wedge(
     let [(first, sign_first), (second, sign_second)] = hosts;
     // The band wants every winding rail to run its period forward; when the
     // march went the other way round, the whole loop reverses.
-    // A closed march may hand its first station back as its last; the loop
-    // owns it once, and the grid closes itself.
-    while blend.len() > 8
-        && blend.spine[blend.len() - 1].distance(blend.spine[0]) <= tol.confusion() * 100.0
-    {
-        blend.spine.pop();
-        blend.touch_first.pop();
-        blend.touch_second.pop();
-        blend.on_first.pop();
-        blend.on_second.pop();
-        blend.along.pop();
-    }
-    // A march may also overshoot its start before noticing closure, leaving
-    // trailing stations that re-trace the loop's opening arc: the sequence
-    // folds back on itself and no smooth fit can follow it. The overshoot
-    // reads off the closing step: while it points *against* the march, the
-    // last station is past the start and goes.
-    while blend.len() > 8 {
-        let last = blend.spine[blend.len() - 1];
-        let prev = blend.spine[blend.len() - 2];
-        if (blend.spine[0] - last).dot(last - prev) >= 0.0 {
-            break;
-        }
-        blend.spine.pop();
-        blend.touch_first.pop();
-        blend.touch_second.pop();
-        blend.on_first.pop();
-        blend.on_second.pop();
-        blend.along.pop();
-    }
+    owned_once(&mut blend, tol);
     {
         let winding = |on: &[(f64, f64)], surface: &SurfaceGeometry| -> f64 {
             let Some(period) = period_of(surface) else {
@@ -779,7 +750,6 @@ pub(crate) fn closed_band_wedge(
     // material added.
     let additive = !convex;
 
-    let n = blend.len();
     // Two tenths of a micron at unit scale: what the march's own stations
     // hold to, and what the band's edges are widened to say.
     let fit_target = (tol.confusion() * 2e3).max(2e-4);
@@ -787,36 +757,7 @@ pub(crate) fn closed_band_wedge(
     // The blend surface: each station's exact ball arc, the loop of stations
     // fitted *closed*: the join is C1 wherever the seam lands, so anchoring
     // the seam column costs nothing.
-    let mut rows: Vec<Vec<Point>> = (0..ACROSS).map(|_| Vec::with_capacity(n + 1)).collect();
-    for i in 0..=n {
-        let at = i % n;
-        let centre = blend.spine[at];
-        let a = (blend.touch_first[at] - centre) / radius;
-        let b = (blend.touch_second[at] - centre) / radius;
-        let cross = a.cross(b);
-        let m = cross.magnitude();
-        if m <= tol.angular() {
-            ogeom_bail!(
-                Construction,
-                "a blend section collapsed; the radius wedges rather than \
-                 seats at station {at}"
-            );
-        }
-        let axis = cross / m;
-        let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
-        for (k, row) in rows.iter_mut().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
-            let theta = sweep * (k as f64) / ((ACROSS - 1) as f64);
-            let dir = a * theta.cos() + axis.cross(a) * theta.sin();
-            row.push(centre + dir * radius);
-        }
-    }
-    // The closed direction is `v` by the fit's convention, so the grid goes
-    // in station-major: one row per station arc, first repeated at the end.
-    let loops: Vec<Vec<Point>> = (0..=n)
-        .map(|i| (0..ACROSS).map(|k| rows[k][i]).collect())
-        .collect();
-    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v_chordal(&loops, 3, fit_target, tol)?;
+    let (fitted, rows) = fit_closed_band(&blend, radius, fit_target, tol)?;
     if !fitted.met {
         ogeom_bail!(
             NotDone,
@@ -824,13 +765,13 @@ pub(crate) fn closed_band_wedge(
             fitted.error
         );
     }
+    let surface = fitted.curve;
 
     // The loop's own parameters, recomputed the way the fit computes them
     // (averaged centripetal), so the rail pcurves fitted at them are
     // same-parameter with the surface's borders.
     let u_params = averaged_chordal(&rows);
 
-    let surface = fitted.curve;
     let (u_knots, v_knots) = (surface.u_knots().clone(), surface.v_knots().clone());
     let (k_count, l_count, net) = {
         let grid = surface.grid();
@@ -1067,6 +1008,91 @@ pub(crate) fn closed_band_wedge(
         Some(turned) => Built::new(applied.shape, turned.then(&applied.history)),
         None => applied,
     })
+}
+
+/// A closed march's stations with its loop owned once: a first station
+/// handed back as the last dropped, and trailing stations that overshot
+/// the start and re-trace the loop's opening arc dropped with it.
+pub(crate) fn owned_once(blend: &mut crate::march::MarchedBlend, tol: Tolerances) {
+    // A closed march may hand its first station back as its last; the loop
+    // owns it once, and the grid closes itself.
+    while blend.len() > 8
+        && blend.spine[blend.len() - 1].distance(blend.spine[0]) <= tol.confusion() * 100.0
+    {
+        blend.spine.pop();
+        blend.touch_first.pop();
+        blend.touch_second.pop();
+        blend.on_first.pop();
+        blend.on_second.pop();
+        blend.along.pop();
+    }
+    // A march may also overshoot its start before noticing closure, leaving
+    // trailing stations that re-trace the loop's opening arc: the sequence
+    // folds back on itself and no smooth fit can follow it. The overshoot
+    // reads off the closing step: while it points *against* the march, the
+    // last station is past the start and goes.
+    while blend.len() > 8 {
+        let last = blend.spine[blend.len() - 1];
+        let prev = blend.spine[blend.len() - 2];
+        if (blend.spine[0] - last).dot(last - prev) >= 0.0 {
+            break;
+        }
+        blend.spine.pop();
+        blend.touch_first.pop();
+        blend.touch_second.pop();
+        blend.on_first.pop();
+        blend.on_second.pop();
+        blend.along.pop();
+    }
+}
+
+/// The closed band through each station's exact ball arc, fitted round
+/// the loop of stations: `u` runs across each arc from the first support's
+/// touch point to the second's, `v` round the loop, closed, at the
+/// target `aim`. Back come the fit and the arcs' samples, one row across
+/// per sample, each running round the loop with its first station
+/// repeated at the end.
+pub(crate) fn fit_closed_band(
+    blend: &crate::march::MarchedBlend,
+    radius: f64,
+    aim: f64,
+    tol: Tolerances,
+) -> OgeomResult<(
+    ogeom_geom::fit::Fitted<ogeom_geom::BSplineSurface>,
+    Vec<Vec<Point>>,
+)> {
+    let n = blend.len();
+    let mut rows: Vec<Vec<Point>> = (0..ACROSS).map(|_| Vec::with_capacity(n + 1)).collect();
+    for i in 0..=n {
+        let at = i % n;
+        let centre = blend.spine[at];
+        let a = (blend.touch_first[at] - centre) / radius;
+        let b = (blend.touch_second[at] - centre) / radius;
+        let cross = a.cross(b);
+        let m = cross.magnitude();
+        if m <= tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "a blend section collapsed; the radius wedges rather than \
+             seats at station {at}"
+            );
+        }
+        let axis = cross / m;
+        let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
+        for (k, row) in rows.iter_mut().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let theta = sweep * (k as f64) / ((ACROSS - 1) as f64);
+            let dir = a * theta.cos() + axis.cross(a) * theta.sin();
+            row.push(centre + dir * radius);
+        }
+    }
+    // The closed direction is `v` by the fit's convention, so the grid goes
+    // in station-major: one row per station arc, first repeated at the end.
+    let loops: Vec<Vec<Point>> = (0..=n)
+        .map(|i| (0..ACROSS).map(|k| rows[k][i]).collect())
+        .collect();
+    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v_chordal(&loops, 3, aim, tol)?;
+    Ok((fitted, rows))
 }
 
 /// The open seat's wedge: a marched band that ran off its supports, capped
