@@ -13,6 +13,38 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fix_shape` drops holes of nothing on every curved surface it can
+  bound, and joins loose faces' free edges across a gap.** (#397)
+  - A hole every point of which is within the face's tolerance of its
+    boundary went only on a plane or a cylinder, whose chart has one
+    scale. Now it also goes on a cone, a sphere, a torus, a B-spline
+    patch (polynomial or rational), and a revolution or extrusion of a
+    B-spline. The chart is drawn to the scale of a bound on how far a
+    step in each parameter carries a point over the box the hole reaches:
+    in closed form on the elementary surfaces (`|r(v)|` and the slant on a
+    cone, `R·|cos v|` and `R` on a sphere, `|R + r·cos v|` and `r` on a
+    torus), and from the control net on a spline. There the derivative is
+    `Σ N_i' w_i (P_i − S) / W`, bounded by the net's steps and weight steps
+    over its knot spans. Where the two directions need not meet square,
+    the reach on the drawn chart is the tolerance over `√2`. The cell
+    proof covers only the box the bound holds over. Any other surface, or
+    a spline the hole's box leaves, keeps its holes.
+  - Pcurves are carried between periods in the chart before it is scaled,
+    along `v` too where the surface closes there (a torus).
+  - Free edges twinned across a gap are stated as the gap on faces a
+    compound holds loose, as on a shell's. The safeguards are the same:
+    only mutual twins, a gap shorter than every edge of either face, no
+    other vertex as near, and a trial sewing on a copy.
+  - A face with no wires on a plane, a cylinder or an extrusion stays
+    reported. Its domain is a working window that the readers set, the
+    converters widen and the offsets grow, not an extent the face states.
+  - Measured: on a cone, a sphere, a torus and a rational patch, a
+    sliver hole 1e-4 high goes and a millimetre-square hole stays. Each
+    face measures its chart rectangle's closed-form area less the square
+    to 1e-9 relative. On the sphere, a 0.01 mm hole with a 1 mm slit off
+    it stays. A box with its lid lifted 1e-3, as six loose faces in a
+    compound, has 4 gaps stated and comes back closed and valid.
+
 - **A plane across the extrusion of a B-spline profile meets it in closed
   form.** (#516)
   - The closed forms of a plane across a linear extrusion (#515) left a

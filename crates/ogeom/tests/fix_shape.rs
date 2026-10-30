@@ -1930,15 +1930,257 @@ fn a_hole_within_the_face_s_tolerance_of_its_boundary_goes() {
     assert_eq!(model.children_of(&faces[0]).unwrap().len(), 3);
 }
 
-/// A 10 mm box's shell with its lid lifted 1e-3 mm off the walls: each of
-/// the lid's edges is free beside a wall's, a gap the edges do not state.
-/// `fix_shape` states the gap on each pair and sews them: the shell closes
-/// and checks clean, and measures the box's 600 mm² to within the lift
-/// along the rim. A lid lifted 2 mm, past the millimetre a fitted trim may
-/// stand off its surface, stays apart, its faces as they were.
+/// A face of tolerance `reach` over the chart rectangle `outer` of
+/// `surface`, every edge a chart segment carried onto the surface, with
+/// `holes` (walked clockwise in the chart) cut from it.
+fn chart_face_with_holes(
+    model: &mut Model,
+    surface: &SurfaceGeometry,
+    outer: (Point2, Point2),
+    reach: f64,
+    holes: &[Vec<Point2>],
+) -> Shape {
+    use ogeom::geom::Surface as _;
+    let id = model.geometry_mut().add_surface(surface.clone());
+    let ring = |model: &mut Model, points: &[Point2]| -> Shape {
+        let vertices: Vec<Shape> = points
+            .iter()
+            .map(|p| make_vertex(model, surface.point_at(p.x, p.y, T).unwrap()).shape)
+            .collect();
+        let mut edges = Vec::new();
+        for k in 0..points.len() {
+            let (from, to) = (points[k], points[(k + 1) % points.len()]);
+            let chart = ogeom::geom::Line2d::segment(from, to, T).unwrap();
+            let range = ogeom::geom::Curve2d::domain(&chart);
+            let carried = ogeom::geom::Curve::OnSurface(Box::new(
+                ogeom::geom::CurveOnSurface::new(chart.into(), surface.clone()),
+            ));
+            let curve = model.geometry_mut().add_curve(carried);
+            let data = ogeom::topo::EdgeData::on_curve(curve, Location::identity(), range);
+            let edge = model
+                .add_edge(
+                    data,
+                    &[
+                        vertices[k].clone(),
+                        vertices[(k + 1) % points.len()].clone(),
+                    ],
+                )
+                .unwrap();
+            ogeom::algo::attach_pcurve(
+                &mut *model,
+                &edge,
+                chart.into(),
+                id,
+                Location::identity(),
+                range,
+            )
+            .unwrap();
+            edges.push(edge);
+        }
+        model.add_wire(&edges).unwrap()
+    };
+    let (low, high) = outer;
+    let corners = [
+        low,
+        Point2::new(high.x, low.y),
+        high,
+        Point2::new(low.x, high.y),
+    ];
+    let mut wires = vec![ring(model, &corners)];
+    for hole in holes {
+        wires.push(ring(model, hole));
+    }
+    let mut data = FaceData::new(id, Location::identity());
+    data.widen(ogeom::core::Tolerance::new(reach).unwrap());
+    model.add_face(data, &wires).unwrap()
+}
+
+/// The chart rectangle from `(u0, v0)` to `(u1, v1)`, walked clockwise.
+fn chart_square(u0: f64, v0: f64, u1: f64, v1: f64) -> Vec<Point2> {
+    vec![
+        Point2::new(u0, v0),
+        Point2::new(u0, v1),
+        Point2::new(u1, v1),
+        Point2::new(u1, v0),
+    ]
+}
+
+/// On a cone, a sphere, a torus and a rational B-spline patch, a face of
+/// tolerance 1e-3 holds a thin triangular hole about a millimetre long
+/// and 1e-4 high, every point of it within 1e-3 of its boundary through
+/// space, and a hole about a millimetre square. The thin hole goes and the
+/// square stays: the face measures the closed form of its chart rectangle
+/// less the square's. On the sphere a 0.01 mm square hole with a slit
+/// 1 mm long and 1.5e-3 wide off it, enclosing less than the tolerance
+/// times its boundary's length but whose middle stands 5e-3 from its
+/// boundary, stays too.
 #[test]
-fn a_shell_s_free_edges_twinned_across_a_gap_are_sewn() {
-    for (lift, sewn) in [(1e-3, true), (2.0, false)] {
+fn a_hole_within_the_face_s_tolerance_goes_on_curved_surfaces() {
+    use ogeom::geom::{BSplineSurface, ConeSurface, SphereSurface, TorusSurface};
+    use ogeom::math::{Cone, ControlGrid, KnotVector, Sphere, Torus, Weighted};
+    let pt = |u: f64, v: f64| Point2::new(u, v);
+    let sliver =
+        |u: f64, v: f64, du: f64, dv: f64| vec![pt(u, v), pt(u + 0.5 * du, v + dv), pt(u + du, v)];
+
+    // A cone of radius 5 at height 0 and half angle 0.3.
+    let (r0, alpha) = (5.0, 0.3_f64);
+    let cone: SurfaceGeometry =
+        ConeSurface::new(Cone::new(Frame::WORLD, r0, alpha, T).unwrap(), (0.0, 10.0))
+            .unwrap()
+            .into();
+    let cone_area = move |u0: f64, v0: f64, u1: f64, v1: f64| {
+        let primitive = |v: f64| r0 * v + 0.5 * alpha.tan() * v * v;
+        (u1 - u0) / alpha.cos() * (primitive(v1) - primitive(v0))
+    };
+    // A sphere of radius 10.
+    let radius = 10.0;
+    let sphere: SurfaceGeometry =
+        SphereSurface::new(Sphere::new(Frame::WORLD, radius, T).unwrap()).into();
+    let sphere_area = move |u0: f64, v0: f64, u1: f64, v1: f64| {
+        radius * radius * (u1 - u0) * (v1.sin() - v0.sin())
+    };
+    // A torus of radii 10 and 3.
+    let (major, minor) = (10.0, 3.0);
+    let torus: SurfaceGeometry =
+        TorusSurface::new(Torus::new(Frame::WORLD, major, minor, T).unwrap()).into();
+    let torus_area = move |u0: f64, v0: f64, u1: f64, v1: f64| {
+        minor * (u1 - u0) * (major * (v1 - v0) + minor * (v1.sin() - v0.sin()))
+    };
+    // A flat rational patch: x a rational quadratic of 0, 5, 10 weighted
+    // 1, 2, 1 along u, y = 10 v.
+    let mut net = Vec::new();
+    for (x, w) in [(0.0, 1.0), (5.0, 2.0), (10.0, 1.0)] {
+        for y in [0.0, 10.0] {
+            net.push(Weighted::new(Point::new(x, y, 0.0), w, T).unwrap());
+        }
+    }
+    let patch: SurfaceGeometry = BSplineSurface::rational(
+        KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2).unwrap(),
+        KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap(),
+        ControlGrid::new(net, 3, 2).unwrap(),
+    )
+    .unwrap()
+    .into();
+    let x = |u: f64| (20.0 * u * (1.0 - u) + 10.0 * u * u) / (1.0 + 2.0 * u * (1.0 - u));
+    let patch_area = move |u0: f64, v0: f64, u1: f64, v1: f64| (x(u1) - x(u0)) * 10.0 * (v1 - v0);
+
+    type Area = Box<dyn Fn(f64, f64, f64, f64) -> f64>;
+    let flag = (2.0, 0.2, 1e-3, 0.1, 1.5e-4);
+    let (fu, fv, side, slit, width) = flag;
+    let flagged = vec![
+        pt(fu, fv),
+        pt(fu, fv + side),
+        pt(fu + side, fv + side),
+        pt(fu + side, fv + 0.5 * (side + width)),
+        pt(fu + side + slit, fv + 0.5 * (side + width)),
+        pt(fu + side + slit, fv + 0.5 * (side - width)),
+        pt(fu + side, fv + 0.5 * (side - width)),
+        pt(fu + side, fv),
+    ];
+    // A name, the surface, its chart rectangles' area, the face's
+    // rectangle, the thin hole, the square hole, and whether the flagged
+    // hole is cut too.
+    type Case = (
+        &'static str,
+        SurfaceGeometry,
+        Area,
+        [f64; 4],
+        Vec<Point2>,
+        [f64; 4],
+        bool,
+    );
+    let cases: [Case; 4] = [
+        (
+            "cone",
+            cone,
+            Box::new(cone_area),
+            [0.5, 1.0, 2.0, 5.0],
+            sliver(1.0, 3.0, 0.15, 1e-4),
+            [1.5, 2.0, 1.6, 3.0],
+            false,
+        ),
+        (
+            "sphere",
+            sphere,
+            Box::new(sphere_area),
+            [0.5, -0.5, 2.5, 0.5],
+            sliver(1.0, 0.1, 0.1, 1e-5),
+            [1.5, -0.3, 1.6, -0.2],
+            true,
+        ),
+        (
+            "torus",
+            torus,
+            Box::new(torus_area),
+            [0.5, 0.5, 1.5, 1.5],
+            sliver(0.8, 0.8, 0.05, 3e-5),
+            [1.0, 1.0, 1.1, 1.1],
+            false,
+        ),
+        (
+            "patch",
+            patch,
+            Box::new(patch_area),
+            [0.1, 0.1, 0.9, 0.9],
+            sliver(0.5, 0.5, 0.02, 1e-5),
+            [0.2, 0.2, 0.3, 0.3],
+            false,
+        ),
+    ];
+    for (name, surface, area, [u0, v0, u1, v1], thin, [a0, b0, a1, b1], with_flag) in cases {
+        let mut model = Model::new();
+        let mut holes = vec![thin, chart_square(a0, b0, a1, b1)];
+        let mut exact = area(u0, v0, u1, v1) - area(a0, b0, a1, b1);
+        if with_flag {
+            holes.push(flagged.clone());
+            exact -= area(fu, fv, fu + side, fv + side);
+            exact -= area(
+                fu + side,
+                fv + 0.5 * (side - width),
+                fu + side + slit,
+                fv + 0.5 * (side + width),
+            );
+        }
+        let kept = holes.len() - 1;
+        let face =
+            chart_face_with_holes(&mut model, &surface, (pt(u0, v0), pt(u1, v1)), 1e-3, &holes);
+        let compound = make_compound(&mut model, &[face]).unwrap().shape;
+        let fixed = ogeom::heal::fix_shape(&mut model, &compound, T).unwrap();
+        assert_eq!(fixed.report.small_wires_removed, 1, "{name}");
+        assert!(
+            fixed.report.after.is_valid(),
+            "{name}: {}",
+            fixed.report.after
+        );
+        let measured = area_of(&model, &fixed.shape);
+        assert!(
+            (measured - exact).abs() < 1e-9 * exact,
+            "{name}: {measured} against {exact}"
+        );
+        let faces = explore_unique(&model, &fixed.shape, ShapeType::Face).unwrap();
+        assert_eq!(
+            model.children_of(&faces[0]).unwrap().len(),
+            1 + kept,
+            "{name}"
+        );
+    }
+}
+
+/// A 10 mm box's faces with its lid lifted 1e-3 mm off the walls, held in
+/// a shell and again loose in a compound: each of the lid's edges is free
+/// beside a wall's, a gap the edges do not state. `fix_shape` states the
+/// gap on each pair and sews them: the faces close and check clean, and
+/// measure the box's 600 mm² to within the lift along the rim. A lid
+/// lifted 2 mm, past the millimetre a fitted trim may stand off its
+/// surface, stays apart, its faces as they were.
+#[test]
+fn free_edges_twinned_across_a_gap_are_sewn() {
+    for (lift, sewn, loose) in [
+        (1e-3, true, false),
+        (2.0, false, false),
+        (1e-3, true, true),
+        (2.0, false, true),
+    ] {
         let mut model = Model::new();
         let p = |x: f64, y: f64, z: f64| Point::new(x, y, z);
         let top = 10.0 + lift;
@@ -1994,7 +2236,11 @@ fn a_shell_s_free_edges_twinned_across_a_gap_are_sewn() {
         assert_eq!(walls.shells.len(), 1);
         let mut all = explore_unique(&model, &walls.shells[0], ShapeType::Face).unwrap();
         all.push(lid);
-        let open = model.add_shell(&all).unwrap();
+        let open = if loose {
+            make_compound(&mut model, &all).unwrap().shape
+        } else {
+            model.add_shell(&all).unwrap()
+        };
         assert!(!check(&model, &open, T).unwrap().is_valid());
         let fixed = ogeom::heal::fix_shape(&mut model, &open, T).unwrap();
         if sewn {
@@ -2009,7 +2255,10 @@ fn a_shell_s_free_edges_twinned_across_a_gap_are_sewn() {
         // the lift times the rim's 40 mm more.
         let area = area_of(&model, &fixed.shape);
         let slack = if sewn { 40.0 * lift } else { 0.0 };
-        assert!((area - 600.0).abs() <= slack + 1e-9, "lift {lift}: {area}");
+        assert!(
+            (area - 600.0).abs() <= slack + 1e-9,
+            "lift {lift}, loose {loose}: {area}"
+        );
     }
 }
 

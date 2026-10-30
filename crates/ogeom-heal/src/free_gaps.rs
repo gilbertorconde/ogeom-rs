@@ -1,15 +1,17 @@
-//! Free edges of a shell that are each other's twin across a gap, stated
-//! as the gap so that sewing joins them.
+//! Free edges of loose faces that are each other's twin across a gap,
+//! stated as the gap so that sewing joins them.
 //!
 //! Sewing takes two edges for one where each lies within the tolerance the
-//! other states ([`sew`](ogeom_algo::sew())). Two faces of an open shell
-//! built apart (fitted separately, read from separate entities) can meet a
-//! little wider than that, each edge free, the shell open between them.
+//! other states ([`sew`](ogeom_algo::sew())). Two faces of an open shell,
+//! or two a compound holds loose, built apart (fitted separately, read
+//! from separate entities) can meet a little wider than that, each edge
+//! free, the faces open between them.
 //! Sewing everything at a wider reach joins edges that are not twins at
 //! all: on the community assemblies' open sheets, a millimetre joins
 //! hundreds of pairs. So the reach is not widened; the pair is.
 //!
-//! Two free edges of two faces of a shell are twins across a gap only where
+//! Two free edges of two faces of the shape (a shell's, or a compound's,
+//! loose or in shells) are twins across a gap only where
 //! all of these hold, as for a lacking edge across a wire gap:
 //!
 //! - their ends stand pairwise, one way round or the other, and the two
@@ -54,7 +56,7 @@ pub(crate) struct Twins {
     widen: Vec<(Shape, f64)>,
 }
 
-/// Widen the free edges of `shape`'s shells that are twins across a gap no
+/// Widen the free edges of `shape`'s faces that are twins across a gap no
 /// wider than `cap`, and their ends, to that gap, where sewing is shown to
 /// join them (see the module documentation). Returns how many pairs are
 /// stated.
@@ -131,17 +133,10 @@ fn trial(
     Ok(Some(ogeom_algo::sew(model, &faces, tol)?.joined))
 }
 
-/// The free edges of `shape`'s shells that are twins across a gap no wider
+/// The free edges of `shape`'s faces that are twins across a gap no wider
 /// than `cap`, as the module documentation says, with what each widens to.
 fn twins(model: &Model, shape: &Shape, cap: f64, tol: Tolerances) -> OgeomResult<Vec<Twins>> {
-    let mut faces: Vec<Shape> = Vec::new();
-    for shell in explore_unique(model, shape, ShapeType::Shell)? {
-        for face in explore_unique(model, &shell, ShapeType::Face)? {
-            if !faces.iter().any(|f| f.is_same(&face)) {
-                faces.push(face);
-            }
-        }
-    }
+    let faces = explore_unique(model, shape, ShapeType::Face)?;
     let uses = ogeom_algo::edge_uses(model, shape)?;
     let mut free: Vec<Free> = Vec::new();
     for (k, face) in faces.iter().enumerate() {

@@ -42,10 +42,12 @@
 //!   farther than the other (a notch), the longer is cut where the shorter
 //!   turns back, and the stretch out to the tip goes with the shorter edge
 //!   (see `tails`);
-//! - a hole on a plane or a cylinder every point of which stands within the
-//!   face's tolerance of the hole's boundary, which no neighbour walks,
-//!   goes: by the face's own tolerance it encloses nothing (see
-//!   `small_wires`);
+//! - a hole every point of which stands within the face's tolerance of
+//!   the hole's boundary, which no neighbour walks, goes: by the face's own
+//!   tolerance it encloses nothing. That is proved on the chart drawn to the
+//!   scale of a bound on how far the surface carries a step of it, on a
+//!   plane, a cylinder, a cone, a sphere, a torus, a B-spline patch, and a
+//!   revolution or extrusion of a B-spline (see `small_wires`);
 //! - a boundary that crosses itself once in its surface's chart is mended
 //!   where the mend is the one it says (see `crossing`): two consecutive
 //!   edges crossing short of the vertex they meet at, by no more than a
@@ -59,7 +61,7 @@
 //!   seam edge where the surface closes and a degenerate edge where it
 //!   pinches to a pole, or else marked as covering it;
 //! - loose faces (a compound of them, or an open shell) are sewn where
-//!   they share edges. Two free edges of a shell's faces that are each
+//!   they share edges. Two free edges of their faces that are each
 //!   other's twin across a gap no wider than a fitted trim may stand off
 //!   its surface, the gap shorter than every edge of either face and no
 //!   other vertex as near their ends, first state that gap, each edge and
@@ -122,7 +124,7 @@ pub struct FixReport {
     pub edges_trimmed: usize,
     /// Edge pairs sewn, and edges still free after, when sewing ran.
     pub sewn: Option<(usize, usize)>,
-    /// Pairs of a shell's free edges that are each other's twin across a
+    /// Pairs of loose faces' free edges that are each other's twin across a
     /// gap, widened to state it before sewing.
     pub free_gaps_stated: usize,
     /// Tolerances tightened.

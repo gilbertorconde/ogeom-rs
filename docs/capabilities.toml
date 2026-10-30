@@ -423,17 +423,20 @@ strip a wire's tails (an edge out and one straight back along the same \
 curve within their tolerances, on one copy of the chart, held by no other \
 face; a hole of tails alone goes) and cut off its notches (an edge run back \
 along part of the one before it, the longer cut where the shorter turns; \
-check names two-edge tails and notches, not a slit of one edge), remove a hole on a plane or cylinder held \
-by no other face whose every point is within the face's tolerance of its \
-boundary (proved cell by cell; the hole's area within the tolerance times \
-its length is necessary, not sufficient), mend a boundary crossing itself once in \
+check names two-edge tails and notches, not a slit of one edge), remove a hole held by no other face whose \
+every point is within the face's tolerance of its boundary, on a plane, cylinder, cone, sphere, \
+torus, B-spline patch, or revolution or extrusion of a B-spline (proved cell by cell on the chart \
+drawn to a bound on the surface's first derivatives over the hole's box, closed form on the \
+elementary surfaces and from the control net on a spline; the hole's area within the tolerance \
+times its length is necessary, not sufficient; any other surface keeps its holes), mend a boundary crossing itself once in \
 its chart (two consecutive edges crossing short of their vertex within the \
 trim cap are cut back to the crossing and the vertex moved there; any other \
 crossing of a one-wire face held by a container splits it into its two \
 loops; each face changed checking clean after, anything else counted), bound a wireless face by its \
 domain's sides (seam and pole edges) on a sphere, torus or patch, or mark it natural where those \
-sides have no closed form, state the gap between two free edges of a shell that are each \
-other's only twin within the trim cap (the gap shorter than every edge of either face, no other \
+sides have no closed form (a wireless face on a plane, cylinder or extrusion stays reported: its \
+domain is a working window, not an extent), state the gap between two free edges of a shell's \
+or a compound's loose faces that are each other's only twin within the trim cap (the gap shorter than every edge of either face, no other \
 vertex as near their ends) where sewing a copy shows it joins them, chain free edges into contours and \
 wires (free_bounds), \
 tighten tolerances, widen an edge to how far its pcurves stand off its \
