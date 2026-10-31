@@ -13,6 +13,33 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A face blend asks only the ball's lune of the solid's other faces.**
+  - Between two planes and where `blend_faces` sweeps one section (faces
+    sharing a direction or an axis), a face anywhere inside the ball
+    touching both faces refused the blend. Only the ball's lune, the part
+    between its centre and its arc, bounds the round: the corner it takes
+    off or fills lies outside the ball. A part thinner than the ball, its
+    far side reaching into the back of the ball only, is now rounded: a 2
+    by 2 box's edge at radius 1.5 is `12 - 3 (1 - pi/4) r^2` to 1e-9, where
+    it was refused with "cuts into another face of the solid". A face
+    inside the ball is searched for a point inside a lune cell by cell
+    over the sector and the run; a box 1 tall, whose bottom crosses the
+    lune, is still refused by name. The marched path still asks the whole
+    ball.
+
+- **A swept face blend rounds every corner two faces share.**
+  - Where the surfaces cross in more than one corner the ball rolls in (a
+    drum's flat and its wall, two drums fused) and the faces share no
+    edge, `blend_faces` refused as ambiguous. It now blends every corner,
+    where the corners stand farther apart than the sum of their reaches:
+    two drums whose creases were rounded at 0.3 or 0.95 fill at radius 1
+    to the sharp pair's closed form. `fillet_faces` still refuses several
+    corners by name.
+  - With the fixes below, 141 of the `faceblend` stress run's 211
+    refusals at seeds 1 to 8 now build, every one judged against the
+    rolling-ball oracle; nothing else in `faceblend`, `blend` or `fillet`
+    changed.
+
 - **A concave edge round whose ball rests on the far edge of a strip
   beside it.**
   - Where `fillet_edge` or `fillet_edges` rounds a concave straight edge
@@ -79,6 +106,22 @@ bump may break the API and a patch bump may not.
     fit of 2e-4, and meets both faces within a tenth of a degree.
 
 ### Fixed
+
+- **A swept face blend over an older round cuts its lines of contact on
+  the faces' surfaces.**
+  - Each face was cut along its line of contact over the face's extent
+    read off its bounding box, which reaches past a window that holds the
+    face tightly (a drum's wall over its height): the line stood off the
+    surface and the blend read "does not touch both faces; it misses at
+    least one of them" wherever an older round stood between the faces on
+    an extruded layout. The window now grows, only where the line leaves
+    it, to hold the line.
+  - The side the ball rolls on was read just off the arc toward the
+    crease, which an older round just smaller than the ball has already
+    taken off or filled: "the solid beside the round is open". Where no
+    face stands in the ball's lune it is read inside the lune. A drum's rim
+    rounded at 0.97 and blended at 1 is the drum less the rim ring to 1e-9.
+  - A refused blend puts back the faces' windows it widened.
 
 - **`blend_faces` rounds past a wedge standing over part of the faces'
   shared edges.**

@@ -1997,6 +1997,37 @@ pub(crate) fn face_seat(
     behind: bool,
     tol: Tolerances,
 ) -> OgeomResult<FaceSeat> {
+    let mut seats = face_seats(model, faces, radius, behind, tol)?;
+    if seats.len() > 1 {
+        let side = if behind { "back" } else { "front" };
+        ogeom_bail!(
+            Construction,
+            "more than one ball of radius {radius} touches the {side} of both faces; which \
+             corner to round is ambiguous"
+        );
+    }
+    Ok(seats.remove(0))
+}
+
+/// Every ball of `radius` touching both faces, on the side each face's
+/// normal points to, or behind both with `behind`, where the two faces'
+/// surfaces share a direction or an axis: one in each corner where the two
+/// surfaces cross and the ball touches both faces (a drum's flat and its
+/// wall meet in two creases).
+///
+/// Corners whose rounds could meet are refused: each corner between its
+/// round and its crease lies, in the section, within the larger of its
+/// crease's distances to the two contacts. Distance from the crease is
+/// convex, so it is greatest on the corner's boundary; along a profile's
+/// short arc from the crease, and along the ball's arc, which faces the
+/// crease, it is greatest at an end.
+pub(crate) fn face_seats(
+    model: &mut Model,
+    faces: [&Shape; 2],
+    radius: f64,
+    behind: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<FaceSeat>> {
     let mut surfaces = Vec::with_capacity(2);
     let mut reads = Vec::with_capacity(2);
     for face in faces {
@@ -2063,6 +2094,13 @@ pub(crate) fn face_seat(
         made = true;
         let mut found = Vec::with_capacity(2);
         for (f, face) in faces.iter().enumerate() {
+            if !layout.turns() {
+                let ends = [
+                    exact.contact(f, extents[f].0),
+                    exact.contact(f, extents[f].1),
+                ];
+                hold_line(model, reads[f].0, &mut surfaces[f], ends)?;
+            }
             match contact_stretch(model, face, &exact, f, extents[f], tol)? {
                 Some(stretch) => found.push(stretch),
                 None => break,
@@ -2076,62 +2114,177 @@ pub(crate) fn face_seat(
     if let (Some(why), false) = (unmade, made) {
         return Err(why);
     }
-    let (exact, stretches) = match seated.len() {
-        0 => ogeom_bail!(
+    if seated.is_empty() {
+        ogeom_bail!(
             Construction,
             "a ball of radius {radius} touching the {side} of both faces' surfaces does not \
              touch both faces; it misses at least one of them"
-        ),
-        1 => seated.remove(0),
-        _ => ogeom_bail!(
-            Construction,
-            "more than one ball of radius {radius} touches the {side} of both faces; which \
-             corner to round is ambiguous"
-        ),
-    };
-
-    // The run the round spans: where both lines of contact lie on their
-    // faces.
-    let closed = [stretches[0].closed, stretches[1].closed];
-    let span = match closed {
-        [true, true] => None,
-        [false, false] => {
-            let (a0, a1) = stretches[0].span;
-            let (mut b0, mut b1) = stretches[1].span;
-            if layout.turns() {
-                let best = [-TAU, 0.0, TAU]
+        );
+    }
+    if seated.len() > 1 {
+        let mut reaches = Vec::with_capacity(seated.len());
+        for (exact, _) in &seated {
+            let section = exact.section;
+            let Some(crease) =
+                crossings(profiles[0], profiles[1], tol)
                     .into_iter()
-                    .max_by(|x, y| {
-                        let o = |k: f64| a1.min(b1 + k) - a0.max(b0 + k);
-                        o(*x).total_cmp(&o(*y))
+                    .min_by(|p, q| {
+                        norm2(sub2(*p, section.centre)).total_cmp(&norm2(sub2(*q, section.centre)))
                     })
-                    .unwrap_or(0.0);
-                b0 += best;
-                b1 += best;
-            }
-            let (lo, hi) = (a0.max(b0), a1.min(b1));
-            if hi - lo <= tol.parametric() {
+            else {
                 ogeom_bail!(
                     Construction,
-                    "the two faces reach the round over stretches of the corner that do not \
-                     overlap"
+                    "the two faces' surfaces do not meet, so there is no corner between them \
+                     for the round to take off or fill"
                 );
-            }
-            Some((lo, hi))
+            };
+            let reach = section
+                .contacts
+                .iter()
+                .map(|c| norm2(sub2(*c, crease)))
+                .fold(0.0, f64::max);
+            reaches.push((crease, reach));
         }
-        // One line closes on its face and the other runs across its own:
-        // the round spans the open one's run.
-        [true, false] => Some(stretches[1].span),
-        [false, true] => Some(stretches[0].span),
+        for (i, (p, a)) in reaches.iter().enumerate() {
+            for (q, b) in &reaches[i + 1..] {
+                if norm2(sub2(*p, *q)) <= a + b + tol.confusion() {
+                    ogeom_bail!(
+                        Construction,
+                        "more than one ball of radius {radius} touches the {side} of both \
+                         faces, in corners whose rounds could meet; which corner to round is \
+                         ambiguous"
+                    );
+                }
+            }
+        }
+    }
+
+    let mut seats = Vec::with_capacity(seated.len());
+    for (exact, stretches) in seated {
+        // The run the round spans: where both lines of contact lie on their
+        // faces.
+        let closed = [stretches[0].closed, stretches[1].closed];
+        let span = match closed {
+            [true, true] => None,
+            [false, false] => {
+                let (a0, a1) = stretches[0].span;
+                let (mut b0, mut b1) = stretches[1].span;
+                if layout.turns() {
+                    let best = [-TAU, 0.0, TAU]
+                        .into_iter()
+                        .max_by(|x, y| {
+                            let o = |k: f64| a1.min(b1 + k) - a0.max(b0 + k);
+                            o(*x).total_cmp(&o(*y))
+                        })
+                        .unwrap_or(0.0);
+                    b0 += best;
+                    b1 += best;
+                }
+                let (lo, hi) = (a0.max(b0), a1.min(b1));
+                if hi - lo <= tol.parametric() {
+                    ogeom_bail!(
+                        Construction,
+                        "the two faces reach the round over stretches of the corner that do \
+                         not overlap"
+                    );
+                }
+                Some((lo, hi))
+            }
+            // One line closes on its face and the other runs across its
+            // own: the round spans the open one's run.
+            [true, false] => Some(stretches[1].span),
+            [false, true] => Some(stretches[0].span),
+        };
+        seats.push(FaceSeat {
+            exact,
+            stretches,
+            span,
+            profiles,
+            surfaces: surfaces.clone(),
+            reads: reads.clone(),
+        });
+    }
+    Ok(seats)
+}
+
+/// The two faces' surfaces as they stand, to put back where the faces'
+/// windows were widened for a round that is not made.
+pub(crate) fn surfaces_of(
+    model: &Model,
+    faces: [&Shape; 2],
+) -> OgeomResult<Vec<(SurfaceId, SurfaceGeometry)>> {
+    let mut held = Vec::with_capacity(2);
+    for face in faces {
+        let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+            ogeom_bail!(Dangling, "face is not in this model");
+        };
+        if let Some(surface) = model.geometry().surface(data.surface) {
+            held.push((data.surface, surface.clone()));
+        }
+    }
+    Ok(held)
+}
+
+/// Surfaces put back as [`surfaces_of`] held them.
+pub(crate) fn put_back(model: &mut Model, held: Vec<(SurfaceId, SurfaceGeometry)>) {
+    for (id, surface) in held {
+        if let Some(slot) = model.geometry_mut().surface_mut(id) {
+            *slot = surface;
+        }
+    }
+}
+
+/// A plane's or a cylinder's window grown, where it does not already, to
+/// hold the line between `ends`, the same surface written back as the
+/// face's own, so a line of contact cut over the face's extent along an
+/// extruded layout stands on it.
+///
+/// The extent is read off the face's bounding box, which can reach past the
+/// face, and so past a window that holds the face tightly (a drum's wall
+/// over its height). The line lies on the surface, along a plane or along
+/// a cylinder's axis, so it lies in the window where both its ends do.
+fn hold_line(
+    model: &mut Model,
+    id: SurfaceId,
+    surface: &mut SurfaceGeometry,
+    ends: [Point; 2],
+) -> OgeomResult<()> {
+    let grown =
+        |(lo, hi): (f64, f64), at: [f64; 2]| (lo.min(at[0]).min(at[1]), hi.max(at[0]).max(at[1]));
+    let wider: SurfaceGeometry = match &*surface {
+        SurfaceGeometry::Plane(plane) => {
+            let frame = plane.plane().frame();
+            let (x, y) = (frame.x().vector(), frame.y().vector());
+            let chart = ends.map(|p| p - frame.origin());
+            let (u, v) = plane.domain();
+            let wider = (
+                grown(u, chart.map(|d| d.dot(x))),
+                grown(v, chart.map(|d| d.dot(y))),
+            );
+            if wider == (u, v) {
+                return Ok(());
+            }
+            ogeom_geom::PlaneSurface::over(plane.plane(), wider.0, wider.1)?.into()
+        }
+        SurfaceGeometry::Cylinder(cylinder) => {
+            let frame = cylinder.cylinder().frame();
+            let (_, h) = cylinder.domain();
+            let wider = grown(
+                h,
+                ends.map(|p| (p - frame.origin()).dot(frame.z().vector())),
+            );
+            if wider == h {
+                return Ok(());
+            }
+            CylinderSurface::new(cylinder.cylinder(), wider)?.into()
+        }
+        _ => return Ok(()),
     };
-    Ok(FaceSeat {
-        exact,
-        stretches,
-        span,
-        profiles,
-        surfaces,
-        reads,
-    })
+    if let Some(held) = model.geometry_mut().surface_mut(id) {
+        *held = wider.clone();
+    }
+    *surface = wider;
+    Ok(())
 }
 
 /// The solid between a seat's round and the corner it rounds: the section
@@ -2140,16 +2293,18 @@ pub(crate) fn face_seat(
 /// edges of `solid` along the crease end inside an open run, the run ends
 /// there: past it the crease is no corner of the solid (a crease running
 /// off a block's side while the ball still rolls over its top), and the
-/// sweep stops in the ball's section through the edges' end. With it, a
-/// point inside it beside the middle of the round, where the solid being
-/// blended says whether the corner is material, and the run swept, its
-/// first station and how far it goes.
+/// sweep stops in the ball's section through the edges' end. With it, two
+/// points beside the middle of the round where the solid being blended
+/// says which side of the faces the ball rolls on: one inside the wedge,
+/// just off the arc, where it says whether the corner is material, and one
+/// as far inside the ball, where it says whether the ball's lune is; and
+/// the run swept, its first station and how far it goes.
 pub(crate) fn corner_wedge(
     model: &mut Model,
     seat: &FaceSeat,
     solid: &Shape,
     tol: Tolerances,
-) -> OgeomResult<(Shape, Point, (f64, f64))> {
+) -> OgeomResult<(Shape, [Point; 2], (f64, f64))> {
     let exact = &seat.exact;
     let layout = exact.layout;
     let section = exact.section;
@@ -2268,8 +2423,15 @@ pub(crate) fn corner_wedge(
     );
     let gap = norm2(sub2(crease, on_arc));
     let toward = scale2(sub2(crease, on_arc), 1.0 / gap);
-    let probe = add2(on_arc, scale2(toward, gap.min(exact.radius) * 0.1));
-    Ok((wedge, layout.lift(probe, s0 + turn / 2.0), (s0, turn)))
+    let off = gap.min(exact.radius) * 0.1;
+    let probe = add2(on_arc, scale2(toward, off));
+    let within = add2(on_arc, scale2(bisector, -off / norm2(bisector)));
+    let middle = s0 + turn / 2.0;
+    Ok((
+        wedge,
+        [layout.lift(probe, middle), layout.lift(within, middle)],
+        (s0, turn),
+    ))
 }
 
 /// The crease at the section point `crease` swept along the layout, its
@@ -2313,8 +2475,7 @@ pub(crate) fn face_inside_seat(
         solid,
         faces,
         &exact.layout,
-        section.centre,
-        exact.radius,
+        Sector::new(section.centre, section.contacts, exact.radius),
         run,
         tol,
     )? {
@@ -2361,11 +2522,11 @@ pub(crate) fn face_inside_rolling_ball(
     tol: Tolerances,
 ) -> OgeomResult<Option<Point>> {
     let layout = Layout::extruded(centre, along, tol)?;
-    if let Some(at) = face_inside_ball(model, solid, faces, &layout, (0.0, 0.0), radius, run, tol)?
-    {
+    let flat = [centre, crease, contacts[0], contacts[1]].map(|p| layout.flat(p));
+    let sector = Sector::new(flat[0], [flat[2], flat[3]], radius);
+    if let Some(at) = face_inside_ball(model, solid, faces, &layout, sector, run, tol)? {
         return Ok(Some(at));
     }
-    let flat = [centre, crease, contacts[0], contacts[1]].map(|p| layout.flat(p));
     face_inside_swept(model, solid, faces, &layout, flat, radius, run, tol)
 }
 
@@ -2414,39 +2575,250 @@ fn face_inside_swept(
             .collect()
     };
     let centre_at = |s: f64| -> OgeomResult<Point> { Ok(layout.lift(centre, s)) };
+    let lunes = SweptLunes {
+        layout,
+        sector: Sector::new(centre, [first, second], radius),
+        run: (s0, turn),
+    };
+    let search = |measure: &ogeom_algo::PointDistance, hint: Option<Point>| {
+        lunes.face_inside(measure, hint, tol)
+    };
     let rolling = crate::between::Rolling {
         radius,
         stations,
         centre: &centre_at,
         lines,
         ends,
+        lunes: Some(&search),
     };
     crate::between::face_inside_balls(model, solid, faces, &rolling, tol)
 }
 
-/// A point inside the ball of `radius` centred at `centre` in the section,
-/// at some station of the run `(s0, turn)`, of a face of `solid` other than
-/// the two `faces` on a surface whose trace is the same line or circle in
-/// every section of `layout`.
+/// The lune of a ball's section, the part of its disc between its centre
+/// and its arc: the sector from the centre to the two contacts, the short
+/// way round.
+#[derive(Clone, Copy)]
+struct Sector {
+    centre: P2,
+    radius: f64,
+    /// The unit direction from the centre to the first contact.
+    from: P2,
+    /// The way the short arc turns from the first contact to the second,
+    /// and how far.
+    sense: f64,
+    angle: f64,
+}
+
+impl Sector {
+    fn new(centre: P2, contacts: [P2; 2], radius: f64) -> Self {
+        let (sense, angle) = Section { centre, contacts }.turn();
+        let a = sub2(contacts[0], centre);
+        Self {
+            centre,
+            radius,
+            from: scale2(a, 1.0 / norm2(a)),
+            sense,
+            angle,
+        }
+    }
+
+    /// The point at distance `rho` from the centre, turned `alpha` from the
+    /// first contact toward the second.
+    fn at(&self, rho: f64, alpha: f64) -> P2 {
+        let (sin, cos) = (self.sense * alpha).sin_cos();
+        let (x, y) = self.from;
+        add2(
+            self.centre,
+            scale2((x * cos - y * sin, x * sin + y * cos), rho),
+        )
+    }
+
+    /// How deep `q` stands inside the sector: its distance from the
+    /// sector's boundary, and -1 outside it. Inside, the boundary's
+    /// nearest point is on the arc or on one of the two radii, and a radius
+    /// is nearest along its line, the foot inside it, where the angle to it
+    /// is under a right angle, and at the centre otherwise.
+    fn depth(&self, q: P2) -> f64 {
+        let w = sub2(q, self.centre);
+        let m = norm2(w);
+        let turned = (self.sense * cross2(self.from, w)).atan2(dot2(self.from, w));
+        let beta = if turned < 0.0 { turned + TAU } else { turned };
+        if m >= self.radius || beta > self.angle {
+            return -1.0;
+        }
+        let to_radius = |b: f64| if b < PI / 2.0 { m * b.sin() } else { m };
+        (self.radius - m)
+            .min(to_radius(beta))
+            .min(to_radius(self.angle - beta))
+    }
+}
+
+/// The lunes of a ball rolled along a layout over a run: the sector of its
+/// section at every station.
+struct SweptLunes<'a> {
+    layout: &'a Layout,
+    sector: Sector,
+    /// The run's first station and how far it goes.
+    run: (f64, f64),
+}
+
+impl SweptLunes<'_> {
+    /// Whether the station `s` lies on the run, to `slack` either way.
+    fn on_run(&self, s: f64, slack: f64) -> bool {
+        let (s0, turn) = self.run;
+        if self.layout.turns() {
+            turn + 2.0 * slack >= TAU || (s - s0 + slack).rem_euclid(TAU) <= turn + 2.0 * slack
+        } else {
+            (s0 - slack..=s0 + turn + slack).contains(&s)
+        }
+    }
+
+    /// Whether `q` stands more than the confusion inside a lune at a station
+    /// of the run, read to the confusion along it (about an axis, the
+    /// confusion over `q`'s distance from it).
+    fn holds(&self, q: Point, tol: Tolerances) -> bool {
+        let flat = self.layout.flat(q);
+        let slack = if self.layout.turns() {
+            tol.confusion() / flat.0.abs().max(tol.confusion())
+        } else {
+            tol.confusion()
+        };
+        self.on_run(self.layout.station(q), slack) && self.sector.depth(flat) > tol.confusion()
+    }
+
+    /// A point of the face `measure` reads lying more than the confusion
+    /// inside a lune at a station of the run, `hint` tried first; `None`
+    /// where the face is shown to reach into no lune by more than twice the
+    /// confusion.
+    ///
+    /// The swept lunes are cut into cells, each a stretch of the sector's
+    /// radius, of its angle and of the run. Every point of a cell lies
+    /// within `e` of its middle point in the section, `e` half the radius's
+    /// stretch and the outer radius times half the angle's, and a section
+    /// point moves along the run at most its distance from the axis per
+    /// radian about an axis and one per unit along a direction. A cell
+    /// whose middle point stands farther from the face than those bounds
+    /// add up to holds none of it, and a cell all within the confusion of
+    /// the sector's boundary holds none deeper. Every other cell is halved
+    /// across its widest stretch, until the face's nearest point to a
+    /// middle point is found inside a lune at a station of the run.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where the
+    /// cells read reach [`LUNE_CELLS`] with neither found.
+    fn face_inside(
+        &self,
+        measure: &ogeom_algo::PointDistance,
+        hint: Option<Point>,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<Point>> {
+        if let Some(q) = hint.filter(|q| self.holds(*q, tol)) {
+            return Ok(Some(q));
+        }
+        let sector = self.sector;
+        let (s0, turn) = self.run;
+        let about_axis = self.layout.turns();
+        let mut cells: Vec<[f64; 6]> = Vec::new();
+        let split = |lo: f64, hi: f64, n: u32| {
+            (0..n).map(move |k| {
+                let at = |k: u32| (hi - lo).mul_add(f64::from(k) / f64::from(n), lo);
+                (at(k), at(k + 1))
+            })
+        };
+        for (r0, r1) in split(0.0, sector.radius, 4) {
+            for (a0, a1) in split(0.0, sector.angle, 4) {
+                for (t0, t1) in split(s0, s0 + turn, 16) {
+                    cells.push([r0, r1, a0, a1, t0, t1]);
+                }
+            }
+        }
+        let mut read = 0;
+        while let Some([r0, r1, a0, a1, t0, t1]) = cells.pop() {
+            read += 1;
+            if read > LUNE_CELLS {
+                ogeom_bail!(
+                    NotDone,
+                    "whether another face of the solid comes inside the part of the ball of \
+                     radius {} between its centre and its arc cannot be told within {LUNE_CELLS} \
+                     pieces of the run",
+                    sector.radius
+                );
+            }
+            let (rm, am, tm) = (
+                f64::midpoint(r0, r1),
+                f64::midpoint(a0, a1),
+                f64::midpoint(t0, t1),
+            );
+            let middle = sector.at(rm, am);
+            let across = (r1 - r0).mul_add(0.5, r1 * (a1 - a0) * 0.5);
+            if sector.depth(middle) + across <= tol.confusion() {
+                continue;
+            }
+            let speed = if about_axis {
+                middle.0.abs() + across
+            } else {
+                1.0
+            };
+            let along = speed * (t1 - t0) * 0.5;
+            let (d, q) = measure.nearest(self.layout.lift(middle, tm), tol)?;
+            if d > across + along {
+                continue;
+            }
+            if self.holds(q, tol) {
+                return Ok(Some(q));
+            }
+            // A cell within the confusion is a point: a point of the face in
+            // it more than twice the confusion inside a lune puts the face's
+            // nearest point to the middle, within the confusion of it, more
+            // than the confusion inside, and that is held. Not held, the
+            // face reaches no deeper there: read as touching.
+            if across + along <= tol.confusion() {
+                continue;
+            }
+            let widest = [r1 - r0, r1 * (a1 - a0), along * 2.0];
+            if widest[0] >= widest[1] && widest[0] >= widest[2] {
+                cells.push([r0, rm, a0, a1, t0, t1]);
+                cells.push([rm, r1, a0, a1, t0, t1]);
+            } else if widest[1] >= widest[2] {
+                cells.push([r0, r1, a0, am, t0, t1]);
+                cells.push([r0, r1, am, a1, t0, t1]);
+            } else {
+                cells.push([r0, r1, a0, a1, t0, tm]);
+                cells.push([r0, r1, a0, a1, tm, t1]);
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// How many cells of a run's lunes are read, at most, to show a face clear
+/// of them or find a point of it inside one.
+const LUNE_CELLS: usize = 1 << 16;
+
+/// A point inside the lune of the ball, the `sector` of its section between
+/// its centre and its arc, at some station of the run `(s0, turn)`, of a
+/// face of `solid` other than the two `faces` on a surface whose trace is
+/// the same line or circle in every section of `layout`.
 ///
 /// Such a face's nearest point to the ball's centre is the same in every
-/// section, so the ball reaches into the face's surface exactly where that
-/// point lies more than the confusion distance inside it, and a point the
-/// face holds there, at a station inside the run, is a point of the solid's
-/// boundary inside the ball. Each of a few stations spread along the run is
-/// asked, so a face that runs along part of the run only is found where it
-/// stands at one of them; a face found nowhere proves nothing.
+/// section. Where that point lies more than the confusion distance inside
+/// the sector, a point the face holds there, at a station inside the run,
+/// is a point of the solid's boundary inside the lune. Each of a few
+/// stations spread along the run is asked, so a face that runs along part
+/// of the run only is found where it stands at one of them; a face found
+/// nowhere, or whose nearest point lies outside the sector, proves nothing.
 #[allow(clippy::too_many_arguments, reason = "one ball and its run")]
 fn face_inside_ball(
     model: &Model,
     solid: &Shape,
     faces: [&Shape; 2],
     layout: &Layout,
-    centre: P2,
-    radius: f64,
+    sector: Sector,
     run: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Option<Point>> {
+    let (centre, radius) = (sector.centre, sector.radius);
     use ogeom_geom::Transformable as _;
     const STATIONS: u32 = 8;
     let conf = tol.confusion();
@@ -2497,7 +2869,7 @@ fn face_inside_ball(
                 add2(middle, scale2(d, own / m))
             }
         };
-        if norm2(sub2(near, centre)) >= radius - conf {
+        if sector.depth(near) <= conf {
             continue;
         }
         for k in 0..STATIONS {
@@ -2541,6 +2913,13 @@ pub(crate) fn fillet_faces(
     if !closed_form_between(model, [a, b], tol)? {
         return crate::pair_marched::fillet_faces(model, a, b, radius, trim, tol);
     }
+    // The faces' windows, widened to read the ball, are put back where no
+    // ball seats.
+    let held = surfaces_of(model, [a, b])?;
+    let seat = face_seat(model, [a, b], radius, false, tol);
+    if seat.is_err() {
+        put_back(model, held);
+    }
     let FaceSeat {
         exact,
         stretches,
@@ -2548,7 +2927,7 @@ pub(crate) fn fillet_faces(
         profiles: _,
         surfaces,
         reads,
-    } = face_seat(model, [a, b], radius, false, tol)?;
+    } = seat?;
     let layout = exact.layout;
 
     let mut history = History::new();

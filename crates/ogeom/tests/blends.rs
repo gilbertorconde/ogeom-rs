@@ -571,12 +571,25 @@ fn a_face_blend_fills_between_two_drums_of_one_solid() {
         }
     }
 
-    // One crease's section, halved by the plane between the axes, with the
-    // right axis at (3, 0), the ball's centre at (0, h) (5 + r from both
-    // axes) and the crease at (0, y). The triangle (0, 0), (3, 0), (0, h)
-    // holds the half fill, the right drum's part of it (the triangle
-    // (0, 0), (3, 0), (0, y) and the sector from the crease to the ball's
-    // touch) and the ball's sector.
+    let (want, fill) = drums_filled(big, apart, r, length);
+    let got = exact_volume(&model, &blended);
+    assert!(
+        (got - want).abs() < fill * 1e-6,
+        "both creases filled: {got} against {want}"
+    );
+}
+
+/// Two drums of radius `big`, `apart` between their axes and `length`
+/// long, fused, with both creases filled by a ball of radius `r`: the
+/// solid's volume, and the fill's.
+///
+/// One crease's section, halved by the plane between the axes, with the
+/// right axis at (`apart` / 2, 0), the ball's centre at (0, h) (`big` + r
+/// from both axes) and the crease at (0, y). The triangle (0, 0),
+/// (`apart` / 2, 0), (0, h) holds the half fill, the right drum's part of
+/// it (the triangle (0, 0), (`apart` / 2, 0), (0, y) and the sector from
+/// the crease to the ball's touch) and the ball's sector.
+fn drums_filled(big: f64, apart: f64, r: f64, length: f64) -> (f64, f64) {
     let pi = core::f64::consts::PI;
     let half = apart / 2.0;
     let h = (big + r).mul_add(big + r, -(half * half)).sqrt();
@@ -586,11 +599,147 @@ fn a_face_blend_fills_between_two_drums_of_one_solid() {
     let fill = 2.0 * 2.0 * (half * h / 2.0 - half * y / 2.0 - sector - ball) * length;
     let lens =
         2.0 * big * big * (half / big).acos() - half * (4.0 * big * big - apart * apart).sqrt();
-    let want = (2.0 * pi * big * big - lens) * length + fill;
+    ((2.0 * pi * big * big - lens) * length + fill, fill)
+}
+
+/// The same two drums with both creases first rounded at `rho`, below the
+/// blend's radius: the walls share no edge, the old rounds standing
+/// between them in both creases. The ball of radius 1 touching both walls
+/// rolls in each crease clear of the old round, which a smaller ball's
+/// round lies wholly inside, so the blend fills both creases over the old
+/// rounds and the solid is the sharp pair's fill at radius 1, whatever
+/// `rho`. Near the radius (0.95) the old round fills all but a sliver of
+/// the corner beside the new round.
+#[test]
+fn a_face_blend_fills_both_creases_over_older_smaller_rounds() {
+    let (big, apart, r, length) = (5.0_f64, 6.0_f64, 1.0_f64, 20.0_f64);
+    for rho in [0.3, 0.95] {
+        let mut model = Model::new();
+        let at =
+            |x: f64| Frame::new(Point::new(x, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+        let left = ogeom::algo::make_cylinder(&mut model, at(0.0), big, length, T)
+            .unwrap()
+            .shape;
+        let right = ogeom::algo::make_cylinder(&mut model, at(apart), big, length, T)
+            .unwrap()
+            .shape;
+        let pair = ogeom::boolean::fuse(&mut model, &left, &right, T)
+            .unwrap()
+            .shape;
+        let drum_walls = |model: &Model, shape: &Shape| {
+            faces_on(
+                model,
+                shape,
+                |s| matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - big).abs() < 1e-12),
+            )
+        };
+        let walls = drum_walls(&model, &pair);
+        let creases = shared_edges(&model, &walls[0], &walls[1]);
+        assert_eq!(creases.len(), 2);
+        let rounded = ogeom::fillet::fillet_edges(&mut model, &pair, &creases, rho, T)
+            .unwrap()
+            .shape;
+        let walls = drum_walls(&model, &rounded);
+        assert_eq!(walls.len(), 2);
+        assert!(!share_an_edge(&model, &walls[0], &walls[1]), "rho {rho}");
+
+        let blended = ogeom::fillet::blend_faces(&mut model, &rounded, &walls[0], &walls[1], r, T)
+            .unwrap_or_else(|e| panic!("rho {rho}: {e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+        assert!(diagnosis.is_valid(), "rho {rho}: {:?}", diagnosis.problems);
+        // The fill over the sharp pair, held as the sharp pair's own test
+        // holds it.
+        let (want, fill) = drums_filled(big, apart, r, length);
+        let got = exact_volume(&model, &blended);
+        assert!(
+            (got - want).abs() < fill * 1e-6,
+            "rho {rho}: both creases filled over the old rounds: {got} against {want}"
+        );
+    }
+}
+
+/// A drum of radius 10 and height 20 whose top rim is rounded at `rho`,
+/// just below the blend's radius 1: its wall and its top share no edge.
+/// The ball touching both rolls inside the drum, and the old round lies
+/// wholly in the corner the blend takes off, so the blend is the drum with
+/// its rim rounded at 1, the sharp drum less the rim ring. The old round
+/// fills the corner beside the new round to within a sliver of it, so the
+/// solid there is open; the ball itself is in the material.
+#[test]
+fn a_face_blend_rounds_a_rim_over_an_older_round_just_smaller() {
+    let pi = core::f64::consts::PI;
+    let r = 1.0;
+    for rho in [0.5, 0.97] {
+        let mut model = Model::new();
+        let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+            .unwrap()
+            .shape;
+        let rim = rim_at(&model, &drum, 20.0);
+        let rounded = ogeom::fillet::fillet_edge(&mut model, &drum, &rim, rho, T)
+            .unwrap()
+            .shape;
+        let wall = cylinder_face_of(&model, &rounded);
+        let top = lid_at(&model, &rounded, 20.0);
+        assert!(!share_an_edge(&model, &wall, &top), "rho {rho}");
+        let blended = ogeom::fillet::blend_faces(&mut model, &rounded, &wall, &top, r, T)
+            .unwrap_or_else(|e| panic!("rho {rho}: {e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+        assert!(diagnosis.is_valid(), "rho {rho}: {:?}", diagnosis.problems);
+        let want = pi * 100.0 * 20.0 - rim_ring(10.0, r, 1.0);
+        let got = exact_volume(&model, &blended);
+        assert!(
+            (got - want).abs() < want * 1e-9,
+            "rho {rho}: a plain rim round: {got} against {want}"
+        );
+    }
+}
+
+/// A box `w` across and `h` tall along y and z, 3 long along x, its edge
+/// at y = `w`, z = `h` blended between the top and the side at radius
+/// 1.5. In the section the ball's centre stands at (`w` - 1.5, `h` - 1.5).
+///
+/// - 2 by 2: the centre at (0.5, 0.5), the ball reaches past the far side
+///   and the bottom, behind its centre, and its lune, the quarter of it
+///   between the centre and the arc, stays inside the box. The blend is
+///   the box with the edge rounded, `12 - 3 (1 - pi/4) r^2`.
+/// - 2 by 1: the centre stands 0.5 below the bottom, which crosses the
+///   lune, and the blend is refused by name.
+#[test]
+fn a_face_blend_rounds_a_part_thinner_than_its_ball_where_the_lune_stays_inside() {
+    let pi = core::f64::consts::PI;
+    let r = 1.5;
+    let part = |model: &mut Model, w: f64, h: f64| {
+        let block = ogeom::algo::make_box(model, Frame::WORLD, (3.0, w, h), T)
+            .unwrap()
+            .shape;
+        let top = planar_face_at(model, &block, Point::new(1.5, w / 2.0, h));
+        let side = planar_face_at(model, &block, Point::new(1.5, w, h / 2.0));
+        (block, top, side)
+    };
+    let mut model = Model::new();
+    let (block, top, side) = part(&mut model, 2.0, 2.0);
+    let blended = ogeom::fillet::blend_faces(&mut model, &block, &top, &side, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let want = (3.0 * (1.0 - pi / 4.0) * r).mul_add(-r, 12.0);
     let got = exact_volume(&model, &blended);
+    assert!((got - want).abs() < 1e-9, "{got} against {want}");
+
+    let mut model = Model::new();
+    let (block, top, side) = part(&mut model, 2.0, 1.0);
+    let why = ogeom::fillet::blend_faces(&mut model, &block, &top, &side, r, T)
+        .err()
+        .unwrap_or_else(|| panic!("a ball whose centre stands outside the part is blended"));
     assert!(
-        (got - want).abs() < fill * 1e-6,
-        "both creases filled: {got} against {want}"
+        matches!(why, ogeom::core::OgeomError::Construction(_))
+            && why
+                .to_string()
+                .contains("cuts into another face of the solid"),
+        "{why}"
     );
 }
 

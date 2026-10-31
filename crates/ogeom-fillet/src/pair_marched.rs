@@ -1396,6 +1396,7 @@ pub(crate) fn face_inside(
         centre: &centre,
         lines,
         ends,
+        lunes: None,
     };
     crate::between::face_inside_balls(model, solid, faces, &rolling, tol)
 }

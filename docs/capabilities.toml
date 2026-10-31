@@ -964,7 +964,16 @@ point inside it at any station of the run (a chamfer, a round or a wedge \
 between the faces, over all or part of the run), read over the whole run \
 by halving between stations until the centre's travel fits under the \
 face's clearance: the strip goes with the corner only where it lies \
-wholly outside the ball. Faces the crease or a line of contact meets, \
+wholly outside the ball. Between two planes and on the swept path only \
+the ball's lune counts, the part of it between its centre and its arc, \
+searched cell by cell over its section and the run where a face comes \
+inside the ball: a part thinner than the ball, its far side reaching \
+into the back of the ball only, is rounded, and an older, smaller round \
+between the faces goes with the corner, the ball's side read inside the \
+lune. The swept path blends every corner the surfaces cross in that the \
+ball rolls in (a drum's flat and its wall, two drums fused), where the \
+corners stand apart by more than their reach; `fillet_faces` refuses \
+several by name. Faces the crease or a line of contact meets, \
 and faces holding a capped run's end, are where the round runs off and \
 are not asked. Between two planes a blend is refused by name too where \
 the ball touching both touches a face's plane off the face at a station \

@@ -24,6 +24,11 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// the ball stays clear of a face between two stations.
 const HALVINGS: u32 = 24;
 
+/// A search of a face, read by its distances, for a point inside the
+/// lune of a ball of a run, tried first at a point it may already hold.
+pub(crate) type LuneSearch<'a> =
+    dyn Fn(&PointDistance, Option<Point>) -> OgeomResult<Option<Point>> + 'a;
+
 /// The balls a round between two faces rolls along its run.
 pub(crate) struct Rolling<'a> {
     pub(crate) radius: f64,
@@ -41,6 +46,17 @@ pub(crate) struct Rolling<'a> {
     /// Where the run ends: the contacts and the crease in its end
     /// sections. A face holding one ends the run and is not asked.
     pub(crate) ends: Vec<Point>,
+    /// Where every ball's section is the same (a run swept along a
+    /// direction or turned about an axis), the search of a face that comes
+    /// inside a ball for a point of it inside the ball's lune, the part of
+    /// the ball between its centre and its arc, at a station of the run.
+    /// Only the lunes bound the round: the round's arc bounds each, the
+    /// corner it takes off or fills lies outside the ball, and a face
+    /// reaching into the back of a ball, away from the corner, stands
+    /// clear of both. `None` asks the whole ball.
+    /// The search is handed the point the ball was found to hold, if any,
+    /// to try first.
+    pub(crate) lunes: Option<&'a LuneSearch<'a>>,
 }
 
 /// A point of a face of `solid` other than the two `faces`, and other than
@@ -159,7 +175,13 @@ pub(crate) fn face_inside_balls(
             .map(|c| clearance(*c))
             .collect::<OgeomResult<_>>()?;
         if let Some(at) = at_stations.iter().find_map(|e| inside(*e)) {
-            return Ok(Some(at));
+            match rolling.lunes {
+                None => return Ok(Some(at)),
+                Some(search) => match search(&measure, Some(at))? {
+                    Some(at) => return Ok(Some(at)),
+                    None => continue,
+                },
+            }
         }
         let mut intervals: Vec<Interval> = (0..middles.len())
             .map(|i| Interval {
@@ -170,6 +192,7 @@ pub(crate) fn face_inside_balls(
                 depth: 0,
             })
             .collect();
+        let mut found = None;
         while let Some(Interval {
             at: (a, b),
             ends: (pa, pb),
@@ -188,17 +211,18 @@ pub(crate) fn face_inside_balls(
             }
             let gm = clearance(pm)?;
             if let Some(at) = inside(gm) {
-                return Ok(Some(at));
+                found = Some(Ok(at));
+                break;
             }
             if depth >= HALVINGS || m <= a || m >= b {
-                ogeom_bail!(
-                    NotDone,
+                found = Some(Err(format!(
                     "whether another face of the solid comes inside the ball of radius \
                      {radius} rolling between the two faces cannot be told: it stands within \
                      {} of the ball between two stations {} apart",
                     ga.min(gb).max(0.0),
                     pa.distance(pb)
-                );
+                )));
+                break;
             }
             for (at, ends, gaps) in [
                 ((a, m), (pa, pm), (ga, gm.0)),
@@ -212,6 +236,16 @@ pub(crate) fn face_inside_balls(
                     depth: depth + 1,
                 });
             }
+        }
+        match (found, rolling.lunes) {
+            (None, _) => {}
+            (Some(found), Some(search)) => {
+                if let Some(at) = search(&measure, found.ok())? {
+                    return Ok(Some(at));
+                }
+            }
+            (Some(Ok(at)), None) => return Ok(Some(at)),
+            (Some(Err(why)), None) => ogeom_bail!(NotDone, "{why}"),
         }
     }
     Ok(None)

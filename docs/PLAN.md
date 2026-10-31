@@ -164,6 +164,15 @@ in `tests/sheet_fillets.rs`):
 - a line of contact crossing a face more than once: several runs between the
   same two faces, and with `trim` a face cut along several lines whose piece
   away from every round may be more than one;
+- `fillet_faces` where the surfaces cross in more than one corner the ball
+  rolls in (two drums fused, a drum's flat and its wall), which
+  `blend_faces` blends corner by corner
+  (`a_face_blend_fills_both_creases_over_older_smaller_rounds`); and on
+  either, corners within the sum of their reaches, each the larger of its
+  crease's distances to the contacts, which bounds the corner in the
+  section but not tightly. Owed: one round per corner on a sheet, each face
+  kept between its lines of contact, and the corners told apart by their
+  own sections;
 - a round crossing a face that stands between the two (a ball crossing a
   chamfer between the faces it rounds), where the solid beside the round is
   open where the seat says material, or the reverse. No ball rolls in that
@@ -183,7 +192,15 @@ in `tests/sheet_fillets.rs`):
   smaller than the one it would replace, a wedge fused into a drum's foot
   over a short stretch, the foot parted from the top or its edges shared
   either side of the wedge. The run is read whole, halved between stations
-  until the centre's travel fits under the face's clearance. Faces the
+  until the centre's travel fits under the face's clearance. Between two
+  planes and on the swept path a face inside the ball counts only inside
+  its lune, the part between its centre and its arc
+  (`a_face_blend_rounds_a_part_thinner_than_its_ball_where_the_lune_stays_inside`);
+  the marched path still asks the whole ball and reads the ball's side
+  just off the arc toward the crease, so a part thinner than its ball, or
+  an older round just smaller than it in the corner, is refused there.
+  Owed: the marched seat's lunes, their planes turning along the run.
+  Faces the
   crease or a line of contact meets, and faces holding a capped run's
   ends, are where the round runs off (a crease running off a block's
   side) and are not asked. Owed: a face that ends the run without
