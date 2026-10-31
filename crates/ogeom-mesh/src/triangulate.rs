@@ -2517,8 +2517,9 @@ pub fn inside_boundary_with<P: Predicates>(rings: &[Vec<Point2>], p: Point2) -> 
 
 /// The boundary of one wire, in the face's parameter space.
 ///
-/// Each edge is discretized in *space* and its pcurve evaluated at the resulting
-/// parameters, so two faces sharing the edge agree on where its points are.
+/// Each edge is drawn at its own polyline's points ([`edge_polyline`]) and
+/// its pcurve evaluated at their parameters, so two faces sharing the edge
+/// agree on where its points are.
 /// With `in_chart`, each edge's samples are also refined until its chords
 /// keep to its pcurve in the chart ([`refine_in_chart`]): a ring to place
 /// points against rather than to weld a mesh along.
@@ -3193,6 +3194,22 @@ fn sample_parameters(
     deflection: Deflection,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Vec<f64>, bool)>> {
+    Ok(edge_polyline(model, data, deflection, tol)?
+        .map(|line| (line.parameters, line.deflection_met)))
+}
+
+/// An edge's polyline in its curve's own frame: its 3D curve discretized
+/// at `deflection`, refined where a chart chord of it on a face it bounds
+/// sags past the repair's reach ([`refine_in_every_chart`]). Every face
+/// bounding the edge draws its boundary through these points, and the
+/// edge's own polyline is these points; `None` for an edge with no 3D
+/// curve.
+pub(crate) fn edge_polyline(
+    model: &Model,
+    data: &ogeom_topo::EdgeData,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Option<crate::discretize::Polyline>> {
     let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
         return Ok(None);
     };
@@ -3200,7 +3217,24 @@ fn sample_parameters(
         ogeom_bail!(Dangling, "curve is not in this model");
     };
     let line = discretize(geometry, *range, deflection, tol)?;
-    Ok(Some((line.parameters, line.deflection_met)))
+    let drawn = line.parameters.len();
+    let (parameters, met) =
+        refine_in_every_chart(model, data, line.parameters.clone(), deflection, tol);
+    if parameters.len() == drawn {
+        return Ok(Some(crate::discretize::Polyline {
+            deflection_met: line.deflection_met && met,
+            ..line
+        }));
+    }
+    let points = parameters
+        .iter()
+        .map(|&t| geometry.point_at(t, tol))
+        .collect::<OgeomResult<Vec<Point>>>()?;
+    Ok(Some(crate::discretize::Polyline {
+        points,
+        parameters,
+        deflection_met: line.deflection_met && met,
+    }))
 }
 
 /// Map parameters on the 3D curve onto the pcurve's own range.
@@ -3295,6 +3329,95 @@ fn refine_in_chart(
         }
     }
     (parameters, true)
+}
+
+/// An edge's sample `parameters` refined until, on every curved surface
+/// it has a pcurve on, no span's chart chord lifts farther off the line
+/// through its lifted ends than the repair lets a chart edge sag
+/// ([`REPAIR_SAG`] chords). A face is drawn from its rings' chart chords,
+/// and the repair splits every triangle along one that sags so, but never
+/// a span the face shares with its neighbour: where an edge bends in the
+/// chart and not in space (a curve where a plane cuts a torus near the
+/// tube's rim), the triangles along such a span draw the repair's points
+/// towards it, off the face by the sag. Each span is read at its middle and split there, the
+/// pcurves taken in the order the edge holds them and the round repeated
+/// until none splits a span: the samples depend on the edge alone, so
+/// every face bounding it draws the same points. A plane's chart is its
+/// space and is not asked. The flag is false where `max_segments` stopped
+/// a refinement short.
+fn refine_in_every_chart(
+    model: &Model,
+    data: &ogeom_topo::EdgeData,
+    parameters: Vec<f64>,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> (Vec<f64>, bool) {
+    use ogeom_geom::Surface as _;
+    let charts: Vec<(&ogeom_geom::PlanarCurve, &SurfaceGeometry, (f64, f64))> = data
+        .representations
+        .iter()
+        .filter_map(|repr| {
+            let (curve, surface, range) = match repr {
+                EdgeRepr::PCurve {
+                    curve,
+                    surface,
+                    range,
+                    ..
+                } => (*curve, *surface, *range),
+                EdgeRepr::Seam {
+                    forward,
+                    surface,
+                    range,
+                    ..
+                } => (*forward, *surface, *range),
+                _ => return None,
+            };
+            let surface = model.geometry().surface(surface)?;
+            if matches!(surface, SurfaceGeometry::Plane(_)) {
+                return None;
+            }
+            Some((model.geometry().pcurve(curve)?, surface, range))
+        })
+        .collect();
+    let mut parameters = parameters;
+    let ceiling = deflection.max_segments.max(parameters.len());
+    loop {
+        let before = parameters.len();
+        for &(pcurve, surface, range) in &charts {
+            let at = |t: f64| {
+                pcurve
+                    .point_at(to_pcurve_parameter(t, data, range), tol)
+                    .ok()
+            };
+            let lift = |p: Point2| surface.point_at(p.x, p.y, tol).ok();
+            let bows = |a: f64, b: f64| -> bool {
+                let (Some(pa), Some(pb)) = (at(a), at(b)) else {
+                    return false;
+                };
+                let (Some(start), Some(end)) = (lift(pa), lift(pb)) else {
+                    return false;
+                };
+                lift(pa + (pb - pa) * 0.5)
+                    .is_some_and(|m| chord_sag(start, end, m, tol) > deflection.chord * REPAIR_SAG)
+            };
+            let mut i = 0;
+            while i + 1 < parameters.len() {
+                let (a, b) = (parameters[i], parameters[i + 1]);
+                let mid = f64::midpoint(a, b);
+                if mid > a && mid < b && bows(a, b) {
+                    if parameters.len() > ceiling {
+                        return (parameters, false);
+                    }
+                    parameters.insert(i + 1, mid);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        if parameters.len() == before {
+            return (parameters, true);
+        }
+    }
 }
 
 /// The edge of a surface's domain, as a boundary ring.
@@ -3677,7 +3800,7 @@ fn triangulate_region_inner(
                             // Off the surface's domain; nothing to refine towards.
                             _ => 0.0,
                         };
-                        sag > deflection.chord * 3.0
+                        sag > deflection.chord * REPAIR_SAG
                     })
                 });
                 // A surface curved both ways twists between its rows and
@@ -4551,6 +4674,10 @@ const U_PROBES: usize = 8;
 /// exhausted allocator.
 const REFINEMENT_ROUNDS: usize = 12;
 
+/// How many chords a chart edge's lift may stand off the line through its
+/// ends before the repair splits the triangles along it.
+const REPAIR_SAG: f64 = 3.0;
+
 /// The fewest grid cells a face has for its cells to be given centres.
 ///
 /// A face of fewer (a fillet's sliver, a small corner ball) keeps its grid's
@@ -5076,14 +5203,10 @@ pub fn polyline_of_edge(
     let NodeData::Edge(data) = node.data() else {
         ogeom_bail!(Construction, "edge node holds no edge data");
     };
-    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+    let Some(line) = edge_polyline(model, data, deflection, tol)? else {
         return Ok(Vec::new());
     };
-    let Some(geometry) = model.geometry().curve(*curve) else {
-        ogeom_bail!(Dangling, "curve is not in this model");
-    };
     let placement = edge.transform(model.datums())?;
-    let line = discretize(geometry, *range, deflection, tol)?;
     let mut points: Vec<Point> = line.points.iter().map(|p| placement.apply(*p)).collect();
     if edge.orientation() == Orientation::Reversed {
         points.reverse();

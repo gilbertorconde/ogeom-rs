@@ -41,6 +41,24 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face's mesh no longer folds off its face where an edge bends in the
+  chart and not in space.**
+  - An edge is drawn at points chosen along its curve in space, the same
+    for every face it bounds. Where a plane cuts a torus near the tube's
+    rim, the cut runs almost straight in space and bends in the torus's
+    chart: DoomCube 350 solid 585, meshed at a chord of 0.0666, drew a
+    2.8 mm stretch of such a cut as one span, whose straight chart chord
+    lifts 0.21 beyond the plane. The repair splits every triangle along a
+    chart edge that sags more than three chords, but may not split a span
+    the face shares, so it refined towards the span: the torus face's mesh
+    stood 0.2 beyond the plane and passed through itself, and the solid's
+    mesh, converted back, came back crossing itself.
+  - An edge's points are now refined wherever the chart chord of a span,
+    on any curved face it bounds, sags past those three chords. Every face
+    sharing the edge draws the same points, and they are the edge's own
+    polyline (`polyline_of_edge`, and the one `tessellate` stores). Solid
+    585's mesh now keeps within its chord of the solid, both ways; the
+    real-world import of both assemblies is unchanged.
 - **A face's mesh no longer says it met its chord while standing off its
   surface by far more.**
   - The mesher measured each triangle's middle, lifted onto the surface,

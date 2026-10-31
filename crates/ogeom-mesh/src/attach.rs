@@ -25,7 +25,7 @@ use ogeom_topo::{
     EdgeRepr, Filter, Model, NodeData, Shape, ShapeType, Triangulation, explore_unique,
 };
 
-use crate::discretize::{Deflection, Polyline, discretize};
+use crate::discretize::{Deflection, Polyline};
 
 /// What a tessellation pass produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,8 +348,10 @@ pub fn polyline_of(model: &Model, edge: &Shape) -> Option<(Vec<ogeom_math::Point
     })
 }
 
-/// An edge's polyline from its 3D curve, or `None` for an edge with no 3D
-/// curve (a degenerate edge at a cone's apex has nothing to discretize).
+/// An edge's polyline, the points its faces draw it through
+/// ([`edge_polyline`](crate::triangulate::edge_polyline)), or `None` for
+/// an edge with no 3D curve (a degenerate edge at a cone's apex has nothing
+/// to discretize).
 fn edge_line(
     model: &Model,
     edge: &Shape,
@@ -362,13 +364,7 @@ fn edge_line(
     let NodeData::Edge(data) = node.data() else {
         ogeom_bail!(Construction, "edge node holds no edge data");
     };
-    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-        return Ok(None);
-    };
-    let Some(geometry) = model.geometry().curve(*curve) else {
-        ogeom_bail!(Dangling, "curve is not in this model");
-    };
-    Ok(Some(discretize(geometry, *range, deflection, tol)?))
+    crate::triangulate::edge_polyline(model, data, deflection, tol)
 }
 
 /// Store a polyline on an edge, replacing any earlier one and the paths
