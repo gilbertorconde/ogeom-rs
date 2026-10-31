@@ -171,20 +171,26 @@ in `tests/sheet_fillets.rs`):
   ball of radius 1.5 touching the wall and the lid has its centre 1.41 from
   the chamfer's plane. The round would leave the material through the
   chamfer, giving round, chamfer, round meeting at creases. It needs a ball
-  touching the chamfer as well (a three-face blend). Between two planes
-  and between surfaces sharing a direction or an axis, `blend_faces`
-  refuses by name where another face of the solid on a surface the same
-  in every section holds a point inside the ball
-  (`a_face_blend_refuses_a_ball_that_crosses_a_bevel_between_the_faces`):
-  a chamfer the ball crosses, uneven or not, a round smaller than the
-  one it would replace. Not checked: a face between them on another
-  surface (a B-spline strip), which is asked only by the probe beside the
-  middle of the ball's arc, and every face of a marched seat, where the
-  same probe is the only check. A strip crossing the ball away from the
-  middle of its arc passes it. Owed: the marched balls checked against
-  the faces bridging the two faces along the run, which needs the
-  faces ending the run (a crease running off a block's side) told from
-  the faces between;
+  touching the chamfer as well (a three-face blend). On every path, two
+  planes, swept and marched, `blend_faces` refuses by name where another
+  face of the solid, on any surface, holds a point inside the ball at a
+  station of the run (`between.rs`;
+  `a_face_blend_refuses_a_ball_that_crosses_a_bevel_between_the_faces`,
+  `a_face_blend_refuses_a_spline_bevel_or_a_bevel_over_part_of_the_edge`,
+  `a_face_blend_refuses_a_wedge_its_ball_crosses_over_part_of_the_foot`):
+  a chamfer the ball crosses, uneven or not, plane or B-spline, a round
+  smaller than the one it would replace, a wedge fused into a drum's foot
+  over a short stretch. The run is read whole, halved between stations
+  until the centre's travel fits under the face's clearance. Faces the
+  crease or a line of contact meets, and faces holding a capped run's
+  ends, are where the round runs off (a crease running off a block's
+  side) and are not asked. Owed: a face that ends the run without
+  meeting either line or holding an end (a narrow face past the one a
+  line of contact leaves by) is asked as a face between; and the face's
+  distance is the kernel's point-to-face distance, which takes the foot
+  on the face's surface only where it lands inside the trim, so a face
+  whose nearest interior point is not its surface's is read from its
+  edges.
 - with `trim`, a closed line of contact across the seam of a closed B-spline
   face whose chart does not wrap round (a tube swept from a B-spline ring):
   `split_face` brings a trace back by a period only on a periodic chart, so

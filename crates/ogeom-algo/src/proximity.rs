@@ -106,6 +106,65 @@ pub fn distance_between_shapes(
     distance_between_elements(&ea, &eb, options, tol)
 }
 
+/// A shape's boundary gathered once, to measure many points against.
+pub struct PointDistance(Vec<Element>);
+
+impl core::fmt::Debug for PointDistance {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PointDistance")
+            .field("elements", &self.0.len())
+            .finish()
+    }
+}
+
+impl PointDistance {
+    /// The vertices, edges and faces of `shape`, placed.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if a handle fails to
+    /// resolve.
+    pub fn of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Self> {
+        Ok(Self(elements(model, shape, tol)?))
+    }
+
+    /// The least distance from `p` to the shape's boundary and a point of it
+    /// at that distance, as [`distance_between_shapes`] measures it from a
+    /// vertex at `p`: to each vertex, the foot on each edge, and the foot on
+    /// each face where it lands inside the face's trimming.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the shape
+    /// has no vertex, edge or face foot to measure to.
+    pub fn nearest(&self, p: Point, tol: Tolerances) -> OgeomResult<(f64, Point)> {
+        let mut best: Option<(f64, Point)> = None;
+        let mut keep = |d: f64, q: Point| {
+            if d.is_finite() && best.is_none_or(|(held, _)| d < held) {
+                best = Some((d, q));
+            }
+        };
+        for element in &self.0 {
+            match element {
+                Element::Vertex(_, q) => keep(p.distance(*q), *q),
+                Element::Edge(_, curve) => {
+                    let foot = project_on_curve(curve, p, 64, tol)?;
+                    keep(foot.distance, foot.point);
+                }
+                Element::Face(_, face) => {
+                    let foot = project_on_surface(&face.world, p, 32, tol)?;
+                    if inside_trim(face, foot.point, tol)? {
+                        keep(foot.distance, foot.point);
+                    }
+                }
+            }
+        }
+        best.ok_or_else(|| {
+            ogeom_core::ogeom_err!(Construction, "a shape with no elements has no distance")
+        })
+    }
+}
+
 /// The elements of a shape (its vertices, edges and faces, placed) for
 /// measuring it against others many times: see [`distance_between_elements`].
 pub(crate) struct Elements(Vec<Element>);

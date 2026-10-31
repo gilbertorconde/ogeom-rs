@@ -81,6 +81,26 @@ bump may break the API and a patch bump may not.
 ### Fixed
 
 - **`blend_faces` refuses a ball that crosses a face between the two faces
+  on any surface, over part of the run, and on a marched seat.**
+  - A marched seat was asked only beside the middle of the ball's arc at
+    the middle of its run. A drum leaning 15 degrees on a block, its foot
+    parted from the top, with a wedge fused into the foot over 1.2 of its
+    run and a slope `x' + z' = 1.6` the ball of radius 2 crosses, gave a
+    valid solid with the wedge standing out through the round.
+  - Between two planes and between surfaces sharing an axis, only planes
+    and coaxial surfaces were asked, at 8 stations. A chamfer on a
+    B-spline, or a chamfer over 0.2 of the edge between those stations,
+    was left standing between two pieces of round, and a wedge in an
+    upright drum's foot was filled over.
+  - Every face of the solid on any surface is now asked over the whole
+    run, the ball seated exactly between stations, an interval halved
+    until the centre's travel fits under the face's clearance. A point
+    found inside the ball is refused by name. Faces the crease or a line
+    of contact meets, and faces holding a capped run's ends, are where
+    the round runs off and are not asked. Strips the ball clears go with
+    the corner as before.
+
+- **`blend_faces` refuses a ball that crosses a face between the two faces
   it blends.**
   - Between two planes the wedge was cut whatever stood between them. On a
     2-cube chamfered 0.3 and blended at radius 0.5, the only ball touching

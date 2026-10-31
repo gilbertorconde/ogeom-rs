@@ -4150,3 +4150,268 @@ fn face_curvature_samples_refuses_no_grid_and_a_shape_that_is_not_a_face() {
         Err(ogeom::core::OgeomError::Construction(_))
     ));
 }
+
+/// A right prism over the triangle `corners` (lying in a plane square to
+/// `along`), swept along `along`; with `spline` restated on B-splines.
+fn triangle_prism(model: &mut Model, corners: [Point; 3], along: Vector, spline: bool) -> Shape {
+    let wire = ogeom::algo::make_polygon(model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(
+        corners[0],
+        Direction::new(along, T).unwrap(),
+        Direction::new(corners[1] - corners[0], T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let plane: ogeom::geom::SurfaceGeometry =
+        ogeom::geom::PlaneSurface::new(ogeom::math::Plane::new(frame)).into();
+    let face = ogeom::algo::make_face(model, plane, &[wire], T)
+        .unwrap()
+        .shape;
+    let prism = ogeom::algo::make_prism(model, &face, along, T)
+        .unwrap()
+        .shape;
+    if spline {
+        ogeom::algo::to_nurbs(model, &prism, T).unwrap().shape
+    } else {
+        prism
+    }
+}
+
+/// The 2-cube with its top edge along x at y = z = 2 bevelled at `chamfer`
+/// over `xs` only, by cutting a prism (a B-spline one with `spline`): the
+/// solid, its top and its side y = 2.
+fn notched_cube(
+    model: &mut Model,
+    chamfer: f64,
+    xs: (f64, f64),
+    spline: bool,
+) -> (Shape, Shape, Shape) {
+    let cube = ogeom::algo::make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let e = 0.5;
+    let corners = [
+        (2.0 - chamfer - e, 2.0 + e),
+        (2.0 + e, 2.0 - chamfer - e),
+        (2.0 + e, 2.0 + e),
+    ]
+    .map(|(y, z): (f64, f64)| Point::new(xs.0, y, z));
+    let prism = triangle_prism(model, corners, Vector::new(xs.1 - xs.0, 0.0, 0.0), spline);
+    let cut = ogeom::boolean::cut(model, &cube, &prism, T).unwrap().shape;
+    let top = planar_face_at(model, &cut, Point::new(0.05, 0.5, 2.0));
+    let side = planar_face_at(model, &cut, Point::new(0.05, 2.0, 0.5));
+    (cut, top, side)
+}
+
+/// The drum of [`slanted_drum_on_block`] at `slant`, its wall parted above
+/// the top, with a triangular prism (a B-spline one with `spline`) fused
+/// into the concave corner at the drum's -x side (its -y side with
+/// `minus_y`): its slope is `x' + z' = slope`, `x'` running out from the
+/// wall's line x = 14 (y = 14) and `z'` up from the top, over `span` along
+/// y (x). The solid, the wall above the split and the top.
+fn wedged_drum(
+    model: &mut Model,
+    slant: f64,
+    slope: f64,
+    (span, minus_y): ((f64, f64), bool),
+    spline: bool,
+) -> (Shape, Shape, Shape) {
+    let sharp = slanted_drum_on_block(model, slant);
+    let (parted, _) = wall_parted(model, &sharp);
+    let at = |out: f64, t: f64, up: f64| {
+        if minus_y {
+            Point::new(t, 14.0 - out, 10.0 + up)
+        } else {
+            Point::new(14.0 - out, t, 10.0 + up)
+        }
+    };
+    let corners = [(-0.5, -0.5), (slope + 0.5, -0.5), (-0.5, slope + 0.5)]
+        .map(|(x, z): (f64, f64)| at(x, span.0, z));
+    let along = at(0.0, span.1, 0.0) - at(0.0, span.0, 0.0);
+    let prism = triangle_prism(model, corners, along, spline);
+    let wedged = ogeom::boolean::fuse(model, &parted, &prism, T)
+        .unwrap()
+        .shape;
+    // The wall above the split is the one that reaches the drum's lid;
+    // the bound of an edge on the B-spline wedge reaches below the split.
+    let above = walls_where(model, &wedged, |b| b.corners().iter().any(|p| p.z > 19.0));
+    assert_eq!(above.len(), 1, "one wall above the split");
+    let top = lid_at(model, &wedged, 10.0);
+    (wedged, above[0].clone(), top)
+}
+
+/// Where the ball of radius `r` rolling round the foot of the drum leaning
+/// `slant` degrees stands at the drum's -x side: a radius above the top and
+/// `6 + r` from the axis, through (20, 20, 5) along (0, sin, cos). At the
+/// height `10 + r` the axis stands at y = 20 + (5 + r) tan, and the centre
+/// at the -x end of the section of the offset cylinder there, square
+/// across from the axis: it touches the top at (14 - r, y, 10) and the
+/// wall at (14, y, 10 + r).
+fn foot_ball_at_minus_x(slant: f64, r: f64) -> Point {
+    Point::new(
+        14.0 - r,
+        20.0 + (5.0 + r) * slant.to_radians().tan(),
+        10.0 + r,
+    )
+}
+
+/// A wedge fused into the concave corner of a drum's foot over a short
+/// stretch of it, its slope crossing the ball that rolls between the wall
+/// and the top there, is not filled over by their blend: no ball of the
+/// radius rolls between the wall and the top alone past it. Each blend is
+/// refused by name, on the drum upright (swept) and leaning 15 degrees
+/// (marched), the wedge plane or on B-splines.
+///
+/// At the drum's -x side the ball touching both is centred at
+/// [`foot_ball_at_minus_x`], `(x', z') = (r, r)`, and touches the top and
+/// the wall a radius out and a radius up, both past the wedge's legs. The
+/// slope `x' + z' = 1.6` stands `(2r - 1.6) / sqrt 2 = 1.697` from it at
+/// r = 2, short of the radius, its nearest point `(0.8, 0.8)` on the
+/// wedge's face. The ball's arc there, whose middle is at
+/// `(r - r / sqrt 2)` each way, 0.586, runs through the wedge, and a round
+/// of the two faces leaves the wedge standing out through it (main returns
+/// such a solid). The same holds upright at the drum's -y side. The wedge
+/// spans 1.2 of a run round the foot of about 50, beside no station of a
+/// probe at the run's middle.
+#[test]
+fn a_face_blend_refuses_a_wedge_its_ball_crosses_over_part_of_the_foot() {
+    let r = 2.0;
+    let slope = 1.6;
+    let gap = 2.0f64.mul_add(r, -slope) / 2.0_f64.sqrt();
+    assert!(gap < r, "the slope crosses the ball: {gap}");
+    for (slant, spline) in [(0.0, false), (0.0, true), (15.0, false), (15.0, true)] {
+        let mut model = Model::new();
+        let upright = slant == 0.0;
+        let t = if upright {
+            20.0
+        } else {
+            foot_ball_at_minus_x(slant, r).y
+        };
+        let (solid, wall, top) = wedged_drum(
+            &mut model,
+            slant,
+            slope,
+            ((t - 0.6, t + 0.6), upright),
+            spline,
+        );
+        let why = ogeom::fillet::blend_faces(&mut model, &solid, &wall, &top, r, T)
+            .err()
+            .unwrap_or_else(|| panic!("slant {slant}, spline {spline}: the wedge is filled over"));
+        assert!(
+            matches!(why, ogeom::core::OgeomError::Construction(_))
+                && why
+                    .to_string()
+                    .contains("cuts into another face of the solid"),
+            "slant {slant}, spline {spline}: {why}"
+        );
+    }
+}
+
+/// A wedge that lies wholly in the corner the ball fills goes into the
+/// fill: with its slope at `x' + z' = 0.8`, `(2r - 0.8) / sqrt 2 = 2.26`
+/// from the ball's centre at r = 2, the blend is the blend of the foot
+/// without the wedge. Upright, that adds the torus ring by Pappus to the
+/// sharp drum; leaning, it is the same solid as the blend without the
+/// wedge, face for face and in volume.
+#[test]
+fn a_face_blend_fills_over_a_wedge_its_ball_clears() {
+    let r = 2.0;
+    for slant in [0.0, 15.0] {
+        let blended = |wedge: bool| {
+            let mut model = Model::new();
+            let upright = slant == 0.0;
+            let t = if upright {
+                20.0
+            } else {
+                foot_ball_at_minus_x(slant, r).y
+            };
+            let (solid, wall, top) = if wedge {
+                wedged_drum(&mut model, slant, 0.8, ((t - 0.6, t + 0.6), upright), false)
+            } else {
+                let sharp = slanted_drum_on_block(&mut model, slant);
+                let (parted, wall) = wall_parted(&mut model, &sharp);
+                let top = lid_at(&model, &parted, 10.0);
+                (parted, wall, top)
+            };
+            let blended = ogeom::fillet::blend_faces(&mut model, &solid, &wall, &top, r, T)
+                .unwrap_or_else(|e| panic!("slant {slant}, wedge {wedge}: {e}"))
+                .shape;
+            let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let faces = explore_unique(&model, &blended, ShapeType::Face)
+                .unwrap()
+                .len();
+            (faces, exact_volume(&model, &blended))
+        };
+        let (with, without) = (blended(true), blended(false));
+        assert_eq!(with.0, without.0, "slant {slant}: the wedge is taken whole");
+        assert!(
+            (with.1 - without.1).abs() < without.1 * 1e-9,
+            "slant {slant}: {} against {}",
+            with.1,
+            without.1
+        );
+        if slant == 0.0 {
+            let pi = core::f64::consts::PI;
+            let sharp = 40.0 * 40.0 * 10.0 + pi * 36.0 * 10.0;
+            let want = sharp + rim_ring(6.0, r, -1.0);
+            assert!(
+                (without.1 - want).abs() < want * 1e-9,
+                "the plain foot ring: {} against {want}",
+                without.1
+            );
+        }
+    }
+}
+
+/// A bevel the ball crosses that a check of planes and coaxial surfaces at
+/// a few stations misses, refused by name as the plane chamfer is
+/// (`a_face_blend_refuses_a_ball_that_crosses_a_bevel_between_the_faces`
+/// holds the section's proof):
+///
+/// - the cube's chamfer at 0.3 restated on a B-spline by cutting a B-spline
+///   prism, blended at radius 0.5: the cube rounded less the lens of the
+///   ball beyond the chamfer on each unit of length would be 7.891750554;
+/// - the same at 0.6, where the contacts stand on what the chamfer took
+///   off and the cut would take nothing;
+/// - a chamfer at 0.3 over x from 0.9 to 1.1 only, plane or B-spline,
+///   which stands between stations spread evenly along the edge: the
+///   cube rounded less the lens over 0.2 would be 7.892604229.
+///
+/// The cube chamfered at 0.1 on a B-spline still blends to the cube
+/// rounded, `8 - 2 (1 - pi/4) r^2`.
+#[test]
+fn a_face_blend_refuses_a_spline_bevel_or_a_bevel_over_part_of_the_edge() {
+    for (chamfer, xs, spline) in [
+        (0.3, (-1.0, 3.0), true),
+        (0.6, (-1.0, 3.0), true),
+        (0.3, (0.9, 1.1), false),
+        (0.3, (0.9, 1.1), true),
+    ] {
+        let mut model = Model::new();
+        let (solid, top, side) = notched_cube(&mut model, chamfer, xs, spline);
+        let why = ogeom::fillet::blend_faces(&mut model, &solid, &top, &side, 0.5, T)
+            .err()
+            .unwrap_or_else(|| panic!("over {xs:?}, spline {spline}: the bevel is blended"));
+        assert!(
+            matches!(why, ogeom::core::OgeomError::Construction(_))
+                && why
+                    .to_string()
+                    .contains("cuts into another face of the solid"),
+            "over {xs:?}, spline {spline}: {why}"
+        );
+    }
+    let mut model = Model::new();
+    let (solid, top, side) = notched_cube(&mut model, 0.1, (-1.0, 3.0), true);
+    let r = 0.5;
+    let blended = ogeom::fillet::blend_faces(&mut model, &solid, &top, &side, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let want = (2.0 * (1.0 - core::f64::consts::FRAC_PI_4) * r).mul_add(-r, 8.0);
+    let got = exact_volume(&model, &blended);
+    assert!((got - want).abs() < 1e-9, "{got} against {want}");
+}

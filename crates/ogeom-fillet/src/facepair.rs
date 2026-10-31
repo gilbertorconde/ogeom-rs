@@ -81,8 +81,8 @@ use crate::support::Seat;
 ///
 /// - for two planes, if they are parallel or the faces do not both reach
 ///   the meeting line, or the ball touching both reaches into another face
-///   of the solid (a strip between them, such as a chamfer, that the ball
-///   crosses rather than takes off whole);
+///   of the solid at a station of the run (a strip between them, such as a
+///   chamfer, that the ball crosses rather than takes off whole);
 /// - for a curved face, if the two are one face or either is not a face
 ///   of the solid;
 /// - for a curved face sharing edges with the other, as
@@ -92,16 +92,20 @@ use crate::support::Seat;
 ///   if no ball touches both faces there, its round would be a torus
 ///   crossing its own axis, or the solid beside the middle of the round is
 ///   not what that side needs (material behind the faces, open in front of
-///   them), or, for surfaces sharing a direction or an axis, the ball
-///   reaches into another face of the solid on such a surface (a chamfer
-///   between them it crosses). It is also refused where a ball seats on
-///   both sides;
+///   them), or the ball reaches into another face of the solid at a station
+///   of the run (a chamfer or a wedge between them it crosses), other than
+///   a face the round runs off at the run's ends or along the crease. It
+///   is also refused where a ball seats on both sides;
 /// - for a marched seat, on a side, if no ball seats along where the
 ///   surfaces cross, more than one crossing holds one touching both faces,
 ///   the ball leaves the two faces at different places round its seat and
 ///   never both at once, its line of contact enters a face more than once,
 ///   or the march stops while the ball still touches both faces; and if a
 ///   face is a trimmed or offset surface.
+///
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where whether
+/// another face comes inside the ball between two stations cannot be told
+/// within the halvings allowed.
 pub fn blend_faces(
     model: &mut Model,
     solid: &Shape,
@@ -202,11 +206,16 @@ pub fn blend_faces(
     let k = normal_a.dot(normal_b);
     let side = if convex { -1.0 } else { 1.0 };
     let centre = seed + (normal_a + normal_b) * (side * radius / (1.0 + k));
+    let contacts = [
+        centre - normal_a * (side * radius),
+        centre - normal_b * (side * radius),
+    ];
     if let Some(at) = crate::sheet_curved::face_inside_rolling_ball(
         model,
         solid,
         [a, b],
-        centre,
+        [centre, seed],
+        contacts,
         along,
         radius,
         (lo, hi - lo),
@@ -397,11 +406,13 @@ fn curved_blend(
                 Some(solid),
                 tol,
             )
-            .and_then(|seat| match seat.probe() {
-                Some(probe) => Ok((Corner::Marched(Box::new(seat)), probe, None)),
-                None => {
-                    ogeom_bail!(Invariant, "a marched seat on the crease has no probe")
-                }
+            .and_then(|seat| {
+                let Some(probe) = seat.probe() else {
+                    ogeom_bail!(Invariant, "a marched seat on the crease has no probe");
+                };
+                let inside =
+                    crate::pair_marched::face_inside(model, solid, [a, b], &seat, radius, tol)?;
+                Ok((Corner::Marched(Box::new(seat)), probe, inside))
             }),
         };
         let (wedge, probe, inside) = match built {

@@ -2253,7 +2253,7 @@ fn crease_line(layout: &Layout, crease: P2, tol: Tolerances) -> OgeomResult<Curv
 /// A point inside a seat's ball, somewhere along the run `(s0, turn)`, of a
 /// face of `solid` other than the two `faces`; `None` where none is found.
 pub(crate) fn face_inside_seat(
-    model: &Model,
+    model: &mut Model,
     solid: &Shape,
     faces: [&Shape; 2],
     seat: &FaceSeat,
@@ -2261,12 +2261,36 @@ pub(crate) fn face_inside_seat(
     tol: Tolerances,
 ) -> OgeomResult<Option<Point>> {
     let exact = &seat.exact;
-    face_inside_ball(
+    let section = exact.section;
+    if let Some(at) = face_inside_ball(
         model,
         solid,
         faces,
         &exact.layout,
-        exact.section.centre,
+        section.centre,
+        exact.radius,
+        run,
+        tol,
+    )? {
+        return Ok(Some(at));
+    }
+    let Some(crease) = crossings(seat.profiles[0], seat.profiles[1], tol)
+        .into_iter()
+        .min_by(|p, q| norm2(sub2(*p, section.centre)).total_cmp(&norm2(sub2(*q, section.centre))))
+    else {
+        return Ok(None);
+    };
+    face_inside_swept(
+        model,
+        solid,
+        faces,
+        &exact.layout,
+        [
+            section.centre,
+            crease,
+            section.contacts[0],
+            section.contacts[1],
+        ],
         exact.radius,
         run,
         tol,
@@ -2276,19 +2300,82 @@ pub(crate) fn face_inside_seat(
 /// A point of a face of `solid` other than the two `faces` inside the ball
 /// of `radius` centred on the line through `centre` along `along`, at a
 /// station `(p - centre) . along` inside `run`; `None` where none is found.
+/// `crease` and `contacts` are where the faces' planes meet and where the
+/// ball touches them in the section through `centre`.
 #[allow(clippy::too_many_arguments, reason = "one ball and its run")]
 pub(crate) fn face_inside_rolling_ball(
-    model: &Model,
+    model: &mut Model,
     solid: &Shape,
     faces: [&Shape; 2],
-    centre: Point,
+    [centre, crease]: [Point; 2],
+    contacts: [Point; 2],
     along: Vector,
     radius: f64,
     run: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Option<Point>> {
     let layout = Layout::extruded(centre, along, tol)?;
-    face_inside_ball(model, solid, faces, &layout, (0.0, 0.0), radius, run, tol)
+    if let Some(at) = face_inside_ball(model, solid, faces, &layout, (0.0, 0.0), radius, run, tol)?
+    {
+        return Ok(Some(at));
+    }
+    let flat = [centre, crease, contacts[0], contacts[1]].map(|p| layout.flat(p));
+    face_inside_swept(model, solid, faces, &layout, flat, radius, run, tol)
+}
+
+/// A point of any face of `solid` other than the two `faces`, and other
+/// than the faces the run ends on or the corner runs along, inside the
+/// ball of `radius` swept along `layout` over the run `(s0, turn)`, as
+/// [`face_inside_balls`](crate::between::face_inside_balls) finds it. `at`
+/// holds the section's ball centre, crease and two contacts. A run once
+/// round an axis has no ends.
+#[allow(clippy::too_many_arguments, reason = "one ball and its run")]
+fn face_inside_swept(
+    model: &mut Model,
+    solid: &Shape,
+    faces: [&Shape; 2],
+    layout: &Layout,
+    at: [P2; 4],
+    radius: f64,
+    (s0, turn): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    /// The intervals the run is first read over.
+    const STATIONS: u32 = 16;
+    let [centre, crease, first, second] = at;
+    // A circle's parameter is its angle from the layout's `x`, read from
+    // zero.
+    let from = if layout.turns() {
+        s0.rem_euclid(TAU)
+    } else {
+        s0
+    };
+    let run = (from, from + turn);
+    let stations = (0..=STATIONS)
+        .map(|k| turn.mul_add(f64::from(k) / f64::from(STATIONS), s0))
+        .collect();
+    let mut lines = Vec::with_capacity(3);
+    for q in [crease, first, second] {
+        lines.push((crease_line(layout, q, tol)?, run));
+    }
+    let round = layout.turns() && turn >= TAU - tol.angular();
+    let ends = if round {
+        Vec::new()
+    } else {
+        [crease, first, second]
+            .into_iter()
+            .flat_map(|q| [layout.lift(q, run.0), layout.lift(q, run.1)])
+            .collect()
+    };
+    let centre_at = |s: f64| -> OgeomResult<Point> { Ok(layout.lift(centre, s)) };
+    let rolling = crate::between::Rolling {
+        radius,
+        stations,
+        centre: &centre_at,
+        lines,
+        ends,
+    };
+    crate::between::face_inside_balls(model, solid, faces, &rolling, tol)
 }
 
 /// A point inside the ball of `radius` centred at `centre` in the section,

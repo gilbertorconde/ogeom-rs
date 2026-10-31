@@ -2,6 +2,7 @@
 //! and their 2D counterparts.
 
 pub mod analyse;
+mod between;
 pub mod bridge;
 pub mod chamfer;
 mod consumed;

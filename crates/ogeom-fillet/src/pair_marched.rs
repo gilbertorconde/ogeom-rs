@@ -278,7 +278,7 @@ fn reordered(blend: &MarchedBlend, order: &[usize]) -> MarchedBlend {
 }
 
 /// The deflection faces are read at for whether the ball touches them.
-fn reading(radius: f64, tol: Tolerances) -> ogeom_mesh::Deflection {
+pub(crate) fn reading(radius: f64, tol: Tolerances) -> ogeom_mesh::Deflection {
     ogeom_mesh::Deflection {
         chord: (radius * 1e-3).max(tol.confusion() * 1e2),
         ..ogeom_mesh::Deflection::default()
@@ -1270,6 +1270,129 @@ pub(crate) fn crease_edge_ends(
         (from > w0 + margin).then_some((from, p)),
         (to < w1 - margin).then_some((to, q)),
     ])
+}
+
+/// A point of a face of `solid` other than the two `faces` inside the ball
+/// of `radius` at some station of a marched seat's run, as
+/// [`face_inside_balls`](crate::between::face_inside_balls) finds it; `None`
+/// where none is.
+///
+/// The ball is seated exactly between the march's stations, from the
+/// nearest of them. A closed run goes round its loop and has no ends. A
+/// capped run ends at its first and last stations, and a face holding a
+/// contact or the crease there is a face it runs off.
+pub(crate) fn face_inside(
+    model: &mut Model,
+    solid: &Shape,
+    faces: [&Shape; 2],
+    seat: &PairSeat,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    let PairSeat {
+        hosts,
+        guide,
+        blend,
+        run,
+        ..
+    } = seat;
+    let [first, second] = &hosts.surfaces;
+    let n = blend.len();
+    let (lo, hi) = guide.domain();
+    let period = hi - lo;
+    // The stations' guide parameters in order along the run, unwrapped
+    // round a loop, a closed run's last station followed by its first.
+    let mut stations = blend.along.clone();
+    let closed = matches!(run, Run::Closed);
+    if closed {
+        for i in 1..n {
+            while stations[i] - stations[i - 1] > period / 2.0 {
+                stations[i] -= period;
+            }
+            while stations[i - 1] - stations[i] > period / 2.0 {
+                stations[i] += period;
+            }
+        }
+        let back = if stations[n - 1] >= stations[0] {
+            period
+        } else {
+            -period
+        };
+        stations.push(stations[0] + back);
+    }
+    let index = |k: usize| k % n;
+    // How far the centre moves between neighbouring stations at most: a
+    // seating farther off than three times that from its seed is another
+    // seating.
+    let mut step = 0.0_f64;
+    for k in 0..stations.len() - 1 {
+        step = step.max(blend.spine[index(k)].distance(blend.spine[index(k + 1)]));
+    }
+    let reach = step.mul_add(3.0, tol.confusion());
+    let params = stations.clone();
+    let centre = |t: f64| -> OgeomResult<Point> {
+        let k = (0..params.len())
+            .min_by(|&j, &k| (params[j] - t).abs().total_cmp(&(params[k] - t).abs()))
+            .unwrap_or(0);
+        let i = index(k);
+        if (params[k] - t).abs() <= tol.parametric() {
+            return Ok(blend.spine[i]);
+        }
+        let near = [
+            blend.on_first[i].0,
+            blend.on_first[i].1,
+            blend.on_second[i].0,
+            blend.on_second[i].1,
+        ];
+        let x = seat_section(
+            first,
+            second,
+            radius,
+            guide,
+            blend.sides,
+            on_guide(guide, t),
+            near,
+            tol,
+        )?;
+        let p = first.point_at(x[0], x[1], tol)?;
+        let Some(normal) = crate::march::unit_normal(first, x[0], x[1], tol) else {
+            ogeom_bail!(
+                NotDone,
+                "the ball's seat between two stations has no normal"
+            );
+        };
+        let c = p + normal * (f64::from(blend.sides.first) * radius);
+        if c.distance(blend.spine[i]) > reach {
+            ogeom_bail!(
+                NotDone,
+                "the ball does not seat between two stations of its march, so whether it \
+                 clears the solid's other faces there cannot be read"
+            );
+        }
+        Ok(c)
+    };
+    let (lines, ends) = if closed {
+        (vec![(guide.clone(), (lo, hi))], Vec::new())
+    } else {
+        let (w0, w1) = (stations[0], stations[n - 1]);
+        let crease = crease_over(guide, (w0, w1), tol)?;
+        let range = crease.domain();
+        let mut ends = Vec::with_capacity(6);
+        for i in [0, n - 1] {
+            ends.push(blend.touch_first[i]);
+            ends.push(blend.touch_second[i]);
+            ends.push(guide.point_at(on_guide(guide, blend.along[i]), tol)?);
+        }
+        (vec![(crease, range)], ends)
+    };
+    let rolling = crate::between::Rolling {
+        radius,
+        stations,
+        centre: &centre,
+        lines,
+        ends,
+    };
+    crate::between::face_inside_balls(model, solid, faces, &rolling, tol)
 }
 
 /// Blend two faces of `solid` over a marched seat: the corner between the

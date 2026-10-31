@@ -93,7 +93,7 @@ pub use primitive::{
     make_polyhedron, make_sphere, make_torus, make_wedge, torus_face_seamed_at,
 };
 pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
-pub use proximity::{ClosestPair, ShapeDistance, distance_between_shapes};
+pub use proximity::{ClosestPair, PointDistance, ShapeDistance, distance_between_shapes};
 pub use recognize::{Canonical, Recognized, recognize_points};
 pub use seam_columns::join_seam_columns;
 pub use self_cross::{SelfCrossing, self_crossings};

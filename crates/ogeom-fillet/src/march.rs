@@ -659,7 +659,12 @@ impl Condition for BallContact<'_> {
 }
 
 /// A surface's unit normal.
-fn unit_normal(surface: &SurfaceGeometry, u: f64, v: f64, tol: Tolerances) -> Option<Vector> {
+pub(crate) fn unit_normal(
+    surface: &SurfaceGeometry,
+    u: f64,
+    v: f64,
+    tol: Tolerances,
+) -> Option<Vector> {
     let (du, dv) = surface.d1_at(u, v, tol).ok()?;
     let cross = du.cross(dv);
     let length = cross.magnitude();
