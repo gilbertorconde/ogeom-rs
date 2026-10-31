@@ -171,7 +171,14 @@ in `tests/sheet_fillets.rs`):
   ball of radius 1.5 touching the wall and the lid has its centre 1.41 from
   the chamfer's plane. The round would leave the material through the
   chamfer, giving round, chamfer, round meeting at creases. It needs a ball
-  touching the chamfer as well (a three-face blend);
+  touching the chamfer as well (a three-face blend). Owed first: where
+  the centre stands a radius or more behind the chamfer, the chamfer lies
+  in the corner the round takes off, as an edge round takes off a strip
+  (`consumed.rs`), and the round is the two faces' alone, the condition
+  read in the meridian section. Two planes with a strip between are not checked so:
+  `blend_faces` cuts the wedge whatever the strip, and on a box chamfered
+  0.3 the round of radius 0.5 leaves the chamfer standing between two
+  pieces of round;
 - with `trim`, a closed line of contact across the seam of a closed B-spline
   face whose chart does not wrap round (a tube swept from a B-spline ring):
   `split_face` brings a trace back by a period only on a periodic chart, so
@@ -183,11 +190,23 @@ in `tests/sheet_fillets.rs`):
 refuses where the ball's contact on one of the edge's faces stands past
 that face's far side at every station: the face is narrower than the
 setback all along the edge (a sliver face where two oblique boxes are
-fused, a triangle face whose apex stands under the setback). The ball then
-rolls over the face's far edge, and the round touches three things: the
-other face, the far edge as a rolling circle and maybe the face beyond.
-In the stress run's blend scenario these are 11 of the 18 refusals at
-seeds 1 to 4. Within a request, the ball also refuses where its contact
+fused, a triangle face whose apex stands under the setback). Where the
+face is a planar strip whose far edge turns the same way as the edge
+(convex both: a chamfer, a narrow top), the ball rolls between the faces
+either side of the strip and, where the strip lies wholly in the corner
+it takes off, the strip goes with the corner (`consumed.rs`). Owed there:
+the concave mirror (a flat in an inside corner), whose fill's caps need
+the solid past the strip's ends read as open, and ends not square to the
+edge. Where the far edge turns the other way, the ball rolls over it,
+and the round touches the other face and the far edge as a rolling
+circle. In the stress run's blend scenario these are 11 of the 18
+refusals at seeds 1 to 4, and every one is of that kind: a concave seam
+where two oblique boxes are fused, the narrow face a strip of one box's
+face between the seam and that box's convex edge, which runs oblique to
+both the seam and the other face. The ball touching a plane and a line
+oblique to it has its centre on an ellipse, so the round is a marched
+band from the face's line of contact to the far edge, meeting the face
+beyond that edge at a crease. Within a request, the ball also refuses where its contact
 runs off a face anywhere along an edge that shares a face or a vertex
 with another of the request (4 refusals): the band's contacts are checked
 against its neighbours' and an off-face contact holds none to check. Owed:

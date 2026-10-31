@@ -961,7 +961,12 @@ chamfer between the faces it rounds). An edge round refuses by name \
 where its faces meet tangent (no corner), where the ball's contact on a \
 face stands past the face's far side in the material (a boss on the \
 wall) or all along the edge (a face narrower than the setback, which a \
-ball would roll over onto the face beyond), and where it runs off a \
+ball would roll over onto the face beyond), but for a convex straight \
+edge beside a planar strip (a chamfer, a narrow top) whose far edge is \
+convex too: where the strip lies wholly in the corner the ball touching \
+the planes either side of it takes off, its ends on faces square to the \
+edge, the round is that ball's and the strip goes with the corner. It \
+refuses also where it runs off a \
 face anywhere along an edge of a request that shares a face or a vertex \
 with another of its edges; an edge sharing neither runs off a face \
 narrowing to a tip and is cut off there, as alone."""

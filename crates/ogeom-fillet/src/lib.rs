@@ -4,6 +4,7 @@
 pub mod analyse;
 pub mod bridge;
 pub mod chamfer;
+mod consumed;
 pub mod corner;
 pub mod corner2d;
 mod corner_curved;

@@ -975,6 +975,167 @@ fn a_round_running_off_a_narrowing_wall_is_taken_beside_an_edge_apart() {
     }
 }
 
+/// A round wider than a strip beside its edge takes the strip off whole:
+/// the corner of a prism, cut by a narrow bevel, rounded on either of the
+/// bevel's edges at a radius whose ball no longer touches the bevel. No
+/// ball touches the edge's own two faces, and the ball touching the faces
+/// either side of the bevel holds the bevel in the corner it takes off. The
+/// prism is then its unbevelled profile with the corner rounded: the
+/// profile's area less `r^2 (cot(a/2) - (pi - a)/2)` at a corner of
+/// interior angle `a`, whatever the bevel, run along the depth.
+///
+/// Two profiles: a square bevelled across its corner (a chamfer), and an
+/// oblique apex cut off by a narrow top. Each bevel edge, alone and as a
+/// request of one edge.
+#[test]
+fn a_round_wider_than_a_bevel_beside_it_takes_the_bevel_off_whole() {
+    use core::f64::consts::PI;
+    use ogeom_math::Vector;
+    let depth = 2.0;
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    // (profile, its area unbevelled, the corner, the two walls from it,
+    // the bevel's two ends, radii)
+    let c = 0.1;
+    let t = 0.05;
+    type Case = (
+        Vec<(f64, f64)>,
+        f64,
+        (f64, f64),
+        [(f64, f64); 2],
+        [(f64, f64); 2],
+        [f64; 2],
+    );
+    let cases: [Case; 2] = [
+        (
+            vec![
+                (0.0, 0.0),
+                (2.0, 0.0),
+                (2.0, 2.0 - c),
+                (2.0 - c, 2.0),
+                (0.0, 2.0),
+            ],
+            4.0,
+            (2.0, 2.0),
+            [(0.0, 2.0), (2.0, 0.0)],
+            [(2.0 - c, 2.0), (2.0, 2.0 - c)],
+            [0.5, 1.0],
+        ),
+        (
+            vec![
+                (0.0, 0.0),
+                (4.0, 0.0),
+                (1.0 + 1.5 * t, 2.0 - t),
+                (1.0 - 0.5 * t, 2.0 - t),
+            ],
+            4.0,
+            (1.0, 2.0),
+            [(0.0, 0.0), (4.0, 0.0)],
+            [(1.0 - 0.5 * t, 2.0 - t), (1.0 + 1.5 * t, 2.0 - t)],
+            [0.5, 0.8],
+        ),
+    ];
+    for (profile, area, corner, walls, bevel, radii) in &cases {
+        let apex = Point::new(0.0, corner.0, corner.1);
+        let to_feet = walls.map(|(y, z)| Point::new(0.0, y, z) - apex);
+        let interior =
+            (to_feet[0].dot(to_feet[1]) / (to_feet[0].magnitude() * to_feet[1].magnitude())).acos();
+        // Each wall's plane: through the apex, square to the profile plane.
+        let planes = to_feet.map(|foot| {
+            let n = Vector::X.cross(foot);
+            (apex, n * (1.0 / n.magnitude()))
+        });
+        let bevel_normal = {
+            let (a, b) = (bevel[0], bevel[1]);
+            let n = Vector::X.cross(Vector::new(0.0, b.0 - a.0, b.1 - a.1));
+            n * (1.0 / n.magnitude())
+        };
+        for &radius in radii {
+            let want = (area
+                - radius * radius * (1.0 / (interior / 2.0).tan() - (PI - interior) / 2.0))
+                * depth;
+            for &(y, z) in bevel {
+                for alone in [true, false] {
+                    let mut model = ogeom_topo::Model::new();
+                    let prism = profile_prism(&mut model, profile, depth);
+                    let edge = edge_with_midpoint(&model, &prism, Point::new(-depth / 2.0, y, z));
+                    let rounded = if alone {
+                        ogeom_fillet::fillet_edge(&mut model, &prism, &edge, radius, T)
+                    } else {
+                        ogeom_fillet::fillet_edges(
+                            &mut model,
+                            &prism,
+                            std::slice::from_ref(&edge),
+                            radius,
+                            T,
+                        )
+                    }
+                    .unwrap_or_else(|e| panic!("radius {radius} at ({y}, {z}): {e}"));
+                    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+                    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+                    let got = ogeom_algo::volume_properties(&model, &rounded.shape, fine, T)
+                        .unwrap()
+                        .mass;
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "radius {radius} at ({y}, {z}): {got} against {want}"
+                    );
+                    // The bevel is gone: no face of the result lies on its
+                    // plane.
+                    for face in
+                        explore(&model, &rounded.shape, Filter::OfType(ShapeType::Face)).unwrap()
+                    {
+                        let data = model.node(&face).unwrap().data().as_face().unwrap();
+                        if let ogeom_geom::SurfaceGeometry::Plane(plane) =
+                            model.geometry().surface(data.surface).unwrap()
+                        {
+                            let n = plane.plane().normal().vector();
+                            let off = (plane.plane().frame().origin() - Point::new(0.0, y, z))
+                                .dot(bevel_normal);
+                            assert!(
+                                n.cross(bevel_normal).magnitude() > 1e-6 || off.abs() > 1e-6,
+                                "radius {radius} at ({y}, {z}): a face stands on the bevel"
+                            );
+                        }
+                    }
+                    // The round: a cylinder of the radius along the edge,
+                    // its axis the radius off both walls.
+                    let mut cylinders = 0;
+                    for face in rounded.history.generated(&edge) {
+                        let data = model.node(face).unwrap().data().as_face().unwrap();
+                        let ogeom_geom::SurfaceGeometry::Cylinder(cyl) =
+                            model.geometry().surface(data.surface).unwrap()
+                        else {
+                            continue;
+                        };
+                        let placed = face.transform(model.datums()).unwrap();
+                        let axis = cyl.cylinder().axis();
+                        let origin = placed.apply(axis.location);
+                        let direction = placed.apply_vector(axis.direction.vector());
+                        assert!(
+                            (cyl.cylinder().radius() - radius).abs() < 1e-9
+                                && direction.cross(Vector::X).magnitude() < 1e-9,
+                            "a band of radius {} along {direction:?}",
+                            cyl.cylinder().radius()
+                        );
+                        for (on, normal) in planes {
+                            let off = (origin - on).dot(normal).abs();
+                            assert!(
+                                (off - radius).abs() < 1e-9,
+                                "the ball's centre stands {off} off a wall, not {radius}"
+                            );
+                        }
+                        cylinders += 1;
+                    }
+                    assert!(cylinders > 0, "radius {radius} at ({y}, {z}): no band");
+                }
+            }
+        }
+    }
+}
+
 /// A disc of radius `big` at the top about the origin, two high, its drum
 /// drafted by `k` over the height so its foot stands out (a cone; a
 /// cylinder at zero), up to its chord `y = c` at the top, that wall drafted

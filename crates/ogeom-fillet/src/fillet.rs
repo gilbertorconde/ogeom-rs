@@ -40,7 +40,13 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// straight edge beside it), both run it out onto that face until its whole
 /// section has left the material. Where a
 /// host face narrows along the edge and the ball's contact runs off it
-/// out of the solid, both cut the band off on the face that follows. One
+/// out of the solid, both cut the band off on the face that follows. Where
+/// a convex edge's face is a planar strip narrower than the setback all
+/// along, its far edge convex too and its ends on faces square to the edge
+/// (a chamfer, a narrow top), the ball rolls between the planes either
+/// side of the strip, and where the strip lies wholly in the corner that
+/// ball takes off, the round is that ball's cylinder and the strip goes
+/// with the corner. One
 /// thing differs: where the edge ends against a neighbouring blend, this
 /// blend stops flush there instead of running on through it. Three such
 /// flush blends and their vertex are what
@@ -54,7 +60,8 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// [`OgeomError::Construction`] if the edge is
 /// neither of the seats above, is concave, or `radius` is not a usable
 /// length, or the ball sets back past the far side of a face into the
-/// material, or past it all along the edge.
+/// material, or past it all along the edge where no strip is taken off as
+/// above.
 pub fn fillet_edge(
     model: &mut Model,
     solid: &Shape,
@@ -83,8 +90,12 @@ fn fillet_edge_own(
     }
     // The ball touches each face a setback back from the edge; set back
     // past a face's far side into the material, or all along the edge,
-    // the band would cut through the face.
-    crate::support::ball_fits(model, solid, edge, radius, true, tol)?;
+    // the band would cut through the face. Past a strip's far side all
+    // along, the ball may roll between the faces either side of the strip
+    // and take it off whole.
+    if let Err(refusal) = crate::support::ball_fits(model, solid, edge, radius, true, tol) {
+        return consuming(model, solid, edge, radius, refusal, tol);
+    }
     let edges = std::slice::from_ref(edge);
     with_fitted_rims(
         model,
@@ -93,6 +104,27 @@ fn fillet_edge_own(
         |model, rims| fillet_edge_meeting(model, solid, edge, radius, None, rims, tol),
         tol,
     )
+}
+
+/// The round of `edge` that takes a narrow strip beside it off whole, where
+/// [`crate::consumed::consumed_seat`] finds one, and `refusal` otherwise.
+fn consuming(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    refusal: OgeomError,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if !matches!(refusal, OgeomError::Construction(_)) {
+        return Err(refusal);
+    }
+    let Some(seat) = crate::consumed::consumed_seat(model, solid, edge, radius, tol)? else {
+        return Err(refusal);
+    };
+    let mut built = seated_fillet(model, solid, &seat, radius, Some(edge), &[], tol)?;
+    crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+    Ok(built)
 }
 
 /// An edge of a multi-edge request, by its ends: where each end stands and
@@ -574,7 +606,7 @@ fn fillet_edges_own(
             j == i || (!f.iter().any(|x| faces.contains(x)) && !e.iter().any(|x| ends.contains(x)))
         })
     };
-    crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
+    let fitted = crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
         // A band checked against no other is held to what one edge alone
         // is.
         for (i, edge) in edges.iter().enumerate() {
@@ -588,7 +620,15 @@ fn fillet_edges_own(
             )?);
         }
         Ok(())
-    })?;
+    });
+    if let Err(refusal) = fitted {
+        // A request of one edge is that edge alone, a strip beside it taken
+        // off whole as there.
+        return match edges {
+            [edge] if meeting.is_none() => consuming(model, solid, edge, radius, refusal, tol),
+            _ => Err(refusal),
+        };
+    }
     crate::support::bands_clear(model, edges, &contacts, tol)?;
     use ogeom_geom::Curve3d as _;
     // The vertices three or more of the chain's edges meet at: the corners

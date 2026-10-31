@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **An edge round wider than a strip beside its edge takes the strip off
+  whole.**
+  - Where `fillet_edge`, or `fillet_edges` asked for one edge, rounds a
+    convex straight edge beside a planar strip narrower than the ball's
+    setback (a chamfer, a narrow top), whose far edge is convex too and
+    whose ends lie on faces square to the edge, the ball rolls between
+    the planes either side of the strip. Where the strip lies wholly in
+    the corner that ball takes off, read in closed form in the section,
+    the round is the cylinder tangent to both planes and the strip is
+    gone. It was refused with "sets back ... across a face that does not
+    reach so far".
+  - A box chamfered across an edge and rounded on either chamfer edge is
+    the box rounded on that edge, whatever the chamfer. A concave edge
+    beside such a strip, a strip whose far edge turns the other way (the
+    seams of two fused oblique boxes) and ends not square to the edge
+    are refused as before.
+
 - **`fillet_faces` rounds a marched seat that closes on itself between
   separate faces.**
   - Where the ball touches both faces all the way round where their
