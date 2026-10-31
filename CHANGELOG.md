@@ -80,6 +80,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`blend_faces` between two planes refuses a ball whose contact runs off
+  a face.**
+  - The run was cut back to where both faces reach along the planes'
+    meeting line, but not across it: a face narrower than the ball's
+    setback was blended as if it ran on. An L whose wall is 2 tall,
+    blended with its floor at radius 2.1 or 3, gave a valid solid whose
+    fill rose 0.1 or 1 past the wall's top, its rail on the wall's plane
+    above the wall.
+  - Each contact is now classified on its face at sixteen stations along
+    the run, and a contact off its face is refused by name. The new
+    `faceblend` stress scenario found four such results over seeds 1 to 8,
+    all on concave corners, their contacts 0.006 to 0.43 past the face;
+    the convex corners it drew were already refused, the ball reaching
+    into the face beyond.
+
 - **`blend_faces` refuses a ball that crosses a face between the two faces
   on any surface, over part of the run, and on a marched seat.**
   - A marched seat was asked only beside the middle of the ball's arc at

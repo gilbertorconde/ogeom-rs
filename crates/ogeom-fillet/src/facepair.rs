@@ -30,6 +30,13 @@ use ogeom_topo::{Model, NodeData, Shape, ShapeType, explore_unique};
 use crate::fillet::seated_fillet;
 use crate::support::Seat;
 
+/// The stations along a two-plane run where each contact is asked to lie
+/// on its face, the middles of as many equal stretches as the swept
+/// check's first reading. A contact found off its face proves the round
+/// would stand on no face there; a face notched between two stations is
+/// not seen.
+const CONTACT_STATIONS: u32 = 16;
+
 /// Blend two faces of one solid with a rolling ball of the given radius.
 ///
 /// The two faces need not touch. What they must do is face each other
@@ -80,9 +87,11 @@ use crate::support::Seat;
 /// name, if the radius is not a usable length, and:
 ///
 /// - for two planes, if they are parallel or the faces do not both reach
-///   the meeting line, or the ball touching both reaches into another face
-///   of the solid at a station of the run (a strip between them, such as a
-///   chamfer, that the ball crosses rather than takes off whole);
+///   the meeting line, or the ball touching both touches a face's plane
+///   off the face at a station of the run (a face narrower than the ball's
+///   setback), or reaches into another face of the solid at a station of
+///   the run (a strip between them, such as a chamfer, that the ball
+///   crosses rather than takes off whole);
 /// - for a curved face, if the two are one face or either is not a face
 ///   of the solid;
 /// - for a curved face sharing edges with the other, as
@@ -226,6 +235,34 @@ pub fn blend_faces(
             "no ball of radius {radius} rolls between the two faces: {}",
             stands_inside(at)
         );
+    }
+
+    // Each contact must lie on its own face along the run. A contact off
+    // the face (the face narrower than the ball's setback) touches only
+    // the face's plane, and the round's rail there would stand on no face:
+    // a fill hanging past the face's far edge, or a cut running into the
+    // face beyond it.
+    let deflection = ogeom_mesh::Deflection {
+        chord: (radius * 1e-3).max(tol.confusion() * 1e2),
+        ..ogeom_mesh::Deflection::default()
+    };
+    for (face, contact, name) in [(a, contacts[0], "first"), (b, contacts[1], "second")] {
+        for k in 0..CONTACT_STATIONS {
+            let t = (hi - lo).mul_add((f64::from(k) + 0.5) / f64::from(CONTACT_STATIONS), lo);
+            let at = contact + along * t;
+            if ogeom_algo::classify_on_face(model, face, at, deflection, tol)?
+                == ogeom_algo::Containment::Out
+            {
+                ogeom_bail!(
+                    Construction,
+                    "no ball of radius {radius} rolls between the two faces: the ball touching \
+                     both touches the {name} face's plane at ({:.6}, {:.6}, {:.6}), off the face",
+                    at.x,
+                    at.y,
+                    at.z
+                );
+            }
+        }
     }
 
     let seat = Seat {

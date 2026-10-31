@@ -4415,3 +4415,54 @@ fn a_face_blend_refuses_a_spline_bevel_or_a_bevel_over_part_of_the_edge() {
     let got = exact_volume(&model, &blended);
     assert!((got - want).abs() < 1e-9, "{got} against {want}");
 }
+
+/// An L in section: a floor 4 long (x from 0 to 4, y = 0) and a wall 2
+/// tall (x = 0, y from 0 to 2), 3 deep along z, meeting in a concave
+/// corner. The solid, the floor and the wall.
+fn notch_l(model: &mut Model) -> (Shape, Shape, Shape) {
+    let at =
+        |x: f64, y: f64| Frame::new(Point::new(x, y, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let floor = ogeom::algo::make_box(model, at(0.0, -1.0), (4.0, 1.0, 3.0), T)
+        .unwrap()
+        .shape;
+    let wall = ogeom::algo::make_box(model, at(-1.0, -1.0), (1.0, 3.0, 3.0), T)
+        .unwrap()
+        .shape;
+    let l = ogeom::boolean::fuse(model, &floor, &wall, T).unwrap().shape;
+    let floor = planar_face_at(model, &l, Point::new(2.0, 0.0, 1.5));
+    let wall = planar_face_at(model, &l, Point::new(0.0, 1.0, 1.5));
+    (l, floor, wall)
+}
+
+/// A ball in a square concave corner touches each face a radius from the
+/// corner. Where the wall is lower than that, the ball touches only the
+/// wall's plane, above the wall, and a fill there would stand on no face,
+/// rising past the wall's top: no ball rolls on the two faces, and the
+/// blend is refused by name. A radius the wall holds fills the quarter
+/// corner, `(1 - pi/4) r^2` along the 3 of depth.
+#[test]
+fn a_face_blend_refuses_a_ball_whose_contact_runs_past_a_face() {
+    for r in [2.1, 3.0] {
+        let mut model = Model::new();
+        let (l, floor, wall) = notch_l(&mut model);
+        let why = ogeom::fillet::blend_faces(&mut model, &l, &floor, &wall, r, T)
+            .err()
+            .unwrap_or_else(|| panic!("radius {r} is blended past the wall's top"));
+        assert!(
+            matches!(why, ogeom::core::OgeomError::Construction(_))
+                && why.to_string().contains("off the face"),
+            "radius {r}: {why}"
+        );
+    }
+    let r = 1.9;
+    let mut model = Model::new();
+    let (l, floor, wall) = notch_l(&mut model);
+    let blended = ogeom::fillet::blend_faces(&mut model, &l, &floor, &wall, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let want = (1.0 - core::f64::consts::FRAC_PI_4).mul_add(r * r * 3.0, 21.0);
+    let got = exact_volume(&model, &blended);
+    assert!((got - want).abs() < 1e-9, "{got} against {want}");
+}
