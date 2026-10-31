@@ -122,12 +122,6 @@ more than the confusion distance as tangent closes the blind block, but the
 drum's section against the round still sees the drum above the plate, and
 the pieces stop agreeing: twice as many of those placements refused.
 
-**A section tangent to an edge at its end.** A drill whose circle on a rounded
-box's base touches the round's tangent line at the corner vertex, where the
-corner ball touches the base (stress drill seed 1, drill 2): the cut and the
-common are right, but the drill less the box is refused ("the kept pieces
-did not close into a shell").
-
 **A loop's pcurve stops short of its seam column after a fuse.** A
 section that crosses a torus's seam a hair from its own start is marched
 as a long piece and one a few hundred-thousandths long across the seam.

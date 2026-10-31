@@ -212,8 +212,12 @@ fn drills_along_a_round_s_tangent_line_into_the_corners_cut() {
 /// front face passes through the point where the top round's tangent line
 /// ends at the corner, the corner ball touching the front face's plane
 /// there (stress drill scenario, seed 1, drill 2). The section with the
-/// top face is tangent to that line at its end. Cut and common are valid
-/// and add up to the part. The common is the rounded box's chord along y,
+/// top face is tangent to that line at its end, and the corner ball's
+/// section with the drill's wall touches the ball's rim arc there to the
+/// fourth order. Cut, common and the drill less the part are valid; cut
+/// and common add up to the part, and the drill less the part and the
+/// common add up to the drill to a billionth. The common is the rounded
+/// box's chord along y,
 /// the inner depth and twice the root of 4 less the square of the distance
 /// off the inner box's section, integrated over the drill's disc: across z
 /// in closed form, along x by the tanh-sinh rule, whose levels 8, 10 and 12
@@ -247,17 +251,23 @@ fn a_drill_touching_a_round_s_tangent_line_at_the_corner_cuts() {
             "common",
             ogeom::boolean::common(&mut model, &part, &tool, T),
         ),
+        ("rest", ogeom::boolean::cut(&mut model, &tool, &part, T)),
     ] {
         let made = made.unwrap_or_else(|e| panic!("{name}: {e}"));
         let diagnosis = check(&model, &made.shape, T).unwrap();
         assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
         volumes.push(volume(&model, &made.shape));
     }
-    let (cut, common) = (volumes[0], volumes[1]);
+    let (cut, common, rest) = (volumes[0], volumes[1], volumes[2]);
     let whole = volume(&model, &part);
     assert!(
         (cut + common - whole).abs() < whole * 1e-6,
         "cut {cut} + common {common} against the part's {whole}"
+    );
+    let bore = core::f64::consts::PI * radius * radius * 29.276_362_916_734_424;
+    assert!(
+        (rest + common - bore).abs() < bore * 1e-9,
+        "rest {rest} + common {common} against the drill's {bore}"
     );
     // At a distance a = x - 18 past the inner box, the chord is 10 plus
     // twice the root of c squared less t squared, c the root of 4 less a

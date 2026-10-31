@@ -41,6 +41,31 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean ends a section's stretch along a face's edge at the edge's
+  own vertex.**
+  - Where a section runs along a boundary edge, the stretch the edge
+    covers was carried onto the section in proportion to the overlap's
+    ends, which state the two curves' correspondence. Along a fitted
+    section that pace differs from the edge's, so where the edge's own
+    end bounds the stretch, the stretch ended beside the vertex rather
+    than at it. A drill along y whose wall's seam lies on a rounded box's
+    top tangent line meets the corner ball in a section that touches the
+    ball's rim arc at the line's end to the fourth order: carried across,
+    the arc's end landed 2.9e-7 short of the vertex along the section.
+    The drill's other crossings at the vertex folded into that stop and
+    were dropped with it, the drill's seam was not split at the corner,
+    and the drill less the box was refused ("the kept pieces did not
+    close into a shell") where the cut and the common were right.
+  - Such a stretch now ends at the foot of the edge's end on the section,
+    as a crossing at an edge's end already did, taken only within the
+    overlap's own stretch and within the gap it was found at.
+  - The drill less the box and the common add up to the drill to 4e-15
+    relative, and the common matches its closed form to 1e-9. Drill
+    stress at seeds 1 to 12: 2684 of 2688 (2683 before; seed 7's drill
+    with its seam on a side face's round tangent line, refused on the
+    cut, now cuts). Rounded stress at seeds 1 to 4 with 50 cases: all 600,
+    as before.
+
 - **A boolean keeps a section's arc on a curved face only where it lies
   inside the face's true trim.**
   - Each piece of a section between its crossings with a face's boundary

@@ -2246,8 +2246,14 @@ fn onto_range(t: f64, curve: &Curve, range: (f64, f64), tol: Tolerances) -> f64 
     t
 }
 
+/// A stretch of an overlap on the first curve, and the second curve's
+/// parameter at either end where the second curve's range ends it.
+type OverlapPart = ((f64, f64), [Option<f64>; 2]);
+
 /// The parts of an overlap that fall within the second curve's own bounded
-/// range, stated in the *first* curve's parameter, in increasing order.
+/// range, stated in the *first* curve's parameter, in increasing order,
+/// each with the second curve's parameter at either end where the range's
+/// own end, not the overlap's, bounds it.
 ///
 /// An overlap is between two curves. An edge covers only part of its curve.
 /// The correspondence the overlap states is affine, so the edge's range
@@ -2261,7 +2267,7 @@ fn overlap_within(
     range: (f64, f64),
     curve: &Curve,
     tol: Tolerances,
-) -> Vec<(f64, f64)> {
+) -> Vec<OverlapPart> {
     let ordered = |r: (f64, f64)| if r.0 <= r.1 { r } else { (r.1, r.0) };
     let span_a = overlap.on_a.1 - overlap.on_a.0;
     let span_b = overlap.on_b.1 - overlap.on_b.0;
@@ -2269,7 +2275,12 @@ fn overlap_within(
         return Vec::new();
     }
     let to_a = |t: f64| overlap.on_a.0 + span_a * (t - overlap.on_b.0) / span_b;
-    let (wlo, whi) = ordered((to_a(range.0), to_a(range.1)));
+    let (from_start, from_end) = (to_a(range.0), to_a(range.1));
+    let ((wlo, elo), (whi, ehi)) = if from_start <= from_end {
+        ((from_start, range.0), (from_end, range.1))
+    } else {
+        ((from_end, range.1), (from_start, range.0))
+    };
     let (lo, hi) = ordered(overlap.on_a);
     let period = if curve.is_periodic() {
         let (a, b) = curve.domain();
@@ -2287,12 +2298,13 @@ fn overlap_within(
     turns
         .iter()
         .map(|&k| {
+            let (start, end) = (period.mul_add(k, wlo), period.mul_add(k, whi));
             (
-                lo.max(period.mul_add(k, wlo)),
-                hi.min(period.mul_add(k, whi)),
+                (lo.max(start), hi.min(end)),
+                [(start > lo).then_some(elo), (end < hi).then_some(ehi)],
             )
         })
-        .filter(|(a, b)| b - a > tol.parametric())
+        .filter(|((a, b), _)| b - a > tol.parametric())
         .collect()
 }
 
@@ -6081,7 +6093,50 @@ fn fill(
                         // reading the whole curve as boundary makes the meridian
                         // opposite the seam disappear, which is the octant's own
                         // edge, on a ball cut at its corner.
-                        for (lo, hi) in overlap_within(overlap, drange, drawn, tol) {
+                        for ((lo, hi), ends) in overlap_within(overlap, drange, drawn, tol) {
+                            // Where the edge's own end bounds the stretch, the
+                            // stretch ends at that end's vertex, as a crossing
+                            // at an edge's end does: the overlap states its
+                            // correspondence by its own ends alone, and carried
+                            // across in proportion the edge's end lands off the
+                            // vertex along a fitted section by the curves'
+                            // differing pace. A section touching the edge at
+                            // its end to the fourth order lands there a few
+                            // tenths of a micron off, the other crossings at
+                            // the vertex fold into that stop and are dropped
+                            // with it, and the edges they split stay whole.
+                            // The foot is taken only within the overlap's own
+                            // stretch, which the vertex, on the edge inside it,
+                            // lies beside.
+                            let (olo, ohi) = if overlap.on_a.0 <= overlap.on_a.1 {
+                                overlap.on_a
+                            } else {
+                                (overlap.on_a.1, overlap.on_a.0)
+                            };
+                            let mut window = [lo, hi];
+                            for (t, end) in window.iter_mut().zip(ends) {
+                                let Some(end) = end else {
+                                    continue;
+                                };
+                                let vertex = drawn.point_at(end, tol)?;
+                                let foot =
+                                    ogeom_algo::project_on_curve(&section.curve, vertex, 64, tol)?;
+                                let mut f = foot.parameter;
+                                if section.closed {
+                                    let period = domain.1 - domain.0;
+                                    f += period * ((*t - f) / period).round();
+                                }
+                                if foot.distance <= cc.gap
+                                    && f >= olo - tol.parametric()
+                                    && f <= ohi + tol.parametric()
+                                {
+                                    *t = f;
+                                }
+                            }
+                            let [lo, hi] = window;
+                            if hi - lo <= tol.parametric() {
+                                continue;
+                            }
                             if *DEBUG_WIRE {
                                 eprintln!("PAVE s{si}: side {side} overlap ({lo:.6}, {hi:.6})");
                             }
@@ -7455,6 +7510,9 @@ fn fill(
                         Vec::new()
                     } else {
                         overlap_within(overlap, e.crange, &contact.curve, tol)
+                            .into_iter()
+                            .map(|(part, _)| part)
+                            .collect()
                     };
                     let to_b = move |t: f64| {
                         overlap.on_b.0
