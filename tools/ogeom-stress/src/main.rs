@@ -347,8 +347,10 @@ impl Part {
     }
 }
 
-/// Edges with a curve between two different faces. A seam (one face on
-/// both sides) or a pole has no corner to round.
+/// Edges with a curve between two different faces that meet at an angle.
+/// A seam (one face on both sides), a pole, and an edge whose faces meet
+/// tangent (a round's own rail, a split between coplanar faces) have no
+/// corner to round.
 fn creases(model: &Model, shape: &Shape) -> Vec<Shape> {
     explore_unique(model, shape, ShapeType::Edge)
         .unwrap_or_default()
@@ -358,17 +360,46 @@ fn creases(model: &Model, shape: &Shape) -> Vec<Shape> {
                 .node(e)
                 .and_then(|n| n.data().as_edge())
                 .is_some_and(|d| d.curve3d().is_some() && !d.degenerate);
-            let faces = ogeom::topo::ancestors_of(model, shape, e, ShapeType::Face)
-                .map(|fs| {
-                    let mut nodes: Vec<_> = fs.iter().map(Shape::node).collect();
-                    nodes.sort_unstable();
-                    nodes.dedup();
-                    nodes.len()
-                })
-                .unwrap_or(0);
-            has_curve && faces == 2
+            let mut faces =
+                ogeom::topo::ancestors_of(model, shape, e, ShapeType::Face).unwrap_or_default();
+            faces.sort_unstable_by_key(Shape::node);
+            faces.dedup_by_key(|f| f.node());
+            has_curve && faces.len() == 2 && !meet_tangent(model, e, &faces)
         })
         .collect()
+}
+
+/// Whether two faces' outward normals agree at an edge's midpoint.
+fn meet_tangent(model: &Model, edge: &Shape, faces: &[Shape]) -> bool {
+    use ogeom::geom::{Curve3d as _, Surface as _, Transformable as _};
+    let Ok(Some((curve, range))) = ogeom::algo::placed_edge_curve(model, edge, T) else {
+        return false;
+    };
+    let Ok(mid) = curve.point_at(f64::midpoint(range.0, range.1), T) else {
+        return false;
+    };
+    let normal = |face: &Shape| -> Option<Vector> {
+        let data = model.node(face)?.data().as_face()?;
+        let surface = model.geometry().surface(data.surface)?.clone();
+        let placed = surface
+            .transformed(&face.transform(model.datums()).ok()?, T)
+            .ok()?;
+        let (u, v) = ogeom::algo::project_on_surface(&placed, mid, 16, T)
+            .ok()?
+            .parameters;
+        let n = placed.normal_at(u, v, T).ok()?.vector();
+        Some(
+            if face.orientation() == ogeom::topo::Orientation::Reversed {
+                -n
+            } else {
+                n
+            },
+        )
+    };
+    let (Some(a), Some(b)) = (normal(&faces[0]), normal(&faces[1])) else {
+        return false;
+    };
+    a.dot(b).clamp(-1.0, 1.0).acos() <= T.angular()
 }
 
 fn frame_at(origin: Point, z: Direction, x: Direction) -> Frame {

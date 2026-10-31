@@ -1,8 +1,8 @@
 {
-  "blend": { "ok": 54, "refused": 6, "invalid": 0, "wrong": 0, "panic": 0 },
+  "blend": { "ok": 56, "refused": 4, "invalid": 0, "wrong": 0, "panic": 0 },
   "chain": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "drill": { "ok": 224, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
-  "fillet": { "ok": 137, "refused": 23, "invalid": 0, "wrong": 0, "panic": 0 },
+  "fillet": { "ok": 140, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "hollow": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "oblique": { "ok": 120, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "offset": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
