@@ -840,33 +840,51 @@ enum Image {
     Seam(PlanarCurve, PlanarCurve),
 }
 
-fn image_on(model: &Model, edge: &Shape, surface: SurfaceId) -> OgeomResult<Option<Image>> {
+/// An occurrence's image on `surface` and the range of the image it
+/// covers, which runs with the curve's range from end to end but need not
+/// equal it: a ruling of a cone runs along its length in space and along
+/// the height in the cone's chart.
+fn image_on(
+    model: &Model,
+    edge: &Shape,
+    surface: SurfaceId,
+) -> OgeomResult<Option<(Image, (f64, f64))>> {
     let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
         ogeom_bail!(Dangling, "edge is not in this model");
     };
     let get = |id| model.geometry().pcurve(id).cloned();
     Ok(match data.pcurve_for(surface, edge.location()) {
-        Some(EdgeRepr::PCurve { curve, .. }) => get(*curve).map(Image::One),
+        Some(EdgeRepr::PCurve { curve, range, .. }) => get(*curve).map(|c| (Image::One(c), *range)),
         Some(EdgeRepr::Seam {
-            forward, reversed, ..
+            forward,
+            reversed,
+            range,
+            ..
         }) => match (get(*forward), get(*reversed)) {
-            (Some(f), Some(r)) => Some(Image::Seam(f, r)),
+            (Some(f), Some(r)) => Some((Image::Seam(f, r), *range)),
             _ => None,
         },
         _ => None,
     })
 }
 
-/// The image an occurrence uses: a seam's forward image for a forward
-/// occurrence, its reversed one otherwise.
-fn occurrence_image(model: &Model, edge: &Shape, surface: SurfaceId) -> OgeomResult<PlanarCurve> {
+/// The image an occurrence uses, a seam's forward image for a forward
+/// occurrence and its reversed one otherwise, with the range it covers.
+fn occurrence_image(
+    model: &Model,
+    edge: &Shape,
+    surface: SurfaceId,
+) -> OgeomResult<(PlanarCurve, (f64, f64))> {
     match image_on(model, edge, surface)? {
-        Some(Image::One(c)) => Ok(c),
-        Some(Image::Seam(f, r)) => Ok(if edge.orientation() == Orientation::Reversed {
-            r
-        } else {
-            f
-        }),
+        Some((Image::One(c), range)) => Ok((c, range)),
+        Some((Image::Seam(f, r), range)) => Ok((
+            if edge.orientation() == Orientation::Reversed {
+                r
+            } else {
+                f
+            },
+            range,
+        )),
         None => ogeom_bail!(
             Construction,
             "a boundary edge of a face has no image in the face's chart"
@@ -894,24 +912,44 @@ pub(crate) fn piece_of(
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let forward = old.oriented(Orientation::Forward);
-    let (curve, _) = edge_curve(model, &forward, tol)?;
-    let image = image_on(model, &forward, surface)?;
+    let (curve, (a, b)) = edge_curve(model, &forward, tol)?;
+    let Some((image, (pa, pb))) = image_on(model, &forward, surface)? else {
+        ogeom_bail!(
+            Construction,
+            "a boundary edge of a face has no image in the face's chart"
+        );
+    };
+    // The image's parameter runs with the curve's from end to end, so the
+    // piece's stretch of it is the curve's stretch carried across.
+    let span = b - a;
+    if span.abs() <= tol.parametric() {
+        ogeom_bail!(
+            Construction,
+            "a boundary edge spans no stretch of its curve"
+        );
+    }
+    let across = |t: f64| (pb - pa).mul_add((t - a) / span, pa);
+    let image_range = (across(range.0), across(range.1));
     let tolerance = model
         .node(old)
         .and_then(|n| n.data().as_edge())
         .map_or(Tolerance::MIN, |d| d.tolerance);
     let edge = make_edge_between(model, curve, range, from, to, tol)?.shape;
     match image {
-        Some(Image::One(c)) => {
-            attach_pcurve(model, &edge, c, surface, Location::identity(), range)?;
+        Image::One(c) => {
+            attach_pcurve(model, &edge, c, surface, Location::identity(), image_range)?;
         }
-        Some(Image::Seam(f, r)) => {
-            attach_seam(model, &edge, f, r, surface, Location::identity(), range)?;
+        Image::Seam(f, r) => {
+            attach_seam(
+                model,
+                &edge,
+                f,
+                r,
+                surface,
+                Location::identity(),
+                image_range,
+            )?;
         }
-        None => ogeom_bail!(
-            Construction,
-            "a boundary edge of a face has no image in the face's chart"
-        ),
     }
     same_parameter(model, &edge);
     model.widen(&edge, tolerance)?;
@@ -1082,7 +1120,7 @@ fn counter_clockwise(model: &mut Model, face: Shape, tol: Tolerances) -> OgeomRe
         else {
             return Ok(face);
         };
-        let image = occurrence_image(model, edge, data.surface)?;
+        let (image, _) = occurrence_image(model, edge, data.surface)?;
         let forward = edge.orientation() != Orientation::Reversed;
         for k in 0..DRAWN {
             let f = f64::from(k) / f64::from(DRAWN);
@@ -1550,8 +1588,9 @@ pub(crate) fn round_sheet_edge(
         if let Seat::Marched(marched) = &seat {
             model.widen(&rail, Tolerance::new(marched.fit_target)?)?;
         }
-        let edge_image = occurrence_image(model, &side.loops[side.wire][side.at], side.surface_id)?;
-        let near = edge_image.point_at(if rising { range.0 } else { range.1 }, tol)?;
+        let (edge_image, image_range) =
+            occurrence_image(model, &side.loops[side.wire][side.at], side.surface_id)?;
+        let near = edge_image.point_at(if rising { image_range.0 } else { image_range.1 }, tol)?;
         attach_image(
             model,
             &rail,
@@ -3132,9 +3171,10 @@ fn closed_up(
         tol,
     )?
     .shape;
-    let old_image = occurrence_image(model, &edge.oriented(Orientation::Forward), surface_id)?;
+    let (old_image, image_range) =
+        occurrence_image(model, &edge.oriented(Orientation::Forward), surface_id)?;
     let (old_curve, old_range) = edge_curve(model, edge, tol)?;
-    let near = old_image.point_at(old_range.0, tol)?;
+    let near = old_image.point_at(image_range.0, tol)?;
     attach_image(model, &ring, surface_id, surface, Some(near), tol)?;
     // The ring runs as the contact curve does; the old edge may not.
     let runs_alike = old_curve

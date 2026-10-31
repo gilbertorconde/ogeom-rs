@@ -1462,9 +1462,7 @@ fn run_case(family: &str, rng: &mut Rng, described: &mut String) -> Verdict {
     }
 
     let sheet = rng.chance(0.25);
-    // Trimming a cone standing on a plane returns a cone face whose
-    // pcurves miss their curves; those sheets are asked untrimmed.
-    let trim = rng.chance(0.5) && !matches!(family, "frustum" | "conefoot");
+    let trim = rng.chance(0.5);
     let blend_sides = if scene.convex {
         [-1.0, -1.0]
     } else {

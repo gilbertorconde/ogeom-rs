@@ -2448,3 +2448,66 @@ fn a_notch_in_the_strip_is_refused() {
     let said = refusal(fillet_sheet_edges(&mut model, &sheet, &[corner], 2.0, T));
     assert!(said.contains("within the strip"), "{said}");
 }
+
+/// A cone frustum standing on a block, fused: its wall narrows from
+/// radius `r0` at the block's top, z = 2, to `r1` at z = 4, and runs on
+/// half a unit into the block. The ball of radius `r` in the concave foot
+/// sits `r` above the top, `r` from the wall's line in the axial section,
+/// so its centre stands `r0 - f r + r sqrt(1 + f^2)` from the axis, `f`
+/// the wall's flare, and it touches the wall `r / sqrt(1 + f^2)` nearer
+/// the axis and `r f / sqrt(1 + f^2)` lower. Trimmed, the wall keeps the
+/// frustum above that circle, the top keeps the square outside the
+/// centre's circle, and both pass the checker: the wall's seam cut at the
+/// circle keeps its image's own pace up the cone's chart, which runs along
+/// the height while the seam's line runs along its length.
+#[test]
+fn a_cone_standing_on_a_plane_trims_to_its_circles_of_contact() {
+    for (r0, r1, r) in [(2.0, 1.4, 0.8), (2.7, 0.9, 1.0), (3.0, 1.0, 0.5)] {
+        let mut model = Model::new();
+        let at = |x, y, z| Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap();
+        let block = ogeom::algo::make_box(&mut model, at(-6.0, -6.0, 0.0), (12.0, 12.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let flare = (r0 - r1) / 2.0;
+        let cone =
+            ogeom::algo::make_cone(&mut model, at(0.0, 0.0, 1.5), r0 + flare * 0.5, r1, 2.5, T)
+                .unwrap()
+                .shape;
+        let solid = ogeom::boolean::fuse(&mut model, &block, &cone, T)
+            .unwrap()
+            .shape;
+        let all = faces(&model, &solid);
+        let wall = face_where(&model, &solid, |s| matches!(s, SurfaceGeometry::Cone(_)));
+        let top = all
+            .into_iter()
+            .find(|f| {
+                let (p, n) = face_normal(&model, f, T).unwrap();
+                (p.z - 2.0).abs() < 1e-9 && n.z > 0.5
+            })
+            .unwrap();
+        let built = fillet_faces(&mut model, &wall, &top, r, true, T).unwrap();
+        usable(&model, &built.shape);
+
+        let slant = flare.hypot(1.0);
+        let centre = r.mul_add(slant, flare.mul_add(-r, r0));
+        let (touch, height) = (centre - r / slant, 2.0 + r - r * flare / slant);
+        let kept_wall = face_where(&model, &built.shape, |s| {
+            matches!(s, SurfaceGeometry::Cone(_))
+        });
+        let want = PI * (touch + r1) * (4.0 - height) * slant;
+        let got = area(&model, &kept_wall);
+        assert!(
+            (got - want).abs() < 1e-9,
+            "{r0} to {r1}: the wall keeps {got} against {want}"
+        );
+        let kept_top = face_where(&model, &built.shape, |s| {
+            matches!(s, SurfaceGeometry::Plane(_))
+        });
+        let want = PI.mul_add(-centre * centre, 144.0);
+        let got = area(&model, &kept_top);
+        assert!(
+            (got - want).abs() < 1e-9,
+            "{r0} to {r1}: the top keeps {got} against {want}"
+        );
+    }
+}

@@ -99,6 +99,18 @@ bump may break the API and a patch bump may not.
     edges as before. These are the two `faceblend` stress cases wrong over
     seeds 1 to 8 (#557).
 
+- **`fillet_faces` with `trim` keeps a cone's seam on its own chart.**
+  - A seam cut where a line of contact crosses it took its image's range
+    from the 3D curve's. A cone's ruling runs along its length in space and
+    along the height in the cone's chart, so on a frustum standing on a
+    block the trimmed wall's seam missed its line by 0.066 (taper 0.3) to
+    0.78 (taper 0.9) at the cut, the wall's boundary did not close in its
+    chart, and at a 45 degree taper `check` could not read the result.
+  - A piece of an edge now carries its image's stretch across from the
+    curve's in proportion, as the edge pairs them, and the trimmed cone
+    keeps the frustum above its circle of contact. The `faceblend` stress
+    scenario now trims cone sheets as it trims the others (#556).
+
 - **`blend_faces` between two planes refuses a ball whose contact runs off
   a face.**
   - The run was cut back to where both faces reach along the planes'
