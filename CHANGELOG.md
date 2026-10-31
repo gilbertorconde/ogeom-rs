@@ -41,6 +41,38 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Mesh conversion builds a single facet beside a curved face as a fan
+  where its seam would stand wider than the reach.**
+  - A cylinder or torus fitted to a piece of a spline face (a blend, a
+    turned profile) leaves single facets beside it that are chords of the
+    spline, not of the fitted surface. The facet's plane meets that surface
+    millimetres off the mesh edge they share, and the edge was threaded
+    along the mesh as a chord, its tolerance the edge's sag: up to 0.63 on
+    `nist_ctc_02` against a reach (twenty coplanar distances) of 0.093,
+    and 0.05 to 0.1 on `nist_ctc_04`, `nist_ftc_07`, `nist_ftc_10` and
+    `grid_point_on_a_diagonal_boundary`.
+  - Where such a chord stands wider than the reach and the facet can be a
+    fan (one side on a curved face, or a wedge whose two sides on one
+    curved face are split at their corner), the plan asks for the fan, as
+    it does where no curve places the seam. The fan's seam is lifted onto
+    the curved face; its surface is ruled from its far corner.
+  - A facet whose seam's pcurve ends off its corner, within its tolerance,
+    and runs on across the facet's other side past the corner's tolerance
+    is built as a fan too. Drawn as one ring, a face's boundary joins its
+    edges at their corners and hid this. A chord's wide tolerance had
+    widened the corner beside it enough to cover the crossing; with the
+    chord gone the crossing showed on the rough rounded box.
+  - On `mesh_corpus` every edge between a curved face and a single facet
+    now holds within the reach, except on `nist_ctc_02`: its widest seam
+    falls from 0.63 to 0.35, along planes of two facets that no fan takes.
+    Every part keeps its faces, checks valid and stays closed. Volume error
+    falls on `nist_ctc_02` (7.5e-5 to 6.7e-5), `nist_ftc_07`, `nist_ftc_10`
+    and `grid_point_on_a_diagonal_boundary`. It rises on
+    `sliver_on_a_diagonal_of_the_grid` (9.8e-5 to 1.04e-4) and
+    `nist_ctc_05` (1.902e-4 to 1.906e-4), although the faces of both lie
+    closer to the source's surface, area-weighted (by 4% and 0.005%): the
+    fans fill concave chords, which the parts' convex chords had offset.
+
 - **A face whose boundary runs out and back along itself meshes closed.**
   - On DoomCube 350 solid 711, a cylinder face lies between a circle and a
     spline edge. The spline rises to the circle, runs 0.54 µm past it

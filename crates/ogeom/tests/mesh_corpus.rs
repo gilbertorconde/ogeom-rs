@@ -620,6 +620,90 @@ fn grid_point_on_a_diagonal_boundary() {
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
+/// The widest edge between a curved face and a planar face of three edges
+/// (a single facet, or a facet's worth of coplanar triangles) of a part
+/// converted from its mesh at a thousandth of its diagonal, and the reach
+/// of that conversion: twenty coplanar distances, as far as a snapped curve
+/// may stand off its faces.
+fn widest_facet_seam(name: &str) -> (f64, f64) {
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
+    let mesh = ogeom::mesh::triangulate(
+        model,
+        part,
+        Deflection::with_chord(diagonal * 1e-3).unwrap(),
+        T,
+    )
+    .unwrap();
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    // Each edge's faces: whether each is planar, and how many edges it has.
+    let mut owners: ogeom::core::FastMap<_, Vec<(bool, usize)>> = ogeom::core::FastMap::default();
+    for face in explore_unique(&back, &out.shape, ShapeType::Face).unwrap() {
+        let data = back.node(&face).unwrap().data().as_face().unwrap();
+        let planar = matches!(
+            back.geometry().surface(data.surface),
+            Some(SurfaceGeometry::Plane(_))
+        );
+        let edges = explore_unique(&back, &face, ShapeType::Edge).unwrap();
+        for edge in &edges {
+            owners
+                .entry(edge.node())
+                .or_default()
+                .push((planar, edges.len()));
+        }
+    }
+    let widest = explore_unique(&back, &out.shape, ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            let faces = &owners[&e.node()];
+            faces.iter().any(|&(planar, n)| planar && n == 3)
+                && faces.iter().any(|&(planar, _)| !planar)
+        })
+        .map(|e| {
+            back.node(e)
+                .unwrap()
+                .data()
+                .as_edge()
+                .unwrap()
+                .tolerance
+                .get()
+        })
+        .fold(0.0_f64, f64::max);
+    (widest, out.coplanar_distance * 20.0)
+}
+
+/// A single facet left beside a curved face fitted to a piece of a spline
+/// (a cylinder or torus standing for a blend or a turned profile) is no
+/// chord of that surface: the facet's plane meets it millimetres off the
+/// mesh edge they share, and the line threaded along that edge stands off
+/// the curved face by the edge's sag, up to 0.05 to 0.1 on these parts
+/// against reaches of 0.004 to 0.02. Each such facet comes back as a fan
+/// onto the curved face, its seam lifted onto that face, and every edge
+/// between a curved face and a facet holds within the reach.
+#[test]
+#[ignore = "heavy"]
+fn facets_beside_spline_pieces_meet_them_within_the_reach() {
+    for name in [
+        "nist_ctc_04_asme1_rd.stp",
+        "nist_ftc_07_asme1_rd.stp",
+        "nist_ftc_10_asme1_rb.stp",
+        "grid_point_on_a_diagonal_boundary.step",
+        "sliver_on_a_diagonal_of_the_grid.step",
+    ] {
+        let (widest, reach) = widest_facet_seam(name);
+        assert!(
+            widest <= reach,
+            "{name}: an edge between a curved face and a facet stands {widest} off, \
+             past the reach {reach}"
+        );
+    }
+}
+
 /// A degenerate spline sliver's mesh converted: facets beside its curved
 /// regions are built as fans whose ruled surface has no normal along the
 /// seam. Each such fan's build fails, and the curved face its seam lies on

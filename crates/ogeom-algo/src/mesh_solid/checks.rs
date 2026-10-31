@@ -635,6 +635,23 @@ pub(super) fn folded_seams(
         // seam with the drum beside it bulging a micron past the facet's
         // other side by a vertex) never shows in its drawing.
         let rings = ogeom_mesh::face_boundary(model, face, fine, tol)?;
+        // A ring joins consecutive edges at one point, which hides an
+        // edge whose pcurve ends off its corner, within its tolerance, and
+        // on across the next edge: a facet's seam with a curved face can
+        // cross the facet's other side so, past the corner's tolerance.
+        // Each pcurve of a facet that could be a fan is drawn alone, and
+        // a facet whose pcurves cross away from its corners is one.
+        if !curved(g) {
+            let beside: Vec<usize> = face_edges
+                .iter()
+                .flat_map(|id| owners[id].iter().copied())
+                .filter(|&o| o != g && curved(o))
+                .filter_map(|o| fan_of(g, o))
+                .collect();
+            if !beside.is_empty() && pcurves_cross(model, face, surface_id, &balls, tol)? {
+                fans.extend(beside);
+            }
+        }
         for [a, b, p, q] in chart_crossings(&rings) {
             let lift = |x: Point2| surface.point_at(x.x, x.y, tol);
             // Where the chords cross, along the first.
@@ -715,6 +732,75 @@ pub(super) fn folded_seams(
         }
     }
     Ok((out.into_iter().collect(), fans.into_iter().collect()))
+}
+
+/// Whether two of a face's edges' pcurves, each drawn alone on the face's
+/// surface, cross away from every corner's tolerance (`balls`).
+fn pcurves_cross(
+    model: &Model,
+    face: &Shape,
+    surface_id: ogeom_topo::SurfaceId,
+    balls: &[(Point, f64)],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    /// Segments each pcurve is drawn with: its ends are what can stand
+    /// across the next edge, and the segments between them follow it.
+    const SEGMENTS: u32 = 64;
+    let Some(surface) = model.geometry().surface(surface_id) else {
+        return Ok(false);
+    };
+    let mut drawn: Vec<Vec<Point2>> = Vec::new();
+    for edge in ogeom_topo::explore_unique(model, face, ogeom_topo::ShapeType::Edge)? {
+        let Some(EdgeRepr::PCurve { curve, range, .. }) = model
+            .node(&edge)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.pcurve_for(surface_id, edge.location()))
+        else {
+            continue;
+        };
+        let Some(pcurve) = model.geometry().pcurve(*curve) else {
+            continue;
+        };
+        let mut points = Vec::with_capacity(SEGMENTS as usize + 1);
+        for k in 0..=SEGMENTS {
+            let t = (range.1 - range.0).mul_add(f64::from(k) / f64::from(SEGMENTS), range.0);
+            points.push(pcurve.point_at(t, tol)?);
+        }
+        drawn.push(points);
+    }
+    for (i, a) in drawn.iter().enumerate() {
+        for b in &drawn[i + 1..] {
+            for x in a.windows(2) {
+                for y in b.windows(2) {
+                    if !segments_cross(
+                        (x[0].x, x[0].y),
+                        (x[1].x, x[1].y),
+                        (y[0].x, y[0].y),
+                        (y[1].x, y[1].y),
+                    ) {
+                        continue;
+                    }
+                    let side = |o: Point2, p: Point2, q: Point2| {
+                        (p.x - o.x).mul_add(q.y - o.y, -((p.y - o.y) * (q.x - o.x)))
+                    };
+                    let (d1, d2) = (side(y[0], y[1], x[0]), side(y[0], y[1], x[1]));
+                    let f = d1 / (d1 - d2);
+                    let Ok(at) = surface.point_at(
+                        (x[1].x - x[0].x).mul_add(f, x[0].x),
+                        (x[1].y - x[0].y).mul_add(f, x[0].y),
+                        tol,
+                    ) else {
+                        continue;
+                    };
+                    if !balls.iter().any(|&(v, r)| at.distance(v) <= r) {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// The triangle of facet `f` that could be built as a fan (see [`Fan`])

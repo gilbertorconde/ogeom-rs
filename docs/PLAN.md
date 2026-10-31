@@ -247,11 +247,17 @@ through the boundary's vertices. Folds and faces that mesh open are caught
 after the build and their curved faces withdrawn to facets, so every
 measured part tessellates closed at the cost of those faces. A chord where no
 point carries onto both surfaces (a torus and a cylinder fitted to pieces of
-one spline blend) can stand 0.2 off, stated as its tolerance. Design items,
-in order: absorb single facets at junctions without costing an exact seam
-(taking every facet within reach breaks exact rims); junction rules
-(Benière et al. 2012: a junction stays only if its faces are pairwise
-adjacent, dangling edges dropped).
+one spline blend) can stand 0.2 off, stated as its tolerance. A single facet
+whose seam with a curved face would be a chord wider than the reach is built
+as a fan onto that face instead (a wedge split at its corner first), its
+seam lifted onto the face: on `mesh_corpus` every edge between a curved face
+and a single facet then holds within the reach except on `nist_ctc_02`,
+whose widest (0.35) border two-triangle planes along a spline blend's tori.
+Design items, in order: those two-facet planes, which no fan takes; seams
+between two curved faces fitted to one spline (a torus beside a cylinder at
+0.09, nearly tangent, no point on both); junction rules (Benière et al.
+2012: a junction stays only if its faces are pairwise adjacent, dangling
+edges dropped).
 
 Tracing a seam as a branch of the two fitted surfaces' intersection has
 nothing to trace on the measured parts. Of the 427 chords on `mesh_corpus`,
@@ -267,7 +273,10 @@ its sag), its cylinders beside planes (0.46), and its tori beside cylinders
 through three vertices standing a little wider than the polyline would. Of
 the 169 within the reach, 3 have a crossing within it all along. The fix is
 upstream, in fits that share their neighbours' tangency or take the spline
-face whole; the chord stays as the fallback.
+face whole; the chord stays as the fallback. The planes beside those tori
+and cylinders were single facets, now built as fans (above): their seams lie
+on the curved faces, and of the main corpus with the step-conformance parts
+the widest seam on a curved face is 0.35 (p99 0.046), against 0.63 (0.16).
 
 **Fillets fitted apart from their supports.** Derived from their supports:
 rounds between two planes, a torus between any two supports on its axis
@@ -303,7 +312,17 @@ patch where it is one disk with one loop and verifies
   but not measured;
 - between vertices a fit is no closer to the true surface than its knots
   allow: on coarse meshes up to 4 times the distance in the row at a free
-  edge, under 1 inside.
+  edge, under 1 inside;
+- a ring (a spline blend round a pocket) is no disk, and cutting it into
+  disks does not help on a coarse mesh. On `nist_ctc_02` its blends are
+  rings four facets across (radius 10, chord 1.17). Halved, then halved
+  again, the pieces fail: the mean-value map flattens triangles with all
+  three corners on one side of the square, a half ring folds over its mean
+  plane, and the quarter rings' patches stand 3 to 5 percent past a
+  triangle's sag at its middle, or hold too few vertices inside. One piece
+  of eight verified, and the facets left beside it widened the worst seam
+  from 0.35 to 0.73. A ring needs a chart that goes round it (periodic in
+  one direction) and enough rows across to verify against.
 
 **A torus pierced with no circle free either way.** Holes in a whole torus
 are inner wires, its seams placed on a free parallel and meridian or threaded

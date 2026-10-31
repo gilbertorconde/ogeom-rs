@@ -3,7 +3,9 @@
 //! and boundary layout in its chart, the seams of faces round an axis or
 //! threaded through their holes, and the fans and wedges between facets
 //! and curved faces. A plan that cannot be made asks for vertices to keep,
-//! facets to build as fans, or curved faces to facet.
+//! facets to build as fans, or curved faces to facet; so does one that
+//! would bound a facet by a seam standing off its faces wider than a
+//! snapped curve may, where the facet can be a fan.
 
 use ogeom_core::{FastMap, OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, LineCurve, PlanarCurve};
@@ -336,7 +338,8 @@ impl Planner<'_> {
                     let fan = self
                         .fan_seam_of(&chain, &faces)
                         .and_then(|(g, wedge)| self.lifted_seam(&chain, g, wedge));
-                    let snapped = if fan.is_some() {
+                    let fanned = fan.is_some();
+                    let snapped = if fanned {
                         fan
                     } else if threaded {
                         let closed = chain.len() > 2 && chain[0] == chain[chain.len() - 1];
@@ -350,6 +353,23 @@ impl Planner<'_> {
                     };
                     match snapped {
                         Some(spec) => {
+                            // A seam standing farther off its faces than a
+                            // snapped curve may (a chord between a facet and
+                            // a surface it is no chord of) is built onto the
+                            // curved face instead where the facet can be a
+                            // fan, its seam then on that face, or where it
+                            // runs along both curved sides of a wedge, split
+                            // at their corner for one.
+                            let (Snapped::Open(_, _, tolerance)
+                            | Snapped::Loop(_, _, tolerance)
+                            | Snapped::Closed(_, tolerance)) = spec.0;
+                            if !fanned && tolerance > self.flat * REACH {
+                                if let Some(t) = self.fan_for(&chain, &faces) {
+                                    fan_wanted.push(t);
+                                } else if let Some(v) = self.wedge_corner(&chain, &faces) {
+                                    wedge_corners.push(v);
+                                }
+                            }
                             let index = plan.edges.len();
                             let (spec, forward, images) = spec;
                             if faces.len() == 1 && !images.is_empty() {
