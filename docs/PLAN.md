@@ -179,6 +179,21 @@ in `tests/sheet_fillets.rs`):
   line cut at the seam on such a chart, or the face restated on a periodic
   one.
 
+**An edge round whose ball is wider than a face it rounds.** `fillet_edge`
+refuses where the ball's contact on one of the edge's faces stands past
+that face's far side at every station: the face is narrower than the
+setback all along the edge (a sliver face where two oblique boxes are
+fused, a triangle face whose apex stands under the setback). The ball then
+rolls over the face's far edge, and the round touches three things: the
+other face, the far edge as a rolling circle and maybe the face beyond.
+In the stress run's blend scenario these are 11 of the 18 refusals at
+seeds 1 to 4. Within a request, the ball also refuses where its contact
+runs off a face anywhere along an edge that shares a face or a vertex
+with another of the request (4 refusals): the band's contacts are checked
+against its neighbours' and an off-face contact holds none to check. Owed:
+the overlap check read on the stretch of the band the face holds, and the
+contact beyond it carried onto the face the band is cut off by.
+
 **A pole leg whose edge winds round the pole and whose rail does not.** A
 marched band whose rail passes over a sphere's pole has a leg from the
 winding loop to the pole with the other loop cut out as a hole. When the

@@ -957,7 +957,14 @@ round is refused by name, as the cut does not part the face. Refused by \
 name too: faces the ball leaves at different places round its seat and \
 never both at once, a line of contact crossing a face more than once, \
 and a round crossing a face between the two (a ball wider than a \
-chamfer between the faces it rounds)."""
+chamfer between the faces it rounds). An edge round refuses by name \
+where its faces meet tangent (no corner), where the ball's contact on a \
+face stands past the face's far side in the material (a boss on the \
+wall) or all along the edge (a face narrower than the setback, which a \
+ball would roll over onto the face beyond), and where it runs off a \
+face anywhere along an edge of a request that shares a face or a vertex \
+with another of its edges; an edge sharing neither runs off a face \
+narrowing to a tip and is cut off there, as alone."""
 symbols = [
     "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edges",
     "ogeom_fillet::fillet_edge_variable",

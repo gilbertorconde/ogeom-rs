@@ -41,6 +41,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fillet_edges` rounds an edge whose ball runs off a narrowing face
+  beside edges it does not touch.**
+  - A request of more than one edge refused any station where the ball's
+    contact ran off its face, even where `fillet_edge` cuts that band off
+    on the face that follows (a face narrowing to a tip along the edge).
+    The contacts are kept to check each band against the others', and
+    only edges sharing a face hold contacts that check.
+  - An edge sharing no face and no vertex with another edge of the request
+    is now held to what it is held to alone. Its band is built and applied
+    as before; where every station held, nothing changes.
+  - Measured: a triangle prism's narrowing floor edge with its apex edge,
+    at radius 0.3 and 0.5, removes the floor band's closed form plus
+    `r^2 (cot(a / 2) - (pi - a) / 2)` along the depth to 1e-6, both bands
+    cylinders of the radius standing it off both faces. In the stress
+    run's blend scenario, 5 of 23 refusals at seeds 1 to 4 round, each to
+    the sum of its edges rounded alone within 1e-6.
+
 - **A boolean splits an edge where an edge of the other solid lying on its
   face ends on it tangentially.**
   - An edge of one solid lying in a face of the other is carried onto that

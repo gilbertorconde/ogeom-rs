@@ -869,6 +869,112 @@ fn a_round_on_a_narrowing_wall_is_cut_off_where_the_wall_ends() {
     }
 }
 
+/// The narrowing wall's floor edge asked together with the prism's apex
+/// edge, which shares no face and no vertex with it: no band is checked
+/// against the other, so the floor band runs off the wall's tips as it
+/// does alone. The apex edge is straight between planes meeting at an
+/// interior angle `a`, square to the prism's ends, and its band takes the
+/// section `r^2 (cot(a / 2) - (pi - a) / 2)` along the prism's depth, on
+/// top of the floor band's. Each band is a cylinder of the radius whose
+/// axis stands the radius off both of its edge's faces. Before, a request
+/// of more than one edge refused any station whose contact ran off.
+#[test]
+fn a_round_running_off_a_narrowing_wall_is_taken_beside_an_edge_apart() {
+    use core::f64::consts::{FRAC_PI_4, PI};
+    use ogeom_math::Vector;
+    let (length, apex, height, depth) = (10.0_f64, 1.0_f64, 1.0_f64, 2.0_f64);
+    let rises = [height / apex, height / (length - apex)];
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    // The apex's interior angle, between its walls toward the two feet.
+    let to_feet = [
+        Vector::new(0.0, -apex, -height),
+        Vector::new(0.0, length - apex, -height),
+    ];
+    let interior =
+        (to_feet[0].dot(to_feet[1]) / (to_feet[0].magnitude() * to_feet[1].magnitude())).acos();
+    // Each face's plane through the solid: a point on it and its normal.
+    let planes = |which: &str| -> [(Point, Vector); 2] {
+        let wall = |foot: Vector| {
+            let n = Vector::X.cross(foot);
+            (Point::new(0.0, apex, height), n * (1.0 / n.magnitude()))
+        };
+        match which {
+            "floor" => [(Point::ORIGIN, Vector::Z), (Point::ORIGIN, Vector::X)],
+            _ => [wall(to_feet[0]), wall(to_feet[1])],
+        }
+    };
+    for radius in [0.3, 0.5] {
+        let mut model = ogeom_topo::Model::new();
+        let profile = [(0.0, 0.0), (length, 0.0), (apex, height)];
+        let prism = profile_prism(&mut model, &profile, depth);
+        let before = ogeom_algo::volume_properties(&model, &prism, fine, T)
+            .unwrap()
+            .mass;
+        let floor = edge_with_midpoint(&model, &prism, Point::new(0.0, length / 2.0, 0.0));
+        let top = edge_with_midpoint(&model, &prism, Point::new(-depth / 2.0, apex, height));
+        let rounded = ogeom_fillet::fillet_edges(
+            &mut model,
+            &prism,
+            &[floor.clone(), top.clone()],
+            radius,
+            T,
+        )
+        .unwrap();
+        let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let removed = before
+            - ogeom_algo::volume_properties(&model, &rounded.shape, fine, T)
+                .unwrap()
+                .mass;
+        let want = (1.0 - FRAC_PI_4)
+            * radius
+            * radius
+            * (length - rises.iter().map(|k| radius / k).sum::<f64>())
+            + rises
+                .iter()
+                .map(|k| radius.powi(3) / (6.0 * k))
+                .sum::<f64>()
+            + radius * radius * ((1.0 / (interior / 2.0).tan()) - (PI - interior) / 2.0) * depth;
+        assert!(
+            (removed - want).abs() < 1e-6,
+            "radius {radius}: the two rounds took {removed} against {want}"
+        );
+        for (which, edge, along) in [("floor", &floor, Vector::Y), ("apex", &top, Vector::X)] {
+            let mut cylinders = 0;
+            for face in rounded.history.generated(edge) {
+                let data = model.node(face).unwrap().data().as_face().unwrap();
+                let ogeom_geom::SurfaceGeometry::Cylinder(c) =
+                    model.geometry().surface(data.surface).unwrap()
+                else {
+                    continue;
+                };
+                let placed = face.transform(model.datums()).unwrap();
+                let axis = c.cylinder().axis();
+                let origin = placed.apply(axis.location);
+                let direction = placed.apply_vector(axis.direction.vector());
+                assert!(
+                    (c.cylinder().radius() - radius).abs() < 1e-9
+                        && direction.cross(along).magnitude() < 1e-9,
+                    "{which}: a band of radius {} along {direction:?}",
+                    c.cylinder().radius()
+                );
+                for (on, normal) in planes(which) {
+                    let off = (origin - on).dot(normal).abs();
+                    assert!(
+                        (off - radius).abs() < 1e-9,
+                        "{which}: the ball's centre stands {off} off a face, not {radius}"
+                    );
+                }
+                cylinders += 1;
+            }
+            assert!(cylinders > 0, "{which}: no band was generated");
+        }
+    }
+}
+
 /// A disc of radius `big` at the top about the origin, two high, its drum
 /// drafted by `k` over the height so its foot stands out (a cone; a
 /// cylinder at zero), up to its chord `y = c` at the top, that wall drafted

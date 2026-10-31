@@ -365,8 +365,10 @@ fn route(
 /// consumed or split a later edge: a chain whose members interfere is
 /// refused rather than guessed at. A request of two or more edges also
 /// refuses a ball that sets back past the far side of a face anywhere
-/// along an edge, since each band's contacts are checked against the
-/// others' and a contact off its face holds none to check.
+/// along an edge that shares a face or a vertex with another of the
+/// request, since each band's contacts are checked against the others'
+/// and a contact off its face holds none to check. An edge sharing
+/// neither is held to what [`fillet_edge`] holds it to.
 pub fn fillet_edges(
     model: &mut Model,
     solid: &Shape,
@@ -550,13 +552,39 @@ fn fillet_edges_own(
     // past a face's far side, the band would cut through the face, and set
     // back into another edge's band, the two balls overlap.
     let mut contacts = Vec::with_capacity(edges.len());
+    // An edge sharing no face and no vertex with another of the request
+    // has no band checked against its own: its contacts stand on its two
+    // faces, which no other band reaches across, and no corner or junction
+    // takes its ends.
+    let mut touched: Vec<(Vec<ogeom_topo::TShapeId>, Vec<ogeom_topo::TShapeId>)> =
+        Vec::with_capacity(edges.len());
+    for edge in edges {
+        let faces = ogeom_topo::ancestors_of(model, solid, edge, ShapeType::Face)?
+            .iter()
+            .map(Shape::node)
+            .collect();
+        let ends = ogeom_algo::edge_vertices(model, edge)?
+            .map(|(a, b)| vec![a.node(), b.node()])
+            .unwrap_or_default();
+        touched.push((faces, ends));
+    }
+    let alone = |i: usize| {
+        let (faces, ends) = &touched[i];
+        touched.iter().enumerate().all(|(j, (f, e))| {
+            j == i || (!f.iter().any(|x| faces.contains(x)) && !e.iter().any(|x| ends.contains(x)))
+        })
+    };
     crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
-        // A lone edge's band is checked against no other, and is held to
-        // what one edge alone is.
-        let alone = edges.len() == 1;
-        for edge in edges {
+        // A band checked against no other is held to what one edge alone
+        // is.
+        for (i, edge) in edges.iter().enumerate() {
             contacts.push(crate::support::ball_fits(
-                model, solid, edge, radius, alone, tol,
+                model,
+                solid,
+                edge,
+                radius,
+                alone(i),
+                tol,
             )?);
         }
         Ok(())
