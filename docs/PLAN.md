@@ -249,10 +249,25 @@ measured part tessellates closed at the cost of those faces. A chord where no
 point carries onto both surfaces (a torus and a cylinder fitted to pieces of
 one spline blend) can stand 0.2 off, stated as its tolerance. Design items,
 in order: absorb single facets at junctions without costing an exact seam
-(taking every facet within reach breaks exact rims); trace seams between
-solved corners as one branch of the intersection guided by the mesh path;
-junction rules (Benière et al. 2012: a junction stays only if its faces are
-pairwise adjacent, dangling edges dropped).
+(taking every facet within reach breaks exact rims); junction rules
+(Benière et al. 2012: a junction stays only if its faces are pairwise
+adjacent, dangling edges dropped).
+
+Tracing a seam as a branch of the two fitted surfaces' intersection has
+nothing to trace on the measured parts. Of the 427 chords on `mesh_corpus`,
+258 stand wider than the reach (twenty coplanar distances), and 254 of those
+because one surface stands farther than the reach off the other at a point
+of the mesh path. A signed distance moves no faster than the point it is
+taken at, so no point on both surfaces lies within the reach of that point,
+and Newton's step from the path lands 0.5 to 15 off it. The widest are all
+of this kind: `nist_ctc_02`'s planes and tori fitted to pieces of B-spline
+faces (0.63 over a span of 28, the torus's equator bowing off the plane by
+its sag), its cylinders beside planes (0.46), and its tori beside cylinders
+(0.11, meeting at a quarter of a degree to seven). The other four are cubics
+through three vertices standing a little wider than the polyline would. Of
+the 169 within the reach, 3 have a crossing within it all along. The fix is
+upstream, in fits that share their neighbours' tangency or take the spline
+face whole; the chord stays as the fallback.
 
 **Fillets fitted apart from their supports.** Derived from their supports:
 rounds between two planes, a torus between any two supports on its axis
