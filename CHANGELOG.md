@@ -119,6 +119,31 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drill a hair off touching a face cuts as the touching drill does.**
+  - A drum whose wall runs along a plane of the other solid, raised
+    through it or lowered short of it by no more than the confusion
+    distance, is now the touching configuration in every decision about
+    the line: the plane meets it along one line, where raised by a hair it
+    met it in two a few ten-thousandths apart, and the boolean intersects
+    the drum moved onto the plane by that hair, its seams with it, so that
+    its sections with a round the plane runs into and with the faces the
+    line ends on end where the line does. Drilled along `nist_ctc_03`'s
+    plate top into the round at its edge (stress drill seed 2, drill 5)
+    with eight seam directions, raised or lowered by 1e-8 or 1e-7, 23 of
+    the 32 placements were refused and none is; their commons agree with
+    the touching drill's to 2e-8. A blind drill of radius 2 with its seam
+    1e-7 above a block's top, refused as a piece lying on the block at
+    every probe, cuts to the disc's closed form.
+  - A line in a circle's or an ellipse's plane whose chord through it lies
+    deeper than the gap crosses it twice in closed form however shallowly;
+    it was left to the sampling path, which found nothing a few tenths of a
+    micron deep. Two crossings of an edge by sections on one face of the
+    other solid are one graze only where the edge stays within the
+    crossings' honesty or its own tolerance of the face between them, no
+    longer ten confusions. Drills raised 3e-7 or 5e-7 through a block's
+    top, refused as kept pieces that did not close, now cut, through the
+    block and blind in it.
+
 - **A marched section's fit no longer swings between its samples.**
   - The joint fit of a marched section split a span between its two middle
     samples. Where a span held two samples, one on its own start knot,

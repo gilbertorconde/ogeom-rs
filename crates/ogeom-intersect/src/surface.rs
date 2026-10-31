@@ -199,6 +199,43 @@ fn plane_sphere(plane: ogeom_math::Plane, sphere: ogeom_math::Sphere, tol: Toler
     }
 }
 
+/// The move across a drum's axis that lays its wall on a plane, where the
+/// two touch along a line to within the confusion distance: the axis
+/// parallel to the plane, and its distance from the plane within the
+/// confusion distance of the radius, either side, to the rounding that
+/// distance is read with. `None` otherwise.
+///
+/// Within that distance the drum and the plane are one configuration, the
+/// tangent one: the wall either side of the touching line stands off the
+/// plane by no more than the drum's own depth past it, so a drum raised
+/// through the plane by a hair and one lowered short of it by a hair are
+/// told apart by nothing the tolerance can see. Every decision about the
+/// line reads this one answer: [`surface_surface`] meets the two along the
+/// one line, and a boolean computes the drum's other sections on the drum
+/// moved by it, so that they end where the line does.
+#[must_use]
+pub fn drum_onto_plane(
+    plane: &ogeom_math::Plane,
+    cylinder: &ogeom_math::Cylinder,
+    tol: Tolerances,
+) -> Option<Vector> {
+    let axis = cylinder.axis();
+    if plane.normal().dot(axis.direction).abs() > tol.angular() {
+        return None;
+    }
+    let gap = plane.signed_distance_to(axis.location);
+    let r = cylinder.radius();
+    // The distance is a difference of coordinates: a drum placed a
+    // confusion distance off the plane reads that far to their rounding.
+    let rounding = 4.0
+        * f64::EPSILON
+        * (axis.location.to_vector().magnitude() + plane.origin().to_vector().magnitude() + r);
+    if (gap.abs() - r).abs() > tol.confusion() + rounding {
+        return None;
+    }
+    Some(plane.normal().vector() * (r.copysign(gap) - gap))
+}
+
 /// A plane and a cylinder.
 ///
 /// Three genuinely different answers depending on the angle between them, and
@@ -217,7 +254,12 @@ fn plane_cylinder(
     if along.abs() <= tol.angular() {
         let gap = plane.signed_distance_to(axis.location);
         let reach = gap.abs();
-        if reach > cylinder.radius() + tol.confusion() {
+        let foot = plane.project(axis.location);
+        if drum_onto_plane(&plane, &cylinder, tol).is_some() {
+            // Tangent along one line.
+            return Ok(Meeting::Along(vec![line_through(foot, axis.direction)]));
+        }
+        if reach > cylinder.radius() {
             return Ok(Meeting::Apart);
         }
         // How far along the plane, from the foot of the axis, each line sits.
@@ -226,13 +268,8 @@ fn plane_cylinder(
             .mul_add(cylinder.radius(), -(gap * gap))
             .max(0.0)
             .sqrt();
-        let foot = plane.project(axis.location);
         let sideways =
             Direction::from_cross(plane.normal().vector(), axis.direction.vector(), tol)?;
-        if offset <= tol.confusion() {
-            // Tangent along one line.
-            return Ok(Meeting::Along(vec![line_through(foot, axis.direction)]));
-        }
         return Ok(Meeting::Along(vec![
             line_through(foot + sideways.vector() * offset, axis.direction),
             line_through(foot - sideways.vector() * offset, axis.direction),

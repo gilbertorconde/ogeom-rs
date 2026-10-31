@@ -3,10 +3,12 @@
 //! rounded box's tangent line into the corners where the rounds' end arcs
 //! touch it, and an oblique drill through a vertex of a shaved cube with
 //! its own seam on that vertex, and drills along a torus's axis touching it
-//! inside its outer equator or standing just inside the touch. Each cut, common and drill less the part is
-//! valid, cut and common add up to the part, the drill less the part and
-//! the common add up to the drill, and the common matches the drill's
-//! share of the part integrated ray by ray along the drill's axis.
+//! inside its outer equator or standing just inside the touch, and drills
+//! whose wall runs along a face a hair off touching it. Each cut, common
+//! and drill less the part is valid, cut and common add up to the part,
+//! the drill less the part and the common add up to the drill, and the
+//! common matches the drill's share of the part integrated ray by ray
+//! along the drill's axis.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 #![allow(
     clippy::cast_precision_loss,
@@ -692,4 +694,128 @@ fn a_gap_past_its_stated_tolerance_by_rounding_alone_is_within_it() {
         .shape;
     let diagnosis = check(&model, &cut, T).unwrap();
     assert!(diagnosis.is_valid(), "{diagnosis}");
+}
+
+/// Drills of radius 2 along x whose top line runs along a 20 by 14 by 10
+/// block's top face, raised through it or lowered under it by up to half a
+/// micron, through the block and blind in it, the seam on the top line,
+/// across, below and on either diagonal. Within the confusion distance the
+/// drum and the face are the touching drill: the common is the disc times
+/// the length inside, and a raised drill's blind end and the faces it
+/// ends on meet the touching line where it ends. Past it the face cuts
+/// the drum in two lines either side of the top, and the edges of the
+/// block's end faces cross the drill's rims at a few hundredths of a degree
+/// twice, as the lines end; the common is the disc less the cap above the
+/// face. Every cut, common and drill less the block is valid and adds up
+/// to the block and the drill (see [`drill`]).
+#[test]
+fn drills_a_hair_off_a_block_s_top_cut_as_their_closed_form() {
+    let r = 2.0;
+    for lift in [1e-8, -1e-8, 1e-7, -1e-7, 3e-7, 5e-7] {
+        for seam in [
+            Vector::new(0.0, 0.0, 1.0),
+            Vector::new(0.0, 1.0, 0.0),
+            Vector::new(0.0, 0.0, -1.0),
+            Vector::new(0.0, 1.0, 1.0),
+            Vector::new(0.0, 1.0, -1.0),
+        ] {
+            for (length, inside) in [(30.0, 20.0), (15.0, 10.0)] {
+                let mut model = Model::new();
+                let block = make_box(&mut model, Frame::WORLD, (20.0, 14.0, 10.0), T)
+                    .unwrap()
+                    .shape;
+                let common = drill(
+                    &mut model,
+                    &block,
+                    Point::new(-5.0, 7.0, 10.0 - r + lift),
+                    (Vector::new(1.0, 0.0, 0.0), seam),
+                    r,
+                    length,
+                );
+                let disc = core::f64::consts::PI * r * r;
+                let cap = if lift > T.confusion() {
+                    let h: f64 = lift;
+                    r * r * ((r - h) / r).acos() - (r - h) * h.mul_add(-h, 2.0 * r * h).sqrt()
+                } else {
+                    0.0
+                };
+                let want = (disc - cap) * inside;
+                // The result's faces stand within the confusion distance of
+                // the exact ones, so its volume is the exact one to within
+                // that distance times the drill's wall inside the block.
+                let doubt = T.confusion() * core::f64::consts::TAU * r * inside;
+                assert!(
+                    (common - want).abs() <= doubt,
+                    "lift {lift} seam {seam:?} length {length}: common {common} against {want}"
+                );
+            }
+        }
+    }
+}
+
+/// The drill along y with its top line in `nist_ctc_03`'s plate top where
+/// the face runs into the round of radius 11 at its edge (see
+/// [`drills_along_faces_that_run_into_rounds_cut`]), lowered by a hundredth
+/// of a micron, its seam on the bottom line. The drum touches the plate
+/// along its top line to within the confusion distance, and its section
+/// with the round ends where that line does, at the round's tangent edge,
+/// as it does for the drill touching the plate exactly. Read on the drum
+/// where it stands, the section crosses the drill's top line half a micron
+/// past the line's end, and the kept pieces do not close.
+#[test]
+fn a_drill_a_hair_under_a_plate_top_running_into_a_round_cuts() {
+    let (model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let mut model = model;
+    plate_top_drill(&mut model, &part, Vector::new(0.0, 0.0, -1.0), -1e-8);
+}
+
+/// The plate-top drill of
+/// [`a_drill_a_hair_under_a_plate_top_running_into_a_round_cuts`] with its
+/// seam turned through eight directions in the xz plane and the drill
+/// raised or lowered by a hundredth or a tenth of a micron. Every placement
+/// is the touching drill to within the confusion distance: valid, adding
+/// up to the part and the drill, and its common the touching drill's to
+/// within the confusion distance times the drill's wall.
+#[test]
+#[ignore = "heavy"]
+fn drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one() {
+    let (base, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let wall = core::f64::consts::TAU * PLATE_DRILL.1 * PLATE_DRILL.2;
+    for k in 0..8 {
+        let a = core::f64::consts::FRAC_PI_4 * f64::from(k);
+        let seam = Vector::new(a.sin(), 0.0, -a.cos());
+        let touching = plate_top_drill(&mut base.clone(), &part, seam, 0.0);
+        for dz in [1e-8, -1e-8, 1e-7, -1e-7] {
+            let common = plate_top_drill(&mut base.clone(), &part, seam, dz);
+            assert!(
+                (common - touching).abs() <= T.confusion() * wall,
+                "seam {k}/8 dz {dz}: common {common} against the touching drill's {touching}"
+            );
+        }
+    }
+}
+
+/// Stress drill seed 2, drill 5 on `nist_ctc_03`: start, radius and length.
+const PLATE_DRILL: (Point, f64, f64) = (
+    Point::new(
+        -8.889_999_999_999_999,
+        -59.490_189_782_151_33,
+        46.209_359_186_641_39,
+    ),
+    31.898_180_813_358_604,
+    969.890_539_564_302_6,
+);
+
+/// [`PLATE_DRILL`] along y, its frame's x along `seam`, moved `dz` along z,
+/// through [`drill`]. Returns the common's volume.
+fn plate_top_drill(model: &mut Model, part: &Shape, seam: Vector, dz: f64) -> f64 {
+    let (start, radius, length) = PLATE_DRILL;
+    drill(
+        model,
+        part,
+        Point::new(start.x, start.y, start.z + dz),
+        (Vector::new(0.0, 1.0, 0.0), seam),
+        radius,
+        length,
+    )
 }

@@ -470,6 +470,25 @@ struct GFace {
 }
 
 impl GFace {
+    /// The face moved by `shift` with its seams: a seam is the face's own
+    /// edge, which no other face holds, and it stays on the face's columns.
+    /// Its other edges stay where they stand, which their neighbours hold
+    /// them at.
+    fn move_by(&mut self, shift: ogeom_math::Vector, tol: Tolerances) -> OgeomResult<()> {
+        let moving = ogeom_math::Transform::translation(shift);
+        let far = shift.magnitude();
+        self.surface = self.surface.transformed(&moving, tol)?;
+        self.bound = self.bound.expanded(far);
+        self.filter = self.filter.expanded(far);
+        for e in &mut self.edges {
+            if e.other_side.is_some() {
+                e.curve = std::sync::Arc::new(e.curve.transformed(&moving, tol)?);
+                e.bound = e.bound.expanded(far);
+            }
+        }
+        Ok(())
+    }
+
     fn trim_lines(&self, tol: Tolerances) -> &[Vec<Point2>] {
         self.trim_lines.get_or_init(|| face_trim_lines(self, tol))
     }
@@ -3843,7 +3862,7 @@ fn cluster_paves(
         });
         let touch = match (prev, off) {
             (Some((held, last)), Some(off)) if !joined => {
-                grazed(curve, (held, last), (at, pave), floor, off, tol)?
+                grazed(curve, (held, last), (at, pave), edge_tolerance, off, tol)?
             }
             _ => None,
         };
@@ -3896,7 +3915,10 @@ fn off_face(
 
 /// Where two consecutive crossings of an edge by sections on one face of
 /// the other solid are the two ends of a graze: the edge between them never
-/// leaving that face by more than the crossings' honesty. A face tangent
+/// leaving that face by more than the crossings' honesty or its own
+/// tolerance. An exact edge dipping deeper into the face than its
+/// tolerance crosses it twice, as the surfaces either side of it do, and
+/// the sections ending there end apart. A face tangent
 /// to the other solid's face along a line meets a third face of its own
 /// solid a hair off the tangency (a round beside the face, its tangent edge
 /// a few microns from the other solid). The sections either side of the
@@ -3919,14 +3941,14 @@ fn grazed(
     curve: &Curve,
     (from, first): (Point, Pave),
     (to, second): (Point, Pave),
-    floor: f64,
+    edge_tolerance: f64,
     off: OffFace<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Option<(f64, Point)>> {
     let (Some(face), Some(other)) = (first.across, second.across) else {
         return Ok(None);
     };
-    let honesty = honest(first.honesty.max(second.honesty).max(floor), tol);
+    let honesty = honest(first.honesty.max(second.honesty).max(edge_tolerance), tol);
     if face != other || from.distance(to) > honest(f64::INFINITY, tol) * 1e2 {
         return Ok(None);
     }
@@ -4871,6 +4893,82 @@ fn share_hugs(
         });
     }
     Ok(())
+}
+
+/// The move of each face of `own` standing on a drum that touches the
+/// planes of `other`'s faces it meets along lines, each to within the
+/// confusion distance as
+/// [`drum_onto_plane`](ogeom_intersect::drum_onto_plane) reads the pair:
+/// the one move across the axis that lays the drum on all of them. The
+/// faces on one surface move together, the planes any of them meets asked
+/// of all. `None` for a face no plane touches so, or whose planes ask for
+/// moves no one move makes that is no longer than the longest of them.
+///
+/// The touching line is the pair's whole section, and every other section
+/// of the drum (against a round the plane runs into, against the faces the
+/// line ends on) must end where that line does, as it would on a drum
+/// touching the plane exactly. Moved by no more than the confusion
+/// distance, the drum stands within its edges' tolerance of where it was,
+/// its chart unchanged, so the sections found on it are the drum's own and
+/// their pcurves read on it as they stand.
+fn drums_onto_planes(
+    own: &GSolid,
+    other: &GSolid,
+    tol: Tolerances,
+) -> Vec<Option<ogeom_math::Vector>> {
+    let mut numbered: ogeom_core::FastMap<&(ogeom_topo::SurfaceId, Location), usize> =
+        ogeom_core::FastMap::default();
+    let mut asked: Vec<Vec<(ogeom_math::Vector, f64)>> = Vec::new();
+    let mut of_face = Vec::with_capacity(own.faces.len());
+    for face in &own.faces {
+        let next = numbered.len();
+        let at = *numbered.entry(&face.carrier).or_insert(next);
+        if at == asked.len() {
+            asked.push(Vec::new());
+        }
+        of_face.push(at);
+        let SurfaceGeometry::Cylinder(drum) = &face.surface else {
+            continue;
+        };
+        let drum = drum.cylinder();
+        for theirs in &other.faces {
+            let SurfaceGeometry::Plane(plane) = &theirs.surface else {
+                continue;
+            };
+            if !face.filter.intersects(&theirs.filter) {
+                continue;
+            }
+            let plane = plane.plane();
+            if let Some(shift) = ogeom_intersect::drum_onto_plane(&plane, &drum, tol) {
+                let normal = plane.normal().vector();
+                asked[at].push((normal, shift.dot(normal)));
+            }
+        }
+    }
+    let moves: Vec<Option<ogeom_math::Vector>> = asked
+        .iter()
+        .map(|asked| {
+            let &(n0, s0) = asked.first()?;
+            // Every normal lies across the axis. The move is along the
+            // first normal, and along the first normal not parallel to it
+            // as well.
+            let mut shift = n0 * s0;
+            if let Some(&(n1, s1)) = asked
+                .iter()
+                .find(|(n, _)| n.cross(n0).magnitude() > tol.angular())
+            {
+                let (a, b, c) = (n0.dot(n0), n0.dot(n1), n1.dot(n1));
+                let det = a.mul_add(c, -(b * b));
+                shift = n0 * ((s0 * c - s1 * b) / det) + n1 * ((s1 * a - s0 * b) / det);
+            }
+            let agrees = asked
+                .iter()
+                .all(|&(n, s)| (n.dot(shift) - s).abs() <= tol.intersection());
+            let longest = asked.iter().map(|(_, s)| s.abs()).fold(0.0, f64::max);
+            (agrees && shift.magnitude() <= longest + tol.intersection()).then_some(shift)
+        })
+        .collect();
+    of_face.into_iter().map(|at| moves[at]).collect()
 }
 
 /// The sections between two gathered solids, with the paves they put on
@@ -10379,20 +10477,31 @@ fn general_fuse_as(
     let read_at_centre = PROBE_AT_CENTRE.get();
     let read_thin = AT_STATED.get();
     ogeom_core::progress::stage("boolean: gather");
-    let ga = gather(
+    let mut ga = gather(
         model,
         a,
         matches!(operands, Operands::SheetBySolid | Operands::SheetBySheet),
         aside.map(|aside| &aside[0]),
         tol,
     )?;
-    let gb = gather(
+    let mut gb = gather(
         model,
         b,
         operands == Operands::SheetBySheet,
         aside.map(|aside| &aside[1]),
         tol,
     )?;
+    let (onto_a, onto_b) = (
+        drums_onto_planes(&ga, &gb, tol),
+        drums_onto_planes(&gb, &ga, tol),
+    );
+    for (gathered, onto) in [(&mut ga, onto_a), (&mut gb, onto_b)] {
+        for (face, shift) in gathered.faces.iter_mut().zip(onto) {
+            if let Some(shift) = shift {
+                face.move_by(shift, tol)?;
+            }
+        }
+    }
     #[cfg(feature = "test-hooks")]
     work::add(|w| w.faces_gathered += ga.faces.len() + gb.faces.len());
     let neighbours = if operands == Operands::Itself {

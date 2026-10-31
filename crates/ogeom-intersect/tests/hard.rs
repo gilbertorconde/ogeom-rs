@@ -123,6 +123,47 @@ fn a_plane_tangent_along_a_ruling_is_the_analytic_paths_case() {
     ));
 }
 
+/// A drum moved through the plane it touches, or back off it, by no more
+/// than the confusion distance is the tangent configuration: one line, at
+/// the foot of the axis on the plane, the plane's distance from the axis
+/// read within the confusion distance of the radius either side. Raised
+/// by a hair the closed form met the plane in two lines a few
+/// ten-thousandths apart, so a boolean's other sections of the drum, which
+/// end on one line for every depth the tolerance cannot see, ended on
+/// neither. Past the confusion distance the two lines are back, the root
+/// of twice the radius times the depth either side of the foot.
+#[test]
+fn a_drum_within_the_confusion_distance_of_touching_a_plane_touches_it() {
+    let touching = pln(Point::new(2.0, 0.0, 0.0), Vector::X);
+    for depth in [1e-8, 5e-8, 1e-7, -1e-8, -1e-7, 3e-7, 1e-6] {
+        let drum = cyl(Point::new(depth, 0.0, 0.0), Vector::Z, 2.0);
+        let Meeting::Along(lines) = surface_surface(&drum, &touching, T).unwrap() else {
+            panic!("depth {depth}: the plane meets the drum");
+        };
+        let ys: Vec<f64> = lines
+            .iter()
+            .map(|line| line.point_at(0.0, T).unwrap())
+            .map(|p| {
+                assert!((p.x - 2.0).abs() < 1e-15, "depth {depth}: {p:?}");
+                p.y
+            })
+            .collect();
+        if depth.abs() <= T.confusion() {
+            assert_eq!(ys.len(), 1, "depth {depth}: {ys:?}");
+            assert!(ys[0].abs() < 1e-15, "depth {depth}: {ys:?}");
+        } else {
+            let half = (depth * (4.0 - depth)).sqrt();
+            assert_eq!(ys.len(), 2, "depth {depth}: {ys:?}");
+            for y in ys {
+                assert!(
+                    (y.abs() - half).abs() < 1e-12,
+                    "depth {depth}: {y} against {half}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn near_tangent_sphere_and_cylinder_give_one_thin_loop() {
     // Equal radii, axis offset a thousandth: the near-tangential quartic. One

@@ -413,9 +413,12 @@ fn skew_conics_3d(
 /// A line in the conic's plane meets it where a quadratic along the line
 /// vanishes, at most twice; a line through the plane meets it at most where
 /// it pierces the plane. Kept where the two pass within the gap. A line
-/// running nearly along the plane without lying in it, or a crossing nearly
-/// tangent, is left to the sampling path, which measures how far such a
-/// touch reaches.
+/// running nearly along the plane without lying in it is left to the
+/// sampling path. So is a crossing nearly tangent where the line's chord
+/// through the conic stands within the gap of it at its middle: the two
+/// are one touch there, and the sampling path measures how far it reaches.
+/// A chord deeper than the gap crosses twice however shallowly, as the
+/// conic's surface and the line's do, and its roots are the crossings.
 fn line_conic_3d(
     line: &ogeom_geom::LineCurve,
     conic: &Curve,
@@ -432,6 +435,7 @@ fn line_conic_3d(
     let lean = along.dot(normal);
     let height = (origin - centre).dot(normal);
     let mut ts: Vec<f64> = Vec::new();
+    let mut deep = false;
     if lean.abs() <= tol.angular() {
         if height.abs() > options.gap.max(tol.confusion()) {
             return Some(CurveIntersection::empty());
@@ -453,6 +457,9 @@ fn line_conic_3d(
             let gap = conic.point_at(foot, tol).ok()?.distance(p);
             return (gap > options.gap).then(CurveIntersection::empty);
         }
+        let middle = origin + along * (-qb / (2.0 * qa));
+        let foot = conic_parameter(conic, middle, tol)?;
+        deep = conic.point_at(foot, tol).ok()?.distance(middle) > options.gap;
         let root = disc.sqrt();
         ts.push((-qb - root) / (2.0 * qa));
         ts.push((-qb + root) / (2.0 * qa));
@@ -481,7 +488,7 @@ fn line_conic_3d(
             continue;
         }
         let tangent = conic.d1_at(s, tol).ok()?;
-        if tangent.cross(along).magnitude() <= 1e-3 * tangent.magnitude() {
+        if !deep && tangent.cross(along).magnitude() <= 1e-3 * tangent.magnitude() {
             return None;
         }
         crossings.push(Crossing {
@@ -3217,6 +3224,61 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// A line in a circle's plane whose chord through it lies a few tenths
+    /// of a micron deep, past the gap, crosses it twice at a few hundredths
+    /// of a degree: at the roots `7 +- sqrt(depth (2 r - depth))` along the
+    /// line, each on both curves to rounding, in either order of the pair.
+    /// Read as a touch, or not at all, the face the circle bounds and the
+    /// face across the line keep different splits of the chord.
+    #[test]
+    fn a_chord_deeper_than_the_gap_crosses_twice_however_shallowly() {
+        use ogeom_math::{Direction, Vector};
+        let line: Curve =
+            LineCurve::segment(Point::new(0.0, 0.0, 10.0), Point::new(0.0, 14.0, 10.0), T)
+                .unwrap()
+                .into();
+        for depth in [3e-7, 5e-7, 1e-6] {
+            for seam in [Vector::new(0.0, 0.0, 1.0), Vector::new(0.0, 1.0, 0.0)] {
+                let frame = Frame::new(
+                    Point::new(0.0, 7.0, 8.0 + depth),
+                    Direction::X,
+                    Direction::new(seam, T).unwrap(),
+                    T,
+                )
+                .unwrap();
+                let circle: Curve = CircleCurve::new(Circle::new(frame, 2.0, T).unwrap()).into();
+                // The depth the centre stands at as stored, and how far
+                // along the line the coordinates' rounding moves a crossing
+                // at the angle `half / r` it crosses at.
+                let stored = (8.0 + depth) - 8.0;
+                let half = (stored * (4.0 - stored)).sqrt();
+                let along = 16.0 * f64::EPSILON * 10.0 * 2.0 / half;
+                for (a, b, line_first) in [(&line, &circle, true), (&circle, &line, false)] {
+                    let found = intersect_curves(a, b, CurveCurveOptions::default(), T).unwrap();
+                    assert_eq!(found.crossings.len(), 2, "depth {depth}: {found:?}");
+                    let mut ys: Vec<f64> = found.crossings.iter().map(|c| c.point.y).collect();
+                    ys.sort_by(f64::total_cmp);
+                    for (y, want) in ys.iter().zip([7.0 - half, 7.0 + half]) {
+                        assert!(
+                            (y - want).abs() < along,
+                            "depth {depth}: {y} against {want}"
+                        );
+                    }
+                    for hit in &found.crossings {
+                        let (on_line, on_circle) = if line_first {
+                            (hit.on_a, hit.on_b)
+                        } else {
+                            (hit.on_b, hit.on_a)
+                        };
+                        let p = line.point_at(on_line, T).unwrap();
+                        let q = circle.point_at(on_circle, T).unwrap();
+                        assert!(p.distance(q) < 1e-12, "{p:?} against {q:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// Two trims of one circle share whatever stretch they share, across the

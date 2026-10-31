@@ -67,5 +67,5 @@ pub use section::{
     IntersectOptions, ParameterWindow, SectionCurve, SurfaceIntersection, exact_pcurve_of,
     exact_pcurve_over, intersect_surfaces, intersect_surfaces_within,
 };
-pub use surface::{Meeting, surface_surface};
+pub use surface::{Meeting, drum_onto_plane, surface_surface};
 pub use walk::{Condition, Walked, follow, walk_one_way};
