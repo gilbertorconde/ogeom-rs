@@ -7396,16 +7396,48 @@ fn fill(
                 let mut reach = crossing.reach;
                 let mut onto_end = None;
                 if tangential(&contact.curve, crossing.on_a, &e.curve, crossing.on_b, tol)? {
-                    if !at_stated
-                        || !crosses_shallowly(
+                    let shallow = at_stated
+                        && crosses_shallowly(
                             &contact.curve,
                             contact.crange,
                             contact.tolerance,
                             e,
                             (crossing.on_a, crossing.on_b),
                             tol,
-                        )?
-                    {
+                        )?;
+                    if !shallow {
+                        // A touch at the contact's end is the end's vertex
+                        // lying on the edge: the contact's strand ends
+                        // there, and the edge splits at the vertex's foot,
+                        // which is known where the touch is not. A rounded
+                        // box's arc between a corner ball and a round ends
+                        // on a drill's seam that runs along the round's
+                        // tangent line, tangent to it.
+                        if at_end {
+                            let end = if crossing.on_a
+                                < f64::midpoint(contact.crange.0, contact.crange.1)
+                            {
+                                contact.crange.0
+                            } else {
+                                contact.crange.1
+                            };
+                            let vertex = contact.curve.point_at(end, tol)?;
+                            let (gap, on_edge) =
+                                nearest_on_edge_curve(&e.curve, e.crange, vertex, tol)?;
+                            let width = held_radius(&held, contact.node, contact.tolerance)
+                                + held_radius(&held, e.node, e.tolerance);
+                            if gap <= width
+                                && on_edge > e.crange.0 + tol.parametric()
+                                && on_edge < e.crange.1 - tol.parametric()
+                            {
+                                paves.entry(e.node).or_default().push(Pave {
+                                    t: on_edge,
+                                    honesty: honest(contact.tolerance, tol).max(gap),
+                                    across: None,
+                                    spread: 0.0,
+                                });
+                            }
+                        }
                         continue;
                     }
                     reach = 0.0;

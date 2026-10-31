@@ -95,19 +95,10 @@ the split waits on the pole item above. A branch nothing fits (residuals of
 0.1 to 10 near a tangency), and a near-tangent crossing whose capped angle
 term stands at 1e-3 or more, carry their miss.
 
-**A drill's seam along the other part's edge.** A drill whose wall runs along
-a round's tangent line with its own seam on that line: the section hugs an
-edge on both sides and lays no split, and the boolean refuses. A drill tangent
-to a plane along a face's edge, seam there, is the same. Carrying the seam
-onto that face as a contact closes it, but the same contact breaks a drill
-whose seam crosses a face's interior lying in its plane. Turned away, the
-seam closes. On the rounded box (20 by 14 by 10, radius 2) a drill along x
-whose lowest line runs along a bottom round's tangent line on the front or
-back face (radii 1.38 and 1.18) cuts with its seam toward -y and refuses
-with it on that line ("the kept pieces did not close into a shell"). The
-drill lying in `nist_ctc_03`'s plate underside between its rounds refuses
-the same way with its seam toward -z, on the underside, and cuts with it
-toward z or -y.
+**A drill's seam beside the other part's face.** The drill lying in
+`nist_ctc_03`'s plate underside between its rounds was refused with its seam
+toward -z, on the underside, and cut with it toward z or -y; it has not been
+measured since a contact ending tangentially on a seam splits it.
 A drill whose seam stands up to a few tenths of a micron above a block's top
 face cuts through validly; a blind one in the same place is refused: a
 drill of radius 2 along x with its seam 1e-7 above the top refuses as a
@@ -117,7 +108,9 @@ face where the face runs into a round is refused for some seam directions
 and offsets of up to a tenth of a micron: at the stress drill seed 2,
 drill 5 placement on `nist_ctc_03` (radius 32 against the round of radius
 11), all eight seam directions cut on the face, and 23 of the 32 raised or
-lowered by 1e-8 or 1e-7 refuse. Treating a plane and a drum that part by no
+lowered by 1e-8 or 1e-7 refuse. Raised or lowered along z with the seam
+turned in the xz plane, all sixteen raised cut and fifteen of the sixteen
+lowered refuse ("the kept pieces did not close into a shell"). Treating a plane and a drum that part by no
 more than the confusion distance as tangent closes the blind block, but the
 drum's section against the round still sees the drum above the plate, and
 the pieces stop agreeing: twice as many of those placements refused.

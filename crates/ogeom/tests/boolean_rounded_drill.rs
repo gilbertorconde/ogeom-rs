@@ -197,3 +197,116 @@ fn a_drum_through_a_rounded_corner_cuts_and_fills() {
         .shape;
     shares_add_up(&mut model, &rounded, &drum, steiner(dims, r));
 }
+
+/// Cut, common and the drill less the part of `rounded` with `drill` are
+/// valid; cut and common add up to `whole`, and the drill less the part and
+/// the common to the drill's `drilled` volume, each to 1e-9 of it.
+fn three_ways_add_up(
+    model: &mut Model,
+    rounded: &Shape,
+    drill: &Shape,
+    whole: f64,
+    drilled: f64,
+    what: &str,
+) {
+    let mut shares = Vec::new();
+    for (name, made) in [
+        ("cut", ogeom::boolean::cut(model, rounded, drill, T)),
+        ("common", ogeom::boolean::common(model, rounded, drill, T)),
+        (
+            "drill less the part",
+            ogeom::boolean::cut(model, drill, rounded, T),
+        ),
+    ] {
+        let made = made.unwrap_or_else(|e| panic!("{what}, {name}: {e}"));
+        let diagnosis = check(model, &made.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{what}, {name}: {diagnosis}");
+        shares.push(volume(model, &made.shape));
+    }
+    let (cut, common, rest) = (shares[0], shares[1], shares[2]);
+    assert!(
+        (cut + common - whole).abs() < whole * 1e-9,
+        "{what}: cut {cut} + common {common} against Steiner's {whole}"
+    );
+    assert!(
+        (rest + common - drilled).abs() < drilled * 1e-9,
+        "{what}: drill less the part {rest} + common {common} against the drill's {drilled}"
+    );
+}
+
+/// A drill whose axis lies in a flat face of a box rounded at 2 on every
+/// edge, its radius standing it on that face's tangent line with a round,
+/// and its seam on that line. The drill crosses the face and the round at
+/// right angles along the line, so neither section splits anything there:
+/// the drill's piece inside the box is bounded by its own seam. At the line's
+/// ends the edges where the round meets the corner balls run onto the drill
+/// as contacts, tangent to the seam where they end on it, and the seam splits
+/// at those ends.
+#[test]
+fn a_drill_with_its_seam_on_a_rounds_tangent_line_cuts_fills_and_is_cut() {
+    use core::f64::consts::PI;
+    let dims = (20.0, 14.0, 10.0);
+    let mut model = Model::new();
+    let rounded = rounded_box(&mut model, Frame::WORLD, dims, 2.0);
+    let whole = steiner(dims, 2.0);
+    // Along y in the face x = 0, the lowest line on the bottom round's
+    // tangent line z = 2; along x in the faces y = 0 and y = 14, the same;
+    // along y in the bottom face, the line toward -x on the side round's
+    // tangent line x = 2.
+    let cases = [
+        (
+            (0.0, -3.0, 2.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, -1.0),
+            1.124_596_711_687_329_2,
+            20.0,
+        ),
+        (
+            (-5.0, 0.0, 2.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 0.0, -1.0),
+            1.38,
+            30.0,
+        ),
+        (
+            (-5.0, 0.0, 2.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 0.0, -1.0),
+            1.18,
+            30.0,
+        ),
+        (
+            (-5.0, 14.0, 2.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 0.0, -1.0),
+            1.38,
+            30.0,
+        ),
+        (
+            (2.0, -3.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            3.860_952_736_605_640_6,
+            20.0,
+        ),
+    ];
+    for (line, axis, seam, r, length) in cases {
+        let at = (
+            line.0 - seam.0 * r,
+            line.1 - seam.1 * r,
+            line.2 - seam.2 * r,
+        );
+        let drill = make_cylinder(&mut model, frame(at, axis, seam), r, length, T)
+            .unwrap()
+            .shape;
+        let what = format!("radius {r} along {axis:?}, seam toward {seam:?}");
+        three_ways_add_up(
+            &mut model,
+            &rounded,
+            &drill,
+            whole,
+            PI * r * r * length,
+            &what,
+        );
+    }
+}

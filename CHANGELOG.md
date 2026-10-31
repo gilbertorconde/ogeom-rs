@@ -41,6 +41,28 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean splits an edge where an edge of the other solid lying on its
+  face ends on it tangentially.**
+  - An edge of one solid lying in a face of the other is carried onto that
+    face as a contact, and the face's boundary splits where the contact
+    crosses it. A crossing where the two curves are tangent was skipped as
+    a touch, also where it is the contact's own end: the contact's strand
+    then ended on a boundary edge left whole, and dangled.
+  - A drill whose axis lies in a flat face of a rounded box, with its seam
+    on that face's tangent line with a round, crosses the face and the
+    round at right angles along that line, so its piece inside the box is
+    bounded by its own seam. The arcs where the round meets the corner
+    balls run onto the drill as contacts and end on its seam tangent to it.
+    The seam was not split there, and cut, common and the drill less the
+    box were refused ("the kept pieces did not close into a shell").
+  - A tangential crossing at the contact's end now splits the edge at the
+    foot of the contact's end vertex, where it lies within the two edges'
+    tolerances of the edge.
+  - Measured: on a box of 20 by 14 by 10 rounded at 2, five drills (radii
+    1.12 to 3.86, along x and y, seams on the tangent lines of the bottom
+    and side rounds) are valid; cut and common add up to Steiner's volume,
+    and the drill less the box and the common to the drill, to 1e-9.
+
 - **A boolean ends a section's stretch along a face's edge at the edge's
   own vertex.**
   - Where a section runs along a boundary edge, the stretch the edge
