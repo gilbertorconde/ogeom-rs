@@ -5659,6 +5659,12 @@ fn fill(
             *section = rebased;
         }
     }
+    #[cfg(feature = "test-hooks")]
+    work::add(|w| {
+        w.widest_section = sections
+            .iter()
+            .fold(w.widest_section, |widest, s| widest.max(s.tolerance));
+    });
     let grazed = graze_contacts(ga, gb, &sections, &contacts, tol)?;
     contacts.extend(grazed);
     let touched = tangent_contacts(ga, gb, &tangents, &contacts, tol)?;

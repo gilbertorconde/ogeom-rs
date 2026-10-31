@@ -478,3 +478,16 @@ arc, the other on the pocket's corner edge, 1.43e-4 from it. The
 reproducer for a contact ending within its own vertex's radius of the
 other solid's edge: the cut of the wedge from the block was refused (the
 kept pieces did not close into a shell).
+
+## band_wedge_inside_its_junction.ogeom
+
+Two solids in this kernel's native format, as rounding the rim of a
+drafted pocket of a disc up to a chord fuses them
+(`rounds_at_a_bore_meeting_a_drafted_chord_take_all_above_both` in
+`crates/ogeom-fillet/tests/chain.rs`, chord 0.5 off the centre, wall
+drafted 0.1, r = 0.5): the corner wedge of the arc's band (a drum, a torus
+and three planes), and the junction piece of fourteen faces holding it
+whole. The wedge's torus meets the junction's drafted wall all but
+tangentially. The reproducer for a section whose fit swung between two
+samples: it stated a tolerance of 0.156, and the fuse came out a valid
+solid of 0.1191 where the junction alone is 0.1368.

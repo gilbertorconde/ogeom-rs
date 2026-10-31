@@ -205,6 +205,18 @@ pub fn approximate_branch(
             tol,
         )
     };
+    let held = |closed: bool| {
+        ogeom_geom::fit::fit_points_joint_from_held(
+            &points,
+            &unwrapped_a,
+            &unwrapped_b,
+            &stations,
+            closed,
+            3,
+            tolerance,
+            tol,
+        )
+    };
     let meets_itself = {
         let n = points.len();
         let (pa, pb) = (
@@ -227,7 +239,7 @@ pub fn approximate_branch(
     {
         fitted = Some(winding);
     }
-    let (space, on_a, on_b) = match fitted {
+    let mut chosen = match fitted {
         Some(fitted) if fitted.0.error <= tolerance => fitted,
         Some(fitted) => {
             let other = free()?;
@@ -240,10 +252,51 @@ pub fn approximate_branch(
         None => free()?,
     };
 
-    // Measured where it is promised, in millimetres. The joint fit's own
-    // residual mixes space and chart coordinates and says little about
-    // either alone, so it serves only as a bound on what is measured here.
-    let lifted = lift_error(a, b, &on_a, &on_b, &space.curve, tol);
+    let measured =
+        |(space, on_a, on_b): &Joint| measured_error(a, b, (space, on_a, on_b), &points, tol);
+    let mut fit_error = measured(&chosen);
+    // A fit that misses is fitted again from the stations, splitting only
+    // spans that hold samples inside them
+    // ([`ogeom_geom::fit::fit_points_joint_from_held`]): where the first
+    // swung between two samples, this one stays near them. Measured the
+    // same way, the closer stands.
+    if fit_error > tolerance
+        && let Ok(held) = held(branch.closed() && meets_itself)
+    {
+        let again = measured(&held);
+        if again < fit_error {
+            (chosen, fit_error) = (held, again);
+        }
+    }
+    let (space, on_a, on_b) = chosen;
+    Ok(IntersectionCurve {
+        fit_error,
+        met: space.error <= tolerance,
+        curve: space.curve,
+        on_a,
+        on_b,
+        closed: branch.closed(),
+    })
+}
+
+/// How far a joint fit stands from the section it follows, in
+/// millimetres: what [`IntersectionCurve::fit_error`] states.
+///
+/// The joint fit's own residual mixes space and chart coordinates and
+/// says little about either alone, so it serves only as a bound on what
+/// is measured here.
+fn measured_error(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    (space, on_a, on_b): (
+        &ogeom_geom::fit::Fitted<BSplineCurve>,
+        &BSpline2d,
+        &BSpline2d,
+    ),
+    points: &[ogeom_math::Point],
+    tol: Tolerances,
+) -> f64 {
+    let lifted = lift_error(a, b, on_a, on_b, &space.curve, tol);
     // Where the surfaces meet at a shallow angle, a curve microns off both
     // can still sit far along them from where they cross. That distance is
     // the surfaces' gap over the sine of their angle, and it is no more than
@@ -253,7 +306,7 @@ pub fn approximate_branch(
     // at the samples. The smaller of the two stands.
     let crossing = if lifted.unsettled {
         let charted =
-            space_error(a, &on_a, space.error, tol).max(space_error(b, &on_b, space.error, tol));
+            space_error(a, on_a, space.error, tol).max(space_error(b, on_b, space.error, tol));
         lifted.lifted_off.max(charted.max(space.error))
     } else {
         lifted.lifted_off
@@ -264,19 +317,11 @@ pub fn approximate_branch(
         .max(lifted.across.min(crossing));
     // Each sample's distance from the curve, which the fit's residual
     // already bounds: read only where that bound would decide the error.
-    let fit_error = if space.error <= lifted {
+    if space.error <= lifted {
         lifted
     } else {
-        lifted.max(trace_error(&space.curve, &points, space.error, tol))
-    };
-    Ok(IntersectionCurve {
-        fit_error,
-        met: space.error <= tolerance,
-        curve: space.curve,
-        on_a,
-        on_b,
-        closed: branch.closed(),
-    })
+        lifted.max(trace_error(&space.curve, points, space.error, tol))
+    }
 }
 
 /// A joint fit: the curve, and its images on the two surfaces.

@@ -2069,7 +2069,8 @@ mod tests {
     }
 
     /// The marches of a ball of `radius` along where the supports' offsets
-    /// cross, each in order along its guide.
+    /// cross, each in order along its guide, the guide traced at a chord
+    /// of a thousandth.
     fn marches(hosts: &Hosts, radius: f64) -> Vec<(Curve, MarchedBlend)> {
         #[allow(clippy::cast_possible_truncation, reason = "a sign")]
         let sides = Sides {
@@ -2085,7 +2086,13 @@ mod tests {
         let SurfaceIntersection::Along(guides) = ogeom_intersect::intersect_surfaces(
             &offset(first, sides.first),
             &offset(second, sides.second),
-            IntersectOptions::default(),
+            IntersectOptions {
+                marching: Marching {
+                    chord: 1e-3,
+                    ..Marching::default()
+                },
+                ..IntersectOptions::default()
+            },
             T,
         )
         .unwrap() else {
@@ -2220,8 +2227,9 @@ mod tests {
         out
     }
 
-    /// Where the patch twists and ripples, the ball's touch point on the
-    /// floor runs unevenly in the guide's parameter, and a fit through
+    /// Where the patch twists and ripples along a guide traced coarsely,
+    /// the ball's touch point on the floor runs unevenly in the guide's
+    /// parameter, and a fit through
     /// the march's stations alone strays from the true contact between
     /// them by ten times its target. The line held to the contact between
     /// the stations stands within the error it states, read every eighth

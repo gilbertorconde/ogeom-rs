@@ -85,15 +85,24 @@ one of the 90 closes into a valid result. What remains:
   other over a region: pair it as same-domain and split it where the planes
   part by the weld distance.
 
-**A section whose fit misses widens its junctions as far.** A marched section
-keeps its fit's measured error as its tolerance, and the paving's reach and
-the junctions along an edge grow with it, unbounded. Two sources remain. A
-section through or beside a sphere's pole fits its samples, but its sphere
-pcurve strays up to 0.09 between them; split at the pole sample each piece
-measures under 1e-3, but the boolean then refuses a drill it passes whole, so
-the split waits on the pole item above. A branch nothing fits (residuals of
-0.1 to 10 near a tangency), and a near-tangent crossing whose capped angle
-term stands at 1e-3 or more, carry their miss.
+**A section whose fit misses widens its junctions as far.** A marched
+section keeps its fit's measured error as its tolerance, and the paving's
+reach and the junctions along an edge grow with it, unbounded. Over the
+workspace suite (heavy tier included) and the stress suite at seeds 1 to
+4, a boolean's sections no longer state more than 2.1e-3, with a sphere
+chart's pole met only where the chart is left unturned, which refuses.
+Three still miss by more than a few chords. A section of two skinned
+lens runs ends with its sample 5.8e-4 past the edge of one patch's chart,
+and its pcurve, lifted there, stands 2.1e-3 off the curve
+(`sections_off_the_spine_round_a_lens_glue_their_runs_on_the_mitre_planes`
+in `crates/ogeom/tests/pipe_laws.rs`). A skin running tangent to a mitre
+plane (`an_off_centre_section_down_an_l_mitres_between_skinned_runs` in
+`crates/ogeom/tests/pipe_corners.rs`) states 1.6e-3, the surfaces' normals
+there parallel to 1e-14. A drum meeting a
+face blend's patch at a few ten-thousandths of a radian states up to
+5.2e-4 (the stress face-blend scenarios), where the section solved
+between two samples lands tens of chords off their chord and is not
+filled in.
 
 **A drill's seam beside the other part's face.** The drill lying in
 `nist_ctc_03`'s plate underside between its rounds was refused with its seam

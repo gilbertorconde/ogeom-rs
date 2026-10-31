@@ -423,6 +423,61 @@ pub fn fit_points_joint_from(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
+    joint_from(
+        points, on_a, on_b, stations, closed, degree, tolerance, false, tol,
+    )
+}
+
+/// As [`fit_points_joint_from`], splitting a span only where samples lie
+/// strictly inside it on both sides of the new knot.
+///
+/// The refinement splits a span between its two middle samples. Where a
+/// span holds two samples, one on its own start knot, that leaves a span
+/// whose only sample sits on its knot: nothing holds the cubic inside it,
+/// and the fit can pass every sample and swing between two of them by far
+/// more than their spacing, a turn round a drum in its chart image between
+/// samples a fraction of a millimetre apart. Here such a span is left
+/// whole and the fit stops there, its residual stated as it is.
+///
+/// # Errors
+///
+/// As [`fit_points_joint_from`].
+#[allow(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    reason = "one trace in three spaces, its stations and the fit's terms"
+)]
+pub fn fit_points_joint_from_held(
+    points: &[Point],
+    on_a: &[Point2],
+    on_b: &[Point2],
+    stations: &[usize],
+    closed: bool,
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
+    joint_from(
+        points, on_a, on_b, stations, closed, degree, tolerance, true, tol,
+    )
+}
+
+#[allow(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    reason = "one trace in three spaces, its stations and the fit's terms"
+)]
+fn joint_from(
+    points: &[Point],
+    on_a: &[Point2],
+    on_b: &[Point2],
+    stations: &[usize],
+    closed: bool,
+    degree: usize,
+    tolerance: f64,
+    within: bool,
+    tol: Tolerances,
+) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d, BSpline2d)> {
     if points.len() != on_a.len() || points.len() != on_b.len() {
         ogeom_bail!(
             Construction,
@@ -465,6 +520,7 @@ pub fn fit_points_joint_from(
         closed,
         false,
         &kept,
+        within,
     )?;
     let Some(control) = controls.pop() else {
         ogeom_bail!(NotDone, "the joint fit solved nothing");
@@ -656,7 +712,7 @@ pub fn fit_points_at(
         if knots.control_point_count() >= data.len() {
             break;
         }
-        let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
+        let Some(refined) = refined_where_bad(&knots, &errors, tolerance, false)? else {
             break;
         };
         knots = refined_or_interpolating(refined, parameters, false)?;
@@ -812,6 +868,7 @@ fn sampled<const D: usize, P>(
                 closed,
                 interpolate,
                 &[],
+                false,
             )?;
             let Some(control) = controls.pop() else {
                 ogeom_bail!(NotDone, "the curve fit solved nothing");
@@ -985,6 +1042,7 @@ pub fn fit_trace_sampled(
                 false,
                 interpolate,
                 &[],
+                false,
             )?;
             let Some(control) = controls.pop() else {
                 ogeom_bail!(NotDone, "the trace fit solved nothing");
@@ -1258,7 +1316,7 @@ fn fit_points_2d_at_inner(
         if knots.control_point_count() >= data.len() {
             break;
         }
-        let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
+        let Some(refined) = refined_where_bad(&knots, &errors, tolerance, false)? else {
             break;
         };
         knots = refined_or_interpolating(refined, parameters, closed)?;
@@ -1418,7 +1476,7 @@ fn fit_spaced<const D: usize>(
         if knots.control_point_count() >= points.len() + usize::from(closed) {
             break;
         }
-        let Some(refined) = refined_where_bad(&knots, &errors, tolerance)? else {
+        let Some(refined) = refined_where_bad(&knots, &errors, tolerance, false)? else {
             break;
         };
         knots = refined_or_interpolating(refined, &parameters, closed)?;
@@ -3017,6 +3075,7 @@ fn fit_grid_on(
         false,
         interpolate,
         u_kept,
+        false,
     )?;
     // Pass two: the columns of control points, against the v parameters.
     let k = u_knots.control_point_count();
@@ -3031,6 +3090,7 @@ fn fit_grid_on(
         closed_v,
         interpolate,
         v_kept,
+        false,
     )?;
     let l = v_knots.control_point_count();
 
@@ -3069,7 +3129,13 @@ type FamilyRound<const D: usize> = (KnotVector, Vec<Vec<[f64; D]>>, f64);
 /// refined against the worst residual across the whole family, parameters
 /// held fixed. The `kept` interior knots, `(parameter, multiplicity)`,
 /// are in the vector from the start and stay; they are not combined with
-/// interpolation, whose knots follow the parameters alone.
+/// interpolation, whose knots follow the parameters alone. Where `within`,
+/// a span is split only so each part holds a parameter strictly inside it
+/// ([`refined_where_bad`]).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the family, its parameters and the fit's terms"
+)]
 fn fit_family<const D: usize>(
     family: &[Vec<[f64; D]>],
     parameters: &[f64],
@@ -3078,6 +3144,7 @@ fn fit_family<const D: usize>(
     closed: bool,
     interpolate: bool,
     kept: Kept<'_>,
+    within: bool,
 ) -> OgeomResult<(KnotVector, Vec<Vec<[f64; D]>>)> {
     let degree = degree.min(parameters.len() - 1).max(1);
     let (a, b) = (parameters[0], parameters[parameters.len() - 1]);
@@ -3128,7 +3195,7 @@ fn fit_family<const D: usize>(
         {
             break;
         }
-        let Some(refined) = refined_where_bad(&knots, &merged, tolerance)? else {
+        let Some(refined) = refined_where_bad(&knots, &merged, tolerance, within)? else {
             break;
         };
         // A refinement past one control point per datum leaves spans with
@@ -3651,6 +3718,8 @@ fn wandering<const D: usize>(
 ///
 /// `None` when no span can be split further: every bad span holds fewer than
 /// two parameters, and a knot needs data on both sides to be supported.
+/// Where `within`, a parameter on a span's own start knot is not counted,
+/// so each span a split makes holds one strictly inside it.
 ///
 /// Errors in strictly increasing parameter order, as a fit at fixed
 /// parameters gives them, hold each span's samples as one run, found by
@@ -3659,6 +3728,7 @@ fn refined_where_bad(
     knots: &KnotVector,
     errors: &[(f64, f64)],
     tolerance: f64,
+    within: bool,
 ) -> OgeomResult<Option<KnotVector>> {
     let distinct = knots.distinct();
     let mut refined = knots.clone();
@@ -3678,6 +3748,11 @@ fn refined_where_bad(
                 .collect()
         };
         let bad = inside.iter().any(|(_, e)| *e > tolerance);
+        let inside = if within {
+            std::borrow::Cow::Owned(inside.iter().filter(|(u, _)| *u > lo).copied().collect())
+        } else {
+            inside
+        };
         if !bad || inside.len() < 2 {
             continue;
         }

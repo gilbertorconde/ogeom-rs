@@ -2227,6 +2227,66 @@ fn a_round_capped_tangent_to_a_bore_cuts_either_way() {
     }
 }
 
+/// The corner wedge of a drafted pocket's arc band and the junction piece
+/// holding it, as rounding the pocket's rim takes them. The wedge's torus
+/// meets the junction's drafted wall all but tangentially, and the fit of
+/// their section swung out past the end of the wall's chart between two
+/// samples and stated a tolerance of 0.156. The fuse came
+/// out a valid solid of 0.1191 where the junction holding the wedge is
+/// 0.1368. The wedge lies inside the junction, so the fuse is the junction,
+/// the common the wedge, and no section between them states more than a
+/// thousand times the looser operand's widest tolerance, the budget the
+/// boolean holds a marched fit to in its own fallback.
+#[test]
+fn a_wedge_inside_its_junction_fuses_to_the_junction() {
+    let (model, roots) =
+        ogeom::io::native::read(&corpus("band_wedge_inside_its_junction.ogeom")).unwrap();
+    let (wedge, junction) = (&roots[0], &roots[1]);
+    let volume = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| {
+        let diagnosis = ogeom::algo::check(model, shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        ogeom::algo::volume_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let widest = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| {
+        explore_unique(model, shape, ShapeType::Edge)
+            .unwrap()
+            .iter()
+            .filter_map(|e| model.node(e).and_then(|n| n.data().as_edge()))
+            .fold(0.0_f64, |w, d| w.max(d.tolerance.get()))
+    };
+    let budget = widest(&model, wedge).max(widest(&model, junction)) * 1e3;
+    let (whole, inside) = (volume(&model, junction), volume(&model, wedge));
+    let mut model = model.clone();
+    let (fused, work) =
+        ogeom_bool::work::counted(|| ogeom::boolean::fuse(&mut model, wedge, junction, T));
+    let fused = fused.unwrap().shape;
+    assert!(
+        work.widest_section <= budget,
+        "a section states {} against {budget}",
+        work.widest_section
+    );
+    assert!(
+        widest(&model, &fused) <= budget,
+        "an edge states {} against {budget}",
+        widest(&model, &fused)
+    );
+    let fused = volume(&model, &fused);
+    assert!(
+        (fused - whole).abs() <= 1e-8,
+        "fuse {fused} against {whole}"
+    );
+    let common = ogeom::boolean::common(&mut model, wedge, junction, T)
+        .unwrap()
+        .shape;
+    let common = volume(&model, &common);
+    assert!(
+        (common - inside).abs() <= 1e-8,
+        "common {common} against {inside}"
+    );
+}
+
 /// The ring wedge a fillet junction joins round a pentagon pocket, cut
 /// to a box round one corner, against the pocketed block cut the same way
 /// (`contact_ending_inside_a_wide_vertex.ogeom`). Two of the wedge's edges

@@ -119,6 +119,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A marched section's fit no longer swings between its samples.**
+  - The joint fit of a marched section split a span between its two middle
+    samples. Where a span held two samples, one on its own start knot,
+    that left a span whose only sample sat on its knot, and the fit could
+    pass every sample and swing between two of them: a pcurve ran a turn
+    round a drum, or out past the end of a wall's chart, and the section
+    stated a tolerance of 0.156 to 11. A fit that misses is now fitted
+    again splitting only spans with samples inside them, and the closer of
+    the two, measured the same way, stands. Over the workspace suite and
+    the stress suite at seeds 1 to 4, the widest section a boolean states
+    outside a sphere chart's pole falls from 11.1 to 2.1e-3. A drafted
+    pocket's band wedge fused into the junction holding it came out a
+    valid solid of 0.1191 where the junction alone is 0.1368; it is now
+    the junction to 1e-8. A slanted drum's rim rounded at 0.058 gave a
+    valid solid whose volume could not be measured and that had lost the
+    drum's wall; it is now refused.
+
 - **A marched face blend reads its side inside the ball's lune.**
   - Between faces whose surfaces share no direction or axis (a pipe and
     its branch, a leaning drum and the block it stands in), `blend_faces`

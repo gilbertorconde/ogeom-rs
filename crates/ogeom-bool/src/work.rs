@@ -5,7 +5,7 @@
 use std::cell::Cell;
 
 /// What the booleans run on one thread did, summed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Work {
     /// Faces gathered into the general fuse, both operands', each time one
     /// is run.
@@ -23,6 +23,9 @@ pub struct Work {
     /// Attempts made with contacts ended where their curves part by the
     /// radius they hold to, the last a refused boolean is retried with.
     pub stated_retries: usize,
+    /// The widest tolerance any section between the two operands states,
+    /// over every general fuse run.
+    pub widest_section: f64,
 }
 
 thread_local! {
@@ -34,6 +37,7 @@ thread_local! {
             seated_cuts: 0,
             seated_fills: 0,
             stated_retries: 0,
+            widest_section: 0.0,
         })
     };
     static UNSEATED: Cell<bool> = const { Cell::new(false) };
