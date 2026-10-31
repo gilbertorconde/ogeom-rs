@@ -19,7 +19,10 @@
 //! part), read on volumes integrated on the exact surfaces and held to a
 //! millionth of the solids. A solid the exact integral refuses is measured
 //! on a fine tessellation instead, allowed the chord times its area on
-//! top, and the report lists those cases.
+//! top, and the report lists those cases. The face-blend scenario
+//! (`faceblend`) holds `blend_faces` and `fillet_faces` to the rolling ball
+//! worked out from the inputs alone: whether one rolls, the round's
+//! distance from its centres, and the volume it takes off or adds.
 //!
 //! `ogeom-stress` runs every scenario and prints the tally. `--check
 //! <baseline.json>` fails when a scenario has fewer `ok` or more bad cases
@@ -48,6 +51,8 @@ use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Frame, Point, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape, ShapeType, explore_unique};
+
+mod faceblend;
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -1806,6 +1811,15 @@ fn cases(seed: u64, per_part: usize, corpus: bool) -> Vec<Case> {
         out.push(Case {
             key,
             run: Box::new(move || chain_case(&mut Rng::new(s))),
+        });
+    }
+    for i in 0..per_part * 6 {
+        let family = faceblend::FAMILIES[i % faceblend::FAMILIES.len()];
+        let key = format!("faceblend/{family}/{i}");
+        let s = case_seed(seed, &key);
+        out.push(Case {
+            key,
+            run: Box::new(move || faceblend::faceblend_case(family, &mut Rng::new(s))),
         });
     }
     for (scenario, oblique) in [("pairs", false), ("oblique", true)] {
