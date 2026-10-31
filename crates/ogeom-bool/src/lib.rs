@@ -77,10 +77,14 @@ use arrange::{Strand, Traversal, assemble as arrange_pieces, inside_many, inside
 /// Parameter-space chord for the polyline scaffolding.
 const SCAFFOLD_CHORD: f64 = 1e-3;
 
-/// How far a curved strand's chords may stand off its curve on a plane. A
-/// piece is classified by a point inside its polyline outline, and a piece
-/// thinner than its outline's chords bow (the cap annulus between two drums
-/// a thousandth apart in radius) has that point outside the true piece.
+/// How far a curved strand's chords may stand off its curve on a plane, and
+/// a face outline's chords off its pcurves on any surface. A piece is
+/// classified by a point inside its polyline outline, and a piece thinner
+/// than its outline's chords bow (the cap annulus between two drums a
+/// thousandth apart in radius) has that point outside the true piece. A
+/// section's piece is kept on a face by its middle read against the face's
+/// outline, and a piece standing nearer the rim than the rim's chords bow
+/// (an arc between two crossings of a bowed seam) reads on the wrong side.
 const STRAND_SAG: f64 = 1e-4;
 
 /// Samples enough that a curve's chords stand within [`STRAND_SAG`] of it in
@@ -441,11 +445,11 @@ struct GFace {
     /// The edges its rings walk out along and straight back ([`slits`]),
     /// left out of `edges`.
     slits: ogeom_core::FastSet<EdgeKey>,
-    /// The face's boundary polylined in its chart, both seam columns, ends
-    /// welded: the trim [`chart_point_within`] tests against. Built the first
-    /// time a probe asks and kept, since the same face is asked about once
-    /// per piece that might lie on it. `None` where a pcurve would not
-    /// polyline.
+    /// The face's boundary polylined in its chart within [`STRAND_SAG`],
+    /// both seam columns, ends welded: the trim [`chart_point_within`]
+    /// tests against. Built the first time a probe asks and kept, since the
+    /// same face is asked about once per piece that might lie on it. `None`
+    /// where a pcurve would not polyline.
     outline: std::sync::OnceLock<Option<Vec<Vec<Point2>>>>,
     /// [`GFace::outline`] with its lines' boxes, for asking whether many
     /// points lie inside it.
@@ -485,7 +489,7 @@ impl GFace {
                 let mut lines: Vec<Vec<Point2>> = Vec::new();
                 for e in &self.edges {
                     lines.push(
-                        pcurve_polyline(
+                        pcurve_polyline_within_sag(
                             &e.pcurve,
                             e.prange,
                             e.crange,
@@ -500,8 +504,15 @@ impl GFace {
                     // band as outside.
                     if let Some((other, orange)) = &e.other_side {
                         lines.push(
-                            pcurve_polyline(other, *orange, e.crange, e.crange, &self.surface, tol)
-                                .ok()?,
+                            pcurve_polyline_within_sag(
+                                other,
+                                *orange,
+                                e.crange,
+                                e.crange,
+                                &self.surface,
+                                tol,
+                            )
+                            .ok()?,
                         );
                     }
                 }
@@ -2876,6 +2887,34 @@ fn pcurve_polyline(
     surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Point2>> {
+    let sagged = matches!(surface, SurfaceGeometry::Plane(_));
+    chart_polyline(pcurve, prange, crange, sub, surface, sagged, tol)
+}
+
+/// [`pcurve_polyline`] with its chords held within [`STRAND_SAG`] of the
+/// pcurve on any surface, not only on a plane.
+fn pcurve_polyline_within_sag(
+    pcurve: &PlanarCurve,
+    prange: (f64, f64),
+    crange: (f64, f64),
+    sub: (f64, f64),
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Point2>> {
+    chart_polyline(pcurve, prange, crange, sub, surface, true, tol)
+}
+
+/// The pcurve's course over a sub-range of the curve's parameters, its
+/// chords within [`STRAND_SAG`] where `sagged`.
+fn chart_polyline(
+    pcurve: &PlanarCurve,
+    prange: (f64, f64),
+    crange: (f64, f64),
+    sub: (f64, f64),
+    surface: &SurfaceGeometry,
+    sagged: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Point2>> {
     let lo = rescale(sub.0, crange, prange);
     let hi = rescale(sub.1, crange, prange);
     // Enough samples that the first step approximates the tangent and the
@@ -2911,7 +2950,7 @@ fn pcurve_polyline(
         let steps = steps.clamp(1.0, 4096.0) as usize;
         count = count.max(steps);
     }
-    if matches!(surface, SurfaceGeometry::Plane(_)) && !matches!(pcurve, PlanarCurve::Line(_)) {
+    if sagged && !matches!(pcurve, PlanarCurve::Line(_)) {
         count = match circle_sag_count(pcurve, lo, hi, count) {
             Some(count) => count,
             None => sag_count(&|t| pcurve.point_at(t, tol), lo, hi, count)?.0,
@@ -5617,7 +5656,7 @@ fn fill(
     let outline = |face: &GFace| -> OgeomResult<Vec<Vec<Point2>>> {
         let mut lines = Vec::new();
         for e in &face.edges {
-            lines.push(pcurve_polyline(
+            lines.push(pcurve_polyline_within_sag(
                 &e.pcurve,
                 e.prange,
                 e.crange,
@@ -5626,7 +5665,7 @@ fn fill(
                 tol,
             )?);
             if let Some((other, orange)) = &e.other_side {
-                lines.push(pcurve_polyline(
+                lines.push(pcurve_polyline_within_sag(
                     other,
                     *orange,
                     e.crange,

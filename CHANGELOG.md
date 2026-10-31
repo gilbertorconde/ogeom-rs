@@ -41,6 +41,28 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean keeps a section's arc on a curved face only where it lies
+  inside the face's true trim.**
+  - Each piece of a section between its crossings with a face's boundary
+    is kept on the face by its middle, read against the face's outline
+    polylined in the chart. On a curved surface the outline took a fixed
+    number of samples per edge, and its chords could cut across a bow of
+    the trim wider than a piece's distance from it. A torus and a ball
+    fused, then cut by a torus whose sections cross the fused seam twice
+    0.25 apart, where the seam bows 0.008 radian off its chord on the
+    ball: the arc of each section between the crossings stands 0.011 off
+    the seam and 0.008 inside the other operand, yet read inside its face,
+    and the cut was refused ("the kept pieces did not close into a
+    shell").
+  - The outline's chords now stand within the strand sag (1e-4 in the
+    chart) of its pcurves on every surface, as they did on a plane. The
+    outline only gains samples, so a reading changes only for a point
+    nearer the trim than the old chords bowed.
+  - The cut and the common add up to the fused solid to 1e-7, and the
+    fused solid and the first two's common to the torus's and the ball's
+    closed-form volumes. Chain stress at seeds 1 to 12 with 100 cases per
+    part: 3598 of 3600 (3597 before).
+
 - **Mesh conversion builds a single facet beside a curved face as a fan
   where its seam would stand wider than the reach.**
   - A cylinder or torus fitted to a piece of a spline face (a blend, a

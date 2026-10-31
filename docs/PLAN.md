@@ -143,7 +143,7 @@ carry the short piece into the long one, across the closed section's
 join, which a piece's range does not yet pass.
 
 **A section passing beside a ball's pole in a chain.** Of the chain stress
-scenario's 3600 cases at seeds 1 to 12 with 100 cases per part, 3 are
+scenario's 3600 cases at seeds 1 to 12 with 100 cases per part, 2 are
 refused. Seed 10's `chain/primitives/29`, a torus and a ball fused and cut
 by a ball, and seed 11's `chain/primitives/62` are refused by name ("a
 branch passing beside a chart's pole fits nothing yet"). In seed 10's
@@ -154,8 +154,7 @@ marched pair misses its trace by 0.011. Fitted with its error read between
 the samples, the image holds to 8.7e-7, but the cut then comes out with a
 face `check` reads as turned inward, and the cut and the common miss the
 fused solid by 15.7: the piece bounded by an image winding round the pole
-a hair from it is not yet split and classified rightly. Seed 8's
-`chain/primitives/284` is refused as kept pieces that do not close.
+a hair from it is not yet split and classified rightly.
 
 ### Fillets and blends
 

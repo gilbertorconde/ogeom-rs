@@ -327,3 +327,116 @@ fn a_fused_ball_face_whose_section_crosses_its_seam_beside_the_pole_is_cut() {
         "cut {kept} + common {shared} against {measured}"
     );
 }
+
+/// A torus and a ball fused, then cut by a second torus whose sections
+/// cross the fused seam twice a hundredth of a millimetre apart, where the
+/// seam bows between the crossings by more than that. The arc of each
+/// section between the crossings lies inside the other operand and on
+/// neither fused face; read against a face outline whose chords cut across
+/// the bow, both arcs read inside their faces, and the kept pieces did not
+/// close. The cut and the common add up to the fused solid, and the fused
+/// solid and the first two's common to the torus and the ball.
+#[test]
+fn a_section_crossing_a_bowed_fused_seam_twice_close_together_is_trimmed_by_it() {
+    let mut model = Model::new();
+    let (major, minor) = (2.667_455_290_041_892_6, 0.944_581_982_922_587_7);
+    let ring = ogeom::algo::make_torus(
+        &mut model,
+        frame(
+            [
+                2.190_991_776_198_397_5,
+                -1.672_874_258_614_358_6,
+                -1.301_708_966_940_314_8,
+            ],
+            [
+                -0.342_447_767_989_901,
+                -0.718_629_797_426_728_3,
+                0.605_227_841_766_350_5,
+            ],
+            [
+                -0.939_536_867_929_479,
+                0.261_930_296_234_303_2,
+                -0.220_596_903_232_740_87,
+            ],
+        ),
+        major,
+        minor,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let radius = 1.887_274_072_171_815_3;
+    let ball = ogeom::algo::make_sphere(
+        &mut model,
+        frame(
+            [
+                1.749_738_635_071_303,
+                0.296_105_230_908_845_66,
+                -1.327_061_519_051_863_8,
+            ],
+            [
+                -0.780_490_395_450_219_7,
+                -0.597_201_210_969_75,
+                0.184_893_094_046_868_05,
+            ],
+            [-0.0, 0.295_749_561_085_824, 0.955_265_511_320_042_7],
+        ),
+        radius,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let cutter = ogeom::algo::make_torus(
+        &mut model,
+        frame(
+            [
+                1.073_495_874_185_432_8,
+                -0.432_176_061_383_354_07,
+                -0.508_354_819_639_134_1,
+            ],
+            [
+                0.487_571_345_070_652_1,
+                -0.581_791_432_783_320_9,
+                -0.650_993_788_146_957_5,
+            ],
+            [
+                -0.873_083_148_082_698_6,
+                -0.324_900_133_573_391_2,
+                -0.363_546_035_239_001_7,
+            ],
+        ),
+        1.831_766_660_605_446_6,
+        0.681_031_088_147_804,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &ring, &ball, T)
+        .unwrap()
+        .shape;
+    let lens = ogeom::boolean::common(&mut model, &ring, &ball, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &fused, &cutter, T)
+        .unwrap()
+        .shape;
+    let common = ogeom::boolean::common(&mut model, &fused, &cutter, T)
+        .unwrap()
+        .shape;
+    for (name, shape) in [("fused", &fused), ("cut", &cut), ("common", &common)] {
+        let diagnosis = ogeom::algo::check(&model, shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+    }
+    let pi = core::f64::consts::PI;
+    let both = 2.0 * pi * pi * major * minor * minor + 4.0 / 3.0 * pi * radius.powi(3);
+    let (whole, shared) = (volume(&model, &fused), volume(&model, &lens));
+    assert!(
+        (whole + shared - both).abs() <= both * 1e-7,
+        "fused {whole} + common {shared} against {both}"
+    );
+    let (kept, inside) = (volume(&model, &cut), volume(&model, &common));
+    assert!(
+        (kept + inside - whole).abs() <= whole * 1e-7,
+        "cut {kept} + common {inside} against {whole}"
+    );
+}
