@@ -68,7 +68,7 @@ pub(crate) fn consumed_seat(
 }
 
 /// The straight seat of `edge`, `None` where it has none.
-fn seat_of(
+pub(crate) fn seat_of(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
@@ -82,7 +82,11 @@ fn seat_of(
 }
 
 /// A straight edge's two ends, placed in the world; `None` for a curved one.
-fn segment(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Option<[Point; 2]>> {
+pub(crate) fn segment(
+    model: &Model,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<[Point; 2]>> {
     if model
         .node(edge)
         .and_then(|n| n.data().as_edge())

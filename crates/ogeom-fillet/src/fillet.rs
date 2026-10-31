@@ -46,7 +46,11 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// (a chamfer, a narrow top), the ball rolls between the planes either
 /// side of the strip, and where the strip lies wholly in the corner that
 /// ball takes off, the round is that ball's cylinder and the strip goes
-/// with the corner. One
+/// with the corner. Where a concave edge's face is such a strip and its
+/// far edge is straight and convex (the seam where two solids are fused
+/// at a slant), the ball touches the other face and rests on that far
+/// edge, and where it does so alone over the whole crease, clear of every
+/// other face, the round is the band fitted through those balls' arcs. One
 /// thing differs: where the edge ends against a neighbouring blend, this
 /// blend stops flush there instead of running on through it. Three such
 /// flush blends and their vertex are what
@@ -60,8 +64,9 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// [`OgeomError::Construction`] if the edge is
 /// neither of the seats above, is concave, or `radius` is not a usable
 /// length, or the ball sets back past the far side of a face into the
-/// material, or past it all along the edge where no strip is taken off as
-/// above.
+/// material, or past it all along the edge where no strip is taken off and
+/// no far edge holds the ball as above; naming why where the ball rests
+/// on such a far edge but leaves it, or another face, along the crease.
 pub fn fillet_edge(
     model: &mut Model,
     solid: &Shape,
@@ -120,7 +125,11 @@ fn consuming(
         return Err(refusal);
     }
     let Some(seat) = crate::consumed::consumed_seat(model, solid, edge, radius, tol)? else {
-        return Err(refusal);
+        let Some(mut built) = crate::rolled::rolled_fillet(model, solid, edge, radius, tol)? else {
+            return Err(refusal);
+        };
+        crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+        return Ok(built);
     };
     let mut built = seated_fillet(model, solid, &seat, radius, Some(edge), &[], tol)?;
     crate::support::credit_new_faces(model, solid, edge, &mut built)?;
@@ -606,18 +615,24 @@ fn fillet_edges_own(
             j == i || (!f.iter().any(|x| faces.contains(x)) && !e.iter().any(|x| ends.contains(x)))
         })
     };
+    // Edges sharing nothing with the rest of the request whose ball rests
+    // on the far edge of a narrow face beside them, rounded as alone.
+    let mut rolled = vec![false; edges.len()];
     let fitted = crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
         // A band checked against no other is held to what one edge alone
         // is.
         for (i, edge) in edges.iter().enumerate() {
-            contacts.push(crate::support::ball_fits(
-                model,
-                solid,
-                edge,
-                radius,
-                alone(i),
-                tol,
-            )?);
+            match crate::support::ball_fits(model, solid, edge, radius, alone(i), tol) {
+                Ok(found) => contacts.push(found),
+                Err(refusal @ OgeomError::Construction(_)) if edges.len() > 1 && alone(i) => {
+                    if crate::rolled::rolled_run(model, solid, edge, radius, tol)?.is_none() {
+                        return Err(refusal);
+                    }
+                    rolled[i] = true;
+                    contacts.push(Vec::new());
+                }
+                Err(other) => return Err(other),
+            }
         }
         Ok(())
     });
@@ -1031,6 +1046,19 @@ fn fillet_edges_own(
             };
             let mut step = {
                 let (step, wedges) = crate::support::collecting_wedges(|| {
+                    if rolled[index] {
+                        let Some(mut built) =
+                            crate::rolled::rolled_fillet(model, &current, target, radius, tol)?
+                        else {
+                            ogeom_bail!(
+                                Construction,
+                                "the ball no longer rests on the far edge beside an edge \
+                                 of the chain"
+                            );
+                        };
+                        crate::support::credit_new_faces(model, &current, target, &mut built)?;
+                        return Ok(built);
+                    }
                     fillet_edge_meeting(
                         model,
                         &current,

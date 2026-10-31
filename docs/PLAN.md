@@ -203,16 +203,26 @@ either side of the strip and, where the strip lies wholly in the corner
 it takes off, the strip goes with the corner (`consumed.rs`). Owed there:
 the concave mirror (a flat in an inside corner), whose fill's caps need
 the solid past the strip's ends read as open, and ends not square to the
-edge. Where the far edge turns the other way, the ball rolls over it,
-and the round touches the other face and the far edge as a rolling
-circle. In the stress run's blend scenario these are 11 of the 18
-refusals at seeds 1 to 4, and every one is of that kind: a concave seam
-where two oblique boxes are fused, the narrow face a strip of one box's
-face between the seam and that box's convex edge, which runs oblique to
-both the seam and the other face. The ball touching a plane and a line
-oblique to it has its centre on an ellipse, so the round is a marched
-band from the face's line of contact to the far edge, meeting the face
-beyond that edge at a crease. Within a request, the ball also refuses where its contact
+edge. Where the far edge turns the other way (a concave seam where two
+solids are fused at a slant), the ball touches the other face and rests
+on the far edge, its centre on the ellipse where the plane a radius off
+that face meets the cylinder a radius about the edge, and where it rests
+on that edge alone over the whole crease the round is the band through
+its arcs (`rolled.rs`). Of the 11 stress blend refusals of that kind at
+seeds 1 to 4, three round alone (seed 1 cases 12 and 48, seed 4 case 31)
+and two of those in their requests. The rest are refused by name: the
+ball comes down on the strip along the crease (seed 3 cases 4, 32 and
+33) or onto the face beyond the far edge (seed 3 cases 17 and 54), its
+contact runs off the face it touches (seed 1 case 36, seed 4 case 48),
+or it runs past the far edge's end round a corner of a triangular strip
+(seed 2 case 54). Owed: the run carried across those changes. Onto the
+strip it goes on as the cylinder between the two planes, tangent to the
+band where the ellipse meets that cylinder's axis, the band's rail
+turning there from the far edge onto the strip; round a corner of the
+strip the centre runs on the circle a radius about the corner; beyond
+the far edge the ball rounds the seam between the other face and the
+face beyond, another edge's round. Seed 1 case 12 rounds alone, but
+another edge of its request shares a face with it. Within a request, the ball also refuses where its contact
 runs off a face anywhere along an edge that shares a face or a vertex
 with another of the request (4 refusals): the band's contacts are checked
 against its neighbours' and an off-face contact holds none to check. Owed:

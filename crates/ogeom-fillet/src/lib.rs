@@ -15,6 +15,7 @@ pub mod march;
 mod marched;
 mod pair_marched;
 mod pinched;
+mod rolled;
 mod ruled;
 pub mod sheet;
 mod sheet_curved;

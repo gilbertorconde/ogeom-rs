@@ -13,6 +13,28 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A concave edge round whose ball rests on the far edge of a strip
+  beside it.**
+  - Where `fillet_edge` or `fillet_edges` rounds a concave straight edge
+    between planes beside a planar strip narrower than the ball's
+    setback, whose far edge is straight and convex (the seam where two
+    solids are fused at a slant), the ball touches the other face and
+    rests on that far edge. Its centre runs on the ellipse where the plane
+    a radius off the face meets the cylinder a radius about the edge, or
+    on a line where the edge is parallel to the face. The round is a band
+    fitted through the balls' arcs to the marched band's target, its rails
+    on the face's plane and on the edge's line, and it meets the face
+    beyond the far edge at a crease. It was refused with "sets back ...
+    across a face that does not reach so far".
+  - It is built where over the whole crease the ball rests on that edge
+    alone and touches the face within it, comes within its radius of no
+    other face, and its sections do not cross. Where the ball comes down
+    on the strip or onto the face beyond along the crease, runs past the
+    far edge's end, or leaves either face, it is refused by name. A request
+    of several edges rounds such an edge where it shares no face and no
+    vertex with the others.
+  - Four of the stress run's 39 blend refusals at seeds 1 to 8 now round.
+
 - **An edge round wider than a strip beside its edge takes the strip off
   whole.**
   - Where `fillet_edge`, or `fillet_edges` asked for one edge, rounds a

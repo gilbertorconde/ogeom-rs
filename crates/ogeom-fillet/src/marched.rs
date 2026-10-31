@@ -1633,7 +1633,6 @@ fn open_runout_wedge(
 /// end arc a degenerate edge and both legs meeting the rails at the pole.
 /// Every other end is capped in its section's own plane.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
-#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
 pub(crate) fn build_open_band(
     model: &mut Model,
     solid: &Shape,
@@ -1644,6 +1643,59 @@ pub(crate) fn build_open_band(
     radius: f64,
     convex: bool,
     pinched: [bool; 2],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    build_held_band(
+        model, solid, edge, blend, guide, hosts, radius, convex, pinched, None, tol,
+    )
+}
+
+/// Where a closed-form seat's band lies exactly: the line or plane each
+/// rail stands on, and how far a point stands off the ball's envelope.
+pub(crate) struct ExactBand<'a> {
+    /// The first rail's, then the second's.
+    pub rails: [Rail; 2],
+    /// The distance from a point to the envelope of the run's balls.
+    pub off: &'a dyn Fn(Point) -> f64,
+}
+
+/// What a band's rail lies on exactly.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Rail {
+    /// A plane through a point, with its unit normal.
+    Plane(Point, Vector),
+    /// A line through a point, with its unit direction.
+    Line(Point, Vector),
+}
+
+impl Rail {
+    /// The foot of `p` on the rail's plane or line.
+    fn foot(self, p: Point) -> Point {
+        match self {
+            Self::Plane(origin, normal) => p - normal * (p - origin).dot(normal),
+            Self::Line(origin, along) => origin + along * (p - origin).dot(along),
+        }
+    }
+}
+
+/// [`build_open_band`], with the band held to what `exact` knows of it
+/// where a caller knows it: each border row of the fitted band set on its
+/// rail's plane or line, so the rail is exactly the contact curve there,
+/// and the band refused where it then stands further off the envelope
+/// than the fit's target.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
+pub(crate) fn build_held_band(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    blend: &crate::march::MarchedBlend,
+    guide: &Curve,
+    hosts: [(&SurfaceGeometry, f64); 2],
+    radius: f64,
+    convex: bool,
+    pinched: [bool; 2],
+    exact: Option<&ExactBand<'_>>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
@@ -1708,6 +1760,15 @@ pub(crate) fn build_open_band(
         let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
         (grid.u_count(), grid.v_count(), net)
     };
+    // A border control row on a plane or a line makes its clamped border
+    // curve lie on it: the rail is the contact curve, not a fit of it.
+    if let Some(exact) = exact {
+        for (i, rail) in [(0, exact.rails[0]), (k_count - 1, exact.rails[1])] {
+            for j in 0..l_count {
+                net[i * l_count + j] = rail.foot(net[i * l_count + j]);
+            }
+        }
+    }
     // The fit holds each end row within its target of the end section but
     // not in the cap's plane, and where the cap stands flush with a face of
     // the solid (a crease running off the solid square to its side) a band
@@ -1731,6 +1792,29 @@ pub(crate) fn build_open_band(
         &ogeom_math::ControlGrid::new(net.clone(), k_count, l_count)?,
         tol,
     )?;
+    if let Some(exact) = exact {
+        // Read between the stations and across the arcs, where the fit and
+        // the rows set on their rails stand furthest off.
+        use ogeom_geom::Surface as _;
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let along = (n * 4).max(16);
+        let mut worst: f64 = 0.0;
+        for b in 0..=along {
+            #[allow(clippy::cast_precision_loss)]
+            let v = v0 + (v1 - v0) * (b as f64) / (along as f64);
+            for a in 0..=32 {
+                let u = u0 + (u1 - u0) * f64::from(a) / 32.0;
+                worst = worst.max((exact.off)(surface.point_at(u, v, tol)?));
+            }
+        }
+        if worst > fit_target {
+            ogeom_bail!(
+                NotDone,
+                "the blend surface stands {worst} off the ball's envelope against a target \
+                 of {fit_target}"
+            );
+        }
+    }
     let point_at = |i: usize, j: usize| -> Point { net[i * l_count + j] };
     let blend_geo: SurfaceGeometry = surface.into();
     let (u_dom, v_dom) = blend_geo.domain();

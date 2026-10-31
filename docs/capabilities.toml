@@ -971,7 +971,21 @@ ball would roll over onto the face beyond), but for a convex straight \
 edge beside a planar strip (a chamfer, a narrow top) whose far edge is \
 convex too: where the strip lies wholly in the corner the ball touching \
 the planes either side of it takes off, its ends on faces square to the \
-edge, the round is that ball's and the strip goes with the corner. It \
+edge, the round is that ball's and the strip goes with the corner. A \
+concave straight edge beside such a strip whose far edge is straight and \
+convex (the seam of two solids fused at a slant) rounds with the ball \
+touching the other face and resting on that far edge, its centre on the \
+ellipse, or the line, where the plane a radius off the face meets the \
+cylinder a radius about the edge, the band fitted through the balls' arcs \
+to the marched band's target with its rails on the face's plane and the \
+edge's line, where over the whole crease the ball rests on that edge \
+alone, its contact moving one way along it, touches the face within it, \
+comes within its radius of no other face and its sections do not cross; \
+it is refused by name where the ball comes down on the strip or onto the \
+face beyond the far edge along the crease (no round changing from one \
+kind of contact to the other is built), runs past the far edge's end \
+(round a corner of the strip), or leaves either face, and in a request \
+where the edge shares a face or a vertex with another of its edges. It \
 refuses also where it runs off a \
 face anywhere along an edge of a request that shares a face or a vertex \
 with another of its edges; an edge sharing neither runs off a face \
@@ -992,6 +1006,9 @@ tests = [
     "crates/ogeom-fillet/tests/marched_fillet.rs",
     "crates/ogeom-fillet/tests/chain.rs",
     "crates/ogeom-fillet/tests/fillet.rs",
+    "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback",
+    "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches",
+    "crates/ogeom-fillet/tests/concave.rs::a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it",
     "crates/ogeom-fillet/tests/marched_blend.rs::a_cylinder_square_on_a_plane_rounds_the_same_on_patches",
     "crates/ogeom-fillet/tests/marched_blend.rs::a_straight_seat_between_two_patches_runs_off_their_ends",
 ]
