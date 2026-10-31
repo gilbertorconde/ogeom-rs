@@ -1941,6 +1941,13 @@ pub(crate) struct FaceSeat {
     reads: Vec<(SurfaceId, Tolerance, Point, Vector)>,
 }
 
+impl FaceSeat {
+    /// Whether the round runs the whole turn.
+    pub(crate) const fn closed(&self) -> bool {
+        self.span.is_none()
+    }
+}
+
 /// The ball of `radius` touching both faces, on the side each face's
 /// normal points to, or behind both with `behind`, where the two faces'
 /// surfaces share a direction or an axis.

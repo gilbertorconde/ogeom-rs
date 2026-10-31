@@ -53,7 +53,12 @@ const CONTACT_STATIONS: u32 = 16;
 ///   once ([`fillet_edges`](crate::fillet_edges)): a cylinder or torus
 ///   where the seat has a closed form, a B-spline band fitted through the
 ///   marched ball otherwise (B-spline, cone, sphere and torus hosts
-///   included).
+///   included). Where the shared edges stop short of closing round a loop
+///   because another face stands over the crease between them (a wedge
+///   fused into the corner), while the ball touches both faces all the way
+///   round a closed seat, the blend is that closed round, built as between
+///   faces sharing no edge: the other face is taken in whole where every
+///   ball clears it.
 /// - A curved face and another face sharing no edge, their surfaces
 ///   sharing a direction (planes and cylinders along it) or an axis (planes
 ///   square to it, cylinders, cones, spheres and tori about it): the ball
@@ -95,7 +100,10 @@ const CONTACT_STATIONS: u32 = 16;
 /// - for a curved face, if the two are one face or either is not a face
 ///   of the solid;
 /// - for a curved face sharing edges with the other, as
-///   [`fillet_edges`](crate::fillet_edges);
+///   [`fillet_edges`](crate::fillet_edges), and, where the ball touches
+///   both faces all the way round a closed seat the shared edges do not
+///   close, if it reaches into another face of the solid at a station of
+///   the run;
 /// - for a curved face sharing no edge with the other, if their surfaces
 ///   do not cross; and, for each side of the faces the ball could roll on,
 ///   if no ball touches both faces there, its round would be a torus
@@ -397,82 +405,63 @@ fn curved_blend(
                 .any(|t| crate::support::same_occurrence(model, t, e, tol))
         })
         .collect();
+    // Shared edges that close round a loop are the whole corner. Open ones
+    // end where the crease leaves a face, or where another face of the
+    // solid stands over it (a wedge fused into the corner) while the ball
+    // still rolls on the two faces past it. Where the ball rolls touching
+    // both all the way round a closed seat, its round is the blend whatever
+    // stands over the crease: built where every ball clears the other
+    // faces, refused where one reaches into a face. Otherwise the shared
+    // edges are the corner.
     if !shared.is_empty() {
-        return crate::fillet::fillet_edges(model, solid, &shared, radius, tol);
-    }
-
-    // Which corner the ball rounds is read from both sides: behind both
-    // faces it rolls in the material and the round takes a convex corner
-    // off; in front of both it rolls in the open and fills a concave one.
-    // A side counts only where the solid agrees, the corner beside the
-    // round being material for the first and open for the second.
-    // The corner is swept from one section where the surfaces share a
-    // direction or an axis, and marched along where they cross otherwise.
-    let swept = crate::sheet_curved::closed_form_between(model, [a, b], tol)?;
-    let hosts = if swept {
-        None
-    } else {
-        Some(crate::pair_marched::hosts_of(model, [a, b], radius, tol)?)
-    };
-    let mut seated = Vec::new();
-    let mut misses: Vec<(&str, String)> = Vec::new();
-    for behind in [true, false] {
-        let side = if behind { "behind" } else { "in front of" };
-        let built = match &hosts {
-            None => crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol).and_then(
-                |seat| {
-                    let (wedge, probe, run) =
-                        crate::sheet_curved::corner_wedge(model, &seat, solid, tol)?;
-                    let inside = crate::sheet_curved::face_inside_seat(
-                        model,
-                        solid,
-                        [a, b],
-                        &seat,
-                        run,
-                        tol,
-                    )?;
-                    Ok((Corner::Swept(wedge), probe, inside))
-                },
-            ),
-            Some(hosts) => crate::pair_marched::pair_seat(
-                model,
-                [a, b],
-                hosts,
-                radius,
-                behind,
-                Some(solid),
-                tol,
-            )
-            .and_then(|seat| {
-                let Some(probe) = seat.probe() else {
-                    ogeom_bail!(Invariant, "a marched seat on the crease has no probe");
-                };
-                let inside =
-                    crate::pair_marched::face_inside(model, solid, [a, b], &seat, radius, tol)?;
-                Ok((Corner::Marched(Box::new(seat)), probe, inside))
-            }),
-        };
-        let (wedge, probe, inside) = match built {
-            Ok(built) => built,
-            Err(
-                ogeom_core::OgeomError::Construction(why) | ogeom_core::OgeomError::NotDone(why),
-            ) => {
-                misses.push((side, why.to_string()));
-                continue;
+        if closes_round(model, &shared)? {
+            return crate::fillet::fillet_edges(model, solid, &shared, radius, tol);
+        }
+        let held = surfaces_of(model, [a, b])?;
+        let reads = match read_sides(model, solid, a, b, radius, tol) {
+            Ok(reads) => reads,
+            Err(ogeom_core::OgeomError::Construction(_) | ogeom_core::OgeomError::NotDone(_)) => {
+                Vec::new()
             }
             Err(e) => return Err(e),
         };
-        let material = matches!(
-            ogeom_algo::classify_in_solid_exact(model, solid, probe, tol)?,
-            ogeom_algo::Containment::In
-        );
-        if let (true, Some(at)) = (material == behind, inside) {
-            misses.push((side, stands_inside(at)));
-        } else if material == behind {
-            seated.push((wedge, behind));
-        } else {
-            let found = if material { "material" } else { "open" };
-            misses.push((side, format!("the solid beside the round is {found}")));
+        let mut round = reads
+            .into_iter()
+            .filter(|read| read.closed)
+            .filter_map(|read| match read.made {
+                Made::Rounds(corner) => Some(Ok((corner, read.behind))),
+                Made::Crosses(at) => Some(Err(at)),
+                Made::Misses(_) => None,
+            });
+        if let (Some(found), None) = (round.next(), round.next()) {
+            let (corner, behind) = match found {
+                Ok(seated) => seated,
+                Err(at) => ogeom_bail!(
+                    Construction,
+                    "no ball of radius {radius} rounds a corner between the two faces: the \
+                     ball rolls on both all the way round, and {}",
+                    stands_inside(at)
+                ),
+            };
+            return apply(model, solid, corner, behind, radius, tol);
+        }
+        for (id, surface) in held {
+            if let Some(slot) = model.geometry_mut().surface_mut(id) {
+                *slot = surface;
+            }
+        }
+        return crate::fillet::fillet_edges(model, solid, &shared, radius, tol);
+    }
+
+    let reads = read_sides(model, solid, a, b, radius, tol)?;
+    let mut seated = Vec::new();
+    let mut misses: Vec<(&str, String)> = Vec::new();
+    for read in reads {
+        let side = if read.behind { "behind" } else { "in front of" };
+        match read.made {
+            Made::Rounds(corner) => seated.push((corner, read.behind)),
+            Made::Crosses(at) => misses.push((side, stands_inside(at))),
+            Made::Misses(why) => misses.push((side, why)),
         }
     }
     let (wedge, behind) = match seated.len() {
@@ -499,6 +488,168 @@ fn curved_blend(
              faces; which one to blend is ambiguous"
         ),
     };
+    apply(model, solid, wedge, behind, radius, tol)
+}
+
+/// What a ball on one side of two faces makes of the corner between them.
+enum Made {
+    /// It rolls on the two faces alone, beside the corner that side needs.
+    Rounds(Corner),
+    /// It rolls beside the corner that side needs, but reaches into another
+    /// face of the solid at this point.
+    Crosses(Point),
+    /// It rounds no corner on that side, for this reason.
+    Misses(String),
+}
+
+/// One side's reading: behind both faces or in front of them, whether the
+/// ball's seat closes round a loop touching both faces all the way, and
+/// what it makes of the corner.
+struct SideRead {
+    behind: bool,
+    closed: bool,
+    made: Made,
+}
+
+/// The ball read on each side of two faces that share no edge, or whose
+/// shared edges leave part of the crease: behind both, where it rolls in
+/// the material, then in front of both. The corner is swept from one
+/// section where the surfaces share a direction or an axis, and marched
+/// along where they cross otherwise. A side counts only where the solid
+/// agrees, the corner beside the round being material for the first and
+/// open for the second.
+fn read_sides(
+    model: &mut Model,
+    solid: &Shape,
+    a: &Shape,
+    b: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<SideRead>> {
+    let swept = crate::sheet_curved::closed_form_between(model, [a, b], tol)?;
+    let hosts = if swept {
+        None
+    } else {
+        Some(crate::pair_marched::hosts_of(model, [a, b], radius, tol)?)
+    };
+    let mut reads = Vec::with_capacity(2);
+    for behind in [true, false] {
+        let built = match &hosts {
+            None => crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol).and_then(
+                |seat| {
+                    let closed = seat.closed();
+                    let (wedge, probe, run) =
+                        crate::sheet_curved::corner_wedge(model, &seat, solid, tol)?;
+                    let inside = crate::sheet_curved::face_inside_seat(
+                        model,
+                        solid,
+                        [a, b],
+                        &seat,
+                        run,
+                        tol,
+                    )?;
+                    Ok((Corner::Swept(wedge), probe, inside, closed))
+                },
+            ),
+            Some(hosts) => crate::pair_marched::pair_seat(
+                model,
+                [a, b],
+                hosts,
+                radius,
+                behind,
+                Some(solid),
+                tol,
+            )
+            .and_then(|seat| {
+                let Some(probe) = seat.probe() else {
+                    ogeom_bail!(Invariant, "a marched seat on the crease has no probe");
+                };
+                let closed = seat.closed();
+                let inside =
+                    crate::pair_marched::face_inside(model, solid, [a, b], &seat, radius, tol)?;
+                Ok((Corner::Marched(Box::new(seat)), probe, inside, closed))
+            }),
+        };
+        let (wedge, probe, inside, closed) = match built {
+            Ok(built) => built,
+            Err(
+                ogeom_core::OgeomError::Construction(why) | ogeom_core::OgeomError::NotDone(why),
+            ) => {
+                reads.push(SideRead {
+                    behind,
+                    closed: false,
+                    made: Made::Misses(why.to_string()),
+                });
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let material = matches!(
+            ogeom_algo::classify_in_solid_exact(model, solid, probe, tol)?,
+            ogeom_algo::Containment::In
+        );
+        let made = match (material == behind, inside) {
+            (true, Some(at)) => Made::Crosses(at),
+            (true, None) => Made::Rounds(wedge),
+            (false, _) => {
+                let found = if material { "material" } else { "open" };
+                Made::Misses(format!("the solid beside the round is {found}"))
+            }
+        };
+        reads.push(SideRead {
+            behind,
+            closed,
+            made,
+        });
+    }
+    Ok(reads)
+}
+
+/// Whether edges close round loops: every vertex ending one of them ends
+/// two.
+fn closes_round(model: &Model, edges: &[Shape]) -> OgeomResult<bool> {
+    let mut ends: Vec<(ogeom_topo::TShapeId, usize)> = Vec::new();
+    for edge in edges {
+        let Some((first, last)) = ogeom_algo::edge_vertices(model, edge)? else {
+            return Ok(false);
+        };
+        for vertex in [first, last] {
+            match ends.iter_mut().find(|(node, _)| *node == vertex.node()) {
+                Some((_, count)) => *count += 1,
+                None => ends.push((vertex.node(), 1)),
+            }
+        }
+    }
+    Ok(ends.iter().all(|&(_, count)| count == 2))
+}
+
+/// The two faces' surfaces as they stand, to put back where the faces'
+/// windows were widened for a march whose round is not taken.
+fn surfaces_of(
+    model: &Model,
+    faces: [&Shape; 2],
+) -> OgeomResult<Vec<(ogeom_topo::SurfaceId, SurfaceGeometry)>> {
+    let mut held = Vec::with_capacity(2);
+    for face in faces {
+        let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+            ogeom_bail!(Dangling, "face is not in this model");
+        };
+        if let Some(surface) = model.geometry().surface(data.surface) {
+            held.push((data.surface, surface.clone()));
+        }
+    }
+    Ok(held)
+}
+
+/// The corner taken off (`behind`) or filled.
+fn apply(
+    model: &mut Model,
+    solid: &Shape,
+    wedge: Corner,
+    behind: bool,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     match wedge {
         Corner::Swept(wedge) if behind => ogeom_bool::cut(model, solid, &wedge, tol),
         Corner::Swept(wedge) => ogeom_bool::fuse(model, solid, &wedge, tol),

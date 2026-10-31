@@ -177,10 +177,12 @@ in `tests/sheet_fillets.rs`):
   station of the run (`between.rs`;
   `a_face_blend_refuses_a_ball_that_crosses_a_bevel_between_the_faces`,
   `a_face_blend_refuses_a_spline_bevel_or_a_bevel_over_part_of_the_edge`,
-  `a_face_blend_refuses_a_wedge_its_ball_crosses_over_part_of_the_foot`):
+  `a_face_blend_refuses_a_wedge_its_ball_crosses_over_part_of_the_foot`,
+  `a_face_blend_refuses_a_wedge_on_the_foot_s_edges_its_ball_crosses`):
   a chamfer the ball crosses, uneven or not, plane or B-spline, a round
   smaller than the one it would replace, a wedge fused into a drum's foot
-  over a short stretch. The run is read whole, halved between stations
+  over a short stretch, the foot parted from the top or its edges shared
+  either side of the wedge. The run is read whole, halved between stations
   until the centre's travel fits under the face's clearance. Faces the
   crease or a line of contact meets, and faces holding a capped run's
   ends, are where the round runs off (a crease running off a block's

@@ -80,6 +80,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`blend_faces` rounds past a wedge standing over part of the faces'
+  shared edges.**
+  - Faces sharing edges were always rounded as those edges. Where a wedge
+    fused into a leaning drum's foot parts the foot's edges, the edge round
+    ended at the wedge in plane caps: on a drum of radius 3.5817 leaning
+    22.352 degrees, blended at 1.3733 with a wedge every ball clears by
+    0.064, the result kept the wedge's faces and filled 10.414205, where
+    the balls' normal sections integrate to 12.105707. With a wedge whose
+    slope comes inside the ball, a capped round left a face 0.087 off the
+    balls' envelope.
+  - Where the shared edges do not close round a loop and the ball touches
+    both faces all the way round a closed seat, the blend is now that
+    round, built as between faces sharing no edge: the wedge every ball
+    clears goes into the fill (12.105678 against the sections' 12.105707),
+    and a ball that reaches into the wedge is refused by name.
+    Shared edges that close, or a seat the ball leaves, are rounded as the
+    edges as before. These are the two `faceblend` stress cases wrong over
+    seeds 1 to 8 (#557).
+
 - **`blend_faces` between two planes refuses a ball whose contact runs off
   a face.**
   - The run was cut back to where both faces reach along the planes'

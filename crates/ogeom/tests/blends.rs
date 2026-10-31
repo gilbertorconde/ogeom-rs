@@ -4466,3 +4466,249 @@ fn a_face_blend_refuses_a_ball_whose_contact_runs_past_a_face() {
     let got = exact_volume(&model, &blended);
     assert!((got - want).abs() < 1e-9, "{got} against {want}");
 }
+
+/// A drum leaning on a block: its axis `lean` from the vertical toward the
+/// azimuth `toward`, standing at `foot` on the top of a square block, sunk
+/// so its tilted base stays inside the block.
+struct Leaning {
+    radius: f64,
+    lean: f64,
+    toward: f64,
+    side: f64,
+    base: f64,
+    foot: (f64, f64),
+}
+
+/// A triangular prism fused into a drum's foot at azimuth `at`, in the
+/// vertical plane through the foot: its slope runs from `leg_top` out
+/// across the top to `leg_wall` up the wall, `width` wide, and it runs on
+/// a little under the top and behind the wall.
+struct FootWedge {
+    leg_top: f64,
+    leg_wall: f64,
+    width: f64,
+    at: f64,
+}
+
+impl Leaning {
+    fn axis(&self) -> Vector {
+        Vector::new(
+            self.lean.sin() * self.toward.cos(),
+            self.lean.sin() * self.toward.sin(),
+            self.lean.cos(),
+        )
+    }
+
+    fn foot(&self) -> Point {
+        Point::new(self.foot.0, self.foot.1, self.base)
+    }
+
+    /// The solid, the drum's wall and the block's top, and the slope of
+    /// the wedge where there is one: a corner and its two sides.
+    fn build(
+        &self,
+        model: &mut Model,
+        wedge: Option<&FootWedge>,
+    ) -> (Shape, Shape, Shape, Option<[Point; 3]>) {
+        let (radius, axis, foot) = (self.radius, self.axis(), self.foot());
+        let up = Vector::new(0.0, 0.0, 1.0);
+        let e = up.cross(axis) / up.cross(axis).magnitude();
+        let f = axis.cross(e);
+        let block =
+            ogeom::algo::make_box(model, Frame::WORLD, (self.side, self.side, self.base), T)
+                .unwrap()
+                .shape;
+        let sunk = radius.mul_add(self.lean.sin(), 0.3) / axis.dot(up);
+        let frame = Frame::new(
+            foot - axis * sunk,
+            Direction::new(axis, T).unwrap(),
+            Direction::new(e, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let drum = ogeom::algo::make_cylinder(model, frame, radius, sunk + 5.0, T)
+            .unwrap()
+            .shape;
+        let mut solid = ogeom::boolean::fuse(model, &block, &drum, T).unwrap().shape;
+        let mut slope = None;
+        if let Some(w) = wedge {
+            let out = Vector::new(w.at.cos(), w.at.sin(), 0.0);
+            let across = up.cross(out);
+            let p0 = foot + out * (radius / (out - axis * out.dot(axis)).magnitude());
+            let delta = 0.2;
+            let back = w.leg_wall.mul_add(self.lean.tan(), delta + 0.1);
+            let q = |a: f64, z: f64| p0 + out * a + up * z - across * (w.width / 2.0);
+            let section = [
+                q(-back, -delta),
+                q(w.leg_top * (1.0 + delta / w.leg_wall), -delta),
+                q(-back, w.leg_wall * (1.0 + back / w.leg_top)),
+            ];
+            let wire = ogeom::algo::make_polygon(model, &section, true, T)
+                .unwrap()
+                .shape;
+            let plane = ogeom::geom::PlaneSurface::new(ogeom::math::Plane::through(
+                section[0],
+                Direction::new(across, T).unwrap(),
+            ));
+            let face = ogeom::algo::make_face(model, plane.into(), &[wire], T)
+                .unwrap()
+                .shape;
+            let prism = ogeom::algo::make_prism(model, &face, across * w.width, T)
+                .unwrap()
+                .shape;
+            solid = ogeom::boolean::fuse(model, &solid, &prism, T)
+                .unwrap()
+                .shape;
+            slope = Some([section[1], section[2], section[1] + across * w.width]);
+        }
+        let d = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+        let face_at = |model: &Model, p: Point| {
+            explore_unique(model, &solid, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|face| {
+                    matches!(
+                        ogeom::algo::classify_on_face(model, face, p, d, T),
+                        Ok(ogeom::algo::Containment::In)
+                    )
+                })
+                .unwrap()
+        };
+        let wall = face_at(
+            model,
+            foot + axis * 4.0 + (e * 2.0_f64.cos() + f * 2.0_f64.sin()) * radius,
+        );
+        let top = face_at(model, Point::new(1.0, 1.0, self.base));
+        (solid, wall, top, slope)
+    }
+
+    /// The least distance, less `r`, from the centres of the balls of
+    /// radius `r` rolling round the foot to the rectangle with corner `s[0]`
+    /// and sides to `s[1]` and `s[2]`, square to each other, at 720 stations.
+    /// A centre's path is where the plane `r` above the top meets the
+    /// cylinder `r` outside the wall: an ellipse about the axis's point at
+    /// that height, its long half axis `(radius + r) / cos(lean)` along the
+    /// lean.
+    fn clearance(&self, r: f64, s: [Point; 3]) -> f64 {
+        let o = self.foot() + self.axis() * (r / self.lean.cos());
+        let h = Vector::new(self.toward.cos(), self.toward.sin(), 0.0);
+        let w = Vector::new(-self.toward.sin(), self.toward.cos(), 0.0);
+        let (u, v) = (s[1] - s[0], s[2] - s[0]);
+        let mut least = f64::INFINITY;
+        for k in 0..720 {
+            let t = f64::from(k) * core::f64::consts::TAU / 720.0;
+            let c = o
+                + h * ((self.radius + r) / self.lean.cos() * t.cos())
+                + w * ((self.radius + r) * t.sin());
+            let d = c - s[0];
+            let a = (d.dot(u) / u.dot(u)).clamp(0.0, 1.0);
+            let b = (d.dot(v) / v.dot(v)).clamp(0.0, 1.0);
+            least = least.min((s[0] + u * a + v * b).distance(c) - r);
+        }
+        least
+    }
+}
+
+/// A drum leaning 22 degrees on a block, a wedge fused into its foot that
+/// every ball rolling round the foot clears, the wall and the top still
+/// sharing the foot's edges either side of it: the wedge lies wholly in
+/// the corner the round fills, so the blend fills the same ring as the
+/// bare foot's and takes the wedge in whole. Its fill against the sharp solid
+/// is the one the face-blend stress scenario integrates over the balls'
+/// normal sections, 12.105707, and the bare foot's edge round agrees.
+#[test]
+fn a_face_blend_fills_over_a_wedge_on_the_foot_s_edges_its_ball_clears() {
+    let drum = Leaning {
+        radius: 3.5817,
+        lean: 22.352_f64.to_radians(),
+        toward: 0.5157,
+        side: 27.4902,
+        base: 4.9156,
+        foot: (14.527, 13.376),
+    };
+    let wedge = FootWedge {
+        leg_top: 1.3237,
+        leg_wall: 0.5299,
+        width: 2.1498,
+        at: 0.8073,
+    };
+    let r = 1.3733;
+    let want = 12.105_707;
+    let mut model = Model::new();
+    let (sharp, wall, top, _) = drum.build(&mut model, None);
+    let before = exact_volume(&model, &sharp);
+    let bare = ogeom::fillet::blend_faces(&mut model, &sharp, &wall, &top, r, T)
+        .unwrap()
+        .shape;
+    let bare_fill = exact_volume(&model, &bare) - before;
+    assert!(
+        (bare_fill - want).abs() < want * 1e-5,
+        "the bare foot: {bare_fill} against {want}"
+    );
+
+    let mut model = Model::new();
+    let (solid, wall, top, slope) = drum.build(&mut model, Some(&wedge));
+    assert!(
+        drum.clearance(r, slope.unwrap()) > 0.06,
+        "every ball clears the slope"
+    );
+    assert!(
+        share_an_edge(&model, &wall, &top),
+        "the foot runs past the wedge"
+    );
+    let blended = ogeom::fillet::blend_faces(&mut model, &solid, &wall, &top, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let planes = faces_on(&model, &blended, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::Plane(_))
+    });
+    assert_eq!(planes.len(), 7, "the block's six faces and the drum's cap");
+    let filled = exact_volume(&model, &blended) - before;
+    assert!(
+        (filled - want).abs() < want * 1e-5,
+        "the wedge taken in whole: {filled} against {want}"
+    );
+}
+
+/// A drum leaning 23 degrees on a block, a wedge fused into its foot whose
+/// slope comes inside the ball rolling round the foot, the wall and the top
+/// still sharing the foot's edges either side of it: the ball rolls on
+/// the wall and the top all the way round, so the blend is that round or
+/// nothing, and no ball rolls past the wedge touching the two alone.
+/// Refused by name, rather than ending the round where the foot's edges
+/// end at the wedge.
+#[test]
+fn a_face_blend_refuses_a_wedge_on_the_foot_s_edges_its_ball_crosses() {
+    let drum = Leaning {
+        radius: 2.3999,
+        lean: 23.492_f64.to_radians(),
+        toward: 1.8367,
+        side: 20.3994,
+        base: 3.3357,
+        foot: (10.0441, 11.0273),
+    };
+    let wedge = FootWedge {
+        leg_top: 0.6764,
+        leg_wall: 0.4920,
+        width: 0.5101,
+        at: 2.9225,
+    };
+    let r = 0.6532;
+    let mut model = Model::new();
+    let (solid, wall, top, slope) = drum.build(&mut model, Some(&wedge));
+    assert!(
+        drum.clearance(r, slope.unwrap()) < -0.01,
+        "a ball crosses the slope"
+    );
+    let why = ogeom::fillet::blend_faces(&mut model, &solid, &wall, &top, r, T)
+        .err()
+        .unwrap_or_else(|| panic!("the round runs past the wedge"));
+    assert!(
+        matches!(why, ogeom::core::OgeomError::Construction(_))
+            && why.to_string().contains("all the way round")
+            && why.to_string().contains("cuts into another face"),
+        "{why}"
+    );
+}

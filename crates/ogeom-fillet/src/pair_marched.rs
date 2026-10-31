@@ -158,6 +158,11 @@ impl PairSeat {
     pub(crate) const fn probe(&self) -> Option<Point> {
         self.probe
     }
+
+    /// Whether the round runs all the way round a closed seat.
+    pub(crate) const fn closed(&self) -> bool {
+        matches!(self.run, Run::Closed)
+    }
 }
 
 /// The marched seat of a ball of `radius` touching both faces, on the side
