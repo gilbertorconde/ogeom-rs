@@ -419,6 +419,9 @@ struct PreparedFace {
     /// How far off the surface a point still lies on the face: the face's
     /// own tolerance, never under the confusion distance.
     reach: f64,
+    /// The widest tolerance among the face's edges and vertices, read the
+    /// first time a ray meets the face (see [`PreparedFace::rim`]).
+    rim: std::sync::OnceLock<OgeomResult<f64>>,
 }
 
 /// How many bands from a curved face's trim a ray's hit is read again
@@ -725,6 +728,32 @@ impl PreparedFace {
         }
     }
 
+    /// The widest tolerance among the face's edges and vertices: how far
+    /// the face's trim may stand from where its neighbours' trims meet it.
+    /// Two faces sharing an edge lie within the edge's tolerance of it, not
+    /// on it, and between them the boundary overlaps itself or leaves a gap
+    /// that wide: a ray crossing either face that near its trim may cross
+    /// both or neither.
+    fn rim(&self, model: &Model) -> OgeomResult<f64> {
+        let read = || -> OgeomResult<f64> {
+            let mut widest = 0.0_f64;
+            for kind in [ShapeType::Edge, ShapeType::Vertex] {
+                for shape in ogeom_topo::explore_unique(model, &self.face, kind)? {
+                    widest = widest.max(match model.node(&shape).map(|n| n.data()) {
+                        Some(NodeData::Edge(data)) => data.tolerance.get(),
+                        Some(NodeData::Vertex(data)) => data.tolerance.get(),
+                        _ => 0.0,
+                    });
+                }
+            }
+            Ok(widest)
+        };
+        match self.rim.get_or_init(read) {
+            Ok(rim) => Ok(*rim),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     /// Where a point sits against this face: [`classify_on_face`] on what
     /// was prepared, with no surface lookup, placement or ring walk per
     /// question.
@@ -965,6 +994,7 @@ impl SolidBoundary {
                     surface: data.surface,
                     bound,
                     reach: tol.confusion().max(data.tolerance.get()),
+                    rim: std::sync::OnceLock::new(),
                 },
                 own,
             ))
@@ -1350,7 +1380,12 @@ impl SolidBoundary {
                     }
                     let mut rings = prepared.rings(model, ring_deflection, tol)?;
                     let mut at = rings.place(surface, Point2::new(u, v), tol);
-                    let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
+                    let band = parametric_band(
+                        surface,
+                        (u, v),
+                        reach.max(prepared.rim(model)?) + ring_chord,
+                        tol,
+                    );
                     let face = &prepared.face;
                     // Near the trim on a curved face, the rings are read again
                     // drawn finer: drawn straight in a stretched chart, they
@@ -1371,7 +1406,9 @@ impl SolidBoundary {
                     if rings.within(model, face, ring_deflection, at, band, tol)? {
                         // Too near the face's boundary to know which side of the
                         // trim it crossed, and a shared edge would be counted by
-                        // both faces or neither.
+                        // both faces or neither: within the ring's chord, or
+                        // within the tolerance its edges and vertices are
+                        // known to.
                         continue 'directions;
                     }
                     if rings.inside(model, face, ring_deflection, at, tol)? {
