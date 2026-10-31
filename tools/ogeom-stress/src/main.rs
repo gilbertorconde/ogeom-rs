@@ -561,7 +561,8 @@ fn across(axis: Vector, rng: &mut Rng) -> Vector {
 
 /// A drill through the part: along a principal axis mostly, obliquely
 /// sometimes, placed at random or snapped so its wall passes through a
-/// vertex or is tangent to a plane through one.
+/// vertex or is tangent to a plane through one. The cut and the common add
+/// up to the part, and the drill less the part and the common to the drill.
 fn drill_case(part: &Part, rng: &mut Rng) -> Verdict {
     let mut model = part.model.clone();
     let diagonal = part.diagonal();
@@ -642,7 +643,19 @@ fn drill_case(part: &Part, rng: &mut Rng) -> Verdict {
                 Err(v) => return v,
             },
         };
-        let named = [("part", &whole), ("cut", &cut), ("common", &common)];
+        // The drill runs out of the part at both ends, so something of it
+        // is always left.
+        let rest = ogeom::boolean::cut(&mut model, &drill, &part.shape, T);
+        let (_, rest) = match judged(&model, "drill less the part", rest) {
+            Ok(r) => r,
+            Err(v) => return v,
+        };
+        let named = [
+            ("part", &whole),
+            ("cut", &cut),
+            ("common", &common),
+            ("drill less the part", &rest),
+        ];
         let slack = allowance(scale, &[&whole, &cut, &common]);
         let miss = cut.volume + common.volume - whole.volume;
         if miss.abs() > slack {
@@ -658,6 +671,22 @@ fn drill_case(part: &Part, rng: &mut Rng) -> Verdict {
                     whole.volume,
                     miss / whole.volume,
                     part.stated,
+                ),
+            )
+            .read_from(&named);
+        }
+        let slack = allowance(drill_volume, &[&rest, &common]);
+        let miss = rest.volume + common.volume - drill_volume;
+        if miss.abs() > slack {
+            return Verdict::of(
+                Outcome::Wrong,
+                format!(
+                    "drill less the part {:.9} + common {:.9} = {:.9}, drill {drill_volume:.9}, \
+                     off {miss:.3e} ({:.2e} of the drill) against {slack:.3e}",
+                    rest.volume,
+                    common.volume,
+                    rest.volume + common.volume,
+                    miss / drill_volume,
                 ),
             )
             .read_from(&named);
