@@ -1021,7 +1021,9 @@ pub(super) fn broken_faces(
 /// boundary nodes can bow past the facet it bounds and carry its curved
 /// face through a face beyond, a fold no check on one face or one seam
 /// sees. The curved faces of each crossing pair are the culprits; where
-/// both are planes, those that can be gathered again.
+/// both are planes, those that can be gathered again. With them, a point
+/// of the first crossing of planes neither of which can be: the mesh's own
+/// triangles cross there.
 pub(super) fn crossing_faces(
     model: &Model,
     shape: &Shape,
@@ -1030,7 +1032,7 @@ pub(super) fn crossing_faces(
     regrouped: &Regrouped,
     kept: &ogeom_mesh::FaceMeshCache,
     tol: Tolerances,
-) -> OgeomResult<Vec<usize>> {
+) -> OgeomResult<(Vec<usize>, Option<Point>)> {
     let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
     let of_face: FastMap<ogeom_topo::TShapeId, usize> = built
         .iter()
@@ -1038,6 +1040,7 @@ pub(super) fn crossing_faces(
         .filter_map(|(g, face)| Some((face.as_ref()?.node(), g)))
         .collect();
     let mut out = std::collections::BTreeSet::new();
+    let mut stuck = None;
     for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
         for crossing in crate::self_cross::crossings(model, &solid, kept, tol)? {
             let pair: Vec<usize> = [&crossing.face, &crossing.other]
@@ -1047,11 +1050,125 @@ pub(super) fn crossing_faces(
             if pair.iter().any(|&g| curved(g)) {
                 out.extend(pair.into_iter().filter(|&g| curved(g)));
             } else {
-                out.extend(
-                    pair.into_iter()
-                        .filter(|&g| regrouped.can_withdraw(groups, g)),
-                );
+                let movable: Vec<usize> = pair
+                    .into_iter()
+                    .filter(|&g| regrouped.can_withdraw(groups, g))
+                    .collect();
+                if movable.is_empty() {
+                    stuck = stuck.or(Some(crossing.at));
+                }
+                out.extend(movable);
             }
+        }
+    }
+    Ok((out.into_iter().collect(), stuck))
+}
+
+/// The built faces to withdraw for an edge of `shape` whose pcurve stands
+/// farther off it than the edge is long, as [`check`](crate::check())
+/// reports the edge suspect once the build has stated its pcurves' gaps.
+/// A curved face fitted to scattered vertices holds a seam's points only
+/// to its fit, and its image of a seam shorter than that scatter stands
+/// off by more than the seam spans: the curved face whose image stands off
+/// is the culprit. A plane's image stands off where the seam's curve was
+/// placed on a curved face beside it, which is then the culprit; between
+/// planes alone, the plane whose image stands off, if it can be gathered
+/// again. A plane gathered down to single triangles holds its vertices
+/// exactly, and its images stand off nothing.
+pub(super) fn spanned_faces(
+    model: &mut Model,
+    shape: &Shape,
+    groups: &Groups,
+    built: &[Option<Shape>],
+    regrouped: &Regrouped,
+    tol: Tolerances,
+) -> OgeomResult<Vec<usize>> {
+    crate::pcurve_gap::state_pcurve_gaps(model, shape, tol)?;
+    let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
+    let of_surface: FastMap<ogeom_topo::SurfaceId, usize> = built
+        .iter()
+        .enumerate()
+        .filter_map(|(g, face)| {
+            let data = model.node(face.as_ref()?)?.data().as_face()?;
+            Some((data.surface, g))
+        })
+        .collect();
+    let mut out = std::collections::BTreeSet::new();
+    for edge in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Edge)? {
+        let Some(length) = crate::check::edge_spanned_past(model, &edge, tol)? else {
+            continue;
+        };
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(curve) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        // Each face's group along the edge, and whether its image stands
+        // off by more than the edge is long.
+        let mut beside: Vec<(usize, bool)> = Vec::new();
+        for repr in &data.representations {
+            let (sides, pcurve_range, surface) = match repr {
+                EdgeRepr::PCurve {
+                    curve,
+                    range,
+                    surface,
+                    ..
+                } => ([Some(*curve), None], *range, *surface),
+                EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    surface,
+                    ..
+                } => ([Some(*forward), Some(*reversed)], *range, *surface),
+                _ => continue,
+            };
+            let (Some(&g), Some(geometry)) =
+                (of_surface.get(&surface), model.geometry().surface(surface))
+            else {
+                continue;
+            };
+            let mut off = false;
+            for side in sides.into_iter().flatten() {
+                let Some(pcurve) = model.geometry().pcurve(side) else {
+                    continue;
+                };
+                let gap = crate::pcurve_gap::pcurve_gap(
+                    (curve, *range),
+                    (pcurve, pcurve_range),
+                    geometry,
+                    data.tolerance.get(),
+                    tol,
+                )?;
+                off |= gap > length + tol.confusion();
+            }
+            beside.push((g, off));
+        }
+        let off_curved: Vec<usize> = beside
+            .iter()
+            .filter(|&&(g, off)| off && curved(g))
+            .map(|&(g, _)| g)
+            .collect();
+        let placing: Vec<usize> = beside
+            .iter()
+            .filter(|&&(g, _)| curved(g))
+            .map(|&(g, _)| g)
+            .collect();
+        if !off_curved.is_empty() {
+            out.extend(off_curved);
+        } else if !placing.is_empty() {
+            out.extend(placing);
+        } else {
+            out.extend(
+                beside
+                    .iter()
+                    .filter(|&&(g, off)| off && regrouped.can_withdraw(groups, g))
+                    .map(|&(g, _)| g),
+            );
         }
     }
     Ok(out.into_iter().collect())

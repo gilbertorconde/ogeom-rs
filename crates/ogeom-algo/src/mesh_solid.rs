@@ -65,7 +65,7 @@ use caches::{AreaCache, ImageCache, SnapCache};
 use checks::{
     Regrouped, absorb_facets, any_turned_in, backwards_facets, broken_faces, collapsed_beside,
     crossed_boundaries, crossed_seams, crossing_faces, failing_faces, folded_seams, give_back,
-    overlapping_faces, planes_off_their_vertices, unbuilt_culprits, unmatched_faces,
+    overlapping_faces, planes_off_their_vertices, spanned_faces, unbuilt_culprits, unmatched_faces,
 };
 use planner::{NOISE_FLOOR, Planner, Replan};
 use regions::{flat_noise, split_disconnected};
@@ -1099,7 +1099,8 @@ fn build_from(
                             reason = FallbackReason::BoundaryOpen;
                         }
                         if culprits.is_empty() && options.recognize {
-                            culprits = or_withdraw!(
+                            let stuck;
+                            (culprits, stuck) = or_withdraw!(
                                 'checks,
                                 &built,
                                 crossing_faces(
@@ -1107,6 +1108,27 @@ fn build_from(
                                 )
                             );
                             reason = FallbackReason::Crosses;
+                            if culprits.is_empty()
+                                && let Some(at) = stuck
+                            {
+                                ogeom_bail!(
+                                    Construction,
+                                    "the mesh passes through itself at ({:.6}, {:.6}, {:.6}): \
+                                     its own triangles cross there, so no solid built on them \
+                                     bounds a single region",
+                                    at.x,
+                                    at.y,
+                                    at.z
+                                );
+                            }
+                        }
+                        if culprits.is_empty() && options.recognize {
+                            culprits = or_withdraw!(
+                                'checks,
+                                &built,
+                                spanned_faces(model, &shape, &groups, &built, &regrouped, tol)
+                            );
+                            reason = FallbackReason::SpansShort;
                         }
                         if culprits.is_empty() {
                             report.faces = built.iter().flatten().count();

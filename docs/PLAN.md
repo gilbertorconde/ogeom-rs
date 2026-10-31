@@ -307,10 +307,10 @@ a surface whose curvature varies fast can read its inflections as scatter.
 **Converted parts of the real assemblies.** Fifty solids of the DoomCube 350
 assembly and fifty-three of the Voron 2.4, each meshed at a thousandth of
 its diagonal and converted back, come back valid within 3e-3 of their
-volume but for two of the DoomCube's, solids 525 and 585 (seven regions
-faceted), which `check` finds faces passing through others in and edges
-whose pcurves stand off their curves by more than the edges are long. Not
-diagnosed.
+volume. Without recognition (`MeshSolidOptions::recognize` off) the build
+asks nothing of the solid it returns, so a mesh passing through itself comes
+back a solid crossing itself there; with recognition the conversion is
+refused, naming where.
 
 **A face whose rims touch within a micron meshes open.** One solid of the
 DoomCube 350 assembly has a cylinder face between a circle and a spline edge

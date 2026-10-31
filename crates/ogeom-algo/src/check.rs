@@ -940,38 +940,9 @@ fn check_spanned(
     tol: Tolerances,
     found: &mut Diagnosis,
 ) -> OgeomResult<()> {
-    // A polyline through points of the edge in order is no longer than
-    // the edge: where it is longer than the tolerance, so is the edge. The
-    // chord between the ends is the one-piece polyline, and turns most
-    // edges away for two evaluations.
-    const PIECES: u32 = 16;
-    let scale = placement.scale_factor().abs();
-    let at = |f: f64| curve.point_at((range.1 - range.0).mul_add(f, range.0), tol);
-    if at(0.0)?.distance(at(1.0)?) * scale > tolerance {
-        return Ok(());
-    }
-    let mut polyline = 0.0;
-    let mut last = at(0.0)?;
-    for i in 1..=PIECES {
-        let next = at(f64::from(i) / f64::from(PIECES))?;
-        polyline += last.distance(next);
-        last = next;
-    }
-    if polyline * scale > tolerance {
-        return Ok(());
-    }
-    let Ok(length) = crate::length::curve_length(curve, range, tol) else {
-        return Ok(());
-    };
-    if length * scale > tolerance {
-        return Ok(());
-    }
-    let Some(gap) = crate::pcurve_gap::edge_pcurve_gap(model, edge, tol)? else {
-        return Ok(());
-    };
-    // Below the confusion tolerance a gap and a length are rounding: an
-    // edge with no length has a gap of a few ulps.
-    if gap > length + tol.confusion() {
+    if let Some((gap, length)) =
+        spanned_past(model, edge, (curve, range), placement, tolerance, tol)?
+    {
         found.note(
             Severity::Suspect,
             edge,
@@ -985,6 +956,85 @@ fn check_spanned(
         );
     }
     Ok(())
+}
+
+/// The length of an edge whose pcurves stand farther off its curve than
+/// it is long, as [`check`](crate::check()) reports it suspect; `None`
+/// where the edge is not reported, or has no curve.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the edge
+/// or its geometry is not in `model`; as the curve's evaluation.
+pub(crate) fn edge_spanned_past(
+    model: &Model,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
+        ogeom_bail!(Dangling, "edge is not in this model");
+    };
+    let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+        return Ok(None);
+    };
+    let Some(geometry) = model.geometry().curve(*curve) else {
+        ogeom_bail!(Dangling, "curve is not in this model");
+    };
+    let placement = edge.transform(model.datums())?;
+    Ok(spanned_past(
+        model,
+        edge,
+        (geometry, *range),
+        &placement,
+        data.tolerance.get(),
+        tol,
+    )?
+    .map(|(_, length)| length))
+}
+
+/// The gap and the length of an edge at most `tolerance` long whose
+/// pcurves stand farther off its curve than it is long, by more than the
+/// confusion distance.
+fn spanned_past(
+    model: &Model,
+    edge: &Shape,
+    (curve, range): (&ogeom_geom::Curve, (f64, f64)),
+    placement: &ogeom_math::Transform,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(f64, f64)>> {
+    // A polyline through points of the edge in order is no longer than
+    // the edge: where it is longer than the tolerance, so is the edge. The
+    // chord between the ends is the one-piece polyline, and turns most
+    // edges away for two evaluations.
+    const PIECES: u32 = 16;
+    let scale = placement.scale_factor().abs();
+    let at = |f: f64| curve.point_at((range.1 - range.0).mul_add(f, range.0), tol);
+    if at(0.0)?.distance(at(1.0)?) * scale > tolerance {
+        return Ok(None);
+    }
+    let mut polyline = 0.0;
+    let mut last = at(0.0)?;
+    for i in 1..=PIECES {
+        let next = at(f64::from(i) / f64::from(PIECES))?;
+        polyline += last.distance(next);
+        last = next;
+    }
+    if polyline * scale > tolerance {
+        return Ok(None);
+    }
+    let Ok(length) = crate::length::curve_length(curve, range, tol) else {
+        return Ok(None);
+    };
+    if length * scale > tolerance {
+        return Ok(None);
+    }
+    let Some(gap) = crate::pcurve_gap::edge_pcurve_gap(model, edge, tol)? else {
+        return Ok(None);
+    };
+    // Below the confusion tolerance a gap and a length are rounding: an
+    // edge with no length has a gap of a few ulps.
+    Ok((gap > length + tol.confusion()).then_some((gap, length)))
 }
 
 /// Verify that every pcurve lands where the 3D curve does, to the edge's

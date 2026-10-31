@@ -59,6 +59,28 @@ bump may break the API and a patch bump may not.
     polyline (`polyline_of_edge`, and the one `tessellate` stores). Solid
     585's mesh now keeps within its chord of the solid, both ways; the
     real-world import of both assemblies is unchanged.
+- **Mesh conversion no longer returns a solid with an edge shorter than
+  its pcurves stand off it.**
+  - A facet a curved region takes in holds its corners only to the reach
+    of the region's surface. On DoomCube 350 solid 525, a two-triangle
+    facet beside a cone fitted to a wall 2.17 µm high stood 0.006 off the
+    cone, and the cone's image of the facet's edge with the plane beside
+    it stood that far off an edge 0.00217 long: `check` reported the edge
+    suspect. Solid 585 had two such edges between cylinders.
+  - The build now asks the built solid for these edges, as `check`
+    measures them, once every other check passes. The curved face whose
+    image stands off is the culprit, or where a plane's does, the curved
+    face its edge was placed on; it gives back the facets it took or is
+    faceted, reported with the new `FallbackReason::SpansShort`. Both
+    solids now check valid, nothing faceted, within 2.4e-4 and 4.9e-4 of
+    their volumes (585 had seven regions faceted, in 54.5 s; now 6.4 s).
+    The other 48 DoomCube 350 and 53 Voron 2.4 solids of the conversion
+    sample come back as they did.
+- **Mesh conversion refuses a mesh that passes through itself.**
+  - Where faces of the built solid crossed and every one was a plane that
+    could not be gathered again, the mesh's own triangles cross there, and
+    `solid_from_mesh` returned a solid crossing itself without a word. It
+    is now refused, naming the point.
 - **A face's mesh no longer says it met its chord while standing off its
   surface by far more.**
   - The mesher measured each triangle's middle, lifted onto the surface,

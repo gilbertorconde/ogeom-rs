@@ -108,6 +108,9 @@ pub enum FallbackReason {
     /// Its face, built, passed through another face of the solid or
     /// through itself, away from the edges they share.
     Crosses,
+    /// Its face, built, had a pcurve standing farther off an edge than
+    /// the edge is long.
+    SpansShort,
 }
 
 impl fmt::Display for FallbackReason {
@@ -123,6 +126,9 @@ impl fmt::Display for FallbackReason {
             Self::BuildFailed => "building or meshing its face failed",
             Self::BoundaryOpen => "its face's boundary did not close",
             Self::Crosses => "its face passed through another face",
+            Self::SpansShort => {
+                "a pcurve of its face stood off an edge farther than the edge is long"
+            }
         })
     }
 }
