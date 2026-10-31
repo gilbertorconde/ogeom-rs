@@ -187,6 +187,10 @@ pub fn fillet_sheet_edges(
 ///   ending in half-planes through the axis, or all the way round where
 ///   both lines of contact close on their faces.
 ///
+/// Where such surfaces cross in more than one corner the ball touches both
+/// faces in (the walls of two drums fused side by side), every corner is
+/// rounded, each over its own run, as long as the corners stand apart.
+///
 /// Otherwise (a B-spline face, a cylinder at a slant to a plane) the ball
 /// is marched along where the two surfaces cross, or, where they do not
 /// cross and the round bridges a gap, along where the surfaces offset by
@@ -203,11 +207,13 @@ pub fn fillet_sheet_edges(
 /// it on the round's side of that line goes) and the result is one shell
 /// of the two trimmed faces and the round, sharing an edge along each line
 /// of contact; where a face's line of contact runs past the round's ends
-/// (or closes round on itself), the rest of it stays free boundary.
-/// Without it the faces are left as they are and the result is
-/// the round alone, its normal following the faces' as in the shell.
+/// (or closes round on itself), the rest of it stays free boundary. Over
+/// several corners each face is cut back along every line of contact it
+/// holds, and the shell holds every round. Without it the faces are left
+/// as they are and the result is the round alone, or a compound of the
+/// rounds, its normal following the faces' as in the shell.
 ///
-/// History: each face generates the round; with `trim`, each face is
+/// History: each face generates every round; with `trim`, each face is
 /// modified into its trimmed self.
 ///
 /// # Errors
@@ -229,7 +235,8 @@ pub fn fillet_sheet_edges(
 ///   round);
 /// - two planes are parallel, or no ball of `radius` touches the front of
 ///   both surfaces, or it does not fit inside a curved face, or more than
-///   one does and touches both faces;
+///   one does and touches both faces in corners close enough that their
+///   rounds could meet;
 /// - the ball touching both surfaces misses a face, or touches the two at
 ///   the ends of a diameter, or its round would be a torus crossing its
 ///   own axis;
@@ -240,7 +247,9 @@ pub fn fillet_sheet_edges(
 /// - one face's line of contact closes on itself across the face's own
 ///   boundary (round a seam) while the round spans only part of the turn;
 /// - with `trim`, cutting a face back leaves it in more than one piece, or
-///   leaves a placed face.
+///   leaves a placed face, or, over several corners, a later corner's line
+///   of contact misses what the earlier cuts left of the face or the cut
+///   along it rebuilds an earlier one's edge.
 pub fn fillet_faces(
     model: &mut Model,
     a: &Shape,

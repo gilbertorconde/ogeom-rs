@@ -1223,6 +1223,94 @@ fn a_plane_and_a_separate_cylinder_trim_into_one_shell() {
     assert_eq!(built.history.modified(&floor).len(), 1);
 }
 
+/// The walls of two drums of radius 5, their axes along z 6 apart, fused
+/// and 10 long: they cross in two creases, at (3, 4) and (3, -4). A ball
+/// of radius 1 touching both from outside stands 6 from each axis, at
+/// (3, ±√27), so it touches each wall where the wall turns 60 degrees from
+/// the line through the axes, and its arc between the contacts turns 60
+/// degrees as well. Both creases round, each to that arc swept along the
+/// drums, π/3 times 10 in area. Trimmed, each wall keeps the 240 degrees
+/// between its two contacts, 5 · 4π/3 · 10, and the walls and the two
+/// rounds are one shell sharing the four lines of contact.
+#[test]
+fn two_drums_round_both_creases_their_walls_meet_in() {
+    let (big, apart, r, length) = (5.0_f64, 6.0_f64, 1.0_f64, 10.0_f64);
+    let round_area = r * (PI / 3.0) * length;
+    let is_round = |s: &SurfaceGeometry| matches!(s, SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - r).abs() < 1e-12);
+    let is_wall = |s: &SurfaceGeometry| matches!(s, SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - big).abs() < 1e-12);
+    for trim in [false, true] {
+        let mut model = Model::new();
+        let at =
+            |x: f64| Frame::new(Point::new(x, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+        let left = ogeom::algo::make_cylinder(&mut model, at(0.0), big, length, T)
+            .unwrap()
+            .shape;
+        let right = ogeom::algo::make_cylinder(&mut model, at(apart), big, length, T)
+            .unwrap()
+            .shape;
+        let pair = ogeom::boolean::fuse(&mut model, &left, &right, T)
+            .unwrap()
+            .shape;
+        let walls: Vec<Shape> = faces(&model, &pair)
+            .into_iter()
+            .filter(|f| is_wall(&surface_of(&model, f)))
+            .collect();
+        assert_eq!(walls.len(), 2);
+        let built = fillet_faces(&mut model, &walls[0], &walls[1], r, trim, T)
+            .unwrap_or_else(|e| panic!("trim {trim}: {e}"));
+        let shape = built.shape.clone();
+        let all = faces(&model, &shape);
+        let rounds: Vec<&Shape> = all
+            .iter()
+            .filter(|f| is_round(&surface_of(&model, f)))
+            .collect();
+        assert_eq!(rounds.len(), 2, "trim {trim}: a round in each crease");
+        // Each round on the cylinder of radius 1 about its ball's centre
+        // line, one in each crease.
+        let mut sides = Vec::new();
+        for round in &rounds {
+            let SurfaceGeometry::Cylinder(c) = surface_of(&model, round) else {
+                unreachable!()
+            };
+            let y = 27.0_f64.sqrt();
+            let off = |y: f64| off_axis(&c.cylinder(), Point::new(3.0, y, 0.0));
+            assert!(off(y).min(off(-y)) < 1e-12, "trim {trim}");
+            sides.push(off(y) < 1e-12);
+            assert!(
+                (area(&model, round) - round_area).abs() < 1e-9,
+                "trim {trim}: {} against {round_area}",
+                area(&model, round)
+            );
+        }
+        assert_ne!(
+            sides[0], sides[1],
+            "trim {trim}: the rounds are in both creases"
+        );
+        if !trim {
+            assert_eq!(all.len(), 2);
+            assert_eq!(built.history.generated(&walls[0]).len(), 2);
+            continue;
+        }
+        assert_eq!(model.kind_of(&shape).unwrap(), ShapeType::Shell);
+        assert_eq!(all.len(), 4);
+        usable(&model, &shape);
+        assert_eq!(
+            edge_use(&model, &shape).0,
+            4,
+            "the four lines of contact shared"
+        );
+        let kept = big * (4.0 * PI / 3.0) * length;
+        for wall in all.iter().filter(|f| is_wall(&surface_of(&model, f))) {
+            assert!(
+                (area(&model, wall) - kept).abs() < 1e-9,
+                "a wall keeps its 240 degrees between the contacts: {} against {kept}",
+                area(&model, wall)
+            );
+        }
+        assert_eq!(built.history.modified(&walls[0]).len(), 1);
+    }
+}
+
 /// A plane and a separate cylinder square to it: the floor z = 0 and a
 /// tube of radius 3 standing clear of it from z = 1 to z = 6, both facing
 /// the gap. A ball of radius 2 rolls round the tube on the floor, its

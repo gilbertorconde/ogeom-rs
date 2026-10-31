@@ -743,6 +743,277 @@ fn a_face_blend_rounds_a_part_thinner_than_its_ball_where_the_lune_stays_inside(
     );
 }
 
+/// A bar 8 long and `r + 4e-4` square, its top and side blended at radius
+/// `r` = 1.5: the ball's centre stands 4e-4 inside the far side and the
+/// bottom, so both pass just behind it, through the back of every ball
+/// along the bar and outside every lune. Their planes run along the bar,
+/// so each stays as far from the lunes all along it: the bar with the
+/// edge rounded, `8 w h - 8 (1 - pi/4) r^2`.
+#[test]
+fn a_face_blend_rounds_a_bar_whose_far_faces_pass_just_behind_the_ball_s_centre() {
+    let pi = core::f64::consts::PI;
+    let (r, length) = (1.5_f64, 8.0_f64);
+    let w = r + 4e-4;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (length, w, w), T)
+        .unwrap()
+        .shape;
+    let top = planar_face_at(&model, &block, Point::new(length / 2.0, w / 2.0, w));
+    let side = planar_face_at(&model, &block, Point::new(length / 2.0, w, w / 2.0));
+    let blended = ogeom::fillet::blend_faces(&mut model, &block, &top, &side, r, T)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let want = (length * (1.0 - pi / 4.0) * r).mul_add(-r, length * w * w);
+    let got = exact_volume(&model, &blended);
+    assert!((got - want).abs() < 1e-9, "{got} against {want}");
+}
+
+/// The part of a drum of radius 3.25 beyond its flat at x = 0.35, 6 long:
+/// the segment of the disc 2.9 wide. Its flat and its wall meet in two
+/// convex creases at (0.35, ±√(3.25² - 0.35²)), and a ball of radius 1.4
+/// behind both seats in each, touching the flat at height ±√(1.85² - 1.75²)
+/// and the wall where its centre's radius meets it. The two balls overlap
+/// near the middle of the segment, and each corner reaches farther from its
+/// crease than half the creases' distance apart, but each corner lies on
+/// its own side of the segment's middle line. With the creases first
+/// rounded at 0.4, so the flat and the wall share no edge, both corners
+/// are taken off over the old rounds, which lie inside them: the segment
+/// less the two corners, each bounded by the flat, the ball's arc and the
+/// wall's arc.
+#[test]
+fn a_face_blend_takes_off_two_corners_whose_balls_overlap_but_whose_corners_stand_apart() {
+    let (big, flat, r, rho, length) = (3.25_f64, 0.35_f64, 1.4_f64, 0.4_f64, 6.0_f64);
+    let mut model = Model::new();
+    let at = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(&mut model, at, big, length, T)
+        .unwrap()
+        .shape;
+    let keep = Frame::new(Point::new(flat, -big, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let slab = ogeom::algo::make_box(&mut model, keep, (big, 2.0 * big, length + 2.0), T)
+        .unwrap()
+        .shape;
+    let segment = ogeom::boolean::common(&mut model, &drum, &slab, T)
+        .unwrap()
+        .shape;
+    let flat_and_wall = |model: &Model, shape: &Shape| {
+        let face = planar_face_at(model, shape, Point::new(flat, 0.0, length / 2.0));
+        let wall = faces_on(
+            model,
+            shape,
+            |s| matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - big).abs() < 1e-12),
+        );
+        assert_eq!(wall.len(), 1);
+        (face, wall[0].clone())
+    };
+    let (face, wall) = flat_and_wall(&model, &segment);
+    let creases = shared_edges(&model, &face, &wall);
+    assert_eq!(creases.len(), 2);
+    let segment = ogeom::fillet::fillet_edges(&mut model, &segment, &creases, rho, T)
+        .unwrap()
+        .shape;
+    let (face, wall) = flat_and_wall(&model, &segment);
+    assert!(!share_an_edge(&model, &face, &wall));
+    let blended = ogeom::fillet::blend_faces(&mut model, &segment, &face, &wall, r, T)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // The corner in the upper crease by Green's theorem round its
+    // boundary: half the cross of each segment's ends, and for an arc of
+    // radius `a` about `m` turning `turn` from `p` to `q`, half of
+    // `a^2 turn + m x (q - p)`.
+    let cross = |p: (f64, f64), q: (f64, f64)| p.0 * q.1 - p.1 * q.0;
+    let arc = |m: (f64, f64), a: f64, p: (f64, f64), q: (f64, f64)| {
+        let from = (p.1 - m.1).atan2(p.0 - m.0);
+        let mut turn = (q.1 - m.1).atan2(q.0 - m.0) - from;
+        if turn > core::f64::consts::PI {
+            turn -= core::f64::consts::TAU;
+        } else if turn < -core::f64::consts::PI {
+            turn += core::f64::consts::TAU;
+        }
+        (a * a).mul_add(turn, cross(m, (q.0 - p.0, q.1 - p.1))) / 2.0
+    };
+    let crease = (flat, big.mul_add(big, -(flat * flat)).sqrt());
+    let inner = big - r;
+    let centre = (
+        flat + r,
+        inner.mul_add(inner, -(flat + r) * (flat + r)).sqrt(),
+    );
+    let on_flat = (flat, centre.1);
+    let on_wall = (centre.0 * big / inner, centre.1 * big / inner);
+    let corner = (cross(crease, on_flat) / 2.0
+        + arc(centre, r, on_flat, on_wall)
+        + arc((0.0, 0.0), big, on_wall, crease))
+    .abs();
+    let half = (flat / big).acos();
+    let segment_area = big * big * (half - half.sin() * half.cos());
+    let want = (segment_area - 2.0 * corner) * length;
+    let got = exact_volume(&model, &blended);
+    assert!((got - want).abs() < 1e-9, "{got} against {want}");
+}
+
+/// The volume between the balls' arcs and the two walls of a tee, a pipe
+/// of radius `big` along x through a branch of radius `small` along z,
+/// rolled round by a ball of radius `r` outside both: its centre runs on
+/// `(b cos t, b sin t, sqrt(B^2 - b^2 sin^2 t))`, `b = small + r`,
+/// `B = big + r`. Each normal section of the balls' tube is a fan of rays
+/// from the centre between the contacts, from the ball out to the first
+/// wall, weighted by the tube's Jacobian `s (|c'| - s <u, T'>)`: the
+/// rolling-ball integration the face-blend stress oracle uses, by the
+/// trapezoid rule round the closed path (exact to rounding for a smooth
+/// periodic integrand at this count) and Gauss-Legendre across each fan.
+fn tee_corner(big: f64, small: f64, r: f64) -> f64 {
+    let (b, bb) = (small + r, big + r);
+    let centre = |t: f64| {
+        let (sin, cos) = t.sin_cos();
+        Vector::new(b * cos, b * sin, b.mul_add(-b * sin * sin, bb * bb).sqrt())
+    };
+    let velocity = |t: f64| {
+        let (sin, cos) = t.sin_cos();
+        let z = b.mul_add(-b * sin * sin, bb * bb).sqrt();
+        Vector::new(-b * sin, b * cos, -b * b * sin * cos / z)
+    };
+    let tangent = |t: f64| {
+        let v = velocity(t);
+        v / v.magnitude()
+    };
+    // The first distance past the ball along the ray from `c` along `u`
+    // to the cylinder of `radius` about the axis `axis` through the origin.
+    let hit = |c: Vector, u: Vector, axis: Vector, radius: f64| {
+        let w = c - axis * c.dot(axis);
+        let up = u - axis * u.dot(axis);
+        let (a, h) = (up.dot(up), w.dot(up));
+        let disc = h.mul_add(h, -a * (w.dot(w) - radius * radius));
+        if a <= 0.0 || disc < 0.0 {
+            return f64::INFINITY;
+        }
+        [(-h - disc.sqrt()) / a, (-h + disc.sqrt()) / a]
+            .into_iter()
+            .filter(|s| *s >= r * (1.0 - 1e-9))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let nodes = [
+        (-0.906_179_845_938_664, 0.236_926_885_056_189),
+        (-0.538_469_310_105_683, 0.478_628_670_499_366),
+        (0.0, 0.568_888_888_888_889),
+        (0.538_469_310_105_683, 0.478_628_670_499_366),
+        (0.906_179_845_938_664, 0.236_926_885_056_189),
+    ];
+    let n = 720;
+    let mut total = 0.0;
+    for k in 0..n {
+        let t = core::f64::consts::TAU * f64::from(k) / f64::from(n);
+        let c = centre(t);
+        let speed = velocity(t).magnitude();
+        let h = 1e-4;
+        let turn = (tangent(t + h) - tangent(t - h)) / (2.0 * h);
+        let toward = |axis: Vector| {
+            let w = c - axis * c.dot(axis);
+            -(w / w.magnitude())
+        };
+        let (ua, ub) = (toward(Vector::X), toward(Vector::Z));
+        let sweep = ua.cross(ub).magnitude().atan2(ua.dot(ub));
+        let e2 = ub - ua * ub.dot(ua);
+        let e2 = e2 / e2.magnitude();
+        let ray = |phi: f64| ua * phi.cos() + e2 * phi.sin();
+        let reach =
+            |phi: f64| hit(c, ray(phi), Vector::X, big).min(hit(c, ray(phi), Vector::Z, small));
+        let pieces = 32;
+        let mut section = 0.0;
+        for p in 0..pieces {
+            let (lo, hi) = (
+                sweep * f64::from(p) / f64::from(pieces),
+                sweep * f64::from(p + 1) / f64::from(pieces),
+            );
+            let (mid, half) = (f64::midpoint(lo, hi), (hi - lo) / 2.0);
+            for (x, w) in nodes {
+                let phi = half.mul_add(x, mid);
+                let s = reach(phi);
+                let bend = ray(phi).dot(turn);
+                section += w
+                    * half
+                    * (speed * (s * s - r * r) / 2.0 - bend * (s * s * s - r * r * r) / 3.0);
+            }
+        }
+        total += section;
+    }
+    total * core::f64::consts::TAU / f64::from(n)
+}
+
+/// A pipe of radius 3 along x through a branch of radius 1.5 along z, their
+/// crease first rounded at 0.37, then the two walls blended at 0.4: the old
+/// round fills the corner to within a twelfth of the ball's gap from its
+/// arc to the crease, so a point just off the arc toward the crease lies
+/// in the old round's fill. Every ball clears the old round, which a
+/// smaller ball's round lies wholly inside, so the side is read inside
+/// the ball's lune, where the space is open, and the blend fills the
+/// corner at 0.4 over the old round: the sharp tee with the corner volume
+/// [`tee_corner`] integrates, to the band's fit of 2e-4 over its area.
+#[test]
+fn a_marched_face_blend_fills_over_an_older_round_just_smaller() {
+    let (big, small, rho, r) = (3.0_f64, 1.5_f64, 0.37_f64, 0.4_f64);
+    let mut model = Model::new();
+    let along = Frame::new(Point::new(-8.0, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap();
+    let pipe = ogeom::algo::make_cylinder(&mut model, along, big, 16.0, T)
+        .unwrap()
+        .shape;
+    let up = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+    let branch = ogeom::algo::make_cylinder(&mut model, up, small, 7.0, T)
+        .unwrap()
+        .shape;
+    let tee = ogeom::boolean::fuse(&mut model, &pipe, &branch, T)
+        .unwrap()
+        .shape;
+    let sharp = exact_volume(&model, &tee);
+    let walls = |model: &Model, shape: &Shape| {
+        let wall = |radius: f64| {
+            let found = faces_on(
+                model,
+                shape,
+                |s| matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(c) if (c.cylinder().radius() - radius).abs() < 1e-12),
+            );
+            assert_eq!(found.len(), 1, "one wall of radius {radius}");
+            found[0].clone()
+        };
+        (wall(big), wall(small))
+    };
+    let (a, b) = walls(&model, &tee);
+    let crease = shared_edges(&model, &a, &b);
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &tee, &crease, rho, T)
+        .unwrap()
+        .shape;
+    let (a, b) = walls(&model, &rounded);
+    assert!(!share_an_edge(&model, &a, &b));
+    let blended = ogeom::fillet::blend_faces(&mut model, &rounded, &a, &b, r, T)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let bands: Vec<Shape> = faces_on(&model, &blended, |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::BSpline(_))
+    });
+    assert!(!bands.is_empty(), "a fitted band");
+    let band_area: f64 = bands
+        .iter()
+        .map(|f| {
+            ogeom::algo::surface_properties(&model, f, ogeom::mesh::Deflection::default(), T)
+                .unwrap()
+                .mass
+        })
+        .sum();
+    let want = sharp + tee_corner(big, small, r);
+    let got = exact_volume(&model, &blended);
+    let slack = 2e-4 * band_area;
+    assert!(
+        (got - want).abs() < slack,
+        "{got} against {want}, off {:.3e} against {slack:.3e}",
+        got - want
+    );
+}
+
 /// A boss whose wall is a B-spline surface (the same drum, restated) on a
 /// block: the seat has no closed form, so the ball is marched round the
 /// foot and the round is a fitted band. It must ride the wall and the top

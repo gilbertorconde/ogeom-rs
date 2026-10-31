@@ -88,7 +88,8 @@ const CONTACT_STATIONS: u32 = 16;
 ///   holds part of the seat), or, where the solid's edges along the crease
 ///   end first (a crease running off a block's side while the ball still
 ///   rolls over its top), in the section through their end. The band rides
-///   both faces within a tenth of a degree.
+///   both faces within a tenth of a degree. An older, smaller round between
+///   the faces that every ball clears goes with the corner.
 ///
 /// # Errors
 ///
@@ -595,12 +596,13 @@ fn read_sides(
                 tol,
             )
             .and_then(|seat| {
-                let Some(probe) = seat.probe() else {
+                let Some([corner, lune]) = seat.probes() else {
                     ogeom_bail!(Invariant, "a marched seat on the crease has no probe");
                 };
                 let closed = seat.closed();
                 let inside =
                     crate::pair_marched::face_inside(model, solid, [a, b], &seat, radius, tol)?;
+                let probe = if inside.is_none() { lune } else { corner };
                 Ok((Corners::Marched(Box::new(seat), probe, inside), closed))
             }),
         };

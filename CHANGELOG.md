@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_faces` rounds every corner two faces share.**
+  - Where the faces' surfaces share a direction or an axis and cross in
+    more than one corner the ball touches both faces in (the walls of two
+    drums fused side by side), `fillet_faces` refused with "more than one
+    ball ... touches the front of both faces". It now rounds every corner,
+    as `blend_faces` does, where the corners stand apart: without `trim` a
+    compound of the rounds, and with it one shell, each face cut back along
+    every line of contact it holds, one corner after the other. Two drums
+    of radius 5 whose axes stand 6 apart round at radius 1 to two arcs of
+    60 degrees, each face keeping its 240 degrees between the contacts, to
+    1e-9 in area.
+
 - **A face blend asks only the ball's lune of the solid's other faces.**
   - Between two planes and where `blend_faces` sweeps one section (faces
     sharing a direction or an axis), a face anywhere inside the ball
@@ -106,6 +118,43 @@ bump may break the API and a patch bump may not.
     fit of 2e-4, and meets both faces within a tenth of a degree.
 
 ### Fixed
+
+- **A marched face blend reads its side inside the ball's lune.**
+  - Between faces whose surfaces share no direction or axis (a pipe and
+    its branch, a leaning drum and the block it stands in), `blend_faces`
+    read which side of the faces the ball rolls on just off the middle of
+    its arc toward the crease. With an older round just smaller than the
+    ball in the corner that point lies in the old round's fill, and the
+    blend read "the solid beside the round is material". Where no other
+    face stands in the ball the side is now read inside the ball's lune,
+    as the swept path reads it: a pipe of radius 3 through a branch of
+    radius 1.5, its crease rounded at 0.37, fills at 0.4 to within 2.3e-6
+    of the rolling-ball integral over the balls' normal sections.
+  - The run's halving between stations stopped at once where the march
+    ran against its guide's parameter, its stations falling, and the blend
+    read "whether another face of the solid comes inside the ball ...
+    cannot be told". An interval is now spent only when its middle meets
+    one of its ends.
+
+- **A face blend clears a plane along its run of every lune at once.**
+  - Between two planes and on the swept path along a direction, a face
+    passing just behind the ball's centre (the far side of a bar barely
+    thicker than the radius) kept the lune search splitting its cells
+    along the run until it ran out, and the blend ended "cannot be told
+    within 65536 pieces of the run". A plane's distance is linear along
+    such a run, so over the swept sectors it is least and most in the
+    run's two end sections; a plane clear there is clear of every lune.
+    A bar 1.5004 square, its edge blended at 1.5, is the bar with the edge
+    rounded to 1e-9.
+
+- **Two corners whose balls overlap but whose corners stand apart.**
+  - Where the surfaces cross in two corners closer than the sum of their
+    reaches, the face blend refused them as corners whose rounds could
+    meet. Each corner's section lies in the convex polygon through its
+    crease, its contacts and the meeting points of its arcs' end tangents,
+    and corners a line parts are now taken: the segment of a drum of
+    radius 3.25 beyond a flat 0.35 off its axis, its two creases blended
+    at 1.4, is the segment less the two corners to 1e-9.
 
 - **A swept face blend over an older round cuts its lines of contact on
   the faces' surfaces.**

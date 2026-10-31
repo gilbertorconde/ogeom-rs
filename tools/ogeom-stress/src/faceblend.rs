@@ -48,7 +48,9 @@
 //! `fillet_edges`) have no closed form here; a smaller ball's round lies
 //! wholly inside a larger one's corner (the morphological closing and
 //! opening are monotone in the ball), so such a strip blocks a round of
-//! radius `r` exactly where its own radius exceeds `r`.
+//! radius `r` exactly where its own radius exceeds `r`: between faces of
+//! a solid it stands inside the ball, and for `fillet_faces` the ball's
+//! contacts fall on the stretch of each face it took off.
 
 use core::f64::consts::{PI, TAU};
 use std::sync::OnceLock;
@@ -1071,13 +1073,23 @@ impl Marched {
             };
         }
         let mut found = unsure.map_or(Rolls::Yes, Rolls::Unsure);
-        if !solid {
-            return found;
-        }
+        // The old round took each face back to its own line of contact. A
+        // smaller ball's contacts fall on what it took off, and between
+        // faces of a solid the old round stands inside the ball.
         if let Some(rho) = self.strip {
             found = found.and(Rolls::of_margin(r - rho, TOUCH, || {
-                format!("an old round of radius {rho} stands inside the ball")
+                if solid {
+                    format!("an old round of radius {rho} stands inside the ball")
+                } else {
+                    format!(
+                        "the ball's contacts fall where an old round of radius {rho} took the \
+                         faces back"
+                    )
+                }
             }));
+        }
+        if !solid {
+            return found;
         }
         let lunes = Lunes::new(spine, self.supports, sides, r);
         for p in &self.others {

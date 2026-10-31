@@ -148,15 +148,17 @@ pub(crate) struct PairSeat {
     /// sections otherwise, in order along the guide.
     blend: MarchedBlend,
     run: Run,
-    /// For a seat between faces of a solid, a point just off the middle of
-    /// the ball's arc toward the crease, where the solid says whether the
-    /// corner is material.
-    probe: Option<Point>,
+    /// For a seat between faces of a solid, two points beside the middle of
+    /// the ball's arc where the solid says which side of the faces the ball
+    /// rolls on: one just off the arc toward the crease, where it says
+    /// whether the corner is material, and one as far inside the ball,
+    /// where it says whether the ball's lune is.
+    probes: Option<[Point; 2]>,
 }
 
 impl PairSeat {
-    pub(crate) const fn probe(&self) -> Option<Point> {
-        self.probe
+    pub(crate) const fn probes(&self) -> Option<[Point; 2]> {
+        self.probes
     }
 
     /// Whether the round runs all the way round a closed seat.
@@ -236,7 +238,7 @@ pub(crate) fn pair_seat(
     let mut why: Option<OgeomError> = None;
     for guide in guides {
         match seat_along(model, faces, &hosts, &guide, sides, radius, solid, tol) {
-            Ok(Some((blend, run, probe))) => found.push((guide, blend, run, probe)),
+            Ok(Some((blend, run, probes))) => found.push((guide, blend, run, probes)),
             Ok(None) => {}
             Err(e @ (OgeomError::Construction(_) | OgeomError::NotDone(_))) => why = Some(e),
             Err(e) => return Err(e),
@@ -244,13 +246,13 @@ pub(crate) fn pair_seat(
     }
     match found.len() {
         1 => {
-            let (guide, blend, run, probe) = found.remove(0);
+            let (guide, blend, run, probes) = found.remove(0);
             Ok(PairSeat {
                 hosts,
                 guide,
                 blend,
                 run,
-                probe,
+                probes,
             })
         }
         0 => Err(why.unwrap_or_else(|| {
@@ -301,8 +303,8 @@ fn spread(count: usize, most: usize) -> Vec<usize> {
 /// The march along one guide, and the run it gives: `None` where the ball
 /// does not touch both faces along it. With `whole`, the solid the faces
 /// bound, the run is the closed seat or the stretch of it the faces and the
-/// solid's edges along the crease give ends to, and the probe beside it is
-/// read.
+/// solid's edges along the crease give ends to, and the probes beside it
+/// are read.
 #[allow(clippy::too_many_arguments, reason = "one seat, all its data")]
 #[allow(clippy::type_complexity, reason = "the seat's three parts")]
 fn seat_along(
@@ -314,7 +316,7 @@ fn seat_along(
     radius: f64,
     whole: Option<&Shape>,
     tol: Tolerances,
-) -> OgeomResult<Option<(MarchedBlend, Run, Option<Point>)>> {
+) -> OgeomResult<Option<(MarchedBlend, Run, Option<[Point; 2]>)>> {
     let [first, second] = &hosts.surfaces;
     // Seeded where the guide passes nearest each face, then at its middle.
     let mut seeds = Vec::with_capacity(3);
@@ -385,11 +387,11 @@ fn seat_along(
     let closed = blend.stopped == BlendStop::Closed;
     let (blend, missed) = match (closed, missing) {
         (true, None) => {
-            let probe = whole
+            let probes = whole
                 .is_some()
-                .then(|| probe_at(&blend, guide, blend.len() / 2, radius, tol))
+                .then(|| probes_at(&blend, guide, blend.len() / 2, radius, tol))
                 .transpose()?;
-            return Ok(Some((blend, Run::Closed, probe)));
+            return Ok(Some((blend, Run::Closed, probes)));
         }
         // A loop the faces hold part of: opened where the ball misses a
         // face, and read from there round as one run. Between faces of a
@@ -509,8 +511,8 @@ fn seat_along(
         }
         let through = [ends[0].map(|(_, p)| p), ends[1].map(|(_, p)| p)];
         let run = trimmed(&blend, hosts, guide, sides, radius, (w0, w1), through, tol)?;
-        let probe = probe_at(&run, guide, run.len() / 2, radius, tol)?;
-        return Ok(Some((run, Run::Capped, Some(probe))));
+        let probes = probes_at(&run, guide, run.len() / 2, radius, tol)?;
+        return Ok(Some((run, Run::Capped, Some(probes))));
     }
 
     let mut stretches = Vec::with_capacity(2);
@@ -542,17 +544,20 @@ fn seat_along(
     Ok(Some((run, Run::Open(Box::new([a, b])), None)))
 }
 
-/// Just off the middle of the ball's arc at station `i`, toward the crease.
-fn probe_at(
+/// Two points beside the middle of the ball's arc at station `i`: one just
+/// off it toward the crease, and one as far inside the ball, toward its
+/// centre.
+fn probes_at(
     blend: &MarchedBlend,
     guide: &Curve,
     i: usize,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Point> {
+) -> OgeomResult<[Point; 2]> {
     let centre = blend.spine[i];
-    let bisector = (blend.touch_first[i] - centre) + (blend.touch_second[i] - centre);
-    let on_arc = centre + bisector.normalized(tol)? * radius;
+    let bisector =
+        ((blend.touch_first[i] - centre) + (blend.touch_second[i] - centre)).normalized(tol)?;
+    let on_arc = centre + bisector * radius;
     let crease = guide.point_at(on_guide(guide, blend.along[i]), tol)?;
     let toward = crease - on_arc;
     let gap = toward.magnitude();
@@ -563,7 +568,8 @@ fn probe_at(
              the crease"
         );
     }
-    Ok(on_arc + toward / gap * (gap.min(radius) * 0.1))
+    let off = gap.min(radius) * 0.1;
+    Ok([on_arc + toward / gap * off, on_arc - bisector * off])
 }
 
 /// A face cut along the ball's line of contact.

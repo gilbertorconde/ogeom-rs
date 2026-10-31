@@ -1987,28 +1987,6 @@ impl FaceSeat {
     }
 }
 
-/// The ball of `radius` touching both faces, on the side each face's
-/// normal points to, or behind both with `behind`, where the two faces'
-/// surfaces share a direction or an axis.
-pub(crate) fn face_seat(
-    model: &mut Model,
-    faces: [&Shape; 2],
-    radius: f64,
-    behind: bool,
-    tol: Tolerances,
-) -> OgeomResult<FaceSeat> {
-    let mut seats = face_seats(model, faces, radius, behind, tol)?;
-    if seats.len() > 1 {
-        let side = if behind { "back" } else { "front" };
-        ogeom_bail!(
-            Construction,
-            "more than one ball of radius {radius} touches the {side} of both faces; which \
-             corner to round is ambiguous"
-        );
-    }
-    Ok(seats.remove(0))
-}
-
 /// Every ball of `radius` touching both faces, on the side each face's
 /// normal points to, or behind both with `behind`, where the two faces'
 /// surfaces share a direction or an axis: one in each corner where the two
@@ -2020,7 +1998,9 @@ pub(crate) fn face_seat(
 /// crease's distances to the two contacts. Distance from the crease is
 /// convex, so it is greatest on the corner's boundary; along a profile's
 /// short arc from the crease, and along the ball's arc, which faces the
-/// crease, it is greatest at an end.
+/// crease, it is greatest at an end. Where two such discs meet, the
+/// corners are still taken where a line parts the convex polygons
+/// [`corner_hull`] holds them in.
 pub(crate) fn face_seats(
     model: &mut Model,
     faces: [&Shape; 2],
@@ -2062,18 +2042,10 @@ pub(crate) fn face_seats(
     // The stations each face spans, a little widened: its line of contact
     // is cut where it leaves the face, and stays inside the window of the
     // face's surface, which reaches a little past the face.
-    let mut extents = [(0.0, 0.0); 2];
-    for (extent, face) in extents.iter_mut().zip(faces) {
-        let mut lo = f64::INFINITY;
-        let mut hi = f64::NEG_INFINITY;
-        for corner in shape_bounds(model, face, tol)?.corners() {
-            let s = layout.station(corner);
-            lo = lo.min(s);
-            hi = hi.max(s);
-        }
-        let pad = ((hi - lo).abs() * 1e-3).max(tol.confusion() * 1e3);
-        *extent = (lo - pad, hi + pad);
-    }
+    let extents = [
+        station_extent(model, &layout, faces[0], tol)?,
+        station_extent(model, &layout, faces[1], tol)?,
+    ];
 
     let mut seated = Vec::new();
     let (mut unmade, mut made) = (None, false);
@@ -2143,11 +2115,15 @@ pub(crate) fn face_seats(
                 .iter()
                 .map(|c| norm2(sub2(*c, crease)))
                 .fold(0.0, f64::max);
-            reaches.push((crease, reach));
+            let hull = corner_hull(section, crease, profiles);
+            reaches.push((crease, reach, hull));
         }
-        for (i, (p, a)) in reaches.iter().enumerate() {
-            for (q, b) in &reaches[i + 1..] {
-                if norm2(sub2(*p, *q)) <= a + b + tol.confusion() {
+        for (i, (p, a, one)) in reaches.iter().enumerate() {
+            for (q, b, other) in &reaches[i + 1..] {
+                let apart = norm2(sub2(*p, *q)) > a + b + tol.confusion()
+                    || matches!((one, other), (Some(one), Some(other))
+                        if parted(one, other, tol.confusion()));
+                if !apart {
                     ogeom_bail!(
                         Construction,
                         "more than one ball of radius {radius} touches the {side} of both \
@@ -2205,6 +2181,87 @@ pub(crate) fn face_seats(
         });
     }
     Ok(seats)
+}
+
+/// A convex polygon, as its corners, holding the corner of a seat's
+/// section between the ball's arc and the crease. The corner's boundary
+/// runs along each profile from the crease to its contact (a segment, or
+/// the circle's short arc) and back along the ball's arc, which faces the
+/// crease. A circular arc short of a half turn lies in the triangle of its
+/// ends and the meeting point of its end tangents, so the corner lies in
+/// the hull of the crease, the contacts and those meeting points. `None`
+/// where an arc reaches a half turn, its tangents parallel.
+fn corner_hull(section: Section, crease: P2, profiles: [Profile; 2]) -> Option<Vec<P2>> {
+    // Where the tangents at the ends of the short arc from `p` to `q`
+    // about `centre` meet: along the bisector, the arc's radius over the
+    // cosine of half its turn.
+    let apex = |centre: P2, p: P2, q: P2| -> Option<P2> {
+        let (u, v) = (sub2(p, centre), sub2(q, centre));
+        let size = norm2(u);
+        let sum = add2(scale2(u, 1.0 / size), scale2(v, 1.0 / norm2(v)));
+        let length = norm2(sum);
+        let apex = add2(centre, scale2(sum, 2.0 * size / (length * length)));
+        (apex.0.is_finite() && apex.1.is_finite()).then_some(apex)
+    };
+    let mut corners = vec![crease, section.contacts[0], section.contacts[1]];
+    corners.push(apex(
+        section.centre,
+        section.contacts[0],
+        section.contacts[1],
+    )?);
+    for (profile, contact) in profiles.into_iter().zip(section.contacts) {
+        if let Profile::Circle { centre, .. } = profile {
+            corners.push(apex(centre, crease, contact)?);
+        }
+    }
+    Some(corners)
+}
+
+/// Whether a line parts two convex polygons, given by their corners, by
+/// more than `margin`. Two convex polygons apart have a parting line
+/// square to an edge of one of them, and every edge joins two corners.
+fn parted(one: &[P2], other: &[P2], margin: f64) -> bool {
+    let reach = |corners: &[P2], n: P2| {
+        corners
+            .iter()
+            .map(|c| dot2(*c, n))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| {
+                (lo.min(x), hi.max(x))
+            })
+    };
+    [one, other].into_iter().any(|corners| {
+        corners.iter().enumerate().any(|(i, p)| {
+            corners[i + 1..].iter().any(|q| {
+                let edge = sub2(*q, *p);
+                let size = norm2(edge);
+                if size <= margin {
+                    return false;
+                }
+                let n = scale2(perp2(edge), 1.0 / size);
+                let ((a0, a1), (b0, b1)) = (reach(one, n), reach(other, n));
+                a1 + margin < b0 || b1 + margin < a0
+            })
+        })
+    })
+}
+
+/// The stations a face spans, read off its bounding box and a little
+/// widened.
+fn station_extent(
+    model: &Model,
+    layout: &Layout,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(f64, f64)> {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for corner in shape_bounds(model, face, tol)?.corners() {
+        let s = layout.station(corner);
+        lo = lo.min(s);
+        hi = hi.max(s);
+    }
+    let pad = ((hi - lo).abs() * 1e-3).max(tol.confusion() * 1e3);
+    Ok((lo - pad, hi + pad))
 }
 
 /// The two faces' surfaces as they stand, to put back where the faces'
@@ -2580,9 +2637,13 @@ fn face_inside_swept(
         sector: Sector::new(centre, [first, second], radius),
         run: (s0, turn),
     };
-    let search = |measure: &ogeom_algo::PointDistance, hint: Option<Point>| {
-        lunes.face_inside(measure, hint, tol)
-    };
+    let search =
+        |model: &Model, face: &Shape, measure: &ogeom_algo::PointDistance, hint: Option<Point>| {
+            if lunes.plane_clear(model, face, tol)? {
+                return Ok(None);
+            }
+            lunes.face_inside(measure, hint, tol)
+        };
     let rolling = crate::between::Rolling {
         radius,
         stations,
@@ -2620,6 +2681,29 @@ impl Sector {
             sense,
             angle,
         }
+    }
+
+    /// The least and the most of `n . u` over the unit directions `u` from
+    /// the centre to the arc, `n` a unit vector: at the arc's ends, or one
+    /// (minus one) where `n` (its opposite) turns within the arc.
+    fn spread_along(&self, n: P2) -> (f64, f64) {
+        let turned = |v: P2| {
+            let t = (self.sense * cross2(self.from, v)).atan2(dot2(self.from, v));
+            if t < 0.0 { t + TAU } else { t }
+        };
+        let beta = turned(n);
+        let ends = [beta.cos(), (self.angle - beta).cos()];
+        let lo = if turned(scale2(n, -1.0)) <= self.angle {
+            -1.0
+        } else {
+            ends[0].min(ends[1])
+        };
+        let hi = if beta <= self.angle {
+            1.0
+        } else {
+            ends[0].max(ends[1])
+        };
+        (lo, hi)
     }
 
     /// The point at distance `rho` from the centre, turned `alpha` from the
@@ -2684,6 +2768,51 @@ impl SweptLunes<'_> {
             tol.confusion()
         };
         self.on_run(self.layout.station(q), slack) && self.sector.depth(flat) > tol.confusion()
+    }
+
+    /// Whether `face` is planar and its plane stands more than the
+    /// confusion clear of every lune of a run swept along a direction. The
+    /// signed distance from a plane is linear along such a run, so over the
+    /// swept sectors it is least and most in the run's two end sections:
+    /// at the centre there, or on the arc, where the sector's directions
+    /// spread the plane's normal over [`Sector::spread_along`].
+    fn plane_clear(&self, model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+        use ogeom_geom::Transformable as _;
+        if self.layout.turns() {
+            return Ok(false);
+        }
+        let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+            return Ok(false);
+        };
+        let Some(surface @ SurfaceGeometry::Plane(_)) = model.geometry().surface(data.surface)
+        else {
+            return Ok(false);
+        };
+        let SurfaceGeometry::Plane(plane) = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?
+        else {
+            return Ok(false);
+        };
+        let frame = plane.plane().frame();
+        let (at, normal) = (frame.origin(), frame.z().vector());
+        let across = self.layout.flat_vector(normal, 0.0);
+        let size = norm2(across);
+        let (lo, hi) = if size > 0.0 {
+            let (lo, hi) = self.sector.spread_along(scale2(across, 1.0 / size));
+            (lo * size, hi * size)
+        } else {
+            (0.0, 0.0)
+        };
+        let radius = self.sector.radius;
+        let (s0, turn) = self.run;
+        let (mut least, mut most) = (f64::INFINITY, f64::NEG_INFINITY);
+        for s in [s0, s0 + turn] {
+            let g = normal.dot(self.layout.lift(self.sector.centre, s) - at);
+            least = least.min(radius.mul_add(lo.min(0.0), g));
+            most = most.max(radius.mul_add(hi.max(0.0), g));
+        }
+        Ok(least > tol.confusion() || most < -tol.confusion())
     }
 
     /// A point of the face `measure` reads lying more than the confusion
@@ -2901,7 +3030,6 @@ pub(crate) fn closed_form_between(
 
 /// Round the corner between two faces of separate shapes where one is
 /// curved: from the closed form where the seat has one, marched otherwise.
-#[allow(clippy::too_many_lines, reason = "one rebuild, checked then assembled")]
 pub(crate) fn fillet_faces(
     model: &mut Model,
     a: &Shape,
@@ -2914,101 +3042,98 @@ pub(crate) fn fillet_faces(
         return crate::pair_marched::fillet_faces(model, a, b, radius, trim, tol);
     }
     // The faces' windows, widened to read the ball, are put back where no
-    // ball seats.
+    // round is made.
     let held = surfaces_of(model, [a, b])?;
-    let seat = face_seat(model, [a, b], radius, false, tol);
-    if seat.is_err() {
+    let made = face_seats(model, [a, b], radius, false, tol)
+        .and_then(|seats| rounds_between(model, [a, b], &seats, trim, tol));
+    if made.is_err() {
         put_back(model, held);
     }
-    let FaceSeat {
-        exact,
-        stretches,
-        span,
-        profiles: _,
-        surfaces,
-        reads,
-    } = seat?;
-    let layout = exact.layout;
+    made
+}
 
+/// The round of every seat between two separate faces, one in each corner
+/// where their surfaces cross and the ball touches both. Without `trim`,
+/// the rounds alone, the one round itself or a compound of them. With it,
+/// each face cut back along its line of contact in every corner, one
+/// corner after the other, the piece away from all the rounds kept, and
+/// the kept pieces and the rounds one shell.
+fn rounds_between(
+    model: &mut Model,
+    [a, b]: [&Shape; 2],
+    seats: &[FaceSeat],
+    trim: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     let mut history = History::new();
     let away = false;
     if !trim {
-        let round = match span {
-            Some((lo, hi)) => {
-                let mut corners = Vec::with_capacity(2);
-                let mut rails = Vec::with_capacity(2);
-                for f in 0..2 {
-                    let v0 = make_vertex(model, exact.contact(f, lo)).shape;
-                    let v1 = make_vertex(model, exact.contact(f, hi)).shape;
-                    let (curve, range) = exact.contact_run(f, (lo, hi), tol)?;
-                    let rail = make_edge_between(model, curve, range, &v0, &v1, tol)?.shape;
-                    corners.push([v0, v1]);
-                    rails.push(rail);
-                }
-                exact_open_round(
-                    model,
-                    &exact,
-                    (lo, hi),
-                    &[rails[0].clone(), rails[1].clone()],
-                    &[corners[0].clone(), corners[1].clone()],
-                    away,
-                    tol,
-                )?
-            }
-            None => {
-                let start = layout.station(stretches[0].start);
-                let mut rings = Vec::with_capacity(2);
-                for f in 0..2 {
-                    let curve = exact.contact_curve(f, tol)?;
-                    let v = make_vertex(model, exact.contact(f, start)).shape;
-                    rings.push(
-                        make_edge_between(model, curve, (start, start + TAU), &v, &v, tol)?.shape,
-                    );
-                }
-                let surface = exact.surface((0.0, TAU), tol)?;
-                let band =
-                    ogeom_algo::make_revolution_band(model, &surface, &rings[0], &rings[1], tol)?;
-                oriented_round(model, band, away, |q| exact.centre(layout.station(q)), tol)?
-            }
+        let mut rounds = Vec::with_capacity(seats.len());
+        for seat in seats {
+            let round = round_alone(model, seat, away, tol)?;
+            history.generate(a, round.clone());
+            history.generate(b, round.clone());
+            rounds.push(round);
+        }
+        let shape = match rounds.as_slice() {
+            [one] => one.clone(),
+            _ => model.add_compound(&rounds)?,
         };
-        history.generate(a, round.clone());
-        history.generate(b, round.clone());
-        return Ok(Built::new(round, history));
+        return Ok(Built::new(shape, history));
     }
 
-    // Each kept piece with its line of contact cut to the run, and the
-    // round between them.
-    let mut kept = Vec::with_capacity(2);
-    let mut rails = Vec::with_capacity(2);
-    let mut corners = Vec::with_capacity(2);
-    for f in 0..2 {
-        let stretch = &stretches[f];
-        let (surface_id, tolerance, _, _) = reads[f];
-        match span {
-            None => {
-                kept.push(stretch.piece.clone());
-                rails.push(stretch.edge.clone());
-                let Some((v, _)) = edge_vertices(model, &stretch.edge)? else {
-                    ogeom_bail!(Construction, "a line of contact has no vertices");
+    // Each kept piece with its line of contact in every corner cut to its
+    // run, and the rails and their ends, corner by corner.
+    let mut kept = [a.clone(), b.clone()];
+    let mut rails: Vec<[Shape; 2]> = Vec::with_capacity(seats.len());
+    let mut corners: Vec<[[Shape; 2]; 2]> = Vec::with_capacity(seats.len());
+    for (k, seat) in seats.iter().enumerate() {
+        let FaceSeat {
+            exact,
+            stretches,
+            span,
+            surfaces,
+            reads,
+            ..
+        } = seat;
+        let mut seat_rails = Vec::with_capacity(2);
+        let mut seat_corners = Vec::with_capacity(2);
+        for f in 0..2 {
+            // The first corner's stretch is the one cut on the face itself.
+            // A later corner's is cut on what the earlier corners left.
+            let later;
+            let stretch = if k == 0 {
+                &stretches[f]
+            } else {
+                let extent = station_extent(model, &exact.layout, [a, b][f], tol)?;
+                let Some(cut) = contact_stretch(model, &kept[f], exact, f, extent, tol)? else {
+                    ogeom_bail!(
+                        Construction,
+                        "a line of contact misses what cutting the face back along another \
+                         corner's line leaves of it"
+                    );
                 };
-                corners.push([v.clone(), v]);
-            }
-            Some((lo, hi)) if stretch.closed => {
-                let (piece, rail, ends) = closed_cut_to_run(
+                later = cut;
+                &later
+            };
+            let (surface_id, tolerance, _, _) = reads[f];
+            let (piece, rail, ends) = match *span {
+                None => {
+                    let Some((v, _)) = edge_vertices(model, &stretch.edge)? else {
+                        ogeom_bail!(Construction, "a line of contact has no vertices");
+                    };
+                    (stretch.piece.clone(), stretch.edge.clone(), [v.clone(), v])
+                }
+                Some((lo, hi)) if stretch.closed => closed_cut_to_run(
                     model,
                     stretch,
-                    &exact,
+                    exact,
                     f,
                     (lo, hi),
                     (surface_id, &surfaces[f], tolerance),
                     tol,
-                )?;
-                kept.push(piece);
-                rails.push(rail);
-                corners.push(ends);
-            }
-            Some((lo, hi)) => {
-                let (piece, rail, ends) = cut_to_run(
+                )?,
+                Some((lo, hi)) => cut_to_run(
                     model,
                     &stretch.piece,
                     &stretch.edge,
@@ -3016,30 +3141,109 @@ pub(crate) fn fillet_faces(
                     tolerance,
                     [exact.contact(f, lo), exact.contact(f, hi)],
                     tol,
-                )?;
-                kept.push(piece);
-                rails.push(rail);
-                corners.push(ends);
-            }
+                )?,
+            };
+            kept[f] = piece;
+            seat_rails.push(rail);
+            seat_corners.push(ends);
+        }
+        rails.push([seat_rails[0].clone(), seat_rails[1].clone()]);
+        corners.push([seat_corners[0].clone(), seat_corners[1].clone()]);
+    }
+    // A later cut must leave the earlier corners' rails as they were, for
+    // their rounds to share them.
+    for (f, piece) in kept.iter().enumerate() {
+        let edges = explore_unique(model, piece, ShapeType::Edge)?;
+        if rails
+            .iter()
+            .any(|rail| !edges.iter().any(|e| e.is_same(&rail[f])))
+        {
+            ogeom_bail!(
+                Construction,
+                "cutting a face back along a second line of contact rebuilds the edge an \
+                 earlier cut left, so the rounds would not share the face's edges"
+            );
         }
     }
-    let rails = [rails[0].clone(), rails[1].clone()];
-    let corners = [corners[0].clone(), corners[1].clone()];
-    let round = match span {
-        Some(run) => exact_open_round(model, &exact, run, &rails, &corners, away, tol)?,
-        None => {
-            let surface = exact.surface((0.0, TAU), tol)?;
-            let band =
-                ogeom_algo::make_revolution_band(model, &surface, &rails[0], &rails[1], tol)?;
-            oriented_round(model, band, away, |q| exact.centre(layout.station(q)), tol)?
-        }
-    };
-    let shell = model.add_shell(&[kept[0].clone(), round.clone(), kept[1].clone()])?;
+    let mut faces = Vec::with_capacity(seats.len() + 2);
+    faces.push(kept[0].clone());
+    for ((seat, rails), corners) in seats.iter().zip(&rails).zip(&corners) {
+        let exact = &seat.exact;
+        let round = match seat.span {
+            Some(run) => exact_open_round(model, exact, run, rails, corners, away, tol)?,
+            None => {
+                let surface = exact.surface((0.0, TAU), tol)?;
+                let band =
+                    ogeom_algo::make_revolution_band(model, &surface, &rails[0], &rails[1], tol)?;
+                let layout = exact.layout;
+                oriented_round(model, band, away, |q| exact.centre(layout.station(q)), tol)?
+            }
+        };
+        history.generate(a, round.clone());
+        history.generate(b, round.clone());
+        faces.push(round);
+    }
+    faces.push(kept[1].clone());
+    let shell = model.add_shell(&faces)?;
     history.modify(a, kept[0].clone());
     history.modify(b, kept[1].clone());
-    history.generate(a, round.clone());
-    history.generate(b, round);
     Ok(Built::new(shell, history))
+}
+
+/// The round of one seat between two separate faces left as they are:
+/// bounded by its own rails along the lines of contact over the run, or
+/// closed round the whole turn.
+fn round_alone(
+    model: &mut Model,
+    seat: &FaceSeat,
+    away: bool,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let FaceSeat {
+        exact,
+        stretches,
+        span,
+        ..
+    } = seat;
+    let layout = exact.layout;
+    match *span {
+        Some((lo, hi)) => {
+            let mut corners = Vec::with_capacity(2);
+            let mut rails = Vec::with_capacity(2);
+            for f in 0..2 {
+                let v0 = make_vertex(model, exact.contact(f, lo)).shape;
+                let v1 = make_vertex(model, exact.contact(f, hi)).shape;
+                let (curve, range) = exact.contact_run(f, (lo, hi), tol)?;
+                let rail = make_edge_between(model, curve, range, &v0, &v1, tol)?.shape;
+                corners.push([v0, v1]);
+                rails.push(rail);
+            }
+            exact_open_round(
+                model,
+                exact,
+                (lo, hi),
+                &[rails[0].clone(), rails[1].clone()],
+                &[corners[0].clone(), corners[1].clone()],
+                away,
+                tol,
+            )
+        }
+        None => {
+            let start = layout.station(stretches[0].start);
+            let mut rings = Vec::with_capacity(2);
+            for f in 0..2 {
+                let curve = exact.contact_curve(f, tol)?;
+                let v = make_vertex(model, exact.contact(f, start)).shape;
+                rings.push(
+                    make_edge_between(model, curve, (start, start + TAU), &v, &v, tol)?.shape,
+                );
+            }
+            let surface = exact.surface((0.0, TAU), tol)?;
+            let band =
+                ogeom_algo::make_revolution_band(model, &surface, &rings[0], &rings[1], tol)?;
+            oriented_round(model, band, away, |q| exact.centre(layout.station(q)), tol)
+        }
+    }
 }
 
 /// A kept piece whose line of contact (`edge`, open) runs past the run the

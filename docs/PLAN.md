@@ -164,15 +164,20 @@ in `tests/sheet_fillets.rs`):
 - a line of contact crossing a face more than once: several runs between the
   same two faces, and with `trim` a face cut along several lines whose piece
   away from every round may be more than one;
-- `fillet_faces` where the surfaces cross in more than one corner the ball
-  rolls in (two drums fused, a drum's flat and its wall), which
-  `blend_faces` blends corner by corner
-  (`a_face_blend_fills_both_creases_over_older_smaller_rounds`); and on
-  either, corners within the sum of their reaches, each the larger of its
-  crease's distances to the contacts, which bounds the corner in the
-  section but not tightly. Owed: one round per corner on a sheet, each face
-  kept between its lines of contact, and the corners told apart by their
-  own sections;
+- corners where the surfaces cross in more than one place the ball rolls
+  in (two drums fused, a drum's flat and its wall), rounded corner by
+  corner by `blend_faces` and `fillet_faces`
+  (`a_face_blend_fills_both_creases_over_older_smaller_rounds`,
+  `two_drums_round_both_creases_their_walls_meet_in`), are told apart by
+  the sum of their reaches, each the larger of its crease's distances to
+  the contacts, or else by a line parting the convex polygons that hold
+  each corner's section: its crease, its contacts and the meeting points
+  of each arc's end tangents
+  (`a_face_blend_takes_off_two_corners_whose_balls_overlap_but_whose_corners_stand_apart`).
+  Owed: corners whose polygons overlap while the corners do not, told
+  apart by their own boundaries; and with `trim` over several corners,
+  each later cut keeps the earlier rails, which a cut rebuilding them is
+  refused by name;
 - a round crossing a face that stands between the two (a ball crossing a
   chamfer between the faces it rounds), where the solid beside the round is
   open where the seat says material, or the reverse. No ball rolls in that
@@ -195,12 +200,20 @@ in `tests/sheet_fillets.rs`):
   until the centre's travel fits under the face's clearance. Between two
   planes and on the swept path a face inside the ball counts only inside
   its lune, the part between its centre and its arc
-  (`a_face_blend_rounds_a_part_thinner_than_its_ball_where_the_lune_stays_inside`);
-  the marched path still asks the whole ball and reads the ball's side
-  just off the arc toward the crease, so a part thinner than its ball, or
-  an older round just smaller than it in the corner, is refused there.
-  Owed: the marched seat's lunes, their planes turning along the run.
-  Faces the
+  (`a_face_blend_rounds_a_part_thinner_than_its_ball_where_the_lune_stays_inside`),
+  and a face on a plane along a straight run is cleared of every lune at
+  once from the run's two end sections
+  (`a_face_blend_rounds_a_bar_whose_far_faces_pass_just_behind_the_ball_s_centre`).
+  The marched path reads the ball's side inside its lune where no face
+  stands in the ball
+  (`a_marched_face_blend_fills_over_an_older_round_just_smaller`), but
+  still asks the whole ball, so a part thinner than its ball is refused
+  there. Owed: the marched seat's lunes, their planes turning along the
+  run. An older marched round just smaller than the ball (within a few
+  hundredths of it) is fitted to 2e-4 and reaches into the ball by a few
+  micrometres beside a contact, where its border runs within its own
+  tolerance of the face; the blend is refused there, as the fitted round
+  does stand inside the ball. Faces the
   crease or a line of contact meets, and faces holding a capped run's
   ends, are where the round runs off (a crease running off a block's
   side) and are not asked. Owed: a face that ends the run without

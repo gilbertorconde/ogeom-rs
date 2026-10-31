@@ -24,15 +24,17 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// the ball stays clear of a face between two stations.
 const HALVINGS: u32 = 24;
 
-/// A search of a face, read by its distances, for a point inside the
-/// lune of a ball of a run, tried first at a point it may already hold.
+/// A search of a face of the model, read by its distances, for a point
+/// inside the lune of a ball of a run, tried first at a point it may
+/// already hold.
 pub(crate) type LuneSearch<'a> =
-    dyn Fn(&PointDistance, Option<Point>) -> OgeomResult<Option<Point>> + 'a;
+    dyn Fn(&Model, &Shape, &PointDistance, Option<Point>) -> OgeomResult<Option<Point>> + 'a;
 
 /// The balls a round between two faces rolls along its run.
 pub(crate) struct Rolling<'a> {
     pub(crate) radius: f64,
-    /// Stations along the run, in order, from its start to its end.
+    /// Stations along the run, in order, from its start to its end: rising
+    /// or falling in the parameter, as the run goes along its guide.
     pub(crate) stations: Vec<f64>,
     /// The ball's centre at a station, seated exactly.
     pub(crate) centre: &'a dyn Fn(f64) -> OgeomResult<Point>,
@@ -177,7 +179,7 @@ pub(crate) fn face_inside_balls(
         if let Some(at) = at_stations.iter().find_map(|e| inside(*e)) {
             match rolling.lunes {
                 None => return Ok(Some(at)),
-                Some(search) => match search(&measure, Some(at))? {
+                Some(search) => match search(model, &face, &measure, Some(at))? {
                     Some(at) => return Ok(Some(at)),
                     None => continue,
                 },
@@ -214,7 +216,9 @@ pub(crate) fn face_inside_balls(
                 found = Some(Ok(at));
                 break;
             }
-            if depth >= HALVINGS || m <= a || m >= b {
+            // A run marched against its guide's parameter has its stations
+            // falling: the interval is spent when its middle meets an end.
+            if depth >= HALVINGS || m <= a.min(b) || m >= a.max(b) {
                 found = Some(Err(format!(
                     "whether another face of the solid comes inside the ball of radius \
                      {radius} rolling between the two faces cannot be told: it stands within \
@@ -240,7 +244,7 @@ pub(crate) fn face_inside_balls(
         match (found, rolling.lunes) {
             (None, _) => {}
             (Some(found), Some(search)) => {
-                if let Some(at) = search(&measure, found.ok())? {
+                if let Some(at) = search(model, &face, &measure, found.ok())? {
                     return Ok(Some(at));
                 }
             }
@@ -281,4 +285,62 @@ fn face_slack(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<f64> 
         }
     }
     Ok(most.mul_add(2.0, tol.confusion() * 100.0))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test code")]
+mod tests {
+    use super::*;
+    use ogeom_math::{Direction, Frame};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A unit ball rolled up the corner of a box of side 10 between its
+    /// faces x = 0 and y = 0, from z = 2 to z = 8, stands a unit from the
+    /// top and the bottom at the run's ends and clear of every other face:
+    /// no face comes inside it, whichever way the stations run. A run
+    /// marched against its guide's parameter has them falling, and the
+    /// intervals near the ends are halved before they clear.
+    #[test]
+    fn a_run_clears_the_faces_beside_it_whichever_way_its_stations_run() {
+        let mut model = Model::new();
+        let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+        let solid = ogeom_algo::make_box(&mut model, frame, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let on = |model: &Model, p: Point| {
+            explore_unique(model, &solid, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|f| {
+                    PointDistance::of(model, f, T)
+                        .unwrap()
+                        .nearest(p, T)
+                        .unwrap()
+                        .0
+                        < 1e-9
+                })
+                .unwrap()
+        };
+        let faces = [
+            on(&model, Point::new(0.0, 5.0, 5.0)),
+            on(&model, Point::new(5.0, 0.0, 5.0)),
+        ];
+        let centre = |t: f64| Ok(Point::new(1.0, 1.0, t));
+        for stations in [vec![2.0, 8.0], vec![8.0, 2.0]] {
+            let rolling = Rolling {
+                radius: 1.0,
+                stations: stations.clone(),
+                centre: &centre,
+                lines: Vec::new(),
+                ends: Vec::new(),
+                lunes: None,
+            };
+            let found = face_inside_balls(&mut model, &solid, [&faces[0], &faces[1]], &rolling, T);
+            assert!(
+                matches!(found, Ok(None)),
+                "stations {stations:?}: {found:?}"
+            );
+        }
+    }
 }
