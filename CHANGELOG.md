@@ -41,6 +41,38 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face's mesh no longer says it met its chord while standing off its
+  surface by far more.**
+  - The mesher measured each triangle's middle, lifted onto the surface,
+    against the triangle's plane. A sliver laid along a line the surface
+    bends under holds that bend in its plane, and passed while its middle
+    stood inside the bend. A cylinder face of Voron 2.4 solid 990 converted
+    back from its mesh, whose rim runs along straight chords standing up
+    to 0.038 inside it, meshed 0.027 off its surface at a chord of 1e-4 and
+    said it had met it; 24 of its faces did.
+  - The middle is now also measured against the triangle's own middle
+    along the surface's normal there. Those faces now say they missed, and
+    no face's mesh changes: only the flag does.
+- **A ray through a gap between two faces that their edge's tolerance
+  covers is no longer counted.**
+  - Two faces sharing an edge lie within the edge's tolerance of it, not on
+    it, and between them the boundary can leave a gap or overlap itself
+    that wide. `classify_in_solid_exact` abandoned a ray only for a
+    crossing within the ring's chord of a face's trim, so a ray out through
+    such a gap crossed one face too few, or too many, and read the point on
+    the wrong side. A box roofed by a cylinder whose ends close along
+    straight chords 0.414 under the roof read a point well inside it as
+    outside.
+  - A ray now abandons a crossing within the widest tolerance of the face's
+    edges and vertices of its trim too, and the next direction is tried.
+  - `check` named a planar face of Voron 2.4 solids 990 and 660 converted
+    back from their meshes turned in, on such a ray past a cylinder whose
+    rim is straight chords; the winding number over the solid's mesh and
+    the original part both put the material behind the face. Both now
+    check valid, and the converter keeps the curved faces it had given
+    back as facets over that reading: 990 on 623 faces, none faceted, its
+    volume within 8.0e-5 of the part's.
+
 - **Mesh conversion no longer returns a solid with a face passing through
   another.**
   - A curved region fitted to a strip of a few triangles meets the plane of
