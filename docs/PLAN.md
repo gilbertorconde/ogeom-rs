@@ -171,14 +171,20 @@ in `tests/sheet_fillets.rs`):
   ball of radius 1.5 touching the wall and the lid has its centre 1.41 from
   the chamfer's plane. The round would leave the material through the
   chamfer, giving round, chamfer, round meeting at creases. It needs a ball
-  touching the chamfer as well (a three-face blend). Owed first: where
-  the centre stands a radius or more behind the chamfer, the chamfer lies
-  in the corner the round takes off, as an edge round takes off a strip
-  (`consumed.rs`), and the round is the two faces' alone, the condition
-  read in the meridian section. Two planes with a strip between are not checked so:
-  `blend_faces` cuts the wedge whatever the strip, and on a box chamfered
-  0.3 the round of radius 0.5 leaves the chamfer standing between two
-  pieces of round;
+  touching the chamfer as well (a three-face blend). Between two planes
+  and between surfaces sharing a direction or an axis, `blend_faces`
+  refuses by name where another face of the solid on a surface the same
+  in every section holds a point inside the ball
+  (`a_face_blend_refuses_a_ball_that_crosses_a_bevel_between_the_faces`):
+  a chamfer the ball crosses, uneven or not, a round smaller than the
+  one it would replace. Not checked: a face between them on another
+  surface (a B-spline strip), which is asked only by the probe beside the
+  middle of the ball's arc, and every face of a marched seat, where the
+  same probe is the only check. A strip crossing the ball away from the
+  middle of its arc passes it. Owed: the marched balls checked against
+  the faces bridging the two faces along the run, which needs the
+  faces ending the run (a crease running off a block's side) told from
+  the faces between;
 - with `trim`, a closed line of contact across the seam of a closed B-spline
   face whose chart does not wrap round (a tube swept from a B-spline ring):
   `split_face` brings a trace back by a period only on a periodic chart, so

@@ -957,7 +957,13 @@ round is refused by name, as the cut does not part the face. Refused by \
 name too: faces the ball leaves at different places round its seat and \
 never both at once, a line of contact crossing a face more than once, \
 and a round crossing a face between the two (a ball wider than a \
-chamfer between the faces it rounds). An edge round refuses by name \
+chamfer between the faces it rounds). Between two planes, and between \
+surfaces sharing a direction or an axis, the ball touching both faces is \
+the only one, and a blend is refused by name where another face of the \
+solid on a surface the same in every section (a chamfer or round between \
+the faces) holds a point inside it: the strip goes with the corner only \
+where it lies wholly outside the ball. A marched seat is checked only \
+beside the middle of its arc. An edge round refuses by name \
 where its faces meet tangent (no corner), where the ball's contact on a \
 face stands past the face's far side in the material (a boss on the \
 wall) or all along the edge (a face narrower than the setback, which a \

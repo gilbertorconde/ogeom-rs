@@ -2096,13 +2096,14 @@ pub(crate) fn face_seat(
 /// off a block's side while the ball still rolls over its top), and the
 /// sweep stops in the ball's section through the edges' end. With it, a
 /// point inside it beside the middle of the round, where the solid being
-/// blended says whether the corner is material.
+/// blended says whether the corner is material, and the run swept, its
+/// first station and how far it goes.
 pub(crate) fn corner_wedge(
     model: &mut Model,
     seat: &FaceSeat,
     solid: &Shape,
     tol: Tolerances,
-) -> OgeomResult<(Shape, Point)> {
+) -> OgeomResult<(Shape, Point, (f64, f64))> {
     let exact = &seat.exact;
     let layout = exact.layout;
     let section = exact.section;
@@ -2222,7 +2223,7 @@ pub(crate) fn corner_wedge(
     let gap = norm2(sub2(crease, on_arc));
     let toward = scale2(sub2(crease, on_arc), 1.0 / gap);
     let probe = add2(on_arc, scale2(toward, gap.min(exact.radius) * 0.1));
-    Ok((wedge, layout.lift(probe, s0 + turn / 2.0)))
+    Ok((wedge, layout.lift(probe, s0 + turn / 2.0), (s0, turn)))
 }
 
 /// The crease at the section point `crease` swept along the layout, its
@@ -2247,6 +2248,136 @@ fn crease_line(layout: &Layout, crease: P2, tol: Tolerances) -> OgeomResult<Curv
             )?)))
         }
     }
+}
+
+/// A point inside a seat's ball, somewhere along the run `(s0, turn)`, of a
+/// face of `solid` other than the two `faces`; `None` where none is found.
+pub(crate) fn face_inside_seat(
+    model: &Model,
+    solid: &Shape,
+    faces: [&Shape; 2],
+    seat: &FaceSeat,
+    run: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    let exact = &seat.exact;
+    face_inside_ball(
+        model,
+        solid,
+        faces,
+        &exact.layout,
+        exact.section.centre,
+        exact.radius,
+        run,
+        tol,
+    )
+}
+
+/// A point of a face of `solid` other than the two `faces` inside the ball
+/// of `radius` centred on the line through `centre` along `along`, at a
+/// station `(p - centre) . along` inside `run`; `None` where none is found.
+#[allow(clippy::too_many_arguments, reason = "one ball and its run")]
+pub(crate) fn face_inside_rolling_ball(
+    model: &Model,
+    solid: &Shape,
+    faces: [&Shape; 2],
+    centre: Point,
+    along: Vector,
+    radius: f64,
+    run: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    let layout = Layout::extruded(centre, along, tol)?;
+    face_inside_ball(model, solid, faces, &layout, (0.0, 0.0), radius, run, tol)
+}
+
+/// A point inside the ball of `radius` centred at `centre` in the section,
+/// at some station of the run `(s0, turn)`, of a face of `solid` other than
+/// the two `faces` on a surface whose trace is the same line or circle in
+/// every section of `layout`.
+///
+/// Such a face's nearest point to the ball's centre is the same in every
+/// section, so the ball reaches into the face's surface exactly where that
+/// point lies more than the confusion distance inside it, and a point the
+/// face holds there, at a station inside the run, is a point of the solid's
+/// boundary inside the ball. Each of a few stations spread along the run is
+/// asked, so a face that runs along part of the run only is found where it
+/// stands at one of them; a face found nowhere proves nothing.
+#[allow(clippy::too_many_arguments, reason = "one ball and its run")]
+fn face_inside_ball(
+    model: &Model,
+    solid: &Shape,
+    faces: [&Shape; 2],
+    layout: &Layout,
+    centre: P2,
+    radius: f64,
+    run: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    use ogeom_geom::Transformable as _;
+    const STATIONS: u32 = 8;
+    let conf = tol.confusion();
+    let deflection = ogeom_mesh::Deflection {
+        chord: (radius * 1e-3).max(conf * 1e2),
+        ..ogeom_mesh::Deflection::default()
+    };
+    for face in explore_unique(model, solid, ShapeType::Face)? {
+        if faces.iter().any(|f| f.is_same(&face)) {
+            continue;
+        }
+        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+            continue;
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            continue;
+        };
+        // Only these surfaces have a trace the same in every section.
+        if !matches!(
+            surface,
+            SurfaceGeometry::Plane(_)
+                | SurfaceGeometry::Cylinder(_)
+                | SurfaceGeometry::Cone(_)
+                | SurfaceGeometry::Sphere(_)
+                | SurfaceGeometry::Torus(_)
+        ) {
+            continue;
+        }
+        let placed = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?;
+        let Some(profile) = profile_of(&placed, layout, tol) else {
+            continue;
+        };
+        let near = match profile {
+            Profile::Line { at, normal } => {
+                sub2(centre, scale2(normal, dot2(sub2(centre, at), normal)))
+            }
+            Profile::Circle {
+                centre: middle,
+                radius: own,
+            } => {
+                let d = sub2(centre, middle);
+                let m = norm2(d);
+                if m <= conf {
+                    continue;
+                }
+                add2(middle, scale2(d, own / m))
+            }
+        };
+        if norm2(sub2(near, centre)) >= radius - conf {
+            continue;
+        }
+        for k in 0..STATIONS {
+            let s = run.0 + run.1 * (f64::from(k) + 0.5) / f64::from(STATIONS);
+            let p = layout.lift(near, s);
+            if ogeom_algo::classify_on_face(model, &face, p, deflection, tol)?
+                == ogeom_algo::Containment::In
+            {
+                return Ok(Some(p));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Whether the two faces' surfaces share a direction or an axis, so the

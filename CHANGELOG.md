@@ -58,6 +58,24 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`blend_faces` refuses a ball that crosses a face between the two faces
+  it blends.**
+  - Between two planes the wedge was cut whatever stood between them. On a
+    2-cube chamfered 0.3 and blended at radius 0.5, the only ball touching
+    both planes has its centre 0.495 from the chamfer's plane, so part of
+    it lies outside the solid. The result left the chamfer standing
+    between two pieces of round, 0.000949 short of
+    `8 - 2 (1 - pi/4) r^2` by the lens beyond the chamfer. Where the
+    contacts stood on the chamfered-off part of the faces, the result was
+    the solid unchanged.
+  - Between surfaces sharing a direction or an axis, only the solid
+    beside the middle of the ball's arc was asked. A drum chamfered
+    unevenly (0.9 by 0.2) and blended at radius 1 kept a sliver of the
+    chamfer between two pieces of torus.
+  - Both now refuse by name where another face of the solid, on a surface
+    the same in every section, holds a point inside the ball. Where the
+    strip lies wholly outside the ball it goes with the corner as before.
+
 - **`fillet_edges` rounds an edge whose ball runs off a narrowing face
   beside edges it does not touch.**
   - A request of more than one edge refused any station where the ball's

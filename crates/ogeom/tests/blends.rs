@@ -380,6 +380,151 @@ fn a_face_blend_rounds_across_a_chamfer_between_the_faces() {
     );
 }
 
+/// A 2-cube whose top edge along x at y = z = 2 is bevelled: chamfered at
+/// `chamfer` (`round` false) or rounded at it. The solid, its top and the
+/// side y = 2, which the bevel parts.
+fn bevelled_cube(model: &mut Model, chamfer: f64, round: bool) -> (Shape, Shape, Shape) {
+    let cube = ogeom::algo::make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let edge = edge_near(model, &cube, Point::new(1.0, 2.0, 2.0));
+    let bevelled = if round {
+        ogeom::fillet::fillet_edge(model, &cube, &edge, chamfer, T)
+    } else {
+        ogeom::fillet::chamfer_edge(model, &cube, &edge, chamfer, T)
+    }
+    .unwrap()
+    .shape;
+    let top = planar_face_at(model, &bevelled, Point::new(1.0, 0.5, 2.0));
+    let side = planar_face_at(model, &bevelled, Point::new(1.0, 2.0, 0.5));
+    assert!(!share_an_edge(model, &top, &side), "the bevel parts them");
+    (bevelled, top, side)
+}
+
+/// A drum of radius 10 and height 20 whose top rim is chamfered `on_wall`
+/// down its wall and `on_top` in across its top: the solid, its wall and
+/// its top.
+fn chamfered_drum(model: &mut Model, on_wall: f64, on_top: f64) -> (Shape, Shape, Shape) {
+    let drum = ogeom::algo::make_cylinder(model, Frame::WORLD, 10.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let rim = rim_at(model, &drum, 20.0);
+    let wall = cylinder_face_of(model, &drum);
+    let chamfered =
+        ogeom::fillet::chamfer_edge_distances(model, &drum, &rim, &wall, on_wall, on_top, T)
+            .unwrap()
+            .shape;
+    let wall = cylinder_face_of(model, &chamfered);
+    let top = lid_at(model, &chamfered, 20.0);
+    (chamfered, wall, top)
+}
+
+/// A bevel between two faces that the ball touching both crosses is not
+/// taken off by their blend, and no ball of the radius rolls between the
+/// two faces alone: the ball touching both is unique (its centre a radius
+/// behind each), and part of it lies outside the solid, beyond the bevel.
+/// Each blend is refused by name.
+///
+/// - The cube chamfered 0.3 at radius 0.5: in the section the ball's
+///   centre stands (2r - c) / sqrt 2 = 0.495 from the chamfer's plane,
+///   short of the radius; the cut would leave the chamfer standing between
+///   two pieces of round, short of `8 - 2 (1 - pi/4) r^2` by the lens
+///   `2 (r^2 acos(d/r) - d sqrt(r^2 - d^2))` beyond the chamfer.
+/// - The cube chamfered 0.6 at radius 0.5, and 0.3 at radius 0.2: the
+///   contacts stand where the chamfer took the faces off, and the cut takes
+///   nothing.
+/// - The cube rounded at 0.3, blended at radius 0.2: the smaller ball
+///   crosses the round, whose axis stands 0.1 sqrt 2 from its centre.
+/// - The drum chamfered unevenly, 0.9 by 0.2 either way round, at radius 1:
+///   the meridian section is the cube's, the chamfer's line passing 0.995
+///   from the ball's centre, beside the middle of its arc, which stays in
+///   the material.
+#[test]
+fn a_face_blend_refuses_a_ball_that_crosses_a_bevel_between_the_faces() {
+    let refused = |model: &mut Model, solid: &Shape, a: &Shape, b: &Shape, r: f64| {
+        let why = ogeom::fillet::blend_faces(model, solid, a, b, r, T)
+            .err()
+            .unwrap_or_else(|| panic!("radius {r} is blended"));
+        assert!(
+            matches!(why, ogeom::core::OgeomError::Construction(_))
+                && why
+                    .to_string()
+                    .contains("cuts into another face of the solid"),
+            "radius {r}: {why}"
+        );
+    };
+    for (chamfer, round, r) in [
+        (0.3, false, 0.5),
+        (0.6, false, 0.5),
+        (0.3, false, 0.2),
+        (0.3, true, 0.2),
+    ] {
+        let mut model = Model::new();
+        let (solid, top, side) = bevelled_cube(&mut model, chamfer, round);
+        refused(&mut model, &solid, &top, &side, r);
+    }
+    for (on_wall, on_top) in [(0.9, 0.2), (0.2, 0.9)] {
+        let mut model = Model::new();
+        let (solid, wall, top) = chamfered_drum(&mut model, on_wall, on_top);
+        refused(&mut model, &solid, &wall, &top, 1.0);
+    }
+}
+
+/// A bevel between two faces that lies wholly in the corner the ball
+/// touching both takes off goes with the corner, as before: the cube's
+/// blend is the cube with that edge rounded, `8 - 2 (1 - pi/4) r^2`,
+/// whatever the bevel, on seven faces, none on the chamfer's plane; the
+/// drum's is the drum with its rim rounded.
+#[test]
+fn a_face_blend_takes_a_bevel_off_whole_where_the_ball_clears_it() {
+    let pi = core::f64::consts::PI;
+    for (chamfer, round, r) in [
+        (0.1, false, 0.5),
+        (0.2, false, 0.5),
+        (0.29, false, 0.5),
+        (0.3, false, 1.0),
+        (0.3, true, 0.5),
+    ] {
+        let mut model = Model::new();
+        let (solid, top, side) = bevelled_cube(&mut model, chamfer, round);
+        let blended = ogeom::fillet::blend_faces(&mut model, &solid, &top, &side, r, T)
+            .unwrap_or_else(|e| panic!("bevel {chamfer} at radius {r}: {e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let faces = explore_unique(&model, &blended, ShapeType::Face).unwrap();
+        assert_eq!(faces.len(), 7, "bevel {chamfer} at radius {r}");
+        let normal = Vector::new(0.0, 1.0, 1.0) / 2.0_f64.sqrt();
+        for face in faces.iter().filter(|_| !round) {
+            let (p, n) = ogeom::algo::face_normal(&model, face, T).unwrap();
+            let on = (p - Point::new(0.0, 2.0, 2.0 - chamfer)).dot(normal).abs() < 1e-9;
+            assert!(
+                !on || n.cross(normal).magnitude() > 1e-9,
+                "bevel {chamfer} at radius {r}: the chamfer stands"
+            );
+        }
+        let want = (2.0 * (1.0 - pi / 4.0) * r).mul_add(-r, 8.0);
+        let got = exact_volume(&model, &blended);
+        assert!(
+            (got - want).abs() < 1e-9,
+            "bevel {chamfer} at radius {r}: {got} against {want}"
+        );
+    }
+    let mut model = Model::new();
+    let (solid, wall, top) = chamfered_drum(&mut model, 0.5, 0.2);
+    let blended = ogeom::fillet::blend_faces(&mut model, &solid, &wall, &top, 1.0, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &blended, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let want = pi * 100.0 * 20.0 - rim_ring(10.0, 1.0, 1.0);
+    let got = exact_volume(&model, &blended);
+    assert!(
+        (got - want).abs() < want * 1e-9,
+        "a plain rim round: {got} against {want}"
+    );
+}
+
 /// Two parallel drums fused side by side meet along two straight creases,
 /// both concave. Blending one drum's wall against the other's fills both
 /// creases with exact cylinders, and the fill is measured against the

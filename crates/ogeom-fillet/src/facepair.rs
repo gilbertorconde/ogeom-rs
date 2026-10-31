@@ -80,7 +80,9 @@ use crate::support::Seat;
 /// name, if the radius is not a usable length, and:
 ///
 /// - for two planes, if they are parallel or the faces do not both reach
-///   the meeting line;
+///   the meeting line, or the ball touching both reaches into another face
+///   of the solid (a strip between them, such as a chamfer, that the ball
+///   crosses rather than takes off whole);
 /// - for a curved face, if the two are one face or either is not a face
 ///   of the solid;
 /// - for a curved face sharing edges with the other, as
@@ -90,7 +92,10 @@ use crate::support::Seat;
 ///   if no ball touches both faces there, its round would be a torus
 ///   crossing its own axis, or the solid beside the middle of the round is
 ///   not what that side needs (material behind the faces, open in front of
-///   them). It is also refused where a ball seats on both sides;
+///   them), or, for surfaces sharing a direction or an axis, the ball
+///   reaches into another face of the solid on such a surface (a chamfer
+///   between them it crosses). It is also refused where a ball seats on
+///   both sides;
 /// - for a marched seat, on a side, if no ball seats along where the
 ///   surfaces cross, more than one crossing holds one touching both faces,
 ///   the ball leaves the two faces at different places round its seat and
@@ -185,6 +190,35 @@ pub fn blend_faces(
         }
     }
 
+    // The ball touching both planes, behind both on a convex corner and in
+    // front of both on a concave one: its centre `o` off the line has
+    // `n_a . o = n_b . o = -r` (or `r`), so `o = -r (n_a + n_b) / (1 + n_a . n_b)`.
+    // It is the only ball touching both planes on that side, so where another
+    // face of the solid reaches inside it (a strip between the faces, such as
+    // a chamfer, crossing its arc) no ball rolls in the corner touching the
+    // two faces alone, and the wedge would leave that face standing between
+    // two pieces of round. The planes are not parallel, so `1 + n_a . n_b`
+    // is positive.
+    let k = normal_a.dot(normal_b);
+    let side = if convex { -1.0 } else { 1.0 };
+    let centre = seed + (normal_a + normal_b) * (side * radius / (1.0 + k));
+    if let Some(at) = crate::sheet_curved::face_inside_rolling_ball(
+        model,
+        solid,
+        [a, b],
+        centre,
+        along,
+        radius,
+        (lo, hi - lo),
+        tol,
+    )? {
+        ogeom_bail!(
+            Construction,
+            "no ball of radius {radius} rolls between the two faces: {}",
+            stands_inside(at)
+        );
+    }
+
     let seat = Seat {
         start: seed + along * lo,
         end: seed + along * hi,
@@ -194,6 +228,17 @@ pub fn blend_faces(
         convex,
     };
     seated_fillet(model, solid, &seat, radius, None, &[], tol)
+}
+
+/// Why a ball touching both faces rounds nothing: it reaches into another
+/// face of the solid at `at`.
+fn stands_inside(at: Point) -> String {
+    format!(
+        "the ball touching both cuts into another face of the solid at ({:.6}, {:.6}, {:.6}), \
+         a face standing between them (a strip such as a chamfer) that a round of the two \
+         faces alone would leave standing between two pieces of round",
+        at.x, at.y, at.z
+    )
 }
 
 /// A face's plane origin and its outward normal, refusing anything curved.
@@ -328,9 +373,21 @@ fn curved_blend(
     for behind in [true, false] {
         let side = if behind { "behind" } else { "in front of" };
         let built = match &hosts {
-            None => crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol)
-                .and_then(|seat| crate::sheet_curved::corner_wedge(model, &seat, solid, tol))
-                .map(|(wedge, probe)| (Corner::Swept(wedge), probe)),
+            None => crate::sheet_curved::face_seat(model, [a, b], radius, behind, tol).and_then(
+                |seat| {
+                    let (wedge, probe, run) =
+                        crate::sheet_curved::corner_wedge(model, &seat, solid, tol)?;
+                    let inside = crate::sheet_curved::face_inside_seat(
+                        model,
+                        solid,
+                        [a, b],
+                        &seat,
+                        run,
+                        tol,
+                    )?;
+                    Ok((Corner::Swept(wedge), probe, inside))
+                },
+            ),
             Some(hosts) => crate::pair_marched::pair_seat(
                 model,
                 [a, b],
@@ -341,13 +398,13 @@ fn curved_blend(
                 tol,
             )
             .and_then(|seat| match seat.probe() {
-                Some(probe) => Ok((Corner::Marched(Box::new(seat)), probe)),
+                Some(probe) => Ok((Corner::Marched(Box::new(seat)), probe, None)),
                 None => {
                     ogeom_bail!(Invariant, "a marched seat on the crease has no probe")
                 }
             }),
         };
-        let (wedge, probe) = match built {
+        let (wedge, probe, inside) = match built {
             Ok(built) => built,
             Err(
                 ogeom_core::OgeomError::Construction(why) | ogeom_core::OgeomError::NotDone(why),
@@ -361,7 +418,9 @@ fn curved_blend(
             ogeom_algo::classify_in_solid_exact(model, solid, probe, tol)?,
             ogeom_algo::Containment::In
         );
-        if material == behind {
+        if let (true, Some(at)) = (material == behind, inside) {
+            misses.push((side, stands_inside(at)));
+        } else if material == behind {
             seated.push((wedge, behind));
         } else {
             let found = if material { "material" } else { "open" };
